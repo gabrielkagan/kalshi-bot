@@ -1,0 +1,7 @@
+.env
+*.jsonl
+venv/
+__pycache__/
+*.pyc
+logs/
+*.tar.gz
