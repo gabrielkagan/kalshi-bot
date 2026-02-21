@@ -39,7 +39,7 @@ MAX_ENTRY_PRICE = 97              # cents
 MAX_CONTRACTS_PER_TRADE = 5
 MAX_RISK_PER_TRADE = 0.03        # 3% of balance
 MIN_SECONDS_BEFORE_CLOSE = 0
-MAX_SECONDS_BEFORE_CLOSE = 240
+MAX_SECONDS_BEFORE_CLOSE = 300    # start scanning 5 min before close
 ONE_ASSET_PER_WINDOW = True
 
 # ─── API Configuration ───────────────────────────────────────────────────────
@@ -55,6 +55,7 @@ SCAN_JOURNAL = "scan_journal.jsonl"
 TRADE_JOURNAL = "trade_journal.jsonl"
 SETTLEMENT_JOURNAL = "settlement_journal.jsonl"
 ORDER_JOURNAL = "order_journal.jsonl"
+REJECTION_JOURNAL = "rejection_journal.jsonl"
 
 # ─── Loop Timing ─────────────────────────────────────────────────────────────
 SCAN_INTERVAL_SECONDS = 1.0
@@ -107,10 +108,12 @@ MAKER_POLL_INTERVAL = 2.0         # poll for maker fills every 2 seconds
 ESCALATION_MAX_ENTRY = 99         # taker price cap during escalation (cents)
 CONVERGENCE_WINDOW_SECONDS = 30.0 # seconds to measure price velocity
 PANIC_BID_PRICE = 99              # resting bid price (cents)
+MAKER_TIMEOUT_SECONDS = 30.0     # hard timeout for maker orders
 
-# ─── Strategy Timeouts ───────────────────────────────────────────────────
-MAKER_PATIENT_TIMEOUT = 30.0      # seconds before re-evaluating patient maker
-MAKER_AGGRESSIVE_TIMEOUT = 10.0   # seconds before re-evaluating aggressive maker
+# ─── Adaptive Escalation ─────────────────────────────────────────────────
+ESCALATION_WAIT_LONG = 15.0       # maker wait when 60-300s to close
+ESCALATION_WAIT_MEDIUM = 10.0     # maker wait when 30-60s to close
+ESCALATION_WAIT_SHORT = 5.0       # maker wait when <30s to close
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -563,6 +566,9 @@ class Logger:
     def log_order(self, data: Dict):
         self._write_entry(ORDER_JOURNAL, {"type": "order", **data})
 
+    def log_rejection(self, data: Dict):
+        self._write_entry(REJECTION_JOURNAL, {"type": "rejection", **data})
+
     def log_fill(self, fill: Dict) -> bool:
         """Log a fill, deduplicating by fill_id. Returns True if new."""
         fill_id = fill.get("fill_id", "")
@@ -663,6 +669,25 @@ class StateManager:
                 ON pending_orders(ticker);
             CREATE INDEX IF NOT EXISTS idx_settled_trades_asset
                 ON settled_trades(asset);
+
+            CREATE TABLE IF NOT EXISTS rejected_opportunities (
+                ticker TEXT PRIMARY KEY,
+                event_ticker TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                rejection_reason TEXT NOT NULL,
+                rejection_time TEXT NOT NULL,
+                z_score REAL,
+                spot_price REAL,
+                threshold REAL,
+                volatility REAL,
+                market_price INTEGER,
+                seconds_to_close REAL,
+                calibrated_prob REAL,
+                status TEXT NOT NULL DEFAULT 'pending'
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rejected_status
+                ON rejected_opportunities(status);
         """)
         self.conn.commit()
 
@@ -852,6 +877,42 @@ class StateManager:
             UPDATE positions SET status='settled', updated_at=?
             WHERE ticker=?
         """, (now, ticker))
+        self.conn.commit()
+
+    # ── Rejected Opportunities ─────────────────────────────────────────
+
+    def insert_rejection(self, ticker: str, event_ticker: str, asset: str,
+                         rejection_reason: str, z_score: Optional[float],
+                         spot_price: Optional[float], threshold: Optional[float],
+                         volatility: Optional[float], market_price: Optional[int],
+                         seconds_to_close: Optional[float],
+                         calibrated_prob: Optional[float]):
+        """Insert a rejected opportunity. INSERT OR IGNORE deduplicates by ticker."""
+        now = datetime.datetime.utcnow().isoformat() + "Z"
+        self.conn.execute("""
+            INSERT OR IGNORE INTO rejected_opportunities
+                (ticker, event_ticker, asset, rejection_reason, rejection_time,
+                 z_score, spot_price, threshold, volatility, market_price,
+                 seconds_to_close, calibrated_prob, status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (ticker, event_ticker, asset, rejection_reason, now,
+              z_score, spot_price, threshold, volatility, market_price,
+              seconds_to_close, calibrated_prob, "pending"))
+        self.conn.commit()
+
+    def get_unsettled_rejections(self) -> List[Dict]:
+        """Return all rejected opportunities with status='pending'."""
+        rows = self.conn.execute(
+            "SELECT * FROM rejected_opportunities WHERE status='pending'"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_rejection_settled(self, ticker: str):
+        """Set status='settled' for a rejected opportunity."""
+        self.conn.execute(
+            "UPDATE rejected_opportunities SET status='settled' WHERE ticker=?",
+            (ticker,)
+        )
         self.conn.commit()
 
     # ── Bot Order Lifecycle ─────────────────────────────────────────────
@@ -1480,6 +1541,28 @@ class OpportunityScanner:
                 )
                 cal_prob = prob_result.get("calibrated_prob")
                 if cal_prob is None:
+                    reason = prob_result.get("reason", "")
+                    if "z_score" in reason or "refusing" in reason:
+                        rej_data = {
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "rejection_reason": reason,
+                            "z_score": prob_result.get("z_score"),
+                            "spot_price": spot,
+                            "threshold": threshold,
+                            "volatility": blended_rv,
+                            "market_price": None,
+                            "seconds_to_close": round(seconds_remaining, 1),
+                            "calibrated_prob": None,
+                        }
+                        self._state.insert_rejection(
+                            ticker, window["event_ticker"], asset, reason,
+                            prob_result.get("z_score"), spot, threshold,
+                            blended_rv, None, seconds_remaining, None)
+                        self._logger.log_rejection(rej_data)
+                        logging.info(
+                            f"Rejected opportunity: {ticker} — {reason}")
                     continue
 
                 # Skip if calibrated prob too low to ever produce an edge
@@ -1508,6 +1591,29 @@ class OpportunityScanner:
                     market_price_cents=best_ask
                 )
                 if not prob_with_market.get("tradeable"):
+                    reason = prob_with_market.get("reason", "")
+                    if "z_score" in reason or "refusing" in reason:
+                        rej_data = {
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "rejection_reason": reason,
+                            "z_score": prob_with_market.get("z_score"),
+                            "spot_price": spot,
+                            "threshold": threshold,
+                            "volatility": blended_rv,
+                            "market_price": best_ask,
+                            "seconds_to_close": round(seconds_remaining, 1),
+                            "calibrated_prob": prob_with_market.get("calibrated_prob"),
+                        }
+                        self._state.insert_rejection(
+                            ticker, window["event_ticker"], asset, reason,
+                            prob_with_market.get("z_score"), spot, threshold,
+                            blended_rv, best_ask, seconds_remaining,
+                            prob_with_market.get("calibrated_prob"))
+                        self._logger.log_rejection(rej_data)
+                        logging.info(
+                            f"Rejected opportunity: {ticker} — {reason}")
                     continue
 
                 final_prob = prob_with_market["calibrated_prob"]
@@ -1780,14 +1886,17 @@ class OpportunityScanner:
 # ═════════════════════════════════════════════════════════════════════════════
 
 class OrderExecutor:
-    """Execute trades using the intelligent strategy engine.
+    """Maker-first executor with adaptive taker escalation.
 
-    On entry, evaluate_execution_strategy() determines the initial approach:
-    MAKER_PATIENT, MAKER_AGGRESSIVE, TAKER_NOW, or PANIC_CAPTURE.
+    Always enters via a maker limit order (1-2¢ below fair value).
+    tick() polls for fills and, if unfilled, escalates to a taker order
+    after an urgency-based wait window:
+      - 60-300s to close → wait 15s
+      - 30-60s  to close → wait 10s
+      - <30s    to close → wait 5s
 
-    Each tick re-evaluates with fresh orderbook data.  If conditions escalate
-    (e.g. MAKER_PATIENT → TAKER_NOW because the book is converging), the
-    executor upgrades in-flight without waiting for fixed time thresholds.
+    On escalation: cancel maker, re-fetch orderbook, validate price
+    is in [MIN_ENTRY_PRICE, ESCALATION_MAX_ENTRY], and submit taker.
 
     UUID client_order_id, persist to SQLite before submission,
     log fills to trade_journal.jsonl, record position on fill.
@@ -1801,7 +1910,6 @@ class OrderExecutor:
         self._active_order: Optional[Dict] = None
         self._last_poll: float = 0.0
         self._ask_history: deque = deque(maxlen=30)
-        self._entry_strategy: Optional[str] = None
 
     @property
     def has_active_order(self) -> bool:
@@ -1810,59 +1918,25 @@ class OrderExecutor:
     # ── Public interface ──────────────────────────────────────────────────
 
     def execute(self, candidate: Dict) -> Optional[Dict]:
-        """Execute using the strategy pre-computed by the scanner.
-
-        The scanner already called evaluate_execution_strategy() with full
-        orderbook depth data and embedded the result in the candidate dict.
-        TAKER_NOW and PANIC_CAPTURE act immediately; maker strategies set up
-        a resting order that tick() monitors and may upgrade.
-        """
+        """Always submit maker order. Escalation to taker happens in tick()."""
         if self._active_order is not None:
             return None
         self._ask_history.clear()
 
-        strategy = candidate.get("strategy", STRATEGY_MAKER_PATIENT)
-        scores = candidate.get("strategy_scores", {})
-        self._entry_strategy = strategy
-
-        self._logger.log_order({
-            "action": "strategy_executing",
-            "strategy": strategy,
-            "scores": scores,
-            "ticker": candidate["ticker"],
-            "z_score": candidate.get("z_score"),
-            "seconds_to_close": candidate.get("seconds_to_close"),
-            "best_yes_ask": candidate.get("best_yes_ask"),
-            "ob_snapshot": candidate.get("ob_snapshot"),
-        })
-        logging.info(
-            f"Strategy: {strategy} for {candidate['ticker']} "
-            f"(certainty={scores.get('certainty')}, ob={scores.get('orderbook')}, "
-            f"urgency={scores.get('urgency')}, composite={scores.get('composite')})"
-        )
-
         if OBSERVATION_MODE:
             logging.info(
-                f"OBSERVATION MODE: Would place order for {candidate['ticker']} "
+                f"OBSERVATION MODE: Would place maker for {candidate['ticker']} "
                 f"at {candidate.get('best_yes_ask', '?')}¢ for "
-                f"{candidate.get('position_size', '?')} contracts using {strategy}"
+                f"{candidate.get('position_size', '?')} contracts"
             )
             return None
 
-        if strategy == STRATEGY_TAKER_NOW:
-            return self._submit_taker(candidate)
-
-        if strategy == STRATEGY_PANIC_CAPTURE:
-            self._submit_panic_from_candidate(candidate)
-            return None
-
-        # MAKER_PATIENT or MAKER_AGGRESSIVE — place maker order
-        self._submit_maker(candidate, aggressive=(strategy == STRATEGY_MAKER_AGGRESSIVE))
+        self._submit_maker(candidate)
         return None
 
     def tick(self) -> Optional[Dict]:
-        """Called each main-loop tick.  Re-evaluates execution strategy with
-        fresh orderbook data and upgrades in-flight if conditions warrant.
+        """Called each main-loop tick.  Polls for maker fill, then
+        adaptively escalates to taker based on urgency if unfilled.
         """
         if self._active_order is None:
             return None
@@ -1874,7 +1948,7 @@ class OrderExecutor:
 
         order = self._active_order
 
-        # 1. Check for fill (maker or panic)
+        # 1. Check for maker fill
         fill = self._check_for_fill(order)
         if fill:
             self._on_fill(fill, order)
@@ -1889,66 +1963,26 @@ class OrderExecutor:
             self._cancel_active("close_approaching")
             return None
 
-        # 3. Panic orders just wait for fill or expiry
-        if order.get("is_panic"):
-            return None
+        # 3. Escalation: maker waited long enough?
+        escalation_wait = self._escalation_wait(remaining)
+        if elapsed >= escalation_wait:
+            return self._escalate_to_taker(order, remaining)
 
-        # 4. Fetch orderbook and re-evaluate strategy
-        ob_data = self._client.get_orderbook(order["ticker"], depth=5)
-        best_ask = None
-        ask_depth = 999
-        total_depth = 999
-        if ob_data:
-            best_ask = OpportunityScanner._best_yes_ask_cents(ob_data)
-            ask_depth = self._best_ask_depth(ob_data)
-            total_depth = self._total_ob_depth(ob_data)
-            if best_ask is not None:
-                self._ask_history.append((now, best_ask))
-
-        velocity = self._convergence_velocity()
-        candidate = order["candidate"]
-
-        market_data = {
-            "z_score": candidate.get("z_score", 0),
-            "calibrated_prob": candidate.get("calibrated_prob", 0),
-            "spot": candidate.get("spot", 0),
-            "threshold": candidate.get("threshold", 0),
-            "seconds_to_close": remaining,
-            "blended_rv": candidate.get("blended_rv", 0),
-            "vol_regime": candidate.get("vol_regime", "normal"),
-            "best_yes_ask": best_ask,
-            "best_ask_depth": ask_depth,
-            "total_ob_depth": total_depth,
-            "convergence_velocity": velocity,
-            "edge": candidate.get("edge", 0),
-        }
-        strategy, scores = evaluate_execution_strategy(market_data)
-
-        # 5. Act on strategy upgrade
-        if strategy == STRATEGY_PANIC_CAPTURE:
-            logging.info(
-                f"Strategy upgrade → PANIC_CAPTURE for {order['ticker']} "
-                f"(composite={scores['composite']})"
-            )
-            self._execute_panic_capture(order)
-            return None
-
-        if strategy == STRATEGY_TAKER_NOW:
-            logging.info(
-                f"Strategy upgrade → TAKER_NOW for {order['ticker']} "
-                f"(composite={scores['composite']})"
-            )
-            return self._escalate_to_taker(order, remaining, reason="strategy_taker_now")
-
-        # 6. Timeout based on entry strategy
-        timeout = (MAKER_AGGRESSIVE_TIMEOUT
-                   if self._entry_strategy == STRATEGY_MAKER_AGGRESSIVE
-                   else MAKER_PATIENT_TIMEOUT)
-        if elapsed >= timeout:
-            # Time's up for this maker — escalate to taker
-            return self._escalate_to_taker(order, remaining, reason="maker_timeout")
+        # 4. Hard timeout fallback
+        if elapsed >= MAKER_TIMEOUT_SECONDS:
+            self._cancel_active("timeout")
 
         return None
+
+    @staticmethod
+    def _escalation_wait(remaining: float) -> float:
+        """Urgency-based maker wait before escalating to taker."""
+        if remaining >= 60:
+            return ESCALATION_WAIT_LONG     # 15s
+        elif remaining >= 30:
+            return ESCALATION_WAIT_MEDIUM   # 10s
+        else:
+            return ESCALATION_WAIT_SHORT    # 5s
 
     # ── Market Intelligence Helpers ───────────────────────────────────────
 
@@ -2467,6 +2501,8 @@ class SettlementTracker:
         self._last_check_ts: int = 0
         self._last_poll_time: float = 0.0
         self._processed_tickers: Set[str] = set()
+        self._pending_rejection_tickers: Set[str] = set()
+        self._settled_rejection_tickers: Set[str] = set()
 
     # ── Startup ──────────────────────────────────────────────────────────
 
@@ -2476,7 +2512,17 @@ class SettlementTracker:
             (datetime.datetime.utcnow() - datetime.timedelta(hours=24)).timestamp()
         )
         self._load_processed_tickers()
+        self._load_pending_rejections()
         self._poll()
+
+    def _load_pending_rejections(self):
+        """Load unsettled rejected tickers from DB."""
+        rows = self._state.get_unsettled_rejections()
+        self._pending_rejection_tickers = {r["ticker"] for r in rows}
+        logging.info(
+            f"SettlementTracker: loaded {len(self._pending_rejection_tickers)} "
+            f"pending rejected opportunities"
+        )
 
     def _load_processed_tickers(self):
         """Load already-settled tickers from DB for deduplication."""
@@ -2498,6 +2544,7 @@ class SettlementTracker:
             return
         self._last_poll_time = now
         self._poll()
+        self._poll_rejections()
 
     # ── Core poll ────────────────────────────────────────────────────────
 
@@ -2613,6 +2660,92 @@ class SettlementTracker:
             f"(market_result={market_result}, "
             f"revenue={revenue}¢, cost={total_cost}¢, "
             f"pnl={pnl}¢, fee={fee}¢)"
+        )
+
+    # ── Rejection Settlement ─────────────────────────────────────────────
+
+    def register_rejection_ticker(self, ticker: str):
+        """Called by scanner when a new rejection is recorded."""
+        self._pending_rejection_tickers.add(ticker)
+
+    def _poll_rejections(self):
+        """Check if any rejected-opportunity tickers have settled."""
+        # Refresh from DB to pick up rejections inserted by scanner since last poll
+        db_rows = self._state.get_unsettled_rejections()
+        for r in db_rows:
+            self._pending_rejection_tickers.add(r["ticker"])
+
+        if not self._pending_rejection_tickers:
+            return
+
+        # Snapshot to iterate safely
+        tickers_to_check = list(
+            self._pending_rejection_tickers - self._settled_rejection_tickers
+        )
+        for ticker in tickers_to_check:
+            try:
+                resp = self._client.get_market(ticker)
+                if not resp:
+                    continue
+                market = resp.get("market", resp)
+                result = market.get("result", "")
+                if result:
+                    self._process_rejection_settlement(market, ticker)
+            except Exception as e:
+                logging.debug(
+                    f"Rejection settlement check failed for {ticker}: {e}")
+
+    def _process_rejection_settlement(self, market: Dict, ticker: str):
+        """Compute counterfactual P&L for a rejected opportunity that settled."""
+        result = market.get("result", "")
+
+        # Look up the rejection row from SQLite
+        row = self._state.conn.execute(
+            "SELECT * FROM rejected_opportunities WHERE ticker=?", (ticker,)
+        ).fetchone()
+        if not row:
+            return
+
+        entry_price = row["market_price"]
+        # If we never had a market price (pre-filter rejection), skip P&L calc
+        if entry_price is None:
+            would_have_profit = None
+            counterfactual_outcome = "unknown_no_price"
+        else:
+            # Counterfactual: bought 1 YES contract at entry_price
+            if result in ("yes", "all_yes"):
+                would_have_profit = 100 - entry_price  # cents
+                counterfactual_outcome = "would_have_won"
+            elif result in ("no", "all_no"):
+                would_have_profit = -entry_price  # cents
+                counterfactual_outcome = "would_have_lost"
+            else:
+                would_have_profit = None
+                counterfactual_outcome = f"unknown_result_{result}"
+
+        self._logger.log_rejection({
+            "type": "rejection_settlement",
+            "ticker": ticker,
+            "event_ticker": row["event_ticker"],
+            "asset": row["asset"],
+            "rejection_reason": row["rejection_reason"],
+            "market_result": result,
+            "entry_price_if_traded": entry_price,
+            "counterfactual_outcome": counterfactual_outcome,
+            "would_have_profit_cents": would_have_profit,
+            "assumed_contracts": 1,
+            "z_score": row["z_score"],
+            "spot_price": row["spot_price"],
+            "threshold": row["threshold"],
+        })
+
+        self._state.mark_rejection_settled(ticker)
+        self._settled_rejection_tickers.add(ticker)
+        self._pending_rejection_tickers.discard(ticker)
+
+        logging.info(
+            f"Rejection settled: {ticker} -> {counterfactual_outcome} "
+            f"(result={result}, would_have_profit={would_have_profit}¢)"
         )
 
 
