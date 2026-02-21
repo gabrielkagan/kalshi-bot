@@ -1845,7 +1845,7 @@ class OrderExecutor:
             logging.info(
                 f"OBSERVATION MODE: Would place order for {candidate['ticker']} "
                 f"at {candidate.get('best_yes_ask', '?')}¢ for "
-                f"{candidate.get('count', '?')} contracts using {strategy}"
+                f"{candidate.get('position_size', '?')} contracts using {strategy}"
             )
             return None
 
