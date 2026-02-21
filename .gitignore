@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 logs/
 *.tar.gz
+*.db
