@@ -1543,6 +1543,9 @@ class OpportunityScanner:
                 if cal_prob is None:
                     reason = prob_result.get("reason", "")
                     if "z_score" in reason or "refusing" in reason:
+                        # Fetch orderbook to record market price for counterfactual P&L
+                        rej_ob, _ = self._get_orderbook_cached(ticker)
+                        rej_ask = self._best_yes_ask_cents(rej_ob) if rej_ob else None
                         rej_data = {
                             "ticker": ticker,
                             "event_ticker": window["event_ticker"],
@@ -1552,14 +1555,14 @@ class OpportunityScanner:
                             "spot_price": spot,
                             "threshold": threshold,
                             "volatility": blended_rv,
-                            "market_price": None,
+                            "market_price": rej_ask,
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": None,
                         }
                         self._state.insert_rejection(
                             ticker, window["event_ticker"], asset, reason,
                             prob_result.get("z_score"), spot, threshold,
-                            blended_rv, None, seconds_remaining, None)
+                            blended_rv, rej_ask, seconds_remaining, None)
                         self._logger.log_rejection(rej_data)
                         logging.info(
                             f"Rejected opportunity: {ticker} — {reason}")
