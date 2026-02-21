@@ -1,5 +1,6 @@
 requests
 websocket-client
+websockets
 cryptography
 scipy
 numpy

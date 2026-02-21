@@ -11,10 +11,15 @@ import math
 import base64
 import datetime
 import threading
+import asyncio
+import random
 import logging
-from typing import Optional, Dict, List, Set
+from collections import deque
+from typing import Optional, Dict, List, Set, Tuple
 
 import requests
+import websockets
+from scipy.stats import t as student_t
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 
@@ -51,6 +56,35 @@ ORDER_JOURNAL = "order_journal.jsonl"
 SCAN_INTERVAL_SECONDS = 1.0
 MARKET_REFRESH_SECONDS = 30.0
 SETTLEMENT_CHECK_SECONDS = 60.0
+
+# ─── Coinbase WebSocket ──────────────────────────────────────────────────────
+COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com"
+COINBASE_PRODUCTS = {
+    "BTC": "BTC-USD",
+    "ETH": "ETH-USD",
+    "SOL": "SOL-USD",
+    "XRP": "XRP-USD",
+}
+PRICE_BUFFER_SIZE = 300           # 5 minutes of 1-second snapshots
+
+# ─── Volatility Engine ───────────────────────────────────────────────────────
+VOL_RETURN_INTERVAL = 5           # seconds between log returns
+VOL_WINDOW_1MIN = 12              # 60s / 5s = 12 returns
+VOL_WINDOW_5MIN = 60              # 300s / 5s = 60 returns
+VOL_WINDOW_15MIN = 180            # 900s / 5s = 180 returns
+VOL_BLEND_WEIGHTS = (0.5, 0.3, 0.2)  # 1min, 5min, 15min
+JUMP_THRESHOLD_MULTIPLIER = 3.0   # return > 3x RV = jump
+JUMP_VOL_MULTIPLIER = 2.0         # multiply vol by 2x during elevated regime
+JUMP_DECAY_SECONDS = 60.0         # elevated regime lasts 60s
+
+# ─── Probability Engine ──────────────────────────────────────────────────────
+SECONDS_PER_YEAR = 365.25 * 24 * 3600  # crypto trades 24/7
+STUDENT_T_DF = 4                  # degrees of freedom for t-distribution
+BETA_SLOPE = 0.85                 # logistic calibration (<1 compresses extremes)
+MAX_EFFECTIVE_PROB = 0.93         # hard cap on calibrated probability
+Z_SCORE_MAX = 8.0                 # refuse to trade if |z| > 8 (vol estimate wrong)
+DISCREPANCY_PROB = 0.90           # model says >90% but...
+DISCREPANCY_PRICE = 75            # ...market is below 75¢ → refuse
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -596,6 +630,378 @@ class StateManager:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  CoinbaseFeed
+# ═════════════════════════════════════════════════════════════════════════════
+
+class CoinbaseFeed:
+    """Coinbase WebSocket feed for real-time crypto prices.
+
+    Runs an asyncio event loop in a daemon thread. Shares price data with
+    the synchronous main loop via a lock-protected dict and deque buffers.
+    """
+
+    def __init__(self):
+        self._prices: Dict[str, float] = {}
+        self._buffers: Dict[str, deque] = {
+            asset: deque(maxlen=PRICE_BUFFER_SIZE) for asset in ASSETS
+        }
+        self._lock = threading.Lock()
+        self._connected = False
+        self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._stop_event: Optional[asyncio.Event] = None
+        # Reverse lookup: "BTC-USD" -> "BTC"
+        self._product_to_asset = {v: k for k, v in COINBASE_PRODUCTS.items()}
+
+    # ── Public API (called from main thread) ──────────────────────────────
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run_thread, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if self._loop and self._stop_event:
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+
+    def get_price(self, asset: str) -> Optional[float]:
+        with self._lock:
+            return self._prices.get(asset)
+
+    def get_all_prices(self) -> Dict[str, Optional[float]]:
+        with self._lock:
+            return {a: self._prices.get(a) for a in ASSETS}
+
+    def get_buffer(self, asset: str) -> List[Tuple[float, float]]:
+        with self._lock:
+            return list(self._buffers.get(asset, []))
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    # ── Background thread ─────────────────────────────────────────────────
+
+    def _run_thread(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._stop_event = asyncio.Event()
+        try:
+            self._loop.run_until_complete(self._run())
+        except Exception:
+            logging.error("Coinbase feed thread crashed", exc_info=True)
+        finally:
+            self._loop.close()
+
+    async def _run(self):
+        """Top-level coroutine: run WS listener and snapshot sampler."""
+        await asyncio.gather(
+            self._ws_loop(),
+            self._snapshot_loop(),
+        )
+
+    # ── WebSocket connection with reconnect ───────────────────────────────
+
+    async def _ws_loop(self):
+        backoff = 1.0
+        max_backoff = 60.0
+
+        while not self._stop_event.is_set():
+            try:
+                async with websockets.connect(COINBASE_WS_URL) as ws:
+                    await ws.send(json.dumps({
+                        "type": "subscribe",
+                        "product_ids": list(COINBASE_PRODUCTS.values()),
+                        "channels": ["ticker"],
+                    }))
+                    self._connected = True
+                    backoff = 1.0  # reset on successful connect
+                    logging.info("Coinbase feed connected")
+
+                    async for raw in ws:
+                        if self._stop_event.is_set():
+                            break
+                        self._handle_message(raw)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._connected = False
+                jitter = backoff * random.uniform(0, 0.25)
+                wait = backoff + jitter
+                logging.warning(
+                    f"Coinbase feed disconnected: {e} — "
+                    f"reconnecting in {wait:.1f}s"
+                )
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(), timeout=wait
+                    )
+                    break  # stop_event was set during wait
+                except asyncio.TimeoutError:
+                    pass  # timeout elapsed, retry
+                backoff = min(backoff * 2, max_backoff)
+
+        self._connected = False
+        logging.info("Coinbase feed stopped")
+
+    def _handle_message(self, raw: str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+
+        msg_type = data.get("type")
+        if msg_type != "ticker":
+            return
+
+        product_id = data.get("product_id", "")
+        price_str = data.get("price")
+        asset = self._product_to_asset.get(product_id)
+        if not asset or not price_str:
+            return
+
+        try:
+            price = float(price_str)
+        except (ValueError, TypeError):
+            return
+
+        with self._lock:
+            self._prices[asset] = price
+
+    # ── 1-second snapshot sampler ─────────────────────────────────────────
+
+    async def _snapshot_loop(self):
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=1.0
+                )
+                break  # stop_event was set
+            except asyncio.TimeoutError:
+                pass  # 1 second elapsed
+
+            now = time.time()
+            with self._lock:
+                for asset, price in self._prices.items():
+                    self._buffers[asset].append((now, price))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  VolatilityEngine
+# ═════════════════════════════════════════════════════════════════════════════
+
+class VolatilityEngine:
+    """Realized volatility from 5-second log returns with jump detection.
+
+    Maintains its own rolling buffer of log returns per asset (up to 15 min).
+    The price buffer in CoinbaseFeed only holds 5 min of 1-second snapshots,
+    but this engine accumulates 5-second returns over a longer horizon.
+    """
+
+    def __init__(self, feed: CoinbaseFeed):
+        self._feed = feed
+        self._returns: Dict[str, deque] = {
+            a: deque(maxlen=VOL_WINDOW_15MIN) for a in ASSETS
+        }
+        self._last_return_time: Dict[str, float] = {}
+        self._jump_until: Dict[str, float] = {}
+        self._cache: Dict[str, Optional[Dict]] = {}
+
+    def update(self, asset: str) -> Optional[Dict]:
+        """Called every tick. Computes a new log return every 5s, returns vol estimate."""
+        buf = self._feed.get_buffer(asset)
+        if len(buf) < VOL_RETURN_INTERVAL + 1:
+            return None
+
+        now = time.time()
+        last_time = self._last_return_time.get(asset, 0)
+
+        # Only compute a new return every VOL_RETURN_INTERVAL seconds
+        if now - last_time >= VOL_RETURN_INTERVAL:
+            current_ts, current_price = buf[-1]
+            target_ts = current_ts - VOL_RETURN_INTERVAL
+
+            # Find the snapshot closest to 5 seconds ago
+            past_price = None
+            for ts, p in reversed(buf):
+                if ts <= target_ts:
+                    past_price = p
+                    break
+
+            if past_price and past_price > 0 and current_price > 0:
+                log_return = math.log(current_price / past_price)
+                self._returns[asset].append(log_return)
+                self._last_return_time[asset] = now
+
+                # Check for jump against current estimate (before updating cache)
+                estimate = self._compute(asset, now)
+                if estimate and estimate["blended_rv"] > 0:
+                    if abs(log_return) > JUMP_THRESHOLD_MULTIPLIER * estimate["blended_rv"]:
+                        self._jump_until[asset] = now + JUMP_DECAY_SECONDS
+                        logging.info(
+                            f"Jump detected: {asset} "
+                            f"return={log_return:.6f} "
+                            f"rv={estimate['blended_rv']:.6f}"
+                        )
+
+                self._cache[asset] = self._compute(asset, now)
+            else:
+                self._cache.setdefault(asset, None)
+        elif asset not in self._cache:
+            self._cache[asset] = self._compute(asset, now)
+
+        return self._cache.get(asset)
+
+    def _compute(self, asset: str, now: float) -> Optional[Dict]:
+        returns = self._returns[asset]
+        if len(returns) < 2:
+            return None
+
+        returns_list = list(returns)
+
+        # Compute RV for each window: sqrt(mean(r^2))
+        rv_1min = self._window_rv(returns_list, VOL_WINDOW_1MIN)
+        rv_5min = self._window_rv(returns_list, VOL_WINDOW_5MIN)
+        rv_15min = self._window_rv(returns_list, VOL_WINDOW_15MIN)
+
+        # Blend: 0.5 * 1min + 0.3 * 5min + 0.2 * 15min
+        w1, w5, w15 = VOL_BLEND_WEIGHTS
+        blended = w1 * rv_1min + w5 * rv_5min + w15 * rv_15min
+
+        # Jump regime check
+        regime = "normal"
+        jump_expiry = self._jump_until.get(asset, 0)
+        if now < jump_expiry:
+            regime = "elevated"
+            blended *= JUMP_VOL_MULTIPLIER
+
+        return {
+            "rv_1min": rv_1min,
+            "rv_5min": rv_5min,
+            "rv_15min": rv_15min,
+            "blended_rv": blended,
+            "regime": regime,
+            "num_returns": len(returns),
+            "jump_seconds_remaining": round(max(0, jump_expiry - now), 1),
+        }
+
+    @staticmethod
+    def _window_rv(returns: List[float], window: int) -> float:
+        """Realized volatility = sqrt(mean(r^2)) over the last `window` returns."""
+        subset = returns[-window:] if len(returns) >= window else returns
+        if not subset:
+            return 0.0
+        sum_sq = sum(r * r for r in subset)
+        return math.sqrt(sum_sq / len(subset))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  ProbabilityEngine
+# ═════════════════════════════════════════════════════════════════════════════
+
+class ProbabilityEngine:
+    """Compute win probability from spot price, strike, time, and volatility.
+
+    Uses Student-t CDF (df=4) for fat-tailed z-score mapping, then applies
+    beta calibration via logistic compression to cap at 93%.
+    """
+
+    @staticmethod
+    def compute(spot: float, threshold: float, seconds_remaining: float,
+                blended_rv: float,
+                market_price_cents: Optional[int] = None) -> Dict:
+        """
+        Compute calibrated win probability for a "price stays above threshold" bet.
+
+        Args:
+            spot: current price (e.g. 68500.0 for BTC)
+            threshold: strike/threshold price the market resolves against
+            seconds_remaining: seconds until market close
+            blended_rv: blended realized vol (per-5-second log return scale)
+            market_price_cents: current Kalshi YES price in cents (for sanity check)
+
+        Returns dict with: z_score, raw_prob, calibrated_prob, tradeable, reason
+        """
+        result: Dict = {
+            "z_score": None,
+            "raw_prob": None,
+            "calibrated_prob": None,
+            "tradeable": False,
+            "reason": "",
+        }
+
+        # ── Guard: need valid inputs ─────────────────────────────────────
+        if spot <= 0 or seconds_remaining <= 0 or blended_rv <= 0:
+            result["reason"] = "invalid inputs (spot/time/vol <= 0)"
+            return result
+
+        # ── Annualize vol and compute z-score ────────────────────────────
+        # blended_rv is std dev of 5-second log returns.
+        # σ_annual = blended_rv × sqrt(seconds_per_year / 5)
+        # σ_annual × sqrt(t_years) = blended_rv × sqrt(t_seconds / 5)
+        # Denominator for z: spot × blended_rv × sqrt(t_seconds / 5)
+        sigma_move = spot * blended_rv * math.sqrt(seconds_remaining / 5.0)
+
+        if sigma_move <= 0:
+            result["reason"] = "sigma_move is zero"
+            return result
+
+        z_score = (threshold - spot) / sigma_move
+        result["z_score"] = round(z_score, 4)
+
+        # ── Safety: refuse if z-score is absurdly large ──────────────────
+        if abs(z_score) > Z_SCORE_MAX:
+            result["reason"] = (
+                f"|z_score|={abs(z_score):.1f} > {Z_SCORE_MAX} — "
+                f"volatility estimate likely wrong, refusing to trade"
+            )
+            logging.warning(
+                f"ProbabilityEngine: {result['reason']} "
+                f"(spot={spot}, threshold={threshold}, rv={blended_rv:.8f})"
+            )
+            return result
+
+        # ── Raw probability via Student-t CDF (df=4) ────────────────────
+        # P(price stays above threshold) = P(move > threshold - spot)
+        # = P(Z > z_score) = 1 - CDF(z_score)
+        raw_prob = 1.0 - student_t.cdf(z_score, df=STUDENT_T_DF)
+        result["raw_prob"] = round(raw_prob, 6)
+
+        # ── Beta calibration: logistic compression + cap ─────────────────
+        calibrated_prob = ProbabilityEngine._calibrate(raw_prob)
+        result["calibrated_prob"] = round(calibrated_prob, 6)
+
+        # ── Sanity: model vs market discrepancy ──────────────────────────
+        if market_price_cents is not None:
+            if calibrated_prob > DISCREPANCY_PROB and market_price_cents < DISCREPANCY_PRICE:
+                result["reason"] = (
+                    f"model says {calibrated_prob:.1%} but market is "
+                    f"{market_price_cents}¢ (< {DISCREPANCY_PRICE}¢) — refusing"
+                )
+                logging.warning(f"ProbabilityEngine: {result['reason']}")
+                return result
+
+        # ── All checks passed ────────────────────────────────────────────
+        result["tradeable"] = True
+        result["reason"] = "ok"
+        return result
+
+    @staticmethod
+    def _calibrate(raw_prob: float) -> float:
+        """Apply logistic compression then hard cap at MAX_EFFECTIVE_PROB.
+
+        Maps raw_prob through: logit → scale by BETA_SLOPE → inverse logit → cap.
+        This pulls extreme probabilities toward 0.5 and caps at 93%.
+        """
+        # Clamp to avoid log(0) in logit
+        p = max(0.001, min(0.999, raw_prob))
+        logit = math.log(p / (1.0 - p))
+        scaled_logit = BETA_SLOPE * logit
+        compressed = 1.0 / (1.0 + math.exp(-scaled_logit))
+        return min(compressed, MAX_EFFECTIVE_PROB)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  Market Discovery
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -667,6 +1073,8 @@ class MainLoop:
         self.client = KalshiClient(api_key, private_key_path)
         self.state = StateManager()
         self.logger = Logger()
+        self.feed = CoinbaseFeed()
+        self.vol = VolatilityEngine(self.feed)
         self._shutdown = threading.Event()
         self._active_windows: List[Dict] = []
         self._last_market_refresh: float = 0.0
@@ -704,6 +1112,10 @@ class MainLoop:
 
         # Check for settlements that happened while bot was down
         self._check_settlements()
+
+        # Start Coinbase price feed
+        self.feed.start()
+        logging.info("Coinbase price feed starting...")
 
         # Initial market scan
         self._refresh_active_windows()
@@ -763,6 +1175,7 @@ class MainLoop:
 
         # Recompute seconds_to_close and log each window
         utc_now = datetime.datetime.utcnow()
+        prices = self.feed.get_all_prices()
         for window in self._active_windows:
             seconds_to_close = (window["close_time"] - utc_now).total_seconds()
             window["seconds_to_close"] = seconds_to_close
@@ -773,13 +1186,28 @@ class MainLoop:
                 <= MAX_SECONDS_BEFORE_CLOSE
             )
 
-            self.logger.log_scan({
-                "asset": window["asset"],
+            asset = window["asset"]
+            vol_estimate = self.vol.update(asset)
+
+            scan_entry = {
+                "asset": asset,
                 "event_ticker": window["event_ticker"],
                 "seconds_to_close": round(seconds_to_close, 1),
                 "in_trading_range": in_range,
                 "num_markets": len(window["markets"]),
-            })
+                "spot_price": prices.get(asset),
+                "buffer_len": len(self.feed.get_buffer(asset)),
+            }
+            if vol_estimate:
+                scan_entry.update({
+                    "rv_1min": round(vol_estimate["rv_1min"], 8),
+                    "rv_5min": round(vol_estimate["rv_5min"], 8),
+                    "rv_15min": round(vol_estimate["rv_15min"], 8),
+                    "blended_rv": round(vol_estimate["blended_rv"], 8),
+                    "vol_regime": vol_estimate["regime"],
+                    "vol_returns": vol_estimate["num_returns"],
+                })
+            self.logger.log_scan(scan_entry)
 
     # ── Run ───────────────────────────────────────────────────────────────
 
@@ -806,6 +1234,7 @@ class MainLoop:
 
     def _cleanup(self):
         logging.info("Shutting down...")
+        self.feed.stop()
         self.state.close()
         logging.info("Bot stopped.")
 
