@@ -26,7 +26,7 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 
 # ─── Trading Configuration ───────────────────────────────────────────────────
-DRY_RUN = False                   # True = log decisions but skip order submission
+OBSERVATION_MODE = True            # True = evaluate & log everything but place no orders
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 SERIES_TICKERS = {
     "BTC": "KXBTC15M",
@@ -1840,8 +1840,12 @@ class OrderExecutor:
             f"urgency={scores.get('urgency')}, composite={scores.get('composite')})"
         )
 
-        if DRY_RUN:
-            logging.info(f"DRY_RUN: would execute {strategy} — skipping order submission")
+        if OBSERVATION_MODE:
+            logging.info(
+                f"OBSERVATION MODE: Would place order for {candidate['ticker']} "
+                f"at {candidate.get('best_yes_ask', '?')}¢ for "
+                f"{candidate.get('count', '?')} contracts using {strategy}"
+            )
             return None
 
         if strategy == STRATEGY_TAKER_NOW:
