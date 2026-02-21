@@ -43,7 +43,8 @@ MAX_SECONDS_BEFORE_CLOSE = 240
 ONE_ASSET_PER_WINDOW = True
 
 # ─── API Configuration ───────────────────────────────────────────────────────
-BASE_URL = "https://demo-api.kalshi.co"
+BASE_URL = ("https://api.kalshi.com" if os.environ.get("KALSHI_ENV") == "production"
+            else "https://demo-api.kalshi.co")
 API_PATH_PREFIX = "/trade-api/v2"
 READ_RATE_LIMIT = 20              # per second
 WRITE_RATE_LIMIT = 8              # per second
