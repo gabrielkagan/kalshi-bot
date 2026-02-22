@@ -208,6 +208,7 @@ def _load_dist_config() -> Dict:
 DIST_CONFIG = _load_dist_config()
 
 _CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
+_TELEGRAM: Optional["TelegramNotifier"] = None
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
 MIN_EDGE_PCT = 0.25               # model prob must exceed market by ≥0.25 pp (observation mode — collect data at all edge levels)
@@ -768,6 +769,38 @@ class Logger:
         except FileNotFoundError:
             pass
         logging.info(f"Loaded {len(self._logged_fill_ids)} previously logged fill IDs")
+
+
+class TelegramNotifier:
+    """Fire-and-forget Telegram alerts via Bot API."""
+
+    def __init__(self, bot_token: str, chat_id: str):
+        self._url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        self._chat_id = chat_id
+        self.enabled = bool(bot_token and chat_id)
+        self._dedup: Dict[str, float] = {}
+
+    def send(self, message: str, silent: bool = False, dedup_key: Optional[str] = None):
+        if not self.enabled:
+            return
+        if dedup_key:
+            now = time.time()
+            if dedup_key in self._dedup and now - self._dedup[dedup_key] < 60:
+                return
+            self._dedup[dedup_key] = now
+        text = message[:4096]
+        threading.Thread(target=self._post, args=(text, silent), daemon=True).start()
+
+    def _post(self, text: str, silent: bool):
+        try:
+            requests.post(self._url, json={
+                "chat_id": self._chat_id,
+                "text": text,
+                "parse_mode": "Markdown",
+                "disable_notification": silent,
+            }, timeout=5)
+        except Exception as e:
+            logging.debug(f"Telegram send failed: {e}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -4144,6 +4177,18 @@ class OrderExecutor:
                     "ofa_adjustment": candidate.get("ofa_adjustment"),
                     "balance_at_scan": candidate.get("balance_at_scan"),
                 })
+                if _TELEGRAM:
+                    _ba = candidate.get("best_yes_ask", "?")
+                    _edge = candidate.get("edge")
+                    _prob = candidate.get("calibrated_prob")
+                    _sz = candidate.get("position_size", "?")
+                    _edge_s = f"{_edge:.1%}" if _edge is not None else "?"
+                    _prob_s = f"{_prob:.0%}" if _prob is not None else "?"
+                    _TELEGRAM.send(
+                        f"\U0001f4ca {candidate['ticker']} @ {_ba}c, "
+                        f"edge={_edge_s}, prob={_prob_s}, size={_sz}",
+                        dedup_key=candidate["ticker"],
+                    )
                 if not hasattr(self, '_last_obs_ticker') or self._last_obs_ticker != candidate['ticker']:
                     self._last_obs_ticker = candidate['ticker']
                     _ba = candidate.get("best_yes_ask")
@@ -4919,6 +4964,10 @@ class SettlementTracker:
             f"revenue={revenue}¢, cost={total_cost}¢, "
             f"pnl={pnl}¢, fee={fee}¢)"
         )
+        if _TELEGRAM:
+            emoji = "\u2705" if outcome == "WIN" else "\u274c"
+            sign = "+" if pnl >= 0 else ""
+            _TELEGRAM.send(f"{emoji} {outcome} {ticker} {sign}{pnl}c")
 
     # ── Rejection Settlement ─────────────────────────────────────────────
 
@@ -5212,6 +5261,11 @@ class MainLoop:
         self.calibration = CalibrationEngine()
         global _CALIBRATION_ENGINE
         _CALIBRATION_ENGINE = self.calibration
+        tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+        self.telegram = TelegramNotifier(tg_token, tg_chat)
+        global _TELEGRAM
+        _TELEGRAM = self.telegram
         self.cross_feed = CrossExchangeFeed(self.feed) if CROSS_EXCHANGE_ENABLED else None
         self.coinglass = CoinGlassFetcher()
         self.order_flow = OrderFlowEngine(
@@ -5260,6 +5314,8 @@ class MainLoop:
         self.sizer.starting_balance_cents = balance_cents
         self._peak_balance = balance_cents / 100
         logging.info(f"Connected to Kalshi. Balance: ${balance_cents / 100:.2f}")
+        if _TELEGRAM:
+            _TELEGRAM.send(f"\U0001f7e2 Bot started \u2014 Balance: ${balance_cents / 100:.2f}")
 
         # Reconcile local state with API
         self.state.reconcile_with_api(self.client)
@@ -5394,6 +5450,10 @@ class MainLoop:
                 f"Daily summary ({yesterday}): {wins}W/{losses}L, "
                 f"PnL={total_pnl}¢, fees={total_fees}¢"
             )
+            if _TELEGRAM:
+                _TELEGRAM.send(
+                    f"\U0001f4c8 Daily ({yesterday}): {wins}W/{losses}L, PnL={total_pnl}c"
+                )
         except Exception as e:
             logging.debug(f"_log_daily_summary failed: {e}")
 
@@ -5509,6 +5569,8 @@ class MainLoop:
                     self._last_error = str(e)
                     self._last_error_time = time.time()
                     logging.error("Tick error", exc_info=True)
+                    if _TELEGRAM:
+                        _TELEGRAM.send(f"\u26a0\ufe0f Tick error: {str(e)[:200]}")
                     time.sleep(5)
                     continue
 
@@ -5530,6 +5592,8 @@ class MainLoop:
             self.dvol_fetcher.stop()
         self.feed.stop()
         self.state.close()
+        if _TELEGRAM:
+            _TELEGRAM.send("\U0001f534 Bot shutting down")
         logging.info("Bot stopped.")
 
 
