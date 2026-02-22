@@ -11,6 +11,8 @@ REPO_DIR = os.path.join(SCRIPT_DIR, "..")
 TEMPLATE_PATH = os.path.join(REPO_DIR, "whitepaper.md")
 STATS_PATH = os.path.join(REPO_DIR, "whitepaper_stats.json")
 OUTPUT_PATH = os.path.join(REPO_DIR, "whitepaper_rendered.md")
+INVESTOR_TEMPLATE_PATH = os.path.join(REPO_DIR, "whitepaper_investor.md")
+INVESTOR_OUTPUT_PATH = os.path.join(REPO_DIR, "whitepaper_investor_rendered.md")
 README_TEMPLATE_PATH = os.path.join(REPO_DIR, "README.template.md")
 README_OUTPUT_PATH = os.path.join(REPO_DIR, "README.md")
 
@@ -146,6 +148,21 @@ def main():
     unreplaced = re.findall(r"\{\{(\w+)\}\}", rendered)
     if unreplaced:
         print(f"Warning: {len(unreplaced)} unreplaced placeholders in whitepaper: {unreplaced}", file=sys.stderr)
+
+    # Render investor whitepaper
+    if os.path.exists(INVESTOR_TEMPLATE_PATH):
+        with open(INVESTOR_TEMPLATE_PATH) as f:
+            investor_template = f.read()
+
+        investor_rendered = re.sub(r"\{\{(\w+)\}\}", replace_placeholder, investor_template)
+
+        with open(INVESTOR_OUTPUT_PATH, "w") as f:
+            f.write(investor_rendered)
+
+        print(f"Rendered investor whitepaper written to {INVESTOR_OUTPUT_PATH}")
+        unreplaced_investor = re.findall(r"\{\{(\w+)\}\}", investor_rendered)
+        if unreplaced_investor:
+            print(f"Warning: {len(unreplaced_investor)} unreplaced placeholders in investor whitepaper: {unreplaced_investor}", file=sys.stderr)
 
     # Render README
     if os.path.exists(README_TEMPLATE_PATH):

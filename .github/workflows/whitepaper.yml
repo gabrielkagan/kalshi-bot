@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'whitepaper.md'
+      - 'whitepaper_investor.md'
       - 'README.template.md'
       - 'scripts/generate_whitepaper_stats.py'
       - 'scripts/build_whitepaper.py'
@@ -58,7 +59,7 @@ jobs:
       - name: Render whitepaper with stats
         run: python3 scripts/build_whitepaper.py
 
-      - name: Generate PDF
+      - name: Generate technical PDF
         uses: docker://pandoc/extra:latest
         with:
           args: >-
@@ -73,10 +74,25 @@ jobs:
             -V documentclass=article
             --metadata title="Kalshi Crypto Trading Bot — Technical Whitepaper"
 
-      - name: Commit PDF
+      - name: Generate investor PDF
+        uses: docker://pandoc/extra:latest
+        with:
+          args: >-
+            whitepaper_investor_rendered.md
+            -o whitepaper_investor.pdf
+            --from markdown
+            --pdf-engine=xelatex
+            --toc
+            --toc-depth=3
+            -V geometry:margin=1in
+            -V fontsize=11pt
+            -V documentclass=article
+            --metadata title="Kalshi Crypto Trading Bot — Investor Whitepaper"
+
+      - name: Commit PDFs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add whitepaper.pdf README.md
-          git diff --cached --quiet || git commit -m "Auto-generate whitepaper PDF and README stats [skip ci]"
+          git add whitepaper.pdf whitepaper_investor.pdf README.md
+          git diff --cached --quiet || git commit -m "Auto-generate whitepaper PDFs and README stats [skip ci]"
           git push

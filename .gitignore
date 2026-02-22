@@ -7,4 +7,5 @@ logs/
 *.tar.gz
 *.db
 whitepaper_rendered.md
+whitepaper_investor_rendered.md
 whitepaper_stats.json
