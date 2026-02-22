@@ -951,6 +951,17 @@ class StateManager:
                 pass  # column already exists
         self.conn.commit()
 
+        # Migration: add new columns to rejected_opportunities (safe to re-run)
+        for col_def in [
+            ("raw_prob", "REAL"),
+            ("market_result", "TEXT"),
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE rejected_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
+            except Exception:
+                pass  # column already exists
+        self.conn.commit()
+
     # ── Ticker Parsing ────────────────────────────────────────────────────
 
     @staticmethod
@@ -2683,7 +2694,7 @@ class CalibrationEngine:
         return retrained
 
     def load_training_data_from_db(self, state: "StateManager"):
-        """Rebuild training data from evaluated_opportunities on startup."""
+        """Rebuild training data from evaluated + rejected opportunities on startup."""
         try:
             rows = state.conn.execute(
                 "SELECT raw_prob, market_result FROM evaluated_opportunities "
@@ -2693,6 +2704,24 @@ class CalibrationEngine:
 
             loaded = 0
             for row in rows:
+                raw_p = row["raw_prob"]
+                result = row["market_result"]
+                if result in ("yes", "all_yes"):
+                    binary = 1
+                elif result in ("no", "all_no"):
+                    binary = 0
+                else:
+                    continue
+                self._observations.append((raw_p, binary))
+                loaded += 1
+
+            # Also load from rejected_opportunities (z-score rejections with known outcomes)
+            rej_rows = state.conn.execute(
+                "SELECT raw_prob, market_result FROM rejected_opportunities "
+                "WHERE status='settled' AND raw_prob IS NOT NULL "
+                "AND market_result IS NOT NULL"
+            ).fetchall()
+            for row in rej_rows:
                 raw_p = row["raw_prob"]
                 result = row["market_result"]
                 if result in ("yes", "all_yes"):
@@ -5323,8 +5352,16 @@ class MainLoop:
         # Check for settlements that happened while bot was down
         self.tracker.startup()
 
+        # Backfill raw_prob for calibration data
+        self._backfill_calibration_data()
+
         # Load calibration training data from historical settlements
         self.calibration.load_training_data_from_db(self.state)
+        if _TELEGRAM and self.calibration.active_method != "fixed_beta":
+            _TELEGRAM.send(
+                f"\U0001f9e0 Calibration: {self.calibration.active_method} trained "
+                f"({len(self.calibration._observations)} obs)"
+            )
 
         # Start Coinbase price feed
         self.feed.start()
@@ -5365,6 +5402,83 @@ class MainLoop:
         self._active_windows = discover_active_windows(self.client)
         self._last_market_refresh = time.time()
         logging.debug(f"Refreshed: {len(self._active_windows)} active windows")
+
+    # ── Calibration Backfill ─────────────────────────────────────────────
+
+    def _backfill_calibration_data(self):
+        """One-time backfill of raw_prob for calibration training data."""
+        try:
+            # Step A: Backfill evaluated_opportunities raw_prob
+            rows = self.state.conn.execute(
+                "SELECT id, asset, spot_price, threshold, volatility, "
+                "seconds_to_close, z_score "
+                "FROM evaluated_opportunities "
+                "WHERE raw_prob IS NULL "
+                "AND spot_price IS NOT NULL AND threshold IS NOT NULL "
+                "AND volatility IS NOT NULL AND seconds_to_close IS NOT NULL"
+            ).fetchall()
+
+            eval_count = 0
+            for row in rows:
+                z = row["z_score"]
+                if z is None:
+                    spot = row["spot_price"]
+                    thresh = row["threshold"]
+                    vol = row["volatility"]
+                    ttc = row["seconds_to_close"]
+                    if vol <= 0 or ttc <= 0:
+                        continue
+                    sigma_move = spot * vol * math.sqrt(ttc / 5.0)
+                    if sigma_move <= 0:
+                        continue
+                    z = (thresh - spot) / sigma_move
+                raw_prob = ProbabilityEngine._cdf_complement(z, row["asset"])
+                self.state.conn.execute(
+                    "UPDATE evaluated_opportunities SET raw_prob = ? WHERE id = ?",
+                    (raw_prob, row["id"]),
+                )
+                eval_count += 1
+            if eval_count:
+                self.state.conn.commit()
+                logging.info("Backfill: updated raw_prob for %d evaluated_opportunities", eval_count)
+
+            # Step B: Backfill rejected_opportunities raw_prob + market_result
+            rej_results = {}
+            if os.path.exists(REJECTION_JOURNAL):
+                with open(REJECTION_JOURNAL, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if entry.get("type") == "rejection_settlement":
+                            rej_results[entry["ticker"]] = entry["market_result"]
+
+            rej_rows = self.state.conn.execute(
+                "SELECT ticker, asset, z_score FROM rejected_opportunities "
+                "WHERE raw_prob IS NULL AND z_score IS NOT NULL"
+            ).fetchall()
+
+            rej_count = 0
+            for row in rej_rows:
+                z = row["z_score"]
+                raw_prob = ProbabilityEngine._cdf_complement(z, row["asset"])
+                market_result = rej_results.get(row["ticker"])
+                self.state.conn.execute(
+                    "UPDATE rejected_opportunities SET raw_prob = ?, market_result = ? "
+                    "WHERE ticker = ?",
+                    (raw_prob, market_result, row["ticker"]),
+                )
+                rej_count += 1
+            if rej_count:
+                self.state.conn.commit()
+                logging.info("Backfill: updated raw_prob for %d rejected_opportunities", rej_count)
+
+        except Exception as e:
+            logging.warning("Backfill calibration data failed: %s", e)
 
     # ── Daily Summary ─────────────────────────────────────────────────────
 
