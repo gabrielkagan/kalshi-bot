@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render whitepaper.md by replacing {{PLACEHOLDER}} markers with live stats."""
+"""Render whitepaper.md and README.template.md by replacing {{PLACEHOLDER}} markers with live stats."""
 
 import json
 import os
@@ -11,6 +11,8 @@ REPO_DIR = os.path.join(SCRIPT_DIR, "..")
 TEMPLATE_PATH = os.path.join(REPO_DIR, "whitepaper.md")
 STATS_PATH = os.path.join(REPO_DIR, "whitepaper_stats.json")
 OUTPUT_PATH = os.path.join(REPO_DIR, "whitepaper_rendered.md")
+README_TEMPLATE_PATH = os.path.join(REPO_DIR, "README.template.md")
+README_OUTPUT_PATH = os.path.join(REPO_DIR, "README.md")
 
 
 def pct(n, total):
@@ -65,8 +67,18 @@ def build_replacements(stats):
 
     assets = stats.get("assets_tracked", ["BTC", "ETH", "SOL", "XRP"])
 
+    # Find top rejection reason (exclude candidate)
+    rejection_counts = {k: v for k, v in fb.items() if k != "candidate"}
+    if rejection_counts:
+        top_key = max(rejection_counts, key=rejection_counts.get)
+        top_val = rejection_counts[top_key]
+        top_rejection = f"{top_key.replace('_', ' ').title()} ({top_val:,})"
+    else:
+        top_rejection = "N/A"
+
     r = {
         "TOTAL_EVALUATED": f"{total:,}",
+        "TOP_REJECTION": top_rejection,
         "TOTAL_SETTLED": f"{total_settled:,}",
         "OBSERVATION_PERIOD": stats.get("observation_period", "N/A"),
         "ASSETS_TRACKED": ", ".join(assets),
@@ -133,7 +145,22 @@ def main():
     print(f"Rendered whitepaper written to {OUTPUT_PATH}")
     unreplaced = re.findall(r"\{\{(\w+)\}\}", rendered)
     if unreplaced:
-        print(f"Warning: {len(unreplaced)} unreplaced placeholders: {unreplaced}", file=sys.stderr)
+        print(f"Warning: {len(unreplaced)} unreplaced placeholders in whitepaper: {unreplaced}", file=sys.stderr)
+
+    # Render README
+    if os.path.exists(README_TEMPLATE_PATH):
+        with open(README_TEMPLATE_PATH) as f:
+            readme_template = f.read()
+
+        readme_rendered = re.sub(r"\{\{(\w+)\}\}", replace_placeholder, readme_template)
+
+        with open(README_OUTPUT_PATH, "w") as f:
+            f.write(readme_rendered)
+
+        print(f"Rendered README written to {README_OUTPUT_PATH}")
+        unreplaced_readme = re.findall(r"\{\{(\w+)\}\}", readme_rendered)
+        if unreplaced_readme:
+            print(f"Warning: {len(unreplaced_readme)} unreplaced placeholders in README: {unreplaced_readme}", file=sys.stderr)
 
 
 if __name__ == "__main__":

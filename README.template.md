@@ -98,6 +98,22 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 | CoinGlass | REST | Funding rates | Every 10min (100 calls/day budget) |
 | Kalshi | REST | Markets, orderbooks, positions, settlements | 1s scan loop, 30s market refresh |
 
+## Live Stats
+
+<!-- Auto-updated by GitHub Actions from VPS state.db -->
+
+| Metric | Value |
+|--------|-------|
+| Markets evaluated | {{TOTAL_EVALUATED}} |
+| Observation period | {{OBSERVATION_PERIOD}} |
+| Filter pass rate | {{FILTER_CANDIDATE_PCT}} ({{FILTER_CANDIDATE}} of {{TOTAL_EVALUATED}}) |
+| Top rejection reason | {{TOP_REJECTION}} |
+| Settled trades | {{TOTAL_SETTLED}} |
+| Win rate | {{WIN_RATE}} |
+| Observation P&L | {{OBSERVATION_PNL}} cents |
+
+*Last updated: {{GENERATED_AT}}*
+
 ## Setup
 
 ### Prerequisites

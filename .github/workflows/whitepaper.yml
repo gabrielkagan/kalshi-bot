@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'whitepaper.md'
+      - 'README.template.md'
       - 'scripts/generate_whitepaper_stats.py'
       - 'scripts/build_whitepaper.py'
       - '.github/workflows/whitepaper.yml'
@@ -76,6 +77,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add whitepaper.pdf
-          git diff --cached --quiet || git commit -m "Auto-generate whitepaper PDF [skip ci]"
+          git add whitepaper.pdf README.md
+          git diff --cached --quiet || git commit -m "Auto-generate whitepaper PDF and README stats [skip ci]"
           git push
