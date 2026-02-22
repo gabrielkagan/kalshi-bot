@@ -2697,6 +2697,8 @@ class CalibrationEngine:
     def load_training_data_from_db(self, state: "StateManager"):
         """Rebuild training data from evaluated + rejected opportunities on startup."""
         try:
+            self._observations.clear()
+
             rows = state.conn.execute(
                 "SELECT raw_prob, market_result FROM evaluated_opportunities "
                 "WHERE status='settled' AND raw_prob IS NOT NULL "
