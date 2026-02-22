@@ -46,8 +46,8 @@ ONE_ASSET_PER_WINDOW = True
 BASE_URL = ("https://api.elections.kalshi.com" if os.environ.get("KALSHI_ENV") == "production"
             else "https://demo-api.kalshi.co")
 API_PATH_PREFIX = "/trade-api/v2"
-READ_RATE_LIMIT = 20              # per second
-WRITE_RATE_LIMIT = 8              # per second
+READ_RATE_LIMIT = 30              # per second (Advanced tier)
+WRITE_RATE_LIMIT = 30             # per second (Advanced tier)
 
 # ─── File Paths ──────────────────────────────────────────────────────────────
 DB_PATH = "state.db"
@@ -145,7 +145,7 @@ DISCREPANCY_PRICE = 75            # ...market is below 75¢ → refuse
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
 MIN_EDGE_PCT = 5.0                # model prob must exceed market by ≥5 pp
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
-MAX_OB_FETCHES_PER_TICK = 4       # cap API calls for orderbooks per tick
+MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
 BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
 
 # ─── Position Sizing ───────────────────────────────────────────────────────
