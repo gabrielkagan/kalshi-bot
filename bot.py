@@ -4365,6 +4365,7 @@ class MainLoop:
         self._last_error: Optional[str] = None
         self._last_error_time: float = 0.0
         self._start_time: float = time.time()
+        self._peak_balance: float = 0.0
         self._last_summary_date: Optional[str] = None
 
     # ── Signal Handling ───────────────────────────────────────────────────
@@ -4393,6 +4394,7 @@ class MainLoop:
             sys.exit(1)
         balance_cents = balance_resp.get("balance", 0)
         self.sizer.starting_balance_cents = balance_cents
+        self._peak_balance = balance_cents / 100
         logging.info(f"Connected to Kalshi. Balance: ${balance_cents / 100:.2f}")
 
         # Reconcile local state with API

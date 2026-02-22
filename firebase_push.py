@@ -68,8 +68,25 @@ class FirebasePusher:
         try:
             bal = self._ml.client.get_balance()
             snap["current_balance"] = round(bal["balance"] / 100, 2) if bal else 0.0
+            if snap["current_balance"] > self._ml._peak_balance:
+                self._ml._peak_balance = snap["current_balance"]
+            snap["peak_balance"] = self._ml._peak_balance
         except Exception:
             snap["current_balance"] = 0.0
+            snap["peak_balance"] = getattr(self._ml, "_peak_balance", 0.0)
+
+        # Starting balance
+        try:
+            snap["starting_balance"] = round(self._ml.sizer.starting_balance_cents / 100, 2)
+        except Exception:
+            snap["starting_balance"] = 0.0
+
+        # Drawdown Kelly multiplier
+        try:
+            bal_cents = int(snap["current_balance"] * 100)
+            snap["drawdown_kelly_mult"] = self._ml.sizer._drawdown_scaler(bal_cents)
+        except Exception:
+            snap["drawdown_kelly_mult"] = 1.0
 
         # Active positions
         try:
@@ -77,6 +94,12 @@ class FirebasePusher:
             snap["active_positions"] = positions
         except Exception:
             snap["active_positions"] = []
+
+        # Resting orders
+        try:
+            snap["resting_orders"] = self._ml.state.get_resting_orders()
+        except Exception:
+            snap["resting_orders"] = []
 
         # Recent trades + win/loss from settled_trades
         try:
@@ -116,12 +139,35 @@ class FirebasePusher:
                 (today_midnight,),
             ).fetchone()
             snap["daily_pnl_cents"] = row["daily"] if row else 0
+
+            # Daily P&L percentage
+            start_cents = self._ml.sizer.starting_balance_cents
+            if start_cents > 0:
+                snap["daily_pnl_pct"] = round(snap["daily_pnl_cents"] / start_cents * 100, 2)
+            else:
+                snap["daily_pnl_pct"] = 0.0
+
+            # Consecutive losses
+            recent_settled = conn.execute(
+                "SELECT side, market_result FROM settled_trades ORDER BY settled_at DESC LIMIT 20"
+            ).fetchall()
+            streak = 0
+            for r in recent_settled:
+                side, result = r["side"], r["market_result"]
+                is_win = (result in ("yes", "all_yes") and side == "yes") or \
+                         (result in ("no", "all_no") and side == "no")
+                if is_win:
+                    break
+                streak += 1
+            snap["consecutive_losses"] = streak
         except Exception:
             snap["recent_trades"] = []
             snap["win_count"] = 0
             snap["loss_count"] = 0
             snap["win_rate"] = 0.0
             snap["daily_pnl_cents"] = 0
+            snap["daily_pnl_pct"] = 0.0
+            snap["consecutive_losses"] = 0
 
         # Volatility from cache (read-only)
         try:
@@ -135,12 +181,58 @@ class FirebasePusher:
                         "dvol_5s": cached.get("dvol_5s"),
                         "iv_rv_blend_method": cached.get("iv_rv_blend_method"),
                         "jump_component": cached.get("jump_component", 0),
+                        "rv_1min": cached.get("rv_1min"),
+                        "rv_5min": cached.get("rv_5min"),
+                        "rv_15min": cached.get("rv_15min"),
+                        "bv_5min": cached.get("bv_5min"),
+                        "bv_15min": cached.get("bv_15min"),
+                        "iv_rv_spread": cached.get("iv_rv_spread"),
+                        "num_returns": cached.get("num_returns", 0),
+                        "jump_seconds_remaining": cached.get("jump_seconds_remaining", 0),
                     }
                 else:
                     vol_data[asset] = None
             snap["current_volatility"] = vol_data
         except Exception:
             snap["current_volatility"] = {}
+
+        # Spot prices
+        try:
+            snap["spot_prices"] = self._ml.feed.get_all_prices()
+        except Exception:
+            snap["spot_prices"] = {}
+
+        # Funding rates (numeric)
+        try:
+            funding = {}
+            for asset in ASSETS:
+                rate = self._ml.coinglass.get_funding_rate(asset)
+                funding[asset] = rate  # float or None
+            snap["funding_rates"] = funding
+        except Exception:
+            snap["funding_rates"] = {}
+
+        # Cross-exchange prices and premia
+        try:
+            if hasattr(self._ml, 'cross_feed') and self._ml.cross_feed:
+                cx_data = {}
+                for asset in ASSETS:
+                    cx_data[asset] = {
+                        "prices": self._ml.cross_feed.get_prices(asset),
+                        "lead_lag": self._ml.cross_feed.get_lead_lag(asset),
+                    }
+                snap["cross_exchange"] = cx_data
+        except Exception:
+            snap["cross_exchange"] = {}
+
+        # Cross-exchange feed health
+        try:
+            if hasattr(self._ml, 'cross_feed') and self._ml.cross_feed:
+                snap["feed_health"] = dict(self._ml.cross_feed._connected)
+            else:
+                snap["feed_health"] = {}
+        except Exception:
+            snap["feed_health"] = {}
 
         # Order flow signals
         try:
@@ -158,17 +250,27 @@ class FirebasePusher:
         except Exception:
             snap["order_flow"] = {}
 
-        # Seconds to next close
+        # Active windows breakdown
         try:
             windows = self._ml._active_windows
             if windows:
                 snap["seconds_to_next_close"] = round(
                     min(w["seconds_to_close"] for w in windows), 1
                 )
+                by_asset = {}
+                for w in windows:
+                    a = w["asset"]
+                    by_asset[a] = by_asset.get(a, 0) + 1
+                snap["active_windows"] = {
+                    "total": len(windows),
+                    "by_asset": by_asset,
+                }
             else:
                 snap["seconds_to_next_close"] = -1
+                snap["active_windows"] = {"total": 0, "by_asset": {}}
         except Exception:
             snap["seconds_to_next_close"] = -1
+            snap["active_windows"] = {"total": 0, "by_asset": {}}
 
         # Bot status
         try:
@@ -184,6 +286,55 @@ class FirebasePusher:
             snap["bot_status"] = "UNKNOWN"
 
         snap["last_error_message"] = getattr(self._ml, "_last_error", None) or ""
+
+        # Active order detail (makes TRADING status informative)
+        try:
+            order = self._ml.executor._active_order
+            if order:
+                snap["active_order"] = {
+                    "ticker": order["ticker"],
+                    "asset": order["asset"],
+                    "price_cents": order["price_cents"],
+                    "count": order["count"],
+                    "is_taker": order.get("is_taker", False),
+                    "is_panic": order.get("is_panic", False),
+                    "elapsed_seconds": round(time.time() - order["submit_time"], 1),
+                    "seconds_to_close": round(
+                        order["seconds_to_close_at_submit"] - (time.time() - order["submit_time"]), 1
+                    ),
+                    "edge": order.get("candidate", {}).get("edge"),
+                    "kelly_fraction": order.get("candidate", {}).get("kelly_fraction"),
+                    "strategy": order.get("candidate", {}).get("strategy"),
+                    "cal_prob": order.get("candidate", {}).get("calibrated_prob"),
+                }
+            else:
+                snap["active_order"] = None
+        except Exception:
+            snap["active_order"] = None
+
+        # Filter funnel (per-asset rejection breakdown from last scan)
+        try:
+            stats = self._ml.scanner._last_scan_stats
+            snap["filter_funnel"] = stats if stats else {}
+        except Exception:
+            snap["filter_funnel"] = {}
+
+        # Rate limit pressure
+        try:
+            snap["rate_limits"] = {
+                "reads_last_second": len(self._ml.client._read_timestamps),
+                "writes_last_second": len(self._ml.client._write_timestamps),
+                "read_limit": 30,
+                "write_limit": 30,
+            }
+        except Exception:
+            snap["rate_limits"] = {}
+
+        # Settlement queue
+        try:
+            snap["pending_settlements"] = len(self._ml.tracker._pending_rejection_tickers)
+        except Exception:
+            snap["pending_settlements"] = 0
 
         # ── recent_opportunities (last 20 evaluated with market data) ────
         try:
