@@ -3602,15 +3602,30 @@ def discover_active_windows(client: KalshiClient) -> List[Dict]:
             limit=200,
         )
         if not result or "markets" not in result:
+            logging.warning(
+                f"Market discovery: {asset} ({series}) — API returned no data"
+            )
             continue
+
+        markets = result["markets"]
 
         # Group markets by event_ticker (each event = one 15-min window)
         events: Dict[str, List[Dict]] = {}
-        for mkt in result["markets"]:
+        for mkt in markets:
             et = mkt.get("event_ticker", "")
             if et not in events:
                 events[et] = []
             events[et].append(mkt)
+
+        if not events:
+            logging.info(
+                f"Market discovery: {asset} ({series}) — 0 open markets"
+            )
+        else:
+            logging.info(
+                f"Market discovery: {asset} ({series}) — "
+                f"{len(markets)} markets in {len(events)} windows"
+            )
 
         for event_ticker, mkts in events.items():
             close_time_str = mkts[0].get("close_time", "")
