@@ -140,6 +140,14 @@ STUDENT_T_DF = 4                  # degrees of freedom for t-distribution
 BETA_SLOPE = 0.85                 # logistic calibration (<1 compresses extremes)
 MAX_EFFECTIVE_PROB = 0.93         # hard cap on calibrated probability (default / fallback)
 
+# ─── Calibration Engine ─────────────────────────────────────────────────────
+CALIBRATION_STATE_PATH = "calibration_state.json"
+CALIBRATION_MIN_SAMPLES_PLATT = 200
+CALIBRATION_MIN_SAMPLES_BETA = 500
+CALIBRATION_MIN_SAMPLES_BLR = 50
+CALIBRATION_RETRAIN_INTERVAL = 3600    # seconds between retrain checks
+CALIBRATION_BRIER_WINDOW = 500         # rolling Brier over last N outcomes
+
 # Dynamic probability cap schedule (keyed by seconds_remaining)
 # As expiry approaches, allow higher confidence from the model
 DYNAMIC_CAP_SCHEDULE = [
@@ -198,6 +206,8 @@ def _load_dist_config() -> Dict:
     return config
 
 DIST_CONFIG = _load_dist_config()
+
+_CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
 MIN_EDGE_PCT = 0.25               # model prob must exceed market by ≥0.25 pp (observation mode — collect data at all edge levels)
@@ -899,6 +909,8 @@ class StateManager:
             ("ask_depth", "INTEGER"),
             ("best_ask_source", "TEXT"),
             ("ofa_confidence", "TEXT"),
+            ("raw_prob", "REAL"),
+            ("calibration_method", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1166,7 +1178,9 @@ class StateManager:
                                      drawdown_scaler: Optional[float] = None,
                                      ask_depth: Optional[int] = None,
                                      best_ask_source: Optional[str] = None,
-                                     ofa_confidence: Optional[str] = None):
+                                     ofa_confidence: Optional[str] = None,
+                                     raw_prob: Optional[float] = None,
+                                     calibration_method: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.utcnow().isoformat() + "Z"
         try:
@@ -1179,8 +1193,9 @@ class StateManager:
                      strategy, position_size, kelly_f, z_score,
                      vol_regime, calibrated_prob_raw,
                      breakeven_wr, expected_value, drawdown_scaler,
-                     ask_depth, best_ask_source, ofa_confidence)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     ask_depth, best_ask_source, ofa_confidence,
+                     raw_prob, calibration_method)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1188,7 +1203,8 @@ class StateManager:
                   strategy, position_size, kelly_f, z_score,
                   vol_regime, calibrated_prob_raw,
                   breakeven_wr, expected_value, drawdown_scaler,
-                  ask_depth, best_ask_source, ofa_confidence))
+                  ask_depth, best_ask_source, ofa_confidence,
+                  raw_prob, calibration_method))
             self.conn.commit()
         except Exception as e:
             logging.debug(f"insert_evaluated_opportunity failed: {e}")
@@ -2319,6 +2335,7 @@ class ProbabilityEngine:
             "z_score": None,
             "raw_prob": None,
             "calibrated_prob": None,
+            "calibration_method": None,
             "tradeable": False,
             "reason": "",
         }
@@ -2360,9 +2377,14 @@ class ProbabilityEngine:
         raw_prob = ProbabilityEngine._cdf_complement(z_score, asset)
         result["raw_prob"] = round(raw_prob, 6)
 
-        # ── Beta calibration: logistic compression + dynamic cap ──────────
+        # ── Calibration: adaptive (if trained) or fixed β=0.85 ──────────
         dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining)
-        calibrated_prob = ProbabilityEngine._calibrate(raw_prob, cap=dynamic_cap)
+        if _CALIBRATION_ENGINE is not None:
+            calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
+            result["calibration_method"] = _CALIBRATION_ENGINE.active_method
+        else:
+            calibrated_prob = ProbabilityEngine._calibrate(raw_prob, cap=dynamic_cap)
+            result["calibration_method"] = "fixed_beta"
         result["calibrated_prob"] = round(calibrated_prob, 6)
 
         # ── Sanity: model vs market discrepancy ──────────────────────────
@@ -2401,6 +2423,544 @@ class ProbabilityEngine:
         scaled_logit = BETA_SLOPE * logit
         compressed = 1.0 / (1.0 + math.exp(-scaled_logit))
         return min(compressed, cap)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  CalibrationEngine
+# ═════════════════════════════════════════════════════════════════════════════
+
+class CalibrationEngine:
+    """Data-driven calibration replacing fixed β=0.85 Platt scaling.
+
+    Implements three calibration methods:
+    - Platt Scaling: 2-parameter logistic (A, B) — default, needs 200+ samples
+    - Beta Calibration: 3-parameter (a, b, c) — needs 500+ samples
+    - Online BLR: Bayesian linear regression with Laplace approx — needs 50+ samples
+
+    Until enough data is collected, falls back to the existing fixed β=0.85.
+    """
+
+    def __init__(self, state_path: str = CALIBRATION_STATE_PATH):
+        self.state_path = state_path
+        self.active_method: str = "fixed_beta"  # current method in use
+        self._observations: List[Tuple[float, int]] = []  # (raw_prob, binary_outcome)
+        self._brier_scores: deque = deque(maxlen=CALIBRATION_BRIER_WINDOW)
+        self._last_retrain: float = 0.0
+
+        # Platt parameters: P_cal = 1 / (1 + exp(A * logit(p) + B))
+        self._platt_A: float = BETA_SLOPE  # default = current fixed β
+        self._platt_B: float = 0.0
+        self._platt_trained: bool = False
+
+        # Beta Cal parameters: logit(P_cal) = c + a * log(p) + b * log(1-p)
+        self._beta_a: float = 1.0
+        self._beta_b: float = -1.0
+        self._beta_c: float = 0.0
+        self._beta_trained: bool = False
+
+        # Online BLR parameters: sigmoid(w * logit(p) + b)
+        # Prior centered on identity: w=1, b=0
+        self._blr_mu = [1.0, 0.0]  # [w, b] posterior mean
+        self._blr_precision = [[1.0, 0.0], [0.0, 1.0]]  # 2x2 precision matrix (prior)
+        self._blr_trained: bool = False
+
+        # Previous Brier score for regression check
+        self._prev_brier: Optional[float] = None
+
+        self._load_state()
+
+    # ── Persistence ────────────────────────────────────────────────────────
+
+    def _load_state(self):
+        """Load learned parameters from calibration_state.json."""
+        try:
+            with open(self.state_path, "r") as f:
+                state = json.load(f)
+
+            self.active_method = state.get("active_method", "fixed_beta")
+
+            if "platt" in state:
+                self._platt_A = state["platt"]["A"]
+                self._platt_B = state["platt"]["B"]
+                self._platt_trained = state["platt"].get("trained", False)
+
+            if "beta_cal" in state:
+                self._beta_a = state["beta_cal"]["a"]
+                self._beta_b = state["beta_cal"]["b"]
+                self._beta_c = state["beta_cal"]["c"]
+                self._beta_trained = state["beta_cal"].get("trained", False)
+
+            if "blr" in state:
+                self._blr_mu = state["blr"]["mu"]
+                self._blr_precision = state["blr"]["precision"]
+                self._blr_trained = state["blr"].get("trained", False)
+
+            if "observations" in state:
+                self._observations = [(o[0], o[1]) for o in state["observations"]]
+
+            if "prev_brier" in state:
+                self._prev_brier = state["prev_brier"]
+
+            logging.info(
+                "CalibrationEngine loaded: method=%s, observations=%d, "
+                "platt_trained=%s, beta_trained=%s, blr_trained=%s",
+                self.active_method, len(self._observations),
+                self._platt_trained, self._beta_trained, self._blr_trained,
+            )
+        except FileNotFoundError:
+            logging.info("No calibration state found, starting fresh (fixed_beta fallback)")
+        except Exception as e:
+            logging.warning("Error loading calibration state: %s", e)
+
+    def _save_state(self):
+        """Atomically persist learned parameters."""
+        state = {
+            "active_method": self.active_method,
+            "platt": {
+                "A": self._platt_A,
+                "B": self._platt_B,
+                "trained": self._platt_trained,
+            },
+            "beta_cal": {
+                "a": self._beta_a,
+                "b": self._beta_b,
+                "c": self._beta_c,
+                "trained": self._beta_trained,
+            },
+            "blr": {
+                "mu": self._blr_mu,
+                "precision": self._blr_precision,
+                "trained": self._blr_trained,
+            },
+            "observations": self._observations,
+            "prev_brier": self._prev_brier,
+            "saved_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "n_observations": len(self._observations),
+        }
+        tmp_path = self.state_path + ".tmp"
+        try:
+            with open(tmp_path, "w") as f:
+                json.dump(state, f, indent=2)
+            os.replace(tmp_path, self.state_path)
+        except Exception as e:
+            logging.warning("CalibrationEngine: failed to save state: %s", e)
+
+    # ── Inference ──────────────────────────────────────────────────────────
+
+    def calibrate(self, raw_prob: float, cap: float) -> float:
+        """Calibrate raw_prob using the active method. Sub-ms, called per evaluation."""
+        if self.active_method == "platt" and self._platt_trained:
+            result = self._platt_predict(raw_prob)
+        elif self.active_method == "beta_cal" and self._beta_trained:
+            result = self._beta_cal_predict(raw_prob)
+        elif self.active_method == "blr" and self._blr_trained:
+            result = self._blr_predict(raw_prob)
+        else:
+            return CalibrationEngine._fallback_calibrate(raw_prob, cap)
+        return max(0.001, min(cap, result))
+
+    @staticmethod
+    def _fallback_calibrate(raw_prob: float, cap: float) -> float:
+        """Identical to ProbabilityEngine._calibrate — fixed β=0.85."""
+        p = max(0.001, min(0.999, raw_prob))
+        logit_p = math.log(p / (1.0 - p))
+        scaled = BETA_SLOPE * logit_p
+        compressed = 1.0 / (1.0 + math.exp(-scaled))
+        return min(compressed, cap)
+
+    # ── Training Data Management ───────────────────────────────────────────
+
+    def add_observation(self, raw_prob: float, outcome: int):
+        """Append a (raw_prob, binary_outcome) pair and update rolling Brier."""
+        self._observations.append((raw_prob, outcome))
+        # Update rolling Brier with the *current* calibration prediction
+        pred = self.calibrate(raw_prob, cap=1.0)
+        brier = (pred - outcome) ** 2
+        self._brier_scores.append(brier)
+
+    def maybe_retrain(self) -> bool:
+        """Hourly retrain check, gated by minimum sample sizes."""
+        now = time.time()
+        if now - self._last_retrain < CALIBRATION_RETRAIN_INTERVAL:
+            return False
+        self._last_retrain = now
+
+        n = len(self._observations)
+        retrained = False
+
+        # Try Platt first (lowest data requirement)
+        if n >= CALIBRATION_MIN_SAMPLES_PLATT:
+            try:
+                old_brier = self.rolling_brier_score()
+                self._train_platt()
+
+                # Brier regression check
+                new_brier = self._compute_brier_on_observations()
+                if self._prev_brier is not None and new_brier > self._prev_brier + 0.01:
+                    logging.warning(
+                        "CalibrationEngine: Platt retrain REJECTED — "
+                        "Brier regression %.4f > %.4f + 0.01",
+                        new_brier, self._prev_brier,
+                    )
+                    # Revert to fallback
+                    self._platt_A = BETA_SLOPE
+                    self._platt_B = 0.0
+                    self._platt_trained = False
+                    self.active_method = "fixed_beta"
+                else:
+                    self._platt_trained = True
+                    if self.active_method == "fixed_beta":
+                        self.active_method = "platt"
+                    self._prev_brier = new_brier
+                    retrained = True
+                    logging.info(
+                        "CalibrationEngine: Platt retrained — A=%.4f, B=%.4f, "
+                        "Brier=%.4f, n=%d",
+                        self._platt_A, self._platt_B, new_brier, n,
+                    )
+            except Exception as e:
+                logging.warning("CalibrationEngine: Platt training failed: %s", e)
+
+        # Try Beta Cal (higher data requirement)
+        if n >= CALIBRATION_MIN_SAMPLES_BETA:
+            try:
+                self._train_beta_cal()
+                self._beta_trained = True
+                logging.info(
+                    "CalibrationEngine: Beta Cal trained — a=%.4f, b=%.4f, c=%.4f, n=%d",
+                    self._beta_a, self._beta_b, self._beta_c, n,
+                )
+            except Exception as e:
+                logging.warning("CalibrationEngine: Beta Cal training failed: %s", e)
+
+        # Try BLR (lowest data requirement but Bayesian)
+        if n >= CALIBRATION_MIN_SAMPLES_BLR:
+            try:
+                self._train_blr()
+                self._blr_trained = True
+                logging.info(
+                    "CalibrationEngine: BLR trained — mu=[%.4f, %.4f], n=%d",
+                    self._blr_mu[0], self._blr_mu[1], n,
+                )
+            except Exception as e:
+                logging.warning("CalibrationEngine: BLR training failed: %s", e)
+
+        if retrained:
+            self._save_state()
+        return retrained
+
+    def load_training_data_from_db(self, state: "StateManager"):
+        """Rebuild training data from evaluated_opportunities on startup."""
+        try:
+            rows = state.conn.execute(
+                "SELECT raw_prob, market_result FROM evaluated_opportunities "
+                "WHERE status='settled' AND raw_prob IS NOT NULL "
+                "AND market_result IS NOT NULL"
+            ).fetchall()
+
+            loaded = 0
+            for row in rows:
+                raw_p = row["raw_prob"]
+                result = row["market_result"]
+                if result in ("yes", "all_yes"):
+                    binary = 1
+                elif result in ("no", "all_no"):
+                    binary = 0
+                else:
+                    continue
+                self._observations.append((raw_p, binary))
+                loaded += 1
+
+            logging.info(
+                "CalibrationEngine: loaded %d observations from DB (total: %d)",
+                loaded, len(self._observations),
+            )
+
+            # Attempt initial training if enough data
+            if loaded > 0:
+                self._last_retrain = 0.0  # force retrain check
+                self.maybe_retrain()
+
+        except Exception as e:
+            logging.warning("CalibrationEngine: failed to load from DB: %s", e)
+
+    # ── Platt Scaling ──────────────────────────────────────────────────────
+
+    def _platt_predict(self, raw_prob: float) -> float:
+        """P_cal = 1 / (1 + exp(A * logit(p) + B))"""
+        p = max(0.001, min(0.999, raw_prob))
+        logit_p = math.log(p / (1.0 - p))
+        return 1.0 / (1.0 + math.exp(-(self._platt_A * logit_p + self._platt_B)))
+
+    def _train_platt(self):
+        """Newton-Raphson optimization of (A, B) minimizing log-loss.
+
+        Objective: minimize -sum[ y*log(q) + (1-y)*log(1-q) ]
+        where q = sigmoid(A * logit(p) + B)
+        """
+        if not self._observations:
+            return
+
+        A, B = self._platt_A, self._platt_B
+
+        # Precompute logits
+        logits = []
+        targets = []
+        for raw_p, outcome in self._observations:
+            p = max(0.001, min(0.999, raw_p))
+            logits.append(math.log(p / (1.0 - p)))
+            targets.append(float(outcome))
+
+        n = len(logits)
+
+        for iteration in range(50):
+            # Compute gradient and Hessian
+            g_A = 0.0
+            g_B = 0.0
+            h_AA = 0.0
+            h_AB = 0.0
+            h_BB = 0.0
+
+            for i in range(n):
+                z = A * logits[i] + B
+                # Numerically stable sigmoid
+                if z >= 0:
+                    q = 1.0 / (1.0 + math.exp(-z))
+                else:
+                    ez = math.exp(z)
+                    q = ez / (1.0 + ez)
+                q = max(1e-10, min(1 - 1e-10, q))
+
+                err = q - targets[i]
+                g_A += err * logits[i]
+                g_B += err
+                w = q * (1.0 - q)
+                h_AA += w * logits[i] * logits[i]
+                h_AB += w * logits[i]
+                h_BB += w
+
+            # Solve 2x2 system: H @ delta = -g
+            det = h_AA * h_BB - h_AB * h_AB
+            if abs(det) < 1e-12:
+                break
+
+            dA = -(h_BB * g_A - h_AB * g_B) / det
+            dB = -(h_AA * g_B - h_AB * g_A) / det
+
+            A += dA
+            B += dB
+
+            if abs(dA) < 1e-8 and abs(dB) < 1e-8:
+                break
+
+        # Guardrail: reject if parameters are extreme
+        if abs(A) > 5.0 or abs(B) > 5.0:
+            logging.warning(
+                "CalibrationEngine: Platt params extreme (A=%.4f, B=%.4f), rejecting",
+                A, B,
+            )
+            return
+
+        self._platt_A = A
+        self._platt_B = B
+
+    # ── Beta Calibration ───────────────────────────────────────────────────
+
+    def _beta_cal_predict(self, raw_prob: float) -> float:
+        """logit(P_cal) = c + a * log(p) + b * log(1-p)"""
+        p = max(0.001, min(0.999, raw_prob))
+        logit_out = self._beta_c + self._beta_a * math.log(p) + self._beta_b * math.log(1.0 - p)
+        # Clamp to avoid overflow
+        logit_out = max(-20.0, min(20.0, logit_out))
+        return 1.0 / (1.0 + math.exp(-logit_out))
+
+    def _train_beta_cal(self):
+        """Newton-Raphson optimization of (a, b, c) minimizing log-loss.
+
+        Model: q = sigmoid(a * log(p) + b * log(1-p) + c)
+        """
+        if not self._observations:
+            return
+
+        a, b, c = self._beta_a, self._beta_b, self._beta_c
+
+        # Precompute features
+        log_p = []
+        log_1mp = []
+        targets = []
+        for raw_p, outcome in self._observations:
+            p = max(0.001, min(0.999, raw_p))
+            log_p.append(math.log(p))
+            log_1mp.append(math.log(1.0 - p))
+            targets.append(float(outcome))
+
+        n = len(log_p)
+
+        for iteration in range(100):
+            # Gradient and 3x3 Hessian
+            g = [0.0, 0.0, 0.0]  # d/d(a, b, c)
+            H = [[0.0]*3 for _ in range(3)]
+
+            for i in range(n):
+                z = a * log_p[i] + b * log_1mp[i] + c
+                if z >= 0:
+                    q = 1.0 / (1.0 + math.exp(-z))
+                else:
+                    ez = math.exp(z)
+                    q = ez / (1.0 + ez)
+                q = max(1e-10, min(1 - 1e-10, q))
+
+                err = q - targets[i]
+                feats = [log_p[i], log_1mp[i], 1.0]
+
+                for j in range(3):
+                    g[j] += err * feats[j]
+                    for k in range(3):
+                        H[j][k] += q * (1.0 - q) * feats[j] * feats[k]
+
+            # Solve 3x3 via Cramer's rule
+            delta = CalibrationEngine._solve_3x3(H, [-g[0], -g[1], -g[2]])
+            if delta is None:
+                break
+
+            a += delta[0]
+            b += delta[1]
+            c += delta[2]
+
+            if all(abs(d) < 1e-8 for d in delta):
+                break
+
+        self._beta_a = a
+        self._beta_b = b
+        self._beta_c = c
+
+    @staticmethod
+    def _solve_3x3(A_mat, b_vec):
+        """Solve 3x3 linear system using Cramer's rule. Returns None if singular."""
+        def det3(m):
+            return (m[0][0] * (m[1][1]*m[2][2] - m[1][2]*m[2][1])
+                    - m[0][1] * (m[1][0]*m[2][2] - m[1][2]*m[2][0])
+                    + m[0][2] * (m[1][0]*m[2][1] - m[1][1]*m[2][0]))
+
+        d = det3(A_mat)
+        if abs(d) < 1e-15:
+            return None
+
+        result = []
+        for col in range(3):
+            mod = [list(row) for row in A_mat]
+            for row in range(3):
+                mod[row][col] = b_vec[row]
+            result.append(det3(mod) / d)
+        return result
+
+    # ── Online BLR ─────────────────────────────────────────────────────────
+
+    def _blr_predict(self, raw_prob: float) -> float:
+        """Posterior mean prediction: sigmoid(w * logit(p) + b)"""
+        p = max(0.001, min(0.999, raw_prob))
+        logit_p = math.log(p / (1.0 - p))
+        z = self._blr_mu[0] * logit_p + self._blr_mu[1]
+        z = max(-20.0, min(20.0, z))
+        return 1.0 / (1.0 + math.exp(-z))
+
+    def _train_blr(self):
+        """Laplace approximation for Bayesian logistic regression.
+
+        Prior: N([1, 0], I) — centered on identity calibration.
+        Posterior: Laplace approximation at MAP estimate.
+        """
+        if not self._observations:
+            return
+
+        mu = list(self._blr_mu)
+
+        # Precompute logits
+        logits = []
+        targets = []
+        for raw_p, outcome in self._observations:
+            p = max(0.001, min(0.999, raw_p))
+            logits.append(math.log(p / (1.0 - p)))
+            targets.append(float(outcome))
+
+        n = len(logits)
+        # Prior precision (identity)
+        prior_mu = [1.0, 0.0]
+        lam = 1.0  # prior precision scalar
+
+        for iteration in range(50):
+            g = [lam * (mu[0] - prior_mu[0]), lam * (mu[1] - prior_mu[1])]
+            H = [[lam, 0.0], [0.0, lam]]
+
+            for i in range(n):
+                z = mu[0] * logits[i] + mu[1]
+                if z >= 0:
+                    q = 1.0 / (1.0 + math.exp(-z))
+                else:
+                    ez = math.exp(z)
+                    q = ez / (1.0 + ez)
+                q = max(1e-10, min(1 - 1e-10, q))
+
+                err = q - targets[i]
+                feats = [logits[i], 1.0]
+
+                for j in range(2):
+                    g[j] += err * feats[j]
+                    for k in range(2):
+                        H[j][k] += q * (1.0 - q) * feats[j] * feats[k]
+
+            # Solve 2x2
+            det = H[0][0] * H[1][1] - H[0][1] * H[1][0]
+            if abs(det) < 1e-12:
+                break
+
+            d0 = -(H[1][1] * g[0] - H[0][1] * g[1]) / det
+            d1 = -(H[0][0] * g[1] - H[1][0] * g[0]) / det
+
+            mu[0] += d0
+            mu[1] += d1
+
+            if abs(d0) < 1e-8 and abs(d1) < 1e-8:
+                break
+
+        self._blr_mu = mu
+        # Store posterior precision (Hessian at MAP)
+        self._blr_precision = H
+
+    # ── Metrics ────────────────────────────────────────────────────────────
+
+    def rolling_brier_score(self) -> float:
+        """Rolling Brier score over the last N outcomes."""
+        if not self._brier_scores:
+            return 1.0
+        return sum(self._brier_scores) / len(self._brier_scores)
+
+    def _compute_brier_on_observations(self) -> float:
+        """Compute Brier score over all observations using current model."""
+        if not self._observations:
+            return 1.0
+        total = 0.0
+        for raw_p, outcome in self._observations:
+            pred = self.calibrate(raw_p, cap=1.0)
+            total += (pred - outcome) ** 2
+        return total / len(self._observations)
+
+    def get_diagnostics(self) -> dict:
+        """Return diagnostic info for logging."""
+        return {
+            "active_method": self.active_method,
+            "n_observations": len(self._observations),
+            "rolling_brier": round(self.rolling_brier_score(), 6),
+            "platt_A": round(self._platt_A, 6),
+            "platt_B": round(self._platt_B, 6),
+            "platt_trained": self._platt_trained,
+            "beta_a": round(self._beta_a, 6),
+            "beta_b": round(self._beta_b, 6),
+            "beta_c": round(self._beta_c, 6),
+            "beta_trained": self._beta_trained,
+            "blr_mu": [round(m, 6) for m in self._blr_mu],
+            "blr_trained": self._blr_trained,
+        }
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2635,6 +3195,8 @@ class OpportunityScanner:
                     asset=asset
                 )
                 cal_prob = prob_result.get("calibrated_prob")
+                raw_prob_pre = prob_result.get("raw_prob")
+                calibration_method_pre = prob_result.get("calibration_method")
                 if cal_prob is None:
                     reason = prob_result.get("reason", "")
                     if "z_score" in reason or "refusing" in reason:
@@ -2679,6 +3241,7 @@ class OpportunityScanner:
                             "volatility": blended_rv,
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": round(cal_prob, 6),
+                            "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
                         })
                     except Exception:
                         pass
@@ -2719,6 +3282,7 @@ class OpportunityScanner:
                                 "seconds_to_close": round(seconds_remaining, 1),
                                 "calibrated_prob": round(cal_prob, 6),
                                 "mkt_yes_ask": mkt_yes_ask,
+                                "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
                             })
                         except Exception:
                             pass
@@ -2762,6 +3326,7 @@ class OpportunityScanner:
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": round(cal_prob, 6),
                             "mkt_yes_ask": mkt.get("yes_ask"),
+                            "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
                         })
                     except Exception:
                         pass
@@ -2829,6 +3394,7 @@ class OpportunityScanner:
                             "best_ask_depth": ask_depth,
                             "total_ob_depth": total_depth,
                             "convergence_velocity": self._scanner_convergence_velocity(ticker),
+                            "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
                         })
                         _dedup_key = (ticker, "price_out_of_range")
                         if _dedup_key not in self._eval_opp_seen:
@@ -2844,7 +3410,9 @@ class OpportunityScanner:
                                 vol_regime=vol_est["regime"],
                                 breakeven_wr=best_ask / 100.0,
                                 ask_depth=ask_depth,
-                                best_ask_source=best_ask_source)
+                                best_ask_source=best_ask_source,
+                                raw_prob=raw_prob_pre,
+                                calibration_method=calibration_method_pre)
                     except Exception:
                         pass
                     continue
@@ -2883,6 +3451,8 @@ class OpportunityScanner:
 
                 final_prob = prob_with_market["calibrated_prob"]
                 z_score = prob_with_market["z_score"]
+                raw_prob = prob_with_market.get("raw_prob")
+                calibration_method = prob_with_market.get("calibration_method")
 
                 # Order flow adjustment
                 ofa_signals = None
@@ -2941,6 +3511,7 @@ class OpportunityScanner:
                             "edge": round(edge, 6),
                             "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                             "ofa_adjustment": round(ofa_adjustment, 6),
+                            "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                         })
                         _dedup_key = (ticker, "insufficient_edge")
                         if _dedup_key not in self._eval_opp_seen:
@@ -2962,7 +3533,9 @@ class OpportunityScanner:
                                 expected_value=round(_ev, 2),
                                 ask_depth=ask_depth,
                                 best_ask_source=best_ask_source,
-                                ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none")
+                                ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none",
+                                raw_prob=raw_prob,
+                                calibration_method=calibration_method)
                     except Exception:
                         pass
                     continue
@@ -2998,6 +3571,7 @@ class OpportunityScanner:
                             "calibrated_prob": round(final_prob, 6),
                             "edge": round(edge, 6),
                             "ofa_adjustment": round(ofa_adjustment, 6),
+                            "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                         })
                         _dedup_key = (ticker, "zero_sizing")
                         if _dedup_key not in self._eval_opp_seen:
@@ -3022,7 +3596,9 @@ class OpportunityScanner:
                                 drawdown_scaler=sizing["drawdown_scaler"],
                                 ask_depth=ask_depth,
                                 best_ask_source=best_ask_source,
-                                ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none")
+                                ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none",
+                                raw_prob=raw_prob,
+                                calibration_method=calibration_method)
                     except Exception:
                         pass
                     continue
@@ -3100,6 +3676,7 @@ class OpportunityScanner:
                             "edge": round(edge, 6),
                             "ofa_adjustment": round(ofa_adjustment, 6),
                             "composite_score": strategy_scores.get("composite"),
+                            "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                         })
                         _dedup_key = (ticker, "strategy_wait")
                         if _dedup_key not in self._eval_opp_seen:
@@ -3125,7 +3702,9 @@ class OpportunityScanner:
                                 drawdown_scaler=sizing["drawdown_scaler"],
                                 ask_depth=ask_depth,
                                 best_ask_source=best_ask_source,
-                                ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none")
+                                ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none",
+                                raw_prob=raw_prob,
+                                calibration_method=calibration_method)
                     except Exception:
                         pass
                     continue
@@ -3161,6 +3740,7 @@ class OpportunityScanner:
                         "position_size": sizing["contracts"],
                         "strategy": strategy,
                         "ofa_adjustment": round(ofa_adjustment, 6),
+                        "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                     })
                 except Exception:
                     pass
@@ -3193,6 +3773,8 @@ class OpportunityScanner:
                     "calibrated_prob_raw": round(calibrated_prob_raw, 6),
                     "ofa_adjustment": round(ofa_adjustment, 6),
                     "ofa_confidence": ofa_signals["confidence"] if ofa_signals else "none",
+                    "raw_prob": raw_prob,
+                    "calibration_method": calibration_method,
                 })
 
                 # Respect per-tick orderbook fetch cap
@@ -3254,6 +3836,7 @@ class OpportunityScanner:
                             "calibrated_prob": c["calibrated_prob"],
                             "edge": c["edge"],
                             "ofa_adjustment": c.get("ofa_adjustment"),
+                            "raw_prob": round(c["raw_prob"], 6) if c.get("raw_prob") is not None else None,
                         })
                         _dedup_key = (c["ticker"], "single_asset_selection")
                         if _dedup_key not in self._eval_opp_seen:
@@ -3282,7 +3865,9 @@ class OpportunityScanner:
                                 drawdown_scaler=c.get("drawdown_scaler"),
                                 ask_depth=c.get("ob_snapshot", {}).get("ask_depth"),
                                 best_ask_source=c.get("best_ask_source"),
-                                ofa_confidence=c.get("ofa_confidence"))
+                                ofa_confidence=c.get("ofa_confidence"),
+                                raw_prob=c.get("raw_prob"),
+                                calibration_method=c.get("calibration_method"))
                     except Exception:
                         pass
 
@@ -3587,7 +4172,9 @@ class OrderExecutor:
                         drawdown_scaler=candidate.get("drawdown_scaler"),
                         ask_depth=candidate.get("ob_snapshot", {}).get("ask_depth"),
                         best_ask_source=candidate.get("best_ask_source"),
-                        ofa_confidence=candidate.get("ofa_confidence"))
+                        ofa_confidence=candidate.get("ofa_confidence"),
+                        raw_prob=candidate.get("raw_prob"),
+                        calibration_method=candidate.get("calibration_method"))
             except Exception:
                 pass
             return None
@@ -4499,11 +5086,21 @@ class SettlementTracker:
                     "kelly_f": row.get("kelly_f"),
                     "vol_regime": row.get("vol_regime"),
                     "z_score": row.get("z_score"),
+                    "raw_prob": row.get("raw_prob"),
+                    "calibration_method": row.get("calibration_method"),
                 })
 
                 self._state.mark_evaluated_opportunity_settled(
                     opp_id, market_result=result,
                     counterfactual_pnl=would_have_profit)
+
+                # Feed to calibration engine
+                raw_p = row.get("raw_prob")
+                if raw_p is not None and result in ("yes", "all_yes", "no", "all_no"):
+                    cal_binary = 1 if result in ("yes", "all_yes") else 0
+                    if _CALIBRATION_ENGINE is not None:
+                        _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
+
                 logging.info(
                     f"Evaluated opp settled: {ticker} ({row['filter_stage']}) "
                     f"-> {counterfactual_outcome} (profit={would_have_profit}¢)"
@@ -4612,6 +5209,9 @@ class MainLoop:
         self.dvol_fetcher = DeribitDVOLFetcher()
         self.vol = VolatilityEngine(self.feed, dvol_fetcher=self.dvol_fetcher)
         self.sizer = PositionSizer()
+        self.calibration = CalibrationEngine()
+        global _CALIBRATION_ENGINE
+        _CALIBRATION_ENGINE = self.calibration
         self.cross_feed = CrossExchangeFeed(self.feed) if CROSS_EXCHANGE_ENABLED else None
         self.coinglass = CoinGlassFetcher()
         self.order_flow = OrderFlowEngine(
@@ -4666,6 +5266,9 @@ class MainLoop:
 
         # Check for settlements that happened while bot was down
         self.tracker.startup()
+
+        # Load calibration training data from historical settlements
+        self.calibration.load_training_data_from_db(self.state)
 
         # Start Coinbase price feed
         self.feed.start()
@@ -4806,6 +5409,10 @@ class MainLoop:
         # Check settlements periodically (self-throttled)
         self.tracker.tick()
         self._log_daily_summary()
+
+        # Periodic calibration retrain check
+        if self.calibration:
+            self.calibration.maybe_retrain()
 
         # Recompute seconds_to_close and log each window
         utc_now = datetime.datetime.utcnow()
