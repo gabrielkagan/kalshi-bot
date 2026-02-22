@@ -152,7 +152,7 @@ DYNAMIC_CAP_SCHEDULE = [
 MARKET_BLEND_W = 0.50            # weight on market-implied probability
 ENDGAME_BLEND_PRICE = 96         # don't blend at or above this price (preserve endgame edge)
 
-Z_SCORE_MAX = 8.0                 # refuse to trade if |z| > 8 (vol estimate wrong)
+Z_SCORE_MAX = 12.0                # refuse to trade if |z| > 12 (vol estimate wrong)
 DISCREPANCY_PROB = 0.90           # model says >90% but...
 DISCREPANCY_PRICE = 75            # ...market is below 75¢ → refuse
 
