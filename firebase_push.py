@@ -12,6 +12,18 @@ import requests
 PUSH_INTERVAL = 10  # seconds
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 
+# Firebase key names cannot contain . $ # [ ] /
+_FB_KEY_BAD = str.maketrans({".": "_", "$": "_", "#": "_", "[": "(", "]": ")", "/": "|"})
+
+
+def _sanitize_keys(obj):
+    """Recursively sanitize dict keys for Firebase compatibility."""
+    if isinstance(obj, dict):
+        return {str(k).translate(_FB_KEY_BAD): _sanitize_keys(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_keys(v) for v in obj]
+    return obj
+
 
 class FirebasePusher:
     """Daemon thread that pushes bot status to Firebase REST API."""
@@ -265,4 +277,4 @@ class FirebasePusher:
 
     def _push(self, snapshot: Dict[str, Any]):
         url = f"{self._db_url}/bot_status.json"
-        requests.put(url, json=snapshot, timeout=5)
+        requests.put(url, json=_sanitize_keys(snapshot), timeout=5)
