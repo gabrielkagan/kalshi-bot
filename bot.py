@@ -5239,7 +5239,7 @@ def discover_active_windows(client: KalshiClient) -> List[Dict]:
             try:
                 close_time = datetime.datetime.fromisoformat(
                     close_time_str.replace("Z", "+00:00")
-                ).replace(tzinfo=None)
+                )
             except (ValueError, AttributeError):
                 continue
 
