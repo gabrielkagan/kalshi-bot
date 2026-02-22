@@ -82,8 +82,56 @@ JUMP_THRESHOLD_MULTIPLIER = 3.0   # return > 3x RV = jump
 JUMP_VOL_MULTIPLIER = 2.0         # multiply vol by 2x during elevated regime
 JUMP_DECAY_SECONDS = 60.0         # elevated regime lasts 60s
 
+# ─── Deribit DVOL Integration ────────────────────────────────────────────────
+DERIBIT_DVOL_URL = "https://www.deribit.com/api/v2/public/get_volatility_index_data"
+DERIBIT_DVOL_CURRENCIES = {"BTC": "BTC", "ETH": "ETH"}
+DVOL_FETCH_INTERVAL = 60.0        # seconds between DVOL fetches
+DVOL_CACHE_TTL = 120.0            # stale after 2 min
+DVOL_REQUEST_TIMEOUT = 5.0
+# annualized → per-5-second: 1/sqrt(SECONDS_PER_YEAR / VOL_RETURN_INTERVAL)
+# (computed after SECONDS_PER_YEAR is defined below)
+
+# ─── IV-RV Regime Detection ──────────────────────────────────────────────────
+IV_RV_SPREAD_THRESHOLD = 0.50     # if IV > RV by 50%, shift toward IV
+BETA_LOOKBACK_RETURNS = 60        # 5 min of returns for cross-asset beta
+
+# ─── Cross-Exchange Order Flow ──────────────────────────────────────────
+CROSS_EXCHANGE_ENABLED = True
+CROSS_EXCHANGE_SYMBOLS = {
+    "BTC": {"binance": "btcusdt", "kraken": "BTC/USD", "bybit": "BTCUSDT"},
+    "ETH": {"binance": "ethusdt", "kraken": "ETH/USD", "bybit": "ETHUSDT"},
+    "SOL": {"binance": "solusdt", "kraken": "SOL/USD", "bybit": "SOLUSDT"},
+    "XRP": {"binance": "xrpusdt", "kraken": "XRP/USD", "bybit": "XRPUSDT"},
+}
+BINANCE_WS_URL = "wss://stream.binance.com:9443/stream"
+KRAKEN_WS_URL = "wss://ws.kraken.com/v2"
+BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/spot"
+CROSS_EXCHANGE_BUFFER_SIZE = 15
+CROSS_EXCHANGE_LEAD_THRESHOLD = 0.002     # 0.2% for single-exchange lead
+CROSS_EXCHANGE_CONSENSUS_THRESHOLD = 0.003  # 0.3% for consensus
+CROSS_EXCHANGE_CONSENSUS_MIN = 3
+CROSS_EXCHANGE_STALE_SECONDS = 30.0
+
+# ─── CoinGlass Derivatives ─────────────────────────────────────────────
+COINGLASS_API_URL = "https://open-api-v3.coinglass.com/api"
+COINGLASS_FETCH_INTERVAL = 600.0          # 10 min (100 calls/day budget)
+COINGLASS_CACHE_TTL = 900.0               # stale after 15 min
+COINGLASS_REQUEST_TIMEOUT = 10.0
+COINGLASS_SYMBOLS = {"BTC": "BTC", "ETH": "ETH", "SOL": "SOL", "XRP": "XRP"}
+FUNDING_RATE_EXTREME = 0.0005             # 0.05%/8h
+FUNDING_RATE_ELEVATED = 0.0003            # 0.03%/8h
+
+# ─── Order Flow Adjustments ────────────────────────────────────────────
+OFA_CONSENSUS_BOOST = 0.02                # +2pp when 3+ exchanges confirm direction
+OFA_CONSENSUS_REDUCE = -0.02              # -2pp when 3+ exchanges oppose direction
+OFA_LEAD_BOOST = 0.01                     # +1pp for weaker single-exchange lead
+OFA_EXTREME_FUNDING_REDUCE = -0.015       # -1.5pp for extreme funding
+OFA_ELEVATED_FUNDING_REDUCE = -0.005      # -0.5pp for elevated funding
+OFA_MAX_ADJUSTMENT = 0.03                 # cap total at +/-3pp
+
 # ─── Probability Engine ──────────────────────────────────────────────────────
 SECONDS_PER_YEAR = 365.25 * 24 * 3600  # crypto trades 24/7
+DVOL_ANNUALIZED_TO_5S = 1.0 / math.sqrt(SECONDS_PER_YEAR / VOL_RETURN_INTERVAL)
 STUDENT_T_DF = 4                  # degrees of freedom for t-distribution
 BETA_SLOPE = 0.85                 # logistic calibration (<1 compresses extremes)
 MAX_EFFECTIVE_PROB = 0.93         # hard cap on calibrated probability
@@ -1137,19 +1185,594 @@ class CoinbaseFeed:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  DeribitDVOLFetcher
+# ═════════════════════════════════════════════════════════════════════════════
+
+class DeribitDVOLFetcher:
+    """Daemon thread that fetches Deribit DVOL index for BTC/ETH."""
+
+    def __init__(self):
+        self._cache: Dict[str, Tuple[float, float]] = {}   # asset → (dvol_5s, fetch_time)
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+    def get_dvol(self, asset: str) -> Optional[float]:
+        """Return cached DVOL in per-5-second scale, or None if stale/missing."""
+        with self._lock:
+            entry = self._cache.get(asset)
+        if entry is None:
+            return None
+        dvol_5s, fetch_time = entry
+        if time.time() - fetch_time > DVOL_CACHE_TTL:
+            return None
+        return dvol_5s
+
+    def _run(self):
+        while not self._stop.is_set():
+            for currency_key, currency in DERIBIT_DVOL_CURRENCIES.items():
+                try:
+                    dvol = self._fetch_latest_dvol(currency)
+                    if dvol is not None:
+                        dvol_5s = dvol * DVOL_ANNUALIZED_TO_5S
+                        with self._lock:
+                            self._cache[currency_key] = (dvol_5s, time.time())
+                except Exception:
+                    logging.debug(f"DVOL fetch failed for {currency}", exc_info=True)
+            self._stop.wait(timeout=DVOL_FETCH_INTERVAL)
+
+    def _fetch_latest_dvol(self, currency: str) -> Optional[float]:
+        """Fetch latest DVOL from Deribit. Returns annualized vol as decimal (0.57 = 57%)."""
+        now_ms = int(time.time() * 1000)
+        one_hour_ago_ms = now_ms - 3600 * 1000
+        params = {
+            "currency": currency,
+            "start_timestamp": one_hour_ago_ms,
+            "end_timestamp": now_ms,
+            "resolution": 1,
+        }
+        resp = requests.get(DERIBIT_DVOL_URL, params=params, timeout=DVOL_REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        result = data.get("result", {})
+        candles = result.get("data", [])
+        if not candles:
+            return None
+        # Each candle: [timestamp, open, high, low, close]
+        last_candle = candles[-1]
+        close_dvol = last_candle[4]   # close value
+        return close_dvol / 100.0     # percentage → decimal
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  CrossExchangeFeed
+# ═════════════════════════════════════════════════════════════════════════════
+
+class CrossExchangeFeed:
+    """WebSocket feeds for Binance, Kraken, and Bybit spot prices.
+
+    Runs a single daemon thread with one asyncio event loop managing 3 WebSocket
+    connections. Records 1-second snapshots comparing other exchanges to Coinbase
+    for lead/lag detection.
+    """
+
+    def __init__(self, coinbase_feed: CoinbaseFeed):
+        self._coinbase = coinbase_feed
+        self._prices: Dict[str, Dict[str, float]] = {
+            "binance": {}, "kraken": {}, "bybit": {},
+        }
+        self._last_update: Dict[str, Dict[str, float]] = {
+            "binance": {}, "kraken": {}, "bybit": {},
+        }
+        self._snapshots: Dict[str, deque] = {
+            a: deque(maxlen=CROSS_EXCHANGE_BUFFER_SIZE) for a in ASSETS
+        }
+        self._lock = threading.Lock()
+        self._connected: Dict[str, bool] = {
+            "binance": False, "kraken": False, "bybit": False,
+        }
+        # Reverse lookups
+        self._binance_map = {
+            v["binance"].upper(): k for k, v in CROSS_EXCHANGE_SYMBOLS.items()
+        }
+        self._kraken_map = {
+            v["kraken"]: k for k, v in CROSS_EXCHANGE_SYMBOLS.items()
+        }
+        self._bybit_map = {
+            v["bybit"]: k for k, v in CROSS_EXCHANGE_SYMBOLS.items()
+        }
+        self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._stop_event: Optional[asyncio.Event] = None
+
+    # ── Public API ─────────────────────────────────────────────────────
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run_thread, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if self._loop and self._stop_event:
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+
+    def get_prices(self, asset: str) -> Dict[str, Optional[float]]:
+        """Latest price per exchange, None if stale."""
+        now = time.time()
+        result: Dict[str, Optional[float]] = {}
+        with self._lock:
+            for ex in ("binance", "kraken", "bybit"):
+                price = self._prices[ex].get(asset)
+                ts = self._last_update[ex].get(asset, 0.0)
+                if price is not None and (now - ts) < CROSS_EXCHANGE_STALE_SECONDS:
+                    result[ex] = price
+                else:
+                    result[ex] = None
+        return result
+
+    def get_lead_lag(self, asset: str) -> Dict:
+        """Consensus analysis over snapshot buffer."""
+        with self._lock:
+            snaps = list(self._snapshots.get(asset, []))
+
+        if not snaps:
+            return {
+                "exchanges_above": 0, "exchanges_below": 0,
+                "max_premium_pct": 0.0, "max_discount_pct": 0.0,
+                "consensus_direction": "none", "exchange_premia": {},
+            }
+
+        # Compute average premium per exchange over buffer
+        ex_totals: Dict[str, List[float]] = {"binance": [], "kraken": [], "bybit": []}
+        for _ts, cb_price, ex_prices in snaps:
+            if cb_price is None or cb_price <= 0:
+                continue
+            for ex, ep in ex_prices.items():
+                if ep is not None:
+                    ex_totals[ex].append((ep - cb_price) / cb_price)
+
+        exchange_premia: Dict[str, float] = {}
+        for ex, devs in ex_totals.items():
+            if devs:
+                exchange_premia[ex] = sum(devs) / len(devs)
+
+        above = 0
+        below = 0
+        max_premium = 0.0
+        max_discount = 0.0
+        for ex, avg_dev in exchange_premia.items():
+            if avg_dev > CROSS_EXCHANGE_LEAD_THRESHOLD:
+                above += 1
+                max_premium = max(max_premium, avg_dev)
+            elif avg_dev < -CROSS_EXCHANGE_LEAD_THRESHOLD:
+                below += 1
+                max_discount = max(max_discount, abs(avg_dev))
+
+        if above >= CROSS_EXCHANGE_CONSENSUS_MIN:
+            direction = "above"
+        elif below >= CROSS_EXCHANGE_CONSENSUS_MIN:
+            direction = "below"
+        elif above > 0 or below > 0:
+            direction = "mixed"
+        else:
+            direction = "none"
+
+        return {
+            "exchanges_above": above,
+            "exchanges_below": below,
+            "max_premium_pct": max_premium,
+            "max_discount_pct": max_discount,
+            "consensus_direction": direction,
+            "exchange_premia": exchange_premia,
+        }
+
+    # ── Background thread ──────────────────────────────────────────────
+
+    def _run_thread(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._stop_event = asyncio.Event()
+        try:
+            self._loop.run_until_complete(self._run())
+        except Exception:
+            logging.error("CrossExchangeFeed thread crashed", exc_info=True)
+        finally:
+            self._loop.close()
+
+    async def _run(self):
+        await asyncio.gather(
+            self._ws_binance(),
+            self._ws_kraken(),
+            self._ws_bybit(),
+            self._snapshot_loop(),
+        )
+
+    # ── Binance WebSocket ──────────────────────────────────────────────
+
+    async def _ws_binance(self):
+        streams = "/".join(
+            f"{v['binance']}@ticker" for v in CROSS_EXCHANGE_SYMBOLS.values()
+        )
+        url = f"{BINANCE_WS_URL}?streams={streams}"
+        backoff = 1.0
+        while not self._stop_event.is_set():
+            try:
+                async with websockets.connect(url) as ws:
+                    self._connected["binance"] = True
+                    backoff = 1.0
+                    logging.info("Binance feed connected")
+                    async for raw in ws:
+                        if self._stop_event.is_set():
+                            break
+                        self._handle_binance(raw)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._connected["binance"] = False
+                wait = backoff + backoff * random.uniform(0, 0.25)
+                logging.warning(f"Binance feed disconnected: {e} — reconnecting in {wait:.1f}s")
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=wait)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+                backoff = min(backoff * 2, 60.0)
+        self._connected["binance"] = False
+
+    def _handle_binance(self, raw: str):
+        try:
+            msg = json.loads(raw)
+            data = msg.get("data", {})
+            symbol = data.get("s", "")
+            price_str = data.get("c")  # last price
+            if not symbol or not price_str:
+                return
+            asset = self._binance_map.get(symbol)
+            if asset is None:
+                return
+            price = float(price_str)
+            with self._lock:
+                self._prices["binance"][asset] = price
+                self._last_update["binance"][asset] = time.time()
+        except Exception:
+            pass
+
+    # ── Kraken WebSocket ───────────────────────────────────────────────
+
+    async def _ws_kraken(self):
+        symbols = [v["kraken"] for v in CROSS_EXCHANGE_SYMBOLS.values()]
+        backoff = 1.0
+        while not self._stop_event.is_set():
+            try:
+                async with websockets.connect(KRAKEN_WS_URL) as ws:
+                    await ws.send(json.dumps({
+                        "method": "subscribe",
+                        "params": {"channel": "ticker", "symbol": symbols},
+                    }))
+                    self._connected["kraken"] = True
+                    backoff = 1.0
+                    logging.info("Kraken feed connected")
+                    async for raw in ws:
+                        if self._stop_event.is_set():
+                            break
+                        self._handle_kraken(raw)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._connected["kraken"] = False
+                wait = backoff + backoff * random.uniform(0, 0.25)
+                logging.warning(f"Kraken feed disconnected: {e} — reconnecting in {wait:.1f}s")
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=wait)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+                backoff = min(backoff * 2, 60.0)
+        self._connected["kraken"] = False
+
+    def _handle_kraken(self, raw: str):
+        try:
+            msg = json.loads(raw)
+            channel = msg.get("channel")
+            if channel != "ticker":
+                return
+            for entry in msg.get("data", []):
+                symbol = entry.get("symbol", "")
+                price = entry.get("last")
+                asset = self._kraken_map.get(symbol)
+                if asset is None or price is None:
+                    continue
+                price = float(price)
+                with self._lock:
+                    self._prices["kraken"][asset] = price
+                    self._last_update["kraken"][asset] = time.time()
+        except Exception:
+            pass
+
+    # ── Bybit WebSocket ────────────────────────────────────────────────
+
+    async def _ws_bybit(self):
+        args = [f"tickers.{v['bybit']}" for v in CROSS_EXCHANGE_SYMBOLS.values()]
+        backoff = 1.0
+        while not self._stop_event.is_set():
+            try:
+                async with websockets.connect(BYBIT_WS_URL) as ws:
+                    await ws.send(json.dumps({
+                        "op": "subscribe",
+                        "args": args,
+                    }))
+                    self._connected["bybit"] = True
+                    backoff = 1.0
+                    logging.info("Bybit feed connected")
+                    async for raw in ws:
+                        if self._stop_event.is_set():
+                            break
+                        self._handle_bybit(raw)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._connected["bybit"] = False
+                wait = backoff + backoff * random.uniform(0, 0.25)
+                logging.warning(f"Bybit feed disconnected: {e} — reconnecting in {wait:.1f}s")
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=wait)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+                backoff = min(backoff * 2, 60.0)
+        self._connected["bybit"] = False
+
+    def _handle_bybit(self, raw: str):
+        try:
+            msg = json.loads(raw)
+            topic = msg.get("topic", "")
+            if not topic.startswith("tickers."):
+                return
+            symbol = topic.replace("tickers.", "")
+            data = msg.get("data", {})
+            price_str = data.get("lastPrice")
+            if not price_str:
+                return
+            asset = self._bybit_map.get(symbol)
+            if asset is None:
+                return
+            price = float(price_str)
+            with self._lock:
+                self._prices["bybit"][asset] = price
+                self._last_update["bybit"][asset] = time.time()
+        except Exception:
+            pass
+
+    # ── 1-second snapshot sampler ──────────────────────────────────────
+
+    async def _snapshot_loop(self):
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=1.0)
+                break
+            except asyncio.TimeoutError:
+                pass
+            now = time.time()
+            for asset in ASSETS:
+                cb_price = self._coinbase.get_price(asset)
+                with self._lock:
+                    ex_prices = {
+                        ex: self._prices[ex].get(asset)
+                        for ex in ("binance", "kraken", "bybit")
+                    }
+                    self._snapshots[asset].append((now, cb_price, ex_prices))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  CoinGlassFetcher
+# ═════════════════════════════════════════════════════════════════════════════
+
+class CoinGlassFetcher:
+    """Daemon thread that fetches funding rates from CoinGlass API."""
+
+    def __init__(self):
+        self._api_key = os.environ.get("COINGLASS_API_KEY", "")
+        self._cache: Dict[str, Dict] = {}  # asset -> {"funding_rate": float, "fetch_time": float}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self):
+        if not self._api_key:
+            logging.info("COINGLASS_API_KEY not set — CoinGlass funding rates disabled")
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+    def get_funding_rate(self, asset: str) -> Optional[float]:
+        """Return cached average funding rate, or None if stale/missing."""
+        with self._lock:
+            entry = self._cache.get(asset)
+        if entry is None:
+            return None
+        if time.time() - entry["fetch_time"] > COINGLASS_CACHE_TTL:
+            return None
+        return entry["funding_rate"]
+
+    def _run(self):
+        while not self._stop.is_set():
+            for asset, symbol in COINGLASS_SYMBOLS.items():
+                try:
+                    rate = self._fetch_funding(symbol)
+                    if rate is not None:
+                        with self._lock:
+                            self._cache[asset] = {
+                                "funding_rate": rate,
+                                "fetch_time": time.time(),
+                            }
+                except Exception:
+                    logging.debug(f"CoinGlass fetch failed for {symbol}", exc_info=True)
+            self._stop.wait(timeout=COINGLASS_FETCH_INTERVAL)
+
+    def _fetch_funding(self, symbol: str) -> Optional[float]:
+        """Fetch current funding rates from CoinGlass, return average across exchanges."""
+        url = f"{COINGLASS_API_URL}/futures/funding/current"
+        headers = {"CG-API-KEY": self._api_key}
+        resp = requests.get(
+            url, params={"symbol": symbol}, headers=headers,
+            timeout=COINGLASS_REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        data_list = body.get("data", [])
+        if not data_list:
+            return None
+        rates = []
+        for entry in data_list:
+            rate = entry.get("rate")
+            if rate is not None:
+                try:
+                    rates.append(float(rate))
+                except (ValueError, TypeError):
+                    pass
+        if not rates:
+            return None
+        return sum(rates) / len(rates)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  OrderFlowEngine
+# ═════════════════════════════════════════════════════════════════════════════
+
+class OrderFlowEngine:
+    """Aggregates cross-exchange and derivatives signals into a probability adjustment."""
+
+    def __init__(self, cross_feed=None, coinglass=None):
+        self._cross = cross_feed
+        self._coinglass = coinglass
+
+    def get_signals(self, asset: str) -> Dict:
+        """Compute order flow adjustment for the given asset.
+
+        Returns:
+            {
+                "prob_adjustment": float,
+                "confidence": "high"|"moderate"|"low"|"none",
+                "signals": {
+                    "cross_exchange": {...lead_lag dict...},
+                    "funding": {"rate": float|None, "level": str},
+                },
+                "adjustments_applied": [str, ...],
+            }
+        """
+        adjustments: List[Tuple[str, float]] = []
+        cross_exchange = {}
+        funding_info = {"rate": None, "level": "unknown"}
+
+        # 1. Cross-exchange consensus
+        if self._cross is not None:
+            try:
+                lead_lag = self._cross.get_lead_lag(asset)
+                cross_exchange = lead_lag
+                direction = lead_lag.get("consensus_direction", "none")
+                above = lead_lag.get("exchanges_above", 0)
+                below = lead_lag.get("exchanges_below", 0)
+
+                if direction == "above" and above >= CROSS_EXCHANGE_CONSENSUS_MIN:
+                    adjustments.append((
+                        f"consensus_above_{above}ex",
+                        OFA_CONSENSUS_BOOST,
+                    ))
+                elif direction == "below" and below >= CROSS_EXCHANGE_CONSENSUS_MIN:
+                    adjustments.append((
+                        f"consensus_below_{below}ex",
+                        OFA_CONSENSUS_REDUCE,
+                    ))
+                elif direction == "mixed":
+                    # Weaker signal: at least one exchange leads
+                    if above > below:
+                        adjustments.append(("lead_above_mixed", OFA_LEAD_BOOST))
+                    elif below > above:
+                        adjustments.append(("lead_below_mixed", -OFA_LEAD_BOOST))
+            except Exception:
+                logging.debug("CrossExchangeFeed.get_lead_lag failed", exc_info=True)
+
+        # 2. Funding rate
+        if self._coinglass is not None:
+            try:
+                rate = self._coinglass.get_funding_rate(asset)
+                if rate is not None:
+                    abs_rate = abs(rate)
+                    if abs_rate >= FUNDING_RATE_EXTREME:
+                        funding_info = {"rate": rate, "level": "extreme"}
+                        adjustments.append((
+                            f"extreme_funding_{rate:+.6f}",
+                            OFA_EXTREME_FUNDING_REDUCE,
+                        ))
+                    elif abs_rate >= FUNDING_RATE_ELEVATED:
+                        funding_info = {"rate": rate, "level": "elevated"}
+                        adjustments.append((
+                            f"elevated_funding_{rate:+.6f}",
+                            OFA_ELEVATED_FUNDING_REDUCE,
+                        ))
+                    else:
+                        funding_info = {"rate": rate, "level": "normal"}
+                else:
+                    funding_info = {"rate": None, "level": "unknown"}
+            except Exception:
+                logging.debug("CoinGlassFetcher.get_funding_rate failed", exc_info=True)
+
+        # 3. Sum and clamp
+        total = sum(v for _, v in adjustments)
+        total = max(-OFA_MAX_ADJUSTMENT, min(OFA_MAX_ADJUSTMENT, total))
+
+        # 4. Confidence
+        abs_total = abs(total)
+        if abs_total >= 0.015:
+            confidence = "high"
+        elif abs_total >= 0.005:
+            confidence = "moderate"
+        elif abs_total > 0:
+            confidence = "low"
+        else:
+            confidence = "none"
+
+        return {
+            "prob_adjustment": total,
+            "confidence": confidence,
+            "signals": {
+                "cross_exchange": cross_exchange,
+                "funding": funding_info,
+            },
+            "adjustments_applied": [
+                f"{name}: {val:+.3f}" for name, val in adjustments
+            ],
+        }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  VolatilityEngine
 # ═════════════════════════════════════════════════════════════════════════════
 
 class VolatilityEngine:
-    """Realized volatility from 5-second log returns with jump detection.
+    """Realized Kernel + HAR-RV + Deribit DVOL volatility engine.
 
+    Uses microstructure-noise-robust Realized Kernel (Barndorff-Nielsen 2008),
+    bipower variation for jump separation, and optional Deribit DVOL blending.
     Maintains its own rolling buffer of log returns per asset (up to 15 min).
-    The price buffer in CoinbaseFeed only holds 5 min of 1-second snapshots,
-    but this engine accumulates 5-second returns over a longer horizon.
     """
 
-    def __init__(self, feed: CoinbaseFeed):
+    def __init__(self, feed: CoinbaseFeed, dvol_fetcher: Optional[DeribitDVOLFetcher] = None):
         self._feed = feed
+        self._dvol = dvol_fetcher
         self._returns: Dict[str, deque] = {
             a: deque(maxlen=VOL_WINDOW_15MIN) for a in ASSETS
         }
@@ -1202,6 +1825,121 @@ class VolatilityEngine:
 
         return self._cache.get(asset)
 
+    # ── Kernel & statistical methods ─────────────────────────────────────
+
+    @staticmethod
+    def _parzen_kernel(x: float) -> float:
+        """Flat-top Parzen kernel for Realized Kernel estimator."""
+        ax = abs(x)
+        if ax <= 0.5:
+            return 1.0
+        if ax <= 1.0:
+            # Smooth cubic taper: Hermite basis h00 maps [0.5, 1] → [1, 0]
+            u = 2.0 * (ax - 0.5)  # maps [0.5, 1] → [0, 1]
+            return 1.0 - 3.0 * u * u + 2.0 * u * u * u
+        return 0.0
+
+    @staticmethod
+    def _realized_kernel(returns: List[float], window: int) -> float:
+        """Realized Kernel (Barndorff-Nielsen 2008) — microstructure-noise robust.
+
+        RK = Σ_{h=-H}^{H} k(h/(H+1)) × γ(h)
+        where γ(h) is the autocovariance at lag h.
+        Returns per-return scale volatility (same unit as old _window_rv).
+        """
+        subset = returns[-window:] if len(returns) >= window else returns
+        n = len(subset)
+        if n < 2:
+            return 0.0
+
+        H = math.ceil(math.sqrt(n))
+
+        rk = 0.0
+        for h in range(-H, H + 1):
+            weight = VolatilityEngine._parzen_kernel(h / (H + 1))
+            if weight == 0.0:
+                continue
+            # Compute autocovariance γ(h)
+            gamma_h = 0.0
+            ah = abs(h)
+            count = 0
+            for j in range(ah, n):
+                gamma_h += subset[j] * subset[j - ah]
+                count += 1
+            if count > 0:
+                gamma_h /= count
+            rk += weight * gamma_h
+
+        return math.sqrt(max(0.0, rk))
+
+    @staticmethod
+    def _bipower_variation(returns: List[float], window: int) -> float:
+        """Bipower variation — robust to jumps, estimates continuous-path vol.
+
+        BV = (π/2) × (1/(n-1)) × Σ |r_j| × |r_{j+1}|
+        Returns per-return scale volatility.
+        """
+        subset = returns[-window:] if len(returns) >= window else returns
+        n = len(subset)
+        if n < 2:
+            return 0.0
+
+        bv_sum = 0.0
+        for j in range(n - 1):
+            bv_sum += abs(subset[j]) * abs(subset[j + 1])
+
+        bv = (math.pi / 2.0) * bv_sum / (n - 1)
+        return math.sqrt(max(0.0, bv))
+
+    def _estimate_beta(self, asset: str, reference: str = "BTC") -> float:
+        """Cross-asset beta: cov(r_asset, r_ref) / var(r_ref). Clamped [0.5, 3.0]."""
+        if asset == reference:
+            return 1.0
+
+        r_asset = list(self._returns.get(asset, []))
+        r_ref = list(self._returns.get(reference, []))
+
+        # Use last BETA_LOOKBACK_RETURNS from each
+        r_asset = r_asset[-BETA_LOOKBACK_RETURNS:]
+        r_ref = r_ref[-BETA_LOOKBACK_RETURNS:]
+
+        n = min(len(r_asset), len(r_ref))
+        if n < 10:
+            return 1.0
+
+        # Align to same length (most recent)
+        r_asset = r_asset[-n:]
+        r_ref = r_ref[-n:]
+
+        mean_a = sum(r_asset) / n
+        mean_r = sum(r_ref) / n
+
+        cov = sum((r_asset[i] - mean_a) * (r_ref[i] - mean_r) for i in range(n)) / n
+        var_r = sum((r_ref[i] - mean_r) ** 2 for i in range(n)) / n
+
+        if var_r <= 0:
+            return 1.0
+
+        beta = cov / var_r
+        return max(0.5, min(3.0, beta))
+
+    def _get_implied_vol(self, asset: str) -> Optional[float]:
+        """Get implied vol in per-5-second scale. BTC/ETH direct, SOL/XRP via beta."""
+        if self._dvol is None:
+            return None
+
+        if asset in DERIBIT_DVOL_CURRENCIES:
+            return self._dvol.get_dvol(asset)
+
+        # SOL/XRP: scale BTC DVOL by cross-asset beta
+        btc_dvol = self._dvol.get_dvol("BTC")
+        if btc_dvol is None:
+            return None
+        beta = self._estimate_beta(asset, "BTC")
+        return btc_dvol * beta
+
+    # ── Core computation ─────────────────────────────────────────────────
+
     def _compute(self, asset: str, now: float) -> Optional[Dict]:
         returns = self._returns[asset]
         if len(returns) < 2:
@@ -1209,16 +1947,52 @@ class VolatilityEngine:
 
         returns_list = list(returns)
 
-        # Compute RV for each window: sqrt(mean(r^2))
-        rv_1min = self._window_rv(returns_list, VOL_WINDOW_1MIN)
-        rv_5min = self._window_rv(returns_list, VOL_WINDOW_5MIN)
-        rv_15min = self._window_rv(returns_list, VOL_WINDOW_15MIN)
+        # Step 1: Realized Kernel at each window
+        rk_1min = self._realized_kernel(returns_list, VOL_WINDOW_1MIN)
+        rk_5min = self._realized_kernel(returns_list, VOL_WINDOW_5MIN)
+        rk_15min = self._realized_kernel(returns_list, VOL_WINDOW_15MIN)
 
-        # Blend: 0.5 * 1min + 0.3 * 5min + 0.2 * 15min
+        # Step 2: HAR-RV blend on kernel estimates
         w1, w5, w15 = VOL_BLEND_WEIGHTS
-        blended = w1 * rv_1min + w5 * rv_5min + w15 * rv_15min
+        continuous_rv = w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
 
-        # Jump regime check
+        # Step 3: Bipower variation for jump separation
+        bv_1min = self._bipower_variation(returns_list, VOL_WINDOW_1MIN)
+        bv_5min = self._bipower_variation(returns_list, VOL_WINDOW_5MIN)
+        bv_15min = self._bipower_variation(returns_list, VOL_WINDOW_15MIN)
+        bv_blended = w1 * bv_1min + w5 * bv_5min + w15 * bv_15min
+
+        jump_var = max(0.0, continuous_rv ** 2 - bv_blended ** 2)
+        rv_blended = math.sqrt(bv_blended ** 2 + jump_var)
+
+        # Track RV-only blended for diagnostics
+        rv_only_blended = rv_blended
+        blended = rv_blended
+
+        # Step 4: DVOL blending (if available)
+        iv = self._get_implied_vol(asset)
+        dvol_5s = iv  # for diagnostics
+        iv_rv_spread = None
+        iv_rv_blend_method = "rv_only"
+
+        if iv is not None and iv > 0 and rv_blended > 0:
+            # Inverse-variance weighting
+            var_rv = (rk_1min - rk_15min) ** 2   # spread as proxy for RV uncertainty
+            var_iv = (iv * 0.10) ** 2             # 10% uncertainty on IV
+            # Avoid division by zero
+            if var_rv + var_iv > 0:
+                w_rv = var_iv / (var_rv + var_iv)
+                w_iv = var_rv / (var_rv + var_iv)
+                blended = w_rv * rv_blended + w_iv * iv
+                iv_rv_blend_method = "inverse_variance"
+
+            # Step 5: IV-RV regime detection
+            iv_rv_spread = (iv - rv_blended) / rv_blended
+            if iv_rv_spread > IV_RV_SPREAD_THRESHOLD:
+                blended = 0.3 * rv_blended + 0.7 * iv
+                iv_rv_blend_method = "stress_override"
+
+        # Step 6: Jump regime (existing, preserved)
         regime = "normal"
         jump_expiry = self._jump_until.get(asset, 0)
         if now < jump_expiry:
@@ -1226,23 +2000,24 @@ class VolatilityEngine:
             blended *= JUMP_VOL_MULTIPLIER
 
         return {
-            "rv_1min": rv_1min,
-            "rv_5min": rv_5min,
-            "rv_15min": rv_15min,
+            # Original 7 fields (backward-compatible)
+            "rv_1min": rk_1min,
+            "rv_5min": rk_5min,
+            "rv_15min": rk_15min,
             "blended_rv": blended,
             "regime": regime,
             "num_returns": len(returns),
             "jump_seconds_remaining": round(max(0, jump_expiry - now), 1),
+            # New diagnostic fields
+            "bv_1min": bv_1min,
+            "bv_5min": bv_5min,
+            "bv_15min": bv_15min,
+            "jump_component": math.sqrt(jump_var) if jump_var > 0 else 0.0,
+            "dvol_5s": dvol_5s,
+            "iv_rv_spread": iv_rv_spread,
+            "iv_rv_blend_method": iv_rv_blend_method,
+            "rv_only_blended": rv_only_blended,
         }
-
-    @staticmethod
-    def _window_rv(returns: List[float], window: int) -> float:
-        """Realized volatility = sqrt(mean(r^2)) over the last `window` returns."""
-        subset = returns[-window:] if len(returns) >= window else returns
-        if not subset:
-            return 0.0
-        sum_sq = sum(r * r for r in subset)
-        return math.sqrt(sum_sq / len(subset))
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1471,13 +2246,14 @@ class OpportunityScanner:
 
     def __init__(self, client: KalshiClient, state: StateManager,
                  feed: CoinbaseFeed, vol: VolatilityEngine, logger: Logger,
-                 sizer: PositionSizer):
+                 sizer: PositionSizer, order_flow: Optional[OrderFlowEngine] = None):
         self._client = client
         self._state = state
         self._feed = feed
         self._vol = vol
         self._logger = logger
         self._sizer = sizer
+        self._order_flow = order_flow
         # Orderbook cache: ticker -> (data, fetch_time)
         self._ob_cache: Dict[str, Tuple[Optional[Dict], float]] = {}
         # Balance cache: (balance_cents, fetch_time)
@@ -1621,6 +2397,19 @@ class OpportunityScanner:
 
                 final_prob = prob_with_market["calibrated_prob"]
                 z_score = prob_with_market["z_score"]
+
+                # Order flow adjustment
+                ofa_signals = None
+                ofa_adjustment = 0.0
+                if self._order_flow is not None:
+                    try:
+                        ofa_signals = self._order_flow.get_signals(asset)
+                        ofa_adjustment = ofa_signals["prob_adjustment"]
+                    except Exception:
+                        logging.debug("OrderFlowEngine.get_signals failed", exc_info=True)
+                calibrated_prob_raw = final_prob
+                final_prob = max(0.01, min(MAX_EFFECTIVE_PROB, final_prob + ofa_adjustment))
+
                 edge = final_prob - best_ask / 100.0
 
                 # Filter: edge must meet minimum
@@ -1677,6 +2466,10 @@ class OpportunityScanner:
                     "composite_score": strategy_scores["composite"],
                     "chosen_strategy": strategy,
                     "reason": strategy_scores["reason"],
+                    "calibrated_prob_raw": round(calibrated_prob_raw, 6),
+                    "ofa_adjustment": round(ofa_adjustment, 6),
+                    "ofa_confidence": ofa_signals["confidence"] if ofa_signals else "none",
+                    "ofa_adjustments_applied": ofa_signals["adjustments_applied"] if ofa_signals else [],
                 })
 
                 if strategy == STRATEGY_WAIT:
@@ -1706,6 +2499,9 @@ class OpportunityScanner:
                         "ask_depth": ask_depth,
                         "total_depth": total_depth,
                     },
+                    "calibrated_prob_raw": round(calibrated_prob_raw, 6),
+                    "ofa_adjustment": round(ofa_adjustment, 6),
+                    "ofa_confidence": ofa_signals["confidence"] if ofa_signals else "none",
                 })
 
                 # Respect per-tick orderbook fetch cap
@@ -1717,10 +2513,42 @@ class OpportunityScanner:
         if not candidates:
             return None
 
-        best = max(candidates, key=lambda c: c["edge"])
+        # ── Single-asset-per-timeslot: pick highest edge per 15-min window ──
+        # Group candidates by timeslot (shared across assets)
+        by_timeslot: Dict[str, List[Dict]] = {}
+        for c in candidates:
+            ts = self._window_timeslot(c["event_ticker"])
+            by_timeslot.setdefault(ts, []).append(c)
+
+        # Keep only the single best-edge candidate per timeslot
+        filtered: List[Dict] = []
+        for ts, slot_candidates in by_timeslot.items():
+            slot_candidates.sort(key=lambda c: c["edge"], reverse=True)
+            winner = slot_candidates[0]
+            filtered.append(winner)
+
+            # Log which assets were rejected in favor of the winner
+            if len(slot_candidates) > 1:
+                rejected = [
+                    {"asset": c["asset"], "ticker": c["ticker"],
+                     "edge": round(c["edge"], 6), "calibrated_prob": c["calibrated_prob"]}
+                    for c in slot_candidates[1:]
+                ]
+                self._logger.log_scan({
+                    "type": "single_asset_selection",
+                    "timeslot": ts,
+                    "chosen_asset": winner["asset"],
+                    "chosen_ticker": winner["ticker"],
+                    "chosen_edge": round(winner["edge"], 6),
+                    "rejected_assets": rejected,
+                    "reason": "single best asset per window (correlation-adjusted)",
+                })
+
+        best = max(filtered, key=lambda c: c["edge"])
         self._logger.log_scan({
             "type": "opportunity",
-            "candidates_found": len(candidates),
+            "candidates_evaluated": len(candidates),
+            "candidates_after_single_asset": len(filtered),
             "chosen_strategy": best.get("strategy"),
             **{k: v for k, v in best.items() if k not in ("strategy_scores", "ob_snapshot")},
         })
@@ -2825,11 +3653,17 @@ class MainLoop:
         self.state = StateManager()
         self.logger = Logger()
         self.feed = CoinbaseFeed()
-        self.vol = VolatilityEngine(self.feed)
+        self.dvol_fetcher = DeribitDVOLFetcher()
+        self.vol = VolatilityEngine(self.feed, dvol_fetcher=self.dvol_fetcher)
         self.sizer = PositionSizer()
+        self.cross_feed = CrossExchangeFeed(self.feed) if CROSS_EXCHANGE_ENABLED else None
+        self.coinglass = CoinGlassFetcher()
+        self.order_flow = OrderFlowEngine(
+            cross_feed=self.cross_feed, coinglass=self.coinglass,
+        )
         self.scanner = OpportunityScanner(
             self.client, self.state, self.feed, self.vol, self.logger,
-            self.sizer
+            self.sizer, order_flow=self.order_flow,
         )
         self.executor = OrderExecutor(self.client, self.state, self.logger)
         self.tracker = SettlementTracker(self.client, self.state, self.logger)
@@ -2877,6 +3711,18 @@ class MainLoop:
         # Start Coinbase price feed
         self.feed.start()
         logging.info("Coinbase price feed starting...")
+
+        # Start Deribit DVOL fetcher
+        self.dvol_fetcher.start()
+        logging.info("Deribit DVOL fetcher starting...")
+
+        # Start cross-exchange feeds
+        if self.cross_feed:
+            self.cross_feed.start()
+            logging.info("Cross-exchange feed starting...")
+
+        # Start CoinGlass funding rate fetcher
+        self.coinglass.start()
 
         # Start Firebase dashboard push (if configured)
         from firebase_push import FirebasePusher
@@ -2943,7 +3789,25 @@ class MainLoop:
                     "blended_rv": round(vol_estimate["blended_rv"], 8),
                     "vol_regime": vol_estimate["regime"],
                     "vol_returns": vol_estimate["num_returns"],
+                    "bv_1min": round(vol_estimate.get("bv_1min", 0), 8),
+                    "jump_component": round(vol_estimate.get("jump_component", 0), 8),
+                    "dvol_5s": round(vol_estimate["dvol_5s"], 8) if vol_estimate.get("dvol_5s") is not None else None,
+                    "iv_rv_blend_method": vol_estimate.get("iv_rv_blend_method"),
                 })
+            # Order flow snapshot
+            if self.order_flow is not None:
+                try:
+                    ofa = self.order_flow.get_signals(asset)
+                    scan_entry["ofa_adjustment"] = round(ofa["prob_adjustment"], 6)
+                    scan_entry["ofa_confidence"] = ofa["confidence"]
+                    cx = ofa["signals"].get("cross_exchange", {})
+                    scan_entry["cross_ex_consensus"] = cx.get("consensus_direction")
+                    scan_entry["cross_ex_above"] = cx.get("exchanges_above", 0)
+                    fn = ofa["signals"].get("funding", {})
+                    scan_entry["funding_rate"] = fn.get("rate")
+                    scan_entry["funding_level"] = fn.get("level")
+                except Exception:
+                    pass
             self.logger.log_scan(scan_entry)
 
         # Poll active executor order (maker fill check)
@@ -2991,6 +3855,12 @@ class MainLoop:
         logging.info("Shutting down...")
         if hasattr(self, 'firebase'):
             self.firebase.stop()
+        if hasattr(self, 'coinglass'):
+            self.coinglass.stop()
+        if hasattr(self, 'cross_feed') and self.cross_feed:
+            self.cross_feed.stop()
+        if hasattr(self, 'dvol_fetcher'):
+            self.dvol_fetcher.stop()
         self.feed.stop()
         self.state.close()
         logging.info("Bot stopped.")

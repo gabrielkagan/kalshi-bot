@@ -120,12 +120,31 @@ class FirebasePusher:
                     vol_data[asset] = {
                         "blended_rv": cached["blended_rv"],
                         "regime": cached["regime"],
+                        "dvol_5s": cached.get("dvol_5s"),
+                        "iv_rv_blend_method": cached.get("iv_rv_blend_method"),
+                        "jump_component": cached.get("jump_component", 0),
                     }
                 else:
                     vol_data[asset] = None
             snap["current_volatility"] = vol_data
         except Exception:
             snap["current_volatility"] = {}
+
+        # Order flow signals
+        try:
+            if hasattr(self._ml, 'order_flow') and self._ml.order_flow:
+                ofa_data = {}
+                for asset in ASSETS:
+                    signals = self._ml.order_flow.get_signals(asset)
+                    ofa_data[asset] = {
+                        "prob_adjustment": signals["prob_adjustment"],
+                        "confidence": signals["confidence"],
+                        "consensus": signals["signals"].get("cross_exchange", {}).get("consensus_direction"),
+                        "funding_level": signals["signals"].get("funding", {}).get("level"),
+                    }
+                snap["order_flow"] = ofa_data
+        except Exception:
+            snap["order_flow"] = {}
 
         # Seconds to next close
         try:
