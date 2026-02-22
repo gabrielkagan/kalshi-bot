@@ -2465,12 +2465,11 @@ class OpportunityScanner:
 
     def scan(self, active_windows: List[Dict]) -> Optional[Dict]:
         """Evaluate all windows/markets, return best candidate or None."""
-        self._eval_opp_seen.clear()
         now = time.time()
         ob_fetches_this_tick = 0
         candidates: List[Dict] = []
 
-        # Clean up ask history for tickers no longer in active windows
+        # Clean up ask history and dedup set for tickers no longer in active windows
         active_tickers = set()
         for w in active_windows:
             for m in w.get("markets", []):
@@ -2478,6 +2477,9 @@ class OpportunityScanner:
         expired = [t for t in self._ticker_ask_history if t not in active_tickers]
         for t in expired:
             del self._ticker_ask_history[t]
+        self._eval_opp_seen = {
+            (tk, stage) for tk, stage in self._eval_opp_seen if tk in active_tickers
+        }
         scan_stats: Dict[str, Dict[str, int]] = {
             a: {"evaluated": 0, "low_prob": 0, "no_orderbook": 0, "no_best_ask": 0,
                 "price_out_of_range": 0, "insufficient_edge": 0, "zero_sizing": 0,
