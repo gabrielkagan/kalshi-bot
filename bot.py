@@ -137,7 +137,21 @@ SECONDS_PER_YEAR = 365.25 * 24 * 3600  # crypto trades 24/7
 DVOL_ANNUALIZED_TO_5S = 1.0 / math.sqrt(SECONDS_PER_YEAR / VOL_RETURN_INTERVAL)
 STUDENT_T_DF = 4                  # degrees of freedom for t-distribution
 BETA_SLOPE = 0.85                 # logistic calibration (<1 compresses extremes)
-MAX_EFFECTIVE_PROB = 0.93         # hard cap on calibrated probability
+MAX_EFFECTIVE_PROB = 0.93         # hard cap on calibrated probability (default / fallback)
+
+# Dynamic probability cap schedule (keyed by seconds_remaining)
+# As expiry approaches, allow higher confidence from the model
+DYNAMIC_CAP_SCHEDULE = [
+    (600, 0.93),   # > 10 min: status quo cap
+    (300, 0.95),   # 5–10 min: slightly relaxed
+    (120, 0.97),   # 2–5 min: moderately relaxed
+    (60,  0.985),  # 1–2 min: high confidence allowed
+    (0,   0.995),  # < 1 min: near-certain allowed
+]
+
+MARKET_BLEND_W = 0.50            # weight on market-implied probability
+ENDGAME_BLEND_PRICE = 96         # don't blend at or above this price (preserve endgame edge)
+
 Z_SCORE_MAX = 8.0                 # refuse to trade if |z| > 8 (vol estimate wrong)
 DISCREPANCY_PROB = 0.90           # model says >90% but...
 DISCREPANCY_PRICE = 75            # ...market is below 75¢ → refuse
@@ -2274,8 +2288,9 @@ class ProbabilityEngine:
         raw_prob = 1.0 - student_t.cdf(z_score, df=STUDENT_T_DF)
         result["raw_prob"] = round(raw_prob, 6)
 
-        # ── Beta calibration: logistic compression + cap ─────────────────
-        calibrated_prob = ProbabilityEngine._calibrate(raw_prob)
+        # ── Beta calibration: logistic compression + dynamic cap ──────────
+        dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining)
+        calibrated_prob = ProbabilityEngine._calibrate(raw_prob, cap=dynamic_cap)
         result["calibrated_prob"] = round(calibrated_prob, 6)
 
         # ── Sanity: model vs market discrepancy ──────────────────────────
@@ -2294,8 +2309,16 @@ class ProbabilityEngine:
         return result
 
     @staticmethod
-    def _calibrate(raw_prob: float) -> float:
-        """Apply logistic compression then hard cap at MAX_EFFECTIVE_PROB.
+    def _dynamic_cap(seconds_remaining: float) -> float:
+        """Return probability cap based on time to close."""
+        for threshold_secs, cap in DYNAMIC_CAP_SCHEDULE:
+            if seconds_remaining > threshold_secs:
+                return cap
+        return DYNAMIC_CAP_SCHEDULE[-1][1]  # smallest TTC bracket
+
+    @staticmethod
+    def _calibrate(raw_prob: float, cap: float = MAX_EFFECTIVE_PROB) -> float:
+        """Apply logistic compression then hard cap.
 
         Maps raw_prob through: logit → scale by BETA_SLOPE → inverse logit → cap.
         This pulls extreme probabilities toward 0.5 and caps at 93%.
@@ -2305,7 +2328,7 @@ class ProbabilityEngine:
         logit = math.log(p / (1.0 - p))
         scaled_logit = BETA_SLOPE * logit
         compressed = 1.0 / (1.0 + math.exp(-scaled_logit))
-        return min(compressed, MAX_EFFECTIVE_PROB)
+        return min(compressed, cap)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2797,7 +2820,15 @@ class OpportunityScanner:
                     except Exception:
                         logging.debug("OrderFlowEngine.get_signals failed", exc_info=True)
                 calibrated_prob_raw = final_prob
-                final_prob = max(0.01, min(MAX_EFFECTIVE_PROB, final_prob + ofa_adjustment))
+                _dyn_cap = ProbabilityEngine._dynamic_cap(seconds_remaining)
+                final_prob = max(0.01, min(_dyn_cap, final_prob + ofa_adjustment))
+
+                # ── Market-price blending ──────────────────────────────────
+                # For mid-range prices, blend model with market to temper overconfidence.
+                # Skip blending for endgame (≥96c) where dynamic cap provides the edge.
+                if best_ask < ENDGAME_BLEND_PRICE:
+                    market_implied_prob = best_ask / 100.0
+                    final_prob = (1.0 - MARKET_BLEND_W) * final_prob + MARKET_BLEND_W * market_implied_prob
 
                 edge = final_prob - best_ask / 100.0
 
