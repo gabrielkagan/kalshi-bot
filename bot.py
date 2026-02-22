@@ -511,6 +511,19 @@ class KalshiClient:
             params["cursor"] = cursor
         return self._request("GET", f"{API_PATH_PREFIX}/markets", params=params)
 
+    def get_events(self, series_ticker: Optional[str] = None,
+                   status: Optional[str] = None,
+                   with_nested_markets: bool = False,
+                   limit: int = 100) -> Optional[Dict]:
+        params: Dict = {"limit": limit}
+        if series_ticker:
+            params["series_ticker"] = series_ticker
+        if status:
+            params["status"] = status
+        if with_nested_markets:
+            params["with_nested_markets"] = "true"
+        return self._request("GET", f"{API_PATH_PREFIX}/events", params=params)
+
     def get_market(self, ticker: str) -> Optional[Dict]:
         return self._request("GET", f"{API_PATH_PREFIX}/markets/{ticker}")
 
@@ -3587,47 +3600,47 @@ class SettlementTracker:
 def discover_active_windows(client: KalshiClient) -> List[Dict]:
     """
     Query Kalshi for currently open 15-minute crypto windows.
+
+    Uses the events endpoint (GET /events) with status=open and
+    with_nested_markets=true to find tradeable markets. The markets
+    endpoint (GET /markets) with series_ticker only returns pre-created
+    'initialized' markets on production, missing the active ones.
+
     Returns list of dicts with asset, event_ticker, close_time,
     seconds_to_close, and markets list.
     """
     now = datetime.datetime.utcnow()
-    now_ts = int(now.timestamp())
     windows: List[Dict] = []
 
     for asset, series in SERIES_TICKERS.items():
-        result = client.get_markets(
+        result = client.get_events(
             series_ticker=series,
             status="open",
-            min_close_ts=now_ts,
-            limit=200,
+            with_nested_markets=True,
+            limit=100,
         )
-        if not result or "markets" not in result:
+        if not result or "events" not in result:
             logging.warning(
                 f"Market discovery: {asset} ({series}) — API returned no data"
             )
             continue
 
-        markets = result["markets"]
+        events = result["events"]
+        market_count = 0
 
-        # Group markets by event_ticker (each event = one 15-min window)
-        events: Dict[str, List[Dict]] = {}
-        for mkt in markets:
-            et = mkt.get("event_ticker", "")
-            if et not in events:
-                events[et] = []
-            events[et].append(mkt)
+        for event in events:
+            event_ticker = event.get("event_ticker", "")
+            nested_markets = event.get("markets", [])
+            if not isinstance(nested_markets, list):
+                continue
 
-        if not events:
-            logging.info(
-                f"Market discovery: {asset} ({series}) — 0 open markets"
-            )
-        else:
-            logging.info(
-                f"Market discovery: {asset} ({series}) — "
-                f"{len(markets)} markets in {len(events)} windows"
-            )
+            # Filter to actual market dicts (not string references)
+            mkts = [m for m in nested_markets if isinstance(m, dict)]
+            if not mkts:
+                continue
 
-        for event_ticker, mkts in events.items():
+            market_count += len(mkts)
+
             close_time_str = mkts[0].get("close_time", "")
             try:
                 close_time = datetime.datetime.fromisoformat(
@@ -3644,6 +3657,16 @@ def discover_active_windows(client: KalshiClient) -> List[Dict]:
                 "seconds_to_close": seconds_to_close,
                 "markets": mkts,
             })
+
+        if market_count == 0:
+            logging.info(
+                f"Market discovery: {asset} ({series}) — 0 open markets"
+            )
+        else:
+            logging.info(
+                f"Market discovery: {asset} ({series}) — "
+                f"{market_count} markets in {len(events)} windows"
+            )
 
     return windows
 
