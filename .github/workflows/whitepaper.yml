@@ -17,22 +17,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Pull live stats from VPS
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: botuser
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
-            cd ~/kalshi-bot-repo
-            python3 scripts/generate_whitepaper_stats.py > /tmp/whitepaper_stats.json
-
-      - name: Fetch stats from VPS
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Upload stats script and run on VPS
+        run: |
+          scp scripts/generate_whitepaper_stats.py botuser@${{ secrets.VPS_HOST }}:/tmp/generate_whitepaper_stats.py
+          ssh botuser@${{ secrets.VPS_HOST }} "cd ~/kalshi-bot-repo && python3 /tmp/generate_whitepaper_stats.py > /tmp/whitepaper_stats.json"
           scp botuser@${{ secrets.VPS_HOST }}:/tmp/whitepaper_stats.json ./whitepaper_stats.json
 
       - uses: actions/setup-python@v5
