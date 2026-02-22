@@ -143,7 +143,7 @@ DISCREPANCY_PROB = 0.90           # model says >90% but...
 DISCREPANCY_PRICE = 75            # ...market is below 75¢ → refuse
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
-MIN_EDGE_PCT = 5.0                # model prob must exceed market by ≥5 pp
+MIN_EDGE_PCT = 2.0                # model prob must exceed market by ≥2 pp (lowered from 5 for observation data)
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
 BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
