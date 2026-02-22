@@ -1,6 +1,6 @@
 ---
 title: "Kalshi Crypto Trading Bot — Investor Whitepaper"
-author: "Marina Kagan"
+author: "Gabriel Kagan"
 date: "February 2026"
 ---
 
