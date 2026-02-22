@@ -2272,8 +2272,10 @@ class PositionSizer:
             result["reason"] = "no balance"
             return result
 
-        # b = net odds = profit per dollar risked = (100 - price) / price
-        b = (100 - price_cents) / price_cents
+        # Fee-adjusted odds: subtract taker fee from win profit, add to loss
+        fee_1c = calculate_taker_fee(1, price_cents)
+        # b = net odds = profit per dollar risked (fee-adjusted)
+        b = (100 - price_cents - fee_1c) / (price_cents + fee_1c)
         p = win_prob
         q = 1.0 - p
 
@@ -2617,14 +2619,20 @@ class OpportunityScanner:
 
                 edge = final_prob - best_ask / 100.0
 
-                # Filter: edge must meet minimum
-                if edge < MIN_EDGE_PCT / 100.0:
+                # Fee-adjusted edge: subtract taker fee for 1 contract
+                # (conservative — more contracts = lower per-contract fee)
+                est_fee_1c = calculate_taker_fee(1, best_ask)
+                fee_adjusted_edge = edge - est_fee_1c / 100.0
+
+                # Filter: fee-adjusted edge must meet minimum
+                if fee_adjusted_edge < MIN_EDGE_PCT / 100.0:
                     scan_stats[asset]["insufficient_edge"] += 1
                     self._recent_opportunities.append({
                         "ticker": ticker, "asset": asset,
                         "seconds_to_close": round(seconds_remaining, 1),
                         "best_ask": best_ask,
-                        "edge_bps": round(edge * 10000),
+                        "edge_bps": round(fee_adjusted_edge * 10000),
+                        "gross_edge_bps": round(edge * 10000),
                         "chosen_strategy": None,
                         "rejection_reason": "insufficient_edge",
                         "ts": datetime.datetime.utcnow().isoformat() + "Z",
@@ -2635,7 +2643,7 @@ class OpportunityScanner:
                             "ticker": ticker,
                             "event_ticker": window["event_ticker"],
                             "asset": asset,
-                            "rejection_reason": f"edge {edge:.4f} < min {MIN_EDGE_PCT / 100.0:.4f}",
+                            "rejection_reason": f"net_edge {fee_adjusted_edge:.4f} < min {MIN_EDGE_PCT / 100.0:.4f} (gross {edge:.4f}, fee {est_fee_1c}c)",
                             "spot_price": spot,
                             "threshold": threshold,
                             "volatility": blended_rv,
@@ -2643,12 +2651,13 @@ class OpportunityScanner:
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": round(final_prob, 6),
                             "edge": round(edge, 6),
+                            "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                             "ofa_adjustment": round(ofa_adjustment, 6),
                         })
                         self._state.insert_evaluated_opportunity(
                             ticker, window["event_ticker"], asset,
                             "insufficient_edge",
-                            rejection_reason=f"edge {edge:.4f} < min",
+                            rejection_reason=f"net_edge {fee_adjusted_edge:.4f} < min",
                             spot_price=spot, threshold=threshold,
                             volatility=blended_rv, market_price=best_ask,
                             seconds_to_close=seconds_remaining,
@@ -3957,14 +3966,16 @@ class SettlementTracker:
         # If we never had a market price (pre-filter rejection), skip P&L calc
         if entry_price is None:
             would_have_profit = None
+            assumed_fee = 0
             counterfactual_outcome = "unknown_no_price"
         else:
-            # Counterfactual: bought 1 YES contract at entry_price
+            # Counterfactual: bought 1 YES contract at entry_price (include taker fee)
+            assumed_fee = calculate_taker_fee(1, int(entry_price))
             if result in ("yes", "all_yes"):
-                would_have_profit = 100 - entry_price  # cents
+                would_have_profit = (100 - entry_price) - assumed_fee  # cents
                 counterfactual_outcome = "would_have_won"
             elif result in ("no", "all_no"):
-                would_have_profit = -entry_price  # cents
+                would_have_profit = -(entry_price + assumed_fee)  # cents
                 counterfactual_outcome = "would_have_lost"
             else:
                 would_have_profit = None
@@ -3980,6 +3991,7 @@ class SettlementTracker:
             "entry_price_if_traded": entry_price,
             "counterfactual_outcome": counterfactual_outcome,
             "would_have_profit_cents": would_have_profit,
+            "assumed_fee_cents": assumed_fee,
             "assumed_contracts": 1,
             "z_score": row["z_score"],
             "spot_price": row["spot_price"],
@@ -4023,16 +4035,20 @@ class SettlementTracker:
                 entry_price = row["market_price"]
                 if entry_price is None:
                     would_have_profit = None
+                    assumed_fee = 0
                     counterfactual_outcome = "unknown_no_price"
-                elif result in ("yes", "all_yes"):
-                    would_have_profit = 100 - entry_price
-                    counterfactual_outcome = "would_have_won"
-                elif result in ("no", "all_no"):
-                    would_have_profit = -entry_price
-                    counterfactual_outcome = "would_have_lost"
                 else:
-                    would_have_profit = None
-                    counterfactual_outcome = f"unknown_result_{result}"
+                    assumed_fee = calculate_taker_fee(1, int(entry_price))
+                    if result in ("yes", "all_yes"):
+                        would_have_profit = (100 - entry_price) - assumed_fee
+                        counterfactual_outcome = "would_have_won"
+                    elif result in ("no", "all_no"):
+                        would_have_profit = -(entry_price + assumed_fee)
+                        counterfactual_outcome = "would_have_lost"
+                    else:
+                        would_have_profit = None
+                        assumed_fee = 0
+                        counterfactual_outcome = f"unknown_result_{result}"
 
                 self._logger.log_rejection({
                     "type": "evaluated_settlement",
@@ -4045,6 +4061,7 @@ class SettlementTracker:
                     "entry_price_if_traded": entry_price,
                     "counterfactual_outcome": counterfactual_outcome,
                     "would_have_profit_cents": would_have_profit,
+                    "assumed_fee_cents": assumed_fee,
                     "assumed_contracts": 1,
                     "calibrated_prob": row.get("calibrated_prob"),
                     "edge": row.get("edge"),
