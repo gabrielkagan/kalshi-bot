@@ -70,8 +70,6 @@ jobs:
             -V geometry:margin=1in
             -V fontsize=11pt
             -V documentclass=article
-            -V mainfont="DejaVu Serif"
-            -V monofont="DejaVu Sans Mono"
             --metadata title="Kalshi Crypto Trading Bot — Technical Whitepaper"
 
       - name: Commit PDF
