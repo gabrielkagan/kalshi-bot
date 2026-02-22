@@ -56,6 +56,9 @@ TRADE_JOURNAL = "trade_journal.jsonl"
 SETTLEMENT_JOURNAL = "settlement_journal.jsonl"
 ORDER_JOURNAL = "order_journal.jsonl"
 REJECTION_JOURNAL = "rejection_journal.jsonl"
+OPPORTUNITY_JOURNAL = "opportunity_journal.jsonl"
+EXECUTION_JOURNAL = "execution_journal.jsonl"
+PERFORMANCE_JOURNAL = "performance_journal.jsonl"
 
 # ─── Loop Timing ─────────────────────────────────────────────────────────────
 SCAN_INTERVAL_SECONDS = 1.0
@@ -630,6 +633,15 @@ class Logger:
     def log_rejection(self, data: Dict):
         self._write_entry(REJECTION_JOURNAL, {"type": "rejection", **data})
 
+    def log_opportunity(self, data: Dict):
+        self._write_entry(OPPORTUNITY_JOURNAL, {"type": "opportunity", **data})
+
+    def log_execution(self, data: Dict):
+        self._write_entry(EXECUTION_JOURNAL, {"type": "execution", **data})
+
+    def log_performance(self, data: Dict):
+        self._write_entry(PERFORMANCE_JOURNAL, {"type": "performance", **data})
+
     def log_fill(self, fill: Dict) -> bool:
         """Log a fill, deduplicating by fill_id. Returns True if new."""
         fill_id = fill.get("fill_id", "")
@@ -749,6 +761,31 @@ class StateManager:
 
             CREATE INDEX IF NOT EXISTS idx_rejected_status
                 ON rejected_opportunities(status);
+
+            CREATE TABLE IF NOT EXISTS evaluated_opportunities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                event_ticker TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                filter_stage TEXT NOT NULL,
+                rejection_reason TEXT,
+                evaluation_time TEXT NOT NULL,
+                spot_price REAL,
+                threshold REAL,
+                volatility REAL,
+                market_price INTEGER,
+                seconds_to_close REAL,
+                calibrated_prob REAL,
+                edge REAL,
+                ofa_adjustment REAL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                market_result TEXT,
+                counterfactual_pnl INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_eval_opp_status
+                ON evaluated_opportunities(status);
+            CREATE INDEX IF NOT EXISTS idx_eval_opp_ticker
+                ON evaluated_opportunities(ticker);
         """)
         self.conn.commit()
 
@@ -973,6 +1010,55 @@ class StateManager:
         self.conn.execute(
             "UPDATE rejected_opportunities SET status='settled' WHERE ticker=?",
             (ticker,)
+        )
+        self.conn.commit()
+
+    # ── Evaluated Opportunities ────────────────────────────────────────
+
+    def insert_evaluated_opportunity(self, ticker: str, event_ticker: str,
+                                     asset: str, filter_stage: str,
+                                     rejection_reason: Optional[str] = None,
+                                     spot_price: Optional[float] = None,
+                                     threshold: Optional[float] = None,
+                                     volatility: Optional[float] = None,
+                                     market_price: Optional[int] = None,
+                                     seconds_to_close: Optional[float] = None,
+                                     calibrated_prob: Optional[float] = None,
+                                     edge: Optional[float] = None,
+                                     ofa_adjustment: Optional[float] = None):
+        """Insert an evaluated opportunity for settlement tracking."""
+        now = datetime.datetime.utcnow().isoformat() + "Z"
+        try:
+            self.conn.execute("""
+                INSERT INTO evaluated_opportunities
+                    (ticker, event_ticker, asset, filter_stage, rejection_reason,
+                     evaluation_time, spot_price, threshold, volatility,
+                     market_price, seconds_to_close, calibrated_prob,
+                     edge, ofa_adjustment, status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
+                  now, spot_price, threshold, volatility, market_price,
+                  seconds_to_close, calibrated_prob, edge, ofa_adjustment,
+                  "pending"))
+            self.conn.commit()
+        except Exception as e:
+            logging.debug(f"insert_evaluated_opportunity failed: {e}")
+
+    def get_unsettled_evaluated_opportunities(self) -> List[Dict]:
+        """Return evaluated opportunities with status='pending' and a market_price."""
+        rows = self.conn.execute(
+            "SELECT * FROM evaluated_opportunities WHERE status='pending' AND market_price IS NOT NULL"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_evaluated_opportunity_settled(self, opp_id: int,
+                                             market_result: Optional[str] = None,
+                                             counterfactual_pnl: Optional[int] = None):
+        """Set status='settled' for an evaluated opportunity by id."""
+        self.conn.execute(
+            "UPDATE evaluated_opportunities SET status='settled', "
+            "market_result=?, counterfactual_pnl=? WHERE id=?",
+            (market_result, counterfactual_pnl, opp_id)
         )
         self.conn.commit()
 
@@ -2271,6 +2357,22 @@ class OpportunityScanner:
         self._ob_cache: Dict[str, Tuple[Optional[Dict], float]] = {}
         # Balance cache: (balance_cents, fetch_time)
         self._balance_cache: Tuple[Optional[int], float] = (None, 0.0)
+        # Scan stats from last scan() call
+        self._last_scan_stats: Optional[Dict] = None
+        # Session-level counters for dashboard
+        self._session_strategy_counts: Dict[str, int] = {
+            STRATEGY_WAIT: 0, STRATEGY_MAKER_PATIENT: 0,
+            STRATEGY_MAKER_AGGRESSIVE: 0, STRATEGY_TAKER_NOW: 0,
+            STRATEGY_PANIC_CAPTURE: 0,
+        }
+        self._session_asset_perf: Dict[str, Dict[str, int]] = {
+            a: {"opportunities_found": 0, "times_selected": 0, "times_rejected": 0}
+            for a in ASSETS
+        }
+        self._session_total_scanned: int = 0
+        self._session_total_candidates: int = 0
+        self._last_opportunity_ts: Optional[str] = None
+        self._recent_opportunities: deque = deque(maxlen=20)
 
     # ── Public entry point ────────────────────────────────────────────────
 
@@ -2279,6 +2381,12 @@ class OpportunityScanner:
         now = time.time()
         ob_fetches_this_tick = 0
         candidates: List[Dict] = []
+        scan_stats: Dict[str, Dict[str, int]] = {
+            a: {"evaluated": 0, "low_prob": 0, "no_orderbook": 0, "no_best_ask": 0,
+                "price_out_of_range": 0, "insufficient_edge": 0, "zero_sizing": 0,
+                "strategy_wait": 0, "candidates": 0}
+            for a in ASSETS
+        }
 
         # 1. Filter windows by time range
         time_ok_windows = [
@@ -2324,6 +2432,9 @@ class OpportunityScanner:
                 if threshold is None:
                     continue
 
+                scan_stats[asset]["evaluated"] += 1
+                self._session_total_scanned += 1
+
                 # Pre-filter: compute probability without market price
                 prob_result = ProbabilityEngine.compute(
                     spot, threshold, seconds_remaining, blended_rv
@@ -2360,6 +2471,22 @@ class OpportunityScanner:
                 # Skip if calibrated prob too low to ever produce an edge
                 min_prob_needed = (MIN_ENTRY_PRICE + MIN_EDGE_PCT) / 100.0
                 if cal_prob < min_prob_needed:
+                    scan_stats[asset]["low_prob"] += 1
+                    try:
+                        self._logger.log_opportunity({
+                            "filter_stage": "low_probability",
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "rejection_reason": f"cal_prob {cal_prob:.4f} < min_needed {min_prob_needed:.4f}",
+                            "spot_price": spot,
+                            "threshold": threshold,
+                            "volatility": blended_rv,
+                            "seconds_to_close": round(seconds_remaining, 1),
+                            "calibrated_prob": round(cal_prob, 6),
+                        })
+                    except Exception:
+                        pass
                     continue
 
                 # Fetch orderbook (cached, rate-limited)
@@ -2367,14 +2494,79 @@ class OpportunityScanner:
                 if was_fresh:
                     ob_fetches_this_tick += 1
                 if ob_data is None:
+                    scan_stats[asset]["no_orderbook"] += 1
+                    try:
+                        self._logger.log_opportunity({
+                            "filter_stage": "no_orderbook",
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "rejection_reason": "orderbook data unavailable",
+                            "spot_price": spot,
+                            "threshold": threshold,
+                            "volatility": blended_rv,
+                            "seconds_to_close": round(seconds_remaining, 1),
+                            "calibrated_prob": round(cal_prob, 6),
+                        })
+                    except Exception:
+                        pass
                     continue
 
                 best_ask = self._best_yes_ask_cents(ob_data)
                 if best_ask is None:
+                    scan_stats[asset]["no_best_ask"] += 1
+                    try:
+                        self._logger.log_opportunity({
+                            "filter_stage": "no_best_ask",
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "rejection_reason": "no best ask in orderbook",
+                            "spot_price": spot,
+                            "threshold": threshold,
+                            "volatility": blended_rv,
+                            "seconds_to_close": round(seconds_remaining, 1),
+                            "calibrated_prob": round(cal_prob, 6),
+                        })
+                    except Exception:
+                        pass
                     continue
 
                 # Filter: ask must be in entry price range
                 if not (MIN_ENTRY_PRICE <= best_ask <= MAX_ENTRY_PRICE):
+                    scan_stats[asset]["price_out_of_range"] += 1
+                    self._recent_opportunities.append({
+                        "ticker": ticker, "asset": asset,
+                        "seconds_to_close": round(seconds_remaining, 1),
+                        "best_ask": best_ask, "edge_bps": None,
+                        "chosen_strategy": None,
+                        "rejection_reason": "price_out_of_range",
+                        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                    })
+                    try:
+                        self._logger.log_opportunity({
+                            "filter_stage": "price_out_of_range",
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "rejection_reason": f"best_ask {best_ask}¢ outside [{MIN_ENTRY_PRICE}, {MAX_ENTRY_PRICE}]",
+                            "spot_price": spot,
+                            "threshold": threshold,
+                            "volatility": blended_rv,
+                            "market_price": best_ask,
+                            "seconds_to_close": round(seconds_remaining, 1),
+                            "calibrated_prob": round(cal_prob, 6),
+                        })
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset,
+                            "price_out_of_range",
+                            rejection_reason=f"best_ask {best_ask}¢ outside range",
+                            spot_price=spot, threshold=threshold,
+                            volatility=blended_rv, market_price=best_ask,
+                            seconds_to_close=seconds_remaining,
+                            calibrated_prob=cal_prob)
+                    except Exception:
+                        pass
                     continue
 
                 # Re-run probability with market price for sanity check
@@ -2427,6 +2619,43 @@ class OpportunityScanner:
 
                 # Filter: edge must meet minimum
                 if edge < MIN_EDGE_PCT / 100.0:
+                    scan_stats[asset]["insufficient_edge"] += 1
+                    self._recent_opportunities.append({
+                        "ticker": ticker, "asset": asset,
+                        "seconds_to_close": round(seconds_remaining, 1),
+                        "best_ask": best_ask,
+                        "edge_bps": round(edge * 10000),
+                        "chosen_strategy": None,
+                        "rejection_reason": "insufficient_edge",
+                        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                    })
+                    try:
+                        self._logger.log_opportunity({
+                            "filter_stage": "insufficient_edge",
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "rejection_reason": f"edge {edge:.4f} < min {MIN_EDGE_PCT / 100.0:.4f}",
+                            "spot_price": spot,
+                            "threshold": threshold,
+                            "volatility": blended_rv,
+                            "market_price": best_ask,
+                            "seconds_to_close": round(seconds_remaining, 1),
+                            "calibrated_prob": round(final_prob, 6),
+                            "edge": round(edge, 6),
+                            "ofa_adjustment": round(ofa_adjustment, 6),
+                        })
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset,
+                            "insufficient_edge",
+                            rejection_reason=f"edge {edge:.4f} < min",
+                            spot_price=spot, threshold=threshold,
+                            volatility=blended_rv, market_price=best_ask,
+                            seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge,
+                            ofa_adjustment=ofa_adjustment)
+                    except Exception:
+                        pass
                     continue
 
                 # Compute position size via Kelly criterion
@@ -2435,6 +2664,43 @@ class OpportunityScanner:
                     continue
                 sizing = self._sizer.compute(final_prob, best_ask, balance)
                 if sizing["contracts"] <= 0:
+                    scan_stats[asset]["zero_sizing"] += 1
+                    self._recent_opportunities.append({
+                        "ticker": ticker, "asset": asset,
+                        "seconds_to_close": round(seconds_remaining, 1),
+                        "best_ask": best_ask,
+                        "edge_bps": round(edge * 10000),
+                        "chosen_strategy": None,
+                        "rejection_reason": "zero_sizing",
+                        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                    })
+                    try:
+                        self._logger.log_opportunity({
+                            "filter_stage": "zero_sizing",
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "rejection_reason": "position sizing yielded 0 contracts",
+                            "spot_price": spot,
+                            "threshold": threshold,
+                            "volatility": blended_rv,
+                            "market_price": best_ask,
+                            "seconds_to_close": round(seconds_remaining, 1),
+                            "calibrated_prob": round(final_prob, 6),
+                            "edge": round(edge, 6),
+                            "ofa_adjustment": round(ofa_adjustment, 6),
+                        })
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset,
+                            "zero_sizing",
+                            rejection_reason="0 contracts from sizing",
+                            spot_price=spot, threshold=threshold,
+                            volatility=blended_rv, market_price=best_ask,
+                            seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge,
+                            ofa_adjustment=ofa_adjustment)
+                    except Exception:
+                        pass
                     continue
 
                 # Compute orderbook depth for strategy engine
@@ -2459,6 +2725,8 @@ class OpportunityScanner:
                 strategy, strategy_scores = evaluate_execution_strategy(
                     strategy_data
                 )
+                if strategy in self._session_strategy_counts:
+                    self._session_strategy_counts[strategy] += 1
 
                 # Log strategy evaluation for every market evaluated
                 self._logger.log_scan({
@@ -2486,7 +2754,79 @@ class OpportunityScanner:
                 })
 
                 if strategy == STRATEGY_WAIT:
+                    scan_stats[asset]["strategy_wait"] += 1
+                    self._recent_opportunities.append({
+                        "ticker": ticker, "asset": asset,
+                        "seconds_to_close": round(seconds_remaining, 1),
+                        "best_ask": best_ask,
+                        "edge_bps": round(edge * 10000),
+                        "chosen_strategy": "WAIT",
+                        "rejection_reason": "strategy_wait",
+                        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                    })
+                    try:
+                        self._logger.log_opportunity({
+                            "filter_stage": "strategy_wait",
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "rejection_reason": "strategy engine returned WAIT",
+                            "spot_price": spot,
+                            "threshold": threshold,
+                            "volatility": blended_rv,
+                            "market_price": best_ask,
+                            "seconds_to_close": round(seconds_remaining, 1),
+                            "calibrated_prob": round(final_prob, 6),
+                            "edge": round(edge, 6),
+                            "ofa_adjustment": round(ofa_adjustment, 6),
+                            "composite_score": strategy_scores.get("composite"),
+                        })
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset,
+                            "strategy_wait",
+                            rejection_reason="WAIT strategy",
+                            spot_price=spot, threshold=threshold,
+                            volatility=blended_rv, market_price=best_ask,
+                            seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge,
+                            ofa_adjustment=ofa_adjustment)
+                    except Exception:
+                        pass
                     continue
+
+                scan_stats[asset]["candidates"] += 1
+                self._session_total_candidates += 1
+                self._session_asset_perf[asset]["opportunities_found"] += 1
+                self._last_opportunity_ts = datetime.datetime.utcnow().isoformat() + "Z"
+                self._recent_opportunities.append({
+                    "ticker": ticker,
+                    "asset": asset,
+                    "seconds_to_close": round(seconds_remaining, 1),
+                    "best_ask": best_ask,
+                    "edge_bps": round(edge * 10000),
+                    "chosen_strategy": strategy,
+                    "rejection_reason": None,
+                    "ts": self._last_opportunity_ts,
+                })
+                try:
+                    self._logger.log_opportunity({
+                        "filter_stage": "candidate",
+                        "ticker": ticker,
+                        "event_ticker": window["event_ticker"],
+                        "asset": asset,
+                        "spot_price": spot,
+                        "threshold": threshold,
+                        "volatility": blended_rv,
+                        "market_price": best_ask,
+                        "seconds_to_close": round(seconds_remaining, 1),
+                        "calibrated_prob": round(final_prob, 6),
+                        "edge": round(edge, 6),
+                        "position_size": sizing["contracts"],
+                        "strategy": strategy,
+                        "ofa_adjustment": round(ofa_adjustment, 6),
+                    })
+                except Exception:
+                    pass
 
                 candidates.append({
                     "ticker": ticker,
@@ -2524,6 +2864,7 @@ class OpportunityScanner:
                 break
 
         if not candidates:
+            self._last_scan_stats = scan_stats
             return None
 
         # ── Single-asset-per-timeslot: pick highest edge per 15-min window ──
@@ -2539,9 +2880,12 @@ class OpportunityScanner:
             slot_candidates.sort(key=lambda c: c["edge"], reverse=True)
             winner = slot_candidates[0]
             filtered.append(winner)
+            self._session_asset_perf[winner["asset"]]["times_selected"] += 1
 
             # Log which assets were rejected in favor of the winner
             if len(slot_candidates) > 1:
+                for c in slot_candidates[1:]:
+                    self._session_asset_perf[c["asset"]]["times_rejected"] += 1
                 rejected = [
                     {"asset": c["asset"], "ticker": c["ticker"],
                      "edge": round(c["edge"], 6), "calibrated_prob": c["calibrated_prob"]}
@@ -2556,6 +2900,34 @@ class OpportunityScanner:
                     "rejected_assets": rejected,
                     "reason": "single best asset per window (correlation-adjusted)",
                 })
+                for c in slot_candidates[1:]:
+                    try:
+                        self._logger.log_opportunity({
+                            "filter_stage": "single_asset_selection",
+                            "ticker": c["ticker"],
+                            "event_ticker": c["event_ticker"],
+                            "asset": c["asset"],
+                            "rejection_reason": f"lost to {winner['asset']} (edge {winner['edge']:.4f} vs {c['edge']:.4f})",
+                            "spot_price": c["spot"],
+                            "threshold": c["threshold"],
+                            "volatility": c["blended_rv"],
+                            "market_price": c["best_yes_ask"],
+                            "seconds_to_close": c["seconds_to_close"],
+                            "calibrated_prob": c["calibrated_prob"],
+                            "edge": c["edge"],
+                            "ofa_adjustment": c.get("ofa_adjustment"),
+                        })
+                        self._state.insert_evaluated_opportunity(
+                            c["ticker"], c["event_ticker"], c["asset"],
+                            "single_asset_selection",
+                            rejection_reason=f"lost to {winner['asset']}",
+                            spot_price=c["spot"], threshold=c["threshold"],
+                            volatility=c["blended_rv"], market_price=c["best_yes_ask"],
+                            seconds_to_close=c["seconds_to_close"],
+                            calibrated_prob=c["calibrated_prob"], edge=c["edge"],
+                            ofa_adjustment=c.get("ofa_adjustment"))
+                    except Exception:
+                        pass
 
         best = max(filtered, key=lambda c: c["edge"])
         self._logger.log_scan({
@@ -2565,6 +2937,7 @@ class OpportunityScanner:
             "chosen_strategy": best.get("strategy"),
             **{k: v for k, v in best.items() if k not in ("strategy_scores", "ob_snapshot")},
         })
+        self._last_scan_stats = scan_stats
         return best
 
     # ── Threshold parsing ─────────────────────────────────────────────────
@@ -2773,6 +3146,35 @@ class OrderExecutor:
                 f"at {candidate.get('best_yes_ask', '?')}¢ for "
                 f"{candidate.get('position_size', '?')} contracts"
             )
+            try:
+                self._logger.log_execution({
+                    "action": "observation_would_trade",
+                    "ticker": candidate["ticker"],
+                    "asset": candidate["asset"],
+                    "event_ticker": candidate["event_ticker"],
+                    "best_yes_ask": candidate.get("best_yes_ask"),
+                    "position_size": candidate.get("position_size"),
+                    "edge": candidate.get("edge"),
+                    "calibrated_prob": candidate.get("calibrated_prob"),
+                    "strategy": candidate.get("strategy"),
+                    "seconds_to_close": candidate.get("seconds_to_close"),
+                    "vol_regime": candidate.get("vol_regime"),
+                    "ofa_adjustment": candidate.get("ofa_adjustment"),
+                    "balance_at_scan": candidate.get("balance_at_scan"),
+                })
+                self._state.insert_evaluated_opportunity(
+                    candidate["ticker"], candidate["event_ticker"],
+                    candidate["asset"], "observation_trade",
+                    spot_price=candidate.get("spot"),
+                    threshold=candidate.get("threshold"),
+                    volatility=candidate.get("blended_rv"),
+                    market_price=candidate.get("best_yes_ask"),
+                    seconds_to_close=candidate.get("seconds_to_close"),
+                    calibrated_prob=candidate.get("calibrated_prob"),
+                    edge=candidate.get("edge"),
+                    ofa_adjustment=candidate.get("ofa_adjustment"))
+            except Exception:
+                pass
             return None
 
         self._submit_maker(candidate)
@@ -3389,6 +3791,7 @@ class SettlementTracker:
         self._last_poll_time = now
         self._poll()
         self._poll_rejections()
+        self._poll_evaluated_opportunities()
 
     # ── Core poll ────────────────────────────────────────────────────────
 
@@ -3592,6 +3995,71 @@ class SettlementTracker:
             f"(result={result}, would_have_profit={would_have_profit}¢)"
         )
 
+    # ── Evaluated Opportunity Settlement ──────────────────────────────────
+
+    def _poll_evaluated_opportunities(self):
+        """Check if any evaluated opportunities have settled for counterfactual tracking."""
+        try:
+            rows = self._state.get_unsettled_evaluated_opportunities()
+        except Exception as e:
+            logging.debug(f"get_unsettled_evaluated_opportunities failed: {e}")
+            return
+
+        if not rows:
+            return
+
+        for row in rows:
+            ticker = row["ticker"]
+            opp_id = row["id"]
+            try:
+                resp = self._client.get_market(ticker)
+                if not resp:
+                    continue
+                market = resp.get("market", resp)
+                result = market.get("result", "")
+                if not result:
+                    continue
+
+                entry_price = row["market_price"]
+                if entry_price is None:
+                    would_have_profit = None
+                    counterfactual_outcome = "unknown_no_price"
+                elif result in ("yes", "all_yes"):
+                    would_have_profit = 100 - entry_price
+                    counterfactual_outcome = "would_have_won"
+                elif result in ("no", "all_no"):
+                    would_have_profit = -entry_price
+                    counterfactual_outcome = "would_have_lost"
+                else:
+                    would_have_profit = None
+                    counterfactual_outcome = f"unknown_result_{result}"
+
+                self._logger.log_rejection({
+                    "type": "evaluated_settlement",
+                    "ticker": ticker,
+                    "event_ticker": row["event_ticker"],
+                    "asset": row["asset"],
+                    "filter_stage": row["filter_stage"],
+                    "rejection_reason": row.get("rejection_reason"),
+                    "market_result": result,
+                    "entry_price_if_traded": entry_price,
+                    "counterfactual_outcome": counterfactual_outcome,
+                    "would_have_profit_cents": would_have_profit,
+                    "assumed_contracts": 1,
+                    "calibrated_prob": row.get("calibrated_prob"),
+                    "edge": row.get("edge"),
+                })
+
+                self._state.mark_evaluated_opportunity_settled(
+                    opp_id, market_result=result,
+                    counterfactual_pnl=would_have_profit)
+                logging.info(
+                    f"Evaluated opp settled: {ticker} ({row['filter_stage']}) "
+                    f"-> {counterfactual_outcome} (profit={would_have_profit}¢)"
+                )
+            except Exception as e:
+                logging.debug(f"Evaluated opp settlement check failed for {ticker}: {e}")
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  Market Discovery
@@ -3679,11 +4147,11 @@ class MainLoop:
     """Continuous observation loop. Scans active windows every second."""
 
     def __init__(self):
-        api_key = os.environ.get("KALSHI_API_KEY", "")
+        api_key = os.environ.get("KALSHI_API_KEY") or os.environ.get("KALSHI_API_KEY_ID", "")
         private_key_path = os.environ.get("KALSHI_PRIVATE_KEY_PATH", "")
         if not api_key or not private_key_path:
             logging.critical(
-                "KALSHI_API_KEY and KALSHI_PRIVATE_KEY_PATH must be set in environment"
+                "KALSHI_API_KEY (or KALSHI_API_KEY_ID) and KALSHI_PRIVATE_KEY_PATH must be set"
             )
             sys.exit(1)
 
@@ -3711,6 +4179,7 @@ class MainLoop:
         self._last_error: Optional[str] = None
         self._last_error_time: float = 0.0
         self._start_time: float = time.time()
+        self._last_summary_date: Optional[str] = None
 
     # ── Signal Handling ───────────────────────────────────────────────────
 
@@ -3782,6 +4251,93 @@ class MainLoop:
         self._last_market_refresh = time.time()
         logging.debug(f"Refreshed: {len(self._active_windows)} active windows")
 
+    # ── Daily Summary ─────────────────────────────────────────────────────
+
+    def _log_daily_summary(self):
+        """Log aggregated daily performance metrics on date change."""
+        try:
+            today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+            if self._last_summary_date is None:
+                self._last_summary_date = today
+                return
+            if today == self._last_summary_date:
+                return
+
+            yesterday = self._last_summary_date
+            self._last_summary_date = today
+
+            # Aggregate settled trades for yesterday
+            rows = self.state.conn.execute(
+                "SELECT * FROM settled_trades WHERE settled_at LIKE ?",
+                (yesterday + "%",)
+            ).fetchall()
+
+            total_pnl = 0
+            total_fees = 0
+            wins = 0
+            losses = 0
+            per_asset: Dict[str, Dict] = {}
+
+            for row in rows:
+                r = dict(row)
+                pnl = r["pnl_cents"]
+                total_pnl += pnl
+                total_fees += r["fee_cents"]
+                if pnl > 0:
+                    wins += 1
+                else:
+                    losses += 1
+
+                a = r["asset"]
+                if a not in per_asset:
+                    per_asset[a] = {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0}
+                per_asset[a]["trades"] += 1
+                per_asset[a]["pnl_cents"] += pnl
+                if pnl > 0:
+                    per_asset[a]["wins"] += 1
+                else:
+                    per_asset[a]["losses"] += 1
+
+            # Rejection counts for yesterday
+            rej_rows = self.state.conn.execute(
+                "SELECT rejection_reason, COUNT(*) as cnt FROM rejected_opportunities "
+                "WHERE rejection_time LIKE ? GROUP BY rejection_reason",
+                (yesterday + "%",)
+            ).fetchall()
+            rejection_counts = {r["rejection_reason"]: r["cnt"] for r in rej_rows}
+
+            # Evaluated opportunity outcomes for yesterday
+            eval_rows = self.state.conn.execute(
+                "SELECT filter_stage, status, COUNT(*) as cnt FROM evaluated_opportunities "
+                "WHERE evaluation_time LIKE ? GROUP BY filter_stage, status",
+                (yesterday + "%",)
+            ).fetchall()
+            eval_counts = {}
+            for r in eval_rows:
+                stage = r["filter_stage"]
+                if stage not in eval_counts:
+                    eval_counts[stage] = {}
+                eval_counts[stage][r["status"]] = r["cnt"]
+
+            self.logger.log_performance({
+                "summary_type": "daily",
+                "date": yesterday,
+                "total_trades": wins + losses,
+                "wins": wins,
+                "losses": losses,
+                "total_pnl_cents": total_pnl,
+                "total_fees_cents": total_fees,
+                "per_asset": per_asset,
+                "rejection_counts": rejection_counts,
+                "evaluated_opportunity_counts": eval_counts,
+            })
+            logging.info(
+                f"Daily summary ({yesterday}): {wins}W/{losses}L, "
+                f"PnL={total_pnl}¢, fees={total_fees}¢"
+            )
+        except Exception as e:
+            logging.debug(f"_log_daily_summary failed: {e}")
+
     # ── Main Tick ─────────────────────────────────────────────────────────
 
     def _tick(self):
@@ -3793,6 +4349,7 @@ class MainLoop:
 
         # Check settlements periodically (self-throttled)
         self.tracker.tick()
+        self._log_daily_summary()
 
         # Recompute seconds_to_close and log each window
         utc_now = datetime.datetime.utcnow()
@@ -3854,6 +4411,15 @@ class MainLoop:
         # Run opportunity scanner (only if no active order)
         if not self.executor.has_active_order:
             candidate = self.scanner.scan(self._active_windows)
+            if self.scanner._last_scan_stats:
+                try:
+                    self.logger.log_scan({
+                        "type": "scan_summary",
+                        "per_asset": self.scanner._last_scan_stats,
+                        "had_candidate": candidate is not None,
+                    })
+                except Exception:
+                    pass
             if candidate:
                 logging.info(
                     f"Opportunity: {candidate['ticker']} "

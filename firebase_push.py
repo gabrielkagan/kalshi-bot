@@ -173,6 +173,94 @@ class FirebasePusher:
 
         snap["last_error_message"] = getattr(self._ml, "_last_error", None) or ""
 
+        # ── recent_opportunities (last 20 evaluated with market data) ────
+        try:
+            scanner = self._ml.scanner
+            snap["recent_opportunities"] = list(scanner._recent_opportunities)
+        except Exception:
+            snap["recent_opportunities"] = []
+
+        # ── strategy_breakdown (session counts by strategy) ──────────────
+        try:
+            snap["strategy_breakdown"] = dict(self._ml.scanner._session_strategy_counts)
+        except Exception:
+            snap["strategy_breakdown"] = {}
+
+        # ── asset_performance (per-asset selection stats) ────────────────
+        try:
+            perf = {}
+            for asset in ASSETS:
+                ap = self._ml.scanner._session_asset_perf[asset]
+                found = ap["opportunities_found"]
+                selected = ap["times_selected"]
+                rejected = ap["times_rejected"]
+                total = selected + rejected
+                perf[asset] = {
+                    "opportunities_found": found,
+                    "times_selected": selected,
+                    "times_rejected": rejected,
+                    "selection_rate": round(selected / total, 4) if total > 0 else 0.0,
+                }
+            snap["asset_performance"] = perf
+        except Exception:
+            snap["asset_performance"] = {}
+
+        # ── session_stats ────────────────────────────────────────────────
+        try:
+            uptime_min = round((time.time() - self._ml._start_time) / 60, 1)
+            total_scanned = self._ml.scanner._session_total_scanned
+            snap["session_stats"] = {
+                "total_opportunities_found": self._ml.scanner._session_total_candidates,
+                "total_markets_scanned": total_scanned,
+                "evaluation_rate": round(total_scanned / max(uptime_min, 0.1), 1),
+                "uptime_minutes": uptime_min,
+                "last_opportunity_timestamp": self._ml.scanner._last_opportunity_ts,
+            }
+        except Exception:
+            snap["session_stats"] = {}
+
+        # ── simulated_performance (observation mode counterfactuals) ─────
+        try:
+            conn = self._ml.state.conn
+            sim_count = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
+                "WHERE filter_stage = 'observation_trade'"
+            ).fetchone()["cnt"]
+
+            row = conn.execute(
+                "SELECT "
+                "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins, "
+                "  COUNT(CASE WHEN counterfactual_pnl <= 0 THEN 1 END) AS losses, "
+                "  COALESCE(SUM(counterfactual_pnl), 0) AS pnl "
+                "FROM evaluated_opportunities "
+                "WHERE filter_stage = 'observation_trade' AND status = 'settled'"
+            ).fetchone()
+
+            snap["simulated_performance"] = {
+                "simulated_trades_count": sim_count,
+                "simulated_wins": row["wins"],
+                "simulated_losses": row["losses"],
+                "simulated_pnl_cents": row["pnl"],
+            }
+        except Exception:
+            snap["simulated_performance"] = {
+                "simulated_trades_count": 0,
+                "simulated_wins": 0,
+                "simulated_losses": 0,
+                "simulated_pnl_cents": 0,
+            }
+
+        # ── rejection_summary (counts by reason) ────────────────────────
+        try:
+            conn = self._ml.state.conn
+            rej_rows = conn.execute(
+                "SELECT rejection_reason, COUNT(*) AS cnt "
+                "FROM rejected_opportunities GROUP BY rejection_reason"
+            ).fetchall()
+            snap["rejection_summary"] = {r["rejection_reason"]: r["cnt"] for r in rej_rows}
+        except Exception:
+            snap["rejection_summary"] = {}
+
         return snap
 
     def _push(self, snapshot: Dict[str, Any]):
