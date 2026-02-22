@@ -520,9 +520,17 @@ class KalshiClient:
             )
             if resp.status_code == 429:
                 retry_after = float(resp.headers.get("Retry-After", "1"))
-                logging.warning(f"Rate limited, sleeping {retry_after}s")
+                retries = getattr(self, '_429_retries', 0) + 1
+                if retries > 3:
+                    logging.error(f"Rate limited {retries} times, giving up: {method} {path}")
+                    self._429_retries = 0
+                    return None
+                self._429_retries = retries
+                logging.warning(f"Rate limited, sleeping {retry_after}s (attempt {retries}/3)")
                 time.sleep(retry_after)
-                return self._request(method, path, params, json_body)
+                result = self._request(method, path, params, json_body)
+                self._429_retries = 0
+                return result
             resp.raise_for_status()
             return resp.json() if resp.content else {}
         except requests.exceptions.RequestException as e:
@@ -890,7 +898,7 @@ class StateManager:
 
     def _reconcile_positions(self, client: KalshiClient, now: str):
         api_resp = client.get_positions()
-        if not api_resp or "market_positions" not in api_resp:
+        if not api_resp or not api_resp.get("market_positions"):
             logging.warning("Could not fetch positions for reconciliation")
             return
 
@@ -898,7 +906,7 @@ class StateManager:
         for pos in api_resp["market_positions"]:
             ticker = pos["ticker"]
             api_tickers.add(ticker)
-            position_count = fp_str_to_int(pos.get("position_fp")) or pos.get("position", 0)
+            position_count = fp_str_to_int(pos.get("position_fp")) or (pos.get("position") or 0)
 
             if position_count == 0:
                 self.conn.execute(
@@ -908,7 +916,7 @@ class StateManager:
             side = "yes" if position_count > 0 else "no"
             count = abs(position_count)
             cost_d = pos.get("market_exposure_dollars")
-            cost = dollars_str_to_cents(cost_d) if cost_d else pos.get("market_exposure", 0)
+            cost = dollars_str_to_cents(cost_d) if cost_d else (pos.get("market_exposure") or 0)
             avg_price = cost // count if count else 0
 
             existing = self.conn.execute(
@@ -945,7 +953,7 @@ class StateManager:
 
     def _reconcile_orders(self, client: KalshiClient, now: str):
         api_resp = client.get_orders(status="resting")
-        if not api_resp or "orders" not in api_resp:
+        if not api_resp or not api_resp.get("orders"):
             logging.warning("Could not fetch orders for reconciliation")
             return
 
@@ -973,7 +981,7 @@ class StateManager:
             else:
                 price = order.get("yes_price", 0) or order.get("no_price", 0)
 
-            remaining = fp_str_to_int(order.get("remaining_count_fp")) or order.get("remaining_count", 0)
+            remaining = fp_str_to_int(order.get("remaining_count_fp")) or (order.get("remaining_count") or 0)
 
             self.conn.execute("""
                 INSERT INTO pending_orders (order_id, client_order_id, ticker,
@@ -1034,7 +1042,7 @@ class StateManager:
 
         result = settlement.get("market_result", "")
         rev_d = settlement.get("revenue_dollars")
-        revenue = dollars_str_to_cents(rev_d) if rev_d else settlement.get("revenue", 0)
+        revenue = dollars_str_to_cents(rev_d) if rev_d else (settlement.get("revenue") or 0)
         total_cost = pos["total_cost_cents"]
         pnl = revenue - total_cost
         fee = calculate_taker_fee(pos["count"], pos["avg_price_cents"])
@@ -3418,7 +3426,7 @@ class OpportunityScanner:
         resp = self._client.get_balance()
         if resp is None:
             return cached_balance  # return stale if API fails
-        balance = resp.get("balance", 0)
+        balance = resp.get("balance") or 0
         self._balance_cache = (balance, now)
         return balance
 
@@ -3621,7 +3629,7 @@ class OrderExecutor:
         """Total depth (contracts) across all orderbook levels."""
         total = 0
         for side in ("no", "yes"):
-            for entry in ob_data.get(side, []):
+            for entry in (ob_data.get(side) or []):
                 if isinstance(entry, (list, tuple)) and len(entry) >= 2:
                     total += int(entry[1])
                 elif isinstance(entry, dict):
@@ -3663,7 +3671,7 @@ class OrderExecutor:
             logging.error(f"Panic capture order failed: {ticker}")
             return
 
-        order_id = resp.get("order", {}).get("order_id", client_oid)
+        order_id = (resp.get("order") or {}).get("order_id", client_oid)
         self._state.confirm_order_submitted(client_oid, order_id)
 
         self._active_order = {
@@ -3723,7 +3731,7 @@ class OrderExecutor:
             logging.error(f"Panic capture order failed: {ticker}")
             return
 
-        order_id = resp.get("order", {}).get("order_id", client_oid)
+        order_id = (resp.get("order") or {}).get("order_id", client_oid)
         self._state.confirm_order_submitted(client_oid, order_id)
 
         self._active_order = {
@@ -3767,10 +3775,17 @@ class OrderExecutor:
         self._cancel_active(reason)
 
         # Re-fetch orderbook for current best ask
-        ob_data = self._client.get_orderbook(ticker, depth=5)
-        if ob_data is None:
+        ob_raw = self._client.get_orderbook(ticker, depth=5)
+        if ob_raw is None:
             logging.warning(f"Escalation aborted: orderbook fetch failed for {ticker}")
             return None
+
+        # Unwrap response envelope (same as _get_orderbook_cached)
+        ob_fp = ob_raw.get("orderbook_fp") if ob_raw else None
+        if ob_fp:
+            ob_data = OpportunityScanner._convert_orderbook_fp(ob_fp)
+        else:
+            ob_data = ob_raw.get("orderbook") or ob_raw
 
         best_ask = OpportunityScanner._best_yes_ask_cents(ob_data)
         if best_ask is None:
@@ -3858,7 +3873,7 @@ class OrderExecutor:
             logging.error(f"Maker order submission failed: {ticker}")
             return
 
-        order_id = resp.get("order", {}).get("order_id", client_oid)
+        order_id = (resp.get("order") or {}).get("order_id", client_oid)
         self._state.confirm_order_submitted(client_oid, order_id)
 
         self._active_order = {
@@ -3920,7 +3935,7 @@ class OrderExecutor:
             logging.error(f"Taker order submission failed: {ticker}")
             return None
 
-        order_id = resp.get("order", {}).get("order_id", client_oid)
+        order_id = (resp.get("order") or {}).get("order_id", client_oid)
         self._state.confirm_order_submitted(client_oid, order_id)
 
         order_info = {
@@ -3975,7 +3990,7 @@ class OrderExecutor:
         resp = self._client.get_fills(
             ticker=order["ticker"], min_ts=min_ts
         )
-        if not resp or "fills" not in resp:
+        if not resp or not resp.get("fills"):
             return None
 
         for fill in resp["fills"]:
@@ -3995,9 +4010,9 @@ class OrderExecutor:
         self._state.mark_order_status(order_id, "filled")
 
         # Extract fill details — prefer FP/dollar fields, fall back to legacy
-        fill_count = fp_str_to_int(fill.get("count_fp")) or fill.get("count", order["count"])
+        fill_count = fp_str_to_int(fill.get("count_fp")) or (fill.get("count") or order["count"])
         fill_price_d = fill.get("yes_price_dollars")
-        fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else fill.get("yes_price", order["price_cents"])
+        fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("yes_price") or order["price_cents"])
 
         # Record position in SQLite
         self._state.record_position_from_fill(
@@ -4177,7 +4192,7 @@ class SettlementTracker:
         if processed_any:
             balance_resp = self._client.get_balance()
             if balance_resp:
-                new_balance = balance_resp.get("balance", 0)
+                new_balance = balance_resp.get("balance") or 0
                 logging.info(
                     f"Balance after settlements: ${new_balance / 100:.2f}"
                 )
@@ -4189,7 +4204,7 @@ class SettlementTracker:
         ticker = settlement["ticker"]
         market_result = settlement.get("market_result", "")
         rev_d = settlement.get("revenue_dollars")
-        revenue = dollars_str_to_cents(rev_d) if rev_d else settlement.get("revenue", 0)
+        revenue = dollars_str_to_cents(rev_d) if rev_d else (settlement.get("revenue") or 0)
 
         # Look up position in SQLite
         pos = self._state.conn.execute(
@@ -4459,13 +4474,12 @@ def discover_active_windows(client: KalshiClient) -> List[Dict]:
             with_nested_markets=True,
             limit=100,
         )
-        if not result or "events" not in result:
+        events = result.get("events") if result else None
+        if not events:
             logging.warning(
                 f"Market discovery: {asset} ({series}) — API returned no data"
             )
             continue
-
-        events = result["events"]
         market_count = 0
 
         for event in events:
@@ -4578,7 +4592,7 @@ class MainLoop:
         if balance_resp is None:
             logging.critical("Cannot connect to Kalshi API — check credentials")
             sys.exit(1)
-        balance_cents = balance_resp.get("balance", 0)
+        balance_cents = balance_resp.get("balance") or 0
         self.sizer.starting_balance_cents = balance_cents
         self._peak_balance = balance_cents / 100
         logging.info(f"Connected to Kalshi. Balance: ${balance_cents / 100:.2f}")
@@ -4606,9 +4620,13 @@ class MainLoop:
         self.coinglass.start()
 
         # Start Firebase dashboard push (if configured)
-        from firebase_push import FirebasePusher
-        self.firebase = FirebasePusher(self)
-        self.firebase.start()
+        try:
+            from firebase_push import FirebasePusher
+            self.firebase = FirebasePusher(self)
+            self.firebase.start()
+        except Exception as e:
+            logging.info(f"Firebase dashboard not available: {e}")
+            self.firebase = None
 
         # Initial market scan
         self._refresh_active_windows()
