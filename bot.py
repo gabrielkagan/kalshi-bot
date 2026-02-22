@@ -2496,25 +2496,46 @@ class OpportunityScanner:
                 if was_fresh:
                     ob_fetches_this_tick += 1
                 if ob_data is None:
-                    scan_stats[asset]["no_orderbook"] += 1
-                    try:
-                        self._logger.log_opportunity({
-                            "filter_stage": "no_orderbook",
-                            "ticker": ticker,
-                            "event_ticker": window["event_ticker"],
-                            "asset": asset,
-                            "rejection_reason": "orderbook data unavailable",
-                            "spot_price": spot,
-                            "threshold": threshold,
-                            "volatility": blended_rv,
-                            "seconds_to_close": round(seconds_remaining, 1),
-                            "calibrated_prob": round(cal_prob, 6),
-                        })
-                    except Exception:
-                        pass
-                    continue
+                    # Try NBBO fallback before giving up
+                    mkt_yes_ask = mkt.get("yes_ask")
+                    if mkt_yes_ask and isinstance(mkt_yes_ask, (int, float)) and mkt_yes_ask > 0:
+                        ob_data = {}  # empty dict so downstream code works
+                        logging.info(
+                            "Orderbook unavailable for %s, will use market NBBO yes_ask=%d¢",
+                            ticker, int(mkt_yes_ask),
+                        )
+                    else:
+                        scan_stats[asset]["no_orderbook"] += 1
+                        try:
+                            self._logger.log_opportunity({
+                                "filter_stage": "no_orderbook",
+                                "ticker": ticker,
+                                "event_ticker": window["event_ticker"],
+                                "asset": asset,
+                                "rejection_reason": "orderbook data unavailable and no market NBBO",
+                                "spot_price": spot,
+                                "threshold": threshold,
+                                "volatility": blended_rv,
+                                "seconds_to_close": round(seconds_remaining, 1),
+                                "calibrated_prob": round(cal_prob, 6),
+                                "mkt_yes_ask": mkt_yes_ask,
+                            })
+                        except Exception:
+                            pass
+                        continue
 
                 best_ask = self._best_yes_ask_cents(ob_data)
+                best_ask_source = "orderbook"
+                if best_ask is None:
+                    # Fallback: use market's NBBO yes_ask from events endpoint
+                    mkt_yes_ask = mkt.get("yes_ask")
+                    if mkt_yes_ask and isinstance(mkt_yes_ask, (int, float)) and mkt_yes_ask > 0:
+                        best_ask = int(mkt_yes_ask)
+                        best_ask_source = "market_nbbo"
+                        logging.info(
+                            "Using market NBBO yes_ask=%d¢ for %s (orderbook NO bids empty)",
+                            best_ask, ticker,
+                        )
                 if best_ask is None:
                     scan_stats[asset]["no_best_ask"] += 1
                     try:
@@ -2523,16 +2544,30 @@ class OpportunityScanner:
                             "ticker": ticker,
                             "event_ticker": window["event_ticker"],
                             "asset": asset,
-                            "rejection_reason": "no best ask in orderbook",
+                            "rejection_reason": "no best ask in orderbook or market NBBO",
                             "spot_price": spot,
                             "threshold": threshold,
                             "volatility": blended_rv,
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": round(cal_prob, 6),
+                            "mkt_yes_ask": mkt.get("yes_ask"),
                         })
                     except Exception:
                         pass
                     continue
+
+                # Diagnostic: log when orderbook and market NBBO disagree
+                try:
+                    mkt_yes_ask_raw = mkt.get("yes_ask")
+                    if mkt_yes_ask_raw and best_ask_source == "orderbook":
+                        mkt_nbbo = int(mkt_yes_ask_raw)
+                        if mkt_nbbo != best_ask:
+                            logging.debug(
+                                "NBBO mismatch %s: orderbook=%d¢ market_nbbo=%d¢ (diff=%d¢)",
+                                ticker, best_ask, mkt_nbbo, abs(best_ask - mkt_nbbo),
+                            )
+                except Exception:
+                    pass
 
                 # Filter: ask must be in entry price range
                 if not (MIN_ENTRY_PRICE <= best_ask <= MAX_ENTRY_PRICE):
@@ -2556,6 +2591,7 @@ class OpportunityScanner:
                             "threshold": threshold,
                             "volatility": blended_rv,
                             "market_price": best_ask,
+                            "best_ask_source": best_ask_source,
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": round(cal_prob, 6),
                         })
@@ -2648,6 +2684,7 @@ class OpportunityScanner:
                             "threshold": threshold,
                             "volatility": blended_rv,
                             "market_price": best_ask,
+                            "best_ask_source": best_ask_source,
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": round(final_prob, 6),
                             "edge": round(edge, 6),
@@ -2827,6 +2864,7 @@ class OpportunityScanner:
                         "threshold": threshold,
                         "volatility": blended_rv,
                         "market_price": best_ask,
+                        "best_ask_source": best_ask_source,
                         "seconds_to_close": round(seconds_remaining, 1),
                         "calibrated_prob": round(final_prob, 6),
                         "edge": round(edge, 6),
@@ -2848,6 +2886,7 @@ class OpportunityScanner:
                     "calibrated_prob": round(final_prob, 6),
                     "z_score": z_score,
                     "best_yes_ask": best_ask,
+                    "best_ask_source": best_ask_source,
                     "edge": round(edge, 6),
                     "position_size": sizing["contracts"],
                     "kelly_f": sizing["kelly_f"],
