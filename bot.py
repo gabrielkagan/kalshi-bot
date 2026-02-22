@@ -35,7 +35,7 @@ SERIES_TICKERS = {
     "XRP": "KXXRP15M",
 }
 MIN_ENTRY_PRICE = 85              # cents
-MAX_ENTRY_PRICE = 97              # cents
+MAX_ENTRY_PRICE = 99              # cents
 MAX_CONTRACTS_PER_TRADE = 5
 MAX_RISK_PER_TRADE = 0.03        # 3% of balance
 MIN_SECONDS_BEFORE_CLOSE = 0
