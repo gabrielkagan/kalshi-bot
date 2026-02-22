@@ -12,6 +12,7 @@ import sqlite3
 import math
 import base64
 import datetime
+from datetime import timezone
 import threading
 import asyncio
 import random
@@ -715,7 +716,7 @@ class Logger:
         self._logged_fill_ids: Set[str] = set()
 
     def _write_entry(self, filepath: str, entry: Dict):
-        entry["ts"] = datetime.datetime.utcnow().isoformat() + "Z"
+        entry["ts"] = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
             with open(filepath, "a") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
@@ -989,7 +990,7 @@ class StateManager:
 
     def reconcile_with_api(self, client: KalshiClient):
         """Sync local state with Kalshi API on startup. API always wins."""
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self._reconcile_positions(client, now)
         self._reconcile_orders(client, now)
         self.conn.commit()
@@ -1131,7 +1132,7 @@ class StateManager:
 
     def record_settlement(self, settlement: Dict):
         ticker = settlement["ticker"]
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
         pos = self.conn.execute(
             "SELECT * FROM positions WHERE ticker=?", (ticker,)
@@ -1171,7 +1172,7 @@ class StateManager:
                          seconds_to_close: Optional[float],
                          calibrated_prob: Optional[float]):
         """Insert a rejected opportunity. INSERT OR IGNORE deduplicates by ticker."""
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
             INSERT OR IGNORE INTO rejected_opportunities
                 (ticker, event_ticker, asset, rejection_reason, rejection_time,
@@ -1226,7 +1227,7 @@ class StateManager:
                                      raw_prob: Optional[float] = None,
                                      calibration_method: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
             self.conn.execute("""
                 INSERT OR REPLACE INTO evaluated_opportunities
@@ -1264,7 +1265,7 @@ class StateManager:
                                              market_result: Optional[str] = None,
                                              counterfactual_pnl: Optional[int] = None):
         """Set status='settled' for an evaluated opportunity by id."""
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute(
             "UPDATE evaluated_opportunities SET status='settled', "
             "market_result=?, counterfactual_pnl=?, settled_time=? WHERE id=?",
@@ -1278,7 +1279,7 @@ class StateManager:
                          event_ticker: str, asset: str, side: str,
                          count: int, price_cents: int, is_taker: bool):
         """Insert a new bot-initiated order with status='pending'."""
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
             INSERT INTO pending_orders (order_id, client_order_id, ticker,
                 event_ticker, asset, side, action, count, price_cents,
@@ -1291,7 +1292,7 @@ class StateManager:
 
     def confirm_order_submitted(self, client_order_id: str, order_id: str):
         """Update with server-assigned order_id, set status='resting'."""
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
             UPDATE pending_orders SET order_id=?, status='resting', updated_at=?
             WHERE client_order_id=? AND status='pending'
@@ -1300,7 +1301,7 @@ class StateManager:
 
     def mark_order_status(self, order_id: str, status: str):
         """Update order status (filled, canceled, api_error)."""
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
             UPDATE pending_orders SET status=?, updated_at=?
             WHERE order_id=? OR client_order_id=?
@@ -1311,7 +1312,7 @@ class StateManager:
                                   asset: str, side: str, count: int,
                                   price_cents: int):
         """Record a new open position from a fill."""
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         cost = count * price_cents
         self.conn.execute("""
             INSERT OR REPLACE INTO positions
@@ -1324,7 +1325,7 @@ class StateManager:
 
     def update_garch_params(self, asset: str, omega: float, alpha: float,
                             beta: float, last_variance: float):
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
             INSERT OR REPLACE INTO garch_params
                 (asset, omega, alpha, beta, last_variance, updated_at)
@@ -2578,7 +2579,7 @@ class CalibrationEngine:
             },
             "observations": self._observations,
             "prev_brier": self._prev_brier,
-            "saved_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "saved_at": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             "n_observations": len(self._observations),
         }
         tmp_path = self.state_path + ".tmp"
@@ -3437,7 +3438,7 @@ class OpportunityScanner:
                         "best_ask": best_ask, "edge_bps": None,
                         "chosen_strategy": None,
                         "rejection_reason": "price_out_of_range",
-                        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                        "ts": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                     })
                     try:
                         self._logger.log_opportunity({
@@ -3554,7 +3555,7 @@ class OpportunityScanner:
                         "gross_edge_bps": round(edge * 10000),
                         "chosen_strategy": None,
                         "rejection_reason": "insufficient_edge",
-                        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                        "ts": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                     })
                     try:
                         self._logger.log_opportunity({
@@ -3616,7 +3617,7 @@ class OpportunityScanner:
                         "edge_bps": round(edge * 10000),
                         "chosen_strategy": None,
                         "rejection_reason": "zero_sizing",
-                        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                        "ts": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                     })
                     try:
                         self._logger.log_opportunity({
@@ -3720,7 +3721,7 @@ class OpportunityScanner:
                         "edge_bps": round(edge * 10000),
                         "chosen_strategy": "WAIT",
                         "rejection_reason": "strategy_wait",
-                        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                        "ts": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                     })
                     try:
                         self._logger.log_opportunity({
@@ -3774,7 +3775,7 @@ class OpportunityScanner:
                 scan_stats[asset]["candidates"] += 1
                 self._session_total_candidates += 1
                 self._session_asset_perf[asset]["opportunities_found"] += 1
-                self._last_opportunity_ts = datetime.datetime.utcnow().isoformat() + "Z"
+                self._last_opportunity_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
                 self._recent_opportunities.append({
                     "ticker": ticker,
                     "asset": asset,
@@ -4839,7 +4840,7 @@ class SettlementTracker:
     def startup(self):
         """Initialize watermark to 24h ago, load dedup set, sweep once."""
         self._last_check_ts = int(
-            (datetime.datetime.utcnow() - datetime.timedelta(hours=24)).timestamp()
+            (datetime.datetime.now(timezone.utc) - datetime.timedelta(hours=24)).timestamp()
         )
         self._load_processed_tickers()
         self._load_pending_rejections()
@@ -4911,7 +4912,7 @@ class SettlementTracker:
             processed_any = True
 
         # Advance watermark to now (even if nothing processed, to shrink window)
-        self._last_check_ts = int(datetime.datetime.utcnow().timestamp())
+        self._last_check_ts = int(datetime.datetime.now(timezone.utc).timestamp())
 
         # Refresh balance after processing settlements
         if processed_any:
@@ -5203,7 +5204,7 @@ def discover_active_windows(client: KalshiClient) -> List[Dict]:
     Returns list of dicts with asset, event_ticker, close_time,
     seconds_to_close, and markets list.
     """
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(timezone.utc)
     windows: List[Dict] = []
 
     for asset, series in SERIES_TICKERS.items():
@@ -5485,7 +5486,7 @@ class MainLoop:
     def _log_daily_summary(self):
         """Log aggregated daily performance metrics on date change."""
         try:
-            today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+            today = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d")
             if self._last_summary_date is None:
                 self._last_summary_date = today
                 return
@@ -5589,7 +5590,7 @@ class MainLoop:
             self.calibration.maybe_retrain()
 
         # Recompute seconds_to_close and log each window
-        utc_now = datetime.datetime.utcnow()
+        utc_now = datetime.datetime.now(timezone.utc)
         prices = self.feed.get_all_prices()
         for window in self._active_windows:
             seconds_to_close = (window["close_time"] - utc_now).total_seconds()
