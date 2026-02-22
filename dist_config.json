@@ -1,0 +1,91 @@
+{
+  "generated_at": "2026-02-22T22:15:26Z",
+  "data_days": 7,
+  "return_interval_seconds": 60,
+  "assets": {
+    "BTC": {
+      "distribution": "nig",
+      "student_t_df": 8.0,
+      "nig_params": {
+        "a": 0.3198435086763819,
+        "b": -0.019122975734237505,
+        "loc": 0.033140842693225044,
+        "scale": 0.5539208194816045
+      },
+      "fit_stats": {
+        "student_t_best_df": 8.0,
+        "student_t_loglik": -13526.825943836273,
+        "student_t_ks_pvalue": 1.866281060552302e-95,
+        "n_returns": 10061,
+        "raw_kurtosis": 24.12634660836641,
+        "raw_skew": 0.20387429426391437,
+        "nig_loglik": -12383.095824512235,
+        "nig_ks_pvalue": 0.1118233638818803
+      }
+    },
+    "ETH": {
+      "distribution": "nig",
+      "student_t_df": 8.0,
+      "nig_params": {
+        "a": 0.30566914390344235,
+        "b": -0.007375268061047333,
+        "loc": 0.013095143022677813,
+        "scale": 0.5419537879767421
+      },
+      "fit_stats": {
+        "student_t_best_df": 8.0,
+        "student_t_loglik": -13507.370459682765,
+        "student_t_ks_pvalue": 2.5800686002674367e-107,
+        "n_returns": 10061,
+        "raw_kurtosis": 19.855112714756377,
+        "raw_skew": 0.36326567783765346,
+        "nig_loglik": -12286.915186772509,
+        "nig_ks_pvalue": 0.42366690209536495
+      }
+    },
+    "SOL": {
+      "distribution": "nig",
+      "student_t_df": 8.0,
+      "nig_params": {
+        "a": 0.44432022831910545,
+        "b": -0.00847938931801745,
+        "loc": 0.012596505999061605,
+        "scale": 0.6586941259159133
+      },
+      "fit_stats": {
+        "student_t_best_df": 8.0,
+        "student_t_loglik": -13724.932293080088,
+        "student_t_ks_pvalue": 1.9724724088607955e-93,
+        "n_returns": 10061,
+        "raw_kurtosis": 17.606084553337517,
+        "raw_skew": 0.5128867799108641,
+        "nig_loglik": -12920.311792689563,
+        "nig_ks_pvalue": 4.530836529683669e-15
+      }
+    },
+    "XRP": {
+      "distribution": "nig",
+      "student_t_df": 8.0,
+      "nig_params": {
+        "a": 0.47594763280255464,
+        "b": 0.005113336661446822,
+        "loc": -0.007314526959309647,
+        "scale": 0.6789995489160294
+      },
+      "fit_stats": {
+        "student_t_best_df": 8.0,
+        "student_t_loglik": -13718.07610381988,
+        "student_t_ks_pvalue": 3.9551569943730778e-81,
+        "n_returns": 10061,
+        "raw_kurtosis": 17.859466455023714,
+        "raw_skew": 0.6092176397131172,
+        "nig_loglik": -12958.281617643519,
+        "nig_ks_pvalue": 8.334933607504704e-06
+      }
+    }
+  },
+  "defaults": {
+    "distribution": "student_t",
+    "student_t_df": 4
+  }
+}

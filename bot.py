@@ -21,7 +21,7 @@ from typing import Optional, Dict, List, Set, Tuple
 
 import requests
 import websockets
-from scipy.stats import t as student_t
+from scipy.stats import t as student_t, norminvgauss
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 
@@ -59,6 +59,7 @@ REJECTION_JOURNAL = "rejection_journal.jsonl"
 OPPORTUNITY_JOURNAL = "opportunity_journal.jsonl"
 EXECUTION_JOURNAL = "execution_journal.jsonl"
 PERFORMANCE_JOURNAL = "performance_journal.jsonl"
+DIST_CONFIG_PATH = "dist_config.json"
 
 # ─── Loop Timing ─────────────────────────────────────────────────────────────
 SCAN_INTERVAL_SECONDS = 1.0
@@ -155,6 +156,48 @@ ENDGAME_BLEND_PRICE = 96         # don't blend at or above this price (preserve 
 Z_SCORE_MAX = 12.0                # refuse to trade if |z| > 12 (vol estimate wrong)
 DISCREPANCY_PROB = 0.90           # model says >90% but...
 DISCREPANCY_PRICE = 75            # ...market is below 75¢ → refuse
+
+# ─── Per-Asset Distribution Config ──────────────────────────────────────────
+
+def _load_dist_config() -> Dict:
+    """Load per-asset distribution config from dist_config.json.
+
+    Returns dict keyed by asset name. Falls back to Student-t(df=4) if missing.
+    """
+    defaults = {"distribution": "student_t", "student_t_df": STUDENT_T_DF}
+    config: Dict[str, Dict] = {}
+
+    try:
+        with open(DIST_CONFIG_PATH, "r") as f:
+            raw = json.load(f)
+
+        for asset_name, acfg in raw.get("assets", {}).items():
+            entry = dict(defaults)
+            if "distribution" in acfg:
+                entry["distribution"] = acfg["distribution"]
+            if "student_t_df" in acfg:
+                entry["student_t_df"] = float(acfg["student_t_df"])
+            if "nig_params" in acfg:
+                p = acfg["nig_params"]
+                entry["nig_a"] = float(p["a"])
+                entry["nig_b"] = float(p["b"])
+                entry["nig_loc"] = float(p.get("loc", 0.0))
+                entry["nig_scale"] = float(p.get("scale", 1.0))
+            config[asset_name] = entry
+
+        logging.info(
+            "Loaded dist config: %s",
+            {a: f"{c['distribution']}(df={c.get('student_t_df')})" if c['distribution'] == 'student_t'
+             else "nig" for a, c in config.items()}
+        )
+    except FileNotFoundError:
+        logging.info("No %s found, using defaults (Student-t df=%d)", DIST_CONFIG_PATH, STUDENT_T_DF)
+    except Exception as e:
+        logging.warning("Error loading %s, using defaults: %s", DIST_CONFIG_PATH, e)
+
+    return config
+
+DIST_CONFIG = _load_dist_config()
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
 MIN_EDGE_PCT = 0.25               # model prob must exceed market by ≥0.25 pp (observation mode — collect data at all edge levels)
@@ -2233,14 +2276,33 @@ class VolatilityEngine:
 class ProbabilityEngine:
     """Compute win probability from spot price, strike, time, and volatility.
 
-    Uses Student-t CDF (df=4) for fat-tailed z-score mapping, then applies
-    beta calibration via logistic compression to cap at 93%.
+    Supports per-asset distribution selection via dist_config.json:
+    - Student-t CDF with configurable df per asset (default df=4)
+    - NIG (Normal Inverse Gaussian) CDF with fitted parameters
+    Falls back to Student-t(df=4) if no config file is present.
     """
+
+    @staticmethod
+    def _cdf_complement(z_score: float, asset: Optional[str] = None) -> float:
+        """Compute 1 - CDF(z_score) using per-asset distribution config."""
+        cfg = DIST_CONFIG.get(asset) if asset else None
+        if cfg is None:
+            return 1.0 - student_t.cdf(z_score, df=STUDENT_T_DF)
+
+        if cfg.get("distribution") == "nig" and "nig_a" in cfg:
+            val = 1.0 - norminvgauss.cdf(
+                z_score, cfg["nig_a"], cfg["nig_b"],
+                loc=cfg.get("nig_loc", 0.0),
+                scale=cfg.get("nig_scale", 1.0),
+            )
+            return max(0.0, min(1.0, val))  # clamp float rounding
+        return 1.0 - student_t.cdf(z_score, df=cfg.get("student_t_df", STUDENT_T_DF))
 
     @staticmethod
     def compute(spot: float, threshold: float, seconds_remaining: float,
                 blended_rv: float,
-                market_price_cents: Optional[int] = None) -> Dict:
+                market_price_cents: Optional[int] = None,
+                asset: Optional[str] = None) -> Dict:
         """
         Compute calibrated win probability for a "price stays above threshold" bet.
 
@@ -2292,10 +2354,10 @@ class ProbabilityEngine:
             )
             return result
 
-        # ── Raw probability via Student-t CDF (df=4) ────────────────────
+        # ── Raw probability via configurable distribution CDF ────────────
         # P(price stays above threshold) = P(move > threshold - spot)
         # = P(Z > z_score) = 1 - CDF(z_score)
-        raw_prob = 1.0 - student_t.cdf(z_score, df=STUDENT_T_DF)
+        raw_prob = ProbabilityEngine._cdf_complement(z_score, asset)
         result["raw_prob"] = round(raw_prob, 6)
 
         # ── Beta calibration: logistic compression + dynamic cap ──────────
@@ -2569,7 +2631,8 @@ class OpportunityScanner:
 
                 # Pre-filter: compute probability without market price
                 prob_result = ProbabilityEngine.compute(
-                    spot, threshold, seconds_remaining, blended_rv
+                    spot, threshold, seconds_remaining, blended_rv,
+                    asset=asset
                 )
                 cal_prob = prob_result.get("calibrated_prob")
                 if cal_prob is None:
@@ -2789,7 +2852,8 @@ class OpportunityScanner:
                 # Re-run probability with market price for sanity check
                 prob_with_market = ProbabilityEngine.compute(
                     spot, threshold, seconds_remaining, blended_rv,
-                    market_price_cents=best_ask
+                    market_price_cents=best_ask,
+                    asset=asset
                 )
                 if not prob_with_market.get("tradeable"):
                     reason = prob_with_market.get("reason", "")
