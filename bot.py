@@ -2836,6 +2836,9 @@ class MainLoop:
         self._shutdown = threading.Event()
         self._active_windows: List[Dict] = []
         self._last_market_refresh: float = 0.0
+        self._last_error: Optional[str] = None
+        self._last_error_time: float = 0.0
+        self._start_time: float = time.time()
 
     # ── Signal Handling ───────────────────────────────────────────────────
 
@@ -2874,6 +2877,11 @@ class MainLoop:
         # Start Coinbase price feed
         self.feed.start()
         logging.info("Coinbase price feed starting...")
+
+        # Start Firebase dashboard push (if configured)
+        from firebase_push import FirebasePusher
+        self.firebase = FirebasePusher(self)
+        self.firebase.start()
 
         # Initial market scan
         self._refresh_active_windows()
@@ -2966,7 +2974,9 @@ class MainLoop:
                 loop_start = time.time()
                 try:
                     self._tick()
-                except Exception:
+                except Exception as e:
+                    self._last_error = str(e)
+                    self._last_error_time = time.time()
                     logging.error("Tick error", exc_info=True)
                     time.sleep(5)
                     continue
@@ -2979,6 +2989,8 @@ class MainLoop:
 
     def _cleanup(self):
         logging.info("Shutting down...")
+        if hasattr(self, 'firebase'):
+            self.firebase.stop()
         self.feed.stop()
         self.state.close()
         logging.info("Bot stopped.")
