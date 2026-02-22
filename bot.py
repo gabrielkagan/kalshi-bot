@@ -3362,7 +3362,7 @@ class OpportunityScanner:
         """
         result = {}
         for side in ("yes", "no"):
-            entries = ob_fp.get(f"{side}_dollars", [])
+            entries = ob_fp.get(f"{side}_dollars") or []
             converted = []
             for entry in entries:
                 if isinstance(entry, (list, tuple)) and len(entry) >= 2:
