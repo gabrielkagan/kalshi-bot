@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /home/botuser/kalshi-bot
-source /home/botuser/kalshi-bot/venv/bin/activate
-source /home/botuser/kalshi-bot/.env
+cd /home/botuser/kalshi-bot-repo
+source /home/botuser/kalshi-bot-repo/venv/bin/activate
+source /home/botuser/kalshi-bot-repo/.env
 exec python3 bot.py
