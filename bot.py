@@ -195,6 +195,31 @@ def calculate_maker_fee(count: int, price_cents: int) -> int:
     return calculate_fee(count, price_cents, is_taker=False)
 
 
+# ── FP / Dollar String Helpers ──────────────────────────────────────────────
+def dollars_str_to_cents(s) -> int:
+    """Convert dollar string like '0.8800' to integer cents (88)."""
+    if s is None:
+        return 0
+    return round(float(s) * 100)
+
+
+def cents_to_dollars_str(cents: int) -> str:
+    """Convert integer cents (88) to dollar string '0.8800'."""
+    return f"{cents / 100:.4f}"
+
+
+def fp_str_to_int(s) -> int:
+    """Convert FP string like '5.00' to integer (5)."""
+    if s is None:
+        return 0
+    return int(round(float(s)))
+
+
+def int_to_fp_str(n: int) -> str:
+    """Convert integer (5) to FP string '5.00'."""
+    return f"{n:.2f}"
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  Execution Strategy Engine
 # ═════════════════════════════════════════════════════════════════════════════
@@ -545,12 +570,15 @@ class KalshiClient:
             "side": side,
             "action": action,
             "count": count,
+            "count_fp": int_to_fp_str(count),
             "type": "limit",
         }
         if yes_price is not None:
             body["yes_price"] = yes_price
+            body["yes_price_dollars"] = cents_to_dollars_str(yes_price)
         if no_price is not None:
             body["no_price"] = no_price
+            body["no_price_dollars"] = cents_to_dollars_str(no_price)
         if client_order_id:
             body["client_order_id"] = client_order_id
         return self._request("POST", f"{API_PATH_PREFIX}/portfolio/orders",
@@ -832,7 +860,7 @@ class StateManager:
         for pos in api_resp["market_positions"]:
             ticker = pos["ticker"]
             api_tickers.add(ticker)
-            position_count = pos.get("position", 0)
+            position_count = fp_str_to_int(pos.get("position_fp")) or pos.get("position", 0)
 
             if position_count == 0:
                 self.conn.execute(
@@ -841,7 +869,8 @@ class StateManager:
 
             side = "yes" if position_count > 0 else "no"
             count = abs(position_count)
-            cost = pos.get("market_exposure", 0)
+            cost_d = pos.get("market_exposure_dollars")
+            cost = dollars_str_to_cents(cost_d) if cost_d else pos.get("market_exposure", 0)
             avg_price = cost // count if count else 0
 
             existing = self.conn.execute(
@@ -896,7 +925,17 @@ class StateManager:
             ticker = order["ticker"]
             asset = self._asset_from_ticker(ticker)
             event_ticker = self._event_ticker_from_ticker(ticker)
-            price = order.get("yes_price", 0) or order.get("no_price", 0)
+            # Prefer *_dollars fields (new FP API), fall back to legacy
+            ypd = order.get("yes_price_dollars")
+            npd = order.get("no_price_dollars")
+            if ypd:
+                price = dollars_str_to_cents(ypd)
+            elif npd:
+                price = dollars_str_to_cents(npd)
+            else:
+                price = order.get("yes_price", 0) or order.get("no_price", 0)
+
+            remaining = fp_str_to_int(order.get("remaining_count_fp")) or order.get("remaining_count", 0)
 
             self.conn.execute("""
                 INSERT INTO pending_orders (order_id, client_order_id, ticker,
@@ -905,7 +944,7 @@ class StateManager:
                 VALUES (?,?,?,?,?,?,?,?,?,'resting',?,?)
             """, (oid, order.get("client_order_id", ""), ticker,
                   event_ticker, asset, order["side"], order["action"],
-                  order.get("remaining_count", 0), price,
+                  remaining, price,
                   order.get("created_time", now), now))
 
         # Mark local resting orders not on API as canceled
@@ -956,7 +995,8 @@ class StateManager:
             return
 
         result = settlement.get("market_result", "")
-        revenue = settlement.get("revenue", 0)
+        rev_d = settlement.get("revenue_dollars")
+        revenue = dollars_str_to_cents(rev_d) if rev_d else settlement.get("revenue", 0)
         total_cost = pos["total_cost_cents"]
         pnl = revenue - total_cost
         fee = calculate_taker_fee(pos["count"], pos["avg_price_cents"])
@@ -2496,13 +2536,20 @@ class OpportunityScanner:
                 if was_fresh:
                     ob_fetches_this_tick += 1
                 if ob_data is None:
-                    # Try NBBO fallback before giving up
-                    mkt_yes_ask = mkt.get("yes_ask")
-                    if mkt_yes_ask and isinstance(mkt_yes_ask, (int, float)) and mkt_yes_ask > 0:
+                    # Try NBBO fallback before giving up (prefer *_dollars field)
+                    mkt_yes_ask_raw = mkt.get("yes_ask_dollars") or mkt.get("yes_ask")
+                    if mkt_yes_ask_raw:
+                        if isinstance(mkt_yes_ask_raw, str):
+                            mkt_yes_ask = dollars_str_to_cents(mkt_yes_ask_raw)
+                        else:
+                            mkt_yes_ask = int(mkt_yes_ask_raw)
+                    else:
+                        mkt_yes_ask = None
+                    if mkt_yes_ask and mkt_yes_ask > 0:
                         ob_data = {}  # empty dict so downstream code works
                         logging.info(
                             "Orderbook unavailable for %s, will use market NBBO yes_ask=%d¢",
-                            ticker, int(mkt_yes_ask),
+                            ticker, mkt_yes_ask,
                         )
                     else:
                         scan_stats[asset]["no_orderbook"] += 1
@@ -2527,10 +2574,17 @@ class OpportunityScanner:
                 best_ask = self._best_yes_ask_cents(ob_data)
                 best_ask_source = "orderbook"
                 if best_ask is None:
-                    # Fallback: use market's NBBO yes_ask from events endpoint
-                    mkt_yes_ask = mkt.get("yes_ask")
-                    if mkt_yes_ask and isinstance(mkt_yes_ask, (int, float)) and mkt_yes_ask > 0:
-                        best_ask = int(mkt_yes_ask)
+                    # Fallback: use market's NBBO yes_ask (prefer *_dollars field)
+                    mkt_yes_ask_raw = mkt.get("yes_ask_dollars") or mkt.get("yes_ask")
+                    if mkt_yes_ask_raw:
+                        if isinstance(mkt_yes_ask_raw, str):
+                            mkt_yes_ask = dollars_str_to_cents(mkt_yes_ask_raw)
+                        else:
+                            mkt_yes_ask = int(mkt_yes_ask_raw)
+                    else:
+                        mkt_yes_ask = None
+                    if mkt_yes_ask and mkt_yes_ask > 0:
+                        best_ask = mkt_yes_ask
                         best_ask_source = "market_nbbo"
                         logging.info(
                             "Using market NBBO yes_ask=%d¢ for %s (orderbook NO bids empty)",
@@ -3091,9 +3145,33 @@ class OpportunityScanner:
 
         # Fresh fetch
         ob_data = self._client.get_orderbook(ticker, depth=5)
-        orderbook = ob_data.get("orderbook", ob_data) if ob_data else None
+        # Prefer orderbook_fp (new FP format), fall back to orderbook (legacy)
+        orderbook_fp = ob_data.get("orderbook_fp") if ob_data else None
+        if orderbook_fp:
+            orderbook = self._convert_orderbook_fp(orderbook_fp)
+        else:
+            orderbook = ob_data.get("orderbook", ob_data) if ob_data else None
         self._ob_cache[ticker] = (orderbook, now)
         return (orderbook, True)
+
+    @staticmethod
+    def _convert_orderbook_fp(ob_fp: Dict) -> Dict:
+        """Convert orderbook_fp format to internal cents format.
+
+        Input:  {"no_dollars": [["0.1100", "205.00"], ...], "yes_dollars": [...]}
+        Output: {"no": [[11, 205], ...], "yes": [[77, 200], ...]}
+        """
+        result = {}
+        for side in ("yes", "no"):
+            entries = ob_fp.get(f"{side}_dollars", [])
+            converted = []
+            for entry in entries:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    price_cents = round(float(entry[0]) * 100)
+                    count = int(round(float(entry[1])))
+                    converted.append([price_cents, count])
+            result[side] = converted
+        return result
 
     # ── Timeslot helpers ──────────────────────────────────────────────────
 
@@ -3699,9 +3777,10 @@ class OrderExecutor:
         # Update order status
         self._state.mark_order_status(order_id, "filled")
 
-        # Extract fill details (fall back to order values)
-        fill_count = fill.get("count", order["count"])
-        fill_price = fill.get("yes_price", order["price_cents"])
+        # Extract fill details — prefer FP/dollar fields, fall back to legacy
+        fill_count = fp_str_to_int(fill.get("count_fp")) or fill.get("count", order["count"])
+        fill_price_d = fill.get("yes_price_dollars")
+        fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else fill.get("yes_price", order["price_cents"])
 
         # Record position in SQLite
         self._state.record_position_from_fill(
@@ -3892,7 +3971,8 @@ class SettlementTracker:
         """Record outcome, P&L, and log to journal."""
         ticker = settlement["ticker"]
         market_result = settlement.get("market_result", "")
-        revenue = settlement.get("revenue", 0)
+        rev_d = settlement.get("revenue_dollars")
+        revenue = dollars_str_to_cents(rev_d) if rev_d else settlement.get("revenue", 0)
 
         # Look up position in SQLite
         pos = self._state.conn.execute(
