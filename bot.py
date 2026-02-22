@@ -2415,6 +2415,7 @@ class OpportunityScanner:
         self._session_total_candidates: int = 0
         self._last_opportunity_ts: Optional[str] = None
         self._recent_opportunities: deque = deque(maxlen=20)
+        self._ticker_ask_history: Dict[str, deque] = {}
 
     # ── Public entry point ────────────────────────────────────────────────
 
@@ -2423,6 +2424,15 @@ class OpportunityScanner:
         now = time.time()
         ob_fetches_this_tick = 0
         candidates: List[Dict] = []
+
+        # Clean up ask history for tickers no longer in active windows
+        active_tickers = set()
+        for w in active_windows:
+            for m in w.get("markets", []):
+                active_tickers.add(m.get("ticker", ""))
+        expired = [t for t in self._ticker_ask_history if t not in active_tickers]
+        for t in expired:
+            del self._ticker_ask_history[t]
         scan_stats: Dict[str, Dict[str, int]] = {
             a: {"evaluated": 0, "low_prob": 0, "no_orderbook": 0, "no_best_ask": 0,
                 "price_out_of_range": 0, "insufficient_edge": 0, "zero_sizing": 0,
@@ -2590,6 +2600,10 @@ class OpportunityScanner:
                             "Using market NBBO yes_ask=%d¢ for %s (orderbook NO bids empty)",
                             best_ask, ticker,
                         )
+                if best_ask is not None:
+                    if ticker not in self._ticker_ask_history:
+                        self._ticker_ask_history[ticker] = deque(maxlen=300)
+                    self._ticker_ask_history[ticker].append((time.time(), best_ask))
                 if best_ask is None:
                     scan_stats[asset]["no_best_ask"] += 1
                     try:
@@ -2623,6 +2637,27 @@ class OpportunityScanner:
                 except Exception:
                     pass
 
+                # Compute orderbook depth early (used in logging + strategy)
+                ask_depth = OrderExecutor._best_ask_depth(ob_data)
+                total_depth = OrderExecutor._total_ob_depth(ob_data)
+
+                # Log price snapshot for all markets with orderbook data
+                try:
+                    self._logger.log_scan({
+                        "type": "price_snapshot",
+                        "ticker": ticker,
+                        "asset": asset,
+                        "seconds_to_close": round(seconds_remaining, 1),
+                        "best_ask": best_ask,
+                        "best_ask_source": best_ask_source,
+                        "best_ask_depth": ask_depth,
+                        "total_ob_depth": total_depth,
+                        "convergence_velocity": self._scanner_convergence_velocity(ticker),
+                        "calibrated_prob": round(cal_prob, 6),
+                    })
+                except Exception:
+                    pass
+
                 # Filter: ask must be in entry price range
                 if not (MIN_ENTRY_PRICE <= best_ask <= MAX_ENTRY_PRICE):
                     scan_stats[asset]["price_out_of_range"] += 1
@@ -2648,6 +2683,9 @@ class OpportunityScanner:
                             "best_ask_source": best_ask_source,
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": round(cal_prob, 6),
+                            "best_ask_depth": ask_depth,
+                            "total_ob_depth": total_depth,
+                            "convergence_velocity": self._scanner_convergence_velocity(ticker),
                         })
                         self._state.insert_evaluated_opportunity(
                             ticker, window["event_ticker"], asset,
@@ -2803,10 +2841,6 @@ class OpportunityScanner:
                         pass
                     continue
 
-                # Compute orderbook depth for strategy engine
-                ask_depth = OrderExecutor._best_ask_depth(ob_data)
-                total_depth = OrderExecutor._total_ob_depth(ob_data)
-
                 # Evaluate execution strategy for this market
                 strategy_data = {
                     "z_score": z_score,
@@ -2819,7 +2853,7 @@ class OpportunityScanner:
                     "best_yes_ask": best_ask,
                     "best_ask_depth": ask_depth,
                     "total_ob_depth": total_depth,
-                    "convergence_velocity": 0,  # no history at scan time
+                    "convergence_velocity": self._scanner_convergence_velocity(ticker),
                     "edge": edge,
                 }
                 strategy, strategy_scores = evaluate_execution_strategy(
@@ -3153,6 +3187,22 @@ class OpportunityScanner:
             orderbook = ob_data.get("orderbook", ob_data) if ob_data else None
         self._ob_cache[ticker] = (orderbook, now)
         return (orderbook, True)
+
+    def _scanner_convergence_velocity(self, ticker: str) -> float:
+        """Upward ask movement in cents over convergence window, from scan history."""
+        history = self._ticker_ask_history.get(ticker)
+        if not history or len(history) < 2:
+            return 0.0
+        now = time.time()
+        cutoff = now - CONVERGENCE_WINDOW_SECONDS
+        oldest_price = None
+        for ts, price in history:
+            if ts >= cutoff:
+                oldest_price = price
+                break
+        if oldest_price is None:
+            return 0.0
+        return history[-1][1] - oldest_price
 
     @staticmethod
     def _convert_orderbook_fp(ob_fp: Dict) -> Dict:
