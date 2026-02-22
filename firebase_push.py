@@ -399,12 +399,78 @@ class FirebasePusher:
                 "WHERE filter_stage = 'observation_trade' AND status = 'settled'"
             ).fetchone()
 
-            snap["simulated_performance"] = {
+            settled_total = row["wins"] + row["losses"]
+            pending_count = sim_count - settled_total
+
+            sim_perf = {
                 "simulated_trades_count": sim_count,
                 "simulated_wins": row["wins"],
                 "simulated_losses": row["losses"],
                 "simulated_pnl_cents": row["pnl"],
+                "simulated_win_rate": round(row["wins"] / settled_total, 4) if settled_total > 0 else 0.0,
+                "pending_settlement": pending_count,
             }
+
+            # Averages for observation trades
+            avg_row = conn.execute(
+                "SELECT AVG(edge) AS avg_edge, AVG(kelly_f) AS avg_kelly, "
+                "  AVG(position_size) AS avg_size "
+                "FROM evaluated_opportunities "
+                "WHERE filter_stage = 'observation_trade' AND edge IS NOT NULL"
+            ).fetchone()
+            if avg_row and avg_row["avg_edge"] is not None:
+                sim_perf["avg_edge"] = round(avg_row["avg_edge"], 6)
+                sim_perf["avg_kelly_f"] = round(avg_row["avg_kelly"], 6) if avg_row["avg_kelly"] else None
+                sim_perf["avg_position_size"] = round(avg_row["avg_size"], 1) if avg_row["avg_size"] else None
+
+            # P&L by strategy
+            strat_rows = conn.execute(
+                "SELECT strategy, COUNT(*) AS cnt, "
+                "  COALESCE(SUM(counterfactual_pnl), 0) AS pnl, "
+                "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins "
+                "FROM evaluated_opportunities "
+                "WHERE filter_stage = 'observation_trade' AND status = 'settled' "
+                "  AND strategy IS NOT NULL "
+                "GROUP BY strategy"
+            ).fetchall()
+            if strat_rows:
+                sim_perf["pnl_by_strategy"] = {
+                    r["strategy"]: {"count": r["cnt"], "pnl_cents": r["pnl"], "wins": r["wins"]}
+                    for r in strat_rows
+                }
+
+            # P&L by vol regime
+            regime_rows = conn.execute(
+                "SELECT vol_regime, COUNT(*) AS cnt, "
+                "  COALESCE(SUM(counterfactual_pnl), 0) AS pnl, "
+                "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins "
+                "FROM evaluated_opportunities "
+                "WHERE filter_stage = 'observation_trade' AND status = 'settled' "
+                "  AND vol_regime IS NOT NULL "
+                "GROUP BY vol_regime"
+            ).fetchall()
+            if regime_rows:
+                sim_perf["pnl_by_vol_regime"] = {
+                    r["vol_regime"]: {"count": r["cnt"], "pnl_cents": r["pnl"], "wins": r["wins"]}
+                    for r in regime_rows
+                }
+
+            # P&L by asset
+            asset_rows = conn.execute(
+                "SELECT asset, COUNT(*) AS cnt, "
+                "  COALESCE(SUM(counterfactual_pnl), 0) AS pnl, "
+                "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins "
+                "FROM evaluated_opportunities "
+                "WHERE filter_stage = 'observation_trade' AND status = 'settled' "
+                "GROUP BY asset"
+            ).fetchall()
+            if asset_rows:
+                sim_perf["pnl_by_asset"] = {
+                    r["asset"]: {"count": r["cnt"], "pnl_cents": r["pnl"], "wins": r["wins"]}
+                    for r in asset_rows
+                }
+
+            snap["simulated_performance"] = sim_perf
         except Exception:
             snap["simulated_performance"] = {
                 "simulated_trades_count": 0,
@@ -412,6 +478,21 @@ class FirebasePusher:
                 "simulated_losses": 0,
                 "simulated_pnl_cents": 0,
             }
+
+        # ── recent_simulated_trades (last 10 observation trades with detail) ──
+        try:
+            conn = self._ml.state.conn
+            sim_rows = conn.execute(
+                "SELECT ticker, asset, evaluation_time, market_price, edge, "
+                "  calibrated_prob, strategy, position_size, kelly_f, z_score, "
+                "  vol_regime, status, market_result, counterfactual_pnl, settled_time "
+                "FROM evaluated_opportunities "
+                "WHERE filter_stage = 'observation_trade' "
+                "ORDER BY id DESC LIMIT 10"
+            ).fetchall()
+            snap["recent_simulated_trades"] = [dict(r) for r in sim_rows]
+        except Exception:
+            snap["recent_simulated_trades"] = []
 
         # ── rejection_summary (counts by reason) ────────────────────────
         try:

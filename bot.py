@@ -817,6 +817,22 @@ class StateManager:
         """)
         self.conn.commit()
 
+        # Migration: add new columns to evaluated_opportunities (safe to re-run)
+        for col_def in [
+            ("strategy", "TEXT"),
+            ("position_size", "INTEGER"),
+            ("kelly_f", "REAL"),
+            ("z_score", "REAL"),
+            ("vol_regime", "TEXT"),
+            ("calibrated_prob_raw", "REAL"),
+            ("settled_time", "TEXT"),
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
+            except Exception:
+                pass  # column already exists
+        self.conn.commit()
+
     # ── Ticker Parsing ────────────────────────────────────────────────────
 
     @staticmethod
@@ -1065,7 +1081,13 @@ class StateManager:
                                      seconds_to_close: Optional[float] = None,
                                      calibrated_prob: Optional[float] = None,
                                      edge: Optional[float] = None,
-                                     ofa_adjustment: Optional[float] = None):
+                                     ofa_adjustment: Optional[float] = None,
+                                     strategy: Optional[str] = None,
+                                     position_size: Optional[int] = None,
+                                     kelly_f: Optional[float] = None,
+                                     z_score: Optional[float] = None,
+                                     vol_regime: Optional[str] = None,
+                                     calibrated_prob_raw: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.utcnow().isoformat() + "Z"
         try:
@@ -1074,12 +1096,16 @@ class StateManager:
                     (ticker, event_ticker, asset, filter_stage, rejection_reason,
                      evaluation_time, spot_price, threshold, volatility,
                      market_price, seconds_to_close, calibrated_prob,
-                     edge, ofa_adjustment, status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     edge, ofa_adjustment, status,
+                     strategy, position_size, kelly_f, z_score,
+                     vol_regime, calibrated_prob_raw)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
-                  "pending"))
+                  "pending",
+                  strategy, position_size, kelly_f, z_score,
+                  vol_regime, calibrated_prob_raw))
             self.conn.commit()
         except Exception as e:
             logging.debug(f"insert_evaluated_opportunity failed: {e}")
@@ -1095,10 +1121,11 @@ class StateManager:
                                              market_result: Optional[str] = None,
                                              counterfactual_pnl: Optional[int] = None):
         """Set status='settled' for an evaluated opportunity by id."""
+        now = datetime.datetime.utcnow().isoformat() + "Z"
         self.conn.execute(
             "UPDATE evaluated_opportunities SET status='settled', "
-            "market_result=?, counterfactual_pnl=? WHERE id=?",
-            (market_result, counterfactual_pnl, opp_id)
+            "market_result=?, counterfactual_pnl=?, settled_time=? WHERE id=?",
+            (market_result, counterfactual_pnl, now, opp_id)
         )
         self.conn.commit()
 
@@ -2694,7 +2721,8 @@ class OpportunityScanner:
                             spot_price=spot, threshold=threshold,
                             volatility=blended_rv, market_price=best_ask,
                             seconds_to_close=seconds_remaining,
-                            calibrated_prob=cal_prob)
+                            calibrated_prob=cal_prob,
+                            vol_regime=vol_est["regime"])
                     except Exception:
                         pass
                     continue
@@ -2791,7 +2819,10 @@ class OpportunityScanner:
                             volatility=blended_rv, market_price=best_ask,
                             seconds_to_close=seconds_remaining,
                             calibrated_prob=final_prob, edge=edge,
-                            ofa_adjustment=ofa_adjustment)
+                            ofa_adjustment=ofa_adjustment,
+                            z_score=z_score,
+                            vol_regime=vol_est["regime"],
+                            calibrated_prob_raw=calibrated_prob_raw)
                     except Exception:
                         pass
                     continue
@@ -2836,7 +2867,12 @@ class OpportunityScanner:
                             volatility=blended_rv, market_price=best_ask,
                             seconds_to_close=seconds_remaining,
                             calibrated_prob=final_prob, edge=edge,
-                            ofa_adjustment=ofa_adjustment)
+                            ofa_adjustment=ofa_adjustment,
+                            z_score=z_score,
+                            vol_regime=vol_est["regime"],
+                            calibrated_prob_raw=calibrated_prob_raw,
+                            kelly_f=sizing["kelly_f"],
+                            position_size=0)
                     except Exception:
                         pass
                     continue
@@ -2923,7 +2959,13 @@ class OpportunityScanner:
                             volatility=blended_rv, market_price=best_ask,
                             seconds_to_close=seconds_remaining,
                             calibrated_prob=final_prob, edge=edge,
-                            ofa_adjustment=ofa_adjustment)
+                            ofa_adjustment=ofa_adjustment,
+                            strategy=strategy,
+                            z_score=z_score,
+                            vol_regime=vol_est["regime"],
+                            calibrated_prob_raw=calibrated_prob_raw,
+                            kelly_f=sizing["kelly_f"],
+                            position_size=sizing["contracts"])
                     except Exception:
                         pass
                     continue
@@ -3061,7 +3103,13 @@ class OpportunityScanner:
                             volatility=c["blended_rv"], market_price=c["best_yes_ask"],
                             seconds_to_close=c["seconds_to_close"],
                             calibrated_prob=c["calibrated_prob"], edge=c["edge"],
-                            ofa_adjustment=c.get("ofa_adjustment"))
+                            ofa_adjustment=c.get("ofa_adjustment"),
+                            strategy=c.get("strategy"),
+                            z_score=c.get("z_score"),
+                            vol_regime=c.get("vol_regime"),
+                            calibrated_prob_raw=c.get("calibrated_prob_raw"),
+                            kelly_f=c.get("kelly_f"),
+                            position_size=c.get("position_size"))
                     except Exception:
                         pass
 
@@ -3348,7 +3396,13 @@ class OrderExecutor:
                     seconds_to_close=candidate.get("seconds_to_close"),
                     calibrated_prob=candidate.get("calibrated_prob"),
                     edge=candidate.get("edge"),
-                    ofa_adjustment=candidate.get("ofa_adjustment"))
+                    ofa_adjustment=candidate.get("ofa_adjustment"),
+                    strategy=candidate.get("strategy"),
+                    position_size=candidate.get("position_size"),
+                    kelly_f=candidate.get("kelly_f"),
+                    z_score=candidate.get("z_score"),
+                    vol_regime=candidate.get("vol_regime"),
+                    calibrated_prob_raw=candidate.get("calibrated_prob_raw"))
             except Exception:
                 pass
             return None
@@ -4204,20 +4258,31 @@ class SettlementTracker:
                 entry_price = row["market_price"]
                 if entry_price is None:
                     would_have_profit = None
-                    assumed_fee = 0
+                    taker_fee = 0
+                    maker_fee = 0
+                    pnl_taker = None
+                    pnl_maker = None
+                    count = row.get("position_size") or 1
                     counterfactual_outcome = "unknown_no_price"
                 else:
-                    assumed_fee = calculate_taker_fee(1, int(entry_price))
+                    count = row.get("position_size") or 1
+                    taker_fee = calculate_taker_fee(count, int(entry_price))
+                    maker_fee = calculate_maker_fee(count, int(entry_price))
                     if result in ("yes", "all_yes"):
-                        would_have_profit = (100 - entry_price) - assumed_fee
+                        pnl_taker = (100 - entry_price) * count - taker_fee
+                        pnl_maker = (100 - entry_price) * count - maker_fee
                         counterfactual_outcome = "would_have_won"
                     elif result in ("no", "all_no"):
-                        would_have_profit = -(entry_price + assumed_fee)
+                        pnl_taker = -(entry_price * count + taker_fee)
+                        pnl_maker = -(entry_price * count + maker_fee)
                         counterfactual_outcome = "would_have_lost"
                     else:
-                        would_have_profit = None
-                        assumed_fee = 0
+                        pnl_taker = None
+                        pnl_maker = None
+                        taker_fee = 0
+                        maker_fee = 0
                         counterfactual_outcome = f"unknown_result_{result}"
+                    would_have_profit = pnl_taker  # conservative (taker)
 
                 self._logger.log_rejection({
                     "type": "evaluated_settlement",
@@ -4230,10 +4295,18 @@ class SettlementTracker:
                     "entry_price_if_traded": entry_price,
                     "counterfactual_outcome": counterfactual_outcome,
                     "would_have_profit_cents": would_have_profit,
-                    "assumed_fee_cents": assumed_fee,
-                    "assumed_contracts": 1,
+                    "assumed_contracts": count,
+                    "taker_fee_cents": taker_fee,
+                    "maker_fee_cents": maker_fee,
+                    "pnl_taker_cents": pnl_taker,
+                    "pnl_maker_cents": pnl_maker,
                     "calibrated_prob": row.get("calibrated_prob"),
                     "edge": row.get("edge"),
+                    "strategy": row.get("strategy"),
+                    "position_size": row.get("position_size"),
+                    "kelly_f": row.get("kelly_f"),
+                    "vol_regime": row.get("vol_regime"),
+                    "z_score": row.get("z_score"),
                 })
 
                 self._state.mark_evaluated_opportunity_settled(
