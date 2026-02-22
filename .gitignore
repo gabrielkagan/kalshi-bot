@@ -6,3 +6,5 @@ __pycache__/
 logs/
 *.tar.gz
 *.db
+whitepaper_rendered.md
+whitepaper_stats.json

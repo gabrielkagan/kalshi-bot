@@ -1,0 +1,69 @@
+name: Generate Whitepaper PDF
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'whitepaper.md'
+      - 'scripts/generate_whitepaper_stats.py'
+      - 'scripts/build_whitepaper.py'
+      - '.github/workflows/whitepaper.yml'
+
+  workflow_dispatch:
+
+jobs:
+  whitepaper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull live stats from VPS
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: botuser
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd ~/kalshi-bot-repo
+            python3 scripts/generate_whitepaper_stats.py > /tmp/whitepaper_stats.json
+
+      - name: Fetch stats from VPS
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          scp botuser@${{ secrets.VPS_HOST }}:/tmp/whitepaper_stats.json ./whitepaper_stats.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Render whitepaper with stats
+        run: python3 scripts/build_whitepaper.py
+
+      - name: Install pandoc and LaTeX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc texlive-latex-recommended texlive-fonts-recommended texlive-latex-extra
+
+      - name: Generate PDF
+        run: |
+          pandoc whitepaper_rendered.md \
+            -o whitepaper.pdf \
+            --from markdown \
+            --pdf-engine=pdflatex \
+            --toc \
+            --toc-depth=3 \
+            -V geometry:margin=1in \
+            -V fontsize=11pt \
+            -V documentclass=article \
+            --metadata title="Kalshi Crypto Trading Bot — Technical Whitepaper"
+
+      - name: Commit PDF
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add whitepaper.pdf
+          git diff --cached --quiet || git commit -m "Auto-generate whitepaper PDF [skip ci]"
+          git push
