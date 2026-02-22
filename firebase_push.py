@@ -414,7 +414,7 @@ class FirebasePusher:
             # Averages for observation trades
             avg_row = conn.execute(
                 "SELECT AVG(edge) AS avg_edge, AVG(kelly_f) AS avg_kelly, "
-                "  AVG(position_size) AS avg_size "
+                "  AVG(position_size) AS avg_size, AVG(expected_value) AS avg_ev "
                 "FROM evaluated_opportunities "
                 "WHERE filter_stage = 'observation_trade' AND edge IS NOT NULL"
             ).fetchone()
@@ -422,6 +422,7 @@ class FirebasePusher:
                 sim_perf["avg_edge"] = round(avg_row["avg_edge"], 6)
                 sim_perf["avg_kelly_f"] = round(avg_row["avg_kelly"], 6) if avg_row["avg_kelly"] else None
                 sim_perf["avg_position_size"] = round(avg_row["avg_size"], 1) if avg_row["avg_size"] else None
+                sim_perf["avg_expected_value"] = round(avg_row["avg_ev"], 2) if avg_row["avg_ev"] else None
 
             # P&L by strategy
             strat_rows = conn.execute(
@@ -485,7 +486,9 @@ class FirebasePusher:
             sim_rows = conn.execute(
                 "SELECT ticker, asset, evaluation_time, market_price, edge, "
                 "  calibrated_prob, strategy, position_size, kelly_f, z_score, "
-                "  vol_regime, status, market_result, counterfactual_pnl, settled_time "
+                "  vol_regime, status, market_result, counterfactual_pnl, settled_time, "
+                "  breakeven_wr, expected_value, drawdown_scaler, ask_depth, "
+                "  best_ask_source, ofa_confidence "
                 "FROM evaluated_opportunities "
                 "WHERE filter_stage = 'observation_trade' "
                 "ORDER BY id DESC LIMIT 10"

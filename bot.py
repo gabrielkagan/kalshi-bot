@@ -826,6 +826,12 @@ class StateManager:
             ("vol_regime", "TEXT"),
             ("calibrated_prob_raw", "REAL"),
             ("settled_time", "TEXT"),
+            ("breakeven_wr", "REAL"),
+            ("expected_value", "REAL"),
+            ("drawdown_scaler", "REAL"),
+            ("ask_depth", "INTEGER"),
+            ("best_ask_source", "TEXT"),
+            ("ofa_confidence", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1087,7 +1093,13 @@ class StateManager:
                                      kelly_f: Optional[float] = None,
                                      z_score: Optional[float] = None,
                                      vol_regime: Optional[str] = None,
-                                     calibrated_prob_raw: Optional[float] = None):
+                                     calibrated_prob_raw: Optional[float] = None,
+                                     breakeven_wr: Optional[float] = None,
+                                     expected_value: Optional[float] = None,
+                                     drawdown_scaler: Optional[float] = None,
+                                     ask_depth: Optional[int] = None,
+                                     best_ask_source: Optional[str] = None,
+                                     ofa_confidence: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.utcnow().isoformat() + "Z"
         try:
@@ -1098,14 +1110,18 @@ class StateManager:
                      market_price, seconds_to_close, calibrated_prob,
                      edge, ofa_adjustment, status,
                      strategy, position_size, kelly_f, z_score,
-                     vol_regime, calibrated_prob_raw)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     vol_regime, calibrated_prob_raw,
+                     breakeven_wr, expected_value, drawdown_scaler,
+                     ask_depth, best_ask_source, ofa_confidence)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
                   "pending",
                   strategy, position_size, kelly_f, z_score,
-                  vol_regime, calibrated_prob_raw))
+                  vol_regime, calibrated_prob_raw,
+                  breakeven_wr, expected_value, drawdown_scaler,
+                  ask_depth, best_ask_source, ofa_confidence))
             self.conn.commit()
         except Exception as e:
             logging.debug(f"insert_evaluated_opportunity failed: {e}")
@@ -2443,11 +2459,13 @@ class OpportunityScanner:
         self._last_opportunity_ts: Optional[str] = None
         self._recent_opportunities: deque = deque(maxlen=20)
         self._ticker_ask_history: Dict[str, deque] = {}
+        self._eval_opp_seen: Set[Tuple[str, str]] = set()
 
     # ── Public entry point ────────────────────────────────────────────────
 
     def scan(self, active_windows: List[Dict]) -> Optional[Dict]:
         """Evaluate all windows/markets, return best candidate or None."""
+        self._eval_opp_seen.clear()
         now = time.time()
         ob_fetches_this_tick = 0
         candidates: List[Dict] = []
@@ -2714,15 +2732,21 @@ class OpportunityScanner:
                             "total_ob_depth": total_depth,
                             "convergence_velocity": self._scanner_convergence_velocity(ticker),
                         })
-                        self._state.insert_evaluated_opportunity(
-                            ticker, window["event_ticker"], asset,
-                            "price_out_of_range",
-                            rejection_reason=f"best_ask {best_ask}¢ outside range",
-                            spot_price=spot, threshold=threshold,
-                            volatility=blended_rv, market_price=best_ask,
-                            seconds_to_close=seconds_remaining,
-                            calibrated_prob=cal_prob,
-                            vol_regime=vol_est["regime"])
+                        _dedup_key = (ticker, "price_out_of_range")
+                        if _dedup_key not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dedup_key)
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset,
+                                "price_out_of_range",
+                                rejection_reason=f"best_ask {best_ask}¢ outside range",
+                                spot_price=spot, threshold=threshold,
+                                volatility=blended_rv, market_price=best_ask,
+                                seconds_to_close=seconds_remaining,
+                                calibrated_prob=cal_prob,
+                                vol_regime=vol_est["regime"],
+                                breakeven_wr=best_ask / 100.0,
+                                ask_depth=ask_depth,
+                                best_ask_source=best_ask_source)
                     except Exception:
                         pass
                     continue
@@ -2811,18 +2835,27 @@ class OpportunityScanner:
                             "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                             "ofa_adjustment": round(ofa_adjustment, 6),
                         })
-                        self._state.insert_evaluated_opportunity(
-                            ticker, window["event_ticker"], asset,
-                            "insufficient_edge",
-                            rejection_reason=f"net_edge {fee_adjusted_edge:.4f} < min",
-                            spot_price=spot, threshold=threshold,
-                            volatility=blended_rv, market_price=best_ask,
-                            seconds_to_close=seconds_remaining,
-                            calibrated_prob=final_prob, edge=edge,
-                            ofa_adjustment=ofa_adjustment,
-                            z_score=z_score,
-                            vol_regime=vol_est["regime"],
-                            calibrated_prob_raw=calibrated_prob_raw)
+                        _dedup_key = (ticker, "insufficient_edge")
+                        if _dedup_key not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dedup_key)
+                            _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset,
+                                "insufficient_edge",
+                                rejection_reason=f"net_edge {fee_adjusted_edge:.4f} < min",
+                                spot_price=spot, threshold=threshold,
+                                volatility=blended_rv, market_price=best_ask,
+                                seconds_to_close=seconds_remaining,
+                                calibrated_prob=final_prob, edge=edge,
+                                ofa_adjustment=ofa_adjustment,
+                                z_score=z_score,
+                                vol_regime=vol_est["regime"],
+                                calibrated_prob_raw=calibrated_prob_raw,
+                                breakeven_wr=best_ask / 100.0,
+                                expected_value=round(_ev, 2),
+                                ask_depth=ask_depth,
+                                best_ask_source=best_ask_source,
+                                ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none")
                     except Exception:
                         pass
                     continue
@@ -2859,20 +2892,30 @@ class OpportunityScanner:
                             "edge": round(edge, 6),
                             "ofa_adjustment": round(ofa_adjustment, 6),
                         })
-                        self._state.insert_evaluated_opportunity(
-                            ticker, window["event_ticker"], asset,
-                            "zero_sizing",
-                            rejection_reason="0 contracts from sizing",
-                            spot_price=spot, threshold=threshold,
-                            volatility=blended_rv, market_price=best_ask,
-                            seconds_to_close=seconds_remaining,
-                            calibrated_prob=final_prob, edge=edge,
-                            ofa_adjustment=ofa_adjustment,
-                            z_score=z_score,
-                            vol_regime=vol_est["regime"],
-                            calibrated_prob_raw=calibrated_prob_raw,
-                            kelly_f=sizing["kelly_f"],
-                            position_size=0)
+                        _dedup_key = (ticker, "zero_sizing")
+                        if _dedup_key not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dedup_key)
+                            _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset,
+                                "zero_sizing",
+                                rejection_reason="0 contracts from sizing",
+                                spot_price=spot, threshold=threshold,
+                                volatility=blended_rv, market_price=best_ask,
+                                seconds_to_close=seconds_remaining,
+                                calibrated_prob=final_prob, edge=edge,
+                                ofa_adjustment=ofa_adjustment,
+                                z_score=z_score,
+                                vol_regime=vol_est["regime"],
+                                calibrated_prob_raw=calibrated_prob_raw,
+                                kelly_f=sizing["kelly_f"],
+                                position_size=0,
+                                breakeven_wr=best_ask / 100.0,
+                                expected_value=round(_ev, 2),
+                                drawdown_scaler=sizing["drawdown_scaler"],
+                                ask_depth=ask_depth,
+                                best_ask_source=best_ask_source,
+                                ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none")
                     except Exception:
                         pass
                     continue
@@ -2951,21 +2994,31 @@ class OpportunityScanner:
                             "ofa_adjustment": round(ofa_adjustment, 6),
                             "composite_score": strategy_scores.get("composite"),
                         })
-                        self._state.insert_evaluated_opportunity(
-                            ticker, window["event_ticker"], asset,
-                            "strategy_wait",
-                            rejection_reason="WAIT strategy",
-                            spot_price=spot, threshold=threshold,
-                            volatility=blended_rv, market_price=best_ask,
-                            seconds_to_close=seconds_remaining,
-                            calibrated_prob=final_prob, edge=edge,
-                            ofa_adjustment=ofa_adjustment,
-                            strategy=strategy,
-                            z_score=z_score,
-                            vol_regime=vol_est["regime"],
-                            calibrated_prob_raw=calibrated_prob_raw,
-                            kelly_f=sizing["kelly_f"],
-                            position_size=sizing["contracts"])
+                        _dedup_key = (ticker, "strategy_wait")
+                        if _dedup_key not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dedup_key)
+                            _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset,
+                                "strategy_wait",
+                                rejection_reason="WAIT strategy",
+                                spot_price=spot, threshold=threshold,
+                                volatility=blended_rv, market_price=best_ask,
+                                seconds_to_close=seconds_remaining,
+                                calibrated_prob=final_prob, edge=edge,
+                                ofa_adjustment=ofa_adjustment,
+                                strategy=strategy,
+                                z_score=z_score,
+                                vol_regime=vol_est["regime"],
+                                calibrated_prob_raw=calibrated_prob_raw,
+                                kelly_f=sizing["kelly_f"],
+                                position_size=sizing["contracts"],
+                                breakeven_wr=best_ask / 100.0,
+                                expected_value=round(_ev, 2),
+                                drawdown_scaler=sizing["drawdown_scaler"],
+                                ask_depth=ask_depth,
+                                best_ask_source=best_ask_source,
+                                ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none")
                     except Exception:
                         pass
                     continue
@@ -3095,21 +3148,34 @@ class OpportunityScanner:
                             "edge": c["edge"],
                             "ofa_adjustment": c.get("ofa_adjustment"),
                         })
-                        self._state.insert_evaluated_opportunity(
-                            c["ticker"], c["event_ticker"], c["asset"],
-                            "single_asset_selection",
-                            rejection_reason=f"lost to {winner['asset']}",
-                            spot_price=c["spot"], threshold=c["threshold"],
-                            volatility=c["blended_rv"], market_price=c["best_yes_ask"],
-                            seconds_to_close=c["seconds_to_close"],
-                            calibrated_prob=c["calibrated_prob"], edge=c["edge"],
-                            ofa_adjustment=c.get("ofa_adjustment"),
-                            strategy=c.get("strategy"),
-                            z_score=c.get("z_score"),
-                            vol_regime=c.get("vol_regime"),
-                            calibrated_prob_raw=c.get("calibrated_prob_raw"),
-                            kelly_f=c.get("kelly_f"),
-                            position_size=c.get("position_size"))
+                        _dedup_key = (c["ticker"], "single_asset_selection")
+                        if _dedup_key not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dedup_key)
+                            _ba = c["best_yes_ask"]
+                            _cp = c["calibrated_prob"]
+                            _fee1 = calculate_taker_fee(1, _ba)
+                            _ev = (_cp * (100 - _ba)) - ((1 - _cp) * _ba) - _fee1
+                            self._state.insert_evaluated_opportunity(
+                                c["ticker"], c["event_ticker"], c["asset"],
+                                "single_asset_selection",
+                                rejection_reason=f"lost to {winner['asset']}",
+                                spot_price=c["spot"], threshold=c["threshold"],
+                                volatility=c["blended_rv"], market_price=_ba,
+                                seconds_to_close=c["seconds_to_close"],
+                                calibrated_prob=_cp, edge=c["edge"],
+                                ofa_adjustment=c.get("ofa_adjustment"),
+                                strategy=c.get("strategy"),
+                                z_score=c.get("z_score"),
+                                vol_regime=c.get("vol_regime"),
+                                calibrated_prob_raw=c.get("calibrated_prob_raw"),
+                                kelly_f=c.get("kelly_f"),
+                                position_size=c.get("position_size"),
+                                breakeven_wr=_ba / 100.0,
+                                expected_value=round(_ev, 2),
+                                drawdown_scaler=c.get("drawdown_scaler"),
+                                ask_depth=c.get("ob_snapshot", {}).get("ask_depth"),
+                                best_ask_source=c.get("best_ask_source"),
+                                ofa_confidence=c.get("ofa_confidence"))
                     except Exception:
                         pass
 
@@ -3386,23 +3452,35 @@ class OrderExecutor:
                     "ofa_adjustment": candidate.get("ofa_adjustment"),
                     "balance_at_scan": candidate.get("balance_at_scan"),
                 })
-                self._state.insert_evaluated_opportunity(
-                    candidate["ticker"], candidate["event_ticker"],
-                    candidate["asset"], "observation_trade",
-                    spot_price=candidate.get("spot"),
-                    threshold=candidate.get("threshold"),
-                    volatility=candidate.get("blended_rv"),
-                    market_price=candidate.get("best_yes_ask"),
-                    seconds_to_close=candidate.get("seconds_to_close"),
-                    calibrated_prob=candidate.get("calibrated_prob"),
-                    edge=candidate.get("edge"),
-                    ofa_adjustment=candidate.get("ofa_adjustment"),
-                    strategy=candidate.get("strategy"),
-                    position_size=candidate.get("position_size"),
-                    kelly_f=candidate.get("kelly_f"),
-                    z_score=candidate.get("z_score"),
-                    vol_regime=candidate.get("vol_regime"),
-                    calibrated_prob_raw=candidate.get("calibrated_prob_raw"))
+                if not hasattr(self, '_last_obs_ticker') or self._last_obs_ticker != candidate['ticker']:
+                    self._last_obs_ticker = candidate['ticker']
+                    _ba = candidate.get("best_yes_ask")
+                    _cp = candidate.get("calibrated_prob")
+                    _fee1 = calculate_taker_fee(1, _ba) if _ba else 0
+                    _ev = (_cp * (100 - _ba)) - ((1 - _cp) * _ba) - _fee1 if (_ba and _cp) else None
+                    self._state.insert_evaluated_opportunity(
+                        candidate["ticker"], candidate["event_ticker"],
+                        candidate["asset"], "observation_trade",
+                        spot_price=candidate.get("spot"),
+                        threshold=candidate.get("threshold"),
+                        volatility=candidate.get("blended_rv"),
+                        market_price=_ba,
+                        seconds_to_close=candidate.get("seconds_to_close"),
+                        calibrated_prob=_cp,
+                        edge=candidate.get("edge"),
+                        ofa_adjustment=candidate.get("ofa_adjustment"),
+                        strategy=candidate.get("strategy"),
+                        position_size=candidate.get("position_size"),
+                        kelly_f=candidate.get("kelly_f"),
+                        z_score=candidate.get("z_score"),
+                        vol_regime=candidate.get("vol_regime"),
+                        calibrated_prob_raw=candidate.get("calibrated_prob_raw"),
+                        breakeven_wr=_ba / 100.0 if _ba else None,
+                        expected_value=round(_ev, 2) if _ev is not None else None,
+                        drawdown_scaler=candidate.get("drawdown_scaler"),
+                        ask_depth=candidate.get("ob_snapshot", {}).get("ask_depth"),
+                        best_ask_source=candidate.get("best_ask_source"),
+                        ofa_confidence=candidate.get("ofa_confidence"))
             except Exception:
                 pass
             return None
