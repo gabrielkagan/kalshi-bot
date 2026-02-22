@@ -824,6 +824,8 @@ class StateManager:
                 market_result TEXT,
                 counterfactual_pnl INTEGER
             );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_opp_ticker_stage
+                ON evaluated_opportunities(ticker, filter_stage);
             CREATE INDEX IF NOT EXISTS idx_eval_opp_status
                 ON evaluated_opportunities(status);
             CREATE INDEX IF NOT EXISTS idx_eval_opp_ticker
@@ -1118,7 +1120,7 @@ class StateManager:
         now = datetime.datetime.utcnow().isoformat() + "Z"
         try:
             self.conn.execute("""
-                INSERT INTO evaluated_opportunities
+                INSERT OR REPLACE INTO evaluated_opportunities
                     (ticker, event_ticker, asset, filter_stage, rejection_reason,
                      evaluation_time, spot_price, threshold, volatility,
                      market_price, seconds_to_close, calibrated_prob,
