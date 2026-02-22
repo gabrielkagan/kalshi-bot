@@ -57,24 +57,21 @@ jobs:
       - name: Render whitepaper with stats
         run: python3 scripts/build_whitepaper.py
 
-      - name: Install pandoc and LaTeX
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-latex-extra
-
       - name: Generate PDF
-        run: |
-          pandoc whitepaper_rendered.md \
-            -o whitepaper.pdf \
-            --from markdown \
-            --pdf-engine=xelatex \
-            --toc \
-            --toc-depth=3 \
-            -V geometry:margin=1in \
-            -V fontsize=11pt \
-            -V documentclass=article \
-            -V mainfont="DejaVu Serif" \
-            -V monofont="DejaVu Sans Mono" \
+        uses: docker://pandoc/extra:latest
+        with:
+          args: >-
+            whitepaper_rendered.md
+            -o whitepaper.pdf
+            --from markdown
+            --pdf-engine=xelatex
+            --toc
+            --toc-depth=3
+            -V geometry:margin=1in
+            -V fontsize=11pt
+            -V documentclass=article
+            -V mainfont="DejaVu Serif"
+            -V monofont="DejaVu Sans Mono"
             --metadata title="Kalshi Crypto Trading Bot — Technical Whitepaper"
 
       - name: Commit PDF
