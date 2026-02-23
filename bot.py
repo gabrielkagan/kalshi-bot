@@ -37,8 +37,7 @@ SERIES_TICKERS = {
 }
 MIN_ENTRY_PRICE = 88              # cents (data: 88-96c is 14/14 = 100% WR; all losses were 83-85c)
 MAX_ENTRY_PRICE = 99              # cents
-MAX_CONTRACTS_PER_TRADE = 20
-MAX_RISK_PER_TRADE = 1.00        # 100% of balance (observation mode — no real trades)
+MAX_RISK_PER_TRADE = 0.50         # max 50% of bankroll at risk per trade (scales with balance)
 MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 180    # start scanning 3 min before close (data: <3min is 10/10; all losses were 3-5min)
 ONE_ASSET_PER_WINDOW = True
@@ -268,7 +267,12 @@ MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advan
 BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
 
 # ─── Position Sizing ───────────────────────────────────────────────────────
-KELLY_FRACTION = 0.25             # quarter-Kelly
+# Edge-based tiered sizing: higher edge → more aggressive
+SIZING_TIERS = [                  # (min_edge, risk_fraction)
+    (0.05, 0.50),                 # edge ≥ 5%  → risk 50% of bankroll
+    (0.03, 0.35),                 # edge ≥ 3%  → risk 35% of bankroll
+    (0.015, 0.20),                # edge ≥ 1.5% → risk 20% of bankroll
+]
 DRAWDOWN_HALF_THRESHOLD = 0.90    # below 90% of starting balance → halve size
 DRAWDOWN_QUARTER_THRESHOLD = 0.80 # below 80% → quarter size
 
@@ -4777,21 +4781,17 @@ class CalibrationEngine:
 # ═════════════════════════════════════════════════════════════════════════════
 
 class PositionSizer:
-    """Quarter-Kelly position sizing with drawdown scaling.
+    """Edge-tiered position sizing with drawdown scaling.
 
-    Kelly fraction:
-        f = 0.25 × ((b×p − q) / b)
-    where b = (100−price)/price (net odds), p = win_prob, q = 1−p.
+    Sizing tiers (from SIZING_TIERS):
+        edge ≥ 5%  → risk 50% of bankroll
+        edge ≥ 3%  → risk 35% of bankroll
+        edge ≥ 1.5% → risk 20% of bankroll
 
-    Contracts = floor(f × bankroll / price_in_dollars).
+    Contracts = floor(bankroll × risk_fraction / price).
 
-    Hard limits: min 1 contract (if edge exists), max MAX_CONTRACTS_PER_TRADE,
-    max MAX_RISK_PER_TRADE of bankroll at risk.
-
-    If Kelly fraction is negative (no edge), returns 0 contracts.
-
-    Drawdown scaler: halves position below 90% of starting balance,
-    quarters it below 80%.
+    Hard cap: MAX_RISK_PER_TRADE of bankroll (safety ceiling).
+    Drawdown scaler: halves below 90%, quarters below 80%.
     """
 
     def __init__(self, starting_balance_cents: int = 0):
@@ -4819,32 +4819,36 @@ class PositionSizer:
             result["reason"] = "no balance"
             return result
 
-        # Fee-adjusted odds: subtract taker fee from win profit, add to loss
+        # Compute fee-adjusted edge
         fee_1c = calculate_taker_fee(1, price_cents)
-        # b = net odds = profit per dollar risked (fee-adjusted)
         b = (100 - price_cents - fee_1c) / (price_cents + fee_1c)
         p = win_prob
         q = 1.0 - p
-
-        # Full Kelly edge: (b*p - q) / b
         kelly_edge = (b * p - q) / b
+        result["kelly_f"] = round(kelly_edge, 6)
+
         if kelly_edge <= 0:
-            result["kelly_f"] = round(KELLY_FRACTION * kelly_edge, 6)
             result["reason"] = "negative edge (Kelly <= 0)"
             return result
 
-        # Quarter-Kelly fraction
-        f = KELLY_FRACTION * kelly_edge
-        result["kelly_f"] = round(f, 6)
+        # Edge-based tier selection: higher edge → larger risk fraction
+        edge = win_prob - price_cents / 100.0
+        risk_fraction = 0.0
+        for min_edge, frac in SIZING_TIERS:
+            if edge >= min_edge:
+                risk_fraction = frac
+                break
 
-        # Convert to contracts: floor(f × bankroll_dollars / price_dollars)
-        bankroll_dollars = balance_cents / 100.0
-        price_dollars = price_cents / 100.0
-        raw_contracts = math.floor(f * bankroll_dollars / price_dollars)
+        if risk_fraction <= 0:
+            result["reason"] = "edge below minimum tier"
+            return result
+
+        # Contracts = floor(bankroll × risk_fraction / price)
+        raw_contracts = math.floor((balance_cents * risk_fraction) / price_cents)
         result["raw_contracts"] = raw_contracts
 
         if raw_contracts <= 0:
-            result["reason"] = "Kelly size rounds to 0"
+            result["reason"] = "risk budget rounds to 0 contracts"
             return result
 
         # Apply drawdown scaler
@@ -4852,15 +4856,14 @@ class PositionSizer:
         result["drawdown_scaler"] = scaler
         scaled_contracts = math.floor(raw_contracts * scaler)
 
-        # Hard limit: max contracts that fit in MAX_RISK_PER_TRADE of bankroll
+        # Safety ceiling: MAX_RISK_PER_TRADE of bankroll
         max_by_risk = int((balance_cents * MAX_RISK_PER_TRADE) / price_cents)
 
         if max_by_risk < 1:
             result["reason"] = "balance too small for 1 contract within risk limit"
             return result
 
-        # Apply all caps
-        contracts = min(scaled_contracts, MAX_CONTRACTS_PER_TRADE, max_by_risk)
+        contracts = min(scaled_contracts, max_by_risk)
 
         # Enforce minimum 1 when edge exists and risk budget allows
         contracts = max(contracts, 1)
