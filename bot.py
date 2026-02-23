@@ -99,6 +99,25 @@ JUMP_DECAY_MAX_BOOST = 1.0           # boost starts at 1.0 (total = 2.0×)
 JUMP_DECAY_MIN_BOOST = 0.01          # below this = regime "normal"
 JUMP_MAX_HISTORY = 10                # max jump events per asset
 
+# ─── Adaptive Jump Detection (Tier System) ────────────────────────────────
+JUMP_ADAPTIVE_SHADOW_MODE = True        # True = log only, legacy drives regime
+JUMP_ADAPTIVE_SUBSAMPLE = 3             # Every 3rd 5s tick = 15s returns
+JUMP_ADAPTIVE_EWMA_LAMBDA = 0.94       # EWMA decay for variance
+JUMP_ADAPTIVE_EWMA_INIT_RETURNS = 10   # Min 15s returns before EWMA trusted
+JUMP_ADAPTIVE_PCTILE_WINDOW = 180      # 180 × 15s = 45 min rolling window
+JUMP_ADAPTIVE_PCTILE_LEVEL = 0.995     # 99.5th percentile
+JUMP_ADAPTIVE_SIGMA_MULT = 4.0         # |r| > 4σ_EWMA threshold
+JUMP_ADAPTIVE_PCTILE_MIN_OBS = 30      # Min obs before percentile trusted
+JUMP_ADAPTIVE_DECAY_TAU = 64.93        # 45/ln(2), half-life = 45s
+JUMP_ADAPTIVE_DECAY_MAX_BOOST = 1.5    # Base boost per jump (magnitude-scaled)
+JUMP_ADAPTIVE_DECAY_MIN_BOOST = 0.01   # Below this = "normal"
+JUMP_ADAPTIVE_DECAY_CAP = 5.0          # Max total multiplier
+JUMP_ADAPTIVE_MAG_SCALE_BASE = 4.0     # Magnitude scaling denominator
+JUMP_ADAPTIVE_MAG_CAP = 3.0            # Cap magnitude ratio at 3x
+JUMP_ADAPTIVE_MAX_HISTORY = 10         # Max events per asset
+JUMP_ADAPTIVE_STATE_PATH = "jump_adaptive_state.json"
+JUMP_ADAPTIVE_SAVE_INTERVAL = 300.0    # Save EWMA/percentile state every 5 min
+
 # ─── EGARCH(1,1) Estimation ──────────────────────────────────────────────
 EGARCH_SHADOW_MODE = True               # True = compute/log only, don't affect blended_rv
 EGARCH_STATE_PATH = "egarch_state.json"
@@ -2194,6 +2213,19 @@ class VolatilityEngine:
         self._last_return_time: Dict[str, float] = {}
         self._jump_events: Dict[str, List[float]] = {a: [] for a in ASSETS}
         self._cache: Dict[str, Optional[Dict]] = {}
+        # ── Adaptive jump detection state ──
+        self._adaptive_tick_counter: Dict[str, int] = {a: 0 for a in ASSETS}
+        self._adaptive_returns_15s: Dict[str, deque] = {
+            a: deque(maxlen=JUMP_ADAPTIVE_PCTILE_WINDOW) for a in ASSETS
+        }
+        self._adaptive_ewma_var: Dict[str, Optional[float]] = {a: None for a in ASSETS}
+        self._adaptive_abs_returns: Dict[str, deque] = {
+            a: deque(maxlen=JUMP_ADAPTIVE_PCTILE_WINDOW) for a in ASSETS
+        }
+        self._adaptive_jump_events: Dict[str, List] = {a: [] for a in ASSETS}
+        self._adaptive_last_save: float = 0.0
+        self._adaptive_total_jumps: Dict[str, int] = {a: 0 for a in ASSETS}
+        self._load_adaptive_state()
         # Adaptive RK bandwidth diagnostics
         self._rk_noise_history: Dict[str, deque] = {
             a: deque(maxlen=720) for a in ASSETS  # 720 = 1h of 5s ticks
@@ -2234,6 +2266,52 @@ class VolatilityEngine:
                 if self._egarch is not None:
                     self._egarch.record_return(asset, log_return)
 
+                # Adaptive jump detection (Tier 1: subsample to 15s)
+                adaptive_result = None
+                return_15s = self._adaptive_subsample_return(asset, log_return, now)
+                if return_15s is not None:
+                    adaptive_result = self._adaptive_jump_test(asset, return_15s, now)
+                    if adaptive_result["is_jump"]:
+                        boost = (JUMP_ADAPTIVE_DECAY_MAX_BOOST
+                                 * min(JUMP_ADAPTIVE_MAG_CAP, adaptive_result["magnitude_ratio"])
+                                 / JUMP_ADAPTIVE_MAG_SCALE_BASE)
+                        self._record_adaptive_jump_event(asset, now, adaptive_result["magnitude_ratio"])
+                        if JUMP_ADAPTIVE_SHADOW_MODE:
+                            logging.info(
+                                "Jump detected [adaptive-shadow]: %s r_15s=%.6f "
+                                "ewma_σ=%.6f threshold=%.6f ratio=%.2f n=%d boost=%.3f",
+                                asset, adaptive_result["return_15s"],
+                                adaptive_result["ewma_sigma"],
+                                adaptive_result["effective_threshold"],
+                                adaptive_result["magnitude_ratio"],
+                                adaptive_result["n_obs_15s"], boost)
+                        else:
+                            self._record_jump_event(asset, now)
+                            logging.info(
+                                "Jump detected [adaptive]: %s r_15s=%.6f "
+                                "ewma_σ=%.6f threshold=%.6f ratio=%.2f n=%d boost=%.3f",
+                                asset, adaptive_result["return_15s"],
+                                adaptive_result["ewma_sigma"],
+                                adaptive_result["effective_threshold"],
+                                adaptive_result["magnitude_ratio"],
+                                adaptive_result["n_obs_15s"], boost)
+                    elif adaptive_result["n_obs_15s"] % 60 == 0 and adaptive_result["n_obs_15s"] > 0:
+                        logging.info(
+                            "Adaptive jump health %s: ewma_σ=%.6f pctile=%.6f "
+                            "sigma_thresh=%.6f n=%d total_jumps=%d",
+                            asset, adaptive_result["ewma_sigma"],
+                            adaptive_result["pctile_threshold"]
+                            if adaptive_result["pctile_threshold"] != float('inf') else 0.0,
+                            adaptive_result["sigma_threshold"]
+                            if adaptive_result["sigma_threshold"] != float('inf') else 0.0,
+                            adaptive_result["n_obs_15s"],
+                            self._adaptive_total_jumps.get(asset, 0))
+                    # Periodic save
+                    now_save = time.time()
+                    if now_save - self._adaptive_last_save >= JUMP_ADAPTIVE_SAVE_INTERVAL:
+                        self._save_adaptive_state()
+                        self._adaptive_last_save = now_save
+
                 # Check for jump against current estimate (before updating cache)
                 estimate = self._compute(asset, now)
                 if estimate and estimate["blended_rv"] > 0:
@@ -2246,33 +2324,42 @@ class VolatilityEngine:
                         log_return, lm_local_bv, n_returns)
                     ctz_jump = estimate.get("_ctz_jump_detected", False)
 
-                    if JUMP_SHADOW_MODE:
-                        # Legacy test drives regime; new tests logged only
-                        if legacy_jump:
-                            self._record_jump_event(asset, now)
-                            logging.info(
-                                "Jump detected [legacy]: %s return=%.6f rv=%.6f "
-                                "lm=%.4f/%.4f ctz=%s",
-                                asset, log_return, estimate["blended_rv"],
-                                lm_stat, lm_crit,
-                                f"{estimate.get('ctz_stat', 0):.4f}")
-                        elif lm_jump or ctz_jump:
-                            logging.info(
-                                "Jump detected [shadow]: %s return=%.6f rv=%.6f "
-                                "lm=%.4f/%.4f(hit=%s) ctz=%s(hit=%s)",
-                                asset, log_return, estimate["blended_rv"],
-                                lm_stat, lm_crit, lm_jump,
-                                f"{estimate.get('ctz_stat', 0):.4f}", ctz_jump)
+                    if JUMP_ADAPTIVE_SHADOW_MODE:
+                        # Adaptive in shadow: legacy LM/CTZ still run as before
+                        if JUMP_SHADOW_MODE:
+                            # Legacy test drives regime; new tests logged only
+                            if legacy_jump:
+                                self._record_jump_event(asset, now)
+                                logging.info(
+                                    "Jump detected [legacy]: %s return=%.6f rv=%.6f "
+                                    "lm=%.4f/%.4f ctz=%s",
+                                    asset, log_return, estimate["blended_rv"],
+                                    lm_stat, lm_crit,
+                                    f"{estimate.get('ctz_stat', 0):.4f}")
+                            elif lm_jump or ctz_jump:
+                                logging.info(
+                                    "Jump detected [shadow]: %s return=%.6f rv=%.6f "
+                                    "lm=%.4f/%.4f(hit=%s) ctz=%s(hit=%s)",
+                                    asset, log_return, estimate["blended_rv"],
+                                    lm_stat, lm_crit, lm_jump,
+                                    f"{estimate.get('ctz_stat', 0):.4f}", ctz_jump)
+                        else:
+                            if lm_jump or ctz_jump:
+                                self._record_jump_event(asset, now)
+                                logging.info(
+                                    "Jump detected [new]: %s return=%.6f rv=%.6f "
+                                    "lm=%.4f/%.4f(hit=%s) ctz=%s(hit=%s)",
+                                    asset, log_return, estimate["blended_rv"],
+                                    lm_stat, lm_crit, lm_jump,
+                                    f"{estimate.get('ctz_stat', 0):.4f}", ctz_jump)
                     else:
-                        # New tests drive regime
-                        if lm_jump or ctz_jump:
-                            self._record_jump_event(asset, now)
-                            logging.info(
-                                "Jump detected [new]: %s return=%.6f rv=%.6f "
-                                "lm=%.4f/%.4f(hit=%s) ctz=%s(hit=%s)",
-                                asset, log_return, estimate["blended_rv"],
-                                lm_stat, lm_crit, lm_jump,
-                                f"{estimate.get('ctz_stat', 0):.4f}", ctz_jump)
+                        # Adaptive drives regime — LM/CTZ logged at DEBUG only
+                        logging.debug(
+                            "Jump test [legacy-debug]: %s return=%.6f rv=%.6f "
+                            "legacy=%s lm=%.4f/%.4f ctz=%s",
+                            asset, log_return, estimate["blended_rv"],
+                            legacy_jump, lm_stat, lm_crit,
+                            f"{estimate.get('ctz_stat', 0):.4f}")
 
                 # Seed EGARCH variance from RK if needed, then recursive update
                 if self._egarch is not None:
@@ -2304,6 +2391,186 @@ class VolatilityEngine:
         events.append(timestamp)
         if len(events) > JUMP_MAX_HISTORY:
             del events[:-JUMP_MAX_HISTORY]
+
+    # ── Adaptive jump detection methods ──────────────────────────────────
+
+    def _adaptive_subsample_return(self, asset: str, log_return_5s: float, now: float) -> Optional[float]:
+        """Subsample to 15s returns by summing every 3rd group of 5s returns."""
+        self._adaptive_tick_counter[asset] = self._adaptive_tick_counter.get(asset, 0) + 1
+        if self._adaptive_tick_counter[asset] % JUMP_ADAPTIVE_SUBSAMPLE != 0:
+            return None
+        # Sum the last SUBSAMPLE entries from the 5s return buffer
+        returns = self._returns.get(asset)
+        if returns is None or len(returns) < JUMP_ADAPTIVE_SUBSAMPLE:
+            return None
+        return sum(list(returns)[-JUMP_ADAPTIVE_SUBSAMPLE:])
+
+    def _adaptive_jump_test(self, asset: str, return_15s: float, now: float) -> dict:
+        """Core adaptive jump detection: EWMA variance + rolling percentile."""
+        abs_r = abs(return_15s)
+
+        # Compute thresholds from HISTORICAL data (before appending current return)
+        n_hist = len(self._adaptive_abs_returns[asset])
+
+        # Sigma threshold from pre-update EWMA
+        pre_ewma_var = self._adaptive_ewma_var.get(asset)
+        if pre_ewma_var is not None and pre_ewma_var > 0:
+            ewma_sigma = math.sqrt(pre_ewma_var)
+            sigma_threshold = JUMP_ADAPTIVE_SIGMA_MULT * ewma_sigma
+        else:
+            ewma_sigma = 0.0
+            sigma_threshold = float('inf')
+
+        # Rolling percentile from historical |returns| (before appending current)
+        if n_hist >= JUMP_ADAPTIVE_PCTILE_MIN_OBS:
+            sorted_abs = sorted(self._adaptive_abs_returns[asset])
+            idx = min(int(JUMP_ADAPTIVE_PCTILE_LEVEL * len(sorted_abs)), len(sorted_abs) - 1)
+            pctile_threshold = sorted_abs[idx]
+        else:
+            pctile_threshold = float('inf')
+
+        # Now append current return to buffers
+        self._adaptive_returns_15s[asset].append(return_15s)
+        self._adaptive_abs_returns[asset].append(abs_r)
+        n_obs = len(self._adaptive_returns_15s[asset])
+
+        # EWMA variance update (after threshold computation)
+        r_sq = return_15s * return_15s
+        if pre_ewma_var is None:
+            if n_obs >= 2:
+                # Initialize from sample variance
+                buf = list(self._adaptive_returns_15s[asset])
+                mean_r = sum(buf) / len(buf)
+                ewma_var = sum((x - mean_r) ** 2 for x in buf) / (len(buf) - 1)
+                self._adaptive_ewma_var[asset] = ewma_var
+        else:
+            ewma_var = JUMP_ADAPTIVE_EWMA_LAMBDA * pre_ewma_var + (1 - JUMP_ADAPTIVE_EWMA_LAMBDA) * r_sq
+            self._adaptive_ewma_var[asset] = ewma_var
+
+        effective_threshold = max(sigma_threshold, pctile_threshold)
+
+        # Jump detection (guarded by warmup)
+        if n_obs >= JUMP_ADAPTIVE_EWMA_INIT_RETURNS and effective_threshold > 0 and effective_threshold != float('inf'):
+            is_jump = abs_r > effective_threshold
+        else:
+            is_jump = False
+
+        magnitude_ratio = abs_r / effective_threshold if effective_threshold > 0 and effective_threshold != float('inf') else 0.0
+
+        return {
+            "is_jump": is_jump,
+            "ewma_sigma": ewma_sigma,
+            "sigma_threshold": sigma_threshold,
+            "pctile_threshold": pctile_threshold,
+            "effective_threshold": effective_threshold,
+            "magnitude_ratio": magnitude_ratio,
+            "n_obs_15s": n_obs,
+            "return_15s": return_15s,
+        }
+
+    def _record_adaptive_jump_event(self, asset: str, timestamp: float, magnitude_ratio: float):
+        """Record an adaptive jump event with magnitude-scaled boost."""
+        capped_ratio = min(JUMP_ADAPTIVE_MAG_CAP, magnitude_ratio)
+        boost = JUMP_ADAPTIVE_DECAY_MAX_BOOST * capped_ratio / JUMP_ADAPTIVE_MAG_SCALE_BASE
+        self._adaptive_jump_events[asset].append((timestamp, boost))
+        if len(self._adaptive_jump_events[asset]) > JUMP_ADAPTIVE_MAX_HISTORY:
+            del self._adaptive_jump_events[asset][:-JUMP_ADAPTIVE_MAX_HISTORY]
+        self._adaptive_total_jumps[asset] = self._adaptive_total_jumps.get(asset, 0) + 1
+
+    def _adaptive_decay_multiplier(self, asset: str, now: float) -> Tuple[float, str]:
+        """Compute adaptive jump decay multiplier from event history."""
+        events = self._adaptive_jump_events.get(asset, [])
+        if not events:
+            return (1.0, "normal")
+        total_boost = sum(
+            boost * math.exp(-(now - ts) / JUMP_ADAPTIVE_DECAY_TAU)
+            for ts, boost in events if ts <= now
+        )
+        if total_boost > JUMP_ADAPTIVE_DECAY_MIN_BOOST:
+            return (min(JUMP_ADAPTIVE_DECAY_CAP, 1.0 + total_boost), "elevated")
+        return (1.0, "normal")
+
+    def _save_adaptive_state(self):
+        """Persist adaptive jump detection state to JSON (atomic write)."""
+        state = {}
+        for asset in ASSETS:
+            state[asset] = {
+                "ewma_var": self._adaptive_ewma_var.get(asset),
+                "tick_counter": self._adaptive_tick_counter.get(asset, 0),
+                "total_jumps": self._adaptive_total_jumps.get(asset, 0),
+                "returns_15s": list(self._adaptive_returns_15s.get(asset, [])),
+                "abs_returns": list(self._adaptive_abs_returns.get(asset, [])),
+                "jump_events": list(self._adaptive_jump_events.get(asset, [])),
+            }
+        state["saved_at"] = time.time()
+        tmp_path = JUMP_ADAPTIVE_STATE_PATH + ".tmp"
+        try:
+            with open(tmp_path, "w") as f:
+                json.dump(state, f)
+            os.replace(tmp_path, JUMP_ADAPTIVE_STATE_PATH)
+            file_size = os.path.getsize(JUMP_ADAPTIVE_STATE_PATH) / 1024.0
+            logging.info(
+                "Adaptive jump state saved: BTC=%d ETH=%d SOL=%d XRP=%d obs (file_size=%.1fKB)",
+                len(self._adaptive_returns_15s["BTC"]),
+                len(self._adaptive_returns_15s["ETH"]),
+                len(self._adaptive_returns_15s["SOL"]),
+                len(self._adaptive_returns_15s["XRP"]),
+                file_size)
+        except Exception as e:
+            logging.warning("Failed to save adaptive jump state: %s", e)
+
+    def _load_adaptive_state(self):
+        """Restore adaptive jump detection state from JSON on startup."""
+        if not os.path.exists(JUMP_ADAPTIVE_STATE_PATH):
+            logging.info("No adaptive jump state file found, starting fresh")
+            return
+        try:
+            with open(JUMP_ADAPTIVE_STATE_PATH, "r") as f:
+                state = json.load(f)
+        except Exception as e:
+            logging.warning("Failed to load adaptive jump state: %s (starting fresh)", e)
+            return
+        saved_at = state.get("saved_at", 0)
+        for asset in ASSETS:
+            try:
+                adata = state.get(asset)
+                if not isinstance(adata, dict):
+                    continue
+                ev = adata.get("ewma_var")
+                if ev is not None and isinstance(ev, (int, float)):
+                    self._adaptive_ewma_var[asset] = float(ev)
+                tc = adata.get("tick_counter")
+                if isinstance(tc, (int, float)):
+                    self._adaptive_tick_counter[asset] = int(tc)
+                tj = adata.get("total_jumps")
+                if isinstance(tj, (int, float)):
+                    self._adaptive_total_jumps[asset] = int(tj)
+                r15 = adata.get("returns_15s")
+                if isinstance(r15, list):
+                    self._adaptive_returns_15s[asset] = deque(
+                        [float(x) for x in r15 if isinstance(x, (int, float))],
+                        maxlen=JUMP_ADAPTIVE_PCTILE_WINDOW)
+                ar = adata.get("abs_returns")
+                if isinstance(ar, list):
+                    self._adaptive_abs_returns[asset] = deque(
+                        [float(x) for x in ar if isinstance(x, (int, float))],
+                        maxlen=JUMP_ADAPTIVE_PCTILE_WINDOW)
+                je = adata.get("jump_events")
+                if isinstance(je, list):
+                    events = []
+                    for item in je:
+                        if isinstance(item, (list, tuple)) and len(item) == 2:
+                            events.append((float(item[0]), float(item[1])))
+                    self._adaptive_jump_events[asset] = events[-JUMP_ADAPTIVE_MAX_HISTORY:]
+            except Exception as e:
+                logging.warning("Adaptive jump state load failed for %s: %s (starting fresh)", asset, e)
+        logging.info(
+            "Adaptive jump state restored: BTC=%d ETH=%d SOL=%d XRP=%d obs, ewma_age=%.0fs",
+            len(self._adaptive_returns_15s["BTC"]),
+            len(self._adaptive_returns_15s["ETH"]),
+            len(self._adaptive_returns_15s["SOL"]),
+            len(self._adaptive_returns_15s["XRP"]),
+            time.time() - saved_at if saved_at else 0)
 
     # ── Kernel & statistical methods ─────────────────────────────────────
 
@@ -2854,7 +3121,7 @@ class VolatilityEngine:
                 vrp if vrp is not None else 0.0,
             )
 
-        # Step 6: Jump regime — exponential decay
+        # Step 6: Jump regime — exponential decay (legacy)
         regime = "normal"
         jump_multiplier = 1.0
         jump_events = self._jump_events.get(asset, [])
@@ -2868,12 +3135,35 @@ class VolatilityEngine:
                 jump_multiplier = min(4.0, 1.0 + total_boost)
                 blended *= jump_multiplier
 
+        # Step 6b: Adaptive jump decay
+        adaptive_multiplier, adaptive_regime = self._adaptive_decay_multiplier(asset, now)
+        if not JUMP_ADAPTIVE_SHADOW_MODE:
+            # Adaptive drives regime — undo legacy and apply adaptive
+            if jump_multiplier > 1.0:
+                blended /= jump_multiplier
+            regime = adaptive_regime
+            jump_multiplier = adaptive_multiplier
+            if adaptive_multiplier > 1.0:
+                blended *= adaptive_multiplier
+
         # Backward-compat: compute approximate seconds remaining
         jump_seconds_remaining = 0.0
         if jump_events:
             age = now - max(jump_events)
             full_decay = -JUMP_DECAY_TAU * math.log(JUMP_DECAY_MIN_BOOST / JUMP_DECAY_MAX_BOOST)
             jump_seconds_remaining = max(0.0, full_decay - age)
+
+        # Adaptive seconds remaining
+        adaptive_seconds_remaining = 0.0
+        adaptive_events = self._adaptive_jump_events.get(asset, [])
+        if adaptive_events:
+            newest_ts = max(ts for ts, _ in adaptive_events)
+            # Time until the largest single boost decays below threshold
+            max_boost = max(b for _, b in adaptive_events)
+            if max_boost > JUMP_ADAPTIVE_DECAY_MIN_BOOST:
+                full_decay_adaptive = -JUMP_ADAPTIVE_DECAY_TAU * math.log(
+                    JUMP_ADAPTIVE_DECAY_MIN_BOOST / max_boost)
+                adaptive_seconds_remaining = max(0.0, full_decay_adaptive - (now - newest_ts))
 
         return {
             # Original 7 fields (backward-compatible)
@@ -2906,6 +3196,13 @@ class VolatilityEngine:
             "ctz_jump_detected": ctz_jump,
             "jump_multiplier": round(jump_multiplier, 4),
             "jump_event_count": len(jump_events),
+            # Adaptive jump diagnostics
+            "adaptive_jump_multiplier": round(adaptive_multiplier, 4),
+            "adaptive_jump_regime": adaptive_regime,
+            "adaptive_jump_event_count": len(self._adaptive_jump_events.get(asset, [])),
+            "adaptive_seconds_remaining": round(adaptive_seconds_remaining, 1),
+            "adaptive_ewma_sigma": math.sqrt(self._adaptive_ewma_var[asset]) if self._adaptive_ewma_var.get(asset) else None,
+            "adaptive_n_obs_15s": len(self._adaptive_returns_15s.get(asset, [])),
             # EGARCH diagnostics
             "egarch_sigma": egarch_sigma,
             "egarch_n_updates": self._egarch._n_updates.get(asset, 0) if self._egarch else 0,
@@ -7616,6 +7913,14 @@ class MainLoop:
                 len(self.egarch_estimator._returns["ETH"]),
                 len(self.egarch_estimator._returns["SOL"]),
                 len(self.egarch_estimator._returns["XRP"]))
+        if hasattr(self, 'vol'):
+            self.vol._save_adaptive_state()
+            logging.info(
+                "Adaptive jump state saved on shutdown: BTC=%d ETH=%d SOL=%d XRP=%d obs",
+                len(self.vol._adaptive_returns_15s["BTC"]),
+                len(self.vol._adaptive_returns_15s["ETH"]),
+                len(self.vol._adaptive_returns_15s["SOL"]),
+                len(self.vol._adaptive_returns_15s["XRP"]))
         if hasattr(self, 'firebase'):
             self.firebase.stop()
         if hasattr(self, 'coinglass'):
