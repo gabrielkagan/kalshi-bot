@@ -2326,13 +2326,16 @@ class VolatilityEngine:
                     if self._egarch._log_var.get(asset) is None and estimate and estimate.get("rv_5min", 0) > 0:
                         self._egarch.seed_variance(asset, estimate["rv_5min"] ** 2)
                     egarch_sigma = self._egarch.recursive_update(asset, log_return)
-                    # Anomaly: sigma/rv ratio extreme
+                    # Anomaly: sigma/rv ratio extreme (throttled to 1 per asset per 5 min)
                     if egarch_sigma and estimate and estimate.get("blended_rv", 0) > 0:
                         ratio = egarch_sigma / estimate["blended_rv"]
                         if ratio > 5.0 or ratio < 0.2:
-                            logging.warning(
-                                "EGARCH %s: sigma/rv ratio extreme (%.4f) — model may be diverging",
-                                asset, ratio)
+                            throttle_key = f"egarch_ratio_{asset}"
+                            if now - self._rk_last_summary.get(throttle_key, 0) >= 300:
+                                self._rk_last_summary[throttle_key] = now
+                                logging.warning(
+                                    "EGARCH %s: sigma/rv ratio extreme (%.4f) — model may be diverging",
+                                    asset, ratio)
 
                 self._cache[asset] = self._compute(asset, now)
             else:
@@ -3859,10 +3862,10 @@ class EGARCHEstimator:
         return self._sigma.get(asset)
 
     def is_active(self, asset: str) -> bool:
-        """Returns False if EGARCH_SHADOW_MODE=True or no params."""
+        """Returns False if shadow mode, or no successful MLE fit yet."""
         if EGARCH_SHADOW_MODE:
             return False
-        return self._params.get(asset) is not None
+        return self._mle_converged.get(asset, False)
 
     def maybe_refit(self):
         """Check 2h timer, refit each asset via MLE if enough data."""
