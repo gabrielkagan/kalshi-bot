@@ -116,6 +116,13 @@ EGARCH_ALPHA_BOUNDS = (0.01, 0.5)
 EGARCH_GAMMA_BOUNDS = (-0.3, 0.3)       # both leverage directions
 EGARCH_BETA_BOUNDS = (0.80, 0.999)      # high persistence typical for crypto
 
+# ─── Adaptive RK Bandwidth (BN 2008/2009) ─────────────────────────────────
+RK_ADAPTIVE_SHADOW_MODE = True           # True = compute/log only, use old H for blended_rv
+RK_CSTAR_FLAT_TOP_PARZEN = 3.5134       # c* for flat-top Parzen kernel (BN 2009 Table 2)
+RK_NOISE_VAR_FLOOR = 1e-20              # ω² floor (prevents zero/negative)
+RK_BANDWIDTH_MAX_FRACTION = 1 / 3       # H* cap as fraction of n
+RK_MIN_RETURNS_FOR_ADAPTIVE = 20        # need ≥20 returns for reliable γ̂(1)
+
 # ─── HAR-WLS Estimation ──────────────────────────────────────────────────
 HAR_OBSERVATION_INTERVAL = 300      # 5 min between observations (seconds)
 HAR_OBSERVATION_MAXLEN = 288        # 24h of 5-min observations
@@ -2165,6 +2172,15 @@ class VolatilityEngine:
         self._last_return_time: Dict[str, float] = {}
         self._jump_events: Dict[str, List[float]] = {a: [] for a in ASSETS}
         self._cache: Dict[str, Optional[Dict]] = {}
+        # Adaptive RK bandwidth diagnostics
+        self._rk_noise_history: Dict[str, deque] = {
+            a: deque(maxlen=720) for a in ASSETS  # 720 = 1h of 5s ticks
+        }
+        self._rk_prev_omega_sq: Dict[str, float] = {}
+        self._rk_last_summary: Dict[str, float] = {a: 0.0 for a in ASSETS}
+        self._rk_adaptive_diff_count: Dict[str, int] = {a: 0 for a in ASSETS}
+        self._rk_delta_5_accum: Dict[str, List[float]] = {a: [] for a in ASSETS}
+        self._rk_delta_15_accum: Dict[str, List[float]] = {a: [] for a in ASSETS}
 
     def update(self, asset: str) -> Optional[Dict]:
         """Called every tick. Computes a new log return every 5s, returns vol estimate."""
@@ -2282,7 +2298,54 @@ class VolatilityEngine:
         return 0.0
 
     @staticmethod
-    def _realized_kernel(returns: List[float], window: int) -> float:
+    def _estimate_noise_variance(returns: List[float]) -> float:
+        """Estimate microstructure noise variance ω² from first-order autocovariance.
+
+        ω² = max(FLOOR, -γ̂(1)) where γ̂(1) = (1/(n-1)) × Σ r_i × r_{i+1}
+        Non-negative autocovariance (momentum) floors to RK_NOISE_VAR_FLOOR.
+        """
+        n = len(returns)
+        if n < 2:
+            return RK_NOISE_VAR_FLOOR
+        gamma1 = sum(returns[i] * returns[i + 1] for i in range(n - 1)) / (n - 1)
+        return max(RK_NOISE_VAR_FLOOR, -gamma1)
+
+    @staticmethod
+    def _realized_quarticity(returns: List[float], window: int) -> float:
+        """Realized Quarticity: RQ = (n/3) × Σ r_i⁴ over the window subset."""
+        subset = returns[-window:] if len(returns) >= window else returns
+        n = len(subset)
+        if n < 1:
+            return 0.0
+        return (n / 3.0) * sum(r ** 4 for r in subset)
+
+    @staticmethod
+    def _optimal_rk_bandwidth(returns: List[float], window: int, omega_sq: float) -> int:
+        """BN (2008/2009) optimal bandwidth for flat-top Parzen kernel.
+
+        H* = ceil(c* × ξ^(4/5) × n^(3/5)) where ξ² = ω² / √RQ.
+        Falls back to ceil(√n) if insufficient data or degenerate inputs.
+        """
+        subset = returns[-window:] if len(returns) >= window else returns
+        n = len(subset)
+        if n < 2:
+            return 0
+        H_floor = math.ceil(math.sqrt(n))
+        H_cap = math.floor(n * RK_BANDWIDTH_MAX_FRACTION)
+        if n < RK_MIN_RETURNS_FOR_ADAPTIVE or omega_sq <= RK_NOISE_VAR_FLOOR:
+            return H_floor
+        rq = VolatilityEngine._realized_quarticity(returns, window)
+        if rq <= 0.0:
+            return H_floor
+        sqrt_rq = math.sqrt(rq)
+        xi_sq = omega_sq / sqrt_rq
+        if xi_sq <= 0.0:
+            return H_floor
+        H_star = math.ceil(RK_CSTAR_FLAT_TOP_PARZEN * (xi_sq ** 0.8) * (n ** 0.6))
+        return max(H_floor, min(H_star, H_cap))
+
+    @staticmethod
+    def _realized_kernel(returns: List[float], window: int, bandwidth: Optional[int] = None) -> float:
         """Realized Kernel (Barndorff-Nielsen 2008) — microstructure-noise robust.
 
         RK = Σ_{h=-H}^{H} k(h/(H+1)) × γ(h)
@@ -2294,7 +2357,7 @@ class VolatilityEngine:
         if n < 2:
             return 0.0
 
-        H = math.ceil(math.sqrt(n))
+        H = bandwidth if bandwidth is not None else math.ceil(math.sqrt(n))
 
         rk = 0.0
         for h in range(-H, H + 1):
@@ -2500,10 +2563,83 @@ class VolatilityEngine:
 
         returns_list = list(returns)
 
-        # Step 1: Realized Kernel at each window
+        # Noise variance estimation (once for all windows)
+        omega_sq = self._estimate_noise_variance(returns_list)
+
+        # Step 1: Fixed-bandwidth RK (always — production path)
         rk_1min = self._realized_kernel(returns_list, VOL_WINDOW_1MIN)
         rk_5min = self._realized_kernel(returns_list, VOL_WINDOW_5MIN)
         rk_15min = self._realized_kernel(returns_list, VOL_WINDOW_15MIN)
+
+        # Adaptive bandwidth computation
+        H_fixed_5 = math.ceil(math.sqrt(min(len(returns_list), VOL_WINDOW_5MIN))) if len(returns_list) >= 2 else 0
+        H_fixed_15 = math.ceil(math.sqrt(min(len(returns_list), VOL_WINDOW_15MIN))) if len(returns_list) >= 2 else 0
+        H_adaptive_5 = self._optimal_rk_bandwidth(returns_list, VOL_WINDOW_5MIN, omega_sq)
+        H_adaptive_15 = self._optimal_rk_bandwidth(returns_list, VOL_WINDOW_15MIN, omega_sq)
+
+        # Adaptive RK (shadow comparison — 1min always same since < RK_MIN_RETURNS_FOR_ADAPTIVE)
+        ark_5min = self._realized_kernel(returns_list, VOL_WINDOW_5MIN, bandwidth=H_adaptive_5) if H_adaptive_5 != H_fixed_5 else rk_5min
+        ark_15min = self._realized_kernel(returns_list, VOL_WINDOW_15MIN, bandwidth=H_adaptive_15) if H_adaptive_15 != H_fixed_15 else rk_15min
+
+        # When shadow mode is off, use adaptive values
+        if not RK_ADAPTIVE_SHADOW_MODE:
+            rk_5min = ark_5min
+            rk_15min = ark_15min
+
+        # ── Adaptive RK logging ───────────────────────────────────────────
+        # Track noise history for diagnostics
+        self._rk_noise_history[asset].append(omega_sq)
+
+        # Per-tick DEBUG: when adaptive H differs from fixed
+        if H_adaptive_5 != H_fixed_5 or H_adaptive_15 != H_fixed_15:
+            delta_5 = round((ark_5min - rk_5min) / rk_5min, 4) if rk_5min > 0 and H_adaptive_5 != H_fixed_5 else 0.0
+            delta_15 = round((ark_15min - rk_15min) / rk_15min, 4) if rk_15min > 0 and H_adaptive_15 != H_fixed_15 else 0.0
+            logging.debug(
+                "RK adaptive %s: H_5=%d→%d H_15=%d→%d ω²=%.2e delta_5=%.4f delta_15=%.4f",
+                asset, H_fixed_5, H_adaptive_5, H_fixed_15, H_adaptive_15,
+                omega_sq, delta_5, delta_15
+            )
+            self._rk_adaptive_diff_count[asset] = self._rk_adaptive_diff_count.get(asset, 0) + 1
+            if H_adaptive_5 != H_fixed_5 and rk_5min > 0:
+                self._rk_delta_5_accum[asset].append(abs((ark_5min - rk_5min) / rk_5min))
+            if H_adaptive_15 != H_fixed_15 and rk_15min > 0:
+                self._rk_delta_15_accum[asset].append(abs((ark_15min - rk_15min) / rk_15min))
+
+        # Noise regime change (INFO): ω² changes by >10× from previous tick
+        prev_omega = self._rk_prev_omega_sq.get(asset)
+        if prev_omega is not None and prev_omega > 0 and omega_sq > 0:
+            omega_ratio = omega_sq / prev_omega
+            if omega_ratio > 10.0 or omega_ratio < 0.1:
+                logging.info(
+                    "RK noise shift %s: ω²=%.2e (prev=%.2e, ratio=%.1f×)",
+                    asset, omega_sq, prev_omega, omega_ratio
+                )
+        self._rk_prev_omega_sq[asset] = omega_sq
+
+        # Bandwidth divergence alert (WARNING): adaptive > 2× fixed
+        if H_adaptive_5 > 2 * H_fixed_5 and H_fixed_5 > 0:
+            logging.warning(
+                "RK bandwidth divergence %s: H_adaptive=%d vs H_fixed=%d (%.1f×) ω²=%.2e — high noise session",
+                asset, H_adaptive_5, H_fixed_5, H_adaptive_5 / H_fixed_5, omega_sq
+            )
+        if H_adaptive_15 > 2 * H_fixed_15 and H_fixed_15 > 0:
+            logging.warning(
+                "RK bandwidth divergence %s: H_adaptive=%d vs H_fixed=%d (%.1f×) ω²=%.2e — high noise session",
+                asset, H_adaptive_15, H_fixed_15, H_adaptive_15 / H_fixed_15, omega_sq
+            )
+
+        # Periodic summary (INFO, every 5 min)
+        if now - self._rk_last_summary.get(asset, 0) >= 300:
+            H_fixed_1 = math.ceil(math.sqrt(min(len(returns_list), VOL_WINDOW_1MIN))) if len(returns_list) >= 2 else 0
+            H_adaptive_1 = H_fixed_1  # 1min always same (n < RK_MIN_RETURNS_FOR_ADAPTIVE)
+            logging.info(
+                "RK bandwidth %s: H_fixed=[%d,%d,%d] H_adaptive=[%d,%d,%d] ω²=%.2e ark_5=%.8f rk_5=%.8f ratio=%.4f",
+                asset, H_fixed_1, H_fixed_5, H_fixed_15,
+                H_adaptive_1, H_adaptive_5, H_adaptive_15,
+                omega_sq, ark_5min, rk_5min,
+                ark_5min / rk_5min if rk_5min > 0 else 0.0
+            )
+            self._rk_last_summary[asset] = now
 
         # Step 2: Bipower variation for jump separation
         bv_1min = self._bipower_variation(returns_list, VOL_WINDOW_1MIN)
@@ -2660,6 +2796,16 @@ class VolatilityEngine:
             "egarch_sigma": egarch_sigma,
             "egarch_n_updates": self._egarch._n_updates.get(asset, 0) if self._egarch else 0,
             "egarch_log_var": self._egarch._log_var.get(asset) if self._egarch else None,
+            # Adaptive RK bandwidth diagnostics
+            "omega_sq": omega_sq,
+            "rk_H_fixed_5": H_fixed_5,
+            "rk_H_fixed_15": H_fixed_15,
+            "rk_H_adaptive_5": H_adaptive_5,
+            "rk_H_adaptive_15": H_adaptive_15,
+            "ark_5min": ark_5min,
+            "ark_15min": ark_15min,
+            "rk_adaptive_delta_5": round((ark_5min - rk_5min) / rk_5min, 6) if rk_5min > 0 and H_adaptive_5 != H_fixed_5 else 0.0,
+            "rk_adaptive_delta_15": round((ark_15min - rk_15min) / rk_15min, 6) if rk_15min > 0 and H_adaptive_15 != H_fixed_15 else 0.0,
             # Internal (for Lee-Mykland at tick level in update())
             "_lm_local_bv": bv_5min,
             "_ctz_jump_detected": ctz_jump,
@@ -7035,6 +7181,16 @@ class MainLoop:
                     "egarch_n_updates": vol_estimate.get("egarch_n_updates", 0),
                     "egarch_log_var": round(vol_estimate.get("egarch_log_var", 0), 4) if vol_estimate.get("egarch_log_var") is not None else None,
                     "egarch_vs_rv_ratio": round(vol_estimate["egarch_sigma"] / vol_estimate["blended_rv"], 4) if vol_estimate.get("egarch_sigma") and vol_estimate.get("blended_rv") and vol_estimate["blended_rv"] > 0 else None,
+                    # Adaptive RK bandwidth
+                    "omega_sq": vol_estimate.get("omega_sq"),
+                    "rk_H_adaptive_5": vol_estimate.get("rk_H_adaptive_5"),
+                    "rk_H_adaptive_15": vol_estimate.get("rk_H_adaptive_15"),
+                    "rk_H_fixed_5": vol_estimate.get("rk_H_fixed_5"),
+                    "rk_H_fixed_15": vol_estimate.get("rk_H_fixed_15"),
+                    "ark_5min": round(vol_estimate.get("ark_5min", 0), 8) if vol_estimate.get("ark_5min") is not None else None,
+                    "ark_15min": round(vol_estimate.get("ark_15min", 0), 8) if vol_estimate.get("ark_15min") is not None else None,
+                    "rk_adaptive_delta_5": vol_estimate.get("rk_adaptive_delta_5", 0),
+                    "rk_adaptive_delta_15": vol_estimate.get("rk_adaptive_delta_15", 0),
                 })
             # Order flow snapshot
             if self.order_flow is not None:

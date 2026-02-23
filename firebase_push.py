@@ -201,6 +201,12 @@ class FirebasePusher:
                         "egarch_sigma": cached.get("egarch_sigma"),
                         "egarch_n_updates": cached.get("egarch_n_updates", 0),
                         "egarch_log_var": cached.get("egarch_log_var"),
+                        # Adaptive RK bandwidth
+                        "omega_sq": cached.get("omega_sq"),
+                        "rk_H_adaptive_5": cached.get("rk_H_adaptive_5"),
+                        "rk_H_adaptive_15": cached.get("rk_H_adaptive_15"),
+                        "ark_5min": cached.get("ark_5min"),
+                        "ark_15min": cached.get("ark_15min"),
                     }
                 else:
                     vol_data[asset] = None
@@ -547,6 +553,35 @@ class FirebasePusher:
             snap["egarch_estimation"] = self._ml.egarch_estimator.get_diagnostics()
         except Exception:
             snap["egarch_estimation"] = None
+
+        # ── Adaptive RK bandwidth diagnostics ────────────────────────
+        try:
+            rk_diag = {}
+            vol_engine = self._ml.vol
+            for asset in ASSETS:
+                noise_hist = vol_engine._rk_noise_history.get(asset, [])
+                cached = vol_engine._cache.get(asset)
+                if cached and noise_hist:
+                    noise_list = list(noise_hist)
+                    total_ticks = len(noise_list)
+                    diff_count = vol_engine._rk_adaptive_diff_count.get(asset, 0)
+                    d5 = vol_engine._rk_delta_5_accum.get(asset, [])
+                    d15 = vol_engine._rk_delta_15_accum.get(asset, [])
+                    rk_diag[asset] = {
+                        "omega_sq_current": cached.get("omega_sq"),
+                        "omega_sq_1h_mean": sum(noise_list) / total_ticks if total_ticks else None,
+                        "omega_sq_1h_max": max(noise_list) if noise_list else None,
+                        "H_adaptive_5_current": cached.get("rk_H_adaptive_5"),
+                        "H_adaptive_15_current": cached.get("rk_H_adaptive_15"),
+                        "H_fixed_5": cached.get("rk_H_fixed_5"),
+                        "H_fixed_15": cached.get("rk_H_fixed_15"),
+                        "adaptive_pct_different_1h": round(diff_count / total_ticks, 4) if total_ticks else 0.0,
+                        "mean_delta_5_1h": round(sum(d5) / len(d5), 6) if d5 else 0.0,
+                        "mean_delta_15_1h": round(sum(d15) / len(d15), 6) if d15 else 0.0,
+                    }
+            snap["rk_adaptive_diagnostics"] = rk_diag
+        except Exception:
+            snap["rk_adaptive_diagnostics"] = {}
 
         # ── counterfactual analysis ───────────────────────────────────
         try:
