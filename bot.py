@@ -136,7 +136,7 @@ EGARCH_GAMMA_BOUNDS = (-0.3, 0.3)       # both leverage directions
 EGARCH_BETA_BOUNDS = (0.80, 0.999)      # high persistence typical for crypto
 
 # ─── Adaptive RK Bandwidth (BN 2008/2009) ─────────────────────────────────
-RK_ADAPTIVE_SHADOW_MODE = True           # True = compute/log only, use old H for blended_rv
+RK_ADAPTIVE_SHADOW_MODE = False          # False = adaptive H* drives blended_rv
 RK_CSTAR_FLAT_TOP_PARZEN = 3.5134       # c* for flat-top Parzen kernel (BN 2009 Table 2)
 RK_NOISE_VAR_FLOOR = 1e-20              # ω² floor (prevents zero/negative)
 RK_BANDWIDTH_MAX_FRACTION = 1 / 3       # H* cap as fraction of n
@@ -2881,11 +2881,13 @@ class VolatilityEngine:
         H_adaptive_5 = self._optimal_rk_bandwidth(returns_list, VOL_WINDOW_5MIN, omega_sq)
         H_adaptive_15 = self._optimal_rk_bandwidth(returns_list, VOL_WINDOW_15MIN, omega_sq)
 
-        # Adaptive RK (shadow comparison — 1min always same since < RK_MIN_RETURNS_FOR_ADAPTIVE)
+        # Adaptive RK — compute with optimal bandwidth H*
+        rk_fixed_5 = rk_5min   # Save fixed-H values for diagnostics
+        rk_fixed_15 = rk_15min
         ark_5min = self._realized_kernel(returns_list, VOL_WINDOW_5MIN, bandwidth=H_adaptive_5) if H_adaptive_5 != H_fixed_5 else rk_5min
         ark_15min = self._realized_kernel(returns_list, VOL_WINDOW_15MIN, bandwidth=H_adaptive_15) if H_adaptive_15 != H_fixed_15 else rk_15min
 
-        # When shadow mode is off, use adaptive values
+        # When shadow mode is off, use adaptive values for all downstream
         if not RK_ADAPTIVE_SHADOW_MODE:
             rk_5min = ark_5min
             rk_15min = ark_15min
@@ -2896,18 +2898,18 @@ class VolatilityEngine:
 
         # Per-tick DEBUG: when adaptive H differs from fixed
         if H_adaptive_5 != H_fixed_5 or H_adaptive_15 != H_fixed_15:
-            delta_5 = round((ark_5min - rk_5min) / rk_5min, 4) if rk_5min > 0 and H_adaptive_5 != H_fixed_5 else 0.0
-            delta_15 = round((ark_15min - rk_15min) / rk_15min, 4) if rk_15min > 0 and H_adaptive_15 != H_fixed_15 else 0.0
+            delta_5 = round((ark_5min - rk_fixed_5) / rk_fixed_5, 4) if rk_fixed_5 > 0 and H_adaptive_5 != H_fixed_5 else 0.0
+            delta_15 = round((ark_15min - rk_fixed_15) / rk_fixed_15, 4) if rk_fixed_15 > 0 and H_adaptive_15 != H_fixed_15 else 0.0
             logging.debug(
                 "RK adaptive %s: H_5=%d→%d H_15=%d→%d ω²=%.2e delta_5=%.4f delta_15=%.4f",
                 asset, H_fixed_5, H_adaptive_5, H_fixed_15, H_adaptive_15,
                 omega_sq, delta_5, delta_15
             )
             self._rk_adaptive_diff_count[asset] = self._rk_adaptive_diff_count.get(asset, 0) + 1
-            if H_adaptive_5 != H_fixed_5 and rk_5min > 0:
-                self._rk_delta_5_accum[asset].append(abs((ark_5min - rk_5min) / rk_5min))
-            if H_adaptive_15 != H_fixed_15 and rk_15min > 0:
-                self._rk_delta_15_accum[asset].append(abs((ark_15min - rk_15min) / rk_15min))
+            if H_adaptive_5 != H_fixed_5 and rk_fixed_5 > 0:
+                self._rk_delta_5_accum[asset].append(abs((ark_5min - rk_fixed_5) / rk_fixed_5))
+            if H_adaptive_15 != H_fixed_15 and rk_fixed_15 > 0:
+                self._rk_delta_15_accum[asset].append(abs((ark_15min - rk_fixed_15) / rk_fixed_15))
 
         # Noise regime change (INFO): ω² changes by >10× from previous tick
         prev_omega = self._rk_prev_omega_sq.get(asset)
@@ -3215,8 +3217,8 @@ class VolatilityEngine:
             "rk_H_adaptive_15": H_adaptive_15,
             "ark_5min": ark_5min,
             "ark_15min": ark_15min,
-            "rk_adaptive_delta_5": round((ark_5min - rk_5min) / rk_5min, 6) if rk_5min > 0 and H_adaptive_5 != H_fixed_5 else 0.0,
-            "rk_adaptive_delta_15": round((ark_15min - rk_15min) / rk_15min, 6) if rk_15min > 0 and H_adaptive_15 != H_fixed_15 else 0.0,
+            "rk_adaptive_delta_5": round((ark_5min - rk_fixed_5) / rk_fixed_5, 6) if rk_fixed_5 > 0 and H_adaptive_5 != H_fixed_5 else 0.0,
+            "rk_adaptive_delta_15": round((ark_15min - rk_fixed_15) / rk_fixed_15, 6) if rk_fixed_15 > 0 and H_adaptive_15 != H_fixed_15 else 0.0,
             # HAR-IV diagnostics
             "dvol_sq_hourly": dvol_sq_for_har,
             "vrp": vrp,
