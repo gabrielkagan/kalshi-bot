@@ -192,6 +192,12 @@ class FirebasePusher:
                         "har_model": cached.get("har_model", "fixed"),
                         "har_blend_rv": cached.get("har_blend_rv"),
                         "fixed_blend_rv": cached.get("fixed_blend_rv"),
+                        "medrv_5min": cached.get("medrv_5min"),
+                        "tbpv_5min": cached.get("tbpv_5min"),
+                        "ctz_stat": cached.get("ctz_stat"),
+                        "ctz_jump_detected": cached.get("ctz_jump_detected"),
+                        "jump_multiplier": cached.get("jump_multiplier", 1.0),
+                        "jump_event_count": cached.get("jump_event_count", 0),
                     }
                 else:
                     vol_data[asset] = None

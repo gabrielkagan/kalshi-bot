@@ -87,6 +87,19 @@ JUMP_THRESHOLD_MULTIPLIER = 3.0   # return > 3x RV = jump
 JUMP_VOL_MULTIPLIER = 2.0         # multiply vol by 2x during elevated regime
 JUMP_DECAY_SECONDS = 60.0         # elevated regime lasts 60s
 
+# ─── Advanced Jump Detection ────────────────────────────────────────────────
+JUMP_SHADOW_MODE = True              # True = compute new tests but use legacy for regime
+JUMP_MEDRV_CONST = 1.419358          # π / (6 - 4√3 + π), MedRV scaling
+JUMP_TBPV_C = 3.0                    # threshold = c × local_σ for TBPV
+JUMP_TBPV_MU1_INV2 = 1.5707963268   # μ₁⁻² = π/2
+JUMP_CTZ_VARIANCE_CONST = 0.608994   # π²/4 + π - 5, for C-Tz variance
+JUMP_CTZ_CRITICAL = 2.3263           # Φ⁻¹(0.99), 1% one-sided
+JUMP_LM_GUMBEL_C = 4.6001           # -log(-log(0.99)), LM 1% significance
+JUMP_DECAY_TAU = 432.7               # 300/ln(2), half-life = 300s
+JUMP_DECAY_MAX_BOOST = 1.0           # boost starts at 1.0 (total = 2.0×)
+JUMP_DECAY_MIN_BOOST = 0.01          # below this = regime "normal"
+JUMP_MAX_HISTORY = 10                # max jump events per asset
+
 # ─── HAR-WLS Estimation ──────────────────────────────────────────────────
 HAR_OBSERVATION_INTERVAL = 300      # 5 min between observations (seconds)
 HAR_OBSERVATION_MAXLEN = 288        # 24h of 5-min observations
@@ -2105,7 +2118,7 @@ class VolatilityEngine:
             a: deque(maxlen=VOL_WINDOW_15MIN) for a in ASSETS
         }
         self._last_return_time: Dict[str, float] = {}
-        self._jump_until: Dict[str, float] = {}
+        self._jump_events: Dict[str, List[float]] = {a: [] for a in ASSETS}
         self._cache: Dict[str, Optional[Dict]] = {}
 
     def update(self, asset: str) -> Optional[Dict]:
@@ -2137,13 +2150,42 @@ class VolatilityEngine:
                 # Check for jump against current estimate (before updating cache)
                 estimate = self._compute(asset, now)
                 if estimate and estimate["blended_rv"] > 0:
-                    if abs(log_return) > JUMP_THRESHOLD_MULTIPLIER * estimate["blended_rv"]:
-                        self._jump_until[asset] = now + JUMP_DECAY_SECONDS
-                        logging.info(
-                            f"Jump detected: {asset} "
-                            f"return={log_return:.6f} "
-                            f"rv={estimate['blended_rv']:.6f}"
-                        )
+                    legacy_jump = abs(log_return) > JUMP_THRESHOLD_MULTIPLIER * estimate["blended_rv"]
+
+                    # Lee-Mykland tick-level test
+                    lm_local_bv = estimate.get("_lm_local_bv", 0)
+                    n_returns = estimate.get("num_returns", 2)
+                    lm_stat, lm_crit, lm_jump = self._lee_mykland_test(
+                        log_return, lm_local_bv, n_returns)
+                    ctz_jump = estimate.get("_ctz_jump_detected", False)
+
+                    if JUMP_SHADOW_MODE:
+                        # Legacy test drives regime; new tests logged only
+                        if legacy_jump:
+                            self._record_jump_event(asset, now)
+                            logging.info(
+                                "Jump detected [legacy]: %s return=%.6f rv=%.6f "
+                                "lm=%.4f/%.4f ctz=%s",
+                                asset, log_return, estimate["blended_rv"],
+                                lm_stat, lm_crit,
+                                f"{estimate.get('ctz_stat', 0):.4f}")
+                        elif lm_jump or ctz_jump:
+                            logging.info(
+                                "Jump detected [shadow]: %s return=%.6f rv=%.6f "
+                                "lm=%.4f/%.4f(hit=%s) ctz=%s(hit=%s)",
+                                asset, log_return, estimate["blended_rv"],
+                                lm_stat, lm_crit, lm_jump,
+                                f"{estimate.get('ctz_stat', 0):.4f}", ctz_jump)
+                    else:
+                        # New tests drive regime
+                        if lm_jump or ctz_jump:
+                            self._record_jump_event(asset, now)
+                            logging.info(
+                                "Jump detected [new]: %s return=%.6f rv=%.6f "
+                                "lm=%.4f/%.4f(hit=%s) ctz=%s(hit=%s)",
+                                asset, log_return, estimate["blended_rv"],
+                                lm_stat, lm_crit, lm_jump,
+                                f"{estimate.get('ctz_stat', 0):.4f}", ctz_jump)
 
                 self._cache[asset] = self._compute(asset, now)
             else:
@@ -2152,6 +2194,16 @@ class VolatilityEngine:
             self._cache[asset] = self._compute(asset, now)
 
         return self._cache.get(asset)
+
+    def _record_jump_event(self, asset: str, timestamp: float):
+        """Append jump timestamp, trim to JUMP_MAX_HISTORY."""
+        events = self._jump_events.get(asset)
+        if events is None:
+            events = []
+            self._jump_events[asset] = events
+        events.append(timestamp)
+        if len(events) > JUMP_MAX_HISTORY:
+            del events[:-JUMP_MAX_HISTORY]
 
     # ── Kernel & statistical methods ─────────────────────────────────────
 
@@ -2219,6 +2271,117 @@ class VolatilityEngine:
         bv = (math.pi / 2.0) * bv_sum / (n - 1)
         return math.sqrt(max(0.0, bv))
 
+    @staticmethod
+    def _medrv(returns: List[float], window: int) -> float:
+        """Median Realized Variance (Andersen, Dobrev & Schaumburg 2012).
+
+        MedRV = MEDRV_CONST × (1/(n-2)) × Σ med(|r_{i-1}|, |r_i|, |r_{i+1}|)²
+        Robust to jumps AND zero returns. Returns per-return scale vol.
+        """
+        subset = returns[-window:] if len(returns) >= window else returns
+        n = len(subset)
+        if n < 3:
+            return 0.0
+
+        med_sum = 0.0
+        for i in range(1, n - 1):
+            a, b, c = abs(subset[i - 1]), abs(subset[i]), abs(subset[i + 1])
+            # Inline 3-element median: sort and take middle
+            if a > b:
+                a, b = b, a
+            if b > c:
+                b, c = c, b
+            if a > b:
+                a, b = b, a
+            med_sum += b * b
+
+        medrv = JUMP_MEDRV_CONST * med_sum / (n - 2)
+        return math.sqrt(max(0.0, medrv))
+
+    @staticmethod
+    def _tbpv(returns: List[float], window: int) -> float:
+        """Threshold Bipower Variation (Corsi, Pirino & Renò 2010).
+
+        TBPV = μ₁⁻² × (1/(n-1)) × Σ |r_j|·|r_{j+1}| × 𝟙(|r_j|≤θ_j) × 𝟙(|r_{j+1}|≤θ_{j+1})
+        93.1% power for consecutive jumps. Returns per-return scale vol.
+        """
+        subset = returns[-window:] if len(returns) >= window else returns
+        n = len(subset)
+        if n < 2:
+            return 0.0
+
+        # Build local sigma: trailing 12-return mean absolute return
+        local_sigma = [0.0] * n
+        trail = 12
+        running_sum = 0.0
+        for i in range(n):
+            running_sum += abs(subset[i])
+            if i >= trail:
+                running_sum -= abs(subset[i - trail])
+            count = min(i + 1, trail)
+            local_sigma[i] = running_sum / count
+
+        tbpv_sum = 0.0
+        for j in range(n - 1):
+            thresh_j = JUMP_TBPV_C * local_sigma[j]
+            thresh_j1 = JUMP_TBPV_C * local_sigma[j + 1]
+            if abs(subset[j]) <= thresh_j and abs(subset[j + 1]) <= thresh_j1:
+                tbpv_sum += abs(subset[j]) * abs(subset[j + 1])
+
+        tbpv = JUMP_TBPV_MU1_INV2 * tbpv_sum / (n - 1)
+        return math.sqrt(max(0.0, tbpv))
+
+    @staticmethod
+    def _quad_power_quarticity(returns: List[float], window: int) -> float:
+        """Quad-power quarticity for C-Tz test variance estimation.
+
+        QPQ = (π²/4) × (1/(n-3)) × Σ |r_i|·|r_{i+1}|·|r_{i+2}|·|r_{i+3}|
+        """
+        subset = returns[-window:] if len(returns) >= window else returns
+        n = len(subset)
+        if n < 4:
+            return 0.0
+
+        qpq_sum = 0.0
+        for i in range(n - 3):
+            qpq_sum += abs(subset[i]) * abs(subset[i + 1]) * abs(subset[i + 2]) * abs(subset[i + 3])
+
+        return (math.pi ** 2 / 4.0) * qpq_sum / (n - 3)
+
+    @staticmethod
+    def _ctz_jump_test(rv_sq: float, tbpv_sq: float, qpq: float, n: int) -> float:
+        """C-Tz jump statistic (Corsi, Pirino & Renò 2010).
+
+        Tz = (RV² - TBPV²) / √(CTZ_VARIANCE_CONST × QPQ / n)
+        Returns z-score; compare against JUMP_CTZ_CRITICAL.
+        """
+        numerator = rv_sq - tbpv_sq
+        if numerator <= 0:
+            return 0.0
+        denom_sq = JUMP_CTZ_VARIANCE_CONST * qpq / n if n > 0 else 0.0
+        if denom_sq <= 0:
+            return 0.0
+        return numerator / math.sqrt(denom_sq)
+
+    @staticmethod
+    def _lee_mykland_test(log_return: float, local_bv_vol: float, n: int):
+        """Lee-Mykland (2008) intraday tick-level jump test.
+
+        L_i = |r_i| / σ̂_i
+        Critical = β_n + GUMBEL_C / S_n
+        Returns (L_statistic, critical_value, is_jump).
+        """
+        if local_bv_vol <= 0 or n < 2:
+            return (0.0, float('inf'), False)
+
+        L_stat = abs(log_return) / local_bv_vol
+        S_n = math.sqrt(2.0 * math.log(n))
+        if S_n <= 0:
+            return (L_stat, float('inf'), False)
+        beta_n = S_n - (math.log(math.pi) + math.log(math.log(n))) / (2.0 * S_n)
+        critical = beta_n + JUMP_LM_GUMBEL_C / S_n
+        return (round(L_stat, 4), round(critical, 4), L_stat > critical)
+
     def _estimate_beta(self, asset: str, reference: str = "BTC") -> float:
         """Cross-asset beta: cov(r_asset, r_ref) / var(r_ref). Clamped [0.5, 3.0]."""
         if asset == reference:
@@ -2284,6 +2447,21 @@ class VolatilityEngine:
         bv_1min = self._bipower_variation(returns_list, VOL_WINDOW_1MIN)
         bv_5min = self._bipower_variation(returns_list, VOL_WINDOW_5MIN)
         bv_15min = self._bipower_variation(returns_list, VOL_WINDOW_15MIN)
+
+        # Step 2a: MedRV (all 3 windows)
+        medrv_1min = self._medrv(returns_list, VOL_WINDOW_1MIN)
+        medrv_5min = self._medrv(returns_list, VOL_WINDOW_5MIN)
+        medrv_15min = self._medrv(returns_list, VOL_WINDOW_15MIN)
+
+        # Step 2a: TBPV + C-Tz (5-min window only)
+        tbpv_5min = self._tbpv(returns_list, VOL_WINDOW_5MIN)
+        ctz_stat = 0.0
+        ctz_jump = False
+        if len(returns_list) >= 4:
+            qpq_5min = self._quad_power_quarticity(returns_list, VOL_WINDOW_5MIN)
+            ctz_stat = self._ctz_jump_test(rk_5min ** 2, tbpv_5min ** 2, qpq_5min,
+                                           min(len(returns_list), VOL_WINDOW_5MIN))
+            ctz_jump = ctz_stat > JUMP_CTZ_CRITICAL
 
         # Step 2b: HAR observation recording + semivariance computation
         har_blend_rv = None
@@ -2359,12 +2537,26 @@ class VolatilityEngine:
                 blended = 0.3 * rv_blended + 0.7 * iv
                 iv_rv_blend_method = "stress_override"
 
-        # Step 6: Jump regime (existing, preserved)
+        # Step 6: Jump regime — exponential decay
         regime = "normal"
-        jump_expiry = self._jump_until.get(asset, 0)
-        if now < jump_expiry:
-            regime = "elevated"
-            blended *= JUMP_VOL_MULTIPLIER
+        jump_multiplier = 1.0
+        jump_events = self._jump_events.get(asset, [])
+        if jump_events:
+            total_boost = sum(
+                JUMP_DECAY_MAX_BOOST * math.exp(-(now - ts) / JUMP_DECAY_TAU)
+                for ts in jump_events if ts <= now
+            )
+            if total_boost > JUMP_DECAY_MIN_BOOST:
+                regime = "elevated"
+                jump_multiplier = min(4.0, 1.0 + total_boost)
+                blended *= jump_multiplier
+
+        # Backward-compat: compute approximate seconds remaining
+        jump_seconds_remaining = 0.0
+        if jump_events:
+            age = now - max(jump_events)
+            full_decay = -JUMP_DECAY_TAU * math.log(JUMP_DECAY_MIN_BOOST / JUMP_DECAY_MAX_BOOST)
+            jump_seconds_remaining = max(0.0, full_decay - age)
 
         return {
             # Original 7 fields (backward-compatible)
@@ -2374,7 +2566,7 @@ class VolatilityEngine:
             "blended_rv": blended,
             "regime": regime,
             "num_returns": len(returns),
-            "jump_seconds_remaining": round(max(0, jump_expiry - now), 1),
+            "jump_seconds_remaining": round(jump_seconds_remaining, 1),
             # New diagnostic fields
             "bv_1min": bv_1min,
             "bv_5min": bv_5min,
@@ -2388,6 +2580,18 @@ class VolatilityEngine:
             "har_model": self._har._active_model.get(asset, "fixed") if self._har else "fixed",
             "har_blend_rv": har_blend_rv,
             "fixed_blend_rv": fixed_blend_rv,
+            # Advanced jump diagnostics
+            "medrv_1min": medrv_1min,
+            "medrv_5min": medrv_5min,
+            "medrv_15min": medrv_15min,
+            "tbpv_5min": tbpv_5min,
+            "ctz_stat": round(ctz_stat, 4),
+            "ctz_jump_detected": ctz_jump,
+            "jump_multiplier": round(jump_multiplier, 4),
+            "jump_event_count": len(jump_events),
+            # Internal (for Lee-Mykland at tick level in update())
+            "_lm_local_bv": bv_5min,
+            "_ctz_jump_detected": ctz_jump,
         }
 
 
@@ -6389,6 +6593,12 @@ class MainLoop:
                     "har_model": vol_estimate.get("har_model", "fixed"),
                     "har_blend_rv": round(vol_estimate["har_blend_rv"], 8) if vol_estimate.get("har_blend_rv") is not None else None,
                     "fixed_blend_rv": round(vol_estimate.get("fixed_blend_rv", 0), 8),
+                    "medrv_5min": round(vol_estimate.get("medrv_5min", 0), 8),
+                    "tbpv_5min": round(vol_estimate.get("tbpv_5min", 0), 8),
+                    "ctz_stat": vol_estimate.get("ctz_stat", 0),
+                    "ctz_jump_detected": vol_estimate.get("ctz_jump_detected", False),
+                    "jump_multiplier": vol_estimate.get("jump_multiplier", 1.0),
+                    "jump_event_count": vol_estimate.get("jump_event_count", 0),
                 })
             # Order flow snapshot
             if self.order_flow is not None:
