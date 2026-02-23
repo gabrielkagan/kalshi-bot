@@ -948,7 +948,7 @@ class StateManager:
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
-            except Exception:
+            except sqlite3.OperationalError:
                 pass  # column already exists
         self.conn.commit()
 
@@ -959,7 +959,7 @@ class StateManager:
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE rejected_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
-            except Exception:
+            except sqlite3.OperationalError:
                 pass  # column already exists
         self.conn.commit()
 
@@ -2540,8 +2540,7 @@ class CalibrationEngine:
                 self._blr_precision = state["blr"]["precision"]
                 self._blr_trained = state["blr"].get("trained", False)
 
-            if "observations" in state:
-                self._observations = [(o[0], o[1]) for o in state["observations"]]
+            # observations are loaded from DB in load_training_data_from_db()
 
             if "prev_brier" in state:
                 self._prev_brier = state["prev_brier"]
@@ -2577,7 +2576,6 @@ class CalibrationEngine:
                 "precision": self._blr_precision,
                 "trained": self._blr_trained,
             },
-            "observations": self._observations,
             "prev_brier": self._prev_brier,
             "saved_at": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             "n_observations": len(self._observations),
