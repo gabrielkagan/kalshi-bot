@@ -508,6 +508,140 @@ class FirebasePusher:
         except Exception:
             snap["rejection_summary"] = {}
 
+        # ── observation_mode flag ─────────────────────────────────────
+        try:
+            snap["observation_mode"] = getattr(self._ml, '_observation_mode', True)
+        except Exception:
+            snap["observation_mode"] = True
+
+        # ── calibration diagnostics ───────────────────────────────────
+        try:
+            diag = self._ml.calibration.get_diagnostics()
+            diag["min_platt"] = 200
+            diag["min_beta"] = 500
+            diag["min_blr"] = 50
+            snap["calibration"] = diag
+        except Exception:
+            snap["calibration"] = None
+
+        # ── counterfactual analysis ───────────────────────────────────
+        try:
+            conn = self._ml.state.conn
+
+            # By filter stage
+            stage_rows = conn.execute(
+                "SELECT filter_stage, COUNT(*) AS total, "
+                "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins, "
+                "  COUNT(CASE WHEN counterfactual_pnl <= 0 THEN 1 END) AS losses, "
+                "  COALESCE(SUM(counterfactual_pnl), 0) AS net_pnl_cents "
+                "FROM evaluated_opportunities "
+                "WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL "
+                "GROUP BY filter_stage"
+            ).fetchall()
+            by_stage = []
+            for r in stage_rows:
+                total = r["total"]
+                by_stage.append({
+                    "stage": r["filter_stage"],
+                    "total": total,
+                    "wins": r["wins"],
+                    "losses": r["losses"],
+                    "net_pnl_cents": r["net_pnl_cents"],
+                    "win_rate": round(r["wins"] / total, 4) if total > 0 else 0.0,
+                })
+
+            # By price bucket
+            bucket_rows = conn.execute(
+                "SELECT "
+                "  CASE "
+                "    WHEN market_price BETWEEN 80 AND 84 THEN '80-84' "
+                "    WHEN market_price BETWEEN 85 AND 89 THEN '85-89' "
+                "    WHEN market_price BETWEEN 90 AND 94 THEN '90-94' "
+                "    WHEN market_price BETWEEN 95 AND 99 THEN '95-99' "
+                "    ELSE 'other' "
+                "  END AS bucket, "
+                "  COUNT(*) AS total, "
+                "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins, "
+                "  COALESCE(SUM(counterfactual_pnl), 0) AS net_pnl_cents "
+                "FROM evaluated_opportunities "
+                "WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL "
+                "  AND market_price BETWEEN 80 AND 99 "
+                "GROUP BY bucket"
+            ).fetchall()
+            breakeven_map = {"80-84": 82, "85-89": 87, "90-94": 92, "95-99": 97}
+            by_bucket = []
+            for r in bucket_rows:
+                total = r["total"]
+                wr = round(r["wins"] / total, 4) if total > 0 else 0.0
+                be = breakeven_map.get(r["bucket"], 0)
+                by_bucket.append({
+                    "bucket": r["bucket"],
+                    "total": total,
+                    "wins": r["wins"],
+                    "net_pnl_cents": r["net_pnl_cents"],
+                    "win_rate": wr,
+                    "breakeven_wr": be,
+                    "above_breakeven": wr * 100 >= be,
+                })
+
+            # Summary: money left on table vs bullets dodged
+            summary_row = conn.execute(
+                "SELECT "
+                "  COALESCE(SUM(CASE WHEN counterfactual_pnl > 0 AND filter_stage != 'observation_trade' "
+                "    THEN counterfactual_pnl ELSE 0 END), 0) AS money_left, "
+                "  COALESCE(SUM(CASE WHEN counterfactual_pnl < 0 AND filter_stage != 'observation_trade' "
+                "    THEN ABS(counterfactual_pnl) ELSE 0 END), 0) AS bullets_dodged "
+                "FROM evaluated_opportunities "
+                "WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL"
+            ).fetchone()
+
+            snap["counterfactual_analysis"] = {
+                "by_stage": by_stage,
+                "by_bucket": by_bucket,
+                "money_left_on_table_cents": summary_row["money_left"],
+                "bullets_dodged_cents": summary_row["bullets_dodged"],
+                "net_filter_value_cents": summary_row["bullets_dodged"] - summary_row["money_left"],
+            }
+        except Exception:
+            snap["counterfactual_analysis"] = None
+
+        # ── ask price distribution ────────────────────────────────────
+        try:
+            scanner = self._ml.scanner
+            opps = list(scanner._recent_opportunities)
+            buckets = {"<80": 0, "80-84": 0, "85-89": 0, "90-92": 0, "93-96": 0, "97-99": 0, "100+": 0}
+            sweet_spot = 0
+            for opp in opps:
+                ask = opp.get("best_ask")
+                if ask is None:
+                    continue
+                if ask < 80:
+                    buckets["<80"] += 1
+                elif ask <= 84:
+                    buckets["80-84"] += 1
+                    sweet_spot += 1
+                elif ask <= 89:
+                    buckets["85-89"] += 1
+                    sweet_spot += 1
+                elif ask <= 92:
+                    buckets["90-92"] += 1
+                    sweet_spot += 1
+                elif ask <= 96:
+                    buckets["93-96"] += 1
+                elif ask <= 99:
+                    buckets["97-99"] += 1
+                else:
+                    buckets["100+"] += 1
+            sample = len(opps)
+            snap["ask_distribution"] = {
+                "sample_size": sample,
+                "buckets": buckets,
+                "sweet_spot_count": sweet_spot,
+                "sweet_spot_pct": round(sweet_spot / sample * 100, 1) if sample > 0 else 0.0,
+            }
+        except Exception:
+            snap["ask_distribution"] = None
+
         return snap
 
     def _push(self, snapshot: Dict[str, Any]):

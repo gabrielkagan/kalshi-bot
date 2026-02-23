@@ -5315,6 +5315,7 @@ class MainLoop:
         self._start_time: float = time.time()
         self._peak_balance: float = 0.0
         self._last_summary_date: Optional[str] = None
+        self._observation_mode: bool = OBSERVATION_MODE
 
     # ── Signal Handling ───────────────────────────────────────────────────
 
