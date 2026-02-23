@@ -946,6 +946,7 @@ class StateManager:
             ("ofa_confidence", "TEXT"),
             ("raw_prob", "REAL"),
             ("calibration_method", "TEXT"),
+            ("old_system_prob", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1226,7 +1227,8 @@ class StateManager:
                                      best_ask_source: Optional[str] = None,
                                      ofa_confidence: Optional[str] = None,
                                      raw_prob: Optional[float] = None,
-                                     calibration_method: Optional[str] = None):
+                                     calibration_method: Optional[str] = None,
+                                     old_system_prob: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
@@ -1240,8 +1242,8 @@ class StateManager:
                      vol_regime, calibrated_prob_raw,
                      breakeven_wr, expected_value, drawdown_scaler,
                      ask_depth, best_ask_source, ofa_confidence,
-                     raw_prob, calibration_method)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     raw_prob, calibration_method, old_system_prob)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1250,7 +1252,7 @@ class StateManager:
                   vol_regime, calibrated_prob_raw,
                   breakeven_wr, expected_value, drawdown_scaler,
                   ask_depth, best_ask_source, ofa_confidence,
-                  raw_prob, calibration_method))
+                  raw_prob, calibration_method, old_system_prob))
             self.conn.commit()
         except Exception as e:
             logging.debug(f"insert_evaluated_opportunity failed: {e}")
@@ -3669,12 +3671,18 @@ class OpportunityScanner:
                     except Exception:
                         logging.debug("OrderFlowEngine.get_signals failed", exc_info=True)
                 calibrated_prob_raw = final_prob
+                # Always compute dynamic cap for counterfactual logging
+                _dyn_cap = ProbabilityEngine._dynamic_cap(seconds_remaining)
                 if _CALIBRATION_ENGINE is not None and _CALIBRATION_ENGINE.is_learned_method_active():
                     # Learned method: no dynamic cap, use safety ceiling only
                     final_prob = max(0.01, min(NUMERICAL_SAFETY_CEILING, final_prob + ofa_adjustment))
                 else:
-                    _dyn_cap = ProbabilityEngine._dynamic_cap(seconds_remaining)
                     final_prob = max(0.01, min(_dyn_cap, final_prob + ofa_adjustment))
+                # Counterfactual: what the old system (fixed cap) would have produced
+                _old_system_prob = max(0.01, min(_dyn_cap, calibrated_prob_raw + ofa_adjustment))
+                if best_ask < ENDGAME_BLEND_PRICE:
+                    _mkt = best_ask / 100.0
+                    _old_system_prob = (1.0 - MARKET_BLEND_W) * _old_system_prob + MARKET_BLEND_W * _mkt
 
                 # ── Market-price blending ──────────────────────────────────
                 # For mid-range prices, blend model with market to temper overconfidence.
@@ -3721,6 +3729,7 @@ class OpportunityScanner:
                             "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                             "ofa_adjustment": round(ofa_adjustment, 6),
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
+                            "old_system_prob": round(_old_system_prob, 6),
                         })
                         _dedup_key = (ticker, "insufficient_edge")
                         if _dedup_key not in self._eval_opp_seen:
@@ -3744,7 +3753,8 @@ class OpportunityScanner:
                                 best_ask_source=best_ask_source,
                                 ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none",
                                 raw_prob=raw_prob,
-                                calibration_method=calibration_method)
+                                calibration_method=calibration_method,
+                                old_system_prob=_old_system_prob)
                     except Exception:
                         pass
                     continue
@@ -3781,6 +3791,7 @@ class OpportunityScanner:
                             "edge": round(edge, 6),
                             "ofa_adjustment": round(ofa_adjustment, 6),
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
+                            "old_system_prob": round(_old_system_prob, 6),
                         })
                         _dedup_key = (ticker, "zero_sizing")
                         if _dedup_key not in self._eval_opp_seen:
@@ -3807,7 +3818,8 @@ class OpportunityScanner:
                                 best_ask_source=best_ask_source,
                                 ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none",
                                 raw_prob=raw_prob,
-                                calibration_method=calibration_method)
+                                calibration_method=calibration_method,
+                                old_system_prob=_old_system_prob)
                     except Exception:
                         pass
                     continue
@@ -3886,6 +3898,7 @@ class OpportunityScanner:
                             "ofa_adjustment": round(ofa_adjustment, 6),
                             "composite_score": strategy_scores.get("composite"),
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
+                            "old_system_prob": round(_old_system_prob, 6),
                         })
                         _dedup_key = (ticker, "strategy_wait")
                         if _dedup_key not in self._eval_opp_seen:
@@ -3913,7 +3926,8 @@ class OpportunityScanner:
                                 best_ask_source=best_ask_source,
                                 ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none",
                                 raw_prob=raw_prob,
-                                calibration_method=calibration_method)
+                                calibration_method=calibration_method,
+                                old_system_prob=_old_system_prob)
                     except Exception:
                         pass
                     continue
@@ -3950,6 +3964,7 @@ class OpportunityScanner:
                         "strategy": strategy,
                         "ofa_adjustment": round(ofa_adjustment, 6),
                         "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
+                        "old_system_prob": round(_old_system_prob, 6),
                     })
                 except Exception:
                     pass
@@ -3984,6 +3999,7 @@ class OpportunityScanner:
                     "ofa_confidence": ofa_signals["confidence"] if ofa_signals else "none",
                     "raw_prob": raw_prob,
                     "calibration_method": calibration_method,
+                    "old_system_prob": round(_old_system_prob, 6),
                 })
 
                 # Respect per-tick orderbook fetch cap
@@ -4046,6 +4062,7 @@ class OpportunityScanner:
                             "edge": c["edge"],
                             "ofa_adjustment": c.get("ofa_adjustment"),
                             "raw_prob": round(c["raw_prob"], 6) if c.get("raw_prob") is not None else None,
+                            "old_system_prob": c.get("old_system_prob"),
                         })
                         _dedup_key = (c["ticker"], "single_asset_selection")
                         if _dedup_key not in self._eval_opp_seen:
@@ -4076,7 +4093,8 @@ class OpportunityScanner:
                                 best_ask_source=c.get("best_ask_source"),
                                 ofa_confidence=c.get("ofa_confidence"),
                                 raw_prob=c.get("raw_prob"),
-                                calibration_method=c.get("calibration_method"))
+                                calibration_method=c.get("calibration_method"),
+                                old_system_prob=c.get("old_system_prob"))
                     except Exception:
                         pass
 
@@ -4395,7 +4413,8 @@ class OrderExecutor:
                         best_ask_source=candidate.get("best_ask_source"),
                         ofa_confidence=candidate.get("ofa_confidence"),
                         raw_prob=candidate.get("raw_prob"),
-                        calibration_method=candidate.get("calibration_method"))
+                        calibration_method=candidate.get("calibration_method"),
+                        old_system_prob=candidate.get("old_system_prob"))
             except Exception:
                 pass
             return None
