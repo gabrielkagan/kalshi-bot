@@ -83,8 +83,6 @@ VOL_WINDOW_5MIN = 60              # 300s / 5s = 60 returns
 VOL_WINDOW_15MIN = 180            # 900s / 5s = 180 returns
 VOL_BLEND_WEIGHTS = (0.5, 0.3, 0.2)  # 1min, 5min, 15min
 JUMP_THRESHOLD_MULTIPLIER = 3.0   # return > 3x RV = jump
-JUMP_VOL_MULTIPLIER = 2.0         # multiply vol by 2x during elevated regime
-JUMP_DECAY_SECONDS = 60.0         # elevated regime lasts 60s
 
 JUMP_DECAY_TAU = 432.7               # 300/ln(2), half-life = 300s
 JUMP_DECAY_MAX_BOOST = 1.0           # boost starts at 1.0 (total = 2.0×)
@@ -92,7 +90,7 @@ JUMP_DECAY_MIN_BOOST = 0.01          # below this = regime "normal"
 JUMP_MAX_HISTORY = 10                # max jump events per asset
 
 # ─── Adaptive Jump Detection (Tier System) ────────────────────────────────
-JUMP_ADAPTIVE_SHADOW_MODE = True        # True = log only, legacy drives regime
+JUMP_ADAPTIVE_SHADOW_MODE = False       # False = adaptive drives regime, legacy at DEBUG
 JUMP_ADAPTIVE_SUBSAMPLE = 3             # Every 3rd 5s tick = 15s returns
 JUMP_ADAPTIVE_EWMA_LAMBDA = 0.94       # EWMA decay for variance
 JUMP_ADAPTIVE_EWMA_INIT_RETURNS = 10   # Min 15s returns before EWMA trusted

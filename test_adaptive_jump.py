@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple
 # ── Constants (mirrored from bot.py) ────────────────────────────────────
 
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
-JUMP_ADAPTIVE_SHADOW_MODE = True
+JUMP_ADAPTIVE_SHADOW_MODE = False
 JUMP_ADAPTIVE_SUBSAMPLE = 3
 JUMP_ADAPTIVE_EWMA_LAMBDA = 0.94
 JUMP_ADAPTIVE_EWMA_INIT_RETURNS = 10
