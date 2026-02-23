@@ -2693,7 +2693,14 @@ class CalibrationEngine:
         return retrained
 
     def load_training_data_from_db(self, state: "StateManager"):
-        """Rebuild training data from evaluated + rejected opportunities on startup."""
+        """Rebuild training data from evaluated opportunities on startup.
+
+        Note: rejected_opportunities (z-score rejections) are excluded because
+        their bimodal raw_prob distribution (clustered at 0 and 1) contaminates
+        Platt training — 2 NO outcomes at raw_prob≈1.0 create extreme log-loss
+        pressure that drives Platt A well below 1.0, compressing all high-end
+        calibrated probabilities (e.g. raw 0.95 → cal 0.89 instead of ~0.96).
+        """
         try:
             self._observations.clear()
 
@@ -2705,24 +2712,6 @@ class CalibrationEngine:
 
             loaded = 0
             for row in rows:
-                raw_p = row["raw_prob"]
-                result = row["market_result"]
-                if result in ("yes", "all_yes"):
-                    binary = 1
-                elif result in ("no", "all_no"):
-                    binary = 0
-                else:
-                    continue
-                self._observations.append((raw_p, binary))
-                loaded += 1
-
-            # Also load from rejected_opportunities (z-score rejections with known outcomes)
-            rej_rows = state.conn.execute(
-                "SELECT raw_prob, market_result FROM rejected_opportunities "
-                "WHERE status='settled' AND raw_prob IS NOT NULL "
-                "AND market_result IS NOT NULL"
-            ).fetchall()
-            for row in rej_rows:
                 raw_p = row["raw_prob"]
                 result = row["market_result"]
                 if result in ("yes", "all_yes"):
