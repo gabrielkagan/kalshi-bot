@@ -140,11 +140,12 @@ DVOL_ANNUALIZED_TO_5S = 1.0 / math.sqrt(SECONDS_PER_YEAR / VOL_RETURN_INTERVAL)
 STUDENT_T_DF = 4                  # degrees of freedom for t-distribution
 BETA_SLOPE = 0.85                 # logistic calibration (<1 compresses extremes)
 MAX_EFFECTIVE_PROB = 0.93         # hard cap on calibrated probability (default / fallback)
+NUMERICAL_SAFETY_CEILING = 0.999  # ceiling for learned calibration methods (replaces hard cap)
 
 # ─── Calibration Engine ─────────────────────────────────────────────────────
 CALIBRATION_STATE_PATH = "calibration_state.json"
 CALIBRATION_MIN_SAMPLES_PLATT = 200
-CALIBRATION_MIN_SAMPLES_BETA = 500
+CALIBRATION_MIN_SAMPLES_BETA = 350   # lowered from 500 (we have 370+ obs)
 CALIBRATION_MIN_SAMPLES_BLR = 50
 CALIBRATION_RETRAIN_INTERVAL = 3600    # seconds between retrain checks
 CALIBRATION_BRIER_WINDOW = 500         # rolling Brier over last N outcomes
@@ -2512,6 +2513,16 @@ class CalibrationEngine:
         # Previous Brier score for regression check
         self._prev_brier: Optional[float] = None
 
+        # Empirical bucket tracking: keyed by prob range string
+        self._empirical_buckets: Dict[str, deque] = {
+            "0.80-0.85": deque(maxlen=200),
+            "0.85-0.90": deque(maxlen=200),
+            "0.90-0.93": deque(maxlen=200),
+            "0.93-0.95": deque(maxlen=200),
+            "0.95-0.97": deque(maxlen=200),
+            "0.97-1.00": deque(maxlen=200),
+        }
+
         self._load_state()
 
     # ── Persistence ────────────────────────────────────────────────────────
@@ -2600,7 +2611,9 @@ class CalibrationEngine:
             result = self._blr_predict(raw_prob)
         else:
             return CalibrationEngine._fallback_calibrate(raw_prob, cap)
-        return max(0.001, min(cap, result))
+        # Learned method active: uncertainty shrinkage + safety ceiling only (no hard cap)
+        result = self._apply_uncertainty_shrinkage(result)
+        return max(0.001, min(NUMERICAL_SAFETY_CEILING, result))
 
     @staticmethod
     def _fallback_calibrate(raw_prob: float, cap: float) -> float:
@@ -2620,77 +2633,89 @@ class CalibrationEngine:
         pred = self.calibrate(raw_prob, cap=1.0)
         brier = (pred - outcome) ** 2
         self._brier_scores.append(brier)
+        # Bucket the calibrated prediction for empirical tracking
+        self._bucket_observation(pred, outcome)
 
     def maybe_retrain(self) -> bool:
-        """Hourly retrain check, gated by minimum sample sizes."""
+        """Hourly retrain check. Trains all eligible methods, promotes best Brier."""
         now = time.time()
         if now - self._last_retrain < CALIBRATION_RETRAIN_INTERVAL:
             return False
         self._last_retrain = now
 
         n = len(self._observations)
-        retrained = False
+        if n < CALIBRATION_MIN_SAMPLES_BLR:
+            return False
 
-        # Try Platt first (lowest data requirement)
+        # ── Train all eligible methods ────────────────────────────────────
+        trained_methods: Dict[str, float] = {}  # method -> Brier
+
         if n >= CALIBRATION_MIN_SAMPLES_PLATT:
             try:
-                old_brier = self.rolling_brier_score()
                 self._train_platt()
-
-                # Brier regression check
-                new_brier = self._compute_brier_on_observations()
-                if self._prev_brier is not None and new_brier > self._prev_brier + 0.01:
-                    logging.warning(
-                        "CalibrationEngine: Platt retrain REJECTED — "
-                        "Brier regression %.4f > %.4f + 0.01",
-                        new_brier, self._prev_brier,
-                    )
-                    # Revert to fallback
-                    self._platt_A = BETA_SLOPE
-                    self._platt_B = 0.0
-                    self._platt_trained = False
-                    self.active_method = "fixed_beta"
-                else:
-                    self._platt_trained = True
-                    if self.active_method == "fixed_beta":
-                        self.active_method = "platt"
-                    self._prev_brier = new_brier
-                    retrained = True
-                    logging.info(
-                        "CalibrationEngine: Platt retrained — A=%.4f, B=%.4f, "
-                        "Brier=%.4f, n=%d",
-                        self._platt_A, self._platt_B, new_brier, n,
-                    )
+                self._platt_trained = True
+                trained_methods["platt"] = self._compute_brier_for_method("platt")
+                logging.info(
+                    "CalibrationEngine: Platt trained — A=%.4f, B=%.4f, Brier=%.4f, n=%d",
+                    self._platt_A, self._platt_B, trained_methods["platt"], n,
+                )
             except Exception as e:
                 logging.warning("CalibrationEngine: Platt training failed: %s", e)
 
-        # Try Beta Cal (higher data requirement)
         if n >= CALIBRATION_MIN_SAMPLES_BETA:
             try:
                 self._train_beta_cal()
                 self._beta_trained = True
+                trained_methods["beta_cal"] = self._compute_brier_for_method("beta_cal")
                 logging.info(
-                    "CalibrationEngine: Beta Cal trained — a=%.4f, b=%.4f, c=%.4f, n=%d",
-                    self._beta_a, self._beta_b, self._beta_c, n,
+                    "CalibrationEngine: Beta Cal trained — a=%.4f, b=%.4f, c=%.4f, "
+                    "Brier=%.4f, n=%d",
+                    self._beta_a, self._beta_b, self._beta_c,
+                    trained_methods["beta_cal"], n,
                 )
             except Exception as e:
                 logging.warning("CalibrationEngine: Beta Cal training failed: %s", e)
 
-        # Try BLR (lowest data requirement but Bayesian)
         if n >= CALIBRATION_MIN_SAMPLES_BLR:
             try:
                 self._train_blr()
                 self._blr_trained = True
+                trained_methods["blr"] = self._compute_brier_for_method("blr")
                 logging.info(
-                    "CalibrationEngine: BLR trained — mu=[%.4f, %.4f], n=%d",
-                    self._blr_mu[0], self._blr_mu[1], n,
+                    "CalibrationEngine: BLR trained — mu=[%.4f, %.4f], Brier=%.4f, n=%d",
+                    self._blr_mu[0], self._blr_mu[1], trained_methods["blr"], n,
                 )
             except Exception as e:
                 logging.warning("CalibrationEngine: BLR training failed: %s", e)
 
-        if retrained:
-            self._save_state()
-        return retrained
+        if not trained_methods:
+            return False
+
+        # ── Promote best Brier method ─────────────────────────────────────
+        best_method = min(trained_methods, key=trained_methods.get)
+        best_brier = trained_methods[best_method]
+
+        # Regression guard: reject if best is worse than previous + margin
+        if self._prev_brier is not None and best_brier > self._prev_brier + 0.01:
+            logging.warning(
+                "CalibrationEngine: promotion REJECTED — best Brier %.4f > prev %.4f + 0.01 "
+                "(methods: %s)",
+                best_brier, self._prev_brier, trained_methods,
+            )
+            return False
+
+        old_method = self.active_method
+        self.active_method = best_method
+        self._prev_brier = best_brier
+
+        logging.info(
+            "CalibrationEngine: PROMOTED %s -> %s (Brier=%.4f, alternatives=%s)",
+            old_method, best_method, best_brier,
+            {k: round(v, 4) for k, v in trained_methods.items()},
+        )
+
+        self._save_state()
+        return True
 
     def load_training_data_from_db(self, state: "StateManager"):
         """Rebuild training data from evaluated opportunities on startup.
@@ -2997,9 +3022,85 @@ class CalibrationEngine:
             total += (pred - outcome) ** 2
         return total / len(self._observations)
 
+    def is_learned_method_active(self) -> bool:
+        """Return True if a data-driven calibration method is active (not fixed_beta fallback)."""
+        if self.active_method == "platt" and self._platt_trained:
+            return True
+        if self.active_method == "beta_cal" and self._beta_trained:
+            return True
+        if self.active_method == "blr" and self._blr_trained:
+            return True
+        return False
+
+    def _apply_uncertainty_shrinkage(self, cal_prob: float) -> float:
+        """Shrink calibrated probability toward 0.5 based on model uncertainty.
+
+        p_adj = 0.5 + (p_cal - 0.5) * (1 - u)
+        where u = brier / sqrt(n). Well-calibrated model with plenty of data
+        → nearly no shrinkage. High Brier or scarce data → conservative.
+        """
+        n = len(self._observations)
+        if n < 50:
+            u = 0.05  # conservative default when data is scarce
+        else:
+            u = self.rolling_brier_score() / math.sqrt(n)
+        u = max(0.0, min(0.5, u))
+        return 0.5 + (cal_prob - 0.5) * (1.0 - u)
+
+    def _compute_brier_for_method(self, method: str) -> float:
+        """Compute Brier score over all observations for a specific method."""
+        if not self._observations:
+            return 1.0
+        total = 0.0
+        for raw_p, outcome in self._observations:
+            if method == "platt":
+                pred = self._platt_predict(raw_p)
+            elif method == "beta_cal":
+                pred = self._beta_cal_predict(raw_p)
+            elif method == "blr":
+                pred = self._blr_predict(raw_p)
+            else:
+                pred = CalibrationEngine._fallback_calibrate(raw_p, cap=1.0)
+            total += (max(0.001, min(0.999, pred)) - outcome) ** 2
+        return total / len(self._observations)
+
+    def _bucket_observation(self, pred: float, outcome: int):
+        """Place a (pred, outcome) pair into the appropriate empirical bucket."""
+        bucket_edges = [
+            (0.80, 0.85, "0.80-0.85"),
+            (0.85, 0.90, "0.85-0.90"),
+            (0.90, 0.93, "0.90-0.93"),
+            (0.93, 0.95, "0.93-0.95"),
+            (0.95, 0.97, "0.95-0.97"),
+            (0.97, 1.00, "0.97-1.00"),
+        ]
+        for lo, hi, key in bucket_edges:
+            if lo <= pred < hi or (key == "0.97-1.00" and pred >= 0.97):
+                self._empirical_buckets[key].append((pred, outcome))
+                break
+
+    def get_empirical_bucket_stats(self) -> Dict[str, dict]:
+        """Return per-bucket stats: count, win_rate, avg_pred, calibration_gap."""
+        stats = {}
+        for key, bucket in self._empirical_buckets.items():
+            if not bucket:
+                stats[key] = {"count": 0, "win_rate": None, "avg_pred": None, "calibration_gap": None}
+                continue
+            preds = [p for p, _ in bucket]
+            outcomes = [o for _, o in bucket]
+            win_rate = sum(outcomes) / len(outcomes)
+            avg_pred = sum(preds) / len(preds)
+            stats[key] = {
+                "count": len(bucket),
+                "win_rate": round(win_rate, 4),
+                "avg_pred": round(avg_pred, 4),
+                "calibration_gap": round(win_rate - avg_pred, 4),
+            }
+        return stats
+
     def get_diagnostics(self) -> dict:
         """Return diagnostic info for logging."""
-        return {
+        diag = {
             "active_method": self.active_method,
             "n_observations": len(self._observations),
             "rolling_brier": round(self.rolling_brier_score(), 6),
@@ -3012,7 +3113,59 @@ class CalibrationEngine:
             "beta_trained": self._beta_trained,
             "blr_mu": [round(m, 6) for m in self._blr_mu],
             "blr_trained": self._blr_trained,
+            "learned_method_active": self.is_learned_method_active(),
         }
+        diag["empirical_buckets"] = self.get_empirical_bucket_stats()
+        return diag
+
+    def backtest_adaptive_vs_fixed(self) -> dict:
+        """Replay all observations through old (fixed cap) vs new (learned + shrinkage) system.
+
+        Called once on startup for diagnostics. Returns comparison dict.
+        """
+        if not self._observations or not self.is_learned_method_active():
+            return {}
+
+        old_brier_sum = 0.0
+        new_brier_sum = 0.0
+        cap_truncated = 0
+        high_prob_markets = 0  # predictions > 0.93 under new system
+
+        for raw_p, outcome in self._observations:
+            # Old system: fixed beta fallback with 0.93 cap
+            old_pred = CalibrationEngine._fallback_calibrate(raw_p, cap=MAX_EFFECTIVE_PROB)
+            old_brier_sum += (old_pred - outcome) ** 2
+
+            # New system: learned method + uncertainty shrinkage
+            new_pred = self.calibrate(raw_p, cap=NUMERICAL_SAFETY_CEILING)
+            new_brier_sum += (new_pred - outcome) ** 2
+
+            # How many predictions were truncated by old cap?
+            uncapped = CalibrationEngine._fallback_calibrate(raw_p, cap=1.0)
+            if uncapped > MAX_EFFECTIVE_PROB:
+                cap_truncated += 1
+
+            if new_pred > MAX_EFFECTIVE_PROB:
+                high_prob_markets += 1
+
+        n = len(self._observations)
+        result = {
+            "n_observations": n,
+            "old_brier": round(old_brier_sum / n, 6),
+            "new_brier": round(new_brier_sum / n, 6),
+            "brier_improvement": round((old_brier_sum - new_brier_sum) / n, 6),
+            "cap_truncated_count": cap_truncated,
+            "high_prob_new_count": high_prob_markets,
+            "active_method": self.active_method,
+        }
+
+        logging.info(
+            "CalibrationEngine BACKTEST: old_brier=%.4f, new_brier=%.4f, "
+            "improvement=%.4f, cap_truncated=%d/%d, high_prob_new=%d",
+            result["old_brier"], result["new_brier"], result["brier_improvement"],
+            cap_truncated, n, high_prob_markets,
+        )
+        return result
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -3516,8 +3669,12 @@ class OpportunityScanner:
                     except Exception:
                         logging.debug("OrderFlowEngine.get_signals failed", exc_info=True)
                 calibrated_prob_raw = final_prob
-                _dyn_cap = ProbabilityEngine._dynamic_cap(seconds_remaining)
-                final_prob = max(0.01, min(_dyn_cap, final_prob + ofa_adjustment))
+                if _CALIBRATION_ENGINE is not None and _CALIBRATION_ENGINE.is_learned_method_active():
+                    # Learned method: no dynamic cap, use safety ceiling only
+                    final_prob = max(0.01, min(NUMERICAL_SAFETY_CEILING, final_prob + ofa_adjustment))
+                else:
+                    _dyn_cap = ProbabilityEngine._dynamic_cap(seconds_remaining)
+                    final_prob = max(0.01, min(_dyn_cap, final_prob + ofa_adjustment))
 
                 # ── Market-price blending ──────────────────────────────────
                 # For mid-range prices, blend model with market to temper overconfidence.
@@ -5348,10 +5505,23 @@ class MainLoop:
 
         # Load calibration training data from historical settlements
         self.calibration.load_training_data_from_db(self.state)
+
+        # Run adaptive-vs-fixed backtest on startup
+        backtest_result = self.calibration.backtest_adaptive_vs_fixed()
+        if backtest_result:
+            logging.info("Startup backtest result: %s", backtest_result)
+
         if _TELEGRAM and self.calibration.active_method != "fixed_beta":
+            bt_msg = ""
+            if backtest_result:
+                bt_msg = (
+                    f"\nBacktest: Brier {backtest_result['old_brier']:.4f} -> "
+                    f"{backtest_result['new_brier']:.4f} "
+                    f"({backtest_result['cap_truncated_count']} cap-truncated)"
+                )
             _TELEGRAM.send(
                 f"\U0001f9e0 Calibration: {self.calibration.active_method} trained "
-                f"({len(self.calibration._observations)} obs)"
+                f"({len(self.calibration._observations)} obs){bt_msg}"
             )
 
         # Start Coinbase price feed

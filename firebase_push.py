@@ -518,7 +518,7 @@ class FirebasePusher:
         try:
             diag = self._ml.calibration.get_diagnostics()
             diag["min_platt"] = 200
-            diag["min_beta"] = 500
+            diag["min_beta"] = 350
             diag["min_blr"] = 50
             snap["calibration"] = diag
         except Exception:
