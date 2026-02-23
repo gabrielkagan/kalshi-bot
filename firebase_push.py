@@ -198,6 +198,9 @@ class FirebasePusher:
                         "ctz_jump_detected": cached.get("ctz_jump_detected"),
                         "jump_multiplier": cached.get("jump_multiplier", 1.0),
                         "jump_event_count": cached.get("jump_event_count", 0),
+                        "egarch_sigma": cached.get("egarch_sigma"),
+                        "egarch_n_updates": cached.get("egarch_n_updates", 0),
+                        "egarch_log_var": cached.get("egarch_log_var"),
                     }
                 else:
                     vol_data[asset] = None
@@ -538,6 +541,12 @@ class FirebasePusher:
             snap["har_estimation"] = self._ml.har_estimator.get_diagnostics()
         except Exception:
             snap["har_estimation"] = None
+
+        # ── EGARCH estimation diagnostics ─────────────────────────────
+        try:
+            snap["egarch_estimation"] = self._ml.egarch_estimator.get_diagnostics()
+        except Exception:
+            snap["egarch_estimation"] = None
 
         # ── counterfactual analysis ───────────────────────────────────
         try:

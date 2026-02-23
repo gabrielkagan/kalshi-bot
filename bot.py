@@ -100,6 +100,22 @@ JUMP_DECAY_MAX_BOOST = 1.0           # boost starts at 1.0 (total = 2.0×)
 JUMP_DECAY_MIN_BOOST = 0.01          # below this = regime "normal"
 JUMP_MAX_HISTORY = 10                # max jump events per asset
 
+# ─── EGARCH(1,1) Estimation ──────────────────────────────────────────────
+EGARCH_SHADOW_MODE = True               # True = compute/log only, don't affect blended_rv
+EGARCH_STATE_PATH = "egarch_state.json"
+EGARCH_REFIT_INTERVAL = 7200            # 2h between MLE refits (match HAR)
+EGARCH_MIN_RETURNS = 360                # 30 min of 5s returns before first MLE fit
+EGARCH_RETURN_MAXLEN = 10800            # 15h of 5s returns for MLE window
+EGARCH_WARMUP_RETURNS = 12              # 1 min before recursive update starts
+EGARCH_E_ABS_Z = 0.7978845608           # E[|z|] for z ~ N(0,1) = sqrt(2/π)
+EGARCH_LOG_VAR_FLOOR = -40.0            # exp(-40) ~ 4.25e-18 (prevents underflow)
+EGARCH_LOG_VAR_CEILING = -10.0          # exp(-10) ~ 4.5e-5 (prevents explosive vol)
+EGARCH_MLE_MAXITER = 200                # scipy L-BFGS-B iterations
+EGARCH_OMEGA_BOUNDS = (-5.0, 0.0)
+EGARCH_ALPHA_BOUNDS = (0.01, 0.5)
+EGARCH_GAMMA_BOUNDS = (-0.3, 0.3)       # both leverage directions
+EGARCH_BETA_BOUNDS = (0.80, 0.999)      # high persistence typical for crypto
+
 # ─── HAR-WLS Estimation ──────────────────────────────────────────────────
 HAR_OBSERVATION_INTERVAL = 300      # 5 min between observations (seconds)
 HAR_OBSERVATION_MAXLEN = 288        # 24h of 5-min observations
@@ -894,6 +910,18 @@ class StateManager:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS egarch_params (
+                asset TEXT PRIMARY KEY,
+                omega REAL NOT NULL,
+                alpha REAL NOT NULL,
+                gamma REAL NOT NULL,
+                beta REAL NOT NULL,
+                last_log_variance REAL,
+                mle_loglik REAL,
+                mle_converged INTEGER DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_positions_asset
                 ON positions(asset);
             CREATE INDEX IF NOT EXISTS idx_positions_status
@@ -1360,6 +1388,21 @@ class StateManager:
                 (asset, omega, alpha, beta, last_variance, updated_at)
             VALUES (?,?,?,?,?,?)
         """, (asset, omega, alpha, beta, last_variance, now))
+        self.conn.commit()
+
+    def update_egarch_params(self, asset: str, omega: float, alpha: float,
+                             gamma: float, beta: float,
+                             last_log_variance: Optional[float] = None,
+                             mle_loglik: Optional[float] = None,
+                             mle_converged: bool = False):
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        self.conn.execute("""
+            INSERT OR REPLACE INTO egarch_params
+                (asset, omega, alpha, gamma, beta, last_log_variance,
+                 mle_loglik, mle_converged, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (asset, omega, alpha, gamma, beta, last_log_variance,
+              mle_loglik, 1 if mle_converged else 0, now))
         self.conn.commit()
 
     def close(self):
@@ -2110,10 +2153,12 @@ class VolatilityEngine:
     """
 
     def __init__(self, feed: CoinbaseFeed, dvol_fetcher: Optional[DeribitDVOLFetcher] = None,
-                 har_estimator: Optional['HAREstimator'] = None):
+                 har_estimator: Optional['HAREstimator'] = None,
+                 egarch_estimator: Optional['EGARCHEstimator'] = None):
         self._feed = feed
         self._dvol = dvol_fetcher
         self._har = har_estimator
+        self._egarch = egarch_estimator
         self._returns: Dict[str, deque] = {
             a: deque(maxlen=VOL_WINDOW_15MIN) for a in ASSETS
         }
@@ -2146,6 +2191,10 @@ class VolatilityEngine:
                 log_return = math.log(current_price / past_price)
                 self._returns[asset].append(log_return)
                 self._last_return_time[asset] = now
+
+                # Feed return to EGARCH
+                if self._egarch is not None:
+                    self._egarch.record_return(asset, log_return)
 
                 # Check for jump against current estimate (before updating cache)
                 estimate = self._compute(asset, now)
@@ -2186,6 +2235,19 @@ class VolatilityEngine:
                                 asset, log_return, estimate["blended_rv"],
                                 lm_stat, lm_crit, lm_jump,
                                 f"{estimate.get('ctz_stat', 0):.4f}", ctz_jump)
+
+                # Seed EGARCH variance from RK if needed, then recursive update
+                if self._egarch is not None:
+                    if self._egarch._log_var.get(asset) is None and estimate and estimate.get("rv_5min", 0) > 0:
+                        self._egarch.seed_variance(asset, estimate["rv_5min"] ** 2)
+                    egarch_sigma = self._egarch.recursive_update(asset, log_return)
+                    # Anomaly: sigma/rv ratio extreme
+                    if egarch_sigma and estimate and estimate.get("blended_rv", 0) > 0:
+                        ratio = egarch_sigma / estimate["blended_rv"]
+                        if ratio > 5.0 or ratio < 0.2:
+                            logging.warning(
+                                "EGARCH %s: sigma/rv ratio extreme (%.4f) — model may be diverging",
+                                asset, ratio)
 
                 self._cache[asset] = self._compute(asset, now)
             else:
@@ -2510,6 +2572,11 @@ class VolatilityEngine:
                     sv_pos_15=sv_pos_15, sv_neg_15=sv_neg_15,
                 )
 
+        # Step 3b: EGARCH conditional volatility
+        egarch_sigma = None
+        if self._egarch is not None:
+            egarch_sigma = self._egarch.get_sigma(asset)
+
         # Track RV-only blended for diagnostics
         rv_only_blended = rv_blended
         blended = rv_blended
@@ -2589,6 +2656,10 @@ class VolatilityEngine:
             "ctz_jump_detected": ctz_jump,
             "jump_multiplier": round(jump_multiplier, 4),
             "jump_event_count": len(jump_events),
+            # EGARCH diagnostics
+            "egarch_sigma": egarch_sigma,
+            "egarch_n_updates": self._egarch._n_updates.get(asset, 0) if self._egarch else 0,
+            "egarch_log_var": self._egarch._log_var.get(asset) if self._egarch else None,
             # Internal (for Lee-Mykland at tick level in update())
             "_lm_local_bv": bv_5min,
             "_ctz_jump_detected": ctz_jump,
@@ -3099,6 +3170,359 @@ class HAREstimator:
                 sv_pos_5 = last.get("sv_pos_5", 0)
                 if sv_pos_5 > 0:
                     diag["semivar_ratio_5min"] = round(sv_neg_5 / sv_pos_5, 2)
+
+            result[asset] = diag
+        return result
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  EGARCHEstimator – Conditional volatility via EGARCH(1,1)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class EGARCHEstimator:
+    """EGARCH(1,1) conditional volatility estimator.
+
+    Model: log(σ²_t) = ω + α·(|z_{t-1}| - E[|z|]) + γ·z_{t-1} + β·log(σ²_{t-1})
+    where z_t = r_t / σ_t
+
+    Log-variance specification guarantees σ²>0 without parameter constraints.
+    The γ parameter captures crypto's documented inverse leverage effect.
+    """
+
+    def __init__(self):
+        self._returns: Dict[str, deque] = {
+            a: deque(maxlen=EGARCH_RETURN_MAXLEN) for a in ASSETS
+        }
+        self._params: Dict[str, Optional[Dict]] = {a: None for a in ASSETS}
+        self._log_var: Dict[str, Optional[float]] = {a: None for a in ASSETS}
+        self._sigma: Dict[str, Optional[float]] = {a: None for a in ASSETS}
+        self._last_refit: float = 0.0
+        self._n_updates: Dict[str, int] = {a: 0 for a in ASSETS}
+        self._mle_loglik: Dict[str, Optional[float]] = {a: None for a in ASSETS}
+        self._mle_converged: Dict[str, bool] = {a: False for a in ASSETS}
+        self._load_state()
+
+    def record_return(self, asset: str, log_return: float):
+        """Append return to MLE buffer."""
+        self._returns[asset].append(log_return)
+
+    def seed_variance(self, asset: str, rk_5min_sq: float):
+        """First-time init: set log_var from realized kernel variance."""
+        if self._log_var.get(asset) is not None:
+            return
+        if rk_5min_sq <= 0:
+            return
+        lv = math.log(rk_5min_sq)
+        lv = max(EGARCH_LOG_VAR_FLOOR, min(EGARCH_LOG_VAR_CEILING, lv))
+        self._log_var[asset] = lv
+        self._sigma[asset] = math.exp(lv * 0.5)
+        using_defaults = False
+        if self._params[asset] is None:
+            self._params[asset] = {
+                "omega": lv * 0.05,
+                "alpha": 0.10,
+                "gamma": 0.0,
+                "beta": 0.95,
+            }
+            using_defaults = True
+        logging.info(
+            "EGARCH %s: seeded from RK (rk_5min=%.6f, log_var=%.4f, using_defaults=%s)",
+            asset, math.sqrt(rk_5min_sq), lv, using_defaults)
+
+    def recursive_update(self, asset: str, log_return: float) -> Optional[float]:
+        """O(1) recursive EGARCH update. Returns new σ or None."""
+        params = self._params.get(asset)
+        log_var = self._log_var.get(asset)
+        if params is None or log_var is None:
+            return None
+        if len(self._returns.get(asset, [])) < EGARCH_WARMUP_RETURNS:
+            return None
+
+        omega = params["omega"]
+        alpha = params["alpha"]
+        gamma = params["gamma"]
+        beta = params["beta"]
+
+        sigma = math.exp(log_var * 0.5)
+        if sigma <= 0:
+            return None
+        z = log_return / sigma
+        new_log_var = omega + alpha * (abs(z) - EGARCH_E_ABS_Z) + gamma * z + beta * log_var
+        new_log_var = max(EGARCH_LOG_VAR_FLOOR, min(EGARCH_LOG_VAR_CEILING, new_log_var))
+
+        # Anomaly logging
+        raw_lv = omega + alpha * (abs(z) - EGARCH_E_ABS_Z) + gamma * z + beta * log_var
+        if raw_lv < EGARCH_LOG_VAR_FLOOR:
+            logging.debug(
+                "EGARCH %s: log_var clamped to FLOOR (was %.4f) — possible underflow",
+                asset, raw_lv)
+        elif raw_lv > EGARCH_LOG_VAR_CEILING:
+            logging.debug(
+                "EGARCH %s: log_var clamped to CEILING (was %.4f) — possible explosion",
+                asset, raw_lv)
+
+        self._log_var[asset] = new_log_var
+        new_sigma = math.exp(new_log_var * 0.5)
+        self._sigma[asset] = new_sigma
+        self._n_updates[asset] = self._n_updates.get(asset, 0) + 1
+        return new_sigma
+
+    def get_sigma(self, asset: str) -> Optional[float]:
+        """Return current conditional σ."""
+        return self._sigma.get(asset)
+
+    def is_active(self, asset: str) -> bool:
+        """Returns False if EGARCH_SHADOW_MODE=True or no params."""
+        if EGARCH_SHADOW_MODE:
+            return False
+        return self._params.get(asset) is not None
+
+    def maybe_refit(self):
+        """Check 2h timer, refit each asset via MLE if enough data."""
+        now = time.time()
+        if now - self._last_refit < EGARCH_REFIT_INTERVAL:
+            return
+        self._last_refit = now
+        any_fit = False
+        for asset in ASSETS:
+            rets = self._returns.get(asset, deque())
+            if len(rets) < EGARCH_MIN_RETURNS:
+                logging.info(
+                    "EGARCH refit %s: SKIPPED (n_returns=%d < %d)",
+                    asset, len(rets), EGARCH_MIN_RETURNS)
+                continue
+            returns_list = list(rets)
+            if self._mle_fit_asset(asset, returns_list):
+                any_fit = True
+        if any_fit:
+            self._save_state()
+
+    def _mle_fit_asset(self, asset: str, returns: list) -> bool:
+        """Fit EGARCH(1,1) via scipy L-BFGS-B. Returns True on success."""
+        try:
+            from scipy.optimize import minimize
+        except ImportError:
+            logging.warning("EGARCH refit %s: scipy not available", asset)
+            return False
+
+        t0 = time.time()
+        n = len(returns)
+        sample_var = sum(r * r for r in returns) / n
+
+        # Initial guess: previous params or heuristic
+        old_params = self._params.get(asset)
+        if old_params is not None:
+            x0 = [old_params["omega"], old_params["alpha"],
+                   old_params["gamma"], old_params["beta"]]
+        else:
+            x0 = [math.log(sample_var) * (1 - 0.95), 0.10, 0.0, 0.95]
+
+        bounds = [
+            EGARCH_OMEGA_BOUNDS,
+            EGARCH_ALPHA_BOUNDS,
+            EGARCH_GAMMA_BOUNDS,
+            EGARCH_BETA_BOUNDS,
+        ]
+
+        try:
+            result = minimize(
+                EGARCHEstimator._neg_log_likelihood,
+                x0, args=(returns,),
+                method="L-BFGS-B",
+                bounds=bounds,
+                options={"maxiter": EGARCH_MLE_MAXITER, "ftol": 1e-10},
+            )
+        except Exception as e:
+            logging.warning("EGARCH refit %s REJECTED: reason=exception %s", asset, e)
+            return False
+
+        omega, alpha, gamma, beta = result.x
+        converged = result.success
+
+        # Sanity check: unconditional log-var
+        if abs(beta) >= 1.0:
+            logging.warning(
+                "EGARCH refit %s REJECTED: reason=beta>=1.0 (%.6f)", asset, beta)
+            return False
+        uncond_log_var = omega / (1.0 - beta)
+        if uncond_log_var < EGARCH_LOG_VAR_FLOOR or uncond_log_var > EGARCH_LOG_VAR_CEILING:
+            logging.warning(
+                "EGARCH refit %s REJECTED: reason=uncond_log_var out of bounds (%.4f)",
+                asset, uncond_log_var)
+            return False
+
+        # Parameter change detection
+        if old_params is not None:
+            d_omega = omega - old_params["omega"]
+            d_alpha = alpha - old_params["alpha"]
+            d_gamma = gamma - old_params["gamma"]
+            d_beta = beta - old_params["beta"]
+            logging.info(
+                "EGARCH %s param delta: Δω=%.4f Δα=%.4f Δγ=%.4f Δβ=%.6f",
+                asset, d_omega, d_alpha, d_gamma, d_beta)
+
+        # Update params
+        new_params = {"omega": omega, "alpha": alpha, "gamma": gamma, "beta": beta}
+        self._params[asset] = new_params
+        self._mle_loglik[asset] = -result.fun
+        self._mle_converged[asset] = converged
+
+        # Reset log_var to unconditional
+        self._log_var[asset] = uncond_log_var
+        self._sigma[asset] = math.exp(uncond_log_var * 0.5)
+
+        uncond_vol = math.exp(uncond_log_var * 0.5)
+        half_life = (math.log(2) / (-math.log(beta))) * 5.0 if beta > 0 and beta < 1 else float('inf')
+        elapsed_ms = (time.time() - t0) * 1000
+
+        # Gamma sign interpretation
+        if gamma > 0.01:
+            gamma_sign = "positive=inverse_leverage"
+        elif gamma < -0.01:
+            gamma_sign = "negative=classic_leverage"
+        else:
+            gamma_sign = "near_zero"
+
+        logging.info(
+            "EGARCH refit %s: omega=%.4f alpha=%.4f gamma=%.4f beta=%.4f "
+            "loglik=%.2f uncond_vol=%.8f half_life=%.1fs converged=%s n=%d elapsed_ms=%.1f",
+            asset, omega, alpha, gamma, beta,
+            -result.fun, uncond_vol, half_life, converged, n, elapsed_ms)
+        logging.info("EGARCH %s gamma sign: %s", asset, gamma_sign)
+
+        return True
+
+    @staticmethod
+    def _neg_log_likelihood(params, returns) -> float:
+        """Negative log-likelihood for EGARCH(1,1)."""
+        omega, alpha, gamma, beta = params
+        n = len(returns)
+        if n < 60:
+            return 1e10
+
+        # Init log_var from sample variance of first 60 returns
+        sample_var = sum(r * r for r in returns[:60]) / 60.0
+        if sample_var <= 0:
+            sample_var = 1e-10
+        log_var = math.log(sample_var)
+
+        LOG_2PI = 1.8378770664093453  # log(2π)
+        nll = 0.0
+        e_abs_z = EGARCH_E_ABS_Z
+
+        for i in range(n):
+            r = returns[i]
+            # NLL contribution: 0.5 * (log(2π) + log_var + r²/exp(log_var))
+            var = math.exp(log_var)
+            if var <= 0:
+                var = 1e-30
+            nll += 0.5 * (LOG_2PI + log_var + r * r / var)
+
+            # EGARCH recursion
+            sigma = math.sqrt(var)
+            if sigma <= 0:
+                sigma = 1e-15
+            z = r / sigma
+            log_var = omega + alpha * (abs(z) - e_abs_z) + gamma * z + beta * log_var
+            log_var = max(-50.0, min(-5.0, log_var))
+
+        return nll / n  # normalize for numerical stability
+
+    def _load_state(self):
+        """Load params and state from JSON file."""
+        if not os.path.exists(EGARCH_STATE_PATH):
+            logging.info("EGARCH loaded: 0 active, no state file")
+            return
+        try:
+            with open(EGARCH_STATE_PATH, "r") as f:
+                state = json.load(f)
+            active_count = 0
+            for asset in ASSETS:
+                adata = state.get(asset)
+                if adata and adata.get("params"):
+                    self._params[asset] = adata["params"]
+                    self._log_var[asset] = adata.get("log_var")
+                    self._sigma[asset] = adata.get("sigma")
+                    self._n_updates[asset] = adata.get("n_updates", 0)
+                    self._mle_loglik[asset] = adata.get("mle_loglik")
+                    self._mle_converged[asset] = adata.get("mle_converged", False)
+                    active_count += 1
+                    logging.info(
+                        "EGARCH %s: restored params omega=%.4f alpha=%.4f "
+                        "gamma=%.4f beta=%.4f log_var=%.4f",
+                        asset,
+                        adata["params"]["omega"], adata["params"]["alpha"],
+                        adata["params"]["gamma"], adata["params"]["beta"],
+                        adata.get("log_var", 0))
+            self._last_refit = state.get("last_refit", 0.0)
+            age = time.time() - self._last_refit if self._last_refit > 0 else float('inf')
+            logging.info("EGARCH loaded: %d active, state_age=%.0fs", active_count, age)
+        except Exception as e:
+            logging.warning("EGARCH state load failed: %s", e)
+
+    def _save_state(self):
+        """Save state to JSON file (atomic write)."""
+        state = {"last_refit": self._last_refit}
+        for asset in ASSETS:
+            state[asset] = {
+                "params": self._params[asset],
+                "log_var": self._log_var[asset],
+                "sigma": self._sigma[asset],
+                "n_updates": self._n_updates[asset],
+                "mle_loglik": self._mle_loglik[asset],
+                "mle_converged": self._mle_converged[asset],
+            }
+        tmp_path = EGARCH_STATE_PATH + ".tmp"
+        try:
+            with open(tmp_path, "w") as f:
+                json.dump(state, f, indent=2)
+            os.replace(tmp_path, EGARCH_STATE_PATH)
+        except Exception as e:
+            logging.warning("EGARCH state save failed: %s", e)
+
+    def get_diagnostics(self) -> Dict:
+        """Per-asset diagnostics dict for Firebase."""
+        result = {}
+        now = time.time()
+        for asset in ASSETS:
+            params = self._params.get(asset)
+            log_var = self._log_var.get(asset)
+            sigma = self._sigma.get(asset)
+            n_rets = len(self._returns.get(asset, []))
+            n_upd = self._n_updates.get(asset, 0)
+
+            diag: Dict = {
+                "has_params": params is not None,
+                "n_returns": n_rets,
+                "n_updates": n_upd,
+                "current_sigma": round(sigma, 10) if sigma is not None else None,
+                "current_log_var": round(log_var, 4) if log_var is not None else None,
+                "mle_loglik": round(self._mle_loglik.get(asset, 0), 4) if self._mle_loglik.get(asset) is not None else None,
+                "mle_converged": self._mle_converged.get(asset, False),
+                "last_refit_age_s": round(now - self._last_refit, 1) if self._last_refit > 0 else None,
+            }
+
+            if params is not None:
+                beta = params["beta"]
+                omega = params["omega"]
+                diag["params"] = {k: round(v, 6) for k, v in params.items()}
+                if abs(beta) < 1.0:
+                    uncond_lv = omega / (1.0 - beta)
+                    diag["unconditional_vol"] = round(math.exp(uncond_lv * 0.5), 10)
+                    if beta > 0 and beta < 1:
+                        diag["half_life_seconds"] = round(
+                            (math.log(2) / (-math.log(beta))) * 5.0, 1)
+                    else:
+                        diag["half_life_seconds"] = None
+                else:
+                    diag["unconditional_vol"] = None
+                    diag["half_life_seconds"] = None
+                diag["asymmetry_gamma"] = round(params["gamma"], 6)
+            else:
+                diag["params"] = None
+                diag["unconditional_vol"] = None
+                diag["half_life_seconds"] = None
+                diag["asymmetry_gamma"] = None
 
             result[asset] = diag
         return result
@@ -6231,8 +6655,10 @@ class MainLoop:
         self.feed = CoinbaseFeed()
         self.dvol_fetcher = DeribitDVOLFetcher()
         self.har_estimator = HAREstimator()
+        self.egarch_estimator = EGARCHEstimator()
         self.vol = VolatilityEngine(self.feed, dvol_fetcher=self.dvol_fetcher,
-                                    har_estimator=self.har_estimator)
+                                    har_estimator=self.har_estimator,
+                                    egarch_estimator=self.egarch_estimator)
         self.sizer = PositionSizer()
         self.calibration = CalibrationEngine()
         global _CALIBRATION_ENGINE
@@ -6553,6 +6979,10 @@ class MainLoop:
         if self.har_estimator:
             self.har_estimator.maybe_refit()
 
+        # Periodic EGARCH MLE refit
+        if self.egarch_estimator:
+            self.egarch_estimator.maybe_refit()
+
         # Recompute seconds_to_close and log each window
         utc_now = datetime.datetime.now(timezone.utc)
         prices = self.feed.get_all_prices()
@@ -6599,6 +7029,10 @@ class MainLoop:
                     "ctz_jump_detected": vol_estimate.get("ctz_jump_detected", False),
                     "jump_multiplier": vol_estimate.get("jump_multiplier", 1.0),
                     "jump_event_count": vol_estimate.get("jump_event_count", 0),
+                    "egarch_sigma": round(vol_estimate["egarch_sigma"], 8) if vol_estimate.get("egarch_sigma") is not None else None,
+                    "egarch_n_updates": vol_estimate.get("egarch_n_updates", 0),
+                    "egarch_log_var": round(vol_estimate.get("egarch_log_var", 0), 4) if vol_estimate.get("egarch_log_var") is not None else None,
+                    "egarch_vs_rv_ratio": round(vol_estimate["egarch_sigma"] / vol_estimate["blended_rv"], 4) if vol_estimate.get("egarch_sigma") and vol_estimate.get("blended_rv") and vol_estimate["blended_rv"] > 0 else None,
                 })
             # Order flow snapshot
             if self.order_flow is not None:
