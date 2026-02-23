@@ -131,12 +131,16 @@ HAR_MIN_OBSERVATIONS = 36           # 3h of data before first fit
 HAR_STATE_PATH = "har_state.json"
 HAR_QLIKE_FALLBACK_THRESHOLD = 2.0  # fall back to fixed if QLIKE > this
 HAR_SHADOW_MODE = True              # True = log only, False = use for actual blend
+HAR_IV_REPLACES_DVOL_BLEND = False  # When True + HAR active IV model, replaces Step 4/5 blending
+HAR_IV_MIN_DVOL_FRACTION = 0.70    # Need ≥70% non-None dvol_sq observations to fit IV models
 
 # ─── Deribit DVOL Integration ────────────────────────────────────────────────
 DERIBIT_DVOL_URL = "https://www.deribit.com/api/v2/public/get_volatility_index_data"
 DERIBIT_DVOL_CURRENCIES = {"BTC": "BTC", "ETH": "ETH"}
 DVOL_FETCH_INTERVAL = 60.0        # seconds between DVOL fetches
 DVOL_CACHE_TTL = 120.0            # stale after 2 min
+DVOL_HOURLY_AVG_MAXLEN = 60       # 60 fetches × 60s = ~1h rolling window
+DVOL_HOURLY_AVG_MIN = 3           # Need ≥3 samples for meaningful average
 DVOL_REQUEST_TIMEOUT = 5.0
 # annualized → per-5-second: 1/sqrt(SECONDS_PER_YEAR / VOL_RETURN_INTERVAL)
 # (computed after SECONDS_PER_YEAR is defined below)
@@ -1585,6 +1589,9 @@ class DeribitDVOLFetcher:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._hourly_dvol: Dict[str, deque] = {
+            a: deque(maxlen=DVOL_HOURLY_AVG_MAXLEN) for a in DERIBIT_DVOL_CURRENCIES
+        }
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -1606,6 +1613,14 @@ class DeribitDVOLFetcher:
             return None
         return dvol_5s
 
+    def get_dvol_hourly_avg(self, asset: str) -> Optional[float]:
+        """Return 1h rolling average of DVOL (per-5s scale), or None if insufficient data."""
+        with self._lock:
+            buf = self._hourly_dvol.get(asset)
+            if buf is None or len(buf) < DVOL_HOURLY_AVG_MIN:
+                return None
+            return sum(buf) / len(buf)
+
     def _run(self):
         while not self._stop.is_set():
             for currency_key, currency in DERIBIT_DVOL_CURRENCIES.items():
@@ -1615,6 +1630,7 @@ class DeribitDVOLFetcher:
                         dvol_5s = dvol * DVOL_ANNUALIZED_TO_5S
                         with self._lock:
                             self._cache[currency_key] = (dvol_5s, time.time())
+                            self._hourly_dvol[currency_key].append(dvol_5s)
                 except Exception:
                     logging.debug(f"DVOL fetch failed for {currency}", exc_info=True)
             self._stop.wait(timeout=DVOL_FETCH_INTERVAL)
@@ -2554,6 +2570,21 @@ class VolatilityEngine:
         beta = self._estimate_beta(asset, "BTC")
         return btc_dvol * beta
 
+    def _get_implied_vol_hourly(self, asset: str) -> Optional[float]:
+        """Get hourly-averaged implied vol in per-5-second scale. BTC/ETH direct, SOL/XRP via beta."""
+        if self._dvol is None:
+            return None
+
+        if asset in DERIBIT_DVOL_CURRENCIES:
+            return self._dvol.get_dvol_hourly_avg(asset)
+
+        # SOL/XRP: scale BTC hourly avg DVOL by cross-asset beta
+        btc_dvol_hourly = self._dvol.get_dvol_hourly_avg("BTC")
+        if btc_dvol_hourly is None:
+            return None
+        beta = self._estimate_beta(asset, "BTC")
+        return btc_dvol_hourly * beta
+
     # ── Core computation ─────────────────────────────────────────────────
 
     def _compute(self, asset: str, now: float) -> Optional[Dict]:
@@ -2663,12 +2694,16 @@ class VolatilityEngine:
 
         # Step 2b: HAR observation recording + semivariance computation
         har_blend_rv = None
+        dvol_sq_for_har = None
         sv_pos_1 = sv_neg_1 = sv_pos_5 = sv_neg_5 = sv_pos_15 = sv_neg_15 = 0.0
         if self._har is not None:
             sv_pos_1, sv_neg_1 = HAREstimator._compute_semivariances(returns_list, VOL_WINDOW_1MIN)
             sv_pos_5, sv_neg_5 = HAREstimator._compute_semivariances(returns_list, VOL_WINDOW_5MIN)
             sv_pos_15, sv_neg_15 = HAREstimator._compute_semivariances(returns_list, VOL_WINDOW_15MIN)
-            self._har.record_observation(asset, returns_list, rk_1min, rk_5min, rk_15min, bv_5min)
+            dvol_hourly = self._get_implied_vol_hourly(asset)
+            dvol_sq_for_har = (dvol_hourly ** 2) if dvol_hourly is not None else None
+            self._har.record_observation(asset, returns_list, rk_1min, rk_5min, rk_15min,
+                                         bv_5min, dvol_sq=dvol_sq_for_har)
 
         # Step 3: HAR-RV blend (WLS-estimated or fixed weights)
         w1, w5, w15 = VOL_BLEND_WEIGHTS
@@ -2686,6 +2721,7 @@ class VolatilityEngine:
                 sv_pos_1=sv_pos_1, sv_neg_1=sv_neg_1,
                 sv_pos_5=sv_pos_5, sv_neg_5=sv_neg_5,
                 sv_pos_15=sv_pos_15, sv_neg_15=sv_neg_15,
+                dvol_sq=dvol_sq_for_har,
             )
             har_blend_rv = rv_blended
             # Still compute fixed-blend diagnostics
@@ -2706,6 +2742,7 @@ class VolatilityEngine:
                     sv_pos_1=sv_pos_1, sv_neg_1=sv_neg_1,
                     sv_pos_5=sv_pos_5, sv_neg_5=sv_neg_5,
                     sv_pos_15=sv_pos_15, sv_neg_15=sv_neg_15,
+                    dvol_sq=dvol_sq_for_har,
                 )
 
         # Step 3b: EGARCH conditional volatility
@@ -2717,13 +2754,74 @@ class VolatilityEngine:
         rv_only_blended = rv_blended
         blended = rv_blended
 
+        # VRP diagnostic (variance risk premium)
+        vrp = None
+        if dvol_sq_for_har is not None and rk_5min > 0:
+            vrp = dvol_sq_for_har - rk_5min ** 2
+
+        # VRP regime logging (every 5 min)
+        if vrp is not None and now - self._rk_last_summary.get(f"vrp_{asset}", 0) >= 300:
+            premium = "positive" if vrp > 0 else "negative"
+            rv5_sq = rk_5min ** 2
+            ratio = dvol_sq_for_har / rv5_sq if rv5_sq > 0 else 0.0
+            logging.info(
+                "VRP %s: vrp=%.2e dvol_sq=%.2e rv5_sq=%.2e ratio=%.2f (premium=%s)",
+                asset, vrp, dvol_sq_for_har, rv5_sq, ratio, premium,
+            )
+            self._rk_last_summary[f"vrp_{asset}"] = now
+
+        # DVOL hourly average health logging (every 5 min)
+        if self._dvol is not None and now - self._rk_last_summary.get(f"dvol_h_{asset}", 0) >= 300:
+            dvol_hourly = self._get_implied_vol_hourly(asset)
+            dvol_raw = self._get_implied_vol(asset)
+            if dvol_hourly is not None and asset in DERIBIT_DVOL_CURRENCIES:
+                buf = self._dvol._hourly_dvol.get(asset)
+                n_samples = len(buf) if buf else 0
+                if n_samples > 0 and dvol_hourly > 0:
+                    spread = (max(buf) - min(buf)) / dvol_hourly
+                    logging.info(
+                        "DVOL hourly %s: avg=%.8f raw=%.8f samples=%d spread=%.4f",
+                        asset, dvol_hourly, dvol_raw if dvol_raw else 0.0, n_samples, spread,
+                    )
+            self._rk_last_summary[f"dvol_h_{asset}"] = now
+
+        # HAR-IV shadow comparison
+        har_iv_shadow_rv = None
+        iv_model_names = {"har_iv", "har_j_iv", "log_har_iv", "har_vrp"}
+        if self._har is not None and dvol_sq_for_har is not None:
+            active_model = self._har._active_model.get(asset, "fixed")
+            if active_model in iv_model_names and active_model in self._har._coefficients.get(asset, {}):
+                jump_sq_s = max(0.0, rk_5min ** 2 - bv_5min ** 2)
+                har_iv_shadow_rv = self._har.get_blend(
+                    asset, rk_1min, rk_5min, rk_15min,
+                    jump_sq=jump_sq_s,
+                    sv_pos_1=sv_pos_1, sv_neg_1=sv_neg_1,
+                    sv_pos_5=sv_pos_5, sv_neg_5=sv_neg_5,
+                    sv_pos_15=sv_pos_15, sv_neg_15=sv_neg_15,
+                    dvol_sq=dvol_sq_for_har,
+                )
+
+        # Production guard: HAR_IV_REPLACES_DVOL_BLEND
+        har_iv_active_for_blend = (
+            HAR_IV_REPLACES_DVOL_BLEND
+            and not HAR_SHADOW_MODE
+            and self._har is not None
+            and self._har._active_model.get(asset, "fixed") in iv_model_names
+            and dvol_sq_for_har is not None
+            and har_iv_shadow_rv is not None
+        )
+
         # Step 4: DVOL blending (if available)
         iv = self._get_implied_vol(asset)
         dvol_5s = iv  # for diagnostics
         iv_rv_spread = None
         iv_rv_blend_method = "rv_only"
 
-        if iv is not None and iv > 0 and rv_blended > 0:
+        if har_iv_active_for_blend:
+            # HAR-IV model replaces threshold blending
+            blended = har_iv_shadow_rv
+            iv_rv_blend_method = "har_iv"
+        elif iv is not None and iv > 0 and rv_blended > 0:
             # Inverse-variance weighting
             var_rv = (rk_1min - rk_15min) ** 2   # spread as proxy for RV uncertainty
             var_iv = (iv * 0.10) ** 2             # 10% uncertainty on IV
@@ -2739,6 +2837,16 @@ class VolatilityEngine:
             if iv_rv_spread > IV_RV_SPREAD_THRESHOLD:
                 blended = 0.3 * rv_blended + 0.7 * iv
                 iv_rv_blend_method = "stress_override"
+
+        # HAR-IV shadow comparison logging (DEBUG)
+        if har_iv_shadow_rv is not None and not har_iv_active_for_blend and blended > 0:
+            delta = (har_iv_shadow_rv - blended) / blended
+            logging.debug(
+                "HAR-IV shadow %s: har_iv=%.8f threshold_blend=%.8f delta=%.4f method=%s model=%s vrp=%.2e",
+                asset, har_iv_shadow_rv, blended, delta, iv_rv_blend_method,
+                self._har._active_model.get(asset, "fixed") if self._har else "none",
+                vrp if vrp is not None else 0.0,
+            )
 
         # Step 6: Jump regime — exponential decay
         regime = "normal"
@@ -2806,6 +2914,10 @@ class VolatilityEngine:
             "ark_15min": ark_15min,
             "rk_adaptive_delta_5": round((ark_5min - rk_5min) / rk_5min, 6) if rk_5min > 0 and H_adaptive_5 != H_fixed_5 else 0.0,
             "rk_adaptive_delta_15": round((ark_15min - rk_15min) / rk_15min, 6) if rk_15min > 0 and H_adaptive_15 != H_fixed_15 else 0.0,
+            # HAR-IV diagnostics
+            "dvol_sq_hourly": dvol_sq_for_har,
+            "vrp": vrp,
+            "har_iv_shadow_rv": har_iv_shadow_rv,
             # Internal (for Lee-Mykland at tick level in update())
             "_lm_local_bv": bv_5min,
             "_ctz_jump_detected": ctz_jump,
@@ -2829,7 +2941,8 @@ class HAREstimator:
     Falls back to fixed weights when insufficient data or sanity checks fail.
     """
 
-    MODEL_NAMES = ("level_har", "log_har", "har_j", "har_semi")
+    MODEL_NAMES = ("level_har", "log_har", "har_j", "har_semi",
+                   "har_iv", "har_j_iv", "log_har_iv", "har_vrp")
 
     def __init__(self):
         self._observations: Dict[str, deque] = {
@@ -2849,7 +2962,7 @@ class HAREstimator:
 
     def record_observation(self, asset: str, returns_list: List[float],
                            rk_1min: float, rk_5min: float, rk_15min: float,
-                           bv_5min: float) -> None:
+                           bv_5min: float, dvol_sq: Optional[float] = None) -> None:
         """Record a 5-min observation for HAR estimation."""
         now = time.time()
         last = self._last_obs_time.get(asset, 0.0)
@@ -2875,14 +2988,16 @@ class HAREstimator:
             "sv_pos_1": sv_pos_1, "sv_neg_1": sv_neg_1,
             "sv_pos_5": sv_pos_5, "sv_neg_5": sv_neg_5,
             "sv_pos_15": sv_pos_15, "sv_neg_15": sv_neg_15,
+            "dvol_sq": dvol_sq,
         }
         self._observations[asset].append(obs)
         n_obs = len(self._observations[asset])
 
         logging.debug(
-            "HAR obs: %s n=%d rv1=%.8f rv5=%.8f rv15=%.8f jump=%.8f sv+5=%.8f sv-5=%.8f",
+            "HAR obs: %s n=%d rv1=%.8f rv5=%.8f rv15=%.8f jump=%.8f sv+5=%.8f sv-5=%.8f dvol_sq=%s",
             asset, n_obs, obs["rv1_sq"], obs["rv5_sq"], obs["rv15_sq"],
             jump_sq, sv_pos_5, sv_neg_5,
+            f"{dvol_sq:.8f}" if dvol_sq is not None else "None",
         )
 
     # ── Prediction (hot path) ────────────────────────────────────────────
@@ -2897,7 +3012,8 @@ class HAREstimator:
                   rk_15min: float, jump_sq: float = 0.0,
                   sv_pos_1: float = 0.0, sv_neg_1: float = 0.0,
                   sv_pos_5: float = 0.0, sv_neg_5: float = 0.0,
-                  sv_pos_15: float = 0.0, sv_neg_15: float = 0.0) -> float:
+                  sv_pos_15: float = 0.0, sv_neg_15: float = 0.0,
+                  dvol_sq: Optional[float] = None) -> float:
         """Return predicted RV using active model's coefficients."""
         model = self._active_model.get(asset, "fixed")
         coeffs = self._coefficients.get(asset, {}).get(model)
@@ -2906,12 +3022,10 @@ class HAREstimator:
             return w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
 
         if model == "level_har":
-            # β0 + β1*rk1² + β5*rk5² + β15*rk15²
             val = coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2 + coeffs[3] * rk_15min**2
             return math.sqrt(max(0.0, val))
 
         if model == "log_har":
-            # exp(β0 + β1*log(rk1²) + β5*log(rk5²) + β15*log(rk15²))
             eps = 1e-20
             val = coeffs[0] + (coeffs[1] * math.log(max(eps, rk_1min**2))
                                 + coeffs[2] * math.log(max(eps, rk_5min**2))
@@ -2919,19 +3033,59 @@ class HAREstimator:
             return math.sqrt(max(0.0, math.exp(val)))
 
         if model == "har_j":
-            # level_har + β_jump * jump²
             val = (coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2
                    + coeffs[3] * rk_15min**2 + coeffs[4] * jump_sq)
             return math.sqrt(max(0.0, val))
 
         if model == "har_semi":
-            # β0 + Σ βi*svi (6 semivariance regressors)
             val = (coeffs[0] + coeffs[1] * sv_pos_1 + coeffs[2] * sv_neg_1
                    + coeffs[3] * sv_pos_5 + coeffs[4] * sv_neg_5
                    + coeffs[5] * sv_pos_15 + coeffs[6] * sv_neg_15)
             return math.sqrt(max(0.0, val))
 
+        if model == "har_iv":
+            if dvol_sq is None:
+                return self._fallback_prediction(asset, rk_1min, rk_5min, rk_15min)
+            val = coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2 + coeffs[3] * rk_15min**2 + coeffs[4] * dvol_sq
+            return math.sqrt(max(0.0, val))
+
+        if model == "har_j_iv":
+            if dvol_sq is None:
+                return self._fallback_prediction(asset, rk_1min, rk_5min, rk_15min)
+            val = (coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2
+                   + coeffs[3] * rk_15min**2 + coeffs[4] * jump_sq + coeffs[5] * dvol_sq)
+            return math.sqrt(max(0.0, val))
+
+        if model == "log_har_iv":
+            if dvol_sq is None:
+                return self._fallback_prediction(asset, rk_1min, rk_5min, rk_15min)
+            eps = 1e-20
+            val = (coeffs[0] + coeffs[1] * math.log(max(eps, rk_1min**2))
+                   + coeffs[2] * math.log(max(eps, rk_5min**2))
+                   + coeffs[3] * math.log(max(eps, rk_15min**2))
+                   + coeffs[4] * math.log(max(eps, dvol_sq)))
+            return math.sqrt(max(0.0, math.exp(val)))
+
+        if model == "har_vrp":
+            if dvol_sq is None:
+                return self._fallback_prediction(asset, rk_1min, rk_5min, rk_15min)
+            vrp = dvol_sq - rk_5min**2
+            val = coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2 + coeffs[3] * rk_15min**2 + coeffs[4] * vrp
+            return math.sqrt(max(0.0, val))
+
         # Unknown model — fallback
+        w1, w5, w15 = VOL_BLEND_WEIGHTS
+        return w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
+
+    def _fallback_prediction(self, asset: str, rk_1min: float, rk_5min: float,
+                             rk_15min: float) -> float:
+        """Fallback when DVOL temporarily stale but IV model is active."""
+        # Try level_har coefficients first
+        coeffs = self._coefficients.get(asset, {}).get("level_har")
+        if coeffs is not None:
+            val = coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2 + coeffs[3] * rk_15min**2
+            return math.sqrt(max(0.0, val))
+        # Fixed weights
         w1, w5, w15 = VOL_BLEND_WEIGHTS
         return w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
 
@@ -2939,7 +3093,8 @@ class HAREstimator:
                            rk_15min: float, jump_sq: float = 0.0,
                            sv_pos_1: float = 0.0, sv_neg_1: float = 0.0,
                            sv_pos_5: float = 0.0, sv_neg_5: float = 0.0,
-                           sv_pos_15: float = 0.0, sv_neg_15: float = 0.0) -> Optional[float]:
+                           sv_pos_15: float = 0.0, sv_neg_15: float = 0.0,
+                           dvol_sq: Optional[float] = None) -> Optional[float]:
         """Return HAR prediction even in shadow mode (for logging). None if fixed."""
         model = self._active_model.get(asset, "fixed")
         if model == "fixed" or model not in self._coefficients.get(asset, {}):
@@ -2947,7 +3102,8 @@ class HAREstimator:
         # Temporarily override shadow check
         return self.get_blend(asset, rk_1min, rk_5min, rk_15min,
                               jump_sq, sv_pos_1, sv_neg_1,
-                              sv_pos_5, sv_neg_5, sv_pos_15, sv_neg_15)
+                              sv_pos_5, sv_neg_5, sv_pos_15, sv_neg_15,
+                              dvol_sq=dvol_sq)
 
     # ── Refit logic ──────────────────────────────────────────────────────
 
@@ -3030,6 +3186,66 @@ class HAREstimator:
         self._try_fit_model(asset, "har_semi", X_semi, targets,
                             qlike_scores, fitted_coeffs)
 
+        # ── Fit IV-augmented models (when sufficient DVOL data) ──────
+        dvol_available = [i for i in range(n - 1) if obs[i].get("dvol_sq") is not None]
+        dvol_fraction = len(dvol_available) / (n - 1) if n > 1 else 0.0
+        fit_iv_models = dvol_fraction >= HAR_IV_MIN_DVOL_FRACTION
+
+        if fit_iv_models:
+            iv_indices = dvol_available
+            iv_targets = [targets[i] for i in iv_indices]
+
+            # har_iv: [1, rv1_sq, rv5_sq, rv15_sq, dvol_sq]
+            X_iv = [[1.0, obs[i]["rv1_sq"], obs[i]["rv5_sq"], obs[i]["rv15_sq"],
+                      obs[i]["dvol_sq"]] for i in iv_indices]
+            self._try_fit_model(asset, "har_iv", X_iv, iv_targets,
+                                qlike_scores, fitted_coeffs)
+
+            # har_j_iv: [1, rv1_sq, rv5_sq, rv15_sq, jump_sq, dvol_sq]
+            X_j_iv = [[1.0, obs[i]["rv1_sq"], obs[i]["rv5_sq"], obs[i]["rv15_sq"],
+                        obs[i]["jump_sq"], obs[i]["dvol_sq"]] for i in iv_indices]
+            self._try_fit_model(asset, "har_j_iv", X_j_iv, iv_targets,
+                                qlike_scores, fitted_coeffs)
+
+            # log_har_iv: [1, log(rv1_sq), log(rv5_sq), log(rv15_sq), log(dvol_sq)]
+            eps = 1e-20
+            X_log_iv = [[1.0, math.log(max(eps, obs[i]["rv1_sq"])),
+                          math.log(max(eps, obs[i]["rv5_sq"])),
+                          math.log(max(eps, obs[i]["rv15_sq"])),
+                          math.log(max(eps, obs[i]["dvol_sq"]))]
+                         for i in iv_indices]
+            log_iv_targets = [math.log(max(eps, t)) for t in iv_targets]
+            c_log_iv = self._fit_wls(X_log_iv, log_iv_targets,
+                                     [1.0 / math.sqrt(max(eps, t)) for t in iv_targets])
+            if c_log_iv is not None:
+                preds_log_iv = []
+                for idx, i in enumerate(iv_indices):
+                    val = sum(c_log_iv[j] * X_log_iv[idx][j] for j in range(len(c_log_iv)))
+                    preds_log_iv.append(math.exp(val))
+                ql_log_iv = self._compute_qlike(iv_targets, preds_log_iv)
+                ok_log_iv, reason_log_iv = self._sanity_check_coeffs(c_log_iv, "log_har_iv")
+                if ok_log_iv and ql_log_iv <= HAR_QLIKE_FALLBACK_THRESHOLD:
+                    qlike_scores["log_har_iv"] = ql_log_iv
+                    fitted_coeffs["log_har_iv"] = c_log_iv
+                else:
+                    logging.warning(
+                        "HAR refit %s: model log_har_iv REJECTED — %s (coeffs=%s)",
+                        asset, reason_log_iv if not ok_log_iv else f"QLIKE={ql_log_iv:.4f}",
+                        [round(x, 6) for x in c_log_iv],
+                    )
+
+            # har_vrp: [1, rv1_sq, rv5_sq, rv15_sq, dvol_sq - rv5_sq]
+            X_vrp = [[1.0, obs[i]["rv1_sq"], obs[i]["rv5_sq"], obs[i]["rv15_sq"],
+                       obs[i]["dvol_sq"] - obs[i]["rv5_sq"]] for i in iv_indices]
+            self._try_fit_model(asset, "har_vrp", X_vrp, iv_targets,
+                                qlike_scores, fitted_coeffs)
+        else:
+            if n > 1:
+                logging.info(
+                    "HAR refit %s: IV models skipped (dvol_fraction=%.2f < %.2f, n_obs=%d)",
+                    asset, dvol_fraction, HAR_IV_MIN_DVOL_FRACTION, n,
+                )
+
         # ── Fixed-weights baseline QLIKE ──────────────────────────────
         w1, w5, w15 = VOL_BLEND_WEIGHTS
         fixed_preds = [(w1**2 * obs[i]["rv1_sq"] + w5**2 * obs[i]["rv5_sq"]
@@ -3063,17 +3279,38 @@ class HAREstimator:
             self._coefficients[asset][best_model] = fitted_coeffs[best_model]
 
         logging.info(
-            "HAR refit %s: PROMOTED %s -> %s (QLIKE=%.4f, alternatives=%s, coeffs=%s, n=%d)",
+            "HAR refit %s: PROMOTED %s -> %s (QLIKE=%.4f, alternatives=%s, coeffs=%s, n=%d, dvol_frac=%.2f)",
             asset, old_model, best_model, best_qlike,
             {k: round(v, 4) for k, v in qlike_scores.items()},
             [round(c, 6) for c in fitted_coeffs.get(best_model, [])] if best_model != "fixed" else [],
-            n,
+            n, dvol_fraction,
         )
         logging.info(
             "HAR refit %s: fixed_baseline_qlike=%.4f, best_qlike=%.4f, improvement=%.1f%%",
             asset, fixed_qlike, best_qlike,
             100 * (fixed_qlike - best_qlike) / fixed_qlike if fixed_qlike > 0 else 0.0,
         )
+
+        # Log when IV model wins over best non-IV model
+        iv_model_names = {"har_iv", "har_j_iv", "log_har_iv", "har_vrp"}
+        if best_model in iv_model_names:
+            best_non_iv_ql = min(
+                (qlike_scores.get(m, float("inf")) for m in self.MODEL_NAMES if m not in iv_model_names and m in qlike_scores),
+                default=fixed_qlike,
+            )
+            logging.info(
+                "HAR refit %s: IV model %s beats best non-IV (QLIKE %.4f vs %.4f, improvement=%.1f%%)",
+                asset, best_model, best_qlike, best_non_iv_ql,
+                100 * (best_non_iv_ql - best_qlike) / best_non_iv_ql if best_non_iv_ql > 0 else 0.0,
+            )
+
+        # Model transition logging
+        if old_model != best_model:
+            old_ql = self._qlike_scores.get(asset, {}).get(old_model, 0.0)
+            logging.info(
+                "HAR model change %s: %s → %s (prev_qlike=%.4f new_qlike=%.4f)",
+                asset, old_model, best_model, old_ql, best_qlike,
+            )
 
     def _try_fit_model(self, asset: str, model_name: str,
                        X: List[List[float]], targets: List[float],
@@ -3222,13 +3459,19 @@ class HAREstimator:
         intercept = coeffs[0]
         weights = coeffs[1:]
 
+        # Log models exempt from non-negativity and sum checks
+        log_models = {"log_har", "log_har_iv"}
+
         # Intercept bound (variance scale)
         if abs(intercept) > 0.001:
             return (False, f"intercept {intercept:.6f} exceeds ±0.001")
 
-        # Non-negativity for RV weights (not for log_har intercept)
-        if model_name != "log_har":
+        # Non-negativity for RV weights
+        if model_name not in log_models:
             for i, w in enumerate(weights):
+                # har_vrp: last coefficient (VRP) can be negative (Bollerslev)
+                if model_name == "har_vrp" and i == len(weights) - 1:
+                    continue
                 if w < 0:
                     return (False, f"weight[{i}]={w:.6f} is negative")
 
@@ -3237,11 +3480,14 @@ class HAREstimator:
             if abs(w) > 1.5:
                 return (False, f"weight[{i}]={w:.6f} exceeds ±1.5")
 
-        # Sum of weights bound (skip for log_har, different scale)
-        if model_name != "log_har":
+        # Sum of weights bound (skip for log models, different scale)
+        if model_name not in log_models:
             wsum = sum(weights)
-            if wsum < 0.3 or wsum > 2.0:
-                return (False, f"sum_weights={wsum:.4f} outside [0.3, 2.0]")
+            # IV-augmented models get wider bound (2.5 vs 2.0)
+            iv_augmented = {"har_iv", "har_j_iv", "har_vrp"}
+            upper = 2.5 if model_name in iv_augmented else 2.0
+            if wsum < 0.3 or wsum > upper:
+                return (False, f"sum_weights={wsum:.4f} outside [0.3, {upper}]")
 
         return (True, "ok")
 
@@ -3316,6 +3562,19 @@ class HAREstimator:
                 sv_pos_5 = last.get("sv_pos_5", 0)
                 if sv_pos_5 > 0:
                     diag["semivar_ratio_5min"] = round(sv_neg_5 / sv_pos_5, 2)
+
+            # DVOL observation fraction
+            if n_obs > 0:
+                dvol_count = sum(1 for o in obs if o.get("dvol_sq") is not None)
+                diag["dvol_obs_fraction"] = round(dvol_count / n_obs, 2)
+
+            # Last VRP
+            if n_obs > 0:
+                last = obs[-1]
+                dvol_sq_last = last.get("dvol_sq")
+                rv5_sq_last = last.get("rv5_sq", 0)
+                if dvol_sq_last is not None and rv5_sq_last > 0:
+                    diag["vrp_last"] = dvol_sq_last - rv5_sq_last
 
             result[asset] = diag
         return result
@@ -7191,6 +7450,10 @@ class MainLoop:
                     "ark_15min": round(vol_estimate.get("ark_15min", 0), 8) if vol_estimate.get("ark_15min") is not None else None,
                     "rk_adaptive_delta_5": vol_estimate.get("rk_adaptive_delta_5", 0),
                     "rk_adaptive_delta_15": vol_estimate.get("rk_adaptive_delta_15", 0),
+                    # HAR-IV diagnostics
+                    "dvol_sq_hourly": round(vol_estimate["dvol_sq_hourly"], 10) if vol_estimate.get("dvol_sq_hourly") is not None else None,
+                    "vrp": round(vol_estimate["vrp"], 10) if vol_estimate.get("vrp") is not None else None,
+                    "har_iv_shadow_rv": round(vol_estimate["har_iv_shadow_rv"], 8) if vol_estimate.get("har_iv_shadow_rv") is not None else None,
                 })
             # Order flow snapshot
             if self.order_flow is not None:

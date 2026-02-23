@@ -207,6 +207,10 @@ class FirebasePusher:
                         "rk_H_adaptive_15": cached.get("rk_H_adaptive_15"),
                         "ark_5min": cached.get("ark_5min"),
                         "ark_15min": cached.get("ark_15min"),
+                        # HAR-IV diagnostics
+                        "dvol_sq_hourly": cached.get("dvol_sq_hourly"),
+                        "vrp": cached.get("vrp"),
+                        "har_iv_shadow_rv": cached.get("har_iv_shadow_rv"),
                     }
                 else:
                     vol_data[asset] = None
