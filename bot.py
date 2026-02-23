@@ -87,6 +87,15 @@ JUMP_THRESHOLD_MULTIPLIER = 3.0   # return > 3x RV = jump
 JUMP_VOL_MULTIPLIER = 2.0         # multiply vol by 2x during elevated regime
 JUMP_DECAY_SECONDS = 60.0         # elevated regime lasts 60s
 
+# ─── HAR-WLS Estimation ──────────────────────────────────────────────────
+HAR_OBSERVATION_INTERVAL = 300      # 5 min between observations (seconds)
+HAR_OBSERVATION_MAXLEN = 288        # 24h of 5-min observations
+HAR_REFIT_INTERVAL = 7200           # 2h between refits
+HAR_MIN_OBSERVATIONS = 36           # 3h of data before first fit
+HAR_STATE_PATH = "har_state.json"
+HAR_QLIKE_FALLBACK_THRESHOLD = 2.0  # fall back to fixed if QLIKE > this
+HAR_SHADOW_MODE = True              # True = log only, False = use for actual blend
+
 # ─── Deribit DVOL Integration ────────────────────────────────────────────────
 DERIBIT_DVOL_URL = "https://www.deribit.com/api/v2/public/get_volatility_index_data"
 DERIBIT_DVOL_CURRENCIES = {"BTC": "BTC", "ETH": "ETH"}
@@ -2087,9 +2096,11 @@ class VolatilityEngine:
     Maintains its own rolling buffer of log returns per asset (up to 15 min).
     """
 
-    def __init__(self, feed: CoinbaseFeed, dvol_fetcher: Optional[DeribitDVOLFetcher] = None):
+    def __init__(self, feed: CoinbaseFeed, dvol_fetcher: Optional[DeribitDVOLFetcher] = None,
+                 har_estimator: Optional['HAREstimator'] = None):
         self._feed = feed
         self._dvol = dvol_fetcher
+        self._har = har_estimator
         self._returns: Dict[str, deque] = {
             a: deque(maxlen=VOL_WINDOW_15MIN) for a in ASSETS
         }
@@ -2269,18 +2280,57 @@ class VolatilityEngine:
         rk_5min = self._realized_kernel(returns_list, VOL_WINDOW_5MIN)
         rk_15min = self._realized_kernel(returns_list, VOL_WINDOW_15MIN)
 
-        # Step 2: HAR-RV blend on kernel estimates
-        w1, w5, w15 = VOL_BLEND_WEIGHTS
-        continuous_rv = w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
-
-        # Step 3: Bipower variation for jump separation
+        # Step 2: Bipower variation for jump separation
         bv_1min = self._bipower_variation(returns_list, VOL_WINDOW_1MIN)
         bv_5min = self._bipower_variation(returns_list, VOL_WINDOW_5MIN)
         bv_15min = self._bipower_variation(returns_list, VOL_WINDOW_15MIN)
-        bv_blended = w1 * bv_1min + w5 * bv_5min + w15 * bv_15min
 
-        jump_var = max(0.0, continuous_rv ** 2 - bv_blended ** 2)
-        rv_blended = math.sqrt(bv_blended ** 2 + jump_var)
+        # Step 2b: HAR observation recording + semivariance computation
+        har_blend_rv = None
+        sv_pos_1 = sv_neg_1 = sv_pos_5 = sv_neg_5 = sv_pos_15 = sv_neg_15 = 0.0
+        if self._har is not None:
+            sv_pos_1, sv_neg_1 = HAREstimator._compute_semivariances(returns_list, VOL_WINDOW_1MIN)
+            sv_pos_5, sv_neg_5 = HAREstimator._compute_semivariances(returns_list, VOL_WINDOW_5MIN)
+            sv_pos_15, sv_neg_15 = HAREstimator._compute_semivariances(returns_list, VOL_WINDOW_15MIN)
+            self._har.record_observation(asset, returns_list, rk_1min, rk_5min, rk_15min, bv_5min)
+
+        # Step 3: HAR-RV blend (WLS-estimated or fixed weights)
+        w1, w5, w15 = VOL_BLEND_WEIGHTS
+        # Always compute fixed blend for counterfactual
+        fixed_continuous_rv = w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
+        fixed_bv_blended = w1 * bv_1min + w5 * bv_5min + w15 * bv_15min
+        fixed_jump_var = max(0.0, fixed_continuous_rv ** 2 - fixed_bv_blended ** 2)
+        fixed_blend_rv = math.sqrt(fixed_bv_blended ** 2 + fixed_jump_var)
+
+        if self._har is not None and self._har.is_active(asset):
+            jump_sq = max(0.0, rk_5min ** 2 - bv_5min ** 2)
+            rv_blended = self._har.get_blend(
+                asset, rk_1min, rk_5min, rk_15min,
+                jump_sq=jump_sq,
+                sv_pos_1=sv_pos_1, sv_neg_1=sv_neg_1,
+                sv_pos_5=sv_pos_5, sv_neg_5=sv_neg_5,
+                sv_pos_15=sv_pos_15, sv_neg_15=sv_neg_15,
+            )
+            har_blend_rv = rv_blended
+            # Still compute fixed-blend diagnostics
+            continuous_rv = fixed_continuous_rv
+            bv_blended = fixed_bv_blended
+            jump_var = fixed_jump_var
+        else:
+            continuous_rv = fixed_continuous_rv
+            bv_blended = fixed_bv_blended
+            jump_var = fixed_jump_var
+            rv_blended = fixed_blend_rv
+            # In shadow mode, compute HAR prediction for logging only
+            if self._har is not None:
+                jump_sq = max(0.0, rk_5min ** 2 - bv_5min ** 2)
+                har_blend_rv = self._har.get_har_prediction(
+                    asset, rk_1min, rk_5min, rk_15min,
+                    jump_sq=jump_sq,
+                    sv_pos_1=sv_pos_1, sv_neg_1=sv_neg_1,
+                    sv_pos_5=sv_pos_5, sv_neg_5=sv_neg_5,
+                    sv_pos_15=sv_pos_15, sv_neg_15=sv_neg_15,
+                )
 
         # Track RV-only blended for diagnostics
         rv_only_blended = rv_blended
@@ -2334,7 +2384,520 @@ class VolatilityEngine:
             "iv_rv_spread": iv_rv_spread,
             "iv_rv_blend_method": iv_rv_blend_method,
             "rv_only_blended": rv_only_blended,
+            # HAR diagnostics
+            "har_model": self._har._active_model.get(asset, "fixed") if self._har else "fixed",
+            "har_blend_rv": har_blend_rv,
+            "fixed_blend_rv": fixed_blend_rv,
         }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  HAREstimator – WLS-estimated HAR-RV coefficients
+# ═════════════════════════════════════════════════════════════════════════════
+
+class HAREstimator:
+    """Estimate HAR-RV blend weights via rolling WLS regression.
+
+    Supports four model variants:
+      - level_har: β0 + β1*RK1² + β5*RK5² + β15*RK15²
+      - log_har:   exp(β0 + β1*log(RK1²) + β5*log(RK5²) + β15*log(RK15²))
+      - har_j:     level_har + β_jump * jump²
+      - har_semi:  β0 + Σ βi*semivariance_i (6 regressors)
+
+    Refits every HAR_REFIT_INTERVAL seconds, selects best model by QLIKE.
+    Falls back to fixed weights when insufficient data or sanity checks fail.
+    """
+
+    MODEL_NAMES = ("level_har", "log_har", "har_j", "har_semi")
+
+    def __init__(self):
+        self._observations: Dict[str, deque] = {
+            a: deque(maxlen=HAR_OBSERVATION_MAXLEN) for a in ASSETS
+        }
+        self._last_obs_time: Dict[str, float] = {}
+        self._last_refit: float = 0.0
+        self._active_model: Dict[str, str] = {a: "fixed" for a in ASSETS}
+        self._coefficients: Dict[str, Dict[str, List[float]]] = {a: {} for a in ASSETS}
+        self._qlike_scores: Dict[str, Dict[str, float]] = {a: {} for a in ASSETS}
+        self._load_state()
+        active = {a: m for a, m in self._active_model.items() if m != "fixed"}
+        age = round(time.time() - self._last_refit, 1) if self._last_refit > 0 else "never"
+        logging.info("HAREstimator loaded: %s active models, state_age=%s", active, age)
+
+    # ── Observation recording ─────────────────────────────────────────────
+
+    def record_observation(self, asset: str, returns_list: List[float],
+                           rk_1min: float, rk_5min: float, rk_15min: float,
+                           bv_5min: float) -> None:
+        """Record a 5-min observation for HAR estimation."""
+        now = time.time()
+        last = self._last_obs_time.get(asset, 0.0)
+        if now - last < HAR_OBSERVATION_INTERVAL:
+            return
+
+        self._last_obs_time[asset] = now
+
+        # Semivariances at all three windows
+        sv_pos_1, sv_neg_1 = self._compute_semivariances(returns_list, VOL_WINDOW_1MIN)
+        sv_pos_5, sv_neg_5 = self._compute_semivariances(returns_list, VOL_WINDOW_5MIN)
+        sv_pos_15, sv_neg_15 = self._compute_semivariances(returns_list, VOL_WINDOW_15MIN)
+
+        # Jump component
+        jump_sq = max(0.0, rk_5min ** 2 - bv_5min ** 2)
+
+        obs = {
+            "ts": now,
+            "rv1_sq": rk_1min ** 2,
+            "rv5_sq": rk_5min ** 2,
+            "rv15_sq": rk_15min ** 2,
+            "jump_sq": jump_sq,
+            "sv_pos_1": sv_pos_1, "sv_neg_1": sv_neg_1,
+            "sv_pos_5": sv_pos_5, "sv_neg_5": sv_neg_5,
+            "sv_pos_15": sv_pos_15, "sv_neg_15": sv_neg_15,
+        }
+        self._observations[asset].append(obs)
+        n_obs = len(self._observations[asset])
+
+        logging.debug(
+            "HAR obs: %s n=%d rv1=%.8f rv5=%.8f rv15=%.8f jump=%.8f sv+5=%.8f sv-5=%.8f",
+            asset, n_obs, obs["rv1_sq"], obs["rv5_sq"], obs["rv15_sq"],
+            jump_sq, sv_pos_5, sv_neg_5,
+        )
+
+    # ── Prediction (hot path) ────────────────────────────────────────────
+
+    def is_active(self, asset: str) -> bool:
+        """True if a non-fixed model is active and not in shadow mode."""
+        if HAR_SHADOW_MODE:
+            return False
+        return self._active_model.get(asset, "fixed") != "fixed"
+
+    def get_blend(self, asset: str, rk_1min: float, rk_5min: float,
+                  rk_15min: float, jump_sq: float = 0.0,
+                  sv_pos_1: float = 0.0, sv_neg_1: float = 0.0,
+                  sv_pos_5: float = 0.0, sv_neg_5: float = 0.0,
+                  sv_pos_15: float = 0.0, sv_neg_15: float = 0.0) -> float:
+        """Return predicted RV using active model's coefficients."""
+        model = self._active_model.get(asset, "fixed")
+        coeffs = self._coefficients.get(asset, {}).get(model)
+        if model == "fixed" or coeffs is None:
+            w1, w5, w15 = VOL_BLEND_WEIGHTS
+            return w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
+
+        if model == "level_har":
+            # β0 + β1*rk1² + β5*rk5² + β15*rk15²
+            val = coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2 + coeffs[3] * rk_15min**2
+            return math.sqrt(max(0.0, val))
+
+        if model == "log_har":
+            # exp(β0 + β1*log(rk1²) + β5*log(rk5²) + β15*log(rk15²))
+            eps = 1e-20
+            val = coeffs[0] + (coeffs[1] * math.log(max(eps, rk_1min**2))
+                                + coeffs[2] * math.log(max(eps, rk_5min**2))
+                                + coeffs[3] * math.log(max(eps, rk_15min**2)))
+            return math.sqrt(max(0.0, math.exp(val)))
+
+        if model == "har_j":
+            # level_har + β_jump * jump²
+            val = (coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2
+                   + coeffs[3] * rk_15min**2 + coeffs[4] * jump_sq)
+            return math.sqrt(max(0.0, val))
+
+        if model == "har_semi":
+            # β0 + Σ βi*svi (6 semivariance regressors)
+            val = (coeffs[0] + coeffs[1] * sv_pos_1 + coeffs[2] * sv_neg_1
+                   + coeffs[3] * sv_pos_5 + coeffs[4] * sv_neg_5
+                   + coeffs[5] * sv_pos_15 + coeffs[6] * sv_neg_15)
+            return math.sqrt(max(0.0, val))
+
+        # Unknown model — fallback
+        w1, w5, w15 = VOL_BLEND_WEIGHTS
+        return w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
+
+    def get_har_prediction(self, asset: str, rk_1min: float, rk_5min: float,
+                           rk_15min: float, jump_sq: float = 0.0,
+                           sv_pos_1: float = 0.0, sv_neg_1: float = 0.0,
+                           sv_pos_5: float = 0.0, sv_neg_5: float = 0.0,
+                           sv_pos_15: float = 0.0, sv_neg_15: float = 0.0) -> Optional[float]:
+        """Return HAR prediction even in shadow mode (for logging). None if fixed."""
+        model = self._active_model.get(asset, "fixed")
+        if model == "fixed" or model not in self._coefficients.get(asset, {}):
+            return None
+        # Temporarily override shadow check
+        return self.get_blend(asset, rk_1min, rk_5min, rk_15min,
+                              jump_sq, sv_pos_1, sv_neg_1,
+                              sv_pos_5, sv_neg_5, sv_pos_15, sv_neg_15)
+
+    # ── Refit logic ──────────────────────────────────────────────────────
+
+    def maybe_refit(self) -> bool:
+        """Check if it's time to refit. Returns True if any asset was refit."""
+        now = time.time()
+        if now - self._last_refit < HAR_REFIT_INTERVAL and self._last_refit > 0:
+            return False
+
+        any_refit = False
+        for asset in ASSETS:
+            obs = self._observations[asset]
+            if len(obs) < HAR_MIN_OBSERVATIONS:
+                continue
+            self._refit_asset(asset, list(obs))
+            any_refit = True
+
+        if any_refit:
+            self._last_refit = now
+            self._save_state()
+        return any_refit
+
+    def _refit_asset(self, asset: str, obs: List[Dict]) -> None:
+        """Fit all 4 model variants for one asset, select best by QLIKE."""
+        n = len(obs)
+        if n < 2:
+            return
+
+        # Build target: next observation's rv5_sq
+        targets = [obs[i + 1]["rv5_sq"] for i in range(n - 1)]
+        old_model = self._active_model.get(asset, "fixed")
+
+        qlike_scores: Dict[str, float] = {}
+        fitted_coeffs: Dict[str, List[float]] = {}
+
+        # ── Fit level_har ─────────────────────────────────────────────
+        X_level = [[1.0, obs[i]["rv1_sq"], obs[i]["rv5_sq"], obs[i]["rv15_sq"]]
+                    for i in range(n - 1)]
+        self._try_fit_model(asset, "level_har", X_level, targets,
+                            qlike_scores, fitted_coeffs)
+
+        # ── Fit log_har ───────────────────────────────────────────────
+        eps = 1e-20
+        X_log = [[1.0, math.log(max(eps, obs[i]["rv1_sq"])),
+                   math.log(max(eps, obs[i]["rv5_sq"])),
+                   math.log(max(eps, obs[i]["rv15_sq"]))]
+                  for i in range(n - 1)]
+        # Targets in log space
+        log_targets = [math.log(max(eps, t)) for t in targets]
+        c = self._fit_wls(X_log, log_targets,
+                          [1.0 / math.sqrt(max(eps, t)) for t in targets])
+        if c is not None:
+            # Predict back in level space for QLIKE
+            preds = []
+            for i in range(n - 1):
+                val = c[0] + c[1] * X_log[i][1] + c[2] * X_log[i][2] + c[3] * X_log[i][3]
+                preds.append(math.exp(val))
+            ql = self._compute_qlike(targets, preds)
+            ok, reason = self._sanity_check_coeffs(c, "log_har")
+            if ok and ql <= HAR_QLIKE_FALLBACK_THRESHOLD:
+                qlike_scores["log_har"] = ql
+                fitted_coeffs["log_har"] = c
+            else:
+                logging.warning(
+                    "HAR refit %s: model log_har REJECTED — %s (coeffs=%s)",
+                    asset, reason if not ok else f"QLIKE={ql:.4f}", [round(x, 6) for x in c],
+                )
+
+        # ── Fit har_j ─────────────────────────────────────────────────
+        X_j = [[1.0, obs[i]["rv1_sq"], obs[i]["rv5_sq"], obs[i]["rv15_sq"],
+                 obs[i]["jump_sq"]] for i in range(n - 1)]
+        self._try_fit_model(asset, "har_j", X_j, targets,
+                            qlike_scores, fitted_coeffs)
+
+        # ── Fit har_semi ──────────────────────────────────────────────
+        X_semi = [[1.0, obs[i]["sv_pos_1"], obs[i]["sv_neg_1"],
+                    obs[i]["sv_pos_5"], obs[i]["sv_neg_5"],
+                    obs[i]["sv_pos_15"], obs[i]["sv_neg_15"]]
+                   for i in range(n - 1)]
+        self._try_fit_model(asset, "har_semi", X_semi, targets,
+                            qlike_scores, fitted_coeffs)
+
+        # ── Fixed-weights baseline QLIKE ──────────────────────────────
+        w1, w5, w15 = VOL_BLEND_WEIGHTS
+        fixed_preds = [(w1**2 * obs[i]["rv1_sq"] + w5**2 * obs[i]["rv5_sq"]
+                         + w15**2 * obs[i]["rv15_sq"]
+                         + 2*w1*w5*math.sqrt(max(0.0, obs[i]["rv1_sq"]*obs[i]["rv5_sq"]))
+                         + 2*w1*w15*math.sqrt(max(0.0, obs[i]["rv1_sq"]*obs[i]["rv15_sq"]))
+                         + 2*w5*w15*math.sqrt(max(0.0, obs[i]["rv5_sq"]*obs[i]["rv15_sq"])))
+                        for i in range(n - 1)]
+        fixed_qlike = self._compute_qlike(targets, fixed_preds)
+        qlike_scores["fixed"] = fixed_qlike
+
+        # ── Select best ──────────────────────────────────────────────
+        best_model = "fixed"
+        best_qlike = fixed_qlike
+        for model_name in self.MODEL_NAMES:
+            if model_name in qlike_scores and qlike_scores[model_name] < best_qlike:
+                # Regression guard: reject if new QLIKE > prev + 0.1
+                prev_qlike = self._qlike_scores.get(asset, {}).get(model_name)
+                if prev_qlike is not None and qlike_scores[model_name] > prev_qlike + 0.1:
+                    logging.warning(
+                        "HAR refit %s: model %s REJECTED — QLIKE regression %.4f > prev %.4f + 0.1",
+                        asset, model_name, qlike_scores[model_name], prev_qlike,
+                    )
+                    continue
+                best_model = model_name
+                best_qlike = qlike_scores[model_name]
+
+        self._active_model[asset] = best_model
+        self._qlike_scores[asset] = qlike_scores
+        if best_model != "fixed" and best_model in fitted_coeffs:
+            self._coefficients[asset][best_model] = fitted_coeffs[best_model]
+
+        logging.info(
+            "HAR refit %s: PROMOTED %s -> %s (QLIKE=%.4f, alternatives=%s, coeffs=%s, n=%d)",
+            asset, old_model, best_model, best_qlike,
+            {k: round(v, 4) for k, v in qlike_scores.items()},
+            [round(c, 6) for c in fitted_coeffs.get(best_model, [])] if best_model != "fixed" else [],
+            n,
+        )
+        logging.info(
+            "HAR refit %s: fixed_baseline_qlike=%.4f, best_qlike=%.4f, improvement=%.1f%%",
+            asset, fixed_qlike, best_qlike,
+            100 * (fixed_qlike - best_qlike) / fixed_qlike if fixed_qlike > 0 else 0.0,
+        )
+
+    def _try_fit_model(self, asset: str, model_name: str,
+                       X: List[List[float]], targets: List[float],
+                       qlike_scores: Dict[str, float],
+                       fitted_coeffs: Dict[str, List[float]]) -> None:
+        """Fit a model via WLS, check sanity, add to results if valid."""
+        eps = 1e-20
+        weights = [1.0 / math.sqrt(max(eps, t)) for t in targets]
+        c = self._fit_wls(X, targets, weights)
+        if c is None:
+            return
+        # Predict
+        preds = [sum(c[j] * X[i][j] for j in range(len(c))) for i in range(len(X))]
+        ql = self._compute_qlike(targets, preds)
+        ok, reason = self._sanity_check_coeffs(c, model_name)
+        if ok and ql <= HAR_QLIKE_FALLBACK_THRESHOLD:
+            qlike_scores[model_name] = ql
+            fitted_coeffs[model_name] = c
+        else:
+            logging.warning(
+                "HAR refit %s: model %s REJECTED — %s (coeffs=%s)",
+                asset, model_name, reason if not ok else f"QLIKE={ql:.4f}",
+                [round(x, 6) for x in c],
+            )
+
+    # ── WLS solver (pure Python) ─────────────────────────────────────────
+
+    @staticmethod
+    def _fit_wls(X: List[List[float]], y: List[float],
+                 w: List[float]) -> Optional[List[float]]:
+        """Weighted least squares via normal equations: (X'WX)β = X'Wy.
+
+        Pure Python, no numpy. Max matrix size 7x7 (HAR-semiRV).
+        """
+        n = len(y)
+        if n == 0:
+            return None
+        p = len(X[0])
+
+        # Build X'WX (p x p) and X'Wy (p x 1)
+        XtWX = [[0.0] * p for _ in range(p)]
+        XtWy = [0.0] * p
+
+        for i in range(n):
+            wi = w[i]
+            xi = X[i]
+            yi = y[i]
+            for j in range(p):
+                wxi_j = wi * xi[j]
+                XtWy[j] += wxi_j * yi
+                for k in range(j, p):
+                    val = wxi_j * xi[k]
+                    XtWX[j][k] += val
+                    if k != j:
+                        XtWX[k][j] += val
+
+        return HAREstimator._gauss_eliminate(XtWX, XtWy)
+
+    @staticmethod
+    def _gauss_eliminate(A: List[List[float]], b: List[float]) -> Optional[List[float]]:
+        """Gaussian elimination with partial pivoting. Returns None if singular."""
+        n = len(b)
+        # Augmented matrix
+        M = [A[i][:] + [b[i]] for i in range(n)]
+
+        for col in range(n):
+            # Partial pivoting
+            max_val = abs(M[col][col])
+            max_row = col
+            for row in range(col + 1, n):
+                if abs(M[row][col]) > max_val:
+                    max_val = abs(M[row][col])
+                    max_row = row
+            if max_val < 1e-15:
+                return None  # Singular
+            if max_row != col:
+                M[col], M[max_row] = M[max_row], M[col]
+
+            pivot = M[col][col]
+            for row in range(col + 1, n):
+                factor = M[row][col] / pivot
+                for j in range(col, n + 1):
+                    M[row][j] -= factor * M[col][j]
+
+        # Back substitution
+        x = [0.0] * n
+        for i in range(n - 1, -1, -1):
+            if abs(M[i][i]) < 1e-15:
+                return None
+            x[i] = M[i][n]
+            for j in range(i + 1, n):
+                x[i] -= M[i][j] * x[j]
+            x[i] /= M[i][i]
+
+        return x
+
+    # ── QLIKE loss ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _compute_qlike(y_actual: List[float], y_predicted: List[float]) -> float:
+        """QLIKE loss: mean(actual/predicted - log(actual/predicted) - 1).
+
+        Both in variance scale. Handles zero/negative with penalty.
+        """
+        eps = 1e-20
+        total = 0.0
+        n = 0
+        for a, p in zip(y_actual, y_predicted):
+            a = max(eps, a)
+            p = max(eps, p)
+            ratio = a / p
+            total += ratio - math.log(ratio) - 1.0
+            n += 1
+        return total / max(n, 1)
+
+    # ── Semivariance ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _compute_semivariances(returns: List[float], window: int) -> tuple:
+        """Compute positive and negative semivariances over the given window.
+
+        sv_pos = sum(r² for r > 0) / n, sv_neg = sum(r² for r <= 0) / n
+        """
+        subset = returns[-window:] if len(returns) >= window else returns
+        n = len(subset)
+        if n == 0:
+            return (0.0, 0.0)
+        sv_pos = 0.0
+        sv_neg = 0.0
+        for r in subset:
+            r2 = r * r
+            if r > 0:
+                sv_pos += r2
+            else:
+                sv_neg += r2
+        return (sv_pos / n, sv_neg / n)
+
+    # ── Sanity checks ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sanity_check_coeffs(coeffs: List[float], model_name: str) -> tuple:
+        """Check coefficient sanity. Returns (ok: bool, reason: str)."""
+        if not coeffs:
+            return (False, "empty coefficients")
+
+        intercept = coeffs[0]
+        weights = coeffs[1:]
+
+        # Intercept bound (variance scale)
+        if abs(intercept) > 0.001:
+            return (False, f"intercept {intercept:.6f} exceeds ±0.001")
+
+        # Non-negativity for RV weights (not for log_har intercept)
+        if model_name != "log_har":
+            for i, w in enumerate(weights):
+                if w < 0:
+                    return (False, f"weight[{i}]={w:.6f} is negative")
+
+        # Upper bound per weight
+        for i, w in enumerate(weights):
+            if abs(w) > 1.5:
+                return (False, f"weight[{i}]={w:.6f} exceeds ±1.5")
+
+        # Sum of weights bound (skip for log_har, different scale)
+        if model_name != "log_har":
+            wsum = sum(weights)
+            if wsum < 0.3 or wsum > 2.0:
+                return (False, f"sum_weights={wsum:.4f} outside [0.3, 2.0]")
+
+        return (True, "ok")
+
+    # ── State persistence ────────────────────────────────────────────────
+
+    def _load_state(self) -> None:
+        """Load coefficients, active model, QLIKE from JSON."""
+        try:
+            with open(HAR_STATE_PATH, "r") as f:
+                state = json.load(f)
+            for asset in ASSETS:
+                if asset in state.get("active_model", {}):
+                    self._active_model[asset] = state["active_model"][asset]
+                if asset in state.get("coefficients", {}):
+                    self._coefficients[asset] = state["coefficients"][asset]
+                if asset in state.get("qlike_scores", {}):
+                    self._qlike_scores[asset] = state["qlike_scores"][asset]
+            self._last_refit = state.get("last_refit", 0.0)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        except Exception as e:
+            logging.warning("HAREstimator: failed to load state: %s", e)
+
+    def _save_state(self) -> None:
+        """Save coefficients, active model, QLIKE to JSON."""
+        state = {
+            "active_model": self._active_model,
+            "coefficients": self._coefficients,
+            "qlike_scores": self._qlike_scores,
+            "last_refit": self._last_refit,
+        }
+        try:
+            tmp = HAR_STATE_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(state, f, indent=2)
+            os.replace(tmp, HAR_STATE_PATH)
+        except Exception as e:
+            logging.warning("HAREstimator: failed to save state: %s", e)
+
+    # ── Diagnostics ──────────────────────────────────────────────────────
+
+    def get_diagnostics(self) -> Dict:
+        """Per-asset diagnostics for Firebase."""
+        result = {}
+        now = time.time()
+        for asset in ASSETS:
+            obs = self._observations[asset]
+            n_obs = len(obs)
+            model = self._active_model.get(asset, "fixed")
+            ql = self._qlike_scores.get(asset, {})
+            coeffs = self._coefficients.get(asset, {})
+
+            diag: Dict[str, Any] = {
+                "active_model": model,
+                "n_observations": n_obs,
+                "qlike_scores": {k: round(v, 4) for k, v in ql.items()} if ql else {},
+                "coefficients": {k: [round(c, 6) for c in v] for k, v in coeffs.items()} if coeffs else {},
+                "last_refit_age_s": round(now - self._last_refit, 1) if self._last_refit > 0 else None,
+            }
+
+            # QLIKE improvement vs fixed
+            if "fixed" in ql and model != "fixed" and model in ql:
+                fixed_ql = ql["fixed"]
+                best_ql = ql[model]
+                if fixed_ql > 0:
+                    diag["qlike_vs_fixed_pct"] = round(100 * (best_ql - fixed_ql) / fixed_ql, 1)
+
+            # Semivariance ratio (last observation)
+            if n_obs > 0:
+                last = obs[-1]
+                sv_neg_5 = last.get("sv_neg_5", 0)
+                sv_pos_5 = last.get("sv_pos_5", 0)
+                if sv_pos_5 > 0:
+                    diag["semivar_ratio_5min"] = round(sv_neg_5 / sv_pos_5, 2)
+
+            result[asset] = diag
+        return result
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -5463,7 +6026,9 @@ class MainLoop:
         self.logger = Logger()
         self.feed = CoinbaseFeed()
         self.dvol_fetcher = DeribitDVOLFetcher()
-        self.vol = VolatilityEngine(self.feed, dvol_fetcher=self.dvol_fetcher)
+        self.har_estimator = HAREstimator()
+        self.vol = VolatilityEngine(self.feed, dvol_fetcher=self.dvol_fetcher,
+                                    har_estimator=self.har_estimator)
         self.sizer = PositionSizer()
         self.calibration = CalibrationEngine()
         global _CALIBRATION_ENGINE
@@ -5780,6 +6345,10 @@ class MainLoop:
         if self.calibration:
             self.calibration.maybe_retrain()
 
+        # Periodic HAR-WLS refit
+        if self.har_estimator:
+            self.har_estimator.maybe_refit()
+
         # Recompute seconds_to_close and log each window
         utc_now = datetime.datetime.now(timezone.utc)
         prices = self.feed.get_all_prices()
@@ -5817,6 +6386,9 @@ class MainLoop:
                     "jump_component": round(vol_estimate.get("jump_component", 0), 8),
                     "dvol_5s": round(vol_estimate["dvol_5s"], 8) if vol_estimate.get("dvol_5s") is not None else None,
                     "iv_rv_blend_method": vol_estimate.get("iv_rv_blend_method"),
+                    "har_model": vol_estimate.get("har_model", "fixed"),
+                    "har_blend_rv": round(vol_estimate["har_blend_rv"], 8) if vol_estimate.get("har_blend_rv") is not None else None,
+                    "fixed_blend_rv": round(vol_estimate.get("fixed_blend_rv", 0), 8),
                 })
             # Order flow snapshot
             if self.order_flow is not None:

@@ -189,6 +189,9 @@ class FirebasePusher:
                         "iv_rv_spread": cached.get("iv_rv_spread"),
                         "num_returns": cached.get("num_returns", 0),
                         "jump_seconds_remaining": cached.get("jump_seconds_remaining", 0),
+                        "har_model": cached.get("har_model", "fixed"),
+                        "har_blend_rv": cached.get("har_blend_rv"),
+                        "fixed_blend_rv": cached.get("fixed_blend_rv"),
                     }
                 else:
                     vol_data[asset] = None
@@ -523,6 +526,12 @@ class FirebasePusher:
             snap["calibration"] = diag
         except Exception:
             snap["calibration"] = None
+
+        # ── HAR estimation diagnostics ─────────────────────────────────
+        try:
+            snap["har_estimation"] = self._ml.har_estimator.get_diagnostics()
+        except Exception:
+            snap["har_estimation"] = None
 
         # ── counterfactual analysis ───────────────────────────────────
         try:
