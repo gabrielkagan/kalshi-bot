@@ -35,12 +35,12 @@ SERIES_TICKERS = {
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
 }
-MIN_ENTRY_PRICE = 80              # cents
+MIN_ENTRY_PRICE = 88              # cents (data: 88-96c is 14/14 = 100% WR; all losses were 83-85c)
 MAX_ENTRY_PRICE = 99              # cents
 MAX_CONTRACTS_PER_TRADE = 20
 MAX_RISK_PER_TRADE = 1.00        # 100% of balance (observation mode — no real trades)
 MIN_SECONDS_BEFORE_CLOSE = 0
-MAX_SECONDS_BEFORE_CLOSE = 300    # start scanning 5 min before close
+MAX_SECONDS_BEFORE_CLOSE = 180    # start scanning 3 min before close (data: <3min is 10/10; all losses were 3-5min)
 ONE_ASSET_PER_WINDOW = True
 
 # ─── API Configuration ───────────────────────────────────────────────────────
@@ -212,7 +212,7 @@ _CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
 _TELEGRAM: Optional["TelegramNotifier"] = None
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
-MIN_EDGE_PCT = 0.25               # model prob must exceed market by ≥0.25 pp (observation mode — collect data at all edge levels)
+MIN_EDGE_PCT = 3.0                # model prob must exceed market by ≥3 pp (data: edge>=3% gives best P&L $1.53, 87.5% WR)
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
 BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
