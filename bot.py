@@ -947,6 +947,7 @@ class StateManager:
             ("raw_prob", "REAL"),
             ("calibration_method", "TEXT"),
             ("old_system_prob", "REAL"),
+            ("fee_adjusted_edge", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1228,7 +1229,8 @@ class StateManager:
                                      ofa_confidence: Optional[str] = None,
                                      raw_prob: Optional[float] = None,
                                      calibration_method: Optional[str] = None,
-                                     old_system_prob: Optional[float] = None):
+                                     old_system_prob: Optional[float] = None,
+                                     fee_adjusted_edge: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
@@ -1242,8 +1244,9 @@ class StateManager:
                      vol_regime, calibrated_prob_raw,
                      breakeven_wr, expected_value, drawdown_scaler,
                      ask_depth, best_ask_source, ofa_confidence,
-                     raw_prob, calibration_method, old_system_prob)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     raw_prob, calibration_method, old_system_prob,
+                     fee_adjusted_edge)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1252,7 +1255,8 @@ class StateManager:
                   vol_regime, calibrated_prob_raw,
                   breakeven_wr, expected_value, drawdown_scaler,
                   ask_depth, best_ask_source, ofa_confidence,
-                  raw_prob, calibration_method, old_system_prob))
+                  raw_prob, calibration_method, old_system_prob,
+                  fee_adjusted_edge))
             self.conn.commit()
         except Exception as e:
             logging.debug(f"insert_evaluated_opportunity failed: {e}")
@@ -3754,7 +3758,8 @@ class OpportunityScanner:
                                 ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none",
                                 raw_prob=raw_prob,
                                 calibration_method=calibration_method,
-                                old_system_prob=_old_system_prob)
+                                old_system_prob=_old_system_prob,
+                                fee_adjusted_edge=fee_adjusted_edge)
                     except Exception:
                         pass
                     continue
@@ -3819,7 +3824,8 @@ class OpportunityScanner:
                                 ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none",
                                 raw_prob=raw_prob,
                                 calibration_method=calibration_method,
-                                old_system_prob=_old_system_prob)
+                                old_system_prob=_old_system_prob,
+                                fee_adjusted_edge=fee_adjusted_edge)
                     except Exception:
                         pass
                     continue
@@ -3927,7 +3933,8 @@ class OpportunityScanner:
                                 ofa_confidence=ofa_signals["confidence"] if ofa_signals else "none",
                                 raw_prob=raw_prob,
                                 calibration_method=calibration_method,
-                                old_system_prob=_old_system_prob)
+                                old_system_prob=_old_system_prob,
+                                fee_adjusted_edge=fee_adjusted_edge)
                     except Exception:
                         pass
                     continue
@@ -4000,6 +4007,7 @@ class OpportunityScanner:
                     "raw_prob": raw_prob,
                     "calibration_method": calibration_method,
                     "old_system_prob": round(_old_system_prob, 6),
+                    "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                 })
 
                 # Respect per-tick orderbook fetch cap
@@ -4094,7 +4102,8 @@ class OpportunityScanner:
                                 ofa_confidence=c.get("ofa_confidence"),
                                 raw_prob=c.get("raw_prob"),
                                 calibration_method=c.get("calibration_method"),
-                                old_system_prob=c.get("old_system_prob"))
+                                old_system_prob=c.get("old_system_prob"),
+                                fee_adjusted_edge=c.get("fee_adjusted_edge"))
                     except Exception:
                         pass
 
@@ -4414,7 +4423,8 @@ class OrderExecutor:
                         ofa_confidence=candidate.get("ofa_confidence"),
                         raw_prob=candidate.get("raw_prob"),
                         calibration_method=candidate.get("calibration_method"),
-                        old_system_prob=candidate.get("old_system_prob"))
+                        old_system_prob=candidate.get("old_system_prob"),
+                        fee_adjusted_edge=candidate.get("fee_adjusted_edge"))
             except Exception:
                 pass
             return None
@@ -5332,6 +5342,8 @@ class SettlementTracker:
                     "z_score": row.get("z_score"),
                     "raw_prob": row.get("raw_prob"),
                     "calibration_method": row.get("calibration_method"),
+                    "fee_adjusted_edge": row.get("fee_adjusted_edge"),
+                    "old_system_prob": row.get("old_system_prob"),
                 })
 
                 self._state.mark_evaluated_opportunity_settled(
