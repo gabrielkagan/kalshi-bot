@@ -102,6 +102,7 @@ JUMP_MAX_HISTORY = 10                # max jump events per asset
 # ─── EGARCH(1,1) Estimation ──────────────────────────────────────────────
 EGARCH_SHADOW_MODE = True               # True = compute/log only, don't affect blended_rv
 EGARCH_STATE_PATH = "egarch_state.json"
+EGARCH_BUFFER_SAVE_INTERVAL = 300.0 # save return buffer to disk every 5 min
 EGARCH_REFIT_INTERVAL = 7200            # 2h between MLE refits (match HAR)
 EGARCH_MIN_RETURNS = 360                # 30 min of 5s returns before first MLE fit
 EGARCH_RETURN_MAXLEN = 10800            # 15h of 5s returns for MLE window
@@ -128,6 +129,7 @@ HAR_OBSERVATION_MAXLEN = 288        # 24h of 5-min observations
 HAR_REFIT_INTERVAL = 7200           # 2h between refits
 HAR_MIN_OBSERVATIONS = 36           # 3h of data before first fit
 HAR_STATE_PATH = "har_state.json"
+HAR_BUFFER_SAVE_INTERVAL = 300.0    # save observation buffer to disk every 5 min
 HAR_QLIKE_FALLBACK_THRESHOLD = 2.0  # fall back to fixed if QLIKE > this
 HAR_SHADOW_MODE = True              # True = log only, False = use for actual blend
 HAR_IV_REPLACES_DVOL_BLEND = False  # When True + HAR active IV model, replaces Step 4/5 blending
@@ -2954,6 +2956,7 @@ class HAREstimator:
         }
         self._last_obs_time: Dict[str, float] = {}
         self._last_refit: float = 0.0
+        self._last_buffer_save: float = 0.0
         self._active_model: Dict[str, str] = {a: "fixed" for a in ASSETS}
         self._coefficients: Dict[str, Dict[str, List[float]]] = {a: {} for a in ASSETS}
         self._qlike_scores: Dict[str, Dict[str, float]] = {a: {} for a in ASSETS}
@@ -3003,6 +3006,20 @@ class HAREstimator:
             jump_sq, sv_pos_5, sv_neg_5,
             f"{dvol_sq:.8f}" if dvol_sq is not None else "None",
         )
+
+        # Periodic buffer save
+        now_save = time.time()
+        if now_save - self._last_buffer_save >= HAR_BUFFER_SAVE_INTERVAL:
+            self._save_state()
+            self._last_buffer_save = now_save
+            try:
+                fsize = os.path.getsize(HAR_STATE_PATH) / 1024.0
+            except OSError:
+                fsize = 0.0
+            logging.info(
+                "HAR buffer saved: BTC=%d ETH=%d SOL=%d XRP=%d (file_size=%.1fKB)",
+                len(self._observations["BTC"]), len(self._observations["ETH"]),
+                len(self._observations["SOL"]), len(self._observations["XRP"]), fsize)
 
     # ── Prediction (hot path) ────────────────────────────────────────────
 
@@ -3498,7 +3515,7 @@ class HAREstimator:
     # ── State persistence ────────────────────────────────────────────────
 
     def _load_state(self) -> None:
-        """Load coefficients, active model, QLIKE from JSON."""
+        """Load coefficients, active model, QLIKE, and observation buffers from JSON."""
         try:
             with open(HAR_STATE_PATH, "r") as f:
                 state = json.load(f)
@@ -3510,18 +3527,43 @@ class HAREstimator:
                 if asset in state.get("qlike_scores", {}):
                     self._qlike_scores[asset] = state["qlike_scores"][asset]
             self._last_refit = state.get("last_refit", 0.0)
+            # Restore observation buffers
+            obs_data = state.get("observations", {})
+            now = time.time()
+            oldest_age = 0.0
+            for asset in ASSETS:
+                try:
+                    asset_obs = obs_data.get(asset, [])
+                    if not isinstance(asset_obs, list):
+                        raise ValueError(f"expected list, got {type(asset_obs).__name__}")
+                    for obs in asset_obs:
+                        if not isinstance(obs, dict):
+                            raise ValueError(f"expected dict, got {type(obs).__name__}")
+                        self._observations[asset].append(obs)
+                    if asset_obs:
+                        first_ts = asset_obs[0].get("ts", now)
+                        oldest_age = max(oldest_age, now - first_ts)
+                except Exception as oe:
+                    logging.warning("HAR observations load failed for %s: %s (starting fresh)", asset, oe)
+                    self._observations[asset].clear()
+            counts = {a: len(self._observations[a]) for a in ASSETS}
+            if any(counts.values()):
+                logging.info(
+                    "HAR observations restored: BTC=%d ETH=%d SOL=%d XRP=%d (oldest=%.0fs ago)",
+                    counts["BTC"], counts["ETH"], counts["SOL"], counts["XRP"], oldest_age)
         except (FileNotFoundError, json.JSONDecodeError):
             pass
         except Exception as e:
             logging.warning("HAREstimator: failed to load state: %s", e)
 
     def _save_state(self) -> None:
-        """Save coefficients, active model, QLIKE to JSON."""
+        """Save coefficients, active model, QLIKE, and observation buffers to JSON."""
         state = {
             "active_model": self._active_model,
             "coefficients": self._coefficients,
             "qlike_scores": self._qlike_scores,
             "last_refit": self._last_refit,
+            "observations": {a: list(self._observations[a]) for a in ASSETS},
         }
         try:
             tmp = HAR_STATE_PATH + ".tmp"
@@ -3609,12 +3651,25 @@ class EGARCHEstimator:
         self._n_updates: Dict[str, int] = {a: 0 for a in ASSETS}
         self._mle_loglik: Dict[str, Optional[float]] = {a: None for a in ASSETS}
         self._mle_converged: Dict[str, bool] = {a: False for a in ASSETS}
+        self._last_buffer_save: float = 0.0
         self._lock = threading.Lock()  # protects param reads during MLE refit
         self._load_state()
 
     def record_return(self, asset: str, log_return: float):
         """Append return to MLE buffer."""
         self._returns[asset].append(log_return)
+        now = time.time()
+        if now - self._last_buffer_save >= EGARCH_BUFFER_SAVE_INTERVAL:
+            self._save_state()
+            self._last_buffer_save = now
+            try:
+                fsize = os.path.getsize(EGARCH_STATE_PATH) / 1024.0
+            except OSError:
+                fsize = 0.0
+            logging.info(
+                "EGARCH buffer saved: BTC=%d ETH=%d SOL=%d XRP=%d (file_size=%.1fKB)",
+                len(self._returns["BTC"]), len(self._returns["ETH"]),
+                len(self._returns["SOL"]), len(self._returns["XRP"]), fsize)
 
     def seed_variance(self, asset: str, rk_5min_sq: float):
         """First-time init: set log_var from realized kernel variance."""
@@ -3845,6 +3900,8 @@ class EGARCHEstimator:
             with open(EGARCH_STATE_PATH, "r") as f:
                 state = json.load(f)
             active_count = 0
+            now = time.time()
+            oldest_age = 0.0
             for asset in ASSETS:
                 adata = state.get(asset)
                 if adata and adata.get("params"):
@@ -3862,14 +3919,28 @@ class EGARCHEstimator:
                         adata["params"]["omega"], adata["params"]["alpha"],
                         adata["params"]["gamma"], adata["params"]["beta"],
                         adata.get("log_var", 0))
+                # Restore return buffer
+                if adata:
+                    try:
+                        for r in adata.get("returns", []):
+                            self._returns[asset].append(r)
+                    except Exception as re:
+                        logging.warning("EGARCH returns load failed for %s: %s (starting fresh)", asset, re)
+                        self._returns[asset].clear()
             self._last_refit = state.get("last_refit", 0.0)
             age = time.time() - self._last_refit if self._last_refit > 0 else float('inf')
             logging.info("EGARCH loaded: %d active, state_age=%.0fs", active_count, age)
+            # Log restored return counts
+            ret_counts = {a: len(self._returns[a]) for a in ASSETS}
+            if any(ret_counts.values()):
+                logging.info(
+                    "EGARCH returns restored: BTC=%d ETH=%d SOL=%d XRP=%d",
+                    ret_counts["BTC"], ret_counts["ETH"], ret_counts["SOL"], ret_counts["XRP"])
         except Exception as e:
             logging.warning("EGARCH state load failed: %s", e)
 
     def _save_state(self):
-        """Save state to JSON file (atomic write)."""
+        """Save state and return buffers to JSON file (atomic write)."""
         state = {"last_refit": self._last_refit}
         for asset in ASSETS:
             state[asset] = {
@@ -3879,6 +3950,7 @@ class EGARCHEstimator:
                 "n_updates": self._n_updates[asset],
                 "mle_loglik": self._mle_loglik[asset],
                 "mle_converged": self._mle_converged[asset],
+                "returns": list(self._returns[asset]),
             }
         tmp_path = EGARCH_STATE_PATH + ".tmp"
         try:
@@ -7528,6 +7600,22 @@ class MainLoop:
 
     def _cleanup(self):
         logging.info("Shutting down...")
+        if hasattr(self, 'har_estimator'):
+            self.har_estimator._save_state()
+            logging.info(
+                "HAR buffer saved on shutdown: BTC=%d ETH=%d SOL=%d XRP=%d",
+                len(self.har_estimator._observations["BTC"]),
+                len(self.har_estimator._observations["ETH"]),
+                len(self.har_estimator._observations["SOL"]),
+                len(self.har_estimator._observations["XRP"]))
+        if hasattr(self, 'egarch_estimator'):
+            self.egarch_estimator._save_state()
+            logging.info(
+                "EGARCH buffer saved on shutdown: BTC=%d ETH=%d SOL=%d XRP=%d",
+                len(self.egarch_estimator._returns["BTC"]),
+                len(self.egarch_estimator._returns["ETH"]),
+                len(self.egarch_estimator._returns["SOL"]),
+                len(self.egarch_estimator._returns["XRP"]))
         if hasattr(self, 'firebase'):
             self.firebase.stop()
         if hasattr(self, 'coinglass'):
