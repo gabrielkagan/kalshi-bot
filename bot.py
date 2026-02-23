@@ -3196,10 +3196,11 @@ class EGARCHEstimator:
         self._params: Dict[str, Optional[Dict]] = {a: None for a in ASSETS}
         self._log_var: Dict[str, Optional[float]] = {a: None for a in ASSETS}
         self._sigma: Dict[str, Optional[float]] = {a: None for a in ASSETS}
-        self._last_refit: float = 0.0
+        self._last_refit: float = time.time()  # avoid wasteful first-tick refit
         self._n_updates: Dict[str, int] = {a: 0 for a in ASSETS}
         self._mle_loglik: Dict[str, Optional[float]] = {a: None for a in ASSETS}
         self._mle_converged: Dict[str, bool] = {a: False for a in ASSETS}
+        self._lock = threading.Lock()  # protects param reads during MLE refit
         self._load_state()
 
     def record_return(self, asset: str, log_return: float):
@@ -3247,11 +3248,10 @@ class EGARCHEstimator:
         if sigma <= 0:
             return None
         z = log_return / sigma
-        new_log_var = omega + alpha * (abs(z) - EGARCH_E_ABS_Z) + gamma * z + beta * log_var
-        new_log_var = max(EGARCH_LOG_VAR_FLOOR, min(EGARCH_LOG_VAR_CEILING, new_log_var))
+        raw_lv = omega + alpha * (abs(z) - EGARCH_E_ABS_Z) + gamma * z + beta * log_var
+        new_log_var = max(EGARCH_LOG_VAR_FLOOR, min(EGARCH_LOG_VAR_CEILING, raw_lv))
 
         # Anomaly logging
-        raw_lv = omega + alpha * (abs(z) - EGARCH_E_ABS_Z) + gamma * z + beta * log_var
         if raw_lv < EGARCH_LOG_VAR_FLOOR:
             logging.debug(
                 "EGARCH %s: log_var clamped to FLOOR (was %.4f) — possible underflow",
@@ -3361,15 +3361,14 @@ class EGARCHEstimator:
                 "EGARCH %s param delta: Δω=%.4f Δα=%.4f Δγ=%.4f Δβ=%.6f",
                 asset, d_omega, d_alpha, d_gamma, d_beta)
 
-        # Update params
+        # Update params (lock protects concurrent reads from Firebase thread)
         new_params = {"omega": omega, "alpha": alpha, "gamma": gamma, "beta": beta}
-        self._params[asset] = new_params
-        self._mle_loglik[asset] = -result.fun
-        self._mle_converged[asset] = converged
-
-        # Reset log_var to unconditional
-        self._log_var[asset] = uncond_log_var
-        self._sigma[asset] = math.exp(uncond_log_var * 0.5)
+        with self._lock:
+            self._params[asset] = new_params
+            self._mle_loglik[asset] = -result.fun
+            self._mle_converged[asset] = converged
+            self._log_var[asset] = uncond_log_var
+            self._sigma[asset] = math.exp(uncond_log_var * 0.5)
 
         uncond_vol = math.exp(uncond_log_var * 0.5)
         half_life = (math.log(2) / (-math.log(beta))) * 5.0 if beta > 0 and beta < 1 else float('inf')
@@ -3481,13 +3480,16 @@ class EGARCHEstimator:
             logging.warning("EGARCH state save failed: %s", e)
 
     def get_diagnostics(self) -> Dict:
-        """Per-asset diagnostics dict for Firebase."""
+        """Per-asset diagnostics dict for Firebase (thread-safe)."""
         result = {}
         now = time.time()
         for asset in ASSETS:
-            params = self._params.get(asset)
-            log_var = self._log_var.get(asset)
-            sigma = self._sigma.get(asset)
+            with self._lock:
+                params = self._params.get(asset)
+                log_var = self._log_var.get(asset)
+                sigma = self._sigma.get(asset)
+                mle_ll = self._mle_loglik.get(asset)
+                mle_conv = self._mle_converged.get(asset, False)
             n_rets = len(self._returns.get(asset, []))
             n_upd = self._n_updates.get(asset, 0)
 
@@ -3497,8 +3499,8 @@ class EGARCHEstimator:
                 "n_updates": n_upd,
                 "current_sigma": round(sigma, 10) if sigma is not None else None,
                 "current_log_var": round(log_var, 4) if log_var is not None else None,
-                "mle_loglik": round(self._mle_loglik.get(asset, 0), 4) if self._mle_loglik.get(asset) is not None else None,
-                "mle_converged": self._mle_converged.get(asset, False),
+                "mle_loglik": round(mle_ll, 4) if mle_ll is not None else None,
+                "mle_converged": mle_conv,
                 "last_refit_age_s": round(now - self._last_refit, 1) if self._last_refit > 0 else None,
             }
 
