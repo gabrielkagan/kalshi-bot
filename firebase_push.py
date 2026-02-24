@@ -842,6 +842,42 @@ class FirebasePusher:
         except Exception:
             logging.debug("Firebase: kalshi_oft build failed", exc_info=True)
 
+        # ── Execution engine capabilities ────────────────────────────────
+        try:
+            exec_eng = {}
+
+            # WebSocket status
+            kf = getattr(self._ml, "kalshi_feed", None)
+            if kf:
+                exec_eng["kalshi_ws_connected"] = kf.is_connected
+                exec_eng["kalshi_ws_subscribed_tickers"] = (
+                    len(kf._subscribed_tickers) if hasattr(kf, '_subscribed_tickers') else 0)
+                exec_eng["kalshi_ws_orderbooks_cached"] = (
+                    len(kf._orderbooks) if hasattr(kf, '_orderbooks') else 0)
+            else:
+                exec_eng["kalshi_ws_connected"] = False
+
+            # Active order execution details
+            order = self._ml.executor._active_order
+            if order:
+                exec_eng["active_order_queue_position"] = order.get("queue_position")
+                exec_eng["active_order_execution_method"] = order.get("execution_method", "legacy")
+
+            # Execution stats from OrderExecutor
+            ex = self._ml.executor
+            exec_eng["session_amend_attempts"] = getattr(ex, "_session_amend_attempts", 0)
+            exec_eng["session_amend_successes"] = getattr(ex, "_session_amend_successes", 0)
+            exec_eng["session_ioc_fills"] = getattr(ex, "_session_ioc_fills", 0)
+            exec_eng["session_ioc_unfilled"] = getattr(ex, "_session_ioc_unfilled", 0)
+            exec_eng["session_ws_fills"] = getattr(ex, "_session_ws_fills", 0)
+            exec_eng["session_rest_fills"] = getattr(ex, "_session_rest_fills", 0)
+            exec_eng["session_post_only_rejections"] = getattr(ex, "_session_post_only_rejections", 0)
+
+            snap["execution_engine"] = exec_eng
+        except Exception:
+            logging.debug("Firebase: execution_engine build failed", exc_info=True)
+            snap["execution_engine"] = {}
+
         return snap
 
     def _push(self, snapshot: Dict[str, Any]):

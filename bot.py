@@ -59,6 +59,7 @@ REJECTION_JOURNAL = "rejection_journal.jsonl"
 OPPORTUNITY_JOURNAL = "opportunity_journal.jsonl"
 EXECUTION_JOURNAL = "execution_journal.jsonl"
 PERFORMANCE_JOURNAL = "performance_journal.jsonl"
+FILL_MODEL_JOURNAL = "fill_model_journal.jsonl"
 DIST_CONFIG_PATH = "dist_config.json"
 
 # ─── Loop Timing ─────────────────────────────────────────────────────────────
@@ -746,7 +747,9 @@ class KalshiClient:
     def place_order(self, ticker: str, side: str, action: str, count: int,
                     yes_price: Optional[int] = None,
                     no_price: Optional[int] = None,
-                    client_order_id: Optional[str] = None) -> Optional[Dict]:
+                    client_order_id: Optional[str] = None,
+                    post_only: Optional[bool] = None,
+                    time_in_force: Optional[str] = None) -> Optional[Dict]:
         body: Dict = {
             "ticker": ticker,
             "side": side,
@@ -763,12 +766,43 @@ class KalshiClient:
             body["no_price_dollars"] = cents_to_dollars_str(no_price)
         if client_order_id:
             body["client_order_id"] = client_order_id
+        if post_only is not None:
+            body["post_only"] = post_only
+        if time_in_force is not None:
+            body["time_in_force"] = time_in_force
         return self._request("POST", f"{API_PATH_PREFIX}/portfolio/orders",
                              json_body=body)
 
     def cancel_order(self, order_id: str) -> Optional[Dict]:
         return self._request("DELETE",
                              f"{API_PATH_PREFIX}/portfolio/orders/{order_id}")
+
+    def amend_order(self, order_id: str, ticker: str, side: str, action: str,
+                    count: Optional[int] = None,
+                    yes_price: Optional[int] = None,
+                    no_price: Optional[int] = None) -> Optional[Dict]:
+        """Amend an existing order in-place (price/count). Saves cancel+re-place."""
+        body: Dict = {"ticker": ticker, "side": side, "action": action}
+        if count is not None:
+            body["count"] = count
+            body["count_fp"] = int_to_fp_str(count)
+        if yes_price is not None:
+            body["yes_price"] = yes_price
+            body["yes_price_dollars"] = cents_to_dollars_str(yes_price)
+        if no_price is not None:
+            body["no_price"] = no_price
+            body["no_price_dollars"] = cents_to_dollars_str(no_price)
+        return self._request("POST",
+                             f"{API_PATH_PREFIX}/portfolio/orders/{order_id}/amend",
+                             json_body=body)
+
+    def get_queue_position(self, order_id: str) -> Optional[int]:
+        """Get queue position for a resting order. Returns position or None."""
+        resp = self._request("GET",
+                             f"{API_PATH_PREFIX}/portfolio/orders/{order_id}/queue_position")
+        if resp is None:
+            return None
+        return resp.get("queue_position")
 
     def get_orders(self, ticker: Optional[str] = None,
                    status: Optional[str] = None) -> Optional[Dict]:
@@ -1674,6 +1708,320 @@ class CoinbaseFeed:
             with self._lock:
                 for asset, price in self._prices.items():
                     self._buffers[asset].append((now, price))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  KalshiFeed — Kalshi WebSocket for fills + orderbook deltas
+# ═════════════════════════════════════════════════════════════════════════════
+
+KALSHI_WS_URL = ("wss://api.elections.kalshi.com/trade-api/ws/v2"
+                 if os.environ.get("KALSHI_ENV") == "production"
+                 else "wss://demo-api.kalshi.co/trade-api/ws/v2")
+
+
+class KalshiFeed:
+    """Kalshi WebSocket feed for real-time fill notifications and orderbook data.
+
+    Runs an asyncio event loop in a daemon thread (same pattern as CoinbaseFeed).
+    Shares fill/orderbook data with the synchronous main loop via lock-protected state.
+
+    Channels:
+      - fill: instant fill notifications (subscribed once at connect)
+      - orderbook_delta: real-time OB snapshots + deltas (per-ticker)
+    """
+
+    def __init__(self, api_key: str, private_key):
+        self._api_key = api_key
+        self._private_key = private_key
+        self._lock = threading.Lock()
+        self._connected = False
+        self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._stop_event: Optional[asyncio.Event] = None
+        # Shared state (lock-protected)
+        self._orderbooks: Dict[str, Dict] = {}
+        self._recent_fills: deque = deque(maxlen=100)
+        self._subscribed_tickers: Set[str] = set()
+        self._pending_subscribes: List[str] = []
+        self._pending_unsubscribes: List[str] = []
+        self._ws = None
+
+    # ── Public API (called from main thread) ──────────────────────────────
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run_thread, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if self._loop and self._stop_event:
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+
+    def subscribe_ticker(self, ticker: str):
+        with self._lock:
+            if ticker not in self._subscribed_tickers:
+                self._pending_subscribes.append(ticker)
+                self._subscribed_tickers.add(ticker)
+
+    def unsubscribe_ticker(self, ticker: str):
+        with self._lock:
+            if ticker in self._subscribed_tickers:
+                self._pending_unsubscribes.append(ticker)
+                self._subscribed_tickers.discard(ticker)
+                self._orderbooks.pop(ticker, None)
+
+    def get_orderbook(self, ticker: str) -> Optional[Dict]:
+        with self._lock:
+            return self._orderbooks.get(ticker)
+
+    def pop_fills(self) -> List[Dict]:
+        with self._lock:
+            fills = list(self._recent_fills)
+            self._recent_fills.clear()
+            return fills
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    # ── Auth ───────────────────────────────────────────────────────────────
+
+    def _create_ws_headers(self) -> Dict[str, str]:
+        """Create auth headers for Kalshi WS handshake (same RSA-PSS as REST)."""
+        timestamp_ms = str(int(time.time() * 1000))
+        # WS auth signs: timestamp + "GET" + "/trade-api/ws/v2"
+        message = f"{timestamp_ms}GET/trade-api/ws/v2".encode("utf-8")
+        sig = self._private_key.sign(
+            message,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.DIGEST_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+        signature = base64.b64encode(sig).decode("utf-8")
+        return {
+            "KALSHI-ACCESS-KEY": self._api_key,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp_ms,
+            "KALSHI-ACCESS-SIGNATURE": signature,
+        }
+
+    # ── Background thread ──────────────────────────────────────────────────
+
+    def _run_thread(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._stop_event = asyncio.Event()
+        try:
+            self._loop.run_until_complete(self._ws_loop())
+        except Exception:
+            logging.error("Kalshi feed thread crashed", exc_info=True)
+        finally:
+            self._loop.close()
+
+    async def _ws_loop(self):
+        backoff = 1.0
+        max_backoff = 60.0
+
+        while not self._stop_event.is_set():
+            try:
+                headers = self._create_ws_headers()
+                async with websockets.connect(
+                    KALSHI_WS_URL,
+                    additional_headers=headers,
+                    ping_interval=30,
+                    ping_timeout=10,
+                ) as ws:
+                    self._ws = ws
+                    self._connected = True
+                    backoff = 1.0
+                    logging.info(f"kalshi_ws_connected: url={KALSHI_WS_URL}")
+
+                    # Subscribe to fills channel (all markets)
+                    await ws.send(json.dumps({
+                        "id": 1,
+                        "cmd": "subscribe",
+                        "params": {"channels": ["fill"]},
+                    }))
+                    logging.debug("kalshi_ws_subscribe: channel=fill")
+
+                    # Re-subscribe to any tickers that were active before reconnect
+                    with self._lock:
+                        for ticker in self._subscribed_tickers:
+                            await self._send_ob_subscribe(ws, ticker)
+
+                    # Message loop with periodic subscribe/unsubscribe processing
+                    async for raw in ws:
+                        if self._stop_event.is_set():
+                            break
+                        self._handle_message(raw)
+                        # Process pending subscriptions
+                        await self._process_pending_subs(ws)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._connected = False
+                self._ws = None
+                jitter = backoff * random.uniform(0, 0.25)
+                wait = backoff + jitter
+                logging.warning(
+                    f"kalshi_ws_disconnected: reason={e} reconnect_backoff={wait:.1f}s"
+                )
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(), timeout=wait
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    pass
+                backoff = min(backoff * 2, max_backoff)
+
+        self._connected = False
+        self._ws = None
+        logging.info("Kalshi feed stopped")
+
+    async def _send_ob_subscribe(self, ws, ticker: str):
+        await ws.send(json.dumps({
+            "id": 2,
+            "cmd": "subscribe",
+            "params": {
+                "channels": ["orderbook_delta"],
+                "market_tickers": [ticker],
+            },
+        }))
+        logging.debug(f"kalshi_ws_subscribe: ticker={ticker} channel=orderbook_delta")
+
+    async def _send_ob_unsubscribe(self, ws, ticker: str):
+        await ws.send(json.dumps({
+            "id": 3,
+            "cmd": "unsubscribe",
+            "params": {
+                "channels": ["orderbook_delta"],
+                "market_tickers": [ticker],
+            },
+        }))
+
+    async def _process_pending_subs(self, ws):
+        with self._lock:
+            subs = list(self._pending_subscribes)
+            self._pending_subscribes.clear()
+            unsubs = list(self._pending_unsubscribes)
+            self._pending_unsubscribes.clear()
+
+        for ticker in subs:
+            try:
+                await self._send_ob_subscribe(ws, ticker)
+            except Exception:
+                logging.debug(f"Failed to subscribe to {ticker}", exc_info=True)
+
+        for ticker in unsubs:
+            try:
+                await self._send_ob_unsubscribe(ws, ticker)
+            except Exception:
+                logging.debug(f"Failed to unsubscribe from {ticker}", exc_info=True)
+
+    def _handle_message(self, raw: str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+
+        msg_type = data.get("type")
+
+        if msg_type == "fill":
+            self._handle_fill(data)
+        elif msg_type == "orderbook_snapshot":
+            self._handle_ob_snapshot(data)
+        elif msg_type == "orderbook_delta":
+            self._handle_ob_delta(data)
+        # Ignore subscription confirmations, errors, etc.
+
+    def _handle_fill(self, data: Dict):
+        """Process a fill notification from the WebSocket."""
+        try:
+            msg = data.get("msg", {})
+            fill_info = {
+                "order_id": msg.get("order_id"),
+                "ticker": msg.get("ticker"),
+                "side": msg.get("side"),
+                "action": msg.get("action"),
+                "count": msg.get("count"),
+                "yes_price": msg.get("yes_price"),
+                "no_price": msg.get("no_price"),
+                "trade_id": msg.get("trade_id"),
+                "ts": time.time(),
+            }
+            with self._lock:
+                self._recent_fills.append(fill_info)
+        except Exception:
+            logging.debug("Failed to parse WS fill message", exc_info=True)
+
+    def _handle_ob_snapshot(self, data: Dict):
+        """Replace cached orderbook with full snapshot."""
+        try:
+            msg = data.get("msg", {})
+            ticker = msg.get("market_ticker")
+            if not ticker:
+                return
+            with self._lock:
+                self._orderbooks[ticker] = {
+                    "yes": msg.get("yes", []),
+                    "no": msg.get("no", []),
+                    "ts": time.time(),
+                }
+        except Exception:
+            logging.debug("Failed to parse WS OB snapshot", exc_info=True)
+
+    def _handle_ob_delta(self, data: Dict):
+        """Apply incremental delta to cached orderbook."""
+        try:
+            msg = data.get("msg", {})
+            ticker = msg.get("market_ticker")
+            if not ticker:
+                return
+            with self._lock:
+                ob = self._orderbooks.get(ticker)
+                if ob is None:
+                    # No snapshot yet — store delta as partial
+                    self._orderbooks[ticker] = {
+                        "yes": msg.get("yes", []),
+                        "no": msg.get("no", []),
+                        "ts": time.time(),
+                    }
+                    return
+                # Apply delta: merge price levels
+                for side in ("yes", "no"):
+                    delta_levels = msg.get(side, [])
+                    if not delta_levels:
+                        continue
+                    existing = {self._level_price(l): l for l in ob.get(side, [])}
+                    for level in delta_levels:
+                        price = self._level_price(level)
+                        qty = self._level_qty(level)
+                        if qty == 0:
+                            existing.pop(price, None)
+                        else:
+                            existing[price] = level
+                    ob[side] = list(existing.values())
+                ob["ts"] = time.time()
+        except Exception:
+            logging.debug("Failed to apply WS OB delta", exc_info=True)
+
+    @staticmethod
+    def _level_price(level) -> int:
+        if isinstance(level, (list, tuple)) and len(level) >= 1:
+            return int(level[0])
+        if isinstance(level, dict):
+            return int(level.get("price", 0))
+        return 0
+
+    @staticmethod
+    def _level_qty(level) -> int:
+        if isinstance(level, (list, tuple)) and len(level) >= 2:
+            return int(level[1])
+        if isinstance(level, dict):
+            return int(level.get("quantity", 0))
+        return 0
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -6611,14 +6959,24 @@ class OrderExecutor:
     """
 
     def __init__(self, client: KalshiClient, state: StateManager,
-                 logger: Logger, main_loop=None):
+                 logger: Logger, main_loop=None, kalshi_feed=None):
         self._client = client
         self._state = state
         self._logger = logger
         self._ml = main_loop
+        self._kalshi_feed = kalshi_feed
         self._active_order: Optional[Dict] = None
         self._last_poll: float = 0.0
         self._ask_history: deque = deque(maxlen=30)
+        self._last_queue_poll: float = 0.0
+        # Session counters for execution engine stats
+        self._session_amend_attempts: int = 0
+        self._session_amend_successes: int = 0
+        self._session_ioc_fills: int = 0
+        self._session_ioc_unfilled: int = 0
+        self._session_ws_fills: int = 0
+        self._session_rest_fills: int = 0
+        self._session_post_only_rejections: int = 0
 
     @property
     def has_active_order(self) -> bool:
@@ -6639,6 +6997,9 @@ class OrderExecutor:
                 f"{candidate.get('position_size', '?')} contracts"
             )
             try:
+                _fv = candidate.get("best_yes_ask")
+                _obs_offset = (MAKER_PRICE_OFFSET if _fv and _fv >= 90
+                               else MAKER_PRICE_OFFSET + 1) if _fv else MAKER_PRICE_OFFSET
                 self._logger.log_execution({
                     "action": "observation_would_trade",
                     "ticker": candidate["ticker"],
@@ -6653,6 +7014,13 @@ class OrderExecutor:
                     "vol_regime": candidate.get("vol_regime"),
                     "ofa_adjustment": candidate.get("ofa_adjustment"),
                     "balance_at_scan": candidate.get("balance_at_scan"),
+                    "execution_params": {
+                        "maker_price": (_fv - _obs_offset) if _fv else None,
+                        "maker_offset": _obs_offset,
+                        "post_only": True,
+                        "escalation_strategy": "amend_first",
+                        "taker_time_in_force": "ioc",
+                    },
                 })
                 if _TELEGRAM:
                     _ba = candidate.get("best_yes_ask", "?")
@@ -6720,9 +7088,28 @@ class OrderExecutor:
 
         order = self._active_order
 
-        # 1. Check for maker fill
+        # 0. Check WebSocket fills first (zero API cost)
+        if self._kalshi_feed and self._kalshi_feed.is_connected:
+            try:
+                for ws_fill in self._kalshi_feed.pop_fills():
+                    if ws_fill.get("order_id") == order["order_id"]:
+                        order["fill_source"] = "websocket"
+                        self._session_ws_fills += 1
+                        latency_ms = round((now - order["submit_time"]) * 1000, 1)
+                        logging.info(
+                            f"kalshi_ws_fill: {order['ticker']} order={order['order_id']} "
+                            f"latency={latency_ms}ms")
+                        self._on_fill(ws_fill, order)
+                        self._active_order = None
+                        return ws_fill
+            except Exception:
+                logging.debug("WS fill check failed", exc_info=True)
+
+        # 1. Check for maker fill via REST
         fill = self._check_for_fill(order)
         if fill:
+            order["fill_source"] = "rest_poll"
+            self._session_rest_fills += 1
             self._on_fill(fill, order)
             self._active_order = None
             return fill
@@ -6735,8 +7122,25 @@ class OrderExecutor:
             self._cancel_active("close_approaching")
             return None
 
+        # 2.5 Queue position polling (~every 5s, rate-limit friendly)
+        if now - self._last_queue_poll >= 5.0:
+            self._last_queue_poll = now
+            try:
+                qpos = self._client.get_queue_position(order["order_id"])
+                if qpos is not None:
+                    order["queue_position"] = qpos
+                    logging.debug(
+                        f"queue_position_check: {order['ticker']} "
+                        f"order={order['order_id']} position={qpos}")
+            except Exception:
+                pass  # Non-critical, don't disrupt flow
+
         # 3. Escalation: maker waited long enough?
         escalation_wait = self._escalation_wait(remaining)
+        # Queue-aware: escalate earlier if deep in queue and time is short
+        queue_pos = order.get("queue_position")
+        if queue_pos is not None and queue_pos > 20 and remaining < 60:
+            escalation_wait = min(escalation_wait, 5.0)
         if elapsed >= escalation_wait:
             return self._escalate_to_taker(order, remaining)
 
@@ -6810,6 +7214,35 @@ class OrderExecutor:
                 elif isinstance(entry, dict):
                     total += int(entry.get("quantity", 0))
         return total
+
+    # ── Repricing ─────────────────────────────────────────────────────────
+
+    def _reprice_maker(self, new_price: int) -> bool:
+        """Amend maker order to a new price. Returns True on success."""
+        if self._active_order is None:
+            return False
+        order = self._active_order
+        self._session_amend_attempts += 1
+        try:
+            resp = self._client.amend_order(
+                order_id=order["order_id"], ticker=order["ticker"],
+                side="yes", action="buy", yes_price=new_price,
+                count=order["count"])
+            if resp is None:
+                logging.warning(
+                    f"amend_failed_fallback: {order['ticker']} "
+                    f"old={order['price_cents']}¢ new={new_price}¢")
+                return False
+            old_price = order["price_cents"]
+            order["price_cents"] = new_price
+            self._session_amend_successes += 1
+            logging.info(
+                f"amend_success: {order['ticker']} "
+                f"{old_price}¢ → {new_price}¢ order={order['order_id']}")
+            return True
+        except Exception:
+            logging.warning("Amend failed with exception", exc_info=True)
+            return False
 
     # ── Panic Capture ──────────────────────────────────────────────────────
 
@@ -6942,17 +7375,15 @@ class OrderExecutor:
 
     def _escalate_to_taker(self, order: Dict, remaining: float,
                            reason: str = "escalation_wait") -> Optional[Dict]:
-        """Cancel maker and re-submit as taker at current best ask."""
+        """Escalate maker to taker. Try amend first (1 API call), fall back to cancel-replace."""
         ticker = order["ticker"]
         elapsed = time.time() - order["submit_time"]
-
-        # Cancel the active maker order
-        self._cancel_active(reason)
 
         # Re-fetch orderbook for current best ask
         ob_raw = self._client.get_orderbook(ticker, depth=5)
         if ob_raw is None:
             logging.warning(f"Escalation aborted: orderbook fetch failed for {ticker}")
+            self._cancel_active(reason)
             return None
 
         # Unwrap response envelope (same as _get_orderbook_cached)
@@ -6965,6 +7396,7 @@ class OrderExecutor:
         best_ask = OpportunityScanner._best_yes_ask_cents(ob_data)
         if best_ask is None:
             logging.warning(f"Escalation aborted: no asks on orderbook for {ticker}")
+            self._cancel_active(reason)
             return None
 
         if best_ask < MIN_ENTRY_PRICE or best_ask > ESCALATION_MAX_ENTRY:
@@ -6972,6 +7404,7 @@ class OrderExecutor:
                 f"Escalation aborted: price {best_ask}¢ out of range "
                 f"[{MIN_ENTRY_PRICE}-{ESCALATION_MAX_ENTRY}¢] for {ticker}"
             )
+            self._cancel_active(reason)
             return None
 
         # Determine urgency tier for logging
@@ -6994,11 +7427,41 @@ class OrderExecutor:
             "urgency_tier": tier,
             "remaining": round(remaining, 1),
         })
+
+        # Try amend-based escalation first (1 write vs 3 API calls for cancel-replace)
+        self._session_amend_attempts += 1
+        try:
+            amend_resp = self._client.amend_order(
+                order_id=order["order_id"], ticker=ticker,
+                side="yes", action="buy", yes_price=best_ask,
+                count=order["count"])
+            if amend_resp is not None:
+                self._session_amend_successes += 1
+                logging.info(
+                    f"escalation_via_amend: {ticker} {order['count']}x "
+                    f"maker={order['price_cents']}¢ → taker={best_ask}¢ "
+                    f"(slip={price_slip}¢, tier={tier})")
+
+                # Order is now crossing the spread — check for fill
+                order["price_cents"] = best_ask
+                order["is_taker"] = True
+                order["execution_method"] = "amend_to_taker"
+                time.sleep(0.3)
+                fill = self._check_for_fill(order)
+                if fill:
+                    self._on_fill(fill, order)
+                    self._active_order = None
+                    return fill
+                # Not filled yet — leave as active for tick() to poll
+                return None
+        except Exception:
+            logging.warning("Amend escalation failed with exception", exc_info=True)
+
+        # Fallback: cancel-replace
         logging.info(
-            f"Escalating to taker: {ticker} {order['count']}x "
-            f"maker={order['price_cents']}¢ → taker={best_ask}¢ "
-            f"(slip={price_slip}¢, tier={tier})"
-        )
+            f"amend_failed_fallback: {ticker}, using cancel-replace "
+            f"(maker={order['price_cents']}¢ → taker={best_ask}¢)")
+        self._cancel_active(reason)
 
         # Build modified candidate with fresh best ask
         candidate = dict(order["candidate"])
@@ -7036,16 +7499,18 @@ class OrderExecutor:
             candidate["asset"], "yes", count, price, False
         )
 
-        # Submit
+        # Submit with post_only to guarantee maker fees (4x cheaper)
         resp = self._client.place_order(
             ticker=ticker, side="yes", action="buy",
             count=count, yes_price=price,
-            client_order_id=client_oid
+            client_order_id=client_oid,
+            post_only=True,
         )
 
         if resp is None:
             self._state.mark_order_status(client_oid, "api_error")
-            logging.error(f"Maker order submission failed: {ticker}")
+            logging.warning(f"Maker order rejected (post_only or API error): {ticker}")
+            self._session_post_only_rejections += 1
             return
 
         order_id = (resp.get("order") or {}).get("order_id", client_oid)
@@ -7100,19 +7565,22 @@ class OrderExecutor:
             candidate["asset"], "yes", count, price, True
         )
 
-        # Submit at best ask — crosses spread for immediate fill
+        # Submit as IOC — exchange auto-cancels any unfilled remainder
         resp = self._client.place_order(
             ticker=ticker, side="yes", action="buy",
             count=count, yes_price=price,
-            client_order_id=client_oid
+            client_order_id=client_oid,
+            time_in_force="ioc",
         )
 
         if resp is None:
             self._state.mark_order_status(client_oid, "api_error")
             logging.error(f"Taker order submission failed: {ticker}")
+            self._session_ioc_unfilled += 1
             return None
 
         order_id = (resp.get("order") or {}).get("order_id", client_oid)
+        remaining_count = (resp.get("order") or {}).get("remaining_count", count)
         self._state.confirm_order_submitted(client_oid, order_id)
 
         order_info = {
@@ -7128,6 +7596,7 @@ class OrderExecutor:
             "seconds_to_close_at_submit": candidate["seconds_to_close"],
             "candidate": candidate,
             "balance_at_entry": balance,
+            "execution_method": "ioc",
         }
 
         self._logger.log_order({
@@ -7137,26 +7606,29 @@ class OrderExecutor:
             "client_order_id": client_oid,
             "price_cents": price,
             "count": count,
+            "time_in_force": "ioc",
         })
-        logging.info(f"Taker order: {ticker} {count}x @ {price}¢")
+        logging.info(f"Taker IOC order: {ticker} {count}x @ {price}¢")
 
-        # Brief wait then check fill
-        time.sleep(1.0)
+        # IOC resolves instantly; brief wait + fill check for confirmation
+        time.sleep(0.3)
         fill = self._check_for_fill(order_info)
         if fill:
             self._on_fill(fill, order_info)
+            self._session_ioc_fills += 1
+            logging.info(f"ioc_taker_result: {ticker} filled={count} remaining=0")
             return fill
 
-        # Not filled — cancel
-        self._client.cancel_order(order_id)
+        # IOC auto-cancels unfilled portion — no manual cancel needed
         self._state.mark_order_status(order_id, "canceled")
+        self._session_ioc_unfilled += 1
         self._logger.log_order({
-            "action": "taker_canceled",
+            "action": "taker_ioc_unfilled",
             "ticker": ticker,
             "order_id": order_id,
-            "reason": "not_filled",
+            "remaining_count": remaining_count,
         })
-        logging.warning(f"Taker order not filled, canceled: {ticker}")
+        logging.warning(f"Taker IOC not filled: {ticker} (remaining={remaining_count})")
         return None
 
     # ── Fill detection ────────────────────────────────────────────────────
@@ -7185,6 +7657,9 @@ class OrderExecutor:
 
         # Update order status
         self._state.mark_order_status(order_id, "filled")
+
+        # Log fill model sample for ML training
+        self._log_fill_model_sample(order, "filled", fill=fill)
 
         # Track fill latency
         fill_latency = round(time.time() - order["submit_time"], 3)
@@ -7255,6 +7730,62 @@ class OrderExecutor:
             f"cost={cost_cents}¢ fee={fee_cents}¢"
         )
 
+    # ── Fill Model Logging ────────────────────────────────────────────────
+
+    def _log_fill_model_sample(self, order: Dict, outcome: str,
+                               fill: Optional[Dict] = None,
+                               cancel_reason: Optional[str] = None):
+        """Write one fill_model_sample to FILL_MODEL_JOURNAL for ML training."""
+        try:
+            candidate = order.get("candidate", {})
+            now = time.time()
+            elapsed = now - order["submit_time"]
+            fill_latency = round(elapsed, 3) if outcome == "filled" else None
+            ob_snap = candidate.get("ob_snapshot", {})
+
+            sample = {
+                "type": "fill_model_sample",
+                "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                "ticker": order["ticker"],
+                "asset": order["asset"],
+                "outcome": outcome,
+                "fill_latency_s": fill_latency,
+                "fill_source": order.get("fill_source"),
+                # Submission context
+                "price_cents": order["price_cents"],
+                "fair_value": candidate.get("best_yes_ask"),
+                "offset_cents": (candidate.get("best_yes_ask", 0) - order["price_cents"])
+                    if candidate.get("best_yes_ask") else None,
+                "count": order["count"],
+                "post_only": not order.get("is_taker", False),
+                # Market context at submission
+                "seconds_to_close": order.get("seconds_to_close_at_submit"),
+                "vol_regime": candidate.get("vol_regime"),
+                "blended_rv": candidate.get("blended_rv"),
+                "ask_depth": ob_snap.get("ask_depth"),
+                "total_ob_depth": ob_snap.get("total_depth"),
+                "spread_at_submit": ob_snap.get("spread"),
+                "convergence_velocity": candidate.get("convergence_velocity"),
+                "z_score": candidate.get("z_score"),
+                "edge": candidate.get("edge"),
+                "kelly_f": candidate.get("kelly_f"),
+                # Queue tracking
+                "queue_position_initial": order.get("queue_position_initial"),
+                "queue_position_final": order.get("queue_position"),
+                # Execution details
+                "execution_method": order.get("execution_method", "maker"),
+                "cancel_reason": cancel_reason,
+                "elapsed_seconds": round(elapsed, 1),
+                # WS state
+                "ws_connected": (self._kalshi_feed.is_connected
+                                 if self._kalshi_feed else False),
+            }
+
+            with open(FILL_MODEL_JOURNAL, "a") as f:
+                f.write(json.dumps(sample) + "\n")
+        except Exception:
+            logging.debug("fill_model_sample write failed", exc_info=True)
+
     # ── Cancel ────────────────────────────────────────────────────────────
 
     def _cancel_active(self, reason: str):
@@ -7265,6 +7796,9 @@ class OrderExecutor:
         order = self._active_order
         self._client.cancel_order(order["order_id"])
         self._state.mark_order_status(order["order_id"], "canceled")
+
+        # Log fill model sample for canceled order
+        self._log_fill_model_sample(order, "canceled", cancel_reason=reason)
 
         self._logger.log_order({
             "action": "maker_canceled",
@@ -7786,7 +8320,15 @@ class MainLoop:
             self.sizer, order_flow=self.order_flow,
             kalshi_oft=self.kalshi_oft,
         )
-        self.executor = OrderExecutor(self.client, self.state, self.logger, main_loop=self)
+        # Kalshi WebSocket feed for real-time fills + orderbook
+        try:
+            self.kalshi_feed = KalshiFeed(api_key, self.client.private_key)
+        except Exception as e:
+            logging.warning(f"KalshiFeed init failed: {e}")
+            self.kalshi_feed = None
+        self.executor = OrderExecutor(
+            self.client, self.state, self.logger,
+            main_loop=self, kalshi_feed=self.kalshi_feed)
         self.tracker = SettlementTracker(self.client, self.state, self.logger)
         self._shutdown = threading.Event()
         self._active_windows: List[Dict] = []
@@ -7879,6 +8421,14 @@ class MainLoop:
 
         # Start CoinGlass funding rate fetcher
         self.coinglass.start()
+
+        # Start Kalshi WebSocket feed (fills + orderbook)
+        if self.kalshi_feed:
+            try:
+                self.kalshi_feed.start()
+                logging.info("Kalshi WebSocket feed starting...")
+            except Exception as e:
+                logging.warning(f"Kalshi WebSocket feed failed to start: {e}")
 
         # Start Firebase dashboard push (if configured)
         try:
@@ -8255,6 +8805,8 @@ class MainLoop:
                 len(self.vol._adaptive_returns_15s["ETH"]),
                 len(self.vol._adaptive_returns_15s["SOL"]),
                 len(self.vol._adaptive_returns_15s["XRP"]))
+        if hasattr(self, 'kalshi_feed') and self.kalshi_feed:
+            self.kalshi_feed.stop()
         if hasattr(self, 'firebase'):
             self.firebase.stop()
         if hasattr(self, 'coinglass'):
