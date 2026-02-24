@@ -303,7 +303,7 @@ BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
 # ─── Position Sizing ───────────────────────────────────────────────────────
 # Edge-based tiered sizing: higher edge → more aggressive
 SIZING_TIERS = [                  # (min_edge, risk_fraction)
-    (0.05, 0.50),                 # edge ≥ 5%  → risk 50% of bankroll
+    (0.05, 0.75),                 # edge ≥ 5%  → risk 75% of bankroll
     (0.03, 0.35),                 # edge ≥ 3%  → risk 35% of bankroll
     (0.01, 0.20),                 # edge ≥ 1.0% → risk 20% of bankroll
 ]
