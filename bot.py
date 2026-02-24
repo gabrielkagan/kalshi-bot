@@ -2466,8 +2466,8 @@ class VolatilityEngine:
         self._rk_prev_omega_sq: Dict[str, float] = {}
         self._rk_last_summary: Dict[str, float] = {a: 0.0 for a in ASSETS}
         self._rk_adaptive_diff_count: Dict[str, int] = {a: 0 for a in ASSETS}
-        self._rk_delta_5_accum: Dict[str, List[float]] = {a: [] for a in ASSETS}
-        self._rk_delta_15_accum: Dict[str, List[float]] = {a: [] for a in ASSETS}
+        self._rk_delta_5_accum: Dict[str, deque] = {a: deque(maxlen=720) for a in ASSETS}
+        self._rk_delta_15_accum: Dict[str, deque] = {a: deque(maxlen=720) for a in ASSETS}
 
     def update(self, asset: str) -> Optional[Dict]:
         """Called every tick. Computes a new log return every 5s, returns vol estimate."""
@@ -5578,6 +5578,9 @@ class OpportunityScanner:
         expired = [t for t in self._ticker_ask_history if t not in active_tickers]
         for t in expired:
             del self._ticker_ask_history[t]
+        expired_ob = [t for t in self._ob_cache if t not in active_tickers]
+        for t in expired_ob:
+            del self._ob_cache[t]
         self._eval_opp_seen = {
             (tk, stage) for tk, stage in self._eval_opp_seen if tk in active_tickers
         }

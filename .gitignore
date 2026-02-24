@@ -6,6 +6,8 @@ __pycache__/
 logs/
 *.tar.gz
 *.db
+*.db-shm
+*.db-wal
 whitepaper_rendered.md
 whitepaper_investor_rendered.md
 whitepaper_stats.json
