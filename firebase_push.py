@@ -683,6 +683,10 @@ class FirebasePusher:
                     "r_squared": dict(mz._r_squared),
                     "qlike": dict(mz._qlike),
                     "obs_count": {a: len(mz._pairs[a]) for a in ASSETS},
+                    "prev_weights": {a: mz._prev_weight.get(a) for a in ASSETS},
+                    "ema_lambda": getattr(_bot_mod, "MZ_EMA_LAMBDA", None),
+                    "equal_weight_threshold": getattr(_bot_mod, "MZ_EQUAL_WEIGHT_R2_THRESHOLD", None),
+                    "mz_window": getattr(_bot_mod, "MZ_WINDOW", None),
                 }
         except Exception:
             logging.debug("Firebase: egarch_blend build failed", exc_info=True)

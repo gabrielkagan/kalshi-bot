@@ -125,15 +125,23 @@ EGARCH_OMEGA_BOUNDS = (-5.0, 0.0)
 EGARCH_ALPHA_BOUNDS = (0.01, 0.5)
 EGARCH_GAMMA_BOUNDS = (-0.3, 0.3)       # both leverage directions
 EGARCH_BETA_BOUNDS = (0.80, 0.999)      # high persistence typical for crypto
+EGARCH_DF_BOUNDS = (2.1, 30.0)          # Student-t df bounds (2.1 floor avoids infinite variance)
+EGARCH_DF_DEFAULT = 5.0                 # Typical for crypto (heavy tails, Caporale & Zekokh 2019)
+EGARCH_REFIT_INTERVALS = {              # Per-asset refit intervals (seconds)
+    "BTC": 7200, "ETH": 7200,          # 2h for high-persistence assets
+    "SOL": 3600, "XRP": 3600,          # 1h for low-persistence (faster regime changes)
+}
 
 # ─── EGARCH-RV Blend ───────────────────────────────────────────────────
 EGARCH_BLEND_SHADOW_MODE = True        # True = log only, don't affect blended_rv
 EGARCH_BLEND_STATE_PATH = "egarch_blend_state.json"
 
 # Mincer-Zarnowitz R² tracker
-MZ_WINDOW = 360                        # Rolling window: 360 ticks × 10s = 1 hour
+MZ_WINDOW = 180                        # Rolling window: 180 ticks × 10s = 30 min (was 360)
 MZ_MIN_OBS = 60                        # Need 10 min of data before R² is valid
 MZ_RECOMPUTE_INTERVAL = 30.0           # Recompute R² every 30s (not every tick)
+MZ_EMA_LAMBDA = 0.97                   # EMA decay for weight smoothing (Stock & Watson 2004)
+MZ_EQUAL_WEIGHT_R2_THRESHOLD = 0.10    # Below this R², use equal-weight midpoint
 
 # Weight bounds per asset (from persistence analysis)
 EGARCH_WEIGHT_BOUNDS = {
@@ -157,7 +165,7 @@ RK_MIN_RETURNS_FOR_ADAPTIVE = 20        # need ≥20 returns for reliable γ̂(1
 
 # ─── HAR-WLS Estimation ──────────────────────────────────────────────────
 HAR_OBSERVATION_INTERVAL = 300      # 5 min between observations (seconds)
-HAR_OBSERVATION_MAXLEN = 288        # 24h of 5-min observations
+HAR_OBSERVATION_MAXLEN = 576        # 48h of 5-min observations (was 288, more data for ridge)
 HAR_REFIT_INTERVAL = 7200           # 2h between refits
 HAR_MIN_OBSERVATIONS = 36           # 3h of data before first fit
 HAR_STATE_PATH = "har_state.json"
@@ -165,6 +173,8 @@ HAR_BUFFER_SAVE_INTERVAL = 300.0    # save observation buffer to disk every 5 mi
 HAR_QLIKE_FALLBACK_THRESHOLD = 2.0  # fall back to fixed if QLIKE > this
 HAR_MIN_RV_SQ = 1e-12              # floor for valid observation (reject flat-market noise)
 HAR_SHADOW_MODE = True              # True = log only, False = use for actual blend
+HAR_RIDGE_LAMBDA = 0.05             # L2 regularization for multicollinearity (Clements & Preve 2021)
+HAR_LOG_PREFERENCE_PCT = 0.05       # Prefer log model if QLIKE within 5% of best
 HAR_IV_REPLACES_DVOL_BLEND = False  # When True + HAR active IV model, replaces Step 4/5 blending
 HAR_IV_MIN_DVOL_FRACTION = 0.70    # Need ≥70% non-None dvol_sq observations to fit IV models
 
@@ -3999,8 +4009,8 @@ class HAREstimator:
         if n < 2:
             return
 
-        # Build target: next observation's rv5_sq
-        targets = [obs[i + 1]["rv5_sq"] for i in range(n - 1)]
+        # Build target: next observation's rv15_sq (falls back to rv5_sq for old obs)
+        targets = [obs[i + 1].get("rv15_sq", obs[i + 1].get("rv5_sq", 0)) for i in range(n - 1)]
         old_model = self._active_model.get(asset, "fixed")
 
         qlike_scores: Dict[str, float] = {}
@@ -4021,7 +4031,8 @@ class HAREstimator:
         # Targets in log space
         log_targets = [math.log(max(eps, t)) for t in targets]
         c = self._fit_wls(X_log, log_targets,
-                          [1.0 / math.sqrt(max(eps, t)) for t in targets])
+                          [1.0 / max(eps, t) for t in targets],
+                          ridge_lambda=HAR_RIDGE_LAMBDA)
         if c is not None:
             # Predict back in level space for QLIKE
             preds = []
@@ -4083,7 +4094,8 @@ class HAREstimator:
                          for i in iv_indices]
             log_iv_targets = [math.log(max(eps, t)) for t in iv_targets]
             c_log_iv = self._fit_wls(X_log_iv, log_iv_targets,
-                                     [1.0 / math.sqrt(max(eps, t)) for t in iv_targets])
+                                     [1.0 / max(eps, t) for t in iv_targets],
+                                     ridge_lambda=HAR_RIDGE_LAMBDA)
             if c_log_iv is not None:
                 preds_log_iv = []
                 for idx, i in enumerate(iv_indices):
@@ -4140,6 +4152,20 @@ class HAREstimator:
                 best_model = model_name
                 best_qlike = qlike_scores[model_name]
 
+        # Prefer log models if within 5% of best QLIKE (guaranteed positive forecasts)
+        log_models_set = {"log_har", "log_har_iv"}
+        if best_model not in log_models_set and HAR_LOG_PREFERENCE_PCT > 0:
+            for lm in log_models_set:
+                if lm in qlike_scores:
+                    if qlike_scores[lm] <= best_qlike * (1.0 + HAR_LOG_PREFERENCE_PCT):
+                        logging.info(
+                            "HAR %s: promoting %s over %s (QLIKE %.4f vs %.4f, within %.0f%%)",
+                            asset, lm, best_model, qlike_scores[lm], best_qlike,
+                            HAR_LOG_PREFERENCE_PCT * 100)
+                        best_model = lm
+                        best_qlike = qlike_scores[lm]
+                        break
+
         self._active_model[asset] = best_model
         self._qlike_scores[asset] = qlike_scores
         if best_model != "fixed" and best_model in fitted_coeffs:
@@ -4157,6 +4183,9 @@ class HAREstimator:
             asset, fixed_qlike, best_qlike,
             100 * (fixed_qlike - best_qlike) / fixed_qlike if fixed_qlike > 0 else 0.0,
         )
+        logging.info(
+            "HAR refit %s: target=rv15_sq ridge=%.3f buffer=%d/%d best=%s QLIKE=%.4f",
+            asset, HAR_RIDGE_LAMBDA, n, HAR_OBSERVATION_MAXLEN, best_model, best_qlike)
 
         # Log when IV model wins over best non-IV model
         iv_model_names = {"har_iv", "har_j_iv", "log_har_iv", "har_vrp"}
@@ -4185,8 +4214,8 @@ class HAREstimator:
                        fitted_coeffs: Dict[str, List[float]]) -> None:
         """Fit a model via WLS, check sanity, add to results if valid."""
         eps = 1e-20
-        weights = [1.0 / math.sqrt(max(eps, t)) for t in targets]
-        c = self._fit_wls(X, targets, weights)
+        weights = [1.0 / max(eps, t) for t in targets]
+        c = self._fit_wls(X, targets, weights, ridge_lambda=HAR_RIDGE_LAMBDA)
         if c is None:
             return
         # Predict
@@ -4207,10 +4236,11 @@ class HAREstimator:
 
     @staticmethod
     def _fit_wls(X: List[List[float]], y: List[float],
-                 w: List[float]) -> Optional[List[float]]:
-        """Weighted least squares via normal equations: (X'WX)β = X'Wy.
+                 w: List[float], ridge_lambda: float = 0.0) -> Optional[List[float]]:
+        """Weighted least squares via normal equations: (X'WX + λI)β = X'Wy.
 
         Pure Python, no numpy. Max matrix size 7x7 (HAR-semiRV).
+        Ridge regularization (λ > 0) prevents multicollinearity issues.
         """
         n = len(y)
         if n == 0:
@@ -4233,6 +4263,11 @@ class HAREstimator:
                     XtWX[j][k] += val
                     if k != j:
                         XtWX[k][j] += val
+
+        # Ridge regularization: add λ to diagonal (Clements & Preve 2021)
+        if ridge_lambda > 0:
+            for j in range(p):
+                XtWX[j][j] += ridge_lambda
 
         return HAREstimator._gauss_eliminate(XtWX, XtWy)
 
@@ -4468,8 +4503,34 @@ class HAREstimator:
                 if dvol_sq_last is not None and rv5_sq_last > 0:
                     diag["vrp_last"] = dvol_sq_last - rv5_sq_last
 
+            # New diagnostic fields for dashboard
+            diag["prediction_target"] = "rv15_sq"
+            diag["ridge_lambda"] = HAR_RIDGE_LAMBDA
+            diag["wls_weight_scheme"] = "1/t"
+            diag["buffer_hours"] = round(n_obs * HAR_OBSERVATION_INTERVAL / 3600, 1)
+            diag["log_preference_active"] = HAR_LOG_PREFERENCE_PCT > 0
+
             result[asset] = diag
         return result
+
+
+def _student_t_e_abs_z(df: float) -> float:
+    """E[|z|] for z ~ Student-t(df). Falls back to Gaussian if df > 30 or invalid."""
+    if df is None or df <= 2.0 or not math.isfinite(df):
+        return EGARCH_E_ABS_Z  # Gaussian fallback
+    if df > 30.0:
+        return EGARCH_E_ABS_Z  # Essentially Gaussian
+    half_df = df / 2.0
+    try:
+        e_abs_z = (math.sqrt(df - 2.0)
+                   * math.exp(math.lgamma(half_df - 0.5) - math.lgamma(half_df))
+                   / math.sqrt(math.pi))
+    except (ValueError, OverflowError):
+        logging.warning("Student-t E[|z|] computation failed for df=%.2f, using Gaussian", df)
+        return EGARCH_E_ABS_Z
+    if not math.isfinite(e_abs_z) or e_abs_z <= 0:
+        return EGARCH_E_ABS_Z
+    return e_abs_z
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -4494,6 +4555,7 @@ class EGARCHEstimator:
         self._log_var: Dict[str, Optional[float]] = {a: None for a in ASSETS}
         self._sigma: Dict[str, Optional[float]] = {a: None for a in ASSETS}
         self._last_refit: float = time.time()  # avoid wasteful first-tick refit
+        self._last_refit_per_asset: Dict[str, float] = {a: time.time() for a in ASSETS}
         self._n_updates: Dict[str, int] = {a: 0 for a in ASSETS}
         self._mle_loglik: Dict[str, Optional[float]] = {a: None for a in ASSETS}
         self._mle_converged: Dict[str, bool] = {a: False for a in ASSETS}
@@ -4544,7 +4606,7 @@ class EGARCHEstimator:
     def recursive_update(self, asset: str, log_return: float) -> Optional[float]:
         """O(1) recursive EGARCH update. Returns new σ or None."""
         with self._lock:
-            params = self._params.get(asset)
+            params = dict(self._params[asset]) if self._params.get(asset) else None
             log_var = self._log_var.get(asset)
         if params is None or log_var is None:
             return None
@@ -4562,7 +4624,10 @@ class EGARCHEstimator:
         z = log_return / sigma
         if not math.isfinite(z):
             return None
-        raw_lv = omega + alpha * (abs(z) - EGARCH_E_ABS_Z) + gamma * z + beta * log_var
+        # Dynamic E[|z|] based on Student-t df (if available)
+        df = params.get("df")
+        e_abs_z = _student_t_e_abs_z(df) if df is not None else EGARCH_E_ABS_Z
+        raw_lv = omega + alpha * (abs(z) - e_abs_z) + gamma * z + beta * log_var
         if not math.isfinite(raw_lv):
             logging.warning("EGARCH %s: raw_lv is NaN/inf (z=%.4f, log_var=%.4f) — skipping update",
                             asset, z, log_var)
@@ -4601,13 +4666,14 @@ class EGARCHEstimator:
         return self._mle_converged.get(asset, False)
 
     def maybe_refit(self):
-        """Check 2h timer, refit each asset via MLE if enough data."""
+        """Per-asset refit timers (SOL/XRP 1h, BTC/ETH 2h)."""
         now = time.time()
-        if now - self._last_refit < EGARCH_REFIT_INTERVAL:
-            return
-        self._last_refit = now
         any_fit = False
         for asset in ASSETS:
+            interval = EGARCH_REFIT_INTERVALS.get(asset, EGARCH_REFIT_INTERVAL)
+            if now - self._last_refit_per_asset.get(asset, 0) < interval:
+                continue
+            self._last_refit_per_asset[asset] = now
             rets = self._returns.get(asset, deque())
             if len(rets) < EGARCH_MIN_RETURNS:
                 logging.info(
@@ -4634,35 +4700,66 @@ class EGARCHEstimator:
         if sample_var <= 0:
             sample_var = 1e-10  # guard against log(0) when all returns are zero
 
-        # Initial guess: previous params or heuristic
+        # Initial guess: previous params or heuristic (5 params: omega, alpha, gamma, beta, df)
         old_params = self._params.get(asset)
         if old_params is not None:
             x0 = [old_params["omega"], old_params["alpha"],
-                   old_params["gamma"], old_params["beta"]]
+                   old_params["gamma"], old_params["beta"],
+                   old_params.get("df", EGARCH_DF_DEFAULT)]
         else:
-            x0 = [math.log(sample_var) * (1 - 0.95), 0.10, 0.0, 0.95]
+            x0 = [math.log(sample_var) * (1 - 0.95), 0.10, 0.0, 0.95, EGARCH_DF_DEFAULT]
 
         bounds = [
             EGARCH_OMEGA_BOUNDS,
             EGARCH_ALPHA_BOUNDS,
             EGARCH_GAMMA_BOUNDS,
             EGARCH_BETA_BOUNDS,
+            EGARCH_DF_BOUNDS,
         ]
 
+        # Try Student-t first, Gaussian fallback
+        df = None
+        distribution = "gaussian"
         try:
             result = minimize(
-                EGARCHEstimator._neg_log_likelihood,
+                EGARCHEstimator._neg_log_likelihood_student_t,
                 x0, args=(returns,),
                 method="L-BFGS-B",
                 bounds=bounds,
                 options={"maxiter": EGARCH_MLE_MAXITER, "ftol": 1e-10},
             )
+            if not result.success or not math.isfinite(result.fun):
+                raise ValueError(f"Student-t failed: success={result.success} fun={result.fun}")
+            omega, alpha, gamma, beta, df = result.x
+            distribution = "student_t"
         except Exception as e:
-            logging.warning("EGARCH refit %s REJECTED: reason=exception %s", asset, e)
-            return False
+            logging.warning("EGARCH refit %s: Student-t failed (%s), trying Gaussian fallback", asset, e)
+            x0_gauss = x0[:4]
+            bounds_gauss = bounds[:4]
+            try:
+                result = minimize(
+                    EGARCHEstimator._neg_log_likelihood_gaussian,
+                    x0_gauss, args=(returns,),
+                    method="L-BFGS-B",
+                    bounds=bounds_gauss,
+                    options={"maxiter": EGARCH_MLE_MAXITER, "ftol": 1e-10},
+                )
+                if not result.success or not math.isfinite(result.fun):
+                    logging.warning("EGARCH refit %s: Gaussian also failed", asset)
+                    return False
+                omega, alpha, gamma, beta = result.x
+                df = None
+                distribution = "gaussian"
+            except Exception as e2:
+                logging.warning("EGARCH refit %s REJECTED: both Student-t and Gaussian failed (%s)", asset, e2)
+                return False
 
-        omega, alpha, gamma, beta = result.x
         converged = result.success
+
+        # NLL validation
+        if not math.isfinite(result.fun):
+            logging.warning("EGARCH refit %s REJECTED: NLL=%s is not finite", asset, result.fun)
+            return False
 
         # Sanity check: unconditional log-var
         if abs(beta) >= 1.0:
@@ -4688,6 +4785,8 @@ class EGARCHEstimator:
 
         # Update params (lock protects concurrent reads from Firebase thread)
         new_params = {"omega": omega, "alpha": alpha, "gamma": gamma, "beta": beta}
+        if df is not None:
+            new_params["df"] = df
         with self._lock:
             self._params[asset] = new_params
             self._mle_loglik[asset] = -result.fun
@@ -4707,18 +4806,71 @@ class EGARCHEstimator:
         else:
             gamma_sign = "near_zero"
 
-        logging.info(
-            "EGARCH refit %s: omega=%.4f alpha=%.4f gamma=%.4f beta=%.4f "
-            "loglik=%.2f uncond_vol=%.8f half_life=%.1fs converged=%s n=%d elapsed_ms=%.1f",
-            asset, omega, alpha, gamma, beta,
-            -result.fun, uncond_vol, half_life, converged, n, elapsed_ms)
+        if df is not None:
+            e_abs_z_val = _student_t_e_abs_z(df)
+            logging.info(
+                "EGARCH refit %s: omega=%.4f alpha=%.4f gamma=%.4f beta=%.4f df=%.2f "
+                "E[|z|]=%.4f dist=%s loglik=%.2f uncond_vol=%.8f half_life=%.1fs converged=%s n=%d elapsed_ms=%.1f",
+                asset, omega, alpha, gamma, beta, df,
+                e_abs_z_val, distribution, -result.fun, uncond_vol, half_life, converged, n, elapsed_ms)
+        else:
+            logging.info(
+                "EGARCH refit %s: omega=%.4f alpha=%.4f gamma=%.4f beta=%.4f "
+                "dist=gaussian loglik=%.2f uncond_vol=%.8f half_life=%.1fs converged=%s n=%d elapsed_ms=%.1f",
+                asset, omega, alpha, gamma, beta,
+                -result.fun, uncond_vol, half_life, converged, n, elapsed_ms)
         logging.info("EGARCH %s gamma sign: %s", asset, gamma_sign)
 
         return True
 
     @staticmethod
-    def _neg_log_likelihood(params, returns) -> float:
-        """Negative log-likelihood for EGARCH(1,1)."""
+    def _neg_log_likelihood_student_t(params, returns) -> float:
+        """Negative log-likelihood for EGARCH(1,1) with Student-t innovations."""
+        omega, alpha, gamma, beta, df = params
+        n = len(returns)
+        if n < 60:
+            return 1e10
+        if df <= 2.0:
+            return 1e10  # Infinite variance — reject
+
+        sample_var = sum(r * r for r in returns[:60]) / 60.0
+        if sample_var <= 0:
+            sample_var = 1e-10
+        log_var = math.log(sample_var)
+
+        # Student-t constants (precompute once per NLL evaluation)
+        half_dfp1 = (df + 1.0) / 2.0
+        half_df = df / 2.0
+        try:
+            log_const = (math.lgamma(half_dfp1) - math.lgamma(half_df)
+                         - 0.5 * math.log(math.pi * (df - 2.0)))
+        except (ValueError, OverflowError):
+            return 1e10
+        e_abs_z = _student_t_e_abs_z(df)
+
+        nll = 0.0
+        for i in range(n):
+            r = returns[i]
+            var = math.exp(log_var)
+            if var <= 0:
+                var = 1e-30
+            # Student-t log-likelihood contribution
+            nll += (-log_const + 0.5 * log_var
+                    + half_dfp1 * math.log(1.0 + r * r / (var * (df - 2.0))))
+
+            # EGARCH recursion with Student-t E[|z|]
+            sigma = math.sqrt(var)
+            if sigma <= 0:
+                sigma = 1e-15
+            z = r / sigma
+            log_var = omega + alpha * (abs(z) - e_abs_z) + gamma * z + beta * log_var
+            log_var = max(EGARCH_LOG_VAR_FLOOR, min(EGARCH_LOG_VAR_CEILING, log_var))
+
+        return nll / n
+
+    @staticmethod
+    def _neg_log_likelihood_gaussian(params, returns) -> float:
+        """Negative log-likelihood for EGARCH(1,1) with Gaussian innovations (fallback)."""
         omega, alpha, gamma, beta = params
         n = len(returns)
         if n < 60:
@@ -4789,6 +4941,12 @@ class EGARCHEstimator:
                         logging.warning("EGARCH returns load failed for %s: %s (starting fresh)", asset, re)
                         self._returns[asset].clear()
             self._last_refit = state.get("last_refit", 0.0)
+            # Restore per-asset refit times (backward compat: migrate from single timestamp)
+            if "last_refit_per_asset" in state:
+                self._last_refit_per_asset = state["last_refit_per_asset"]
+            elif self._last_refit > 0:
+                for a in ASSETS:
+                    self._last_refit_per_asset[a] = self._last_refit
             age = time.time() - self._last_refit if self._last_refit > 0 else float('inf')
             logging.info("EGARCH loaded: %d active, state_age=%.0fs", active_count, age)
             # Log restored return counts
@@ -4802,7 +4960,11 @@ class EGARCHEstimator:
 
     def _save_state(self):
         """Save state and return buffers to JSON file (atomic write)."""
-        state = {"last_refit": self._last_refit}
+        state = {
+            "version": 2,
+            "last_refit": self._last_refit,
+            "last_refit_per_asset": self._last_refit_per_asset,
+        }
         for asset in ASSETS:
             state[asset] = {
                 "params": self._params[asset],
@@ -4862,6 +5024,11 @@ class EGARCHEstimator:
                     diag["unconditional_vol"] = None
                     diag["half_life_seconds"] = None
                 diag["asymmetry_gamma"] = round(params["gamma"], 6)
+                diag["distribution"] = "student_t" if "df" in params else "gaussian"
+                if "df" in params:
+                    diag["student_t_df"] = round(params["df"], 2)
+                    diag["student_t_e_abs_z"] = round(_student_t_e_abs_z(params["df"]), 6)
+                diag["refit_interval_s"] = EGARCH_REFIT_INTERVALS.get(asset, EGARCH_REFIT_INTERVAL)
             else:
                 diag["params"] = None
                 diag["unconditional_vol"] = None
@@ -4895,6 +5062,7 @@ class MincerZarnowitzTracker:
         self._qlike: Dict[str, Optional[float]] = {a: None for a in ASSETS}
         self._last_recompute: Dict[str, float] = {a: 0.0 for a in ASSETS}
         self._egarch_weight: Dict[str, float] = {a: EGARCH_WEIGHT_DEFAULT for a in ASSETS}
+        self._prev_weight: Dict[str, Optional[float]] = {a: None for a in ASSETS}
         self._load_state()
 
     def record(self, asset: str, egarch_var: float, realized_var: float):
@@ -4937,8 +5105,30 @@ class MincerZarnowitzTracker:
 
         # Map R² to weight within asset-specific bounds (BEFORE QLIKE so weight is always set)
         lo, hi = EGARCH_WEIGHT_BOUNDS.get(asset, (0.05, 0.25))
-        w = lo + r_sq * (hi - lo)
-        self._egarch_weight[asset] = round(w, 4)
+        raw_w = lo + r_sq * (hi - lo)
+        w = raw_w
+
+        # EMA smoothing (Stock & Watson 2004): dampens weight oscillation
+        prev_w = self._prev_weight.get(asset)
+        if prev_w is not None:
+            w = MZ_EMA_LAMBDA * prev_w + (1.0 - MZ_EMA_LAMBDA) * w
+        w = round(w, 4)
+        self._prev_weight[asset] = w
+
+        # Equal-weight fallback: if R² too low, EGARCH forecasts are noise
+        if r_sq < MZ_EQUAL_WEIGHT_R2_THRESHOLD:
+            w = round((lo + hi) / 2.0, 4)
+            logging.info("MZ %s: R²=%.4f < %.2f, using equal-weight fallback w=%.4f",
+                         asset, r_sq, MZ_EQUAL_WEIGHT_R2_THRESHOLD, w)
+
+        self._egarch_weight[asset] = w
+
+        logging.info(
+            "MZ %s: R²=%.4f QLIKE=%.4f raw_w=%.4f ema_w=%.4f final_w=%.4f (prev=%.4f, fallback=%s)",
+            asset, r_sq, self._qlike[asset] or 0, round(raw_w, 4), round(self._prev_weight[asset], 4),
+            self._egarch_weight[asset], prev_w or 0,
+            r_sq < MZ_EQUAL_WEIGHT_R2_THRESHOLD,
+        )
 
         # QLIKE for shadow evaluation
         try:
@@ -4960,6 +5150,8 @@ class MincerZarnowitzTracker:
                     self._r_squared[asset] = state["r_squared"][asset]
                 if asset in state.get("weights", {}):
                     self._egarch_weight[asset] = state["weights"][asset]
+                if asset in state.get("prev_weights", {}):
+                    self._prev_weight[asset] = state["prev_weights"][asset]
                 if asset in state.get("pairs", {}):
                     for p in state["pairs"][asset][-MZ_WINDOW:]:
                         self._pairs[asset].append(tuple(p))
@@ -4971,13 +5163,17 @@ class MincerZarnowitzTracker:
     def save_state(self):
         try:
             state = {
+                "version": 1,
                 "r_squared": self._r_squared,
                 "weights": self._egarch_weight,
+                "prev_weights": {a: self._prev_weight[a] for a in ASSETS},
                 "qlike": self._qlike,
                 "pairs": {a: list(self._pairs[a])[-MZ_WINDOW:] for a in ASSETS},
             }
-            with open(EGARCH_BLEND_STATE_PATH, "w") as f:
+            tmp_path = EGARCH_BLEND_STATE_PATH + ".tmp"
+            with open(tmp_path, "w") as f:
                 json.dump(state, f)
+            os.replace(tmp_path, EGARCH_BLEND_STATE_PATH)
         except Exception:
             logging.debug("MZ tracker: save_state failed", exc_info=True)
 
