@@ -35,7 +35,7 @@ SERIES_TICKERS = {
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
 }
-MIN_ENTRY_PRICE = 86              # cents (data: 86-88c bucket is 100% WR; loss zone is 80-84c)
+MIN_ENTRY_PRICE = 87              # cents (bumped from 86; loss zone is 80-84c)
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.50         # max 50% of bankroll at risk per trade (scales with balance)
 MIN_SECONDS_BEFORE_CLOSE = 0
