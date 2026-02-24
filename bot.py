@@ -3960,8 +3960,9 @@ class EGARCHEstimator:
 
     def recursive_update(self, asset: str, log_return: float) -> Optional[float]:
         """O(1) recursive EGARCH update. Returns new σ or None."""
-        params = self._params.get(asset)
-        log_var = self._log_var.get(asset)
+        with self._lock:
+            params = self._params.get(asset)
+            log_var = self._log_var.get(asset)
         if params is None or log_var is None:
             return None
         if len(self._returns.get(asset, [])) < EGARCH_WARMUP_RETURNS:
@@ -3995,14 +3996,14 @@ class EGARCHEstimator:
                 "EGARCH %s: log_var clamped to CEILING (was %.4f) — possible explosion",
                 asset, raw_lv)
 
-        self._log_var[asset] = new_log_var
         new_sigma = math.exp(new_log_var * 0.5)
         if not math.isfinite(new_sigma) or new_sigma <= 0:
-            logging.warning("EGARCH %s: new_sigma invalid (%.6f) — reverting", asset, new_sigma)
-            self._log_var[asset] = log_var  # revert
+            logging.warning("EGARCH %s: new_sigma invalid (%.6f) — skipping", asset, new_sigma)
             return None
-        self._sigma[asset] = new_sigma
-        self._n_updates[asset] = self._n_updates.get(asset, 0) + 1
+        with self._lock:
+            self._log_var[asset] = new_log_var
+            self._sigma[asset] = new_sigma
+            self._n_updates[asset] = self._n_updates.get(asset, 0) + 1
         return new_sigma
 
     def get_sigma(self, asset: str) -> Optional[float]:
@@ -4677,7 +4678,8 @@ class CalibrationEngine:
             result = self._blr_predict(raw_prob)
         else:
             return CalibrationEngine._fallback_calibrate(raw_prob, cap)
-        # Learned method active: uncertainty shrinkage + safety ceiling only (no hard cap)
+        # Learned method active: apply cap, uncertainty shrinkage, safety ceiling
+        result = min(result, cap)
         result = self._apply_uncertainty_shrinkage(result)
         return max(0.001, min(NUMERICAL_SAFETY_CEILING, result))
 
@@ -5322,9 +5324,6 @@ class PositionSizer:
             return result
 
         contracts = min(scaled_contracts, max_by_risk)
-
-        # Enforce minimum 1 when edge exists and risk budget allows
-        contracts = max(contracts, 1)
 
         result["contracts"] = contracts
         result["reason"] = "ok"
