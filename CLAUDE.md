@@ -1,6 +1,6 @@
 # Kalshi Crypto Trading Bot
 
-Cryptocurrency prediction market trading bot for the Kalshi platform.
+Cryptocurrency prediction market trading bot for the Kalshi platform. Trades above/below 15-minute window markets on BTC, ETH, SOL, and XRP.
 
 ## Critical Rules
 
@@ -8,12 +8,47 @@ Cryptocurrency prediction market trading bot for the Kalshi platform.
 - **Never commit `.env` or `*.jsonl` files** — both are gitignored
 - **Always syntax-check before committing:** `python3 -c "import ast; ast.parse(open('bot.py').read())"`
 - **Pushing to main auto-deploys** — GitHub Actions SSHes into the VPS and restarts the service
+- **User prefers data-driven analysis over speculative changes** — do not suggest config changes without backing data
 
 ## Project Structure
 
-- `bot.py` — Main bot entry point (all bot logic lives here)
+- `bot.py` — Main bot entry point (~8300 lines, all bot logic lives here)
+- `firebase_push.py` — Pushes live dashboard snapshots to Firebase
 - `start.sh` — Startup script (activates venv, sources .env, runs bot)
 - `.github/workflows/deploy.yml` — Auto-deploy to VPS on push to main
+
+## Current Bot State
+
+- **OBSERVATION_MODE = True** (line 30) — bot evaluates everything, logs candidates, but places NO orders
+- **Balance:** ~$53 (no change while in observation mode)
+- **Counterfactual performance (24h sim):** 77 trades, 73W/4L, 94.8% WR, +$40.21 taker P&L
+
+## Key Config Values (bot.py)
+
+| Config | Value | Line | Notes |
+|--------|-------|------|-------|
+| OBSERVATION_MODE | True | 30 | No live orders |
+| MIN_ENTRY_PRICE | 86 | 38 | Cents; 86-88c bucket is 100% WR in sim |
+| MAX_ENTRY_PRICE | 99 | 39 | Cents |
+| MIN_EDGE_PCT | 1.0 | 315 | 1 percentage point minimum edge |
+| MAX_SECONDS_BEFORE_CLOSE | 240 | 42 | Start scanning 4 min before window close |
+| ONE_ASSET_PER_WINDOW | False | 43 | Can trade multiple assets per window |
+| SIZING_TIERS | [(0.05,0.75),(0.03,0.35),(0.01,0.20)] | 322 | Edge-based tiered sizing |
+
+## Shadow Mode Features
+
+Features that compute and log but do NOT affect live probability/trading:
+
+| Feature | Constant | Status |
+|---------|----------|--------|
+| EGARCH core vol | EGARCH_SHADOW_MODE = True | Logging, not affecting blended_rv |
+| EGARCH blend | EGARCH_BLEND_SHADOW_MODE = True | Closest to promotion (R² 0.37-0.46) |
+| HAR model | HAR_SHADOW_MODE = True | NOT ready — models rejected (negative coefficients) |
+| Kalshi Order Flow | KALSHI_OFT_SHADOW_MODE = True | New, collecting data, has diagnostic logging |
+
+Promoted features (shadow off, driving live behavior):
+- JUMP_ADAPTIVE (JUMP_ADAPTIVE_SHADOW_MODE = False)
+- RK_ADAPTIVE (RK_ADAPTIVE_SHADOW_MODE = False)
 
 ## Tech Stack
 
@@ -21,6 +56,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform.
 - **Environment:** virtualenv (`venv/`)
 - **Deployment:** DigitalOcean droplet (45.55.181.30), Ubuntu 24.04, runs as `botuser`
 - **Service:** systemd unit `kalshi-bot`
+- **Dashboard:** Firebase Realtime Database (pushed by firebase_push.py)
 
 ## Deployment
 
@@ -36,14 +72,33 @@ Pushing to `main` triggers auto-deploy:
 - **Orderbook:** Returns only bids — best YES ask = `100 - highest_NO_bid`
 - **Order type:** All orders are limit orders (no market orders as of Feb 2026)
 - **Outcome detection:** Use Kalshi settlements API, never z-score heuristics or balance deltas
+- **API tier:** Advanced (30 reads/sec, 30 writes/sec)
+- **Market series:** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M
 
 ## Fee Formula
 
-- **Taker:** `ceil(0.07 × C × P × (1−P))` — ceil on TOTAL, not per contract
-- **Maker:** `ceil(0.0175 × C × P × (1−P))` — ceil on TOTAL, not per contract
+- **Taker:** `ceil(0.07 * C * P * (1-P))` — ceil on TOTAL, not per contract
+- **Maker:** `ceil(0.0175 * C * P * (1-P))` — ceil on TOTAL, not per contract
+
+## Pipeline Funnel
+
+How the scanner filters opportunities (typical distribution):
+1. **low_probability** (~75%) — calibrated prob too low
+2. **price_out_of_range** (~12%) — best ask outside [86, 99]c
+3. **insufficient_edge** (~11%) — net edge after fees < 1%
+4. **candidate** (~0.4%) — passed all filters, would be traded
+5. **observation_trade** — best candidate selected per scan tick (logged, not executed in obs mode)
+
+## Data Storage
+
+- `state.db` — SQLite with settled_trades, rejected_opportunities, evaluated_opportunities
+- `opportunity_journal.jsonl` — filter stage tracking for every market evaluation
+- `scan_journal.jsonl` — per-tick scan summaries (grows fast, ~330MB/day)
+- `rejection_journal.jsonl` — settlement outcomes for rejected opportunities
 
 ## Trading Rules
 
-- **Assets:** BTC, ETH, SOL, XRP — trade only ONE per 15-minute window (whichever has highest edge)
-- **Entry prices:** 85–92¢ target (never below 80¢, endgame at 97–99¢ with tiny positions)
-- **Position size:** 2–5 contracts per trade at current bankroll (~$200)
+- **Assets:** BTC, ETH, SOL, XRP — can trade multiple per 15-minute window
+- **Entry prices:** 86–99c (never below 86c)
+- **Minimum edge:** 1% (after fees)
+- **Position sizing:** Tiered by edge — 75% risk at 5%+ edge, 35% at 3%+, 20% at 1%+
