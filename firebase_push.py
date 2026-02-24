@@ -880,6 +880,9 @@ class FirebasePusher:
             exec_eng["session_ws_fills"] = getattr(ex, "_session_ws_fills", 0)
             exec_eng["session_rest_fills"] = getattr(ex, "_session_rest_fills", 0)
             exec_eng["session_post_only_rejections"] = getattr(ex, "_session_post_only_rejections", 0)
+            exec_eng["session_post_only_degraded"] = getattr(ex, "_session_post_only_degraded_attempts", 0)
+            exec_eng["session_post_only_taker_escalations"] = getattr(ex, "_session_post_only_taker_escalations", 0)
+            exec_eng["session_post_only_taker_fills"] = getattr(ex, "_session_post_only_taker_fills", 0)
 
             # Derived rates
             amend_att = exec_eng["session_amend_attempts"]

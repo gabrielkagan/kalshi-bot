@@ -351,6 +351,11 @@ ESCALATION_WAIT_LONG = 15.0       # maker wait when 60-300s to close
 ESCALATION_WAIT_MEDIUM = 10.0     # maker wait when 30-60s to close
 ESCALATION_WAIT_SHORT = 5.0       # maker wait when <30s to close
 
+# ─── Post-only rejection → taker escalation ────────────────────────────
+POST_ONLY_MAX_SAME_PRICE = 2          # Tier 1: max attempts at same maker price before degrading
+POST_ONLY_DEGRADED_EXTRA_OFFSET = 1   # Tier 2: extra ¢ offset for degraded maker attempt
+POST_ONLY_REJECTION_EXPIRY = 30.0     # Seconds before rejection count resets (stale data guard)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  Fee Helpers
@@ -7217,10 +7222,37 @@ class OrderExecutor:
         self._session_ws_fills: int = 0
         self._session_rest_fills: int = 0
         self._session_post_only_rejections: int = 0
+        # Post-only rejection → taker escalation tracking
+        self._post_only_rejections: Dict[str, Tuple[int, float]] = {}  # ticker → (count, first_rejection_ts)
+        self._session_post_only_degraded_attempts: int = 0
+        self._session_post_only_taker_escalations: int = 0
+        self._session_post_only_taker_fills: int = 0
 
     @property
     def has_active_order(self) -> bool:
         return self._active_order is not None
+
+    # ── Post-only rejection tracking ────────────────────────────────────
+
+    def _get_post_only_rejection_count(self, ticker: str) -> int:
+        """Get active rejection count for ticker. Returns 0 if expired or missing."""
+        entry = self._post_only_rejections.get(ticker)
+        if entry is None:
+            return 0
+        count, first_ts = entry
+        if time.time() - first_ts > POST_ONLY_REJECTION_EXPIRY:
+            self._post_only_rejections.pop(ticker, None)
+            return 0
+        return count
+
+    def _record_post_only_rejection(self, ticker: str):
+        """Increment rejection count for ticker. Starts fresh if expired."""
+        now = time.time()
+        entry = self._post_only_rejections.get(ticker)
+        if entry is None or (now - entry[1] > POST_ONLY_REJECTION_EXPIRY):
+            self._post_only_rejections[ticker] = (1, now)
+        else:
+            self._post_only_rejections[ticker] = (entry[0] + 1, entry[1])
 
     # ── Public interface ──────────────────────────────────────────────────
 
@@ -7311,6 +7343,56 @@ class OrderExecutor:
                 pass
             return None
 
+        # ── Three-tier post_only rejection escalation ──────────────
+        ticker = candidate["ticker"]
+        rejections = self._get_post_only_rejection_count(ticker)
+
+        # Tier 3: Taker escalation (2 same-price + 1 degraded all failed)
+        if rejections >= POST_ONLY_MAX_SAME_PRICE + 1:  # 3+
+            count = candidate["position_size"]
+            price = candidate["best_yes_ask"]
+            cal_prob = candidate["calibrated_prob"]
+
+            if count <= 0:
+                logging.warning("post_only_taker_SKIPPED: %s position_size=%d", ticker, count)
+                self._post_only_rejections.pop(ticker, None)
+                return None
+
+            taker_fee = calculate_taker_fee(count, price)
+            net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+
+            if net_edge < MIN_EDGE_PCT / 100.0:
+                logging.info(
+                    "post_only_taker_SKIPPED: %s net_edge=%.4f < min=%.4f "
+                    "taker_fee=%d¢ count=%d price=%d¢",
+                    ticker, net_edge, MIN_EDGE_PCT / 100.0, taker_fee, count, price)
+                self._post_only_rejections.pop(ticker, None)
+                return None
+
+            logging.info(
+                "post_only_taker_ESCALATION: %s %dx @ %d¢ "
+                "rejections=%d net_edge=%.4f cal_prob=%.4f taker_fee=%d¢",
+                ticker, count, price, rejections, net_edge, cal_prob, taker_fee)
+            self._session_post_only_taker_escalations += 1
+            result = self._submit_taker(candidate)
+            if result is not None:
+                self._post_only_rejections.pop(ticker, None)
+                self._session_post_only_taker_fills += 1
+                logging.info("post_only_taker_FILLED: %s", ticker)
+            else:
+                logging.warning("post_only_taker_UNFILLED: %s (will retry taker next tick)", ticker)
+            return result
+
+        # Tier 2: Degraded maker (1¢ worse, one attempt)
+        if rejections == POST_ONLY_MAX_SAME_PRICE:  # 2
+            logging.info(
+                "post_only_degraded_maker: %s rejections=%d, trying %d¢ worse",
+                ticker, rejections, POST_ONLY_DEGRADED_EXTRA_OFFSET)
+            self._session_post_only_degraded_attempts += 1
+            self._submit_maker(candidate, degraded=True)
+            return None
+
+        # Tier 1: Normal maker (attempt 1 or 2)
         self._submit_maker(candidate)
         return None
 
@@ -7729,11 +7811,12 @@ class OrderExecutor:
 
     # ── Maker ─────────────────────────────────────────────────────────────
 
-    def _submit_maker(self, candidate: Dict, aggressive: bool = False):
+    def _submit_maker(self, candidate: Dict, aggressive: bool = False, degraded: bool = False):
         """Submit maker limit order below fair value.
 
         Patient: 1-2¢ below fair value (wider spread).
         Aggressive: always 1¢ below (tighter, more likely to fill).
+        Degraded: extra offset after post_only rejections (Tier 2).
         """
         ticker = candidate["ticker"]
         count = candidate["position_size"]
@@ -7746,6 +7829,8 @@ class OrderExecutor:
             # 1¢ offset for prices ≥ 90¢, else 2¢
             offset = MAKER_PRICE_OFFSET if fair_value >= 90 else MAKER_PRICE_OFFSET + 1
         price = fair_value - offset
+        if degraded:
+            price -= POST_ONLY_DEGRADED_EXTRA_OFFSET
         if price < MIN_ENTRY_PRICE:
             return
 
@@ -7767,7 +7852,14 @@ class OrderExecutor:
 
         if resp is None:
             self._state.mark_order_status(client_oid, "api_error")
-            logging.warning(f"Maker order rejected (post_only or API error): {ticker}")
+            self._record_post_only_rejection(ticker)
+            rej_count = self._get_post_only_rejection_count(ticker)
+            tier = "degraded" if degraded else "normal"
+            logging.warning(
+                "Maker order rejected (post_only): %s price=%d¢ tier=%s "
+                "rej_count=%d/%d fair=%d¢",
+                ticker, price, tier, rej_count,
+                POST_ONLY_MAX_SAME_PRICE + 1, fair_value)
             self._session_post_only_rejections += 1
             return
 
@@ -7792,6 +7884,9 @@ class OrderExecutor:
         }
         self._last_poll = time.time()
 
+        # Clear rejection tracker on successful maker submission
+        self._post_only_rejections.pop(ticker, None)
+
         self._logger.log_order({
             "action": "maker_submitted",
             "ticker": ticker,
@@ -7801,9 +7896,10 @@ class OrderExecutor:
             "count": count,
             "fair_value": fair_value,
         })
+        tier = "degraded" if degraded else ("aggressive" if aggressive else "patient")
         logging.info(
             f"Maker order: {ticker} {count}x @ {price}¢ "
-            f"(fair={fair_value}¢)"
+            f"(fair={fair_value}¢, tier={tier})"
         )
 
     # ── Taker ─────────────────────────────────────────────────────────────
