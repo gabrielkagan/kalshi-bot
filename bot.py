@@ -1511,22 +1511,49 @@ class StateManager:
                                   edge=None, kelly_f=None,
                                   is_taker=None, fill_source=None,
                                   execution_method=None):
-        """Record a new open position from a fill."""
+        """Record or accumulate a position from a fill.
+
+        If a position already exists for this ticker, accumulate:
+        weighted-average price and sum of contracts/cost.
+        """
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        cost = count * price_cents
-        self.conn.execute("""
-            INSERT OR REPLACE INTO positions
-                (ticker, event_ticker, asset, side, count,
-                 avg_price_cents, total_cost_cents, opened_at, updated_at, status,
-                 strategy, seconds_to_close, fill_latency_seconds,
-                 vol_regime, calibrated_prob, edge, kelly_f,
-                 is_taker, fill_source, execution_method)
-            VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?)
-        """, (ticker, event_ticker, asset, side, count,
-              price_cents, cost, now, now,
-              strategy, seconds_to_close, fill_latency,
-              vol_regime, calibrated_prob, edge, kelly_f,
-              1 if is_taker else 0, fill_source, execution_method))
+        fill_cost = count * price_cents
+
+        existing = self.conn.execute(
+            "SELECT count, avg_price_cents, total_cost_cents, opened_at "
+            "FROM positions WHERE ticker=? AND status='open'", (ticker,)
+        ).fetchone()
+
+        if existing:
+            old_count = existing[0]
+            old_cost = existing[2]
+            new_count = old_count + count
+            new_cost = old_cost + fill_cost
+            new_avg = round(new_cost / new_count) if new_count else price_cents
+            opened_at = existing[3]
+            self.conn.execute("""
+                UPDATE positions
+                SET count=?, avg_price_cents=?, total_cost_cents=?,
+                    updated_at=?, is_taker=?, fill_source=?, execution_method=?
+                WHERE ticker=? AND status='open'
+            """, (new_count, new_avg, new_cost, now,
+                  1 if is_taker else 0, fill_source, execution_method,
+                  ticker))
+        else:
+            opened_at = now
+            self.conn.execute("""
+                INSERT OR REPLACE INTO positions
+                    (ticker, event_ticker, asset, side, count,
+                     avg_price_cents, total_cost_cents, opened_at, updated_at, status,
+                     strategy, seconds_to_close, fill_latency_seconds,
+                     vol_regime, calibrated_prob, edge, kelly_f,
+                     is_taker, fill_source, execution_method)
+                VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?)
+            """, (ticker, event_ticker, asset, side, count,
+                  price_cents, fill_cost, now, now,
+                  strategy, seconds_to_close, fill_latency,
+                  vol_regime, calibrated_prob, edge, kelly_f,
+                  1 if is_taker else 0, fill_source, execution_method))
         self.conn.commit()
 
     def update_garch_params(self, asset: str, omega: float, alpha: float,
