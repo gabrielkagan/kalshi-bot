@@ -216,6 +216,23 @@ OFA_EXTREME_FUNDING_REDUCE = -0.015       # -1.5pp for extreme funding
 OFA_ELEVATED_FUNDING_REDUCE = -0.005      # -0.5pp for elevated funding
 OFA_MAX_ADJUSTMENT = 0.03                 # cap total at +/-3pp
 
+# ─── Kalshi Orderbook Flow Tracking ──────────────────────────────────────
+KALSHI_OFT_ENABLED = True
+KALSHI_OFT_SHADOW_MODE = True          # True = compute & log, don't affect prob_adjustment
+KALSHI_OFT_BUFFER_SIZE = 60            # 60 snapshots × ~1s = ~1 minute history per ticker
+KALSHI_OFT_MIN_SNAPSHOTS = 5           # Need ≥5 snapshots before computing signals
+KALSHI_OFT_STALE_SECONDS = 120.0       # Evict tickers inactive for 2 minutes
+KALSHI_OFT_IMBALANCE_STRONG = 0.7      # bid_qty / total_qty ≥ 0.7 = strong buy pressure
+KALSHI_OFT_IMBALANCE_WEAK = 0.3        # bid_qty / total_qty ≤ 0.3 = strong sell pressure
+KALSHI_OFT_DEPTH_DRAIN_PCT = -0.5      # Depth shrinking >50% over window = drain signal
+KALSHI_OFT_LOG_INTERVAL = 300.0        # Log OFT diagnostics every 5 min
+
+# Kalshi OFT probability adjustments (shadow mode initially)
+OFA_KALSHI_IMBALANCE_BOOST = 0.01      # +1pp for strong buy imbalance
+OFA_KALSHI_IMBALANCE_REDUCE = -0.01    # -1pp for strong sell imbalance
+OFA_KALSHI_DEPTH_DRAIN_BOOST = 0.005   # +0.5pp when depth draining (convergence signal)
+OFA_KALSHI_CONVERGENCE_BOOST = 0.005   # +0.5pp for rapid ask convergence (>0.5¢/s)
+
 # ─── Probability Engine ──────────────────────────────────────────────────────
 SECONDS_PER_YEAR = 365.25 * 24 * 3600  # crypto trades 24/7
 DVOL_ANNUALIZED_TO_5S = 1.0 / math.sqrt(SECONDS_PER_YEAR / VOL_RETURN_INTERVAL)
@@ -2142,11 +2159,12 @@ class CoinGlassFetcher:
 class OrderFlowEngine:
     """Aggregates cross-exchange and derivatives signals into a probability adjustment."""
 
-    def __init__(self, cross_feed=None, coinglass=None):
+    def __init__(self, cross_feed=None, coinglass=None, kalshi_oft=None):
         self._cross = cross_feed
         self._coinglass = coinglass
+        self._kalshi_oft = kalshi_oft
 
-    def get_signals(self, asset: str) -> Dict:
+    def get_signals(self, asset: str, **kwargs) -> Dict:
         """Compute order flow adjustment for the given asset.
 
         Returns:
@@ -2217,11 +2235,25 @@ class OrderFlowEngine:
             except Exception:
                 logging.debug("CoinGlassFetcher.get_funding_rate failed", exc_info=True)
 
-        # 3. Sum and clamp
+        # 3. Kalshi orderbook flow
+        kalshi_flow = {}
+        if self._kalshi_oft is not None:
+            try:
+                ticker = kwargs.get("ticker")
+                if ticker:
+                    koft = self._kalshi_oft.get_signals(ticker)
+                    if koft is not None:
+                        kalshi_flow = koft
+                        if not KALSHI_OFT_SHADOW_MODE and koft["prob_adjustment"] != 0:
+                            adjustments.append(("kalshi_oft", koft["prob_adjustment"]))
+            except Exception:
+                logging.debug("KalshiOFT.get_signals failed", exc_info=True)
+
+        # 4. Sum and clamp
         total = sum(v for _, v in adjustments)
         total = max(-OFA_MAX_ADJUSTMENT, min(OFA_MAX_ADJUSTMENT, total))
 
-        # 4. Confidence
+        # 5. Confidence
         abs_total = abs(total)
         if abs_total >= 0.015:
             confidence = "high"
@@ -2238,11 +2270,152 @@ class OrderFlowEngine:
             "signals": {
                 "cross_exchange": cross_exchange,
                 "funding": funding_info,
+                "kalshi_orderbook": kalshi_flow,
             },
             "adjustments_applied": [
                 f"{name}: {val:+.3f}" for name, val in adjustments
             ],
         }
+
+
+class KalshiOrderFlowTracker:
+    """Tracks Kalshi orderbook snapshots over time for flow signals.
+
+    Records full depth-5 snapshots from the scanner's existing orderbook
+    fetches (no additional API calls). Computes:
+    - Bid/ask imbalance ratio (YES depth vs total)
+    - Depth velocity (total depth change rate)
+    - Spread dynamics (bid-ask spread trend)
+    - Ask convergence velocity (cents/sec)
+    """
+
+    def __init__(self):
+        self._snapshots: Dict[str, deque] = {}
+        self._last_seen: Dict[str, float] = {}
+        self._last_log: Dict[str, float] = {}
+
+    def record_snapshot(self, ticker: str, ob_data: Dict, best_ask: int):
+        """Record orderbook snapshot. Called from scanner after each OB fetch.
+
+        ob_data format: {"no": [[price_cents, qty], ...], "yes": [[price_cents, qty], ...]}
+        """
+        now = time.time()
+        if ticker not in self._snapshots:
+            self._snapshots[ticker] = deque(maxlen=KALSHI_OFT_BUFFER_SIZE)
+
+        # Sum depth per side
+        yes_total_qty = 0
+        no_total_qty = 0
+        best_yes_bid_price = 0
+
+        for entry in (ob_data.get("yes") or []):
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                price, qty = int(entry[0]), int(entry[1])
+                yes_total_qty += qty
+                if price > best_yes_bid_price:
+                    best_yes_bid_price = price
+
+        for entry in (ob_data.get("no") or []):
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                no_total_qty += int(entry[1])
+
+        spread = (best_ask - best_yes_bid_price) if best_yes_bid_price > 0 else 99
+
+        self._snapshots[ticker].append({
+            "ts": now,
+            "best_ask": best_ask,
+            "best_yes_bid": best_yes_bid_price,
+            "yes_total_qty": yes_total_qty,
+            "no_total_qty": no_total_qty,
+            "total_depth": yes_total_qty + no_total_qty,
+            "spread": spread,
+        })
+        self._last_seen[ticker] = now
+
+    def get_signals(self, ticker: str) -> Optional[Dict]:
+        """Compute order flow signals from snapshot history. Returns None if insufficient data."""
+        snaps = self._snapshots.get(ticker)
+        if not snaps or len(snaps) < KALSHI_OFT_MIN_SNAPSHOTS:
+            return None
+
+        snap_list = list(snaps)
+        latest = snap_list[-1]
+        earliest = snap_list[0]
+        time_span = latest["ts"] - earliest["ts"]
+        if time_span <= 0:
+            return None
+
+        # 1. Imbalance: YES bids / total depth
+        total_qty = latest["yes_total_qty"] + latest["no_total_qty"]
+        imbalance = latest["yes_total_qty"] / total_qty if total_qty > 0 else 0.5
+
+        if imbalance >= KALSHI_OFT_IMBALANCE_STRONG:
+            imbalance_level = "strong_buy"
+        elif imbalance <= KALSHI_OFT_IMBALANCE_WEAK:
+            imbalance_level = "strong_sell"
+        else:
+            imbalance_level = "neutral"
+
+        # 2. Depth velocity
+        depth_velocity = (latest["total_depth"] - earliest["total_depth"]) / time_span
+        depth_pct_change = ((latest["total_depth"] - earliest["total_depth"])
+                           / earliest["total_depth"]) if earliest["total_depth"] > 0 else 0.0
+        depth_drain = depth_pct_change < KALSHI_OFT_DEPTH_DRAIN_PCT
+
+        # 3. Spread trend
+        spread_trend = (latest["spread"] - earliest["spread"]) / time_span
+
+        # 4. Ask velocity
+        ask_velocity = (latest["best_ask"] - earliest["best_ask"]) / time_span
+
+        # 5. Prob adjustment (shadow or live)
+        adjustments = []
+        if imbalance_level == "strong_buy":
+            adjustments.append(("kalshi_imbalance_buy", OFA_KALSHI_IMBALANCE_BOOST))
+        elif imbalance_level == "strong_sell":
+            adjustments.append(("kalshi_imbalance_sell", OFA_KALSHI_IMBALANCE_REDUCE))
+        if depth_drain and ask_velocity > 0:
+            adjustments.append(("kalshi_depth_drain", OFA_KALSHI_DEPTH_DRAIN_BOOST))
+        if ask_velocity > 0.5:
+            adjustments.append(("kalshi_convergence", OFA_KALSHI_CONVERGENCE_BOOST))
+
+        total_adj = max(-0.02, min(0.02, sum(v for _, v in adjustments)))
+
+        # Confidence
+        n_snaps = len(snap_list)
+        if n_snaps >= 30 and total_qty >= 20:
+            confidence = "high"
+        elif n_snaps >= 15 or total_qty >= 10:
+            confidence = "moderate"
+        else:
+            confidence = "low"
+
+        return {
+            "imbalance_ratio": round(imbalance, 4),
+            "imbalance_level": imbalance_level,
+            "depth_velocity": round(depth_velocity, 2),
+            "depth_drain": depth_drain,
+            "depth_pct_change": round(depth_pct_change, 4),
+            "spread_current": latest["spread"],
+            "spread_trend": round(spread_trend, 4),
+            "ask_velocity": round(ask_velocity, 4),
+            "prob_adjustment": round(total_adj, 6),
+            "adjustments_applied": [f"{n}: {v:+.3f}" for n, v in adjustments],
+            "n_snapshots": n_snaps,
+            "confidence": confidence,
+        }
+
+    def cleanup_stale(self, active_tickers: Set[str]):
+        """Evict tickers no longer in active windows."""
+        now = time.time()
+        stale = [t for t, ts in self._last_seen.items()
+                 if now - ts > KALSHI_OFT_STALE_SECONDS or t not in active_tickers]
+        for t in stale:
+            self._snapshots.pop(t, None)
+            self._last_seen.pop(t, None)
+
+    def get_tracked_count(self) -> int:
+        return len(self._snapshots)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -5356,7 +5529,8 @@ class OpportunityScanner:
 
     def __init__(self, client: KalshiClient, state: StateManager,
                  feed: CoinbaseFeed, vol: VolatilityEngine, logger: Logger,
-                 sizer: PositionSizer, order_flow: Optional[OrderFlowEngine] = None):
+                 sizer: PositionSizer, order_flow: Optional[OrderFlowEngine] = None,
+                 kalshi_oft: Optional[KalshiOrderFlowTracker] = None):
         self._client = client
         self._state = state
         self._feed = feed
@@ -5364,6 +5538,7 @@ class OpportunityScanner:
         self._logger = logger
         self._sizer = sizer
         self._order_flow = order_flow
+        self._kalshi_oft = kalshi_oft
         # Orderbook cache: ticker -> (data, fetch_time)
         self._ob_cache: Dict[str, Tuple[Optional[Dict], float]] = {}
         # Balance cache: (balance_cents, fetch_time)
@@ -5406,6 +5581,11 @@ class OpportunityScanner:
         self._eval_opp_seen = {
             (tk, stage) for tk, stage in self._eval_opp_seen if tk in active_tickers
         }
+        if self._kalshi_oft is not None:
+            try:
+                self._kalshi_oft.cleanup_stale(active_tickers)
+            except Exception:
+                pass
         scan_stats: Dict[str, Dict[str, int]] = {
             a: {"evaluated": 0, "low_prob": 0, "no_orderbook": 0, "no_best_ask": 0,
                 "price_out_of_range": 0, "insufficient_edge": 0, "zero_sizing": 0,
@@ -5620,6 +5800,13 @@ class OpportunityScanner:
                 ask_depth = OrderExecutor._best_ask_depth(ob_data)
                 total_depth = OrderExecutor._total_ob_depth(ob_data)
 
+                # Record orderbook snapshot for flow tracking
+                try:
+                    if self._kalshi_oft is not None and ob_data:
+                        self._kalshi_oft.record_snapshot(ticker, ob_data, best_ask)
+                except Exception:
+                    pass
+
                 # Log price snapshot for all markets with orderbook data
                 try:
                     self._logger.log_scan({
@@ -5730,7 +5917,7 @@ class OpportunityScanner:
                 ofa_adjustment = 0.0
                 if self._order_flow is not None:
                     try:
-                        ofa_signals = self._order_flow.get_signals(asset)
+                        ofa_signals = self._order_flow.get_signals(asset, ticker=ticker)
                         ofa_adjustment = ofa_signals["prob_adjustment"]
                     except Exception:
                         logging.debug("OrderFlowEngine.get_signals failed", exc_info=True)
@@ -6068,6 +6255,7 @@ class OpportunityScanner:
                     "calibration_method": calibration_method,
                     "old_system_prob": round(_old_system_prob, 6),
                     "fee_adjusted_edge": round(fee_adjusted_edge, 6),
+                    "kalshi_oft_signals": (ofa_signals or {}).get("signals", {}).get("kalshi_orderbook", {}),
                 })
 
                 # Respect per-tick orderbook fetch cap
@@ -7566,12 +7754,15 @@ class MainLoop:
         _TELEGRAM = self.telegram
         self.cross_feed = CrossExchangeFeed(self.feed) if CROSS_EXCHANGE_ENABLED else None
         self.coinglass = CoinGlassFetcher()
+        self.kalshi_oft = KalshiOrderFlowTracker() if KALSHI_OFT_ENABLED else None
         self.order_flow = OrderFlowEngine(
             cross_feed=self.cross_feed, coinglass=self.coinglass,
+            kalshi_oft=self.kalshi_oft,
         )
         self.scanner = OpportunityScanner(
             self.client, self.state, self.feed, self.vol, self.logger,
             self.sizer, order_flow=self.order_flow,
+            kalshi_oft=self.kalshi_oft,
         )
         self.executor = OrderExecutor(self.client, self.state, self.logger, main_loop=self)
         self.tracker = SettlementTracker(self.client, self.state, self.logger)

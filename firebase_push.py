@@ -830,6 +830,18 @@ class FirebasePusher:
         except Exception:
             snap["ask_distribution"] = None
 
+        # ── Kalshi order flow tracking ────────────────────────────────
+        try:
+            koft = getattr(self._ml, "kalshi_oft", None)
+            if koft:
+                import bot as _bot_mod
+                snap["kalshi_order_flow"] = {
+                    "shadow_mode": getattr(_bot_mod, "KALSHI_OFT_SHADOW_MODE", True),
+                    "tracked_tickers": koft.get_tracked_count(),
+                }
+        except Exception:
+            logging.debug("Firebase: kalshi_oft build failed", exc_info=True)
+
         return snap
 
     def _push(self, snapshot: Dict[str, Any]):
