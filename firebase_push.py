@@ -851,9 +851,9 @@ class FirebasePusher:
             if kf:
                 exec_eng["kalshi_ws_connected"] = kf.is_connected
                 exec_eng["kalshi_ws_subscribed_tickers"] = (
-                    len(kf._subscribed_tickers) if hasattr(kf, '_subscribed_tickers') else 0)
+                    kf.get_subscribed_count() if hasattr(kf, 'get_subscribed_count') else 0)
                 exec_eng["kalshi_ws_orderbooks_cached"] = (
-                    len(kf._orderbooks) if hasattr(kf, '_orderbooks') else 0)
+                    kf.get_cached_ob_count() if hasattr(kf, 'get_cached_ob_count') else 0)
             else:
                 exec_eng["kalshi_ws_connected"] = False
 

@@ -1781,7 +1781,16 @@ class KalshiFeed:
 
     @property
     def is_connected(self) -> bool:
-        return self._connected
+        with self._lock:
+            return self._connected
+
+    def get_subscribed_count(self) -> int:
+        with self._lock:
+            return len(self._subscribed_tickers)
+
+    def get_cached_ob_count(self) -> int:
+        with self._lock:
+            return len(self._orderbooks)
 
     # ── Auth ───────────────────────────────────────────────────────────────
 
@@ -1832,7 +1841,8 @@ class KalshiFeed:
                     ping_timeout=10,
                 ) as ws:
                     self._ws = ws
-                    self._connected = True
+                    with self._lock:
+                        self._connected = True
                     backoff = 1.0
                     logging.info(f"kalshi_ws_connected: url={KALSHI_WS_URL}")
 
@@ -1846,8 +1856,9 @@ class KalshiFeed:
 
                     # Re-subscribe to any tickers that were active before reconnect
                     with self._lock:
-                        for ticker in self._subscribed_tickers:
-                            await self._send_ob_subscribe(ws, ticker)
+                        resub_tickers = list(self._subscribed_tickers)
+                    for ticker in resub_tickers:
+                        await self._send_ob_subscribe(ws, ticker)
 
                     # Message loop with periodic subscribe/unsubscribe processing
                     async for raw in ws:
@@ -1860,7 +1871,8 @@ class KalshiFeed:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self._connected = False
+                with self._lock:
+                    self._connected = False
                 self._ws = None
                 jitter = backoff * random.uniform(0, 0.25)
                 wait = backoff + jitter
@@ -1876,7 +1888,8 @@ class KalshiFeed:
                     pass
                 backoff = min(backoff * 2, max_backoff)
 
-        self._connected = False
+        with self._lock:
+            self._connected = False
         self._ws = None
         logging.info("Kalshi feed stopped")
 
@@ -7135,14 +7148,15 @@ class OrderExecutor:
             except Exception:
                 pass  # Non-critical, don't disrupt flow
 
-        # 3. Escalation: maker waited long enough?
-        escalation_wait = self._escalation_wait(remaining)
-        # Queue-aware: escalate earlier if deep in queue and time is short
-        queue_pos = order.get("queue_position")
-        if queue_pos is not None and queue_pos > 20 and remaining < 60:
-            escalation_wait = min(escalation_wait, 5.0)
-        if elapsed >= escalation_wait:
-            return self._escalate_to_taker(order, remaining)
+        # 3. Escalation: maker waited long enough? (skip if already escalated via amend)
+        if not order.get("escalated"):
+            escalation_wait = self._escalation_wait(remaining)
+            # Queue-aware: escalate earlier if deep in queue and time is short
+            queue_pos = order.get("queue_position")
+            if queue_pos is not None and queue_pos > 20 and remaining < 60:
+                escalation_wait = min(escalation_wait, 5.0)
+            if elapsed >= escalation_wait:
+                return self._escalate_to_taker(order, remaining)
 
         # 4. Hard timeout fallback
         if elapsed >= MAKER_TIMEOUT_SECONDS:
@@ -7445,6 +7459,7 @@ class OrderExecutor:
                 # Order is now crossing the spread — check for fill
                 order["price_cents"] = best_ask
                 order["is_taker"] = True
+                order["escalated"] = True
                 order["execution_method"] = "amend_to_taker"
                 time.sleep(0.3)
                 fill = self._check_for_fill(order)
