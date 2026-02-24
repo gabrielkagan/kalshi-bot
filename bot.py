@@ -2938,6 +2938,7 @@ class VolatilityEngine:
         # Step 3c: EGARCH-RV variance-space blend
         egarch_blend_weight = 0.0
         egarch_blend_var = None
+        egarch_blend_sigma = rv_blended  # safe default if blend not computed
         try:
             if (egarch_sigma is not None and egarch_sigma > 0
                     and rv_blended > 0 and self._mz is not None):
@@ -3965,10 +3966,16 @@ class EGARCHEstimator:
         beta = params["beta"]
 
         sigma = math.exp(log_var * 0.5)
-        if sigma <= 0:
+        if sigma <= 0 or not math.isfinite(sigma):
             return None
         z = log_return / sigma
+        if not math.isfinite(z):
+            return None
         raw_lv = omega + alpha * (abs(z) - EGARCH_E_ABS_Z) + gamma * z + beta * log_var
+        if not math.isfinite(raw_lv):
+            logging.warning("EGARCH %s: raw_lv is NaN/inf (z=%.4f, log_var=%.4f) — skipping update",
+                            asset, z, log_var)
+            return None
         new_log_var = max(EGARCH_LOG_VAR_FLOOR, min(EGARCH_LOG_VAR_CEILING, raw_lv))
 
         # Anomaly logging
@@ -3983,6 +3990,10 @@ class EGARCHEstimator:
 
         self._log_var[asset] = new_log_var
         new_sigma = math.exp(new_log_var * 0.5)
+        if not math.isfinite(new_sigma) or new_sigma <= 0:
+            logging.warning("EGARCH %s: new_sigma invalid (%.6f) — reverting", asset, new_sigma)
+            self._log_var[asset] = log_var  # revert
+            return None
         self._sigma[asset] = new_sigma
         self._n_updates[asset] = self._n_updates.get(asset, 0) + 1
         return new_sigma
@@ -4028,6 +4039,8 @@ class EGARCHEstimator:
         t0 = time.time()
         n = len(returns)
         sample_var = sum(r * r for r in returns) / n
+        if sample_var <= 0:
+            sample_var = 1e-10  # guard against log(0) when all returns are zero
 
         # Initial guess: previous params or heuristic
         old_params = self._params.get(asset)
