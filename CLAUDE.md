@@ -19,21 +19,23 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 
 ## Current Bot State
 
-- **OBSERVATION_MODE = True** (line 30) — bot evaluates everything, logs candidates, but places NO orders
-- **Balance:** ~$53 (no change while in observation mode)
-- **Counterfactual performance (24h sim):** 77 trades, 73W/4L, 94.8% WR, +$40.21 taker P&L
+- **OBSERVATION_MODE = False** (line 30) — LIVE TRADING with real money
+- **Balance:** ~$53
+- **MAX_CONTRACTS_LIMIT = 10** — hard cap per trade during test phase
+- **Counterfactual performance (24h sim):** 82 trades, 75W/7L, 91.5% WR, +$42.27
 
 ## Key Config Values (bot.py)
 
 | Config | Value | Line | Notes |
 |--------|-------|------|-------|
-| OBSERVATION_MODE | True | 30 | No live orders |
+| OBSERVATION_MODE | False | 30 | LIVE trading |
+| MAX_CONTRACTS_LIMIT | 10 | 41 | Hard cap per trade (test phase) |
 | MIN_ENTRY_PRICE | 86 | 38 | Cents; 86-88c bucket is 100% WR in sim |
 | MAX_ENTRY_PRICE | 99 | 39 | Cents |
-| MIN_EDGE_PCT | 1.0 | 315 | 1 percentage point minimum edge |
-| MAX_SECONDS_BEFORE_CLOSE | 240 | 42 | Start scanning 4 min before window close |
-| ONE_ASSET_PER_WINDOW | False | 43 | Can trade multiple assets per window |
-| SIZING_TIERS | [(0.05,0.75),(0.03,0.35),(0.01,0.20)] | 322 | Edge-based tiered sizing |
+| MIN_EDGE_PCT | 1.5 | 317 | 1.5 percentage point minimum edge (conservative) |
+| MAX_SECONDS_BEFORE_CLOSE | 240 | 43 | Start scanning 4 min before window close |
+| ONE_ASSET_PER_WINDOW | False | 44 | Can trade multiple assets per window |
+| SIZING_TIERS | [(0.05,0.75),(0.03,0.35),(0.015,0.20)] | 323 | Edge-based tiered sizing |
 
 ## Shadow Mode Features
 

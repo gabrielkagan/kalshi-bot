@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 
 # ─── Trading Configuration ───────────────────────────────────────────────────
-OBSERVATION_MODE = True            # True = evaluate & log everything but place no orders
+OBSERVATION_MODE = False           # False = LIVE TRADING with real money
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 SERIES_TICKERS = {
     "BTC": "KXBTC15M",
@@ -38,6 +38,7 @@ SERIES_TICKERS = {
 MIN_ENTRY_PRICE = 86              # cents (data: 86-88c bucket is 100% WR; loss zone is 80-84c)
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.50         # max 50% of bankroll at risk per trade (scales with balance)
+MAX_CONTRACTS_LIMIT = 10          # Conservative test phase — hard cap on contracts per trade
 MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 240    # start scanning 4 min before close (data: 180-240s is 9W/1L; loss at 243s stays excluded)
 ONE_ASSET_PER_WINDOW = False
@@ -313,7 +314,7 @@ _CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
 _TELEGRAM: Optional["TelegramNotifier"] = None
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
-MIN_EDGE_PCT = 1.0                # model prob must exceed market by ≥1.0 pp (data: 1% edge trades are 94.8% WR over 24h sim)
+MIN_EDGE_PCT = 1.5                # model prob must exceed market by ≥1.5 pp (conservative for live testing phase)
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
 BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
@@ -323,7 +324,7 @@ BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
 SIZING_TIERS = [                  # (min_edge, risk_fraction)
     (0.05, 0.75),                 # edge ≥ 5%  → risk 75% of bankroll
     (0.03, 0.35),                 # edge ≥ 3%  → risk 35% of bankroll
-    (0.01, 0.20),                 # edge ≥ 1.0% → risk 20% of bankroll
+    (0.015, 0.20),                # edge ≥ 1.5% → risk 20% of bankroll
 ]
 DRAWDOWN_HALF_THRESHOLD = 0.90    # below 90% of starting balance → halve size
 DRAWDOWN_QUARTER_THRESHOLD = 0.80 # below 80% → quarter size
@@ -1141,6 +1142,9 @@ class StateManager:
             ("calibrated_prob", "REAL"),
             ("edge", "REAL"),
             ("kelly_f", "REAL"),
+            ("is_taker", "INTEGER"),
+            ("fill_source", "TEXT"),
+            ("execution_method", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE positions ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1507,7 +1511,9 @@ class StateManager:
                                   price_cents: int, strategy=None,
                                   seconds_to_close=None, fill_latency=None,
                                   vol_regime=None, calibrated_prob=None,
-                                  edge=None, kelly_f=None):
+                                  edge=None, kelly_f=None,
+                                  is_taker=None, fill_source=None,
+                                  execution_method=None):
         """Record a new open position from a fill."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         cost = count * price_cents
@@ -1516,12 +1522,14 @@ class StateManager:
                 (ticker, event_ticker, asset, side, count,
                  avg_price_cents, total_cost_cents, opened_at, updated_at, status,
                  strategy, seconds_to_close, fill_latency_seconds,
-                 vol_regime, calibrated_prob, edge, kelly_f)
-            VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?)
+                 vol_regime, calibrated_prob, edge, kelly_f,
+                 is_taker, fill_source, execution_method)
+            VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?)
         """, (ticker, event_ticker, asset, side, count,
               price_cents, cost, now, now,
               strategy, seconds_to_close, fill_latency,
-              vol_regime, calibrated_prob, edge, kelly_f))
+              vol_regime, calibrated_prob, edge, kelly_f,
+              1 if is_taker else 0, fill_source, execution_method))
         self.conn.commit()
 
     def update_garch_params(self, asset: str, omega: float, alpha: float,
@@ -5877,6 +5885,7 @@ class PositionSizer:
             return result
 
         contracts = min(scaled_contracts, max_by_risk)
+        contracts = min(contracts, MAX_CONTRACTS_LIMIT)
 
         result["contracts"] = contracts
         result["reason"] = "ok"
@@ -7708,6 +7717,9 @@ class OrderExecutor:
             calibrated_prob=candidate.get("calibrated_prob"),
             edge=candidate.get("edge"),
             kelly_f=candidate.get("kelly_f"),
+            is_taker=order.get("is_taker", False),
+            fill_source=order.get("fill_source", "rest_poll"),
+            execution_method=order.get("execution_method", "maker"),
         )
 
         # Log trade with all required fields
@@ -7809,7 +7821,9 @@ class OrderExecutor:
             return
 
         order = self._active_order
-        self._client.cancel_order(order["order_id"])
+        cancel_resp = self._client.cancel_order(order["order_id"])
+        if cancel_resp is None:
+            logging.warning(f"Cancel API returned None for {order['order_id']} — order may still be resting")
         self._state.mark_order_status(order["order_id"], "canceled")
 
         # Log fill model sample for canceled order
@@ -8770,7 +8784,8 @@ class MainLoop:
         self._setup_signals()
         self.startup()
 
-        logging.info("Entering main loop (observation mode)...")
+        mode = "LIVE" if not OBSERVATION_MODE else "observation"
+        logging.info(f"Entering main loop ({mode} mode)...")
         try:
             while not self._shutdown.is_set():
                 loop_start = time.time()
