@@ -50,6 +50,20 @@ Promoted features (shadow off, driving live behavior):
 - JUMP_ADAPTIVE (JUMP_ADAPTIVE_SHADOW_MODE = False)
 - RK_ADAPTIVE (RK_ADAPTIVE_SHADOW_MODE = False)
 
+## Order Execution Engine
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `post_only=True` on maker orders | Active | Guarantees maker fees (4x cheaper) |
+| `time_in_force="ioc"` on taker orders | Active | Auto-cancel unfilled, 0.3s wait |
+| `amend_order()` for escalation | Active | Amend-first, cancel-replace fallback |
+| `get_queue_position()` polling | Active | Every ~5s, queue-aware escalation |
+| KalshiFeed WebSocket | Active | fill + orderbook_delta channels |
+| WS fill detection | Active | Zero API cost, REST fallback |
+| `fill_model_journal.jsonl` | Active | ML training data for fill prediction |
+| Dynamic maker offset | Deferred | Needs fill model data (2+ weeks) |
+| Continuous urgency function | Deferred | Needs fill model data |
+
 ## Tech Stack
 
 - **Language:** Python 3
@@ -95,6 +109,7 @@ How the scanner filters opportunities (typical distribution):
 - `opportunity_journal.jsonl` — filter stage tracking for every market evaluation
 - `scan_journal.jsonl` — per-tick scan summaries (grows fast, ~330MB/day)
 - `rejection_journal.jsonl` — settlement outcomes for rejected opportunities
+- `fill_model_journal.jsonl` — maker order lifecycle data for ML fill prediction
 
 ## Trading Rules
 
