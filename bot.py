@@ -3747,8 +3747,8 @@ class HAREstimator:
         # Log models exempt from non-negativity and sum checks
         log_models = {"log_har", "log_har_iv"}
 
-        # Intercept bound (variance scale)
-        if abs(intercept) > 0.001:
+        # Intercept bound (variance scale — log models exempt, they operate in log-space)
+        if model_name not in log_models and abs(intercept) > 0.001:
             return (False, f"intercept {intercept:.6f} exceeds ±0.001")
 
         # Non-negativity for RV weights
@@ -3943,17 +3943,18 @@ class EGARCHEstimator:
             return
         lv = math.log(rk_5min_sq)
         lv = max(EGARCH_LOG_VAR_FLOOR, min(EGARCH_LOG_VAR_CEILING, lv))
-        self._log_var[asset] = lv
-        self._sigma[asset] = math.exp(lv * 0.5)
         using_defaults = False
-        if self._params[asset] is None:
-            self._params[asset] = {
-                "omega": lv * 0.05,
-                "alpha": 0.10,
-                "gamma": 0.0,
-                "beta": 0.95,
-            }
-            using_defaults = True
+        with self._lock:
+            self._log_var[asset] = lv
+            self._sigma[asset] = math.exp(lv * 0.5)
+            if self._params[asset] is None:
+                self._params[asset] = {
+                    "omega": lv * 0.05,
+                    "alpha": 0.10,
+                    "gamma": 0.0,
+                    "beta": 0.95,
+                }
+                using_defaults = True
         logging.info(
             "EGARCH %s: seeded from RK (rk_5min=%.6f, log_var=%.4f, using_defaults=%s)",
             asset, math.sqrt(rk_5min_sq), lv, using_defaults)
@@ -4008,7 +4009,8 @@ class EGARCHEstimator:
 
     def get_sigma(self, asset: str) -> Optional[float]:
         """Return current conditional σ."""
-        return self._sigma.get(asset)
+        with self._lock:
+            return self._sigma.get(asset)
 
     def is_active(self, asset: str) -> bool:
         """Returns False if shadow mode, or no successful MLE fit yet."""
@@ -4164,7 +4166,7 @@ class EGARCHEstimator:
                 sigma = 1e-15
             z = r / sigma
             log_var = omega + alpha * (abs(z) - e_abs_z) + gamma * z + beta * log_var
-            log_var = max(-50.0, min(-5.0, log_var))
+            log_var = max(EGARCH_LOG_VAR_FLOOR, min(EGARCH_LOG_VAR_CEILING, log_var))
 
         return nll / n  # normalize for numerical stability
 
