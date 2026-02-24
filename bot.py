@@ -2390,7 +2390,7 @@ class KalshiOrderFlowTracker:
         else:
             confidence = "low"
 
-        return {
+        result = {
             "imbalance_ratio": round(imbalance, 4),
             "imbalance_level": imbalance_level,
             "depth_velocity": round(depth_velocity, 2),
@@ -2404,6 +2404,23 @@ class KalshiOrderFlowTracker:
             "n_snapshots": n_snaps,
             "confidence": confidence,
         }
+
+        # Periodic per-ticker diagnostic logging
+        now = time.time()
+        last_log = self._last_log.get(ticker, 0.0)
+        if now - last_log >= KALSHI_OFT_LOG_INTERVAL:
+            self._last_log[ticker] = now
+            adj_str = ", ".join(f"{n}: {v:+.3f}" for n, v in adjustments) if adjustments else "none"
+            logging.info(
+                "KalshiOFT %s: imbal=%.3f (%s) depth_vel=%.1f depth_pct=%.1f%% "
+                "spread=%d trend=%.3f ask_vel=%.3f adj=%.4f [%s] snaps=%d conf=%s shadow=%s",
+                ticker, imbalance, imbalance_level, depth_velocity,
+                depth_pct_change * 100, latest["spread"], spread_trend,
+                ask_velocity, total_adj, adj_str, n_snaps, confidence,
+                KALSHI_OFT_SHADOW_MODE,
+            )
+
+        return result
 
     def cleanup_stale(self, active_tickers: Set[str]):
         """Evict tickers no longer in active windows."""
@@ -5984,6 +6001,7 @@ class OpportunityScanner:
                             "ofa_adjustment": round(ofa_adjustment, 6),
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                             "old_system_prob": round(_old_system_prob, 6),
+                            "kalshi_oft": (ofa_signals or {}).get("signals", {}).get("kalshi_orderbook", {}),
                         })
                         _dedup_key = (ticker, "insufficient_edge")
                         if _dedup_key not in self._eval_opp_seen:
@@ -6222,6 +6240,7 @@ class OpportunityScanner:
                         "ofa_adjustment": round(ofa_adjustment, 6),
                         "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                         "old_system_prob": round(_old_system_prob, 6),
+                        "kalshi_oft": (ofa_signals or {}).get("signals", {}).get("kalshi_orderbook", {}),
                     })
                 except Exception:
                     pass
