@@ -2958,7 +2958,10 @@ class VolatilityEngine:
                         egarch_blend_var = w_eg * egarch_var + (1.0 - w_eg) * rv_var
                         egarch_blend_sigma = math.sqrt(egarch_blend_var)
 
-                        if not EGARCH_BLEND_SHADOW_MODE:
+                        if not math.isfinite(egarch_blend_sigma) or egarch_blend_sigma <= 0:
+                            egarch_blend_var = None
+                            egarch_blend_sigma = rv_blended
+                        elif not EGARCH_BLEND_SHADOW_MODE:
                             blended = egarch_blend_sigma
 
                     # Periodic logging + state save
@@ -2985,7 +2988,7 @@ class VolatilityEngine:
                         )
                         self._egarch_blend_last_log[asset] = now
         except Exception:
-            logging.debug("EGARCH blend %s failed, using rv_blended", asset, exc_info=True)
+            logging.warning("EGARCH blend %s failed, using rv_blended", asset, exc_info=True)
 
         # VRP diagnostic (variance risk premium)
         vrp = None
@@ -4327,14 +4330,16 @@ class MincerZarnowitzTracker:
         r_sq = max(0.0, min(1.0, r_sq))
         self._r_squared[asset] = round(r_sq, 4)
 
-        # QLIKE for shadow evaluation
-        self._qlike[asset] = round(VolatilityEngine._compute_qlike(actuals, forecasts), 6)
-
-        # Map R² to weight within asset-specific bounds
+        # Map R² to weight within asset-specific bounds (BEFORE QLIKE so weight is always set)
         lo, hi = EGARCH_WEIGHT_BOUNDS.get(asset, (0.05, 0.25))
-        # Linear interpolation: R²=0 → lo, R²=1 → hi
         w = lo + r_sq * (hi - lo)
         self._egarch_weight[asset] = round(w, 4)
+
+        # QLIKE for shadow evaluation
+        try:
+            self._qlike[asset] = round(HAREstimator._compute_qlike(actuals, forecasts), 6)
+        except Exception:
+            logging.warning("MZ tracker: QLIKE computation failed for %s", asset, exc_info=True)
 
         return self._egarch_weight[asset]
 
