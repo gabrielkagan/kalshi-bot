@@ -759,15 +759,12 @@ class KalshiClient:
             "side": side,
             "action": action,
             "count": count,
-            "count_fp": int_to_fp_str(count),
             "type": "limit",
         }
         if yes_price is not None:
             body["yes_price"] = yes_price
-            body["yes_price_dollars"] = cents_to_dollars_str(yes_price)
         if no_price is not None:
             body["no_price"] = no_price
-            body["no_price_dollars"] = cents_to_dollars_str(no_price)
         if client_order_id:
             body["client_order_id"] = client_order_id
         if post_only is not None:
@@ -789,13 +786,10 @@ class KalshiClient:
         body: Dict = {"ticker": ticker, "side": side, "action": action}
         if count is not None:
             body["count"] = count
-            body["count_fp"] = int_to_fp_str(count)
         if yes_price is not None:
             body["yes_price"] = yes_price
-            body["yes_price_dollars"] = cents_to_dollars_str(yes_price)
         if no_price is not None:
             body["no_price"] = no_price
-            body["no_price_dollars"] = cents_to_dollars_str(no_price)
         return self._request("POST",
                              f"{API_PATH_PREFIX}/portfolio/orders/{order_id}/amend",
                              json_body=body)
