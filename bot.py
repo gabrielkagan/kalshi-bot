@@ -3233,6 +3233,10 @@ class HAREstimator:
         if now - last < HAR_OBSERVATION_INTERVAL:
             return
 
+        # Reject degenerate observations (e.g., bot startup with no returns)
+        if rk_5min <= 0 or rk_15min <= 0:
+            return
+
         self._last_obs_time[asset] = now
 
         # Semivariances at all three windows
@@ -3406,6 +3410,8 @@ class HAREstimator:
 
     def _refit_asset(self, asset: str, obs: List[Dict]) -> None:
         """Fit all 4 model variants for one asset, select best by QLIKE."""
+        # Filter degenerate observations (zero RV from bot startup)
+        obs = [o for o in obs if o.get("rv5_sq", 0) > 0 and o.get("rv15_sq", 0) > 0]
         n = len(obs)
         if n < 2:
             return
