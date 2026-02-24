@@ -7470,6 +7470,7 @@ class OrderExecutor:
                 order["is_taker"] = True
                 order["escalated"] = True
                 order["execution_method"] = "amend_to_taker"
+                order.setdefault("fill_source", "rest_poll")
                 time.sleep(0.3)
                 fill = self._check_for_fill(order)
                 if fill:
@@ -7723,7 +7724,7 @@ class OrderExecutor:
         )
 
         # Log trade with all required fields
-        is_taker = order["is_taker"]
+        is_taker = order.get("is_taker", False)
         cost_cents = fill_count * fill_price
         fee_cents = calculate_fee(fill_count, fill_price, is_taker=is_taker)
 
