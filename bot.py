@@ -38,7 +38,6 @@ SERIES_TICKERS = {
 MIN_ENTRY_PRICE = 86              # cents (data: 86-88c bucket is 100% WR; loss zone is 80-84c)
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.50         # max 50% of bankroll at risk per trade (scales with balance)
-MAX_CONTRACTS_LIMIT = 10          # Conservative test phase — hard cap on contracts per trade
 MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 240    # start scanning 4 min before close (data: 180-240s is 9W/1L; loss at 243s stays excluded)
 ONE_ASSET_PER_WINDOW = False
@@ -5909,7 +5908,6 @@ class PositionSizer:
             return result
 
         contracts = min(scaled_contracts, max_by_risk)
-        contracts = min(contracts, MAX_CONTRACTS_LIMIT)
 
         result["contracts"] = contracts
         result["reason"] = "ok"
