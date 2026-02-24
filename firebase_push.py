@@ -438,6 +438,10 @@ class FirebasePusher:
                     "kelly_fraction": order.get("candidate", {}).get("kelly_fraction"),
                     "strategy": order.get("candidate", {}).get("strategy"),
                     "cal_prob": order.get("candidate", {}).get("calibrated_prob"),
+                    "execution_method": order.get("execution_method", "legacy"),
+                    "fill_source": order.get("fill_source"),
+                    "escalated": order.get("escalated", False),
+                    "queue_position": order.get("queue_position"),
                 }
             else:
                 snap["active_order"] = None
@@ -872,6 +876,16 @@ class FirebasePusher:
             exec_eng["session_ws_fills"] = getattr(ex, "_session_ws_fills", 0)
             exec_eng["session_rest_fills"] = getattr(ex, "_session_rest_fills", 0)
             exec_eng["session_post_only_rejections"] = getattr(ex, "_session_post_only_rejections", 0)
+
+            # Derived rates
+            amend_att = exec_eng["session_amend_attempts"]
+            exec_eng["amend_success_rate"] = round(
+                exec_eng["session_amend_successes"] / amend_att, 3
+            ) if amend_att > 0 else None
+            total_fills = exec_eng["session_ws_fills"] + exec_eng["session_rest_fills"]
+            exec_eng["ws_fill_ratio"] = round(
+                exec_eng["session_ws_fills"] / total_fills, 3
+            ) if total_fills > 0 else None
 
             snap["execution_engine"] = exec_eng
         except Exception:
