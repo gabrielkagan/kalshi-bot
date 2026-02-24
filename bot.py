@@ -35,11 +35,11 @@ SERIES_TICKERS = {
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
 }
-MIN_ENTRY_PRICE = 88              # cents (data: 88-96c is 14/14 = 100% WR; all losses were 83-85c)
+MIN_ENTRY_PRICE = 85              # cents (data: 85-87c is 3/3 wins +49c; loss zone is 80-84c)
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.50         # max 50% of bankroll at risk per trade (scales with balance)
 MIN_SECONDS_BEFORE_CLOSE = 0
-MAX_SECONDS_BEFORE_CLOSE = 180    # start scanning 3 min before close (data: <3min is 10/10; all losses were 3-5min)
+MAX_SECONDS_BEFORE_CLOSE = 240    # start scanning 4 min before close (data: 180-240s is 9W/1L; loss at 243s stays excluded)
 ONE_ASSET_PER_WINDOW = True
 
 # ─── API Configuration ───────────────────────────────────────────────────────
@@ -272,7 +272,7 @@ _CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
 _TELEGRAM: Optional["TelegramNotifier"] = None
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
-MIN_EDGE_PCT = 1.5                # model prob must exceed market by ≥1.5 pp (data: with 88¢ floor, edge>=1.5% is 9/9 100% WR, $104 net)
+MIN_EDGE_PCT = 1.0                # model prob must exceed market by ≥1.0 pp (data: gross edge>=1.5% is 9/10 wins; fee drag is the real filter)
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
 BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
