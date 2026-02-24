@@ -40,7 +40,7 @@ MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.50         # max 50% of bankroll at risk per trade (scales with balance)
 MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 240    # start scanning 4 min before close (data: 180-240s is 9W/1L; loss at 243s stays excluded)
-ONE_ASSET_PER_WINDOW = True
+ONE_ASSET_PER_WINDOW = False
 
 # ─── API Configuration ───────────────────────────────────────────────────────
 BASE_URL = ("https://api.elections.kalshi.com" if os.environ.get("KALSHI_ENV") == "production"
@@ -6081,91 +6081,94 @@ class OpportunityScanner:
             return None
 
         # ── Single-asset-per-timeslot: pick highest edge per 15-min window ──
-        # Group candidates by timeslot (shared across assets)
-        by_timeslot: Dict[str, List[Dict]] = {}
-        for c in candidates:
-            ts = self._window_timeslot(c["event_ticker"])
-            by_timeslot.setdefault(ts, []).append(c)
+        if ONE_ASSET_PER_WINDOW:
+            # Group candidates by timeslot (shared across assets)
+            by_timeslot: Dict[str, List[Dict]] = {}
+            for c in candidates:
+                ts = self._window_timeslot(c["event_ticker"])
+                by_timeslot.setdefault(ts, []).append(c)
 
-        # Keep only the single best-edge candidate per timeslot
-        filtered: List[Dict] = []
-        for ts, slot_candidates in by_timeslot.items():
-            slot_candidates.sort(key=lambda c: c["edge"], reverse=True)
-            winner = slot_candidates[0]
-            filtered.append(winner)
-            self._session_asset_perf[winner["asset"]]["times_selected"] += 1
+            # Keep only the single best-edge candidate per timeslot
+            filtered: List[Dict] = []
+            for ts, slot_candidates in by_timeslot.items():
+                slot_candidates.sort(key=lambda c: c["edge"], reverse=True)
+                winner = slot_candidates[0]
+                filtered.append(winner)
+                self._session_asset_perf[winner["asset"]]["times_selected"] += 1
 
-            # Log which assets were rejected in favor of the winner
-            if len(slot_candidates) > 1:
-                for c in slot_candidates[1:]:
-                    self._session_asset_perf[c["asset"]]["times_rejected"] += 1
-                rejected = [
-                    {"asset": c["asset"], "ticker": c["ticker"],
-                     "edge": round(c["edge"], 6), "calibrated_prob": c["calibrated_prob"]}
-                    for c in slot_candidates[1:]
-                ]
-                self._logger.log_scan({
-                    "type": "single_asset_selection",
-                    "timeslot": ts,
-                    "chosen_asset": winner["asset"],
-                    "chosen_ticker": winner["ticker"],
-                    "chosen_edge": round(winner["edge"], 6),
-                    "rejected_assets": rejected,
-                    "reason": "single best asset per window (correlation-adjusted)",
-                })
-                for c in slot_candidates[1:]:
-                    try:
-                        self._logger.log_opportunity({
-                            "filter_stage": "single_asset_selection",
-                            "ticker": c["ticker"],
-                            "event_ticker": c["event_ticker"],
-                            "asset": c["asset"],
-                            "rejection_reason": f"lost to {winner['asset']} (edge {winner['edge']:.4f} vs {c['edge']:.4f})",
-                            "spot_price": c["spot"],
-                            "threshold": c["threshold"],
-                            "volatility": c["blended_rv"],
-                            "market_price": c["best_yes_ask"],
-                            "seconds_to_close": c["seconds_to_close"],
-                            "calibrated_prob": c["calibrated_prob"],
-                            "edge": c["edge"],
-                            "ofa_adjustment": c.get("ofa_adjustment"),
-                            "raw_prob": round(c["raw_prob"], 6) if c.get("raw_prob") is not None else None,
-                            "old_system_prob": c.get("old_system_prob"),
-                        })
-                        _dedup_key = (c["ticker"], "single_asset_selection")
-                        if _dedup_key not in self._eval_opp_seen:
-                            self._eval_opp_seen.add(_dedup_key)
-                            _ba = c["best_yes_ask"]
-                            _cp = c["calibrated_prob"]
-                            _fee1 = calculate_taker_fee(1, _ba)
-                            _ev = (_cp * (100 - _ba)) - ((1 - _cp) * _ba) - _fee1
-                            self._state.insert_evaluated_opportunity(
-                                c["ticker"], c["event_ticker"], c["asset"],
-                                "single_asset_selection",
-                                rejection_reason=f"lost to {winner['asset']}",
-                                spot_price=c["spot"], threshold=c["threshold"],
-                                volatility=c["blended_rv"], market_price=_ba,
-                                seconds_to_close=c["seconds_to_close"],
-                                calibrated_prob=_cp, edge=c["edge"],
-                                ofa_adjustment=c.get("ofa_adjustment"),
-                                strategy=c.get("strategy"),
-                                z_score=c.get("z_score"),
-                                vol_regime=c.get("vol_regime"),
-                                calibrated_prob_raw=c.get("calibrated_prob_raw"),
-                                kelly_f=c.get("kelly_f"),
-                                position_size=c.get("position_size"),
-                                breakeven_wr=_ba / 100.0,
-                                expected_value=round(_ev, 2),
-                                drawdown_scaler=c.get("drawdown_scaler"),
-                                ask_depth=c.get("ob_snapshot", {}).get("ask_depth"),
-                                best_ask_source=c.get("best_ask_source"),
-                                ofa_confidence=c.get("ofa_confidence"),
-                                raw_prob=c.get("raw_prob"),
-                                calibration_method=c.get("calibration_method"),
-                                old_system_prob=c.get("old_system_prob"),
-                                fee_adjusted_edge=c.get("fee_adjusted_edge"))
-                    except Exception:
-                        pass
+                # Log which assets were rejected in favor of the winner
+                if len(slot_candidates) > 1:
+                    for c in slot_candidates[1:]:
+                        self._session_asset_perf[c["asset"]]["times_rejected"] += 1
+                    rejected = [
+                        {"asset": c["asset"], "ticker": c["ticker"],
+                         "edge": round(c["edge"], 6), "calibrated_prob": c["calibrated_prob"]}
+                        for c in slot_candidates[1:]
+                    ]
+                    self._logger.log_scan({
+                        "type": "single_asset_selection",
+                        "timeslot": ts,
+                        "chosen_asset": winner["asset"],
+                        "chosen_ticker": winner["ticker"],
+                        "chosen_edge": round(winner["edge"], 6),
+                        "rejected_assets": rejected,
+                        "reason": "single best asset per window (correlation-adjusted)",
+                    })
+                    for c in slot_candidates[1:]:
+                        try:
+                            self._logger.log_opportunity({
+                                "filter_stage": "single_asset_selection",
+                                "ticker": c["ticker"],
+                                "event_ticker": c["event_ticker"],
+                                "asset": c["asset"],
+                                "rejection_reason": f"lost to {winner['asset']} (edge {winner['edge']:.4f} vs {c['edge']:.4f})",
+                                "spot_price": c["spot"],
+                                "threshold": c["threshold"],
+                                "volatility": c["blended_rv"],
+                                "market_price": c["best_yes_ask"],
+                                "seconds_to_close": c["seconds_to_close"],
+                                "calibrated_prob": c["calibrated_prob"],
+                                "edge": c["edge"],
+                                "ofa_adjustment": c.get("ofa_adjustment"),
+                                "raw_prob": round(c["raw_prob"], 6) if c.get("raw_prob") is not None else None,
+                                "old_system_prob": c.get("old_system_prob"),
+                            })
+                            _dedup_key = (c["ticker"], "single_asset_selection")
+                            if _dedup_key not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_dedup_key)
+                                _ba = c["best_yes_ask"]
+                                _cp = c["calibrated_prob"]
+                                _fee1 = calculate_taker_fee(1, _ba)
+                                _ev = (_cp * (100 - _ba)) - ((1 - _cp) * _ba) - _fee1
+                                self._state.insert_evaluated_opportunity(
+                                    c["ticker"], c["event_ticker"], c["asset"],
+                                    "single_asset_selection",
+                                    rejection_reason=f"lost to {winner['asset']}",
+                                    spot_price=c["spot"], threshold=c["threshold"],
+                                    volatility=c["blended_rv"], market_price=_ba,
+                                    seconds_to_close=c["seconds_to_close"],
+                                    calibrated_prob=_cp, edge=c["edge"],
+                                    ofa_adjustment=c.get("ofa_adjustment"),
+                                    strategy=c.get("strategy"),
+                                    z_score=c.get("z_score"),
+                                    vol_regime=c.get("vol_regime"),
+                                    calibrated_prob_raw=c.get("calibrated_prob_raw"),
+                                    kelly_f=c.get("kelly_f"),
+                                    position_size=c.get("position_size"),
+                                    breakeven_wr=_ba / 100.0,
+                                    expected_value=round(_ev, 2),
+                                    drawdown_scaler=c.get("drawdown_scaler"),
+                                    ask_depth=c.get("ob_snapshot", {}).get("ask_depth"),
+                                    best_ask_source=c.get("best_ask_source"),
+                                    ofa_confidence=c.get("ofa_confidence"),
+                                    raw_prob=c.get("raw_prob"),
+                                    calibration_method=c.get("calibration_method"),
+                                    old_system_prob=c.get("old_system_prob"),
+                                    fee_adjusted_edge=c.get("fee_adjusted_edge"))
+                        except Exception:
+                            pass
+        else:
+            filtered = candidates
 
         best = max(filtered, key=lambda c: c["edge"])
         self._logger.log_scan({
