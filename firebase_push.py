@@ -668,6 +668,21 @@ class FirebasePusher:
         except Exception:
             snap["egarch_estimation"] = None
 
+        # ── EGARCH blend diagnostics ──────────────────────────────────
+        try:
+            mz = getattr(self._ml, "mz_tracker", None)
+            if mz:
+                import bot as _bot_mod
+                snap["egarch_blend"] = {
+                    "shadow_mode": getattr(_bot_mod, "EGARCH_BLEND_SHADOW_MODE", True),
+                    "weights": {a: mz.get_weight(a) for a in ASSETS},
+                    "r_squared": dict(mz._r_squared),
+                    "qlike": dict(mz._qlike),
+                    "obs_count": {a: len(mz._pairs[a]) for a in ASSETS},
+                }
+        except Exception:
+            logging.debug("Firebase: egarch_blend build failed", exc_info=True)
+
         # ── Adaptive RK bandwidth diagnostics ────────────────────────
         try:
             rk_diag = {}

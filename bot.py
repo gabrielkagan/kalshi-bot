@@ -125,6 +125,28 @@ EGARCH_ALPHA_BOUNDS = (0.01, 0.5)
 EGARCH_GAMMA_BOUNDS = (-0.3, 0.3)       # both leverage directions
 EGARCH_BETA_BOUNDS = (0.80, 0.999)      # high persistence typical for crypto
 
+# ─── EGARCH-RV Blend ───────────────────────────────────────────────────
+EGARCH_BLEND_SHADOW_MODE = True        # True = log only, don't affect blended_rv
+EGARCH_BLEND_STATE_PATH = "egarch_blend_state.json"
+
+# Mincer-Zarnowitz R² tracker
+MZ_WINDOW = 360                        # Rolling window: 360 ticks × 10s = 1 hour
+MZ_MIN_OBS = 60                        # Need 10 min of data before R² is valid
+MZ_RECOMPUTE_INTERVAL = 30.0           # Recompute R² every 30s (not every tick)
+
+# Weight bounds per asset (from persistence analysis)
+EGARCH_WEIGHT_BOUNDS = {
+    "BTC": (0.15, 0.45),   # High persistence → more EGARCH weight
+    "ETH": (0.10, 0.35),
+    "SOL": (0.05, 0.20),   # Low persistence → less EGARCH weight
+    "XRP": (0.05, 0.25),
+}
+EGARCH_WEIGHT_DEFAULT = 0.0            # Before MZ warmup: pure RV (safe default)
+
+# Safety clamps
+EGARCH_RV_RATIO_CLAMP = 3.0           # Reject EGARCH if σ_eg/σ_rv > 3 or < 1/3
+EGARCH_BLEND_LOG_INTERVAL = 300.0     # Log blend diagnostics every 5 min
+
 # ─── Adaptive RK Bandwidth (BN 2008/2009) ─────────────────────────────────
 RK_ADAPTIVE_SHADOW_MODE = False          # False = adaptive H* drives blended_rv
 RK_CSTAR_FLAT_TOP_PARZEN = 3.5134       # c* for flat-top Parzen kernel (BN 2009 Table 2)
@@ -2236,11 +2258,14 @@ class VolatilityEngine:
 
     def __init__(self, feed: CoinbaseFeed, dvol_fetcher: Optional[DeribitDVOLFetcher] = None,
                  har_estimator: Optional['HAREstimator'] = None,
-                 egarch_estimator: Optional['EGARCHEstimator'] = None):
+                 egarch_estimator: Optional['EGARCHEstimator'] = None,
+                 mz_tracker: Optional['MincerZarnowitzTracker'] = None):
         self._feed = feed
         self._dvol = dvol_fetcher
         self._har = har_estimator
         self._egarch = egarch_estimator
+        self._mz = mz_tracker
+        self._egarch_blend_last_log: Dict[str, float] = {}
         self._returns: Dict[str, deque] = {
             a: deque(maxlen=VOL_WINDOW_15MIN) for a in ASSETS
         }
@@ -2910,6 +2935,58 @@ class VolatilityEngine:
         rv_only_blended = rv_blended
         blended = rv_blended
 
+        # Step 3c: EGARCH-RV variance-space blend
+        egarch_blend_weight = 0.0
+        egarch_blend_var = None
+        try:
+            if (egarch_sigma is not None and egarch_sigma > 0
+                    and rv_blended > 0 and self._mz is not None):
+                ratio = egarch_sigma / rv_blended
+                # Safety clamp: reject extreme divergence
+                if 1.0 / EGARCH_RV_RATIO_CLAMP <= ratio <= EGARCH_RV_RATIO_CLAMP:
+                    # Record MZ pair: EGARCH forecast var vs RV realized var
+                    egarch_var = egarch_sigma ** 2
+                    rv_var = rv_blended ** 2
+                    self._mz.record(asset, egarch_var, rv_var)
+
+                    # Get adaptive weight from MZ R²
+                    w_eg = self._mz.maybe_recompute(asset, now)
+                    egarch_blend_weight = w_eg
+
+                    if w_eg > 0:
+                        # Variance-space blend: avoids Jensen's inequality bias
+                        egarch_blend_var = w_eg * egarch_var + (1.0 - w_eg) * rv_var
+                        egarch_blend_sigma = math.sqrt(egarch_blend_var)
+
+                        if not EGARCH_BLEND_SHADOW_MODE:
+                            blended = egarch_blend_sigma
+
+                    # Periodic logging + state save
+                    if now - self._egarch_blend_last_log.get(asset, 0) >= EGARCH_BLEND_LOG_INTERVAL:
+                        mz_r2 = self._mz._r_squared.get(asset)
+                        mz_qlike = self._mz._qlike.get(asset)
+                        logging.info(
+                            "EGARCH blend %s: w_eg=%.3f ratio=%.3f R²=%s QLIKE=%s "
+                            "rv=%.8f eg=%.8f blended=%.8f shadow=%s",
+                            asset, w_eg, ratio,
+                            f"{mz_r2:.4f}" if mz_r2 is not None else "warmup",
+                            f"{mz_qlike:.6f}" if mz_qlike is not None else "n/a",
+                            rv_blended, egarch_sigma,
+                            egarch_blend_sigma if egarch_blend_var else rv_blended,
+                            EGARCH_BLEND_SHADOW_MODE,
+                        )
+                        self._egarch_blend_last_log[asset] = now
+                        self._mz.save_state()
+                else:
+                    if now - self._egarch_blend_last_log.get(asset, 0) >= EGARCH_BLEND_LOG_INTERVAL:
+                        logging.warning(
+                            "EGARCH blend %s: CLAMPED ratio=%.3f (limit=%.1f) — skipping blend",
+                            asset, ratio, EGARCH_RV_RATIO_CLAMP,
+                        )
+                        self._egarch_blend_last_log[asset] = now
+        except Exception:
+            logging.debug("EGARCH blend %s failed, using rv_blended", asset, exc_info=True)
+
         # VRP diagnostic (variance risk premium)
         vrp = None
         if dvol_sq_for_har is not None and rk_5min > 0:
@@ -3083,6 +3160,12 @@ class VolatilityEngine:
             "egarch_sigma": egarch_sigma,
             "egarch_n_updates": self._egarch._n_updates.get(asset, 0) if self._egarch else 0,
             "egarch_log_var": self._egarch._log_var.get(asset) if self._egarch else None,
+            # EGARCH blend diagnostics
+            "egarch_blend_weight": egarch_blend_weight,
+            "egarch_blend_var": egarch_blend_var,
+            "egarch_blend_shadow": EGARCH_BLEND_SHADOW_MODE,
+            "mz_r_squared": self._mz._r_squared.get(asset) if self._mz else None,
+            "mz_qlike": self._mz._qlike.get(asset) if self._mz else None,
             # Adaptive RK bandwidth diagnostics
             "omega_sq": omega_sq,
             "rk_H_fixed_5": H_fixed_5,
@@ -4179,6 +4262,114 @@ class EGARCHEstimator:
 
             result[asset] = diag
         return result
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  MincerZarnowitzTracker – Rolling R² for EGARCH forecast evaluation
+# ═════════════════════════════════════════════════════════════════════════════
+
+class MincerZarnowitzTracker:
+    """Rolling Mincer-Zarnowitz R² for EGARCH forecast evaluation.
+
+    Regression: σ²_realized = α + β·σ²_forecast + ε
+    R² measures how well EGARCH forecasts explain realized variance.
+    Higher R² → more weight to EGARCH in the blend.
+
+    Also tracks QLIKE loss for shadow evaluation.
+    """
+
+    def __init__(self):
+        # Rolling buffers: (forecast_var, realized_var) pairs
+        self._pairs: Dict[str, deque] = {
+            a: deque(maxlen=MZ_WINDOW) for a in ASSETS
+        }
+        self._r_squared: Dict[str, Optional[float]] = {a: None for a in ASSETS}
+        self._qlike: Dict[str, Optional[float]] = {a: None for a in ASSETS}
+        self._last_recompute: Dict[str, float] = {a: 0.0 for a in ASSETS}
+        self._egarch_weight: Dict[str, float] = {a: EGARCH_WEIGHT_DEFAULT for a in ASSETS}
+        self._load_state()
+
+    def record(self, asset: str, egarch_var: float, realized_var: float):
+        """Record a (forecast, realized) variance pair."""
+        if egarch_var <= 0 or realized_var <= 0:
+            return
+        self._pairs[asset].append((egarch_var, realized_var))
+
+    def maybe_recompute(self, asset: str, now: float) -> float:
+        """Recompute R² and weight if enough time has passed. Returns current weight."""
+        if now - self._last_recompute.get(asset, 0) < MZ_RECOMPUTE_INTERVAL:
+            return self._egarch_weight[asset]
+
+        self._last_recompute[asset] = now
+        pairs = list(self._pairs[asset])
+        n = len(pairs)
+
+        if n < MZ_MIN_OBS:
+            self._egarch_weight[asset] = EGARCH_WEIGHT_DEFAULT
+            return EGARCH_WEIGHT_DEFAULT
+
+        forecasts = [p[0] for p in pairs]
+        actuals = [p[1] for p in pairs]
+
+        # OLS: actual = alpha + beta * forecast
+        mean_f = sum(forecasts) / n
+        mean_a = sum(actuals) / n
+        cov_fa = sum((f - mean_f) * (a - mean_a) for f, a in zip(forecasts, actuals)) / n
+        var_f = sum((f - mean_f) ** 2 for f in forecasts) / n
+        var_a = sum((a - mean_a) ** 2 for a in actuals) / n
+
+        if var_f < 1e-30 or var_a < 1e-30:
+            self._r_squared[asset] = 0.0
+            self._egarch_weight[asset] = EGARCH_WEIGHT_DEFAULT
+            return EGARCH_WEIGHT_DEFAULT
+
+        r_sq = (cov_fa ** 2) / (var_f * var_a)
+        r_sq = max(0.0, min(1.0, r_sq))
+        self._r_squared[asset] = round(r_sq, 4)
+
+        # QLIKE for shadow evaluation
+        self._qlike[asset] = round(VolatilityEngine._compute_qlike(actuals, forecasts), 6)
+
+        # Map R² to weight within asset-specific bounds
+        lo, hi = EGARCH_WEIGHT_BOUNDS.get(asset, (0.05, 0.25))
+        # Linear interpolation: R²=0 → lo, R²=1 → hi
+        w = lo + r_sq * (hi - lo)
+        self._egarch_weight[asset] = round(w, 4)
+
+        return self._egarch_weight[asset]
+
+    def get_weight(self, asset: str) -> float:
+        return self._egarch_weight.get(asset, EGARCH_WEIGHT_DEFAULT)
+
+    def _load_state(self):
+        try:
+            with open(EGARCH_BLEND_STATE_PATH, "r") as f:
+                state = json.load(f)
+            for asset in ASSETS:
+                if asset in state.get("r_squared", {}):
+                    self._r_squared[asset] = state["r_squared"][asset]
+                if asset in state.get("weights", {}):
+                    self._egarch_weight[asset] = state["weights"][asset]
+                if asset in state.get("pairs", {}):
+                    for p in state["pairs"][asset][-MZ_WINDOW:]:
+                        self._pairs[asset].append(tuple(p))
+            logging.info("MZ tracker state loaded: R²=%s weights=%s",
+                         self._r_squared, self._egarch_weight)
+        except (FileNotFoundError, json.JSONDecodeError):
+            logging.info("MZ tracker: no saved state, starting fresh")
+
+    def save_state(self):
+        try:
+            state = {
+                "r_squared": self._r_squared,
+                "weights": self._egarch_weight,
+                "qlike": self._qlike,
+                "pairs": {a: list(self._pairs[a])[-MZ_WINDOW:] for a in ASSETS},
+            }
+            with open(EGARCH_BLEND_STATE_PATH, "w") as f:
+                json.dump(state, f)
+        except Exception:
+            logging.debug("MZ tracker: save_state failed", exc_info=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -7330,9 +7521,11 @@ class MainLoop:
         self.dvol_fetcher = DeribitDVOLFetcher()
         self.har_estimator = HAREstimator()
         self.egarch_estimator = EGARCHEstimator()
+        self.mz_tracker = MincerZarnowitzTracker()
         self.vol = VolatilityEngine(self.feed, dvol_fetcher=self.dvol_fetcher,
                                     har_estimator=self.har_estimator,
-                                    egarch_estimator=self.egarch_estimator)
+                                    egarch_estimator=self.egarch_estimator,
+                                    mz_tracker=self.mz_tracker)
         self.sizer = PositionSizer()
         self.calibration = CalibrationEngine()
         global _CALIBRATION_ENGINE
@@ -7809,6 +8002,9 @@ class MainLoop:
                 len(self.egarch_estimator._returns["ETH"]),
                 len(self.egarch_estimator._returns["SOL"]),
                 len(self.egarch_estimator._returns["XRP"]))
+        if hasattr(self, 'mz_tracker'):
+            self.mz_tracker.save_state()
+            logging.info("MZ tracker state saved on shutdown")
         if hasattr(self, 'vol'):
             self.vol._save_adaptive_state()
             logging.info(
