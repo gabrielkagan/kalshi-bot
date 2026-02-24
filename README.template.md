@@ -13,7 +13,7 @@ Deribit DVOL ──────────┤                                  
 CoinGlass funding ─────┘
 ```
 
-Every second, the bot scans all active 15-minute windows, picks the single best opportunity across all four assets, and executes if the edge exceeds 5 percentage points.
+Every second, the bot scans all active 15-minute windows across all four assets and executes when the fee-adjusted edge exceeds 1.5 percentage points.
 
 ## Architecture
 
@@ -65,7 +65,7 @@ The bot has five decision modes, selected by a composite score (45% certainty, 2
 | `TAKER_NOW` | High edge or running low on time | Lift the ask immediately |
 | `PANIC_CAPTURE` | Near-certain outcome + dry book | Bid 99¢ |
 
-Maker orders escalate to taker if unfilled within the adaptive timeout window (15s → 10s → 5s as expiry approaches).
+Maker orders use `post_only=True` to guarantee maker fees. Fill detection via Kalshi WebSocket (zero API cost, REST fallback). Escalation uses `amend_order()` to convert in-place, falling back to cancel + IOC taker. Queue position polled every ~5s for timing.
 
 ### Position Sizing
 
@@ -77,10 +77,11 @@ f = 0.25 × (b×p − q) / b
 where b = (100 − price) / price, p = calibrated prob, q = 1 − p
 ```
 
-- Max 5 contracts per trade, max 3% of bankroll at risk
+- Risk-based sizing: up to 75% of bankroll at 5%+ edge, 35% at 3%+, 20% at 1.5%+
+- Safety ceiling: max 50% of bankroll at risk per trade
 - At 90% of starting balance: halve position sizes
 - At 80% of starting balance: quarter position sizes
-- Only one asset per 15-minute window (whichever has highest edge)
+- Can trade multiple assets per 15-minute window
 
 ### State & Persistence
 
@@ -96,7 +97,7 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 | Bybit | WebSocket | Spot prices for lead/lag detection | Real-time |
 | Deribit | REST | DVOL implied volatility index | Every 60s (120s cache) |
 | CoinGlass | REST | Funding rates | Every 10min (100 calls/day budget) |
-| Kalshi | REST | Markets, orderbooks, positions, settlements | 1s scan loop, 30s market refresh |
+| Kalshi | REST + WebSocket | Markets, orderbooks, positions, settlements, fills | 1s scan loop + real-time WS fills/orderbook |
 
 ## Live Stats
 
@@ -152,7 +153,7 @@ source .env
 python3 bot.py
 ```
 
-The bot starts in **observation mode** by default — it runs the full pipeline (price feeds, volatility, probability, edge detection) and logs everything, but places no orders. Set `OBSERVATION_MODE = False` in `bot.py` to enable live trading.
+The bot runs the full pipeline (price feeds, volatility, probability, edge detection) and places live orders. Set `OBSERVATION_MODE = True` in `bot.py` to run in observation-only mode (logs everything but places no orders).
 
 ## Deployment
 
@@ -174,7 +175,8 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot.py                         — all bot logic (~4,500 lines, never rename)
+bot.py                         — all bot logic (~8,300 lines, never rename)
+firebase_push.py               — pushes live dashboard snapshots to Firebase
 start.sh                       — systemd entrypoint (venv + .env + bot.py)
 requirements.txt               — Python dependencies
 .env.example                   — credential template
@@ -195,6 +197,7 @@ The bot writes JSONL journals for every stage of its decision-making pipeline:
 | `settlement` | Contract outcomes and P&L |
 | `execution` | Execution quality metrics |
 | `performance` | Daily summary aggregations |
+| `fill_model` | Maker order lifecycle data for ML fill prediction |
 
 ### Firebase Dashboard (optional)
 

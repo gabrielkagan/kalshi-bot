@@ -197,7 +197,7 @@ $$\text{edge} = p_{final} - \frac{\text{best\_ask}}{100} - \frac{\text{taker\_fe
 
 A trade must satisfy:
 
-$$\text{edge} \geq \text{MIN\_EDGE\_PCT} = 0.25\%$$
+$$\text{edge} \geq \text{MIN\_EDGE\_PCT} = 1.5\%$$
 
 ## 3.4 Order Flow Analysis
 
@@ -242,13 +242,17 @@ The executor uses a maker-first approach with time-aware escalation.
 
 ### Maker-to-Taker Escalation
 
-1. Place maker order at `fair_value − 1¢`
-2. Poll every 2 seconds for fill
-3. If timeout reached without fill:
-   - Cancel maker order
-   - Re-fetch orderbook for current best ask
-   - Validate price still in [80¢, 99¢]
-   - Submit taker order at best ask
+1. Place maker order with `post_only=True` (guarantees maker fees, 4× cheaper)
+2. Monitor for fills via Kalshi WebSocket (zero API cost) with REST polling fallback
+3. Poll queue position every ~5s for queue-aware escalation timing
+4. If timeout reached without fill:
+   - Attempt `amend_order()` to convert to taker price in-place (avoids cancel+replace race)
+   - If amend fails, fall back to cancel + IOC (`time_in_force="ioc"`) taker order
+   - Re-validate price still in [86¢, 99¢] before taker submission
+
+### Partial Fill Handling
+
+Orders may partially fill (e.g., 3 of 13 contracts). The execution engine tracks `filled_so_far` cumulatively and keeps the order active until fully filled or escalated. REST fill detection uses a `_seen_fill_ids` set to prevent double-counting across consecutive polls.
 
 ### UUID Persistence
 
@@ -272,7 +276,15 @@ The dollar position is:
 
 $$\text{contracts} = \left\lfloor f \times \frac{\text{bankroll}}{\text{price}} \right\rfloor$$
 
-clipped to $[1, 5]$ contracts.
+with a safety ceiling of `MAX_RISK_PER_TRADE` (50%) of bankroll.
+
+### Edge-Based Sizing Tiers
+
+| Minimum Edge | Risk Fraction |
+|---|---|
+| ≥ 5% | 75% of bankroll |
+| ≥ 3% | 35% of bankroll |
+| ≥ 1.5% | 20% of bankroll |
 
 ### Drawdown Scaling
 
@@ -292,13 +304,13 @@ This creates a geometric de-risking curve that preserves capital during losing s
 
 - **Quarter-Kelly**: Conservative fraction (0.25×) of the theoretically optimal bet size
 - **Drawdown scaling**: Size halved below 90% of starting balance, quartered below 80%
-- **Hard limits**: Maximum 5 contracts per trade; maximum risk per trade capped as percentage of bankroll
+- **Hard limits**: Maximum risk per trade capped at 50% of bankroll
 
 ## Market Selection Controls
 
-- **Single-asset-per-window**: Only one asset traded per 15-minute window (the one with highest edge), preventing correlated exposure
-- **Price range guardrails**: Only trade contracts priced 80–99¢ — below 80¢ implies too much uncertainty; above 99¢ offers insufficient reward
-- **Minimum edge threshold**: Fee-adjusted edge must exceed 0.25% after taker fees
+- **Multi-asset capable**: Can trade multiple assets per 15-minute window (configurable via `ONE_ASSET_PER_WINDOW`)
+- **Price range guardrails**: Only trade contracts priced 86–99¢ — below 86¢ has historically poor win rates; above 99¢ offers insufficient reward
+- **Minimum edge threshold**: Fee-adjusted edge must exceed 1.5% after taker fees
 
 ## Model Sanity Controls
 
@@ -308,7 +320,10 @@ This creates a geometric de-risking curve that preserves capital during losing s
 
 ## Execution Controls
 
-- **Maker-first**: Reduces fees by 75% compared to taker orders when fills are obtained
+- **Maker-first with `post_only`**: Guarantees maker fee tier (75% cheaper), rejected if it would cross the spread
+- **WebSocket fill detection**: Zero-cost fill monitoring via Kalshi WebSocket, with REST polling fallback
+- **Amend-first escalation**: Uses `amend_order()` API to convert maker→taker in-place, avoiding cancel+replace race conditions
+- **IOC taker orders**: Taker escalation uses `time_in_force="ioc"` (immediate-or-cancel) to prevent stale resting orders
 - **Price re-validation**: After maker timeout, the system re-fetches the orderbook and re-validates the price range before submitting a taker order
 - **UUID persistence**: Order IDs written to disk before API submission, enabling crash recovery without duplicate orders
 

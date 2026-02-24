@@ -93,8 +93,9 @@ For the small number of markets that pass all filters, the bot determines the ap
 
 The bot uses a fee-minimizing execution strategy:
 
-- **Maker-first**: It initially places limit orders that earn more favorable fee treatment, saving up to 75% on transaction costs compared to aggressive orders
-- **Time-aware escalation**: If the limit order hasn't filled and the window is running short, the bot escalates to more aggressive execution to ensure it captures the opportunity
+- **Maker-first**: It initially places limit orders with `post_only` guarantees, earning 75% lower fees than aggressive orders
+- **Real-time fill detection**: Kalshi WebSocket provides instant fill notifications at zero API cost, with REST polling as a backup
+- **Smart escalation**: If the limit order hasn't filled, the bot first tries to amend the order in-place (faster than canceling and re-placing), then falls back to immediate-or-cancel taker orders
 - **Price re-validation**: Before every execution step, the bot re-checks current market conditions to confirm the trade still makes sense
 
 ---
@@ -160,7 +161,7 @@ If any single check fails, the trade is refused — no exceptions. The system is
 
 ## Hard Price Boundaries
 
-The bot only trades contracts priced between 80 and 99 cents. Below 80 cents, the outcome is too uncertain for the model to have reliable edge. Above 99 cents, the potential profit is too small to justify the risk. This guardrail eliminates an entire class of low-quality trades.
+The bot only trades contracts priced between 86 and 99 cents. Below 86 cents, historical data shows poor win rates and excessive uncertainty. Above 99 cents, the potential profit is too small to justify the risk. This guardrail eliminates an entire class of low-quality trades.
 
 ---
 
@@ -247,7 +248,7 @@ For readers interested in the mathematical foundations, the full technical white
 
 **Position Sizing** — Quarter-Kelly criterion with drawdown-based scaling. The Kelly fraction maximizes long-run geometric growth rate; using one-quarter of this fraction sacrifices approximately 6% of theoretical growth in exchange for dramatically reduced variance.
 
-**Execution Model** — Maker-first limit orders with time-aware taker escalation. Maker orders save 75% on fees; the system escalates to taker execution when remaining time makes patient execution risky.
+**Execution Model** — Maker-first limit orders (`post_only`) with WebSocket fill detection and smart escalation. Maker orders save 75% on fees. If unfilled, the system attempts in-place order amendment before falling back to immediate-or-cancel taker orders. Queue position monitoring enables optimal escalation timing.
 
 ---
 
