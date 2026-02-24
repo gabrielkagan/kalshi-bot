@@ -7144,6 +7144,10 @@ class OrderExecutor:
                             f"kalshi_ws_fill: {order['ticker']} order={order['order_id']} "
                             f"latency={latency_ms}ms")
                         self._on_fill(ws_fill, order)
+                        # Mark this fill as seen so REST poll won't double-count it
+                        ws_trade_id = ws_fill.get("trade_id") or ws_fill.get("id")
+                        if ws_trade_id:
+                            order.setdefault("_seen_fill_ids", set()).add(ws_trade_id)
                         if order.get("filled_so_far", 0) >= order["count"]:
                             self._active_order = None
                             return ws_fill
