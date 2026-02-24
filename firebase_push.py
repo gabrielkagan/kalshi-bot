@@ -616,6 +616,88 @@ class FirebasePusher:
                 "simulated_pnl_cents": 0,
             }
 
+        # ── real_trade_analytics (from settled_trades) ─────────────────
+        try:
+            conn = self._ml.state.conn
+            rta = {}
+
+            # P&L by asset
+            asset_rows = conn.execute(
+                "SELECT asset, COUNT(*) AS cnt, "
+                "  COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
+                "    OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
+                "  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
+                "FROM settled_trades GROUP BY asset"
+            ).fetchall()
+            rta["by_asset"] = {r["asset"]: {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in asset_rows}
+
+            # P&L by price bucket
+            bucket_rows = conn.execute(
+                "SELECT CASE "
+                "  WHEN entry_price_cents BETWEEN 87 AND 89 THEN '87-89' "
+                "  WHEN entry_price_cents BETWEEN 90 AND 94 THEN '90-94' "
+                "  WHEN entry_price_cents BETWEEN 95 AND 99 THEN '95-99' "
+                "  ELSE 'other' END AS bucket, "
+                "COUNT(*) AS cnt, "
+                "COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
+                "  OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
+                "COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
+                "FROM settled_trades GROUP BY bucket"
+            ).fetchall()
+            rta["by_bucket"] = {r["bucket"]: {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in bucket_rows}
+
+            # P&L by strategy
+            strat_rows = conn.execute(
+                "SELECT COALESCE(strategy, 'unknown') AS strat, COUNT(*) AS cnt, "
+                "  COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
+                "    OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
+                "  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
+                "FROM settled_trades GROUP BY strat"
+            ).fetchall()
+            rta["by_strategy"] = {r["strat"]: {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in strat_rows}
+
+            # P&L by hour (UTC)
+            hour_rows = conn.execute(
+                "SELECT CAST(SUBSTR(settled_at, 12, 2) AS INTEGER) AS hour, "
+                "  COUNT(*) AS cnt, "
+                "  COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
+                "    OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
+                "  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
+                "FROM settled_trades WHERE settled_at IS NOT NULL GROUP BY hour"
+            ).fetchall()
+            rta["by_hour"] = {str(r["hour"]): {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in hour_rows}
+
+            # Best and worst trade
+            best = conn.execute(
+                "SELECT ticker, asset, entry_price_cents, (pnl_cents - fee_cents) AS net, settled_at "
+                "FROM settled_trades ORDER BY net DESC LIMIT 1"
+            ).fetchone()
+            worst = conn.execute(
+                "SELECT ticker, asset, entry_price_cents, (pnl_cents - fee_cents) AS net, settled_at "
+                "FROM settled_trades ORDER BY net ASC LIMIT 1"
+            ).fetchone()
+            if best:
+                rta["best_trade"] = dict(best)
+            if worst:
+                rta["worst_trade"] = dict(worst)
+
+            # Cumulative P&L time series (for chart)
+            pnl_series = conn.execute(
+                "SELECT settled_at, (pnl_cents - fee_cents) AS net "
+                "FROM settled_trades ORDER BY settled_at"
+            ).fetchall()
+            cumulative = []
+            running = 0
+            for r in pnl_series:
+                running += r["net"]
+                cumulative.append({"ts": r["settled_at"], "cum_pnl": running})
+            rta["cumulative_pnl"] = cumulative
+
+            snap["real_trade_analytics"] = rta
+        except Exception:
+            logging.debug("Firebase: real_trade_analytics build failed", exc_info=True)
+            snap["real_trade_analytics"] = {}
+
         # ── recent_simulated_trades (last 10 observation trades with detail) ──
         try:
             conn = self._ml.state.conn
@@ -659,6 +741,18 @@ class FirebasePusher:
             snap["calibration"] = diag
         except Exception:
             snap["calibration"] = None
+
+        # ── NIG distribution parameters ────────────────────────────────
+        try:
+            import json as _json
+            dist_path = os.path.join(os.path.dirname(__file__), "dist_config.json")
+            if os.path.exists(dist_path):
+                with open(dist_path) as f:
+                    snap["nig_distribution"] = _json.load(f)
+            else:
+                snap["nig_distribution"] = None
+        except Exception:
+            snap["nig_distribution"] = None
 
         # ── HAR estimation diagnostics ─────────────────────────────────
         try:
@@ -883,6 +977,19 @@ class FirebasePusher:
             exec_eng["session_post_only_degraded"] = getattr(ex, "_session_post_only_degraded_attempts", 0)
             exec_eng["session_post_only_taker_escalations"] = getattr(ex, "_session_post_only_taker_escalations", 0)
             exec_eng["session_post_only_taker_fills"] = getattr(ex, "_session_post_only_taker_fills", 0)
+
+            # Escalation funnel
+            po_rej = exec_eng.get("session_post_only_rejections", 0)
+            po_deg = exec_eng.get("session_post_only_degraded", 0)
+            po_esc = exec_eng.get("session_post_only_taker_escalations", 0)
+            po_fill = exec_eng.get("session_post_only_taker_fills", 0)
+            exec_eng["escalation_funnel"] = {
+                "rejections": po_rej,
+                "degraded_attempts": po_deg,
+                "taker_escalations": po_esc,
+                "taker_fills": po_fill,
+                "taker_fill_rate": round(po_fill / po_esc, 3) if po_esc > 0 else None,
+            }
 
             # Derived rates
             amend_att = exec_eng["session_amend_attempts"]
