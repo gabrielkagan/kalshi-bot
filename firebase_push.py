@@ -88,6 +88,20 @@ class FirebasePusher:
         except Exception:
             snap["drawdown_kelly_mult"] = 1.0
 
+        # Balance history (append current, push last hour)
+        try:
+            self._ml._balance_history.append({
+                "ts": snap["timestamp"],
+                "bal": snap["current_balance"],
+            })
+            hist = list(self._ml._balance_history)
+            snap["balance_history"] = hist[-360:]  # last hour
+            if len(hist) > 360:
+                snap["balance_history_4h"] = hist[::max(1, len(hist) // 360)]
+        except Exception:
+            logging.debug("Firebase: balance_history build failed", exc_info=True)
+            snap["balance_history"] = []
+
         # Active positions
         try:
             positions = self._ml.state.get_open_positions()
@@ -104,9 +118,27 @@ class FirebasePusher:
         # Recent trades + win/loss from settled_trades
         try:
             conn = self._ml.state.conn
-            rows = conn.execute(
-                "SELECT * FROM settled_trades ORDER BY settled_at DESC LIMIT 10"
-            ).fetchall()
+            try:
+                rows = conn.execute("""
+                    SELECT st.ticker, st.event_ticker, st.asset, st.market_result,
+                           st.side, st.count, st.entry_price_cents, st.revenue_cents,
+                           st.fee_cents, st.pnl_cents, st.settled_at,
+                           COALESCE(st.strategy, eo.strategy) AS strategy,
+                           COALESCE(st.vol_regime, eo.vol_regime) AS vol_regime,
+                           COALESCE(st.seconds_to_close, eo.seconds_to_close) AS ttc,
+                           COALESCE(st.edge, eo.edge) AS edge,
+                           COALESCE(st.kelly_f, eo.kelly_f) AS kelly_f,
+                           st.fill_latency_seconds, st.calibrated_prob
+                    FROM settled_trades st
+                    LEFT JOIN evaluated_opportunities eo
+                        ON st.ticker = eo.ticker AND eo.filter_stage = 'observation_trade'
+                    ORDER BY st.settled_at DESC LIMIT 10
+                """).fetchall()
+            except Exception:
+                # Fallback: enrichment columns may not exist yet (pre-migration)
+                rows = conn.execute(
+                    "SELECT * FROM settled_trades ORDER BY settled_at DESC LIMIT 10"
+                ).fetchall()
             snap["recent_trades"] = [dict(r) for r in rows]
 
             # Win/loss counts (same logic as SettlementTracker)
@@ -168,6 +200,65 @@ class FirebasePusher:
             snap["daily_pnl_cents"] = 0
             snap["daily_pnl_pct"] = 0.0
             snap["consecutive_losses"] = 0
+
+        # Risk metrics
+        try:
+            risk = {}
+            peak = snap.get("peak_balance", 0)
+            cur = snap.get("current_balance", 0)
+            risk["max_drawdown_pct"] = round((peak - cur) / peak * 100, 2) if peak > 0 else 0.0
+            risk["max_drawdown_dollars"] = round(peak - cur, 2)
+
+            conn = self._ml.state.conn
+            all_pnl = conn.execute(
+                "SELECT (pnl_cents - fee_cents) AS net FROM settled_trades"
+            ).fetchall()
+            nets = [r["net"] for r in all_pnl]
+            n = len(nets)
+            if n > 0:
+                total = sum(nets)
+                mean = total / n
+                variance = sum((x - mean) ** 2 for x in nets) / n if n > 1 else 0
+                std = variance ** 0.5
+                uptime_days = max(snap.get("uptime_seconds", 1) / 86400, 0.01)
+                trades_per_day = n / uptime_days
+                risk["sharpe_ratio"] = round(mean / std * (trades_per_day ** 0.5), 2) if std > 0 else 0.0
+                risk["total_pnl_cents"] = total
+                risk["avg_pnl_per_trade"] = round(total / n, 1)
+                gross_wins = sum(x for x in nets if x > 0)
+                gross_losses = abs(sum(x for x in nets if x < 0))
+                risk["profit_factor"] = round(gross_wins / gross_losses, 2) if gross_losses > 0 else 999.0
+                risk["total_trades"] = n
+            else:
+                risk.update({"sharpe_ratio": 0, "total_pnl_cents": 0, "avg_pnl_per_trade": 0,
+                              "profit_factor": 0, "total_trades": 0})
+            snap["risk_metrics"] = risk
+        except Exception:
+            logging.debug("Firebase: risk_metrics build failed", exc_info=True)
+            snap["risk_metrics"] = None
+
+        # Execution quality
+        try:
+            lats = list(self._ml._recent_fill_latencies)
+            eq = {}
+            if lats:
+                lats_sorted = sorted(lats)
+                eq["avg_fill_latency_ms"] = round(sum(lats) / len(lats) * 1000, 1)
+                eq["median_fill_latency_ms"] = round(lats_sorted[len(lats_sorted) // 2] * 1000, 1)
+                eq["min_fill_latency_ms"] = round(lats_sorted[0] * 1000, 1)
+                eq["max_fill_latency_ms"] = round(lats_sorted[-1] * 1000, 1)
+                eq["recent_count"] = len(lats)
+            else:
+                eq = {"avg_fill_latency_ms": 0, "median_fill_latency_ms": 0,
+                      "min_fill_latency_ms": 0, "max_fill_latency_ms": 0, "recent_count": 0}
+            eq["session_fills"] = getattr(self._ml, "_session_fill_count", 0)
+            maker_subs = getattr(self._ml, "_session_maker_submissions", 0)
+            maker_fills = getattr(self._ml, "_session_maker_fills", 0)
+            eq["maker_fill_rate"] = round(maker_fills / maker_subs, 3) if maker_subs > 0 else 0.0
+            snap["execution_quality"] = eq
+        except Exception:
+            logging.debug("Firebase: execution_quality build failed", exc_info=True)
+            snap["execution_quality"] = None
 
         # Volatility from cache (read-only)
         try:
@@ -294,6 +385,24 @@ class FirebasePusher:
         except Exception:
             snap["seconds_to_next_close"] = -1
             snap["active_windows"] = {"total": 0, "by_asset": {}}
+
+        # Convergence velocity per asset
+        try:
+            conv = {}
+            scanner = self._ml.scanner
+            # Snapshot keys to avoid RuntimeError from dict mutation during iteration
+            ticker_keys = list(scanner._ticker_ask_history.keys())
+            for asset in ASSETS:
+                velocities = []
+                for ticker in ticker_keys:
+                    history = scanner._ticker_ask_history.get(ticker)
+                    if history and asset.lower() in ticker.lower() and len(history) >= 2:
+                        velocities.append(scanner._scanner_convergence_velocity(ticker))
+                conv[asset] = round(max(velocities), 2) if velocities else 0.0
+            snap["convergence_velocity"] = conv
+        except Exception:
+            logging.debug("Firebase: convergence_velocity build failed", exc_info=True)
+            snap["convergence_velocity"] = None
 
         # Bot status
         try:

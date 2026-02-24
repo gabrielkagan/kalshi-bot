@@ -1042,6 +1042,38 @@ class StateManager:
                 pass  # column already exists
         self.conn.commit()
 
+        # Migration: add enrichment columns to settled_trades
+        for col_def in [
+            ("strategy", "TEXT"),
+            ("seconds_to_close", "REAL"),
+            ("fill_latency_seconds", "REAL"),
+            ("vol_regime", "TEXT"),
+            ("calibrated_prob", "REAL"),
+            ("edge", "REAL"),
+            ("kelly_f", "REAL"),
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE settled_trades ADD COLUMN {col_def[0]} {col_def[1]}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+        self.conn.commit()
+
+        # Migration: add enrichment columns to positions
+        for col_def in [
+            ("strategy", "TEXT"),
+            ("seconds_to_close", "REAL"),
+            ("fill_latency_seconds", "REAL"),
+            ("vol_regime", "TEXT"),
+            ("calibrated_prob", "REAL"),
+            ("edge", "REAL"),
+            ("kelly_f", "REAL"),
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE positions ADD COLUMN {col_def[0]} {col_def[1]}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+        self.conn.commit()
+
     # ── Ticker Parsing ────────────────────────────────────────────────────
 
     @staticmethod
@@ -1213,11 +1245,12 @@ class StateManager:
         ticker = settlement["ticker"]
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-        pos = self.conn.execute(
+        pos_row = self.conn.execute(
             "SELECT * FROM positions WHERE ticker=?", (ticker,)
         ).fetchone()
-        if not pos:
+        if not pos_row:
             return
+        pos = dict(pos_row)
 
         result = settlement.get("market_result", "")
         rev_d = settlement.get("revenue_dollars")
@@ -1230,11 +1263,15 @@ class StateManager:
             INSERT OR REPLACE INTO settled_trades
                 (ticker, event_ticker, asset, market_result, side, count,
                  entry_price_cents, revenue_cents, fee_cents, pnl_cents,
-                 settled_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                 settled_at, strategy, seconds_to_close, fill_latency_seconds,
+                 vol_regime, calibrated_prob, edge, kelly_f)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, pos["event_ticker"], pos["asset"], result,
               pos["side"], pos["count"], pos["avg_price_cents"],
-              revenue, fee, pnl, now))
+              revenue, fee, pnl, now,
+              pos.get("strategy"), pos.get("seconds_to_close"),
+              pos.get("fill_latency_seconds"), pos.get("vol_regime"),
+              pos.get("calibrated_prob"), pos.get("edge"), pos.get("kelly_f")))
 
         self.conn.execute("""
             UPDATE positions SET status='settled', updated_at=?
@@ -1393,17 +1430,24 @@ class StateManager:
 
     def record_position_from_fill(self, ticker: str, event_ticker: str,
                                   asset: str, side: str, count: int,
-                                  price_cents: int):
+                                  price_cents: int, strategy=None,
+                                  seconds_to_close=None, fill_latency=None,
+                                  vol_regime=None, calibrated_prob=None,
+                                  edge=None, kelly_f=None):
         """Record a new open position from a fill."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         cost = count * price_cents
         self.conn.execute("""
             INSERT OR REPLACE INTO positions
                 (ticker, event_ticker, asset, side, count,
-                 avg_price_cents, total_cost_cents, opened_at, updated_at, status)
-            VALUES (?,?,?,?,?,?,?,?,?,'open')
+                 avg_price_cents, total_cost_cents, opened_at, updated_at, status,
+                 strategy, seconds_to_close, fill_latency_seconds,
+                 vol_regime, calibrated_prob, edge, kelly_f)
+            VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?)
         """, (ticker, event_ticker, asset, side, count,
-              price_cents, cost, now, now))
+              price_cents, cost, now, now,
+              strategy, seconds_to_close, fill_latency,
+              vol_regime, calibrated_prob, edge, kelly_f))
         self.conn.commit()
 
     def update_garch_params(self, asset: str, omega: float, alpha: float,
@@ -6137,10 +6181,11 @@ class OrderExecutor:
     """
 
     def __init__(self, client: KalshiClient, state: StateManager,
-                 logger: Logger):
+                 logger: Logger, main_loop=None):
         self._client = client
         self._state = state
         self._logger = logger
+        self._ml = main_loop
         self._active_order: Optional[Dict] = None
         self._last_poll: float = 0.0
         self._ask_history: deque = deque(maxlen=30)
@@ -6575,6 +6620,8 @@ class OrderExecutor:
 
         order_id = (resp.get("order") or {}).get("order_id", client_oid)
         self._state.confirm_order_submitted(client_oid, order_id)
+        if self._ml:
+            self._ml._session_maker_submissions += 1
 
         self._active_order = {
             "order_id": order_id,
@@ -6709,6 +6756,18 @@ class OrderExecutor:
         # Update order status
         self._state.mark_order_status(order_id, "filled")
 
+        # Track fill latency
+        fill_latency = round(time.time() - order["submit_time"], 3)
+        try:
+            if self._ml:
+                self._ml._recent_fill_latencies.append(fill_latency)
+                self._ml._session_fill_count += 1
+                if not order.get("is_taker", True):
+                    self._ml._session_maker_fills += 1
+        except Exception:
+            logging.debug("Fill latency tracking failed", exc_info=True)
+        logging.info(f"Fill latency: {fill_latency:.3f}s ({'taker' if order.get('is_taker') else 'maker'})")
+
         # Extract fill details — prefer FP/dollar fields, fall back to legacy
         fill_count = fp_str_to_int(fill.get("count_fp")) or (fill.get("count") or order["count"])
         fill_price_d = fill.get("yes_price_dollars")
@@ -6722,6 +6781,13 @@ class OrderExecutor:
             side="yes",
             count=fill_count,
             price_cents=fill_price,
+            strategy=candidate.get("strategy"),
+            seconds_to_close=order.get("seconds_to_close_at_submit"),
+            fill_latency=fill_latency,
+            vol_regime=candidate.get("vol_regime"),
+            calibrated_prob=candidate.get("calibrated_prob"),
+            edge=candidate.get("edge"),
+            kelly_f=candidate.get("kelly_f"),
         )
 
         # Log trade with all required fields
@@ -7285,7 +7351,7 @@ class MainLoop:
             self.client, self.state, self.feed, self.vol, self.logger,
             self.sizer, order_flow=self.order_flow,
         )
-        self.executor = OrderExecutor(self.client, self.state, self.logger)
+        self.executor = OrderExecutor(self.client, self.state, self.logger, main_loop=self)
         self.tracker = SettlementTracker(self.client, self.state, self.logger)
         self._shutdown = threading.Event()
         self._active_windows: List[Dict] = []
@@ -7294,6 +7360,11 @@ class MainLoop:
         self._last_error_time: float = 0.0
         self._start_time: float = time.time()
         self._peak_balance: float = 0.0
+        self._balance_history: deque = deque(maxlen=8640)  # ~24h at 10s intervals
+        self._recent_fill_latencies: deque = deque(maxlen=100)
+        self._session_fill_count: int = 0
+        self._session_maker_submissions: int = 0
+        self._session_maker_fills: int = 0
         self._last_summary_date: Optional[str] = None
         self._observation_mode: bool = OBSERVATION_MODE
 
