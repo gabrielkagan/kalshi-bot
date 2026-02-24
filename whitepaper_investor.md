@@ -8,7 +8,7 @@ date: "February 2026"
 
 This document describes an automated trading system for **Kalshi**, the first CFTC-regulated prediction market exchange in the United States. The bot trades short-duration cryptocurrency contracts — binary options that settle every 15 minutes — using a systematic, model-driven approach designed to capture small but frequent mispricings.
 
-The system monitors real-time prices across seven data sources, estimates outcome probabilities using institutional-grade statistical models, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around capital preservation and disciplined risk management.
+The system monitors real-time prices across seven data sources, estimates outcome probabilities using institutional-grade statistical models with per-asset distribution fitting, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around capital preservation and disciplined risk management.
 
 **Key facts:**
 
@@ -16,6 +16,7 @@ The system monitors real-time prices across seven data sources, estimates outcom
 - {{TOTAL_SETTLED}} markets settled with verified outcomes
 - {{WIN_RATE}} observed win rate across all settled positions
 - Fully automated, always-on operation with complete audit trail
+- Live trading with real capital since February 2026
 
 ---
 
@@ -53,7 +54,7 @@ The system maintains real-time connections to seven data sources simultaneously:
 - **Four spot exchanges** (Coinbase, Binance, Kraken, Bybit) — providing live cryptocurrency prices with sub-second updates
 - **Deribit** — the leading crypto derivatives exchange, providing implied volatility data that reflects the market's forward-looking risk expectations
 - **CoinGlass** — providing funding rate data from perpetual futures markets, indicating leverage buildup and crowded positioning
-- **Kalshi** — the prediction market itself, providing current contract prices and orderbook depth
+- **Kalshi** — the prediction market itself, providing current contract prices, orderbook depth, and real-time fill notifications via WebSocket
 
 This multi-source approach means the bot sees price movements developing across global markets before they are reflected in Kalshi contract prices.
 
@@ -62,12 +63,12 @@ This multi-source approach means the bot sees price movements developing across 
 For every active market, the bot estimates the probability that the underlying asset will stay above the contract's threshold for the remainder of the 15-minute window. This estimate incorporates:
 
 - Current spot price relative to the threshold
-- Recent realized volatility (how much the price has been moving)
+- Recent realized volatility (how much the price has been moving), estimated using noise-robust academic methods
 - Options-implied volatility (what the derivatives market expects)
 - Cross-exchange price signals (whether other exchanges are leading a move)
 - Funding rate regime (whether leveraged positions suggest mean-reversion risk)
 
-The probability model uses fat-tailed statistical distributions that better capture the reality of crypto markets, where sudden large moves occur more frequently than simple models predict.
+The probability model uses **Normal Inverse Gaussian (NIG) distributions** fitted specifically to each cryptocurrency's return characteristics. Unlike generic models, NIG captures both the heavy tails (large moves are more common than a bell curve predicts) and the asymmetry (upward and downward moves have different frequencies) unique to each asset.
 
 ## 3. Filter
 
@@ -75,9 +76,9 @@ Most markets are not worth trading. The system applies a rigorous multi-stage fi
 
 - The model's estimated probability is too low (the contract is unlikely to pay out)
 - The Kalshi price is too high (not enough profit potential) or too low (too much uncertainty)
-- The edge after fees is insufficient
-- Another asset in the same window offers a better opportunity
+- The edge after fees is insufficient (evaluated at worst-case taker fee rates)
 - The model and the market disagree by a suspicious margin (suggesting the model may be missing information)
+- Statistical inputs appear unreliable (extreme z-scores indicating potential data issues)
 
 Of {{TOTAL_EVALUATED}} markets evaluated during the observation period, the vast majority are correctly identified as unprofitable and filtered out — the system is highly selective.
 
@@ -91,11 +92,12 @@ For the small number of markets that pass all filters, the bot determines the ap
 
 ## 5. Execute
 
-The bot uses a fee-minimizing execution strategy:
+The bot uses a fee-minimizing execution strategy with intelligent escalation:
 
 - **Maker-first**: It initially places limit orders with `post_only` guarantees, earning 75% lower fees than aggressive orders
+- **Three-tier rejection handling**: If a maker order is rejected (locked spread), the system tries a degraded maker (worse price), then escalates to an aggressive taker order — but only after re-verifying the trade is still profitable at the higher fee rate
 - **Real-time fill detection**: Kalshi WebSocket provides instant fill notifications at zero API cost, with REST polling as a backup
-- **Smart escalation**: If the limit order hasn't filled, the bot first tries to amend the order in-place (faster than canceling and re-placing), then falls back to immediate-or-cancel taker orders
+- **Smart escalation**: If a limit order hasn't filled as the window nears expiry, the bot first tries to amend the order in-place (faster than canceling and re-placing), then falls back to immediate-or-cancel taker orders
 - **Price re-validation**: Before every execution step, the bot re-checks current market conditions to confirm the trade still makes sense
 
 ---
@@ -110,15 +112,15 @@ While a typical Kalshi trader might check the Bitcoin price on one website, this
 
 ## Volatility Sophistication
 
-The probability of a crypto asset staying above a given price depends critically on how much the price is expected to move. The bot uses academic-grade volatility estimation techniques (Realized Kernel estimators from Barndorff-Nielsen 2008, HAR-RV multi-horizon blending) that are standard in institutional finance but rare among retail prediction market participants. This produces more accurate probability estimates, especially during volatile periods.
+The probability of a crypto asset staying above a given price depends critically on how much the price is expected to move. The bot uses academic-grade volatility estimation techniques (Realized Kernel estimators from Barndorff-Nielsen 2008, data-adaptive bandwidth selection, Mincer-Zarnowitz R²-weighted blending) that are standard in institutional finance but rare among retail prediction market participants. This produces more accurate probability estimates, especially during volatile periods.
 
-## Derivatives Intelligence
+## Distribution Fitting
 
-The bot integrates implied volatility from Deribit (the leading crypto options exchange) and funding rates from CoinGlass (perpetual futures data). These signals capture the broader crypto market's risk expectations and positioning, providing context that pure spot-price analysis misses entirely.
+Most quantitative models assume returns follow a simple bell curve (Gaussian) or a generic fat-tailed distribution. This system fits **Normal Inverse Gaussian distributions** to each cryptocurrency individually, capturing the specific tail behavior and asymmetry of BTC, ETH, SOL, and XRP. This produces measurably better probability estimates — statistical tests confirm NIG fits the actual data far better than generic alternatives.
 
 ## Fee Optimization
 
-Kalshi charges different fees for different order types. The bot's maker-first execution strategy captures the 75% fee discount available to limit orders whenever possible, directly improving the profit margin on every trade. This seemingly small advantage compounds significantly over hundreds of trades.
+Kalshi charges different fees for different order types. The bot's maker-first execution strategy with three-tier escalation captures the 75% fee discount available to limit orders whenever possible, directly improving the profit margin on every trade. When forced to pay taker fees (locked spreads), the system re-verifies profitability before proceeding. This seemingly small advantage compounds significantly over hundreds of trades.
 
 ---
 
@@ -143,16 +145,16 @@ If the account balance drops below certain thresholds relative to its starting v
 
 This creates a geometric de-risking curve: the more the account loses, the less it risks, making recovery from drawdowns more manageable.
 
-## Diversification Rule
+## Multi-Asset Trading
 
-The bot trades only **one asset per 15-minute window** — whichever offers the highest edge. This prevents correlated exposure (e.g., being long both BTC and ETH when a broad crypto selloff hits) and concentrates capital on the best available opportunity.
+The bot can trade multiple assets per 15-minute window, concentrating capital on the best available opportunities while maintaining independent risk assessment for each position.
 
 ## Multiple Safety Checks
 
 Before any trade is placed, the system verifies:
 
 - The model's probability estimate passes a sanity check against the market price
-- The estimated edge exceeds the minimum threshold after accounting for all fees
+- The estimated edge exceeds the minimum threshold after accounting for all fees (at worst-case taker rates)
 - The contract price falls within acceptable bounds (not too cheap, not too expensive)
 - No extreme statistical indicators suggest unreliable model inputs
 - The position size respects all hard limits and drawdown adjustments
@@ -161,7 +163,7 @@ If any single check fails, the trade is refused — no exceptions. The system is
 
 ## Hard Price Boundaries
 
-The bot only trades contracts priced between 86 and 99 cents. Below 86 cents, historical data shows poor win rates and excessive uncertainty. Above 99 cents, the potential profit is too small to justify the risk. This guardrail eliminates an entire class of low-quality trades.
+The bot only trades contracts priced between 87 and 99 cents. Below 87 cents, historical data shows poor win rates and excessive uncertainty. Above 99 cents, the potential profit is too small to justify the risk. This guardrail eliminates an entire class of low-quality trades.
 
 ---
 
@@ -227,8 +229,8 @@ This pipeline ensures rapid iteration while maintaining a safety net against bro
 Every decision the bot makes is logged:
 
 - **SQLite database** — Stores all positions, orders, fills, settlements, and every market evaluation with its filter stage outcome
-- **Eight JSONL journal files** — Append-only logs covering scans, opportunities, rejections, trades, settlements, orders, execution events, and performance summaries
-- **Firebase dashboard** — Real-time web interface showing current positions, market evaluations, and system status
+- **Nine JSONL journal files** — Append-only logs covering scans, opportunities, rejections, trades, settlements, orders, execution events, performance summaries, and maker order fill model training data
+- **Firebase dashboard** — Real-time web interface showing current positions, market evaluations, system status, and execution engine statistics
 
 This comprehensive logging enables full after-the-fact analysis of any trade or decision.
 
@@ -242,13 +244,13 @@ Order identifiers are written to the database before API submission. If the bot 
 
 For readers interested in the mathematical foundations, the full technical whitepaper provides detailed formulas and derivations. Brief summaries of the key models:
 
-**Volatility Model** — Uses the Realized Kernel estimator (Barndorff-Nielsen 2008) to produce noise-robust volatility from high-frequency returns, blended across 1/5/15-minute horizons using the HAR-RV framework. Includes jump detection (bipower variation) and options-implied volatility integration from Deribit.
+**Volatility Model** — Uses the Realized Kernel estimator (Barndorff-Nielsen 2008) with data-adaptive bandwidth selection to produce noise-robust volatility from high-frequency returns. Multiple estimators are blended using Mincer-Zarnowitz R²-weighted EMA blending, replacing fixed weights with data-driven quality scores. Includes adaptive jump detection (percentile-based thresholds per asset) and options-implied volatility integration from Deribit. An EGARCH(1,1) model with Student-t innovations runs in shadow mode, computing forecasts without affecting live decisions.
 
-**Probability Model** — Computes win probability using a Student-t distribution (4 degrees of freedom) applied to the z-score of price distance to threshold, with logistic calibration for model uncertainty and a dynamic time-dependent probability cap.
+**Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven: as settlement outcomes accumulate, the CalibrationEngine progresses from fixed logistic scaling to Platt Scaling to Beta Calibration to Isotonic Regression. A dynamic time-dependent probability cap relaxes as expiry approaches (93% at 10min+ → 99.5% at <1min).
 
 **Position Sizing** — Quarter-Kelly criterion with drawdown-based scaling. The Kelly fraction maximizes long-run geometric growth rate; using one-quarter of this fraction sacrifices approximately 6% of theoretical growth in exchange for dramatically reduced variance.
 
-**Execution Model** — Maker-first limit orders (`post_only`) with WebSocket fill detection and smart escalation. Maker orders save 75% on fees. If unfilled, the system attempts in-place order amendment before falling back to immediate-or-cancel taker orders. Queue position monitoring enables optimal escalation timing.
+**Execution Model** — Three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Maker orders use `post_only=True` to guarantee 75% fee savings. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment before falling back to cancel + IOC. Queue position monitoring enables optimal escalation timing.
 
 ---
 

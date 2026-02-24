@@ -18,19 +18,20 @@ Kalshi lists 15-minute crypto contracts around the clock. Each window produces f
 
 ## Strategy in Plain English
 
-1. **Observe** — Continuously stream spot prices from Coinbase, Binance, Kraken, and Bybit. Fetch implied volatility from Deribit and funding rates from CoinGlass.
-2. **Estimate** — For every active market, compute the probability that the asset stays above its threshold using a volatility-weighted, fat-tailed statistical model.
+1. **Observe** — Continuously stream spot prices from Coinbase, Binance, Kraken, and Bybit. Fetch implied volatility from Deribit and funding rates from CoinGlass. Monitor Kalshi's own orderbook via WebSocket.
+2. **Estimate** — For every active market, compute the probability that the asset stays above its threshold using a volatility-weighted, fat-tailed statistical model with per-asset Normal Inverse Gaussian (NIG) distributions.
 3. **Filter** — Reject markets that are too uncertain, too expensive, or offer insufficient edge after fees.
 4. **Size** — Use a conservative Kelly criterion (quarter-Kelly) to determine position size, with automatic scaling during drawdowns.
-5. **Execute** — Place maker (limit) orders first to minimize fees, escalating to taker orders if time runs short.
+5. **Execute** — Place maker (limit) orders first to minimize fees, with three-tier post_only rejection handling and time-aware taker escalation.
 6. **Settle** — Track outcomes via the Kalshi settlements API and log performance for continuous evaluation.
 
 ## Key Differentiators
 
 - **Multi-exchange intelligence**: Aggregates spot prices from 4 exchanges plus derivatives signals from Deribit and CoinGlass, detecting cross-exchange lead-lag patterns before they appear in Kalshi prices.
-- **Microstructure-aware volatility**: Uses Realized Kernel estimation (Barndorff-Nielsen 2008) rather than naive sample variance, correctly handling market microstructure noise.
-- **Adaptive execution**: Maker-first strategy with time-aware taker escalation minimizes fees while ensuring fills before window expiry.
-- **Comprehensive risk controls**: Quarter-Kelly sizing, drawdown scaling, single-asset-per-window rule, z-score sanity checks, and model-market discrepancy detection.
+- **Microstructure-aware volatility**: Uses Realized Kernel estimation (Barndorff-Nielsen 2008) with data-adaptive bandwidth selection, Mincer-Zarnowitz R²-weighted blending, and EGARCH conditional volatility modeling.
+- **Per-asset NIG distributions**: Normal Inverse Gaussian CDF replaces the generic Student-t, capturing both heavy tails and asymmetry specific to each cryptocurrency.
+- **Adaptive execution**: Three-tier post_only rejection handler (normal → degraded → taker IOC), plus maker-first strategy with time-aware escalation, minimizes fees while ensuring fills.
+- **Comprehensive risk controls**: Quarter-Kelly sizing, drawdown scaling, z-score sanity checks, data-driven calibration, and model-market discrepancy detection.
 
 ---
 
@@ -47,31 +48,37 @@ Kalshi lists 15-minute crypto contracts around the clock. Each window produces f
   Deribit API ─────────────┘         OrderFlowEngine           PositionSizer
   CoinGlass API ──────────────────────────┘                         │
                                                                     ▼
-  Kalshi API ◄──────────────────────────────────────────── OrderExecutor
-       │                                                        │
-       ▼                                                        ▼
-  SettlementTracker ──→ StateManager (SQLite) ◄────── Logger (8 JSONL journals)
+  Kalshi API + WS ◄────────────────────────────────────────── OrderExecutor
+       │                                                          │
+       ▼                                                          ▼
+  SettlementTracker ──→ StateManager (SQLite) ◄──── Logger (9 JSONL journals)
+                              ↑
+                     CalibrationEngine
 ```
 
 ## Component Overview
 
-The system comprises 15 classes, each with a single responsibility:
+The system comprises 17 classes, each with a single responsibility:
 
 | Component | Role |
 |---|---|
 | **KalshiClient** | API communication with RSA-PSS authentication and per-second rate limiting (30 reads/sec, 30 writes/sec on Advanced tier) |
-| **Logger** | Structured JSONL logging across 8 journals with fill deduplication |
+| **KalshiFeed** | WebSocket connection for real-time fills and orderbook delta streaming |
+| **Logger** | Structured JSONL logging across 9 journals with fill deduplication |
 | **StateManager** | SQLite-backed persistent state (WAL mode for crash resilience); tracks positions, orders, fills, and settlements |
 | **CoinbaseFeed** | Real-time WebSocket feed for BTC, ETH, SOL, XRP with 300-point price buffer (5 minutes at 1-second intervals) |
 | **DeribitDVOLFetcher** | Daemon thread fetching implied volatility (DVOL) index for BTC and ETH every 60 seconds |
 | **CrossExchangeFeed** | Multi-exchange WebSocket feeds from Binance, Kraken, and Bybit for cross-exchange lead-lag detection |
 | **CoinGlassFetcher** | Funding rate data from CoinGlass API (10-minute intervals, 15-minute TTL) for leverage regime detection |
 | **OrderFlowEngine** | Aggregates cross-exchange consensus and derivatives signals into probability adjustments (capped at ±3 percentage points) |
-| **VolatilityEngine** | Realized Kernel volatility with HAR-RV blending across 1/5/15-minute windows, plus jump detection and DVOL integration |
-| **ProbabilityEngine** | Win probability via Student-t CDF (df=4) with logistic calibration, dynamic caps, and market-price blending |
+| **KalshiOrderFlowTracker** | Shadow-mode Kalshi-native orderbook imbalance, depth velocity, and spread convergence signals |
+| **VolatilityEngine** | Realized Kernel volatility with adaptive bandwidth (H*), MZ R²-weighted blending, EGARCH(1,1) Student-t (shadow), HAR-RV (shadow), plus adaptive jump detection and DVOL integration |
+| **MZTracker** | Mincer-Zarnowitz R² regression for dynamic EGARCH blend weight estimation with EMA smoothing |
+| **ProbabilityEngine** | Win probability via NIG CDF (per-asset fitted) with data-driven calibration, dynamic caps, and market-price blending |
+| **CalibrationEngine** | Learns calibration from settlement outcomes: Platt Scaling → Beta Calibration → Isotonic Regression as data grows |
 | **PositionSizer** | Quarter-Kelly position sizing with drawdown-based scaling |
-| **OpportunityScanner** | 10-stage filter pipeline evaluating all markets across active 15-minute windows |
-| **OrderExecutor** | Maker-first limit orders with adaptive taker escalation based on time-to-expiry |
+| **OpportunityScanner** | Multi-stage filter pipeline evaluating all markets across active 15-minute windows |
+| **OrderExecutor** | Three-tier post_only handler, maker-first limit orders with adaptive taker escalation, WebSocket fill detection, amend-first conversion |
 | **SettlementTracker** | Incremental settlement polling (30-second intervals) using the Kalshi settlements API |
 | **MainLoop** | Continuous 1-second observation loop coordinating all components |
 
@@ -85,7 +92,7 @@ The system comprises 15 classes, each with a single responsibility:
 | Bybit | Spot prices (cross-exchange) | WebSocket | Real-time |
 | Deribit | Implied volatility (DVOL) for BTC/ETH | REST API | 60 seconds |
 | CoinGlass | Funding rates (BTC, ETH, SOL, XRP) | REST API | 10 minutes |
-| Kalshi | Markets, orderbooks, balance, fills, settlements | REST API | On-demand |
+| Kalshi | Markets, orderbooks, balance, fills, settlements | REST API + WebSocket | On-demand + real-time |
 
 ---
 
@@ -93,39 +100,62 @@ The system comprises 15 classes, each with a single responsibility:
 
 ## 3.1 Volatility Engine
 
-The volatility engine produces a per-asset, per-5-second realized volatility estimate that feeds the probability model. It combines three techniques:
+The volatility engine produces a per-asset, per-5-second realized volatility estimate that feeds the probability model. It combines multiple techniques with data-adaptive weighting.
 
 ### Realized Kernel (Barndorff-Nielsen 2008)
 
-Standard sample variance of high-frequency returns is biased by market microstructure noise (bid-ask bounce, discrete tick sizes). The Realized Kernel estimator corrects this using a kernel-weighted autocovariance function, producing noise-robust volatility estimates from 5-second log returns.
+Standard sample variance of high-frequency returns is biased by market microstructure noise (bid-ask bounce, discrete tick sizes). The Realized Kernel estimator corrects this using a kernel-weighted autocovariance function with a Parzen flat-top kernel, producing noise-robust volatility estimates from 5-second log returns.
 
-### HAR-RV Blending
+**Adaptive bandwidth (H*)**: Rather than using a fixed bandwidth H=1, the system estimates the optimal bandwidth from the data using the noise-to-signal ratio:
 
-Volatility exhibits heterogeneous persistence — recent moves matter more than distant ones, but ignoring longer history causes whipsawing. The system computes realized volatility at three horizons and blends them:
+$$H^* = c \times \left(\frac{\hat{\omega}^2}{\text{IV}}\right)^{2/5} \times n^{3/5}$$
 
-$$\sigma_{blended} = 0.50 \times \sigma_{1min} + 0.30 \times \sigma_{5min} + 0.20 \times \sigma_{15min}$$
+where $\hat{\omega}^2$ is the estimated microstructure noise variance and IV is the integrated variance. This produces tighter estimates during calm periods and wider smoothing during noisy periods.
 
-where each $\sigma_h$ is the square root of the sum of squared 5-second log returns over that horizon (12, 60, and 180 returns respectively).
+### Mincer-Zarnowitz R²-Weighted Blending
 
-### Jump Detection
+Rather than fixed weights (the earlier 50/30/20 scheme), the system dynamically weights estimators based on their forecasting quality. A Mincer-Zarnowitz regression compares each estimator's forecast against realized outcomes:
 
-Jumps — sudden, large price moves — invalidate smooth volatility assumptions. The system detects them using a Bipower Variation comparison:
+$$RV_{t+1} = \alpha + \beta \times \hat{\sigma}_t + \varepsilon_t$$
 
-- A return exceeding $3\sigma$ of the current realized volatility triggers a **jump event**
-- During a jump event, the volatility estimate is multiplied by **2.0×** for **60 seconds**
-- The elevated regime decays after 60 seconds, reverting to normal estimation
+The R² from this regression measures forecast quality. Weights are smoothed using an EMA (λ=0.97) to prevent whipsawing:
+
+$$w_t = \lambda \times w_{t-1} + (1-\lambda) \times w_{raw}$$
+
+Below an R² threshold of 0.10, the system reverts to equal-weight blending as a fallback.
+
+### EGARCH(1,1) with Student-t Innovations (Shadow Mode)
+
+An EGARCH model captures volatility clustering and leverage effects:
+
+$$\log(\sigma_t^2) = \omega + \alpha \left(|z_{t-1}| - E[|z|]\right) + \gamma z_{t-1} + \beta \log(\sigma_{t-1}^2)$$
+
+Fitted with Student-t innovations (df typically 3.2–3.8 for crypto) via maximum likelihood on 10,800 samples (3 hours at 1-second intervals), refitted hourly. Currently in shadow mode — logging forecasts and computing MZ R² blend weights, but not affecting live trading decisions.
+
+### HAR-RV Model (Shadow Mode)
+
+The Heterogeneous Autoregressive model of Realized Volatility captures multi-horizon persistence:
+
+$$RV_{t+1} = \beta_0 + \beta_d RV_t^{(d)} + \beta_w RV_t^{(w)} + \beta_m RV_t^{(m)} + \varepsilon_t$$
+
+Extended variants include jump components (HAR-J), semi-variance (HAR-Semi), implied volatility integration (HAR-IV), and variance risk premium (HAR-VRP). Fitted with ridge regression (α=0.05) to prevent overfitting. Currently in shadow mode and **not producing viable models** — all variants are rejected by coefficient validity checks (negative weights, sum-of-weights outside [0.3, 2.5]). The 15-minute crypto environment may lack the daily/weekly seasonality HAR was designed for.
+
+### Adaptive Jump Detection
+
+Jumps — sudden, large price moves — invalidate smooth volatility assumptions. The system uses an adaptive threshold rather than the fixed 3σ approach:
+
+- **EWMA variance tracking**: Tracks running variance of 15-second subsampled returns (λ=0.94)
+- **Percentile-based threshold**: Jump trigger set at the asset's own volatility distribution percentile, adapting to current regime
+- **Tiered response**: Jump multiplier and cooldown duration scale with jump severity
+- **Health monitoring**: Logs EWMA σ, percentile, threshold, and total jump count per asset
 
 ### DVOL Integration
 
-When Deribit implied volatility (DVOL) exceeds realized volatility by more than 50%, the system blends in the implied estimate:
-
-$$\sigma_{final} = 0.75 \times \sigma_{RV} + 0.25 \times \sigma_{IV}$$
-
-This respects the market's forward-looking information during regime changes while anchoring to observed data.
+When Deribit implied volatility (DVOL) exceeds realized volatility by more than 50%, the system blends in the implied estimate using inverse-variance weighting. This respects the market's forward-looking information during regime changes while anchoring to observed data.
 
 ### Cross-Asset Beta
 
-For assets without direct DVOL data (SOL, XRP), the system estimates a cross-asset beta against BTC using a 60-return lookback window, allowing derivative signals to propagate across correlated assets.
+For assets without direct DVOL data (SOL, XRP), the system estimates a cross-asset beta against BTC using a 60-return lookback window, clamped to [0.5, 3.0], allowing derivative signals to propagate across correlated assets.
 
 ## 3.2 Probability Model
 
@@ -137,34 +167,46 @@ $$z = \frac{\text{threshold} - \text{spot}}{\text{spot} \times \sigma_{blended} 
 
 where $T$ is seconds remaining and $\sigma_{blended}$ is per-5-second scale. The denominator represents the expected magnitude of price movement over the remaining window.
 
-### Step 2: Student-t CDF (df=4)
+### Step 2: NIG CDF (Per-Asset Fitted)
 
-Rather than assuming Gaussian returns, the model uses a Student-t distribution with 4 degrees of freedom:
+The model uses the Normal Inverse Gaussian distribution with per-asset fitted parameters:
 
-$$p_{raw} = 1 - F_t(z; \nu=4)$$
+$$p_{raw} = 1 - F_{NIG}(z; a, b, \mu, \delta)$$
 
-The fat tails of the Student-t distribution (kurtosis ≈ 9 vs. 3 for Gaussian) better capture the empirical distribution of crypto returns, where large moves occur more frequently than a normal distribution would predict.
+where $a$ controls tail heaviness, $b$ captures asymmetry (skew), $\mu$ is location, and $\delta$ is scale. NIG parameters are fitted via maximum likelihood on 7 days of 60-second returns (~10,000 samples per asset) and stored in `dist_config.json`.
 
-### Step 3: Logistic Calibration
+**Why NIG over Student-t?** NIG provides two key improvements:
+- **Asymmetry**: The $b$ parameter captures the empirical skew in crypto returns (e.g., BTC $b=-0.019$, slight left skew)
+- **Better tail fit**: KS test p-values for NIG are dramatically higher (BTC: 0.11, ETH: 0.42) compared to Student-t (effectively 0), indicating NIG genuinely captures the return distribution
 
-Raw probabilities are compressed toward 50% using a logistic function with slope $\beta = 0.85$:
+The system falls back to Student-t(df=4) if NIG parameters are unavailable.
 
-$$p_{cal} = \text{logistic}\left(\beta \times \text{logit}(p_{raw})\right)$$
+### Step 3: Data-Driven Calibration
 
-This calibration step accounts for model uncertainty — when $\beta < 1$, extreme probabilities are pulled toward the center, reflecting the reality that a model with finite data should not be maximally confident.
+Raw probabilities are calibrated using a CalibrationEngine that learns from settlement outcomes:
+
+| Method | Min Samples | Description |
+|---|---|---|
+| Fixed logistic (β=0.85) | 0 | Default fallback — compresses extreme probabilities |
+| Platt Scaling | 200 | 2-parameter logistic (A, B) fitted to outcomes |
+| Beta Calibration | 500 | 3-parameter (a, b, c) — more flexible than Platt |
+| Isotonic Regression | 1,000 | Non-parametric monotonic mapping — most flexible |
+
+The engine automatically promotes to better methods as data accumulates, with validation checks to prevent degradation.
 
 ### Step 4: Dynamic Probability Cap
 
-A time-dependent cap prevents overconfidence:
+A time-dependent cap adjusts confidence based on time remaining:
 
 | Time to Expiry | Cap |
 |---|---|
-| 0–30 seconds | 93% |
-| 30–60 seconds | 92% |
-| 60–300 seconds | 91% |
-| > 300 seconds | 90% |
+| > 10 minutes | 93% |
+| 5–10 minutes | 95% |
+| 2–5 minutes | 97% |
+| 1–2 minutes | 98.5% |
+| < 1 minute | 99.5% |
 
-Longer time horizons carry more uncertainty, justifying lower caps.
+As expiry approaches and less can go wrong, the cap relaxes to allow higher-confidence trades in the endgame.
 
 ### Step 5: Market-Price Blending
 
@@ -176,7 +218,7 @@ At 96¢ and above, blending is skipped to preserve edge in high-confidence endga
 
 ### Sanity Checks
 
-- **Z-score limit**: If $|z| > 8$, the market is refused (model inputs are unreliable at extremes)
+- **Z-score limit**: If $|z| > 12$, the market is refused (volatility estimate is likely wrong at extremes)
 - **Model-market discrepancy**: If $p_{cal} > 90\%$ but market price $< 75$¢, the market is refused (suggests the model may be missing information the market has)
 
 ## 3.3 Edge Detection
@@ -185,15 +227,18 @@ A trade requires positive expected value after accounting for fees.
 
 ### Fee Formula
 
-Kalshi charges taker fees using a variance-based formula:
+Kalshi charges fees using a variance-based formula:
 
-$$\text{fee} = \left\lceil 0.07 \times C \times P \times (1-P) \right\rceil \text{ cents}$$
+$$\text{taker fee} = \left\lceil 0.07 \times C \times P \times (1-P) \right\rceil \text{ cents}$$
+$$\text{maker fee} = \left\lceil 0.0175 \times C \times P \times (1-P) \right\rceil \text{ cents}$$
 
-where $C$ is the number of contracts and $P$ is the trade price as a decimal. The ceiling is applied to the total, not per contract. Maker fees use 0.0175 instead of 0.07.
+where $C$ is the number of contracts and $P$ is the trade price as a decimal. The ceiling is applied to the total, not per contract.
 
 ### Fee-Adjusted Edge
 
-$$\text{edge} = p_{final} - \frac{\text{best\_ask}}{100} - \frac{\text{taker\_fee}}{100}$$
+The scanner evaluates edge using taker fees (worst-case), so any candidate that passes the filter is profitable even if maker order is rejected:
+
+$$\text{edge} = p_{final} - \frac{\text{best\_ask}}{100} - \frac{\text{taker\_fee}}{C \times 100}$$
 
 A trade must satisfy:
 
@@ -222,25 +267,48 @@ Perpetual futures funding rates from CoinGlass indicate leverage buildup:
 | Extreme funding | Rate > 0.05% per 8h | −1.5 pp |
 | Elevated funding | Rate > 0.03% per 8h | −0.5 pp |
 
+### Kalshi Order Flow (Shadow Mode)
+
+The KalshiOrderFlowTracker monitors Kalshi's own orderbook for predictive signals:
+
+- **Imbalance**: Ratio of bid vs. ask depth — strong imbalance (>0.8 or <0.2) suggests directional pressure
+- **Depth velocity**: Rate of change in total depth — draining liquidity may predict a move
+- **Spread convergence**: Narrowing spread + trending depth suggests informed trading
+- **Adjustments**: ±1 to 1.5pp based on signal strength, with confidence levels based on snapshot count
+
+Currently logging only — signals are computed but do not affect trading decisions. Needs ~200+ signal→settlement pairs to evaluate predictive power.
+
 ### Total Adjustment Cap
 
 All adjustments are summed and capped at **±3 percentage points**, preventing any single signal source from dominating the probability estimate.
 
 ## 3.5 Execution Strategy
 
-The executor uses a maker-first approach with time-aware escalation.
+The executor uses a maker-first approach with three-tier post_only rejection handling and time-aware escalation.
 
-### Execution Modes
+### Three-Tier Post-Only Handler
 
-| Mode | Trigger | Behavior |
+When a `post_only=True` maker order is rejected (the order would cross the spread rather than rest on the book), the system escalates through three tiers:
+
+| Tier | Trigger | Action |
 |---|---|---|
-| `WAIT` | Position blocker active | No trade this window |
-| `MAKER_PATIENT` | > 60s to close | Limit order at fair value − 1¢, 15s timeout |
-| `MAKER_AGGRESSIVE` | 30–60s to close | Limit order at fair value − 1¢, 10s timeout |
-| `TAKER_NOW` | < 30s to close | Skip maker, submit at best ask |
-| `PANIC_CAPTURE` | High urgency, endgame | Submit at 99¢ (maximum price) |
+| Tier 1: Normal maker | 0–1 rejections | Standard maker order, 1–2¢ below fair value |
+| Tier 2: Degraded maker | 2 rejections | Same offset + 1¢ additional discount. If price drops below 87¢ floor, skipped. |
+| Tier 3: Taker IOC | 3+ rejections | Edge re-verified with actual taker fees → IOC order if still profitable |
 
-### Maker-to-Taker Escalation
+Rejection counts expire after 30 seconds and are per-ticker (unique per market window).
+
+### Time-Based Escalation
+
+For orders that are successfully placed but sit unfilled:
+
+| Urgency | Time to Close | Maker Wait |
+|---|---|---|
+| Low | 60–300s | 15s |
+| Medium | 30–60s | 10s |
+| High | <30s | 5s |
+
+### Maker-to-Taker Conversion
 
 1. Place maker order with `post_only=True` (guarantees maker fees, 4× cheaper)
 2. Monitor for fills via Kalshi WebSocket (zero API cost) with REST polling fallback
@@ -248,11 +316,11 @@ The executor uses a maker-first approach with time-aware escalation.
 4. If timeout reached without fill:
    - Attempt `amend_order()` to convert to taker price in-place (avoids cancel+replace race)
    - If amend fails, fall back to cancel + IOC (`time_in_force="ioc"`) taker order
-   - Re-validate price still in [86¢, 99¢] before taker submission
+   - Re-validate price still in [87¢, 99¢] before taker submission
 
 ### Partial Fill Handling
 
-Orders may partially fill (e.g., 3 of 13 contracts). The execution engine tracks `filled_so_far` cumulatively and keeps the order active until fully filled or escalated. REST fill detection uses a `_seen_fill_ids` set to prevent double-counting across consecutive polls.
+Orders may partially fill (e.g., 3 of 13 contracts). The execution engine tracks `filled_so_far` cumulatively and keeps the order active until fully filled or escalated. REST fill detection uses a `_seen_fill_ids` set to prevent double-counting across consecutive polls and against WebSocket fills.
 
 ### UUID Persistence
 
@@ -308,24 +376,28 @@ This creates a geometric de-risking curve that preserves capital during losing s
 
 ## Market Selection Controls
 
-- **Multi-asset capable**: Can trade multiple assets per 15-minute window (configurable via `ONE_ASSET_PER_WINDOW`)
-- **Price range guardrails**: Only trade contracts priced 86–99¢ — below 86¢ has historically poor win rates; above 99¢ offers insufficient reward
-- **Minimum edge threshold**: Fee-adjusted edge must exceed 1.5% after taker fees
+- **Multi-asset capable**: Can trade multiple assets per 15-minute window
+- **Price range guardrails**: Only trade contracts priced 87–99¢ — below 87¢ has historically poor win rates; above 99¢ offers insufficient reward
+- **Minimum edge threshold**: Fee-adjusted edge must exceed 1.5% after taker fees (worst-case)
+- **Scanner uses taker fees**: Every candidate is profitable even if forced to taker execution
 
 ## Model Sanity Controls
 
-- **Z-score limit**: Refuse markets where $|z| > 8$ (extreme inputs suggest data issues)
+- **Z-score limit**: Refuse markets where $|z| > 12$ (extreme inputs suggest volatility estimate is wrong)
 - **Model-market discrepancy**: If the model estimates >90% probability but the market prices below 75¢, refuse (the model may be missing material information)
-- **Dynamic probability cap**: Time-dependent ceiling (90–93%) prevents overconfidence regardless of model output
+- **Dynamic probability cap**: Time-dependent ceiling (93–99.5%) prevents overconfidence regardless of model output
+- **Data-driven calibration**: CalibrationEngine learns from settlement outcomes, replacing fixed assumptions with empirical mappings
 
 ## Execution Controls
 
+- **Three-tier post_only handler**: Escalates from normal maker → degraded maker → taker IOC after repeated rejections, with edge re-verification at each tier
 - **Maker-first with `post_only`**: Guarantees maker fee tier (75% cheaper), rejected if it would cross the spread
 - **WebSocket fill detection**: Zero-cost fill monitoring via Kalshi WebSocket, with REST polling fallback
 - **Amend-first escalation**: Uses `amend_order()` API to convert maker→taker in-place, avoiding cancel+replace race conditions
 - **IOC taker orders**: Taker escalation uses `time_in_force="ioc"` (immediate-or-cancel) to prevent stale resting orders
 - **Price re-validation**: After maker timeout, the system re-fetches the orderbook and re-validates the price range before submitting a taker order
 - **UUID persistence**: Order IDs written to disk before API submission, enabling crash recovery without duplicate orders
+- **Rejection expiry**: Post_only rejection counts expire after 30 seconds, preventing stale state from affecting future windows
 
 ---
 
@@ -404,7 +476,7 @@ The primary state store uses SQLite in WAL (Write-Ahead Logging) mode for crash 
 
 ### JSONL Journals
 
-Eight append-only journal files provide a complete audit trail:
+Nine append-only journal files provide a complete audit trail:
 
 1. **scan_journal** — Every tick: price snapshots, orderbook depth
 2. **opportunity_journal** — Every market evaluation with filter stage
@@ -414,6 +486,7 @@ Eight append-only journal files provide a complete audit trail:
 6. **order_journal** — Full order lifecycle (create, cancel, fill)
 7. **execution_journal** — Maker-to-taker escalation events
 8. **performance_journal** — Session summaries and strategy counts
+9. **fill_model_journal** — Maker order lifecycle data (queue position, time-to-fill, spread at submission) for future ML fill prediction model
 
 ## Firebase Real-Time Dashboard
 
@@ -423,10 +496,22 @@ A Firebase integration provides a live web dashboard showing:
 - Active market evaluations
 - Volatility regime indicators
 - Order flow signals
+- Execution engine statistics (amend success rate, WS fill ratio, post_only rejection counts, taker escalation counts)
 
-## Observation Mode
+## Shadow Mode Features
 
-The bot supports a full observation mode (`OBSERVATION_MODE = True`) where it runs the complete evaluation pipeline — volatility estimation, probability calculation, edge detection, and position sizing — but does not submit any orders. All hypothetical trades are logged to the database and journals, enabling strategy validation before committing capital.
+The system supports shadow mode for experimental features — they compute and log but do not affect live trading decisions:
+
+| Feature | Status | Readiness |
+|---|---|---|
+| EGARCH blend | Shadow | Closest to promotion (R² 0.19–0.76) |
+| EGARCH core vol | Shadow | Stable convergence, building block for blend |
+| HAR-RV model | Shadow | Not viable — all model variants rejected |
+| Kalshi order flow | Shadow | Early data collection, needs 200+ outcomes |
+
+Promoted features (shadow off, driving live behavior):
+- **Adaptive jump detection** — percentile-based thresholds per asset
+- **Adaptive RK bandwidth** — data-driven H* selection
 
 ---
 
