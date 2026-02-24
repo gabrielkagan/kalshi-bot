@@ -693,6 +693,9 @@ class KalshiClient:
                 result = self._request(method, path, params, json_body)
                 self._429_retries = 0
                 return result
+            if resp.status_code >= 400:
+                body_text = resp.text[:500] if resp.text else "(empty)"
+                logging.error(f"API error: {method} {path} -> {resp.status_code} body={body_text}")
             resp.raise_for_status()
             return resp.json() if resp.content else {}
         except requests.exceptions.RequestException as e:
