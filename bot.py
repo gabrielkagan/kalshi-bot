@@ -162,6 +162,7 @@ HAR_MIN_OBSERVATIONS = 36           # 3h of data before first fit
 HAR_STATE_PATH = "har_state.json"
 HAR_BUFFER_SAVE_INTERVAL = 300.0    # save observation buffer to disk every 5 min
 HAR_QLIKE_FALLBACK_THRESHOLD = 2.0  # fall back to fixed if QLIKE > this
+HAR_MIN_RV_SQ = 1e-12              # floor for valid observation (reject flat-market noise)
 HAR_SHADOW_MODE = True              # True = log only, False = use for actual blend
 HAR_IV_REPLACES_DVOL_BLEND = False  # When True + HAR active IV model, replaces Step 4/5 blending
 HAR_IV_MIN_DVOL_FRACTION = 0.70    # Need ≥70% non-None dvol_sq observations to fit IV models
@@ -3233,8 +3234,8 @@ class HAREstimator:
         if now - last < HAR_OBSERVATION_INTERVAL:
             return
 
-        # Reject degenerate observations (e.g., bot startup with no returns)
-        if rk_5min <= 0 or rk_15min <= 0:
+        # Reject degenerate observations (bot startup or flat market)
+        if rk_5min ** 2 < HAR_MIN_RV_SQ or rk_15min ** 2 < HAR_MIN_RV_SQ:
             return
 
         self._last_obs_time[asset] = now
@@ -3410,8 +3411,8 @@ class HAREstimator:
 
     def _refit_asset(self, asset: str, obs: List[Dict]) -> None:
         """Fit all 4 model variants for one asset, select best by QLIKE."""
-        # Filter degenerate observations (zero RV from bot startup)
-        obs = [o for o in obs if o.get("rv5_sq", 0) > 0 and o.get("rv15_sq", 0) > 0]
+        # Filter degenerate observations (zero/near-zero RV from startup or flat market)
+        obs = [o for o in obs if o.get("rv5_sq", 0) >= HAR_MIN_RV_SQ and o.get("rv15_sq", 0) >= HAR_MIN_RV_SQ]
         n = len(obs)
         if n < 2:
             return
