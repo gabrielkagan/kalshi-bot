@@ -7144,8 +7144,13 @@ class OrderExecutor:
                             f"kalshi_ws_fill: {order['ticker']} order={order['order_id']} "
                             f"latency={latency_ms}ms")
                         self._on_fill(ws_fill, order)
-                        self._active_order = None
-                        return ws_fill
+                        if order.get("filled_so_far", 0) >= order["count"]:
+                            self._active_order = None
+                            return ws_fill
+                        # Partial fill — keep monitoring for remaining contracts
+                        logging.info(
+                            f"Partial WS fill — keeping order active "
+                            f"({order['filled_so_far']}/{order['count']})")
             except Exception:
                 logging.debug("WS fill check failed", exc_info=True)
 
@@ -7155,8 +7160,13 @@ class OrderExecutor:
             order["fill_source"] = "rest_poll"
             self._session_rest_fills += 1
             self._on_fill(fill, order)
-            self._active_order = None
-            return fill
+            if order.get("filled_so_far", 0) >= order["count"]:
+                self._active_order = None
+                return fill
+            # Partial fill — keep monitoring
+            logging.info(
+                f"Partial REST fill — keeping order active "
+                f"({order['filled_so_far']}/{order['count']})")
 
         elapsed = now - order["submit_time"]
         remaining = order["seconds_to_close_at_submit"] - elapsed
@@ -7497,9 +7507,10 @@ class OrderExecutor:
                 fill = self._check_for_fill(order)
                 if fill:
                     self._on_fill(fill, order)
-                    self._active_order = None
-                    return fill
-                # Not filled yet — leave as active for tick() to poll
+                    if order.get("filled_so_far", 0) >= order["count"]:
+                        self._active_order = None
+                        return fill
+                # Not filled yet (or partial) — leave as active for tick() to poll
                 return None
         except Exception:
             logging.warning("Amend escalation failed with exception", exc_info=True)
@@ -7681,7 +7692,11 @@ class OrderExecutor:
     # ── Fill detection ────────────────────────────────────────────────────
 
     def _check_for_fill(self, order: Dict) -> Optional[Dict]:
-        """Check if order has been filled via REST fills endpoint."""
+        """Check if order has been filled via REST fills endpoint.
+
+        Tracks seen fill IDs on the order dict to avoid double-counting
+        partial fills on consecutive polls.
+        """
         min_ts = int(order["submit_time"])
         resp = self._client.get_fills(
             ticker=order["ticker"], min_ts=min_ts
@@ -7689,21 +7704,41 @@ class OrderExecutor:
         if not resp or not resp.get("fills"):
             return None
 
+        seen = order.setdefault("_seen_fill_ids", set())
         for fill in resp["fills"]:
-            if fill.get("order_id") == order["order_id"]:
+            fill_id = fill.get("trade_id") or fill.get("id") or id(fill)
+            if fill.get("order_id") == order["order_id"] and fill_id not in seen:
+                seen.add(fill_id)
                 return fill
         return None
 
     # ── Fill handling ─────────────────────────────────────────────────────
 
-    def _on_fill(self, fill: Dict, order: Dict):
-        """Handle fill: update SQLite, log trade, record position."""
+    def _on_fill(self, fill: Dict, order: Dict) -> int:
+        """Handle fill: update SQLite, log trade, record position.
+
+        Returns the fill_count so callers can track partial vs complete fills.
+        """
         order_id = order["order_id"]
         ticker = order["ticker"]
         candidate = order["candidate"]
 
-        # Update order status
-        self._state.mark_order_status(order_id, "filled")
+        # Extract fill details — prefer FP/dollar fields, fall back to legacy
+        fill_count = fp_str_to_int(fill.get("count_fp")) or (fill.get("count") or order["count"])
+        fill_price_d = fill.get("yes_price_dollars")
+        fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("yes_price") or order["price_cents"])
+
+        # Track cumulative fills for partial fill detection
+        order["filled_so_far"] = order.get("filled_so_far", 0) + fill_count
+        is_complete = order["filled_so_far"] >= order["count"]
+
+        # Update order status only when fully filled
+        if is_complete:
+            self._state.mark_order_status(order_id, "filled")
+        else:
+            logging.info(
+                f"Partial fill: {ticker} {fill_count}/{order['count']} "
+                f"(cumulative {order['filled_so_far']}/{order['count']})")
 
         # Log fill model sample for ML training
         self._log_fill_model_sample(order, "filled", fill=fill)
@@ -7719,11 +7754,6 @@ class OrderExecutor:
         except Exception:
             logging.debug("Fill latency tracking failed", exc_info=True)
         logging.info(f"Fill latency: {fill_latency:.3f}s ({'taker' if order.get('is_taker') else 'maker'})")
-
-        # Extract fill details — prefer FP/dollar fields, fall back to legacy
-        fill_count = fp_str_to_int(fill.get("count_fp")) or (fill.get("count") or order["count"])
-        fill_price_d = fill.get("yes_price_dollars")
-        fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("yes_price") or order["price_cents"])
 
         # Record position in SQLite
         self._state.record_position_from_fill(
@@ -7778,7 +7808,9 @@ class OrderExecutor:
             f"FILL: {ticker} {fill_count}x @ {fill_price}¢ "
             f"({'taker' if is_taker else 'maker'}) "
             f"cost={cost_cents}¢ fee={fee_cents}¢"
+            f"{'' if is_complete else ' [PARTIAL ' + str(order['filled_so_far']) + '/' + str(order['count']) + ']'}"
         )
+        return fill_count
 
     # ── Fill Model Logging ────────────────────────────────────────────────
 
@@ -7839,15 +7871,19 @@ class OrderExecutor:
     # ── Cancel ────────────────────────────────────────────────────────────
 
     def _cancel_active(self, reason: str):
-        """Cancel the active maker order."""
+        """Cancel the active maker order (unfilled remainder only)."""
         if self._active_order is None:
             return
 
         order = self._active_order
+        filled = order.get("filled_so_far", 0)
+
         cancel_resp = self._client.cancel_order(order["order_id"])
         if cancel_resp is None:
             logging.warning(f"Cancel API returned None for {order['order_id']} — order may still be resting")
-        self._state.mark_order_status(order["order_id"], "canceled")
+
+        status = "partial_canceled" if filled > 0 else "canceled"
+        self._state.mark_order_status(order["order_id"], status)
 
         # Log fill model sample for canceled order
         self._log_fill_model_sample(order, "canceled", cancel_reason=reason)
@@ -7858,9 +7894,11 @@ class OrderExecutor:
             "order_id": order["order_id"],
             "reason": reason,
             "elapsed": round(time.time() - order["submit_time"], 1),
+            "filled_so_far": filled,
         })
         logging.info(
             f"Maker order canceled: {order['ticker']} reason={reason}"
+            f"{' (partial fill: ' + str(filled) + '/' + str(order['count']) + ')' if filled > 0 else ''}"
         )
         self._active_order = None
 
