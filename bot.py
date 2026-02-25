@@ -8781,6 +8781,7 @@ class MainLoop:
         self.tracker = SettlementTracker(self.client, self.state, self.logger)
         self._shutdown = threading.Event()
         self._active_windows: List[Dict] = []
+        self._discovery_ob_tickers: set = set()
         self._last_market_refresh: float = 0.0
         self._last_error: Optional[str] = None
         self._last_error_time: float = 0.0
@@ -8913,21 +8914,33 @@ class MainLoop:
         if not self.kalshi_feed or not self.kalshi_feed.is_connected:
             return
         try:
-            sub_count = 0
+            active_tickers: set = set()
             for window in self._active_windows:
                 for mkt in window.get("markets", []):
                     ticker = mkt.get("ticker", "")
                     if ticker:
-                        try:
-                            self.kalshi_feed.subscribe_ticker(ticker)
-                            sub_count += 1
-                        except Exception:
-                            pass
-            if sub_count > 0:
+                        active_tickers.add(ticker)
+
+            # Unsubscribe expired tickers from previous cycle
+            expired = self._discovery_ob_tickers - active_tickers
+            for ticker in expired:
+                try:
+                    self.kalshi_feed.unsubscribe_ticker(ticker)
+                except Exception:
+                    pass
+
+            # Subscribe to current active tickers (idempotent)
+            for ticker in active_tickers:
+                try:
+                    self.kalshi_feed.subscribe_ticker(ticker)
+                except Exception:
+                    pass
+
+            if expired:
                 logging.info(
-                    f"discovery_ob_subscribe: queued {sub_count} tickers "
-                    f"across {len(self._active_windows)} windows"
+                    f"discovery_ob_cleanup: unsubscribed {len(expired)} expired tickers"
                 )
+            self._discovery_ob_tickers = active_tickers
         except Exception as e:
             logging.warning(f"discovery_ob_subscribe failed: {e}")
 

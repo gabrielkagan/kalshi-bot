@@ -479,142 +479,70 @@ class FirebasePusher:
         except Exception:
             snap["recent_opportunities"] = []
 
-        # ── strategy_breakdown (session counts by strategy) ──────────────
+        # ── strategy_breakdown (from settled_trades) ──────────────────────
         try:
-            snap["strategy_breakdown"] = dict(self._ml.scanner._session_strategy_counts)
+            conn = self._ml.state.conn
+            strat_rows = conn.execute(
+                "SELECT COALESCE(strategy, 'unknown') AS strat, COUNT(*) AS cnt, "
+                "  COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
+                "    OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
+                "  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
+                "FROM settled_trades GROUP BY strat"
+            ).fetchall()
+            snap["strategy_breakdown"] = {
+                r["strat"]: {
+                    "count": r["cnt"],
+                    "wins": r["wins"],
+                    "losses": r["cnt"] - r["wins"],
+                    "pnl_cents": r["net_pnl"],
+                }
+                for r in strat_rows
+            }
         except Exception:
             snap["strategy_breakdown"] = {}
 
-        # ── asset_performance (per-asset selection stats) ────────────────
+        # ── asset_performance (from settled_trades) ────────────────────────
         try:
-            perf = {}
-            for asset in ASSETS:
-                ap = self._ml.scanner._session_asset_perf[asset]
-                found = ap["opportunities_found"]
-                selected = ap["times_selected"]
-                rejected = ap["times_rejected"]
-                total = selected + rejected
-                perf[asset] = {
-                    "opportunities_found": found,
-                    "times_selected": selected,
-                    "times_rejected": rejected,
-                    "selection_rate": round(selected / total, 4) if total > 0 else 0.0,
+            conn = self._ml.state.conn
+            asset_rows = conn.execute(
+                "SELECT asset, COUNT(*) AS cnt, "
+                "  COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
+                "    OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
+                "  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl, "
+                "  AVG(edge) AS avg_edge "
+                "FROM settled_trades GROUP BY asset"
+            ).fetchall()
+            snap["asset_performance"] = {
+                r["asset"]: {
+                    "trades": r["cnt"],
+                    "wins": r["wins"],
+                    "losses": r["cnt"] - r["wins"],
+                    "pnl_cents": r["net_pnl"],
+                    "avg_edge": round(r["avg_edge"], 6) if r["avg_edge"] else 0.0,
                 }
-            snap["asset_performance"] = perf
+                for r in asset_rows
+            }
         except Exception:
             snap["asset_performance"] = {}
 
         # ── session_stats ────────────────────────────────────────────────
         try:
-            uptime_min = round((time.time() - self._ml._start_time) / 60, 1)
+            start_time = self._ml._start_time
             total_scanned = self._ml.scanner._session_total_scanned
+            ex = self._ml.executor
+            total_fills = getattr(ex, "_session_ws_fills", 0) + getattr(ex, "_session_rest_fills", 0)
             snap["session_stats"] = {
-                "total_opportunities_found": self._ml.scanner._session_total_candidates,
-                "total_markets_scanned": total_scanned,
-                "evaluation_rate": round(total_scanned / max(uptime_min, 0.1), 1),
-                "uptime_minutes": uptime_min,
-                "last_opportunity_timestamp": self._ml.scanner._last_opportunity_ts,
+                "session_start_time": start_time,
+                "total_evaluations": total_scanned,
+                "total_orders_placed": self._ml.scanner._session_total_candidates,
+                "total_fills": total_fills,
+                "total_cancels": getattr(ex, "_session_ioc_unfilled", 0),
+                "active_event_tickers": len(self._ml._active_windows),
+                "events_evaluated": total_scanned,
+                "unique_markets_seen": total_scanned,
             }
         except Exception:
             snap["session_stats"] = {}
-
-        # ── simulated_performance (observation mode counterfactuals) ─────
-        try:
-            conn = self._ml.state.conn
-            sim_count = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
-                "WHERE filter_stage = 'observation_trade'"
-            ).fetchone()["cnt"]
-
-            row = conn.execute(
-                "SELECT "
-                "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins, "
-                "  COUNT(CASE WHEN counterfactual_pnl <= 0 THEN 1 END) AS losses, "
-                "  COALESCE(SUM(counterfactual_pnl), 0) AS pnl "
-                "FROM evaluated_opportunities "
-                "WHERE filter_stage = 'observation_trade' AND status = 'settled'"
-            ).fetchone()
-
-            settled_total = row["wins"] + row["losses"]
-            pending_count = sim_count - settled_total
-
-            sim_perf = {
-                "simulated_trades_count": sim_count,
-                "simulated_wins": row["wins"],
-                "simulated_losses": row["losses"],
-                "simulated_pnl_cents": row["pnl"],
-                "simulated_win_rate": round(row["wins"] / settled_total, 4) if settled_total > 0 else 0.0,
-                "pending_settlement": pending_count,
-            }
-
-            # Averages for observation trades
-            avg_row = conn.execute(
-                "SELECT AVG(edge) AS avg_edge, AVG(kelly_f) AS avg_kelly, "
-                "  AVG(position_size) AS avg_size, AVG(expected_value) AS avg_ev "
-                "FROM evaluated_opportunities "
-                "WHERE filter_stage = 'observation_trade' AND edge IS NOT NULL"
-            ).fetchone()
-            if avg_row and avg_row["avg_edge"] is not None:
-                sim_perf["avg_edge"] = round(avg_row["avg_edge"], 6)
-                sim_perf["avg_kelly_f"] = round(avg_row["avg_kelly"], 6) if avg_row["avg_kelly"] else None
-                sim_perf["avg_position_size"] = round(avg_row["avg_size"], 1) if avg_row["avg_size"] else None
-                sim_perf["avg_expected_value"] = round(avg_row["avg_ev"], 2) if avg_row["avg_ev"] else None
-
-            # P&L by strategy
-            strat_rows = conn.execute(
-                "SELECT strategy, COUNT(*) AS cnt, "
-                "  COALESCE(SUM(counterfactual_pnl), 0) AS pnl, "
-                "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins "
-                "FROM evaluated_opportunities "
-                "WHERE filter_stage = 'observation_trade' AND status = 'settled' "
-                "  AND strategy IS NOT NULL "
-                "GROUP BY strategy"
-            ).fetchall()
-            if strat_rows:
-                sim_perf["pnl_by_strategy"] = {
-                    r["strategy"]: {"count": r["cnt"], "pnl_cents": r["pnl"], "wins": r["wins"]}
-                    for r in strat_rows
-                }
-
-            # P&L by vol regime
-            regime_rows = conn.execute(
-                "SELECT vol_regime, COUNT(*) AS cnt, "
-                "  COALESCE(SUM(counterfactual_pnl), 0) AS pnl, "
-                "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins "
-                "FROM evaluated_opportunities "
-                "WHERE filter_stage = 'observation_trade' AND status = 'settled' "
-                "  AND vol_regime IS NOT NULL "
-                "GROUP BY vol_regime"
-            ).fetchall()
-            if regime_rows:
-                sim_perf["pnl_by_vol_regime"] = {
-                    r["vol_regime"]: {"count": r["cnt"], "pnl_cents": r["pnl"], "wins": r["wins"]}
-                    for r in regime_rows
-                }
-
-            # P&L by asset
-            asset_rows = conn.execute(
-                "SELECT asset, COUNT(*) AS cnt, "
-                "  COALESCE(SUM(counterfactual_pnl), 0) AS pnl, "
-                "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins "
-                "FROM evaluated_opportunities "
-                "WHERE filter_stage = 'observation_trade' AND status = 'settled' "
-                "GROUP BY asset"
-            ).fetchall()
-            if asset_rows:
-                sim_perf["pnl_by_asset"] = {
-                    r["asset"]: {"count": r["cnt"], "pnl_cents": r["pnl"], "wins": r["wins"]}
-                    for r in asset_rows
-                }
-
-            snap["simulated_performance"] = sim_perf
-        except Exception:
-            snap["simulated_performance"] = {
-                "simulated_trades_count": 0,
-                "simulated_wins": 0,
-                "simulated_losses": 0,
-                "simulated_pnl_cents": 0,
-            }
 
         # ── real_trade_analytics (from settled_trades) ─────────────────
         try:
@@ -698,33 +626,6 @@ class FirebasePusher:
             logging.debug("Firebase: real_trade_analytics build failed", exc_info=True)
             snap["real_trade_analytics"] = {}
 
-        # ── recent_simulated_trades (last 10 observation trades with detail) ──
-        try:
-            conn = self._ml.state.conn
-            sim_rows = conn.execute(
-                "SELECT ticker, asset, evaluation_time, market_price, edge, "
-                "  calibrated_prob, strategy, position_size, kelly_f, z_score, "
-                "  vol_regime, status, market_result, counterfactual_pnl, settled_time, "
-                "  breakeven_wr, expected_value, drawdown_scaler, ask_depth, "
-                "  best_ask_source, ofa_confidence "
-                "FROM evaluated_opportunities "
-                "WHERE filter_stage = 'observation_trade' "
-                "ORDER BY id DESC LIMIT 10"
-            ).fetchall()
-            snap["recent_simulated_trades"] = [dict(r) for r in sim_rows]
-        except Exception:
-            snap["recent_simulated_trades"] = []
-
-        # ── rejection_summary (counts by reason) ────────────────────────
-        try:
-            conn = self._ml.state.conn
-            rej_rows = conn.execute(
-                "SELECT rejection_reason, COUNT(*) AS cnt "
-                "FROM rejected_opportunities GROUP BY rejection_reason"
-            ).fetchall()
-            snap["rejection_summary"] = {r["rejection_reason"]: r["cnt"] for r in rej_rows}
-        except Exception:
-            snap["rejection_summary"] = {}
 
         # ── observation_mode flag ─────────────────────────────────────
         try:
