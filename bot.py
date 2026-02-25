@@ -8727,18 +8727,18 @@ class MainLoop:
             cross_feed=self.cross_feed, coinglass=self.coinglass,
             kalshi_oft=self.kalshi_oft,
         )
-        self.scanner = OpportunityScanner(
-            self.client, self.state, self.feed, self.vol, self.logger,
-            self.sizer, order_flow=self.order_flow,
-            kalshi_oft=self.kalshi_oft,
-            kalshi_feed=self.kalshi_feed,
-        )
         # Kalshi WebSocket feed for real-time fills + orderbook
         try:
             self.kalshi_feed = KalshiFeed(api_key, self.client.private_key)
         except Exception as e:
             logging.warning(f"KalshiFeed init failed: {e}")
             self.kalshi_feed = None
+        self.scanner = OpportunityScanner(
+            self.client, self.state, self.feed, self.vol, self.logger,
+            self.sizer, order_flow=self.order_flow,
+            kalshi_oft=self.kalshi_oft,
+            kalshi_feed=self.kalshi_feed,
+        )
         self.executor = OrderExecutor(
             self.client, self.state, self.logger,
             main_loop=self, kalshi_feed=self.kalshi_feed)
