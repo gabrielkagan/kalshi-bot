@@ -35,7 +35,7 @@ SERIES_TICKERS = {
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
 }
-MIN_ENTRY_PRICE = 86              # cents (data: 86c bucket is 94.1% WR, +$32.75 sim PnL; loss zone is 80-84c)
+MIN_ENTRY_PRICE = 87              # cents (data: two losses at 86c; 87c+ is cleaner)
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.50         # max 50% of bankroll at risk per trade (scales with balance)
 MIN_SECONDS_BEFORE_CLOSE = 0
@@ -279,7 +279,7 @@ DYNAMIC_CAP_SCHEDULE = [
 MARKET_BLEND_W = 0.50            # weight on market-implied probability
 ENDGAME_BLEND_PRICE = 96         # don't blend at or above this price (preserve endgame edge)
 
-Z_SCORE_MAX = 12.0                # refuse to trade if |z| > 12 (vol estimate wrong)
+Z_SCORE_MAX = 25.0                # refuse to trade if |z| > 25 (data: 0 losses in tradeable range up to z=25)
 DISCREPANCY_PROB = 0.90           # model says >90% but...
 DISCREPANCY_PRICE = 75            # ...market is below 75¢ → refuse
 
