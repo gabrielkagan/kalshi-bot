@@ -30,10 +30,10 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | OBSERVATION_MODE | False | 30 | LIVE trading |
 | MIN_ENTRY_PRICE | 86 | 38 | Cents; 86-88c bucket is 100% WR in sim |
 | MAX_ENTRY_PRICE | 99 | 39 | Cents |
-| MIN_EDGE_PCT | 1.5 | 316 | 1.5 percentage point minimum edge |
+| MIN_EDGE_PCT | 1.0 | 332 | 1.0 percentage point minimum edge (data: 1.0-1.5% bucket 97.4% WR) |
 | MAX_SECONDS_BEFORE_CLOSE | 240 | 42 | Start scanning 4 min before window close |
 | ONE_ASSET_PER_WINDOW | False | 43 | Can trade multiple assets per window |
-| SIZING_TIERS | [(0.05,0.75),(0.03,0.35),(0.015,0.20)] | 322 | Edge-based tiered sizing |
+| SIZING_TIERS | [(0.05,0.75),(0.03,0.35),(0.015,0.20),(0.01,0.10)] | 339 | Edge-based tiered sizing |
 
 ## Shadow Mode Features
 
@@ -116,4 +116,4 @@ How the scanner filters opportunities (typical distribution):
 - **Assets:** BTC, ETH, SOL, XRP — can trade multiple per 15-minute window
 - **Entry prices:** 86–99c (never below 86c)
 - **Minimum edge:** 1% (after fees)
-- **Position sizing:** Tiered by edge — 75% risk at 5%+ edge, 35% at 3%+, 20% at 1%+
+- **Position sizing:** Tiered by edge — 75% risk at 5%+ edge, 35% at 3%+, 20% at 1.5%+, 10% at 1%+
