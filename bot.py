@@ -1318,6 +1318,13 @@ class StateManager:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_unsettled_positions(self) -> List[Dict]:
+        """Return positions that are open or closed but not yet settled."""
+        rows = self.conn.execute(
+            "SELECT * FROM positions WHERE status IN ('open', 'closed')"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_resting_orders(self, ticker: Optional[str] = None) -> List[Dict]:
         if ticker:
             rows = self.conn.execute(
@@ -8298,8 +8305,8 @@ class SettlementTracker:
 
     def _poll(self):
         """Fetch new settlements from API and process them."""
-        open_positions = self._state.get_open_positions()
-        if not open_positions:
+        unsettled = self._state.get_unsettled_positions()
+        if not unsettled:
             return
 
         resp = self._client.get_settlements(min_ts=self._last_check_ts)
@@ -8310,7 +8317,7 @@ class SettlementTracker:
         if not settlements:
             return
 
-        our_tickers = {p["ticker"] for p in open_positions}
+        our_tickers = {p["ticker"] for p in unsettled}
         processed_any = False
 
         for s in settlements:
