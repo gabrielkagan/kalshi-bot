@@ -937,10 +937,22 @@ class FirebasePusher:
             koft = getattr(self._ml, "kalshi_oft", None)
             if koft:
                 import bot as _bot_mod
-                snap["kalshi_order_flow"] = {
+                koft_data = {
                     "shadow_mode": getattr(_bot_mod, "KALSHI_OFT_SHADOW_MODE", True),
                     "tracked_tickers": koft.get_tracked_count(),
                 }
+                # Per-ticker signals
+                per_ticker = {}
+                for ticker in list(koft._snapshots.keys()):
+                    try:
+                        sigs = koft.get_signals(ticker)
+                        if sigs:
+                            per_ticker[ticker] = sigs
+                    except Exception:
+                        pass
+                if per_ticker:
+                    koft_data["signals"] = per_ticker
+                snap["kalshi_order_flow"] = koft_data
         except Exception:
             logging.debug("Firebase: kalshi_oft build failed", exc_info=True)
 
