@@ -562,7 +562,7 @@ class FirebasePusher:
             # P&L by price bucket
             bucket_rows = conn.execute(
                 "SELECT CASE "
-                "  WHEN entry_price_cents BETWEEN 87 AND 89 THEN '87-89' "
+                "  WHEN entry_price_cents BETWEEN 86 AND 89 THEN '86-89' "
                 "  WHEN entry_price_cents BETWEEN 90 AND 94 THEN '90-94' "
                 "  WHEN entry_price_cents BETWEEN 95 AND 99 THEN '95-99' "
                 "  ELSE 'other' END AS bucket, "

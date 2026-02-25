@@ -329,7 +329,7 @@ _CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
 _TELEGRAM: Optional["TelegramNotifier"] = None
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
-MIN_EDGE_PCT = 1.5                # model prob must exceed market by ≥1.5 pp (conservative for live testing phase)
+MIN_EDGE_PCT = 1.0                # model prob must exceed market by ≥1.0 pp (data: 1.0-1.5% bucket is 97.4% WR, 37W/1L)
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
 BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
