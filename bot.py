@@ -6140,7 +6140,8 @@ class OpportunityScanner:
     def __init__(self, client: KalshiClient, state: StateManager,
                  feed: CoinbaseFeed, vol: VolatilityEngine, logger: Logger,
                  sizer: PositionSizer, order_flow: Optional[OrderFlowEngine] = None,
-                 kalshi_oft: Optional[KalshiOrderFlowTracker] = None):
+                 kalshi_oft: Optional[KalshiOrderFlowTracker] = None,
+                 kalshi_feed=None):
         self._client = client
         self._state = state
         self._feed = feed
@@ -6149,6 +6150,7 @@ class OpportunityScanner:
         self._sizer = sizer
         self._order_flow = order_flow
         self._kalshi_oft = kalshi_oft
+        self._kalshi_feed = kalshi_feed
         # Orderbook cache: ticker -> (data, fetch_time)
         self._ob_cache: Dict[str, Tuple[Optional[Dict], float]] = {}
         # Balance cache: (balance_cents, fetch_time)
@@ -6191,6 +6193,14 @@ class OpportunityScanner:
         expired_ob = [t for t in self._ob_cache if t not in active_tickers]
         for t in expired_ob:
             del self._ob_cache[t]
+        # Unsubscribe expired tickers from WS orderbook_delta
+        if self._kalshi_feed:
+            ws_expired = set(expired) | set(expired_ob)
+            for t in ws_expired:
+                try:
+                    self._kalshi_feed.unsubscribe_ticker(t)
+                except Exception:
+                    pass
         self._eval_opp_seen = {
             (tk, stage) for tk, stage in self._eval_opp_seen if tk in active_tickers
         }
@@ -7077,15 +7087,31 @@ class OpportunityScanner:
         return 100 - best_no_bid
 
     def _get_orderbook_cached(self, ticker: str) -> Tuple[Optional[Dict], bool]:
-        """Return (orderbook_data, was_fresh_fetch). Uses TTL cache."""
+        """Return (orderbook_data, was_fresh_fetch). Uses TTL cache.
+
+        Prefers real-time WS orderbook when available (zero API cost),
+        falls back to REST fetch if WS data is missing or stale.
+        """
         now = time.time()
+
+        # Try WS orderbook first (free, real-time)
+        if self._kalshi_feed and self._kalshi_feed.is_connected:
+            ws_ob = self._kalshi_feed.get_orderbook(ticker)
+            if ws_ob and now - ws_ob.get("ts", 0) < ORDERBOOK_CACHE_TTL * 2:
+                # Subscribe if not already (ensures future deltas flow)
+                self._kalshi_feed.subscribe_ticker(ticker)
+                self._ob_cache[ticker] = (ws_ob, now)
+                return (ws_ob, False)
+            # No WS data yet — subscribe so it arrives for next scan
+            self._kalshi_feed.subscribe_ticker(ticker)
+
         cached = self._ob_cache.get(ticker)
         if cached:
             data, fetch_time = cached
             if now - fetch_time < ORDERBOOK_CACHE_TTL:
                 return (data, False)
 
-        # Fresh fetch
+        # REST fallback
         ob_data = self._client.get_orderbook(ticker, depth=5)
         # Prefer orderbook_fp (new FP format), fall back to orderbook (legacy)
         orderbook_fp = ob_data.get("orderbook_fp") if ob_data else None
@@ -8705,6 +8731,7 @@ class MainLoop:
             self.client, self.state, self.feed, self.vol, self.logger,
             self.sizer, order_flow=self.order_flow,
             kalshi_oft=self.kalshi_oft,
+            kalshi_feed=self.kalshi_feed,
         )
         # Kalshi WebSocket feed for real-time fills + orderbook
         try:
