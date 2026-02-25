@@ -338,7 +338,7 @@ BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
 # Edge-based tiered sizing: higher fee-adjusted edge → more aggressive
 # Thresholds are fee-adjusted (gross edge minus ~1¢ taker fee per contract)
 SIZING_TIERS = [                  # (min_fee_adj_edge, risk_fraction)
-    (0.04, 0.75),                 # fee-adj edge ≥ 4.0% → risk 75% (≈ gross ≥ 5%)
+    (0.04, 0.50),                 # fee-adj edge ≥ 4.0% → risk 50% (≈ gross ≥ 5%)
     (0.02, 0.35),                 # fee-adj edge ≥ 2.0% → risk 35% (≈ gross ≥ 3%)
     (0.015, 0.20),                # fee-adj edge ≥ 1.5% → risk 20% (≈ gross ≥ 2.5%)
     (0.01, 0.10),                 # fee-adj edge ≥ 1.0% → risk 10% (data: 97.4% WR, 37W/1L)
@@ -6056,7 +6056,7 @@ class PositionSizer:
     """Edge-tiered position sizing with drawdown scaling.
 
     Sizing tiers (from SIZING_TIERS, fee-adjusted edge):
-        fee-adj edge ≥ 4.0% → risk 75% of bankroll
+        fee-adj edge ≥ 4.0% → risk 50% of bankroll
         fee-adj edge ≥ 2.0% → risk 35% of bankroll
         fee-adj edge ≥ 1.5% → risk 20% of bankroll
         fee-adj edge ≥ 1.0% → risk 10% of bankroll
