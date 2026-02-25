@@ -7442,7 +7442,9 @@ class OrderExecutor:
                 self._session_post_only_taker_fills += 1
                 logging.info("post_only_taker_FILLED: %s", ticker)
             else:
-                logging.warning("post_only_taker_UNFILLED: %s (will retry taker next tick)", ticker)
+                # Clear rejections to prevent hot retry loop on persistent API errors
+                self._post_only_rejections.pop(ticker, None)
+                logging.warning("post_only_taker_UNFILLED: %s (cleared rejections, will re-evaluate)", ticker)
             return result
 
         # Tier 2: Degraded maker (1¢ worse, one attempt)
@@ -7986,7 +7988,7 @@ class OrderExecutor:
             ticker=ticker, side="yes", action="buy",
             count=count, yes_price=price,
             client_order_id=client_oid,
-            time_in_force="ioc",
+            time_in_force="immediate_or_cancel",
         )
 
         if resp is None:
