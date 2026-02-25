@@ -6216,6 +6216,26 @@ class OpportunityScanner:
                 self._kalshi_oft.cleanup_stale(active_tickers)
             except Exception:
                 pass
+
+        # Pre-subscribe all active tickers to WS and feed OFT from WS orderbooks
+        if self._kalshi_feed and self._kalshi_feed.is_connected:
+            for t in active_tickers:
+                try:
+                    self._kalshi_feed.subscribe_ticker(t)
+                except Exception:
+                    pass
+            # Feed OFT with any available WS orderbook data (zero API cost)
+            if self._kalshi_oft is not None:
+                for t in active_tickers:
+                    try:
+                        ws_ob = self._kalshi_feed.get_orderbook(t)
+                        if ws_ob and now - ws_ob.get("ts", 0) < 30:
+                            best_ask = self._best_yes_ask_cents(ws_ob)
+                            if best_ask is not None:
+                                self._kalshi_oft.record_snapshot(t, ws_ob, best_ask)
+                    except Exception:
+                        pass
+
         scan_stats: Dict[str, Dict[str, int]] = {
             a: {"evaluated": 0, "low_prob": 0, "no_orderbook": 0, "no_best_ask": 0,
                 "price_out_of_range": 0, "insufficient_edge": 0, "zero_sizing": 0,
