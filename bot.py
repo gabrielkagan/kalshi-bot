@@ -1845,6 +1845,15 @@ class KalshiFeed:
         with self._lock:
             return len(self._orderbooks)
 
+    def get_all_orderbooks(self) -> Dict[str, Dict]:
+        """Return a shallow copy of all cached orderbooks (thread-safe).
+
+        Used by FirebasePusher for dashboard visibility only.
+        Does NOT affect trading, scanning, or order execution.
+        """
+        with self._lock:
+            return dict(self._orderbooks)
+
     # ── Auth ───────────────────────────────────────────────────────────────
 
     def _create_ws_headers(self) -> Dict[str, str]:
@@ -8894,6 +8903,34 @@ class MainLoop:
         self._last_market_refresh = time.time()
         logging.debug(f"Refreshed: {len(self._active_windows)} active windows")
 
+    def _subscribe_discovery_orderbooks(self):
+        """Subscribe to WS orderbook_delta for all discovered tickers.
+
+        Dashboard visibility ONLY — does NOT affect Scanner.scan(),
+        execution, or any trading logic. Called every 30s after
+        _refresh_active_windows().
+        """
+        if not self.kalshi_feed or not self.kalshi_feed.is_connected:
+            return
+        try:
+            sub_count = 0
+            for window in self._active_windows:
+                for mkt in window.get("markets", []):
+                    ticker = mkt.get("ticker", "")
+                    if ticker:
+                        try:
+                            self.kalshi_feed.subscribe_ticker(ticker)
+                            sub_count += 1
+                        except Exception:
+                            pass
+            if sub_count > 0:
+                logging.info(
+                    f"discovery_ob_subscribe: queued {sub_count} tickers "
+                    f"across {len(self._active_windows)} windows"
+                )
+        except Exception as e:
+            logging.warning(f"discovery_ob_subscribe failed: {e}")
+
     # ── Calibration Backfill ─────────────────────────────────────────────
 
     def _backfill_calibration_data(self):
@@ -9070,6 +9107,7 @@ class MainLoop:
         # Refresh market list periodically
         if now - self._last_market_refresh >= MARKET_REFRESH_SECONDS:
             self._refresh_active_windows()
+            self._subscribe_discovery_orderbooks()   # dashboard visibility
 
         # Check settlements periodically (self-throttled)
         self.tracker.tick()

@@ -1018,6 +1018,86 @@ class FirebasePusher:
             logging.debug("Firebase: execution_engine build failed", exc_info=True)
             snap["execution_engine"] = {}
 
+        # ── Orderbook visibility (dashboard only) ─────────────────────────
+        try:
+            kf = getattr(self._ml, "kalshi_feed", None)
+            if kf and kf.is_connected:
+                all_obs = kf.get_all_orderbooks()
+                now_ts = time.time()
+                ob_summary = {}
+
+                for ticker, ob in all_obs.items():
+                    try:
+                        ob_ts = ob.get("ts", 0)
+                        age_s = round(now_ts - ob_ts, 1)
+                        stale = age_s > 30
+
+                        no_bids = ob.get("no", [])
+                        yes_bids = ob.get("yes", [])
+
+                        def parse_levels(entries):
+                            result = []
+                            for e in entries:
+                                if isinstance(e, (list, tuple)) and len(e) >= 2:
+                                    p, q = e[0], int(e[1])
+                                elif isinstance(e, dict):
+                                    p, q = e.get("price", 0), int(e.get("quantity", 0))
+                                else:
+                                    continue
+                                if isinstance(p, float) and p < 1.0:
+                                    p = round(p * 100)
+                                else:
+                                    p = int(p)
+                                if q > 0:
+                                    result.append((p, q))
+                            return result
+
+                        parsed_no = parse_levels(no_bids)
+                        yes_ask_levels = [{"p": 100 - p, "q": q} for p, q in parsed_no]
+                        yes_ask_levels.sort(key=lambda x: x["p"])
+
+                        parsed_yes = parse_levels(yes_bids)
+                        yes_bid_levels = [{"p": p, "q": q} for p, q in parsed_yes]
+                        yes_bid_levels.sort(key=lambda x: -x["p"])
+
+                        best_ask = yes_ask_levels[0]["p"] if yes_ask_levels else None
+                        best_bid = yes_bid_levels[0]["p"] if yes_bid_levels else None
+                        spread = (best_ask - best_bid) if (best_ask is not None and best_bid is not None) else None
+
+                        total_ask_depth = sum(l["q"] for l in yes_ask_levels)
+                        total_bid_depth = sum(l["q"] for l in yes_bid_levels)
+
+                        asset = "UNK"
+                        for a in ["BTC", "ETH", "SOL", "XRP"]:
+                            if a in ticker.upper():
+                                asset = a
+                                break
+
+                        if asset not in ob_summary:
+                            ob_summary[asset] = {}
+
+                        ob_summary[asset][ticker] = {
+                            "best_ask": best_ask,
+                            "best_bid": best_bid,
+                            "spread": spread,
+                            "ask_depth": total_ask_depth,
+                            "bid_depth": total_bid_depth,
+                            "asks": yes_ask_levels[:3],
+                            "bids": yes_bid_levels[:3],
+                            "age_s": age_s,
+                            "stale": stale,
+                        }
+                    except Exception:
+                        logging.debug(f"Firebase: ob summary failed for {ticker}", exc_info=True)
+
+                snap["orderbooks"] = ob_summary
+                logging.debug(f"Firebase: orderbooks built for {sum(len(v) for v in ob_summary.values())} tickers")
+            else:
+                snap["orderbooks"] = {}
+        except Exception:
+            logging.debug("Firebase: orderbooks build failed", exc_info=True)
+            snap["orderbooks"] = {}
+
         return snap
 
     def _push(self, snapshot: Dict[str, Any]):
