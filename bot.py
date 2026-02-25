@@ -343,7 +343,6 @@ MAKER_PRICE_OFFSET = 1            # cents below fair value for maker orders
 MAKER_POLL_INTERVAL = 2.0         # poll for maker fills every 2 seconds
 ESCALATION_MAX_ENTRY = 99         # taker price cap during escalation (cents)
 CONVERGENCE_WINDOW_SECONDS = 30.0 # seconds to measure price velocity
-PANIC_BID_PRICE = 99              # resting bid price (cents)
 MAKER_TIMEOUT_SECONDS = 30.0     # hard timeout for maker orders
 
 # ─── Adaptive Escalation ─────────────────────────────────────────────────
@@ -2029,7 +2028,7 @@ class KalshiFeed:
             with self._lock:
                 self._recent_fills.append(fill_info)
         except Exception:
-            logging.debug("Failed to parse WS fill message", exc_info=True)
+            logging.warning("Failed to parse WS fill message", exc_info=True)
 
     def _handle_ob_snapshot(self, data: Dict):
         """Replace cached orderbook with full snapshot."""
@@ -2045,7 +2044,7 @@ class KalshiFeed:
                     "ts": time.time(),
                 }
         except Exception:
-            logging.debug("Failed to parse WS OB snapshot", exc_info=True)
+            logging.warning("Failed to parse WS OB snapshot", exc_info=True)
 
     def _handle_ob_delta(self, data: Dict):
         """Apply incremental delta to cached orderbook."""
@@ -2080,7 +2079,7 @@ class KalshiFeed:
                     ob[side] = list(existing.values())
                 ob["ts"] = time.time()
         except Exception:
-            logging.debug("Failed to apply WS OB delta", exc_info=True)
+            logging.warning("Failed to apply WS OB delta", exc_info=True)
 
     @staticmethod
     def _level_price(level) -> int:
@@ -7498,7 +7497,7 @@ class OrderExecutor:
                             f"Partial WS fill — keeping order active "
                             f"({order['filled_so_far']}/{order['count']})")
             except Exception:
-                logging.debug("WS fill check failed", exc_info=True)
+                logging.warning("WS fill check failed", exc_info=True)
 
         # 1. Check for maker fill via REST
         fill = self._check_for_fill(order)
@@ -7644,135 +7643,6 @@ class OrderExecutor:
         except Exception:
             logging.warning("Amend failed with exception", exc_info=True)
             return False
-
-    # ── Panic Capture ──────────────────────────────────────────────────────
-
-    def _execute_panic_capture(self, order: Dict):
-        """Cancel maker and place resting 99¢ panic capture bid."""
-        self._cancel_active("panic_capture")
-        self._submit_panic_bid(order)
-
-    def _submit_panic_bid(self, old_order: Dict):
-        """Place resting 99¢ GTC limit bid for panic capture."""
-        candidate = old_order["candidate"]
-        ticker = old_order["ticker"]
-        count = candidate["position_size"]
-        price = PANIC_BID_PRICE
-        balance = old_order["balance_at_entry"]
-        remaining = (old_order["seconds_to_close_at_submit"]
-                     - (time.time() - old_order["submit_time"]))
-
-        client_oid = str(uuid.uuid4())
-
-        self._state.insert_bot_order(
-            client_oid, ticker, candidate["event_ticker"],
-            candidate["asset"], "yes", count, price, False
-        )
-
-        resp = self._client.place_order(
-            ticker=ticker, side="yes", action="buy",
-            count=count, yes_price=price,
-            client_order_id=client_oid
-        )
-
-        if resp is None:
-            self._state.mark_order_status(client_oid, "api_error")
-            logging.error(f"Panic capture order failed: {ticker}")
-            return
-
-        order_id = (resp.get("order") or {}).get("order_id", client_oid)
-        self._state.confirm_order_submitted(client_oid, order_id)
-
-        self._active_order = {
-            "order_id": order_id,
-            "client_order_id": client_oid,
-            "ticker": ticker,
-            "event_ticker": candidate["event_ticker"],
-            "asset": candidate["asset"],
-            "price_cents": price,
-            "count": count,
-            "is_taker": False,
-            "is_panic": True,
-            "submit_time": time.time(),
-            "seconds_to_close_at_submit": remaining,
-            "candidate": candidate,
-            "balance_at_entry": balance,
-        }
-        self._last_poll = time.time()
-
-        self._logger.log_order({
-            "action": "panic_capture_submitted",
-            "ticker": ticker,
-            "order_id": order_id,
-            "client_order_id": client_oid,
-            "price_cents": price,
-            "count": count,
-            "z_score": candidate.get("z_score"),
-        })
-        logging.info(
-            f"Panic capture: {ticker} {count}x @ {price}¢ "
-            f"(z={candidate.get('z_score', 0):.1f}, remaining={remaining:.0f}s)"
-        )
-
-    def _submit_panic_from_candidate(self, candidate: Dict):
-        """Place panic capture bid directly from a candidate (no active order)."""
-        ticker = candidate["ticker"]
-        count = candidate["position_size"]
-        price = PANIC_BID_PRICE
-        balance = candidate["balance_at_scan"]
-        remaining = candidate["seconds_to_close"]
-
-        client_oid = str(uuid.uuid4())
-
-        self._state.insert_bot_order(
-            client_oid, ticker, candidate["event_ticker"],
-            candidate["asset"], "yes", count, price, False
-        )
-
-        resp = self._client.place_order(
-            ticker=ticker, side="yes", action="buy",
-            count=count, yes_price=price,
-            client_order_id=client_oid
-        )
-
-        if resp is None:
-            self._state.mark_order_status(client_oid, "api_error")
-            logging.error(f"Panic capture order failed: {ticker}")
-            return
-
-        order_id = (resp.get("order") or {}).get("order_id", client_oid)
-        self._state.confirm_order_submitted(client_oid, order_id)
-
-        self._active_order = {
-            "order_id": order_id,
-            "client_order_id": client_oid,
-            "ticker": ticker,
-            "event_ticker": candidate["event_ticker"],
-            "asset": candidate["asset"],
-            "price_cents": price,
-            "count": count,
-            "is_taker": False,
-            "is_panic": True,
-            "submit_time": time.time(),
-            "seconds_to_close_at_submit": remaining,
-            "candidate": candidate,
-            "balance_at_entry": balance,
-        }
-        self._last_poll = time.time()
-
-        self._logger.log_order({
-            "action": "panic_capture_submitted",
-            "ticker": ticker,
-            "order_id": order_id,
-            "client_order_id": client_oid,
-            "price_cents": price,
-            "count": count,
-            "z_score": candidate.get("z_score"),
-        })
-        logging.info(
-            f"Panic capture: {ticker} {count}x @ {price}¢ "
-            f"(z={candidate.get('z_score', 0):.1f}, remaining={remaining:.0f}s)"
-        )
 
     def _escalate_to_taker(self, order: Dict, remaining: float,
                            reason: str = "escalation_wait") -> Optional[Dict]:
@@ -8904,7 +8774,11 @@ class MainLoop:
     def _refresh_active_windows(self):
         self._active_windows = discover_active_windows(self.client)
         self._last_market_refresh = time.time()
-        logging.debug(f"Refreshed: {len(self._active_windows)} active windows")
+        n = len(self._active_windows)
+        if n == 0:
+            logging.warning("Market refresh returned 0 active windows — scanner idle")
+        else:
+            logging.debug(f"Refreshed: {n} active windows")
 
     def _subscribe_discovery_orderbooks(self):
         """Subscribe to WS orderbook_delta for all discovered tickers.

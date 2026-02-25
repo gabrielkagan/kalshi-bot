@@ -914,6 +914,39 @@ class FirebasePusher:
                 exec_eng["session_ws_fills"] / total_fills, 3
             ) if total_fills > 0 else None
 
+            # Strategy distribution from scanner
+            scanner = getattr(self._ml, "scanner", None)
+            strat_counts = getattr(scanner, "_session_strategy_counts", None)
+            if strat_counts:
+                exec_eng["strategy_distribution"] = dict(strat_counts)
+
+            # ── Health alerts ──────────────────────────────────────────
+            alerts = []
+            ws_f = exec_eng.get("session_ws_fills", 0)
+            rest_f = exec_eng.get("session_rest_fills", 0)
+            ioc_f = exec_eng.get("session_ioc_fills", 0)
+            ioc_u = exec_eng.get("session_ioc_unfilled", 0)
+
+            # WS fill detection may be broken
+            if rest_f >= 3 and ws_f == 0:
+                alerts.append("WS fill detection may be broken (0 WS fills, REST taking over)")
+
+            # IOC taker path may be broken
+            if ioc_u >= 3 and ioc_f == 0:
+                alerts.append(f"IOC taker path failing ({ioc_u} unfilled, 0 fills)")
+
+            # Post-only rejection storm
+            if po_rej >= 10 and po_fill == 0:
+                alerts.append(f"Post-only rejection storm ({po_rej} rejects, 0 taker fills)")
+
+            # No fills at all despite orders
+            total_orders = getattr(scanner, "_session_total_candidates", 0)
+            if total_orders >= 3 and (ws_f + rest_f) == 0:
+                alerts.append(f"No fills despite {total_orders} candidates — check execution")
+
+            exec_eng["health_alerts"] = alerts
+            exec_eng["health_ok"] = len(alerts) == 0
+
             snap["execution_engine"] = exec_eng
         except Exception:
             logging.debug("Firebase: execution_engine build failed", exc_info=True)
