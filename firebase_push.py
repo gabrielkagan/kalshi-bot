@@ -128,10 +128,11 @@ class FirebasePusher:
                            COALESCE(st.seconds_to_close, eo.seconds_to_close) AS ttc,
                            COALESCE(st.edge, eo.edge) AS edge,
                            COALESCE(st.kelly_f, eo.kelly_f) AS kelly_f,
-                           st.fill_latency_seconds, st.calibrated_prob
+                           st.fill_latency_seconds,
+                           COALESCE(st.calibrated_prob, eo.calibrated_prob) AS calibrated_prob
                     FROM settled_trades st
                     LEFT JOIN evaluated_opportunities eo
-                        ON st.ticker = eo.ticker AND eo.filter_stage = 'observation_trade'
+                        ON st.ticker = eo.ticker AND eo.filter_stage IN ('candidate', 'observation_trade')
                     ORDER BY st.settled_at DESC LIMIT 10
                 """).fetchall()
             except Exception:
