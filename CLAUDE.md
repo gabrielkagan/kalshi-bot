@@ -33,7 +33,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | MIN_EDGE_PCT | 1.0 | 332 | 1.0 percentage point minimum edge (data: 1.0-1.5% bucket 97.4% WR) |
 | MAX_SECONDS_BEFORE_CLOSE | 240 | 42 | Start scanning 4 min before window close |
 | ONE_ASSET_PER_WINDOW | False | 43 | Can trade multiple assets per window |
-| SIZING_TIERS | [(0.05,0.75),(0.03,0.35),(0.015,0.20),(0.01,0.10)] | 339 | Edge-based tiered sizing |
+| SIZING_TIERS | [(0.04,0.75),(0.02,0.35),(0.015,0.20),(0.01,0.10)] | 339 | Fee-adjusted edge tiered sizing |
 
 ## Shadow Mode Features
 
