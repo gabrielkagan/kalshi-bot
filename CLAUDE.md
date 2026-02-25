@@ -12,7 +12,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 
 ## Project Structure
 
-- `bot.py` — Main bot entry point (~8300 lines, all bot logic lives here)
+- `bot.py` — Main bot entry point (~9200 lines, all bot logic lives here)
 - `firebase_push.py` — Pushes live dashboard snapshots to Firebase
 - `start.sh` — Startup script (activates venv, sources .env, runs bot)
 - `.github/workflows/deploy.yml` — Auto-deploy to VPS on push to main
@@ -20,8 +20,8 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 ## Current Bot State
 
 - **OBSERVATION_MODE = False** (line 30) — LIVE TRADING with real money
-- **Balance:** ~$58
-- **Counterfactual performance (24h sim):** 82 trades, 75W/7L, 91.5% WR, +$42.27
+- **Balance:** ~$97
+- **Live performance:** 24 settled trades, 23W/1L (95.8% WR)
 
 ## Key Config Values (bot.py)
 
@@ -42,7 +42,7 @@ Features that compute and log but do NOT affect live probability/trading:
 | Feature | Constant | Status |
 |---------|----------|--------|
 | EGARCH core vol | EGARCH_SHADOW_MODE = True | Logging, not affecting blended_rv |
-| EGARCH blend | EGARCH_BLEND_SHADOW_MODE = True | Closest to promotion (R² 0.37-0.46) |
+| EGARCH blend | EGARCH_BLEND_SHADOW_MODE = True | Closest to promotion (R² 0.42-0.61 typical) |
 | HAR model | HAR_SHADOW_MODE = True | NOT ready — models rejected (negative coefficients) |
 | Kalshi Order Flow | KALSHI_OFT_SHADOW_MODE = True | New, collecting data, has diagnostic logging |
 
@@ -55,7 +55,7 @@ Promoted features (shadow off, driving live behavior):
 | Feature | Status | Notes |
 |---------|--------|-------|
 | `post_only=True` on maker orders | Active | Guarantees maker fees (4x cheaper) |
-| `time_in_force="ioc"` on taker orders | Active | Auto-cancel unfilled, 0.3s wait |
+| `time_in_force="immediate_or_cancel"` on taker orders | Active | Auto-cancel unfilled |
 | `amend_order()` for escalation | Active | Amend-first, cancel-replace fallback |
 | `get_queue_position()` polling | Active | Every ~5s, queue-aware escalation |
 | KalshiFeed WebSocket | Active | fill + orderbook_delta channels |

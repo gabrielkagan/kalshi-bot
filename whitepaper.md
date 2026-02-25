@@ -58,7 +58,7 @@ Kalshi lists 15-minute crypto contracts around the clock. Each window produces f
 
 ## Component Overview
 
-The system comprises 17 classes, each with a single responsibility:
+The system comprises 22 classes, each with a single responsibility:
 
 | Component | Role |
 |---|---|
@@ -73,13 +73,16 @@ The system comprises 17 classes, each with a single responsibility:
 | **OrderFlowEngine** | Aggregates cross-exchange consensus and derivatives signals into probability adjustments (capped at ±3 percentage points) |
 | **KalshiOrderFlowTracker** | Shadow-mode Kalshi-native orderbook imbalance, depth velocity, and spread convergence signals |
 | **VolatilityEngine** | Realized Kernel volatility with adaptive bandwidth (H*), MZ R²-weighted blending, EGARCH(1,1) Student-t (shadow), HAR-RV (shadow), plus adaptive jump detection and DVOL integration |
+| **HAREstimator** | Heterogeneous Autoregressive RV model with extended variants (HAR-J, HAR-Semi, HAR-IV, HAR-VRP); fitted via ridge regression (shadow mode) |
+| **EGARCHEstimator** | EGARCH(1,1) with Student-t innovations (df 3.2–3.8), MLE-fitted on 10,800 samples (3 hours), refitted hourly (shadow mode) |
 | **MZTracker** | Mincer-Zarnowitz R² regression for dynamic EGARCH blend weight estimation with EMA smoothing |
 | **ProbabilityEngine** | Win probability via NIG CDF (per-asset fitted) with data-driven calibration, dynamic caps, and market-price blending |
-| **CalibrationEngine** | Learns calibration from settlement outcomes: Platt Scaling → Beta Calibration → Isotonic Regression as data grows |
-| **PositionSizer** | Quarter-Kelly position sizing with drawdown-based scaling |
+| **CalibrationEngine** | Learns calibration from settlement outcomes: Platt Scaling → Beta Calibration → Bayesian Linear Regression as data grows |
+| **PositionSizer** | Edge-tiered position sizing with drawdown-based scaling |
 | **OpportunityScanner** | Multi-stage filter pipeline evaluating all markets across active 15-minute windows |
 | **OrderExecutor** | Three-tier post_only handler, maker-first limit orders with adaptive taker escalation, WebSocket fill detection, amend-first conversion |
 | **SettlementTracker** | Incremental settlement polling (30-second intervals) using the Kalshi settlements API |
+| **TelegramNotifier** | Optional Telegram alerts for trades, settlements, and errors |
 | **MainLoop** | Continuous 1-second observation loop coordinating all components |
 
 ## Data Sources
@@ -189,8 +192,8 @@ Raw probabilities are calibrated using a CalibrationEngine that learns from sett
 |---|---|---|
 | Fixed logistic (β=0.85) | 0 | Default fallback — compresses extreme probabilities |
 | Platt Scaling | 200 | 2-parameter logistic (A, B) fitted to outcomes |
-| Beta Calibration | 500 | 3-parameter (a, b, c) — more flexible than Platt |
-| Isotonic Regression | 1,000 | Non-parametric monotonic mapping — most flexible |
+| Beta Calibration | 350 | 3-parameter (a, b, c) — more flexible than Platt |
+| Bayesian Linear Regression | 50 | Online posterior with prior w=1, b=0 (identity calibration) |
 
 The engine automatically promotes to better methods as data accumulates, with validation checks to prevent degradation.
 
@@ -219,7 +222,7 @@ At 96¢ and above, blending is skipped to preserve edge in high-confidence endga
 ### Sanity Checks
 
 - **Z-score limit**: If $|z| > 12$, the market is refused (volatility estimate is likely wrong at extremes)
-- **Model-market discrepancy**: If $p_{cal} > 90\%$ but market price $< 75$¢, the market is refused (suggests the model may be missing information the market has)
+- **Model-market discrepancy**: If $p_{cal} > 90\%$ but market price $< 75$¢, the market is refused (the model may be missing information the market has)
 
 ## 3.3 Edge Detection
 
@@ -242,7 +245,7 @@ $$\text{edge} = p_{final} - \frac{\text{best\_ask}}{100} - \frac{\text{taker\_fe
 
 A trade must satisfy:
 
-$$\text{edge} \geq \text{MIN\_EDGE\_PCT} = 1.5\%$$
+$$\text{edge} \geq \text{MIN\_EDGE\_PCT} = 1.0\%$$
 
 ## 3.4 Order Flow Analysis
 
@@ -293,7 +296,7 @@ When a `post_only=True` maker order is rejected (the order would cross the sprea
 | Tier | Trigger | Action |
 |---|---|---|
 | Tier 1: Normal maker | 0–1 rejections | Standard maker order, 1–2¢ below fair value |
-| Tier 2: Degraded maker | 2 rejections | Same offset + 1¢ additional discount. If price drops below 87¢ floor, skipped. |
+| Tier 2: Degraded maker | 2 rejections | Same offset + 1¢ additional discount. If price drops below 86¢ floor, skipped. |
 | Tier 3: Taker IOC | 3+ rejections | Edge re-verified with actual taker fees → IOC order if still profitable |
 
 Rejection counts expire after 30 seconds and are per-ticker (unique per market window).
@@ -316,7 +319,7 @@ For orders that are successfully placed but sit unfilled:
 4. If timeout reached without fill:
    - Attempt `amend_order()` to convert to taker price in-place (avoids cancel+replace race)
    - If amend fails, fall back to cancel + IOC (`time_in_force="ioc"`) taker order
-   - Re-validate price still in [87¢, 99¢] before taker submission
+   - Re-validate price still in [86¢, 99¢] before taker submission
 
 ### Partial Fill Handling
 
@@ -348,11 +351,14 @@ with a safety ceiling of `MAX_RISK_PER_TRADE` (50%) of bankroll.
 
 ### Edge-Based Sizing Tiers
 
-| Minimum Edge | Risk Fraction |
-|---|---|
-| ≥ 5% | 75% of bankroll |
-| ≥ 3% | 35% of bankroll |
-| ≥ 1.5% | 20% of bankroll |
+Thresholds are fee-adjusted (gross edge minus ~1¢ taker fee per contract):
+
+| Fee-Adjusted Edge | Risk Fraction | Approx Gross Edge |
+|---|---|---|
+| ≥ 4% | 50% of bankroll | ~5%+ |
+| ≥ 2% | 35% of bankroll | ~3%+ |
+| ≥ 1.5% | 20% of bankroll | ~2.5%+ |
+| ≥ 1% | 10% of bankroll | ~2%+ |
 
 ### Drawdown Scaling
 
@@ -377,8 +383,8 @@ This creates a geometric de-risking curve that preserves capital during losing s
 ## Market Selection Controls
 
 - **Multi-asset capable**: Can trade multiple assets per 15-minute window
-- **Price range guardrails**: Only trade contracts priced 87–99¢ — below 87¢ has historically poor win rates; above 99¢ offers insufficient reward
-- **Minimum edge threshold**: Fee-adjusted edge must exceed 1.5% after taker fees (worst-case)
+- **Price range guardrails**: Only trade contracts priced 86–99¢ — below 86¢ has historically poor win rates; above 99¢ offers insufficient reward
+- **Minimum edge threshold**: Fee-adjusted edge must exceed 1.0% after taker fees (worst-case)
 - **Scanner uses taker fees**: Every candidate is profitable even if forced to taker execution
 
 ## Model Sanity Controls
@@ -504,7 +510,7 @@ The system supports shadow mode for experimental features — they compute and l
 
 | Feature | Status | Readiness |
 |---|---|---|
-| EGARCH blend | Shadow | Closest to promotion (R² 0.19–0.76) |
+| EGARCH blend | Shadow | Closest to promotion (R² 0.42–0.61 typical) |
 | EGARCH core vol | Shadow | Stable convergence, building block for blend |
 | HAR-RV model | Shadow | Not viable — all model variants rejected |
 | Kalshi order flow | Shadow | Early data collection, needs 200+ outcomes |

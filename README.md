@@ -6,42 +6,45 @@ Automated trading bot for Kalshi's 15-minute cryptocurrency prediction markets. 
 
 ```
 Coinbase (1s prices) ──┐
-Binance ───────────────┤                                          ┌─ Maker order (1¢ below fair)
+Binance ───────────────┤                                          ┌─ Maker order (post_only)
 Kraken ────────────────┼──→ Volatility ──→ Probability ──→ Edge ──┤
-Bybit ─────────────────┤     Engine          Engine      Filter   ├─ Taker escalation
-Deribit DVOL ──────────┤                                          └─ Panic capture (99¢)
+Bybit ─────────────────┤     Engine          Engine      Filter   └─ Taker escalation (amend/IOC)
+Deribit DVOL ──────────┤
 CoinGlass funding ─────┘
 ```
 
-Every second, the bot scans all active 15-minute windows across all four assets and executes when the fee-adjusted edge exceeds 1.5 percentage points.
+Every second, the bot scans all active 15-minute windows across all four assets and executes when the fee-adjusted edge exceeds 1 percentage point.
 
 ## Architecture
 
 ### Volatility Engine
 
-The bot doesn't use a single volatility number — it blends three estimators with a HAR-RV weighting scheme:
+The bot doesn't use a single volatility number — it blends three Realized Kernel estimators (Barndorff-Nielsen 2008, Parzen flat-top kernel) with data-adaptive bandwidth selection:
 
-| Estimator | Weight | Purpose |
-|-----------|--------|---------|
-| 1-min realized kernel | 50% | Current microstructure (Barndorff-Nielsen 2008, Parzen flat-top kernel) |
+| Estimator | Base Weight | Purpose |
+|-----------|-------------|---------|
+| 1-min realized kernel | 50% | Current microstructure |
 | 5-min bipower variation | 30% | Jump-robust medium-term vol |
 | 15-min realized kernel | 20% | Window-level baseline |
 
 On top of this:
 
-- **Deribit DVOL integration** — when IV diverges from RV by >50%, the engine shifts toward implied vol using inverse-variance weighting. For SOL/XRP (no direct DVOL), it scales BTC DVOL by a rolling cross-asset beta (60-return lookback, clamped 0.5–3.0).
-- **Jump detection** — when any single return exceeds 3σ, the vol estimate doubles for 60 seconds.
+- **Adaptive RK bandwidth (H\*)** — bandwidth auto-tunes from the noise-to-signal ratio, producing tighter estimates in calm periods and wider smoothing during noisy periods
+- **Mincer-Zarnowitz R²-weighted EGARCH blending** — an EGARCH(1,1) model with Student-t innovations runs in shadow mode (R² typically 0.42–0.61); MZ regression scores forecast quality, EMA-smoothed weights ready for promotion
+- **Deribit DVOL integration** — when IV diverges from RV by >50%, the engine shifts toward implied vol using inverse-variance weighting. For SOL/XRP (no direct DVOL), it scales BTC DVOL by a rolling cross-asset beta (60-return lookback, clamped 0.5–3.0)
+- **Adaptive jump detection** — percentile-based per-asset thresholds (replaced fixed 3σ); EWMA variance tracking with tiered response scaling by severity
 
 ### Probability Model
 
 Converts the volatility estimate into a settlement probability:
 
 1. Compute z-score: distance from current price to strike, normalized by estimated vol
-2. Map through Student-t CDF (df=4) — heavier tails than Gaussian, better for crypto
-3. Logistic calibration (β=0.85) — compresses extreme probabilities toward center
-4. Hard cap at 93% — the model never claims >93% confidence
+2. Map through per-asset Normal Inverse Gaussian (NIG) CDF — captures both heavy tails and asymmetry unique to each crypto; falls back to Student-t(df=4) if NIG unavailable
+3. Data-driven calibration via CalibrationEngine — progresses from fixed logistic (β=0.85) → Platt Scaling → Beta Calibration → BLR as data accumulates (currently Beta Cal with 1170+ observations)
+4. Dynamic probability cap: 93% at >10min, relaxing to 99.5% at <1min remaining
+5. Market-price blending: 50/50 blend with market-implied probability below 96¢
 
-Safety rails refuse to trade if: the model says >90% but the market is below 75¢, or |z-score| > 8.0.
+Safety rails refuse to trade if: the model says >90% but the market is below 75¢, or |z-score| > 12.0.
 
 ### Cross-Exchange Intelligence
 
@@ -55,29 +58,27 @@ Total cross-exchange adjustment is capped at ±3pp.
 
 ### Execution Strategy
 
-The bot has five decision modes, selected by a composite score (45% certainty, 25% orderbook depth, 30% urgency):
+The bot always enters as a maker and escalates to taker based on time pressure. A diagnostic strategy engine classifies each opportunity (WAIT, MAKER_PATIENT, MAKER_AGGRESSIVE, TAKER_NOW) for logging, but the actual execution path is:
 
-| Mode | When | Action |
-|------|------|--------|
-| `WAIT` | Low score | Do nothing |
-| `MAKER_PATIENT` | Moderate edge, time remaining | Post 1¢ below fair value, wait 15s |
-| `MAKER_AGGRESSIVE` | Good edge, some time | Post at fair value, wait 10s |
-| `TAKER_NOW` | High edge or running low on time | Lift the ask immediately |
-| `PANIC_CAPTURE` | Near-certain outcome + dry book | Bid 99¢ |
-
-Maker orders use `post_only=True` to guarantee maker fees. Fill detection via Kalshi WebSocket (zero API cost, REST fallback). Escalation uses `amend_order()` to convert in-place, falling back to cancel + IOC taker. Queue position polled every ~5s for timing.
+1. Place maker order with `post_only=True` (guarantees 75% cheaper maker fees)
+2. Monitor for fills via Kalshi WebSocket (zero API cost, REST fallback)
+3. Poll queue position every ~5s for escalation timing
+4. If unfilled after wait period (15s/10s/5s depending on time remaining):
+   - Attempt `amend_order()` to convert to taker price in-place
+   - Fallback: cancel + IOC (`time_in_force="immediate_or_cancel"`) taker order
+5. Three-tier post_only rejection handler: normal → degraded → taker IOC after 3+ rejections
 
 ### Position Sizing
 
-Quarter-Kelly with drawdown scaling:
+Edge-tiered sizing with drawdown scaling:
 
-```
-f = 0.25 × (b×p − q) / b
+| Fee-Adjusted Edge | Risk Fraction |
+|-------------------|---------------|
+| ≥ 4% (~5%+ gross) | 50% of bankroll |
+| ≥ 2% (~3%+ gross) | 35% of bankroll |
+| ≥ 1.5% (~2.5%+ gross) | 20% of bankroll |
+| ≥ 1% | 10% of bankroll |
 
-where b = (100 − price) / price, p = calibrated prob, q = 1 − p
-```
-
-- Risk-based sizing: up to 75% of bankroll at 5%+ edge, 35% at 3%+, 20% at 1.5%+
 - Safety ceiling: max 50% of bankroll at risk per trade
 - At 90% of starting balance: halve position sizes
 - At 80% of starting balance: quarter position sizes
@@ -99,21 +100,9 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 | CoinGlass | REST | Funding rates | Every 10min (100 calls/day budget) |
 | Kalshi | REST + WebSocket | Markets, orderbooks, positions, settlements, fills | 1s scan loop + real-time WS fills/orderbook |
 
-## Live Stats
+## Live Dashboard
 
-<!-- Auto-updated by GitHub Actions from VPS state.db -->
-
-| Metric | Value |
-|--------|-------|
-| Markets evaluated | 0 |
-| Observation period | N/A |
-| Filter pass rate | 0% (0 of 0) |
-| Top rejection reason | N/A |
-| Settled trades | 0 |
-| Win rate | N/A |
-| Observation P&L | 0 cents |
-
-*Last updated: N/A*
+Real-time monitoring via Firebase: balance, positions, trades, volatility, execution health, and 50+ diagnostic panels pushed every 10 seconds. See `FIREBASE_DASHBOARD_BRIEF.md` for the full schema.
 
 ## Setup
 
@@ -175,7 +164,7 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot.py                         — all bot logic (~8,300 lines, never rename)
+bot.py                         — all bot logic (~9,200 lines, never rename)
 firebase_push.py               — pushes live dashboard snapshots to Firebase
 start.sh                       — systemd entrypoint (venv + .env + bot.py)
 requirements.txt               — Python dependencies

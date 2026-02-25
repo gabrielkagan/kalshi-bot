@@ -76,7 +76,7 @@ Most markets are not worth trading. The system applies a rigorous multi-stage fi
 
 - The model's estimated probability is too low (the contract is unlikely to pay out)
 - The Kalshi price is too high (not enough profit potential) or too low (too much uncertainty)
-- The edge after fees is insufficient (evaluated at worst-case taker fee rates)
+- The edge after fees is insufficient — must exceed 1% after taker fees (evaluated at worst-case rates)
 - The model and the market disagree by a suspicious margin (suggesting the model may be missing information)
 - Statistical inputs appear unreliable (extreme z-scores indicating potential data issues)
 
@@ -130,11 +130,11 @@ Capital preservation is the system's primary objective. Every design decision pr
 
 ## Conservative Position Sizing
 
-The bot uses a **quarter-Kelly** approach — it bets only 25% of the mathematically optimal amount for long-run growth. While this sacrifices some theoretical upside, it dramatically reduces the probability of large drawdowns. In practical terms, this means:
+The bot uses an **edge-tiered** approach — higher-conviction trades (greater model edge over the market) receive larger allocations, while lower-edge trades get minimal sizing. The largest tier risks 50% of bankroll only on trades with 4%+ fee-adjusted edge, and the smallest tier risks just 10%. In practical terms:
 
-- Individual trades risk a small, precisely calculated fraction of the bankroll
+- Individual trades risk a precisely calculated fraction of the bankroll, proportional to estimated edge
 - Even a string of losses has a limited impact on total capital
-- The sizing formula is derived from decades of financial mathematics research
+- The sizing tiers are calibrated against actual trade performance data
 
 ## Automatic De-Risking
 
@@ -163,7 +163,7 @@ If any single check fails, the trade is refused — no exceptions. The system is
 
 ## Hard Price Boundaries
 
-The bot only trades contracts priced between 87 and 99 cents. Below 87 cents, historical data shows poor win rates and excessive uncertainty. Above 99 cents, the potential profit is too small to justify the risk. This guardrail eliminates an entire class of low-quality trades.
+The bot only trades contracts priced between 86 and 99 cents. Below 86 cents, historical data shows poor win rates and excessive uncertainty. Above 99 cents, the potential profit is too small to justify the risk. This guardrail eliminates an entire class of low-quality trades.
 
 ---
 
@@ -248,9 +248,9 @@ For readers interested in the mathematical foundations, the full technical white
 
 **Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven: as settlement outcomes accumulate, the CalibrationEngine progresses from fixed logistic scaling to Platt Scaling to Beta Calibration to Isotonic Regression. A dynamic time-dependent probability cap relaxes as expiry approaches (93% at 10min+ → 99.5% at <1min).
 
-**Position Sizing** — Quarter-Kelly criterion with drawdown-based scaling. The Kelly fraction maximizes long-run geometric growth rate; using one-quarter of this fraction sacrifices approximately 6% of theoretical growth in exchange for dramatically reduced variance.
+**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Higher fee-adjusted edge trades get larger allocations (50% at 4%+, 35% at 2%+, 20% at 1.5%+, 10% at 1%+), with automatic de-risking during drawdowns.
 
-**Execution Model** — Three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Maker orders use `post_only=True` to guarantee 75% fee savings. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment before falling back to cancel + IOC. Queue position monitoring enables optimal escalation timing.
+**Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Maker orders use `post_only=True` to guarantee 75% fee savings. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing.
 
 ---
 
