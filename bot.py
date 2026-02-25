@@ -1117,6 +1117,10 @@ class StateManager:
             ("calibration_method", "TEXT"),
             ("old_system_prob", "REAL"),
             ("fee_adjusted_edge", "REAL"),
+            ("egarch_sigma", "REAL"),
+            ("egarch_blend_sigma", "REAL"),
+            ("egarch_blend_weight", "REAL"),
+            ("mz_r_squared", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1128,6 +1132,10 @@ class StateManager:
         for col_def in [
             ("raw_prob", "REAL"),
             ("market_result", "TEXT"),
+            ("egarch_sigma", "REAL"),
+            ("egarch_blend_sigma", "REAL"),
+            ("egarch_blend_weight", "REAL"),
+            ("mz_r_squared", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE rejected_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1389,18 +1397,24 @@ class StateManager:
                          spot_price: Optional[float], threshold: Optional[float],
                          volatility: Optional[float], market_price: Optional[int],
                          seconds_to_close: Optional[float],
-                         calibrated_prob: Optional[float]):
+                         calibrated_prob: Optional[float],
+                         egarch_sigma: Optional[float] = None,
+                         egarch_blend_sigma: Optional[float] = None,
+                         egarch_blend_weight: Optional[float] = None,
+                         mz_r_squared: Optional[float] = None):
         """Insert a rejected opportunity. INSERT OR IGNORE deduplicates by ticker."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
             INSERT OR IGNORE INTO rejected_opportunities
                 (ticker, event_ticker, asset, rejection_reason, rejection_time,
                  z_score, spot_price, threshold, volatility, market_price,
-                 seconds_to_close, calibrated_prob, status)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 seconds_to_close, calibrated_prob, status,
+                 egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, event_ticker, asset, rejection_reason, now,
               z_score, spot_price, threshold, volatility, market_price,
-              seconds_to_close, calibrated_prob, "pending"))
+              seconds_to_close, calibrated_prob, "pending",
+              egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared))
         self.conn.commit()
 
     def get_unsettled_rejections(self) -> List[Dict]:
@@ -1446,7 +1460,11 @@ class StateManager:
                                      raw_prob: Optional[float] = None,
                                      calibration_method: Optional[str] = None,
                                      old_system_prob: Optional[float] = None,
-                                     fee_adjusted_edge: Optional[float] = None):
+                                     fee_adjusted_edge: Optional[float] = None,
+                                     egarch_sigma: Optional[float] = None,
+                                     egarch_blend_sigma: Optional[float] = None,
+                                     egarch_blend_weight: Optional[float] = None,
+                                     mz_r_squared: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
@@ -1461,8 +1479,9 @@ class StateManager:
                      breakeven_wr, expected_value, drawdown_scaler,
                      ask_depth, best_ask_source, ofa_confidence,
                      raw_prob, calibration_method, old_system_prob,
-                     fee_adjusted_edge)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     fee_adjusted_edge,
+                     egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1472,7 +1491,8 @@ class StateManager:
                   breakeven_wr, expected_value, drawdown_scaler,
                   ask_depth, best_ask_source, ofa_confidence,
                   raw_prob, calibration_method, old_system_prob,
-                  fee_adjusted_edge))
+                  fee_adjusted_edge,
+                  egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared))
             self.conn.commit()
         except Exception as e:
             logging.debug(f"insert_evaluated_opportunity failed: {e}")
@@ -6303,6 +6323,15 @@ class OpportunityScanner:
             blended_rv = vol_est["blended_rv"]
             seconds_remaining = window["seconds_to_close"]
 
+            # Extract EGARCH diagnostics for per-evaluation logging
+            _ebs_var = vol_est.get("egarch_blend_var")
+            _egarch_diag = {
+                "egarch_sigma": vol_est.get("egarch_sigma"),
+                "egarch_blend_sigma": math.sqrt(_ebs_var) if _ebs_var and _ebs_var > 0 else None,
+                "egarch_blend_weight": vol_est.get("egarch_blend_weight"),
+                "mz_r_squared": vol_est.get("mz_r_squared"),
+            }
+
             for mkt in window["markets"]:
                 ticker = mkt.get("ticker", "")
                 threshold = self._parse_threshold(mkt)
@@ -6338,11 +6367,13 @@ class OpportunityScanner:
                             "market_price": rej_ask,
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": None,
+                            **_egarch_diag,
                         }
                         self._state.insert_rejection(
                             ticker, window["event_ticker"], asset, reason,
                             prob_result.get("z_score"), spot, threshold,
-                            blended_rv, rej_ask, seconds_remaining, None)
+                            blended_rv, rej_ask, seconds_remaining, None,
+                            **_egarch_diag)
                         self._logger.log_rejection(rej_data)
                         logging.info(
                             f"Rejected opportunity: {ticker} — {reason}")
@@ -6365,6 +6396,7 @@ class OpportunityScanner:
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": round(cal_prob, 6),
                             "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
+                            **_egarch_diag,
                         })
                     except Exception:
                         pass
@@ -6406,6 +6438,7 @@ class OpportunityScanner:
                                 "calibrated_prob": round(cal_prob, 6),
                                 "mkt_yes_ask": mkt_yes_ask,
                                 "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
+                                **_egarch_diag,
                             })
                         except Exception:
                             pass
@@ -6450,6 +6483,7 @@ class OpportunityScanner:
                             "calibrated_prob": round(cal_prob, 6),
                             "mkt_yes_ask": mkt.get("yes_ask"),
                             "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
+                            **_egarch_diag,
                         })
                     except Exception:
                         pass
@@ -6525,6 +6559,7 @@ class OpportunityScanner:
                             "total_ob_depth": total_depth,
                             "convergence_velocity": self._scanner_convergence_velocity(ticker),
                             "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
+                            **_egarch_diag,
                         })
                         _dedup_key = (ticker, "price_out_of_range")
                         if _dedup_key not in self._eval_opp_seen:
@@ -6542,7 +6577,8 @@ class OpportunityScanner:
                                 ask_depth=ask_depth,
                                 best_ask_source=best_ask_source,
                                 raw_prob=raw_prob_pre,
-                                calibration_method=calibration_method_pre)
+                                calibration_method=calibration_method_pre,
+                                **_egarch_diag)
                     except Exception:
                         pass
                     continue
@@ -6568,12 +6604,14 @@ class OpportunityScanner:
                             "market_price": best_ask,
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": prob_with_market.get("calibrated_prob"),
+                            **_egarch_diag,
                         }
                         self._state.insert_rejection(
                             ticker, window["event_ticker"], asset, reason,
                             prob_with_market.get("z_score"), spot, threshold,
                             blended_rv, best_ask, seconds_remaining,
-                            prob_with_market.get("calibrated_prob"))
+                            prob_with_market.get("calibrated_prob"),
+                            **_egarch_diag)
                         self._logger.log_rejection(rej_data)
                         logging.info(
                             f"Rejected opportunity: {ticker} — {reason}")
@@ -6654,6 +6692,7 @@ class OpportunityScanner:
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                             "old_system_prob": round(_old_system_prob, 6),
                             "kalshi_oft": (ofa_signals or {}).get("signals", {}).get("kalshi_orderbook", {}),
+                            **_egarch_diag,
                         })
                         _dedup_key = (ticker, "insufficient_edge")
                         if _dedup_key not in self._eval_opp_seen:
@@ -6679,7 +6718,8 @@ class OpportunityScanner:
                                 raw_prob=raw_prob,
                                 calibration_method=calibration_method,
                                 old_system_prob=_old_system_prob,
-                                fee_adjusted_edge=fee_adjusted_edge)
+                                fee_adjusted_edge=fee_adjusted_edge,
+                                **_egarch_diag)
                     except Exception:
                         pass
                     continue
@@ -6730,6 +6770,7 @@ class OpportunityScanner:
                             "ofa_adjustment": round(ofa_adjustment, 6),
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                             "old_system_prob": round(_old_system_prob, 6),
+                            **_egarch_diag,
                         })
                         _dedup_key = (ticker, "zero_sizing")
                         if _dedup_key not in self._eval_opp_seen:
@@ -6758,7 +6799,8 @@ class OpportunityScanner:
                                 raw_prob=raw_prob,
                                 calibration_method=calibration_method,
                                 old_system_prob=_old_system_prob,
-                                fee_adjusted_edge=fee_adjusted_edge)
+                                fee_adjusted_edge=fee_adjusted_edge,
+                                **_egarch_diag)
                     except Exception:
                         pass
                     continue
@@ -6838,6 +6880,7 @@ class OpportunityScanner:
                             "composite_score": strategy_scores.get("composite"),
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                             "old_system_prob": round(_old_system_prob, 6),
+                            **_egarch_diag,
                         })
                         _dedup_key = (ticker, "strategy_wait")
                         if _dedup_key not in self._eval_opp_seen:
@@ -6867,7 +6910,8 @@ class OpportunityScanner:
                                 raw_prob=raw_prob,
                                 calibration_method=calibration_method,
                                 old_system_prob=_old_system_prob,
-                                fee_adjusted_edge=fee_adjusted_edge)
+                                fee_adjusted_edge=fee_adjusted_edge,
+                                **_egarch_diag)
                     except Exception:
                         pass
                     continue
@@ -6906,6 +6950,7 @@ class OpportunityScanner:
                         "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                         "old_system_prob": round(_old_system_prob, 6),
                         "kalshi_oft": (ofa_signals or {}).get("signals", {}).get("kalshi_orderbook", {}),
+                        **_egarch_diag,
                     })
                 except Exception:
                     pass
@@ -6943,6 +6988,7 @@ class OpportunityScanner:
                     "old_system_prob": round(_old_system_prob, 6),
                     "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                     "kalshi_oft_signals": (ofa_signals or {}).get("signals", {}).get("kalshi_orderbook", {}),
+                    **_egarch_diag,
                 })
 
                 # Respect per-tick orderbook fetch cap
@@ -7007,6 +7053,10 @@ class OpportunityScanner:
                                 "ofa_adjustment": c.get("ofa_adjustment"),
                                 "raw_prob": round(c["raw_prob"], 6) if c.get("raw_prob") is not None else None,
                                 "old_system_prob": c.get("old_system_prob"),
+                                "egarch_sigma": c.get("egarch_sigma"),
+                                "egarch_blend_sigma": c.get("egarch_blend_sigma"),
+                                "egarch_blend_weight": c.get("egarch_blend_weight"),
+                                "mz_r_squared": c.get("mz_r_squared"),
                             })
                             _dedup_key = (c["ticker"], "single_asset_selection")
                             if _dedup_key not in self._eval_opp_seen:
@@ -7039,7 +7089,11 @@ class OpportunityScanner:
                                     raw_prob=c.get("raw_prob"),
                                     calibration_method=c.get("calibration_method"),
                                     old_system_prob=c.get("old_system_prob"),
-                                    fee_adjusted_edge=c.get("fee_adjusted_edge"))
+                                    fee_adjusted_edge=c.get("fee_adjusted_edge"),
+                                    egarch_sigma=c.get("egarch_sigma"),
+                                    egarch_blend_sigma=c.get("egarch_blend_sigma"),
+                                    egarch_blend_weight=c.get("egarch_blend_weight"),
+                                    mz_r_squared=c.get("mz_r_squared"))
                         except Exception:
                             pass
         else:
@@ -7426,7 +7480,11 @@ class OrderExecutor:
                         raw_prob=candidate.get("raw_prob"),
                         calibration_method=candidate.get("calibration_method"),
                         old_system_prob=candidate.get("old_system_prob"),
-                        fee_adjusted_edge=candidate.get("fee_adjusted_edge"))
+                        fee_adjusted_edge=candidate.get("fee_adjusted_edge"),
+                        egarch_sigma=candidate.get("egarch_sigma"),
+                        egarch_blend_sigma=candidate.get("egarch_blend_sigma"),
+                        egarch_blend_weight=candidate.get("egarch_blend_weight"),
+                        mz_r_squared=candidate.get("mz_r_squared"))
             except Exception:
                 pass
             return None
