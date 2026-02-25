@@ -7503,6 +7503,8 @@ class OrderExecutor:
                         ws_trade_id = ws_fill.get("trade_id") or ws_fill.get("id")
                         if ws_trade_id:
                             order.setdefault("_seen_fill_ids", set()).add(ws_trade_id)
+                        else:
+                            logging.warning(f"WS fill missing trade_id for {order['ticker']}")
                         if order.get("filled_so_far", 0) >= order["count"]:
                             self._active_order = None
                             return ws_fill
@@ -7950,7 +7952,10 @@ class OrderExecutor:
 
         seen = order.setdefault("_seen_fill_ids", set())
         for fill in resp["fills"]:
-            fill_id = fill.get("trade_id") or fill.get("id") or id(fill)
+            fill_id = fill.get("trade_id") or fill.get("id")
+            if not fill_id:
+                logging.warning(f"REST fill missing trade_id/id for {order['ticker']} — skipping to avoid double-count")
+                continue
             if fill.get("order_id") == order["order_id"] and fill_id not in seen:
                 seen.add(fill_id)
                 return fill
@@ -7968,12 +7973,23 @@ class OrderExecutor:
         candidate = order["candidate"]
 
         # Extract fill details — prefer FP/dollar fields, fall back to legacy
-        fill_count = fp_str_to_int(fill.get("count_fp")) or (fill.get("count") or order["count"])
+        raw_fill_count = fp_str_to_int(fill.get("count_fp")) or (fill.get("count") or order["count"])
+        remaining = order["count"] - order.get("filled_so_far", 0)
+        if raw_fill_count > remaining > 0:
+            logging.warning(
+                f"Fill count {raw_fill_count} exceeds remaining {remaining} for "
+                f"{order['ticker']} — capping to {remaining}")
+            fill_count = remaining
+        else:
+            fill_count = raw_fill_count
         fill_price_d = fill.get("yes_price_dollars")
         fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("yes_price") or order["price_cents"])
 
         # Track cumulative fills for partial fill detection
-        order["filled_so_far"] = order.get("filled_so_far", 0) + fill_count
+        order["filled_so_far"] = min(
+            order.get("filled_so_far", 0) + fill_count,
+            order["count"]
+        )
         is_complete = order["filled_so_far"] >= order["count"]
 
         # Update order status only when fully filled
