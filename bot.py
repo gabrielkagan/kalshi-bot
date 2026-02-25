@@ -335,12 +335,13 @@ MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advan
 BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
 
 # ─── Position Sizing ───────────────────────────────────────────────────────
-# Edge-based tiered sizing: higher edge → more aggressive
-SIZING_TIERS = [                  # (min_edge, risk_fraction)
-    (0.05, 0.75),                 # edge ≥ 5%  → risk 75% of bankroll
-    (0.03, 0.35),                 # edge ≥ 3%  → risk 35% of bankroll
-    (0.015, 0.20),                # edge ≥ 1.5% → risk 20% of bankroll
-    (0.01, 0.10),                 # edge ≥ 1.0% → risk 10% of bankroll (data: 97.4% WR, 37W/1L)
+# Edge-based tiered sizing: higher fee-adjusted edge → more aggressive
+# Thresholds are fee-adjusted (gross edge minus ~1¢ taker fee per contract)
+SIZING_TIERS = [                  # (min_fee_adj_edge, risk_fraction)
+    (0.04, 0.75),                 # fee-adj edge ≥ 4.0% → risk 75% (≈ gross ≥ 5%)
+    (0.02, 0.35),                 # fee-adj edge ≥ 2.0% → risk 35% (≈ gross ≥ 3%)
+    (0.015, 0.20),                # fee-adj edge ≥ 1.5% → risk 20% (≈ gross ≥ 2.5%)
+    (0.01, 0.10),                 # fee-adj edge ≥ 1.0% → risk 10% (data: 97.4% WR, 37W/1L)
 ]
 DRAWDOWN_HALF_THRESHOLD = 0.90    # below 90% of starting balance → halve size
 DRAWDOWN_QUARTER_THRESHOLD = 0.80 # below 80% → quarter size
@@ -6054,10 +6055,11 @@ class CalibrationEngine:
 class PositionSizer:
     """Edge-tiered position sizing with drawdown scaling.
 
-    Sizing tiers (from SIZING_TIERS):
-        edge ≥ 5%  → risk 50% of bankroll
-        edge ≥ 3%  → risk 35% of bankroll
-        edge ≥ 1.5% → risk 20% of bankroll
+    Sizing tiers (from SIZING_TIERS, fee-adjusted edge):
+        fee-adj edge ≥ 4.0% → risk 75% of bankroll
+        fee-adj edge ≥ 2.0% → risk 35% of bankroll
+        fee-adj edge ≥ 1.5% → risk 20% of bankroll
+        fee-adj edge ≥ 1.0% → risk 10% of bankroll
 
     Contracts = floor(bankroll × risk_fraction / price).
 
@@ -6103,7 +6105,8 @@ class PositionSizer:
             return result
 
         # Edge-based tier selection: higher edge → larger risk fraction
-        edge = win_prob - price_cents / 100.0
+        # Use fee-adjusted edge (consistent with scanner MIN_EDGE_PCT filter)
+        edge = win_prob - price_cents / 100.0 - fee_1c / 100.0
         risk_fraction = 0.0
         for min_edge, frac in SIZING_TIERS:
             if edge >= min_edge:
