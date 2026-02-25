@@ -35,7 +35,7 @@ SERIES_TICKERS = {
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
 }
-MIN_ENTRY_PRICE = 87              # cents (bumped from 86; loss zone is 80-84c)
+MIN_ENTRY_PRICE = 86              # cents (data: 86c bucket is 94.1% WR, +$32.75 sim PnL; loss zone is 80-84c)
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.50         # max 50% of bankroll at risk per trade (scales with balance)
 MIN_SECONDS_BEFORE_CLOSE = 0
@@ -340,6 +340,7 @@ SIZING_TIERS = [                  # (min_edge, risk_fraction)
     (0.05, 0.75),                 # edge ≥ 5%  → risk 75% of bankroll
     (0.03, 0.35),                 # edge ≥ 3%  → risk 35% of bankroll
     (0.015, 0.20),                # edge ≥ 1.5% → risk 20% of bankroll
+    (0.01, 0.10),                 # edge ≥ 1.0% → risk 10% of bankroll (data: 97.4% WR, 37W/1L)
 ]
 DRAWDOWN_HALF_THRESHOLD = 0.90    # below 90% of starting balance → halve size
 DRAWDOWN_QUARTER_THRESHOLD = 0.80 # below 80% → quarter size
