@@ -100,9 +100,21 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 | CoinGlass | REST | Funding rates | Every 10min (100 calls/day budget) |
 | Kalshi | REST + WebSocket | Markets, orderbooks, positions, settlements, fills | 1s scan loop + real-time WS fills/orderbook |
 
-## Live Dashboard
+## Live Stats
 
-Real-time monitoring via Firebase: balance, positions, trades, volatility, execution health, and 50+ diagnostic panels pushed every 10 seconds. See `FIREBASE_DASHBOARD_BRIEF.md` for the full schema.
+<!-- Auto-updated by GitHub Actions from VPS state.db -->
+
+| Metric | Value |
+|--------|-------|
+| Markets evaluated | 0 |
+| Observation period | N/A |
+| Filter pass rate | 0% (0 of 0) |
+| Top rejection reason | N/A |
+| Settled trades | 0 |
+| Win rate | N/A |
+| Observation P&L | 0 cents |
+
+*Last updated: N/A*
 
 ## Setup
 
