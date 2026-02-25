@@ -125,7 +125,7 @@ EGARCH_OMEGA_BOUNDS = (-5.0, 0.0)
 EGARCH_ALPHA_BOUNDS = (0.01, 0.5)
 EGARCH_GAMMA_BOUNDS = (-0.3, 0.3)       # both leverage directions
 EGARCH_BETA_BOUNDS = (0.80, 0.999)      # high persistence typical for crypto
-EGARCH_DF_BOUNDS = (2.1, 30.0)          # Student-t df bounds (2.1 floor avoids infinite variance)
+EGARCH_DF_BOUNDS = (4.0, 30.0)          # Student-t df bounds (4.0 floor ensures finite kurtosis)
 EGARCH_DF_DEFAULT = 5.0                 # Typical for crypto (heavy tails, Caporale & Zekokh 2019)
 EGARCH_REFIT_INTERVALS = {              # Per-asset refit intervals (seconds)
     "BTC": 7200, "ETH": 7200,          # 2h for high-persistence assets
@@ -137,8 +137,8 @@ EGARCH_BLEND_SHADOW_MODE = True        # True = log only, don't affect blended_r
 EGARCH_BLEND_STATE_PATH = "egarch_blend_state.json"
 
 # Mincer-Zarnowitz R² tracker
-MZ_WINDOW = 180                        # Rolling window: 180 ticks × 10s = 30 min (was 360)
-MZ_MIN_OBS = 60                        # Need 10 min of data before R² is valid
+MZ_WINDOW = 720                        # Rolling window: 720 ticks × 10s = 2 hours
+MZ_MIN_OBS = 240                       # Need 40 min of data before R² is valid (1:3 ratio)
 MZ_RECOMPUTE_INTERVAL = 30.0           # Recompute R² every 30s (not every tick)
 MZ_EMA_LAMBDA = 0.97                   # EMA decay for weight smoothing (Stock & Watson 2004)
 MZ_EQUAL_WEIGHT_R2_THRESHOLD = 0.10    # Below this R², use equal-weight midpoint
@@ -149,6 +149,12 @@ EGARCH_WEIGHT_BOUNDS = {
     "ETH": (0.10, 0.35),
     "SOL": (0.05, 0.20),   # Low persistence → less EGARCH weight
     "XRP": (0.05, 0.25),
+}
+EGARCH_GAMMA_CONSTRAINTS = {           # Per-asset gamma bounds (leverage effect)
+    "BTC": (0.0, 0.0),                    # gamma insignificant (t~0.75-1.2), fix at zero
+    "ETH": (-0.3, 0.3),                   # gamma significant (t~1.6-2.6)
+    "SOL": (-0.3, 0.3),                   # gamma significant (t~1.9-3.0)
+    "XRP": (0.0, 0.0),                    # gamma insignificant (t~1.0-1.6), fix at zero
 }
 EGARCH_WEIGHT_DEFAULT = 0.0            # Before MZ warmup: pure RV (safe default)
 
@@ -4729,10 +4735,14 @@ class EGARCHEstimator:
         else:
             x0 = [math.log(sample_var) * (1 - 0.95), 0.10, 0.0, 0.95, EGARCH_DF_DEFAULT]
 
+        gamma_bounds = EGARCH_GAMMA_CONSTRAINTS.get(asset, EGARCH_GAMMA_BOUNDS)
+        gamma_lo, gamma_hi = gamma_bounds
+        if gamma_lo == gamma_hi:
+            x0[2] = gamma_lo  # force initial guess when gamma is constrained
         bounds = [
             EGARCH_OMEGA_BOUNDS,
             EGARCH_ALPHA_BOUNDS,
-            EGARCH_GAMMA_BOUNDS,
+            gamma_bounds,              # per-asset (was EGARCH_GAMMA_BOUNDS)
             EGARCH_BETA_BOUNDS,
             EGARCH_DF_BOUNDS,
         ]
@@ -4850,8 +4860,8 @@ class EGARCHEstimator:
         n = len(returns)
         if n < 60:
             return 1e10
-        if df <= 2.0:
-            return 1e10  # Infinite variance — reject
+        if df < 4.0:
+            return 1e10  # df<4 → infinite kurtosis — reject
 
         sample_var = sum(r * r for r in returns[:60]) / 60.0
         if sample_var <= 0:
