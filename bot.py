@@ -6689,6 +6689,19 @@ class OpportunityScanner:
                 if balance is None or balance <= 0:
                     continue
                 sizing = self._sizer.compute(final_prob, best_ask, balance)
+
+                # Cap by existing exposure (positions + resting orders) to prevent
+                # accumulation across scan ticks on the same ticker
+                existing_exposure = 0
+                for pos in self._state.get_open_positions():
+                    if pos["ticker"] == ticker:
+                        existing_exposure += pos["count"]
+                        break
+                for resting in self._state.get_resting_orders(ticker=ticker):
+                    existing_exposure += resting["count"]
+                if existing_exposure > 0:
+                    sizing["contracts"] = max(0, sizing["contracts"] - existing_exposure)
+
                 if sizing["contracts"] <= 0:
                     scan_stats[asset]["zero_sizing"] += 1
                     self._recent_opportunities.append({
@@ -8034,6 +8047,13 @@ class OrderExecutor:
             fill_source=order.get("fill_source", "rest_poll"),
             execution_method=order.get("execution_method", "maker"),
         )
+
+        # Invalidate scanner balance cache so next tick gets fresh balance
+        try:
+            if self._ml and hasattr(self._ml, 'scanner'):
+                self._ml.scanner._balance_cache = (None, 0.0)
+        except Exception:
+            pass
 
         # Log trade with all required fields
         is_taker = order.get("is_taker", False)
