@@ -30,8 +30,9 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | OBSERVATION_MODE | False | 30 | LIVE trading |
 | MIN_ENTRY_PRICE | 87 | 38 | Cents; two losses at 86c, raised to 87c |
 | MAX_ENTRY_PRICE | 99 | 39 | Cents |
-| MIN_EDGE_PCT | 1.0 | 332 | 1.0 percentage point minimum edge (data: 1.0-1.5% bucket 97.4% WR) |
-| MAX_SECONDS_BEFORE_CLOSE | 240 | 42 | Start scanning 4 min before window close |
+| MIN_EDGE_PCT | 0.9 | 332 | 0.9 percentage point minimum edge |
+| MARKET_BLEND_W | 0.0 | 273 | No market blend (was 0.50; promoted from shadow cal pipeline) |
+| MAX_SECONDS_BEFORE_CLOSE | 270 | 42 | Start scanning 4.5 min before close (data: 240-270s 8W/0L) |
 | ONE_ASSET_PER_WINDOW | False | 43 | Can trade multiple assets per window |
 | SIZING_TIERS | [(0.04,0.50),(0.02,0.35),(0.015,0.20),(0.01,0.10)] | 339 | Fee-adjusted edge tiered sizing |
 
@@ -41,15 +42,16 @@ Features that compute and log but do NOT affect live probability/trading:
 
 | Feature | Constant | Status |
 |---------|----------|--------|
-| EGARCH core vol | EGARCH_SHADOW_MODE = True | Logging, not affecting blended_rv |
-| EGARCH blend | EGARCH_BLEND_SHADOW_MODE = True | Closest to promotion (R² 0.42-0.61 typical) |
 | Kalshi Order Flow | KALSHI_OFT_SHADOW_MODE = True | Collecting data, has diagnostic logging |
-| Time-varying RK weights | RK_TV_SHADOW_MODE = True | Adapts RK blend by time-to-expiry |
 | Sigmoid QLIKE mapping | MZ_SIGMOID_SHADOW_MODE = True | Alternative EGARCH weight via QLIKE ratio |
 
 Promoted features (shadow off, driving live behavior):
 - JUMP_ADAPTIVE (JUMP_ADAPTIVE_SHADOW_MODE = False)
 - RK_ADAPTIVE (RK_ADAPTIVE_SHADOW_MODE = False)
+- EGARCH core vol (EGARCH_SHADOW_MODE = False)
+- EGARCH blend (EGARCH_BLEND_SHADOW_MODE = False)
+- TV RK weights (RK_TV_SHADOW_MODE = False)
+- Cal pipeline (SHADOW_CAL_PIPELINE = False, MARKET_BLEND_W = 0.0) — temperature competes in Brier tournament, no market blend
 
 ## Order Execution Engine
 
