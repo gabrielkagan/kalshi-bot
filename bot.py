@@ -83,6 +83,7 @@ VOL_WINDOW_1MIN = 12              # 60s / 5s = 12 returns
 VOL_WINDOW_5MIN = 60              # 300s / 5s = 60 returns
 VOL_WINDOW_15MIN = 180            # 900s / 5s = 180 returns
 VOL_BLEND_WEIGHTS = (0.5, 0.3, 0.2)  # 1min, 5min, 15min
+RK_TV_SHADOW_MODE = True              # Shadow time-varying RK weights (log only, don't affect production blend)
 JUMP_THRESHOLD_MULTIPLIER = 3.0   # return > 3x RV = jump
 
 JUMP_DECAY_TAU = 432.7               # 300/ln(2), half-life = 300s
@@ -113,9 +114,10 @@ JUMP_ADAPTIVE_SAVE_INTERVAL = 300.0    # Save EWMA/percentile state every 5 min
 EGARCH_SHADOW_MODE = True               # True = compute/log only, don't affect blended_rv
 EGARCH_STATE_PATH = "egarch_state.json"
 EGARCH_BUFFER_SAVE_INTERVAL = 300.0 # save return buffer to disk every 5 min
-EGARCH_REFIT_INTERVAL = 7200            # 2h between MLE refits (match HAR)
+EGARCH_REFIT_INTERVAL = 7200            # 2h between MLE refits
 EGARCH_MIN_RETURNS = 360                # 30 min of 5s returns before first MLE fit
 EGARCH_RETURN_MAXLEN = 10800            # 15h of 5s returns for MLE window
+EGARCH_MLE_EWL_LAMBDA = 0.99984        # Exponential weighting in MLE: ~6-hour half-life (smooths ghost features)
 EGARCH_WARMUP_RETURNS = 12              # 1 min before recursive update starts
 EGARCH_E_ABS_Z = 0.7978845608           # E[|z|] for z ~ N(0,1) = sqrt(2/π)
 EGARCH_LOG_VAR_FLOOR = -40.0            # exp(-40) ~ 4.25e-18 (prevents underflow)
@@ -125,7 +127,7 @@ EGARCH_OMEGA_BOUNDS = (-5.0, 0.0)
 EGARCH_ALPHA_BOUNDS = (0.01, 0.5)
 EGARCH_GAMMA_BOUNDS = (-0.3, 0.3)       # both leverage directions
 EGARCH_BETA_BOUNDS = (0.80, 0.999)      # high persistence typical for crypto
-EGARCH_DF_BOUNDS = (4.0, 30.0)          # Student-t df bounds (4.0 floor ensures finite kurtosis)
+EGARCH_DF_BOUNDS = (3.0, 30.0)          # Student-t df bounds (3.0 keeps finite variance, allows heavier tails)
 EGARCH_DF_DEFAULT = 5.0                 # Typical for crypto (heavy tails, Caporale & Zekokh 2019)
 EGARCH_REFIT_INTERVALS = {              # Per-asset refit intervals (seconds)
     "BTC": 7200, "ETH": 7200,          # 2h for high-persistence assets
@@ -142,6 +144,12 @@ MZ_MIN_OBS = 240                       # Need 40 min of data before R² is valid
 MZ_RECOMPUTE_INTERVAL = 30.0           # Recompute R² every 30s (not every tick)
 MZ_EMA_LAMBDA = 0.97                   # EMA decay for weight smoothing (Stock & Watson 2004)
 MZ_EQUAL_WEIGHT_R2_THRESHOLD = 0.10    # Below this R², use equal-weight midpoint
+
+# Shadow sigmoid QLIKE-ratio weight mapping
+MZ_SIGMOID_SHADOW_MODE = True          # Shadow mode: log only, don't affect production weight
+MZ_SIGMOID_KAPPA = 15.0                # Sigmoid steepness parameter
+MZ_SIGMOID_Q_MID = 0.15               # QLIKE improvement ratio midpoint (50% weight at this improvement)
+MZ_SIGMOID_W_MAX = 0.15               # Maximum sigmoid weight (cap)
 
 # Weight bounds per asset (from persistence analysis)
 EGARCH_WEIGHT_BOUNDS = {
@@ -168,21 +176,6 @@ RK_CSTAR_FLAT_TOP_PARZEN = 3.5134       # c* for flat-top Parzen kernel (BN 2009
 RK_NOISE_VAR_FLOOR = 1e-20              # ω² floor (prevents zero/negative)
 RK_BANDWIDTH_MAX_FRACTION = 1 / 3       # H* cap as fraction of n
 RK_MIN_RETURNS_FOR_ADAPTIVE = 20        # need ≥20 returns for reliable γ̂(1)
-
-# ─── HAR-WLS Estimation ──────────────────────────────────────────────────
-HAR_OBSERVATION_INTERVAL = 300      # 5 min between observations (seconds)
-HAR_OBSERVATION_MAXLEN = 576        # 48h of 5-min observations (was 288, more data for ridge)
-HAR_REFIT_INTERVAL = 7200           # 2h between refits
-HAR_MIN_OBSERVATIONS = 36           # 3h of data before first fit
-HAR_STATE_PATH = "har_state.json"
-HAR_BUFFER_SAVE_INTERVAL = 300.0    # save observation buffer to disk every 5 min
-HAR_QLIKE_FALLBACK_THRESHOLD = 2.0  # fall back to fixed if QLIKE > this
-HAR_MIN_RV_SQ = 1e-12              # floor for valid observation (reject flat-market noise)
-HAR_SHADOW_MODE = True              # True = log only, False = use for actual blend
-HAR_RIDGE_LAMBDA = 0.05             # L2 regularization for multicollinearity (Clements & Preve 2021)
-HAR_LOG_PREFERENCE_PCT = 0.05       # Prefer log model if QLIKE within 5% of best
-HAR_IV_REPLACES_DVOL_BLEND = False  # When True + HAR active IV model, replaces Step 4/5 blending
-HAR_IV_MIN_DVOL_FRACTION = 0.70    # Need ≥70% non-None dvol_sq observations to fit IV models
 
 # ─── Deribit DVOL Integration ────────────────────────────────────────────────
 DERIBIT_DVOL_URL = "https://www.deribit.com/api/v2/public/get_volatility_index_data"
@@ -390,6 +383,34 @@ def calculate_taker_fee(count: int, price_cents: int) -> int:
 def calculate_maker_fee(count: int, price_cents: int) -> int:
     """Convenience wrapper — maker fee in cents."""
     return calculate_fee(count, price_cents, is_taker=False)
+
+
+# ── Shadow Time-Varying RK Weights ─────────────────────────────────────────
+def compute_tv_rk_weights(seconds_to_close: float) -> Tuple[float, float, float]:
+    """Compute time-varying RK blend weights based on seconds to expiry.
+
+    Near expiry (< 60s): fast RK₁ dominates (most responsive).
+    Far from expiry (> 180s): stable RK₅ and RK₁₅ dominate.
+    Between: linear interpolation.
+
+    Returns (w1, w5, w15) tuple that sums to 1.0.
+    """
+    if seconds_to_close <= 30:
+        return (0.80, 0.15, 0.05)
+    elif seconds_to_close <= 60:
+        # Linear interp from 30→60
+        t = (seconds_to_close - 30) / 30.0
+        return (0.80 - 0.15 * t, 0.15 + 0.05 * t, 0.05 + 0.10 * t)
+    elif seconds_to_close <= 120:
+        # Linear interp from 60→120
+        t = (seconds_to_close - 60) / 60.0
+        return (0.65 - 0.15 * t, 0.20 + 0.05 * t, 0.15 + 0.05 * t)
+    elif seconds_to_close <= 240:
+        # Linear interp from 120→240
+        t = (seconds_to_close - 120) / 120.0
+        return (0.50 - 0.15 * t, 0.25 + 0.05 * t, 0.20 + 0.10 * t)
+    else:
+        return (0.35, 0.30, 0.35)
 
 
 # ── FP / Dollar String Helpers ──────────────────────────────────────────────
@@ -1121,6 +1142,10 @@ class StateManager:
             ("egarch_blend_sigma", "REAL"),
             ("egarch_blend_weight", "REAL"),
             ("mz_r_squared", "REAL"),
+            ("shadow_tv_blend_rv", "REAL"),
+            ("mz_shadow_sigmoid_w", "REAL"),
+            ("mz_baseline_qlike", "REAL"),
+            ("mz_qlike", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1136,6 +1161,10 @@ class StateManager:
             ("egarch_blend_sigma", "REAL"),
             ("egarch_blend_weight", "REAL"),
             ("mz_r_squared", "REAL"),
+            ("shadow_tv_blend_rv", "REAL"),
+            ("mz_shadow_sigmoid_w", "REAL"),
+            ("mz_baseline_qlike", "REAL"),
+            ("mz_qlike", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE rejected_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1401,7 +1430,11 @@ class StateManager:
                          egarch_sigma: Optional[float] = None,
                          egarch_blend_sigma: Optional[float] = None,
                          egarch_blend_weight: Optional[float] = None,
-                         mz_r_squared: Optional[float] = None):
+                         mz_r_squared: Optional[float] = None,
+                         shadow_tv_blend_rv: Optional[float] = None,
+                         mz_shadow_sigmoid_w: Optional[float] = None,
+                         mz_baseline_qlike: Optional[float] = None,
+                         mz_qlike: Optional[float] = None):
         """Insert a rejected opportunity. INSERT OR IGNORE deduplicates by ticker."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
@@ -1409,12 +1442,14 @@ class StateManager:
                 (ticker, event_ticker, asset, rejection_reason, rejection_time,
                  z_score, spot_price, threshold, volatility, market_price,
                  seconds_to_close, calibrated_prob, status,
-                 egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
+                 shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, event_ticker, asset, rejection_reason, now,
               z_score, spot_price, threshold, volatility, market_price,
               seconds_to_close, calibrated_prob, "pending",
-              egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared))
+              egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
+              shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike))
         self.conn.commit()
 
     def get_unsettled_rejections(self) -> List[Dict]:
@@ -1464,7 +1499,11 @@ class StateManager:
                                      egarch_sigma: Optional[float] = None,
                                      egarch_blend_sigma: Optional[float] = None,
                                      egarch_blend_weight: Optional[float] = None,
-                                     mz_r_squared: Optional[float] = None):
+                                     mz_r_squared: Optional[float] = None,
+                                     shadow_tv_blend_rv: Optional[float] = None,
+                                     mz_shadow_sigmoid_w: Optional[float] = None,
+                                     mz_baseline_qlike: Optional[float] = None,
+                                     mz_qlike: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
@@ -1480,8 +1519,9 @@ class StateManager:
                      ask_depth, best_ask_source, ofa_confidence,
                      raw_prob, calibration_method, old_system_prob,
                      fee_adjusted_edge,
-                     egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
+                     shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1492,7 +1532,8 @@ class StateManager:
                   ask_depth, best_ask_source, ofa_confidence,
                   raw_prob, calibration_method, old_system_prob,
                   fee_adjusted_edge,
-                  egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared))
+                  egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
+                  shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike))
             self.conn.commit()
         except Exception as e:
             logging.debug(f"insert_evaluated_opportunity failed: {e}")
@@ -2890,7 +2931,7 @@ class KalshiOrderFlowTracker:
 # ═════════════════════════════════════════════════════════════════════════════
 
 class VolatilityEngine:
-    """Realized Kernel + HAR-RV + Deribit DVOL volatility engine.
+    """Realized Kernel + Deribit DVOL volatility engine.
 
     Uses microstructure-noise-robust Realized Kernel (Barndorff-Nielsen 2008),
     bipower variation for jump separation, and optional Deribit DVOL blending.
@@ -2898,12 +2939,10 @@ class VolatilityEngine:
     """
 
     def __init__(self, feed: CoinbaseFeed, dvol_fetcher: Optional[DeribitDVOLFetcher] = None,
-                 har_estimator: Optional['HAREstimator'] = None,
                  egarch_estimator: Optional['EGARCHEstimator'] = None,
                  mz_tracker: Optional['MincerZarnowitzTracker'] = None):
         self._feed = feed
         self._dvol = dvol_fetcher
-        self._har = har_estimator
         self._egarch = egarch_estimator
         self._mz = mz_tracker
         self._egarch_blend_last_log: Dict[str, float] = {}
@@ -2936,7 +2975,7 @@ class VolatilityEngine:
         self._rk_delta_5_accum: Dict[str, deque] = {a: deque(maxlen=720) for a in ASSETS}
         self._rk_delta_15_accum: Dict[str, deque] = {a: deque(maxlen=720) for a in ASSETS}
 
-    def update(self, asset: str) -> Optional[Dict]:
+    def update(self, asset: str, seconds_to_close: Optional[float] = None) -> Optional[Dict]:
         """Called every tick. Computes a new log return every 5s, returns vol estimate."""
         buf = self._feed.get_buffer(asset)
         if len(buf) < VOL_RETURN_INTERVAL + 1:
@@ -3514,58 +3553,28 @@ class VolatilityEngine:
         bv_5min = self._bipower_variation(returns_list, VOL_WINDOW_5MIN)
         bv_15min = self._bipower_variation(returns_list, VOL_WINDOW_15MIN)
 
-        # Step 2b: HAR observation recording + semivariance computation
-        har_blend_rv = None
-        dvol_sq_for_har = None
-        sv_pos_1 = sv_neg_1 = sv_pos_5 = sv_neg_5 = sv_pos_15 = sv_neg_15 = 0.0
-        if self._har is not None:
-            sv_pos_1, sv_neg_1 = HAREstimator._compute_semivariances(returns_list, VOL_WINDOW_1MIN)
-            sv_pos_5, sv_neg_5 = HAREstimator._compute_semivariances(returns_list, VOL_WINDOW_5MIN)
-            sv_pos_15, sv_neg_15 = HAREstimator._compute_semivariances(returns_list, VOL_WINDOW_15MIN)
-            dvol_hourly = self._get_implied_vol_hourly(asset)
-            dvol_sq_for_har = (dvol_hourly ** 2) if dvol_hourly is not None else None
-            self._har.record_observation(asset, returns_list, rk_1min, rk_5min, rk_15min,
-                                         bv_5min, dvol_sq=dvol_sq_for_har)
+        # DVOL squared for VRP diagnostic
+        dvol_hourly = self._get_implied_vol_hourly(asset)
+        dvol_sq = (dvol_hourly ** 2) if dvol_hourly is not None else None
 
-        # Step 3: HAR-RV blend (WLS-estimated or fixed weights)
+        # Step 3: RK blend (fixed weights)
         w1, w5, w15 = VOL_BLEND_WEIGHTS
-        # Always compute fixed blend for counterfactual
-        fixed_continuous_rv = w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
-        fixed_bv_blended = w1 * bv_1min + w5 * bv_5min + w15 * bv_15min
-        fixed_jump_var = max(0.0, fixed_continuous_rv ** 2 - fixed_bv_blended ** 2)
-        fixed_blend_rv = math.sqrt(fixed_bv_blended ** 2 + fixed_jump_var)
+        continuous_rv = w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
+        bv_blended = w1 * bv_1min + w5 * bv_5min + w15 * bv_15min
+        jump_var = max(0.0, continuous_rv ** 2 - bv_blended ** 2)
+        fixed_blend_rv = math.sqrt(bv_blended ** 2 + jump_var)
+        rv_blended = fixed_blend_rv
 
-        if self._har is not None and self._har.is_active(asset):
-            jump_sq = max(0.0, rk_5min ** 2 - bv_5min ** 2)
-            rv_blended = self._har.get_blend(
-                asset, rk_1min, rk_5min, rk_15min,
-                jump_sq=jump_sq,
-                sv_pos_1=sv_pos_1, sv_neg_1=sv_neg_1,
-                sv_pos_5=sv_pos_5, sv_neg_5=sv_neg_5,
-                sv_pos_15=sv_pos_15, sv_neg_15=sv_neg_15,
-                dvol_sq=dvol_sq_for_har,
-            )
-            har_blend_rv = rv_blended
-            # Still compute fixed-blend diagnostics
-            continuous_rv = fixed_continuous_rv
-            bv_blended = fixed_bv_blended
-            jump_var = fixed_jump_var
-        else:
-            continuous_rv = fixed_continuous_rv
-            bv_blended = fixed_bv_blended
-            jump_var = fixed_jump_var
-            rv_blended = fixed_blend_rv
-            # In shadow mode, compute HAR prediction for logging only
-            if self._har is not None:
-                jump_sq = max(0.0, rk_5min ** 2 - bv_5min ** 2)
-                har_blend_rv = self._har.get_har_prediction(
-                    asset, rk_1min, rk_5min, rk_15min,
-                    jump_sq=jump_sq,
-                    sv_pos_1=sv_pos_1, sv_neg_1=sv_neg_1,
-                    sv_pos_5=sv_pos_5, sv_neg_5=sv_neg_5,
-                    sv_pos_15=sv_pos_15, sv_neg_15=sv_neg_15,
-                    dvol_sq=dvol_sq_for_har,
-                )
+        # Step 3a: Shadow time-varying RK weights (logged only, never affects blended_rv)
+        shadow_tv_blend_rv = None
+        shadow_tv_weights = None
+        if RK_TV_SHADOW_MODE and seconds_to_close is not None:
+            tw1, tw5, tw15 = compute_tv_rk_weights(seconds_to_close)
+            shadow_tv_weights = (round(tw1, 3), round(tw5, 3), round(tw15, 3))
+            tv_continuous = tw1 * rk_1min + tw5 * rk_5min + tw15 * rk_15min
+            tv_bv = tw1 * bv_1min + tw5 * bv_5min + tw15 * bv_15min
+            tv_jump_var = max(0.0, tv_continuous ** 2 - tv_bv ** 2)
+            shadow_tv_blend_rv = math.sqrt(tv_bv ** 2 + tv_jump_var)
 
         # Step 3b: EGARCH conditional volatility
         egarch_sigma = None
@@ -3634,17 +3643,17 @@ class VolatilityEngine:
 
         # VRP diagnostic (variance risk premium)
         vrp = None
-        if dvol_sq_for_har is not None and rk_5min > 0:
-            vrp = dvol_sq_for_har - rk_5min ** 2
+        if dvol_sq is not None and rk_5min > 0:
+            vrp = dvol_sq - rk_5min ** 2
 
         # VRP regime logging (every 5 min)
         if vrp is not None and now - self._rk_last_summary.get(f"vrp_{asset}", 0) >= 300:
             premium = "positive" if vrp > 0 else "negative"
             rv5_sq = rk_5min ** 2
-            ratio = dvol_sq_for_har / rv5_sq if rv5_sq > 0 else 0.0
+            ratio = dvol_sq / rv5_sq if rv5_sq > 0 else 0.0
             logging.info(
                 "VRP %s: vrp=%.2e dvol_sq=%.2e rv5_sq=%.2e ratio=%.2f (premium=%s)",
-                asset, vrp, dvol_sq_for_har, rv5_sq, ratio, premium,
+                asset, vrp, dvol_sq, rv5_sq, ratio, premium,
             )
             self._rk_last_summary[f"vrp_{asset}"] = now
 
@@ -3663,43 +3672,13 @@ class VolatilityEngine:
                     )
             self._rk_last_summary[f"dvol_h_{asset}"] = now
 
-        # HAR-IV shadow comparison
-        har_iv_shadow_rv = None
-        iv_model_names = {"har_iv", "har_j_iv", "log_har_iv", "har_vrp"}
-        if self._har is not None and dvol_sq_for_har is not None:
-            active_model = self._har._active_model.get(asset, "fixed")
-            if active_model in iv_model_names and active_model in self._har._coefficients.get(asset, {}):
-                jump_sq_s = max(0.0, rk_5min ** 2 - bv_5min ** 2)
-                har_iv_shadow_rv = self._har.get_blend(
-                    asset, rk_1min, rk_5min, rk_15min,
-                    jump_sq=jump_sq_s,
-                    sv_pos_1=sv_pos_1, sv_neg_1=sv_neg_1,
-                    sv_pos_5=sv_pos_5, sv_neg_5=sv_neg_5,
-                    sv_pos_15=sv_pos_15, sv_neg_15=sv_neg_15,
-                    dvol_sq=dvol_sq_for_har,
-                )
-
-        # Production guard: HAR_IV_REPLACES_DVOL_BLEND
-        har_iv_active_for_blend = (
-            HAR_IV_REPLACES_DVOL_BLEND
-            and not HAR_SHADOW_MODE
-            and self._har is not None
-            and self._har._active_model.get(asset, "fixed") in iv_model_names
-            and dvol_sq_for_har is not None
-            and har_iv_shadow_rv is not None
-        )
-
         # Step 4: DVOL blending (if available)
         iv = self._get_implied_vol(asset)
         dvol_5s = iv  # for diagnostics
         iv_rv_spread = None
         iv_rv_blend_method = "rv_only"
 
-        if har_iv_active_for_blend:
-            # HAR-IV model replaces threshold blending
-            blended = har_iv_shadow_rv
-            iv_rv_blend_method = "har_iv"
-        elif iv is not None and iv > 0 and rv_blended > 0:
+        if iv is not None and iv > 0 and rv_blended > 0:
             # Inverse-variance weighting
             var_rv = (rk_1min - rk_15min) ** 2   # spread as proxy for RV uncertainty
             var_iv = (iv * 0.10) ** 2             # 10% uncertainty on IV
@@ -3715,16 +3694,6 @@ class VolatilityEngine:
             if iv_rv_spread > IV_RV_SPREAD_THRESHOLD:
                 blended = 0.3 * rv_blended + 0.7 * iv
                 iv_rv_blend_method = "stress_override"
-
-        # HAR-IV shadow comparison logging (DEBUG)
-        if har_iv_shadow_rv is not None and not har_iv_active_for_blend and blended > 0:
-            delta = (har_iv_shadow_rv - blended) / blended
-            logging.debug(
-                "HAR-IV shadow %s: har_iv=%.8f threshold_blend=%.8f delta=%.4f method=%s model=%s vrp=%.2e",
-                asset, har_iv_shadow_rv, blended, delta, iv_rv_blend_method,
-                self._har._active_model.get(asset, "fixed") if self._har else "none",
-                vrp if vrp is not None else 0.0,
-            )
 
         # Step 6: Jump regime — exponential decay (legacy)
         regime = "normal"
@@ -3788,9 +3757,6 @@ class VolatilityEngine:
             "iv_rv_spread": iv_rv_spread,
             "iv_rv_blend_method": iv_rv_blend_method,
             "rv_only_blended": rv_only_blended,
-            # HAR diagnostics
-            "har_model": self._har._active_model.get(asset, "fixed") if self._har else "fixed",
-            "har_blend_rv": har_blend_rv,
             "fixed_blend_rv": fixed_blend_rv,
             "jump_multiplier": round(jump_multiplier, 4),
             "jump_event_count": len(jump_events),
@@ -3811,6 +3777,8 @@ class VolatilityEngine:
             "egarch_blend_shadow": EGARCH_BLEND_SHADOW_MODE,
             "mz_r_squared": self._mz._r_squared.get(asset) if self._mz else None,
             "mz_qlike": self._mz._qlike.get(asset) if self._mz else None,
+            "mz_baseline_qlike": self._mz._baseline_qlike.get(asset) if self._mz else None,
+            "mz_shadow_sigmoid_w": self._mz._shadow_sigmoid_w.get(asset) if self._mz else None,
             # Adaptive RK bandwidth diagnostics
             "omega_sq": omega_sq,
             "rk_H_fixed_5": H_fixed_5,
@@ -3821,745 +3789,13 @@ class VolatilityEngine:
             "ark_15min": ark_15min,
             "rk_adaptive_delta_5": round((ark_5min - rk_fixed_5) / rk_fixed_5, 6) if rk_fixed_5 > 0 and H_adaptive_5 != H_fixed_5 else 0.0,
             "rk_adaptive_delta_15": round((ark_15min - rk_fixed_15) / rk_fixed_15, 6) if rk_fixed_15 > 0 and H_adaptive_15 != H_fixed_15 else 0.0,
-            # HAR-IV diagnostics
-            "dvol_sq_hourly": dvol_sq_for_har,
+            # DVOL diagnostics
+            "dvol_sq_hourly": dvol_sq,
             "vrp": vrp,
-            "har_iv_shadow_rv": har_iv_shadow_rv,
+            # Shadow time-varying RK weights
+            "shadow_tv_blend_rv": shadow_tv_blend_rv,
+            "shadow_tv_weights": shadow_tv_weights,
         }
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-#  HAREstimator – WLS-estimated HAR-RV coefficients
-# ═════════════════════════════════════════════════════════════════════════════
-
-class HAREstimator:
-    """Estimate HAR-RV blend weights via rolling WLS regression.
-
-    Supports four model variants:
-      - level_har: β0 + β1*RK1² + β5*RK5² + β15*RK15²
-      - log_har:   exp(β0 + β1*log(RK1²) + β5*log(RK5²) + β15*log(RK15²))
-      - har_j:     level_har + β_jump * jump²
-      - har_semi:  β0 + Σ βi*semivariance_i (6 regressors)
-
-    Refits every HAR_REFIT_INTERVAL seconds, selects best model by QLIKE.
-    Falls back to fixed weights when insufficient data or sanity checks fail.
-    """
-
-    MODEL_NAMES = ("level_har", "log_har", "har_j", "har_semi",
-                   "har_iv", "har_j_iv", "log_har_iv", "har_vrp")
-
-    def __init__(self):
-        self._observations: Dict[str, deque] = {
-            a: deque(maxlen=HAR_OBSERVATION_MAXLEN) for a in ASSETS
-        }
-        self._last_obs_time: Dict[str, float] = {}
-        self._last_refit: float = 0.0
-        self._last_buffer_save: float = 0.0
-        self._active_model: Dict[str, str] = {a: "fixed" for a in ASSETS}
-        self._coefficients: Dict[str, Dict[str, List[float]]] = {a: {} for a in ASSETS}
-        self._qlike_scores: Dict[str, Dict[str, float]] = {a: {} for a in ASSETS}
-        self._load_state()
-        active = {a: m for a, m in self._active_model.items() if m != "fixed"}
-        age = round(time.time() - self._last_refit, 1) if self._last_refit > 0 else "never"
-        logging.info("HAREstimator loaded: %s active models, state_age=%s", active, age)
-
-    # ── Observation recording ─────────────────────────────────────────────
-
-    def record_observation(self, asset: str, returns_list: List[float],
-                           rk_1min: float, rk_5min: float, rk_15min: float,
-                           bv_5min: float, dvol_sq: Optional[float] = None) -> None:
-        """Record a 5-min observation for HAR estimation."""
-        now = time.time()
-        last = self._last_obs_time.get(asset, 0.0)
-        if now - last < HAR_OBSERVATION_INTERVAL:
-            return
-
-        # Reject degenerate observations (bot startup or flat market)
-        if rk_5min ** 2 < HAR_MIN_RV_SQ or rk_15min ** 2 < HAR_MIN_RV_SQ:
-            return
-
-        self._last_obs_time[asset] = now
-
-        # Semivariances at all three windows
-        sv_pos_1, sv_neg_1 = self._compute_semivariances(returns_list, VOL_WINDOW_1MIN)
-        sv_pos_5, sv_neg_5 = self._compute_semivariances(returns_list, VOL_WINDOW_5MIN)
-        sv_pos_15, sv_neg_15 = self._compute_semivariances(returns_list, VOL_WINDOW_15MIN)
-
-        # Jump component
-        jump_sq = max(0.0, rk_5min ** 2 - bv_5min ** 2)
-
-        obs = {
-            "ts": now,
-            "rv1_sq": rk_1min ** 2,
-            "rv5_sq": rk_5min ** 2,
-            "rv15_sq": rk_15min ** 2,
-            "jump_sq": jump_sq,
-            "sv_pos_1": sv_pos_1, "sv_neg_1": sv_neg_1,
-            "sv_pos_5": sv_pos_5, "sv_neg_5": sv_neg_5,
-            "sv_pos_15": sv_pos_15, "sv_neg_15": sv_neg_15,
-            "dvol_sq": dvol_sq,
-        }
-        self._observations[asset].append(obs)
-        n_obs = len(self._observations[asset])
-
-        logging.debug(
-            "HAR obs: %s n=%d rv1=%.8f rv5=%.8f rv15=%.8f jump=%.8f sv+5=%.8f sv-5=%.8f dvol_sq=%s",
-            asset, n_obs, obs["rv1_sq"], obs["rv5_sq"], obs["rv15_sq"],
-            jump_sq, sv_pos_5, sv_neg_5,
-            f"{dvol_sq:.8f}" if dvol_sq is not None else "None",
-        )
-
-        # Periodic buffer save
-        now_save = time.time()
-        if now_save - self._last_buffer_save >= HAR_BUFFER_SAVE_INTERVAL:
-            self._save_state()
-            self._last_buffer_save = now_save
-            try:
-                fsize = os.path.getsize(HAR_STATE_PATH) / 1024.0
-            except OSError:
-                fsize = 0.0
-            logging.info(
-                "HAR buffer saved: BTC=%d ETH=%d SOL=%d XRP=%d (file_size=%.1fKB)",
-                len(self._observations["BTC"]), len(self._observations["ETH"]),
-                len(self._observations["SOL"]), len(self._observations["XRP"]), fsize)
-
-    # ── Prediction (hot path) ────────────────────────────────────────────
-
-    def is_active(self, asset: str) -> bool:
-        """True if a non-fixed model is active and not in shadow mode."""
-        if HAR_SHADOW_MODE:
-            return False
-        return self._active_model.get(asset, "fixed") != "fixed"
-
-    def get_blend(self, asset: str, rk_1min: float, rk_5min: float,
-                  rk_15min: float, jump_sq: float = 0.0,
-                  sv_pos_1: float = 0.0, sv_neg_1: float = 0.0,
-                  sv_pos_5: float = 0.0, sv_neg_5: float = 0.0,
-                  sv_pos_15: float = 0.0, sv_neg_15: float = 0.0,
-                  dvol_sq: Optional[float] = None) -> float:
-        """Return predicted RV using active model's coefficients."""
-        model = self._active_model.get(asset, "fixed")
-        coeffs = self._coefficients.get(asset, {}).get(model)
-        if model == "fixed" or coeffs is None:
-            w1, w5, w15 = VOL_BLEND_WEIGHTS
-            return w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
-
-        if model == "level_har":
-            val = coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2 + coeffs[3] * rk_15min**2
-            return math.sqrt(max(0.0, val))
-
-        if model == "log_har":
-            eps = 1e-20
-            val = coeffs[0] + (coeffs[1] * math.log(max(eps, rk_1min**2))
-                                + coeffs[2] * math.log(max(eps, rk_5min**2))
-                                + coeffs[3] * math.log(max(eps, rk_15min**2)))
-            return math.sqrt(max(0.0, math.exp(val)))
-
-        if model == "har_j":
-            val = (coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2
-                   + coeffs[3] * rk_15min**2 + coeffs[4] * jump_sq)
-            return math.sqrt(max(0.0, val))
-
-        if model == "har_semi":
-            val = (coeffs[0] + coeffs[1] * sv_pos_1 + coeffs[2] * sv_neg_1
-                   + coeffs[3] * sv_pos_5 + coeffs[4] * sv_neg_5
-                   + coeffs[5] * sv_pos_15 + coeffs[6] * sv_neg_15)
-            return math.sqrt(max(0.0, val))
-
-        if model == "har_iv":
-            if dvol_sq is None:
-                return self._fallback_prediction(asset, rk_1min, rk_5min, rk_15min)
-            val = coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2 + coeffs[3] * rk_15min**2 + coeffs[4] * dvol_sq
-            return math.sqrt(max(0.0, val))
-
-        if model == "har_j_iv":
-            if dvol_sq is None:
-                return self._fallback_prediction(asset, rk_1min, rk_5min, rk_15min)
-            val = (coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2
-                   + coeffs[3] * rk_15min**2 + coeffs[4] * jump_sq + coeffs[5] * dvol_sq)
-            return math.sqrt(max(0.0, val))
-
-        if model == "log_har_iv":
-            if dvol_sq is None:
-                return self._fallback_prediction(asset, rk_1min, rk_5min, rk_15min)
-            eps = 1e-20
-            val = (coeffs[0] + coeffs[1] * math.log(max(eps, rk_1min**2))
-                   + coeffs[2] * math.log(max(eps, rk_5min**2))
-                   + coeffs[3] * math.log(max(eps, rk_15min**2))
-                   + coeffs[4] * math.log(max(eps, dvol_sq)))
-            return math.sqrt(max(0.0, math.exp(val)))
-
-        if model == "har_vrp":
-            if dvol_sq is None:
-                return self._fallback_prediction(asset, rk_1min, rk_5min, rk_15min)
-            vrp = dvol_sq - rk_5min**2
-            val = coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2 + coeffs[3] * rk_15min**2 + coeffs[4] * vrp
-            return math.sqrt(max(0.0, val))
-
-        # Unknown model — fallback
-        w1, w5, w15 = VOL_BLEND_WEIGHTS
-        return w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
-
-    def _fallback_prediction(self, asset: str, rk_1min: float, rk_5min: float,
-                             rk_15min: float) -> float:
-        """Fallback when DVOL temporarily stale but IV model is active."""
-        # Try level_har coefficients first
-        coeffs = self._coefficients.get(asset, {}).get("level_har")
-        if coeffs is not None:
-            val = coeffs[0] + coeffs[1] * rk_1min**2 + coeffs[2] * rk_5min**2 + coeffs[3] * rk_15min**2
-            return math.sqrt(max(0.0, val))
-        # Fixed weights
-        w1, w5, w15 = VOL_BLEND_WEIGHTS
-        return w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
-
-    def get_har_prediction(self, asset: str, rk_1min: float, rk_5min: float,
-                           rk_15min: float, jump_sq: float = 0.0,
-                           sv_pos_1: float = 0.0, sv_neg_1: float = 0.0,
-                           sv_pos_5: float = 0.0, sv_neg_5: float = 0.0,
-                           sv_pos_15: float = 0.0, sv_neg_15: float = 0.0,
-                           dvol_sq: Optional[float] = None) -> Optional[float]:
-        """Return HAR prediction even in shadow mode (for logging). None if fixed."""
-        model = self._active_model.get(asset, "fixed")
-        if model == "fixed" or model not in self._coefficients.get(asset, {}):
-            return None
-        # Temporarily override shadow check
-        return self.get_blend(asset, rk_1min, rk_5min, rk_15min,
-                              jump_sq, sv_pos_1, sv_neg_1,
-                              sv_pos_5, sv_neg_5, sv_pos_15, sv_neg_15,
-                              dvol_sq=dvol_sq)
-
-    # ── Refit logic ──────────────────────────────────────────────────────
-
-    def maybe_refit(self) -> bool:
-        """Check if it's time to refit. Returns True if any asset was refit."""
-        now = time.time()
-        if now - self._last_refit < HAR_REFIT_INTERVAL and self._last_refit > 0:
-            return False
-
-        any_refit = False
-        for asset in ASSETS:
-            obs = self._observations[asset]
-            if len(obs) < HAR_MIN_OBSERVATIONS:
-                continue
-            self._refit_asset(asset, list(obs))
-            any_refit = True
-
-        if any_refit:
-            self._last_refit = now
-            self._save_state()
-        return any_refit
-
-    def _refit_asset(self, asset: str, obs: List[Dict]) -> None:
-        """Fit all 4 model variants for one asset, select best by QLIKE."""
-        # Filter degenerate observations (zero/near-zero RV from startup or flat market)
-        obs = [o for o in obs if o.get("rv5_sq", 0) >= HAR_MIN_RV_SQ and o.get("rv15_sq", 0) >= HAR_MIN_RV_SQ]
-        n = len(obs)
-        if n < 2:
-            return
-
-        # Build target: next observation's rv15_sq (falls back to rv5_sq for old obs)
-        targets = [obs[i + 1].get("rv15_sq", obs[i + 1].get("rv5_sq", 0)) for i in range(n - 1)]
-        old_model = self._active_model.get(asset, "fixed")
-
-        qlike_scores: Dict[str, float] = {}
-        fitted_coeffs: Dict[str, List[float]] = {}
-
-        # ── Fit level_har ─────────────────────────────────────────────
-        X_level = [[1.0, obs[i]["rv1_sq"], obs[i]["rv5_sq"], obs[i]["rv15_sq"]]
-                    for i in range(n - 1)]
-        self._try_fit_model(asset, "level_har", X_level, targets,
-                            qlike_scores, fitted_coeffs)
-
-        # ── Fit log_har ───────────────────────────────────────────────
-        eps = 1e-20
-        X_log = [[1.0, math.log(max(eps, obs[i]["rv1_sq"])),
-                   math.log(max(eps, obs[i]["rv5_sq"])),
-                   math.log(max(eps, obs[i]["rv15_sq"]))]
-                  for i in range(n - 1)]
-        # Targets in log space
-        log_targets = [math.log(max(eps, t)) for t in targets]
-        c = self._fit_wls(X_log, log_targets,
-                          [1.0 / max(eps, t) for t in targets],
-                          ridge_lambda=HAR_RIDGE_LAMBDA)
-        if c is not None:
-            # Predict back in level space for QLIKE
-            preds = []
-            for i in range(n - 1):
-                val = c[0] + c[1] * X_log[i][1] + c[2] * X_log[i][2] + c[3] * X_log[i][3]
-                preds.append(math.exp(val))
-            ql = self._compute_qlike(targets, preds)
-            ok, reason = self._sanity_check_coeffs(c, "log_har")
-            if ok and ql <= HAR_QLIKE_FALLBACK_THRESHOLD:
-                qlike_scores["log_har"] = ql
-                fitted_coeffs["log_har"] = c
-            else:
-                logging.warning(
-                    "HAR refit %s: model log_har REJECTED — %s (coeffs=%s)",
-                    asset, reason if not ok else f"QLIKE={ql:.4f}", [round(x, 6) for x in c],
-                )
-
-        # ── Fit har_j ─────────────────────────────────────────────────
-        X_j = [[1.0, obs[i]["rv1_sq"], obs[i]["rv5_sq"], obs[i]["rv15_sq"],
-                 obs[i]["jump_sq"]] for i in range(n - 1)]
-        self._try_fit_model(asset, "har_j", X_j, targets,
-                            qlike_scores, fitted_coeffs)
-
-        # ── Fit har_semi ──────────────────────────────────────────────
-        X_semi = [[1.0, obs[i]["sv_pos_1"], obs[i]["sv_neg_1"],
-                    obs[i]["sv_pos_5"], obs[i]["sv_neg_5"],
-                    obs[i]["sv_pos_15"], obs[i]["sv_neg_15"]]
-                   for i in range(n - 1)]
-        self._try_fit_model(asset, "har_semi", X_semi, targets,
-                            qlike_scores, fitted_coeffs)
-
-        # ── Fit IV-augmented models (when sufficient DVOL data) ──────
-        dvol_available = [i for i in range(n - 1) if obs[i].get("dvol_sq") is not None]
-        dvol_fraction = len(dvol_available) / (n - 1) if n > 1 else 0.0
-        fit_iv_models = dvol_fraction >= HAR_IV_MIN_DVOL_FRACTION
-
-        if fit_iv_models:
-            iv_indices = dvol_available
-            iv_targets = [targets[i] for i in iv_indices]
-
-            # har_iv: [1, rv1_sq, rv5_sq, rv15_sq, dvol_sq]
-            X_iv = [[1.0, obs[i]["rv1_sq"], obs[i]["rv5_sq"], obs[i]["rv15_sq"],
-                      obs[i]["dvol_sq"]] for i in iv_indices]
-            self._try_fit_model(asset, "har_iv", X_iv, iv_targets,
-                                qlike_scores, fitted_coeffs)
-
-            # har_j_iv: [1, rv1_sq, rv5_sq, rv15_sq, jump_sq, dvol_sq]
-            X_j_iv = [[1.0, obs[i]["rv1_sq"], obs[i]["rv5_sq"], obs[i]["rv15_sq"],
-                        obs[i]["jump_sq"], obs[i]["dvol_sq"]] for i in iv_indices]
-            self._try_fit_model(asset, "har_j_iv", X_j_iv, iv_targets,
-                                qlike_scores, fitted_coeffs)
-
-            # log_har_iv: [1, log(rv1_sq), log(rv5_sq), log(rv15_sq), log(dvol_sq)]
-            eps = 1e-20
-            X_log_iv = [[1.0, math.log(max(eps, obs[i]["rv1_sq"])),
-                          math.log(max(eps, obs[i]["rv5_sq"])),
-                          math.log(max(eps, obs[i]["rv15_sq"])),
-                          math.log(max(eps, obs[i]["dvol_sq"]))]
-                         for i in iv_indices]
-            log_iv_targets = [math.log(max(eps, t)) for t in iv_targets]
-            c_log_iv = self._fit_wls(X_log_iv, log_iv_targets,
-                                     [1.0 / max(eps, t) for t in iv_targets],
-                                     ridge_lambda=HAR_RIDGE_LAMBDA)
-            if c_log_iv is not None:
-                preds_log_iv = []
-                for idx, i in enumerate(iv_indices):
-                    val = sum(c_log_iv[j] * X_log_iv[idx][j] for j in range(len(c_log_iv)))
-                    preds_log_iv.append(math.exp(val))
-                ql_log_iv = self._compute_qlike(iv_targets, preds_log_iv)
-                ok_log_iv, reason_log_iv = self._sanity_check_coeffs(c_log_iv, "log_har_iv")
-                if ok_log_iv and ql_log_iv <= HAR_QLIKE_FALLBACK_THRESHOLD:
-                    qlike_scores["log_har_iv"] = ql_log_iv
-                    fitted_coeffs["log_har_iv"] = c_log_iv
-                else:
-                    logging.warning(
-                        "HAR refit %s: model log_har_iv REJECTED — %s (coeffs=%s)",
-                        asset, reason_log_iv if not ok_log_iv else f"QLIKE={ql_log_iv:.4f}",
-                        [round(x, 6) for x in c_log_iv],
-                    )
-
-            # har_vrp: [1, rv1_sq, rv5_sq, rv15_sq, dvol_sq - rv5_sq]
-            X_vrp = [[1.0, obs[i]["rv1_sq"], obs[i]["rv5_sq"], obs[i]["rv15_sq"],
-                       obs[i]["dvol_sq"] - obs[i]["rv5_sq"]] for i in iv_indices]
-            self._try_fit_model(asset, "har_vrp", X_vrp, iv_targets,
-                                qlike_scores, fitted_coeffs)
-        else:
-            if n > 1:
-                logging.info(
-                    "HAR refit %s: IV models skipped (dvol_fraction=%.2f < %.2f, n_obs=%d)",
-                    asset, dvol_fraction, HAR_IV_MIN_DVOL_FRACTION, n,
-                )
-
-        # ── Fixed-weights baseline QLIKE ──────────────────────────────
-        w1, w5, w15 = VOL_BLEND_WEIGHTS
-        fixed_preds = [(w1**2 * obs[i]["rv1_sq"] + w5**2 * obs[i]["rv5_sq"]
-                         + w15**2 * obs[i]["rv15_sq"]
-                         + 2*w1*w5*math.sqrt(max(0.0, obs[i]["rv1_sq"]*obs[i]["rv5_sq"]))
-                         + 2*w1*w15*math.sqrt(max(0.0, obs[i]["rv1_sq"]*obs[i]["rv15_sq"]))
-                         + 2*w5*w15*math.sqrt(max(0.0, obs[i]["rv5_sq"]*obs[i]["rv15_sq"])))
-                        for i in range(n - 1)]
-        fixed_qlike = self._compute_qlike(targets, fixed_preds)
-        qlike_scores["fixed"] = fixed_qlike
-
-        # ── Select best ──────────────────────────────────────────────
-        best_model = "fixed"
-        best_qlike = fixed_qlike
-        for model_name in self.MODEL_NAMES:
-            if model_name in qlike_scores and qlike_scores[model_name] < best_qlike:
-                # Regression guard: reject if new QLIKE > prev + 0.1
-                prev_qlike = self._qlike_scores.get(asset, {}).get(model_name)
-                if prev_qlike is not None and qlike_scores[model_name] > prev_qlike + 0.1:
-                    logging.warning(
-                        "HAR refit %s: model %s REJECTED — QLIKE regression %.4f > prev %.4f + 0.1",
-                        asset, model_name, qlike_scores[model_name], prev_qlike,
-                    )
-                    continue
-                best_model = model_name
-                best_qlike = qlike_scores[model_name]
-
-        # Prefer log models if within 5% of best QLIKE (guaranteed positive forecasts)
-        log_models_set = {"log_har", "log_har_iv"}
-        if best_model not in log_models_set and HAR_LOG_PREFERENCE_PCT > 0:
-            for lm in log_models_set:
-                if lm in qlike_scores:
-                    if qlike_scores[lm] <= best_qlike * (1.0 + HAR_LOG_PREFERENCE_PCT):
-                        logging.info(
-                            "HAR %s: promoting %s over %s (QLIKE %.4f vs %.4f, within %.0f%%)",
-                            asset, lm, best_model, qlike_scores[lm], best_qlike,
-                            HAR_LOG_PREFERENCE_PCT * 100)
-                        best_model = lm
-                        best_qlike = qlike_scores[lm]
-                        break
-
-        self._active_model[asset] = best_model
-        self._qlike_scores[asset] = qlike_scores
-        if best_model != "fixed" and best_model in fitted_coeffs:
-            self._coefficients[asset][best_model] = fitted_coeffs[best_model]
-
-        logging.info(
-            "HAR refit %s: PROMOTED %s -> %s (QLIKE=%.4f, alternatives=%s, coeffs=%s, n=%d, dvol_frac=%.2f)",
-            asset, old_model, best_model, best_qlike,
-            {k: round(v, 4) for k, v in qlike_scores.items()},
-            [round(c, 6) for c in fitted_coeffs.get(best_model, [])] if best_model != "fixed" else [],
-            n, dvol_fraction,
-        )
-        logging.info(
-            "HAR refit %s: fixed_baseline_qlike=%.4f, best_qlike=%.4f, improvement=%.1f%%",
-            asset, fixed_qlike, best_qlike,
-            100 * (fixed_qlike - best_qlike) / fixed_qlike if fixed_qlike > 0 else 0.0,
-        )
-        logging.info(
-            "HAR refit %s: target=rv15_sq ridge=%.3f buffer=%d/%d best=%s QLIKE=%.4f",
-            asset, HAR_RIDGE_LAMBDA, n, HAR_OBSERVATION_MAXLEN, best_model, best_qlike)
-
-        # Log when IV model wins over best non-IV model
-        iv_model_names = {"har_iv", "har_j_iv", "log_har_iv", "har_vrp"}
-        if best_model in iv_model_names:
-            best_non_iv_ql = min(
-                (qlike_scores.get(m, float("inf")) for m in self.MODEL_NAMES if m not in iv_model_names and m in qlike_scores),
-                default=fixed_qlike,
-            )
-            logging.info(
-                "HAR refit %s: IV model %s beats best non-IV (QLIKE %.4f vs %.4f, improvement=%.1f%%)",
-                asset, best_model, best_qlike, best_non_iv_ql,
-                100 * (best_non_iv_ql - best_qlike) / best_non_iv_ql if best_non_iv_ql > 0 else 0.0,
-            )
-
-        # Model transition logging
-        if old_model != best_model:
-            old_ql = self._qlike_scores.get(asset, {}).get(old_model, 0.0)
-            logging.info(
-                "HAR model change %s: %s → %s (prev_qlike=%.4f new_qlike=%.4f)",
-                asset, old_model, best_model, old_ql, best_qlike,
-            )
-
-    def _try_fit_model(self, asset: str, model_name: str,
-                       X: List[List[float]], targets: List[float],
-                       qlike_scores: Dict[str, float],
-                       fitted_coeffs: Dict[str, List[float]]) -> None:
-        """Fit a model via WLS, check sanity, add to results if valid."""
-        eps = 1e-20
-        weights = [1.0 / max(eps, t) for t in targets]
-        c = self._fit_wls(X, targets, weights, ridge_lambda=HAR_RIDGE_LAMBDA)
-        if c is None:
-            return
-        # Predict
-        preds = [sum(c[j] * X[i][j] for j in range(len(c))) for i in range(len(X))]
-        ql = self._compute_qlike(targets, preds)
-        ok, reason = self._sanity_check_coeffs(c, model_name)
-        if ok and ql <= HAR_QLIKE_FALLBACK_THRESHOLD:
-            qlike_scores[model_name] = ql
-            fitted_coeffs[model_name] = c
-        else:
-            logging.warning(
-                "HAR refit %s: model %s REJECTED — %s (coeffs=%s)",
-                asset, model_name, reason if not ok else f"QLIKE={ql:.4f}",
-                [round(x, 6) for x in c],
-            )
-
-    # ── WLS solver (pure Python) ─────────────────────────────────────────
-
-    @staticmethod
-    def _fit_wls(X: List[List[float]], y: List[float],
-                 w: List[float], ridge_lambda: float = 0.0) -> Optional[List[float]]:
-        """Weighted least squares via normal equations: (X'WX + λI)β = X'Wy.
-
-        Pure Python, no numpy. Max matrix size 7x7 (HAR-semiRV).
-        Ridge regularization (λ > 0) prevents multicollinearity issues.
-        """
-        n = len(y)
-        if n == 0:
-            return None
-        p = len(X[0])
-
-        # Build X'WX (p x p) and X'Wy (p x 1)
-        XtWX = [[0.0] * p for _ in range(p)]
-        XtWy = [0.0] * p
-
-        for i in range(n):
-            wi = w[i]
-            xi = X[i]
-            yi = y[i]
-            for j in range(p):
-                wxi_j = wi * xi[j]
-                XtWy[j] += wxi_j * yi
-                for k in range(j, p):
-                    val = wxi_j * xi[k]
-                    XtWX[j][k] += val
-                    if k != j:
-                        XtWX[k][j] += val
-
-        # Ridge regularization: add λ to diagonal (Clements & Preve 2021)
-        if ridge_lambda > 0:
-            for j in range(p):
-                XtWX[j][j] += ridge_lambda
-
-        return HAREstimator._gauss_eliminate(XtWX, XtWy)
-
-    @staticmethod
-    def _gauss_eliminate(A: List[List[float]], b: List[float]) -> Optional[List[float]]:
-        """Gaussian elimination with partial pivoting. Returns None if singular."""
-        n = len(b)
-        # Augmented matrix
-        M = [A[i][:] + [b[i]] for i in range(n)]
-
-        for col in range(n):
-            # Partial pivoting
-            max_val = abs(M[col][col])
-            max_row = col
-            for row in range(col + 1, n):
-                if abs(M[row][col]) > max_val:
-                    max_val = abs(M[row][col])
-                    max_row = row
-            if max_val < 1e-15:
-                return None  # Singular
-            if max_row != col:
-                M[col], M[max_row] = M[max_row], M[col]
-
-            pivot = M[col][col]
-            for row in range(col + 1, n):
-                factor = M[row][col] / pivot
-                for j in range(col, n + 1):
-                    M[row][j] -= factor * M[col][j]
-
-        # Back substitution
-        x = [0.0] * n
-        for i in range(n - 1, -1, -1):
-            if abs(M[i][i]) < 1e-15:
-                return None
-            x[i] = M[i][n]
-            for j in range(i + 1, n):
-                x[i] -= M[i][j] * x[j]
-            x[i] /= M[i][i]
-
-        return x
-
-    # ── QLIKE loss ───────────────────────────────────────────────────────
-
-    @staticmethod
-    def _compute_qlike(y_actual: List[float], y_predicted: List[float]) -> float:
-        """QLIKE loss: mean(actual/predicted - log(actual/predicted) - 1).
-
-        Both in variance scale. Handles zero/negative with penalty.
-        """
-        eps = 1e-20
-        total = 0.0
-        n = 0
-        for a, p in zip(y_actual, y_predicted):
-            a = max(eps, a)
-            p = max(eps, p)
-            ratio = a / p
-            total += ratio - math.log(ratio) - 1.0
-            n += 1
-        return total / max(n, 1)
-
-    # ── Semivariance ─────────────────────────────────────────────────────
-
-    @staticmethod
-    def _compute_semivariances(returns: List[float], window: int) -> tuple:
-        """Compute positive and negative semivariances over the given window.
-
-        sv_pos = sum(r² for r > 0) / n, sv_neg = sum(r² for r <= 0) / n
-        """
-        subset = returns[-window:] if len(returns) >= window else returns
-        n = len(subset)
-        if n == 0:
-            return (0.0, 0.0)
-        sv_pos = 0.0
-        sv_neg = 0.0
-        for r in subset:
-            r2 = r * r
-            if r > 0:
-                sv_pos += r2
-            else:
-                sv_neg += r2
-        return (sv_pos / n, sv_neg / n)
-
-    # ── Sanity checks ────────────────────────────────────────────────────
-
-    @staticmethod
-    def _sanity_check_coeffs(coeffs: List[float], model_name: str) -> tuple:
-        """Check coefficient sanity. Returns (ok: bool, reason: str)."""
-        if not coeffs:
-            return (False, "empty coefficients")
-
-        intercept = coeffs[0]
-        weights = coeffs[1:]
-
-        # Log models exempt from non-negativity and sum checks
-        log_models = {"log_har", "log_har_iv"}
-
-        # Intercept bound (variance scale — log models exempt, they operate in log-space)
-        if model_name not in log_models and abs(intercept) > 0.001:
-            return (False, f"intercept {intercept:.6f} exceeds ±0.001")
-
-        # Non-negativity for RV weights
-        if model_name not in log_models:
-            for i, w in enumerate(weights):
-                # har_vrp: last coefficient (VRP) can be negative (Bollerslev)
-                if model_name == "har_vrp" and i == len(weights) - 1:
-                    continue
-                if w < 0:
-                    return (False, f"weight[{i}]={w:.6f} is negative")
-
-        # Upper bound per weight
-        for i, w in enumerate(weights):
-            if abs(w) > 1.5:
-                return (False, f"weight[{i}]={w:.6f} exceeds ±1.5")
-
-        # Sum of weights bound (skip for log models, different scale)
-        if model_name not in log_models:
-            wsum = sum(weights)
-            # IV-augmented models get wider bound (2.5 vs 2.0)
-            iv_augmented = {"har_iv", "har_j_iv", "har_vrp"}
-            upper = 2.5 if model_name in iv_augmented else 2.0
-            if wsum < 0.3 or wsum > upper:
-                return (False, f"sum_weights={wsum:.4f} outside [0.3, {upper}]")
-
-        return (True, "ok")
-
-    # ── State persistence ────────────────────────────────────────────────
-
-    def _load_state(self) -> None:
-        """Load coefficients, active model, QLIKE, and observation buffers from JSON."""
-        try:
-            with open(HAR_STATE_PATH, "r") as f:
-                state = json.load(f)
-            for asset in ASSETS:
-                if asset in state.get("active_model", {}):
-                    self._active_model[asset] = state["active_model"][asset]
-                if asset in state.get("coefficients", {}):
-                    self._coefficients[asset] = state["coefficients"][asset]
-                if asset in state.get("qlike_scores", {}):
-                    self._qlike_scores[asset] = state["qlike_scores"][asset]
-            self._last_refit = state.get("last_refit", 0.0)
-            # Restore observation buffers
-            obs_data = state.get("observations", {})
-            now = time.time()
-            oldest_age = 0.0
-            for asset in ASSETS:
-                try:
-                    asset_obs = obs_data.get(asset, [])
-                    if not isinstance(asset_obs, list):
-                        raise ValueError(f"expected list, got {type(asset_obs).__name__}")
-                    for obs in asset_obs:
-                        if not isinstance(obs, dict):
-                            raise ValueError(f"expected dict, got {type(obs).__name__}")
-                        self._observations[asset].append(obs)
-                    if asset_obs:
-                        first_ts = asset_obs[0].get("ts", now)
-                        oldest_age = max(oldest_age, now - first_ts)
-                except Exception as oe:
-                    logging.warning("HAR observations load failed for %s: %s (starting fresh)", asset, oe)
-                    self._observations[asset].clear()
-            counts = {a: len(self._observations[a]) for a in ASSETS}
-            if any(counts.values()):
-                logging.info(
-                    "HAR observations restored: BTC=%d ETH=%d SOL=%d XRP=%d (oldest=%.0fs ago)",
-                    counts["BTC"], counts["ETH"], counts["SOL"], counts["XRP"], oldest_age)
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass
-        except Exception as e:
-            logging.warning("HAREstimator: failed to load state: %s", e)
-
-    def _save_state(self) -> None:
-        """Save coefficients, active model, QLIKE, and observation buffers to JSON."""
-        state = {
-            "active_model": self._active_model,
-            "coefficients": self._coefficients,
-            "qlike_scores": self._qlike_scores,
-            "last_refit": self._last_refit,
-            "observations": {a: list(self._observations[a]) for a in ASSETS},
-        }
-        try:
-            tmp = HAR_STATE_PATH + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(state, f, indent=2)
-            os.replace(tmp, HAR_STATE_PATH)
-        except Exception as e:
-            logging.warning("HAREstimator: failed to save state: %s", e)
-
-    # ── Diagnostics ──────────────────────────────────────────────────────
-
-    def get_diagnostics(self) -> Dict:
-        """Per-asset diagnostics for Firebase."""
-        result = {}
-        now = time.time()
-        for asset in ASSETS:
-            obs = self._observations[asset]
-            n_obs = len(obs)
-            model = self._active_model.get(asset, "fixed")
-            ql = self._qlike_scores.get(asset, {})
-            coeffs = self._coefficients.get(asset, {})
-
-            diag: Dict[str, Any] = {
-                "active_model": model,
-                "n_observations": n_obs,
-                "qlike_scores": {k: round(v, 4) for k, v in ql.items()} if ql else {},
-                "coefficients": {k: [round(c, 6) for c in v] for k, v in coeffs.items()} if coeffs else {},
-                "last_refit_age_s": round(now - self._last_refit, 1) if self._last_refit > 0 else None,
-            }
-
-            # QLIKE improvement vs fixed
-            if "fixed" in ql and model != "fixed" and model in ql:
-                fixed_ql = ql["fixed"]
-                best_ql = ql[model]
-                if fixed_ql > 0:
-                    diag["qlike_vs_fixed_pct"] = round(100 * (best_ql - fixed_ql) / fixed_ql, 1)
-
-            # Semivariance ratio (last observation)
-            if n_obs > 0:
-                last = obs[-1]
-                sv_neg_5 = last.get("sv_neg_5", 0)
-                sv_pos_5 = last.get("sv_pos_5", 0)
-                if sv_pos_5 > 0:
-                    diag["semivar_ratio_5min"] = round(sv_neg_5 / sv_pos_5, 2)
-
-            # DVOL observation fraction
-            if n_obs > 0:
-                dvol_count = sum(1 for o in obs if o.get("dvol_sq") is not None)
-                diag["dvol_obs_fraction"] = round(dvol_count / n_obs, 2)
-
-            # Last VRP
-            if n_obs > 0:
-                last = obs[-1]
-                dvol_sq_last = last.get("dvol_sq")
-                rv5_sq_last = last.get("rv5_sq", 0)
-                if dvol_sq_last is not None and rv5_sq_last > 0:
-                    diag["vrp_last"] = dvol_sq_last - rv5_sq_last
-
-            # New diagnostic fields for dashboard
-            diag["prediction_target"] = "rv15_sq"
-            diag["ridge_lambda"] = HAR_RIDGE_LAMBDA
-            diag["wls_weight_scheme"] = "1/t"
-            diag["buffer_hours"] = round(n_obs * HAR_OBSERVATION_INTERVAL / 3600, 1)
-            diag["log_preference_active"] = HAR_LOG_PREFERENCE_PCT > 0
-
-            result[asset] = diag
-        return result
 
 
 def _student_t_e_abs_z(df: float) -> float:
@@ -4775,7 +4011,7 @@ class EGARCHEstimator:
         try:
             result = minimize(
                 EGARCHEstimator._neg_log_likelihood_student_t,
-                x0, args=(returns,),
+                x0, args=(returns, EGARCH_MLE_EWL_LAMBDA),
                 method="L-BFGS-B",
                 bounds=bounds,
                 options={"maxiter": EGARCH_MLE_MAXITER, "ftol": 1e-10},
@@ -4791,7 +4027,7 @@ class EGARCHEstimator:
             try:
                 result = minimize(
                     EGARCHEstimator._neg_log_likelihood_gaussian,
-                    x0_gauss, args=(returns,),
+                    x0_gauss, args=(returns, EGARCH_MLE_EWL_LAMBDA),
                     method="L-BFGS-B",
                     bounds=bounds_gauss,
                     options={"maxiter": EGARCH_MLE_MAXITER, "ftol": 1e-10},
@@ -4876,14 +4112,19 @@ class EGARCHEstimator:
         return True
 
     @staticmethod
-    def _neg_log_likelihood_student_t(params, returns) -> float:
-        """Negative log-likelihood for EGARCH(1,1) with Student-t innovations."""
+    def _neg_log_likelihood_student_t(params, returns, ewl_lambda=1.0) -> float:
+        """Negative log-likelihood for EGARCH(1,1) with Student-t innovations.
+
+        When ewl_lambda < 1, applies exponential weighting: recent observations
+        weighted more heavily (lambda^(n-1-i)), smoothing ghost features from
+        hard rolling windows.
+        """
         omega, alpha, gamma, beta, df = params
         n = len(returns)
         if n < 60:
             return 1e10
-        if df < 4.0:
-            return 1e10  # df<4 → infinite kurtosis — reject
+        if df < 3.0:
+            return 1e10  # df<3 → infinite variance — reject
 
         sample_var = sum(r * r for r in returns[:60]) / 60.0
         if sample_var <= 0:
@@ -4900,6 +4141,14 @@ class EGARCHEstimator:
             return 1e10
         e_abs_z = _student_t_e_abs_z(df)
 
+        # Precompute exponential weights if lambda < 1
+        use_ewl = ewl_lambda < 1.0
+        if use_ewl:
+            weights = [ewl_lambda ** (n - 1 - i) for i in range(n)]
+            w_sum = sum(weights)
+        else:
+            w_sum = float(n)
+
         nll = 0.0
         for i in range(n):
             r = returns[i]
@@ -4907,8 +4156,9 @@ class EGARCHEstimator:
             if var <= 0:
                 var = 1e-30
             # Student-t log-likelihood contribution
-            nll += (-log_const + 0.5 * log_var
+            ll_i = (-log_const + 0.5 * log_var
                     + half_dfp1 * math.log(1.0 + r * r / (var * (df - 2.0))))
+            nll += (weights[i] * ll_i) if use_ewl else ll_i
 
             # EGARCH recursion with Student-t E[|z|]
             sigma = math.sqrt(var)
@@ -4918,10 +4168,10 @@ class EGARCHEstimator:
             log_var = omega + alpha * (abs(z) - e_abs_z) + gamma * z + beta * log_var
             log_var = max(EGARCH_LOG_VAR_FLOOR, min(EGARCH_LOG_VAR_CEILING, log_var))
 
-        return nll / n
+        return nll / w_sum
 
     @staticmethod
-    def _neg_log_likelihood_gaussian(params, returns) -> float:
+    def _neg_log_likelihood_gaussian(params, returns, ewl_lambda=1.0) -> float:
         """Negative log-likelihood for EGARCH(1,1) with Gaussian innovations (fallback)."""
         omega, alpha, gamma, beta = params
         n = len(returns)
@@ -4935,16 +4185,25 @@ class EGARCHEstimator:
         log_var = math.log(sample_var)
 
         LOG_2PI = 1.8378770664093453  # log(2π)
-        nll = 0.0
         e_abs_z = EGARCH_E_ABS_Z
 
+        # Precompute exponential weights if lambda < 1
+        use_ewl = ewl_lambda < 1.0
+        if use_ewl:
+            weights = [ewl_lambda ** (n - 1 - i) for i in range(n)]
+            w_sum = sum(weights)
+        else:
+            w_sum = float(n)
+
+        nll = 0.0
         for i in range(n):
             r = returns[i]
             # NLL contribution: 0.5 * (log(2π) + log_var + r²/exp(log_var))
             var = math.exp(log_var)
             if var <= 0:
                 var = 1e-30
-            nll += 0.5 * (LOG_2PI + log_var + r * r / var)
+            ll_i = 0.5 * (LOG_2PI + log_var + r * r / var)
+            nll += (weights[i] * ll_i) if use_ewl else ll_i
 
             # EGARCH recursion
             sigma = math.sqrt(var)
@@ -4954,7 +4213,7 @@ class EGARCHEstimator:
             log_var = omega + alpha * (abs(z) - e_abs_z) + gamma * z + beta * log_var
             log_var = max(EGARCH_LOG_VAR_FLOOR, min(EGARCH_LOG_VAR_CEILING, log_var))
 
-        return nll / n  # normalize for numerical stability
+        return nll / w_sum
 
     def _load_state(self):
         """Load params and state from JSON file."""
@@ -5091,6 +4350,25 @@ class EGARCHEstimator:
         return result
 
 
+# ── QLIKE loss (standalone utility) ──────────────────────────────────────────
+
+def _compute_qlike(y_actual: List[float], y_predicted: List[float]) -> float:
+    """QLIKE loss: mean(actual/predicted - log(actual/predicted) - 1).
+
+    Both in variance scale. Handles zero/negative with penalty.
+    """
+    eps = 1e-20
+    total = 0.0
+    n = 0
+    for a, p in zip(y_actual, y_predicted):
+        a = max(eps, a)
+        p = max(eps, p)
+        ratio = a / p
+        total += ratio - math.log(ratio) - 1.0
+        n += 1
+    return total / max(n, 1)
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  MincerZarnowitzTracker – Rolling R² for EGARCH forecast evaluation
 # ═════════════════════════════════════════════════════════════════════════════
@@ -5115,6 +4393,9 @@ class MincerZarnowitzTracker:
         self._last_recompute: Dict[str, float] = {a: 0.0 for a in ASSETS}
         self._egarch_weight: Dict[str, float] = {a: EGARCH_WEIGHT_DEFAULT for a in ASSETS}
         self._prev_weight: Dict[str, Optional[float]] = {a: None for a in ASSETS}
+        # Shadow sigmoid QLIKE tracking
+        self._baseline_qlike: Dict[str, Optional[float]] = {a: None for a in ASSETS}
+        self._shadow_sigmoid_w: Dict[str, Optional[float]] = {a: None for a in ASSETS}
         self._load_state()
 
     def record(self, asset: str, egarch_var: float, realized_var: float):
@@ -5184,9 +4465,35 @@ class MincerZarnowitzTracker:
 
         # QLIKE for shadow evaluation
         try:
-            self._qlike[asset] = round(HAREstimator._compute_qlike(actuals, forecasts), 6)
+            self._qlike[asset] = round(_compute_qlike(actuals, forecasts), 6)
         except Exception:
             logging.warning("MZ tracker: QLIKE computation failed for %s", asset, exc_info=True)
+
+        # Shadow sigmoid QLIKE-ratio weight mapping
+        if MZ_SIGMOID_SHADOW_MODE:
+            try:
+                egarch_qlike = self._qlike.get(asset)
+                if egarch_qlike is not None and n >= MZ_MIN_OBS:
+                    # Baseline QLIKE: RV-only forecast (each forecast = previous realized var)
+                    # This gives the "no-model" QLIKE score
+                    rv_forecasts = actuals[:-1]  # lag-1 realized var as forecast
+                    rv_actuals = actuals[1:]
+                    if len(rv_forecasts) >= MZ_MIN_OBS:
+                        baseline_q = _compute_qlike(rv_actuals, rv_forecasts)
+                        self._baseline_qlike[asset] = round(baseline_q, 6)
+
+                        # Improvement ratio: how much better EGARCH is vs naive
+                        if baseline_q > 1e-10:
+                            improvement = max(0.0, (baseline_q - egarch_qlike) / baseline_q)
+                            # Sigmoid: w = w_max * sigmoid(kappa * (improvement - q_mid))
+                            sigmoid_arg = MZ_SIGMOID_KAPPA * (improvement - MZ_SIGMOID_Q_MID)
+                            sigmoid_arg = max(-20.0, min(20.0, sigmoid_arg))  # clamp for exp
+                            sigmoid_val = 1.0 / (1.0 + math.exp(-sigmoid_arg))
+                            self._shadow_sigmoid_w[asset] = round(MZ_SIGMOID_W_MAX * sigmoid_val, 6)
+                        else:
+                            self._shadow_sigmoid_w[asset] = 0.0
+            except Exception:
+                logging.debug("MZ sigmoid QLIKE failed for %s", asset, exc_info=True)
 
         return self._egarch_weight[asset]
 
@@ -5207,6 +4514,10 @@ class MincerZarnowitzTracker:
                 if asset in state.get("pairs", {}):
                     for p in state["pairs"][asset][-MZ_WINDOW:]:
                         self._pairs[asset].append(tuple(p))
+                if asset in state.get("baseline_qlike", {}):
+                    self._baseline_qlike[asset] = state["baseline_qlike"][asset]
+                if asset in state.get("shadow_sigmoid_w", {}):
+                    self._shadow_sigmoid_w[asset] = state["shadow_sigmoid_w"][asset]
             logging.info("MZ tracker state loaded: R²=%s weights=%s",
                          self._r_squared, self._egarch_weight)
         except (FileNotFoundError, json.JSONDecodeError):
@@ -5215,12 +4526,14 @@ class MincerZarnowitzTracker:
     def save_state(self):
         try:
             state = {
-                "version": 1,
+                "version": 2,
                 "r_squared": self._r_squared,
                 "weights": self._egarch_weight,
                 "prev_weights": {a: self._prev_weight[a] for a in ASSETS},
                 "qlike": self._qlike,
                 "pairs": {a: list(self._pairs[a])[-MZ_WINDOW:] for a in ASSETS},
+                "baseline_qlike": self._baseline_qlike,
+                "shadow_sigmoid_w": self._shadow_sigmoid_w,
             }
             tmp_path = EGARCH_BLEND_STATE_PATH + ".tmp"
             with open(tmp_path, "w") as f:
@@ -6316,12 +5629,12 @@ class OpportunityScanner:
             if spot is None or spot <= 0:
                 continue
 
-            vol_est = self._vol.update(asset)
+            seconds_remaining = window["seconds_to_close"]
+            vol_est = self._vol.update(asset, seconds_to_close=seconds_remaining)
             if vol_est is None or vol_est["blended_rv"] <= 0:
                 continue
 
             blended_rv = vol_est["blended_rv"]
-            seconds_remaining = window["seconds_to_close"]
 
             # Extract EGARCH diagnostics for per-evaluation logging
             _ebs_var = vol_est.get("egarch_blend_var")
@@ -6330,6 +5643,10 @@ class OpportunityScanner:
                 "egarch_blend_sigma": math.sqrt(_ebs_var) if _ebs_var and _ebs_var > 0 else None,
                 "egarch_blend_weight": vol_est.get("egarch_blend_weight"),
                 "mz_r_squared": vol_est.get("mz_r_squared"),
+                "shadow_tv_blend_rv": vol_est.get("shadow_tv_blend_rv"),
+                "mz_shadow_sigmoid_w": vol_est.get("mz_shadow_sigmoid_w"),
+                "mz_baseline_qlike": vol_est.get("mz_baseline_qlike"),
+                "mz_qlike": vol_est.get("mz_qlike"),
             }
 
             for mkt in window["markets"]:
@@ -8720,11 +8037,9 @@ class MainLoop:
         self.logger = Logger()
         self.feed = CoinbaseFeed()
         self.dvol_fetcher = DeribitDVOLFetcher()
-        self.har_estimator = HAREstimator()
         self.egarch_estimator = EGARCHEstimator()
         self.mz_tracker = MincerZarnowitzTracker()
         self.vol = VolatilityEngine(self.feed, dvol_fetcher=self.dvol_fetcher,
-                                    har_estimator=self.har_estimator,
                                     egarch_estimator=self.egarch_estimator,
                                     mz_tracker=self.mz_tracker)
         self.sizer = PositionSizer()
@@ -9114,10 +8429,6 @@ class MainLoop:
         if self.calibration:
             self.calibration.maybe_retrain()
 
-        # Periodic HAR-WLS refit
-        if self.har_estimator:
-            self.har_estimator.maybe_refit()
-
         # Periodic EGARCH MLE refit
         if self.egarch_estimator:
             self.egarch_estimator.maybe_refit()
@@ -9136,7 +8447,7 @@ class MainLoop:
             )
 
             asset = window["asset"]
-            vol_estimate = self.vol.update(asset)
+            vol_estimate = self.vol.update(asset, seconds_to_close=seconds_to_close)
 
             scan_entry = {
                 "asset": asset,
@@ -9159,8 +8470,6 @@ class MainLoop:
                     "jump_component": round(vol_estimate.get("jump_component", 0), 8),
                     "dvol_5s": round(vol_estimate["dvol_5s"], 8) if vol_estimate.get("dvol_5s") is not None else None,
                     "iv_rv_blend_method": vol_estimate.get("iv_rv_blend_method"),
-                    "har_model": vol_estimate.get("har_model", "fixed"),
-                    "har_blend_rv": round(vol_estimate["har_blend_rv"], 8) if vol_estimate.get("har_blend_rv") is not None else None,
                     "fixed_blend_rv": round(vol_estimate.get("fixed_blend_rv", 0), 8),
                     "jump_multiplier": vol_estimate.get("jump_multiplier", 1.0),
                     "jump_event_count": vol_estimate.get("jump_event_count", 0),
@@ -9178,10 +8487,12 @@ class MainLoop:
                     "ark_15min": round(vol_estimate.get("ark_15min", 0), 8) if vol_estimate.get("ark_15min") is not None else None,
                     "rk_adaptive_delta_5": vol_estimate.get("rk_adaptive_delta_5", 0),
                     "rk_adaptive_delta_15": vol_estimate.get("rk_adaptive_delta_15", 0),
-                    # HAR-IV diagnostics
+                    # DVOL diagnostics
                     "dvol_sq_hourly": round(vol_estimate["dvol_sq_hourly"], 10) if vol_estimate.get("dvol_sq_hourly") is not None else None,
                     "vrp": round(vol_estimate["vrp"], 10) if vol_estimate.get("vrp") is not None else None,
-                    "har_iv_shadow_rv": round(vol_estimate["har_iv_shadow_rv"], 8) if vol_estimate.get("har_iv_shadow_rv") is not None else None,
+                    # Shadow TV RK weights
+                    "shadow_tv_blend_rv": round(vol_estimate["shadow_tv_blend_rv"], 8) if vol_estimate.get("shadow_tv_blend_rv") is not None else None,
+                    "shadow_tv_weights": vol_estimate.get("shadow_tv_weights"),
                 })
             # Order flow snapshot
             if self.order_flow is not None:
@@ -9254,14 +8565,6 @@ class MainLoop:
 
     def _cleanup(self):
         logging.info("Shutting down...")
-        if hasattr(self, 'har_estimator'):
-            self.har_estimator._save_state()
-            logging.info(
-                "HAR buffer saved on shutdown: BTC=%d ETH=%d SOL=%d XRP=%d",
-                len(self.har_estimator._observations["BTC"]),
-                len(self.har_estimator._observations["ETH"]),
-                len(self.har_estimator._observations["SOL"]),
-                len(self.har_estimator._observations["XRP"]))
         if hasattr(self, 'egarch_estimator'):
             self.egarch_estimator._save_state()
             logging.info(

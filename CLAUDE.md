@@ -12,7 +12,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 
 ## Project Structure
 
-- `bot.py` — Main bot entry point (~9200 lines, all bot logic lives here)
+- `bot.py` — Main bot entry point (~8600 lines, all bot logic lives here)
 - `firebase_push.py` — Pushes live dashboard snapshots to Firebase
 - `start.sh` — Startup script (activates venv, sources .env, runs bot)
 - `.github/workflows/deploy.yml` — Auto-deploy to VPS on push to main
@@ -28,7 +28,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | Config | Value | Line | Notes |
 |--------|-------|------|-------|
 | OBSERVATION_MODE | False | 30 | LIVE trading |
-| MIN_ENTRY_PRICE | 86 | 38 | Cents; 86-88c bucket is 100% WR in sim |
+| MIN_ENTRY_PRICE | 87 | 38 | Cents; two losses at 86c, raised to 87c |
 | MAX_ENTRY_PRICE | 99 | 39 | Cents |
 | MIN_EDGE_PCT | 1.0 | 332 | 1.0 percentage point minimum edge (data: 1.0-1.5% bucket 97.4% WR) |
 | MAX_SECONDS_BEFORE_CLOSE | 240 | 42 | Start scanning 4 min before window close |
@@ -43,8 +43,9 @@ Features that compute and log but do NOT affect live probability/trading:
 |---------|----------|--------|
 | EGARCH core vol | EGARCH_SHADOW_MODE = True | Logging, not affecting blended_rv |
 | EGARCH blend | EGARCH_BLEND_SHADOW_MODE = True | Closest to promotion (R² 0.42-0.61 typical) |
-| HAR model | HAR_SHADOW_MODE = True | NOT ready — models rejected (negative coefficients) |
-| Kalshi Order Flow | KALSHI_OFT_SHADOW_MODE = True | New, collecting data, has diagnostic logging |
+| Kalshi Order Flow | KALSHI_OFT_SHADOW_MODE = True | Collecting data, has diagnostic logging |
+| Time-varying RK weights | RK_TV_SHADOW_MODE = True | Adapts RK blend by time-to-expiry |
+| Sigmoid QLIKE mapping | MZ_SIGMOID_SHADOW_MODE = True | Alternative EGARCH weight via QLIKE ratio |
 
 Promoted features (shadow off, driving live behavior):
 - JUMP_ADAPTIVE (JUMP_ADAPTIVE_SHADOW_MODE = False)

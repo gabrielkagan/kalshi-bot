@@ -281,8 +281,6 @@ class FirebasePusher:
                         "iv_rv_spread": cached.get("iv_rv_spread"),
                         "num_returns": cached.get("num_returns", 0),
                         "jump_seconds_remaining": cached.get("jump_seconds_remaining", 0),
-                        "har_model": cached.get("har_model", "fixed"),
-                        "har_blend_rv": cached.get("har_blend_rv"),
                         "fixed_blend_rv": cached.get("fixed_blend_rv"),
                         "jump_multiplier": cached.get("jump_multiplier", 1.0),
                         "jump_event_count": cached.get("jump_event_count", 0),
@@ -300,10 +298,15 @@ class FirebasePusher:
                         "rk_H_adaptive_15": cached.get("rk_H_adaptive_15"),
                         "ark_5min": cached.get("ark_5min"),
                         "ark_15min": cached.get("ark_15min"),
-                        # HAR-IV diagnostics
+                        # DVOL diagnostics
                         "dvol_sq_hourly": cached.get("dvol_sq_hourly"),
                         "vrp": cached.get("vrp"),
-                        "har_iv_shadow_rv": cached.get("har_iv_shadow_rv"),
+                        # Shadow time-varying RK weights
+                        "shadow_tv_blend_rv": cached.get("shadow_tv_blend_rv"),
+                        "shadow_tv_weights": cached.get("shadow_tv_weights"),
+                        # Shadow sigmoid QLIKE
+                        "mz_shadow_sigmoid_w": cached.get("mz_shadow_sigmoid_w"),
+                        "mz_baseline_qlike": cached.get("mz_baseline_qlike"),
                     }
                 else:
                     vol_data[asset] = None
@@ -656,12 +659,6 @@ class FirebasePusher:
         except Exception:
             snap["nig_distribution"] = None
 
-        # ── HAR estimation diagnostics ─────────────────────────────────
-        try:
-            snap["har_estimation"] = self._ml.har_estimator.get_diagnostics()
-        except Exception:
-            snap["har_estimation"] = None
-
         # ── EGARCH estimation diagnostics ─────────────────────────────
         try:
             snap["egarch_estimation"] = self._ml.egarch_estimator.get_diagnostics()
@@ -683,6 +680,10 @@ class FirebasePusher:
                     "ema_lambda": getattr(_bot_mod, "MZ_EMA_LAMBDA", None),
                     "equal_weight_threshold": getattr(_bot_mod, "MZ_EQUAL_WEIGHT_R2_THRESHOLD", None),
                     "mz_window": getattr(_bot_mod, "MZ_WINDOW", None),
+                    # Shadow sigmoid QLIKE weight mapping
+                    "sigmoid_shadow_mode": getattr(_bot_mod, "MZ_SIGMOID_SHADOW_MODE", True),
+                    "baseline_qlike": dict(mz._baseline_qlike),
+                    "shadow_sigmoid_w": dict(mz._shadow_sigmoid_w),
                 }
         except Exception:
             logging.debug("Firebase: egarch_blend build failed", exc_info=True)
@@ -715,6 +716,24 @@ class FirebasePusher:
             snap["rk_adaptive_diagnostics"] = rk_diag
         except Exception:
             snap["rk_adaptive_diagnostics"] = {}
+
+        # ── Shadow time-varying RK weights ─────────────────────────────
+        try:
+            import bot as _bot_mod
+            tv_rk = {
+                "shadow_mode": getattr(_bot_mod, "RK_TV_SHADOW_MODE", True),
+            }
+            for asset in ASSETS:
+                cached = self._ml.vol._cache.get(asset)
+                if cached:
+                    tv_rk[asset] = {
+                        "shadow_tv_blend_rv": cached.get("shadow_tv_blend_rv"),
+                        "shadow_tv_weights": cached.get("shadow_tv_weights"),
+                        "fixed_blend_rv": cached.get("fixed_blend_rv"),
+                    }
+            snap["shadow_tv_rk_weights"] = tv_rk
+        except Exception:
+            snap["shadow_tv_rk_weights"] = {}
 
         # ── counterfactual analysis ───────────────────────────────────
         try:
