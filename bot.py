@@ -5844,7 +5844,6 @@ class OpportunityScanner:
                 "mz_shadow_sigmoid_w": vol_est.get("mz_shadow_sigmoid_w"),
                 "mz_baseline_qlike": vol_est.get("mz_baseline_qlike"),
                 "mz_qlike": vol_est.get("mz_qlike"),
-                "rv_only_blended": vol_est.get("rv_only_blended"),
             }
             # _shadow_extra_base: additional fields for log_opportunity (not in DB insert params)
             # Copied per-market to avoid OFT field bleed between tickers
@@ -6222,7 +6221,7 @@ class OpportunityScanner:
                             }
                 else:
                     # Promoted: EGARCH blend IS live, show what RV-only would do
-                    _cf_rvo = _shadow_diag.get("rv_only_blended")
+                    _cf_rvo = vol_est.get("rv_only_blended")
                     if _cf_rvo and _cf_rvo > 0:
                         _cf_prob = ProbabilityEngine.counterfactual_prob(
                             spot, threshold, seconds_remaining, _cf_rvo, asset)
