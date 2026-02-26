@@ -135,7 +135,7 @@ EGARCH_REFIT_INTERVALS = {              # Per-asset refit intervals (seconds)
 }
 
 # ─── EGARCH-RV Blend ───────────────────────────────────────────────────
-EGARCH_BLEND_SHADOW_MODE = True        # True = log only, don't affect blended_rv
+EGARCH_BLEND_SHADOW_MODE = False       # PROMOTED: EGARCH-RV blend drives live blended_rv
 EGARCH_BLEND_STATE_PATH = "egarch_blend_state.json"
 
 # Mincer-Zarnowitz R² tracker
@@ -5832,6 +5832,7 @@ class OpportunityScanner:
                 "mz_shadow_sigmoid_w": vol_est.get("mz_shadow_sigmoid_w"),
                 "mz_baseline_qlike": vol_est.get("mz_baseline_qlike"),
                 "mz_qlike": vol_est.get("mz_qlike"),
+                "rv_only_blended": vol_est.get("rv_only_blended"),
             }
             # _shadow_extra_base: additional fields for log_opportunity (not in DB insert params)
             # Copied per-market to avoid OFT field bleed between tickers
@@ -6192,19 +6193,35 @@ class OpportunityScanner:
                 # ── Counterfactual analysis: what would each shadow feature produce? ──
                 _cf = {}
 
-                # CF1: EGARCH Blend as primary
-                _cf_ebs = _shadow_diag.get("egarch_blend_sigma")
-                if _cf_ebs and _cf_ebs > 0 and EGARCH_BLEND_SHADOW_MODE:
-                    _cf_prob = ProbabilityEngine.counterfactual_prob(
-                        spot, threshold, seconds_remaining, _cf_ebs, asset)
-                    if _cf_prob is not None:
-                        _cf_edge = _cf_prob - best_ask / 100.0
-                        _cf_fee_edge = _cf_edge - est_fee_1c / 100.0
-                        _cf["egarch_blend"] = {
-                            "prob": _cf_prob, "edge": round(_cf_edge, 6),
-                            "fee_edge": round(_cf_fee_edge, 6),
-                            "would_trade": _cf_fee_edge >= MIN_EDGE_PCT / 100.0,
-                        }
+                # CF1: EGARCH blend ↔ RV-only counterfactual (bidirectional)
+                if EGARCH_BLEND_SHADOW_MODE:
+                    # Shadow: EGARCH blend not live, show what it would do
+                    _cf_ebs = _shadow_diag.get("egarch_blend_sigma")
+                    if _cf_ebs and _cf_ebs > 0:
+                        _cf_prob = ProbabilityEngine.counterfactual_prob(
+                            spot, threshold, seconds_remaining, _cf_ebs, asset)
+                        if _cf_prob is not None:
+                            _cf_edge = _cf_prob - best_ask / 100.0
+                            _cf_fee_edge = _cf_edge - est_fee_1c / 100.0
+                            _cf["egarch_blend"] = {
+                                "prob": _cf_prob, "edge": round(_cf_edge, 6),
+                                "fee_edge": round(_cf_fee_edge, 6),
+                                "would_trade": _cf_fee_edge >= MIN_EDGE_PCT / 100.0,
+                            }
+                else:
+                    # Promoted: EGARCH blend IS live, show what RV-only would do
+                    _cf_rvo = _shadow_diag.get("rv_only_blended")
+                    if _cf_rvo and _cf_rvo > 0:
+                        _cf_prob = ProbabilityEngine.counterfactual_prob(
+                            spot, threshold, seconds_remaining, _cf_rvo, asset)
+                        if _cf_prob is not None:
+                            _cf_edge = _cf_prob - best_ask / 100.0
+                            _cf_fee_edge = _cf_edge - est_fee_1c / 100.0
+                            _cf["rv_only"] = {
+                                "prob": _cf_prob, "edge": round(_cf_edge, 6),
+                                "fee_edge": round(_cf_fee_edge, 6),
+                                "would_trade": _cf_fee_edge >= MIN_EDGE_PCT / 100.0,
+                            }
 
                 # CF2: TV-RK as primary
                 _cf_tv = _shadow_diag.get("shadow_tv_blend_rv")
