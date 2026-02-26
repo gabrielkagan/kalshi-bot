@@ -322,7 +322,7 @@ _CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
 _TELEGRAM: Optional["TelegramNotifier"] = None
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
-MIN_EDGE_PCT = 1.0                # model prob must exceed market by ≥1.0 pp (data: 1.0-1.5% bucket is 97.4% WR, 37W/1L)
+MIN_EDGE_PCT = 0.9                # model prob must exceed market by ≥0.9 pp
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
 BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
@@ -334,7 +334,8 @@ SIZING_TIERS = [                  # (min_fee_adj_edge, risk_fraction)
     (0.04, 0.50),                 # fee-adj edge ≥ 4.0% → risk 50% (≈ gross ≥ 5%)
     (0.02, 0.35),                 # fee-adj edge ≥ 2.0% → risk 35% (≈ gross ≥ 3%)
     (0.015, 0.20),                # fee-adj edge ≥ 1.5% → risk 20% (≈ gross ≥ 2.5%)
-    (0.01, 0.10),                 # fee-adj edge ≥ 1.0% → risk 10% (data: 97.4% WR, 37W/1L)
+    (0.01, 0.10),                 # fee-adj edge ≥ 1.0% → risk 10%
+    (0.009, 0.07),                # fee-adj edge ≥ 0.9% → risk 7% (conservative new tier)
 ]
 DRAWDOWN_HALF_THRESHOLD = 0.90    # below 90% of starting balance → halve size
 DRAWDOWN_QUARTER_THRESHOLD = 0.80 # below 80% → quarter size
