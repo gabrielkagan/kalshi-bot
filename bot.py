@@ -39,7 +39,7 @@ MIN_ENTRY_PRICE = 87              # cents (data: two losses at 86c; 87c+ is clea
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.50         # max 50% of bankroll at risk per trade (scales with balance)
 MIN_SECONDS_BEFORE_CLOSE = 0
-MAX_SECONDS_BEFORE_CLOSE = 240    # start scanning 4 min before close (data: 180-240s is 9W/1L; loss at 243s stays excluded)
+MAX_SECONDS_BEFORE_CLOSE = 270    # start scanning 4.5 min before close (data: 240-270s is 8W/0L, 100% WR)
 ONE_ASSET_PER_WINDOW = False
 
 # ─── API Configuration ───────────────────────────────────────────────────────
