@@ -57,7 +57,8 @@ Promoted features (shadow off, driving live behavior):
 |---------|--------|-------|
 | `post_only=True` on maker orders | Active | Guarantees maker fees (4x cheaper) |
 | `time_in_force="immediate_or_cancel"` on taker orders | Active | Auto-cancel unfilled |
-| `amend_order()` for escalation | Active | Amend-first, cancel-replace fallback |
+| Direct taker for <60s | Active | Skip maker, IOC immediately when <60s to close |
+| Cancel-replace escalation | Active | Cancel maker + IOC taker (amend removed — 4% fill rate) |
 | `get_queue_position()` polling | Active | Every ~5s, queue-aware escalation |
 | KalshiFeed WebSocket | Active | fill + orderbook_delta channels |
 | WS fill detection | Active | Zero API cost, REST fallback |

@@ -910,6 +910,11 @@ class FirebasePusher:
             exec_eng["session_post_only_degraded"] = getattr(ex, "_session_post_only_degraded_attempts", 0)
             exec_eng["session_post_only_taker_escalations"] = getattr(ex, "_session_post_only_taker_escalations", 0)
             exec_eng["session_post_only_taker_fills"] = getattr(ex, "_session_post_only_taker_fills", 0)
+            # Direct taker counters
+            exec_eng["session_direct_taker_attempts"] = getattr(ex, "_session_direct_taker_attempts", 0)
+            exec_eng["session_direct_taker_fills"] = getattr(ex, "_session_direct_taker_fills", 0)
+            exec_eng["session_direct_taker_unfilled"] = getattr(ex, "_session_direct_taker_unfilled", 0)
+            exec_eng["session_direct_taker_skipped"] = getattr(ex, "_session_direct_taker_skipped", 0)
 
             # Escalation funnel
             po_rej = exec_eng.get("session_post_only_rejections", 0)
@@ -925,10 +930,10 @@ class FirebasePusher:
             }
 
             # Derived rates
-            amend_att = exec_eng["session_amend_attempts"]
-            exec_eng["amend_success_rate"] = round(
-                exec_eng["session_amend_successes"] / amend_att, 3
-            ) if amend_att > 0 else None
+            dt_att = exec_eng.get("session_direct_taker_attempts", 0)
+            exec_eng["direct_taker_fill_rate"] = round(
+                exec_eng.get("session_direct_taker_fills", 0) / dt_att, 3
+            ) if dt_att > 0 else None
             total_fills = exec_eng["session_ws_fills"] + exec_eng["session_rest_fills"]
             exec_eng["ws_fill_ratio"] = round(
                 exec_eng["session_ws_fills"] / total_fills, 3
@@ -958,6 +963,12 @@ class FirebasePusher:
             # Post-only rejection storm
             if po_rej >= 10 and po_fill == 0:
                 alerts.append(f"Post-only rejection storm ({po_rej} rejects, 0 taker fills)")
+
+            # Direct taker path may be broken
+            dt_att = exec_eng.get("session_direct_taker_attempts", 0)
+            dt_fill = exec_eng.get("session_direct_taker_fills", 0)
+            if dt_att >= 3 and dt_fill == 0:
+                alerts.append(f"Direct taker path failing ({dt_att} attempts, 0 fills)")
 
             # No fills at all despite orders
             total_orders = getattr(scanner, "_session_total_candidates", 0)

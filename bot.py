@@ -346,10 +346,13 @@ ESCALATION_MAX_ENTRY = 99         # taker price cap during escalation (cents)
 CONVERGENCE_WINDOW_SECONDS = 30.0 # seconds to measure price velocity
 MAKER_TIMEOUT_SECONDS = 30.0     # hard timeout for maker orders
 
+# ─── Direct Taker Threshold ──────────────────────────────────────────────
+DIRECT_TAKER_THRESHOLD = 60.0     # seconds_to_close below this → skip maker, go IOC directly
+
 # ─── Adaptive Escalation ─────────────────────────────────────────────────
-ESCALATION_WAIT_LONG = 15.0       # maker wait when 60-300s to close
-ESCALATION_WAIT_MEDIUM = 10.0     # maker wait when 30-60s to close
-ESCALATION_WAIT_SHORT = 5.0       # maker wait when <30s to close
+ESCALATION_WAIT_LONG = 15.0       # maker wait when >=180s to close
+ESCALATION_WAIT_MEDIUM = 7.0      # maker wait when 120-180s to close (86% fills within 7s)
+ESCALATION_WAIT_SHORT = 5.0       # maker wait when 60-120s to close
 
 # ─── Post-only rejection → taker escalation ────────────────────────────
 POST_ONLY_MAX_SAME_PRICE = 2          # Tier 1: max attempts at same maker price before degrading
@@ -6686,6 +6689,11 @@ class OrderExecutor:
         self._session_post_only_degraded_attempts: int = 0
         self._session_post_only_taker_escalations: int = 0
         self._session_post_only_taker_fills: int = 0
+        # Direct taker counters (for <60s candidates)
+        self._session_direct_taker_attempts: int = 0
+        self._session_direct_taker_fills: int = 0
+        self._session_direct_taker_unfilled: int = 0
+        self._session_direct_taker_skipped: int = 0
 
     @property
     def has_active_order(self) -> bool:
@@ -6749,7 +6757,7 @@ class OrderExecutor:
                         "maker_price": (_fv - _obs_offset) if _fv else None,
                         "maker_offset": _obs_offset,
                         "post_only": True,
-                        "escalation_strategy": "amend_first",
+                        "escalation_strategy": "cancel_replace_ioc",
                         "taker_time_in_force": "ioc",
                     },
                 })
@@ -6806,6 +6814,47 @@ class OrderExecutor:
                 pass
             return None
 
+        # ── Direct taker for <60s candidates ───────────────────────
+        seconds_to_close = candidate.get("seconds_to_close")
+        if seconds_to_close is not None and seconds_to_close < DIRECT_TAKER_THRESHOLD:
+            count = candidate["position_size"]
+            price = candidate["best_yes_ask"]
+            cal_prob = candidate["calibrated_prob"]
+
+            if count <= 0:
+                logging.warning("direct_taker_SKIPPED: %s position_size=%d", candidate["ticker"], count)
+                self._session_direct_taker_skipped += 1
+                return None
+
+            taker_fee = calculate_taker_fee(count, price)
+            net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+
+            if net_edge < MIN_EDGE_PCT / 100.0:
+                logging.info(
+                    "direct_taker_SKIPPED: %s net_edge=%.4f < min=%.4f "
+                    "seconds_to_close=%.0f taker_fee=%d¢",
+                    candidate["ticker"], net_edge, MIN_EDGE_PCT / 100.0,
+                    seconds_to_close, taker_fee)
+                self._session_direct_taker_skipped += 1
+                return None
+
+            self._session_direct_taker_attempts += 1
+            logging.info(
+                "direct_taker_ENTRY: %s %dx @ %d¢ "
+                "seconds_to_close=%.0f net_edge=%.4f cal_prob=%.4f taker_fee=%d¢",
+                candidate["ticker"], count, price,
+                seconds_to_close, net_edge, cal_prob, taker_fee)
+
+            candidate["entry_path"] = "direct_taker"
+            result = self._submit_taker(candidate)
+            if result is not None:
+                self._session_direct_taker_fills += 1
+                logging.info("direct_taker_FILLED: %s", candidate["ticker"])
+            else:
+                self._session_direct_taker_unfilled += 1
+                logging.warning("direct_taker_UNFILLED: %s", candidate["ticker"])
+            return result
+
         # ── Three-tier post_only rejection escalation ──────────────
         ticker = candidate["ticker"]
         rejections = self._get_post_only_rejection_count(ticker)
@@ -6837,6 +6886,7 @@ class OrderExecutor:
                 "rejections=%d net_edge=%.4f cal_prob=%.4f taker_fee=%d¢",
                 ticker, count, price, rejections, net_edge, cal_prob, taker_fee)
             self._session_post_only_taker_escalations += 1
+            candidate["entry_path"] = "post_only_taker"
             result = self._submit_taker(candidate)
             if result is not None:
                 self._post_only_rejections.pop(ticker, None)
@@ -6938,7 +6988,7 @@ class OrderExecutor:
             except Exception:
                 pass  # Non-critical, don't disrupt flow
 
-        # 3. Escalation: maker waited long enough? (skip if already escalated via amend)
+        # 3. Escalation: maker waited long enough? (skip if already escalated)
         if not order.get("escalated"):
             escalation_wait = self._escalation_wait(remaining)
             # Queue-aware: escalate earlier if deep in queue and time is short
@@ -6957,12 +7007,12 @@ class OrderExecutor:
     @staticmethod
     def _escalation_wait(remaining: float) -> float:
         """Urgency-based maker wait before escalating to taker."""
-        if remaining >= 60:
-            return ESCALATION_WAIT_LONG     # 15s
-        elif remaining >= 30:
-            return ESCALATION_WAIT_MEDIUM   # 10s
+        if remaining >= 180:
+            return ESCALATION_WAIT_LONG     # 15s — ample time, let maker fill
+        elif remaining >= 120:
+            return ESCALATION_WAIT_MEDIUM   # 7s — 86% of fills happen within 7s
         else:
-            return ESCALATION_WAIT_SHORT    # 5s
+            return ESCALATION_WAIT_SHORT    # 5s — tight, quick escalation
 
     # ── Market Intelligence Helpers ───────────────────────────────────────
 
@@ -7050,7 +7100,7 @@ class OrderExecutor:
 
     def _escalate_to_taker(self, order: Dict, remaining: float,
                            reason: str = "escalation_wait") -> Optional[Dict]:
-        """Escalate maker to taker. Try amend first (1 API call), fall back to cancel-replace."""
+        """Escalate maker to taker via cancel-replace IOC."""
         ticker = order["ticker"]
         elapsed = time.time() - order["submit_time"]
 
@@ -7083,9 +7133,9 @@ class OrderExecutor:
             return None
 
         # Determine urgency tier for logging
-        if remaining >= 60:
+        if remaining >= 180:
             tier = "long"
-        elif remaining >= 30:
+        elif remaining >= 120:
             tier = "medium"
         else:
             tier = "short"
@@ -7101,49 +7151,19 @@ class OrderExecutor:
             "wait_time": round(elapsed, 1),
             "urgency_tier": tier,
             "remaining": round(remaining, 1),
+            "execution_method": "cancel_replace_ioc",
         })
 
-        # Try amend-based escalation first (1 write vs 3 API calls for cancel-replace)
-        self._session_amend_attempts += 1
-        try:
-            amend_resp = self._client.amend_order(
-                order_id=order["order_id"], ticker=ticker,
-                side="yes", action="buy", yes_price=best_ask,
-                count=order["count"])
-            if amend_resp is not None:
-                self._session_amend_successes += 1
-                logging.info(
-                    f"escalation_via_amend: {ticker} {order['count']}x "
-                    f"maker={order['price_cents']}¢ → taker={best_ask}¢ "
-                    f"(slip={price_slip}¢, tier={tier})")
-
-                # Order is now crossing the spread — check for fill
-                order["price_cents"] = best_ask
-                order["is_taker"] = True
-                order["escalated"] = True
-                order["execution_method"] = "amend_to_taker"
-                order.setdefault("fill_source", "rest_poll")
-                time.sleep(0.3)
-                fill = self._check_for_fill(order)
-                if fill:
-                    self._on_fill(fill, order)
-                    if order.get("filled_so_far", 0) >= order["count"]:
-                        self._active_order = None
-                        return fill
-                # Not filled yet (or partial) — leave as active for tick() to poll
-                return None
-        except Exception:
-            logging.warning("Amend escalation failed with exception", exc_info=True)
-
-        # Fallback: cancel-replace
+        # Cancel maker + submit taker IOC
         logging.info(
-            f"amend_failed_fallback: {ticker}, using cancel-replace "
+            f"escalation_cancel_replace: {ticker} "
             f"(maker={order['price_cents']}¢ → taker={best_ask}¢)")
         self._cancel_active(reason)
 
         # Build modified candidate with fresh best ask
         candidate = dict(order["candidate"])
         candidate["best_yes_ask"] = best_ask
+        candidate["entry_path"] = "escalation_ioc"
 
         return self._submit_taker(candidate)
 
@@ -7219,6 +7239,7 @@ class OrderExecutor:
             "seconds_to_close_at_submit": candidate["seconds_to_close"],
             "candidate": candidate,
             "balance_at_entry": balance,
+            "entry_path": "maker",
         }
         self._last_poll = time.time()
 
@@ -7289,6 +7310,7 @@ class OrderExecutor:
             "candidate": candidate,
             "balance_at_entry": balance,
             "execution_method": "ioc",
+            "entry_path": candidate.get("entry_path", "direct_taker"),
         }
 
         self._logger.log_order({
@@ -7511,6 +7533,7 @@ class OrderExecutor:
                 "queue_position_final": order.get("queue_position"),
                 # Execution details
                 "execution_method": order.get("execution_method", "maker"),
+                "entry_path": order.get("entry_path", "maker"),
                 "cancel_reason": cancel_reason,
                 "elapsed_seconds": round(elapsed, 1),
                 # WS state
