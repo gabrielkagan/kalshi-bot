@@ -111,7 +111,7 @@ JUMP_ADAPTIVE_STATE_PATH = "jump_adaptive_state.json"
 JUMP_ADAPTIVE_SAVE_INTERVAL = 300.0    # Save EWMA/percentile state every 5 min
 
 # ─── EGARCH(1,1) Estimation ──────────────────────────────────────────────
-EGARCH_SHADOW_MODE = True               # True = compute/log only, don't affect blended_rv
+EGARCH_SHADOW_MODE = False              # PROMOTED: EGARCH conditional vol feeds live EGARCH-RV blend
 EGARCH_STATE_PATH = "egarch_state.json"
 EGARCH_BUFFER_SAVE_INTERVAL = 300.0 # save return buffer to disk every 5 min
 EGARCH_REFIT_INTERVAL = 7200            # 2h between MLE refits
