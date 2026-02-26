@@ -360,6 +360,15 @@ POST_ONLY_MAX_SAME_PRICE = 2          # Tier 1: max attempts at same maker price
 POST_ONLY_DEGRADED_EXTRA_OFFSET = 1   # Tier 2: extra ¢ offset for degraded maker attempt
 POST_ONLY_REJECTION_EXPIRY = 30.0     # Seconds before rejection count resets (stale data guard)
 
+# ─── Confirmation Addon ─────────────────────────────────────────────────
+ADDON_ENABLED = True
+ADDON_MIN_PRICE_IMPROVEMENT = 3       # cents improvement from entry to trigger
+ADDON_MIN_SECONDS_SINCE_FILL = 10.0   # seconds after fill before addon eligible
+ADDON_MIN_STC_REMAINING = 45.0        # need ≥45s remaining at addon time
+ADDON_SIZE_FRACTION = 0.50            # addon = 50% of original count
+ADDON_MAX_PER_POSITION = 1            # max 1 addon per position
+ADDON_MAX_ENTRY_PRICE = 98            # 98¢ cap — still profitable after fees
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  Fee Helpers
@@ -6867,6 +6876,13 @@ class OrderExecutor:
         self._session_direct_taker_fills: int = 0
         self._session_direct_taker_unfilled: int = 0
         self._session_direct_taker_skipped: int = 0
+        # Confirmation addon state
+        self._addon_eligible: Dict[str, Dict] = {}   # ticker → metadata
+        self._addon_completed: set = set()            # tickers already addon'd
+        self._session_addon_attempts: int = 0
+        self._session_addon_fills: int = 0
+        self._session_addon_unfilled: int = 0
+        self._session_addon_skipped: int = 0
 
     @property
     def has_active_order(self) -> bool:
@@ -7677,6 +7693,13 @@ class OrderExecutor:
             f"cost={cost_cents}¢ fee={fee_cents}¢"
             f"{'' if is_complete else ' [PARTIAL ' + str(order['filled_so_far']) + '/' + str(order['count']) + ']'}"
         )
+
+        # Register for confirmation addon evaluation
+        try:
+            self._register_addon_eligible(order, fill_price, fill_latency)
+        except Exception:
+            logging.debug("addon registration failed", exc_info=True)
+
         return fill_count
 
     # ── Fill Model Logging ────────────────────────────────────────────────
@@ -7735,6 +7758,328 @@ class OrderExecutor:
                 f.write(json.dumps(sample) + "\n")
         except Exception:
             logging.debug("fill_model_sample write failed", exc_info=True)
+
+    # ── Confirmation Addon ─────────────────────────────────────────────────
+
+    def _register_addon_eligible(self, order: Dict,
+                                actual_fill_price: int = 0,
+                                fill_latency: float = 0.0):
+        """After a fill, register the position for addon evaluation.
+
+        Uses actual fill price (not maker limit price) and corrects STC
+        for fill latency so addon timing is accurate.
+
+        Skips if the fill itself is an addon (prevents recursive registration).
+        """
+        if not ADDON_ENABLED:
+            return
+        candidate = order.get("candidate", {})
+        # Don't re-register addon fills
+        if candidate.get("entry_path") == "confirmation_addon":
+            return
+
+        ticker = order["ticker"]
+        # Use actual execution price, not the submitted limit price
+        entry_price = actual_fill_price if actual_fill_price > 0 else order["price_cents"]
+        fill_count = order.get("filled_so_far", order["count"])
+
+        # Correct STC: subtract fill latency from submit-time STC
+        stc_at_submit = order.get("seconds_to_close_at_submit")
+        stc_at_fill = (stc_at_submit - fill_latency) if stc_at_submit is not None else None
+
+        meta = {
+            "ticker": ticker,
+            "event_ticker": order["event_ticker"],
+            "asset": order["asset"],
+            "entry_price_cents": entry_price,
+            "entry_count": fill_count,
+            "fill_time": time.time(),
+            "seconds_to_close_at_fill": stc_at_fill,
+            "threshold": candidate.get("threshold"),
+            "blended_rv": candidate.get("blended_rv"),
+            "calibrated_prob": candidate.get("calibrated_prob"),
+            "candidate": candidate,
+        }
+        self._addon_eligible[ticker] = meta
+        logging.info(
+            "addon_registered: %s entry=%d¢ count=%d stc=%.0f",
+            ticker, entry_price, fill_count, stc_at_fill or 0)
+
+    def _check_addon_opportunities(self):
+        """Evaluate open positions for confirmation addon. Called from _tick."""
+        if not ADDON_ENABLED or not self._addon_eligible:
+            return
+
+        now = time.time()
+        expired = []
+
+        for ticker, meta in list(self._addon_eligible.items()):
+            # Cleanup: remove entries >5min old
+            if now - meta["fill_time"] > 300:
+                expired.append(ticker)
+                continue
+
+            # Already addon'd this position
+            if ticker in self._addon_completed:
+                continue
+
+            # Elapsed check
+            elapsed = now - meta["fill_time"]
+            if elapsed < ADDON_MIN_SECONDS_SINCE_FILL:
+                continue
+
+            # STC check
+            stc_at_fill = meta.get("seconds_to_close_at_fill")
+            if stc_at_fill is None:
+                continue
+            current_stc = stc_at_fill - elapsed
+            if current_stc < ADDON_MIN_STC_REMAINING:
+                self._session_addon_skipped += 1
+                logging.info(
+                    "addon_SKIP_stc: %s stc_remaining=%.0f < %.0f",
+                    ticker, current_stc, ADDON_MIN_STC_REMAINING)
+                expired.append(ticker)
+                continue
+
+            # Get current best ask
+            current_ask = self._get_addon_best_ask(ticker)
+            if current_ask is None:
+                continue  # Deferred to next tick
+
+            # Price improvement check
+            improvement = current_ask - meta["entry_price_cents"]
+            if improvement < ADDON_MIN_PRICE_IMPROVEMENT:
+                continue  # Not enough improvement yet
+
+            # Price cap
+            if current_ask > ADDON_MAX_ENTRY_PRICE:
+                self._session_addon_skipped += 1
+                logging.info(
+                    "addon_SKIP_price_cap: %s ask=%d¢ > %d¢",
+                    ticker, current_ask, ADDON_MAX_ENTRY_PRICE)
+                continue
+
+            # Get current spot price
+            asset = meta["asset"]
+            spot = self._get_addon_spot(asset)
+            if spot is None:
+                continue
+
+            # Recalculate probability with current spot and STC
+            blended_rv = meta.get("blended_rv")
+            threshold = meta.get("threshold")
+            if blended_rv is None or threshold is None:
+                continue
+
+            prob_result = ProbabilityEngine.compute(
+                spot, threshold, current_stc, blended_rv, asset=asset)
+            cal_prob = prob_result.get("calibrated_prob")
+            if cal_prob is None:
+                continue
+
+            # Taker edge check
+            addon_count = max(1, int(meta["entry_count"] * ADDON_SIZE_FRACTION))
+            taker_fee = calculate_taker_fee(addon_count, current_ask)
+            net_edge = cal_prob - (current_ask / 100.0) - (taker_fee / (addon_count * 100.0))
+
+            if net_edge < MIN_EDGE_PCT / 100.0:
+                self._session_addon_skipped += 1
+                logging.info(
+                    "addon_SKIP_edge: %s net_edge=%.4f < %.4f ask=%d¢ "
+                    "prob=%.4f fee=%d¢",
+                    ticker, net_edge, MIN_EDGE_PCT / 100.0,
+                    current_ask, cal_prob, taker_fee)
+                continue
+
+            # Balance check — addon cost capped at 50% of current balance
+            balance = self._get_addon_balance()
+            if balance is None:
+                continue
+
+            addon_cost = addon_count * current_ask
+            max_addon_cost = int(balance * 0.50)
+            if addon_cost > max_addon_cost:
+                # Reduce count to fit within 50% of balance
+                if current_ask > 0:
+                    addon_count = max_addon_cost // current_ask
+                if addon_count < 1:
+                    self._session_addon_skipped += 1
+                    logging.info(
+                        "addon_SKIP_balance: %s cost=%d¢ > 50%% balance=%d¢",
+                        ticker, addon_cost, balance)
+                    continue
+                addon_cost = addon_count * current_ask
+                taker_fee = calculate_taker_fee(addon_count, current_ask)
+                net_edge = cal_prob - (current_ask / 100.0) - (taker_fee / (addon_count * 100.0))
+                if net_edge < MIN_EDGE_PCT / 100.0:
+                    self._session_addon_skipped += 1
+                    logging.info(
+                        "addon_SKIP_edge_after_resize: %s count=%d edge=%.4f",
+                        ticker, addon_count, net_edge)
+                    continue
+
+            # All checks passed — execute addon
+            self._execute_addon(
+                meta, addon_count, current_ask, current_stc,
+                cal_prob, net_edge, balance, spot)
+            self._addon_completed.add(ticker)
+
+        # Cleanup expired entries
+        for t in expired:
+            self._addon_eligible.pop(t, None)
+        # Also clean completed tickers no longer in eligible
+        for t in list(self._addon_completed):
+            if t not in self._addon_eligible:
+                self._addon_completed.discard(t)
+
+    def _execute_addon(self, meta: Dict, count: int, price: int,
+                       stc: float, prob: float, edge: float,
+                       balance: int, spot: float):
+        """Submit taker IOC for confirmation addon."""
+        ticker = meta["ticker"]
+        self._session_addon_attempts += 1
+
+        logging.info(
+            "addon_TRIGGER: %s %dx @ %d¢ (entry=%d¢ +%d¢) "
+            "stc=%.0f edge=%.4f prob=%.4f balance=%d¢ spot=%.2f",
+            ticker, count, price, meta["entry_price_cents"],
+            price - meta["entry_price_cents"],
+            stc, edge, prob, balance, spot)
+
+        # Build addon candidate for _submit_taker
+        addon_candidate = {
+            "ticker": ticker,
+            "event_ticker": meta["event_ticker"],
+            "asset": meta["asset"],
+            "best_yes_ask": price,
+            "position_size": count,
+            "calibrated_prob": prob,
+            "edge": edge,
+            "seconds_to_close": stc,
+            "balance_at_scan": balance,
+            "entry_path": "confirmation_addon",
+            "strategy": "CONFIRMATION_ADDON",
+            "blended_rv": meta.get("blended_rv"),
+            "threshold": meta.get("threshold"),
+            "vol_regime": meta.get("candidate", {}).get("vol_regime"),
+            "z_score": meta.get("candidate", {}).get("z_score"),
+            "kelly_f": meta.get("candidate", {}).get("kelly_f"),
+            "ob_snapshot": {},
+            "original_entry_price": meta["entry_price_cents"],
+            "original_entry_count": meta["entry_count"],
+            "price_improvement": price - meta["entry_price_cents"],
+        }
+
+        if OBSERVATION_MODE:
+            logging.info(
+                "addon_OBSERVATION: %s %dx @ %d¢ — would submit taker IOC",
+                ticker, count, price)
+            self._logger.log_execution({
+                "action": "addon_observation",
+                "ticker": ticker,
+                "asset": meta["asset"],
+                "price": price,
+                "count": count,
+                "edge": edge,
+                "prob": prob,
+                "stc": stc,
+                "original_entry_price": meta["entry_price_cents"],
+                "price_improvement": price - meta["entry_price_cents"],
+            })
+            return
+
+        # Live: submit taker IOC
+        result = self._submit_taker(addon_candidate)
+
+        if result is not None:
+            self._session_addon_fills += 1
+            logging.info(
+                "addon_FILLED: %s %dx @ %d¢ (+%d¢ from entry)",
+                ticker, count, price,
+                price - meta["entry_price_cents"])
+            if _TELEGRAM:
+                try:
+                    _TELEGRAM.send(
+                        f"\u2795 Addon: {ticker} {count}x @ {price}c "
+                        f"(+{price - meta['entry_price_cents']}c)")
+                except Exception:
+                    pass
+
+            self._logger.log_execution({
+                "action": "addon_filled",
+                "ticker": ticker,
+                "asset": meta["asset"],
+                "price": price,
+                "count": count,
+                "edge": edge,
+                "prob": prob,
+                "stc": stc,
+                "original_entry_price": meta["entry_price_cents"],
+                "price_improvement": price - meta["entry_price_cents"],
+                "balance_after": balance - (count * price),
+            })
+        else:
+            self._session_addon_unfilled += 1
+            logging.warning(
+                "addon_UNFILLED: %s %dx @ %d¢", ticker, count, price)
+            self._logger.log_execution({
+                "action": "addon_unfilled",
+                "ticker": ticker,
+                "asset": meta["asset"],
+                "price": price,
+                "count": count,
+            })
+
+    def _get_addon_best_ask(self, ticker: str) -> Optional[int]:
+        """Get best YES ask for ticker via scanner cache, then REST fallback."""
+        try:
+            scanner = self._ml.scanner if self._ml else None
+            if scanner:
+                ob_data, _ = scanner._get_orderbook_cached(ticker)
+                if ob_data:
+                    return OpportunityScanner._best_yes_ask_cents(ob_data)
+        except Exception:
+            logging.debug("addon orderbook cache lookup failed", exc_info=True)
+
+        # REST fallback
+        try:
+            ob_resp = self._client.get_orderbook(ticker, depth=5)
+            if ob_resp:
+                orderbook_fp = ob_resp.get("orderbook_fp")
+                if orderbook_fp and self._ml and hasattr(self._ml, 'scanner'):
+                    ob_data = self._ml.scanner._convert_orderbook_fp(orderbook_fp)
+                else:
+                    ob_data = ob_resp.get("orderbook", ob_resp)
+                if ob_data:
+                    return OpportunityScanner._best_yes_ask_cents(ob_data)
+        except Exception:
+            logging.debug("addon orderbook REST fallback failed", exc_info=True)
+        return None
+
+    def _get_addon_spot(self, asset: str) -> Optional[float]:
+        """Get current spot price for asset via feed."""
+        try:
+            if self._ml and hasattr(self._ml, 'scanner'):
+                return self._ml.scanner._feed.get_price(asset)
+        except Exception:
+            logging.debug("addon spot price lookup failed", exc_info=True)
+        return None
+
+    def _get_addon_balance(self) -> Optional[int]:
+        """Get current balance in cents."""
+        try:
+            if self._ml and hasattr(self._ml, 'scanner'):
+                return self._ml.scanner._get_balance_cached()
+        except Exception:
+            logging.debug("addon balance lookup failed", exc_info=True)
+        # Direct API fallback
+        try:
+            resp = self._client.get_balance()
+            if resp:
+                return resp.get("balance") or 0
+        except Exception:
+            logging.debug("addon balance API fallback failed", exc_info=True)
+        return None
 
     # ── Cancel ────────────────────────────────────────────────────────────
 
@@ -7903,6 +8248,7 @@ class SettlementTracker:
                 f"SettlementTracker: no position found for {ticker}"
             )
             return
+        pos = dict(pos)  # sqlite3.Row doesn't support .get()
 
         # Determine WIN/LOSS from market_result only (API is truth)
         side = pos["side"]
@@ -8745,6 +9091,13 @@ class MainLoop:
 
         # Poll active executor order (maker fill check)
         self.executor.tick()
+
+        # Check confirmation addon opportunities on open positions
+        if not self.executor.has_active_order:
+            try:
+                self.executor._check_addon_opportunities()
+            except Exception:
+                logging.debug("addon check failed", exc_info=True)
 
         # Run opportunity scanner (only if no active order)
         if not self.executor.has_active_order:
