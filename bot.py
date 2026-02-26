@@ -3052,7 +3052,7 @@ class VolatilityEngine:
                         self._adaptive_last_save = now_save
 
                 # Check for jump against current estimate (before updating cache)
-                estimate = self._compute(asset, now)
+                estimate = self._compute(asset, now, seconds_to_close)
                 if estimate and estimate["blended_rv"] > 0:
                     legacy_jump = abs(log_return) > JUMP_THRESHOLD_MULTIPLIER * estimate["blended_rv"]
 
@@ -3086,11 +3086,11 @@ class VolatilityEngine:
                                     "EGARCH %s: sigma/rv ratio extreme (%.4f) — model may be diverging",
                                     asset, ratio)
 
-                self._cache[asset] = self._compute(asset, now)
+                self._cache[asset] = self._compute(asset, now, seconds_to_close)
             else:
                 self._cache.setdefault(asset, None)
         elif asset not in self._cache:
-            self._cache[asset] = self._compute(asset, now)
+            self._cache[asset] = self._compute(asset, now, seconds_to_close)
 
         return self._cache.get(asset)
 
@@ -3461,7 +3461,7 @@ class VolatilityEngine:
 
     # ── Core computation ─────────────────────────────────────────────────
 
-    def _compute(self, asset: str, now: float) -> Optional[Dict]:
+    def _compute(self, asset: str, now: float, seconds_to_close: Optional[float] = None) -> Optional[Dict]:
         returns = self._returns[asset]
         if len(returns) < 2:
             return None
