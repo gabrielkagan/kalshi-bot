@@ -83,7 +83,7 @@ VOL_WINDOW_1MIN = 12              # 60s / 5s = 12 returns
 VOL_WINDOW_5MIN = 60              # 300s / 5s = 60 returns
 VOL_WINDOW_15MIN = 180            # 900s / 5s = 180 returns
 VOL_BLEND_WEIGHTS = (0.5, 0.3, 0.2)  # 1min, 5min, 15min
-RK_TV_SHADOW_MODE = True              # Shadow time-varying RK weights (log only, don't affect production blend)
+RK_TV_SHADOW_MODE = False             # PROMOTED: time-varying RK weights drive live blend
 JUMP_THRESHOLD_MULTIPLIER = 3.0   # return > 3x RV = jump
 
 JUMP_DECAY_TAU = 432.7               # 300/ln(2), half-life = 300s
@@ -3591,24 +3591,36 @@ class VolatilityEngine:
         dvol_hourly = self._get_implied_vol_hourly(asset)
         dvol_sq = (dvol_hourly ** 2) if dvol_hourly is not None else None
 
-        # Step 3: RK blend (fixed weights)
-        w1, w5, w15 = VOL_BLEND_WEIGHTS
+        # Step 3: RK blend (TV weights when promoted, fixed weights when shadow)
+        if not RK_TV_SHADOW_MODE and seconds_to_close is not None:
+            w1, w5, w15 = compute_tv_rk_weights(seconds_to_close)
+        else:
+            w1, w5, w15 = VOL_BLEND_WEIGHTS
         continuous_rv = w1 * rk_1min + w5 * rk_5min + w15 * rk_15min
         bv_blended = w1 * bv_1min + w5 * bv_5min + w15 * bv_15min
         jump_var = max(0.0, continuous_rv ** 2 - bv_blended ** 2)
         fixed_blend_rv = math.sqrt(bv_blended ** 2 + jump_var)
         rv_blended = fixed_blend_rv
 
-        # Step 3a: Shadow time-varying RK weights (logged only, never affects blended_rv)
+        # Step 3a: Counterfactual RK weights (opposite of live path)
         shadow_tv_blend_rv = None
         shadow_tv_weights = None
         if RK_TV_SHADOW_MODE and seconds_to_close is not None:
+            # Shadow: TV weights not live, show what they would do
             tw1, tw5, tw15 = compute_tv_rk_weights(seconds_to_close)
             shadow_tv_weights = (round(tw1, 3), round(tw5, 3), round(tw15, 3))
             tv_continuous = tw1 * rk_1min + tw5 * rk_5min + tw15 * rk_15min
             tv_bv = tw1 * bv_1min + tw5 * bv_5min + tw15 * bv_15min
             tv_jump_var = max(0.0, tv_continuous ** 2 - tv_bv ** 2)
             shadow_tv_blend_rv = math.sqrt(tv_bv ** 2 + tv_jump_var)
+        elif not RK_TV_SHADOW_MODE:
+            # Promoted: TV weights ARE live, compute what fixed weights would do
+            fw1, fw5, fw15 = VOL_BLEND_WEIGHTS
+            shadow_tv_weights = (round(fw1, 3), round(fw5, 3), round(fw15, 3))
+            fc = fw1 * rk_1min + fw5 * rk_5min + fw15 * rk_15min
+            fb = fw1 * bv_1min + fw5 * bv_5min + fw15 * bv_15min
+            fj = max(0.0, fc ** 2 - fb ** 2)
+            shadow_tv_blend_rv = math.sqrt(fb ** 2 + fj)
 
         # Step 3b: EGARCH conditional volatility
         egarch_sigma = None
@@ -6223,7 +6235,7 @@ class OpportunityScanner:
                                 "would_trade": _cf_fee_edge >= MIN_EDGE_PCT / 100.0,
                             }
 
-                # CF2: TV-RK as primary
+                # CF2: TV-RK ↔ fixed-RK counterfactual (bidirectional)
                 _cf_tv = _shadow_diag.get("shadow_tv_blend_rv")
                 if _cf_tv and _cf_tv > 0:
                     _cf_prob = ProbabilityEngine.counterfactual_prob(
@@ -6231,7 +6243,8 @@ class OpportunityScanner:
                     if _cf_prob is not None:
                         _cf_edge = _cf_prob - best_ask / 100.0
                         _cf_fee_edge = _cf_edge - est_fee_1c / 100.0
-                        _cf["tv_rk"] = {
+                        _cf_key = "tv_rk" if RK_TV_SHADOW_MODE else "fixed_rk"
+                        _cf[_cf_key] = {
                             "prob": _cf_prob, "edge": round(_cf_edge, 6),
                             "fee_edge": round(_cf_fee_edge, 6),
                             "would_trade": _cf_fee_edge >= MIN_EDGE_PCT / 100.0,
