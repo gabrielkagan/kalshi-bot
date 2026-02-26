@@ -7495,13 +7495,30 @@ class OrderExecutor:
         })
         logging.info(f"Taker IOC order: {ticker} {count}x @ {price}¢")
 
-        # IOC resolves instantly; brief wait + fill check for confirmation
+        # IOC resolves instantly; brief wait + collect ALL fill events.
+        # An IOC can match against multiple resting orders, generating
+        # multiple fill events.  _check_for_fill() returns one unseen
+        # fill per call (tracks seen IDs), so loop until exhausted.
         time.sleep(0.3)
-        fill = self._check_for_fill(order_info)
-        if fill:
-            self._on_fill(fill, order_info)
+        total_filled = 0
+        while True:
+            fill = self._check_for_fill(order_info)
+            if not fill:
+                break
+            fill_count = self._on_fill(fill, order_info)
+            total_filled += fill_count
+
+        if total_filled > 0:
             self._session_ioc_fills += 1
-            logging.info(f"ioc_taker_result: {ticker} filled={count} remaining=0")
+            unfilled = count - total_filled
+            logging.info(
+                f"ioc_taker_result: {ticker} filled={total_filled} "
+                f"remaining={unfilled}"
+                f"{'' if unfilled == 0 else ' [PARTIAL]'}")
+            if unfilled > 0:
+                logging.warning(
+                    f"IOC partial fill: {ticker} wanted {count} got "
+                    f"{total_filled} — {unfilled} contracts unfilled")
             return fill
 
         # IOC auto-cancels unfilled portion — no manual cancel needed
@@ -7902,9 +7919,27 @@ class SettlementTracker:
                 f"'{market_result}' for {ticker}"
             )
 
-        # P&L from revenue (API is truth)
-        total_cost = pos["total_cost_cents"]
-        fee = calculate_taker_fee(pos["count"], pos["avg_price_cents"])
+        # Cross-check: detect count mismatch between internal tracking
+        # and Kalshi settlement.  For YES wins, revenue = real_count * 100.
+        recorded_count = pos["count"]
+        if revenue > 0 and outcome == "WIN" and side == "yes":
+            implied_count = revenue // 100
+            if implied_count != recorded_count:
+                logging.error(
+                    f"SETTLEMENT COUNT MISMATCH {ticker}: "
+                    f"internal={recorded_count} kalshi={implied_count} "
+                    f"revenue={revenue}¢ — correcting position before settlement")
+                recorded_count = implied_count
+                corrected_cost = recorded_count * pos["avg_price_cents"]
+                self._state.conn.execute(
+                    "UPDATE positions SET count=?, total_cost_cents=? "
+                    "WHERE ticker=?",
+                    (recorded_count, corrected_cost, ticker))
+                self._state.conn.commit()
+
+        # P&L from revenue (API is truth); use corrected count if mismatched
+        total_cost = recorded_count * pos["avg_price_cents"]
+        fee = calculate_taker_fee(recorded_count, pos["avg_price_cents"])
         pnl = revenue - total_cost
 
         # Record in SQLite via existing StateManager method
@@ -7921,7 +7956,7 @@ class SettlementTracker:
             "outcome": outcome,
             "market_result": market_result,
             "side": side,
-            "count": pos["count"],
+            "count": recorded_count,
             "entry_price_cents": pos["avg_price_cents"],
             "total_cost_cents": total_cost,
             "revenue_cents": revenue,
