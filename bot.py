@@ -1645,11 +1645,9 @@ class StateManager:
             self.conn.execute("""
                 UPDATE positions
                 SET count=?, avg_price_cents=?, total_cost_cents=?,
-                    updated_at=?, is_taker=?, fill_source=?, execution_method=?
+                    updated_at=?
                 WHERE ticker=? AND status='open'
-            """, (new_count, new_avg, new_cost, now,
-                  1 if is_taker else 0, fill_source, execution_method,
-                  ticker))
+            """, (new_count, new_avg, new_cost, now, ticker))
         else:
             opened_at = now
             self.conn.execute("""
@@ -7478,7 +7476,8 @@ class OrderExecutor:
         if resp is None:
             self._state.mark_order_status(client_oid, "api_error")
             logging.error(f"Taker order submission failed: {ticker}")
-            self._session_ioc_unfilled += 1
+            if candidate.get("entry_path") != "confirmation_addon":
+                self._session_ioc_unfilled += 1
             return None
 
         order_id = (resp.get("order") or {}).get("order_id", client_oid)
@@ -7527,7 +7526,8 @@ class OrderExecutor:
             total_filled += fill_count
 
         if total_filled > 0:
-            self._session_ioc_fills += 1
+            if candidate.get("entry_path") != "confirmation_addon":
+                self._session_ioc_fills += 1
             unfilled = count - total_filled
             logging.info(
                 f"ioc_taker_result: {ticker} filled={total_filled} "
@@ -7541,7 +7541,8 @@ class OrderExecutor:
 
         # IOC auto-cancels unfilled portion — no manual cancel needed
         self._state.mark_order_status(order_id, "canceled")
-        self._session_ioc_unfilled += 1
+        if candidate.get("entry_path") != "confirmation_addon":
+            self._session_ioc_unfilled += 1
         self._logger.log_order({
             "action": "taker_ioc_unfilled",
             "ticker": ticker,
@@ -7694,11 +7695,12 @@ class OrderExecutor:
             f"{'' if is_complete else ' [PARTIAL ' + str(order['filled_so_far']) + '/' + str(order['count']) + ']'}"
         )
 
-        # Register for confirmation addon evaluation
-        try:
-            self._register_addon_eligible(order, fill_price, fill_latency)
-        except Exception:
-            logging.debug("addon registration failed", exc_info=True)
+        # Register for confirmation addon evaluation (only on complete fills)
+        if is_complete:
+            try:
+                self._register_addon_eligible(order, fill_price, fill_latency)
+            except Exception:
+                logging.debug("addon registration failed", exc_info=True)
 
         return fill_count
 
@@ -7867,6 +7869,13 @@ class OrderExecutor:
 
             # Recalculate probability with current spot and STC
             blended_rv = meta.get("blended_rv")
+            try:
+                if self._ml and hasattr(self._ml, 'vol'):
+                    fresh_vol = self._ml.vol._cache.get(asset)
+                    if fresh_vol and fresh_vol.get("blended_rv"):
+                        blended_rv = fresh_vol["blended_rv"]
+            except Exception:
+                pass
             threshold = meta.get("threshold")
             if blended_rv is None or threshold is None:
                 continue
@@ -7919,10 +7928,11 @@ class OrderExecutor:
                     continue
 
             # All checks passed — execute addon
-            self._execute_addon(
+            filled = self._execute_addon(
                 meta, addon_count, current_ask, current_stc,
                 cal_prob, net_edge, balance, spot)
-            self._addon_completed.add(ticker)
+            if filled:
+                self._addon_completed.add(ticker)
 
         # Cleanup expired entries
         for t in expired:
@@ -7934,8 +7944,8 @@ class OrderExecutor:
 
     def _execute_addon(self, meta: Dict, count: int, price: int,
                        stc: float, prob: float, edge: float,
-                       balance: int, spot: float):
-        """Submit taker IOC for confirmation addon."""
+                       balance: int, spot: float) -> bool:
+        """Submit taker IOC for confirmation addon. Returns True on fill."""
         ticker = meta["ticker"]
         self._session_addon_attempts += 1
 
@@ -7986,7 +7996,7 @@ class OrderExecutor:
                 "original_entry_price": meta["entry_price_cents"],
                 "price_improvement": price - meta["entry_price_cents"],
             })
-            return
+            return True
 
         # Live: submit taker IOC
         result = self._submit_taker(addon_candidate)
@@ -8016,8 +8026,9 @@ class OrderExecutor:
                 "stc": stc,
                 "original_entry_price": meta["entry_price_cents"],
                 "price_improvement": price - meta["entry_price_cents"],
-                "balance_after": balance - (count * price),
+                "balance_after": balance - (count * price) - calculate_taker_fee(count, price),
             })
+            return True
         else:
             self._session_addon_unfilled += 1
             logging.warning(
@@ -8029,6 +8040,7 @@ class OrderExecutor:
                 "price": price,
                 "count": count,
             })
+            return False
 
     def _get_addon_best_ask(self, ticker: str) -> Optional[int]:
         """Get best YES ask for ticker via scanner cache, then REST fallback."""

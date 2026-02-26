@@ -943,8 +943,7 @@ class FirebasePusher:
             entry_path_dist["confirmation_addon"] = getattr(ex, "_session_addon_fills", 0)
             esc_ioc = max(0, getattr(ex, "_session_ioc_fills", 0)
                           - entry_path_dist["direct_taker"]
-                          - entry_path_dist["post_only_taker"]
-                          - entry_path_dist["confirmation_addon"])
+                          - entry_path_dist["post_only_taker"])
             entry_path_dist["escalation_ioc"] = esc_ioc
             exec_eng["entry_path_distribution"] = entry_path_dist
 
