@@ -7026,6 +7026,32 @@ class OrderExecutor:
                 self._session_direct_taker_skipped += 1
                 return None
 
+            # Verify actual liquidity before submitting IOC
+            fresh_ask = self._get_addon_best_ask(candidate["ticker"])
+            if fresh_ask is None:
+                logging.info(
+                    "direct_taker_SKIPPED: %s no asks on orderbook "
+                    "seconds_to_close=%.0f",
+                    candidate["ticker"], seconds_to_close)
+                self._session_direct_taker_skipped += 1
+                return None
+
+            # Use fresh ask if it differs from scanner's (may be stale NBBO)
+            if fresh_ask != price:
+                logging.info(
+                    "direct_taker_price_update: %s scanner=%d¢ fresh=%d¢",
+                    candidate["ticker"], price, fresh_ask)
+                price = fresh_ask
+                candidate["best_yes_ask"] = fresh_ask
+                taker_fee = calculate_taker_fee(count, price)
+                net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+                if net_edge < MIN_EDGE_PCT / 100.0:
+                    logging.info(
+                        "direct_taker_SKIPPED: %s fresh_ask=%d¢ net_edge=%.4f < min",
+                        candidate["ticker"], price, net_edge)
+                    self._session_direct_taker_skipped += 1
+                    return None
+
             self._session_direct_taker_attempts += 1
             logging.info(
                 "direct_taker_ENTRY: %s %dx @ %d¢ "
@@ -7068,6 +7094,29 @@ class OrderExecutor:
                     ticker, net_edge, MIN_EDGE_PCT / 100.0, taker_fee, count, price)
                 self._post_only_rejections.pop(ticker, None)
                 return None
+
+            # Verify actual liquidity before submitting IOC
+            fresh_ask = self._get_addon_best_ask(ticker)
+            if fresh_ask is None:
+                logging.info(
+                    "post_only_taker_SKIPPED: %s no asks on orderbook", ticker)
+                self._post_only_rejections.pop(ticker, None)
+                return None
+
+            if fresh_ask != price:
+                logging.info(
+                    "post_only_taker_price_update: %s scanner=%d¢ fresh=%d¢",
+                    ticker, price, fresh_ask)
+                price = fresh_ask
+                candidate["best_yes_ask"] = fresh_ask
+                taker_fee = calculate_taker_fee(count, price)
+                net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+                if net_edge < MIN_EDGE_PCT / 100.0:
+                    logging.info(
+                        "post_only_taker_SKIPPED: %s fresh_ask=%d¢ net_edge=%.4f < min",
+                        ticker, price, net_edge)
+                    self._post_only_rejections.pop(ticker, None)
+                    return None
 
             logging.info(
                 "post_only_taker_ESCALATION: %s %dx @ %d¢ "
