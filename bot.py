@@ -270,12 +270,12 @@ DYNAMIC_CAP_SCHEDULE = [
     (0,   0.995),  # < 1 min: near-certain allowed
 ]
 
-MARKET_BLEND_W = 0.50            # weight on market-implied probability
+MARKET_BLEND_W = 0.0              # PROMOTED: no market blend (was 0.50)
 ENDGAME_BLEND_PRICE = 96         # don't blend at or above this price (preserve endgame edge)
 
 # ─── Shadow Calibration Pipeline ──────────────────────────────────────────────
-SHADOW_CAL_PIPELINE = True   # Shadow mode: log alternative pipeline, don't affect trading
-SHADOW_BLEND_W = 0.0         # No market blend (vs production MARKET_BLEND_W=0.50)
+SHADOW_CAL_PIPELINE = False  # PROMOTED: temperature scaling + no blend is now production
+SHADOW_BLEND_W = 0.50        # Counterfactual: old system used 50% market blend
 SHADOW_TEMP_SCALE = True     # Use temperature scaling instead of Beta Cal
 
 Z_SCORE_MAX = 25.0                # refuse to trade if |z| > 25 (data: 0 losses in tradeable range up to z=25)
@@ -4853,6 +4853,10 @@ class CalibrationEngine:
                 self._blr_precision = state["blr"]["precision"]
                 self._blr_trained = state["blr"].get("trained", False)
 
+            if "temperature" in state:
+                self._temperature = state["temperature"].get("value")
+                self._temperature_brier = state["temperature"].get("brier")
+
             # observations are loaded from DB in load_training_data_from_db()
 
             if "prev_brier" in state:
@@ -4889,6 +4893,10 @@ class CalibrationEngine:
                 "precision": self._blr_precision,
                 "trained": self._blr_trained,
             },
+            "temperature": {
+                "value": self._temperature,
+                "brier": self._temperature_brier,
+            },
             "prev_brier": self._prev_brier,
             "saved_at": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             "n_observations": len(self._observations),
@@ -4909,6 +4917,8 @@ class CalibrationEngine:
             result = self._platt_predict(raw_prob)
         elif self.active_method == "beta_cal" and self._beta_trained:
             result = self._beta_cal_predict(raw_prob)
+        elif self.active_method == "temperature" and self._temperature is not None:
+            result = self._temperature_predict(raw_prob, self._temperature)
         elif self.active_method == "blr" and self._blr_trained:
             result = self._blr_predict(raw_prob)
         else:
@@ -5082,6 +5092,22 @@ class CalibrationEngine:
             except Exception as e:
                 logging.warning("CalibrationEngine: BLR training failed: %s", e)
 
+        # ── Fit temperature scaling and include in competition ────────────
+        try:
+            temp = self._fit_temperature()
+            if temp is not None:
+                self._temperature = temp
+                brier_sum = sum((self._temperature_predict(rp, temp) - out) ** 2
+                                for rp, out in self._observations)
+                self._temperature_brier = brier_sum / len(self._observations)
+                trained_methods["temperature"] = self._temperature_brier
+                logging.info(
+                    "CalibrationEngine: Temperature scaling fitted — T=%.4f, Brier=%.4f, n=%d",
+                    temp, self._temperature_brier, n,
+                )
+        except Exception as e:
+            logging.warning("CalibrationEngine: Temperature scaling failed: %s", e)
+
         if not trained_methods:
             return False
 
@@ -5107,21 +5133,6 @@ class CalibrationEngine:
             old_method, best_method, best_brier,
             {k: round(v, 4) for k, v in trained_methods.items()},
         )
-
-        # Temperature scaling (shadow pipeline)
-        try:
-            temp = self._fit_temperature()
-            if temp is not None:
-                self._temperature = temp
-                brier_sum = sum((self._temperature_predict(rp, temp) - out) ** 2
-                                for rp, out in self._observations)
-                self._temperature_brier = brier_sum / len(self._observations)
-                logging.info(
-                    "CalibrationEngine: Temperature scaling fitted — T=%.4f, Brier=%.4f, n=%d",
-                    temp, self._temperature_brier, n,
-                )
-        except Exception as e:
-            logging.warning("CalibrationEngine: Temperature scaling failed: %s", e)
 
         self._save_state()
         return True
@@ -5437,6 +5448,8 @@ class CalibrationEngine:
             return True
         if self.active_method == "beta_cal" and self._beta_trained:
             return True
+        if self.active_method == "temperature" and self._temperature is not None:
+            return True
         if self.active_method == "blr" and self._blr_trained:
             return True
         return False
@@ -5466,6 +5479,8 @@ class CalibrationEngine:
                 pred = self._platt_predict(raw_p)
             elif method == "beta_cal":
                 pred = self._beta_cal_predict(raw_p)
+            elif method == "temperature" and self._temperature is not None:
+                pred = self._temperature_predict(raw_p, self._temperature)
             elif method == "blr":
                 pred = self._blr_predict(raw_p)
             else:
@@ -6191,7 +6206,8 @@ class OpportunityScanner:
                     final_prob = max(0.01, min(NUMERICAL_SAFETY_CEILING, final_prob + ofa_adjustment))
                 else:
                     final_prob = max(0.01, min(_dyn_cap, final_prob + ofa_adjustment))
-                # Counterfactual: what the old system (fixed cap) would have produced
+                # Counterfactual: calibrated prob with dynamic cap applied
+                # (after temp promotion, CF5 "old_cal_system" has the full Beta Cal + blend counterfactual)
                 _old_system_prob = max(0.01, min(_dyn_cap, calibrated_prob_raw + ofa_adjustment))
                 if best_ask < ENDGAME_BLEND_PRICE:
                     _mkt = best_ask / 100.0
@@ -6298,8 +6314,27 @@ class OpportunityScanner:
                             "n_snapshots": ofa_signals.get("n_snapshots"),
                         }
 
-                # CF5: Alternative calibration pipeline (no blend + temperature scaling)
-                if SHADOW_CAL_PIPELINE and _CALIBRATION_ENGINE is not None:
+                # CF5: Old system counterfactual (Beta Cal + 50% market blend)
+                if not SHADOW_CAL_PIPELINE and _CALIBRATION_ENGINE is not None and _CALIBRATION_ENGINE._beta_trained:
+                    try:
+                        _cf5_cal = _CALIBRATION_ENGINE._beta_cal_predict(raw_prob)
+                        _cf5_cal = min(_cf5_cal, _dyn_cap)
+                        _cf5_cal = _CALIBRATION_ENGINE._apply_uncertainty_shrinkage(_cf5_cal)
+                        _cf5_cal = max(0.001, min(NUMERICAL_SAFETY_CEILING, _cf5_cal))
+                        _cf5_cal = max(0.01, min(NUMERICAL_SAFETY_CEILING, _cf5_cal + ofa_adjustment))
+                        if best_ask < ENDGAME_BLEND_PRICE:
+                            _cf5_cal = 0.50 * _cf5_cal + 0.50 * (best_ask / 100.0)
+                        _cf5_edge = _cf5_cal - best_ask / 100.0
+                        _cf5_fee_edge = _cf5_edge - est_fee_1c / 100.0
+                        _cf["old_cal_system"] = {
+                            "prob": round(_cf5_cal, 6),
+                            "edge": round(_cf5_edge, 6),
+                            "fee_edge": round(_cf5_fee_edge, 6),
+                            "would_trade": _cf5_fee_edge >= MIN_EDGE_PCT / 100.0,
+                        }
+                    except Exception:
+                        pass
+                elif SHADOW_CAL_PIPELINE and _CALIBRATION_ENGINE is not None:
                     _cf_cal = _CALIBRATION_ENGINE.shadow_calibration_pipeline(
                         raw_prob, best_ask, seconds_remaining, ofa_adjustment)
                     if _cf_cal is not None:
@@ -6399,9 +6434,9 @@ class OpportunityScanner:
                                 old_system_prob=_old_system_prob,
                                 fee_adjusted_edge=fee_adjusted_edge,
                                 counterfactual=_cf_json,
-                                shadow_cal_prob=_cf.get("cal_pipeline", {}).get("prob") if _cf else None,
-                                shadow_cal_fee_edge=_cf.get("cal_pipeline", {}).get("fee_edge") if _cf else None,
-                                shadow_cal_temperature=_cf.get("cal_pipeline", {}).get("temperature") if _cf else None,
+                                shadow_cal_prob=_cf.get("old_cal_system", {}).get("prob") if _cf else None,
+                                shadow_cal_fee_edge=_cf.get("old_cal_system", {}).get("fee_edge") if _cf else None,
+                                shadow_cal_temperature=_cf.get("old_cal_system", {}).get("temperature") if _cf else None,
                                 **_shadow_diag)
                     except Exception:
                         pass
@@ -6486,9 +6521,9 @@ class OpportunityScanner:
                                 old_system_prob=_old_system_prob,
                                 fee_adjusted_edge=fee_adjusted_edge,
                                 counterfactual=_cf_json,
-                                shadow_cal_prob=_cf.get("cal_pipeline", {}).get("prob") if _cf else None,
-                                shadow_cal_fee_edge=_cf.get("cal_pipeline", {}).get("fee_edge") if _cf else None,
-                                shadow_cal_temperature=_cf.get("cal_pipeline", {}).get("temperature") if _cf else None,
+                                shadow_cal_prob=_cf.get("old_cal_system", {}).get("prob") if _cf else None,
+                                shadow_cal_fee_edge=_cf.get("old_cal_system", {}).get("fee_edge") if _cf else None,
+                                shadow_cal_temperature=_cf.get("old_cal_system", {}).get("temperature") if _cf else None,
                                 **_shadow_diag)
                     except Exception:
                         pass
@@ -6603,9 +6638,9 @@ class OpportunityScanner:
                                 old_system_prob=_old_system_prob,
                                 fee_adjusted_edge=fee_adjusted_edge,
                                 counterfactual=_cf_json,
-                                shadow_cal_prob=_cf.get("cal_pipeline", {}).get("prob") if _cf else None,
-                                shadow_cal_fee_edge=_cf.get("cal_pipeline", {}).get("fee_edge") if _cf else None,
-                                shadow_cal_temperature=_cf.get("cal_pipeline", {}).get("temperature") if _cf else None,
+                                shadow_cal_prob=_cf.get("old_cal_system", {}).get("prob") if _cf else None,
+                                shadow_cal_fee_edge=_cf.get("old_cal_system", {}).get("fee_edge") if _cf else None,
+                                shadow_cal_temperature=_cf.get("old_cal_system", {}).get("temperature") if _cf else None,
                                 **_shadow_diag)
                     except Exception:
                         pass
@@ -6686,9 +6721,9 @@ class OpportunityScanner:
                     "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                     "kalshi_oft_signals": (ofa_signals or {}).get("signals", {}).get("kalshi_orderbook", {}),
                     "counterfactual_json": _cf_json,
-                    "shadow_cal_prob": _cf.get("cal_pipeline", {}).get("prob") if _cf else None,
-                    "shadow_cal_fee_edge": _cf.get("cal_pipeline", {}).get("fee_edge") if _cf else None,
-                    "shadow_cal_temperature": _cf.get("cal_pipeline", {}).get("temperature") if _cf else None,
+                    "shadow_cal_prob": _cf.get("old_cal_system", {}).get("prob") if _cf else None,
+                    "shadow_cal_fee_edge": _cf.get("old_cal_system", {}).get("fee_edge") if _cf else None,
+                    "shadow_cal_temperature": _cf.get("old_cal_system", {}).get("temperature") if _cf else None,
                     **_shadow_diag,
                     **_shadow_extra,
                 })
