@@ -1001,6 +1001,23 @@ class FirebasePusher:
             logging.debug("Firebase: execution_engine build failed", exc_info=True)
             snap["execution_engine"] = {}
 
+        # ── Shadow calibration pipeline ─────────────────────────────────
+        try:
+            import bot as _bot_mod
+            cal_engine = getattr(self._ml, "calibration", None)
+            if cal_engine:
+                snap["shadow_cal_pipeline"] = {
+                    "shadow_mode": getattr(_bot_mod, "SHADOW_CAL_PIPELINE", False),
+                    "temperature": getattr(cal_engine, '_temperature', None),
+                    "temperature_brier": getattr(cal_engine, '_temperature_brier', None),
+                    "production_brier": cal_engine.rolling_brier_score(),
+                    "production_method": cal_engine.active_method,
+                    "blend_w_shadow": getattr(_bot_mod, 'SHADOW_BLEND_W', None),
+                    "blend_w_production": getattr(_bot_mod, 'MARKET_BLEND_W', None),
+                }
+        except Exception:
+            logging.debug("Firebase: shadow_cal_pipeline build failed", exc_info=True)
+
         # ── Orderbook visibility (dashboard only) ─────────────────────────
         try:
             kf = getattr(self._ml, "kalshi_feed", None)
