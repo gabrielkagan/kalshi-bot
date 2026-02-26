@@ -17,6 +17,7 @@ import threading
 import asyncio
 import random
 import logging
+import inspect
 from collections import deque
 from typing import Optional, Dict, List, Set, Tuple
 
@@ -5732,6 +5733,25 @@ class OpportunityScanner:
         self._eval_opp_seen: Set[Tuple[str, str]] = set()
         self._shadow_cal_last_log: Dict[str, float] = {}
 
+        # ── Startup assertion: _shadow_diag keys must be accepted by DB insert fns ──
+        # Prevents the bug class where a new key in _shadow_diag causes a crash
+        # at every **_shadow_diag splat into insert_rejection/insert_evaluated_opportunity.
+        _SHADOW_DIAG_KEYS = {
+            "egarch_sigma", "egarch_blend_sigma", "egarch_blend_weight",
+            "mz_r_squared", "shadow_tv_blend_rv", "mz_shadow_sigmoid_w",
+            "mz_baseline_qlike", "mz_qlike",
+        }
+        for _fn_name, _fn in [
+            ("insert_rejection", self._state.insert_rejection),
+            ("insert_evaluated_opportunity", self._state.insert_evaluated_opportunity),
+        ]:
+            _accepted = set(inspect.signature(_fn).parameters.keys())
+            _unknown = _SHADOW_DIAG_KEYS - _accepted
+            assert not _unknown, (
+                f"_shadow_diag keys {_unknown} not accepted by {_fn_name}(). "
+                f"Add them to the function signature + SQL or remove from _shadow_diag."
+            )
+
     # ── Public entry point ────────────────────────────────────────────────
 
     def scan(self, active_windows: List[Dict]) -> Optional[Dict]:
@@ -6783,6 +6803,10 @@ class OpportunityScanner:
                                     egarch_blend_sigma=c.get("egarch_blend_sigma"),
                                     egarch_blend_weight=c.get("egarch_blend_weight"),
                                     mz_r_squared=c.get("mz_r_squared"),
+                                    shadow_tv_blend_rv=c.get("shadow_tv_blend_rv"),
+                                    mz_shadow_sigmoid_w=c.get("mz_shadow_sigmoid_w"),
+                                    mz_baseline_qlike=c.get("mz_baseline_qlike"),
+                                    mz_qlike=c.get("mz_qlike"),
                                     counterfactual=c.get("counterfactual_json"),
                                     shadow_cal_prob=c.get("shadow_cal_prob"),
                                     shadow_cal_fee_edge=c.get("shadow_cal_fee_edge"),
@@ -7190,6 +7214,11 @@ class OrderExecutor:
                         egarch_blend_sigma=candidate.get("egarch_blend_sigma"),
                         egarch_blend_weight=candidate.get("egarch_blend_weight"),
                         mz_r_squared=candidate.get("mz_r_squared"),
+                        shadow_tv_blend_rv=candidate.get("shadow_tv_blend_rv"),
+                        mz_shadow_sigmoid_w=candidate.get("mz_shadow_sigmoid_w"),
+                        mz_baseline_qlike=candidate.get("mz_baseline_qlike"),
+                        mz_qlike=candidate.get("mz_qlike"),
+                        counterfactual=candidate.get("counterfactual_json"),
                         shadow_cal_prob=candidate.get("shadow_cal_prob"),
                         shadow_cal_fee_edge=candidate.get("shadow_cal_fee_edge"),
                         shadow_cal_temperature=candidate.get("shadow_cal_temperature"))
