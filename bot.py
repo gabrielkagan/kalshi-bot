@@ -354,6 +354,7 @@ DIRECT_TAKER_THRESHOLD = 60.0     # seconds_to_close below this → skip maker, 
 ESCALATION_WAIT_LONG = 15.0       # maker wait when >=180s to close
 ESCALATION_WAIT_MEDIUM = 7.0      # maker wait when 120-180s to close (86% fills within 7s)
 ESCALATION_WAIT_SHORT = 5.0       # maker wait when 60-120s to close
+EARLY_ESCALATION_MIN_MOVE = 2      # ask must move ≥2¢ above maker price to trigger
 
 # ─── Post-only rejection → taker escalation ────────────────────────────
 POST_ONLY_MAX_SAME_PRICE = 2          # Tier 1: max attempts at same maker price before degrading
@@ -7177,6 +7178,27 @@ class OrderExecutor:
 
         # 3. Escalation: maker waited long enough? (skip if already escalated)
         if not order.get("escalated"):
+            # ── Early escalation: ask confirms thesis ──────────────
+            current_ask = self._get_addon_best_ask(order["ticker"])
+            if current_ask is not None:
+                self._ask_history.append((now, current_ask))
+                ask_move = current_ask - order["price_cents"]
+                if ask_move >= EARLY_ESCALATION_MIN_MOVE:
+                    candidate = order["candidate"]
+                    cal_prob = candidate["calibrated_prob"]
+                    count = order["count"]
+                    taker_fee = calculate_taker_fee(count, current_ask)
+                    net_edge = cal_prob - (current_ask / 100.0) - (taker_fee / (count * 100.0))
+                    if net_edge >= MIN_EDGE_PCT / 100.0:
+                        logging.info(
+                            "early_escalation_TRIGGER: %s ask=%d¢ (maker=%d¢ +%d¢) "
+                            "net_edge=%.4f elapsed=%.1fs",
+                            order["ticker"], current_ask, order["price_cents"],
+                            ask_move, net_edge, elapsed)
+                        return self._escalate_to_taker(order, remaining,
+                                                       reason="ask_confirmed")
+
+            # ── Standard time-based escalation (existing code) ─────
             escalation_wait = self._escalation_wait(remaining)
             # Queue-aware: escalate earlier if deep in queue and time is short
             queue_pos = order.get("queue_position")
