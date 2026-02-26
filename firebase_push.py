@@ -929,6 +929,18 @@ class FirebasePusher:
                 "taker_fill_rate": round(po_fill / po_esc, 3) if po_esc > 0 else None,
             }
 
+            # Entry path distribution
+            entry_path_dist = {}
+            ml = self._ml
+            entry_path_dist["maker"] = getattr(ml, "_session_maker_fills", 0)
+            entry_path_dist["direct_taker"] = getattr(ex, "_session_direct_taker_fills", 0)
+            entry_path_dist["post_only_taker"] = getattr(ex, "_session_post_only_taker_fills", 0)
+            esc_ioc = max(0, getattr(ex, "_session_ioc_fills", 0)
+                          - entry_path_dist["direct_taker"]
+                          - entry_path_dist["post_only_taker"])
+            entry_path_dist["escalation_ioc"] = esc_ioc
+            exec_eng["entry_path_distribution"] = entry_path_dist
+
             # Derived rates
             dt_att = exec_eng.get("session_direct_taker_attempts", 0)
             exec_eng["direct_taker_fill_rate"] = round(
