@@ -1149,6 +1149,7 @@ class StateManager:
             ("mz_shadow_sigmoid_w", "REAL"),
             ("mz_baseline_qlike", "REAL"),
             ("mz_qlike", "REAL"),
+            ("counterfactual", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1168,6 +1169,7 @@ class StateManager:
             ("mz_shadow_sigmoid_w", "REAL"),
             ("mz_baseline_qlike", "REAL"),
             ("mz_qlike", "REAL"),
+            ("counterfactual", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE rejected_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1437,7 +1439,8 @@ class StateManager:
                          shadow_tv_blend_rv: Optional[float] = None,
                          mz_shadow_sigmoid_w: Optional[float] = None,
                          mz_baseline_qlike: Optional[float] = None,
-                         mz_qlike: Optional[float] = None):
+                         mz_qlike: Optional[float] = None,
+                         counterfactual: Optional[str] = None):
         """Insert a rejected opportunity. INSERT OR IGNORE deduplicates by ticker."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
@@ -1446,13 +1449,15 @@ class StateManager:
                  z_score, spot_price, threshold, volatility, market_price,
                  seconds_to_close, calibrated_prob, status,
                  egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
-                 shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
+                 counterfactual)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, event_ticker, asset, rejection_reason, now,
               z_score, spot_price, threshold, volatility, market_price,
               seconds_to_close, calibrated_prob, "pending",
               egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
-              shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike))
+              shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
+              counterfactual))
         self.conn.commit()
 
     def get_unsettled_rejections(self) -> List[Dict]:
@@ -1506,7 +1511,8 @@ class StateManager:
                                      shadow_tv_blend_rv: Optional[float] = None,
                                      mz_shadow_sigmoid_w: Optional[float] = None,
                                      mz_baseline_qlike: Optional[float] = None,
-                                     mz_qlike: Optional[float] = None):
+                                     mz_qlike: Optional[float] = None,
+                                     counterfactual: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
@@ -1523,8 +1529,9 @@ class StateManager:
                      raw_prob, calibration_method, old_system_prob,
                      fee_adjusted_edge,
                      egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
-                     shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
+                     counterfactual)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1536,7 +1543,8 @@ class StateManager:
                   raw_prob, calibration_method, old_system_prob,
                   fee_adjusted_edge,
                   egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
-                  shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike))
+                  shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
+                  counterfactual))
             self.conn.commit()
         except Exception as e:
             logging.debug(f"insert_evaluated_opportunity failed: {e}")
@@ -3644,6 +3652,23 @@ class VolatilityEngine:
         except Exception:
             logging.warning("EGARCH blend %s failed, using rv_blended", asset, exc_info=True)
 
+        # Sigmoid QLIKE counterfactual: what blended_rv would be using sigmoid weight
+        mz_sigmoid_improvement = None
+        mz_sigmoid_blend_rv = None
+        egarch_ratio_clamped = False
+        if egarch_sigma is not None and egarch_sigma > 0 and rv_blended > 0:
+            ratio_check = egarch_sigma / rv_blended
+            egarch_ratio_clamped = not (1.0 / EGARCH_RV_RATIO_CLAMP <= ratio_check <= EGARCH_RV_RATIO_CLAMP)
+        if self._mz is not None and egarch_sigma is not None and egarch_sigma > 0 and rv_blended > 0:
+            sig_w = self._mz._shadow_sigmoid_w.get(asset)
+            if sig_w is not None and sig_w > 0:
+                sig_blend_var = sig_w * (egarch_sigma ** 2) + (1.0 - sig_w) * (rv_blended ** 2)
+                mz_sigmoid_blend_rv = math.sqrt(sig_blend_var)
+            bl_q = self._mz._baseline_qlike.get(asset)
+            eg_q = self._mz._qlike.get(asset)
+            if bl_q is not None and eg_q is not None and bl_q > 1e-10:
+                mz_sigmoid_improvement = round(max(0.0, (bl_q - eg_q) / bl_q), 6)
+
         # VRP diagnostic (variance risk premium)
         vrp = None
         if dvol_sq is not None and rk_5min > 0:
@@ -3798,6 +3823,10 @@ class VolatilityEngine:
             # Shadow time-varying RK weights
             "shadow_tv_blend_rv": shadow_tv_blend_rv,
             "shadow_tv_weights": shadow_tv_weights,
+            # Sigmoid QLIKE counterfactual
+            "mz_sigmoid_improvement": mz_sigmoid_improvement,
+            "mz_sigmoid_blend_rv": mz_sigmoid_blend_rv,
+            "egarch_ratio_clamped": egarch_ratio_clamped,
         }
 
 
@@ -4662,6 +4691,24 @@ class ProbabilityEngine:
         result["tradeable"] = True
         result["reason"] = "ok"
         return result
+
+    @staticmethod
+    def counterfactual_prob(spot: float, threshold: float, seconds_remaining: float,
+                            alt_blended_rv: float, asset: Optional[str] = None) -> Optional[float]:
+        """Compute calibrated_prob for a counterfactual blended_rv. Lightweight — no logging."""
+        if spot <= 0 or seconds_remaining <= 0 or alt_blended_rv <= 0:
+            return None
+        sigma_move = spot * alt_blended_rv * math.sqrt(seconds_remaining / 5.0)
+        if sigma_move <= 0:
+            return None
+        z = (threshold - spot) / sigma_move
+        if abs(z) > Z_SCORE_MAX:
+            return None
+        raw = ProbabilityEngine._cdf_complement(z, asset)
+        cap = ProbabilityEngine._dynamic_cap(seconds_remaining)
+        if _CALIBRATION_ENGINE is not None:
+            return round(_CALIBRATION_ENGINE.calibrate(raw, cap=cap), 6)
+        return round(ProbabilityEngine._calibrate(raw, cap=cap), 6)
 
     @staticmethod
     def _dynamic_cap(seconds_remaining: float) -> float:
@@ -5639,9 +5686,10 @@ class OpportunityScanner:
 
             blended_rv = vol_est["blended_rv"]
 
-            # Extract EGARCH diagnostics for per-evaluation logging
+            # Extract shadow diagnostics for per-evaluation logging
+            # _shadow_diag: fields that match insert_evaluated_opportunity/insert_rejection params
             _ebs_var = vol_est.get("egarch_blend_var")
-            _egarch_diag = {
+            _shadow_diag = {
                 "egarch_sigma": vol_est.get("egarch_sigma"),
                 "egarch_blend_sigma": math.sqrt(_ebs_var) if _ebs_var and _ebs_var > 0 else None,
                 "egarch_blend_weight": vol_est.get("egarch_blend_weight"),
@@ -5651,12 +5699,24 @@ class OpportunityScanner:
                 "mz_baseline_qlike": vol_est.get("mz_baseline_qlike"),
                 "mz_qlike": vol_est.get("mz_qlike"),
             }
+            # _shadow_extra_base: additional fields for log_opportunity (not in DB insert params)
+            # Copied per-market to avoid OFT field bleed between tickers
+            _shadow_extra_base = {
+                "shadow_tv_weights": vol_est.get("shadow_tv_weights"),
+                "mz_sigmoid_improvement": vol_est.get("mz_sigmoid_improvement"),
+                "mz_sigmoid_blend_rv": vol_est.get("mz_sigmoid_blend_rv"),
+                "egarch_n_updates": vol_est.get("egarch_n_updates"),
+                "egarch_ratio_clamped": vol_est.get("egarch_ratio_clamped"),
+            }
 
             for mkt in window["markets"]:
                 ticker = mkt.get("ticker", "")
                 threshold = self._parse_threshold(mkt)
                 if threshold is None:
                     continue
+
+                # Per-market copy of shadow extras (OFT fields added per-ticker below)
+                _shadow_extra = dict(_shadow_extra_base)
 
                 scan_stats[asset]["evaluated"] += 1
                 self._session_total_scanned += 1
@@ -5687,13 +5747,14 @@ class OpportunityScanner:
                             "market_price": rej_ask,
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": None,
-                            **_egarch_diag,
+                            **_shadow_diag,
+                            **_shadow_extra,
                         }
                         self._state.insert_rejection(
                             ticker, window["event_ticker"], asset, reason,
                             prob_result.get("z_score"), spot, threshold,
                             blended_rv, rej_ask, seconds_remaining, None,
-                            **_egarch_diag)
+                            **_shadow_diag)
                         self._logger.log_rejection(rej_data)
                         logging.info(
                             f"Rejected opportunity: {ticker} — {reason}")
@@ -5716,7 +5777,8 @@ class OpportunityScanner:
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": round(cal_prob, 6),
                             "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
-                            **_egarch_diag,
+                            **_shadow_diag,
+                            **_shadow_extra,
                         })
                     except Exception:
                         pass
@@ -5758,7 +5820,8 @@ class OpportunityScanner:
                                 "calibrated_prob": round(cal_prob, 6),
                                 "mkt_yes_ask": mkt_yes_ask,
                                 "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
-                                **_egarch_diag,
+                                **_shadow_diag,
+                                **_shadow_extra,
                             })
                         except Exception:
                             pass
@@ -5803,7 +5866,8 @@ class OpportunityScanner:
                             "calibrated_prob": round(cal_prob, 6),
                             "mkt_yes_ask": mkt.get("yes_ask"),
                             "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
-                            **_egarch_diag,
+                            **_shadow_diag,
+                            **_shadow_extra,
                         })
                     except Exception:
                         pass
@@ -5879,7 +5943,8 @@ class OpportunityScanner:
                             "total_ob_depth": total_depth,
                             "convergence_velocity": self._scanner_convergence_velocity(ticker),
                             "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
-                            **_egarch_diag,
+                            **_shadow_diag,
+                            **_shadow_extra,
                         })
                         _dedup_key = (ticker, "price_out_of_range")
                         if _dedup_key not in self._eval_opp_seen:
@@ -5898,7 +5963,7 @@ class OpportunityScanner:
                                 best_ask_source=best_ask_source,
                                 raw_prob=raw_prob_pre,
                                 calibration_method=calibration_method_pre,
-                                **_egarch_diag)
+                                **_shadow_diag)
                     except Exception:
                         pass
                     continue
@@ -5924,14 +5989,15 @@ class OpportunityScanner:
                             "market_price": best_ask,
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": prob_with_market.get("calibrated_prob"),
-                            **_egarch_diag,
+                            **_shadow_diag,
+                            **_shadow_extra,
                         }
                         self._state.insert_rejection(
                             ticker, window["event_ticker"], asset, reason,
                             prob_with_market.get("z_score"), spot, threshold,
                             blended_rv, best_ask, seconds_remaining,
                             prob_with_market.get("calibrated_prob"),
-                            **_egarch_diag)
+                            **_shadow_diag)
                         self._logger.log_rejection(rej_data)
                         logging.info(
                             f"Rejected opportunity: {ticker} — {reason}")
@@ -5979,6 +6045,90 @@ class OpportunityScanner:
                 est_fee_1c = calculate_taker_fee(1, best_ask)
                 fee_adjusted_edge = edge - est_fee_1c / 100.0
 
+                # ── Augment _shadow_diag with Kalshi OFT fields ──
+                if ofa_signals:
+                    _shadow_extra["oft_imbalance_ratio"] = ofa_signals.get("imbalance_ratio")
+                    _shadow_extra["oft_imbalance_level"] = ofa_signals.get("imbalance_level")
+                    _shadow_extra["oft_prob_adjustment"] = ofa_signals.get("prob_adjustment")
+                    _shadow_extra["oft_confidence"] = ofa_signals.get("confidence")
+                    _shadow_extra["oft_n_snapshots"] = ofa_signals.get("n_snapshots")
+                    _shadow_extra["oft_depth_velocity"] = ofa_signals.get("depth_velocity")
+                    _shadow_extra["oft_ask_velocity"] = ofa_signals.get("ask_velocity")
+
+                # ── Counterfactual analysis: what would each shadow feature produce? ──
+                _cf = {}
+
+                # CF1: EGARCH Blend as primary
+                _cf_ebs = _shadow_diag.get("egarch_blend_sigma")
+                if _cf_ebs and _cf_ebs > 0 and EGARCH_BLEND_SHADOW_MODE:
+                    _cf_prob = ProbabilityEngine.counterfactual_prob(
+                        spot, threshold, seconds_remaining, _cf_ebs, asset)
+                    if _cf_prob is not None:
+                        _cf_edge = _cf_prob - best_ask / 100.0
+                        _cf_fee_edge = _cf_edge - est_fee_1c / 100.0
+                        _cf["egarch_blend"] = {
+                            "prob": _cf_prob, "edge": round(_cf_edge, 6),
+                            "fee_edge": round(_cf_fee_edge, 6),
+                            "would_trade": _cf_fee_edge >= MIN_EDGE_PCT / 100.0,
+                        }
+
+                # CF2: TV-RK as primary
+                _cf_tv = _shadow_diag.get("shadow_tv_blend_rv")
+                if _cf_tv and _cf_tv > 0:
+                    _cf_prob = ProbabilityEngine.counterfactual_prob(
+                        spot, threshold, seconds_remaining, _cf_tv, asset)
+                    if _cf_prob is not None:
+                        _cf_edge = _cf_prob - best_ask / 100.0
+                        _cf_fee_edge = _cf_edge - est_fee_1c / 100.0
+                        _cf["tv_rk"] = {
+                            "prob": _cf_prob, "edge": round(_cf_edge, 6),
+                            "fee_edge": round(_cf_fee_edge, 6),
+                            "would_trade": _cf_fee_edge >= MIN_EDGE_PCT / 100.0,
+                        }
+
+                # CF3: Sigmoid QLIKE blend as primary
+                _cf_sig = _shadow_extra.get("mz_sigmoid_blend_rv")
+                if _cf_sig and _cf_sig > 0:
+                    _cf_prob = ProbabilityEngine.counterfactual_prob(
+                        spot, threshold, seconds_remaining, _cf_sig, asset)
+                    if _cf_prob is not None:
+                        _cf_edge = _cf_prob - best_ask / 100.0
+                        _cf_fee_edge = _cf_edge - est_fee_1c / 100.0
+                        _cf["sigmoid_qlike"] = {
+                            "prob": _cf_prob, "edge": round(_cf_edge, 6),
+                            "fee_edge": round(_cf_fee_edge, 6),
+                            "would_trade": _cf_fee_edge >= MIN_EDGE_PCT / 100.0,
+                        }
+
+                # CF4: Kalshi OFT adjusted prob
+                if ofa_signals and KALSHI_OFT_SHADOW_MODE:
+                    _koft_adj = ofa_signals.get("prob_adjustment", 0)
+                    if _koft_adj != 0:
+                        _cf["kalshi_oft"] = {
+                            "prob_adjustment": round(_koft_adj, 6),
+                            "adj_prob": round(final_prob + _koft_adj, 6),
+                            "imbalance_ratio": ofa_signals.get("imbalance_ratio"),
+                            "imbalance_level": ofa_signals.get("imbalance_level"),
+                            "depth_velocity": ofa_signals.get("depth_velocity"),
+                            "ask_velocity": ofa_signals.get("ask_velocity"),
+                            "confidence": ofa_signals.get("confidence"),
+                            "n_snapshots": ofa_signals.get("n_snapshots"),
+                        }
+
+                _cf_json = json.dumps(_cf) if _cf else None
+
+                # Log divergences: cases where a shadow feature disagrees with production
+                _live_would_trade = (fee_adjusted_edge >= MIN_EDGE_PCT / 100.0)
+                for _cf_name, _cf_data in _cf.items():
+                    _shadow_would = _cf_data.get("would_trade")
+                    if _shadow_would is not None and _shadow_would != _live_would_trade:
+                        logging.info(
+                            "COUNTERFACTUAL DIVERGENCE %s %s: live=%s shadow=%s "
+                            "live_edge=%.4f shadow_edge=%.4f",
+                            ticker, _cf_name, _live_would_trade, _shadow_would,
+                            fee_adjusted_edge, _cf_data.get("fee_edge", 0),
+                        )
+
                 # Filter: fee-adjusted edge must meet minimum
                 if fee_adjusted_edge < MIN_EDGE_PCT / 100.0:
                     scan_stats[asset]["insufficient_edge"] += 1
@@ -6012,7 +6162,9 @@ class OpportunityScanner:
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                             "old_system_prob": round(_old_system_prob, 6),
                             "kalshi_oft": (ofa_signals or {}).get("signals", {}).get("kalshi_orderbook", {}),
-                            **_egarch_diag,
+                            "counterfactual": _cf,
+                            **_shadow_diag,
+                            **_shadow_extra,
                         })
                         _dedup_key = (ticker, "insufficient_edge")
                         if _dedup_key not in self._eval_opp_seen:
@@ -6039,7 +6191,8 @@ class OpportunityScanner:
                                 calibration_method=calibration_method,
                                 old_system_prob=_old_system_prob,
                                 fee_adjusted_edge=fee_adjusted_edge,
-                                **_egarch_diag)
+                                counterfactual=_cf_json,
+                                **_shadow_diag)
                     except Exception:
                         pass
                     continue
@@ -6090,7 +6243,9 @@ class OpportunityScanner:
                             "ofa_adjustment": round(ofa_adjustment, 6),
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                             "old_system_prob": round(_old_system_prob, 6),
-                            **_egarch_diag,
+                            "counterfactual": _cf,
+                            **_shadow_diag,
+                            **_shadow_extra,
                         })
                         _dedup_key = (ticker, "zero_sizing")
                         if _dedup_key not in self._eval_opp_seen:
@@ -6120,7 +6275,8 @@ class OpportunityScanner:
                                 calibration_method=calibration_method,
                                 old_system_prob=_old_system_prob,
                                 fee_adjusted_edge=fee_adjusted_edge,
-                                **_egarch_diag)
+                                counterfactual=_cf_json,
+                                **_shadow_diag)
                     except Exception:
                         pass
                     continue
@@ -6200,7 +6356,9 @@ class OpportunityScanner:
                             "composite_score": strategy_scores.get("composite"),
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                             "old_system_prob": round(_old_system_prob, 6),
-                            **_egarch_diag,
+                            "counterfactual": _cf,
+                            **_shadow_diag,
+                            **_shadow_extra,
                         })
                         _dedup_key = (ticker, "strategy_wait")
                         if _dedup_key not in self._eval_opp_seen:
@@ -6231,7 +6389,8 @@ class OpportunityScanner:
                                 calibration_method=calibration_method,
                                 old_system_prob=_old_system_prob,
                                 fee_adjusted_edge=fee_adjusted_edge,
-                                **_egarch_diag)
+                                counterfactual=_cf_json,
+                                **_shadow_diag)
                     except Exception:
                         pass
                     continue
@@ -6270,7 +6429,9 @@ class OpportunityScanner:
                         "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                         "old_system_prob": round(_old_system_prob, 6),
                         "kalshi_oft": (ofa_signals or {}).get("signals", {}).get("kalshi_orderbook", {}),
-                        **_egarch_diag,
+                        "counterfactual": _cf,
+                        **_shadow_diag,
+                        **_shadow_extra,
                     })
                 except Exception:
                     pass
@@ -6308,7 +6469,9 @@ class OpportunityScanner:
                     "old_system_prob": round(_old_system_prob, 6),
                     "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                     "kalshi_oft_signals": (ofa_signals or {}).get("signals", {}).get("kalshi_orderbook", {}),
-                    **_egarch_diag,
+                    "counterfactual_json": _cf_json,
+                    **_shadow_diag,
+                    **_shadow_extra,
                 })
 
                 # Respect per-tick orderbook fetch cap
@@ -6377,6 +6540,13 @@ class OpportunityScanner:
                                 "egarch_blend_sigma": c.get("egarch_blend_sigma"),
                                 "egarch_blend_weight": c.get("egarch_blend_weight"),
                                 "mz_r_squared": c.get("mz_r_squared"),
+                                "shadow_tv_blend_rv": c.get("shadow_tv_blend_rv"),
+                                "mz_sigmoid_blend_rv": c.get("mz_sigmoid_blend_rv"),
+                                "mz_sigmoid_improvement": c.get("mz_sigmoid_improvement"),
+                                "shadow_tv_weights": c.get("shadow_tv_weights"),
+                                "egarch_n_updates": c.get("egarch_n_updates"),
+                                "egarch_ratio_clamped": c.get("egarch_ratio_clamped"),
+                                "counterfactual": c.get("counterfactual_json"),
                             })
                             _dedup_key = (c["ticker"], "single_asset_selection")
                             if _dedup_key not in self._eval_opp_seen:
@@ -6413,7 +6583,8 @@ class OpportunityScanner:
                                     egarch_sigma=c.get("egarch_sigma"),
                                     egarch_blend_sigma=c.get("egarch_blend_sigma"),
                                     egarch_blend_weight=c.get("egarch_blend_weight"),
-                                    mz_r_squared=c.get("mz_r_squared"))
+                                    mz_r_squared=c.get("mz_r_squared"),
+                                    counterfactual=c.get("counterfactual_json"))
                         except Exception:
                             pass
         else:
