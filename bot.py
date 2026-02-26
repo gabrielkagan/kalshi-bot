@@ -1402,7 +1402,8 @@ class StateManager:
         revenue = dollars_str_to_cents(rev_d) if rev_d else (settlement.get("revenue") or 0)
         total_cost = pos["total_cost_cents"]
         pnl = revenue - total_cost
-        fee = calculate_taker_fee(pos["count"], pos["avg_price_cents"])
+        is_taker = bool(pos.get("is_taker"))
+        fee = calculate_fee(pos["count"], pos["avg_price_cents"], is_taker=is_taker)
 
         self.conn.execute("""
             INSERT OR REPLACE INTO settled_trades
@@ -7922,6 +7923,7 @@ class SettlementTracker:
         # Cross-check: detect count mismatch between internal tracking
         # and Kalshi settlement.  For YES wins, revenue = real_count * 100.
         recorded_count = pos["count"]
+        total_cost = pos["total_cost_cents"]
         if revenue > 0 and outcome == "WIN" and side == "yes":
             implied_count = revenue // 100
             if implied_count != recorded_count:
@@ -7930,16 +7932,17 @@ class SettlementTracker:
                     f"internal={recorded_count} kalshi={implied_count} "
                     f"revenue={revenue}¢ — correcting position before settlement")
                 recorded_count = implied_count
-                corrected_cost = recorded_count * pos["avg_price_cents"]
+                total_cost = recorded_count * pos["avg_price_cents"]
                 self._state.conn.execute(
                     "UPDATE positions SET count=?, total_cost_cents=? "
                     "WHERE ticker=?",
-                    (recorded_count, corrected_cost, ticker))
+                    (recorded_count, total_cost, ticker))
                 self._state.conn.commit()
 
-        # P&L from revenue (API is truth); use corrected count if mismatched
-        total_cost = recorded_count * pos["avg_price_cents"]
-        fee = calculate_taker_fee(recorded_count, pos["avg_price_cents"])
+        # P&L: use total_cost_cents from positions (precise) for normal case,
+        # recomputed cost only when count was corrected above.
+        is_taker = bool(pos.get("is_taker"))
+        fee = calculate_fee(recorded_count, pos["avg_price_cents"], is_taker=is_taker)
         pnl = revenue - total_cost
 
         # Record in SQLite via existing StateManager method
