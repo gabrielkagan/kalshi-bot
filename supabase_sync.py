@@ -264,7 +264,7 @@ class SupabaseSyncer:
 
             row = {
                 "id": 1,
-                "data": json.dumps(snapshot, default=str),
+                "data": self._sanitize_for_json(snapshot),
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
             self._post("dashboard_state", [row])
@@ -506,3 +506,19 @@ class SupabaseSyncer:
         if isinstance(val, bytes):
             return val.decode("utf-8", errors="replace")
         return val
+
+    @staticmethod
+    def _sanitize_for_json(obj):
+        """Recursively convert non-JSON-serializable types to strings.
+
+        Keeps the structure as a dict/list so PostgREST's json= parameter
+        handles final serialization (avoids double-encoding into a JSONB string literal).
+        """
+        if isinstance(obj, dict):
+            return {k: SupabaseSyncer._sanitize_for_json(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [SupabaseSyncer._sanitize_for_json(v) for v in obj]
+        if isinstance(obj, (str, int, float, bool)) or obj is None:
+            return obj
+        # datetime, bytes, Decimal, etc. → string
+        return str(obj)

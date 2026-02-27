@@ -284,6 +284,9 @@ CREATE TABLE IF NOT EXISTS dashboard_state (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Realtime requires FULL replica identity so TOASTed JSONB columns are included
+ALTER TABLE dashboard_state REPLICA IDENTITY FULL;
+
 -- Seed the single row
 INSERT INTO dashboard_state (id, data) VALUES (1, '{}')
 ON CONFLICT (id) DO NOTHING;
