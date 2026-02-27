@@ -20,21 +20,24 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 ## Current Bot State
 
 - **OBSERVATION_MODE = False** (line 30) — LIVE TRADING with real money
-- **Balance:** ~$97
-- **Live performance:** 24 settled trades, 23W/1L (95.8% WR)
+- **Balance:** ~$54
+- **Live performance:** 96 settled trades, 89W/7L (92.7% WR)
 
 ## Key Config Values (bot.py)
 
 | Config | Value | Line | Notes |
 |--------|-------|------|-------|
-| OBSERVATION_MODE | False | 30 | LIVE trading |
-| MIN_ENTRY_PRICE | 87 | 38 | Cents; two losses at 86c, raised to 87c |
-| MAX_ENTRY_PRICE | 99 | 39 | Cents |
-| MIN_EDGE_PCT | 0.9 | 332 | 0.9 percentage point minimum edge |
-| MARKET_BLEND_W | 0.0 | 273 | No market blend (was 0.50; promoted from shadow cal pipeline) |
-| MAX_SECONDS_BEFORE_CLOSE | 270 | 42 | Start scanning 4.5 min before close (data: 240-270s 8W/0L) |
-| ONE_ASSET_PER_WINDOW | False | 43 | Can trade multiple assets per window |
-| SIZING_TIERS | [(0.04,0.50),(0.02,0.35),(0.015,0.20),(0.01,0.10)] | 339 | Fee-adjusted edge tiered sizing |
+| OBSERVATION_MODE | False | 31 | LIVE trading |
+| MIN_ENTRY_PRICE | 87 | 39 | Cents; two losses at 86c, raised to 87c |
+| MAX_ENTRY_PRICE | 99 | 40 | Cents |
+| MIN_EDGE_PCT | 0.9 | 331 | 0.9 percentage point minimum edge |
+| MARKET_BLEND_W | 0.50 | 273 | 50% market blend (reverted: no-blend was +1.86pp overconfident) |
+| MAX_RISK_PER_TRADE | 0.25 | 41 | Max 25% bankroll per trade (was 50%; reduced after loss analysis) |
+| MAX_SECONDS_BEFORE_CLOSE | 270 | 43 | Start scanning 4.5 min before close (data: 240-270s 8W/0L) |
+| ONE_ASSET_PER_WINDOW | False | 44 | Can trade multiple assets per window |
+| SIZING_TIERS | [(0.04,0.25),(0.02,0.20),(0.015,0.15),(0.01,0.10),(0.009,0.07)] | 339 | Fee-adjusted edge tiered sizing (reduced: was 50/35/20) |
+| DRAWDOWN_HALF_THRESHOLD | 0.92 | 346 | Halve size below 92% of starting balance (was 90%) |
+| DRAWDOWN_QUARTER_THRESHOLD | 0.85 | 347 | Quarter size below 85% (was 80%) |
 
 ## Shadow Mode Features
 
@@ -44,6 +47,7 @@ Features that compute and log but do NOT affect live probability/trading:
 |---------|----------|--------|
 | Kalshi Order Flow | KALSHI_OFT_SHADOW_MODE = True | Collecting data, has diagnostic logging |
 | Sigmoid QLIKE mapping | MZ_SIGMOID_SHADOW_MODE = True | Alternative EGARCH weight via QLIKE ratio |
+| Cal pipeline (no-blend) | SHADOW_CAL_PIPELINE = True | Reverted: no-blend system monitors in shadow (was promoted, caused +1.86pp overconfidence) |
 
 Promoted features (shadow off, driving live behavior):
 - JUMP_ADAPTIVE (JUMP_ADAPTIVE_SHADOW_MODE = False)
@@ -51,7 +55,7 @@ Promoted features (shadow off, driving live behavior):
 - EGARCH core vol (EGARCH_SHADOW_MODE = False)
 - EGARCH blend (EGARCH_BLEND_SHADOW_MODE = False)
 - TV RK weights (RK_TV_SHADOW_MODE = False)
-- Cal pipeline (SHADOW_CAL_PIPELINE = False, MARKET_BLEND_W = 0.0) — temperature competes in Brier tournament, no market blend
+- Temperature calibration competes in hourly Brier tournament (with 50% market blend applied)
 
 ## Order Execution Engine
 
@@ -118,6 +122,6 @@ How the scanner filters opportunities (typical distribution):
 ## Trading Rules
 
 - **Assets:** BTC, ETH, SOL, XRP — can trade multiple per 15-minute window
-- **Entry prices:** 86–99c (never below 86c)
-- **Minimum edge:** 1% (after fees)
-- **Position sizing:** Tiered by edge — 50% risk at 5%+ edge, 35% at 3%+, 20% at 1.5%+, 10% at 1%+
+- **Entry prices:** 87–99c (never below 87c)
+- **Minimum edge:** 0.9% (after fees)
+- **Position sizing:** Tiered by edge — 25% risk at 4%+ edge, 20% at 2%+, 15% at 1.5%+, 10% at 1%+, 7% at 0.9%+
