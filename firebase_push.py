@@ -870,9 +870,12 @@ class FirebasePusher:
                     "shadow_mode": getattr(_bot_mod, "KALSHI_OFT_SHADOW_MODE", True),
                     "tracked_tickers": koft.get_tracked_count(),
                 }
-                # Per-ticker signals
+                # Per-ticker signals (skip hourly — too many strikes)
+                _hourly_pfx = ("KXBTCD", "KXETHD", "KXSOLD", "KXXRPD")
                 per_ticker = {}
                 for ticker in list(koft._snapshots.keys()):
+                    if ticker.startswith(_hourly_pfx):
+                        continue
                     try:
                         sigs = koft.get_signals(ticker)
                         if sigs:
