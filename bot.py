@@ -38,7 +38,7 @@ SERIES_TICKERS = {
 }
 MIN_ENTRY_PRICE = 87              # cents (data: two losses at 86c; 87c+ is cleaner)
 MAX_ENTRY_PRICE = 99              # cents
-MAX_RISK_PER_TRADE = 0.50         # max 50% of bankroll at risk per trade (scales with balance)
+MAX_RISK_PER_TRADE = 0.25         # max 25% of bankroll at risk per trade (was 50%; reduced after loss analysis)
 MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 270    # start scanning 4.5 min before close (data: 240-270s is 8W/0L, 100% WR)
 ONE_ASSET_PER_WINDOW = False
@@ -270,11 +270,11 @@ DYNAMIC_CAP_SCHEDULE = [
     (0,   0.995),  # < 1 min: near-certain allowed
 ]
 
-MARKET_BLEND_W = 0.0              # PROMOTED: no market blend (was 0.50)
+MARKET_BLEND_W = 0.50             # REVERTED: data shows +1.86pp overconfidence without blend
 ENDGAME_BLEND_PRICE = 96         # don't blend at or above this price (preserve endgame edge)
 
 # ─── Shadow Calibration Pipeline ──────────────────────────────────────────────
-SHADOW_CAL_PIPELINE = False  # PROMOTED: temperature scaling + no blend is now production
+SHADOW_CAL_PIPELINE = True   # REVERTED: no-blend system runs in shadow for monitoring
 SHADOW_BLEND_W = 0.50        # Counterfactual: old system used 50% market blend
 SHADOW_TEMP_SCALE = True     # Use temperature scaling instead of Beta Cal
 
@@ -337,14 +337,14 @@ BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
 # Edge-based tiered sizing: higher fee-adjusted edge → more aggressive
 # Thresholds are fee-adjusted (gross edge minus ~1¢ taker fee per contract)
 SIZING_TIERS = [                  # (min_fee_adj_edge, risk_fraction)
-    (0.04, 0.50),                 # fee-adj edge ≥ 4.0% → risk 50% (≈ gross ≥ 5%)
-    (0.02, 0.35),                 # fee-adj edge ≥ 2.0% → risk 35% (≈ gross ≥ 3%)
-    (0.015, 0.20),                # fee-adj edge ≥ 1.5% → risk 20% (≈ gross ≥ 2.5%)
+    (0.04, 0.25),                 # fee-adj edge ≥ 4.0% → risk 25% (was 50%; reduced after loss analysis)
+    (0.02, 0.20),                 # fee-adj edge ≥ 2.0% → risk 20% (was 35%)
+    (0.015, 0.15),                # fee-adj edge ≥ 1.5% → risk 15% (was 20%)
     (0.01, 0.10),                 # fee-adj edge ≥ 1.0% → risk 10%
     (0.009, 0.07),                # fee-adj edge ≥ 0.9% → risk 7% (conservative new tier)
 ]
-DRAWDOWN_HALF_THRESHOLD = 0.90    # below 90% of starting balance → halve size
-DRAWDOWN_QUARTER_THRESHOLD = 0.80 # below 80% → quarter size
+DRAWDOWN_HALF_THRESHOLD = 0.92    # below 92% of starting balance → halve size (was 90%)
+DRAWDOWN_QUARTER_THRESHOLD = 0.85 # below 85% → quarter size (was 80%)
 
 # ─── Order Execution ──────────────────────────────────────────────────────
 MAKER_PRICE_OFFSET = 1            # cents below fair value for maker orders
@@ -5600,15 +5600,15 @@ class PositionSizer:
     """Edge-tiered position sizing with drawdown scaling.
 
     Sizing tiers (from SIZING_TIERS, fee-adjusted edge):
-        fee-adj edge ≥ 4.0% → risk 50% of bankroll
-        fee-adj edge ≥ 2.0% → risk 35% of bankroll
-        fee-adj edge ≥ 1.5% → risk 20% of bankroll
+        fee-adj edge ≥ 4.0% → risk 25% of bankroll
+        fee-adj edge ≥ 2.0% → risk 20% of bankroll
+        fee-adj edge ≥ 1.5% → risk 15% of bankroll
         fee-adj edge ≥ 1.0% → risk 10% of bankroll
 
     Contracts = floor(bankroll × risk_fraction / price).
 
     Hard cap: MAX_RISK_PER_TRADE of bankroll (safety ceiling).
-    Drawdown scaler: halves below 90%, quarters below 80%.
+    Drawdown scaler: halves below 92%, quarters below 85%.
     """
 
     def __init__(self, starting_balance_cents: int = 0):
@@ -5685,6 +5685,11 @@ class PositionSizer:
 
         result["contracts"] = contracts
         result["reason"] = "ok"
+        logging.info(
+            "sizing_decision: edge=%.4f fee_adj=%.4f tier_frac=%.2f "
+            "balance=$%.2f raw_contracts=%d final_contracts=%d",
+            win_prob - price_cents / 100.0, edge, risk_fraction,
+            balance_cents / 100, raw_contracts, contracts)
         return result
 
     def _drawdown_scaler(self, balance_cents: int) -> float:
@@ -5766,6 +5771,16 @@ class OpportunityScanner:
                 f"_shadow_diag keys {_unknown} not accepted by {_fn_name}(). "
                 f"Add them to the function signature + SQL or remove from _shadow_diag."
             )
+
+        # ── Startup assertion: critical config values ──
+        assert MARKET_BLEND_W == 0.50, f"MARKET_BLEND_W misconfigured: {MARKET_BLEND_W}"
+        assert SHADOW_CAL_PIPELINE is True, "SHADOW_CAL_PIPELINE should be True"
+        assert MAX_RISK_PER_TRADE == 0.25, f"MAX_RISK_PER_TRADE misconfigured: {MAX_RISK_PER_TRADE}"
+        logging.info(
+            "CONFIG_VERIFY: MARKET_BLEND_W=%.2f SHADOW_CAL_PIPELINE=%s "
+            "MAX_RISK=%s SIZING_TIERS=%s DRAWDOWN_HALF=%.2f DRAWDOWN_QUARTER=%.2f",
+            MARKET_BLEND_W, SHADOW_CAL_PIPELINE, MAX_RISK_PER_TRADE,
+            SIZING_TIERS, DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD)
 
     # ── Public entry point ────────────────────────────────────────────────
 
@@ -6434,9 +6449,9 @@ class OpportunityScanner:
                                 old_system_prob=_old_system_prob,
                                 fee_adjusted_edge=fee_adjusted_edge,
                                 counterfactual=_cf_json,
-                                shadow_cal_prob=_cf.get("old_cal_system", {}).get("prob") if _cf else None,
-                                shadow_cal_fee_edge=_cf.get("old_cal_system", {}).get("fee_edge") if _cf else None,
-                                shadow_cal_temperature=_cf.get("old_cal_system", {}).get("temperature") if _cf else None,
+                                shadow_cal_prob=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
+                                shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
+                                shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                                 **_shadow_diag)
                     except Exception:
                         pass
@@ -6521,9 +6536,9 @@ class OpportunityScanner:
                                 old_system_prob=_old_system_prob,
                                 fee_adjusted_edge=fee_adjusted_edge,
                                 counterfactual=_cf_json,
-                                shadow_cal_prob=_cf.get("old_cal_system", {}).get("prob") if _cf else None,
-                                shadow_cal_fee_edge=_cf.get("old_cal_system", {}).get("fee_edge") if _cf else None,
-                                shadow_cal_temperature=_cf.get("old_cal_system", {}).get("temperature") if _cf else None,
+                                shadow_cal_prob=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
+                                shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
+                                shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                                 **_shadow_diag)
                     except Exception:
                         pass
@@ -6638,9 +6653,9 @@ class OpportunityScanner:
                                 old_system_prob=_old_system_prob,
                                 fee_adjusted_edge=fee_adjusted_edge,
                                 counterfactual=_cf_json,
-                                shadow_cal_prob=_cf.get("old_cal_system", {}).get("prob") if _cf else None,
-                                shadow_cal_fee_edge=_cf.get("old_cal_system", {}).get("fee_edge") if _cf else None,
-                                shadow_cal_temperature=_cf.get("old_cal_system", {}).get("temperature") if _cf else None,
+                                shadow_cal_prob=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
+                                shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
+                                shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                                 **_shadow_diag)
                     except Exception:
                         pass
@@ -6721,9 +6736,9 @@ class OpportunityScanner:
                     "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                     "kalshi_oft_signals": (ofa_signals or {}).get("signals", {}).get("kalshi_orderbook", {}),
                     "counterfactual_json": _cf_json,
-                    "shadow_cal_prob": _cf.get("old_cal_system", {}).get("prob") if _cf else None,
-                    "shadow_cal_fee_edge": _cf.get("old_cal_system", {}).get("fee_edge") if _cf else None,
-                    "shadow_cal_temperature": _cf.get("old_cal_system", {}).get("temperature") if _cf else None,
+                    "shadow_cal_prob": (_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
+                    "shadow_cal_fee_edge": (_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
+                    "shadow_cal_temperature": (_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                     **_shadow_diag,
                     **_shadow_extra,
                 })
@@ -7694,6 +7709,13 @@ class OrderExecutor:
         candidate = dict(order["candidate"])
         candidate["best_yes_ask"] = best_ask
         candidate["entry_path"] = "escalation_ioc"
+        filled = order.get("filled_so_far", 0)
+        if filled > 0:
+            candidate["position_size"] = max(1, candidate["position_size"] - filled)
+            logging.info(
+                f"escalation_partial_adjust: {ticker} "
+                f"original={order['count']} filled={filled} "
+                f"ioc_count={candidate['position_size']}")
         self._recent_taker_tickers[ticker] = time.time()
 
         return self._submit_taker(candidate)
