@@ -7104,10 +7104,7 @@ class OrderExecutor:
         self._logger = logger
         self._ml = main_loop
         self._kalshi_feed = kalshi_feed
-        self._active_order: Optional[Dict] = None
-        self._last_poll: float = 0.0
-        self._ask_history: deque = deque(maxlen=30)
-        self._last_queue_poll: float = 0.0
+        self._active_orders: Dict[str, Dict] = {}  # asset → order dict
         # Session counters for execution engine stats
         self._session_amend_attempts: int = 0
         self._session_amend_successes: int = 0
@@ -7135,8 +7132,15 @@ class OrderExecutor:
         self._session_addon_skipped: int = 0
 
     @property
+    def _active_order(self) -> Optional[Dict]:
+        """Backwards compat for firebase_push.py."""
+        if not self._active_orders:
+            return None
+        return next(iter(self._active_orders.values()))
+
+    @property
     def has_active_order(self) -> bool:
-        return self._active_order is not None
+        return len(self._active_orders) > 0
 
     # ── Post-only rejection tracking ────────────────────────────────────
 
@@ -7164,9 +7168,9 @@ class OrderExecutor:
 
     def execute(self, candidate: Dict) -> Optional[Dict]:
         """Always submit maker order. Escalation to taker happens in tick()."""
-        if self._active_order is not None:
+        asset = candidate["asset"]
+        if asset in self._active_orders:
             return None
-        self._ask_history.clear()
 
         if OBSERVATION_MODE:
             logging.info(
@@ -7408,46 +7412,61 @@ class OrderExecutor:
         return None
 
     def tick(self) -> Optional[Dict]:
-        """Called each main-loop tick.  Polls for maker fill, then
-        adaptively escalates to taker based on urgency if unfilled.
+        """Called each main-loop tick.  Iterates all active orders,
+        polls for fills, and handles escalation independently per order.
         """
-        if self._active_order is None:
+        if not self._active_orders:
             return None
 
-        now = time.time()
-        if now - self._last_poll < MAKER_POLL_INTERVAL:
-            return None
-        self._last_poll = now
-
-        order = self._active_order
-
-        # 0. Check WebSocket fills first (zero API cost)
+        # Drain WS fills once, group by order_id
+        ws_fills_by_oid: Dict[str, list] = {}
         if self._kalshi_feed and self._kalshi_feed.is_connected:
             try:
                 for ws_fill in self._kalshi_feed.pop_fills():
-                    if ws_fill.get("order_id") == order["order_id"]:
-                        order["fill_source"] = "websocket"
-                        self._session_ws_fills += 1
-                        latency_ms = round((now - order["submit_time"]) * 1000, 1)
-                        logging.info(
-                            f"kalshi_ws_fill: {order['ticker']} order={order['order_id']} "
-                            f"latency={latency_ms}ms")
-                        self._on_fill(ws_fill, order)
-                        # Mark this fill as seen so REST poll won't double-count it
-                        ws_trade_id = ws_fill.get("trade_id") or ws_fill.get("id")
-                        if ws_trade_id:
-                            order.setdefault("_seen_fill_ids", set()).add(ws_trade_id)
-                        else:
-                            logging.warning(f"WS fill missing trade_id for {order['ticker']}")
-                        if order.get("filled_so_far", 0) >= order["count"]:
-                            self._active_order = None
-                            return ws_fill
-                        # Partial fill — keep monitoring for remaining contracts
-                        logging.info(
-                            f"Partial WS fill — keeping order active "
-                            f"({order['filled_so_far']}/{order['count']})")
+                    oid = ws_fill.get("order_id", "")
+                    ws_fills_by_oid.setdefault(oid, []).append(ws_fill)
             except Exception:
-                logging.warning("WS fill check failed", exc_info=True)
+                logging.warning("WS fill drain failed", exc_info=True)
+
+        result = None
+        for asset in list(self._active_orders):
+            order = self._active_orders.get(asset)
+            if order is None:
+                continue  # removed by a prior iteration's escalation
+            order_ws = ws_fills_by_oid.get(order.get("order_id", ""), [])
+            r = self._tick_one(order, asset, order_ws)
+            if r is not None:
+                result = r
+        return result
+
+    def _tick_one(self, order: Dict, asset: str,
+                  ws_fills: list) -> Optional[Dict]:
+        """Handle one active order: poll for fill, escalate if needed."""
+        now = time.time()
+        if now - order["_last_poll"] < MAKER_POLL_INTERVAL:
+            return None
+        order["_last_poll"] = now
+
+        # 0. Check WebSocket fills (pre-drained, zero API cost)
+        for ws_fill in ws_fills:
+            order["fill_source"] = "websocket"
+            self._session_ws_fills += 1
+            latency_ms = round((now - order["submit_time"]) * 1000, 1)
+            logging.info(
+                f"kalshi_ws_fill: {order['ticker']} order={order['order_id']} "
+                f"latency={latency_ms}ms")
+            self._on_fill(ws_fill, order)
+            ws_trade_id = ws_fill.get("trade_id") or ws_fill.get("id")
+            if ws_trade_id:
+                order.setdefault("_seen_fill_ids", set()).add(ws_trade_id)
+            else:
+                logging.warning(f"WS fill missing trade_id for {order['ticker']}")
+            if order.get("filled_so_far", 0) >= order["count"]:
+                self._active_orders.pop(asset, None)
+                return ws_fill
+            logging.info(
+                f"Partial WS fill — keeping order active "
+                f"({order['filled_so_far']}/{order['count']})")
 
         # 1. Check for maker fill via REST
         fill = self._check_for_fill(order)
@@ -7456,9 +7475,8 @@ class OrderExecutor:
             self._session_rest_fills += 1
             self._on_fill(fill, order)
             if order.get("filled_so_far", 0) >= order["count"]:
-                self._active_order = None
+                self._active_orders.pop(asset, None)
                 return fill
-            # Partial fill — keep monitoring
             logging.info(
                 f"Partial REST fill — keeping order active "
                 f"({order['filled_so_far']}/{order['count']})")
@@ -7468,12 +7486,12 @@ class OrderExecutor:
 
         # 2. Too close to expiry — cancel, don't escalate
         if remaining < MIN_SECONDS_BEFORE_CLOSE:
-            self._cancel_active("close_approaching")
+            self._cancel_order(asset, "close_approaching")
             return None
 
         # 2.5 Queue position polling (~every 5s, rate-limit friendly)
-        if now - self._last_queue_poll >= 5.0:
-            self._last_queue_poll = now
+        if now - order["_last_queue_poll"] >= 5.0:
+            order["_last_queue_poll"] = now
             try:
                 qpos = self._client.get_queue_position(order["order_id"])
                 if qpos is not None:
@@ -7489,7 +7507,7 @@ class OrderExecutor:
             # ── Early escalation: ask confirms thesis ──────────────
             current_ask = self._get_addon_best_ask(order["ticker"])
             if current_ask is not None:
-                self._ask_history.append((now, current_ask))
+                order["_ask_history"].append((now, current_ask))
                 ask_move = current_ask - order["price_cents"]
                 if ask_move >= EARLY_ESCALATION_MIN_MOVE:
                     candidate = order["candidate"]
@@ -7517,7 +7535,7 @@ class OrderExecutor:
 
         # 4. Hard timeout fallback
         if elapsed >= MAKER_TIMEOUT_SECONDS:
-            self._cancel_active("timeout")
+            self._cancel_order(asset, "timeout")
 
         return None
 
@@ -7532,22 +7550,6 @@ class OrderExecutor:
             return ESCALATION_WAIT_SHORT    # 5s — tight, quick escalation
 
     # ── Market Intelligence Helpers ───────────────────────────────────────
-
-    def _convergence_velocity(self) -> float:
-        """Upward price movement in cents over the convergence window."""
-        if len(self._ask_history) < 2:
-            return 0.0
-        now = time.time()
-        cutoff = now - CONVERGENCE_WINDOW_SECONDS
-        oldest_price = None
-        for ts, price in self._ask_history:
-            if ts >= cutoff:
-                oldest_price = price
-                break
-        if oldest_price is None:
-            return 0.0
-        latest_price = self._ask_history[-1][1]
-        return latest_price - oldest_price
 
     @staticmethod
     def _best_ask_depth(ob_data: Dict) -> int:
@@ -7625,7 +7627,7 @@ class OrderExecutor:
         ob_raw = self._client.get_orderbook(ticker, depth=5)
         if ob_raw is None:
             logging.warning(f"Escalation aborted: orderbook fetch failed for {ticker}")
-            self._cancel_active(reason)
+            self._cancel_order(order["asset"], reason)
             return None
 
         # Unwrap response envelope (same as _get_orderbook_cached)
@@ -7638,7 +7640,7 @@ class OrderExecutor:
         best_ask = OpportunityScanner._best_yes_ask_cents(ob_data)
         if best_ask is None:
             logging.warning(f"Escalation aborted: no asks on orderbook for {ticker}")
-            self._cancel_active(reason)
+            self._cancel_order(order["asset"], reason)
             return None
 
         if best_ask < MIN_ENTRY_PRICE or best_ask > ESCALATION_MAX_ENTRY:
@@ -7646,7 +7648,7 @@ class OrderExecutor:
                 f"Escalation aborted: price {best_ask}¢ out of range "
                 f"[{MIN_ENTRY_PRICE}-{ESCALATION_MAX_ENTRY}¢] for {ticker}"
             )
-            self._cancel_active(reason)
+            self._cancel_order(order["asset"], reason)
             return None
 
         # Determine urgency tier for logging
@@ -7675,7 +7677,7 @@ class OrderExecutor:
         logging.info(
             f"escalation_cancel_replace: {ticker} "
             f"(maker={order['price_cents']}¢ → taker={best_ask}¢)")
-        self._cancel_active(reason)
+        self._cancel_order(order["asset"], reason)
 
         # Build modified candidate with fresh best ask
         candidate = dict(order["candidate"])
@@ -7743,7 +7745,8 @@ class OrderExecutor:
         if self._ml:
             self._ml._session_maker_submissions += 1
 
-        self._active_order = {
+        _now = time.time()
+        order = {
             "order_id": order_id,
             "client_order_id": client_oid,
             "ticker": ticker,
@@ -7752,13 +7755,16 @@ class OrderExecutor:
             "price_cents": price,
             "count": count,
             "is_taker": False,
-            "submit_time": time.time(),
+            "submit_time": _now,
             "seconds_to_close_at_submit": candidate["seconds_to_close"],
             "candidate": candidate,
             "balance_at_entry": balance,
             "entry_path": "maker",
+            "_last_poll": _now,
+            "_ask_history": deque(maxlen=30),
+            "_last_queue_poll": 0.0,
         }
-        self._last_poll = time.time()
+        self._active_orders[candidate["asset"]] = order
 
         # Clear rejection tracker on successful maker submission
         self._post_only_rejections.pop(ticker, None)
@@ -8425,12 +8431,12 @@ class OrderExecutor:
 
     # ── Cancel ────────────────────────────────────────────────────────────
 
-    def _cancel_active(self, reason: str):
-        """Cancel the active maker order (unfilled remainder only)."""
-        if self._active_order is None:
+    def _cancel_order(self, asset: str, reason: str):
+        """Cancel the active maker order for a specific asset."""
+        order = self._active_orders.get(asset)
+        if order is None:
             return
 
-        order = self._active_order
         filled = order.get("filled_so_far", 0)
 
         cancel_resp = self._client.cancel_order(order["order_id"])
@@ -8455,7 +8461,12 @@ class OrderExecutor:
             f"Maker order canceled: {order['ticker']} reason={reason}"
             f"{' (partial fill: ' + str(filled) + '/' + str(order['count']) + ')' if filled > 0 else ''}"
         )
-        self._active_order = None
+        self._active_orders.pop(asset, None)
+
+    def _cancel_active(self, reason: str):
+        """Cancel all active maker orders. Used by _reprice_maker compat."""
+        for asset in list(self._active_orders):
+            self._cancel_order(asset, reason)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -9440,37 +9451,35 @@ class MainLoop:
                     pass
             self.logger.log_scan(scan_entry)
 
-        # Poll active executor order (maker fill check)
+        # Poll active executor orders (maker fill check — one per asset)
         self.executor.tick()
 
         # Check confirmation addon opportunities on open positions
-        if not self.executor.has_active_order:
-            try:
-                self.executor._check_addon_opportunities()
-            except Exception:
-                logging.debug("addon check failed", exc_info=True)
+        try:
+            self.executor._check_addon_opportunities()
+        except Exception:
+            logging.debug("addon check failed", exc_info=True)
 
-        # Run opportunity scanner (only if no active order)
-        if not self.executor.has_active_order:
-            candidate = self.scanner.scan(self._active_windows)
-            if self.scanner._last_scan_stats:
-                try:
-                    self.logger.log_scan({
-                        "type": "scan_summary",
-                        "per_asset": self.scanner._last_scan_stats,
-                        "had_candidate": candidate is not None,
-                    })
-                except Exception:
-                    pass
-            if candidate:
-                logging.info(
-                    f"Opportunity: {candidate['ticker']} "
-                    f"ask={candidate['best_yes_ask']}¢ "
-                    f"edge={candidate['edge']:.2%} "
-                    f"size={candidate['position_size']} "
-                    f"prob={candidate['calibrated_prob']:.2%}"
-                )
-                self.executor.execute(candidate)
+        # Run opportunity scanner (always — execute() rejects if asset already active)
+        candidate = self.scanner.scan(self._active_windows)
+        if self.scanner._last_scan_stats:
+            try:
+                self.logger.log_scan({
+                    "type": "scan_summary",
+                    "per_asset": self.scanner._last_scan_stats,
+                    "had_candidate": candidate is not None,
+                })
+            except Exception:
+                pass
+        if candidate:
+            logging.info(
+                f"Opportunity: {candidate['ticker']} "
+                f"ask={candidate['best_yes_ask']}¢ "
+                f"edge={candidate['edge']:.2%} "
+                f"size={candidate['position_size']} "
+                f"prob={candidate['calibrated_prob']:.2%}"
+            )
+            self.executor.execute(candidate)
 
     # ── Run ───────────────────────────────────────────────────────────────
 
@@ -9502,6 +9511,12 @@ class MainLoop:
 
     def _cleanup(self):
         logging.info("Shutting down...")
+        if hasattr(self, 'executor'):
+            for asset in list(self.executor._active_orders):
+                try:
+                    self.executor._cancel_order(asset, "shutdown")
+                except Exception:
+                    pass
         if hasattr(self, 'egarch_estimator'):
             self.egarch_estimator._save_state()
             logging.info(
