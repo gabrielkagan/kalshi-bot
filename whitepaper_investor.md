@@ -8,15 +8,14 @@ date: "February 2026"
 
 This document describes an automated trading system for **Kalshi**, the first CFTC-regulated prediction market exchange in the United States. The bot trades short-duration cryptocurrency contracts — binary options that settle every 15 minutes — using a systematic, model-driven approach designed to capture small but frequent mispricings.
 
-The system monitors real-time prices across seven data sources, estimates outcome probabilities using institutional-grade statistical models with per-asset distribution fitting, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around capital preservation and disciplined risk management.
+The system monitors real-time prices across multiple exchanges, estimates outcome probabilities using EGARCH-conditioned volatility models with per-asset distribution fitting, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
-**Key facts:**
+**Live trading results (as of February 27, 2026):**
 
-- {{TOTAL_EVALUATED}} markets evaluated during the observation period ({{OBSERVATION_PERIOD}})
-- {{TOTAL_SETTLED}} markets settled with verified outcomes
-- {{WIN_RATE}} observed win rate across all settled positions
+- 107 settled trades with a 93.5% win rate (100W / 7L)
+- Live trading with real capital since February 22, 2026
 - Fully automated, always-on operation with complete audit trail
-- Live trading with real capital since February 2026
+- Also collecting calibration data on hourly markets (75 strikes/event) for future expansion
 
 ---
 
@@ -49,11 +48,10 @@ The bot follows a disciplined five-step process for every 15-minute trading wind
 
 ## 1. Observe
 
-The system maintains real-time connections to seven data sources simultaneously:
+The system maintains real-time connections to multiple data sources simultaneously:
 
-- **Four spot exchanges** (Coinbase, Binance, Kraken, Bybit) — providing live cryptocurrency prices with sub-second updates
+- **Two spot exchanges** (Coinbase, Kraken) — providing live cryptocurrency prices with sub-second updates
 - **Deribit** — the leading crypto derivatives exchange, providing implied volatility data that reflects the market's forward-looking risk expectations
-- **CoinGlass** — providing funding rate data from perpetual futures markets, indicating leverage buildup and crowded positioning
 - **Kalshi** — the prediction market itself, providing current contract prices, orderbook depth, and real-time fill notifications via WebSocket
 
 This multi-source approach means the bot sees price movements developing across global markets before they are reflected in Kalshi contract prices.
@@ -63,10 +61,10 @@ This multi-source approach means the bot sees price movements developing across 
 For every active market, the bot estimates the probability that the underlying asset will stay above the contract's threshold for the remainder of the 15-minute window. This estimate incorporates:
 
 - Current spot price relative to the threshold
-- Recent realized volatility (how much the price has been moving), estimated using noise-robust academic methods
+- EGARCH-conditioned volatility (how much the price is expected to move, accounting for clustering and leverage effects)
 - Options-implied volatility (what the derivatives market expects)
 - Cross-exchange price signals (whether other exchanges are leading a move)
-- Funding rate regime (whether leveraged positions suggest mean-reversion risk)
+- Market-price blending (50/50 blend with the market's own implied probability to prevent overconfidence)
 
 The probability model uses **Normal Inverse Gaussian (NIG) distributions** fitted specifically to each cryptocurrency's return characteristics. Unlike generic models, NIG captures both the heavy tails (large moves are more common than a bell curve predicts) and the asymmetry (upward and downward moves have different frequencies) unique to each asset.
 
@@ -76,19 +74,19 @@ Most markets are not worth trading. The system applies a rigorous multi-stage fi
 
 - The model's estimated probability is too low (the contract is unlikely to pay out)
 - The Kalshi price is too high (not enough profit potential) or too low (too much uncertainty)
-- The edge after fees is insufficient — must exceed 1% after taker fees (evaluated at worst-case rates)
+- The edge after fees is insufficient — must exceed 0.9% after taker fees (evaluated at worst-case rates)
 - The model and the market disagree by a suspicious margin (suggesting the model may be missing information)
 - Statistical inputs appear unreliable (extreme z-scores indicating potential data issues)
 
-Of {{TOTAL_EVALUATED}} markets evaluated during the observation period, the vast majority are correctly identified as unprofitable and filtered out — the system is highly selective.
+The vast majority of markets are correctly identified as unprofitable and filtered out — the system is highly selective.
 
 ## 4. Size
 
-For the small number of markets that pass all filters, the bot determines the appropriate position size using a conservative mathematical framework (a fractional Kelly criterion). Position sizes are:
+For the small number of markets that pass all filters, the bot determines the appropriate position size using an edge-tiered framework. Position sizes are:
 
-- **Small by design** — never risking more than a carefully calculated fraction of the bankroll
-- **Automatically reduced during drawdowns** — if the account balance drops, position sizes shrink proportionally
-- **Hard-capped** — regardless of model confidence, no single trade can exceed the maximum position limit
+- **Proportional to conviction** — higher-edge trades receive larger allocations (up to 25% of bankroll at 4%+ edge), lower-edge trades receive minimal sizing (7% at 0.9% edge)
+- **Automatically reduced during drawdowns** — if the account balance drops below 90% of starting value, sizes halve; below 80%, they quarter
+- **Hard-capped** — no single trade can exceed 25% of bankroll regardless of model confidence
 
 ## 5. Execute
 
@@ -96,8 +94,9 @@ The bot uses a fee-minimizing execution strategy with intelligent escalation:
 
 - **Maker-first**: It initially places limit orders with `post_only` guarantees, earning 75% lower fees than aggressive orders
 - **Three-tier rejection handling**: If a maker order is rejected (locked spread), the system tries a degraded maker (worse price), then escalates to an aggressive taker order — but only after re-verifying the trade is still profitable at the higher fee rate
+- **Maker-only below 90 seconds**: No taker execution when less than 90 seconds remain before settlement. Data showed taker trades in this window cost -$85 in net losses. Maker orders can still fill passively.
 - **Real-time fill detection**: Kalshi WebSocket provides instant fill notifications at zero API cost, with REST polling as a backup
-- **Smart escalation**: If a limit order hasn't filled as the window nears expiry, the bot first tries to amend the order in-place (faster than canceling and re-placing), then falls back to immediate-or-cancel taker orders
+- **Smart escalation**: If a limit order hasn't filled and sufficient time remains, the bot first tries to amend the order in-place (faster than canceling and re-placing), then falls back to immediate-or-cancel taker orders
 - **Price re-validation**: Before every execution step, the bot re-checks current market conditions to confirm the trade still makes sense
 
 ---
@@ -108,11 +107,11 @@ The bot's expected profitability comes from four structural advantages:
 
 ## Speed and Breadth of Information
 
-While a typical Kalshi trader might check the Bitcoin price on one website, this system simultaneously processes real-time data from seven professional-grade feeds. It detects cross-exchange price movements — where a large buy on Binance precedes a move on Coinbase — and incorporates these signals before the Kalshi market adjusts.
+While a typical Kalshi trader might check the Bitcoin price on one website, this system simultaneously processes real-time data from multiple professional-grade feeds. It detects cross-exchange price movements — where a large buy on one exchange precedes a move on another — and incorporates these signals before the Kalshi market adjusts.
 
 ## Volatility Sophistication
 
-The probability of a crypto asset staying above a given price depends critically on how much the price is expected to move. The bot uses academic-grade volatility estimation techniques (Realized Kernel estimators from Barndorff-Nielsen 2008, data-adaptive bandwidth selection, Mincer-Zarnowitz R²-weighted blending) that are standard in institutional finance but rare among retail prediction market participants. This produces more accurate probability estimates, especially during volatile periods.
+The probability of a crypto asset staying above a given price depends critically on how much the price is expected to move. The bot uses academic-grade volatility estimation techniques (Realized Kernel estimators from Barndorff-Nielsen 2008, data-adaptive bandwidth selection, EGARCH conditional volatility, Mincer-Zarnowitz R²-weighted blending) that are standard in institutional finance but rare among retail prediction market participants. This produces more accurate probability estimates, especially during volatile periods.
 
 ## Distribution Fitting
 
@@ -126,15 +125,21 @@ Kalshi charges different fees for different order types. The bot's maker-first e
 
 # Risk Management
 
-Capital preservation is the system's primary objective. Every design decision prioritizes survival over aggression.
+Capital preservation is a core component of profit maximization. The system manages risk through position sizing, execution controls, and model safety checks.
 
 ## Conservative Position Sizing
 
-The bot uses an **edge-tiered** approach — higher-conviction trades (greater model edge over the market) receive larger allocations, while lower-edge trades get minimal sizing. The largest tier risks 50% of bankroll only on trades with 4%+ fee-adjusted edge, and the smallest tier risks just 10%. In practical terms:
+The bot uses an **edge-tiered** approach — higher-conviction trades (greater model edge over the market) receive larger allocations, while lower-edge trades get minimal sizing:
 
-- Individual trades risk a precisely calculated fraction of the bankroll, proportional to estimated edge
-- Even a string of losses has a limited impact on total capital
-- The sizing tiers are calibrated against actual trade performance data
+| Fee-Adjusted Edge | Risk Fraction |
+|---|---|
+| ≥ 4% | 25% of bankroll |
+| ≥ 2% | 20% of bankroll |
+| ≥ 1.5% | 15% of bankroll |
+| ≥ 1% | 10% of bankroll |
+| ≥ 0.9% | 7% of bankroll |
+
+Individual trades risk a precisely calculated fraction of the bankroll, proportional to estimated edge. Even a string of losses has a limited impact on total capital. The sizing tiers were calibrated against actual trade performance data — previous higher tiers (50/35/20) were reduced after loss analysis.
 
 ## Automatic De-Risking
 
@@ -154,8 +159,8 @@ The bot can trade multiple assets per 15-minute window, concentrating capital on
 Before any trade is placed, the system verifies:
 
 - The model's probability estimate passes a sanity check against the market price
-- The estimated edge exceeds the minimum threshold after accounting for all fees (at worst-case taker rates)
-- The contract price falls within acceptable bounds (not too cheap, not too expensive)
+- The estimated edge exceeds the minimum threshold (0.9%) after accounting for all fees (at worst-case taker rates)
+- The contract price falls within acceptable bounds (87–99¢)
 - No extreme statistical indicators suggest unreliable model inputs
 - The position size respects all hard limits and drawdown adjustments
 
@@ -163,47 +168,30 @@ If any single check fails, the trade is refused — no exceptions. The system is
 
 ## Hard Price Boundaries
 
-The bot only trades contracts priced between 86 and 99 cents. Below 86 cents, historical data shows poor win rates and excessive uncertainty. Above 99 cents, the potential profit is too small to justify the risk. This guardrail eliminates an entire class of low-quality trades.
+The bot only trades contracts priced between 87 and 99 cents. Below 87 cents, historical data shows poor win rates (two losses at 86¢ prompted the raise). Above 99 cents, the potential profit is too small to justify the risk. This guardrail eliminates an entire class of low-quality trades.
+
+## Maker-Only Late Window
+
+No taker (aggressive) orders are placed when less than 90 seconds remain before settlement. This data-driven threshold was introduced after analysis showed taker trades in the final 90 seconds produced -$85 in net losses. Maker (passive) orders can still fill during this period.
 
 ---
 
-# Performance and Observations
+# Performance
 
-*This section contains live statistics from the bot's observation database, updated on each whitepaper build.*
-
-## Market Evaluation Summary
-
-During the observation period ({{OBSERVATION_PERIOD}}), the bot evaluated **{{TOTAL_EVALUATED}}** individual markets across {{ASSETS_TRACKED}}. The vast majority were correctly identified as unprofitable and filtered out at various stages:
-
-| Stage | Outcome | Count | Share |
-|---|---|---|---|
-| Initial screening | Probability too low to be interesting | {{FILTER_LOW_PROB}} | {{FILTER_LOW_PROB_PCT}} |
-| Orderbook check | No orderbook available | {{FILTER_NO_OB}} | {{FILTER_NO_OB_PCT}} |
-| Price discovery | No executable ask price | {{FILTER_NO_ASK}} | {{FILTER_NO_ASK_PCT}} |
-| Price validation | Price outside acceptable range | {{FILTER_PRICE_OOR}} | {{FILTER_PRICE_OOR_PCT}} |
-| Edge calculation | Edge too small after fees | {{FILTER_INSUFF_EDGE}} | {{FILTER_INSUFF_EDGE_PCT}} |
-| Position sizing | Calculated size rounded to zero | {{FILTER_ZERO_SIZE}} | {{FILTER_ZERO_SIZE_PCT}} |
-| Strategy rules | Another asset chosen for this window | {{FILTER_STRATEGY_WAIT}} | {{FILTER_STRATEGY_WAIT_PCT}} |
-| **Passed all filters** | **Trade candidate** | **{{FILTER_CANDIDATE}}** | **{{FILTER_CANDIDATE_PCT}}** |
-
-This extreme selectivity is by design — the system only trades when every condition aligns.
-
-## Settled Outcomes
+## Live Trading Results
 
 | Metric | Value |
 |---|---|
-| Total settled trades | {{TOTAL_SETTLED}} |
-| Observed win rate | {{WIN_RATE}} |
-| Observation P&L (cents) | {{OBSERVATION_PNL}} |
+| Status | Live trading since February 22, 2026 |
+| Balance | ~$217 |
+| Settled trades | 107 |
+| Win rate | 93.5% (100W / 7L) |
+| Assets | BTC, ETH, SOL, XRP |
+| Entry prices | 87–99¢ |
 
-## Win Rate by Entry Price
+## Hourly Market Expansion
 
-| Entry Price | Trades | Wins | Win Rate |
-|---|---|---|---|
-| 80–84 cents | {{WR_80_N}} | {{WR_80_W}} | {{WR_80_R}} |
-| 85–89 cents | {{WR_85_N}} | {{WR_85_W}} | {{WR_85_R}} |
-| 90–94 cents | {{WR_90_N}} | {{WR_90_W}} | {{WR_90_R}} |
-| 95–99 cents | {{WR_95_N}} | {{WR_95_W}} | {{WR_95_R}} |
+The bot is also monitoring hourly cryptocurrency markets (KXBTCD, KXETHD, KXSOLD, KXXRPD) in observation mode. These markets have 75 strikes per event and settle every hour. The system is collecting calibration data — evaluating every strike, computing probabilities, and tracking settlement outcomes — to validate the model before enabling live trading.
 
 ---
 
@@ -229,8 +217,8 @@ This pipeline ensures rapid iteration while maintaining a safety net against bro
 Every decision the bot makes is logged:
 
 - **SQLite database** — Stores all positions, orders, fills, settlements, and every market evaluation with its filter stage outcome
-- **Nine JSONL journal files** — Append-only logs covering scans, opportunities, rejections, trades, settlements, orders, execution events, performance summaries, and maker order fill model training data
-- **Firebase dashboard** — Real-time web interface showing current positions, market evaluations, system status, and execution engine statistics
+- **JSONL journal files** — Append-only logs covering scans, opportunities, rejections, trades, settlements, orders, execution events, and maker order fill model training data
+- **Firebase dashboard** — Real-time web interface showing current positions, market evaluations, volatility, orderbooks, execution engine health, calibration diagnostics, and EGARCH/NIG parameters
 
 This comprehensive logging enables full after-the-fact analysis of any trade or decision.
 
@@ -244,14 +232,14 @@ Order identifiers are written to the database before API submission. If the bot 
 
 For readers interested in the mathematical foundations, the full technical whitepaper provides detailed formulas and derivations. Brief summaries of the key models:
 
-**Volatility Model** — Uses the Realized Kernel estimator (Barndorff-Nielsen 2008) with data-adaptive bandwidth selection to produce noise-robust volatility from high-frequency returns. Multiple estimators are blended using Mincer-Zarnowitz R²-weighted EMA blending, replacing fixed weights with data-driven quality scores. Includes adaptive jump detection (percentile-based thresholds per asset) and options-implied volatility integration from Deribit. An EGARCH(1,1) model with Student-t innovations runs in shadow mode, computing forecasts without affecting live decisions.
+**Volatility Model** — Uses the Realized Kernel estimator (Barndorff-Nielsen 2008) with data-adaptive bandwidth selection to produce noise-robust volatility from high-frequency returns. Multiple estimators are blended using Mincer-Zarnowitz R²-weighted EMA blending, replacing fixed weights with data-driven quality scores. Includes EGARCH(1,1) with Student-t innovations for conditional volatility (promoted to live trading), time-varying RK weights, adaptive jump detection (percentile-based thresholds per asset), and options-implied volatility integration from Deribit.
 
-**Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven: as settlement outcomes accumulate, the CalibrationEngine progresses from fixed logistic scaling to Platt Scaling to Beta Calibration to Isotonic Regression. A dynamic time-dependent probability cap relaxes as expiry approaches (93% at 10min+ → 99.5% at <1min).
+**Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven: as settlement outcomes accumulate, the CalibrationEngine progresses from fixed logistic scaling to Platt Scaling to Beta Calibration (currently active with 1,900+ observations). A dynamic time-dependent probability cap relaxes as expiry approaches (93% at 10min+ → 99.5% at <1min). Final probability blends 50/50 with market-implied probability to prevent overconfidence.
 
-**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Higher fee-adjusted edge trades get larger allocations (50% at 4%+, 35% at 2%+, 20% at 1.5%+, 10% at 1%+), with automatic de-risking during drawdowns.
+**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Higher fee-adjusted edge trades get larger allocations (25% at 4%+, 20% at 2%+, 15% at 1.5%+, 10% at 1%+, 7% at 0.9%+), with automatic de-risking during drawdowns. Max risk per trade: 25%.
 
-**Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Maker orders use `post_only=True` to guarantee 75% fee savings. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing.
+**Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Maker orders use `post_only=True` to guarantee 75% fee savings. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. No taker execution below 90 seconds to close.
 
 ---
 
-*Generated: {{GENERATED_AT}}*
+*Last updated: February 27, 2026*

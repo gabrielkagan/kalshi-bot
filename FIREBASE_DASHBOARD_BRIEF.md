@@ -550,14 +550,11 @@ Active method, Brier scores, min sample thresholds for Platt/Beta Cal/BLR.
 ### 25. NIG Distribution (`nig_distribution`)
 Per-asset NIG parameters (a, b, loc, scale) from `dist_config.json`.
 
-### 26. HAR Estimation (`har_estimation`)
-HAR-RV model diagnostics. Currently in shadow mode.
+### 26. EGARCH Estimation (`egarch_estimation`)
+EGARCH(1,1) model parameters and convergence metrics. Promoted to live trading.
 
-### 27. EGARCH Estimation (`egarch_estimation`)
-EGARCH(1,1) model parameters and convergence metrics. Shadow mode.
-
-### 28. EGARCH Blend (`egarch_blend`)
-MZ R²-weighted blend weights per asset, R², QLIKE scores, observation counts. Shadow mode flag.
+### 27. EGARCH Blend (`egarch_blend`)
+MZ R²-weighted blend weights per asset, R², QLIKE scores, observation counts. Promoted to live trading.
 
 ### 29. RK Adaptive Diagnostics (`rk_adaptive_diagnostics`)
 Realized Kernel adaptive bandwidth (H*) metrics per asset.
@@ -611,5 +608,5 @@ Boolean indicating whether bot is in observation or live mode.
 10. **Order flow** — `order_flow` signals per asset, confidence badges
 11. **Rate limits** — `rate_limits` gauge showing API pressure
 12. **Session stats** — `session_stats`, `strategy_breakdown`, `asset_performance`
-13. **EGARCH/HAR diagnostics** — `egarch_blend`, `har_estimation` shadow mode metrics
+13. **EGARCH diagnostics** — `egarch_estimation`, `egarch_blend` live model metrics
 14. **Counterfactual** — `counterfactual_analysis` money left vs bullets dodged
