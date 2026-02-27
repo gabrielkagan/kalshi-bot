@@ -549,6 +549,32 @@ LANGUAGE sql SECURITY DEFINER AS $$
   ORDER BY snapshot_time
 $$;
 
+-- 8. Edge accuracy (predicted edge buckets vs actual win rate)
+CREATE OR REPLACE FUNCTION get_analytics_edge_realized()
+RETURNS TABLE(edge_bucket text, total bigint, wins bigint, win_rate numeric,
+              avg_edge numeric, avg_pnl_cents numeric)
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT
+    CASE WHEN edge < 0.02 THEN '<2%' WHEN edge < 0.04 THEN '2-4%'
+         WHEN edge < 0.06 THEN '4-6%' WHEN edge < 0.10 THEN '6-10%' ELSE '10%+' END,
+    COUNT(*), COUNT(*) FILTER (WHERE is_win),
+    ROUND(COUNT(*) FILTER (WHERE is_win)::NUMERIC / NULLIF(COUNT(*), 0), 4),
+    ROUND(AVG(edge)::NUMERIC, 4),
+    ROUND(AVG(pnl_cents - fee_cents)::NUMERIC, 1)
+  FROM trades WHERE edge IS NOT NULL GROUP BY 1 ORDER BY 1
+$$;
+
+-- 9. Time-of-day performance
+CREATE OR REPLACE FUNCTION get_analytics_time_of_day()
+RETURNS TABLE(hour_utc int, total bigint, wins bigint, win_rate numeric, net_pnl_cents bigint)
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT EXTRACT(HOUR FROM settled_at AT TIME ZONE 'UTC')::int,
+    COUNT(*), COUNT(*) FILTER (WHERE is_win),
+    ROUND(COUNT(*) FILTER (WHERE is_win)::NUMERIC / NULLIF(COUNT(*), 0), 4),
+    SUM(pnl_cents - fee_cents)
+  FROM trades GROUP BY 1 ORDER BY 1
+$$;
+
 -- Grant anon execute on all RPC functions
 GRANT EXECUTE ON FUNCTION get_analytics_by_asset TO anon;
 GRANT EXECUTE ON FUNCTION get_analytics_daily_pnl TO anon;
@@ -557,3 +583,5 @@ GRANT EXECUTE ON FUNCTION get_analytics_calibration TO anon;
 GRANT EXECUTE ON FUNCTION get_analytics_counterfactual TO anon;
 GRANT EXECUTE ON FUNCTION get_analytics_vol_history TO anon;
 GRANT EXECUTE ON FUNCTION get_analytics_cal_history TO anon;
+GRANT EXECUTE ON FUNCTION get_analytics_edge_realized TO anon;
+GRANT EXECUTE ON FUNCTION get_analytics_time_of_day TO anon;
