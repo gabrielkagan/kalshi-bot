@@ -398,6 +398,14 @@ class SupabaseSyncer:
         """Push volatility snapshots and calibration state."""
         self._sync_vol_snapshots()
         self._sync_cal_snapshot()
+        self._refresh_analytics_views()
+
+    def _refresh_analytics_views(self):
+        """Refresh materialized views for dashboard analytics."""
+        try:
+            self._rpc("refresh_analytics_views")
+        except Exception:
+            logging.debug("Supabase: view refresh failed", exc_info=True)
 
     def _sync_vol_snapshots(self):
         """Sample current volatility state for each asset."""

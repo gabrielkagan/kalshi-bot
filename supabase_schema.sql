@@ -479,3 +479,81 @@ BEGIN
     REFRESH MATERIALIZED VIEW mv_fill_rates;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- RPC Functions (SECURITY DEFINER — anon can execute, runs as creator)
+-- Used by dashboard analytics panels to query materialized views.
+-- ============================================================================
+
+-- 1. Win rate by asset
+CREATE OR REPLACE FUNCTION get_analytics_by_asset()
+RETURNS TABLE(asset text, total bigint, wins bigint, losses bigint,
+              win_rate numeric, net_pnl_cents bigint)
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT asset, total, wins, losses, win_rate, net_pnl_cents
+  FROM mv_win_rate_by_asset ORDER BY net_pnl_cents DESC
+$$;
+
+-- 2. Daily P&L
+CREATE OR REPLACE FUNCTION get_analytics_daily_pnl()
+RETURNS TABLE(trade_date date, trades bigint, wins bigint, net_pnl_cents bigint)
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT trade_date, trades, wins, net_pnl_cents FROM mv_daily_pnl ORDER BY trade_date
+$$;
+
+-- 3. Win rate by entry price bucket
+CREATE OR REPLACE FUNCTION get_analytics_by_price()
+RETURNS TABLE(price_bucket text, total bigint, wins bigint, win_rate numeric,
+              net_pnl_cents bigint, avg_net_pnl numeric)
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT * FROM mv_win_rate_by_price ORDER BY price_bucket
+$$;
+
+-- 4. Calibration accuracy
+CREATE OR REPLACE FUNCTION get_analytics_calibration()
+RETURNS TABLE(prob_bucket text, total bigint, avg_predicted numeric,
+              avg_actual numeric, settled_count bigint)
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT * FROM mv_calibration_accuracy ORDER BY prob_bucket
+$$;
+
+-- 5. Counterfactual by filter stage
+CREATE OR REPLACE FUNCTION get_analytics_counterfactual()
+RETURNS TABLE(filter_stage text, total bigint, settled bigint,
+              money_left_cents bigint, bullets_dodged_cents bigint,
+              would_have_won bigint, would_have_lost bigint)
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT * FROM mv_counterfactual_by_stage
+$$;
+
+-- 6. Volatility time-series (last 24h)
+CREATE OR REPLACE FUNCTION get_analytics_vol_history()
+RETURNS TABLE(snapshot_time timestamptz, asset text, egarch_blend_sigma real,
+              rk_variance real, egarch_blend_weight real, jump_count int)
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT snapshot_time, asset, egarch_blend_sigma, rk_variance,
+         egarch_blend_weight, jump_count
+  FROM volatility_snapshots
+  WHERE snapshot_time > NOW() - INTERVAL '24 hours'
+  ORDER BY snapshot_time
+$$;
+
+-- 7. Calibration tournament history (last 7 days)
+CREATE OR REPLACE FUNCTION get_analytics_cal_history()
+RETURNS TABLE(snapshot_time timestamptz, active_method text,
+              beta_cal_brier real, temperature_brier real)
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT snapshot_time, active_method, beta_cal_brier, temperature_brier
+  FROM calibration_snapshots
+  WHERE snapshot_time > NOW() - INTERVAL '7 days'
+  ORDER BY snapshot_time
+$$;
+
+-- Grant anon execute on all RPC functions
+GRANT EXECUTE ON FUNCTION get_analytics_by_asset TO anon;
+GRANT EXECUTE ON FUNCTION get_analytics_daily_pnl TO anon;
+GRANT EXECUTE ON FUNCTION get_analytics_by_price TO anon;
+GRANT EXECUTE ON FUNCTION get_analytics_calibration TO anon;
+GRANT EXECUTE ON FUNCTION get_analytics_counterfactual TO anon;
+GRANT EXECUTE ON FUNCTION get_analytics_vol_history TO anon;
+GRANT EXECUTE ON FUNCTION get_analytics_cal_history TO anon;
