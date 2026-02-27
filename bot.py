@@ -343,8 +343,8 @@ SIZING_TIERS = [                  # (min_fee_adj_edge, risk_fraction)
     (0.01, 0.10),                 # fee-adj edge ≥ 1.0% → risk 10%
     (0.009, 0.07),                # fee-adj edge ≥ 0.9% → risk 7% (conservative new tier)
 ]
-DRAWDOWN_HALF_THRESHOLD = 0.92    # below 92% of starting balance → halve size (was 90%)
-DRAWDOWN_QUARTER_THRESHOLD = 0.85 # below 85% → quarter size (was 80%)
+DRAWDOWN_HALF_THRESHOLD = 0.90    # below 90% of starting balance → halve size
+DRAWDOWN_QUARTER_THRESHOLD = 0.80 # below 80% → quarter size
 
 # ─── Order Execution ──────────────────────────────────────────────────────
 MAKER_PRICE_OFFSET = 1            # cents below fair value for maker orders
@@ -355,6 +355,7 @@ MAKER_TIMEOUT_SECONDS = 30.0     # hard timeout for maker orders
 
 # ─── Direct Taker Threshold ──────────────────────────────────────────────
 DIRECT_TAKER_THRESHOLD = 60.0     # seconds_to_close below this → skip maker, go IOC directly
+MAKER_ONLY_THRESHOLD = 90.0       # seconds_to_close below this → maker only, no taker escalation
 
 # ─── Adaptive Escalation ─────────────────────────────────────────────────
 ESCALATION_WAIT_LONG = 15.0       # maker wait when >=180s to close
@@ -5778,9 +5779,11 @@ class OpportunityScanner:
         assert MAX_RISK_PER_TRADE == 0.25, f"MAX_RISK_PER_TRADE misconfigured: {MAX_RISK_PER_TRADE}"
         logging.info(
             "CONFIG_VERIFY: MARKET_BLEND_W=%.2f SHADOW_CAL_PIPELINE=%s "
-            "MAX_RISK=%s SIZING_TIERS=%s DRAWDOWN_HALF=%.2f DRAWDOWN_QUARTER=%.2f",
+            "MAX_RISK=%s SIZING_TIERS=%s DRAWDOWN_HALF=%.2f DRAWDOWN_QUARTER=%.2f "
+            "MAKER_ONLY_THRESHOLD=%.0f",
             MARKET_BLEND_W, SHADOW_CAL_PIPELINE, MAX_RISK_PER_TRADE,
-            SIZING_TIERS, DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD)
+            SIZING_TIERS, DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
+            MAKER_ONLY_THRESHOLD)
 
     # ── Public entry point ────────────────────────────────────────────────
 
@@ -7291,7 +7294,14 @@ class OrderExecutor:
 
         # ── Direct taker for <60s candidates ───────────────────────
         seconds_to_close = candidate.get("seconds_to_close")
-        if seconds_to_close is not None and seconds_to_close < DIRECT_TAKER_THRESHOLD:
+        # Maker-only below 90s: block direct taker, fall through to maker
+        if (seconds_to_close is not None
+                and seconds_to_close < MAKER_ONLY_THRESHOLD
+                and seconds_to_close < DIRECT_TAKER_THRESHOLD):
+            logging.info(
+                "direct_taker_BLOCKED_maker_only: %s seconds_to_close=%.0f",
+                candidate["ticker"], seconds_to_close)
+        elif seconds_to_close is not None and seconds_to_close < DIRECT_TAKER_THRESHOLD:
             count = candidate["position_size"]
             price = candidate["best_yes_ask"]
             cal_prob = candidate["calibrated_prob"]
@@ -7362,7 +7372,9 @@ class OrderExecutor:
         rejections = self._get_post_only_rejection_count(ticker)
 
         # Tier 3: Taker escalation (2 same-price + 1 degraded all failed)
-        if rejections >= POST_ONLY_MAX_SAME_PRICE + 1:  # 3+
+        # Maker-only below 90s: block post-only taker escalation
+        if (rejections >= POST_ONLY_MAX_SAME_PRICE + 1  # 3+
+                and not (seconds_to_close is not None and seconds_to_close < MAKER_ONLY_THRESHOLD)):
             count = candidate["position_size"]
             price = candidate["best_yes_ask"]
             cal_prob = candidate["calibrated_prob"]
@@ -7529,7 +7541,8 @@ class OrderExecutor:
                 pass  # Non-critical, don't disrupt flow
 
         # 3. Escalation: maker waited long enough? (skip if already escalated)
-        if not order.get("escalated"):
+        # Maker-only below 90s: no taker escalation, let maker fill or expire
+        if not order.get("escalated") and remaining >= MAKER_ONLY_THRESHOLD:
             # ── Early escalation: ask confirms thesis ──────────────
             current_ask = self._get_addon_best_ask(order["ticker"])
             if current_ask is not None:
