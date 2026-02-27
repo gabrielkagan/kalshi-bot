@@ -928,6 +928,11 @@ class FirebasePusher:
             exec_eng["session_addon_fills"] = getattr(ex, "_session_addon_fills", 0)
             exec_eng["session_addon_unfilled"] = getattr(ex, "_session_addon_unfilled", 0)
             exec_eng["session_addon_skipped"] = getattr(ex, "_session_addon_skipped", 0)
+            # Dip addon counters
+            exec_eng["dip_addon_shadow"] = getattr(ex, "_session_dip_addon_shadow", 0)
+            exec_eng["dip_addon_attempts"] = getattr(ex, "_session_dip_addon_attempts", 0)
+            exec_eng["dip_addon_fills"] = getattr(ex, "_session_dip_addon_fills", 0)
+            exec_eng["dip_addon_skipped"] = getattr(ex, "_session_dip_addon_skipped", 0)
 
             # Escalation funnel
             po_rej = exec_eng.get("session_post_only_rejections", 0)
@@ -949,6 +954,7 @@ class FirebasePusher:
             entry_path_dist["direct_taker"] = getattr(ex, "_session_direct_taker_fills", 0)
             entry_path_dist["post_only_taker"] = getattr(ex, "_session_post_only_taker_fills", 0)
             entry_path_dist["confirmation_addon"] = getattr(ex, "_session_addon_fills", 0)
+            entry_path_dist["dip_addon"] = getattr(ex, "_session_dip_addon_fills", 0)
             esc_ioc = max(0, getattr(ex, "_session_ioc_fills", 0)
                           - entry_path_dist["direct_taker"]
                           - entry_path_dist["post_only_taker"])

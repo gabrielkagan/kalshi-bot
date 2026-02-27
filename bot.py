@@ -390,6 +390,18 @@ ADDON_SIZE_FRACTION = 0.50            # addon = 50% of original count
 ADDON_MAX_PER_POSITION = 1            # max 1 addon per position
 ADDON_MAX_ENTRY_PRICE = 98            # 98¢ cap — still profitable after fees
 
+# ─── Dip Addon ────────────────────────────────────────────────────────
+DIP_ADDON_ENABLED = True
+DIP_ADDON_SHADOW_MODE = True              # PHASE 1: Log only, don't execute
+DIP_ADDON_MIN_DROP_CENTS = 3              # ask must drop ≥3¢ below entry
+DIP_ADDON_MIN_SECONDS_SINCE_FILL = 5.0   # wait after fill before eligible
+DIP_ADDON_MIN_STC_REMAINING = 90.0       # need ≥90s (aligns with maker-only threshold)
+DIP_ADDON_SIZE_FRACTION = 0.50            # addon = 50% of original count
+DIP_ADDON_MAX_PER_POSITION = 1            # max 1 dip addon per position
+DIP_ADDON_MAX_TOTAL_RISK = 0.35           # original + addon ≤ 35% of bankroll
+DIP_ADDON_MIN_ENTRY_PRICE = 87            # same floor as main bot (87¢)
+DIP_ADDON_SHADOW_FLOOR = 50              # shadow logs ALL dips down to 50¢ for data collection
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  Fee Helpers
@@ -5815,6 +5827,18 @@ class OpportunityScanner:
                 HOURLY_OBSERVATION_ENABLED, HOURLY_OBSERVATION_ONLY,
                 HOURLY_MARKET_BLEND_W, HOURLY_MAX_SECONDS_BEFORE_CLOSE)
 
+        # ── Dip addon config verify ──
+        if DIP_ADDON_ENABLED:
+            assert DIP_ADDON_MIN_DROP_CENTS >= 2, "dip addon drop too small"
+            assert DIP_ADDON_MAX_TOTAL_RISK <= MAX_RISK_PER_TRADE * 2, (
+                "dip addon risk too high")
+            logging.info(
+                "CONFIG_VERIFY (dip_addon): ENABLED=%s SHADOW=%s "
+                "DROP=%dc STC=%.0fs RISK=%.2f FLOOR=%dc",
+                DIP_ADDON_ENABLED, DIP_ADDON_SHADOW_MODE,
+                DIP_ADDON_MIN_DROP_CENTS, DIP_ADDON_MIN_STC_REMAINING,
+                DIP_ADDON_MAX_TOTAL_RISK, DIP_ADDON_MIN_ENTRY_PRICE)
+
     # ── Public entry point ────────────────────────────────────────────────
 
     def scan(self, active_windows: List[Dict]) -> Optional[Dict]:
@@ -7244,6 +7268,12 @@ class OrderExecutor:
         self._session_addon_fills: int = 0
         self._session_addon_unfilled: int = 0
         self._session_addon_skipped: int = 0
+        # Dip addon state
+        self._dip_addon_completed: set = set()         # tickers already dip-addon'd
+        self._session_dip_addon_attempts: int = 0
+        self._session_dip_addon_fills: int = 0
+        self._session_dip_addon_shadow: int = 0
+        self._session_dip_addon_skipped: int = 0
 
     @property
     def _active_order(self) -> Optional[Dict]:
@@ -8263,7 +8293,7 @@ class OrderExecutor:
             return
         candidate = order.get("candidate", {})
         # Don't re-register addon fills
-        if candidate.get("entry_path") == "confirmation_addon":
+        if candidate.get("entry_path") in ("confirmation_addon", "dip_addon"):
             return
 
         ticker = order["ticker"]
@@ -8518,6 +8548,7 @@ class OrderExecutor:
             return True
         else:
             self._session_addon_unfilled += 1
+            self._addon_completed.add(ticker)  # Don't retry — single attempt
             logging.warning(
                 "addon_UNFILLED: %s %dx @ %d¢", ticker, count, price)
             self._logger.log_execution({
@@ -8579,6 +8610,245 @@ class OrderExecutor:
         except Exception:
             logging.debug("addon balance API fallback failed", exc_info=True)
         return None
+
+    # ── Dip Addon ──────────────────────────────────────────────────────────
+
+    def _check_dip_addon_opportunities(self):
+        """Check filled positions for dip buy opportunities.
+
+        Two-tier logging:
+          1. Shadow tier (>=50c): Every qualifying dip -> evaluated_opportunities
+          2. Live tier (>=87c): Execution path (shadow or real)
+        """
+        if not DIP_ADDON_ENABLED or not self._addon_eligible:
+            return
+
+        now = time.time()
+
+        # Cleanup expired tickers from completed set
+        for t in list(self._dip_addon_completed):
+            if t not in self._addon_eligible:
+                self._dip_addon_completed.discard(t)
+
+        for ticker, meta in list(self._addon_eligible.items()):
+            # Already dip-addon'd or expired
+            if ticker in self._dip_addon_completed:
+                continue
+            if now - meta["fill_time"] > 300:
+                continue
+
+            # Don't dip-addon on addon fills
+            if meta.get("candidate", {}).get("entry_path") in (
+                    "confirmation_addon", "dip_addon"):
+                continue
+
+            # Time checks
+            elapsed = now - meta["fill_time"]
+            if elapsed < DIP_ADDON_MIN_SECONDS_SINCE_FILL:
+                continue
+
+            stc_at_fill = meta.get("seconds_to_close_at_fill")
+            if stc_at_fill is None:
+                continue
+            current_stc = stc_at_fill - elapsed
+            if current_stc < DIP_ADDON_MIN_STC_REMAINING:
+                continue
+
+            # Get current ask
+            current_ask = self._get_addon_best_ask(ticker)
+            if current_ask is None:
+                continue
+
+            # DIP CHECK: ask must drop >= threshold below entry
+            drop = meta["entry_price_cents"] - current_ask
+            if drop < DIP_ADDON_MIN_DROP_CENTS:
+                continue
+
+            # ── Shared computation (needed by both tiers) ──────────
+            asset = meta["asset"]
+            spot = self._get_addon_spot(asset)
+            if spot is None:
+                continue
+
+            blended_rv = meta.get("blended_rv")
+            try:
+                if self._ml and hasattr(self._ml, 'vol'):
+                    fresh_vol = self._ml.vol._cache.get(asset)
+                    if fresh_vol and fresh_vol.get("blended_rv"):
+                        blended_rv = fresh_vol["blended_rv"]
+            except Exception:
+                pass
+
+            threshold = meta.get("threshold")
+            if blended_rv is None or threshold is None:
+                continue
+
+            # Recompute probability at current spot/vol/stc
+            prob_result = ProbabilityEngine.compute(
+                spot, threshold, current_stc, blended_rv, asset=asset)
+            cal_prob = prob_result.get("calibrated_prob")
+            if cal_prob is None:
+                continue
+
+            # Sizing (computed once, used by both tiers)
+            addon_count = max(1, int(
+                meta["entry_count"] * DIP_ADDON_SIZE_FRACTION))
+            taker_fee = calculate_taker_fee(addon_count, current_ask)
+            net_edge = (cal_prob - (current_ask / 100.0)
+                        - (taker_fee / (addon_count * 100.0)))
+
+            # ── TIER 1: Shadow observation (50c floor) ─────────────
+            if current_ask >= DIP_ADDON_SHADOW_FLOOR:
+                self._session_dip_addon_shadow += 1
+                try:
+                    self._state.insert_evaluated_opportunity(
+                        ticker=ticker,
+                        event_ticker=meta["event_ticker"],
+                        asset=asset,
+                        filter_stage="dip_addon_shadow",
+                        spot_price=spot,
+                        threshold=threshold,
+                        volatility=blended_rv,
+                        market_price=current_ask,
+                        seconds_to_close=current_stc,
+                        calibrated_prob=cal_prob,
+                        edge=net_edge,
+                        strategy="DIP_ADDON_SHADOW",
+                        position_size=addon_count,
+                        z_score=meta.get("candidate", {}).get("z_score"),
+                        vol_regime=meta.get("candidate", {}).get(
+                            "vol_regime"),
+                        raw_prob=prob_result.get("raw_prob"),
+                        fee_adjusted_edge=net_edge,
+                        counterfactual=(
+                            "entry=%dc drop=%dc orig_count=%d"
+                            % (meta["entry_price_cents"], drop,
+                               meta["entry_count"])),
+                        product_type="dip_addon_shadow",
+                    )
+                except Exception:
+                    logging.debug("dip_addon shadow DB insert failed",
+                                  exc_info=True)
+
+                logging.info(
+                    "dip_addon_SHADOW_OBS: %s ask=%dc entry=%dc drop=%dc "
+                    "edge=%.4f prob=%.4f stc=%.0f count=%d",
+                    ticker, current_ask, meta["entry_price_cents"], drop,
+                    net_edge, cal_prob, current_stc, addon_count)
+
+            # ── TIER 2: Live execution path (87c floor) ────────────
+            # Mark completed after shadow log — one observation per ticker
+            self._dip_addon_completed.add(ticker)
+
+            if current_ask < DIP_ADDON_MIN_ENTRY_PRICE:
+                logging.info("dip_addon_SKIP_floor: %s ask=%dc < %dc",
+                             ticker, current_ask, DIP_ADDON_MIN_ENTRY_PRICE)
+                continue
+
+            # Edge check
+            if net_edge < MIN_EDGE_PCT / 100.0:
+                self._session_dip_addon_skipped += 1
+                logging.info(
+                    "dip_addon_SKIP_edge: %s edge=%.4f ask=%dc prob=%.4f",
+                    ticker, net_edge, current_ask, cal_prob)
+                continue
+
+            # Balance + combined exposure check
+            balance = self._get_addon_balance()
+            if balance is None:
+                continue
+
+            original_cost = meta["entry_count"] * meta["entry_price_cents"]
+            addon_cost = addon_count * current_ask
+            total_exposure = original_cost + addon_cost
+            max_allowed = int(
+                (balance + original_cost) * DIP_ADDON_MAX_TOTAL_RISK)
+            if total_exposure > max_allowed:
+                addon_count = max(
+                    0, (max_allowed - original_cost) // current_ask)
+                if addon_count < 1:
+                    self._session_dip_addon_skipped += 1
+                    logging.info(
+                        "dip_addon_SKIP_exposure: %s total=%dc > %dc",
+                        ticker, total_exposure, max_allowed)
+                    continue
+                addon_cost = addon_count * current_ask
+                taker_fee = calculate_taker_fee(addon_count, current_ask)
+                net_edge = (cal_prob - (current_ask / 100.0)
+                            - (taker_fee / (addon_count * 100.0)))
+                if net_edge < MIN_EDGE_PCT / 100.0:
+                    continue
+
+            # ── EXECUTE (or shadow-log the live tier) ──────────────
+            self._session_dip_addon_attempts += 1
+
+            if DIP_ADDON_SHADOW_MODE:
+                logging.info(
+                    "dip_addon_LIVE_SHADOW: %s %dx @ %dc (entry=%dc -%dc) "
+                    "stc=%.0f edge=%.4f prob=%.4f bal=%dc",
+                    ticker, addon_count, current_ask,
+                    meta["entry_price_cents"], drop, current_stc,
+                    net_edge, cal_prob, balance)
+                self._logger.log_execution({
+                    "action": "dip_addon_live_shadow",
+                    "ticker": ticker, "asset": asset,
+                    "entry_price": meta["entry_price_cents"],
+                    "dip_price": current_ask, "drop_cents": drop,
+                    "addon_count": addon_count, "edge": net_edge,
+                    "prob": cal_prob, "stc": current_stc,
+                    "balance": balance,
+                })
+                return  # One per tick
+
+            # LIVE: taker IOC, single attempt
+            logging.info(
+                "dip_addon_TRIGGER: %s %dx @ %dc (entry=%dc -%dc) "
+                "stc=%.0f edge=%.4f prob=%.4f bal=%dc",
+                ticker, addon_count, current_ask,
+                meta["entry_price_cents"], drop, current_stc,
+                net_edge, cal_prob, balance)
+
+            addon_candidate = {
+                "ticker": ticker,
+                "event_ticker": meta["event_ticker"],
+                "asset": asset,
+                "best_yes_ask": current_ask,
+                "position_size": addon_count,
+                "calibrated_prob": cal_prob,
+                "edge": net_edge,
+                "seconds_to_close": current_stc,
+                "balance_at_scan": balance,
+                "entry_path": "dip_addon",
+                "strategy": "DIP_ADDON",
+                "blended_rv": blended_rv,
+                "threshold": threshold,
+                "vol_regime": meta.get("candidate", {}).get("vol_regime"),
+                "z_score": meta.get("candidate", {}).get("z_score"),
+                "kelly_f": meta.get("candidate", {}).get("kelly_f"),
+                "ob_snapshot": {},
+                "original_entry_price": meta["entry_price_cents"],
+                "original_entry_count": meta["entry_count"],
+                "price_drop": drop,
+            }
+
+            result = self._submit_taker(addon_candidate)
+            if result is not None:
+                self._session_dip_addon_fills += 1
+                logging.info("dip_addon_FILLED: %s %dx @ %dc (-%dc)",
+                             ticker, addon_count, current_ask, drop)
+                if _TELEGRAM:
+                    try:
+                        _cost = addon_count * current_ask / 100
+                        _TELEGRAM.send(
+                            f"Dip addon: {asset} {addon_count}ct "
+                            f"@ {current_ask}c "
+                            f"(${_cost:.2f}, -{drop}c from entry)")
+                    except Exception:
+                        pass
+            else:
+                logging.warning("dip_addon_UNFILLED: %s %dx @ %dc",
+                                ticker, addon_count, current_ask)
+            return  # One per tick max
 
     # ── Cancel ────────────────────────────────────────────────────────────
 
@@ -9635,6 +9905,12 @@ class MainLoop:
             self.executor._check_addon_opportunities()
         except Exception:
             logging.debug("addon check failed", exc_info=True)
+
+        # Check dip addon opportunities on open positions
+        try:
+            self.executor._check_dip_addon_opportunities()
+        except Exception:
+            logging.debug("dip addon check failed", exc_info=True)
 
         # Run opportunity scanner (always — execute() rejects if asset already active)
         candidate = self.scanner.scan(self._active_windows)
