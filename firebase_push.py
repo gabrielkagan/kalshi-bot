@@ -1090,7 +1090,8 @@ class FirebasePusher:
                     try:
                         ob_ts = ob.get("ts", 0)
                         age_s = round(now_ts - ob_ts, 1)
-                        stale = age_s > 30
+                        if age_s > 60:
+                            continue  # Don't push stale orderbooks to dashboard
 
                         no_bids = ob.get("no", [])
                         yes_bids = ob.get("yes", [])

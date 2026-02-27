@@ -7099,8 +7099,13 @@ class OpportunityScanner:
         """
         now = time.time()
 
-        # Try WS orderbook first (free, real-time)
-        if self._kalshi_feed and self._kalshi_feed.is_connected:
+        # Skip WS subscription for hourly tickers — too many strikes (75/asset),
+        # they never get unsubscribed properly, and pollute the Firebase dashboard.
+        _hourly_prefixes = tuple(HOURLY_SERIES_TICKERS.values())
+        is_hourly = ticker.startswith(_hourly_prefixes)
+
+        # Try WS orderbook first (free, real-time) — 15M only
+        if self._kalshi_feed and self._kalshi_feed.is_connected and not is_hourly:
             ws_ob = self._kalshi_feed.get_orderbook(ticker)
             if ws_ob and now - ws_ob.get("ts", 0) < ORDERBOOK_CACHE_TTL * 2:
                 # Subscribe if not already (ensures future deltas flow)
