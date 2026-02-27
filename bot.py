@@ -6212,6 +6212,7 @@ class OpportunityScanner:
                                 best_ask_source=best_ask_source,
                                 raw_prob=raw_prob_pre,
                                 calibration_method=calibration_method_pre,
+                                product_type=window.get("product_type"),
                                 **_shadow_diag)
                     except Exception:
                         pass
@@ -6508,6 +6509,7 @@ class OpportunityScanner:
                                 shadow_cal_prob=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
+                                product_type=window.get("product_type"),
                                 **_shadow_diag)
                     except Exception:
                         pass
@@ -6595,6 +6597,7 @@ class OpportunityScanner:
                                 shadow_cal_prob=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
+                                product_type=window.get("product_type"),
                                 **_shadow_diag)
                     except Exception:
                         pass
@@ -6712,6 +6715,7 @@ class OpportunityScanner:
                                 shadow_cal_prob=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
+                                product_type=window.get("product_type"),
                                 **_shadow_diag)
                     except Exception:
                         pass
