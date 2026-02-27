@@ -1,6 +1,6 @@
 # Kalshi Crypto Trading Bot
 
-Cryptocurrency prediction market trading bot for the Kalshi platform. Trades above/below 15-minute window markets on BTC, ETH, SOL, and XRP.
+Cryptocurrency prediction market trading bot for the Kalshi platform. Trades above/below 15-minute window markets on BTC, ETH, SOL, and XRP. Also collects observation data on hourly above/below markets (KXBTCD, KXETHD, KXSOLD, KXXRPD).
 
 ## Critical Rules
 
@@ -36,8 +36,13 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | MAX_SECONDS_BEFORE_CLOSE | 270 | 43 | Start scanning 4.5 min before close (data: 240-270s 8W/0L) |
 | ONE_ASSET_PER_WINDOW | False | 44 | Can trade multiple assets per window |
 | SIZING_TIERS | [(0.04,0.25),(0.02,0.20),(0.015,0.15),(0.01,0.10),(0.009,0.07)] | 339 | Fee-adjusted edge tiered sizing (reduced: was 50/35/20) |
-| DRAWDOWN_HALF_THRESHOLD | 0.92 | 346 | Halve size below 92% of starting balance (was 90%) |
-| DRAWDOWN_QUARTER_THRESHOLD | 0.85 | 347 | Quarter size below 85% (was 80%) |
+| DRAWDOWN_HALF_THRESHOLD | 0.90 | 346 | Halve size below 90% of starting balance |
+| DRAWDOWN_QUARTER_THRESHOLD | 0.80 | 347 | Quarter size below 80% |
+| MAKER_ONLY_THRESHOLD | 90.0 | 358 | No taker execution below 90s to close (maker only) |
+| HOURLY_OBSERVATION_ENABLED | True | 46 | Master switch for hourly data collection |
+| HOURLY_OBSERVATION_ONLY | True | 47 | True = log only; False = live trading |
+| HOURLY_MARKET_BLEND_W | 0.70 | 53 | Higher blend — calibration untested at hourly |
+| HOURLY_MAX_SECONDS_BEFORE_CLOSE | 900 | 51 | 15 min before close |
 
 ## Shadow Mode Features
 
@@ -63,8 +68,9 @@ Promoted features (shadow off, driving live behavior):
 |---------|--------|-------|
 | `post_only=True` on maker orders | Active | Guarantees maker fees (4x cheaper) |
 | `time_in_force="immediate_or_cancel"` on taker orders | Active | Auto-cancel unfilled |
-| Direct taker for <60s | Active | Skip maker, IOC immediately when <60s to close |
-| Cancel-replace escalation | Active | Cancel maker + IOC taker (amend removed — 4% fill rate) |
+| Direct taker for <60s | Blocked (<90s) | Blocked by maker-only threshold; would skip maker, IOC immediately |
+| Cancel-replace escalation | Blocked (<90s) | Blocked by maker-only threshold; cancel maker + IOC taker |
+| Maker-only below 90s | Active | No taker execution below 90s to close (data: taker <90s cost -$85) |
 | `get_queue_position()` polling | Active | Every ~5s, queue-aware escalation |
 | KalshiFeed WebSocket | Active | fill + orderbook_delta channels |
 | WS fill detection | Active | Zero API cost, REST fallback |
@@ -95,7 +101,8 @@ Pushing to `main` triggers auto-deploy:
 - **Order type:** All orders are limit orders (no market orders as of Feb 2026)
 - **Outcome detection:** Use Kalshi settlements API, never z-score heuristics or balance deltas
 - **API tier:** Advanced (30 reads/sec, 30 writes/sec)
-- **Market series:** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M
+- **Market series (15M):** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M
+- **Market series (hourly):** KXBTCD, KXETHD, KXSOLD, KXXRPD (observation mode)
 
 ## Fee Formula
 

@@ -376,19 +376,27 @@ class FirebasePusher:
                     min(w["seconds_to_close"] for w in windows), 1
                 )
                 by_asset = {}
+                hourly_count = 0
+                fifteenm_count = 0
                 for w in windows:
                     a = w["asset"]
                     by_asset[a] = by_asset.get(a, 0) + 1
+                    if w.get("product_type") == "hourly":
+                        hourly_count += 1
+                    else:
+                        fifteenm_count += 1
                 snap["active_windows"] = {
                     "total": len(windows),
                     "by_asset": by_asset,
+                    "fifteenm": fifteenm_count,
+                    "hourly": hourly_count,
                 }
             else:
                 snap["seconds_to_next_close"] = -1
-                snap["active_windows"] = {"total": 0, "by_asset": {}}
+                snap["active_windows"] = {"total": 0, "by_asset": {}, "fifteenm": 0, "hourly": 0}
         except Exception:
             snap["seconds_to_next_close"] = -1
-            snap["active_windows"] = {"total": 0, "by_asset": {}}
+            snap["active_windows"] = {"total": 0, "by_asset": {}, "fifteenm": 0, "hourly": 0}
 
         # Convergence velocity per asset
         try:
@@ -1017,6 +1025,52 @@ class FirebasePusher:
                 }
         except Exception:
             logging.debug("Firebase: shadow_cal_pipeline build failed", exc_info=True)
+
+        # ── Hourly observation mode ──────────────────────────────────────
+        try:
+            import bot as _bot_mod
+            hourly_enabled = getattr(_bot_mod, "HOURLY_OBSERVATION_ENABLED", False)
+            if hourly_enabled:
+                hourly_data = {
+                    "enabled": True,
+                    "observation_only": getattr(_bot_mod, "HOURLY_OBSERVATION_ONLY", True),
+                    "blend_w": getattr(_bot_mod, "HOURLY_MARKET_BLEND_W", 0.70),
+                    "max_stc": getattr(_bot_mod, "HOURLY_MAX_SECONDS_BEFORE_CLOSE", 900),
+                }
+                conn = self._ml.state.conn
+                # Settled hourly observations
+                try:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='hourly' AND status='settled'"
+                    ).fetchone()
+                    hourly_data["settled_count"] = row["cnt"] if row else 0
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='hourly' AND status='settled' AND market_result='yes'"
+                    ).fetchone()
+                    hourly_data["settled_wins"] = row["cnt"] if row else 0
+                    row = conn.execute(
+                        "SELECT AVG(fee_adjusted_edge) AS avg_e FROM evaluated_opportunities "
+                        "WHERE product_type='hourly' AND market_price IS NOT NULL"
+                    ).fetchone()
+                    hourly_data["avg_edge"] = round(row["avg_e"], 6) if row and row["avg_e"] else None
+                except Exception:
+                    hourly_data["settled_count"] = 0
+                    hourly_data["settled_wins"] = 0
+                    hourly_data["avg_edge"] = None
+                # Pending (unsettled) hourly observations
+                try:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='hourly' AND status='pending'"
+                    ).fetchone()
+                    hourly_data["pending_count"] = row["cnt"] if row else 0
+                except Exception:
+                    hourly_data["pending_count"] = 0
+                snap["hourly_observation"] = hourly_data
+        except Exception:
+            logging.debug("Firebase: hourly_observation build failed", exc_info=True)
 
         # ── Orderbook visibility (dashboard only) ─────────────────────────
         try:

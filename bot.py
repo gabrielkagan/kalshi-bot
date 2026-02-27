@@ -43,6 +43,19 @@ MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 270    # start scanning 4.5 min before close (data: 240-270s is 8W/0L, 100% WR)
 ONE_ASSET_PER_WINDOW = False
 
+# ─── Hourly Observation Mode ──────────────────────────────────────────────────
+HOURLY_OBSERVATION_ENABLED = True     # Master switch for hourly data collection
+HOURLY_OBSERVATION_ONLY = True        # True = log only; False = live trading (plug-and-play)
+HOURLY_SERIES_TICKERS = {
+    "BTC": "KXBTCD",
+    "ETH": "KXETHD",
+    "SOL": "KXSOLD",
+    "XRP": "KXXRPD",
+}
+HOURLY_MAX_SECONDS_BEFORE_CLOSE = 900   # 15 min before close (conservative)
+HOURLY_MIN_SECONDS_BEFORE_CLOSE = 0
+HOURLY_MARKET_BLEND_W = 0.70            # Higher blend — calibration untested at hourly
+
 # ─── API Configuration ───────────────────────────────────────────────────────
 BASE_URL = ("https://api.elections.kalshi.com" if os.environ.get("KALSHI_ENV") == "production"
             else "https://demo-api.kalshi.co")
@@ -1171,6 +1184,7 @@ class StateManager:
             ("shadow_cal_prob", "REAL"),
             ("shadow_cal_fee_edge", "REAL"),
             ("shadow_cal_temperature", "REAL"),
+            ("product_type", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1191,6 +1205,7 @@ class StateManager:
             ("mz_baseline_qlike", "REAL"),
             ("mz_qlike", "REAL"),
             ("counterfactual", "TEXT"),
+            ("product_type", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE rejected_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1242,7 +1257,7 @@ class StateManager:
         if prefix.startswith("KX"):
             asset = prefix[2:]         # "BTC15M" or "BTC"
             # Strip known product suffixes
-            for suffix in ("15M", "1H", "1D"):
+            for suffix in ("15M", "1H", "1D", "D"):
                 if asset.endswith(suffix):
                     asset = asset[:-len(suffix)]
             return asset
@@ -1462,7 +1477,8 @@ class StateManager:
                          mz_shadow_sigmoid_w: Optional[float] = None,
                          mz_baseline_qlike: Optional[float] = None,
                          mz_qlike: Optional[float] = None,
-                         counterfactual: Optional[str] = None):
+                         counterfactual: Optional[str] = None,
+                         product_type: Optional[str] = None):
         """Insert a rejected opportunity. INSERT OR IGNORE deduplicates by ticker."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
@@ -1472,14 +1488,14 @@ class StateManager:
                  seconds_to_close, calibrated_prob, status,
                  egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
                  shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
-                 counterfactual)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 counterfactual, product_type)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, event_ticker, asset, rejection_reason, now,
               z_score, spot_price, threshold, volatility, market_price,
               seconds_to_close, calibrated_prob, "pending",
               egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
               shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
-              counterfactual))
+              counterfactual, product_type))
         self.conn.commit()
 
     def get_unsettled_rejections(self) -> List[Dict]:
@@ -1537,7 +1553,8 @@ class StateManager:
                                      counterfactual: Optional[str] = None,
                                      shadow_cal_prob: Optional[float] = None,
                                      shadow_cal_fee_edge: Optional[float] = None,
-                                     shadow_cal_temperature: Optional[float] = None):
+                                     shadow_cal_temperature: Optional[float] = None,
+                                     product_type: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
@@ -1556,8 +1573,9 @@ class StateManager:
                      egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
                      shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
                      counterfactual,
-                     shadow_cal_prob, shadow_cal_fee_edge, shadow_cal_temperature)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     shadow_cal_prob, shadow_cal_fee_edge, shadow_cal_temperature,
+                     product_type)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1571,7 +1589,8 @@ class StateManager:
                   egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
                   shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
                   counterfactual,
-                  shadow_cal_prob, shadow_cal_fee_edge, shadow_cal_temperature))
+                  shadow_cal_prob, shadow_cal_fee_edge, shadow_cal_temperature,
+                  product_type))
             self.conn.commit()
         except Exception as e:
             logging.debug(f"insert_evaluated_opportunity failed: {e}")
@@ -5785,6 +5804,17 @@ class OpportunityScanner:
             SIZING_TIERS, DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
             MAKER_ONLY_THRESHOLD)
 
+        # ── Hourly observation config verify ──
+        if HOURLY_OBSERVATION_ENABLED:
+            assert HOURLY_OBSERVATION_ONLY is True, (
+                "HOURLY_OBSERVATION_ONLY must be True until observation data validates calibration")
+            assert HOURLY_MARKET_BLEND_W >= 0.50, (
+                f"HOURLY_MARKET_BLEND_W={HOURLY_MARKET_BLEND_W} too low for untested calibration")
+            logging.info(
+                "CONFIG_VERIFY (hourly): ENABLED=%s OBS_ONLY=%s BLEND_W=%.2f MAX_STC=%ds",
+                HOURLY_OBSERVATION_ENABLED, HOURLY_OBSERVATION_ONLY,
+                HOURLY_MARKET_BLEND_W, HOURLY_MAX_SECONDS_BEFORE_CLOSE)
+
     # ── Public entry point ────────────────────────────────────────────────
 
     def scan(self, active_windows: List[Dict]) -> Optional[Dict]:
@@ -5821,9 +5851,18 @@ class OpportunityScanner:
             except Exception:
                 pass
 
+        # Build hourly ticker set (skip WS subscription — observation only)
+        _hourly_tickers = set()
+        for w in active_windows:
+            if w.get("product_type") == "hourly":
+                for m in w.get("markets", []):
+                    _hourly_tickers.add(m.get("ticker", ""))
+
         # Pre-subscribe all active tickers to WS and feed OFT from WS orderbooks
         if self._kalshi_feed and self._kalshi_feed.is_connected:
             for t in active_tickers:
+                if t in _hourly_tickers:
+                    continue  # skip WS subscription for hourly (observation only)
                 try:
                     self._kalshi_feed.subscribe_ticker(t)
                 except Exception:
@@ -5847,11 +5886,16 @@ class OpportunityScanner:
             for a in ASSETS
         }
 
-        # 1. Filter windows by time range
-        time_ok_windows = [
-            w for w in active_windows
-            if MIN_SECONDS_BEFORE_CLOSE <= w["seconds_to_close"] <= MAX_SECONDS_BEFORE_CLOSE
-        ]
+        # 1. Filter windows by time range (product-type-specific thresholds)
+        time_ok_windows = []
+        for w in active_windows:
+            stc = w["seconds_to_close"]
+            if w.get("product_type") == "hourly":
+                if HOURLY_MIN_SECONDS_BEFORE_CLOSE <= stc <= HOURLY_MAX_SECONDS_BEFORE_CLOSE:
+                    time_ok_windows.append(w)
+            else:
+                if MIN_SECONDS_BEFORE_CLOSE <= stc <= MAX_SECONDS_BEFORE_CLOSE:
+                    time_ok_windows.append(w)
         if not time_ok_windows:
             return None
 
@@ -5861,6 +5905,9 @@ class OpportunityScanner:
         # 3. Filter out windows whose timeslot is already occupied by another asset
         eligible_windows = []
         for w in time_ok_windows:
+            if w.get("product_type") == "hourly":
+                eligible_windows.append(w)
+                continue  # hourly windows bypass timeslot logic (observation-only)
             ts = self._window_timeslot(w["event_ticker"])
             if ts in occupied:
                 asset_in_slot = occupied[ts]
@@ -5963,6 +6010,9 @@ class OpportunityScanner:
                 min_prob_needed = (MIN_ENTRY_PRICE + MIN_EDGE_PCT) / 100.0
                 if cal_prob < min_prob_needed:
                     scan_stats[asset]["low_prob"] += 1
+                    if window.get("product_type") == "hourly":
+                        # Volume control: count but don't log (67/75 strikes are low_prob)
+                        continue
                     try:
                         self._logger.log_opportunity({
                             "filter_stage": "low_probability",
@@ -6234,9 +6284,12 @@ class OpportunityScanner:
                 # ── Market-price blending ──────────────────────────────────
                 # For mid-range prices, blend model with market to temper overconfidence.
                 # Skip blending for endgame (≥96c) where dynamic cap provides the edge.
+                _effective_blend_w = (HOURLY_MARKET_BLEND_W
+                                     if window.get("product_type") == "hourly"
+                                     else MARKET_BLEND_W)
                 if best_ask < ENDGAME_BLEND_PRICE:
                     market_implied_prob = best_ask / 100.0
-                    final_prob = (1.0 - MARKET_BLEND_W) * final_prob + MARKET_BLEND_W * market_implied_prob
+                    final_prob = (1.0 - _effective_blend_w) * final_prob + _effective_blend_w * market_implied_prob
 
                 edge = final_prob - best_ask / 100.0
 
@@ -6664,6 +6717,45 @@ class OpportunityScanner:
                         pass
                     continue
 
+                # ── HOURLY OBSERVATION GATE ──
+                if window.get("product_type") == "hourly" and HOURLY_OBSERVATION_ONLY:
+                    try:
+                        self._logger.log_opportunity({
+                            "filter_stage": "hourly_observation",
+                            "product_type": "hourly",
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "spot_price": spot, "threshold": threshold,
+                            "volatility": blended_rv, "market_price": best_ask,
+                            "seconds_to_close": round(seconds_remaining, 1),
+                            "calibrated_prob": round(final_prob, 6),
+                            "edge": round(edge, 6),
+                            "fee_adjusted_edge": round(fee_adjusted_edge, 6),
+                            "position_size": sizing["contracts"],
+                            "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
+                            **_shadow_diag,
+                        })
+                    except Exception:
+                        pass
+                    _dedup_key = (ticker, "hourly_observation")
+                    if _dedup_key not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dedup_key)
+                        _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset, "hourly_observation",
+                            spot_price=spot, threshold=threshold, volatility=blended_rv,
+                            market_price=best_ask, seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                            vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                            calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                            breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                            ask_depth=ask_depth, best_ask_source=best_ask_source,
+                            product_type="hourly", **_shadow_diag)
+                    logging.info("HOURLY_OBS: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
+                                 ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
+                    continue  # DO NOT add to candidates — this is the safety gate
+
                 scan_stats[asset]["candidates"] += 1
                 self._session_total_candidates += 1
                 self._session_asset_perf[asset]["opportunities_found"] += 1
@@ -6709,6 +6801,7 @@ class OpportunityScanner:
                     "ticker": ticker,
                     "event_ticker": window["event_ticker"],
                     "asset": asset,
+                    "product_type": window.get("product_type"),
                     "spot": spot,
                     "threshold": threshold,
                     "seconds_to_close": round(seconds_remaining, 1),
@@ -7187,6 +7280,12 @@ class OrderExecutor:
 
     def execute(self, candidate: Dict) -> Optional[Dict]:
         """Always submit maker order. Escalation to taker happens in tick()."""
+        # Hourly observation safety belt — should never reach here
+        if candidate.get("product_type") == "hourly" and HOURLY_OBSERVATION_ONLY:
+            logging.error("SAFETY: hourly candidate reached execute() — should never happen. Ticker=%s",
+                          candidate.get("ticker"))
+            return None
+
         asset = candidate["asset"]
         if asset in self._active_orders:
             return None
@@ -8938,7 +9037,7 @@ class SettlementTracker:
 
 def discover_active_windows(client: KalshiClient) -> List[Dict]:
     """
-    Query Kalshi for currently open 15-minute crypto windows.
+    Query Kalshi for currently open crypto windows (15M + hourly).
 
     Uses the events endpoint (GET /events) with status=open and
     with_nested_markets=true to find tradeable markets. The markets
@@ -8946,12 +9045,17 @@ def discover_active_windows(client: KalshiClient) -> List[Dict]:
     'initialized' markets on production, missing the active ones.
 
     Returns list of dicts with asset, event_ticker, close_time,
-    seconds_to_close, and markets list.
+    seconds_to_close, markets list, and product_type.
     """
     now = datetime.datetime.now(timezone.utc)
     windows: List[Dict] = []
 
-    for asset, series in SERIES_TICKERS.items():
+    # Build combined series list: 15M always, hourly when enabled
+    series_list = [(a, s, "15m") for a, s in SERIES_TICKERS.items()]
+    if HOURLY_OBSERVATION_ENABLED:
+        series_list += [(a, s, "hourly") for a, s in HOURLY_SERIES_TICKERS.items()]
+
+    for asset, series, product_type in series_list:
         result = client.get_events(
             series_ticker=series,
             status="open",
@@ -8988,12 +9092,15 @@ def discover_active_windows(client: KalshiClient) -> List[Dict]:
                 continue
 
             seconds_to_close = (close_time - now).total_seconds()
+            if seconds_to_close < 0:
+                continue
             windows.append({
                 "asset": asset,
                 "event_ticker": event_ticker,
                 "close_time": close_time,
                 "seconds_to_close": seconds_to_close,
                 "markets": mkts,
+                "product_type": product_type,
             })
 
         if market_count == 0:
@@ -9210,13 +9317,15 @@ class MainLoop:
 
         Dashboard visibility ONLY — does NOT affect Scanner.scan(),
         execution, or any trading logic. Called every 30s after
-        _refresh_active_windows().
+        _refresh_active_windows(). Skips hourly tickers (observation only).
         """
         if not self.kalshi_feed or not self.kalshi_feed.is_connected:
             return
         try:
             active_tickers: set = set()
             for window in self._active_windows:
+                if window.get("product_type") == "hourly":
+                    continue  # skip hourly tickers from WS subscription
                 for mkt in window.get("markets", []):
                     ticker = mkt.get("ticker", "")
                     if ticker:
@@ -9436,12 +9545,15 @@ class MainLoop:
         if self.egarch_estimator:
             self.egarch_estimator.maybe_refit()
 
-        # Recompute seconds_to_close and log each window
+        # Recompute seconds_to_close and log each window (skip hourly vol diagnostics)
         utc_now = datetime.datetime.now(timezone.utc)
         prices = self.feed.get_all_prices()
         for window in self._active_windows:
             seconds_to_close = (window["close_time"] - utc_now).total_seconds()
             window["seconds_to_close"] = seconds_to_close
+
+            if window.get("product_type") == "hourly":
+                continue  # volume control: skip scan journal writes for hourly
 
             in_range = (
                 MIN_SECONDS_BEFORE_CLOSE
