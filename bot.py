@@ -5902,17 +5902,15 @@ class OpportunityScanner:
         # 2. Get occupied timeslots (positions + resting orders)
         occupied = self._get_occupied_timeslots()
 
-        # 3. Filter out windows whose timeslot is already occupied by another asset
+        # 3. Filter out windows whose timeslot already has this SAME asset
         eligible_windows = []
         for w in time_ok_windows:
             if w.get("product_type") == "hourly":
                 eligible_windows.append(w)
                 continue  # hourly windows bypass timeslot logic (observation-only)
             ts = self._window_timeslot(w["event_ticker"])
-            if ts in occupied:
-                asset_in_slot = occupied[ts]
-                if asset_in_slot != w["asset"]:
-                    continue  # another asset occupies this timeslot
+            if ts in occupied and w["asset"] in occupied[ts]:
+                continue  # this asset already has a position/order in this timeslot
             eligible_windows.append(w)
 
         if not eligible_windows:
@@ -7154,23 +7152,23 @@ class OpportunityScanner:
             return parts[1]
         return event_ticker
 
-    def _get_occupied_timeslots(self) -> Dict[str, str]:
-        """Return {timeslot: asset} for timeslots with open positions or resting orders."""
-        occupied: Dict[str, str] = {}
+    def _get_occupied_timeslots(self) -> Dict[str, set]:
+        """Return {timeslot: set(assets)} for timeslots with open positions or resting orders."""
+        occupied: Dict[str, set] = {}
 
         for pos in self._state.get_open_positions():
             et = pos.get("event_ticker", "")
             asset = pos.get("asset", "")
             ts = self._window_timeslot(et)
             if ts:
-                occupied[ts] = asset
+                occupied.setdefault(ts, set()).add(asset)
 
         for order in self._state.get_resting_orders():
             et = order.get("event_ticker", "")
             asset = order.get("asset", "")
             ts = self._window_timeslot(et)
             if ts:
-                occupied[ts] = asset
+                occupied.setdefault(ts, set()).add(asset)
 
         return occupied
 
