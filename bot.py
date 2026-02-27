@@ -1350,7 +1350,7 @@ class StateManager:
 
     def _reconcile_orders(self, client: KalshiClient, now: str):
         api_resp = client.get_orders(status="resting")
-        if not api_resp or not api_resp.get("orders"):
+        if api_resp is None:
             logging.warning("Could not fetch orders for reconciliation")
             return
 
