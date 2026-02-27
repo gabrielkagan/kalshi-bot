@@ -52,7 +52,7 @@ HOURLY_SERIES_TICKERS = {
     "SOL": "KXSOLD",
     "XRP": "KXXRPD",
 }
-HOURLY_MAX_SECONDS_BEFORE_CLOSE = 900   # 15 min before close (conservative)
+HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800  # 30 min before close
 HOURLY_MIN_SECONDS_BEFORE_CLOSE = 0
 HOURLY_MARKET_BLEND_W = 0.70            # Higher blend — calibration untested at hourly
 
