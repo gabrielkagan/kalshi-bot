@@ -7105,6 +7105,7 @@ class OrderExecutor:
         self._ml = main_loop
         self._kalshi_feed = kalshi_feed
         self._active_orders: Dict[str, Dict] = {}  # asset → order dict
+        self._recent_taker_tickers: Dict[str, float] = {}  # ticker → timestamp (cooldown after IOC)
         # Session counters for execution engine stats
         self._session_amend_attempts: int = 0
         self._session_amend_successes: int = 0
@@ -7171,6 +7172,14 @@ class OrderExecutor:
         asset = candidate["asset"]
         if asset in self._active_orders:
             return None
+
+        # Cooldown: skip tickers recently attempted via synchronous IOC
+        ticker = candidate["ticker"]
+        cooldown_ts = self._recent_taker_tickers.get(ticker)
+        if cooldown_ts is not None:
+            if time.time() - cooldown_ts < 60:
+                return None
+            del self._recent_taker_tickers[ticker]
 
         if OBSERVATION_MODE:
             logging.info(
@@ -7323,6 +7332,7 @@ class OrderExecutor:
                 seconds_to_close, net_edge, cal_prob, taker_fee)
 
             candidate["entry_path"] = "direct_taker"
+            self._recent_taker_tickers[candidate["ticker"]] = time.time()
             result = self._submit_taker(candidate)
             if result is not None:
                 self._session_direct_taker_fills += 1
@@ -7387,6 +7397,7 @@ class OrderExecutor:
                 ticker, count, price, rejections, net_edge, cal_prob, taker_fee)
             self._session_post_only_taker_escalations += 1
             candidate["entry_path"] = "post_only_taker"
+            self._recent_taker_tickers[ticker] = time.time()
             result = self._submit_taker(candidate)
             if result is not None:
                 self._post_only_rejections.pop(ticker, None)
@@ -7683,6 +7694,7 @@ class OrderExecutor:
         candidate = dict(order["candidate"])
         candidate["best_yes_ask"] = best_ask
         candidate["entry_path"] = "escalation_ioc"
+        self._recent_taker_tickers[ticker] = time.time()
 
         return self._submit_taker(candidate)
 
