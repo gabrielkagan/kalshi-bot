@@ -7236,11 +7236,13 @@ class OrderExecutor:
                     _edge = candidate.get("edge")
                     _prob = candidate.get("calibrated_prob")
                     _sz = candidate.get("position_size", "?")
+                    _asset = candidate.get("asset", "?")
                     _edge_s = f"{_edge:.1%}" if _edge is not None else "?"
                     _prob_s = f"{_prob:.0%}" if _prob is not None else "?"
+                    _cost = (_ba * _sz / 100) if isinstance(_ba, (int, float)) and isinstance(_sz, (int, float)) else 0
                     _TELEGRAM.send(
-                        f"\U0001f4ca {candidate['ticker']} @ {_ba}c, "
-                        f"edge={_edge_s}, prob={_prob_s}, size={_sz}",
+                        f"\U0001f4ca {_asset} {_sz}ct @ {_ba}c "
+                        f"(${_cost:.2f}) edge={_edge_s} prob={_prob_s}",
                         dedup_key=candidate["ticker"],
                     )
                 if not hasattr(self, '_last_obs_ticker') or self._last_obs_ticker != candidate['ticker']:
@@ -8392,9 +8394,10 @@ class OrderExecutor:
                 price - meta["entry_price_cents"])
             if _TELEGRAM:
                 try:
+                    _addon_cost = count * price / 100
                     _TELEGRAM.send(
-                        f"\u2795 Addon: {ticker} {count}x @ {price}c "
-                        f"(+{price - meta['entry_price_cents']}c)")
+                        f"\u2795 Addon: {meta.get('asset', '?')} {count}ct @ {price}c "
+                        f"(${_addon_cost:.2f}, +{price - meta['entry_price_cents']}c slip)")
                 except Exception:
                     pass
 
@@ -8725,7 +8728,18 @@ class SettlementTracker:
         if _TELEGRAM:
             emoji = "\u2705" if outcome == "WIN" else "\u274c"
             sign = "+" if pnl >= 0 else ""
-            _TELEGRAM.send(f"{emoji} {outcome} {ticker} {sign}{pnl}c")
+            pnl_dollars = pnl / 100
+            bal_str = ""
+            try:
+                bal_resp = self._client.get_balance()
+                if bal_resp:
+                    bal_str = f" | Balance: ${bal_resp.get('balance', 0) / 100:.2f}"
+            except Exception:
+                pass
+            _TELEGRAM.send(
+                f"{emoji} {outcome} {pos['asset']} {recorded_count}ct "
+                f"@{pos['avg_price_cents']}c {sign}${abs(pnl_dollars):.2f}{bal_str}"
+            )
 
     # ── Rejection Settlement ─────────────────────────────────────────────
 
@@ -9394,7 +9408,8 @@ class MainLoop:
             )
             if _TELEGRAM:
                 _TELEGRAM.send(
-                    f"\U0001f4c8 Daily ({yesterday}): {wins}W/{losses}L, PnL={total_pnl}c"
+                    f"\U0001f4c8 Daily ({yesterday}): {wins}W/{losses}L, "
+                    f"PnL=${total_pnl / 100:+.2f}, fees=${total_fees / 100:.2f}"
                 )
         except Exception as e:
             logging.debug(f"_log_daily_summary failed: {e}")
