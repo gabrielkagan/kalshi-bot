@@ -9105,6 +9105,15 @@ class MainLoop:
             logging.info(f"Firebase dashboard not available: {e}")
             self.firebase = None
 
+        # Start Supabase syncer (if configured)
+        try:
+            from supabase_sync import SupabaseSyncer
+            self.supabase_syncer = SupabaseSyncer(self)
+            self.supabase_syncer.start()
+        except Exception as e:
+            logging.info(f"Supabase sync not available: {e}")
+            self.supabase_syncer = None
+
         # Initial market scan
         self._refresh_active_windows()
 
@@ -9516,6 +9525,8 @@ class MainLoop:
             self.kalshi_feed.stop()
         if hasattr(self, 'firebase'):
             self.firebase.stop()
+        if hasattr(self, 'supabase_syncer') and self.supabase_syncer:
+            self.supabase_syncer.stop()
         if hasattr(self, 'coinglass'):
             self.coinglass.stop()
         if hasattr(self, 'cross_feed') and self.cross_feed:
