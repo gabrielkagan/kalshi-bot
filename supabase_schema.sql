@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS trades (
     calibrated_prob REAL,
     edge REAL,
     kelly_f REAL,
+    escalation_type TEXT,
+    maker_price_cents INTEGER,
+    maker_wait_seconds REAL,
+    product_type TEXT,
     is_win BOOLEAN GENERATED ALWAYS AS (
         (market_result IN ('yes', 'all_yes') AND side = 'yes') OR
         (market_result IN ('no', 'all_no') AND side = 'no')
@@ -52,6 +56,7 @@ CREATE TABLE IF NOT EXISTS trades (
 
 CREATE INDEX IF NOT EXISTS idx_trades_asset ON trades(asset);
 CREATE INDEX IF NOT EXISTS idx_trades_settled ON trades(settled_at);
+CREATE INDEX IF NOT EXISTS idx_trades_product_type ON trades(product_type);
 
 CREATE TABLE IF NOT EXISTS evaluations (
     id BIGINT PRIMARY KEY,  -- matches SQLite rowid
@@ -101,6 +106,7 @@ CREATE TABLE IF NOT EXISTS evaluations (
     shadow_cal_prob REAL,
     shadow_cal_fee_edge REAL,
     shadow_cal_temperature REAL,
+    product_type TEXT,
     synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -109,6 +115,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_ticker_stage ON evaluations(ticker, filter_s
 CREATE INDEX IF NOT EXISTS idx_eval_asset ON evaluations(asset);
 CREATE INDEX IF NOT EXISTS idx_eval_time ON evaluations(evaluation_time);
 CREATE INDEX IF NOT EXISTS idx_eval_stage ON evaluations(filter_stage);
+CREATE INDEX IF NOT EXISTS idx_eval_product_type ON evaluations(product_type);
 
 CREATE TABLE IF NOT EXISTS rejections (
     ticker TEXT PRIMARY KEY,
@@ -135,12 +142,14 @@ CREATE TABLE IF NOT EXISTS rejections (
     mz_baseline_qlike REAL,
     mz_qlike REAL,
     counterfactual TEXT,
+    product_type TEXT,
     synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_rej_asset ON rejections(asset);
 CREATE INDEX IF NOT EXISTS idx_rej_reason ON rejections(rejection_reason);
 CREATE INDEX IF NOT EXISTS idx_rej_status ON rejections(status);
+CREATE INDEX IF NOT EXISTS idx_rej_product_type ON rejections(product_type);
 
 -- ============================================================================
 -- Model / Diagnostics Tables
