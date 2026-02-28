@@ -252,7 +252,8 @@ class FirebasePusher:
             else:
                 eq = {"avg_fill_latency_ms": 0, "median_fill_latency_ms": 0,
                       "min_fill_latency_ms": 0, "max_fill_latency_ms": 0, "recent_count": 0}
-            eq["session_fills"] = getattr(self._ml, "_session_fill_count", 0)
+            ex = self._ml.executor
+            eq["session_fills"] = getattr(ex, "_session_ws_fills", 0) + getattr(ex, "_session_rest_fills", 0)
             maker_subs = getattr(self._ml, "_session_maker_submissions", 0)
             maker_fills = getattr(self._ml, "_session_maker_fills", 0)
             eq["maker_fill_rate"] = round(maker_fills / maker_subs, 3) if maker_subs > 0 else 0.0
@@ -491,52 +492,6 @@ class FirebasePusher:
         except Exception:
             snap["recent_opportunities"] = []
 
-        # ── strategy_breakdown (from settled_trades) ──────────────────────
-        try:
-            conn = self._ml.state.conn
-            strat_rows = conn.execute(
-                "SELECT COALESCE(strategy, 'unknown') AS strat, COUNT(*) AS cnt, "
-                "  COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
-                "    OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
-                "  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
-                "FROM settled_trades GROUP BY strat"
-            ).fetchall()
-            snap["strategy_breakdown"] = {
-                r["strat"]: {
-                    "count": r["cnt"],
-                    "wins": r["wins"],
-                    "losses": r["cnt"] - r["wins"],
-                    "pnl_cents": r["net_pnl"],
-                }
-                for r in strat_rows
-            }
-        except Exception:
-            snap["strategy_breakdown"] = {}
-
-        # ── asset_performance (from settled_trades) ────────────────────────
-        try:
-            conn = self._ml.state.conn
-            asset_rows = conn.execute(
-                "SELECT asset, COUNT(*) AS cnt, "
-                "  COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
-                "    OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
-                "  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl, "
-                "  AVG(edge) AS avg_edge "
-                "FROM settled_trades GROUP BY asset"
-            ).fetchall()
-            snap["asset_performance"] = {
-                r["asset"]: {
-                    "trades": r["cnt"],
-                    "wins": r["wins"],
-                    "losses": r["cnt"] - r["wins"],
-                    "pnl_cents": r["net_pnl"],
-                    "avg_edge": round(r["avg_edge"], 6) if r["avg_edge"] else 0.0,
-                }
-                for r in asset_rows
-            }
-        except Exception:
-            snap["asset_performance"] = {}
-
         # ── session_stats ────────────────────────────────────────────────
         try:
             start_time = self._ml._start_time
@@ -645,6 +600,26 @@ class FirebasePusher:
         except Exception:
             snap["observation_mode"] = True
 
+        # ── trading config values ──────────────────────────────────────
+        try:
+            import bot as _bot_mod
+            snap["trading_config"] = {
+                "min_edge_by_price": getattr(_bot_mod, "MIN_EDGE_BY_PRICE", []),
+                "market_blend_w": getattr(_bot_mod, "MARKET_BLEND_W", None),
+                "max_risk_per_trade": getattr(_bot_mod, "MAX_RISK_PER_TRADE", None),
+                "sizing_tiers": getattr(_bot_mod, "SIZING_TIERS", []),
+                "min_entry_price": getattr(_bot_mod, "MIN_ENTRY_PRICE", None),
+                "max_entry_price": getattr(_bot_mod, "MAX_ENTRY_PRICE", None),
+                "max_seconds_before_close": getattr(_bot_mod, "MAX_SECONDS_BEFORE_CLOSE", None),
+                "maker_only_threshold": getattr(_bot_mod, "MAKER_ONLY_THRESHOLD", None),
+                "drawdown_half": getattr(_bot_mod, "DRAWDOWN_HALF_THRESHOLD", None),
+                "drawdown_quarter": getattr(_bot_mod, "DRAWDOWN_QUARTER_THRESHOLD", None),
+                "drawdown_halt": getattr(_bot_mod, "DRAWDOWN_HALT_THRESHOLD", None),
+                "hourly_observation_only": getattr(_bot_mod, "HOURLY_OBSERVATION_ONLY", True),
+            }
+        except Exception:
+            snap["trading_config"] = {}
+
         # ── calibration diagnostics ───────────────────────────────────
         try:
             diag = self._ml.calibration.get_diagnostics()
@@ -695,53 +670,6 @@ class FirebasePusher:
                 }
         except Exception:
             logging.debug("Firebase: egarch_blend build failed", exc_info=True)
-
-        # ── Adaptive RK bandwidth diagnostics ────────────────────────
-        try:
-            rk_diag = {}
-            vol_engine = self._ml.vol
-            for asset in ASSETS:
-                noise_hist = vol_engine._rk_noise_history.get(asset, [])
-                cached = vol_engine._cache.get(asset)
-                if cached and noise_hist:
-                    noise_list = list(noise_hist)
-                    total_ticks = len(noise_list)
-                    diff_count = vol_engine._rk_adaptive_diff_count.get(asset, 0)
-                    d5 = vol_engine._rk_delta_5_accum.get(asset, [])
-                    d15 = vol_engine._rk_delta_15_accum.get(asset, [])
-                    rk_diag[asset] = {
-                        "omega_sq_current": cached.get("omega_sq"),
-                        "omega_sq_1h_mean": sum(noise_list) / total_ticks if total_ticks else None,
-                        "omega_sq_1h_max": max(noise_list) if noise_list else None,
-                        "H_adaptive_5_current": cached.get("rk_H_adaptive_5"),
-                        "H_adaptive_15_current": cached.get("rk_H_adaptive_15"),
-                        "H_fixed_5": cached.get("rk_H_fixed_5"),
-                        "H_fixed_15": cached.get("rk_H_fixed_15"),
-                        "adaptive_pct_different_1h": round(diff_count / total_ticks, 4) if total_ticks else 0.0,
-                        "mean_delta_5_1h": round(sum(d5) / len(d5), 6) if d5 else 0.0,
-                        "mean_delta_15_1h": round(sum(d15) / len(d15), 6) if d15 else 0.0,
-                    }
-            snap["rk_adaptive_diagnostics"] = rk_diag
-        except Exception:
-            snap["rk_adaptive_diagnostics"] = {}
-
-        # ── Shadow time-varying RK weights ─────────────────────────────
-        try:
-            import bot as _bot_mod
-            tv_rk = {
-                "shadow_mode": getattr(_bot_mod, "RK_TV_SHADOW_MODE", True),
-            }
-            for asset in ASSETS:
-                cached = self._ml.vol._cache.get(asset)
-                if cached:
-                    tv_rk[asset] = {
-                        "shadow_tv_blend_rv": cached.get("shadow_tv_blend_rv"),
-                        "shadow_tv_weights": cached.get("shadow_tv_weights"),
-                        "fixed_blend_rv": cached.get("fixed_blend_rv"),
-                    }
-            snap["shadow_tv_rk_weights"] = tv_rk
-        except Exception:
-            snap["shadow_tv_rk_weights"] = {}
 
         # ── counterfactual analysis ───────────────────────────────────
         try:
@@ -1128,6 +1056,7 @@ class FirebasePusher:
                         best_bid = yes_bid_levels[0]["p"] if yes_bid_levels else None
                         spread = (best_ask - best_bid) if (best_ask is not None and best_bid is not None) else None
 
+                        stale = age_s > 30
                         total_ask_depth = sum(l["q"] for l in yes_ask_levels)
                         total_bid_depth = sum(l["q"] for l in yes_bid_levels)
 
