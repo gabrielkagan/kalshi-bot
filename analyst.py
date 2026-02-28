@@ -727,7 +727,26 @@ class Analyst:
         self._db_path = db_path
         self._client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
         self._firebase_url = os.environ.get("FIREBASE_DB_URL")
+        self._tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        self._tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
         self._analyzed_losses = self._load_analyzed_losses()
+
+    def _send_telegram(self, message: str) -> None:
+        """Send analyst findings to Telegram."""
+        if not self._tg_token or not self._tg_chat:
+            return
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{self._tg_token}/sendMessage",
+                json={
+                    "chat_id": self._tg_chat,
+                    "text": message[:4096],
+                    "parse_mode": "Markdown",
+                },
+                timeout=5,
+            )
+        except Exception as e:
+            log.warning("Telegram send failed: %s", e)
 
     def _load_analyzed_losses(self) -> set:
         """Load set of already-analyzed loss tickers from journal."""
@@ -928,6 +947,14 @@ class Analyst:
                         ticker,
                         analysis.root_cause,
                         analysis.confidence,
+                    )
+                    self._send_telegram(
+                        f"\U0001f50d *Loss Postmortem: {ticker}*\n"
+                        f"Asset: {loss_row['asset']} | PnL: ${loss_row['pnl_cents']/100:+.2f}\n"
+                        f"Root cause: *{analysis.root_cause}* ({analysis.confidence})\n"
+                        f"{analysis.analysis[:300]}\n"
+                        f"Preventable: {analysis.preventable}\n"
+                        f"Action: {analysis.suggested_action[:200]}"
                     )
                 else:
                     results.append(
@@ -1336,6 +1363,14 @@ class Analyst:
                 sentiment.confidence,
                 len(sentiment.market_moving_events),
             )
+            # Alert on market-moving events only
+            if sentiment.market_moving_events:
+                events_text = "\n".join(
+                    f"\u2022 {e[:150]}" for e in sentiment.market_moving_events[:3]
+                )
+                self._send_telegram(
+                    f"\U0001f4f0 *News Alert*\n{events_text}"
+                )
             return result
 
         return {"status": "error", "error": "LLM parse failed"}
@@ -1396,6 +1431,35 @@ class Analyst:
         except Exception as e:
             log.error("Agent param_optimizer failed: %s", e, exc_info=True)
             results["param_optimizer"] = {"status": "error", "error": str(e)}
+
+        # Telegram daily summary
+        try:
+            lines = ["\U0001f4ca *Daily Analyst Report*\n"]
+            for agent_name, r in results.items():
+                status = r.get("status", "ok") if isinstance(r, dict) else "ok"
+                if status == "error":
+                    lines.append(f"\u274c {agent_name}: error")
+                elif status == "skipped":
+                    lines.append(f"\u23ed {agent_name}: skipped ({r.get('reason', 'insufficient data')})")
+                else:
+                    lines.append(f"\u2705 {agent_name}: complete")
+                    # Extract key findings
+                    if agent_name == "calibration_audit" and isinstance(r, dict):
+                        brier = r.get("brier_score")
+                        oc = r.get("overconfidence_pp")
+                        if brier is not None:
+                            lines.append(f"   Brier: {brier:.4f} | Overconfidence: {oc:+.1f}pp")
+                    elif agent_name == "param_optimizer" and isinstance(r, dict):
+                        recs = r.get("recommendations", [])
+                        if recs:
+                            for rec in recs[:3]:
+                                if isinstance(rec, dict):
+                                    lines.append(f"   \u2022 {rec.get('summary', rec.get('param', ''))[:100]}")
+                                elif isinstance(rec, str):
+                                    lines.append(f"   \u2022 {rec[:100]}")
+            self._send_telegram("\n".join(lines))
+        except Exception as e:
+            log.warning("Daily Telegram summary failed: %s", e)
 
         return results
 
