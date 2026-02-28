@@ -7485,10 +7485,60 @@ class OrderExecutor:
                         counterfactual=candidate.get("counterfactual_json"),
                         shadow_cal_prob=candidate.get("shadow_cal_prob"),
                         shadow_cal_fee_edge=candidate.get("shadow_cal_fee_edge"),
-                        shadow_cal_temperature=candidate.get("shadow_cal_temperature"))
+                        shadow_cal_temperature=candidate.get("shadow_cal_temperature"),
+                        product_type=candidate.get("product_type"))
             except Exception:
                 pass
             return None
+
+        # ── Log candidate to evaluated_opportunities (live mode) ──
+        try:
+            _ba = candidate.get("best_yes_ask")
+            _cp = candidate.get("calibrated_prob")
+            _fee1 = calculate_taker_fee(1, _ba) if _ba else 0
+            _ev = (_cp * (100 - _ba)) - ((1 - _cp) * _ba) - _fee1 if (_ba and _cp) else None
+            self._state.insert_evaluated_opportunity(
+                candidate["ticker"], candidate["event_ticker"],
+                candidate["asset"], "candidate",
+                spot_price=candidate.get("spot"),
+                threshold=candidate.get("threshold"),
+                volatility=candidate.get("blended_rv"),
+                market_price=_ba,
+                seconds_to_close=candidate.get("seconds_to_close"),
+                calibrated_prob=_cp,
+                edge=candidate.get("edge"),
+                ofa_adjustment=candidate.get("ofa_adjustment"),
+                strategy=candidate.get("strategy"),
+                position_size=candidate.get("position_size"),
+                kelly_f=candidate.get("kelly_f"),
+                z_score=candidate.get("z_score"),
+                vol_regime=candidate.get("vol_regime"),
+                calibrated_prob_raw=candidate.get("calibrated_prob_raw"),
+                breakeven_wr=_ba / 100.0 if _ba else None,
+                expected_value=round(_ev, 2) if _ev is not None else None,
+                drawdown_scaler=candidate.get("drawdown_scaler"),
+                ask_depth=candidate.get("ob_snapshot", {}).get("ask_depth"),
+                best_ask_source=candidate.get("best_ask_source"),
+                ofa_confidence=candidate.get("ofa_confidence"),
+                raw_prob=candidate.get("raw_prob"),
+                calibration_method=candidate.get("calibration_method"),
+                old_system_prob=candidate.get("old_system_prob"),
+                fee_adjusted_edge=candidate.get("fee_adjusted_edge"),
+                egarch_sigma=candidate.get("egarch_sigma"),
+                egarch_blend_sigma=candidate.get("egarch_blend_sigma"),
+                egarch_blend_weight=candidate.get("egarch_blend_weight"),
+                mz_r_squared=candidate.get("mz_r_squared"),
+                shadow_tv_blend_rv=candidate.get("shadow_tv_blend_rv"),
+                mz_shadow_sigmoid_w=candidate.get("mz_shadow_sigmoid_w"),
+                mz_baseline_qlike=candidate.get("mz_baseline_qlike"),
+                mz_qlike=candidate.get("mz_qlike"),
+                counterfactual=candidate.get("counterfactual_json"),
+                shadow_cal_prob=candidate.get("shadow_cal_prob"),
+                shadow_cal_fee_edge=candidate.get("shadow_cal_fee_edge"),
+                shadow_cal_temperature=candidate.get("shadow_cal_temperature"),
+                product_type=candidate.get("product_type"))
+        except Exception:
+            pass
 
         # ── Direct taker for <60s candidates ───────────────────────
         seconds_to_close = candidate.get("seconds_to_close")
