@@ -1023,6 +1023,31 @@ class FirebasePusher:
                     } if rows else {}
                 except Exception:
                     hourly_data["filter_stages"] = {}
+                # Change 10: Simulated P&L from hourly observation trades
+                try:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt, "
+                        "SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS wins, "
+                        "SUM(CASE WHEN market_result='yes' "
+                        "    THEN (100 - market_price) - CAST(CEIL(0.07 * 1 * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "    ELSE -market_price - CAST(CEIL(0.07 * 1 * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "END) AS sim_pnl "
+                        "FROM evaluated_opportunities "
+                        "WHERE product_type='hourly' AND filter_stage='observation_trade' "
+                        "AND status='settled' AND market_result IS NOT NULL"
+                    ).fetchone()
+                    if row and row["cnt"] > 0:
+                        hourly_data["sim_trade_count"] = row["cnt"]
+                        hourly_data["sim_win_rate"] = round(row["wins"] / row["cnt"], 4) if row["cnt"] > 0 else 0
+                        hourly_data["sim_pnl_cents"] = row["sim_pnl"] or 0
+                    else:
+                        hourly_data["sim_trade_count"] = 0
+                        hourly_data["sim_win_rate"] = 0
+                        hourly_data["sim_pnl_cents"] = 0
+                except Exception:
+                    hourly_data["sim_trade_count"] = 0
+                    hourly_data["sim_win_rate"] = 0
+                    hourly_data["sim_pnl_cents"] = 0
                 snap["hourly_observation"] = hourly_data
         except Exception:
             logging.debug("Firebase: hourly_observation build failed", exc_info=True)
