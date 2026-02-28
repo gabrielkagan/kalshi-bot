@@ -55,7 +55,7 @@ HOURLY_SERIES_TICKERS = {
 HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800  # 30 min before close
 HOURLY_MIN_SECONDS_BEFORE_CLOSE = 0
 HOURLY_MARKET_BLEND_W = 0.40            # Optimal Brier per 134K simulation (0.70 was second-worst)
-HOURLY_MIN_ENTRY_PRICE = 80            # Hourly strikes go lower than 15M (data: 80c+ 98.9% WR)
+HOURLY_MIN_ENTRY_PRICE = 70            # Hourly strikes (data: 70c+ 61/61 = 100% WR)
 HOURLY_MAX_RISK_PER_TRADE = 0.15       # Conservative start (60% of 15M's 0.25)
 
 # ─── API Configuration ───────────────────────────────────────────────────────
