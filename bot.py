@@ -285,6 +285,18 @@ DYNAMIC_CAP_SCHEDULE = [
     (0,   0.995),  # < 1 min: near-certain allowed
 ]
 
+# Hourly markets: 60-min windows. 1800s = 30 min out (scan start).
+# At 30 min, deep-ITM hourly strikes are genuinely 95%+ likely.
+# The 15M caps (0.93 at >10min) are too conservative for hourly.
+# Data: 40 settled hourly insufficient_edge trades, 40W/0L (100% WR).
+HOURLY_DYNAMIC_CAP_SCHEDULE = [
+    (1800, 0.97),  # > 30 min: allow up to 97%
+    (900,  0.98),  # 15-30 min
+    (300,  0.99),  # 5-15 min
+    (60,   0.995), # 1-5 min
+    (0,    0.999), # < 1 min
+]
+
 MARKET_BLEND_W = 0.50             # REVERTED: data shows +1.86pp overconfidence without blend
 ENDGAME_BLEND_PRICE = 96         # don't blend at or above this price (preserve endgame edge)
 
@@ -4678,7 +4690,8 @@ class ProbabilityEngine:
     def compute(spot: float, threshold: float, seconds_remaining: float,
                 blended_rv: float,
                 market_price_cents: Optional[int] = None,
-                asset: Optional[str] = None) -> Dict:
+                asset: Optional[str] = None,
+                product_type: Optional[str] = None) -> Dict:
         """
         Compute calibrated win probability for a "price stays above threshold" bet.
 
@@ -4738,7 +4751,7 @@ class ProbabilityEngine:
         result["raw_prob"] = round(raw_prob, 6)
 
         # ── Calibration: adaptive (if trained) or fixed β=0.85 ──────────
-        dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining)
+        dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
         if _CALIBRATION_ENGINE is not None:
             calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
             result["calibration_method"] = _CALIBRATION_ENGINE.active_method
@@ -4781,12 +4794,15 @@ class ProbabilityEngine:
         return round(ProbabilityEngine._calibrate(raw, cap=cap), 6)
 
     @staticmethod
-    def _dynamic_cap(seconds_remaining: float) -> float:
+    def _dynamic_cap(seconds_remaining: float, product_type: str = None) -> float:
         """Return probability cap based on time to close."""
-        for threshold_secs, cap in DYNAMIC_CAP_SCHEDULE:
+        schedule = (HOURLY_DYNAMIC_CAP_SCHEDULE
+                    if product_type == "hourly"
+                    else DYNAMIC_CAP_SCHEDULE)
+        for threshold_secs, cap in schedule:
             if seconds_remaining > threshold_secs:
                 return cap
-        return DYNAMIC_CAP_SCHEDULE[-1][1]  # smallest TTC bracket
+        return schedule[-1][1]  # smallest TTC bracket
 
     @staticmethod
     def _calibrate(raw_prob: float, cap: float = MAX_EFFECTIVE_PROB) -> float:
@@ -5849,7 +5865,7 @@ class OpportunityScanner:
 
     # ── Public entry point ────────────────────────────────────────────────
 
-    def scan(self, active_windows: List[Dict]) -> Optional[Dict]:
+    def scan(self, active_windows: List[Dict]) -> Optional[List[Dict]]:
         """Evaluate all windows/markets, return best candidate or None."""
         now = time.time()
         ob_fetches_this_tick = 0
@@ -6000,7 +6016,7 @@ class OpportunityScanner:
                 # Pre-filter: compute probability without market price
                 prob_result = ProbabilityEngine.compute(
                     spot, threshold, seconds_remaining, blended_rv,
-                    asset=asset
+                    asset=asset, product_type=window.get("product_type")
                 )
                 cal_prob = prob_result.get("calibrated_prob")
                 raw_prob_pre = prob_result.get("raw_prob")
@@ -6258,7 +6274,7 @@ class OpportunityScanner:
                 prob_with_market = ProbabilityEngine.compute(
                     spot, threshold, seconds_remaining, blended_rv,
                     market_price_cents=best_ask,
-                    asset=asset
+                    asset=asset, product_type=window.get("product_type")
                 )
                 if not prob_with_market.get("tradeable"):
                     reason = prob_with_market.get("reason", "")
@@ -6305,7 +6321,7 @@ class OpportunityScanner:
                         logging.debug("OrderFlowEngine.get_signals failed", exc_info=True)
                 calibrated_prob_raw = final_prob
                 # Always compute dynamic cap for counterfactual logging
-                _dyn_cap = ProbabilityEngine._dynamic_cap(seconds_remaining)
+                _dyn_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=window.get("product_type"))
                 if _CALIBRATION_ENGINE is not None and _CALIBRATION_ENGINE.is_learned_method_active():
                     # Learned method: no dynamic cap, use safety ceiling only
                     final_prob = max(0.01, min(NUMERICAL_SAFETY_CEILING, final_prob + ofa_adjustment))
@@ -7008,16 +7024,39 @@ class OpportunityScanner:
         else:
             filtered = candidates
 
-        best = max(filtered, key=lambda c: c["edge"])
+        # ── Per-asset selection: best strike per asset for hourly ──
+        hourly_cands = [c for c in filtered if c.get("product_type") == "hourly"]
+        fifteenm_cands = [c for c in filtered if c.get("product_type") != "hourly"]
+
+        selected: List[Dict] = []
+
+        # Hourly: best edge per asset (up to 4 simultaneous)
+        hourly_by_asset: Dict[str, List[Dict]] = {}
+        for c in hourly_cands:
+            hourly_by_asset.setdefault(c["asset"], []).append(c)
+        for asset_key, asset_cands in hourly_by_asset.items():
+            selected.append(max(asset_cands, key=lambda c: c["edge"]))
+
+        # 15M: single global best (existing behavior)
+        if fifteenm_cands:
+            selected.append(max(fifteenm_cands, key=lambda c: c["edge"]))
+
+        if not selected:
+            self._last_scan_stats = scan_stats
+            return None
+
+        # Log top pick for scan journal
+        best = max(selected, key=lambda c: c["edge"])
         self._logger.log_scan({
             "type": "opportunity",
             "candidates_evaluated": len(candidates),
             "candidates_after_single_asset": len(filtered),
+            "selected_count": len(selected),
             "chosen_strategy": best.get("strategy"),
             **{k: v for k, v in best.items() if k not in ("strategy_scores", "ob_snapshot")},
         })
         self._last_scan_stats = scan_stats
-        return best
+        return selected
 
     # ── Threshold parsing ─────────────────────────────────────────────────
 
@@ -8422,7 +8461,8 @@ class OrderExecutor:
                 continue
 
             prob_result = ProbabilityEngine.compute(
-                spot, threshold, current_stc, blended_rv, asset=asset)
+                spot, threshold, current_stc, blended_rv, asset=asset,
+                product_type=meta.get("candidate", {}).get("product_type"))
             cal_prob = prob_result.get("calibrated_prob")
             if cal_prob is None:
                 continue
@@ -8710,7 +8750,8 @@ class OrderExecutor:
 
             # Recompute probability at current spot/vol/stc
             prob_result = ProbabilityEngine.compute(
-                spot, threshold, current_stc, blended_rv, asset=asset)
+                spot, threshold, current_stc, blended_rv, asset=asset,
+                product_type=meta.get("candidate", {}).get("product_type"))
             cal_prob = prob_result.get("calibrated_prob")
             if cal_prob is None:
                 continue
@@ -9938,25 +9979,26 @@ class MainLoop:
             logging.debug("dip addon check failed", exc_info=True)
 
         # Run opportunity scanner (always — execute() rejects if asset already active)
-        candidate = self.scanner.scan(self._active_windows)
+        candidates = self.scanner.scan(self._active_windows)
         if self.scanner._last_scan_stats:
             try:
                 self.logger.log_scan({
                     "type": "scan_summary",
                     "per_asset": self.scanner._last_scan_stats,
-                    "had_candidate": candidate is not None,
+                    "had_candidate": candidates is not None,
                 })
             except Exception:
                 pass
-        if candidate:
-            logging.info(
-                f"Opportunity: {candidate['ticker']} "
-                f"ask={candidate['best_yes_ask']}¢ "
-                f"edge={candidate['edge']:.2%} "
-                f"size={candidate['position_size']} "
-                f"prob={candidate['calibrated_prob']:.2%}"
-            )
-            self.executor.execute(candidate)
+        if candidates:
+            for candidate in candidates:
+                logging.info(
+                    f"Opportunity: {candidate['ticker']} "
+                    f"ask={candidate['best_yes_ask']}¢ "
+                    f"edge={candidate['edge']:.2%} "
+                    f"size={candidate['position_size']} "
+                    f"prob={candidate['calibrated_prob']:.2%}"
+                )
+                self.executor.execute(candidate)
 
     # ── Run ───────────────────────────────────────────────────────────────
 
