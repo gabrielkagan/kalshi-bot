@@ -1033,7 +1033,7 @@ class FirebasePusher:
                         "    ELSE -market_price - CAST(CEIL(0.07 * 1 * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
                         "END) AS sim_pnl "
                         "FROM evaluated_opportunities "
-                        "WHERE product_type='hourly' AND filter_stage='observation_trade' "
+                        "WHERE product_type='hourly' AND filter_stage='hourly_observation' "
                         "AND status='settled' AND market_result IS NOT NULL"
                     ).fetchone()
                     if row and row["cnt"] > 0:
