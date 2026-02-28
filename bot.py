@@ -45,7 +45,7 @@ ONE_ASSET_PER_WINDOW = False
 
 # ─── Hourly Observation Mode ──────────────────────────────────────────────────
 HOURLY_OBSERVATION_ENABLED = True     # Master switch for hourly data collection
-HOURLY_OBSERVATION_ONLY = False       # Promoted to live after 134K backtest (0 losses across all param combos)
+HOURLY_OBSERVATION_ONLY = True        # REVERTED: 68.8% WR (need 90%+), 26pp overconfident, -$97 overnight
 HOURLY_SERIES_TICKERS = {
     "BTC": "KXBTCD",
     "ETH": "KXETHD",
