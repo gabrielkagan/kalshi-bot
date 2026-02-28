@@ -5202,7 +5202,8 @@ class CalibrationEngine:
             rows = state.conn.execute(
                 "SELECT raw_prob, market_result FROM evaluated_opportunities "
                 "WHERE status='settled' AND raw_prob IS NOT NULL "
-                "AND market_result IS NOT NULL"
+                "AND market_result IS NOT NULL "
+                "AND (product_type IS NULL OR product_type != 'hourly')"
             ).fetchall()
 
             loaded = 0
@@ -9354,9 +9355,11 @@ class SettlementTracker:
                     opp_id, market_result=result,
                     counterfactual_pnl=would_have_profit)
 
-                # Feed to calibration engine
+                # Feed to calibration engine (15M only — hourly has different
+                # calibration dynamics and contaminates the 15M model)
                 raw_p = row.get("raw_prob")
-                if raw_p is not None and result in ("yes", "all_yes", "no", "all_no"):
+                is_hourly = row.get("product_type") == "hourly"
+                if raw_p is not None and not is_hourly and result in ("yes", "all_yes", "no", "all_no"):
                     cal_binary = 1 if result in ("yes", "all_yes") else 0
                     if _CALIBRATION_ENGINE is not None:
                         _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
