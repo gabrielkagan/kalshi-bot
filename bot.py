@@ -387,7 +387,7 @@ def get_min_edge(entry_price_cents: int) -> float:
 
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
-BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
+BALANCE_CACHE_TTL = 10.0          # seconds to cache balance
 
 # ─── Position Sizing ───────────────────────────────────────────────────────
 # Edge-based tiered sizing: higher fee-adjusted edge → more aggressive
@@ -813,7 +813,22 @@ class KalshiClient:
                 json=json_body,
                 timeout=10,
             )
+            # Clock drift detection from server Date header
+            server_date = resp.headers.get("Date")
+            if server_date:
+                try:
+                    from email.utils import parsedate_to_datetime
+                    server_time = parsedate_to_datetime(server_date)
+                    drift = abs((datetime.datetime.now(timezone.utc) - server_time).total_seconds())
+                    if drift > 2.0:
+                        logging.warning(f"clock_drift_detected: {drift:.1f}s vs server")
+                except Exception:
+                    pass
+
             if resp.status_code == 429:
+                if method == "POST" and "/orders" in path:
+                    logging.error(f"Rate limited on POST {path} — NOT retrying to prevent duplicate orders")
+                    return None
                 retry_after = float(resp.headers.get("Retry-After", "1"))
                 retries = getattr(self, '_429_retries', 0) + 1
                 if retries > 3:
@@ -1545,10 +1560,10 @@ class StateManager:
                          mz_qlike: Optional[float] = None,
                          counterfactual: Optional[str] = None,
                          product_type: Optional[str] = None):
-        """Insert a rejected opportunity. INSERT OR IGNORE deduplicates by ticker."""
+        """Insert a rejected opportunity. INSERT OR REPLACE deduplicates by ticker."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
-            INSERT OR IGNORE INTO rejected_opportunities
+            INSERT OR REPLACE INTO rejected_opportunities
                 (ticker, event_ticker, asset, rejection_reason, rejection_time,
                  z_score, spot_price, threshold, volatility, market_price,
                  seconds_to_close, calibrated_prob, status,
@@ -1659,7 +1674,7 @@ class StateManager:
                   product_type))
             self.conn.commit()
         except Exception as e:
-            logging.debug(f"insert_evaluated_opportunity failed: {e}")
+            logging.warning(f"insert_evaluated_opportunity failed: {e}", exc_info=True)
 
     def get_unsettled_evaluated_opportunities(self) -> List[Dict]:
         """Return evaluated opportunities with status='pending' and a market_price."""
@@ -1986,7 +2001,7 @@ class KalshiFeed:
         self._stop_event: Optional[asyncio.Event] = None
         # Shared state (lock-protected)
         self._orderbooks: Dict[str, Dict] = {}
-        self._recent_fills: deque = deque(maxlen=100)
+        self._recent_fills: deque = deque(maxlen=10000)
         self._subscribed_tickers: Set[str] = set()
         self._pending_subscribes: List[str] = []
         self._pending_unsubscribes: List[str] = []
@@ -2128,6 +2143,7 @@ class KalshiFeed:
             except Exception as e:
                 with self._lock:
                     self._connected = False
+                    self._orderbooks.clear()
                 self._ws = None
                 jitter = backoff * random.uniform(0, 0.25)
                 wait = backoff + jitter
@@ -4881,7 +4897,7 @@ class CalibrationEngine:
     def __init__(self, state_path: str = CALIBRATION_STATE_PATH):
         self.state_path = state_path
         self.active_method: str = "fixed_beta"  # current method in use
-        self._observations: List[Tuple[float, int]] = []  # (raw_prob, binary_outcome)
+        self._observations: deque = deque(maxlen=500)  # (raw_prob, binary_outcome)
         self._brier_scores: deque = deque(maxlen=CALIBRATION_BRIER_WINDOW)
         self._last_retrain: float = 0.0
 
@@ -5243,11 +5259,16 @@ class CalibrationEngine:
         try:
             self._observations.clear()
 
+            cutoff = (datetime.datetime.now(timezone.utc)
+                      - datetime.timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%S")
             rows = state.conn.execute(
                 "SELECT raw_prob, market_result FROM evaluated_opportunities "
                 "WHERE status='settled' AND raw_prob IS NOT NULL "
                 "AND market_result IS NOT NULL "
-                "AND (product_type IS NULL OR product_type != 'hourly')"
+                "AND (product_type IS NULL OR product_type != 'hourly') "
+                "AND evaluation_time > ? "
+                "ORDER BY evaluation_time DESC LIMIT 500",
+                (cutoff,)
             ).fetchall()
 
             loaded = 0
@@ -5791,9 +5812,12 @@ class PositionSizer:
         return result
 
     def _drawdown_scaler(self, balance_cents: int) -> float:
-        """Scale position based on drawdown from starting balance."""
+        """Scale position based on drawdown from peak balance (high-water mark)."""
         if self.starting_balance_cents <= 0:
             return 1.0
+        # Ratchet up: drawdown tracks from peak, not starting balance
+        if balance_cents > self.starting_balance_cents:
+            self.starting_balance_cents = balance_cents
         ratio = balance_cents / self.starting_balance_cents
         if ratio < DRAWDOWN_HALT_THRESHOLD:
             return 0.0   # stop trading entirely
@@ -7522,6 +7546,7 @@ class OrderExecutor:
         self._session_dip_addon_fills: int = 0
         self._session_dip_addon_shadow: int = 0
         self._session_dip_addon_skipped: int = 0
+        self._escalating_assets: set = set()  # Fix 5: guard against re-entry during escalation
 
     @property
     def _active_order(self) -> Optional[Dict]:
@@ -7567,7 +7592,7 @@ class OrderExecutor:
             return None
 
         asset = candidate["asset"]
-        if asset in self._active_orders:
+        if asset in self._active_orders or asset in self._escalating_assets:
             return None
 
         # Cooldown: skip tickers recently attempted via synchronous IOC
@@ -7926,10 +7951,11 @@ class OrderExecutor:
                 f"latency={latency_ms}ms")
             self._on_fill(ws_fill, order)
             ws_trade_id = ws_fill.get("trade_id") or ws_fill.get("id")
-            if ws_trade_id:
-                order.setdefault("_seen_fill_ids", set()).add(ws_trade_id)
-            else:
-                logging.warning(f"WS fill missing trade_id for {order['ticker']}")
+            if not ws_trade_id:
+                # Synthetic dedup key when trade_id missing — prevents REST double-count
+                ws_trade_id = f"syn_{ws_fill.get('order_id','')}_{ws_fill.get('count','')}_{ws_fill.get('price','')}"
+                logging.warning(f"WS fill missing trade_id for {order['ticker']}, using synthetic key: {ws_trade_id}")
+            order.setdefault("_seen_fill_ids", set()).add(ws_trade_id)
             if order.get("filled_so_far", 0) >= order["count"]:
                 self._active_orders.pop(asset, None)
                 return ws_fill
@@ -8090,6 +8116,17 @@ class OrderExecutor:
     def _escalate_to_taker(self, order: Dict, remaining: float,
                            reason: str = "escalation_wait") -> Optional[Dict]:
         """Escalate maker to taker via cancel-replace IOC."""
+        ticker = order["ticker"]
+        asset = order["asset"]
+        self._escalating_assets.add(asset)
+        try:
+            return self._escalate_to_taker_inner(order, remaining, reason)
+        finally:
+            self._escalating_assets.discard(asset)
+
+    def _escalate_to_taker_inner(self, order: Dict, remaining: float,
+                                  reason: str = "escalation_wait") -> Optional[Dict]:
+        """Inner escalation logic (guarded by _escalating_assets)."""
         ticker = order["ticker"]
         elapsed = time.time() - order["submit_time"]
 
@@ -8341,6 +8378,16 @@ class OrderExecutor:
                 break
             fill_count = self._on_fill(fill, order_info)
             total_filled += fill_count
+
+        # Second poll pass: catch late fills that arrived after initial 0.3s
+        if total_filled > 0:
+            time.sleep(0.5)
+            while True:
+                fill = self._check_for_fill(order_info)
+                if not fill:
+                    break
+                fill_count = self._on_fill(fill, order_info)
+                total_filled += fill_count
 
         if total_filled > 0:
             if candidate.get("entry_path") != "confirmation_addon":
@@ -9168,10 +9215,11 @@ class OrderExecutor:
 
         cancel_resp = self._client.cancel_order(order["order_id"])
         if cancel_resp is None:
-            logging.warning(f"Cancel API returned None for {order['order_id']} — order may still be resting")
-
-        status = "partial_canceled" if filled > 0 else "canceled"
-        self._state.mark_order_status(order["order_id"], status)
+            logging.error(f"Cancel API FAILED for {order['order_id']} — order may still be resting on exchange")
+            # Don't mark canceled in DB — order may still be live on Kalshi
+        else:
+            status = "partial_canceled" if filled > 0 else "canceled"
+            self._state.mark_order_status(order["order_id"], status)
 
         # Log fill model sample for canceled order
         self._log_fill_model_sample(order, "canceled", cancel_reason=reason)
@@ -9295,8 +9343,11 @@ class SettlementTracker:
             if ticker not in our_tickers:
                 continue
 
-            self._process_settlement(s)
-            processed_any = True
+            try:
+                self._process_settlement(s)
+                processed_any = True
+            except Exception as e:
+                logging.error(f"Settlement processing failed for {ticker}: {e}", exc_info=True)
 
         # Advance watermark to now (even if nothing processed, to shrink window)
         self._last_check_ts = int(datetime.datetime.now(timezone.utc).timestamp())
@@ -9598,7 +9649,11 @@ class SettlementTracker:
                 # calibration dynamics and contaminates the 15M model)
                 raw_p = row.get("raw_prob")
                 is_hourly = row.get("product_type") == "hourly"
-                if raw_p is not None and not is_hourly and result in ("yes", "all_yes", "no", "all_no"):
+                filter_stage = row.get("filter_stage", "")
+                cal_eligible_stages = ("candidate", "observation_trade", "hourly_observation")
+                if (raw_p is not None and not is_hourly
+                        and filter_stage in cal_eligible_stages
+                        and result in ("yes", "all_yes", "no", "all_no")):
                     cal_binary = 1 if result in ("yes", "all_yes") else 0
                     if _CALIBRATION_ENGINE is not None:
                         _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
@@ -10107,6 +10162,13 @@ class MainLoop:
 
     def _tick(self):
         now = time.time()
+
+        # Update peak balance from main thread (firebase reads only)
+        cached_bal = self.scanner._balance_cache[0]
+        if cached_bal is not None:
+            bal_dollars = cached_bal / 100.0
+            if bal_dollars > self._peak_balance:
+                self._peak_balance = bal_dollars
 
         # Refresh market list periodically
         if now - self._last_market_refresh >= MARKET_REFRESH_SECONDS:

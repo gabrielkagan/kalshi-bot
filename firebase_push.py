@@ -28,11 +28,13 @@ def _sanitize_keys(obj):
 class FirebasePusher:
     """Daemon thread that pushes bot status to Firebase REST API."""
 
-    def __init__(self, main_loop):
+    def __init__(self, main_loop, db_path: str = "state.db"):
         self._ml = main_loop
         self._db_url = os.environ.get("FIREBASE_DB_URL", "").rstrip("/")
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._db_path = db_path
+        self._db_conn = None  # opened on daemon thread
 
     def start(self):
         if not self._db_url:
@@ -48,6 +50,11 @@ class FirebasePusher:
             self._thread.join(timeout=5)
 
     def _run(self):
+        import sqlite3
+        self._db_conn = sqlite3.connect(self._db_path)
+        self._db_conn.execute("PRAGMA journal_mode=WAL")
+        self._db_conn.execute("PRAGMA busy_timeout=5000")
+        self._db_conn.row_factory = sqlite3.Row
         while not self._stop.is_set():
             try:
                 snapshot = self._build_snapshot()
@@ -58,8 +65,8 @@ class FirebasePusher:
 
     def _build_snapshot(self) -> Dict[str, Any]:
         snap: Dict[str, Any] = {}
-        now_utc = datetime.datetime.utcnow()
-        snap["timestamp"] = now_utc.isoformat() + "Z"
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        snap["timestamp"] = now_utc.isoformat()
 
         # Uptime
         snap["uptime_seconds"] = round(time.time() - self._ml._start_time, 1)
@@ -68,9 +75,8 @@ class FirebasePusher:
         try:
             bal = self._ml.client.get_balance()
             snap["current_balance"] = round(bal["balance"] / 100, 2) if bal else 0.0
-            if snap["current_balance"] > self._ml._peak_balance:
-                self._ml._peak_balance = snap["current_balance"]
-            snap["peak_balance"] = self._ml._peak_balance
+            # Read-only: peak tracking moved to main loop to avoid cross-thread mutation
+            snap["peak_balance"] = getattr(self._ml, "_peak_balance", snap["current_balance"])
         except Exception:
             snap["current_balance"] = 0.0
             snap["peak_balance"] = getattr(self._ml, "_peak_balance", 0.0)
@@ -115,9 +121,12 @@ class FirebasePusher:
         except Exception:
             snap["resting_orders"] = []
 
-        # Recent trades + win/loss from settled_trades
+        # Track which sections failed for diagnostics
+        snap["_snapshot_errors"] = []
+        conn = self._db_conn
+
+        # Section 1: Recent trades
         try:
-            conn = self._ml.state.conn
             try:
                 rows = conn.execute("""
                     SELECT st.ticker, st.event_ticker, st.asset, st.market_result,
@@ -136,13 +145,16 @@ class FirebasePusher:
                     ORDER BY st.settled_at DESC LIMIT 10
                 """).fetchall()
             except Exception:
-                # Fallback: enrichment columns may not exist yet (pre-migration)
                 rows = conn.execute(
                     "SELECT * FROM settled_trades ORDER BY settled_at DESC LIMIT 10"
                 ).fetchall()
             snap["recent_trades"] = [dict(r) for r in rows]
+        except Exception:
+            snap["recent_trades"] = []
+            snap["_snapshot_errors"].append("recent_trades")
 
-            # Win/loss counts (same logic as SettlementTracker)
+        # Section 2: Win/loss counts
+        try:
             all_settled = conn.execute(
                 "SELECT side, market_result FROM settled_trades"
             ).fetchall()
@@ -164,23 +176,32 @@ class FirebasePusher:
             snap["win_count"] = win
             snap["loss_count"] = loss
             snap["win_rate"] = round(win / (win + loss), 4) if (win + loss) > 0 else 0.0
+        except Exception:
+            snap["win_count"] = 0
+            snap["loss_count"] = 0
+            snap["win_rate"] = 0.0
+            snap["_snapshot_errors"].append("win_loss_counts")
 
-            # Daily P&L
-            today_midnight = now_utc.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + "Z"
+        # Section 3: Daily P&L
+        try:
+            today_midnight = now_utc.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
             row = conn.execute(
                 "SELECT COALESCE(SUM(pnl_cents - fee_cents), 0) AS daily FROM settled_trades WHERE settled_at >= ?",
                 (today_midnight,),
             ).fetchone()
             snap["daily_pnl_cents"] = row["daily"] if row else 0
-
-            # Daily P&L percentage
             start_cents = self._ml.sizer.starting_balance_cents
             if start_cents > 0:
                 snap["daily_pnl_pct"] = round(snap["daily_pnl_cents"] / start_cents * 100, 2)
             else:
                 snap["daily_pnl_pct"] = 0.0
+        except Exception:
+            snap["daily_pnl_cents"] = 0
+            snap["daily_pnl_pct"] = 0.0
+            snap["_snapshot_errors"].append("daily_pnl")
 
-            # Consecutive losses
+        # Section 4: Consecutive losses
+        try:
             recent_settled = conn.execute(
                 "SELECT side, market_result FROM settled_trades ORDER BY settled_at DESC LIMIT 20"
             ).fetchall()
@@ -194,13 +215,8 @@ class FirebasePusher:
                 streak += 1
             snap["consecutive_losses"] = streak
         except Exception:
-            snap["recent_trades"] = []
-            snap["win_count"] = 0
-            snap["loss_count"] = 0
-            snap["win_rate"] = 0.0
-            snap["daily_pnl_cents"] = 0
-            snap["daily_pnl_pct"] = 0.0
             snap["consecutive_losses"] = 0
+            snap["_snapshot_errors"].append("consecutive_losses")
 
         # Risk metrics
         try:
@@ -210,9 +226,8 @@ class FirebasePusher:
             risk["max_drawdown_pct"] = round((peak - cur) / peak * 100, 2) if peak > 0 else 0.0
             risk["max_drawdown_dollars"] = round(peak - cur, 2)
 
-            conn = self._ml.state.conn
             all_pnl = conn.execute(
-                "SELECT (pnl_cents - fee_cents) AS net FROM settled_trades"
+                "SELECT (pnl_cents - fee_cents) AS net, settled_at FROM settled_trades"
             ).fetchall()
             nets = [r["net"] for r in all_pnl]
             n = len(nets)
@@ -221,8 +236,21 @@ class FirebasePusher:
                 mean = total / n
                 variance = sum((x - mean) ** 2 for x in nets) / n if n > 1 else 0
                 std = variance ** 0.5
-                uptime_days = max(snap.get("uptime_seconds", 1) / 86400, 0.01)
-                trades_per_day = n / uptime_days
+                # Use actual trade span for Sharpe annualization
+                span_row = conn.execute(
+                    "SELECT MIN(settled_at) AS first_t, MAX(settled_at) AS last_t FROM settled_trades"
+                ).fetchone()
+                if span_row and span_row["first_t"] and span_row["last_t"]:
+                    from datetime import datetime as _dt
+                    try:
+                        t0 = _dt.fromisoformat(span_row["first_t"].replace("Z", "+00:00"))
+                        t1 = _dt.fromisoformat(span_row["last_t"].replace("Z", "+00:00"))
+                        span_days = max((t1 - t0).total_seconds() / 86400, 0.01)
+                    except Exception:
+                        span_days = max(snap.get("uptime_seconds", 1) / 86400, 0.01)
+                else:
+                    span_days = max(snap.get("uptime_seconds", 1) / 86400, 0.01)
+                trades_per_day = n / span_days
                 risk["sharpe_ratio"] = round(mean / std * (trades_per_day ** 0.5), 2) if std > 0 else 0.0
                 risk["total_pnl_cents"] = total
                 risk["avg_pnl_per_trade"] = round(total / n, 1)
@@ -513,7 +541,7 @@ class FirebasePusher:
 
         # ── real_trade_analytics (from settled_trades) ─────────────────
         try:
-            conn = self._ml.state.conn
+            conn = self._db_conn
             rta = {}
 
             # P&L by asset
@@ -673,7 +701,7 @@ class FirebasePusher:
 
         # ── counterfactual analysis ───────────────────────────────────
         try:
-            conn = self._ml.state.conn
+            conn = self._db_conn
 
             # By filter stage
             stage_rows = conn.execute(
@@ -997,7 +1025,7 @@ class FirebasePusher:
                     "max_positions_per_window": getattr(_bot_mod, "HOURLY_MAX_POSITIONS_PER_WINDOW", None),
                     "max_window_risk": getattr(_bot_mod, "HOURLY_MAX_WINDOW_RISK", None),
                 }
-                conn = self._ml.state.conn
+                conn = self._db_conn
                 # Settled hourly observations
                 try:
                     row = conn.execute(
@@ -1005,6 +1033,8 @@ class FirebasePusher:
                         "WHERE product_type='hourly' AND status='settled'"
                     ).fetchone()
                     hourly_data["settled_count"] = row["cnt"] if row else 0
+                    # NOTE: market_result='yes' = win because bot ONLY takes YES side.
+                    # If bot ever takes NO side, this query must check side column too.
                     row = conn.execute(
                         "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
                         "WHERE product_type='hourly' AND status='settled' AND market_result='yes'"
@@ -1040,6 +1070,8 @@ class FirebasePusher:
                 except Exception:
                     hourly_data["filter_stages"] = {}
                 # Change 10: Simulated P&L from hourly observation trades
+                # NOTE: Assumes YES side only. market_result='yes' = win, payout = 100 - price.
+                # If bot ever takes NO side, sim P&L logic must account for side.
                 try:
                     row = conn.execute(
                         "SELECT COUNT(*) AS cnt, "
@@ -1154,4 +1186,18 @@ class FirebasePusher:
 
     def _push(self, snapshot: Dict[str, Any]):
         url = f"{self._db_url}/bot_status.json"
-        requests.put(url, json=_sanitize_keys(snapshot), timeout=5)
+        payload = _sanitize_keys(snapshot)
+        for attempt in range(2):
+            try:
+                requests.put(url, json=payload, timeout=5)
+                self._consecutive_push_failures = 0
+                return
+            except Exception as e:
+                if attempt == 0:
+                    time.sleep(2)
+                else:
+                    self._consecutive_push_failures = getattr(self, '_consecutive_push_failures', 0) + 1
+                    logging.warning(
+                        f"Firebase PUT failed after retry: {e} "
+                        f"(consecutive={self._consecutive_push_failures})"
+                    )
