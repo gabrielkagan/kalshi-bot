@@ -56,7 +56,7 @@ class SupabaseSyncer:
 
         # Watermarks for incremental sync
         self._wm_evaluations = 0
-        self._wm_rejections_count = 0
+        self._wm_rejections = 0
         self._wm_trades_count = 0
 
         # Timing
@@ -182,6 +182,26 @@ class SupabaseSyncer:
             self._consecutive_errors += 1
             return False
 
+    def _insert(self, table: str, rows: list) -> bool:
+        """INSERT rows (append-only, no UPSERT). For tables like vol/cal snapshots."""
+        if not rows:
+            return True
+        try:
+            self._maybe_refresh_session()
+            url = f"{self._url}/rest/v1/{table}"
+            headers = {"Prefer": "return=minimal"}
+            resp = self._session.post(url, json=rows, headers=headers, timeout=10)
+            self._request_count += 1
+            if resp.status_code in (200, 201):
+                self._consecutive_errors = 0
+                return True
+            logging.debug("Supabase INSERT %s: HTTP %d — %s", table, resp.status_code, resp.text[:200])
+            self._consecutive_errors += 1
+            return False
+        except Exception:
+            self._consecutive_errors += 1
+            return False
+
     def _patch(self, table: str, data: dict, query: str = "") -> bool:
         """PATCH (update) rows matching query."""
         try:
@@ -234,11 +254,11 @@ class SupabaseSyncer:
                     if src == "evaluated_opportunities":
                         self._wm_evaluations = wm
                     elif src == "rejected_opportunities":
-                        self._wm_rejections_count = wm
+                        self._wm_rejections = wm
                     elif src == "settled_trades":
                         self._wm_trades_count = wm
                 logging.info("Supabase watermarks loaded: evals=%d rej=%d trades=%d",
-                             self._wm_evaluations, self._wm_rejections_count, self._wm_trades_count)
+                             self._wm_evaluations, self._wm_rejections, self._wm_trades_count)
         except Exception:
             logging.debug("Supabase: could not load watermarks, starting from 0")
 
@@ -299,24 +319,23 @@ class SupabaseSyncer:
             logging.debug("Supabase: evaluations sync failed", exc_info=True)
 
     def _sync_rejections(self):
-        """Sync rejections — use COUNT as watermark since no autoincrement id."""
+        """Incremental sync of rejected_opportunities by rowid."""
         try:
-            count_row = self._db.execute("SELECT COUNT(*) AS cnt FROM rejected_opportunities").fetchone()
-            current_count = count_row["cnt"] if count_row else 0
-            if current_count <= self._wm_rejections_count:
-                return
-
-            # Fetch all and upsert (idempotent on ticker PK)
             rows = self._db.execute(
-                "SELECT * FROM rejected_opportunities ORDER BY rejection_time DESC LIMIT 500"
+                "SELECT rowid, * FROM rejected_opportunities WHERE rowid > ? ORDER BY rowid LIMIT 500",
+                (self._wm_rejections,)
             ).fetchall()
             if not rows:
                 return
-            mapped = [{col: self._clean(r[col]) for col in r.keys()} for r in rows]
+            mapped = []
+            for r in rows:
+                row_dict = {col: self._clean(r[col]) for col in r.keys() if col != "rowid"}
+                mapped.append(row_dict)
             if self._post("rejections", mapped):
-                self._wm_rejections_count = current_count
-                self._save_watermark("rejected_opportunities", current_count, len(rows))
-                logging.debug("Supabase: synced %d rejections", len(rows))
+                new_wm = max(r["rowid"] for r in rows)
+                self._wm_rejections = new_wm
+                self._save_watermark("rejected_opportunities", new_wm, len(rows))
+                logging.debug("Supabase: synced %d rejections (wm=%d)", len(rows), new_wm)
         except Exception:
             logging.debug("Supabase: rejections sync failed", exc_info=True)
 
@@ -395,10 +414,11 @@ class SupabaseSyncer:
     # ── Periodic snapshots ──────────────────────────────────────────────
 
     def _sync_snapshots(self):
-        """Push volatility snapshots and calibration state."""
+        """Push volatility snapshots, calibration state, and run reconciliation."""
         self._sync_vol_snapshots()
         self._sync_cal_snapshot()
         self._refresh_analytics_views()
+        self._reconciliation_check()
 
     def _refresh_analytics_views(self):
         """Refresh materialized views for dashboard analytics."""
@@ -438,7 +458,7 @@ class SupabaseSyncer:
                 }
                 rows.append(row)
             if rows:
-                self._post("volatility_snapshots", rows)
+                self._insert("volatility_snapshots", rows)
         except Exception:
             logging.debug("Supabase: vol snapshots failed", exc_info=True)
 
@@ -448,21 +468,51 @@ class SupabaseSyncer:
             cal = getattr(self._ml, "calibration", None)
             if not cal:
                 return
+            # Skip if calibration has no observations yet
+            obs_count = len(getattr(cal, "_observations", []))
+            if obs_count == 0:
+                return
             import bot as _bot_mod
+            brier = cal.rolling_brier_score()
             row = {
                 "snapshot_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "active_method": cal.active_method,
-                "beta_cal_brier": cal.rolling_brier_score(),
+                "beta_cal_brier": brier if brier < 1.0 else None,
                 "temperature_brier": getattr(cal, "_temperature_brier", None),
                 "beta_cal_a": getattr(cal, "_beta_a", None),
                 "beta_cal_b": getattr(cal, "_beta_b", None),
                 "temperature": getattr(cal, "_temperature", None),
-                "sample_count": getattr(cal, "_sample_count", None),
+                "sample_count": obs_count,
                 "market_blend_weight": getattr(_bot_mod, "MARKET_BLEND_W", None),
             }
-            self._post("calibration_snapshots", [row])
+            self._insert("calibration_snapshots", [row])
         except Exception:
             logging.debug("Supabase: cal snapshot failed", exc_info=True)
+
+    # ── Reconciliation ─────────────────────────────────────────────────
+
+    def _reconciliation_check(self):
+        """Compare SQLite vs Supabase row counts, log discrepancies."""
+        try:
+            for sqlite_tbl, sb_tbl in [
+                ("evaluated_opportunities", "evaluations"),
+                ("rejected_opportunities", "rejections"),
+                ("settled_trades", "trades"),
+            ]:
+                local = self._db.execute(f"SELECT COUNT(*) FROM {sqlite_tbl}").fetchone()[0]
+                resp = self._session.head(
+                    f"{self._url}/rest/v1/{sb_tbl}?select=*",
+                    headers={"Prefer": "count=exact", "Range-Unit": "items", "Range": "0-0"},
+                    timeout=10,
+                )
+                remote_str = resp.headers.get("content-range", "*/0").split("/")[-1]
+                remote = int(remote_str) if remote_str.isdigit() else 0
+                gap = local - remote
+                if gap > 10:
+                    logging.warning("Supabase reconciliation: %s local=%d remote=%d gap=%d",
+                                    sqlite_tbl, local, remote, gap)
+        except Exception:
+            logging.debug("Supabase: reconciliation check failed", exc_info=True)
 
     # ── Storage check ───────────────────────────────────────────────────
 
