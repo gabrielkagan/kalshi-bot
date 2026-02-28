@@ -37,8 +37,8 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | OBSERVATION_MODE | False | LIVE trading |
 | MIN_ENTRY_PRICE | 87 | Cents; two losses at 86c |
 | MAX_ENTRY_PRICE | 99 | Cents |
-| MIN_EDGE_PCT | 0.7 | Fee-adjusted edge threshold (was 0.9; data: 0.5-0.9% near-misses 11W/1L) |
-| MARKET_BLEND_W | 0.50 | 50% blend with market price (no-blend was +1.86pp overconfident) |
+| MIN_EDGE_BY_PRICE | 0.7%-4.0% | Price-dependent: 87c→0.7%, 89c→0.9%, 91c→1.2%, 93c→1.8%, 95c→2.5%, 97c→4.0% |
+| MARKET_BLEND_W | 0.40 | 60% model, 40% market (data: model underconfident 0.8-2.1pp at 90%+) |
 | MAX_RISK_PER_TRADE | 0.25 | Max 25% bankroll per trade |
 | MAX_SECONDS_BEFORE_CLOSE | 270 | 4.5 min before close |
 | MAKER_ONLY_THRESHOLD | 90.0 | No taker execution below 90s (data: taker <90s cost -$85) |
@@ -52,8 +52,8 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 1. Raw statistical probability (from volatility model)
 2. Beta calibration (CalibrationEngine — trained on 15M data only, hourly excluded)
 3. Dynamic cap: **bypassed** when learned calibration is active (`is_learned_method_active()` → uses 0.999 safety ceiling instead of the cap schedule). Cap schedule only applies during startup before training.
-4. Market blend: 50% weight toward market price (the actual bottleneck for edge, not the cap)
-5. Fee-adjusted edge check: must exceed MIN_EDGE_PCT (0.7%)
+4. Market blend: 40% weight toward market price (60% model)
+5. Fee-adjusted edge check: price-dependent minimum (0.7% at 87c up to 4.0% at 97c+)
 
 ## Shadow Mode Features
 

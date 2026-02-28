@@ -297,7 +297,7 @@ HOURLY_DYNAMIC_CAP_SCHEDULE = [
     (0,    0.999), # < 1 min
 ]
 
-MARKET_BLEND_W = 0.50             # REVERTED: data shows +1.86pp overconfidence without blend
+MARKET_BLEND_W = 0.40             # 60% model, 40% market (data: model underconfident 0.8-2.1pp at 90%+)
 ENDGAME_BLEND_PRICE = 96         # don't blend at or above this price (preserve endgame edge)
 
 # ─── Shadow Calibration Pipeline ──────────────────────────────────────────────
@@ -355,7 +355,26 @@ _CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
 _TELEGRAM: Optional["TelegramNotifier"] = None
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
-MIN_EDGE_PCT = 0.7                # model prob must exceed market by ≥0.7 pp (was 0.9; data: 0.5-0.9% near-misses 11W/1L)
+MIN_EDGE_PCT = 0.7                # flat fallback (used in logging, pre-filter, counterfactuals)
+
+# Price-dependent minimum edge: higher prices have worse asymmetry
+# At 95c: 1 loss = 19 wins. At 87c: 1 loss = 6.7 wins.
+MIN_EDGE_BY_PRICE = [
+    (97, 0.040),   # 97-99c: need 4.0% edge
+    (95, 0.025),   # 95-96c: need 2.5% edge
+    (93, 0.018),   # 93-94c: need 1.8% edge
+    (91, 0.012),   # 91-92c: need 1.2% edge
+    (89, 0.009),   # 89-90c: need 0.9% edge
+    (0,  0.007),   # 87-88c: need 0.7% edge (current flat rate)
+]
+
+def get_min_edge(entry_price_cents: int) -> float:
+    """Return minimum fee-adjusted edge for a given entry price."""
+    for price_floor, min_edge in MIN_EDGE_BY_PRICE:
+        if entry_price_cents >= price_floor:
+            return min_edge
+    return 0.007
+
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
 BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
@@ -363,15 +382,17 @@ BALANCE_CACHE_TTL = 30.0          # seconds to cache balance
 # ─── Position Sizing ───────────────────────────────────────────────────────
 # Edge-based tiered sizing: higher fee-adjusted edge → more aggressive
 # Thresholds are fee-adjusted (gross edge minus ~1¢ taker fee per contract)
-SIZING_TIERS = [                  # (min_fee_adj_edge, risk_fraction)
-    (0.04, 0.25),                 # fee-adj edge ≥ 4.0% → risk 25% (was 50%; reduced after loss analysis)
-    (0.02, 0.20),                 # fee-adj edge ≥ 2.0% → risk 20% (was 35%)
-    (0.015, 0.15),                # fee-adj edge ≥ 1.5% → risk 15% (was 20%)
-    (0.01, 0.10),                 # fee-adj edge ≥ 1.0% → risk 10%
-    (0.009, 0.07),                # fee-adj edge ≥ 0.9% → risk 7% (conservative new tier)
+SIZING_TIERS = [                  # (min_fee_adj_edge, risk_fraction) — aligned with MIN_EDGE_BY_PRICE
+    (0.04,  0.25),                # edge ≥ 4.0% → 25% risk
+    (0.025, 0.20),                # edge ≥ 2.5% → 20% risk
+    (0.018, 0.15),                # edge ≥ 1.8% → 15% risk
+    (0.012, 0.10),                # edge ≥ 1.2% → 10% risk
+    (0.009, 0.07),                # edge ≥ 0.9% → 7% risk
+    (0.007, 0.05),                # edge ≥ 0.7% → 5% risk (87-88c only)
 ]
-DRAWDOWN_HALF_THRESHOLD = 0.90    # below 90% of starting balance → halve size
-DRAWDOWN_QUARTER_THRESHOLD = 0.80 # below 80% → quarter size
+DRAWDOWN_HALF_THRESHOLD = 0.85    # below 85% of starting balance → halve size (was 90%)
+DRAWDOWN_QUARTER_THRESHOLD = 0.75 # below 75% → quarter size (was 80%)
+DRAWDOWN_HALT_THRESHOLD = 0.65    # below 65% → stop trading entirely (NEW)
 
 # ─── Order Execution ──────────────────────────────────────────────────────
 MAKER_PRICE_OFFSET = 1            # cents below fair value for maker orders
@@ -5723,6 +5744,9 @@ class PositionSizer:
         # Apply drawdown scaler
         scaler = self._drawdown_scaler(balance_cents)
         result["drawdown_scaler"] = scaler
+        if scaler <= 0:
+            result["reason"] = "drawdown halt — trading suspended"
+            return result
         scaled_contracts = math.floor(raw_contracts * scaler)
 
         # Safety ceiling: MAX_RISK_PER_TRADE of bankroll
@@ -5748,6 +5772,8 @@ class PositionSizer:
         if self.starting_balance_cents <= 0:
             return 1.0
         ratio = balance_cents / self.starting_balance_cents
+        if ratio < DRAWDOWN_HALT_THRESHOLD:
+            return 0.0   # stop trading entirely
         if ratio < DRAWDOWN_QUARTER_THRESHOLD:
             return 0.25
         if ratio < DRAWDOWN_HALF_THRESHOLD:
@@ -5824,16 +5850,16 @@ class OpportunityScanner:
             )
 
         # ── Startup assertion: critical config values ──
-        assert MARKET_BLEND_W == 0.50, f"MARKET_BLEND_W misconfigured: {MARKET_BLEND_W}"
+        assert MARKET_BLEND_W == 0.40, f"MARKET_BLEND_W misconfigured: {MARKET_BLEND_W}"
         assert SHADOW_CAL_PIPELINE is True, "SHADOW_CAL_PIPELINE should be True"
         assert MAX_RISK_PER_TRADE == 0.25, f"MAX_RISK_PER_TRADE misconfigured: {MAX_RISK_PER_TRADE}"
         logging.info(
             "CONFIG_VERIFY: MARKET_BLEND_W=%.2f SHADOW_CAL_PIPELINE=%s "
             "MAX_RISK=%s SIZING_TIERS=%s DRAWDOWN_HALF=%.2f DRAWDOWN_QUARTER=%.2f "
-            "MAKER_ONLY_THRESHOLD=%.0f",
+            "DRAWDOWN_HALT=%.2f MAKER_ONLY_THRESHOLD=%.0f",
             MARKET_BLEND_W, SHADOW_CAL_PIPELINE, MAX_RISK_PER_TRADE,
             SIZING_TIERS, DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
-            MAKER_ONLY_THRESHOLD)
+            DRAWDOWN_HALT_THRESHOLD, MAKER_ONLY_THRESHOLD)
 
         # ── Hourly config verify ──
         if HOURLY_OBSERVATION_ENABLED:
@@ -6496,8 +6522,9 @@ class OpportunityScanner:
                     except Exception:
                         pass
 
-                # Filter: fee-adjusted edge must meet minimum
-                if fee_adjusted_edge < MIN_EDGE_PCT / 100.0:
+                # Filter: fee-adjusted edge must meet price-dependent minimum
+                _min_edge = get_min_edge(best_ask)
+                if fee_adjusted_edge < _min_edge:
                     scan_stats[asset]["insufficient_edge"] += 1
                     self._recent_opportunities.append({
                         "ticker": ticker, "asset": asset,
@@ -6515,7 +6542,7 @@ class OpportunityScanner:
                             "ticker": ticker,
                             "event_ticker": window["event_ticker"],
                             "asset": asset,
-                            "rejection_reason": f"net_edge {fee_adjusted_edge:.4f} < min {MIN_EDGE_PCT / 100.0:.4f} (gross {edge:.4f}, fee {est_fee_1c}c)",
+                            "rejection_reason": f"net_edge {fee_adjusted_edge:.4f} < min {_min_edge:.4f} @{best_ask}c (gross {edge:.4f}, fee {est_fee_1c}c)",
                             "spot_price": spot,
                             "threshold": threshold,
                             "volatility": blended_rv,
