@@ -973,6 +973,13 @@ class FirebasePusher:
                     "observation_only": getattr(_bot_mod, "HOURLY_OBSERVATION_ONLY", True),
                     "blend_w": getattr(_bot_mod, "HOURLY_MARKET_BLEND_W", 0.70),
                     "max_stc": getattr(_bot_mod, "HOURLY_MAX_SECONDS_BEFORE_CLOSE", 900),
+                    "temperature_t": getattr(_bot_mod, "HOURLY_TEMPERATURE_T", None),
+                    "kelly_fraction": getattr(_bot_mod, "HOURLY_KELLY_FRACTION", None),
+                    "min_stc_entry": getattr(_bot_mod, "HOURLY_MIN_STC_ENTRY", None),
+                    "max_stc_entry": getattr(_bot_mod, "HOURLY_MAX_STC_ENTRY", None),
+                    "excluded_assets": list(getattr(_bot_mod, "HOURLY_EXCLUDED_ASSETS", set())),
+                    "max_positions_per_window": getattr(_bot_mod, "HOURLY_MAX_POSITIONS_PER_WINDOW", None),
+                    "max_window_risk": getattr(_bot_mod, "HOURLY_MAX_WINDOW_RISK", None),
                 }
                 conn = self._ml.state.conn
                 # Settled hourly observations
@@ -1005,6 +1012,17 @@ class FirebasePusher:
                     hourly_data["pending_count"] = row["cnt"] if row else 0
                 except Exception:
                     hourly_data["pending_count"] = 0
+                # Filter stage breakdown for hourly
+                try:
+                    rows = conn.execute(
+                        "SELECT filter_stage, COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='hourly' GROUP BY filter_stage"
+                    ).fetchall()
+                    hourly_data["filter_stages"] = {
+                        r["filter_stage"]: r["cnt"] for r in rows
+                    } if rows else {}
+                except Exception:
+                    hourly_data["filter_stages"] = {}
                 snap["hourly_observation"] = hourly_data
         except Exception:
             logging.debug("Firebase: hourly_observation build failed", exc_info=True)
