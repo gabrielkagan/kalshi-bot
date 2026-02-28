@@ -6108,6 +6108,7 @@ class OpportunityScanner:
                             ticker, window["event_ticker"], asset, reason,
                             prob_result.get("z_score"), spot, threshold,
                             blended_rv, rej_ask, seconds_remaining, None,
+                            product_type=window.get("product_type"),
                             **_shadow_diag)
                         self._logger.log_rejection(rej_data)
                         logging.info(
@@ -6361,6 +6362,7 @@ class OpportunityScanner:
                             prob_with_market.get("z_score"), spot, threshold,
                             blended_rv, best_ask, seconds_remaining,
                             prob_with_market.get("calibrated_prob"),
+                            product_type=window.get("product_type"),
                             **_shadow_diag)
                         self._logger.log_rejection(rej_data)
                         logging.info(
@@ -6950,9 +6952,16 @@ class OpportunityScanner:
                             "edge": round(edge, 6),
                             "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                             "position_size": sizing["contracts"],
+                            "kelly_f": sizing["kelly_f"],
+                            "drawdown_scaler": sizing["drawdown_scaler"],
+                            "calibrated_prob_raw": round(calibrated_prob_raw, 6),
+                            "ofa_adjustment": round(ofa_adjustment, 6),
+                            "strategy": strategy,
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
                             "hourly_pre_temp_prob": round(_hourly_pre_temp_prob, 6) if _hourly_pre_temp_prob is not None else None,
                             "hourly_temp_t": HOURLY_TEMPERATURE_T if HOURLY_TEMPERATURE_ENABLED else None,
+                            "old_system_prob": round(_old_system_prob, 6),
+                            "counterfactual": _cf,
                             **_shadow_diag,
                         })
                     except Exception:
@@ -6970,6 +6979,17 @@ class OpportunityScanner:
                             calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
                             breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                             ask_depth=ask_depth, best_ask_source=best_ask_source,
+                            position_size=sizing["contracts"],
+                            kelly_f=sizing["kelly_f"],
+                            drawdown_scaler=sizing["drawdown_scaler"],
+                            calibrated_prob_raw=calibrated_prob_raw,
+                            ofa_adjustment=ofa_adjustment,
+                            strategy=strategy,
+                            old_system_prob=_old_system_prob,
+                            counterfactual=_cf_json,
+                            shadow_cal_prob=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
+                            shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
+                            shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                             product_type="hourly", **_shadow_diag)
                     logging.info("HOURLY_OBS: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
