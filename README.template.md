@@ -13,7 +13,7 @@ Deribit DVOL ──────────┤
 CoinGlass funding ─────┘
 ```
 
-Every second, the bot scans all active 15-minute windows across all four assets and executes when the fee-adjusted edge exceeds 1 percentage point.
+Every second, the bot scans all active 15-minute windows across all four assets and executes when the fee-adjusted edge exceeds a price-dependent minimum (0.7% at 87¢ up to 4.0% at 97¢+).
 
 ## Architecture
 
@@ -41,10 +41,10 @@ Converts the volatility estimate into a settlement probability:
 1. Compute z-score: distance from current price to strike, normalized by estimated vol
 2. Map through per-asset Normal Inverse Gaussian (NIG) CDF — captures both heavy tails and asymmetry unique to each crypto; falls back to Student-t(df=4) if NIG unavailable
 3. Data-driven calibration via CalibrationEngine — progresses from fixed logistic (β=0.85) → Platt Scaling → Beta Calibration → BLR as data accumulates (currently Beta Cal with 1170+ observations)
-4. Dynamic probability cap: 93% at >10min, relaxing to 99.5% at <1min remaining
-5. Market-price blending: 50/50 blend with market-implied probability below 96¢
+4. Dynamic probability cap: bypassed when learned calibration is active (uses 0.999 safety ceiling); cap schedule only applies during startup before training
+5. Market-price blending: 60% model / 40% market-implied probability
 
-Safety rails refuse to trade if: the model says >90% but the market is below 75¢, or |z-score| > 12.0.
+Safety rails refuse to trade if: the model says >90% but the market is below 75¢, or |z-score| > 25.
 
 ### Cross-Exchange Intelligence
 
@@ -74,14 +74,17 @@ Edge-tiered sizing with drawdown scaling:
 
 | Fee-Adjusted Edge | Risk Fraction |
 |-------------------|---------------|
-| ≥ 4% (~5%+ gross) | 50% of bankroll |
-| ≥ 2% (~3%+ gross) | 35% of bankroll |
-| ≥ 1.5% (~2.5%+ gross) | 20% of bankroll |
-| ≥ 1% | 10% of bankroll |
+| ≥ 4% | 25% of bankroll |
+| ≥ 2.5% | 20% of bankroll |
+| ≥ 1.8% | 15% of bankroll |
+| ≥ 1.2% | 10% of bankroll |
+| ≥ 0.9% | 7% of bankroll |
+| ≥ 0.7% | 5% of bankroll |
 
-- Safety ceiling: max 50% of bankroll at risk per trade
-- At 90% of starting balance: halve position sizes
-- At 80% of starting balance: quarter position sizes
+- Safety ceiling: max 25% of bankroll at risk per trade
+- At 85% of peak balance: halve position sizes
+- At 75% of peak balance: quarter position sizes
+- At 65% of peak balance: halt trading entirely
 - Can trade multiple assets per 15-minute window
 
 ### State & Persistence
@@ -176,7 +179,7 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot.py                         — all bot logic (~9,200 lines, never rename)
+bot.py                         — all bot logic (~10,400 lines, never rename)
 firebase_push.py               — pushes live dashboard snapshots to Firebase
 start.sh                       — systemd entrypoint (venv + .env + bot.py)
 requirements.txt               — Python dependencies

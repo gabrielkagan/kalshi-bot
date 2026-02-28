@@ -17,7 +17,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 
 ## Project Structure
 
-- `bot.py` — Main bot (~8700 lines, all trading logic)
+- `bot.py` — Main bot (~10400 lines, all trading logic)
 - `analyst.py` — AI analyst system (news sentiment, loss analysis, Telegram alerts)
 - `firebase_push.py` — Pushes live dashboard snapshots to Firebase
 - `start.sh` — Startup script (activates venv, sources .env, runs bot)
@@ -26,7 +26,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 ## Current State (Feb 28, 2026)
 
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
-- **15M performance:** 121 trades, 112W/9L (92.6%), PnL -$8.29
+- **15M performance:** 169 trades, 149W/20L (88.2%)
 - **Hourly:** Reverted to observation mode (HOURLY_OBSERVATION_ONLY = True) — 66.7% WR was unprofitable, calibration under investigation
 - **CalibrationEngine:** Hourly data excluded from training (was contaminating 15M model — 35.5% of training data)
 
@@ -40,7 +40,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | MIN_EDGE_BY_PRICE | 0.7%-4.0% | Price-dependent: 87c→0.7%, 89c→0.9%, 91c→1.2%, 93c→1.8%, 95c→2.5%, 97c→4.0% |
 | MARKET_BLEND_W | 0.40 | 60% model, 40% market (data: model underconfident 0.8-2.1pp at 90%+) |
 | MAX_RISK_PER_TRADE | 0.25 | Max 25% bankroll per trade |
-| MAX_SECONDS_BEFORE_CLOSE | 270 | 4.5 min before close |
+| MAX_SECONDS_BEFORE_CLOSE | 300 | 5 min before close |
 | MAKER_ONLY_THRESHOLD | 90.0 | No taker execution below 90s (data: taker <90s cost -$85) |
 | HOURLY_OBSERVATION_ONLY | True | Reverted — calibration too overconfident for hourly |
 | HOURLY_MARKET_BLEND_W | 0.40 | Optimal Brier per 134K simulation |
