@@ -40,7 +40,7 @@ MIN_ENTRY_PRICE = 87              # cents (data: two losses at 86c; 87c+ is clea
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.25         # max 25% of bankroll at risk per trade (was 50%; reduced after loss analysis)
 MIN_SECONDS_BEFORE_CLOSE = 0
-MAX_SECONDS_BEFORE_CLOSE = 270    # start scanning 4.5 min before close (data: 240-270s is 8W/0L, 100% WR)
+MAX_SECONDS_BEFORE_CLOSE = 300    # start scanning 5 min before close (extending from 270: 240-270s was 96.3% WR)
 ONE_ASSET_PER_WINDOW = False
 
 # ─── Hourly Observation Mode ──────────────────────────────────────────────────
@@ -1279,6 +1279,9 @@ class StateManager:
             ("calibrated_prob", "REAL"),
             ("edge", "REAL"),
             ("kelly_f", "REAL"),
+            ("escalation_type", "TEXT"),
+            ("maker_price_cents", "INTEGER"),
+            ("maker_wait_seconds", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE settled_trades ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1298,6 +1301,9 @@ class StateManager:
             ("is_taker", "INTEGER"),
             ("fill_source", "TEXT"),
             ("execution_method", "TEXT"),
+            ("escalation_type", "TEXT"),
+            ("maker_price_cents", "INTEGER"),
+            ("maker_wait_seconds", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE positions ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1503,14 +1509,17 @@ class StateManager:
                 (ticker, event_ticker, asset, market_result, side, count,
                  entry_price_cents, revenue_cents, fee_cents, pnl_cents,
                  settled_at, strategy, seconds_to_close, fill_latency_seconds,
-                 vol_regime, calibrated_prob, edge, kelly_f)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 vol_regime, calibrated_prob, edge, kelly_f,
+                 escalation_type, maker_price_cents, maker_wait_seconds)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, pos["event_ticker"], pos["asset"], result,
               pos["side"], pos["count"], pos["avg_price_cents"],
               revenue, fee, pnl, now,
               pos.get("strategy"), pos.get("seconds_to_close"),
               pos.get("fill_latency_seconds"), pos.get("vol_regime"),
-              pos.get("calibrated_prob"), pos.get("edge"), pos.get("kelly_f")))
+              pos.get("calibrated_prob"), pos.get("edge"), pos.get("kelly_f"),
+              pos.get("escalation_type"), pos.get("maker_price_cents"),
+              pos.get("maker_wait_seconds")))
 
         self.conn.execute("""
             UPDATE positions SET status='settled', updated_at=?
@@ -1713,7 +1722,9 @@ class StateManager:
                                   vol_regime=None, calibrated_prob=None,
                                   edge=None, kelly_f=None,
                                   is_taker=None, fill_source=None,
-                                  execution_method=None):
+                                  execution_method=None,
+                                  escalation_type=None, maker_price_cents=None,
+                                  maker_wait_seconds=None):
         """Record or accumulate a position from a fill.
 
         If a position already exists for this ticker, accumulate:
@@ -1748,13 +1759,15 @@ class StateManager:
                      avg_price_cents, total_cost_cents, opened_at, updated_at, status,
                      strategy, seconds_to_close, fill_latency_seconds,
                      vol_regime, calibrated_prob, edge, kelly_f,
-                     is_taker, fill_source, execution_method)
-                VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?)
+                     is_taker, fill_source, execution_method,
+                     escalation_type, maker_price_cents, maker_wait_seconds)
+                VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, side, count,
                   price_cents, fill_cost, now, now,
                   strategy, seconds_to_close, fill_latency,
                   vol_regime, calibrated_prob, edge, kelly_f,
-                  1 if is_taker else 0, fill_source, execution_method))
+                  1 if is_taker else 0, fill_source, execution_method,
+                  escalation_type, maker_price_cents, maker_wait_seconds))
         self.conn.commit()
 
     def update_garch_params(self, asset: str, omega: float, alpha: float,
@@ -8120,6 +8133,9 @@ class OrderExecutor:
         candidate = dict(order["candidate"])
         candidate["best_yes_ask"] = best_ask
         candidate["entry_path"] = "escalation_ioc"
+        candidate["escalation_type"] = reason
+        candidate["maker_price_cents"] = order["price_cents"]
+        candidate["maker_wait_seconds"] = round(elapsed, 1)
         filled = order.get("filled_so_far", 0)
         if filled > 0:
             candidate["position_size"] = max(1, candidate["position_size"] - filled)
@@ -8431,6 +8447,9 @@ class OrderExecutor:
             is_taker=order.get("is_taker", False),
             fill_source=order.get("fill_source", "rest_poll"),
             execution_method=order.get("execution_method", "maker"),
+            escalation_type=candidate.get("escalation_type", "none"),
+            maker_price_cents=candidate.get("maker_price_cents"),
+            maker_wait_seconds=candidate.get("maker_wait_seconds"),
         )
 
         # Invalidate scanner balance cache so next tick gets fresh balance
