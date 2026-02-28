@@ -1363,8 +1363,8 @@ class Analyst:
                 sentiment.confidence,
                 len(sentiment.market_moving_events),
             )
-            # Alert on market-moving events only
-            if sentiment.market_moving_events:
+            # Alert only on high-confidence market-moving events
+            if sentiment.market_moving_events and sentiment.confidence == "high":
                 events_text = "\n".join(
                     f"\u2022 {e[:150]}" for e in sentiment.market_moving_events[:3]
                 )
