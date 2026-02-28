@@ -46,14 +46,35 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | HOURLY_MARKET_BLEND_W | 0.40 | Optimal Brier per 134K simulation |
 | HOURLY_MIN_ENTRY_PRICE | 70 | Hourly floor |
 | HOURLY_MAX_RISK_PER_TRADE | 0.15 | 60% of 15M's 0.25 |
+| HOURLY_TEMPERATURE_T | 1.45 | Softens overconfident probs: 95%→88.4% |
+| HOURLY_KELLY_FRACTION | 0.25 | Quarter-Kelly sizing for hourly |
+| HOURLY_MIN_STC_ENTRY | 300 | Min 5 min STC — EGARCH degrades below this |
+| HOURLY_MAX_STC_ENTRY | 900 | Max 15 min STC — sweet spot per researcher |
+| HOURLY_EXCLUDED_ASSETS | {XRP} | XRP: 63.3% WR, p=0.41 vs coin flip |
+| HOURLY_MAX_POSITIONS_PER_WINDOW | 2 | ENB ~1.3 — limit correlated exposure |
+| HOURLY_MAX_WINDOW_RISK | 0.15 | Max aggregate risk per hourly window |
 
 ## Calibration Pipeline
 
 1. Raw statistical probability (from volatility model)
 2. Beta calibration (CalibrationEngine — trained on 15M data only, hourly excluded)
-3. Dynamic cap: **bypassed** when learned calibration is active (`is_learned_method_active()` → uses 0.999 safety ceiling instead of the cap schedule). Cap schedule only applies during startup before training.
-4. Market blend: 40% weight toward market price (60% model)
-5. Fee-adjusted edge check: price-dependent minimum (0.7% at 87c up to 4.0% at 97c+)
+3. **Hourly temperature scaling** (Layer 1): T=1.45 softens overconfident probs (95%→88.4%). Applied before OFA/dynamic cap. 15M unaffected.
+4. Dynamic cap: **bypassed** when learned calibration is active (`is_learned_method_active()` → uses 0.999 safety ceiling instead of the cap schedule). Cap schedule only applies during startup before training.
+5. Market blend: 40% weight toward market price (60% model)
+6. Fee-adjusted edge check: price-dependent minimum (0.7% at 87c up to 4.0% at 97c+)
+
+## Hourly Three-Layer Optimization
+
+Researcher-recommended filters to fix hourly overconfidence, timing, and correlation issues. All run under `HOURLY_OBSERVATION_ONLY = True` — observation gate is the shadow mechanism. Filters placed LATE in pipeline so all upstream data is still logged for counterfactual analysis.
+
+| Layer | Filter Stage | Purpose |
+|-------|-------------|---------|
+| 1 | Temperature scaling (T=1.45) | Softens 15M calibration that doesn't transfer to hourly |
+| 2 | STC timing (300-900s) | EGARCH degrades outside this window |
+| 3a | Asset exclusion (XRP) | 63.3% WR, p=0.41 — not profitable |
+| 3b | Per-window position limit (2) | ENB ~1.3 independent bets per window |
+| 3c | Per-window risk cap (15%) | Prevents correlated multi-asset blowups |
+| 3d | Quarter-Kelly sizing | 44% of growth rate, ~3% halving probability |
 
 ## Shadow Mode Features
 

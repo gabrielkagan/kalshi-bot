@@ -58,6 +58,16 @@ HOURLY_MARKET_BLEND_W = 0.40            # Optimal Brier per 134K simulation (0.7
 HOURLY_MIN_ENTRY_PRICE = 70            # Hourly strikes (data: 70c+ 61/61 = 100% WR)
 HOURLY_MAX_RISK_PER_TRADE = 0.15       # Conservative start (60% of 15M's 0.25)
 
+# ─── Hourly Three-Layer Optimization (Researcher Recommendations) ─────────
+HOURLY_TEMPERATURE_T = 1.45           # Temperature scaling: softens overconfident probs (T>1 = less confident)
+HOURLY_TEMPERATURE_ENABLED = True     # Toggle for temperature scaling
+HOURLY_MIN_STC_ENTRY = 300            # Min STC for entry (5 min) — EGARCH degrades beyond this
+HOURLY_MAX_STC_ENTRY = 900            # Max STC for entry (15 min) — sweet spot per researcher
+HOURLY_EXCLUDED_ASSETS = {"XRP"}      # XRP: 63.3% WR, p=0.41 vs coin flip — drop it
+HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time window (ENB ~1.3)
+HOURLY_MAX_WINDOW_RISK = 0.15         # Max aggregate risk across all hourly positions per window
+HOURLY_KELLY_FRACTION = 0.25          # Quarter-Kelly: 44% of growth rate, ~3% halving probability
+
 # ─── API Configuration ───────────────────────────────────────────────────────
 BASE_URL = ("https://api.elections.kalshi.com" if os.environ.get("KALSHI_ENV") == "production"
             else "https://demo-api.kalshi.co")
@@ -5829,6 +5839,9 @@ class OpportunityScanner:
         self._ticker_ask_history: Dict[str, deque] = {}
         self._eval_opp_seen: Set[Tuple[str, str]] = set()
         self._shadow_cal_last_log: Dict[str, float] = {}
+        # Hourly per-window tracking (reset each scan tick)
+        self._hourly_window_counts: Dict[str, int] = {}
+        self._hourly_window_risk: Dict[str, float] = {}
 
         # ── Startup assertion: _shadow_diag keys must be accepted by DB insert fns ──
         # Prevents the bug class where a new key in _shadow_diag causes a crash
@@ -5871,12 +5884,17 @@ class OpportunityScanner:
                 f"HOURLY floor {HOURLY_MIN_ENTRY_PRICE} > 15M floor {MIN_ENTRY_PRICE}")
             assert HOURLY_MAX_RISK_PER_TRADE <= MAX_RISK_PER_TRADE, (
                 f"HOURLY risk {HOURLY_MAX_RISK_PER_TRADE} > 15M risk {MAX_RISK_PER_TRADE}")
+            assert HOURLY_TEMPERATURE_T > 0, "HOURLY_TEMPERATURE_T must be positive"
+            assert 0 < HOURLY_KELLY_FRACTION <= 1.0, "HOURLY_KELLY_FRACTION must be in (0, 1]"
+            assert HOURLY_MIN_STC_ENTRY < HOURLY_MAX_STC_ENTRY, "STC entry window invalid"
+            assert HOURLY_MAX_POSITIONS_PER_WINDOW >= 1, "Must allow at least 1 position per window"
             logging.info(
                 "CONFIG_VERIFY (hourly): ENABLED=%s OBS_ONLY=%s BLEND_W=%.2f "
-                "MIN_ENTRY=%dc MAX_RISK=%.2f MAX_STC=%ds",
+                "MIN_ENTRY=%dc MAX_RISK=%.2f MAX_STC=%ds TEMP_T=%.2f KELLY_F=%.2f",
                 HOURLY_OBSERVATION_ENABLED, HOURLY_OBSERVATION_ONLY,
                 HOURLY_MARKET_BLEND_W, HOURLY_MIN_ENTRY_PRICE,
-                HOURLY_MAX_RISK_PER_TRADE, HOURLY_MAX_SECONDS_BEFORE_CLOSE)
+                HOURLY_MAX_RISK_PER_TRADE, HOURLY_MAX_SECONDS_BEFORE_CLOSE,
+                HOURLY_TEMPERATURE_T, HOURLY_KELLY_FRACTION)
 
         # ── Dip addon config verify ──
         if DIP_ADDON_ENABLED:
@@ -5897,6 +5915,10 @@ class OpportunityScanner:
         now = time.time()
         ob_fetches_this_tick = 0
         candidates: List[Dict] = []
+
+        # Reset hourly per-window tracking each tick
+        self._hourly_window_counts = {}
+        self._hourly_window_risk = {}
 
         # Clean up ask history and dedup set for tickers no longer in active windows
         active_tickers = set()
@@ -6337,6 +6359,15 @@ class OpportunityScanner:
                 raw_prob = prob_with_market.get("raw_prob")
                 calibration_method = prob_with_market.get("calibration_method")
 
+                # ── Hourly temperature scaling (Layer 1) ──────────────
+                _hourly_pre_temp_prob = None
+                if window.get("product_type") == "hourly" and HOURLY_TEMPERATURE_ENABLED:
+                    _hourly_pre_temp_prob = final_prob
+                    _p = max(0.001, min(0.999, final_prob))
+                    _z = math.log(_p / (1.0 - _p))
+                    _z_scaled = _z / HOURLY_TEMPERATURE_T
+                    final_prob = 1.0 / (1.0 + math.exp(-_z_scaled))
+
                 # Order flow adjustment
                 ofa_signals = None
                 ofa_adjustment = 0.0
@@ -6601,8 +6632,10 @@ class OpportunityScanner:
                     continue
                 sizing = self._sizer.compute(final_prob, best_ask, balance)
 
-                # Hourly risk cap: more conservative than 15M
+                # Hourly: quarter-Kelly + conservative per-trade risk cap
                 if window.get("product_type") == "hourly":
+                    _full_kelly_contracts = sizing["contracts"]
+                    sizing["contracts"] = max(1, int(sizing["contracts"] * HOURLY_KELLY_FRACTION))
                     _hourly_max = int((balance * HOURLY_MAX_RISK_PER_TRADE) / best_ask)
                     if sizing["contracts"] > _hourly_max:
                         sizing["contracts"] = max(1, _hourly_max)
@@ -6807,6 +6840,87 @@ class OpportunityScanner:
                         pass
                     continue
 
+                # ── Hourly Layer 3a: Asset exclusion ──────────────
+                if (window.get("product_type") == "hourly"
+                        and asset in HOURLY_EXCLUDED_ASSETS):
+                    _dedup_key = (ticker, "hourly_asset_excluded")
+                    if _dedup_key not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dedup_key)
+                        _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset, "hourly_asset_excluded",
+                            spot_price=spot, threshold=threshold, volatility=blended_rv,
+                            market_price=best_ask, seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                            vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                            calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                            breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                            ask_depth=ask_depth, best_ask_source=best_ask_source,
+                            product_type="hourly", **_shadow_diag)
+                    continue
+
+                # ── Hourly Layer 2: STC timing restriction ──────────────
+                if (window.get("product_type") == "hourly"
+                        and (seconds_remaining < HOURLY_MIN_STC_ENTRY
+                             or seconds_remaining > HOURLY_MAX_STC_ENTRY)):
+                    _dedup_key = (ticker, "hourly_timing_restricted")
+                    if _dedup_key not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dedup_key)
+                        _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset, "hourly_timing_restricted",
+                            spot_price=spot, threshold=threshold, volatility=blended_rv,
+                            market_price=best_ask, seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                            vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                            calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                            breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                            ask_depth=ask_depth, best_ask_source=best_ask_source,
+                            product_type="hourly", **_shadow_diag)
+                    continue
+
+                # ── Hourly Layer 3b: Per-window position limit ──────────────
+                if window.get("product_type") == "hourly":
+                    _wkey = window["event_ticker"]
+                    if self._hourly_window_counts.get(_wkey, 0) >= HOURLY_MAX_POSITIONS_PER_WINDOW:
+                        _dedup_key = (ticker, "hourly_window_limit")
+                        if _dedup_key not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dedup_key)
+                            _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset, "hourly_window_limit",
+                                spot_price=spot, threshold=threshold, volatility=blended_rv,
+                                market_price=best_ask, seconds_to_close=seconds_remaining,
+                                calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                                vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                                calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                                breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                                ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                product_type="hourly", **_shadow_diag)
+                        continue
+
+                # ── Hourly Layer 3c: Per-window aggregate risk cap ──────────────
+                if window.get("product_type") == "hourly":
+                    _wkey = window["event_ticker"]
+                    _wrisk = self._hourly_window_risk.get(_wkey, 0.0)
+                    _this_risk = (sizing["contracts"] * best_ask) / (balance if balance > 0 else 1)
+                    if _wrisk + _this_risk > HOURLY_MAX_WINDOW_RISK:
+                        _dedup_key = (ticker, "hourly_window_risk_cap")
+                        if _dedup_key not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dedup_key)
+                            _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset, "hourly_window_risk_cap",
+                                spot_price=spot, threshold=threshold, volatility=blended_rv,
+                                market_price=best_ask, seconds_to_close=seconds_remaining,
+                                calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                                vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                                calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                                breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                                ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                product_type="hourly", **_shadow_diag)
+                        continue
+
                 # ── HOURLY OBSERVATION GATE ──
                 if window.get("product_type") == "hourly" and HOURLY_OBSERVATION_ONLY:
                     try:
@@ -6824,6 +6938,8 @@ class OpportunityScanner:
                             "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                             "position_size": sizing["contracts"],
                             "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
+                            "hourly_pre_temp_prob": round(_hourly_pre_temp_prob, 6) if _hourly_pre_temp_prob is not None else None,
+                            "hourly_temp_t": HOURLY_TEMPERATURE_T if HOURLY_TEMPERATURE_ENABLED else None,
                             **_shadow_diag,
                         })
                     except Exception:
@@ -6845,6 +6961,13 @@ class OpportunityScanner:
                     logging.info("HOURLY_OBS: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
                     continue  # DO NOT add to candidates — this is the safety gate
+
+                # Track hourly per-window counts for Layer 3b/3c limits
+                if window.get("product_type") == "hourly":
+                    _wkey = window["event_ticker"]
+                    self._hourly_window_counts[_wkey] = self._hourly_window_counts.get(_wkey, 0) + 1
+                    self._hourly_window_risk[_wkey] = self._hourly_window_risk.get(_wkey, 0.0) + \
+                        (sizing["contracts"] * best_ask) / (balance if balance > 0 else 1)
 
                 scan_stats[asset]["candidates"] += 1
                 self._session_total_candidates += 1
