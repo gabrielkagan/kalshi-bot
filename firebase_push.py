@@ -933,10 +933,26 @@ class FirebasePusher:
             if dt_att >= 3 and dt_fill == 0:
                 alerts.append(f"Direct taker path failing ({dt_att} attempts, 0 fills)")
 
-            # No fills at all despite orders
+            # No fills at all despite orders (Change 14: exclude hourly obs candidates)
             total_orders = getattr(scanner, "_session_total_candidates", 0)
-            if total_orders >= 3 and (ws_f + rest_f) == 0:
-                alerts.append(f"No fills despite {total_orders} candidates — check execution")
+            hourly_obs_cand = getattr(scanner, "_session_hourly_obs_candidates", 0) or 0
+            candidates_15m = max(0, total_orders - hourly_obs_cand)
+            exec_eng["candidates_15m"] = candidates_15m
+            exec_eng["candidates_hourly"] = hourly_obs_cand
+            if hourly_obs_cand == 0 and total_orders > 0:
+                # Scanner doesn't track hourly separately; check if hourly obs is active
+                try:
+                    import bot as _bot_mod3
+                    if getattr(_bot_mod3, "HOURLY_OBSERVATION_ENABLED", False) and \
+                       getattr(_bot_mod3, "HOURLY_OBSERVATION_ONLY", True):
+                        # Can't distinguish 15m vs hourly candidates, suppress this alert
+                        candidates_15m = 0
+                        exec_eng["candidates_15m"] = 0
+                        exec_eng["candidates_hourly"] = total_orders
+                except Exception:
+                    pass
+            if candidates_15m >= 3 and (ws_f + rest_f) == 0:
+                alerts.append(f"No fills despite {candidates_15m} 15M candidates — check execution")
 
             exec_eng["health_alerts"] = alerts
             exec_eng["health_ok"] = len(alerts) == 0
