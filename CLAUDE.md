@@ -1,6 +1,6 @@
 # Kalshi Crypto Trading Bot
 
-Cryptocurrency prediction market trading bot for the Kalshi platform. Trades above/below 15-minute window markets on BTC, ETH, SOL, and XRP. Also collects observation data on hourly above/below markets (KXBTCD, KXETHD, KXSOLD, KXXRPD).
+Cryptocurrency prediction market trading bot for the Kalshi platform. Trades above/below 15-minute window markets on BTC, ETH, SOL, and XRP. Also trades hourly above/below markets (KXBTCD, KXETHD, KXSOLD, KXXRPD) — promoted to live after 134K backtest with 0 losses.
 
 ## Critical Rules
 
@@ -39,10 +39,12 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | DRAWDOWN_HALF_THRESHOLD | 0.90 | 346 | Halve size below 90% of starting balance |
 | DRAWDOWN_QUARTER_THRESHOLD | 0.80 | 347 | Quarter size below 80% |
 | MAKER_ONLY_THRESHOLD | 90.0 | 358 | No taker execution below 90s to close (maker only) |
-| HOURLY_OBSERVATION_ENABLED | True | 46 | Master switch for hourly data collection |
-| HOURLY_OBSERVATION_ONLY | True | 47 | True = log only; False = live trading |
-| HOURLY_MARKET_BLEND_W | 0.70 | 53 | Higher blend — calibration untested at hourly |
-| HOURLY_MAX_SECONDS_BEFORE_CLOSE | 900 | 51 | 15 min before close |
+| HOURLY_OBSERVATION_ENABLED | True | 47 | Master switch for hourly markets |
+| HOURLY_OBSERVATION_ONLY | False | 48 | Promoted to live after 134K backtest |
+| HOURLY_MARKET_BLEND_W | 0.40 | 57 | Optimal Brier per 134K simulation (was 0.70) |
+| HOURLY_MIN_ENTRY_PRICE | 80 | 58 | Hourly floor lower than 15M (data: 80c+ 98.9% WR) |
+| HOURLY_MAX_RISK_PER_TRADE | 0.15 | 59 | Conservative (60% of 15M's 0.25) |
+| HOURLY_MAX_SECONDS_BEFORE_CLOSE | 1800 | 55 | 30 min before close |
 
 ## Shadow Mode Features
 
@@ -102,7 +104,7 @@ Pushing to `main` triggers auto-deploy:
 - **Outcome detection:** Use Kalshi settlements API, never z-score heuristics or balance deltas
 - **API tier:** Advanced (30 reads/sec, 30 writes/sec)
 - **Market series (15M):** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M
-- **Market series (hourly):** KXBTCD, KXETHD, KXSOLD, KXXRPD (observation mode)
+- **Market series (hourly):** KXBTCD, KXETHD, KXSOLD, KXXRPD (live trading)
 
 ## Fee Formula
 

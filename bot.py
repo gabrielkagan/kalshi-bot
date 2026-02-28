@@ -45,7 +45,7 @@ ONE_ASSET_PER_WINDOW = False
 
 # ─── Hourly Observation Mode ──────────────────────────────────────────────────
 HOURLY_OBSERVATION_ENABLED = True     # Master switch for hourly data collection
-HOURLY_OBSERVATION_ONLY = True        # True = log only; False = live trading (plug-and-play)
+HOURLY_OBSERVATION_ONLY = False       # Promoted to live after 134K backtest (0 losses across all param combos)
 HOURLY_SERIES_TICKERS = {
     "BTC": "KXBTCD",
     "ETH": "KXETHD",
@@ -54,7 +54,9 @@ HOURLY_SERIES_TICKERS = {
 }
 HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800  # 30 min before close
 HOURLY_MIN_SECONDS_BEFORE_CLOSE = 0
-HOURLY_MARKET_BLEND_W = 0.70            # Higher blend — calibration untested at hourly
+HOURLY_MARKET_BLEND_W = 0.40            # Optimal Brier per 134K simulation (0.70 was second-worst)
+HOURLY_MIN_ENTRY_PRICE = 80            # Hourly strikes go lower than 15M (data: 80c+ 98.9% WR)
+HOURLY_MAX_RISK_PER_TRADE = 0.15       # Conservative start (60% of 15M's 0.25)
 
 # ─── API Configuration ───────────────────────────────────────────────────────
 BASE_URL = ("https://api.elections.kalshi.com" if os.environ.get("KALSHI_ENV") == "production"
@@ -399,7 +401,7 @@ DIP_ADDON_MIN_STC_REMAINING = 90.0       # need ≥90s (aligns with maker-only t
 DIP_ADDON_SIZE_FRACTION = 0.50            # addon = 50% of original count
 DIP_ADDON_MAX_PER_POSITION = 1            # max 1 dip addon per position
 DIP_ADDON_MAX_TOTAL_RISK = 0.35           # original + addon ≤ 35% of bankroll
-DIP_ADDON_MIN_ENTRY_PRICE = 87            # same floor as main bot (87¢)
+DIP_ADDON_MIN_ENTRY_PRICE = 80            # lowered to match hourly floor (80¢)
 DIP_ADDON_SHADOW_FLOOR = 50              # shadow logs ALL dips down to 50¢ for data collection
 
 
@@ -5816,16 +5818,22 @@ class OpportunityScanner:
             SIZING_TIERS, DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
             MAKER_ONLY_THRESHOLD)
 
-        # ── Hourly observation config verify ──
+        # ── Hourly config verify ──
         if HOURLY_OBSERVATION_ENABLED:
-            assert HOURLY_OBSERVATION_ONLY is True, (
-                "HOURLY_OBSERVATION_ONLY must be True until observation data validates calibration")
-            assert HOURLY_MARKET_BLEND_W >= 0.50, (
-                f"HOURLY_MARKET_BLEND_W={HOURLY_MARKET_BLEND_W} too low for untested calibration")
+            assert HOURLY_MARKET_BLEND_W >= 0.30, (
+                f"HOURLY_MARKET_BLEND_W={HOURLY_MARKET_BLEND_W} too low")
+            assert HOURLY_MIN_ENTRY_PRICE >= 70, (
+                f"HOURLY_MIN_ENTRY_PRICE={HOURLY_MIN_ENTRY_PRICE} too low")
+            assert HOURLY_MIN_ENTRY_PRICE <= MIN_ENTRY_PRICE, (
+                f"HOURLY floor {HOURLY_MIN_ENTRY_PRICE} > 15M floor {MIN_ENTRY_PRICE}")
+            assert HOURLY_MAX_RISK_PER_TRADE <= MAX_RISK_PER_TRADE, (
+                f"HOURLY risk {HOURLY_MAX_RISK_PER_TRADE} > 15M risk {MAX_RISK_PER_TRADE}")
             logging.info(
-                "CONFIG_VERIFY (hourly): ENABLED=%s OBS_ONLY=%s BLEND_W=%.2f MAX_STC=%ds",
+                "CONFIG_VERIFY (hourly): ENABLED=%s OBS_ONLY=%s BLEND_W=%.2f "
+                "MIN_ENTRY=%dc MAX_RISK=%.2f MAX_STC=%ds",
                 HOURLY_OBSERVATION_ENABLED, HOURLY_OBSERVATION_ONLY,
-                HOURLY_MARKET_BLEND_W, HOURLY_MAX_SECONDS_BEFORE_CLOSE)
+                HOURLY_MARKET_BLEND_W, HOURLY_MIN_ENTRY_PRICE,
+                HOURLY_MAX_RISK_PER_TRADE, HOURLY_MAX_SECONDS_BEFORE_CLOSE)
 
         # ── Dip addon config verify ──
         if DIP_ADDON_ENABLED:
@@ -5875,7 +5883,7 @@ class OpportunityScanner:
             except Exception:
                 pass
 
-        # Build hourly ticker set (skip WS subscription — observation only)
+        # Build hourly ticker set (skip WS orderbook subscription — too many strikes per event)
         _hourly_tickers = set()
         for w in active_windows:
             if w.get("product_type") == "hourly":
@@ -5886,7 +5894,7 @@ class OpportunityScanner:
         if self._kalshi_feed and self._kalshi_feed.is_connected:
             for t in active_tickers:
                 if t in _hourly_tickers:
-                    continue  # skip WS subscription for hourly (observation only)
+                    continue  # skip WS subscription for hourly (too many strikes per event)
                 try:
                     self._kalshi_feed.subscribe_ticker(t)
                 except Exception:
@@ -6029,7 +6037,10 @@ class OpportunityScanner:
                     continue
 
                 # Skip if calibrated prob too low to ever produce an edge
-                min_prob_needed = (MIN_ENTRY_PRICE + MIN_EDGE_PCT) / 100.0
+                _min_price = (HOURLY_MIN_ENTRY_PRICE
+                              if window.get("product_type") == "hourly"
+                              else MIN_ENTRY_PRICE)
+                min_prob_needed = (_min_price + MIN_EDGE_PCT) / 100.0
                 if cal_prob < min_prob_needed:
                     scan_stats[asset]["low_prob"] += 1
                     if window.get("product_type") == "hourly":
@@ -6186,7 +6197,10 @@ class OpportunityScanner:
                     pass
 
                 # Filter: ask must be in entry price range
-                if not (MIN_ENTRY_PRICE <= best_ask <= MAX_ENTRY_PRICE):
+                _entry_floor = (HOURLY_MIN_ENTRY_PRICE
+                                if window.get("product_type") == "hourly"
+                                else MIN_ENTRY_PRICE)
+                if not (_entry_floor <= best_ask <= MAX_ENTRY_PRICE):
                     scan_stats[asset]["price_out_of_range"] += 1
                     self._recent_opportunities.append({
                         "ticker": ticker, "asset": asset,
@@ -6202,7 +6216,7 @@ class OpportunityScanner:
                             "ticker": ticker,
                             "event_ticker": window["event_ticker"],
                             "asset": asset,
-                            "rejection_reason": f"best_ask {best_ask}¢ outside [{MIN_ENTRY_PRICE}, {MAX_ENTRY_PRICE}]",
+                            "rejection_reason": f"best_ask {best_ask}¢ outside [{_entry_floor}, {MAX_ENTRY_PRICE}]",
                             "spot_price": spot,
                             "threshold": threshold,
                             "volatility": blended_rv,
@@ -6542,6 +6556,12 @@ class OpportunityScanner:
                 if balance is None or balance <= 0:
                     continue
                 sizing = self._sizer.compute(final_prob, best_ask, balance)
+
+                # Hourly risk cap: more conservative than 15M
+                if window.get("product_type") == "hourly":
+                    _hourly_max = int((balance * HOURLY_MAX_RISK_PER_TRADE) / best_ask)
+                    if sizing["contracts"] > _hourly_max:
+                        sizing["contracts"] = max(1, _hourly_max)
 
                 # Cap by existing exposure (positions + resting orders) to prevent
                 # accumulation across scan ticks on the same ticker
