@@ -96,6 +96,10 @@ WEATHER_MAX_RISK_PER_TRADE = 0.10
 WEATHER_KELLY_FRACTION = 0.25
 WEATHER_MARKET_BLEND_W = 0.50            # More trust in market for weather
 
+# ─── Sports Comeback Observation Mode ────────────────────────────────────
+SPORTS_ENABLED = True
+SPORTS_OBSERVATION_ONLY = True         # HARDCODED — never live without explicit promotion
+
 # ─── API Configuration ───────────────────────────────────────────────────────
 BASE_URL = ("https://api.elections.kalshi.com" if os.environ.get("KALSHI_ENV") == "production"
             else "https://demo-api.kalshi.co")
@@ -1252,6 +1256,39 @@ class StateManager:
                 ON evaluated_opportunities(status);
             CREATE INDEX IF NOT EXISTS idx_eval_opp_ticker
                 ON evaluated_opportunities(ticker);
+        """)
+        self.conn.commit()
+
+        # Sports shadow log table (independent from crypto)
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS sports_shadow_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_id TEXT, sport TEXT, league TEXT,
+                home_team TEXT, away_team TEXT, home_code TEXT, away_code TEXT,
+                pregame_fav_code TEXT, pregame_fav_prob REAL,
+                pregame_price_home REAL, pregame_price_away REAL, pregame_price_draw REAL,
+                scheduled_start TEXT, outcome_type TEXT,
+                home_score INTEGER, away_score INTEGER, fav_score INTEGER, underdog_score INTEGER,
+                deficit INTEGER, period INTEGER, clock TEXT, time_remaining_pct REAL,
+                game_status TEXT, red_cards_fav INTEGER, red_cards_underdog INTEGER,
+                ticker TEXT, event_ticker TEXT, yes_bid INTEGER, yes_ask INTEGER,
+                mid_price REAL, spread INTEGER, ask_depth INTEGER, bid_depth INTEGER,
+                comeback_prob REAL, prior REAL, likelihood_ratio REAL,
+                edge REAL, fee_adjusted_edge REAL,
+                signal_fired INTEGER DEFAULT 0, filter_stage TEXT, rejection_reason TEXT,
+                simulated_contracts INTEGER, simulated_risk REAL,
+                evaluation_time TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                espn_latency_ms REAL, kalshi_latency_ms REAL,
+                closing_price REAL,
+                final_home_score INTEGER, final_away_score INTEGER,
+                fav_won INTEGER, market_result TEXT, pnl_cents INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_sports_shadow_game
+                ON sports_shadow_log(game_id);
+            CREATE INDEX IF NOT EXISTS idx_sports_shadow_league
+                ON sports_shadow_log(league);
+            CREATE INDEX IF NOT EXISTS idx_sports_shadow_signal
+                ON sports_shadow_log(signal_fired);
         """)
         self.conn.commit()
 
@@ -6036,6 +6073,14 @@ class OpportunityScanner:
                 DIP_ADDON_MIN_DROP_CENTS, DIP_ADDON_MIN_STC_REMAINING,
                 DIP_ADDON_MAX_TOTAL_RISK, DIP_ADDON_MIN_ENTRY_PRICE)
 
+        # ── Sports config verify ──
+        if SPORTS_ENABLED:
+            assert SPORTS_OBSERVATION_ONLY is True, (
+                "SPORTS_OBSERVATION_ONLY must be True — never live without explicit promotion")
+            logging.info(
+                "CONFIG_VERIFY (sports): ENABLED=%s OBS_ONLY=%s",
+                SPORTS_ENABLED, SPORTS_OBSERVATION_ONLY)
+
         # ── Validate market_config.py matches bot.py constants ──
         validate_market_configs()
 
@@ -10242,6 +10287,20 @@ class MainLoop:
             except Exception as e:
                 logging.warning(f"Weather engine unavailable: {e}")
 
+        # ── Sports Engine (conditional) ────────────────────────────────────
+        self.sports_engine = None
+        if SPORTS_ENABLED:
+            try:
+                from sports_engine import SportsEngine
+                self.sports_engine = SportsEngine(
+                    kalshi_client=self.client,
+                    state_manager=self.state,
+                    db_path=DB_PATH,
+                )
+                logging.info("Sports engine initialized")
+            except Exception as e:
+                logging.warning(f"Sports engine unavailable: {e}")
+
         # ── Capital Allocator (conditional) ────────────────────────────────
         self.capital_allocator = None
         try:
@@ -10385,6 +10444,15 @@ class MainLoop:
             except Exception as e:
                 logging.warning(f"Weather engine failed to start: {e}")
                 self.weather_engine = None
+
+        # Start Sports engine (if enabled)
+        if self.sports_engine:
+            try:
+                self.sports_engine.start()
+                logging.info("Sports engine starting...")
+            except Exception as e:
+                logging.warning(f"Sports engine failed to start: {e}")
+                self.sports_engine = None
 
         # Start Firebase dashboard push (if configured)
         try:

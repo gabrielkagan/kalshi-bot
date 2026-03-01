@@ -672,6 +672,8 @@ class FirebasePusher:
                 "spx_hourly_observation_only": getattr(_bot_mod, "SPX_HOURLY_OBSERVATION_ONLY", True),
                 "weather_enabled": getattr(_bot_mod, "WEATHER_ENABLED", False),
                 "weather_observation_only": getattr(_bot_mod, "WEATHER_OBSERVATION_ONLY", True),
+                "sports_enabled": getattr(_bot_mod, "SPORTS_ENABLED", False),
+                "sports_observation_only": getattr(_bot_mod, "SPORTS_OBSERVATION_ONLY", True),
             }
         except Exception:
             snap["trading_config"] = {}
@@ -1281,6 +1283,82 @@ class FirebasePusher:
                 snap["weather_observation"] = wx_data
         except Exception:
             logging.debug("Firebase: weather_observation build failed", exc_info=True)
+
+        # ── Sports Observation Panel ─────────────────────────────────────
+        try:
+            if getattr(_bot_mod, "SPORTS_ENABLED", False):
+                sp_data = {
+                    "enabled": True,
+                    "observation_only": getattr(_bot_mod, "SPORTS_OBSERVATION_ONLY", True),
+                }
+                conn = self._db_conn
+                # Total shadow log entries + signals
+                try:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt, "
+                        "SUM(CASE WHEN signal_fired=1 THEN 1 ELSE 0 END) AS signals "
+                        "FROM sports_shadow_log"
+                    ).fetchone()
+                    sp_data["total_evaluations"] = row["cnt"] if row else 0
+                    sp_data["total_signals"] = row["signals"] if row else 0
+                except Exception:
+                    sp_data["total_evaluations"] = 0
+                    sp_data["total_signals"] = 0
+
+                # Per-league breakdown
+                try:
+                    rows = conn.execute(
+                        "SELECT league, COUNT(*) AS cnt, "
+                        "SUM(CASE WHEN signal_fired=1 THEN 1 ELSE 0 END) AS signals "
+                        "FROM sports_shadow_log GROUP BY league ORDER BY cnt DESC"
+                    ).fetchall()
+                    sp_data["leagues"] = {
+                        r["league"]: {"evaluations": r["cnt"], "signals": r["signals"]}
+                        for r in rows
+                    } if rows else {}
+                except Exception:
+                    sp_data["leagues"] = {}
+
+                # Settled signals (where we have outcome data)
+                try:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt, "
+                        "SUM(CASE WHEN fav_won=1 THEN 1 ELSE 0 END) AS wins, "
+                        "SUM(COALESCE(pnl_cents, 0)) AS sim_pnl "
+                        "FROM sports_shadow_log "
+                        "WHERE signal_fired=1 AND fav_won IS NOT NULL"
+                    ).fetchone()
+                    if row and row["cnt"] > 0:
+                        sp_data["sim_trade_count"] = row["cnt"]
+                        sp_data["sim_win_rate"] = round(row["wins"] / row["cnt"], 4)
+                        sp_data["sim_pnl_cents"] = row["sim_pnl"] or 0
+                    else:
+                        sp_data["sim_trade_count"] = 0
+                        sp_data["sim_win_rate"] = 0
+                        sp_data["sim_pnl_cents"] = 0
+                except Exception:
+                    sp_data["sim_trade_count"] = 0
+                    sp_data["sim_win_rate"] = 0
+                    sp_data["sim_pnl_cents"] = 0
+
+                # Edge distribution for signals
+                try:
+                    row = conn.execute(
+                        "SELECT AVG(fee_adjusted_edge) AS avg_edge, "
+                        "MIN(fee_adjusted_edge) AS min_edge, "
+                        "MAX(fee_adjusted_edge) AS max_edge "
+                        "FROM sports_shadow_log WHERE signal_fired=1"
+                    ).fetchone()
+                    if row and row["avg_edge"] is not None:
+                        sp_data["avg_edge"] = round(row["avg_edge"], 4)
+                        sp_data["min_edge"] = round(row["min_edge"], 4)
+                        sp_data["max_edge"] = round(row["max_edge"], 4)
+                except Exception:
+                    pass
+
+                snap["sports_observation"] = sp_data
+        except Exception:
+            logging.debug("Firebase: sports_observation build failed", exc_info=True)
 
         # ── Capital Allocation Panel ──────────────────────────────────────
         try:

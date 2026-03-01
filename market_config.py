@@ -142,6 +142,25 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         fee_multiplier_maker=0.0175,
         observation_filter_label="weather_observation",
     ),
+    "sports": MarketTypeConfig(
+        product_type="sports",
+        enabled=True,
+        observation_only=True,
+        min_entry_price=1,
+        max_entry_price=99,
+        min_seconds_before_close=0,
+        max_seconds_before_close=0,     # N/A for sports — game-level markets
+        max_risk_per_trade=0.10,
+        kelly_fraction=0.25,
+        market_blend_w=0.0,             # No blend — Bayesian model only
+        temperature_t=1.0,
+        temperature_enabled=False,
+        cal_eligible=False,
+        use_hourly_dynamic_cap=False,
+        fee_multiplier_taker=0.07,
+        fee_multiplier_maker=0.0175,
+        observation_filter_label="sports_observation",
+    ),
 }
 
 
@@ -258,15 +277,24 @@ def validate_market_configs() -> None:
     assert cfg_w.market_blend_w == bot.WEATHER_MARKET_BLEND_W, (
         f"weather blend_w: {cfg_w.market_blend_w} != {bot.WEATHER_MARKET_BLEND_W}")
 
+    # ── Sports ──
+    cfg_sp = MARKET_CONFIGS["sports"]
+    assert cfg_sp.observation_only is True, (
+        "sports observation_only must be True — never live without explicit promotion")
+    assert cfg_sp.observation_only == bot.SPORTS_OBSERVATION_ONLY, (
+        f"sports obs_only: {cfg_sp.observation_only} != {bot.SPORTS_OBSERVATION_ONLY}")
+    assert cfg_sp.cal_eligible is False, "sports must NOT be cal_eligible"
+
     # ── Cross-type invariants ──
     assert MARKET_CONFIGS["15m"].cal_eligible is True, "15m must be cal_eligible"
-    for pt in ("hourly", "spx_hourly", "weather"):
+    for pt in ("hourly", "spx_hourly", "weather", "sports"):
         assert not MARKET_CONFIGS[pt].cal_eligible, f"{pt} should not be cal_eligible"
 
     # Observation filter labels match exact DB strings
     assert MARKET_CONFIGS["hourly"].observation_filter_label == "hourly_observation"
     assert MARKET_CONFIGS["spx_hourly"].observation_filter_label == "spx_observation"
     assert MARKET_CONFIGS["weather"].observation_filter_label == "weather_observation"
+    assert MARKET_CONFIGS["sports"].observation_filter_label == "sports_observation"
 
     import logging
     logging.info("MARKET_CONFIGS: all %d configs validated against constants", len(MARKET_CONFIGS))
