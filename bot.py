@@ -62,8 +62,8 @@ HOURLY_MAX_RISK_PER_TRADE = 0.15       # Conservative start (60% of 15M's 0.25)
 HOURLY_TEMPERATURE_T = 1.45           # Temperature scaling: softens overconfident probs (T>1 = less confident)
 HOURLY_TEMPERATURE_ENABLED = True     # Toggle for temperature scaling
 HOURLY_MIN_STC_ENTRY = 300            # Min STC for entry (5 min) — EGARCH degrades beyond this
-HOURLY_MAX_STC_ENTRY = 900            # Max STC for entry (15 min) — sweet spot per researcher
-HOURLY_EXCLUDED_ASSETS = {"XRP"}      # XRP: 63.3% WR, p=0.41 vs coin flip — drop it
+HOURLY_MAX_STC_ENTRY = 1800           # 30 min — expanded for observation data collection
+HOURLY_EXCLUDED_ASSETS = set()         # Empty in observation mode — collect all asset data
 HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time window (ENB ~1.3)
 HOURLY_MAX_WINDOW_RISK = 0.15         # Max aggregate risk across all hourly positions per window
 HOURLY_KELLY_FRACTION = 0.25          # Quarter-Kelly: 44% of growth rate, ~3% halving probability
