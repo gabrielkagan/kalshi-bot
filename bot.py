@@ -7328,7 +7328,7 @@ class OpportunityScanner:
                 # ── STC SHADOW GATE (15M only) ──
                 # Markets at 300-600s STC: log full evaluation for data collection, but don't trade.
                 # This lets us measure WR/PnL at extended STC without risking capital.
-                if window.get("product_type") is None and seconds_remaining > STC_SHADOW_THRESHOLD:
+                if window.get("product_type") in (None, "15m") and seconds_remaining > STC_SHADOW_THRESHOLD:
                     _dedup_key = (ticker, "stc_shadow")
                     if _dedup_key not in self._eval_opp_seen:
                         self._eval_opp_seen.add(_dedup_key)
