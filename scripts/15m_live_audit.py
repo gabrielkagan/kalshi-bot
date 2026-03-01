@@ -1,0 +1,1209 @@
+#!/usr/bin/env python3
+"""15-minute crypto LIVE trading audit script.
+
+Runs locally against a copy of state.db from VPS.
+Evaluates live performance, execution quality, profit leakage,
+config sensitivity, and data sufficiency.
+
+Usage:
+    scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
+    python scripts/15m_live_audit.py [--db /tmp/state.db] [--since 2026-02-28]
+    python scripts/15m_live_audit.py --db /tmp/state.db --regime auto
+    python scripts/15m_live_audit.py --db /tmp/state.db --asset XRP
+"""
+
+import argparse
+import math
+import sqlite3
+import sys
+from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+
+
+# ── Helpers ──────────────────────────────────────────────────────
+
+def connect_db(path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def section(title: str) -> None:
+    print(f"\n{'=' * 72}")
+    print(f"  {title}")
+    print(f"{'=' * 72}\n")
+
+
+def subsection(title: str) -> None:
+    print(f"\n--- {title} ---")
+
+
+def fisher_exact_2x2(a: int, b: int, c: int, d: int) -> float:
+    """One-sided Fisher exact test p-value for [[a,b],[c,d]].
+    Tests if group 1 (a wins, b losses) has significantly higher WR
+    than group 2 (c wins, d losses)."""
+    n = a + b + c + d
+    if n == 0:
+        return 1.0
+
+    def log_fact(x: int) -> float:
+        return sum(math.log(i) for i in range(1, x + 1)) if x > 0 else 0.0
+
+    def log_hyper(aa: int) -> float:
+        r1 = a + b
+        r2 = c + d
+        c1 = a + c
+        bb2 = r1 - aa
+        cc2 = c1 - aa
+        dd2 = r2 - cc2
+        if bb2 < 0 or cc2 < 0 or dd2 < 0:
+            return float('-inf')
+        return (log_fact(r1) + log_fact(r2) + log_fact(c1) + log_fact(b + d)
+                - log_fact(n) - log_fact(aa) - log_fact(bb2)
+                - log_fact(cc2) - log_fact(dd2))
+
+    r1 = a + b
+    c1 = a + c
+    r2 = c + d
+    p_obs = log_hyper(a)
+    p_sum = 0.0
+    lo = max(0, c1 - r2)
+    hi = min(r1, c1)
+    for aa in range(lo, hi + 1):
+        lp = log_hyper(aa)
+        if lp <= p_obs + 1e-10:
+            p_sum += math.exp(lp)
+    return min(1.0, p_sum)
+
+
+def is_15m_trade(row) -> bool:
+    """Check if a settled_trade row is a 15M trade (not hourly).
+    settled_trades has no product_type column; use event_ticker pattern."""
+    et = row["event_ticker"] or ""
+    # Hourly tickers contain 'D-' (e.g., KXBTCD-26MAR0118-T69249.99)
+    return "D-" not in et
+
+
+def is_15m_eval(row) -> bool:
+    """Check if an evaluated_opportunity is 15M."""
+    pt = row["product_type"] if "product_type" in row.keys() else None
+    return pt is None or pt not in ("hourly", "weather", "sports",
+                                     "spx_hourly")
+
+
+SETTLED_15M_FILTER = "AND event_ticker NOT LIKE '%D-%'"
+EVAL_15M_FILTER = ("AND (product_type IS NULL OR product_type NOT IN "
+                    "('hourly', 'weather', 'sports', 'spx_hourly'))")
+
+
+def detect_regime_start(conn: sqlite3.Connection) -> str:
+    """Auto-detect regime start by finding the most recent gap > 4 hours
+    in 15M settled trades (proxy for restart after config change)."""
+    rows = conn.execute(f"""
+        SELECT settled_at FROM settled_trades
+        WHERE settled_at IS NOT NULL {SETTLED_15M_FILTER}
+        ORDER BY settled_at
+    """).fetchall()
+    if not rows:
+        return "2026-02-28T00:00:00"
+    t_list = []
+    for r in rows:
+        try:
+            t_list.append(r["settled_at"])
+        except Exception:
+            pass
+    last_big_gap_idx = 0
+    for i in range(1, len(t_list)):
+        try:
+            t1 = datetime.fromisoformat(t_list[i - 1].replace("Z", ""))
+            t2 = datetime.fromisoformat(t_list[i].replace("Z", ""))
+            if (t2 - t1).total_seconds() > 14400:
+                last_big_gap_idx = i
+        except Exception:
+            pass
+    if last_big_gap_idx == 0:
+        return "2026-02-28T00:00:00"
+    return t_list[last_big_gap_idx]
+
+
+# ── Section 1: Performance Summary ──────────────────────────────
+
+def performance_summary(conn: sqlite3.Connection, since: str,
+                        asset_filter: Optional[str] = None) -> dict:
+    section("1. PERFORMANCE SUMMARY")
+
+    asset_clause = f"AND asset = '{asset_filter}'" if asset_filter else ""
+
+    row = conn.execute(f"""
+        SELECT COUNT(*) AS trades,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS wins,
+          SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) AS losses,
+          SUM(pnl_cents) AS pnl,
+          SUM(fee_cents) AS fees,
+          SUM(count) AS contracts,
+          SUM(count * entry_price_cents) AS risk_cents,
+          ROUND(AVG(entry_price_cents), 1) AS avg_price,
+          ROUND(AVG(seconds_to_close), 1) AS avg_stc,
+          ROUND(AVG(fill_latency_seconds), 2) AS avg_latency,
+          MIN(settled_at) AS first_t,
+          MAX(settled_at) AS last_t
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+    """, (since,)).fetchone()
+
+    trades = row["trades"] or 0
+    wins = row["wins"] or 0
+    losses = row["losses"] or 0
+    pnl = row["pnl"] or 0
+    fees = row["fees"] or 0
+    risk = row["risk_cents"] or 0
+
+    if trades == 0:
+        print("No trades in regime window.")
+        return {"trades": 0}
+
+    wr = wins / trades * 100
+    gross = pnl + fees
+    print(f"Period:         {(row['first_t'] or '')[:16]} to {(row['last_t'] or '')[:16]}")
+    print(f"Trades:         {trades} ({wins}W / {losses}L)")
+    print(f"Win rate:       {wr:.1f}%")
+    print(f"Net PnL:        ${pnl/100:.2f}")
+    print(f"Gross PnL:      ${gross/100:.2f}")
+    print(f"Total fees:     ${fees/100:.2f} ({fees/gross*100:.1f}% of gross)"
+          if gross > 0 else f"Total fees:     ${fees/100:.2f}")
+    print(f"PnL/trade:      ${pnl/100/trades:.2f}")
+    print(f"Contracts:      {row['contracts'] or 0} total, "
+          f"{(row['contracts'] or 0)/trades:.1f} avg")
+    print(f"Capital risked: ${risk/100:.2f} (return: "
+          f"{pnl/risk*100:.1f}%)" if risk > 0 else "")
+    print(f"Avg entry:      {row['avg_price']}c")
+    print(f"Avg STC:        {row['avg_stc']}s ({(row['avg_stc'] or 0)/60:.1f}m)")
+    print(f"Avg fill lat:   {row['avg_latency']}s")
+
+    # Daily breakdown
+    subsection("Daily breakdown")
+    days = conn.execute(f"""
+        SELECT date(settled_at) AS day,
+          COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl,
+          SUM(fee_cents) AS fees,
+          SUM(count * entry_price_cents) AS risk
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+        GROUP BY day ORDER BY day
+    """, (since,)).fetchall()
+    print(f"  {'Day':<12} {'N':>4} {'W/L':>7} {'PnL':>10} {'Fees':>8} "
+          f"{'Risk':>10} {'Return':>8}")
+    print("  " + "-" * 62)
+    for d in days:
+        w = d["w"] or 0
+        l = (d["n"] or 0) - w
+        r_val = d["risk"] or 1
+        print(f"  {d['day']:<12} {d['n']:>4} {w:>3}/{l:<3} "
+              f"${d['pnl']/100:>9.2f} ${d['fees']/100:>7.2f} "
+              f"${r_val/100:>9.2f} {d['pnl']/r_val*100:>7.1f}%")
+
+    # By asset
+    subsection("By asset")
+    assets = conn.execute(f"""
+        SELECT asset,
+          COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl,
+          SUM(fee_cents) AS fees,
+          ROUND(AVG(entry_price_cents), 1) AS avg_p,
+          ROUND(AVG(seconds_to_close), 1) AS avg_stc
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+        GROUP BY asset ORDER BY pnl DESC
+    """, (since,)).fetchall()
+    print(f"  {'Asset':<6} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} "
+          f"{'PnL':>10} {'Fees':>7} {'Avg P':>6} {'Avg STC':>8} {'Share':>6}")
+    print("  " + "-" * 68)
+    for a in assets:
+        l = (a["n"] or 0) - (a["w"] or 0)
+        wr_a = (a["w"] or 0) / a["n"] * 100
+        share = (a["pnl"] or 0) / pnl * 100 if pnl != 0 else 0
+        print(f"  {a['asset']:<6} {a['n']:>4} {a['w']:>3} {l:>3} {wr_a:>5.1f}% "
+              f"${a['pnl']/100:>9.2f} ${a['fees']/100:>6.2f} "
+              f"{a['avg_p']:>5.0f}c {a['avg_stc']:>7.0f}s {share:>5.1f}%")
+
+    return {"trades": trades, "wins": wins, "losses": losses,
+            "pnl": pnl, "fees": fees, "wr": wr}
+
+
+# ── Section 2: Execution Quality ────────────────────────────────
+
+def execution_quality(conn: sqlite3.Connection, since: str,
+                      asset_filter: Optional[str] = None) -> None:
+    section("2. EXECUTION QUALITY")
+    asset_clause = f"AND asset = '{asset_filter}'" if asset_filter else ""
+
+    # Strategy breakdown
+    subsection("By execution strategy")
+    strats = conn.execute(f"""
+        SELECT strategy,
+          COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl,
+          SUM(fee_cents) AS fees,
+          ROUND(AVG(fill_latency_seconds), 2) AS avg_lat,
+          ROUND(AVG(seconds_to_close), 1) AS avg_stc
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+        GROUP BY strategy ORDER BY n DESC
+    """, (since,)).fetchall()
+    print(f"  {'Strategy':<18} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} "
+          f"{'PnL':>10} {'Fees':>7} {'Lat':>6} {'STC':>7}")
+    print("  " + "-" * 70)
+    for s in strats:
+        l = (s["n"] or 0) - (s["w"] or 0)
+        wr_s = (s["w"] or 0) / s["n"] * 100
+        print(f"  {s['strategy'] or 'NULL':<18} {s['n']:>4} {s['w']:>3} {l:>3} "
+              f"{wr_s:>5.1f}% ${s['pnl']/100:>9.2f} ${s['fees']/100:>6.2f} "
+              f"{s['avg_lat']:>5.1f}s {s['avg_stc']:>6.0f}s")
+
+    # Fisher: maker vs taker WR
+    maker = conn.execute(f"""
+        SELECT SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+               SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) AS l
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+          AND strategy = 'MAKER_PATIENT'
+    """, (since,)).fetchone()
+    taker = conn.execute(f"""
+        SELECT SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+               SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) AS l
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+          AND strategy = 'TAKER_NOW'
+    """, (since,)).fetchone()
+    mw, ml = (maker["w"] or 0), (maker["l"] or 0)
+    tw, tl = (taker["w"] or 0), (taker["l"] or 0)
+    if mw + ml > 0 and tw + tl > 0:
+        p_val = fisher_exact_2x2(mw, ml, tw, tl)
+        print(f"\n  Fisher (MAKER vs TAKER WR): p={p_val:.4f} "
+              f"({'significant' if p_val < 0.05 else 'NOT significant'})")
+        print(f"    MAKER: {mw}W/{ml}L = "
+              f"{mw/(mw+ml)*100:.0f}%  |  TAKER: {tw}W/{tl}L = "
+              f"{tw/(tw+tl)*100:.0f}%")
+
+    # Escalation breakdown
+    subsection("By escalation type")
+    escs = conn.execute(f"""
+        SELECT escalation_type,
+          COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl,
+          SUM(fee_cents) AS fees,
+          ROUND(AVG(maker_wait_seconds), 1) AS avg_wait,
+          ROUND(AVG(fill_latency_seconds), 2) AS avg_lat
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+        GROUP BY escalation_type ORDER BY n DESC
+    """, (since,)).fetchall()
+    print(f"  {'Escalation':<18} {'N':>4} {'W':>3} {'L':>3} "
+          f"{'PnL':>10} {'Fees':>7} {'Wait':>6} {'Lat':>6}")
+    print("  " + "-" * 62)
+    for e in escs:
+        l = (e["n"] or 0) - (e["w"] or 0)
+        print(f"  {str(e['escalation_type'] or 'None'):<18} {e['n']:>4} "
+              f"{e['w']:>3} {l:>3} ${e['pnl']/100:>9.2f} "
+              f"${e['fees']/100:>6.2f} "
+              f"{e['avg_wait'] or 0:>5.1f}s {e['avg_lat']:>5.1f}s")
+
+    # Fee distribution
+    subsection("Fee distribution")
+    fee_rows = conn.execute(f"""
+        SELECT fee_cents, COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+        GROUP BY fee_cents ORDER BY fee_cents
+    """, (since,)).fetchall()
+    # Classify: maker fee is typically 1-2c for small positions
+    maker_count = sum(r["n"] for r in fee_rows if r["fee_cents"] <= 2)
+    taker_count = sum(r["n"] for r in fee_rows if r["fee_cents"] > 2)
+    maker_fees = sum(r["n"] * r["fee_cents"] for r in fee_rows
+                     if r["fee_cents"] <= 2)
+    taker_fees = sum(r["n"] * r["fee_cents"] for r in fee_rows
+                     if r["fee_cents"] > 2)
+    total_n = maker_count + taker_count
+    print(f"  Maker fills (fee<=2c): {maker_count}/{total_n} "
+          f"({maker_count/total_n*100:.0f}%), total fees: ${maker_fees/100:.2f}")
+    print(f"  Taker fills (fee>2c):  {taker_count}/{total_n} "
+          f"({taker_count/total_n*100:.0f}%), total fees: ${taker_fees/100:.2f}")
+    print(f"  Taker fee premium:     "
+          f"${(taker_fees - taker_count * 2)/100:.2f} extra vs all-maker")
+
+    # Contract size distribution
+    subsection("Contract size distribution")
+    size_rows = conn.execute(f"""
+        SELECT
+          CASE
+            WHEN count <= 5 THEN '1-5'
+            WHEN count <= 15 THEN '6-15'
+            WHEN count <= 30 THEN '16-30'
+            WHEN count <= 50 THEN '31-50'
+            ELSE '51+'
+          END AS bucket,
+          COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl,
+          ROUND(AVG(count), 1) AS avg_ct,
+          ROUND(AVG(entry_price_cents), 1) AS avg_p
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+        GROUP BY bucket ORDER BY MIN(count)
+    """, (since,)).fetchall()
+    print(f"  {'Size':>8} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} "
+          f"{'PnL':>10} {'Avg Ct':>7} {'Avg P':>6}")
+    print("  " + "-" * 55)
+    for s in size_rows:
+        l = (s["n"] or 0) - (s["w"] or 0)
+        wr_s = (s["w"] or 0) / s["n"] * 100
+        print(f"  {s['bucket']:>8} {s['n']:>4} {s['w']:>3} {l:>3} "
+              f"{wr_s:>5.1f}% ${s['pnl']/100:>9.2f} "
+              f"{s['avg_ct']:>6.1f} {s['avg_p']:>5.0f}c")
+
+
+# ── Section 3: Bucket Analysis ──────────────────────────────────
+
+def bucket_analysis(conn: sqlite3.Connection, since: str,
+                    asset_filter: Optional[str] = None) -> None:
+    section("3. BUCKET ANALYSIS")
+    asset_clause = f"AND asset = '{asset_filter}'" if asset_filter else ""
+
+    # Entry price buckets
+    subsection("By entry price")
+    price_rows = conn.execute(f"""
+        SELECT
+          CASE
+            WHEN entry_price_cents BETWEEN 87 AND 88 THEN '87-88c'
+            WHEN entry_price_cents BETWEEN 89 AND 90 THEN '89-90c'
+            WHEN entry_price_cents BETWEEN 91 AND 92 THEN '91-92c'
+            WHEN entry_price_cents BETWEEN 93 AND 94 THEN '93-94c'
+            WHEN entry_price_cents >= 95 THEN '95c+'
+            ELSE 'other'
+          END AS bucket,
+          COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl,
+          SUM(fee_cents) AS fees,
+          ROUND(AVG(entry_price_cents), 1) AS avg_p
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+        GROUP BY bucket ORDER BY MIN(entry_price_cents)
+    """, (since,)).fetchall()
+    print(f"  {'Bucket':>8} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} "
+          f"{'PnL':>10} {'PnL/T':>8} {'Fees':>7} {'BE WR':>6}")
+    print("  " + "-" * 62)
+    for p in price_rows:
+        l = (p["n"] or 0) - (p["w"] or 0)
+        wr_p = (p["w"] or 0) / p["n"] * 100
+        be = p["avg_p"] or 0
+        print(f"  {p['bucket']:>8} {p['n']:>4} {p['w']:>3} {l:>3} "
+              f"{wr_p:>5.1f}% ${p['pnl']/100:>9.2f} "
+              f"${p['pnl']/100/p['n']:>7.2f} ${p['fees']/100:>6.2f} "
+              f"{be:>5.0f}%")
+
+    # Edge buckets (raw edge from settled_trades)
+    subsection("By edge bucket")
+    edge_rows = conn.execute(f"""
+        SELECT
+          CASE
+            WHEN edge < 0.015 THEN '<1.5%'
+            WHEN edge < 0.020 THEN '1.5-2%'
+            WHEN edge < 0.025 THEN '2-2.5%'
+            WHEN edge < 0.030 THEN '2.5-3%'
+            WHEN edge < 0.040 THEN '3-4%'
+            ELSE '4%+'
+          END AS bucket,
+          COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl,
+          ROUND(AVG(edge), 4) AS avg_edge,
+          ROUND(AVG(entry_price_cents), 1) AS avg_p
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+        GROUP BY bucket ORDER BY MIN(edge)
+    """, (since,)).fetchall()
+    print(f"  {'Edge':>8} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} "
+          f"{'PnL':>10} {'Avg Edge':>9} {'Avg P':>6}")
+    print("  " + "-" * 55)
+    for e in edge_rows:
+        l = (e["n"] or 0) - (e["w"] or 0)
+        wr_e = (e["w"] or 0) / e["n"] * 100
+        print(f"  {e['bucket']:>8} {e['n']:>4} {e['w']:>3} {l:>3} "
+              f"{wr_e:>5.1f}% ${e['pnl']/100:>9.2f} "
+              f"{e['avg_edge']:>+8.4f} {e['avg_p']:>5.0f}c")
+
+    # STC buckets
+    subsection("By seconds-to-close")
+    stc_rows = conn.execute(f"""
+        SELECT
+          CASE
+            WHEN seconds_to_close < 60 THEN '<60s'
+            WHEN seconds_to_close < 120 THEN '60-120s'
+            WHEN seconds_to_close < 180 THEN '120-180s'
+            WHEN seconds_to_close < 240 THEN '180-240s'
+            WHEN seconds_to_close < 300 THEN '240-300s'
+            ELSE '300s+'
+          END AS bucket,
+          COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl,
+          SUM(fee_cents) AS fees,
+          ROUND(AVG(entry_price_cents), 1) AS avg_p,
+          ROUND(AVG(seconds_to_close), 1) AS avg_stc
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+        GROUP BY bucket ORDER BY MIN(seconds_to_close)
+    """, (since,)).fetchall()
+    print(f"  {'STC':>8} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} "
+          f"{'PnL':>10} {'Fees':>7} {'Avg P':>6} {'Avg STC':>8}")
+    print("  " + "-" * 62)
+    for s in stc_rows:
+        l = (s["n"] or 0) - (s["w"] or 0)
+        wr_s = (s["w"] or 0) / s["n"] * 100
+        print(f"  {s['bucket']:>8} {s['n']:>4} {s['w']:>3} {l:>3} "
+              f"{wr_s:>5.1f}% ${s['pnl']/100:>9.2f} "
+              f"${s['fees']/100:>6.2f} {s['avg_p']:>5.0f}c {s['avg_stc']:>7.0f}s")
+
+    # Fisher: STC < 180 vs >= 180 (split at loss cluster)
+    stc_lo = conn.execute(f"""
+        SELECT SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+               SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) AS l
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+          AND seconds_to_close < 180
+    """, (since,)).fetchone()
+    stc_hi = conn.execute(f"""
+        SELECT SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+               SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) AS l
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+          AND seconds_to_close >= 180
+    """, (since,)).fetchone()
+    a, b = (stc_lo["w"] or 0), (stc_lo["l"] or 0)
+    c_, d_ = (stc_hi["w"] or 0), (stc_hi["l"] or 0)
+    if a + b > 0 and c_ + d_ > 0:
+        p_val = fisher_exact_2x2(a, b, c_, d_)
+        print(f"\n  Fisher (STC<180 vs >=180): p={p_val:.4f} "
+              f"({'significant' if p_val < 0.05 else 'NOT significant'})")
+        print(f"    <180s: {a}W/{b}L = {a/(a+b)*100:.0f}%  |  "
+              f">=180s: {c_}W/{d_}L = {c_/(c_+d_)*100:.0f}%")
+
+    # Calibration accuracy
+    subsection("Calibration accuracy")
+    cal_rows = conn.execute(f"""
+        SELECT
+          CASE
+            WHEN calibrated_prob < 0.90 THEN '<90%'
+            WHEN calibrated_prob < 0.92 THEN '90-92%'
+            WHEN calibrated_prob < 0.94 THEN '92-94%'
+            WHEN calibrated_prob < 0.96 THEN '94-96%'
+            ELSE '96%+'
+          END AS bucket,
+          COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          ROUND(AVG(calibrated_prob), 4) AS avg_pred
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+          AND calibrated_prob IS NOT NULL
+        GROUP BY bucket ORDER BY MIN(calibrated_prob)
+    """, (since,)).fetchall()
+    print(f"  {'Predicted':>10} {'N':>4} {'W':>3} {'L':>3} "
+          f"{'Predicted':>10} {'Actual':>8} {'Delta':>8}")
+    print("  " + "-" * 50)
+    for c in cal_rows:
+        l = (c["n"] or 0) - (c["w"] or 0)
+        actual = (c["w"] or 0) / c["n"] * 100
+        pred = (c["avg_pred"] or 0) * 100
+        print(f"  {c['bucket']:>10} {c['n']:>4} {c['w']:>3} {l:>3} "
+              f"{pred:>9.1f}% {actual:>7.1f}% {actual - pred:>+7.1f}pp")
+
+    # Time-of-day
+    subsection("Time-of-day (UTC)")
+    tod_rows = conn.execute(f"""
+        SELECT CAST(strftime('%H', settled_at) AS INTEGER) AS hr,
+          COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+        GROUP BY hr ORDER BY hr
+    """, (since,)).fetchall()
+    print(f"  {'Hour':>6} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'PnL':>10}")
+    print("  " + "-" * 38)
+    for t in tod_rows:
+        l = (t["n"] or 0) - (t["w"] or 0)
+        wr_t = (t["w"] or 0) / t["n"] * 100
+        print(f"  {t['hr']:>4}:00 {t['n']:>4} {t['w']:>3} {l:>3} "
+              f"{wr_t:>5.0f}% ${t['pnl']/100:>9.2f}")
+
+    # Vol regime
+    subsection("Volatility regime")
+    vol_rows = conn.execute(f"""
+        SELECT vol_regime,
+          COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+        GROUP BY vol_regime
+    """, (since,)).fetchall()
+    for v in vol_rows:
+        l = (v["n"] or 0) - (v["w"] or 0)
+        wr_v = (v["w"] or 0) / v["n"] * 100 if v["n"] else 0
+        print(f"  {v['vol_regime'] or 'NULL':<12} {v['n']:>4} trades, "
+              f"{v['w']}W/{l}L ({wr_v:.0f}%), PnL ${v['pnl']/100:.2f}")
+
+
+# ── Section 4: Profit Leakage ───────────────────────────────────
+
+def profit_leakage(conn: sqlite3.Connection, since: str,
+                   asset_filter: Optional[str] = None) -> None:
+    section("4. PROFIT LEAKAGE ANALYSIS")
+    asset_clause_eval = (f"AND asset = '{asset_filter}'"
+                         if asset_filter else "")
+
+    # Filter funnel
+    subsection("Evaluated opportunities funnel")
+    funnel = conn.execute(f"""
+        SELECT filter_stage, COUNT(*) AS n,
+          ROUND(AVG(market_price), 1) AS avg_p,
+          ROUND(AVG(fee_adjusted_edge), 4) AS avg_edge,
+          ROUND(AVG(seconds_to_close), 1) AS avg_stc,
+          SUM(CASE WHEN status='settled' AND market_result='yes'
+              THEN 1 ELSE 0 END) AS cf_w,
+          SUM(CASE WHEN status='settled' AND market_result='no'
+              THEN 1 ELSE 0 END) AS cf_l,
+          SUM(CASE WHEN status='settled'
+              THEN COALESCE(counterfactual_pnl, 0) ELSE 0 END) AS cf_pnl
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
+        GROUP BY filter_stage ORDER BY n DESC
+    """, (since,)).fetchall()
+    print(f"  {'Stage':<24} {'N':>5} {'Avg P':>6} {'Avg Edge':>9} "
+          f"{'CF W':>4} {'CF L':>4} {'CF PnL':>10}")
+    print("  " + "-" * 70)
+    for f in funnel:
+        print(f"  {f['filter_stage']:<24} {f['n']:>5} "
+              f"{f['avg_p'] or 0:>5.0f}c {f['avg_edge'] or 0:>+8.4f} "
+              f"{f['cf_w'] or 0:>4} {f['cf_l'] or 0:>4} "
+              f"${(f['cf_pnl'] or 0)/100:>9.2f}")
+
+    # Loss detail
+    subsection("Loss detail")
+    losses = conn.execute(f"""
+        SELECT ticker, asset, entry_price_cents, count, pnl_cents,
+          fee_cents, seconds_to_close, strategy, escalation_type,
+          fill_latency_seconds, calibrated_prob, edge, vol_regime
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER}
+          AND market_result = 'no'
+        ORDER BY pnl_cents ASC
+    """, (since,)).fetchall()
+    if losses:
+        for lo in losses:
+            print(f"  {lo['ticker']}")
+            print(f"    Asset: {lo['asset']}, {lo['count']}ct @ "
+                  f"{lo['entry_price_cents']}c, PnL: "
+                  f"${lo['pnl_cents']/100:.2f}")
+            print(f"    Strategy: {lo['strategy']}, "
+                  f"Escalation: {lo['escalation_type']}, "
+                  f"STC: {lo['seconds_to_close']:.0f}s")
+            print(f"    CalProb: {lo['calibrated_prob']:.4f}, "
+                  f"Edge: {lo['edge']:.4f}, "
+                  f"VolRegime: {lo['vol_regime']}")
+            print(f"    Fee: {lo['fee_cents']}c, "
+                  f"Latency: {lo['fill_latency_seconds']:.1f}s")
+    else:
+        print("  No losses in regime window!")
+
+    # Counterfactual: stc_shadow (300-600s zone)
+    subsection("STC shadow zone counterfactual (300-600s)")
+    shadow = conn.execute(f"""
+        SELECT
+          CASE
+            WHEN seconds_to_close BETWEEN 300 AND 400 THEN '300-400s'
+            WHEN seconds_to_close BETWEEN 400 AND 500 THEN '400-500s'
+            WHEN seconds_to_close BETWEEN 500 AND 600 THEN '500-600s'
+            ELSE 'other'
+          END AS bucket,
+          COUNT(*) AS n,
+          SUM(CASE WHEN status='settled' AND market_result='yes'
+              THEN 1 ELSE 0 END) AS w,
+          SUM(CASE WHEN status='settled' AND market_result='no'
+              THEN 1 ELSE 0 END) AS l,
+          SUM(CASE WHEN status='settled'
+              THEN COALESCE(counterfactual_pnl, 0) ELSE 0 END) AS cf_pnl,
+          ROUND(AVG(market_price), 1) AS avg_p,
+          SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
+          AND filter_stage = 'stc_shadow'
+        GROUP BY bucket ORDER BY MIN(seconds_to_close)
+    """, (since,)).fetchall()
+    if shadow:
+        total_n = sum(s["n"] for s in shadow)
+        total_w = sum(s["w"] or 0 for s in shadow)
+        total_l = sum(s["l"] or 0 for s in shadow)
+        total_cf = sum(s["cf_pnl"] or 0 for s in shadow)
+        print(f"  {'Bucket':>10} {'N':>4} {'W':>3} {'L':>3} {'Pend':>5} "
+              f"{'CF PnL':>10} {'Avg P':>6}")
+        print("  " + "-" * 48)
+        for s in shadow:
+            print(f"  {s['bucket']:>10} {s['n']:>4} {s['w'] or 0:>3} "
+                  f"{s['l'] or 0:>3} {s['pending'] or 0:>5} "
+                  f"${(s['cf_pnl'] or 0)/100:>9.2f} {s['avg_p']:>5.0f}c")
+        settled_n = total_w + total_l
+        wr = total_w / settled_n * 100 if settled_n > 0 else 0
+        print(f"\n  Total: {total_n} obs, {total_w}W/{total_l}L "
+              f"({wr:.0f}% WR), CF PnL ${total_cf/100:.2f}")
+        print(f"  Data sufficiency: {'SUFFICIENT' if settled_n >= 30 else 'INSUFFICIENT'} "
+              f"(need 30, have {settled_n})")
+    else:
+        print("  No stc_shadow entries")
+
+    # Counterfactual: insufficient_edge by price bucket
+    subsection("Insufficient edge rejections — by price bucket")
+    ie_price = conn.execute(f"""
+        SELECT
+          CASE
+            WHEN market_price BETWEEN 87 AND 88 THEN '87-88c'
+            WHEN market_price BETWEEN 89 AND 90 THEN '89-90c'
+            WHEN market_price BETWEEN 91 AND 92 THEN '91-92c'
+            WHEN market_price BETWEEN 93 AND 94 THEN '93-94c'
+            WHEN market_price >= 95 THEN '95c+'
+            ELSE 'other'
+          END AS bucket,
+          COUNT(*) AS n,
+          SUM(CASE WHEN status='settled' AND market_result='yes'
+              THEN 1 ELSE 0 END) AS w,
+          SUM(CASE WHEN status='settled' AND market_result='no'
+              THEN 1 ELSE 0 END) AS l,
+          SUM(CASE WHEN status='settled'
+              THEN COALESCE(counterfactual_pnl, 0) ELSE 0 END) AS cf_pnl,
+          ROUND(AVG(fee_adjusted_edge), 4) AS avg_fa_edge
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
+          AND filter_stage = 'insufficient_edge'
+        GROUP BY bucket ORDER BY MIN(market_price)
+    """, (since,)).fetchall()
+    if ie_price:
+        print(f"  {'Bucket':>8} {'N':>5} {'W':>4} {'L':>4} "
+              f"{'CF PnL':>10} {'Avg FA Edge':>12} {'Verdict':<16}")
+        print("  " + "-" * 65)
+        for ip in ie_price:
+            verdict = ("CORRECT" if (ip["cf_pnl"] or 0) < 0
+                       else "MAY BE TOO STRICT")
+            print(f"  {ip['bucket']:>8} {ip['n']:>5} {ip['w'] or 0:>4} "
+                  f"{ip['l'] or 0:>4} ${(ip['cf_pnl'] or 0)/100:>9.2f} "
+                  f"{ip['avg_fa_edge'] or 0:>+11.4f} {verdict:<16}")
+
+    # Counterfactual: insufficient_edge by edge bucket
+    subsection("Insufficient edge rejections — by fee-adjusted edge")
+    ie_edge = conn.execute(f"""
+        SELECT
+          CASE
+            WHEN fee_adjusted_edge < -0.02 THEN '<-2%'
+            WHEN fee_adjusted_edge < -0.01 THEN '-2% to -1%'
+            WHEN fee_adjusted_edge < 0 THEN '-1% to 0%'
+            WHEN fee_adjusted_edge < 0.005 THEN '0% to 0.5%'
+            WHEN fee_adjusted_edge < 0.007 THEN '0.5-0.7%'
+            ELSE '0.7%+'
+          END AS bucket,
+          COUNT(*) AS n,
+          SUM(CASE WHEN status='settled' AND market_result='yes'
+              THEN 1 ELSE 0 END) AS w,
+          SUM(CASE WHEN status='settled' AND market_result='no'
+              THEN 1 ELSE 0 END) AS l,
+          SUM(CASE WHEN status='settled'
+              THEN COALESCE(counterfactual_pnl, 0) ELSE 0 END) AS cf_pnl
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
+          AND filter_stage = 'insufficient_edge'
+          AND fee_adjusted_edge IS NOT NULL
+        GROUP BY bucket ORDER BY MIN(fee_adjusted_edge)
+    """, (since,)).fetchall()
+    if ie_edge:
+        print(f"  {'Edge':>12} {'N':>5} {'W':>4} {'L':>4} "
+              f"{'CF PnL':>10} {'Verdict':<16}")
+        print("  " + "-" * 55)
+        for ie in ie_edge:
+            verdict = ("CORRECT" if (ie["cf_pnl"] or 0) < 0
+                       else "MAY BE TOO STRICT")
+            print(f"  {ie['bucket']:>12} {ie['n']:>5} {ie['w'] or 0:>4} "
+                  f"{ie['l'] or 0:>4} ${(ie['cf_pnl'] or 0)/100:>9.2f} "
+                  f"{verdict:<16}")
+
+    # MIN_ENTRY sensitivity: 80-86c
+    subsection("MIN_ENTRY_PRICE sensitivity (80-86c)")
+    por = conn.execute(f"""
+        SELECT market_price,
+          COUNT(*) AS n,
+          SUM(CASE WHEN status='settled' AND market_result='yes'
+              THEN 1 ELSE 0 END) AS w,
+          SUM(CASE WHEN status='settled' AND market_result='no'
+              THEN 1 ELSE 0 END) AS l,
+          SUM(CASE WHEN status='settled'
+              THEN COALESCE(counterfactual_pnl, 0) ELSE 0 END) AS cf_pnl,
+          SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
+          AND filter_stage = 'price_out_of_range'
+          AND market_price BETWEEN 80 AND 86
+        GROUP BY market_price ORDER BY market_price
+    """, (since,)).fetchall()
+    if por:
+        print(f"  {'Price':>6} {'N':>5} {'W':>4} {'L':>4} {'Pend':>5} "
+              f"{'CF PnL':>10} {'WR':>6} {'Verdict':<14}")
+        print("  " + "-" * 58)
+        for p in por:
+            settled_n = (p["w"] or 0) + (p["l"] or 0)
+            wr = (p["w"] or 0) / settled_n * 100 if settled_n > 0 else 0
+            be = p["market_price"]
+            verdict = "PROFITABLE" if wr > be else "UNPROFITABLE"
+            print(f"  {p['market_price']:>5}c {p['n']:>5} {p['w'] or 0:>4} "
+                  f"{p['l'] or 0:>4} {p['pending'] or 0:>5} "
+                  f"${(p['cf_pnl'] or 0)/100:>9.2f} {wr:>5.1f}% "
+                  f"{verdict:<14}")
+    else:
+        print("  No price_out_of_range entries in 80-86c range")
+
+    # Counterfactual: zero_sizing
+    subsection("Counterfactual — zero_sizing (drawdown blocked)")
+    _counterfactual_stage(conn, since, "zero_sizing", asset_clause_eval)
+
+    # Counterfactual: strategy_wait
+    subsection("Counterfactual — strategy_wait")
+    _counterfactual_stage(conn, since, "strategy_wait", asset_clause_eval)
+
+
+def _counterfactual_stage(conn: sqlite3.Connection, since: str,
+                          stage: str, asset_clause: str) -> None:
+    rows = conn.execute(f"""
+        SELECT market_price, market_result, seconds_to_close, asset,
+          COALESCE(counterfactual_pnl, 0) AS cf_pnl
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause}
+          AND filter_stage = ?
+          AND status = 'settled'
+    """, (since, stage)).fetchall()
+    if rows:
+        w = sum(1 for r in rows if r["market_result"] == "yes")
+        l = len(rows) - w
+        cf_total = sum(r["cf_pnl"] for r in rows)
+        avg_p = sum(r["market_price"] for r in rows) / len(rows)
+        avg_stc = sum(r["seconds_to_close"] or 0 for r in rows) / len(rows)
+        wr = w / len(rows) * 100
+        print(f"  N={len(rows)}, {w}W/{l}L, WR={wr:.1f}%, "
+              f"avg_price={avg_p:.1f}c, avg_stc={avg_stc:.0f}s")
+        print(f"  CF PnL: ${cf_total/100:.2f}")
+        verdict = "FILTER CORRECT" if cf_total < 0 else "FILTER MAY BE TOO STRICT"
+        print(f"  >>> {verdict}")
+    else:
+        print(f"  No settled {stage} entries")
+
+
+# ── Section 5: Config Sensitivity ───────────────────────────────
+
+def config_sensitivity(conn: sqlite3.Connection, since: str,
+                       asset_filter: Optional[str] = None) -> None:
+    section("5. CONFIG SENSITIVITY")
+    asset_clause = f"AND asset = '{asset_filter}'" if asset_filter else ""
+    asset_clause_eval = (f"AND asset = '{asset_filter}'"
+                         if asset_filter else "")
+
+    # P1: STC threshold sweep (live trades)
+    subsection("P1: STC threshold sweep (live trades)")
+    print(f"  {'Max STC':>9} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} "
+          f"{'PnL':>10} {'Avg P':>6}")
+    print("  " + "-" * 48)
+    for max_stc in [120, 180, 240, 300]:
+        rows = conn.execute(f"""
+            SELECT COUNT(*) AS n,
+              SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+              SUM(pnl_cents) AS pnl,
+              ROUND(AVG(entry_price_cents), 1) AS avg_p
+            FROM settled_trades
+            WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+              AND seconds_to_close <= ?
+        """, (since, max_stc)).fetchone()
+        n = rows["n"] or 0
+        if n > 0:
+            w = rows["w"] or 0
+            wr = w / n * 100
+            print(f"  {max_stc:>8}s {n:>4} {w:>3} {n-w:>3} "
+                  f"{wr:>5.1f}% ${rows['pnl']/100:>9.2f} "
+                  f"{rows['avg_p']:>5.0f}c")
+
+    # P2: Edge threshold sweep (trades + rejected)
+    subsection("P2: Edge threshold sweep (trades + insufficient_edge)")
+    all_edge = conn.execute(f"""
+        SELECT fee_adjusted_edge, market_price, market_result,
+          position_size, status,
+          COALESCE(counterfactual_pnl, 0) AS cf_pnl
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
+          AND filter_stage IN ('candidate', 'insufficient_edge')
+          AND status = 'settled' AND fee_adjusted_edge IS NOT NULL
+    """, (since,)).fetchall()
+    if all_edge:
+        print(f"  {'Min Edge':>10} {'Would Trade':>12} {'W':>3} {'L':>3} "
+              f"{'WR':>6} {'CF PnL':>10}")
+        print("  " + "-" * 50)
+        for min_e in [0.0, 0.003, 0.005, 0.007, 0.009, 0.012, 0.015]:
+            subset = [r for r in all_edge
+                      if (r["fee_adjusted_edge"] or 0) >= min_e]
+            if subset:
+                w = sum(1 for r in subset
+                        if r["market_result"] == "yes")
+                l = len(subset) - w
+                wr = w / len(subset) * 100
+                cf = sum(r["cf_pnl"] for r in subset)
+                print(f"  {min_e:>9.1%} {len(subset):>12} {w:>3} {l:>3} "
+                      f"{wr:>5.1f}% ${cf/100:>9.2f}")
+
+    # P3: MIN_ENTRY sweep (trades + POR)
+    subsection("P3: MIN_ENTRY_PRICE sweep")
+    all_entry = conn.execute(f"""
+        SELECT market_price, market_result, status,
+          COALESCE(counterfactual_pnl, 0) AS cf_pnl
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
+          AND filter_stage IN ('candidate', 'price_out_of_range')
+          AND status = 'settled'
+    """, (since,)).fetchall()
+    if all_entry:
+        print(f"  {'Min Price':>10} {'Would Trade':>12} {'W':>3} {'L':>3} "
+              f"{'WR':>6} {'CF PnL':>10}")
+        print("  " + "-" * 50)
+        for min_p in [80, 82, 84, 85, 86, 87, 88, 90]:
+            subset = [r for r in all_entry
+                      if (r["market_price"] or 0) >= min_p]
+            if subset:
+                w = sum(1 for r in subset
+                        if r["market_result"] == "yes")
+                l = len(subset) - w
+                wr = w / len(subset) * 100
+                cf = sum(r["cf_pnl"] for r in subset)
+                print(f"  {min_p:>9}c {len(subset):>12} {w:>3} {l:>3} "
+                      f"{wr:>5.1f}% ${cf/100:>9.2f}")
+
+    # P4: MAX_RISK_PER_TRADE impact
+    subsection("P4: Position sizing analysis")
+    sizing = conn.execute(f"""
+        SELECT count, entry_price_cents, pnl_cents, market_result
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+    """, (since,)).fetchall()
+    if sizing:
+        risks = [r["count"] * r["entry_price_cents"] / 100 for r in sizing]
+        pnls = [r["pnl_cents"] / 100 for r in sizing]
+        avg_risk = sum(risks) / len(risks)
+        max_risk = max(risks)
+        max_loss = min(pnls)
+        max_win = max(pnls)
+        print(f"  Avg risk/trade:  ${avg_risk:.2f}")
+        print(f"  Max risk/trade:  ${max_risk:.2f}")
+        print(f"  Max single loss: ${max_loss:.2f}")
+        print(f"  Max single win:  ${max_win:.2f}")
+        # Concentration: what % of PnL comes from top 5 trades?
+        sorted_pnl = sorted(pnls, reverse=True)
+        total_pnl = sum(pnls)
+        top5 = sum(sorted_pnl[:5])
+        print(f"  Top 5 trades:    ${top5:.2f} "
+              f"({top5/total_pnl*100:.0f}% of total)" if total_pnl > 0
+              else "")
+
+    # P5: MAKER_ONLY_THRESHOLD sensitivity
+    subsection("P5: MAKER_ONLY_THRESHOLD sensitivity")
+    for threshold in [60, 90, 120, 150, 180]:
+        below = conn.execute(f"""
+            SELECT COUNT(*) AS n,
+              SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+              SUM(pnl_cents) AS pnl,
+              SUM(CASE WHEN strategy='TAKER_NOW' THEN 1 ELSE 0 END) AS takers
+            FROM settled_trades
+            WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
+              AND seconds_to_close < ?
+        """, (since, threshold)).fetchone()
+        n = below["n"] or 0
+        if n > 0:
+            w = below["w"] or 0
+            takers = below["takers"] or 0
+            print(f"  <{threshold:>3}s: {n} trades, {w}W/{n-w}L, "
+                  f"${(below['pnl'] or 0)/100:.2f}, "
+                  f"{takers} taker ({takers/n*100:.0f}%)")
+
+
+# ── Section 6: Data Sufficiency ─────────────────────────────────
+
+def data_sufficiency(conn: sqlite3.Connection, since: str) -> None:
+    section("6. DATA SUFFICIENCY AUDIT")
+
+    # Total regime window
+    window = conn.execute(f"""
+        SELECT MIN(settled_at) AS first_t, MAX(settled_at) AS last_t,
+          COUNT(*) AS n
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER}
+    """, (since,)).fetchone()
+    n = window["n"] or 0
+    if n > 0:
+        try:
+            t1 = datetime.fromisoformat(
+                (window["first_t"] or "").replace("Z", ""))
+            t2 = datetime.fromisoformat(
+                (window["last_t"] or "").replace("Z", ""))
+            days = (t2 - t1).total_seconds() / 86400
+        except Exception:
+            days = 0
+        print(f"  Regime window:  {days:.1f} days")
+        print(f"  Total trades:   {n}")
+        print(f"  Trades/day:     {n/max(days, 0.1):.1f}")
+    else:
+        print("  No trades in regime window")
+        return
+
+    # Per-config data sufficiency
+    configs = [
+        ("STC shadow (300-600s)", "stc_shadow", 30),
+        ("MIN_ENTRY at 86c", "price_out_of_range", 30),
+        ("Edge threshold marginal", "insufficient_edge", 50),
+        ("zero_sizing", "zero_sizing", 20),
+    ]
+    subsection("Per-config data points")
+    print(f"  {'Config':<28} {'Have':>5} {'Need':>5} {'Gap':>5} {'Status':<14}")
+    print("  " + "-" * 60)
+    for label, stage, needed in configs:
+        if stage == "price_out_of_range":
+            row = conn.execute(f"""
+                SELECT COUNT(*) AS n FROM evaluated_opportunities
+                WHERE evaluation_time >= ? {EVAL_15M_FILTER}
+                  AND filter_stage = ? AND market_price = 86
+                  AND status = 'settled'
+            """, (since, stage)).fetchone()
+        elif stage == "insufficient_edge":
+            row = conn.execute(f"""
+                SELECT COUNT(*) AS n FROM evaluated_opportunities
+                WHERE evaluation_time >= ? {EVAL_15M_FILTER}
+                  AND filter_stage = ?
+                  AND fee_adjusted_edge > -0.02
+                  AND status = 'settled'
+            """, (since, stage)).fetchone()
+        else:
+            row = conn.execute(f"""
+                SELECT COUNT(*) AS n FROM evaluated_opportunities
+                WHERE evaluation_time >= ? {EVAL_15M_FILTER}
+                  AND filter_stage = ? AND status = 'settled'
+            """, (since, stage)).fetchone()
+        have = row["n"] or 0
+        gap = max(0, needed - have)
+        status = "SUFFICIENT" if have >= needed else "INSUFFICIENT"
+        print(f"  {label:<28} {have:>5} {needed:>5} {gap:>5} {status:<14}")
+
+    # Per-asset N
+    subsection("Per-asset trade count")
+    asset_n = conn.execute(f"""
+        SELECT asset, COUNT(*) AS n
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER}
+        GROUP BY asset ORDER BY n DESC
+    """, (since,)).fetchall()
+    for a in asset_n:
+        status = "OK" if a["n"] >= 15 else "LOW"
+        print(f"  {a['asset']:<6} {a['n']:>4} trades  [{status}]")
+
+    # Taker vs maker sample size
+    subsection("Execution path sample sizes")
+    strat_n = conn.execute(f"""
+        SELECT strategy, COUNT(*) AS n
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER}
+        GROUP BY strategy ORDER BY n DESC
+    """, (since,)).fetchall()
+    for s in strat_n:
+        status = "OK" if s["n"] >= 20 else "LOW"
+        print(f"  {s['strategy'] or 'NULL':<18} {s['n']:>4} trades  [{status}]")
+
+    # Vol regime coverage
+    subsection("Vol regime coverage")
+    vol_n = conn.execute(f"""
+        SELECT vol_regime, COUNT(*) AS n
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER}
+        GROUP BY vol_regime
+    """, (since,)).fetchall()
+    for v in vol_n:
+        status = "OK" if v["n"] >= 10 else "LOW"
+        print(f"  {v['vol_regime'] or 'NULL':<12} {v['n']:>4} trades  [{status}]")
+
+
+# ── Section 7: Recommendations ──────────────────────────────────
+
+def recommendations(conn: sqlite3.Connection, since: str,
+                    perf: dict) -> None:
+    section("7. DATA-DRIVEN RECOMMENDATIONS")
+
+    trades = perf.get("trades", 0)
+    if trades == 0:
+        print("  No trades — cannot generate recommendations")
+        return
+
+    wr = perf.get("wr", 0)
+    pnl = perf.get("pnl", 0)
+
+    print(f"  Regime: {trades} trades, {wr:.1f}% WR, "
+          f"PnL ${pnl/100:.2f}\n")
+
+    # Auto-recommendations based on data
+    recs = []
+
+    # R1: STC shadow expansion
+    shadow_row = conn.execute(f"""
+        SELECT COUNT(*) AS n,
+          SUM(CASE WHEN status='settled' AND market_result='yes'
+              THEN 1 ELSE 0 END) AS w,
+          SUM(CASE WHEN status='settled' AND market_result='no'
+              THEN 1 ELSE 0 END) AS l
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER}
+          AND filter_stage = 'stc_shadow'
+    """, (since,)).fetchone()
+    sw = shadow_row["w"] or 0
+    sl = shadow_row["l"] or 0
+    sn = sw + sl
+    if sn >= 30 and sw / sn > 0.90:
+        recs.append(("HIGH", "Promote STC shadow to live (300→400s)",
+                      f"{sw}W/{sl}L ({sw/sn*100:.0f}% WR) — statistically sufficient"))
+    elif sn > 0:
+        recs.append(("WAIT", f"STC shadow: {sw}W/{sl}L ({sn} obs, need 30)",
+                      "Keep collecting shadow data"))
+    else:
+        recs.append(("WAIT", "STC shadow: 0 observations",
+                      "Shadow zone collecting — revisit in 2 weeks"))
+
+    # R2: MIN_ENTRY at 86c
+    por86 = conn.execute(f"""
+        SELECT COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) AS l
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER}
+          AND filter_stage = 'price_out_of_range'
+          AND market_price = 86 AND status = 'settled'
+    """, (since,)).fetchone()
+    pw, pl = (por86["w"] or 0), (por86["l"] or 0)
+    pn = pw + pl
+    if pn >= 30 and pw / pn > 0.91:
+        recs.append(("MEDIUM", f"Lower MIN_ENTRY 87→86c",
+                      f"{pw}W/{pl}L ({pw/pn*100:.0f}% WR) — sufficient data"))
+    elif pn > 0:
+        recs.append(("WAIT", f"MIN_ENTRY 86c: {pw}W/{pl}L ({pn} obs, need 30)",
+                      "Keep collecting counterfactual data"))
+
+    # R3: Edge threshold
+    ie_marginal = conn.execute(f"""
+        SELECT COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) AS l
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER}
+          AND filter_stage = 'insufficient_edge'
+          AND fee_adjusted_edge BETWEEN 0.005 AND 0.007
+          AND status = 'settled'
+    """, (since,)).fetchone()
+    ew, el = (ie_marginal["w"] or 0), (ie_marginal["l"] or 0)
+    en = ew + el
+    if en >= 30 and ew / en > 0.92:
+        recs.append(("MEDIUM", "Lower min edge at 87c: 0.7%→0.5%",
+                      f"{ew}W/{el}L — captures marginal winners"))
+    elif en > 0:
+        recs.append(("WAIT", f"Edge threshold 0.5-0.7%: {ew}W/{el}L "
+                      f"({en} obs, need 30)", "Accumulating data"))
+
+    # R4: Taker WR monitoring
+    taker_row = conn.execute(f"""
+        SELECT SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+               SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) AS l
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER}
+          AND strategy = 'TAKER_NOW'
+    """, (since,)).fetchone()
+    tw, tl = (taker_row["w"] or 0), (taker_row["l"] or 0)
+    if tw + tl >= 20 and tw / (tw + tl) < 0.85:
+        recs.append(("MEDIUM", f"Investigate taker quality: "
+                      f"{tw}W/{tl}L ({tw/(tw+tl)*100:.0f}% WR)",
+                      "Consider raising MAKER_ONLY_THRESHOLD"))
+    elif tw + tl > 0:
+        taker_wr = tw / (tw + tl) * 100
+        recs.append(("MONITOR", f"Taker WR: {tw}W/{tl}L ({taker_wr:.0f}%)",
+                      f"{'Concerning' if taker_wr < 90 else 'Acceptable'} "
+                      f"— need more data"))
+
+    print(f"  {'#':>3} {'Priority':<10} {'Recommendation':<45} {'Rationale'}")
+    print("  " + "-" * 90)
+    for i, (pri, rec, rat) in enumerate(recs, 1):
+        print(f"  {i:>3} {pri:<10} {rec:<45} {rat}")
+
+    if not recs:
+        print("  No recommendations — all filters correctly calibrated")
+
+
+# ── Main ────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="15M live trading audit")
+    parser.add_argument("--db", default="/tmp/state.db",
+                        help="Path to state.db")
+    parser.add_argument("--since", default=None,
+                        help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--regime", choices=["auto"],
+                        help="Auto-detect regime start")
+    parser.add_argument("--asset", default=None,
+                        help="Filter to single asset (BTC/ETH/SOL/XRP)")
+    args = parser.parse_args()
+
+    conn = connect_db(args.db)
+
+    # Determine since timestamp
+    if args.regime == "auto":
+        since = detect_regime_start(conn)
+        print(f"[Auto-detected regime start: {since}]")
+    elif args.since:
+        since = args.since
+    else:
+        since = "2026-02-28T00:00:00"
+    print(f"[Analyzing from: {since}]")
+    if args.asset:
+        print(f"[Filtered to asset: {args.asset}]")
+
+    perf = performance_summary(conn, since, args.asset)
+    if perf["trades"] == 0:
+        print("\nNo trades found. Check --since date and --db path.")
+        conn.close()
+        return
+
+    execution_quality(conn, since, args.asset)
+    bucket_analysis(conn, since, args.asset)
+    profit_leakage(conn, since, args.asset)
+    config_sensitivity(conn, since, args.asset)
+    data_sufficiency(conn, since)
+    recommendations(conn, since, perf)
+
+    conn.close()
+    print(f"\n{'=' * 72}")
+    print("  Audit complete.")
+    print(f"{'=' * 72}")
+
+
+if __name__ == "__main__":
+    main()
