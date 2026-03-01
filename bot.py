@@ -6837,6 +6837,8 @@ class OpportunityScanner:
                                 wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
+                                hourly_pre_temp_prob=_hourly_pre_temp_prob,
+                                hourly_applied_temp_t=_temp_t,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -6953,6 +6955,8 @@ class OpportunityScanner:
                                 wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
+                                hourly_pre_temp_prob=_hourly_pre_temp_prob,
+                                hourly_applied_temp_t=_temp_t,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -7075,6 +7079,8 @@ class OpportunityScanner:
                                 wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
+                                hourly_pre_temp_prob=_hourly_pre_temp_prob,
+                                hourly_applied_temp_t=_temp_t,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -7099,7 +7105,10 @@ class OpportunityScanner:
                             calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
                             breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                             ask_depth=ask_depth, best_ask_source=best_ask_source,
-                            product_type=window.get("product_type"), **_oft_db, **_shadow_diag)
+                            product_type=window.get("product_type"),
+                            hourly_pre_temp_prob=_hourly_pre_temp_prob,
+                            hourly_applied_temp_t=_temp_t,
+                            **_oft_db, **_shadow_diag)
                     continue
 
                 # Layer 2: STC timing restriction (config-driven)
@@ -7119,7 +7128,10 @@ class OpportunityScanner:
                             calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
                             breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                             ask_depth=ask_depth, best_ask_source=best_ask_source,
-                            product_type=window.get("product_type"), **_oft_db, **_shadow_diag)
+                            product_type=window.get("product_type"),
+                            hourly_pre_temp_prob=_hourly_pre_temp_prob,
+                            hourly_applied_temp_t=_temp_t,
+                            **_oft_db, **_shadow_diag)
                     continue
 
                 # Layer 3b: Per-window position limit (config-driven)
@@ -7139,7 +7151,10 @@ class OpportunityScanner:
                                 calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
                                 breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                                 ask_depth=ask_depth, best_ask_source=best_ask_source,
-                                product_type=window.get("product_type"), **_oft_db, **_shadow_diag)
+                                product_type=window.get("product_type"),
+                                hourly_pre_temp_prob=_hourly_pre_temp_prob,
+                                hourly_applied_temp_t=_temp_t,
+                                **_oft_db, **_shadow_diag)
                         continue
 
                 # Layer 3c: Per-window aggregate risk cap (config-driven)
@@ -7161,7 +7176,10 @@ class OpportunityScanner:
                                 calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
                                 breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                                 ask_depth=ask_depth, best_ask_source=best_ask_source,
-                                product_type=window.get("product_type"), **_oft_db, **_shadow_diag)
+                                product_type=window.get("product_type"),
+                                hourly_pre_temp_prob=_hourly_pre_temp_prob,
+                                hourly_applied_temp_t=_temp_t,
+                                **_oft_db, **_shadow_diag)
                         continue
 
                 # ── GENERIC OBSERVATION GATE ──
