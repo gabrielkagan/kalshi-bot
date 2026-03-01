@@ -12,7 +12,10 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 - **Data-driven changes only** — do not suggest config changes without backing data
 - **Investigate before explaining** — when the user reports a loss or anomaly, look at actual data first. Do not dismiss or speculate.
 - **After ANY function signature change**: grep ALL call sites and verify every caller passes the new parameter. `ast.parse` won't catch unbound names.
+- **After ANY constant change in bot.py**: grep the constant name across ALL files (especially `market_config.py`) — `MarketTypeConfig` mirrors bot.py constants and `validate_market_configs()` asserts they match at startup. A mismatch = crash loop on VPS.
 - **Never add keys to `_shadow_diag`** without also adding them to `insert_rejection()` + `insert_evaluated_opportunity()` signatures + SQL.
+- **After ANY change to `discover_active_windows()` or `product_type` assignment**: grep every `window.get("product_type")` comparison in `scan()` and verify each condition still matches actual values. The STC shadow gate, observation gate, and all product_type-based branching must be checked. (Learned: STC shadow gate checked `is None` but 15M windows had `product_type='15m'` — gate was silently dead code, 98c954d Mar 1 2026)
+- **Post-deploy data validation**: After deploy, don't just check "bot is running, no errors". Verify **expected DB entries are being created** — e.g., stc_shadow entries when STC is 300-600s, weather_observation entries when weather is enabled. Missing expected rows = silent logic bug.
 - **Performance analysis must filter to current config regime** — losses under old configs (old sizing, old calibration, pre-maker-only) are not relevant to current optimization decisions. Always identify when major config changes happened and filter accordingly.
 
 ## Project Structure
