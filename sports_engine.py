@@ -667,6 +667,7 @@ class SportsEngine:
             self._insert_evaluated_opportunity(
                 game=game, league_cfg=league_cfg,
                 signal=signal, current_price=current_price,
+                ob_data=ob_data,
             )
 
         if live_count > 0:
@@ -866,16 +867,20 @@ class SportsEngine:
     def _insert_evaluated_opportunity(self, game: GameState,
                                       league_cfg: LeagueConfig,
                                       signal: ComebackSignal,
-                                      current_price: float) -> None:
+                                      current_price: float,
+                                      ob_data: Optional[Dict] = None) -> None:
         """Insert to evaluated_opportunities for settlement tracking."""
         if not self._state:
             return
         try:
-            # Use game_id as ticker for dedup, league as event_ticker
-            ticker = f"SPORTS-{game.game_id}-{game.home_score}-{game.away_score}"
+            # Use real Kalshi ticker if available, else synthetic for dedup
+            real_ticker = ob_data.get("ticker") if ob_data else ""
+            real_event = ob_data.get("event_ticker") if ob_data else ""
+            ticker = real_ticker or f"SPORTS-{game.game_id}-{game.home_score}-{game.away_score}"
+            event_ticker = real_event or game.league
             self._state.insert_evaluated_opportunity(
                 ticker=ticker,
-                event_ticker=game.league,
+                event_ticker=event_ticker,
                 asset=league_cfg.display_name,
                 filter_stage=signal.filter_stage,
                 rejection_reason=signal.rejection_reason,

@@ -1785,9 +1785,13 @@ class StateManager:
             logging.warning(f"insert_evaluated_opportunity failed: {e}", exc_info=True)
 
     def get_unsettled_evaluated_opportunities(self) -> List[Dict]:
-        """Return evaluated opportunities with status='pending' and a market_price."""
+        """Return evaluated opportunities with status='pending' and a market_price.
+        Excludes sports product_type — sports uses synthetic tickers that don't
+        resolve via get_market(), and has its own shadow_log for tracking."""
         rows = self.conn.execute(
-            "SELECT * FROM evaluated_opportunities WHERE status='pending' AND market_price IS NOT NULL"
+            "SELECT * FROM evaluated_opportunities WHERE status='pending'"
+            " AND market_price IS NOT NULL"
+            " AND (product_type IS NULL OR product_type != 'sports')"
         ).fetchall()
         return [dict(row) for row in rows]
 
