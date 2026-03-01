@@ -1284,6 +1284,15 @@ class StateManager:
             ("shadow_cal_fee_edge", "REAL"),
             ("shadow_cal_temperature", "REAL"),
             ("product_type", "TEXT"),
+            # OFT signal columns
+            ("oft_prob_adjustment", "REAL"),
+            ("oft_imbalance_ratio", "REAL"),
+            ("oft_n_snapshots", "INTEGER"),
+            # Weather ensemble columns
+            ("wx_ensemble_mean", "REAL"),
+            ("wx_ensemble_std", "REAL"),
+            ("wx_bias_correction", "REAL"),
+            ("wx_n_members", "INTEGER"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1305,6 +1314,10 @@ class StateManager:
             ("mz_qlike", "REAL"),
             ("counterfactual", "TEXT"),
             ("product_type", "TEXT"),
+            # OFT signal columns (for rejected markets with OFT data)
+            ("oft_prob_adjustment", "REAL"),
+            ("oft_imbalance_ratio", "REAL"),
+            ("oft_n_snapshots", "INTEGER"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE rejected_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1586,7 +1599,10 @@ class StateManager:
                          mz_baseline_qlike: Optional[float] = None,
                          mz_qlike: Optional[float] = None,
                          counterfactual: Optional[str] = None,
-                         product_type: Optional[str] = None):
+                         product_type: Optional[str] = None,
+                         oft_prob_adjustment: Optional[float] = None,
+                         oft_imbalance_ratio: Optional[float] = None,
+                         oft_n_snapshots: Optional[int] = None):
         """Insert a rejected opportunity. INSERT OR REPLACE deduplicates by ticker."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
@@ -1596,14 +1612,16 @@ class StateManager:
                  seconds_to_close, calibrated_prob, status,
                  egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
                  shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
-                 counterfactual, product_type)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 counterfactual, product_type,
+                 oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, event_ticker, asset, rejection_reason, now,
               z_score, spot_price, threshold, volatility, market_price,
               seconds_to_close, calibrated_prob, "pending",
               egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
               shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
-              counterfactual, product_type))
+              counterfactual, product_type,
+              oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots))
         self.conn.commit()
 
     def get_unsettled_rejections(self) -> List[Dict]:
@@ -1662,7 +1680,14 @@ class StateManager:
                                      shadow_cal_prob: Optional[float] = None,
                                      shadow_cal_fee_edge: Optional[float] = None,
                                      shadow_cal_temperature: Optional[float] = None,
-                                     product_type: Optional[str] = None):
+                                     product_type: Optional[str] = None,
+                                     oft_prob_adjustment: Optional[float] = None,
+                                     oft_imbalance_ratio: Optional[float] = None,
+                                     oft_n_snapshots: Optional[int] = None,
+                                     wx_ensemble_mean: Optional[float] = None,
+                                     wx_ensemble_std: Optional[float] = None,
+                                     wx_bias_correction: Optional[float] = None,
+                                     wx_n_members: Optional[int] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
@@ -1682,8 +1707,10 @@ class StateManager:
                      shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
                      counterfactual,
                      shadow_cal_prob, shadow_cal_fee_edge, shadow_cal_temperature,
-                     product_type)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     product_type,
+                     oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
+                     wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1698,7 +1725,9 @@ class StateManager:
                   shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
                   counterfactual,
                   shadow_cal_prob, shadow_cal_fee_edge, shadow_cal_temperature,
-                  product_type))
+                  product_type,
+                  oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
+                  wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members))
             self.conn.commit()
         except Exception as e:
             logging.warning(f"insert_evaluated_opportunity failed: {e}", exc_info=True)
@@ -6150,6 +6179,8 @@ class OpportunityScanner:
 
                 # Per-market copy of shadow extras (OFT fields added per-ticker below)
                 _shadow_extra = dict(_shadow_extra_base)
+                # OFT fields for DB insert — populated after ofa_signals computed
+                _oft_db = {}
 
                 scan_stats[asset]["evaluated"] += 1
                 self._session_total_scanned += 1
@@ -6188,7 +6219,7 @@ class OpportunityScanner:
                             prob_result.get("z_score"), spot, threshold,
                             blended_rv, rej_ask, seconds_remaining, None,
                             product_type=window.get("product_type"),
-                            **_shadow_diag)
+                            **_oft_db, **_shadow_diag)
                         self._logger.log_rejection(rej_data)
                         logging.info(
                             f"Rejected opportunity: {ticker} — {reason}")
@@ -6423,7 +6454,7 @@ class OpportunityScanner:
                                 raw_prob=raw_prob_pre,
                                 calibration_method=calibration_method_pre,
                                 product_type=window.get("product_type"),
-                                **_shadow_diag)
+                                **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
                     continue
@@ -6458,7 +6489,7 @@ class OpportunityScanner:
                             blended_rv, best_ask, seconds_remaining,
                             prob_with_market.get("calibrated_prob"),
                             product_type=window.get("product_type"),
-                            **_shadow_diag)
+                            **_oft_db, **_shadow_diag)
                         self._logger.log_rejection(rej_data)
                         logging.info(
                             f"Rejected opportunity: {ticker} — {reason}")
@@ -6539,6 +6570,12 @@ class OpportunityScanner:
                     _shadow_extra["oft_confidence"] = ofa_signals.get("confidence")
                     _shadow_extra["oft_n_snapshots"] = ofa_signals.get("n_snapshots")
                     _shadow_extra["oft_depth_velocity"] = ofa_signals.get("depth_velocity")
+                    # OFT fields for DB persistence
+                    _oft_db = {
+                        "oft_prob_adjustment": ofa_signals.get("prob_adjustment"),
+                        "oft_imbalance_ratio": ofa_signals.get("imbalance_ratio"),
+                        "oft_n_snapshots": ofa_signals.get("n_snapshots"),
+                    }
                     _shadow_extra["oft_ask_velocity"] = ofa_signals.get("ask_velocity")
 
                 # ── Counterfactual analysis: what would each shadow feature produce? ──
@@ -6743,7 +6780,7 @@ class OpportunityScanner:
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                                 product_type=window.get("product_type"),
-                                **_shadow_diag)
+                                **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
                     continue
@@ -6867,7 +6904,7 @@ class OpportunityScanner:
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                                 product_type=window.get("product_type"),
-                                **_shadow_diag)
+                                **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
                     continue
@@ -6985,7 +7022,7 @@ class OpportunityScanner:
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                                 product_type=window.get("product_type"),
-                                **_shadow_diag)
+                                **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
                     continue
@@ -7006,7 +7043,7 @@ class OpportunityScanner:
                             calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
                             breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                             ask_depth=ask_depth, best_ask_source=best_ask_source,
-                            product_type="hourly", **_shadow_diag)
+                            product_type="hourly", **_oft_db, **_shadow_diag)
                     continue
 
                 # ── Hourly Layer 2: STC timing restriction ──────────────
@@ -7026,7 +7063,7 @@ class OpportunityScanner:
                             calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
                             breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                             ask_depth=ask_depth, best_ask_source=best_ask_source,
-                            product_type="hourly", **_shadow_diag)
+                            product_type="hourly", **_oft_db, **_shadow_diag)
                     continue
 
                 # ── Hourly Layer 3b: Per-window position limit ──────────────
@@ -7046,7 +7083,7 @@ class OpportunityScanner:
                                 calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
                                 breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                                 ask_depth=ask_depth, best_ask_source=best_ask_source,
-                                product_type="hourly", **_shadow_diag)
+                                product_type="hourly", **_oft_db, **_shadow_diag)
                         continue
 
                 # ── Hourly Layer 3c: Per-window aggregate risk cap ──────────────
@@ -7068,7 +7105,7 @@ class OpportunityScanner:
                                 calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
                                 breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                                 ask_depth=ask_depth, best_ask_source=best_ask_source,
-                                product_type="hourly", **_shadow_diag)
+                                product_type="hourly", **_oft_db, **_shadow_diag)
                         continue
 
                 # ── HOURLY OBSERVATION GATE ──
@@ -7125,7 +7162,7 @@ class OpportunityScanner:
                             shadow_cal_prob=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
                             shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                             shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
-                            product_type="hourly", **_shadow_diag)
+                            product_type="hourly", **_oft_db, **_shadow_diag)
                     logging.info("HOURLY_OBS: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
                     continue  # DO NOT add to candidates — this is the safety gate
@@ -7152,7 +7189,7 @@ class OpportunityScanner:
                             ofa_adjustment=ofa_adjustment,
                             strategy=strategy,
                             old_system_prob=_old_system_prob,
-                            product_type="spx_hourly", **_shadow_diag)
+                            product_type="spx_hourly", **_oft_db, **_shadow_diag)
                     logging.info("SPX_OBS: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
                     continue  # DO NOT add to candidates — observation only
@@ -7179,7 +7216,11 @@ class OpportunityScanner:
                             ofa_adjustment=ofa_adjustment,
                             strategy=strategy,
                             old_system_prob=_old_system_prob,
-                            product_type="weather", **_shadow_diag)
+                            wx_ensemble_mean=vol_est.get("ensemble_mean"),
+                            wx_ensemble_std=vol_est.get("ensemble_std"),
+                            wx_bias_correction=vol_est.get("bias_correction"),
+                            wx_n_members=vol_est.get("n_members"),
+                            product_type="weather", **_oft_db, **_shadow_diag)
                     logging.info("WEATHER_OBS: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
                     continue  # DO NOT add to candidates — observation only
@@ -7393,7 +7434,10 @@ class OpportunityScanner:
                                     counterfactual=c.get("counterfactual_json"),
                                     shadow_cal_prob=c.get("shadow_cal_prob"),
                                     shadow_cal_fee_edge=c.get("shadow_cal_fee_edge"),
-                                    shadow_cal_temperature=c.get("shadow_cal_temperature"))
+                                    shadow_cal_temperature=c.get("shadow_cal_temperature"),
+                                    oft_prob_adjustment=c.get("oft_prob_adjustment"),
+                                    oft_imbalance_ratio=c.get("oft_imbalance_ratio"),
+                                    oft_n_snapshots=c.get("oft_n_snapshots"))
                         except Exception:
                             pass
         else:
@@ -7861,6 +7905,9 @@ class OrderExecutor:
                         shadow_cal_prob=candidate.get("shadow_cal_prob"),
                         shadow_cal_fee_edge=candidate.get("shadow_cal_fee_edge"),
                         shadow_cal_temperature=candidate.get("shadow_cal_temperature"),
+                        oft_prob_adjustment=candidate.get("oft_prob_adjustment"),
+                        oft_imbalance_ratio=candidate.get("oft_imbalance_ratio"),
+                        oft_n_snapshots=candidate.get("oft_n_snapshots"),
                         product_type=candidate.get("product_type"))
             except Exception:
                 pass
@@ -7911,6 +7958,9 @@ class OrderExecutor:
                 shadow_cal_prob=candidate.get("shadow_cal_prob"),
                 shadow_cal_fee_edge=candidate.get("shadow_cal_fee_edge"),
                 shadow_cal_temperature=candidate.get("shadow_cal_temperature"),
+                oft_prob_adjustment=candidate.get("oft_prob_adjustment"),
+                oft_imbalance_ratio=candidate.get("oft_imbalance_ratio"),
+                oft_n_snapshots=candidate.get("oft_n_snapshots"),
                 product_type=candidate.get("product_type"))
         except Exception:
             pass
