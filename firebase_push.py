@@ -644,6 +644,10 @@ class FirebasePusher:
                 "drawdown_quarter": getattr(_bot_mod, "DRAWDOWN_QUARTER_THRESHOLD", None),
                 "drawdown_halt": getattr(_bot_mod, "DRAWDOWN_HALT_THRESHOLD", None),
                 "hourly_observation_only": getattr(_bot_mod, "HOURLY_OBSERVATION_ONLY", True),
+                "spx_hourly_enabled": getattr(_bot_mod, "SPX_HOURLY_ENABLED", False),
+                "spx_hourly_observation_only": getattr(_bot_mod, "SPX_HOURLY_OBSERVATION_ONLY", True),
+                "weather_enabled": getattr(_bot_mod, "WEATHER_ENABLED", False),
+                "weather_observation_only": getattr(_bot_mod, "WEATHER_OBSERVATION_ONLY", True),
             }
         except Exception:
             snap["trading_config"] = {}
@@ -1099,6 +1103,173 @@ class FirebasePusher:
                 snap["hourly_observation"] = hourly_data
         except Exception:
             logging.debug("Firebase: hourly_observation build failed", exc_info=True)
+
+        # ── SPX Observation Panel ─────────────────────────────────────────
+        try:
+            if getattr(_bot_mod, "SPX_HOURLY_ENABLED", False):
+                spx_data = {
+                    "enabled": True,
+                    "observation_only": getattr(_bot_mod, "SPX_HOURLY_OBSERVATION_ONLY", True),
+                    "min_entry_price": getattr(_bot_mod, "SPX_HOURLY_MIN_ENTRY_PRICE", None),
+                    "market_blend_w": getattr(_bot_mod, "SPX_HOURLY_MARKET_BLEND_W", None),
+                    "max_risk_per_trade": getattr(_bot_mod, "SPX_HOURLY_MAX_RISK_PER_TRADE", None),
+                    "kelly_fraction": getattr(_bot_mod, "SPX_HOURLY_KELLY_FRACTION", None),
+                    "fee_multiplier_taker": getattr(_bot_mod, "SPX_HOURLY_FEE_MULTIPLIER_TAKER", None),
+                }
+                spx_eng = getattr(self._ml, "spx_engine", None)
+                spx_data["market_open"] = spx_eng.is_market_open() if spx_eng else False
+                if spx_eng:
+                    spx_data["spx_price"] = spx_eng.get_spot_price("SPX")
+                    spx_data["vix_level"] = spx_eng.get_vix()
+
+                conn = self._db_conn
+                try:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='spx_hourly' AND status='settled'"
+                    ).fetchone()
+                    spx_data["settled_count"] = row["cnt"] if row else 0
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='spx_hourly' AND status='settled' AND market_result='yes'"
+                    ).fetchone()
+                    spx_data["settled_wins"] = row["cnt"] if row else 0
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='spx_hourly' AND status='pending'"
+                    ).fetchone()
+                    spx_data["pending_count"] = row["cnt"] if row else 0
+                except Exception:
+                    spx_data["settled_count"] = 0
+                    spx_data["settled_wins"] = 0
+                    spx_data["pending_count"] = 0
+
+                # Filter stage breakdown
+                try:
+                    rows = conn.execute(
+                        "SELECT filter_stage, COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='spx_hourly' GROUP BY filter_stage"
+                    ).fetchall()
+                    spx_data["filter_stages"] = {
+                        r["filter_stage"]: r["cnt"] for r in rows
+                    } if rows else {}
+                except Exception:
+                    spx_data["filter_stages"] = {}
+
+                # Simulated P&L
+                try:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt, "
+                        "SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS wins, "
+                        "SUM(CASE WHEN market_result='yes' "
+                        "    THEN (100 - market_price) - CAST(CEIL(0.035 * 1 * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "    ELSE -market_price - CAST(CEIL(0.035 * 1 * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "END) AS sim_pnl "
+                        "FROM evaluated_opportunities "
+                        "WHERE product_type='spx_hourly' AND filter_stage='spx_observation' "
+                        "AND status='settled' AND market_result IS NOT NULL"
+                    ).fetchone()
+                    if row and row["cnt"] > 0:
+                        spx_data["sim_trade_count"] = row["cnt"]
+                        spx_data["sim_win_rate"] = round(row["wins"] / row["cnt"], 4)
+                        spx_data["sim_pnl_cents"] = row["sim_pnl"] or 0
+                    else:
+                        spx_data["sim_trade_count"] = 0
+                        spx_data["sim_win_rate"] = 0
+                        spx_data["sim_pnl_cents"] = 0
+                except Exception:
+                    spx_data["sim_trade_count"] = 0
+                    spx_data["sim_win_rate"] = 0
+                    spx_data["sim_pnl_cents"] = 0
+                snap["spx_observation"] = spx_data
+        except Exception:
+            logging.debug("Firebase: spx_observation build failed", exc_info=True)
+
+        # ── Weather Observation Panel ─────────────────────────────────────
+        try:
+            if getattr(_bot_mod, "WEATHER_ENABLED", False):
+                wx_data = {
+                    "enabled": True,
+                    "observation_only": getattr(_bot_mod, "WEATHER_OBSERVATION_ONLY", True),
+                    "min_entry_price": getattr(_bot_mod, "WEATHER_MIN_ENTRY_PRICE", None),
+                    "market_blend_w": getattr(_bot_mod, "WEATHER_MARKET_BLEND_W", None),
+                    "max_risk_per_trade": getattr(_bot_mod, "WEATHER_MAX_RISK_PER_TRADE", None),
+                }
+                conn = self._db_conn
+                try:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='weather' AND status='settled'"
+                    ).fetchone()
+                    wx_data["settled_count"] = row["cnt"] if row else 0
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='weather' AND status='settled' AND market_result='yes'"
+                    ).fetchone()
+                    wx_data["settled_wins"] = row["cnt"] if row else 0
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='weather' AND status='pending'"
+                    ).fetchone()
+                    wx_data["pending_count"] = row["cnt"] if row else 0
+                except Exception:
+                    wx_data["settled_count"] = 0
+                    wx_data["settled_wins"] = 0
+                    wx_data["pending_count"] = 0
+
+                # Filter stage breakdown
+                try:
+                    rows = conn.execute(
+                        "SELECT filter_stage, COUNT(*) AS cnt FROM evaluated_opportunities "
+                        "WHERE product_type='weather' GROUP BY filter_stage"
+                    ).fetchall()
+                    wx_data["filter_stages"] = {
+                        r["filter_stage"]: r["cnt"] for r in rows
+                    } if rows else {}
+                except Exception:
+                    wx_data["filter_stages"] = {}
+
+                # Simulated P&L
+                try:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt, "
+                        "SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS wins, "
+                        "SUM(CASE WHEN market_result='yes' "
+                        "    THEN (100 - market_price) - CAST(CEIL(0.07 * 1 * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "    ELSE -market_price - CAST(CEIL(0.07 * 1 * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "END) AS sim_pnl "
+                        "FROM evaluated_opportunities "
+                        "WHERE product_type='weather' AND filter_stage='weather_observation' "
+                        "AND status='settled' AND market_result IS NOT NULL"
+                    ).fetchone()
+                    if row and row["cnt"] > 0:
+                        wx_data["sim_trade_count"] = row["cnt"]
+                        wx_data["sim_win_rate"] = round(row["wins"] / row["cnt"], 4)
+                        wx_data["sim_pnl_cents"] = row["sim_pnl"] or 0
+                    else:
+                        wx_data["sim_trade_count"] = 0
+                        wx_data["sim_win_rate"] = 0
+                        wx_data["sim_pnl_cents"] = 0
+                except Exception:
+                    wx_data["sim_trade_count"] = 0
+                    wx_data["sim_win_rate"] = 0
+                    wx_data["sim_pnl_cents"] = 0
+                snap["weather_observation"] = wx_data
+        except Exception:
+            logging.debug("Firebase: weather_observation build failed", exc_info=True)
+
+        # ── Capital Allocation Panel ──────────────────────────────────────
+        try:
+            cap_alloc = getattr(self._ml, "capital_allocator", None)
+            if cap_alloc:
+                snap["capital_allocation"] = {
+                    "regime": cap_alloc.get_regime(),
+                    "ewma_corr": cap_alloc.get_ewma_correlation(),
+                    "vix_level": cap_alloc.get_vix(),
+                    "composite_score": cap_alloc.get_composite_score(),
+                }
+        except Exception:
+            logging.debug("Firebase: capital_allocation build failed", exc_info=True)
 
         # ── Orderbook visibility (dashboard only) ─────────────────────────
         try:

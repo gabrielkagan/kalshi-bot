@@ -68,6 +68,31 @@ HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time
 HOURLY_MAX_WINDOW_RISK = 0.15         # Max aggregate risk across all hourly positions per window
 HOURLY_KELLY_FRACTION = 0.25          # Quarter-Kelly: 44% of growth rate, ~3% halving probability
 
+# ─── SPX Hourly Observation Mode ──────────────────────────────────────────────
+SPX_HOURLY_ENABLED = True
+SPX_HOURLY_OBSERVATION_ONLY = True       # Shadow first — collect data before live
+SPX_HOURLY_MIN_ENTRY_PRICE = 70
+SPX_HOURLY_MAX_ENTRY_PRICE = 99
+SPX_HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800
+SPX_HOURLY_MIN_SECONDS_BEFORE_CLOSE = 300
+SPX_HOURLY_MARKET_BLEND_W = 0.40
+SPX_HOURLY_MAX_RISK_PER_TRADE = 0.15
+SPX_HOURLY_TEMPERATURE_T = 1.0           # Start neutral, tune with data
+SPX_HOURLY_KELLY_FRACTION = 0.25
+SPX_HOURLY_FEE_MULTIPLIER_TAKER = 0.035  # Finance category: half of crypto's 0.07
+SPX_HOURLY_FEE_MULTIPLIER_MAKER = 0.0175
+
+# ─── Weather Observation Mode ─────────────────────────────────────────────────
+WEATHER_ENABLED = True
+WEATHER_OBSERVATION_ONLY = True
+WEATHER_MIN_ENTRY_PRICE = 60
+WEATHER_MAX_ENTRY_PRICE = 99
+WEATHER_MAX_SECONDS_BEFORE_CLOSE = 86400  # Weather settles daily — always eligible
+WEATHER_MIN_SECONDS_BEFORE_CLOSE = 3600   # At least 1 hour before settlement
+WEATHER_MAX_RISK_PER_TRADE = 0.10
+WEATHER_KELLY_FRACTION = 0.25
+WEATHER_MARKET_BLEND_W = 0.50            # More trust in market for weather
+
 # ─── API Configuration ───────────────────────────────────────────────────────
 BASE_URL = ("https://api.elections.kalshi.com" if os.environ.get("KALSHI_ENV") == "production"
             else "https://demo-api.kalshi.co")
@@ -452,17 +477,19 @@ DIP_ADDON_SHADOW_FLOOR = 50              # shadow logs ALL dips down to 50¢ for
 #  Fee Helpers
 # ═════════════════════════════════════════════════════════════════════════════
 
-def calculate_fee(count: int, price_cents: int, is_taker: bool) -> int:
+def calculate_fee(count: int, price_cents: int, is_taker: bool,
+                   fee_mult_taker: float = 0.07, fee_mult_maker: float = 0.0175) -> int:
     """Fee in cents. Ceil applied to TOTAL, not per contract.
 
-    Taker:  ceil(0.07   × count × price × (100−price) / 100)
-    Maker:  ceil(0.0175 × count × price × (100−price) / 100)
+    Taker:  ceil(fee_mult_taker × count × price × (100−price) / 100)
+    Maker:  ceil(fee_mult_maker × count × price × (100−price) / 100)
 
     The division by 100 converts from the raw product (price in cents ×
     complement in cents) back to cents.  Equivalent to the CLAUDE.md formula
     ceil(rate × C × P × (1−P)) evaluated in dollars, then converted to cents.
+    SPX finance category gets 50% discount (fee_mult_taker=0.035).
     """
-    rate = 0.07 if is_taker else 0.0175
+    rate = fee_mult_taker if is_taker else fee_mult_maker
     return math.ceil(rate * count * price_cents * (100 - price_cents) / 100)
 
 
@@ -5265,7 +5292,7 @@ class CalibrationEngine:
                 "SELECT raw_prob, market_result FROM evaluated_opportunities "
                 "WHERE status='settled' AND raw_prob IS NOT NULL "
                 "AND market_result IS NOT NULL "
-                "AND (product_type IS NULL OR product_type != 'hourly') "
+                "AND (product_type IS NULL OR product_type NOT IN ('hourly', 'spx_hourly', 'weather')) "
                 "AND evaluation_time > ? "
                 "ORDER BY evaluation_time DESC LIMIT 500",
                 (cutoff,)
@@ -5843,7 +5870,7 @@ class OpportunityScanner:
                  feed: CoinbaseFeed, vol: VolatilityEngine, logger: Logger,
                  sizer: PositionSizer, order_flow: Optional[OrderFlowEngine] = None,
                  kalshi_oft: Optional[KalshiOrderFlowTracker] = None,
-                 kalshi_feed=None):
+                 kalshi_feed=None, main_loop=None):
         self._client = client
         self._state = state
         self._feed = feed
@@ -5853,6 +5880,7 @@ class OpportunityScanner:
         self._order_flow = order_flow
         self._kalshi_oft = kalshi_oft
         self._kalshi_feed = kalshi_feed
+        self._ml = main_loop
         # Orderbook cache: ticker -> (data, fetch_time)
         self._ob_cache: Dict[str, Tuple[Optional[Dict], float]] = {}
         # Balance cache: (balance_cents, fetch_time)
@@ -5985,10 +6013,10 @@ class OpportunityScanner:
             except Exception:
                 pass
 
-        # Build hourly ticker set (skip WS orderbook subscription — too many strikes per event)
+        # Build ticker set for product types that skip WS orderbook subscription (too many strikes)
         _hourly_tickers = set()
         for w in active_windows:
-            if w.get("product_type") == "hourly":
+            if w.get("product_type") in ("hourly", "spx_hourly", "weather"):
                 for m in w.get("markets", []):
                     _hourly_tickers.add(m.get("ticker", ""))
 
@@ -6013,18 +6041,29 @@ class OpportunityScanner:
                     except Exception:
                         pass
 
+        # Dynamic scan_stats: include all assets from active windows (SPX, weather, etc.)
+        _all_scan_assets = set(ASSETS)
+        for w in active_windows:
+            _all_scan_assets.add(w["asset"])
         scan_stats: Dict[str, Dict[str, int]] = {
             a: {"evaluated": 0, "low_prob": 0, "no_orderbook": 0, "no_best_ask": 0,
                 "price_out_of_range": 0, "insufficient_edge": 0, "zero_sizing": 0,
                 "strategy_wait": 0, "candidates": 0}
-            for a in ASSETS
+            for a in _all_scan_assets
         }
 
         # 1. Filter windows by time range (product-type-specific thresholds)
         time_ok_windows = []
         for w in active_windows:
             stc = w["seconds_to_close"]
-            if w.get("product_type") == "hourly":
+            pt = w.get("product_type")
+            if pt == "spx_hourly":
+                if SPX_HOURLY_MIN_SECONDS_BEFORE_CLOSE <= stc <= SPX_HOURLY_MAX_SECONDS_BEFORE_CLOSE:
+                    time_ok_windows.append(w)
+            elif pt == "weather":
+                if WEATHER_MIN_SECONDS_BEFORE_CLOSE <= stc <= WEATHER_MAX_SECONDS_BEFORE_CLOSE:
+                    time_ok_windows.append(w)
+            elif pt == "hourly":
                 if HOURLY_MIN_SECONDS_BEFORE_CLOSE <= stc <= HOURLY_MAX_SECONDS_BEFORE_CLOSE:
                     time_ok_windows.append(w)
             else:
@@ -6039,9 +6078,9 @@ class OpportunityScanner:
         # 3. Filter out windows whose timeslot already has this SAME asset
         eligible_windows = []
         for w in time_ok_windows:
-            if w.get("product_type") == "hourly":
+            if w.get("product_type") in ("hourly", "spx_hourly", "weather"):
                 eligible_windows.append(w)
-                continue  # hourly windows bypass timeslot logic (observation-only)
+                continue  # hourly/spx/weather windows bypass timeslot logic
             ts = self._window_timeslot(w["event_ticker"])
             if ts in occupied and w["asset"] in occupied[ts]:
                 continue  # this asset already has a position/order in this timeslot
@@ -6053,12 +6092,28 @@ class OpportunityScanner:
         # 4. Evaluate each market in each surviving window
         for window in eligible_windows:
             asset = window["asset"]
-            spot = self._feed.get_price(asset)
-            if spot is None or spot <= 0:
-                continue
+            _pt = window.get("product_type")
 
-            seconds_remaining = window["seconds_to_close"]
-            vol_est = self._vol.update(asset, seconds_to_close=seconds_remaining)
+            # Route price/vol to appropriate engine based on product type
+            if _pt == "spx_hourly" and self._ml and getattr(self._ml, "spx_engine", None):
+                spot = self._ml.spx_engine.get_spot_price(asset)
+                if spot is None or spot <= 0:
+                    continue
+                seconds_remaining = window["seconds_to_close"]
+                vol_est = self._ml.spx_engine.get_vol_estimate(asset, seconds_remaining)
+            elif _pt == "weather" and self._ml and getattr(self._ml, "weather_engine", None):
+                spot = self._ml.weather_engine.get_spot_price(asset)
+                if spot is None or spot <= 0:
+                    continue
+                seconds_remaining = window["seconds_to_close"]
+                vol_est = self._ml.weather_engine.get_vol_estimate(asset, seconds_remaining)
+            else:
+                spot = self._feed.get_price(asset)
+                if spot is None or spot <= 0:
+                    continue
+                seconds_remaining = window["seconds_to_close"]
+                vol_est = self._vol.update(asset, seconds_to_close=seconds_remaining)
+
             if vol_est is None or vol_est["blended_rv"] <= 0:
                 continue
 
@@ -6140,14 +6195,20 @@ class OpportunityScanner:
                     continue
 
                 # Skip if calibrated prob too low to ever produce an edge
-                _min_price = (HOURLY_MIN_ENTRY_PRICE
-                              if window.get("product_type") == "hourly"
-                              else MIN_ENTRY_PRICE)
+                _pt_for_price = window.get("product_type")
+                if _pt_for_price == "spx_hourly":
+                    _min_price = SPX_HOURLY_MIN_ENTRY_PRICE
+                elif _pt_for_price == "weather":
+                    _min_price = WEATHER_MIN_ENTRY_PRICE
+                elif _pt_for_price == "hourly":
+                    _min_price = HOURLY_MIN_ENTRY_PRICE
+                else:
+                    _min_price = MIN_ENTRY_PRICE
                 min_prob_needed = (_min_price + MIN_EDGE_PCT) / 100.0
                 if cal_prob < min_prob_needed:
                     scan_stats[asset]["low_prob"] += 1
-                    if window.get("product_type") == "hourly":
-                        # Volume control: count but don't log (67/75 strikes are low_prob)
+                    if window.get("product_type") in ("hourly", "spx_hourly", "weather"):
+                        # Volume control: count but don't log (many strikes are low_prob)
                         continue
                     try:
                         self._logger.log_opportunity({
@@ -6300,10 +6361,20 @@ class OpportunityScanner:
                     pass
 
                 # Filter: ask must be in entry price range
-                _entry_floor = (HOURLY_MIN_ENTRY_PRICE
-                                if window.get("product_type") == "hourly"
-                                else MIN_ENTRY_PRICE)
-                if not (_entry_floor <= best_ask <= MAX_ENTRY_PRICE):
+                _ptype = window.get("product_type")
+                if _ptype == "spx_hourly":
+                    _entry_floor = SPX_HOURLY_MIN_ENTRY_PRICE
+                    _entry_ceil = SPX_HOURLY_MAX_ENTRY_PRICE
+                elif _ptype == "weather":
+                    _entry_floor = WEATHER_MIN_ENTRY_PRICE
+                    _entry_ceil = WEATHER_MAX_ENTRY_PRICE
+                elif _ptype == "hourly":
+                    _entry_floor = HOURLY_MIN_ENTRY_PRICE
+                    _entry_ceil = MAX_ENTRY_PRICE
+                else:
+                    _entry_floor = MIN_ENTRY_PRICE
+                    _entry_ceil = MAX_ENTRY_PRICE
+                if not (_entry_floor <= best_ask <= _entry_ceil):
                     scan_stats[asset]["price_out_of_range"] += 1
                     self._recent_opportunities.append({
                         "ticker": ticker, "asset": asset,
@@ -6398,13 +6469,19 @@ class OpportunityScanner:
                 raw_prob = prob_with_market.get("raw_prob")
                 calibration_method = prob_with_market.get("calibration_method")
 
-                # ── Hourly temperature scaling (Layer 1) ──────────────
+                # ── Temperature scaling (Layer 1) ──────────────
                 _hourly_pre_temp_prob = None
-                if window.get("product_type") == "hourly" and HOURLY_TEMPERATURE_ENABLED:
+                _temp_pt = window.get("product_type")
+                _temp_t = None
+                if _temp_pt == "hourly" and HOURLY_TEMPERATURE_ENABLED:
+                    _temp_t = HOURLY_TEMPERATURE_T
+                elif _temp_pt == "spx_hourly" and SPX_HOURLY_TEMPERATURE_T != 1.0:
+                    _temp_t = SPX_HOURLY_TEMPERATURE_T
+                if _temp_t is not None:
                     _hourly_pre_temp_prob = final_prob
                     _p = max(0.001, min(0.999, final_prob))
                     _z = math.log(_p / (1.0 - _p))
-                    _z_scaled = _z / HOURLY_TEMPERATURE_T
+                    _z_scaled = _z / _temp_t
                     final_prob = 1.0 / (1.0 + math.exp(-_z_scaled))
 
                 # Order flow adjustment
@@ -6434,9 +6511,15 @@ class OpportunityScanner:
                 # ── Market-price blending ──────────────────────────────────
                 # For mid-range prices, blend model with market to temper overconfidence.
                 # Skip blending for endgame (≥96c) where dynamic cap provides the edge.
-                _effective_blend_w = (HOURLY_MARKET_BLEND_W
-                                     if window.get("product_type") == "hourly"
-                                     else MARKET_BLEND_W)
+                _wpt = window.get("product_type")
+                if _wpt == "spx_hourly":
+                    _effective_blend_w = SPX_HOURLY_MARKET_BLEND_W
+                elif _wpt == "weather":
+                    _effective_blend_w = WEATHER_MARKET_BLEND_W
+                elif _wpt == "hourly":
+                    _effective_blend_w = HOURLY_MARKET_BLEND_W
+                else:
+                    _effective_blend_w = MARKET_BLEND_W
                 if best_ask < ENDGAME_BLEND_PRICE:
                     market_implied_prob = best_ask / 100.0
                     final_prob = (1.0 - _effective_blend_w) * final_prob + _effective_blend_w * market_implied_prob
@@ -6669,10 +6752,38 @@ class OpportunityScanner:
                 balance = self._get_balance_cached()
                 if balance is None or balance <= 0:
                     continue
-                sizing = self._sizer.compute(final_prob, best_ask, balance)
+                # Capital allocator: per-strategy budget (defaults to full balance)
+                _strategy_key = window.get("product_type") or "crypto_15m"
+                if _strategy_key == "15m":
+                    _strategy_key = "crypto_15m"
+                elif _strategy_key == "hourly":
+                    _strategy_key = "crypto_hourly"
+                _sizing_balance = balance
+                if self._ml and getattr(self._ml, "capital_allocator", None):
+                    try:
+                        _sizing_balance = self._ml.capital_allocator.get_budget_cents(
+                            _strategy_key, balance, locked_by_strategy=None)
+                        if _sizing_balance <= 0:
+                            _sizing_balance = balance  # fallback: never zero out live trading
+                    except Exception:
+                        _sizing_balance = balance
+                sizing = self._sizer.compute(final_prob, best_ask, _sizing_balance)
 
-                # Hourly: quarter-Kelly + conservative per-trade risk cap
-                if window.get("product_type") == "hourly":
+                # Product-type-specific sizing: quarter-Kelly + conservative per-trade risk cap
+                _sizing_pt = window.get("product_type")
+                if _sizing_pt == "spx_hourly":
+                    _full_kelly_contracts = sizing["contracts"]
+                    sizing["contracts"] = max(1, int(sizing["contracts"] * SPX_HOURLY_KELLY_FRACTION))
+                    _spx_max = int((balance * SPX_HOURLY_MAX_RISK_PER_TRADE) / best_ask)
+                    if sizing["contracts"] > _spx_max:
+                        sizing["contracts"] = max(1, _spx_max)
+                elif _sizing_pt == "weather":
+                    _full_kelly_contracts = sizing["contracts"]
+                    sizing["contracts"] = max(1, int(sizing["contracts"] * WEATHER_KELLY_FRACTION))
+                    _wx_max = int((balance * WEATHER_MAX_RISK_PER_TRADE) / best_ask)
+                    if sizing["contracts"] > _wx_max:
+                        sizing["contracts"] = max(1, _wx_max)
+                elif _sizing_pt == "hourly":
                     _full_kelly_contracts = sizing["contracts"]
                     sizing["contracts"] = max(1, int(sizing["contracts"] * HOURLY_KELLY_FRACTION))
                     _hourly_max = int((balance * HOURLY_MAX_RISK_PER_TRADE) / best_ask)
@@ -7019,6 +7130,62 @@ class OpportunityScanner:
                                  ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
                     continue  # DO NOT add to candidates — this is the safety gate
 
+                # ── SPX HOURLY OBSERVATION GATE ──
+                if window.get("product_type") == "spx_hourly" and SPX_HOURLY_OBSERVATION_ONLY:
+                    _dedup_key = (ticker, "spx_observation")
+                    if _dedup_key not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dedup_key)
+                        _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset, "spx_observation",
+                            spot_price=spot, threshold=threshold, volatility=blended_rv,
+                            market_price=best_ask, seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                            vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                            calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                            breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                            ask_depth=ask_depth, best_ask_source=best_ask_source,
+                            position_size=sizing["contracts"],
+                            kelly_f=sizing["kelly_f"],
+                            drawdown_scaler=sizing["drawdown_scaler"],
+                            calibrated_prob_raw=calibrated_prob_raw,
+                            ofa_adjustment=ofa_adjustment,
+                            strategy=strategy,
+                            old_system_prob=_old_system_prob,
+                            fee_adjusted_edge=fee_adjusted_edge,
+                            product_type="spx_hourly", **_shadow_diag)
+                    logging.info("SPX_OBS: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
+                                 ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
+                    continue  # DO NOT add to candidates — observation only
+
+                # ── WEATHER OBSERVATION GATE ──
+                if window.get("product_type") == "weather" and WEATHER_OBSERVATION_ONLY:
+                    _dedup_key = (ticker, "weather_observation")
+                    if _dedup_key not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dedup_key)
+                        _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset, "weather_observation",
+                            spot_price=spot, threshold=threshold, volatility=blended_rv,
+                            market_price=best_ask, seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                            vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                            calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                            breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                            ask_depth=ask_depth, best_ask_source=best_ask_source,
+                            position_size=sizing["contracts"],
+                            kelly_f=sizing["kelly_f"],
+                            drawdown_scaler=sizing["drawdown_scaler"],
+                            calibrated_prob_raw=calibrated_prob_raw,
+                            ofa_adjustment=ofa_adjustment,
+                            strategy=strategy,
+                            old_system_prob=_old_system_prob,
+                            fee_adjusted_edge=fee_adjusted_edge,
+                            product_type="weather", **_shadow_diag)
+                    logging.info("WEATHER_OBS: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
+                                 ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
+                    continue  # DO NOT add to candidates — observation only
+
                 # Track hourly per-window counts for Layer 3b/3c limits
                 if window.get("product_type") == "hourly":
                     _wkey = window["event_ticker"]
@@ -7028,7 +7195,9 @@ class OpportunityScanner:
 
                 scan_stats[asset]["candidates"] += 1
                 self._session_total_candidates += 1
-                self._session_asset_perf[asset]["opportunities_found"] += 1
+                self._session_asset_perf.setdefault(
+                    asset, {"opportunities_found": 0, "times_selected": 0, "times_rejected": 0}
+                )["opportunities_found"] += 1
                 self._last_opportunity_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
                 self._recent_opportunities.append({
                     "ticker": ticker,
@@ -9645,13 +9814,15 @@ class SettlementTracker:
                     opp_id, market_result=result,
                     counterfactual_pnl=would_have_profit)
 
-                # Feed to calibration engine (15M only — hourly has different
-                # calibration dynamics and contaminates the 15M model)
+                # Feed to calibration engine (15M only — hourly/spx/weather have different
+                # calibration dynamics and contaminate the 15M model)
                 raw_p = row.get("raw_prob")
-                is_hourly = row.get("product_type") == "hourly"
+                _opp_pt = row.get("product_type")
+                _is_non_crypto_15m = _opp_pt in ("hourly", "spx_hourly", "weather")
                 filter_stage = row.get("filter_stage", "")
-                cal_eligible_stages = ("candidate", "observation_trade", "hourly_observation")
-                if (raw_p is not None and not is_hourly
+                cal_eligible_stages = ("candidate", "observation_trade", "hourly_observation",
+                                       "spx_observation", "weather_observation")
+                if (raw_p is not None and not _is_non_crypto_15m
                         and filter_stage in cal_eligible_stages
                         and result in ("yes", "all_yes", "no", "all_no")):
                     cal_binary = 1 if result in ("yes", "all_yes") else 0
@@ -9799,11 +9970,51 @@ class MainLoop:
         except Exception as e:
             logging.warning(f"KalshiFeed init failed: {e}")
             self.kalshi_feed = None
+        # ── SPX Engine (conditional) ────────────────────────────────────
+        self.spx_engine = None
+        if SPX_HOURLY_ENABLED:
+            try:
+                from spx_engine import SPXEngine
+                self.spx_engine = SPXEngine(
+                    polygon_key=os.environ.get("POLYGON_API_KEY"),
+                    finnhub_key=os.environ.get("FINNHUB_API_KEY"),
+                )
+                logging.info("SPX engine initialized")
+            except Exception as e:
+                logging.warning(f"SPX engine unavailable: {e}")
+
+        # ── Weather Engine (conditional) ───────────────────────────────────
+        self.weather_engine = None
+        if WEATHER_ENABLED:
+            try:
+                from weather_engine import WeatherEngine
+                self.weather_engine = WeatherEngine()
+                logging.info("Weather engine initialized")
+            except Exception as e:
+                logging.warning(f"Weather engine unavailable: {e}")
+
+        # ── Capital Allocator (conditional) ────────────────────────────────
+        self.capital_allocator = None
+        try:
+            from capital_allocator import CapitalAllocator
+            _obs_strategies = set()
+            if SPX_HOURLY_OBSERVATION_ONLY:
+                _obs_strategies.add("spx_hourly")
+            if WEATHER_OBSERVATION_ONLY:
+                _obs_strategies.add("weather")
+            if HOURLY_OBSERVATION_ONLY:
+                _obs_strategies.add("crypto_hourly")
+            self.capital_allocator = CapitalAllocator(observation_strategies=_obs_strategies)
+            logging.info("Capital allocator initialized")
+        except Exception as e:
+            logging.warning(f"Capital allocator unavailable: {e}")
+
         self.scanner = OpportunityScanner(
             self.client, self.state, self.feed, self.vol, self.logger,
             self.sizer, order_flow=self.order_flow,
             kalshi_oft=self.kalshi_oft,
             kalshi_feed=self.kalshi_feed,
+            main_loop=self,
         )
         self.executor = OrderExecutor(
             self.client, self.state, self.logger,
@@ -9910,6 +10121,24 @@ class MainLoop:
             except Exception as e:
                 logging.warning(f"Kalshi WebSocket feed failed to start: {e}")
 
+        # Start SPX engine price feed (if enabled)
+        if self.spx_engine:
+            try:
+                self.spx_engine.start()
+                logging.info("SPX engine starting...")
+            except Exception as e:
+                logging.warning(f"SPX engine failed to start: {e}")
+                self.spx_engine = None
+
+        # Start Weather engine ensemble fetcher (if enabled)
+        if self.weather_engine:
+            try:
+                self.weather_engine.start()
+                logging.info("Weather engine starting...")
+            except Exception as e:
+                logging.warning(f"Weather engine failed to start: {e}")
+                self.weather_engine = None
+
         # Start Firebase dashboard push (if configured)
         try:
             from firebase_push import FirebasePusher
@@ -9940,6 +10169,23 @@ class MainLoop:
 
     def _refresh_active_windows(self):
         self._active_windows = discover_active_windows(self.client)
+
+        # Merge SPX windows (if engine available and market open)
+        if self.spx_engine and self.spx_engine.is_market_open():
+            try:
+                spx_windows = self.spx_engine.get_active_windows(self.client)
+                self._active_windows.extend(spx_windows)
+            except Exception as e:
+                logging.warning(f"SPX window discovery failed: {e}")
+
+        # Merge weather windows (if engine available)
+        if self.weather_engine:
+            try:
+                wx_windows = self.weather_engine.get_active_windows(self.client)
+                self._active_windows.extend(wx_windows)
+            except Exception as e:
+                logging.warning(f"Weather window discovery failed: {e}")
+
         self._last_market_refresh = time.time()
         n = len(self._active_windows)
         if n == 0:
