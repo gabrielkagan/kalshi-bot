@@ -6844,6 +6844,10 @@ class OpportunityScanner:
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                                 product_type=window.get("product_type"),
+                                wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                                wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                                wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                                wx_n_members=_shadow_extra.get("wx_n_members"),
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -6968,6 +6972,10 @@ class OpportunityScanner:
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                                 product_type=window.get("product_type"),
+                                wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                                wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                                wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                                wx_n_members=_shadow_extra.get("wx_n_members"),
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -7086,6 +7094,10 @@ class OpportunityScanner:
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                                 product_type=window.get("product_type"),
+                                wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                                wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                                wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                                wx_n_members=_shadow_extra.get("wx_n_members"),
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -8041,7 +8053,11 @@ class OrderExecutor:
                         oft_prob_adjustment=candidate.get("oft_prob_adjustment"),
                         oft_imbalance_ratio=candidate.get("oft_imbalance_ratio"),
                         oft_n_snapshots=candidate.get("oft_n_snapshots"),
-                        product_type=candidate.get("product_type"))
+                        product_type=candidate.get("product_type"),
+                        wx_ensemble_mean=candidate.get("wx_ensemble_mean"),
+                        wx_ensemble_std=candidate.get("wx_ensemble_std"),
+                        wx_bias_correction=candidate.get("wx_bias_correction"),
+                        wx_n_members=candidate.get("wx_n_members"))
             except Exception:
                 pass
             return None
@@ -8094,7 +8110,11 @@ class OrderExecutor:
                 oft_prob_adjustment=candidate.get("oft_prob_adjustment"),
                 oft_imbalance_ratio=candidate.get("oft_imbalance_ratio"),
                 oft_n_snapshots=candidate.get("oft_n_snapshots"),
-                product_type=candidate.get("product_type"))
+                product_type=candidate.get("product_type"),
+                wx_ensemble_mean=candidate.get("wx_ensemble_mean"),
+                wx_ensemble_std=candidate.get("wx_ensemble_std"),
+                wx_bias_correction=candidate.get("wx_bias_correction"),
+                wx_n_members=candidate.get("wx_n_members"))
         except Exception:
             pass
 
@@ -9403,6 +9423,19 @@ class OrderExecutor:
             # ── TIER 1: Shadow observation (50c floor) ─────────────
             if current_ask >= DIP_ADDON_SHADOW_FLOOR:
                 self._session_dip_addon_shadow += 1
+                # OFT signals for dip addon
+                _dip_oft_db = {}
+                if self._kalshi_oft is not None:
+                    try:
+                        _dip_koft = self._kalshi_oft.get_signals(ticker)
+                        if _dip_koft:
+                            _dip_oft_db = {
+                                "oft_prob_adjustment": _dip_koft.get("prob_adjustment"),
+                                "oft_imbalance_ratio": _dip_koft.get("imbalance_ratio"),
+                                "oft_n_snapshots": _dip_koft.get("n_snapshots"),
+                            }
+                    except Exception:
+                        pass
                 try:
                     self._state.insert_evaluated_opportunity(
                         ticker=ticker,
@@ -9428,6 +9461,7 @@ class OrderExecutor:
                             % (meta["entry_price_cents"], drop,
                                meta["entry_count"])),
                         product_type="dip_addon_shadow",
+                        **_dip_oft_db,
                     )
                 except Exception:
                     logging.debug("dip_addon shadow DB insert failed",
