@@ -42,24 +42,28 @@ MIN_SETTLED_FOR_EDGE_DISCOVERY = 500
 MIN_SETTLED_FOR_PARAM_OPTIMIZER = 500
 
 # Current bot config (for param optimizer context)
+# !! Keep in sync with bot.py — last verified 2026-02-28 !!
 CURRENT_CONFIG = {
     "MIN_ENTRY_PRICE": 87,
     "MAX_ENTRY_PRICE": 99,
-    "MIN_EDGE_PCT": 0.9,
-    "MARKET_BLEND_W": 0.50,
+    "MIN_EDGE_BY_PRICE": "87c→0.7%, 89c→0.9%, 91c→1.2%, 93c→1.8%, 95c→2.5%, 97c→4.0%",
+    "MARKET_BLEND_W": 0.40,
     "MAX_RISK_PER_TRADE": 0.25,
-    "MAX_SECONDS_BEFORE_CLOSE": 270,
+    "MAX_SECONDS_BEFORE_CLOSE": 300,
     "MAKER_ONLY_THRESHOLD": 90.0,
+    "SIZING_TIERS": "[(0.04,0.25),(0.025,0.20),(0.018,0.15),(0.012,0.10),(0.007,0.05)]",
+    "DRAWDOWN_HALF_THRESHOLD": 0.85,
+    "DRAWDOWN_QUARTER_THRESHOLD": 0.75,
+    "DRAWDOWN_HALT_THRESHOLD": 0.65,
+    "HOURLY_OBSERVATION_ONLY": True,
     "HOURLY_MARKET_BLEND_W": 0.40,
-    "HOURLY_MIN_ENTRY_PRICE": 80,
+    "HOURLY_MIN_ENTRY_PRICE": 70,
     "HOURLY_MAX_RISK_PER_TRADE": 0.15,
     "HOURLY_MAX_SECONDS_BEFORE_CLOSE": 1800,
-    "SIZING_TIERS": "[(0.04,0.25),(0.02,0.20),(0.015,0.15),(0.01,0.10),(0.009,0.07)]",
-    "DRAWDOWN_HALF_THRESHOLD": 0.90,
-    "DRAWDOWN_QUARTER_THRESHOLD": 0.80,
+    "HOURLY_TEMPERATURE_T": 1.45,
+    "HOURLY_KELLY_FRACTION": 0.25,
 }
 
-CRYPTOCOMPARE_API = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN&categories=BTC,ETH,SOL,XRP"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -121,11 +125,6 @@ class EdgeDiscoveryResult(BaseModel):
     findings: List[EdgeFinding]
     summary: str
 
-
-class NewsSentimentResult(BaseModel):
-    per_asset_sentiment: Dict[str, float]
-    market_moving_events: List[str]
-    confidence: Literal["high", "medium", "low"]
 
 
 class ParamRecommendation(BaseModel):
@@ -379,8 +378,17 @@ def compute_edge_stats(rows: List[sqlite3.Row]) -> dict:
 
     total_missed = sum(s["missed_profit_cents"] for s in stages.values())
 
-    # Counterfactual: what if MIN_EDGE was 0.5% instead of 0.9%?
-    edge_counterfactual = {"current_min_edge": 0.9, "alt_min_edge": 0.5}
+    # Counterfactual: what if edge thresholds were halved?
+    # Current price-dependent: 87c→0.7%, 89c→0.9%, 91c→1.2%, 93c→1.8%, 95c→2.5%, 97c→4.0%
+    _EDGE_SCHEDULE = [(97, 0.040), (95, 0.025), (93, 0.018), (91, 0.012), (89, 0.009), (87, 0.007)]
+
+    def _get_min_edge(price_cents):
+        for threshold, edge in _EDGE_SCHEDULE:
+            if price_cents >= threshold:
+                return edge
+        return 0.007
+
+    edge_counterfactual = {"description": "edge thresholds halved"}
     recaptured = 0
     recaptured_losses = 0
     for row in rows:
@@ -389,9 +397,10 @@ def compute_edge_stats(rows: List[sqlite3.Row]) -> dict:
         if row["market_result"] is None:
             continue
         fee_edge = row["fee_adjusted_edge"]
-        if fee_edge is not None and fee_edge >= 0.5:
-            price = row["market_price"]
-            if price is not None and 80 <= price <= 99:
+        price = row["market_price"]
+        if fee_edge is not None and price is not None and 80 <= price <= 99:
+            half_threshold = _get_min_edge(price) / 2.0
+            if fee_edge >= half_threshold:
                 if row["market_result"] == "yes":
                     recaptured += (100 - price) - calculate_maker_fee(1, price)
                 else:
@@ -556,7 +565,7 @@ def _edge_stats_to_markdown(stats: dict) -> str:
     lines.append(_format_table(headers, rows))
 
     ec = stats["edge_counterfactual"]
-    lines.append("## Edge Counterfactual: MIN_EDGE 0.9% → 0.5%")
+    lines.append(f"## Edge Counterfactual: {ec.get('description', 'halved thresholds')}")
     lines.append(f"- Recaptured profit: {ec['recaptured_profit_cents']}c")
     lines.append(f"- Recaptured losses: {ec['recaptured_losses_cents']}c")
     lines.append(f"- **Net: {ec['net_cents']}c**")
@@ -675,7 +684,7 @@ All statistics are pre-computed — do NOT calculate anything yourself.
 
 Focus on:
 - Filter stages with high false rejection rates AND material missed profit
-- Edge counterfactual: would relaxing MIN_EDGE from 0.9% to 0.5% be net profitable?
+- Edge counterfactual: are the price-dependent edge thresholds (0.7%-4.0%) optimal?
 - Whether price_out_of_range rejections are actually blocking winners at specific price levels
 
 Rules:
@@ -700,22 +709,6 @@ Rules:
 - Do NOT perform any calculations — all data is pre-computed
 - Consider that parameters interact: changing one may invalidate assumptions of others"""
 
-NEWS_SENTIMENT_SYSTEM = """You are a crypto market sentiment analyst. Analyze the latest cryptocurrency news headlines and assign sentiment scores.
-
-For each asset (BTC, ETH, SOL, XRP), assign a sentiment score from -1.0 (extremely bearish) to +1.0 (extremely bullish). 0.0 = neutral.
-
-Focus on:
-- Regulatory news (SEC, CFTC actions)
-- Major protocol upgrades or failures
-- Exchange issues (hacks, delistings)
-- Macro events affecting crypto (Fed decisions, banking crises)
-- Large institutional movements
-
-Rules:
-- Only flag events as "market_moving" if they could cause >2% price movement
-- Default to 0.0 (neutral) if no significant news
-- Distinguish between short-term (hours) and medium-term (days) impact
-- Be conservative — most news is noise"""
 
 # ---------------------------------------------------------------------------
 # Analyst class
@@ -998,7 +991,8 @@ class Analyst:
                 "SELECT * FROM evaluated_opportunities "
                 "WHERE status='settled' AND market_result IS NOT NULL "
                 "AND filter_stage IN ('candidate', 'observation_trade', "
-                "'insufficient_edge', 'price_out_of_range') "
+                "'insufficient_edge', 'price_out_of_range', "
+                "'hourly_observation', 'spx_observation', 'weather_observation') "
                 "AND calibrated_prob IS NOT NULL"
             ).fetchall()
         finally:
@@ -1006,6 +1000,15 @@ class Analyst:
 
         stats = compute_calibration_stats(rows)
         md = _cal_stats_to_markdown(stats)
+
+        # Add product_type breakdown to markdown
+        pt_brier = stats.get("per_product_brier", {})
+        if len(pt_brier) > 1:
+            md += "\n\n## WARNING: Multiple product types in data\n"
+            md += "Analyze calibration SEPARATELY per product type. "
+            md += "15M calibration does NOT transfer to hourly.\n"
+            for pt, bs in sorted(pt_brier.items()):
+                md += f"- **{pt}**: Brier={bs}\n"
 
         user_msg = (
             f"Review these calibration statistics and identify any systematic biases. "
@@ -1080,9 +1083,11 @@ class Analyst:
 
         conn = _open_db(self._db_path)
         try:
+            # Filter to crypto 15M only — hourly/SPX/weather have different edge profiles
             rows = conn.execute(
                 "SELECT * FROM evaluated_opportunities "
-                "WHERE status='settled' AND market_result IS NOT NULL"
+                "WHERE status='settled' AND market_result IS NOT NULL "
+                "AND (product_type IS NULL OR product_type = '15m')"
             ).fetchall()
         finally:
             conn.close()
@@ -1271,111 +1276,6 @@ class Analyst:
         return {"status": "error", "error": "LLM parse failed"}
 
     # -------------------------------------------------------------------
-    # Agent 5: News Sentiment
-    # -------------------------------------------------------------------
-
-    def run_news_sentiment(self) -> dict:
-        """Fetch crypto news and assess market sentiment."""
-        # Fetch news from CryptoCompare
-        headlines = []
-        for attempt in range(3):
-            try:
-                resp = requests.get(CRYPTOCOMPARE_API, timeout=10)
-                resp.raise_for_status()
-                data = resp.json()
-                for article in data.get("Data", [])[:20]:
-                    headlines.append(
-                        {
-                            "title": article.get("title", ""),
-                            "categories": article.get("categories", ""),
-                            "source": article.get("source_info", {}).get(
-                                "name", "unknown"
-                            ),
-                            "published": article.get("published_on", 0),
-                        }
-                    )
-                break
-            except Exception as e:
-                if attempt < 2:
-                    log.warning(
-                        "CryptoCompare fetch failed (attempt %d): %s", attempt + 1, e
-                    )
-                    time.sleep(1 * (attempt + 1))
-                else:
-                    log.error("CryptoCompare unavailable after 3 attempts")
-                    result = {
-                        "status": "unavailable",
-                        "error": str(e),
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    self._push_firebase("news_sentiment", result)
-                    return result
-
-        if not headlines:
-            result = {
-                "status": "no_headlines",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            self._push_firebase("news_sentiment", result)
-            return result
-
-        # Format headlines for LLM
-        headline_text = "\n".join(
-            f"- [{h['source']}] {h['title']} (categories: {h['categories']})"
-            for h in headlines
-        )
-
-        user_msg = (
-            f"Analyze these recent crypto news headlines and assess sentiment for "
-            f"BTC, ETH, SOL, and XRP. Respond with ONLY a JSON object matching "
-            f"this schema: {NewsSentimentResult.model_json_schema()}\n\n"
-            f"## Recent Headlines\n{headline_text}"
-        )
-
-        sentiment = self._call_llm(
-            model=HAIKU_MODEL,
-            system=NEWS_SENTIMENT_SYSTEM,
-            user_msg=user_msg,
-            output_type=NewsSentimentResult,
-            agent_name="news_sentiment",
-        )
-
-        if sentiment is not None:
-            result = {
-                "agent": "news_sentiment",
-                "analysis": sentiment.model_dump(),
-                "headline_count": len(headlines),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-            write_journal(result)
-            self._push_firebase(
-                "news_sentiment",
-                {
-                    "per_asset_sentiment": sentiment.per_asset_sentiment,
-                    "market_moving_events": sentiment.market_moving_events[:5],
-                    "confidence": sentiment.confidence,
-                    "headline_count": len(headlines),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-            log.info(
-                "News sentiment: %s, %d market-moving events",
-                sentiment.confidence,
-                len(sentiment.market_moving_events),
-            )
-            # Alert only on high-confidence market-moving events
-            if sentiment.market_moving_events and sentiment.confidence == "high":
-                events_text = "\n".join(
-                    f"\u2022 {e[:150]}" for e in sentiment.market_moving_events[:3]
-                )
-                self._send_telegram(
-                    f"\U0001f4f0 *News Alert*\n{events_text}"
-                )
-            return result
-
-        return {"status": "error", "error": "LLM parse failed"}
-
-    # -------------------------------------------------------------------
     # Orchestrators
     # -------------------------------------------------------------------
 
@@ -1387,7 +1287,6 @@ class Analyst:
             ("loss_postmortem", self.run_loss_postmortem),
             ("calibration_audit", self.run_calibration_audit),
             ("edge_discovery", self.run_edge_discovery),
-            ("news_sentiment", self.run_news_sentiment),
         ]
 
         for name, fn in agents:
@@ -1439,39 +1338,32 @@ class Analyst:
                 status = r.get("status", "ok") if isinstance(r, dict) else "ok"
                 if status == "error":
                     lines.append(f"\u274c {agent_name}: error")
-                elif status == "skipped":
-                    lines.append(f"\u23ed {agent_name}: skipped ({r.get('reason', 'insufficient data')})")
+                elif status in ("skipped", "insufficient_data"):
+                    lines.append(f"\u23ed {agent_name}: insufficient data ({r.get('settled_count', '?')}/{r.get('needed', '?')})")
                 else:
                     lines.append(f"\u2705 {agent_name}: complete")
                     # Extract key findings
                     if agent_name == "calibration_audit" and isinstance(r, dict):
-                        brier = r.get("brier_score")
-                        oc = r.get("overconfidence_pp")
+                        analysis = r.get("analysis", {})
+                        brier = analysis.get("overall_brier")
+                        findings = analysis.get("findings", [])
                         if brier is not None:
-                            lines.append(f"   Brier: {brier:.4f} | Overconfidence: {oc:+.1f}pp")
+                            lines.append(f"   Brier: {brier:.4f} | {len(findings)} finding(s)")
+                        summary = analysis.get("summary", "")
+                        if summary:
+                            lines.append(f"   {summary[:200]}")
                     elif agent_name == "param_optimizer" and isinstance(r, dict):
-                        recs = r.get("recommendations", [])
+                        analysis = r.get("analysis", {})
+                        recs = analysis.get("recommendations", [])
                         if recs:
                             for rec in recs[:3]:
                                 if isinstance(rec, dict):
-                                    lines.append(f"   \u2022 {rec.get('summary', rec.get('param', ''))[:100]}")
-                                elif isinstance(rec, str):
-                                    lines.append(f"   \u2022 {rec[:100]}")
+                                    lines.append(f"   \u2022 {rec.get('param_name', '')}: {rec.get('rationale', '')[:100]}")
             self._send_telegram("\n".join(lines))
         except Exception as e:
             log.warning("Daily Telegram summary failed: %s", e)
 
         return results
-
-    def run_news_loop(self, interval_seconds: int = 300) -> None:
-        """Run news sentiment in a loop."""
-        log.info("Starting news sentiment loop (every %ds)", interval_seconds)
-        while True:
-            try:
-                self.run_news_sentiment()
-            except Exception as e:
-                log.error("News sentiment loop error: %s", e, exc_info=True)
-            time.sleep(interval_seconds)
 
 
 # ---------------------------------------------------------------------------
@@ -1494,16 +1386,13 @@ def main() -> None:
         help="Run daily agents (calibration + edge + param optimizer)",
     )
     parser.add_argument(
-        "--news", action="store_true", help="Run news sentiment loop (every 5 min)"
-    )
-    parser.add_argument(
         "--all", action="store_true", help="Run all agents once (default)"
     )
     parser.add_argument("--db", default=DEFAULT_DB_PATH, help="Path to state.db")
     args = parser.parse_args()
 
     # Default to --all if no specific flag
-    if not any([args.loss_postmortem, args.daily, args.news, args.all]):
+    if not any([args.loss_postmortem, args.daily, args.all]):
         args.all = True
 
     # Verify DB exists
@@ -1527,9 +1416,6 @@ def main() -> None:
         for name, r in results.items():
             status = r.get("status", "complete")
             log.info("  %s: %s", name, status)
-
-    if args.news:
-        analyst.run_news_loop()
 
     if args.all:
         results = analyst.run_all()
