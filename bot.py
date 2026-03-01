@@ -7152,7 +7152,6 @@ class OpportunityScanner:
                             ofa_adjustment=ofa_adjustment,
                             strategy=strategy,
                             old_system_prob=_old_system_prob,
-                            fee_adjusted_edge=fee_adjusted_edge,
                             product_type="spx_hourly", **_shadow_diag)
                     logging.info("SPX_OBS: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
@@ -7180,7 +7179,6 @@ class OpportunityScanner:
                             ofa_adjustment=ofa_adjustment,
                             strategy=strategy,
                             old_system_prob=_old_system_prob,
-                            fee_adjusted_edge=fee_adjusted_edge,
                             product_type="weather", **_shadow_diag)
                     logging.info("WEATHER_OBS: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
