@@ -1336,6 +1336,9 @@ class StateManager:
             # Hourly temperature scaling columns
             ("hourly_pre_temp_prob", "REAL"),
             ("hourly_applied_temp_t", "REAL"),
+            # Hourly shadow instrumentation columns
+            ("hourly_shadow_temp_2_0", "REAL"),
+            ("hourly_shadow_blend_50", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1737,7 +1740,9 @@ class StateManager:
                                      wx_bias_correction: Optional[float] = None,
                                      wx_n_members: Optional[int] = None,
                                      hourly_pre_temp_prob: Optional[float] = None,
-                                     hourly_applied_temp_t: Optional[float] = None):
+                                     hourly_applied_temp_t: Optional[float] = None,
+                                     hourly_shadow_temp_2_0: Optional[float] = None,
+                                     hourly_shadow_blend_50: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
@@ -1760,8 +1765,9 @@ class StateManager:
                      product_type,
                      oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
                      wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
-                     hourly_pre_temp_prob, hourly_applied_temp_t)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     hourly_pre_temp_prob, hourly_applied_temp_t,
+                     hourly_shadow_temp_2_0, hourly_shadow_blend_50)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1779,7 +1785,8 @@ class StateManager:
                   product_type,
                   oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
                   wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
-                  hourly_pre_temp_prob, hourly_applied_temp_t))
+                  hourly_pre_temp_prob, hourly_applied_temp_t,
+                  hourly_shadow_temp_2_0, hourly_shadow_blend_50))
             self.conn.commit()
         except Exception as e:
             logging.warning(f"insert_evaluated_opportunity failed: {e}", exc_info=True)
@@ -6637,6 +6644,24 @@ class OpportunityScanner:
                     _z_scaled = _z / _temp_t
                     final_prob = 1.0 / (1.0 + math.exp(-_z_scaled))
 
+                # ── Shadow instrumentation (hourly only) ──────────
+                _hourly_shadow_temp_2_0 = None
+                _hourly_shadow_blend_50 = None
+                if _hourly_pre_temp_prob is not None and _temp_t is not None:
+                    # R3: T=2.0 shadow — more aggressive softening for offline Brier comparison
+                    _sp = max(0.001, min(0.999, _hourly_pre_temp_prob))
+                    _sz = math.log(_sp / (1.0 - _sp))
+                    _hourly_shadow_temp_2_0 = 1.0 / (1.0 + math.exp(-_sz / 2.0))
+                    # R5: 50% market blend shadow — compare vs current 40% blend
+                    _mkt_p = best_ask / 100.0
+                    _cur_w = _tempcfg.market_blend_w
+                    if _cur_w < 1.0:
+                        _model_p = max(0.001, min(0.999, (_hourly_pre_temp_prob - _cur_w * _mkt_p) / (1.0 - _cur_w)))
+                        _blend50_pre = 0.50 * _model_p + 0.50 * _mkt_p
+                        _bp = max(0.001, min(0.999, _blend50_pre))
+                        _bz = math.log(_bp / (1.0 - _bp))
+                        _hourly_shadow_blend_50 = 1.0 / (1.0 + math.exp(-_bz / _temp_t))
+
                 # Order flow adjustment
                 ofa_signals = None
                 ofa_adjustment = 0.0
@@ -6907,6 +6932,8 @@ class OpportunityScanner:
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
+                                hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_blend_50=_hourly_shadow_blend_50,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -7025,6 +7052,8 @@ class OpportunityScanner:
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
+                                hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_blend_50=_hourly_shadow_blend_50,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -7149,6 +7178,8 @@ class OpportunityScanner:
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
+                                hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_blend_50=_hourly_shadow_blend_50,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -7176,6 +7207,8 @@ class OpportunityScanner:
                             product_type=window.get("product_type"),
                             hourly_pre_temp_prob=_hourly_pre_temp_prob,
                             hourly_applied_temp_t=_temp_t,
+                            hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                            hourly_shadow_blend_50=_hourly_shadow_blend_50,
                             **_oft_db, **_shadow_diag)
                     continue
 
@@ -7199,6 +7232,8 @@ class OpportunityScanner:
                             product_type=window.get("product_type"),
                             hourly_pre_temp_prob=_hourly_pre_temp_prob,
                             hourly_applied_temp_t=_temp_t,
+                            hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                            hourly_shadow_blend_50=_hourly_shadow_blend_50,
                             **_oft_db, **_shadow_diag)
                     continue
 
@@ -7222,6 +7257,8 @@ class OpportunityScanner:
                                 product_type=window.get("product_type"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
+                                hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_blend_50=_hourly_shadow_blend_50,
                                 **_oft_db, **_shadow_diag)
                         continue
 
@@ -7247,6 +7284,8 @@ class OpportunityScanner:
                                 product_type=window.get("product_type"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
+                                hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_blend_50=_hourly_shadow_blend_50,
                                 **_oft_db, **_shadow_diag)
                         continue
 
@@ -7299,6 +7338,8 @@ class OpportunityScanner:
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
+                                hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_blend_50=_hourly_shadow_blend_50,
                             )
                         elif _obs_pt == "weather":
                             _obs_extra.update(
@@ -7445,6 +7486,10 @@ class OpportunityScanner:
                     "shadow_cal_prob": (_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
                     "shadow_cal_fee_edge": (_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                     "shadow_cal_temperature": (_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
+                    "hourly_pre_temp_prob": _hourly_pre_temp_prob,
+                    "hourly_applied_temp_t": _temp_t,
+                    "hourly_shadow_temp_2_0": _hourly_shadow_temp_2_0,
+                    "hourly_shadow_blend_50": _hourly_shadow_blend_50,
                     **_shadow_diag,
                     **_shadow_extra,
                 })
@@ -7569,7 +7614,11 @@ class OpportunityScanner:
                                     shadow_cal_temperature=c.get("shadow_cal_temperature"),
                                     oft_prob_adjustment=c.get("oft_prob_adjustment"),
                                     oft_imbalance_ratio=c.get("oft_imbalance_ratio"),
-                                    oft_n_snapshots=c.get("oft_n_snapshots"))
+                                    oft_n_snapshots=c.get("oft_n_snapshots"),
+                                    hourly_pre_temp_prob=c.get("hourly_pre_temp_prob"),
+                                    hourly_applied_temp_t=c.get("hourly_applied_temp_t"),
+                                    hourly_shadow_temp_2_0=c.get("hourly_shadow_temp_2_0"),
+                                    hourly_shadow_blend_50=c.get("hourly_shadow_blend_50"))
                         except Exception:
                             pass
         else:
@@ -8114,7 +8163,11 @@ class OrderExecutor:
                         wx_ensemble_mean=candidate.get("wx_ensemble_mean"),
                         wx_ensemble_std=candidate.get("wx_ensemble_std"),
                         wx_bias_correction=candidate.get("wx_bias_correction"),
-                        wx_n_members=candidate.get("wx_n_members"))
+                        wx_n_members=candidate.get("wx_n_members"),
+                        hourly_pre_temp_prob=candidate.get("hourly_pre_temp_prob"),
+                        hourly_applied_temp_t=candidate.get("hourly_applied_temp_t"),
+                        hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
+                        hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"))
             except Exception:
                 pass
             return None
@@ -8171,7 +8224,11 @@ class OrderExecutor:
                 wx_ensemble_mean=candidate.get("wx_ensemble_mean"),
                 wx_ensemble_std=candidate.get("wx_ensemble_std"),
                 wx_bias_correction=candidate.get("wx_bias_correction"),
-                wx_n_members=candidate.get("wx_n_members"))
+                wx_n_members=candidate.get("wx_n_members"),
+                hourly_pre_temp_prob=candidate.get("hourly_pre_temp_prob"),
+                hourly_applied_temp_t=candidate.get("hourly_applied_temp_t"),
+                hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
+                hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"))
         except Exception:
             pass
 
