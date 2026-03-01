@@ -113,8 +113,11 @@ class WeatherEnsembleFetcher:
         result["gfs_members"] = gfs_members
 
         # Fetch ECMWF ensemble
-        ecmwf_members = self._fetch_model_ensemble(lat, lon, "ecmwf_ifs", target_date)
+        ecmwf_members = self._fetch_model_ensemble(lat, lon, "ecmwf_ifs025", target_date)
         result["ecmwf_members"] = ecmwf_members
+
+        if not ecmwf_members:
+            logging.warning("WeatherEnsemble: %s ECMWF returned no members (ecmwf_ifs025)", city_code)
 
         # Fetch HRRR deterministic (higher resolution, shorter range)
         hrrr_temp = self._fetch_hrrr(lat, lon, target_date)

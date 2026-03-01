@@ -88,7 +88,7 @@ SPX_HOURLY_FEE_MULTIPLIER_MAKER = 0.0175
 # ─── Weather Observation Mode ─────────────────────────────────────────────────
 WEATHER_ENABLED = True
 WEATHER_OBSERVATION_ONLY = True
-WEATHER_MIN_ENTRY_PRICE = 1
+WEATHER_MIN_ENTRY_PRICE = 10
 WEATHER_MAX_ENTRY_PRICE = 99
 WEATHER_MAX_SECONDS_BEFORE_CLOSE = 86400  # Weather settles daily — always eligible
 WEATHER_MIN_SECONDS_BEFORE_CLOSE = 3600   # At least 1 hour before settlement
@@ -6268,6 +6268,24 @@ class OpportunityScanner:
                         _wx_city, threshold,
                         market_type=_wx_mtype, bracket_bounds=_wx_bounds)
                     if _wx_prob is None:
+                        continue
+                    # R3: Ensemble quality gate — skip if no ensemble data available
+                    if not _wx_prob.get("n_members"):
+                        logging.debug("WEATHER_SKIP: %s no ensemble data (n_members=None/0)", ticker)
+                        _shadow_extra["wx_ensemble_mean"] = None
+                        _shadow_extra["wx_ensemble_std"] = None
+                        _shadow_extra["wx_n_members"] = 0
+                        _fs = "data_unavailable"
+                        _dedup_key_ens = (ticker, _fs)
+                        if _dedup_key_ens not in _seen:
+                            _seen.add(_dedup_key_ens)
+                            self._sm.insert_evaluated_opportunity(
+                                ticker=ticker, event_ticker=w.get("event_ticker",""),
+                                asset=asset, product_type=_pt, filter_stage=_fs,
+                                market_price=int(yes_ask) if yes_ask else None,
+                                wx_ensemble_mean=None, wx_ensemble_std=None,
+                                wx_n_members=0,
+                            )
                         continue
                     prob_result = {
                         "calibrated_prob": _wx_prob.get("calibrated_prob"),
