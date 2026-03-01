@@ -42,7 +42,8 @@ MIN_ENTRY_PRICE = 87              # cents (data: two losses at 86c; 87c+ is clea
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.25         # max 25% of bankroll at risk per trade (was 50%; reduced after loss analysis)
 MIN_SECONDS_BEFORE_CLOSE = 0
-MAX_SECONDS_BEFORE_CLOSE = 300    # start scanning 5 min before close (extending from 270: 240-270s was 96.3% WR)
+MAX_SECONDS_BEFORE_CLOSE = 600    # scan 10 min before close (300-600s is shadow data collection)
+STC_SHADOW_THRESHOLD = 300        # 15M trades above this STC are shadow-only (not executed)
 ONE_ASSET_PER_WINDOW = False
 
 # ─── Hourly Observation Mode ──────────────────────────────────────────────────
@@ -7260,6 +7261,34 @@ class OpportunityScanner:
                     logging.info("%s: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  _obs_log_prefix, ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
                     continue  # DO NOT add to candidates — observation gate
+
+                # ── STC SHADOW GATE (15M only) ──
+                # Markets at 300-600s STC: log full evaluation for data collection, but don't trade.
+                # This lets us measure WR/PnL at extended STC without risking capital.
+                if window.get("product_type") is None and seconds_remaining > STC_SHADOW_THRESHOLD:
+                    _dedup_key = (ticker, "stc_shadow")
+                    if _dedup_key not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dedup_key)
+                        _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset, "stc_shadow",
+                            spot_price=spot, threshold=threshold, volatility=blended_rv,
+                            market_price=best_ask, seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                            vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                            calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                            breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                            ask_depth=ask_depth, best_ask_source=best_ask_source,
+                            position_size=sizing["contracts"],
+                            kelly_f=sizing["kelly_f"],
+                            drawdown_scaler=sizing["drawdown_scaler"],
+                            calibrated_prob_raw=calibrated_prob_raw,
+                            ofa_adjustment=ofa_adjustment,
+                            strategy=strategy,
+                            old_system_prob=_old_system_prob,
+                            product_type=window.get("product_type"),
+                            **_oft_db, **_shadow_diag)
+                    continue
 
                 # Track per-window counts for Layer 3b/3c limits (config-driven)
                 if _fltcfg.max_positions_per_window is not None:
