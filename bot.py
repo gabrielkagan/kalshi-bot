@@ -1295,6 +1295,9 @@ class StateManager:
             ("wx_ensemble_std", "REAL"),
             ("wx_bias_correction", "REAL"),
             ("wx_n_members", "INTEGER"),
+            # Hourly temperature scaling columns
+            ("hourly_pre_temp_prob", "REAL"),
+            ("hourly_applied_temp_t", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1694,7 +1697,9 @@ class StateManager:
                                      wx_ensemble_mean: Optional[float] = None,
                                      wx_ensemble_std: Optional[float] = None,
                                      wx_bias_correction: Optional[float] = None,
-                                     wx_n_members: Optional[int] = None):
+                                     wx_n_members: Optional[int] = None,
+                                     hourly_pre_temp_prob: Optional[float] = None,
+                                     hourly_applied_temp_t: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
@@ -1716,8 +1721,9 @@ class StateManager:
                      shadow_cal_prob, shadow_cal_fee_edge, shadow_cal_temperature,
                      product_type,
                      oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
-                     wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
+                     hourly_pre_temp_prob, hourly_applied_temp_t)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1734,7 +1740,8 @@ class StateManager:
                   shadow_cal_prob, shadow_cal_fee_edge, shadow_cal_temperature,
                   product_type,
                   oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
-                  wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members))
+                  wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
+                  hourly_pre_temp_prob, hourly_applied_temp_t))
             self.conn.commit()
         except Exception as e:
             logging.warning(f"insert_evaluated_opportunity failed: {e}", exc_info=True)
@@ -7204,6 +7211,8 @@ class OpportunityScanner:
                                 shadow_cal_prob=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
+                                hourly_pre_temp_prob=_hourly_pre_temp_prob,
+                                hourly_applied_temp_t=_temp_t,
                             )
                         elif _obs_pt == "weather":
                             _obs_extra.update(

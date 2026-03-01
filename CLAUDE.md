@@ -49,8 +49,8 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | HOURLY_TEMPERATURE_T | 1.45 | Softens overconfident probs: 95%→88.4% |
 | HOURLY_KELLY_FRACTION | 0.25 | Quarter-Kelly sizing for hourly |
 | HOURLY_MIN_STC_ENTRY | 300 | Min 5 min STC — EGARCH degrades below this |
-| HOURLY_MAX_STC_ENTRY | 900 | Max 15 min STC — sweet spot per researcher |
-| HOURLY_EXCLUDED_ASSETS | {XRP} | XRP: 63.3% WR, p=0.41 vs coin flip |
+| HOURLY_MAX_STC_ENTRY | 1800 | Max 30 min STC — expanded for observation data collection |
+| HOURLY_EXCLUDED_ASSETS | set() | Empty — collecting all asset data in observation mode |
 | HOURLY_MAX_POSITIONS_PER_WINDOW | 2 | ENB ~1.3 — limit correlated exposure |
 | HOURLY_MAX_WINDOW_RISK | 0.15 | Max aggregate risk per hourly window |
 
@@ -70,8 +70,8 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | Layer | Filter Stage | Purpose |
 |-------|-------------|---------|
 | 1 | Temperature scaling (T=1.45) | Softens 15M calibration that doesn't transfer to hourly |
-| 2 | STC timing (300-900s) | EGARCH degrades outside this window |
-| 3a | Asset exclusion (XRP) | 63.3% WR, p=0.41 — not profitable |
+| 2 | STC timing (300-1800s) | EGARCH degrades outside; expanded to 1800s for observation data |
+| 3a | Asset exclusion (disabled) | Disabled in observation mode — collecting all asset data |
 | 3b | Per-window position limit (2) | ENB ~1.3 independent bets per window |
 | 3c | Per-window risk cap (15%) | Prevents correlated multi-asset blowups |
 | 3d | Quarter-Kelly sizing | 44% of growth rate, ~3% halving probability |
