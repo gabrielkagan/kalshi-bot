@@ -66,8 +66,8 @@ WEATHER_CITIES: Dict[str, Dict] = {
     },
 }
 
-# Max cities to trade per day (initially conservative)
-MAX_CITIES_PER_DAY = 2
+# Max cities to scan per day (all 5 in observation mode for faster data collection)
+MAX_CITIES_PER_DAY = 5
 
 
 # ═════════════════════════════════════════════════════════════════════════════
