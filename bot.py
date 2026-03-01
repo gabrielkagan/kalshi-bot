@@ -85,7 +85,7 @@ SPX_HOURLY_FEE_MULTIPLIER_MAKER = 0.0175
 # ─── Weather Observation Mode ─────────────────────────────────────────────────
 WEATHER_ENABLED = True
 WEATHER_OBSERVATION_ONLY = True
-WEATHER_MIN_ENTRY_PRICE = 60
+WEATHER_MIN_ENTRY_PRICE = 1
 WEATHER_MAX_ENTRY_PRICE = 99
 WEATHER_MAX_SECONDS_BEFORE_CLOSE = 86400  # Weather settles daily — always eligible
 WEATHER_MIN_SECONDS_BEFORE_CLOSE = 3600   # At least 1 hour before settlement
@@ -6204,7 +6204,12 @@ class OpportunityScanner:
                 if _pt == "weather" and self._ml and getattr(self._ml, "weather_engine", None):
                     # Weather uses ensemble-based Gaussian model, NOT lognormal ProbabilityEngine
                     _wx_city = asset.replace("_TEMP", "")
-                    _wx_prob = self._ml.weather_engine.get_probability(_wx_city, threshold, "above")
+                    _wx_info = self._parse_weather_market_info(mkt)
+                    _wx_mtype = _wx_info[0] if _wx_info else None
+                    _wx_bounds = (_wx_info[1], _wx_info[2]) if (_wx_info and _wx_info[0] == "bracket") else None
+                    _wx_prob = self._ml.weather_engine.get_probability(
+                        _wx_city, threshold,
+                        market_type=_wx_mtype, bracket_bounds=_wx_bounds)
                     if _wx_prob is None:
                         continue
                     prob_result = {
@@ -6218,6 +6223,13 @@ class OpportunityScanner:
                     _shadow_extra["wx_bias_correction"] = _wx_prob.get("bias_correction")
                     _shadow_extra["wx_n_members"] = _wx_prob.get("n_members")
                     _shadow_extra["wx_hrrr_temp"] = _wx_prob.get("hrrr_temp")
+                    logging.info(
+                        "WEATHER_PROB: %s thresh=%.1fF ens_mean=%.1fF ens_std=%.2fF prob=%.4f type=%s",
+                        ticker, threshold,
+                        _wx_prob.get("ensemble_mean") or 0.0,
+                        _wx_prob.get("ensemble_std") or 0.0,
+                        _wx_prob.get("calibrated_prob") or 0.0,
+                        _wx_mtype or "unknown")
                 else:
                     prob_result = ProbabilityEngine.compute(
                         spot, threshold, seconds_remaining, blended_rv,
@@ -6489,6 +6501,10 @@ class OpportunityScanner:
                                 raw_prob=raw_prob_pre,
                                 calibration_method=calibration_method_pre,
                                 product_type=window.get("product_type"),
+                                wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                                wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                                wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                                wx_n_members=_shadow_extra.get("wx_n_members"),
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -7576,6 +7592,75 @@ class OpportunityScanner:
                     return float(m.group(1).replace(",", ""))
                 except ValueError:
                     pass
+
+        return None
+
+    @staticmethod
+    def _parse_weather_market_info(market: Dict):
+        """Parse weather market type and bracket bounds from market dict.
+
+        Returns (market_type, lower_bound, upper_bound) or None.
+        market_type: "bracket" | "lower_tail" | "upper_tail"
+
+        Detection uses floor_strike/cap_strike fields first, ticker prefix as fallback.
+        Bracket (B-prefix): P(lower < X < upper)
+        Tail (T-prefix): lower_tail if only cap_strike, upper_tail if only floor_strike
+        """
+        ticker = market.get("ticker", "")
+        floor_strike = market.get("floor_strike")
+        cap_strike = market.get("cap_strike")
+
+        # Convert to float if present
+        floor_val = None
+        cap_val = None
+        try:
+            if floor_strike is not None:
+                floor_val = float(floor_strike)
+        except (ValueError, TypeError):
+            pass
+        try:
+            if cap_strike is not None:
+                cap_val = float(cap_strike)
+        except (ValueError, TypeError):
+            pass
+
+        # Determine market type from ticker prefix
+        parts = ticker.split("-")
+        strike_part = parts[-1] if len(parts) >= 3 else ""
+
+        if strike_part.startswith("B"):
+            # Bracket market
+            if floor_val is not None and cap_val is not None:
+                return ("bracket", floor_val, cap_val)
+            # Fallback: B{upper}, infer bounds from available data
+            try:
+                upper = float(strike_part[1:])
+            except ValueError:
+                return None
+            lower = floor_val if floor_val is not None else upper - 2.0
+            upper = cap_val if cap_val is not None else upper
+            return ("bracket", lower, upper)
+
+        elif strike_part.startswith("T"):
+            try:
+                t_val = float(strike_part[1:])
+            except ValueError:
+                return None
+            # Use floor_strike/cap_strike to disambiguate tail direction
+            # Lower tail (P(X < threshold)): cap_strike present, no floor
+            # Upper tail (P(X > threshold)): floor_strike present, no cap
+            if cap_val is not None and floor_val is None:
+                return ("lower_tail", None, cap_val)
+            if floor_val is not None and cap_val is None:
+                return ("upper_tail", floor_val, None)
+            # Fallback: use subtitle text
+            subtitle = (market.get("subtitle") or "").lower()
+            if "below" in subtitle or "under" in subtitle:
+                return ("lower_tail", None, t_val)
+            if "above" in subtitle or "over" in subtitle:
+                return ("upper_tail", t_val, None)
+            # Last resort: treat as upper tail (legacy behavior)
+            return ("upper_tail", t_val, None)
 
         return None
 
@@ -9831,6 +9916,31 @@ class SettlementTracker:
 
     # ── Evaluated Opportunity Settlement ──────────────────────────────────
 
+    @staticmethod
+    def _estimate_actual_temp_from_bracket(ticker, threshold, spot_price=None):
+        """Estimate actual temperature from a settled weather bracket for bias update.
+
+        B-type: midpoint of bracket (threshold is floor_strike, brackets ~2°F wide)
+        T-type: threshold ± 2°F based on tail direction (uses spot_price to disambiguate)
+        Returns estimated actual temperature or None.
+        """
+        parts = ticker.split("-")
+        if len(parts) < 3:
+            return None
+        strike_part = parts[-1]
+        if strike_part.startswith("B"):
+            # Bracket: threshold is floor_strike, bracket ~2°F wide → midpoint
+            return threshold + 1.0
+        elif strike_part.startswith("T"):
+            # Tail: use spot_price (ensemble mean at evaluation time) to determine direction
+            if spot_price is not None:
+                if threshold < spot_price:
+                    return threshold - 2.0  # lower tail: actual below threshold
+                else:
+                    return threshold + 2.0  # upper tail: actual above threshold
+            return None  # can't determine tail direction without spot_price
+        return None
+
     def _poll_evaluated_opportunities(self):
         """Check if any evaluated opportunities have settled for counterfactual tracking."""
         try:
@@ -9930,6 +10040,17 @@ class SettlementTracker:
                     cal_binary = 1 if result in ("yes", "all_yes") else 0
                     if _CALIBRATION_ENGINE is not None:
                         _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
+
+                # Weather bias update: estimate actual temp from winning bracket
+                if _opp_pt == "weather" and result in ("yes", "all_yes"):
+                    forecast_mean = row.get("spot_price")
+                    actual_est = self._estimate_actual_temp_from_bracket(
+                        ticker, row.get("threshold"), spot_price=forecast_mean)
+                    if actual_est is not None and forecast_mean and self._ml and \
+                            getattr(self._ml, "weather_engine", None):
+                        _wx_city = row["asset"].replace("_TEMP", "")
+                        self._ml.weather_engine._model.update_bias(
+                            _wx_city, actual_est, forecast_mean)
 
                 logging.info(
                     f"Evaluated opp settled: {ticker} ({row['filter_stage']}) "

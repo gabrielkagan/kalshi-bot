@@ -130,6 +130,16 @@ class WeatherEnsembleFetcher:
         result["n_members"] = len(combined)
         result["fetch_time"] = datetime.datetime.now(timezone.utc).isoformat()
 
+        if combined:
+            _mean = sum(combined) / len(combined)
+            _var = sum((m - _mean) ** 2 for m in combined) / len(combined)
+            _std = math.sqrt(max(_var, 0.01))
+            logging.info("WeatherEnsemble: %s n=%d mean=%.1fF std=%.1fF hrrr=%.1fF gfs=%s ecmwf=%s",
+                         city_code, len(combined), _mean, _std,
+                         result.get("hrrr_temp") or 0.0,
+                         len(gfs_members) if gfs_members else 0,
+                         len(ecmwf_members) if ecmwf_members else 0)
+
         with self._lock:
             self._cache[cache_key] = result
             self._cache_ts[cache_key] = time.time()
@@ -174,6 +184,14 @@ class WeatherEnsembleFetcher:
                         valid = [float(v) for v in values if v is not None]
                         if valid:
                             members.append(max(valid))
+                if members:
+                    logging.info("WeatherEnsembleFetcher: %s used hourly fallback, %d members",
+                                 model, len(members))
+
+            if members:
+                _m = sum(members) / len(members)
+                logging.debug("WeatherEnsembleFetcher: %s %d members, mean=%.1fF, range=[%.1f, %.1f]",
+                              model, len(members), _m, min(members), max(members))
 
             return members if members else None
 
@@ -223,14 +241,24 @@ class WeatherProbabilityModel:
         self._bias_count: Dict[str, int] = {}
 
     def compute_probability(self, ensemble_data: Dict, threshold_f: float,
-                            city_code: str, direction: str = "above") -> Optional[Dict]:
-        """Compute P(high > threshold) from ensemble data.
+                            city_code: str, direction: str = "above",
+                            market_type: Optional[str] = None,
+                            bracket_bounds: Optional[Tuple[float, float]] = None) -> Optional[Dict]:
+        """Compute probability for a weather market from ensemble data.
+
+        Supports three market types:
+          - "bracket": P(lower < X < upper) for range/bracket markets (B-prefix)
+          - "lower_tail": P(X < threshold) for lower tail markets (T-prefix, low end)
+          - "upper_tail": P(X > threshold) for upper tail markets (T-prefix, high end)
+          - None: legacy direction-based (above/below)
 
         Args:
             ensemble_data: Output from WeatherEnsembleFetcher.fetch_ensemble()
             threshold_f: Temperature threshold in Fahrenheit
             city_code: City code for bias correction lookup
-            direction: "above" for P(high > threshold), "below" for P(high < threshold)
+            direction: "above" or "below" (legacy, used when market_type is None)
+            market_type: "bracket", "lower_tail", "upper_tail", or None
+            bracket_bounds: (lower, upper) for bracket markets
 
         Returns dict with raw_prob, calibrated_prob, ensemble_mean, ensemble_std, etc.
         """
@@ -247,13 +275,24 @@ class WeatherProbabilityModel:
         bias = self._bias.get(city_code, 0.0)
         corrected_mean = mean + bias
 
-        # Gaussian CDF: P(high > threshold) = 1 - Phi((threshold - mean) / std)
-        z = (threshold_f - corrected_mean) / std
-        # Standard normal CDF approximation (Abramowitz and Stegun)
-        raw_prob = 1.0 - self._normal_cdf(z)
-
-        if direction == "below":
-            raw_prob = 1.0 - raw_prob
+        # Compute probability based on market type
+        if market_type == "bracket" and bracket_bounds:
+            lower, upper = bracket_bounds
+            z_lower = (lower - corrected_mean) / std
+            z_upper = (upper - corrected_mean) / std
+            raw_prob = self._normal_cdf(z_upper) - self._normal_cdf(z_lower)
+        elif market_type == "lower_tail":
+            z = (threshold_f - corrected_mean) / std
+            raw_prob = self._normal_cdf(z)
+        elif market_type == "upper_tail":
+            z = (threshold_f - corrected_mean) / std
+            raw_prob = 1.0 - self._normal_cdf(z)
+        else:
+            # Legacy: direction-based
+            z = (threshold_f - corrected_mean) / std
+            raw_prob = 1.0 - self._normal_cdf(z)
+            if direction == "below":
+                raw_prob = 1.0 - raw_prob
 
         # Clamp
         raw_prob = max(0.001, min(0.999, raw_prob))
@@ -268,7 +307,7 @@ class WeatherProbabilityModel:
             "n_members": len(members),
             "hrrr_temp": ensemble_data.get("hrrr_temp"),
             "threshold": threshold_f,
-            "direction": direction,
+            "market_type": market_type or direction,
         }
 
     def update_bias(self, city_code: str, actual_high: float, forecast_mean: float):
@@ -466,10 +505,13 @@ class WeatherEngine:
         }
 
     def get_probability(self, city_code: str, threshold_f: float,
-                        direction: str = "above") -> Optional[Dict]:
+                        direction: str = "above",
+                        market_type: Optional[str] = None,
+                        bracket_bounds: Optional[Tuple[float, float]] = None) -> Optional[Dict]:
         """Compute probability for a weather threshold.
 
         This is the weather-specific probability computation (not via ProbabilityEngine).
+        Supports bracket, lower_tail, and upper_tail market types.
         """
         ensemble = self._last_ensemble.get(city_code)
         if not ensemble:
@@ -481,7 +523,9 @@ class WeatherEngine:
         if not ensemble:
             return None
 
-        return self._model.compute_probability(ensemble, threshold_f, city_code, direction)
+        return self._model.compute_probability(
+            ensemble, threshold_f, city_code, direction,
+            market_type=market_type, bracket_bounds=bracket_bounds)
 
     def _fetch_loop(self):
         """Background loop: refresh ensemble data for all cities every 15 minutes."""
