@@ -6216,6 +6216,8 @@ class OpportunityScanner:
                         "calibrated_prob": _wx_prob.get("calibrated_prob"),
                         "raw_prob": _wx_prob.get("raw_prob"),
                         "calibration_method": "weather_ensemble",
+                        "tradeable": True,  # weather ensemble always tradeable (no z-score gate)
+                        "z_score": 0.0,
                     }
                     # Store weather ensemble diagnostics for DB
                     _shadow_extra["wx_ensemble_mean"] = _wx_prob.get("ensemble_mean")
