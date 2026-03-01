@@ -6186,10 +6186,28 @@ class OpportunityScanner:
                 self._session_total_scanned += 1
 
                 # Pre-filter: compute probability without market price
-                prob_result = ProbabilityEngine.compute(
-                    spot, threshold, seconds_remaining, blended_rv,
-                    asset=asset, product_type=window.get("product_type")
-                )
+                if _pt == "weather" and self._ml and getattr(self._ml, "weather_engine", None):
+                    # Weather uses ensemble-based Gaussian model, NOT lognormal ProbabilityEngine
+                    _wx_city = asset.replace("_TEMP", "")
+                    _wx_prob = self._ml.weather_engine.get_probability(_wx_city, threshold, "above")
+                    if _wx_prob is None:
+                        continue
+                    prob_result = {
+                        "calibrated_prob": _wx_prob.get("calibrated_prob"),
+                        "raw_prob": _wx_prob.get("raw_prob"),
+                        "calibration_method": "weather_ensemble",
+                    }
+                    # Store weather ensemble diagnostics for DB
+                    _shadow_extra["wx_ensemble_mean"] = _wx_prob.get("ensemble_mean")
+                    _shadow_extra["wx_ensemble_std"] = _wx_prob.get("ensemble_std")
+                    _shadow_extra["wx_bias_correction"] = _wx_prob.get("bias_correction")
+                    _shadow_extra["wx_n_members"] = _wx_prob.get("n_members")
+                    _shadow_extra["wx_hrrr_temp"] = _wx_prob.get("hrrr_temp")
+                else:
+                    prob_result = ProbabilityEngine.compute(
+                        spot, threshold, seconds_remaining, blended_rv,
+                        asset=asset, product_type=window.get("product_type")
+                    )
                 cal_prob = prob_result.get("calibrated_prob")
                 raw_prob_pre = prob_result.get("raw_prob")
                 calibration_method_pre = prob_result.get("calibration_method")
@@ -6460,11 +6478,17 @@ class OpportunityScanner:
                     continue
 
                 # Re-run probability with market price for sanity check
-                prob_with_market = ProbabilityEngine.compute(
-                    spot, threshold, seconds_remaining, blended_rv,
-                    market_price_cents=best_ask,
-                    asset=asset, product_type=window.get("product_type")
-                )
+                if _pt == "weather":
+                    # Weather: ensemble model doesn't use market price; skip z-score sanity check
+                    prob_with_market = prob_result.copy()
+                    prob_with_market["tradeable"] = True
+                    prob_with_market["z_score"] = 0.0
+                else:
+                    prob_with_market = ProbabilityEngine.compute(
+                        spot, threshold, seconds_remaining, blended_rv,
+                        market_price_cents=best_ask,
+                        asset=asset, product_type=window.get("product_type")
+                    )
                 if not prob_with_market.get("tradeable"):
                     reason = prob_with_market.get("reason", "")
                     if "z_score" in reason or "refusing" in reason:
@@ -6564,19 +6588,21 @@ class OpportunityScanner:
 
                 # ── Augment _shadow_diag with Kalshi OFT fields ──
                 if ofa_signals:
-                    _shadow_extra["oft_imbalance_ratio"] = ofa_signals.get("imbalance_ratio")
-                    _shadow_extra["oft_imbalance_level"] = ofa_signals.get("imbalance_level")
-                    _shadow_extra["oft_prob_adjustment"] = ofa_signals.get("prob_adjustment")
-                    _shadow_extra["oft_confidence"] = ofa_signals.get("confidence")
-                    _shadow_extra["oft_n_snapshots"] = ofa_signals.get("n_snapshots")
-                    _shadow_extra["oft_depth_velocity"] = ofa_signals.get("depth_velocity")
+                    # Kalshi-specific signals are nested under signals.kalshi_orderbook
+                    _koft = ofa_signals.get("signals", {}).get("kalshi_orderbook", {})
+                    _shadow_extra["oft_imbalance_ratio"] = _koft.get("imbalance_ratio")
+                    _shadow_extra["oft_imbalance_level"] = _koft.get("imbalance_level")
+                    _shadow_extra["oft_prob_adjustment"] = _koft.get("prob_adjustment")
+                    _shadow_extra["oft_confidence"] = _koft.get("confidence")
+                    _shadow_extra["oft_n_snapshots"] = _koft.get("n_snapshots")
+                    _shadow_extra["oft_depth_velocity"] = _koft.get("depth_velocity")
                     # OFT fields for DB persistence
                     _oft_db = {
-                        "oft_prob_adjustment": ofa_signals.get("prob_adjustment"),
-                        "oft_imbalance_ratio": ofa_signals.get("imbalance_ratio"),
-                        "oft_n_snapshots": ofa_signals.get("n_snapshots"),
+                        "oft_prob_adjustment": _koft.get("prob_adjustment"),
+                        "oft_imbalance_ratio": _koft.get("imbalance_ratio"),
+                        "oft_n_snapshots": _koft.get("n_snapshots"),
                     }
-                    _shadow_extra["oft_ask_velocity"] = ofa_signals.get("ask_velocity")
+                    _shadow_extra["oft_ask_velocity"] = _koft.get("ask_velocity")
 
                 # ── Counterfactual analysis: what would each shadow feature produce? ──
                 _cf = {}
@@ -6642,17 +6668,18 @@ class OpportunityScanner:
 
                 # CF4: Kalshi OFT adjusted prob
                 if ofa_signals and KALSHI_OFT_SHADOW_MODE:
-                    _koft_adj = ofa_signals.get("prob_adjustment", 0)
+                    _koft_cf = ofa_signals.get("signals", {}).get("kalshi_orderbook", {})
+                    _koft_adj = _koft_cf.get("prob_adjustment", 0)
                     if _koft_adj != 0:
                         _cf["kalshi_oft"] = {
                             "prob_adjustment": round(_koft_adj, 6),
                             "adj_prob": round(final_prob + _koft_adj, 6),
-                            "imbalance_ratio": ofa_signals.get("imbalance_ratio"),
-                            "imbalance_level": ofa_signals.get("imbalance_level"),
-                            "depth_velocity": ofa_signals.get("depth_velocity"),
-                            "ask_velocity": ofa_signals.get("ask_velocity"),
-                            "confidence": ofa_signals.get("confidence"),
-                            "n_snapshots": ofa_signals.get("n_snapshots"),
+                            "imbalance_ratio": _koft_cf.get("imbalance_ratio"),
+                            "imbalance_level": _koft_cf.get("imbalance_level"),
+                            "depth_velocity": _koft_cf.get("depth_velocity"),
+                            "ask_velocity": _koft_cf.get("ask_velocity"),
+                            "confidence": _koft_cf.get("confidence"),
+                            "n_snapshots": _koft_cf.get("n_snapshots"),
                         }
 
                 # CF5: Old system counterfactual (Beta Cal + 50% market blend)
