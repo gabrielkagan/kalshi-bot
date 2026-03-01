@@ -1590,6 +1590,7 @@ class StateManager:
                          volatility: Optional[float], market_price: Optional[int],
                          seconds_to_close: Optional[float],
                          calibrated_prob: Optional[float],
+                         raw_prob: Optional[float] = None,
                          egarch_sigma: Optional[float] = None,
                          egarch_blend_sigma: Optional[float] = None,
                          egarch_blend_weight: Optional[float] = None,
@@ -1609,15 +1610,15 @@ class StateManager:
             INSERT OR REPLACE INTO rejected_opportunities
                 (ticker, event_ticker, asset, rejection_reason, rejection_time,
                  z_score, spot_price, threshold, volatility, market_price,
-                 seconds_to_close, calibrated_prob, status,
+                 seconds_to_close, calibrated_prob, raw_prob, status,
                  egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
                  shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
                  counterfactual, product_type,
                  oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, event_ticker, asset, rejection_reason, now,
               z_score, spot_price, threshold, volatility, market_price,
-              seconds_to_close, calibrated_prob, "pending",
+              seconds_to_close, calibrated_prob, raw_prob, "pending",
               egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
               shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
               counterfactual, product_type,
@@ -1631,11 +1632,15 @@ class StateManager:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def mark_rejection_settled(self, ticker: str):
-        """Set status='settled' for a rejected opportunity."""
+    def mark_rejection_settled(self, ticker: str,
+                              market_result: Optional[str] = None,
+                              counterfactual: Optional[str] = None):
+        """Set status='settled' and update result/counterfactual for a rejected opportunity."""
         self.conn.execute(
-            "UPDATE rejected_opportunities SET status='settled' WHERE ticker=?",
-            (ticker,)
+            """UPDATE rejected_opportunities
+               SET status='settled', market_result=?, counterfactual=?
+               WHERE ticker=?""",
+            (market_result, counterfactual, ticker)
         )
         self.conn.commit()
 
@@ -4848,7 +4853,14 @@ class ProbabilityEngine:
         z_score = (threshold - spot) / sigma_move
         result["z_score"] = round(z_score, 4)
 
+        # ── Raw probability via configurable distribution CDF ────────────
+        # P(price stays above threshold) = P(move > threshold - spot)
+        # = P(Z > z_score) = 1 - CDF(z_score)
+        raw_prob = ProbabilityEngine._cdf_complement(z_score, asset)
+        result["raw_prob"] = round(raw_prob, 6)
+
         # ── Safety: refuse if z-score is absurdly large ──────────────────
+        # Computed AFTER raw_prob so rejection rows still have probability data.
         if abs(z_score) > Z_SCORE_MAX:
             result["reason"] = (
                 f"|z_score|={abs(z_score):.1f} > {Z_SCORE_MAX} — "
@@ -4858,13 +4870,16 @@ class ProbabilityEngine:
                 f"ProbabilityEngine: {result['reason']} "
                 f"(spot={spot}, threshold={threshold}, rv={blended_rv:.8f})"
             )
+            # Still compute calibrated_prob for data collection
+            dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
+            if _CALIBRATION_ENGINE is not None:
+                cal = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
+                result["calibration_method"] = _CALIBRATION_ENGINE.active_method
+            else:
+                cal = ProbabilityEngine._calibrate(raw_prob, cap=dynamic_cap)
+                result["calibration_method"] = "fixed_beta"
+            result["calibrated_prob"] = round(cal, 6)
             return result
-
-        # ── Raw probability via configurable distribution CDF ────────────
-        # P(price stays above threshold) = P(move > threshold - spot)
-        # = P(Z > z_score) = 1 - CDF(z_score)
-        raw_prob = ProbabilityEngine._cdf_complement(z_score, asset)
-        result["raw_prob"] = round(raw_prob, 6)
 
         # ── Calibration: adaptive (if trained) or fixed β=0.85 ──────────
         dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
@@ -6211,7 +6226,7 @@ class OpportunityScanner:
                 cal_prob = prob_result.get("calibrated_prob")
                 raw_prob_pre = prob_result.get("raw_prob")
                 calibration_method_pre = prob_result.get("calibration_method")
-                if cal_prob is None:
+                if not prob_result.get("tradeable"):
                     reason = prob_result.get("reason", "")
                     if "z_score" in reason or "refusing" in reason:
                         # Fetch orderbook to record market price for counterfactual P&L
@@ -6228,14 +6243,16 @@ class OpportunityScanner:
                             "volatility": blended_rv,
                             "market_price": rej_ask,
                             "seconds_to_close": round(seconds_remaining, 1),
-                            "calibrated_prob": None,
+                            "calibrated_prob": cal_prob,
+                            "raw_prob": raw_prob_pre,
                             **_shadow_diag,
                             **_shadow_extra,
                         }
                         self._state.insert_rejection(
                             ticker, window["event_ticker"], asset, reason,
                             prob_result.get("z_score"), spot, threshold,
-                            blended_rv, rej_ask, seconds_remaining, None,
+                            blended_rv, rej_ask, seconds_remaining, cal_prob,
+                            raw_prob=raw_prob_pre,
                             product_type=window.get("product_type"),
                             **_oft_db, **_shadow_diag)
                         self._logger.log_rejection(rej_data)
@@ -6504,6 +6521,7 @@ class OpportunityScanner:
                             "market_price": best_ask,
                             "seconds_to_close": round(seconds_remaining, 1),
                             "calibrated_prob": prob_with_market.get("calibrated_prob"),
+                            "raw_prob": prob_with_market.get("raw_prob"),
                             **_shadow_diag,
                             **_shadow_extra,
                         }
@@ -6512,6 +6530,7 @@ class OpportunityScanner:
                             prob_with_market.get("z_score"), spot, threshold,
                             blended_rv, best_ask, seconds_remaining,
                             prob_with_market.get("calibrated_prob"),
+                            raw_prob=prob_with_market.get("raw_prob"),
                             product_type=window.get("product_type"),
                             **_oft_db, **_shadow_diag)
                         self._logger.log_rejection(rej_data)
@@ -9776,6 +9795,13 @@ class SettlementTracker:
                 would_have_profit = None
                 counterfactual_outcome = f"unknown_result_{result}"
 
+        cf_json = json.dumps({
+            "outcome": counterfactual_outcome,
+            "would_have_profit_cents": would_have_profit,
+            "assumed_fee_cents": assumed_fee,
+            "entry_price": entry_price,
+        })
+
         self._logger.log_rejection({
             "type": "rejection_settlement",
             "ticker": ticker,
@@ -9793,7 +9819,8 @@ class SettlementTracker:
             "threshold": row["threshold"],
         })
 
-        self._state.mark_rejection_settled(ticker)
+        self._state.mark_rejection_settled(ticker, market_result=result,
+                                           counterfactual=cf_json)
         self._settled_rejection_tickers.add(ticker)
         self._pending_rejection_tickers.discard(ticker)
 
