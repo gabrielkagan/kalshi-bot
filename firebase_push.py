@@ -5,7 +5,8 @@ import time
 import logging
 import datetime
 import threading
-from typing import Dict, Any, Optional
+import collections
+from typing import Dict, Any, List, Optional
 
 import requests
 
@@ -25,6 +26,25 @@ def _sanitize_keys(obj):
     return obj
 
 
+def _parse_ob_levels(entries):
+    """Parse orderbook level entries into (price_cents, quantity) tuples."""
+    result = []
+    for e in entries:
+        if isinstance(e, (list, tuple)) and len(e) >= 2:
+            p, q = e[0], int(e[1])
+        elif isinstance(e, dict):
+            p, q = e.get("price", 0), int(e.get("quantity", 0))
+        else:
+            continue
+        if isinstance(p, float) and p < 1.0:
+            p = round(p * 100)
+        else:
+            p = int(p)
+        if q > 0:
+            result.append((p, q))
+    return result
+
+
 class FirebasePusher:
     """Daemon thread that pushes bot status to Firebase REST API."""
 
@@ -35,6 +55,10 @@ class FirebasePusher:
         self._thread: Optional[threading.Thread] = None
         self._db_path = db_path
         self._db_conn = None  # opened on daemon thread
+        # Position health tracking (dashboard enrichment)
+        self._mid_history: Dict[str, collections.deque] = {}
+        self._health_state: Dict[str, str] = {}
+        self._health_streak: Dict[str, int] = {}
 
     def start(self):
         if not self._db_url:
@@ -1289,28 +1313,11 @@ class FirebasePusher:
                         no_bids = ob.get("no", [])
                         yes_bids = ob.get("yes", [])
 
-                        def parse_levels(entries):
-                            result = []
-                            for e in entries:
-                                if isinstance(e, (list, tuple)) and len(e) >= 2:
-                                    p, q = e[0], int(e[1])
-                                elif isinstance(e, dict):
-                                    p, q = e.get("price", 0), int(e.get("quantity", 0))
-                                else:
-                                    continue
-                                if isinstance(p, float) and p < 1.0:
-                                    p = round(p * 100)
-                                else:
-                                    p = int(p)
-                                if q > 0:
-                                    result.append((p, q))
-                            return result
-
-                        parsed_no = parse_levels(no_bids)
+                        parsed_no = _parse_ob_levels(no_bids)
                         yes_ask_levels = [{"p": 100 - p, "q": q} for p, q in parsed_no]
                         yes_ask_levels.sort(key=lambda x: x["p"])
 
-                        parsed_yes = parse_levels(yes_bids)
+                        parsed_yes = _parse_ob_levels(yes_bids)
                         yes_bid_levels = [{"p": p, "q": q} for p, q in parsed_yes]
                         yes_bid_levels.sort(key=lambda x: -x["p"])
 
@@ -1353,7 +1360,190 @@ class FirebasePusher:
             logging.debug("Firebase: orderbooks build failed", exc_info=True)
             snap["orderbooks"] = {}
 
+        # ── Position health (read-only enrichment for dashboard) ─────────
+        try:
+            kf = getattr(self._ml, "kalshi_feed", None)
+            raw_obs = kf.get_all_orderbooks() if (kf and kf.is_connected) else {}
+            windows = getattr(self._ml, "_active_windows", []) or []
+            snap["position_health"] = self._compute_position_health(
+                snap.get("active_positions", []), raw_obs, windows
+            )
+        except Exception:
+            logging.debug("Firebase: position_health build failed", exc_info=True)
+            snap["position_health"] = {
+                "summary": {"lock": 0, "watch": 0, "danger": 0, "total": 0},
+                "positions": {},
+            }
+
         return snap
+
+    def _compute_position_health(
+        self,
+        positions: List[Dict],
+        orderbooks: Dict,
+        active_windows: List[Dict],
+    ) -> Dict[str, Any]:
+        """Compute mark-to-market health data for each open position."""
+        now_ts = time.time()
+        result: Dict[str, Any] = {}
+        counts = {"lock": 0, "watch": 0, "danger": 0}
+        active_tickers = set()
+
+        # Build event_ticker → seconds_to_close lookup
+        stc_lookup: Dict[str, float] = {}
+        for w in active_windows:
+            et = w.get("event_ticker")
+            if et:
+                stc_lookup[et] = w.get("seconds_to_close", 9999)
+
+        for pos in positions:
+            ticker = pos.get("ticker")
+            if not ticker:
+                continue
+            active_tickers.add(ticker)
+
+            ob = orderbooks.get(ticker)
+            if not ob:
+                continue
+
+            try:
+                ob_ts = ob.get("ts", 0)
+                ob_age_s = round(now_ts - ob_ts, 1) if ob_ts else 999
+
+                no_bids = ob.get("no", [])
+                yes_bids = ob.get("yes", [])
+
+                parsed_no = _parse_ob_levels(no_bids)
+                yes_ask_levels = sorted(
+                    [(100 - p, q) for p, q in parsed_no], key=lambda x: x[0]
+                )
+                parsed_yes = _parse_ob_levels(yes_bids)
+                yes_bid_levels = sorted(parsed_yes, key=lambda x: -x[0])
+
+                best_ask = yes_ask_levels[0][0] if yes_ask_levels else None
+                best_bid = yes_bid_levels[0][0] if yes_bid_levels else None
+
+                if best_bid is None or best_ask is None:
+                    continue
+
+                spread = best_ask - best_bid
+                mid_price = (best_bid + best_ask) / 2.0
+                bid_depth = sum(q for _, q in yes_bid_levels)
+                ask_depth = sum(q for _, q in yes_ask_levels)
+
+                entry_price = pos.get("avg_price_cents", 0)
+                count = pos.get("count", 0)
+                side = (pos.get("side") or "").lower()
+
+                # Unrealized P&L (conservative: bid-based exit for YES, ask-based for NO)
+                if side == "yes":
+                    unrealized_cents = (best_bid - entry_price) * count
+                    unrealized_pct = round(
+                        (best_bid - entry_price) / entry_price * 100, 2
+                    ) if entry_price else 0
+                else:
+                    # NO position: profit if ask drops
+                    unrealized_cents = (entry_price - best_ask) * count
+                    unrealized_pct = round(
+                        (entry_price - best_ask) / entry_price * 100, 2
+                    ) if entry_price else 0
+
+                # Seconds to close
+                event_ticker = pos.get("event_ticker")
+                stc_seconds = stc_lookup.get(event_ticker)
+
+                # Mid-price history
+                if ticker not in self._mid_history:
+                    self._mid_history[ticker] = collections.deque(maxlen=30)
+                self._mid_history[ticker].append(mid_price)
+                mid_hist = list(self._mid_history[ticker])[-5:]
+
+                # Health classification
+                if side == "yes":
+                    price_warn = entry_price - 3 <= mid_price < entry_price
+                    price_danger = mid_price < entry_price - 3
+                else:
+                    price_warn = entry_price < mid_price <= entry_price + 3
+                    price_danger = mid_price > entry_price + 3
+
+                danger_conditions = (
+                    price_danger
+                    or spread > 6
+                    or bid_depth < 3
+                    or ob_age_s > 30
+                )
+                # STC-based danger: immediate (no debounce)
+                stc_danger = (
+                    stc_seconds is not None
+                    and stc_seconds < 30
+                    and mid_price < 95
+                )
+
+                watch_conditions = (
+                    price_warn
+                    or 4 < spread <= 6
+                    or 3 <= bid_depth < 5
+                    or ob_age_s >= 30
+                )
+
+                if stc_danger or danger_conditions:
+                    raw_state = "DANGER"
+                elif watch_conditions:
+                    raw_state = "WATCH"
+                else:
+                    raw_state = "LOCK"
+
+                # Debounce: require 2 consecutive ticks before changing state
+                # Exception: STC danger is immediate
+                prev_state = self._health_state.get(ticker, raw_state)
+                if raw_state != prev_state:
+                    streak = self._health_streak.get(ticker, 0) + 1
+                    self._health_streak[ticker] = streak
+                    if stc_danger or streak >= 2:
+                        self._health_state[ticker] = raw_state
+                        self._health_streak[ticker] = 0
+                    # else keep previous state
+                else:
+                    self._health_streak[ticker] = 0
+                    self._health_state[ticker] = raw_state
+
+                health = self._health_state[ticker]
+                counts[health.lower()] += 1
+
+                result[ticker] = {
+                    "entry_price": entry_price,
+                    "mid_price": round(mid_price, 1),
+                    "best_bid": best_bid,
+                    "best_ask": best_ask,
+                    "spread": spread,
+                    "bid_depth": bid_depth,
+                    "ask_depth": ask_depth,
+                    "unrealized_cents": round(unrealized_cents),
+                    "unrealized_pct": round(unrealized_pct, 1),
+                    "health": health,
+                    "ob_age_s": ob_age_s,
+                    "mid_history": mid_hist,
+                    "stc_seconds": round(stc_seconds, 1) if stc_seconds is not None else None,
+                }
+            except Exception:
+                logging.debug(f"Firebase: position health failed for {ticker}", exc_info=True)
+
+        # Cleanup stale tickers
+        stale = [t for t in self._mid_history if t not in active_tickers]
+        for t in stale:
+            self._mid_history.pop(t, None)
+            self._health_state.pop(t, None)
+            self._health_streak.pop(t, None)
+
+        return {
+            "summary": {
+                "lock": counts["lock"],
+                "watch": counts["watch"],
+                "danger": counts["danger"],
+                "total": sum(counts.values()),
+            },
+            "positions": result,
+        }
 
     def _push(self, snapshot: Dict[str, Any]):
         url = f"{self._db_url}/bot_status.json"
