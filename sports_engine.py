@@ -28,6 +28,7 @@ from sports_data import (
     BINARY_ENTRY_CRITERIA,
     BINARY_LR_TABLE,
     LEAGUES,
+    MAX_MODEL_MARKET_GAP,
     THREE_WAY_ENTRY_CRITERIA,
     THREE_WAY_LR_TABLE,
     LeagueConfig,
@@ -494,6 +495,11 @@ class BayesianComebackModel:
             rejection_reason = (
                 f"fee_adj_edge={fee_adjusted_edge:.4f} <= 0 "
                 f"(raw_edge={edge:.4f}, fee={fee_pct:.4f})")
+        elif posterior - current_prob > MAX_MODEL_MARKET_GAP:
+            filter_stage = "sports_model_overconfident"
+            rejection_reason = (
+                f"model_market_gap={posterior - current_prob:.4f} > "
+                f"{MAX_MODEL_MARKET_GAP}")
         else:
             signal_fired = True
             filter_stage = "sports_signal"
@@ -556,6 +562,11 @@ class SportsEngine:
         self._logged_scores: Set[Tuple[str, int, int]] = set()
         # Track pregame favorites: game_id → (fav_code, fav_prob)
         self._pregame_favs: Dict[str, Tuple[str, float]] = {}
+        # Per-game signal dedup: only fire one signal per game
+        self._signaled_games: Set[str] = set()
+        # Settlement tracking
+        self._settled_games: Set[str] = set()
+        self._startup_loaded: bool = False
         # DB connection (separate for thread safety)
         self._db_conn: Optional[sqlite3.Connection] = None
 
@@ -599,6 +610,14 @@ class SportsEngine:
         games = self._espn.poll_all_leagues()
         if not games:
             return
+
+        # 2b. One-time load of already-settled game IDs from DB
+        if not self._startup_loaded:
+            self._load_settled_games()
+            self._startup_loaded = True
+
+        # 2c. Settle any completed games
+        self._settle_completed_games(games)
 
         live_count = 0
         signal_count = 0
@@ -658,6 +677,26 @@ class SportsEngine:
                 deficit=deficit,
             )
 
+            # 7b. Per-game signal dedup — suppress correlated repeat signals
+            if signal.signal_fired and game_id in self._signaled_games:
+                signal = ComebackSignal(
+                    comeback_prob=signal.comeback_prob,
+                    prior=signal.prior,
+                    likelihood_ratio=signal.likelihood_ratio,
+                    edge=signal.edge,
+                    fee_adjusted_edge=signal.fee_adjusted_edge,
+                    deficit_bucket=signal.deficit_bucket,
+                    time_bucket=signal.time_bucket,
+                    strength_bucket=signal.strength_bucket,
+                    signal_fired=False,
+                    filter_stage="sports_already_signaled",
+                    rejection_reason=f"game {game_id} already signaled",
+                    simulated_contracts=0,
+                    simulated_risk=0.0,
+                )
+            elif signal.signal_fired:
+                self._signaled_games.add(game_id)
+
             if signal.signal_fired:
                 signal_count += 1
 
@@ -684,52 +723,136 @@ class SportsEngine:
                           live_count, signal_count)
 
     def _try_capture_pregame(self, game: GameState) -> None:
-        """Capture pregame Kalshi prices before game starts."""
+        """Capture pregame Kalshi prices before game starts.
+
+        Matches individual market tickers against ESPN team codes to correctly
+        identify home vs away markets (instead of relying on _classify_market_side
+        which always returns "home").
+        """
         if not self._discovery:
             return
-        # Look for matching event in Kalshi
         all_markets = self._discovery.get_all_markets()
+        home_upper = game.home_code.upper()
+        away_upper = game.away_code.upper()
+
         for event_ticker, mkts in all_markets.items():
-            # Match by checking if event_ticker contains team codes
-            # This is a heuristic — exact matching depends on Kalshi ticker format
             et_upper = event_ticker.upper()
-            if _team_code_in_ticker(game.home_code.upper(), et_upper) or _team_code_in_ticker(game.away_code.upper(), et_upper):
-                for ticker, side in mkts.market_tickers.items():
-                    ob = self._discovery.get_orderbook_snapshot(ticker)
-                    if ob and "orderbook" in ob:
-                        book = ob["orderbook"]
-                        no_bids = book.get("no", [])
-                        if no_bids:
-                            best_no_bid = max(b[0] for b in no_bids if b)
-                            yes_ask = 100 - best_no_bid
-                            self._discovery.capture_pregame_price(
-                                event_ticker, side, yes_ask
-                            )
-                            # Capture pregame favorite
-                            if yes_ask > 50 and game.game_id not in self._pregame_favs:
-                                fav_code = (game.home_code if side == "home"
-                                            else game.away_code)
-                                self._pregame_favs[game.game_id] = (
-                                    fav_code, yes_ask / 100.0
-                                )
-                break  # Only match first event
+            if not (_team_code_in_ticker(home_upper, et_upper) or
+                    _team_code_in_ticker(away_upper, et_upper)):
+                continue
+
+            home_price = None
+            away_price = None
+            for ticker, _side in list(mkts.market_tickers.items()):
+                ticker_upper = ticker.upper()
+                # Determine which team this market is for
+                is_home = _team_code_in_ticker(home_upper, ticker_upper)
+                is_away = _team_code_in_ticker(away_upper, ticker_upper)
+                if not is_home and not is_away:
+                    continue  # Draw market or unrecognized
+
+                ob = self._discovery.get_orderbook_snapshot(ticker)
+                if not ob or "orderbook" not in ob:
+                    continue
+                book = ob["orderbook"]
+                no_bids = book.get("no", [])
+                if not no_bids:
+                    continue
+                best_no_bid = max(b[0] for b in no_bids if b)
+                yes_ask = 100 - best_no_bid
+
+                if is_home:
+                    mkts.market_tickers[ticker] = "home"
+                    self._discovery.capture_pregame_price(
+                        event_ticker, "home", yes_ask)
+                    home_price = yes_ask
+                elif is_away:
+                    mkts.market_tickers[ticker] = "away"
+                    self._discovery.capture_pregame_price(
+                        event_ticker, "away", yes_ask)
+                    away_price = yes_ask
+
+            # Determine favorite from prices
+            if game.game_id not in self._pregame_favs:
+                if home_price is not None and away_price is not None:
+                    if home_price >= away_price:
+                        self._pregame_favs[game.game_id] = (
+                            game.home_code, home_price / 100.0)
+                    else:
+                        self._pregame_favs[game.game_id] = (
+                            game.away_code, away_price / 100.0)
+                elif home_price is not None and home_price > 50:
+                    self._pregame_favs[game.game_id] = (
+                        game.home_code, home_price / 100.0)
+                elif away_price is not None and away_price > 50:
+                    self._pregame_favs[game.game_id] = (
+                        game.away_code, away_price / 100.0)
+            break  # Only match first event
 
     def _infer_favorite(self, game: GameState) -> Optional[Tuple[str, float]]:
-        """Try to infer favorite from current Kalshi prices."""
+        """Try to infer favorite from current Kalshi prices.
+
+        Matches individual market tickers against ESPN team codes directly
+        instead of relying on pregame_price_home/away (which may not be
+        populated if the game started before the bot).
+        """
         if not self._discovery:
             return None
 
+        home_upper = game.home_code.upper()
+        away_upper = game.away_code.upper()
         all_markets = self._discovery.get_all_markets()
+
         for event_ticker, mkts in all_markets.items():
             et_upper = event_ticker.upper()
-            if _team_code_in_ticker(game.home_code.upper(), et_upper) or _team_code_in_ticker(game.away_code.upper(), et_upper):
-                home_price = mkts.pregame_price_home
-                away_price = mkts.pregame_price_away
-                if home_price and away_price:
-                    if home_price >= away_price:
-                        return (game.home_code, home_price / 100.0)
-                    else:
-                        return (game.away_code, away_price / 100.0)
+            if not (_team_code_in_ticker(home_upper, et_upper) or
+                    _team_code_in_ticker(away_upper, et_upper)):
+                continue
+
+            # First try cached pregame prices
+            if mkts.pregame_price_home and mkts.pregame_price_away:
+                if mkts.pregame_price_home >= mkts.pregame_price_away:
+                    return (game.home_code, mkts.pregame_price_home / 100.0)
+                else:
+                    return (game.away_code, mkts.pregame_price_away / 100.0)
+
+            # Fallback: fetch live orderbook and match by team code
+            home_price = None
+            away_price = None
+            for ticker, _side in mkts.market_tickers.items():
+                ticker_upper = ticker.upper()
+                is_home = _team_code_in_ticker(home_upper, ticker_upper)
+                is_away = _team_code_in_ticker(away_upper, ticker_upper)
+                if not is_home and not is_away:
+                    continue
+
+                ob = self._discovery.get_orderbook_snapshot(ticker)
+                if not ob or "orderbook" not in ob:
+                    continue
+                book = ob["orderbook"]
+                no_bids = book.get("no", [])
+                if not no_bids:
+                    continue
+                best_no_bid = max(b[0] for b in no_bids if b)
+                yes_ask = 100 - best_no_bid
+
+                if is_home:
+                    home_price = yes_ask
+                    mkts.market_tickers[ticker] = "home"
+                elif is_away:
+                    away_price = yes_ask
+                    mkts.market_tickers[ticker] = "away"
+
+            if home_price is not None and away_price is not None:
+                if home_price >= away_price:
+                    return (game.home_code, home_price / 100.0)
+                else:
+                    return (game.away_code, away_price / 100.0)
+            elif home_price is not None and home_price > 50:
+                return (game.home_code, home_price / 100.0)
+            elif away_price is not None and away_price > 50:
+                return (game.away_code, away_price / 100.0)
+
         return None
 
     def _get_current_kalshi_price(self, game: GameState,
@@ -808,6 +931,117 @@ class SportsEngine:
                 break
         return default
 
+    def _load_settled_games(self) -> None:
+        """One-time load of already-settled game IDs from DB."""
+        try:
+            conn = self._get_db_conn()
+            rows = conn.execute(
+                "SELECT DISTINCT game_id FROM sports_shadow_log "
+                "WHERE fav_won IS NOT NULL"
+            ).fetchall()
+            self._settled_games = {r[0] for r in rows}
+            logging.info("SportsEngine: loaded %d settled games from DB",
+                         len(self._settled_games))
+        except Exception:
+            logging.warning("SportsEngine: failed to load settled games",
+                            exc_info=True)
+
+    def _settle_completed_games(self, games: Dict[str, GameState]) -> None:
+        """Settle completed games — populate fav_won, pnl_cents, scores."""
+        for game_id, game in games.items():
+            if game.game_status != "final":
+                continue
+            if game_id in self._settled_games:
+                continue
+
+            try:
+                conn = self._get_db_conn()
+                rows = conn.execute(
+                    "SELECT id, pregame_fav_code, signal_fired, "
+                    "simulated_contracts, yes_ask "
+                    "FROM sports_shadow_log "
+                    "WHERE game_id = ? AND fav_won IS NULL",
+                    (game_id,)
+                ).fetchall()
+                if not rows:
+                    self._settled_games.add(game_id)
+                    continue
+
+                for row in rows:
+                    row_id = row[0]
+                    fav_code = row[1]
+                    signal_fired = row[2]
+                    sim_contracts = row[3] or 0
+                    entry_price = row[4]  # yes_ask at time of evaluation
+
+                    # Determine if favorite won from final scores
+                    if fav_code == game.home_code:
+                        fav_won = 1 if game.home_score > game.away_score else 0
+                    else:
+                        fav_won = 1 if game.away_score > game.home_score else 0
+
+                    market_result = "yes" if fav_won else "no"
+
+                    # Compute simulated PnL for signal rows
+                    pnl_cents = None
+                    if signal_fired and sim_contracts > 0 and entry_price:
+                        cost_cents = sim_contracts * entry_price
+                        p = entry_price / 100.0
+                        fee_cents = math.ceil(
+                            0.07 * sim_contracts * p * (1 - p))
+                        if fav_won:
+                            revenue = sim_contracts * 100
+                            pnl_cents = revenue - cost_cents - fee_cents
+                        else:
+                            pnl_cents = -cost_cents - fee_cents
+
+                    # Get closing price
+                    closing_price = self._get_closing_price(game, fav_code)
+
+                    conn.execute(
+                        "UPDATE sports_shadow_log SET "
+                        "final_home_score=?, final_away_score=?, "
+                        "fav_won=?, market_result=?, pnl_cents=?, "
+                        "closing_price=? WHERE id=?",
+                        (game.home_score, game.away_score,
+                         fav_won, market_result, pnl_cents,
+                         closing_price, row_id)
+                    )
+
+                conn.commit()
+                self._settled_games.add(game_id)
+                self._signaled_games.discard(game_id)
+                logging.debug("SportsEngine: settled game %s (%s vs %s) "
+                              "fav_won=%s, %d rows",
+                              game_id, game.home_team, game.away_team,
+                              fav_won, len(rows))
+            except Exception:
+                logging.warning("SportsEngine: failed to settle game %s",
+                                game_id, exc_info=True)
+
+    def _get_closing_price(self, game: GameState,
+                           fav_code: str) -> Optional[float]:
+        """Get closing price for a completed game's favorite market."""
+        # Try live orderbook first
+        price = self._get_current_kalshi_price(game, fav_code)
+        if price is not None:
+            return price
+
+        # Fallback: last logged yes_ask from sports_shadow_log
+        try:
+            conn = self._get_db_conn()
+            row = conn.execute(
+                "SELECT yes_ask FROM sports_shadow_log "
+                "WHERE game_id = ? AND yes_ask IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (game.game_id,)
+            ).fetchone()
+            if row:
+                return row[0]
+        except Exception:
+            pass
+        return None
+
     def _insert_shadow_log(self, game: GameState, league_cfg: LeagueConfig,
                            fav_code: str, pregame_fav_prob: float,
                            fav_score: int, underdog_score: int,
@@ -822,8 +1056,8 @@ class SportsEngine:
             if self._discovery:
                 for et, mkts in self._discovery.get_all_markets().items():
                     et_upper = et.upper()
-                    if (game.home_code.upper() in et_upper or
-                            game.away_code.upper() in et_upper):
+                    if (_team_code_in_ticker(game.home_code.upper(), et_upper) or
+                            _team_code_in_ticker(game.away_code.upper(), et_upper)):
                         pregame_home = mkts.pregame_price_home
                         pregame_away = mkts.pregame_price_away
                         pregame_draw = mkts.pregame_price_draw

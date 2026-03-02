@@ -268,6 +268,19 @@ THREE_WAY_LR_TABLE: Dict[Tuple[str, str, str], float] = {
 }
 
 
+# ── LR Calibration Overrides ────────────────────────────────────────────────
+
+# Conservative scaling: compress LR toward 1.0 (neutral).
+# LR_scaled = 1.0 + (LR_raw - 1.0) * CONSERVATIVE_LR_SCALE
+# At scale=0.5: LR=2.8 → 1.9, posterior drops from 94.5% → 92.1%
+# Original table preserved for reference. Set to 1.0 to use raw values.
+CONSERVATIVE_LR_SCALE = 0.5
+
+# Reject signals where model - market > this threshold.
+# 30pp: model can be at most 30pp above market (market=20% → model max=50%)
+MAX_MODEL_MARKET_GAP = 0.30
+
+
 # ── Entry Criteria ───────────────────────────────────────────────────────────
 
 # Binary (NBA, NHL, MLB, etc.)
@@ -341,9 +354,13 @@ def classify_strength(pregame_prob: float, outcome_type: str) -> str:
 
 def lookup_lr(outcome_type: str, deficit_bucket: str,
               time_bucket: str, strength_bucket: str) -> float:
-    """Look up likelihood ratio from the appropriate table."""
+    """Look up likelihood ratio from the appropriate table.
+
+    Applies CONSERVATIVE_LR_SCALE to compress raw LR toward 1.0 (neutral).
+    """
     key = (deficit_bucket, time_bucket, strength_bucket)
     if outcome_type == "three_way":
-        return THREE_WAY_LR_TABLE.get(key, 1.0)
+        raw_lr = THREE_WAY_LR_TABLE.get(key, 1.0)
     else:
-        return BINARY_LR_TABLE.get(key, 1.0)
+        raw_lr = BINARY_LR_TABLE.get(key, 1.0)
+    return 1.0 + (raw_lr - 1.0) * CONSERVATIVE_LR_SCALE
