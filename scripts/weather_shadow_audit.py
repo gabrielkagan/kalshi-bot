@@ -104,7 +104,7 @@ def pipeline_audit(conn: sqlite3.Connection) -> dict:
     section("2. DATA PIPELINE + QUALITY AUDIT")
 
     # Ensemble coverage
-    row = conn.execute("""
+    ens_row = conn.execute("""
         SELECT
           SUM(CASE WHEN wx_ensemble_mean IS NOT NULL THEN 1 ELSE 0 END) AS has_ens,
           SUM(CASE WHEN wx_ensemble_mean IS NULL THEN 1 ELSE 0 END) AS null_ens,
@@ -115,6 +115,7 @@ def pipeline_audit(conn: sqlite3.Connection) -> dict:
           AVG(CASE WHEN wx_ensemble_std IS NOT NULL THEN wx_ensemble_std END) AS avg_std
         FROM evaluated_opportunities WHERE product_type='weather'
     """).fetchone()
+    row = ens_row
 
     total = row["total"] or 0
     has_ens = row["has_ens"] or 0
@@ -196,7 +197,7 @@ def pipeline_audit(conn: sqlite3.Connection) -> dict:
     return {
         "ensemble_coverage": coverage,
         "ecmwf_present": ecmwf_present,
-        "avg_members": row["avg_members"] if row else None,
+        "avg_members": ens_row["avg_members"] if ens_row else None,
         "tradeable_pct": tradeable / total * 100 if total > 0 else 0,
     }
 
