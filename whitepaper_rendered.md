@@ -384,8 +384,8 @@ This creates a geometric de-risking curve that preserves capital during losing s
 | Metric | Value |
 |---|---|
 | Status | Live trading since February 22, 2026 |
-| Settled trades | 0 |
-| Win rate | N/A (0W / 0L) |
+| Settled trades | 186 |
+| Win rate | 89.2% (166W / 20L) |
 | Assets | BTC, ETH, SOL, XRP |
 
 ## Markets
@@ -469,4 +469,4 @@ Promoted features (driving live behavior):
 
 ---
 
-*Last updated: N/A*
+*Last updated: 2026-03-02T02:05:10Z*
