@@ -43,8 +43,8 @@ MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.25         # max 25% of bankroll at risk per trade (was 50%; reduced after loss analysis)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 MIN_SECONDS_BEFORE_CLOSE = 0
-MAX_SECONDS_BEFORE_CLOSE = 600    # scan 10 min before close (300-600s is shadow data collection)
-STC_SHADOW_THRESHOLD = 300        # 15M trades above this STC are shadow-only (not executed)
+MAX_SECONDS_BEFORE_CLOSE = 600    # scan 10 min before close (500-600s is shadow data collection)
+STC_SHADOW_THRESHOLD = 500        # 15M trades above this STC are shadow-only (data: 300-500s 17W/0L +$127 cf)
 ONE_ASSET_PER_WINDOW = False
 
 # ─── Hourly Observation Mode ──────────────────────────────────────────────────
@@ -7484,8 +7484,8 @@ class OpportunityScanner:
                     continue  # DO NOT add to candidates — observation gate
 
                 # ── STC SHADOW GATE (15M only) ──
-                # Markets at 300-600s STC: log full evaluation for data collection, but don't trade.
-                # This lets us measure WR/PnL at extended STC without risking capital.
+                # Markets at 500-600s STC: log full evaluation for data collection, but don't trade.
+                # 300-500s promoted to live (data: 17W/0L, +$127 cf PnL). 500-600s still collecting data.
                 if window.get("product_type") in (None, "15m") and seconds_remaining > STC_SHADOW_THRESHOLD:
                     _dedup_key = (ticker, "stc_shadow")
                     if _dedup_key not in self._eval_opp_seen:
