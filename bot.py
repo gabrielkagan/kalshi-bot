@@ -59,12 +59,14 @@ HOURLY_SERIES_TICKERS = {
 HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800  # 30 min before close
 HOURLY_MIN_SECONDS_BEFORE_CLOSE = 0
 HOURLY_MARKET_BLEND_W = 0.40            # Optimal Brier per 134K simulation (0.70 was second-worst)
-HOURLY_MIN_ENTRY_PRICE = 70            # Hourly strikes (data: 70c+ 61/61 = 100% WR)
+HOURLY_MIN_ENTRY_PRICE = 50            # Lowered for data collection (was 70)
 HOURLY_MAX_RISK_PER_TRADE = 0.15       # Conservative start (60% of 15M's 0.25)
 
 # ─── Hourly Three-Layer Optimization (Researcher Recommendations) ─────────
 HOURLY_TEMPERATURE_T = 1.45           # Temperature scaling: softens overconfident probs (T>1 = less confident)
 HOURLY_TEMPERATURE_ENABLED = True     # Toggle for temperature scaling
+HOURLY_CALIBRATION_ENABLED = False    # Disable hourly CalibrationEngine — uses passthrough + temperature
+                                      # Engine was making calibration worse (Brier 0.12 raw → 0.20 after engine)
 HOURLY_MIN_STC_ENTRY = 300            # Min STC for entry (5 min) — EGARCH degrades beyond this
 HOURLY_MAX_STC_ENTRY = 1800           # 30 min — expanded for observation data collection
 HOURLY_EXCLUDED_ASSETS = set()         # Empty in observation mode — collect all asset data
@@ -6137,7 +6139,7 @@ class OpportunityScanner:
         if HOURLY_OBSERVATION_ENABLED:
             assert HOURLY_MARKET_BLEND_W >= 0.30, (
                 f"HOURLY_MARKET_BLEND_W={HOURLY_MARKET_BLEND_W} too low")
-            assert HOURLY_MIN_ENTRY_PRICE >= 70, (
+            assert HOURLY_MIN_ENTRY_PRICE >= 50, (
                 f"HOURLY_MIN_ENTRY_PRICE={HOURLY_MIN_ENTRY_PRICE} too low")
             assert HOURLY_MIN_ENTRY_PRICE <= MIN_ENTRY_PRICE, (
                 f"HOURLY floor {HOURLY_MIN_ENTRY_PRICE} > 15M floor {MIN_ENTRY_PRICE}")
@@ -10516,10 +10518,15 @@ class MainLoop:
         self.calibration = CalibrationEngine()
         global _CALIBRATION_ENGINE
         _CALIBRATION_ENGINE = self.calibration
-        self.hourly_calibration = CalibrationEngine(
-            state_path=HOURLY_CALIBRATION_STATE_PATH, label="HourlyCal")
-        global _HOURLY_CALIBRATION_ENGINE
-        _HOURLY_CALIBRATION_ENGINE = self.hourly_calibration
+        if HOURLY_CALIBRATION_ENABLED:
+            self.hourly_calibration = CalibrationEngine(
+                state_path=HOURLY_CALIBRATION_STATE_PATH, label="HourlyCal")
+            global _HOURLY_CALIBRATION_ENGINE
+            _HOURLY_CALIBRATION_ENGINE = self.hourly_calibration
+        else:
+            self.hourly_calibration = None
+            logging.info("HourlyCal DISABLED: using passthrough + temperature T=%.2f",
+                         HOURLY_TEMPERATURE_T)
         tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
         self.telegram = TelegramNotifier(tg_token, tg_chat)
@@ -10678,17 +10685,20 @@ class MainLoop:
             )
 
         # Load hourly calibration training data (separate from 15M)
-        self.hourly_calibration.load_training_data_from_db(
-            self.state, product_type_include="hourly")
-        hourly_bt = self.hourly_calibration.backtest_adaptive_vs_fixed()
-        if hourly_bt:
-            logging.info("Startup hourly cal backtest: %s", hourly_bt)
-        logging.info(
-            "CONFIG_VERIFY (hourly_cal): method=%s active=%s obs=%d",
-            self.hourly_calibration.active_method,
-            self.hourly_calibration.is_learned_method_active(),
-            len(self.hourly_calibration._observations),
-        )
+        if self.hourly_calibration is not None:
+            self.hourly_calibration.load_training_data_from_db(
+                self.state, product_type_include="hourly")
+            hourly_bt = self.hourly_calibration.backtest_adaptive_vs_fixed()
+            if hourly_bt:
+                logging.info("Startup hourly cal backtest: %s", hourly_bt)
+            logging.info(
+                "CONFIG_VERIFY (hourly_cal): method=%s active=%s obs=%d",
+                self.hourly_calibration.active_method,
+                self.hourly_calibration.is_learned_method_active(),
+                len(self.hourly_calibration._observations),
+            )
+        else:
+            logging.info("CONFIG_VERIFY (hourly_cal): DISABLED (passthrough + temperature)")
 
         # Start Coinbase price feed
         self.feed.start()

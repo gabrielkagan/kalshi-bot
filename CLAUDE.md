@@ -52,10 +52,11 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | MAKER_ONLY_THRESHOLD | 0.0 | Taker allowed at all STC (was 90.0, removed: taker 14W/0L 100% WR) |
 | HOURLY_OBSERVATION_ONLY | True | Reverted — calibration too overconfident for hourly |
 | HOURLY_MARKET_BLEND_W | 0.40 | Optimal Brier per 134K simulation |
-| HOURLY_MIN_ENTRY_PRICE | 70 | Hourly floor |
+| HOURLY_MIN_ENTRY_PRICE | 50 | Lowered from 70 for data collection |
 | HOURLY_MAX_RISK_PER_TRADE | 0.15 | 60% of 15M's 0.25 |
 | HOURLY_TEMPERATURE_T | 1.45 | Softens overconfident probs: 95%→88.4% |
 | HOURLY_KELLY_FRACTION | 0.25 | Quarter-Kelly sizing for hourly |
+| HOURLY_CALIBRATION_ENABLED | False | Engine disabled — passthrough + T=1.45 (engine was hurting: Brier 0.12→0.20) |
 | HOURLY_MIN_STC_ENTRY | 300 | Min 5 min STC — EGARCH degrades below this |
 | HOURLY_MAX_STC_ENTRY | 1800 | Max 30 min STC — expanded for observation data collection |
 | HOURLY_EXCLUDED_ASSETS | set() | Empty — collecting all asset data in observation mode |
