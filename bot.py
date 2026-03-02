@@ -95,7 +95,8 @@ WEATHER_MAX_SECONDS_BEFORE_CLOSE = 86400  # Weather settles daily — always eli
 WEATHER_MIN_SECONDS_BEFORE_CLOSE = 3600   # At least 1 hour before settlement
 WEATHER_MAX_RISK_PER_TRADE = 0.10
 WEATHER_KELLY_FRACTION = 0.25
-WEATHER_MARKET_BLEND_W = 0.50            # More trust in market for weather
+WEATHER_MARKET_BLEND_W = 0.20            # 80% model, 20% market (ensemble is primary signal)
+WEATHER_MIN_EDGE_PCT = 0.003             # 0.3% — lower than crypto (observation-only experiment)
 
 # ─── Sports Comeback Observation Mode ────────────────────────────────────
 SPORTS_ENABLED = True
@@ -1336,6 +1337,7 @@ class StateManager:
             ("wx_ensemble_std", "REAL"),
             ("wx_bias_correction", "REAL"),
             ("wx_n_members", "INTEGER"),
+            ("wx_market_type", "TEXT"),
             # Hourly temperature scaling columns
             ("hourly_pre_temp_prob", "REAL"),
             ("hourly_applied_temp_t", "REAL"),
@@ -1754,6 +1756,7 @@ class StateManager:
                                      wx_ensemble_std: Optional[float] = None,
                                      wx_bias_correction: Optional[float] = None,
                                      wx_n_members: Optional[int] = None,
+                                     wx_market_type: Optional[str] = None,
                                      hourly_pre_temp_prob: Optional[float] = None,
                                      hourly_applied_temp_t: Optional[float] = None,
                                      hourly_shadow_temp_2_0: Optional[float] = None,
@@ -1780,9 +1783,10 @@ class StateManager:
                      product_type,
                      oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
                      wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
+                     wx_market_type,
                      hourly_pre_temp_prob, hourly_applied_temp_t,
                      hourly_shadow_temp_2_0, hourly_shadow_blend_50)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1800,6 +1804,7 @@ class StateManager:
                   product_type,
                   oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
                   wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
+                  wx_market_type,
                   hourly_pre_temp_prob, hourly_applied_temp_t,
                   hourly_shadow_temp_2_0, hourly_shadow_blend_50))
             self.conn.commit()
@@ -6368,6 +6373,7 @@ class OpportunityScanner:
                     _wx_info = self._parse_weather_market_info(mkt)
                     _wx_mtype = _wx_info[0] if _wx_info else None
                     _wx_bounds = (_wx_info[1], _wx_info[2]) if (_wx_info and _wx_info[0] == "bracket") else None
+                    _shadow_extra["wx_market_type"] = _wx_mtype
                     _wx_prob = self._ml.weather_engine.get_probability(
                         _wx_city, threshold,
                         market_type=_wx_mtype, bracket_bounds=_wx_bounds)
@@ -6389,6 +6395,7 @@ class OpportunityScanner:
                                 market_price=int(yes_ask) if yes_ask else None,
                                 wx_ensemble_mean=None, wx_ensemble_std=None,
                                 wx_n_members=0,
+                                wx_market_type=_shadow_extra.get("wx_market_type"),
                             )
                         continue
                     prob_result = {
@@ -6669,6 +6676,7 @@ class OpportunityScanner:
                                 wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
+                                wx_market_type=_shadow_extra.get("wx_market_type"),
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -6964,7 +6972,7 @@ class OpportunityScanner:
                         pass
 
                 # Filter: fee-adjusted edge must meet price-dependent minimum
-                _min_edge = get_min_edge(best_ask)
+                _min_edge = WEATHER_MIN_EDGE_PCT if _pt == "weather" else get_min_edge(best_ask)
                 if fee_adjusted_edge < _min_edge:
                     scan_stats[asset]["insufficient_edge"] += 1
                     self._recent_opportunities.append({
@@ -7035,6 +7043,7 @@ class OpportunityScanner:
                                 wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
+                                wx_market_type=_shadow_extra.get("wx_market_type"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
@@ -7163,6 +7172,7 @@ class OpportunityScanner:
                                 wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
+                                wx_market_type=_shadow_extra.get("wx_market_type"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
@@ -7289,6 +7299,7 @@ class OpportunityScanner:
                                 wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
+                                wx_market_type=_shadow_extra.get("wx_market_type"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
@@ -7458,8 +7469,9 @@ class OpportunityScanner:
                             _obs_extra.update(
                                 wx_ensemble_mean=vol_est.get("ensemble_mean"),
                                 wx_ensemble_std=vol_est.get("ensemble_std"),
-                                wx_bias_correction=vol_est.get("bias_correction"),
+                                wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=vol_est.get("n_members"),
+                                wx_market_type=_shadow_extra.get("wx_market_type"),
                             )
                         self._state.insert_evaluated_opportunity(
                             ticker, window["event_ticker"], asset, _obs_label,
@@ -8277,6 +8289,7 @@ class OrderExecutor:
                         wx_ensemble_std=candidate.get("wx_ensemble_std"),
                         wx_bias_correction=candidate.get("wx_bias_correction"),
                         wx_n_members=candidate.get("wx_n_members"),
+                        wx_market_type=candidate.get("wx_market_type"),
                         hourly_pre_temp_prob=candidate.get("hourly_pre_temp_prob"),
                         hourly_applied_temp_t=candidate.get("hourly_applied_temp_t"),
                         hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
@@ -8338,6 +8351,7 @@ class OrderExecutor:
                 wx_ensemble_std=candidate.get("wx_ensemble_std"),
                 wx_bias_correction=candidate.get("wx_bias_correction"),
                 wx_n_members=candidate.get("wx_n_members"),
+                wx_market_type=candidate.get("wx_market_type"),
                 hourly_pre_temp_prob=candidate.get("hourly_pre_temp_prob"),
                 hourly_applied_temp_t=candidate.get("hourly_applied_temp_t"),
                 hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
@@ -10267,6 +10281,7 @@ class SettlementTracker:
                     continue
 
                 entry_price = row["market_price"]
+                _opp_pt = row.get("product_type")
                 if entry_price is None:
                     would_have_profit = None
                     taker_fee = 0
@@ -10275,6 +10290,15 @@ class SettlementTracker:
                     pnl_maker = None
                     count = row.get("position_size") or 1
                     counterfactual_outcome = "unknown_no_price"
+                elif _opp_pt == "weather" and entry_price < WEATHER_MIN_ENTRY_PRICE:
+                    # Untradeable price — CF PnL is meaningless noise
+                    count = row.get("position_size") or 1
+                    would_have_profit = 0
+                    counterfactual_outcome = "untradeable_price"
+                    taker_fee = 0
+                    maker_fee = 0
+                    pnl_taker = 0
+                    pnl_maker = 0
                 else:
                     count = row.get("position_size") or 1
                     taker_fee = calculate_taker_fee(count, int(entry_price))
@@ -10330,7 +10354,6 @@ class SettlementTracker:
 
                 # Feed to calibration engine — route by product type
                 raw_p = row.get("raw_prob")
-                _opp_pt = row.get("product_type")
                 filter_stage = row.get("filter_stage", "")
                 cal_eligible_stages = ("candidate", "observation_trade", "hourly_observation",
                                        "spx_observation", "weather_observation")

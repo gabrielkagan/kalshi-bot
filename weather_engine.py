@@ -103,6 +103,9 @@ class WeatherEnsembleFetcher:
             cached = self._cache.get(cache_key)
             cached_ts = self._cache_ts.get(cache_key, 0)
             if cached and time.time() - cached_ts < WEATHER_POLL_INTERVAL:
+                cache_age = time.time() - cached_ts
+                if cache_age > 1800:  # 30 min
+                    logging.warning("WeatherEnsemble: %s serving stale cache (%.0fs old)", city_code, cache_age)
                 return cached
 
         lat, lon = city["lat"], city["lon"]
@@ -152,6 +155,7 @@ class WeatherEnsembleFetcher:
     def _fetch_model_ensemble(self, lat: float, lon: float, model: str,
                               target_date: str) -> Optional[List[float]]:
         """Fetch ensemble members' daily high temperature from Open-Meteo."""
+        t0 = time.time()
         try:
             resp = requests.get(OPEN_METEO_ENSEMBLE_URL, params={
                 "latitude": lat,
@@ -163,9 +167,11 @@ class WeatherEnsembleFetcher:
                 "end_date": target_date,
                 "timezone": "America/New_York",
             }, timeout=15)
+            elapsed = time.time() - t0
 
             if resp.status_code != 200:
-                logging.debug("WeatherEnsembleFetcher: %s returned %d", model, resp.status_code)
+                logging.warning("WeatherEnsemble: %s %s returned HTTP %d (%.1fs)",
+                                model, target_date, resp.status_code, elapsed)
                 return None
 
             data = resp.json()
@@ -191,15 +197,26 @@ class WeatherEnsembleFetcher:
                     logging.info("WeatherEnsembleFetcher: %s used hourly fallback, %d members",
                                  model, len(members))
 
-            if members:
-                _m = sum(members) / len(members)
-                logging.debug("WeatherEnsembleFetcher: %s %d members, mean=%.1fF, range=[%.1f, %.1f]",
-                              model, len(members), _m, min(members), max(members))
+            if not members:
+                logging.warning("WeatherEnsemble: %s %s returned 0 members (%.1fs)",
+                                model, target_date, elapsed)
+                return None
 
-            return members if members else None
+            _m = sum(members) / len(members)
+            logging.debug("WeatherEnsembleFetcher: %s %d members, mean=%.1fF, range=[%.1f, %.1f]",
+                          model, len(members), _m, min(members), max(members))
 
+            return members
+
+        except requests.RequestException as e:
+            elapsed = time.time() - t0
+            logging.warning("WeatherEnsemble: %s %s fetch FAILED (%.1fs): %s",
+                            model, target_date, elapsed, e)
+            return None
         except Exception as e:
-            logging.debug("WeatherEnsembleFetcher: %s fetch failed: %s", model, e)
+            elapsed = time.time() - t0
+            logging.warning("WeatherEnsemble: %s %s parse error (%.1fs): %s",
+                            model, target_date, elapsed, e)
             return None
 
     def _fetch_hrrr(self, lat: float, lon: float, target_date: str) -> Optional[float]:
