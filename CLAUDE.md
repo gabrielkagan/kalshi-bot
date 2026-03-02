@@ -16,6 +16,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 - **Never add keys to `_shadow_diag`** without also adding them to `insert_rejection()` + `insert_evaluated_opportunity()` signatures + SQL.
 - **After ANY change to `discover_active_windows()` or `product_type` assignment**: grep every `window.get("product_type")` comparison in `scan()` and verify each condition still matches actual values. The STC shadow gate, observation gate, and all product_type-based branching must be checked. (Learned: STC shadow gate checked `is None` but 15M windows had `product_type='15m'` — gate was silently dead code, 98c954d Mar 1 2026)
 - **Post-deploy data validation**: After deploy, don't just check "bot is running, no errors". Verify **expected DB entries are being created** — e.g., stc_shadow entries when STC is 300-600s, weather_observation entries when weather is enabled. Missing expected rows = silent logic bug.
+- **Any new `sqlite3.connect()` call MUST include `PRAGMA busy_timeout=10000`** — multiple threads (bot, firebase, sports) share state.db. Missing timeout = "database is locked" errors under contention. (Learned: sports_engine.py missing busy_timeout caused ~2000 errors/8hr, Mar 2 2026)
 - **Performance analysis must filter to current config regime** — losses under old configs (old sizing, old calibration, pre-maker-only) are not relevant to current optimization decisions. Always identify when major config changes happened and filter accordingly.
 
 ## Project Structure
