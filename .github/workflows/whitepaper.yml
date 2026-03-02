@@ -41,7 +41,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             cd ~/kalshi-bot-repo
-            python3 /tmp/whitepaper_upload/scripts/generate_whitepaper_stats.py > /tmp/whitepaper_stats.json
+            python3 /tmp/whitepaper_upload/scripts/generate_whitepaper_stats.py ~/kalshi-bot-repo/state.db > /tmp/whitepaper_stats.json
             cat /tmp/whitepaper_stats.json
 
       - name: Setup SSH and fetch stats

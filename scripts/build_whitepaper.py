@@ -133,6 +133,9 @@ def main():
     else:
         with open(STATS_PATH) as f:
             stats = json.load(f)
+        if "error" in stats:
+            print(f"Warning: stats JSON has error: {stats['error']}", file=sys.stderr)
+            stats = {}
 
     with open(TEMPLATE_PATH) as f:
         template = f.read()

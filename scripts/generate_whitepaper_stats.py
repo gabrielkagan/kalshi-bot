@@ -7,7 +7,9 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "state.db")
+DB_PATH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "state.db"
+)
 
 
 def main():
