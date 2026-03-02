@@ -41,6 +41,7 @@ SERIES_TICKERS = {
 MIN_ENTRY_PRICE = 87              # cents (data: two losses at 86c; 87c+ is cleaner)
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.25         # max 25% of bankroll at risk per trade (was 50%; reduced after loss analysis)
+XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 600    # scan 10 min before close (300-600s is shadow data collection)
 STC_SHADOW_THRESHOLD = 300        # 15M trades above this STC are shadow-only (not executed)
@@ -6114,11 +6115,14 @@ class OpportunityScanner:
         assert MARKET_BLEND_W == 0.40, f"MARKET_BLEND_W misconfigured: {MARKET_BLEND_W}"
         assert SHADOW_CAL_PIPELINE is True, "SHADOW_CAL_PIPELINE should be True"
         assert MAX_RISK_PER_TRADE == 0.25, f"MAX_RISK_PER_TRADE misconfigured: {MAX_RISK_PER_TRADE}"
+        assert XRP_MAX_RISK_PER_TRADE <= MAX_RISK_PER_TRADE, (
+            f"XRP risk {XRP_MAX_RISK_PER_TRADE} > 15M risk {MAX_RISK_PER_TRADE}")
+        assert XRP_MAX_RISK_PER_TRADE >= 0.05, f"XRP_MAX_RISK_PER_TRADE too low: {XRP_MAX_RISK_PER_TRADE}"
         logging.info(
             "CONFIG_VERIFY: MARKET_BLEND_W=%.2f SHADOW_CAL_PIPELINE=%s "
-            "MAX_RISK=%s SIZING_TIERS=%s DRAWDOWN_HALF=%.2f DRAWDOWN_QUARTER=%.2f "
+            "MAX_RISK=%s XRP_MAX_RISK=%s SIZING_TIERS=%s DRAWDOWN_HALF=%.2f DRAWDOWN_QUARTER=%.2f "
             "DRAWDOWN_HALT=%.2f MAKER_ONLY_THRESHOLD=%.0f",
-            MARKET_BLEND_W, SHADOW_CAL_PIPELINE, MAX_RISK_PER_TRADE,
+            MARKET_BLEND_W, SHADOW_CAL_PIPELINE, MAX_RISK_PER_TRADE, XRP_MAX_RISK_PER_TRADE,
             SIZING_TIERS, DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
             DRAWDOWN_HALT_THRESHOLD, MAKER_ONLY_THRESHOLD)
 
@@ -7069,6 +7073,14 @@ class OpportunityScanner:
                     _type_max = int((balance * _scfg.max_risk_per_trade) / best_ask)
                     if sizing["contracts"] > _type_max:
                         sizing["contracts"] = max(1, _type_max)
+
+                # Asset-specific risk cap (XRP RK vol systematically underestimates)
+                if asset == "XRP" and _pt in (None, "15m"):
+                    _xrp_max = int((_sizing_balance * XRP_MAX_RISK_PER_TRADE) / best_ask)
+                    if sizing["contracts"] > _xrp_max >= 1:
+                        logging.info("XRP risk cap: %d -> %d contracts (%.0f%% max risk)",
+                                     sizing["contracts"], _xrp_max, XRP_MAX_RISK_PER_TRADE * 100)
+                        sizing["contracts"] = _xrp_max
 
                 # Cap by existing exposure (positions + resting orders) to prevent
                 # accumulation across scan ticks on the same ticker
