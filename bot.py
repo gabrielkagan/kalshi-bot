@@ -1133,7 +1133,7 @@ class StateManager:
     def __init__(self, db_path: str = DB_PATH):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA busy_timeout=5000")
+        self.conn.execute("PRAGMA busy_timeout=10000")
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
 
