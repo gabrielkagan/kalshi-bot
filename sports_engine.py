@@ -534,8 +534,22 @@ def _team_code_in_ticker(code: str, ticker_upper: str) -> bool:
 
     Prevents false positives like "NY" matching "ANYTOWN".
     Team codes are delimited by non-alpha chars or string boundaries in Kalshi tickers.
+    Works for MARKET tickers (e.g. "KXNBAGAME-26MAR03BKNMIA-BKN" — hyphen separator).
+    Does NOT work for EVENT tickers where codes are concatenated ("BKNMIA" has no separator).
+    Use _event_matches_game() for event-level matching instead.
     """
     return bool(re.search(rf'(?:^|[^A-Z]){re.escape(code)}(?:[^A-Z]|$)', ticker_upper))
+
+
+def _event_matches_game(home_code: str, away_code: str, event_ticker: str) -> bool:
+    """Check if a Kalshi event ticker matches an ESPN game.
+
+    Kalshi event tickers concatenate both team codes: "KXNBAGAME-26MAR03BKNMIA".
+    Requires BOTH team codes present (substring match) to avoid false positives
+    where one team appears in a different game's event ticker.
+    """
+    et_upper = event_ticker.upper()
+    return home_code.upper() in et_upper and away_code.upper() in et_upper
 
 
 # ── Main Sports Engine ───────────────────────────────────────────────────────
@@ -736,9 +750,7 @@ class SportsEngine:
         away_upper = game.away_code.upper()
 
         for event_ticker, mkts in all_markets.items():
-            et_upper = event_ticker.upper()
-            if not (_team_code_in_ticker(home_upper, et_upper) or
-                    _team_code_in_ticker(away_upper, et_upper)):
+            if not _event_matches_game(game.home_code, game.away_code, event_ticker):
                 continue
 
             home_price = None
@@ -804,9 +816,7 @@ class SportsEngine:
         all_markets = self._discovery.get_all_markets()
 
         for event_ticker, mkts in all_markets.items():
-            et_upper = event_ticker.upper()
-            if not (_team_code_in_ticker(home_upper, et_upper) or
-                    _team_code_in_ticker(away_upper, et_upper)):
+            if not _event_matches_game(game.home_code, game.away_code, event_ticker):
                 continue
 
             # First try cached pregame prices
@@ -863,19 +873,19 @@ class SportsEngine:
 
         all_markets = self._discovery.get_all_markets()
         for event_ticker, mkts in all_markets.items():
-            et_upper = event_ticker.upper()
-            if _team_code_in_ticker(game.home_code.upper(), et_upper) or _team_code_in_ticker(game.away_code.upper(), et_upper):
-                fav_side = "home" if fav_code == game.home_code else "away"
-                for ticker, side in mkts.market_tickers.items():
-                    if side == fav_side:
-                        ob = self._discovery.get_orderbook_snapshot(ticker)
-                        if ob and "orderbook" in ob:
-                            book = ob["orderbook"]
-                            no_bids = book.get("no", [])
-                            if no_bids:
-                                best_no_bid = max(b[0] for b in no_bids if b)
-                                return 100 - best_no_bid
-                break
+            if not _event_matches_game(game.home_code, game.away_code, event_ticker):
+                continue
+            fav_side = "home" if fav_code == game.home_code else "away"
+            for ticker, side in mkts.market_tickers.items():
+                if side == fav_side:
+                    ob = self._discovery.get_orderbook_snapshot(ticker)
+                    if ob and "orderbook" in ob:
+                        book = ob["orderbook"]
+                        no_bids = book.get("no", [])
+                        if no_bids:
+                            best_no_bid = max(b[0] for b in no_bids if b)
+                            return 100 - best_no_bid
+            break
         return None
 
     def _get_orderbook_data(self, game: GameState,
@@ -892,43 +902,43 @@ class SportsEngine:
 
         all_markets = self._discovery.get_all_markets()
         for event_ticker, mkts in all_markets.items():
-            et_upper = event_ticker.upper()
-            if _team_code_in_ticker(game.home_code.upper(), et_upper) or _team_code_in_ticker(game.away_code.upper(), et_upper):
-                fav_side = "home" if fav_code == game.home_code else "away"
-                for ticker, side in mkts.market_tickers.items():
-                    if side == fav_side:
-                        ob = self._discovery.get_orderbook_snapshot(ticker)
-                        if ob and "orderbook" in ob:
-                            book = ob["orderbook"]
-                            yes_bids = book.get("yes", [])
-                            no_bids = book.get("no", [])
+            if not _event_matches_game(game.home_code, game.away_code, event_ticker):
+                continue
+            fav_side = "home" if fav_code == game.home_code else "away"
+            for ticker, side in mkts.market_tickers.items():
+                if side == fav_side:
+                    ob = self._discovery.get_orderbook_snapshot(ticker)
+                    if ob and "orderbook" in ob:
+                        book = ob["orderbook"]
+                        yes_bids = book.get("yes", [])
+                        no_bids = book.get("no", [])
 
-                            yes_bid = max((b[0] for b in yes_bids if b), default=None)
-                            yes_ask = None
-                            if no_bids:
-                                best_no = max(b[0] for b in no_bids if b)
-                                yes_ask = 100 - best_no
+                        yes_bid = max((b[0] for b in yes_bids if b), default=None)
+                        yes_ask = None
+                        if no_bids:
+                            best_no = max(b[0] for b in no_bids if b)
+                            yes_ask = 100 - best_no
 
-                            mid = None
-                            spread = None
-                            if yes_bid is not None and yes_ask is not None:
-                                mid = (yes_bid + yes_ask) / 2.0
-                                spread = yes_ask - yes_bid
+                        mid = None
+                        spread = None
+                        if yes_bid is not None and yes_ask is not None:
+                            mid = (yes_bid + yes_ask) / 2.0
+                            spread = yes_ask - yes_bid
 
-                            ask_depth = sum(b[1] for b in no_bids if b) if no_bids else 0
-                            bid_depth = sum(b[1] for b in yes_bids if b) if yes_bids else 0
+                        ask_depth = sum(b[1] for b in no_bids if b) if no_bids else 0
+                        bid_depth = sum(b[1] for b in yes_bids if b) if yes_bids else 0
 
-                            return {
-                                "ticker": ticker,
-                                "event_ticker": event_ticker,
-                                "yes_bid": yes_bid,
-                                "yes_ask": yes_ask,
-                                "mid_price": mid,
-                                "spread": spread,
-                                "ask_depth": ask_depth,
-                                "bid_depth": bid_depth,
-                            }
-                break
+                        return {
+                            "ticker": ticker,
+                            "event_ticker": event_ticker,
+                            "yes_bid": yes_bid,
+                            "yes_ask": yes_ask,
+                            "mid_price": mid,
+                            "spread": spread,
+                            "ask_depth": ask_depth,
+                            "bid_depth": bid_depth,
+                        }
+            break
         return default
 
     def _load_settled_games(self) -> None:
@@ -1055,9 +1065,7 @@ class SportsEngine:
             pregame_home = pregame_away = pregame_draw = None
             if self._discovery:
                 for et, mkts in self._discovery.get_all_markets().items():
-                    et_upper = et.upper()
-                    if (_team_code_in_ticker(game.home_code.upper(), et_upper) or
-                            _team_code_in_ticker(game.away_code.upper(), et_upper)):
+                    if _event_matches_game(game.home_code, game.away_code, et):
                         pregame_home = mkts.pregame_price_home
                         pregame_away = mkts.pregame_price_away
                         pregame_draw = mkts.pregame_price_draw
