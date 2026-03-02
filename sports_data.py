@@ -274,27 +274,27 @@ THREE_WAY_LR_TABLE: Dict[Tuple[str, str, str], float] = {
 # LR_scaled = 1.0 + (LR_raw - 1.0) * CONSERVATIVE_LR_SCALE
 # At scale=0.5: LR=2.8 → 1.9, posterior drops from 94.5% → 92.1%
 # Original table preserved for reference. Set to 1.0 to use raw values.
-CONSERVATIVE_LR_SCALE = 0.5
+CONSERVATIVE_LR_SCALE = 0.2
 
 # Reject signals where model - market > this threshold.
 # 30pp: model can be at most 30pp above market (market=20% → model max=50%)
-MAX_MODEL_MARKET_GAP = 0.30
+MAX_MODEL_MARKET_GAP = 0.20
 
 
 # ── Entry Criteria ───────────────────────────────────────────────────────────
 
 # Binary (NBA, NHL, MLB, etc.)
 BINARY_ENTRY_CRITERIA = {
-    "min_pregame_prob": 0.65,       # Pregame favorite must be >= 65%
-    "max_kalshi_fav_price": 38,     # Kalshi fav price must be <= 38c (deep underdog territory)
+    "min_pregame_prob": 0.55,       # Pregame favorite must be >= 55%
+    "max_kalshi_fav_price": 80,     # Kalshi fav price must be <= 80c (was 38c — too restrictive)
     "min_time_remaining_pct": 0.50, # At least 50% of game remaining
     "max_deficit_bucket": "large",  # Skip blowouts
 }
 
 # Three-way (soccer)
 THREE_WAY_ENTRY_CRITERIA = {
-    "min_pregame_prob": 0.60,       # Lower threshold for soccer (draws exist)
-    "max_kalshi_fav_price": 35,     # Tighter for soccer (3-way pricing)
+    "min_pregame_prob": 0.55,       # Lower threshold for soccer (draws exist)
+    "max_kalshi_fav_price": 70,     # Tighter for soccer (3-way pricing, was 35c)
     "min_time_remaining_pct": 0.55, # Soccer: at least 55% (40 min+)
     "max_deficit_goals": 1,         # 1 goal ONLY — 2+ goal comebacks are rare
 }

@@ -27,6 +27,7 @@ import requests
 from sports_data import (
     BINARY_ENTRY_CRITERIA,
     BINARY_LR_TABLE,
+    CONSERVATIVE_LR_SCALE,
     LEAGUES,
     MAX_MODEL_MARKET_GAP,
     THREE_WAY_ENTRY_CRITERIA,
@@ -96,6 +97,16 @@ class ComebackSignal:
     rejection_reason: Optional[str] = None
     simulated_contracts: int = 0
     simulated_risk: float = 0.0
+    # Counterfactual fields for multi-threshold analysis
+    would_signal_50c: bool = False
+    would_signal_60c: bool = False
+    would_signal_70c: bool = False
+    would_signal_80c: bool = False
+    would_signal_pregame_55: bool = False
+    would_signal_pregame_65: bool = False
+    shadow_lr_scale_50_posterior: float = 0.0
+    shadow_lr_scale_50_signal: bool = False
+    market_implied_prob: float = 0.0
 
 
 # ── ESPN Live Feed ───────────────────────────────────────────────────────────
@@ -512,6 +523,48 @@ class BayesianComebackModel:
             sim_contracts = 10
             sim_risk = sim_contracts * current_kalshi_price
 
+        # ── Counterfactual analysis ──────────────────────────────────────
+        # Base checks that are common to all price thresholds
+        _time_ok = game.time_remaining_pct >= criteria["min_time_remaining_pct"]
+        _deficit_ok = True
+        if outcome_type == "three_way" and deficit > criteria.get("max_deficit_goals", 99):
+            _deficit_ok = False
+        elif outcome_type == "binary" and deficit > 15:
+            _deficit_ok = False
+        _base_ok = _time_ok and _deficit_ok and fee_adjusted_edge > 0 and (
+            posterior - current_prob <= MAX_MODEL_MARKET_GAP)
+
+        # Would signal fire at each price ceiling?
+        would_signal_50c = _base_ok and current_kalshi_price <= 50 and pregame_fav_prob >= criteria["min_pregame_prob"]
+        would_signal_60c = _base_ok and current_kalshi_price <= 60 and pregame_fav_prob >= criteria["min_pregame_prob"]
+        would_signal_70c = _base_ok and current_kalshi_price <= 70 and pregame_fav_prob >= criteria["min_pregame_prob"]
+        would_signal_80c = _base_ok and current_kalshi_price <= 80 and pregame_fav_prob >= criteria["min_pregame_prob"]
+
+        # Would signal fire at each pregame threshold?
+        would_signal_pregame_55 = _base_ok and current_kalshi_price <= criteria["max_kalshi_fav_price"] and pregame_fav_prob >= 0.55
+        would_signal_pregame_65 = _base_ok and current_kalshi_price <= criteria["max_kalshi_fav_price"] and pregame_fav_prob >= 0.65
+
+        # Shadow LR scale=0.5 posterior (compare against live scale=0.2)
+        shadow_lr_raw = 1.0
+        key = (deficit_bucket, time_bucket, strength_bucket)
+        if outcome_type == "three_way":
+            shadow_lr_raw = THREE_WAY_LR_TABLE.get(key, 1.0)
+        else:
+            shadow_lr_raw = BINARY_LR_TABLE.get(key, 1.0)
+        shadow_lr_50 = 1.0 + (shadow_lr_raw - 1.0) * 0.5
+        shadow_num = prior * shadow_lr_50
+        shadow_den = shadow_num + (1 - prior)
+        shadow_lr_scale_50_posterior = shadow_num / shadow_den if shadow_den > 0 else prior
+        shadow_edge_50 = shadow_lr_scale_50_posterior - current_prob - fee_pct
+        shadow_lr_scale_50_signal = (
+            _base_ok and shadow_edge_50 > 0
+            and current_kalshi_price <= criteria["max_kalshi_fav_price"]
+            and pregame_fav_prob >= criteria["min_pregame_prob"]
+            and (shadow_lr_scale_50_posterior - current_prob) <= MAX_MODEL_MARKET_GAP
+        )
+
+        market_implied_prob = current_kalshi_price / 100.0
+
         return ComebackSignal(
             comeback_prob=posterior,
             prior=prior,
@@ -526,6 +579,15 @@ class BayesianComebackModel:
             rejection_reason=rejection_reason,
             simulated_contracts=sim_contracts,
             simulated_risk=sim_risk,
+            would_signal_50c=would_signal_50c,
+            would_signal_60c=would_signal_60c,
+            would_signal_70c=would_signal_70c,
+            would_signal_80c=would_signal_80c,
+            would_signal_pregame_55=would_signal_pregame_55,
+            would_signal_pregame_65=would_signal_pregame_65,
+            shadow_lr_scale_50_posterior=shadow_lr_scale_50_posterior,
+            shadow_lr_scale_50_signal=shadow_lr_scale_50_signal,
+            market_implied_prob=market_implied_prob,
         )
 
 
@@ -649,14 +711,24 @@ class SportsEngine:
             if not league_cfg:
                 continue
 
-            # 3. Identify pregame favorite
+            # 3. Identify pregame favorite (with retry chain)
             fav_info = self._pregame_favs.get(game_id)
+            pregame_capture_method = "pre_game" if fav_info else ""
+
             if not fav_info:
-                # Try to infer from current Kalshi prices if no pregame captured
+                # Retry: attempt pregame capture for games that went live
+                self._try_capture_pregame(game)
+                fav_info = self._pregame_favs.get(game_id)
+                if fav_info:
+                    pregame_capture_method = "first_live_retry"
+
+            if not fav_info:
+                # Last resort: infer from current live Kalshi prices
                 fav_info = self._infer_favorite(game)
                 if not fav_info:
                     continue
                 self._pregame_favs[game_id] = fav_info
+                pregame_capture_method = "live_infer"
 
             fav_code, pregame_fav_prob = fav_info
 
@@ -719,11 +791,17 @@ class SportsEngine:
             ob_data = self._get_orderbook_data(game, fav_code)
 
             # 9. Insert to sports_shadow_log
+            if pregame_capture_method == "live_infer" and signal.signal_fired:
+                logging.warning(
+                    "SportsEngine signal fired with live_infer fav for %s "
+                    "(pregame prices not captured)", game_id)
             self._insert_shadow_log(
                 game=game, league_cfg=league_cfg,
                 fav_code=fav_code, pregame_fav_prob=pregame_fav_prob,
                 fav_score=fav_score, underdog_score=underdog_score,
                 deficit=deficit, signal=signal, ob_data=ob_data,
+                pregame_capture_method=pregame_capture_method,
+                market_implied_prob=current_price / 100.0 if current_price else 0.0,
             )
 
             # 10. Insert to evaluated_opportunities
@@ -1057,7 +1135,9 @@ class SportsEngine:
                            fav_code: str, pregame_fav_prob: float,
                            fav_score: int, underdog_score: int,
                            deficit: int, signal: ComebackSignal,
-                           ob_data: Dict) -> None:
+                           ob_data: Dict,
+                           pregame_capture_method: str = "",
+                           market_implied_prob: float = 0.0) -> None:
         """Insert record into sports_shadow_log."""
         try:
             conn = self._get_db_conn()
@@ -1086,10 +1166,15 @@ class SportsEngine:
                     comeback_prob, prior, likelihood_ratio,
                     edge, fee_adjusted_edge,
                     signal_fired, filter_stage, rejection_reason,
-                    simulated_contracts, simulated_risk
+                    simulated_contracts, simulated_risk,
+                    would_signal_50c, would_signal_60c,
+                    would_signal_70c, would_signal_80c,
+                    would_signal_pregame_55, would_signal_pregame_65,
+                    market_implied_prob, pregame_capture_method,
+                    shadow_lr_scale_50_posterior, shadow_lr_scale_50_signal
                 ) VALUES (
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
                 )
             """, (
                 game.game_id, league_cfg.espn_sport, league_cfg.display_name,
@@ -1111,6 +1196,16 @@ class SportsEngine:
                 1 if signal.signal_fired else 0,
                 signal.filter_stage, signal.rejection_reason,
                 signal.simulated_contracts, signal.simulated_risk,
+                1 if signal.would_signal_50c else 0,
+                1 if signal.would_signal_60c else 0,
+                1 if signal.would_signal_70c else 0,
+                1 if signal.would_signal_80c else 0,
+                1 if signal.would_signal_pregame_55 else 0,
+                1 if signal.would_signal_pregame_65 else 0,
+                signal.market_implied_prob,
+                pregame_capture_method,
+                signal.shadow_lr_scale_50_posterior,
+                1 if signal.shadow_lr_scale_50_signal else 0,
             ))
             conn.commit()
         except Exception:

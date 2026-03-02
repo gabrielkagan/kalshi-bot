@@ -1289,7 +1289,17 @@ class StateManager:
                 espn_latency_ms REAL, kalshi_latency_ms REAL,
                 closing_price REAL,
                 final_home_score INTEGER, final_away_score INTEGER,
-                fav_won INTEGER, market_result TEXT, pnl_cents INTEGER
+                fav_won INTEGER, market_result TEXT, pnl_cents INTEGER,
+                would_signal_50c INTEGER DEFAULT 0,
+                would_signal_60c INTEGER DEFAULT 0,
+                would_signal_70c INTEGER DEFAULT 0,
+                would_signal_80c INTEGER DEFAULT 0,
+                would_signal_pregame_55 INTEGER DEFAULT 0,
+                would_signal_pregame_65 INTEGER DEFAULT 0,
+                market_implied_prob REAL,
+                pregame_capture_method TEXT,
+                shadow_lr_scale_50_posterior REAL,
+                shadow_lr_scale_50_signal INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_sports_shadow_game
                 ON sports_shadow_log(game_id);
@@ -1298,6 +1308,26 @@ class StateManager:
             CREATE INDEX IF NOT EXISTS idx_sports_shadow_signal
                 ON sports_shadow_log(signal_fired);
         """)
+        self.conn.commit()
+
+        # Migration: add new columns to sports_shadow_log (safe to re-run)
+        for col_def in [
+            ("would_signal_50c", "INTEGER DEFAULT 0"),
+            ("would_signal_60c", "INTEGER DEFAULT 0"),
+            ("would_signal_70c", "INTEGER DEFAULT 0"),
+            ("would_signal_80c", "INTEGER DEFAULT 0"),
+            ("would_signal_pregame_55", "INTEGER DEFAULT 0"),
+            ("would_signal_pregame_65", "INTEGER DEFAULT 0"),
+            ("market_implied_prob", "REAL"),
+            ("pregame_capture_method", "TEXT"),
+            ("shadow_lr_scale_50_posterior", "REAL"),
+            ("shadow_lr_scale_50_signal", "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE sports_shadow_log ADD COLUMN {col_def[0]} {col_def[1]}")
+            except Exception:
+                pass  # Column already exists
         self.conn.commit()
 
         # Migration: add new columns to evaluated_opportunities (safe to re-run)
