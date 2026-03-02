@@ -590,6 +590,10 @@ class SPXVolatilityEngine:
         self._mz_r_squared: float = 0.5  # initial blend weight
         self._last_bucket_idx: Optional[int] = None
         self._last_egarch_update: float = 0.0
+        # Mincer-Zarnowitz tracking: lists of (egarch_var_forecast, rk_var_realized)
+        self._mz_pairs: deque = deque(maxlen=SPX_MZ_WINDOW)
+        self._mz_recompute_interval: float = 300.0  # 5 minutes
+        self._mz_last_recompute: float = 0.0
 
     def update(self, seconds_to_close: float) -> Optional[Dict]:
         """Compute blended volatility estimate for SPX.
@@ -633,11 +637,24 @@ class SPXVolatilityEngine:
         seasonal_factor = self._seasonal.get_seasonal_factor()
         egarch_rv = egarch_sigma * seasonal_factor if egarch_sigma else None
 
-        # Blend RK and EGARCH
+        # Blend RK and EGARCH via variance-space blend (matches crypto pattern)
+        egarch_blend_var = None
         if egarch_rv and egarch_rv > 0:
+            # Record MZ pair for R-squared tracking
+            egarch_var = egarch_rv ** 2
+            rk_var = rk_rv ** 2
+            self._mz_pairs.append((egarch_var, rk_var))
+            self._maybe_recompute_mz()
+
             # Use MZ R-squared as blend weight for EGARCH
             blend_weight = max(0.0, min(0.8, self._mz_r_squared))
-            blended_rv = (1 - blend_weight) * rk_rv + blend_weight * egarch_rv
+
+            if blend_weight > 0:
+                # Variance-space blend: avoids Jensen's inequality bias
+                egarch_blend_var = blend_weight * egarch_var + (1 - blend_weight) * rk_var
+                blended_rv = math.sqrt(egarch_blend_var)
+            else:
+                blended_rv = rk_rv
         else:
             blended_rv = rk_rv
             blend_weight = 0.0
@@ -667,12 +684,47 @@ class SPXVolatilityEngine:
             "regime": regime,
             "egarch_sigma": egarch_sigma,
             "egarch_blend_weight": blend_weight,
+            "egarch_blend_var": egarch_blend_var,
             "mz_r_squared": self._mz_r_squared,
             "rk_rv": rk_rv,
             "vix_implied_rv": vix_implied_rv,
             "seasonal_factor": seasonal_factor,
             "n_returns": len(returns),
         }
+
+    def _maybe_recompute_mz(self):
+        """Recompute Mincer-Zarnowitz R-squared from stored (forecast, realized) pairs."""
+        now = time.time()
+        if now - self._mz_last_recompute < self._mz_recompute_interval:
+            return
+        self._mz_last_recompute = now
+
+        pairs = list(self._mz_pairs)
+        if len(pairs) < 20:
+            return  # need minimum sample
+
+        forecasts = [p[0] for p in pairs]
+        realized = [p[1] for p in pairs]
+        n = len(forecasts)
+        mean_r = sum(realized) / n
+        ss_tot = sum((r - mean_r) ** 2 for r in realized)
+        if ss_tot < 1e-30:
+            return  # no variance in realized — can't compute R²
+
+        # OLS: realized = a + b * forecast + e
+        mean_f = sum(forecasts) / n
+        ss_xy = sum((f - mean_f) * (r - mean_r) for f, r in zip(forecasts, realized))
+        ss_xx = sum((f - mean_f) ** 2 for f in forecasts)
+        if ss_xx < 1e-30:
+            return
+        b = ss_xy / ss_xx
+        a = mean_r - b * mean_f
+        ss_res = sum((r - (a + b * f)) ** 2 for f, r in zip(forecasts, realized))
+        r_squared = max(0.0, 1.0 - ss_res / ss_tot)
+        old = self._mz_r_squared
+        self._mz_r_squared = r_squared
+        if abs(r_squared - old) > 0.05:
+            logging.info("SPX MZ R²: %.4f → %.4f (n=%d)", old, r_squared, n)
 
     def _compute_realized_kernel(self, returns: List[float]) -> Optional[float]:
         """Parzen flat-top kernel estimator on returns."""

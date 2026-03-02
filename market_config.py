@@ -121,6 +121,8 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         use_hourly_dynamic_cap=False,
         fee_multiplier_taker=0.035,
         fee_multiplier_maker=0.0175,
+        max_positions_per_window=2,
+        max_window_risk=0.15,
         observation_filter_label="spx_observation",
     ),
     "weather": MarketTypeConfig(
@@ -257,6 +259,10 @@ def validate_market_configs() -> None:
         f"spx fee_taker: {cfg_s.fee_multiplier_taker} != {bot.SPX_HOURLY_FEE_MULTIPLIER_TAKER}")
     assert cfg_s.fee_multiplier_maker == bot.SPX_HOURLY_FEE_MULTIPLIER_MAKER, (
         f"spx fee_maker: {cfg_s.fee_multiplier_maker} != {bot.SPX_HOURLY_FEE_MULTIPLIER_MAKER}")
+    assert cfg_s.max_positions_per_window == bot.SPX_HOURLY_MAX_POSITIONS_PER_WINDOW, (
+        f"spx max_pos: {cfg_s.max_positions_per_window} != {bot.SPX_HOURLY_MAX_POSITIONS_PER_WINDOW}")
+    assert cfg_s.max_window_risk == bot.SPX_HOURLY_MAX_WINDOW_RISK, (
+        f"spx max_wrisk: {cfg_s.max_window_risk} != {bot.SPX_HOURLY_MAX_WINDOW_RISK}")
 
     # ── Weather ──
     cfg_w = MARKET_CONFIGS["weather"]

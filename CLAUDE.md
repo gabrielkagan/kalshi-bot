@@ -23,7 +23,9 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 
 - `bot.py` — Main bot (~10400 lines, all trading logic)
 - `analyst.py` — AI analyst system (news sentiment, loss analysis, Telegram alerts)
+- `spx_engine.py` — SPX hourly market engine (Polygon.io price feed, EGARCH, RK, VIX integration)
 - `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
+- `market_config.py` — Centralized MarketTypeConfig for all product types (validates against bot.py at startup)
 - `firebase_push.py` — Pushes live dashboard snapshots to Firebase
 - `start.sh` — Startup script (activates venv, sources .env, runs bot)
 - `.github/workflows/deploy.yml` — Auto-deploy to VPS on push to main
@@ -33,6 +35,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
 - **15M performance:** 169 trades, 149W/20L (88.2%)
 - **Hourly:** Reverted to observation mode (HOURLY_OBSERVATION_ONLY = True) — 66.7% WR was unprofitable, calibration under investigation
+- **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — EGARCH+RK blend, VIX integration, intraday seasonal filter. Per-window limits: max 2 positions, 15% risk cap.
 - **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 5 cities, collecting data. wx_market_type tracked in DB for post-hoc analysis.
 - **CalibrationEngine:** Hourly data excluded from training (was contaminating 15M model — 35.5% of training data)
 
@@ -62,6 +65,17 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | HOURLY_EXCLUDED_ASSETS | set() | Empty — collecting all asset data in observation mode |
 | HOURLY_MAX_POSITIONS_PER_WINDOW | 2 | ENB ~1.3 — limit correlated exposure |
 | HOURLY_MAX_WINDOW_RISK | 0.15 | Max aggregate risk per hourly window |
+| SPX_HOURLY_OBSERVATION_ONLY | True | Shadow-only — collecting data, no live trades |
+| SPX_HOURLY_MIN_ENTRY_PRICE | 70 | Cents — lower than crypto for data collection |
+| SPX_HOURLY_MAX_ENTRY_PRICE | 99 | Cents |
+| SPX_HOURLY_MARKET_BLEND_W | 0.40 | 60% model, 40% market |
+| SPX_HOURLY_TEMPERATURE_T | 1.0 | No temperature correction yet — need data |
+| SPX_HOURLY_KELLY_FRACTION | 0.25 | Quarter-Kelly |
+| SPX_HOURLY_MAX_RISK_PER_TRADE | 0.15 | Conservative sizing |
+| SPX_HOURLY_FEE_MULTIPLIER_TAKER | 0.035 | Finance category — half of crypto's 0.07 |
+| SPX_HOURLY_FEE_MULTIPLIER_MAKER | 0.0175 | Same as crypto maker |
+| SPX_HOURLY_MAX_POSITIONS_PER_WINDOW | 2 | Prevent correlated multi-strike blowups |
+| SPX_HOURLY_MAX_WINDOW_RISK | 0.15 | Max aggregate risk per SPX window |
 | WEATHER_OBSERVATION_ONLY | True | Observation-only — collecting ensemble data |
 | WEATHER_MIN_ENTRY_PRICE | 10 | Cents — low floor for data collection |
 | WEATHER_MAX_ENTRY_PRICE | 99 | Cents |

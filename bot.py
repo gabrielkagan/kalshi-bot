@@ -87,6 +87,8 @@ SPX_HOURLY_TEMPERATURE_T = 1.0           # Start neutral, tune with data
 SPX_HOURLY_KELLY_FRACTION = 0.25
 SPX_HOURLY_FEE_MULTIPLIER_TAKER = 0.035  # Finance category: half of crypto's 0.07
 SPX_HOURLY_FEE_MULTIPLIER_MAKER = 0.0175
+SPX_HOURLY_MAX_POSITIONS_PER_WINDOW = 2  # Max concurrent SPX positions per hourly window
+SPX_HOURLY_MAX_WINDOW_RISK = 0.15        # Max aggregate risk across SPX positions per window
 
 # ─── Weather Observation Mode ─────────────────────────────────────────────────
 WEATHER_ENABLED = True
