@@ -4952,6 +4952,9 @@ class ProbabilityEngine:
             elif _cal_cfg.cal_eligible and _CALIBRATION_ENGINE is not None:
                 cal = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
                 result["calibration_method"] = _CALIBRATION_ENGINE.active_method
+            elif not _cal_cfg.cal_eligible:
+                cal = min(raw_prob, dynamic_cap)
+                result["calibration_method"] = "passthrough"
             else:
                 cal = ProbabilityEngine._calibrate(raw_prob, cap=dynamic_cap)
                 result["calibration_method"] = "fixed_beta"
@@ -4968,6 +4971,9 @@ class ProbabilityEngine:
         elif _cal_cfg2.cal_eligible and _CALIBRATION_ENGINE is not None:
             calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
             result["calibration_method"] = _CALIBRATION_ENGINE.active_method
+        elif not _cal_cfg2.cal_eligible:
+            calibrated_prob = min(raw_prob, dynamic_cap)
+            result["calibration_method"] = "passthrough"
         else:
             calibrated_prob = ProbabilityEngine._calibrate(raw_prob, cap=dynamic_cap)
             result["calibration_method"] = "fixed_beta"
