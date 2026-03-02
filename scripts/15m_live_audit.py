@@ -290,10 +290,10 @@ def execution_quality(conn: sqlite3.Connection, since: str,
               f"{mw/(mw+ml)*100:.0f}%  |  TAKER: {tw}W/{tl}L = "
               f"{tw/(tw+tl)*100:.0f}%")
 
-    # Escalation breakdown
+    # Escalation breakdown (normalize None/none/NULL → 'none')
     subsection("By escalation type")
     escs = conn.execute(f"""
-        SELECT escalation_type,
+        SELECT COALESCE(LOWER(escalation_type), 'none') AS esc_type,
           COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
           SUM(pnl_cents) AS pnl,
@@ -302,14 +302,14 @@ def execution_quality(conn: sqlite3.Connection, since: str,
           ROUND(AVG(fill_latency_seconds), 2) AS avg_lat
         FROM settled_trades
         WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
-        GROUP BY escalation_type ORDER BY n DESC
+        GROUP BY esc_type ORDER BY n DESC
     """, (since,)).fetchall()
     print(f"  {'Escalation':<18} {'N':>4} {'W':>3} {'L':>3} "
           f"{'PnL':>10} {'Fees':>7} {'Wait':>6} {'Lat':>6}")
     print("  " + "-" * 62)
     for e in escs:
         l = (e["n"] or 0) - (e["w"] or 0)
-        print(f"  {str(e['escalation_type'] or 'None'):<18} {e['n']:>4} "
+        print(f"  {e['esc_type']:<18} {e['n']:>4} "
               f"{e['w']:>3} {l:>3} ${e['pnl']/100:>9.2f} "
               f"${e['fees']/100:>6.2f} "
               f"{e['avg_wait'] or 0:>5.1f}s {e['avg_lat']:>5.1f}s")
@@ -570,6 +570,49 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
     section("4. PROFIT LEAKAGE ANALYSIS")
     asset_clause_eval = (f"AND asset = '{asset_filter}'"
                          if asset_filter else "")
+    asset_clause_settled = (f"AND asset = '{asset_filter}'"
+                            if asset_filter else "")
+
+    # Pipeline completeness
+    subsection("Pipeline completeness")
+    pipe = conn.execute(f"""
+        SELECT
+          SUM(CASE WHEN filter_stage = 'candidate' THEN 1 ELSE 0 END) AS candidates,
+          SUM(CASE WHEN filter_stage = 'candidate' AND status = 'settled'
+              THEN 1 ELSE 0 END) AS cand_settled,
+          SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+          COUNT(*) AS total_evals
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
+    """, (since,)).fetchone()
+    traded = conn.execute(f"""
+        SELECT COUNT(*) AS n FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause_settled}
+    """, (since,)).fetchone()
+    rej_n = conn.execute(f"""
+        SELECT COUNT(*) AS n FROM rejected_opportunities
+        WHERE rejection_time >= ?
+          AND (product_type IS NULL OR product_type NOT IN
+               ('hourly', 'weather', 'sports', 'spx_hourly'))
+    """, (since,)).fetchone()
+    cand = pipe["candidates"] or 0
+    traded_n = traded["n"] or 0
+    pending_n = pipe["pending"] or 0
+    total_eval = pipe["total_evals"] or 0
+    rej = rej_n["n"] or 0
+    non_cand = total_eval - cand
+    print(f"  Total evaluated:       {total_eval}")
+    print(f"  Passed all filters:    {cand} ({cand/total_eval*100:.1f}%)"
+          if total_eval > 0 else f"  Passed all filters:    {cand}")
+    print(f"  Filtered out:          {non_cand}")
+    print(f"  Actually traded:       {traded_n}")
+    if cand > 0:
+        gap = cand - traded_n
+        print(f"  Candidate→trade gap:   {gap} "
+              f"({gap/cand*100:.0f}% of candidates not traded)"
+              if gap > 0 else f"  Candidate→trade gap:   0 (all candidates traded)")
+    print(f"  Pending (unsettled):   {pending_n}")
+    print(f"  Rejected opportunities:{rej}")
 
     # Filter funnel
     subsection("Evaluated opportunities funnel")
@@ -602,7 +645,8 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
     losses = conn.execute(f"""
         SELECT ticker, asset, entry_price_cents, count, pnl_cents,
           fee_cents, seconds_to_close, strategy, escalation_type,
-          fill_latency_seconds, calibrated_prob, edge, vol_regime
+          fill_latency_seconds, calibrated_prob, edge, vol_regime,
+          settled_at
         FROM settled_trades
         WHERE settled_at >= ? {SETTLED_15M_FILTER}
           AND market_result = 'no'
@@ -624,6 +668,79 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
                   f"Latency: {lo['fill_latency_seconds']:.1f}s")
     else:
         print("  No losses in regime window!")
+
+    # Loss clustering analysis
+    if losses:
+        subsection("Loss clustering")
+        loss_times = []
+        loss_assets = []
+        for lo in losses:
+            try:
+                t = datetime.fromisoformat(
+                    (lo["settled_at"] if "settled_at" in lo.keys() else "")
+                    .replace("Z", ""))
+                loss_times.append(t)
+            except Exception:
+                loss_times.append(None)
+            loss_assets.append(lo["asset"])
+
+        # Same-hour clustering
+        hour_buckets: Dict[str, int] = defaultdict(int)
+        for t in loss_times:
+            if t:
+                hour_buckets[t.strftime("%Y-%m-%d %H:00")] += 1
+        clusters = {k: v for k, v in hour_buckets.items() if v > 1}
+        if clusters:
+            print("  ALERT: Loss clustering detected (>1 loss in same hour):")
+            for hr, cnt in sorted(clusters.items()):
+                print(f"    {hr} — {cnt} losses")
+        else:
+            print("  No same-hour clustering (losses spread across hours)")
+
+        # Consecutive same-asset losses
+        all_trades = conn.execute(f"""
+            SELECT asset, market_result, settled_at
+            FROM settled_trades
+            WHERE settled_at >= ? {SETTLED_15M_FILTER}
+            ORDER BY settled_at
+        """, (since,)).fetchall()
+        streaks = []
+        cur_asset = None
+        cur_count = 0
+        for t in all_trades:
+            if t["market_result"] == "no":
+                if t["asset"] == cur_asset:
+                    cur_count += 1
+                else:
+                    if cur_count >= 2:
+                        streaks.append((cur_asset, cur_count))
+                    cur_asset = t["asset"]
+                    cur_count = 1
+            else:
+                if cur_count >= 2:
+                    streaks.append((cur_asset, cur_count))
+                cur_asset = None
+                cur_count = 0
+        if cur_count >= 2:
+            streaks.append((cur_asset, cur_count))
+        if streaks:
+            print("  ALERT: Consecutive same-asset losses:")
+            for asset, cnt in streaks:
+                print(f"    {asset}: {cnt} consecutive losses")
+        else:
+            print("  No consecutive same-asset loss streaks")
+
+        # Asset loss concentration
+        asset_loss_ct: Dict[str, int] = defaultdict(int)
+        for a in loss_assets:
+            asset_loss_ct[a] += 1
+        total_losses = len(losses)
+        for asset, cnt in sorted(asset_loss_ct.items(),
+                                  key=lambda x: -x[1]):
+            pct = cnt / total_losses * 100
+            flag = " *** CONCENTRATED" if pct > 60 else ""
+            print(f"  {asset}: {cnt}/{total_losses} losses "
+                  f"({pct:.0f}%){flag}")
 
     # Counterfactual: stc_shadow (300-600s zone)
     subsection("STC shadow zone counterfactual (300-600s)")
@@ -667,6 +784,37 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
               f"({wr:.0f}% WR), CF PnL ${total_cf/100:.2f}")
         print(f"  Data sufficiency: {'SUFFICIENT' if settled_n >= 30 else 'INSUFFICIENT'} "
               f"(need 30, have {settled_n})")
+
+        # Promotion candidate: combined 300-500s bucket
+        promo = conn.execute(f"""
+            SELECT COUNT(*) AS n,
+              SUM(CASE WHEN status='settled' AND market_result='yes'
+                  THEN 1 ELSE 0 END) AS w,
+              SUM(CASE WHEN status='settled' AND market_result='no'
+                  THEN 1 ELSE 0 END) AS l,
+              SUM(CASE WHEN status='settled'
+                  THEN COALESCE(counterfactual_pnl, 0) ELSE 0 END) AS cf_pnl,
+              SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+              ROUND(AVG(market_price), 1) AS avg_p
+            FROM evaluated_opportunities
+            WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
+              AND filter_stage = 'stc_shadow'
+              AND seconds_to_close BETWEEN 300 AND 500
+        """, (since,)).fetchone()
+        pw, pl = (promo["w"] or 0), (promo["l"] or 0)
+        pn_settled = pw + pl
+        if pn_settled > 0:
+            p_wr = pw / pn_settled * 100
+            print(f"\n  >>> PROMOTION CANDIDATE (300-500s combined):")
+            print(f"      {pw}W/{pl}L ({p_wr:.0f}% WR), "
+                  f"CF PnL ${(promo['cf_pnl'] or 0)/100:.2f}, "
+                  f"pending {promo['pending'] or 0}")
+            if pn_settled >= 25 and p_wr >= 90:
+                print(f"      STATUS: READY for promotion consideration "
+                      f"({pn_settled} settled obs)")
+            else:
+                print(f"      STATUS: Need more data "
+                      f"({pn_settled}/25 settled, {p_wr:.0f}%/90% WR)")
     else:
         print("  No stc_shadow entries")
 
@@ -784,12 +932,55 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
     subsection("Counterfactual — strategy_wait")
     _counterfactual_stage(conn, since, "strategy_wait", asset_clause_eval)
 
+    # Counterfactual: dip_addon_shadow
+    subsection("Counterfactual — dip_addon_shadow")
+    dip_rows = conn.execute(f"""
+        SELECT asset, market_price, market_result, seconds_to_close,
+          COALESCE(counterfactual_pnl, 0) AS cf_pnl, status
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
+          AND filter_stage = 'dip_addon_shadow'
+          AND status = 'settled'
+    """, (since,)).fetchall()
+    if dip_rows:
+        w = sum(1 for r in dip_rows if r["market_result"] == "yes")
+        l = len(dip_rows) - w
+        cf_total = sum(r["cf_pnl"] for r in dip_rows)
+        avg_p = sum(r["market_price"] for r in dip_rows) / len(dip_rows)
+        avg_stc = sum(r["seconds_to_close"] or 0
+                      for r in dip_rows) / len(dip_rows)
+        wr = w / len(dip_rows) * 100
+        print(f"  N={len(dip_rows)}, {w}W/{l}L, WR={wr:.1f}%, "
+              f"avg_price={avg_p:.1f}c, avg_stc={avg_stc:.0f}s")
+        print(f"  CF PnL: ${cf_total/100:.2f}")
+        verdict = "FILTER CORRECT" if cf_total < 0 else "FILTER MAY BE TOO STRICT"
+        print(f"  >>> {verdict}")
+        # By asset detail
+        dip_by_asset: Dict[str, List] = defaultdict(list)
+        for r in dip_rows:
+            dip_by_asset[r["asset"]].append(r)
+        if len(dip_by_asset) > 1:
+            print(f"\n  {'Asset':<6} {'N':>4} {'W':>3} {'L':>3} "
+                  f"{'CF PnL':>10} {'WR':>6}")
+            print("  " + "-" * 38)
+            for asset in sorted(dip_by_asset):
+                rr = dip_by_asset[asset]
+                aw = sum(1 for r in rr if r["market_result"] == "yes")
+                al = len(rr) - aw
+                acf = sum(r["cf_pnl"] for r in rr)
+                awr = aw / len(rr) * 100
+                print(f"  {asset:<6} {len(rr):>4} {aw:>3} {al:>3} "
+                      f"${acf/100:>9.2f} {awr:>5.1f}%")
+    else:
+        print("  No settled dip_addon entries")
+
 
 def _counterfactual_stage(conn: sqlite3.Connection, since: str,
                           stage: str, asset_clause: str) -> None:
     rows = conn.execute(f"""
         SELECT market_price, market_result, seconds_to_close, asset,
-          COALESCE(counterfactual_pnl, 0) AS cf_pnl
+          COALESCE(counterfactual_pnl, 0) AS cf_pnl,
+          position_size
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause}
           AND filter_stage = ?
@@ -805,6 +996,12 @@ def _counterfactual_stage(conn: sqlite3.Connection, since: str,
         print(f"  N={len(rows)}, {w}W/{l}L, WR={wr:.1f}%, "
               f"avg_price={avg_p:.1f}c, avg_stc={avg_stc:.0f}s")
         print(f"  CF PnL: ${cf_total/100:.2f}")
+        # Flag if CF PnL uses default sizing (position_size NULL → 1 contract)
+        null_sizing = sum(1 for r in rows
+                          if r["position_size"] is None or r["position_size"] == 0)
+        if null_sizing > 0:
+            print(f"  NOTE: {null_sizing}/{len(rows)} entries use 1ct default "
+                  f"sizing (position_size NULL) — CF PnL is understated")
         verdict = "FILTER CORRECT" if cf_total < 0 else "FILTER MAY BE TOO STRICT"
         print(f"  >>> {verdict}")
     else:
