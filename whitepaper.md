@@ -205,9 +205,9 @@ As expiry approaches and less can go wrong, the cap relaxes to allow higher-conf
 
 The calibrated probability is blended with the market-implied probability:
 
-$$p_{final} = 0.50 \times p_{cal} + 0.50 \times p_{market}$$
+$$p_{final} = 0.60 \times p_{cal} + 0.40 \times p_{market}$$
 
-This 50/50 blend was validated against a no-blend alternative: the no-blend system was +1.86 percentage points overconfident (Brier score 0.0946 vs 0.0422), and would have generated 16 trades that were net -$53.54. The no-blend system now monitors in shadow mode.
+This 60/40 blend (60% model, 40% market) was validated against a no-blend alternative: the no-blend system was +1.86 percentage points overconfident (Brier score 0.0946 vs 0.0422), and would have generated 16 trades that were net -$53.54. The 40% market weight was subsequently tuned from 50% after data showed the model was underconfident by 0.8–2.1pp at 90%+ probabilities. The no-blend system now monitors in shadow mode.
 
 ### Sanity Checks
 
@@ -235,7 +235,20 @@ $$\text{edge} = p_{final} - \frac{\text{best\_ask}}{100} - \frac{\text{taker\_fe
 
 A trade must satisfy:
 
-$$\text{edge} \geq \text{MIN\_EDGE\_PCT} = 0.9\%$$
+$$\text{edge} \geq \text{get\_min\_edge(price)}$$
+
+The minimum edge is price-dependent, reflecting the higher risk of expensive contracts:
+
+| Entry Price | Min Edge |
+|---|---|
+| 97¢+ | 4.0% |
+| 95–96¢ | 2.5% |
+| 93–94¢ | 1.8% |
+| 91–92¢ | 1.2% |
+| 89–90¢ | 0.9% |
+| 87–88¢ | 0.7% |
+
+A flat fallback of 0.7% (MIN\_EDGE\_PCT) applies if the price-dependent schedule is unavailable.
 
 ## 3.4 Kalshi Order Flow (Shadow Mode)
 
@@ -305,10 +318,11 @@ Position sizing is tiered by fee-adjusted edge, with higher-conviction trades re
 | Fee-Adjusted Edge | Risk Fraction |
 |---|---|
 | ≥ 4% | 25% of bankroll |
-| ≥ 2% | 20% of bankroll |
-| ≥ 1.5% | 15% of bankroll |
-| ≥ 1% | 10% of bankroll |
+| ≥ 2.5% | 20% of bankroll |
+| ≥ 1.8% | 15% of bankroll |
+| ≥ 1.2% | 10% of bankroll |
 | ≥ 0.9% | 7% of bankroll |
+| ≥ 0.7% | 5% of bankroll |
 
 Safety ceiling: max 25% of bankroll at risk per trade.
 
@@ -316,9 +330,10 @@ Safety ceiling: max 25% of bankroll at risk per trade.
 
 | Balance vs. Starting | Sizing Adjustment |
 |---|---|
-| ≥ 90% | Full sizing |
-| 80–90% | Half sizing |
-| < 80% | Quarter sizing |
+| ≥ 85% | Full sizing |
+| 75–85% | Half sizing |
+| 65–75% | Quarter sizing |
+| < 65% | Halt trading |
 
 This creates a geometric de-risking curve that preserves capital during losing streaks.
 
@@ -328,15 +343,15 @@ This creates a geometric de-risking curve that preserves capital during losing s
 
 ## Position Sizing Controls
 
-- **Edge-tiered sizing**: Position size scales with conviction — 25% max at 4%+ edge, down to 7% at 0.9% edge
-- **Drawdown scaling**: Size halved below 90% of starting balance, quartered below 80%
+- **Edge-tiered sizing**: Position size scales with conviction — 25% max at 4%+ edge, down to 5% at 0.7% edge
+- **Drawdown scaling**: Size halved below 85% of starting balance, quartered below 75%, trading halted below 65%
 - **Hard limits**: Maximum risk per trade capped at 25% of bankroll
 
 ## Market Selection Controls
 
 - **Multi-asset capable**: Can trade multiple assets per 15-minute window
 - **Price range guardrails**: Only trade contracts priced 87–99¢ — below 87¢ has historically poor win rates; above 99¢ offers insufficient reward
-- **Minimum edge threshold**: Fee-adjusted edge must exceed 0.9% after taker fees (worst-case)
+- **Price-dependent edge threshold**: Fee-adjusted edge must exceed a price-dependent minimum (0.7% at 87¢ up to 4.0% at 97¢+) after taker fees (worst-case)
 - **Scanner uses taker fees**: Every candidate is profitable even if forced to taker execution
 
 ## Model Sanity Controls
@@ -345,7 +360,7 @@ This creates a geometric de-risking curve that preserves capital during losing s
 - **Model-market discrepancy**: If the model estimates >90% probability but the market prices below 75¢, refuse (the model may be missing material information)
 - **Dynamic probability cap**: Time-dependent ceiling (93–99.5%) prevents overconfidence regardless of model output
 - **Data-driven calibration**: CalibrationEngine learns from settlement outcomes, replacing fixed assumptions with empirical mappings
-- **Market-price blending**: 50/50 blend with market-implied probability anchors estimates and prevents systematic overconfidence
+- **Market-price blending**: 60/40 blend (60% model, 40% market) anchors estimates and prevents systematic overconfidence
 
 ## Execution Controls
 
@@ -369,9 +384,8 @@ This creates a geometric de-risking curve that preserves capital during losing s
 | Metric | Value |
 |---|---|
 | Status | Live trading since February 22, 2026 |
-| Balance | ~$217 |
-| Settled trades | 107 |
-| Win rate | 93.5% (100W / 7L) |
+| Settled trades | {{TOTAL_SETTLED}} |
+| Win rate | {{WIN_RATE}} ({{TOTAL_WINS}}W / {{TOTAL_LOSSES}}L) |
 | Assets | BTC, ETH, SOL, XRP |
 
 ## Markets
@@ -455,4 +469,4 @@ Promoted features (driving live behavior):
 
 ---
 
-*Last updated: February 27, 2026*
+*Last updated: {{GENERATED_AT}}*

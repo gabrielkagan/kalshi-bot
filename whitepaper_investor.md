@@ -10,9 +10,9 @@ This document describes an automated trading system for **Kalshi**, the first CF
 
 The system monitors real-time prices across multiple exchanges, estimates outcome probabilities using EGARCH-conditioned volatility models with per-asset distribution fitting, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
-**Live trading results (as of February 27, 2026):**
+**Live trading results (as of {{GENERATED_AT}}):**
 
-- 107 settled trades with a 93.5% win rate (100W / 7L)
+- {{TOTAL_SETTLED}} settled trades with a {{WIN_RATE}} win rate ({{TOTAL_WINS}}W / {{TOTAL_LOSSES}}L)
 - Live trading with real capital since February 22, 2026
 - Fully automated, always-on operation with complete audit trail
 - Also collecting calibration data on hourly markets (75 strikes/event) for future expansion
@@ -64,7 +64,7 @@ For every active market, the bot estimates the probability that the underlying a
 - EGARCH-conditioned volatility (how much the price is expected to move, accounting for clustering and leverage effects)
 - Options-implied volatility (what the derivatives market expects)
 - Cross-exchange price signals (whether other exchanges are leading a move)
-- Market-price blending (50/50 blend with the market's own implied probability to prevent overconfidence)
+- Market-price blending (60% model / 40% market blend to prevent overconfidence)
 
 The probability model uses **Normal Inverse Gaussian (NIG) distributions** fitted specifically to each cryptocurrency's return characteristics. Unlike generic models, NIG captures both the heavy tails (large moves are more common than a bell curve predicts) and the asymmetry (upward and downward moves have different frequencies) unique to each asset.
 
@@ -74,7 +74,7 @@ Most markets are not worth trading. The system applies a rigorous multi-stage fi
 
 - The model's estimated probability is too low (the contract is unlikely to pay out)
 - The Kalshi price is too high (not enough profit potential) or too low (too much uncertainty)
-- The edge after fees is insufficient — must exceed 0.9% after taker fees (evaluated at worst-case rates)
+- The edge after fees is insufficient — must exceed a price-dependent minimum (0.7% at 87¢ up to 4.0% at 97¢+) after taker fees (evaluated at worst-case rates)
 - The model and the market disagree by a suspicious margin (suggesting the model may be missing information)
 - Statistical inputs appear unreliable (extreme z-scores indicating potential data issues)
 
@@ -85,7 +85,7 @@ The vast majority of markets are correctly identified as unprofitable and filter
 For the small number of markets that pass all filters, the bot determines the appropriate position size using an edge-tiered framework. Position sizes are:
 
 - **Proportional to conviction** — higher-edge trades receive larger allocations (up to 25% of bankroll at 4%+ edge), lower-edge trades receive minimal sizing (7% at 0.9% edge)
-- **Automatically reduced during drawdowns** — if the account balance drops below 90% of starting value, sizes halve; below 80%, they quarter
+- **Automatically reduced during drawdowns** — if the account balance drops below 85% of starting value, sizes halve; below 75%, they quarter; below 65%, trading halts entirely
 - **Hard-capped** — no single trade can exceed 25% of bankroll regardless of model confidence
 
 ## 5. Execute
@@ -134,10 +134,11 @@ The bot uses an **edge-tiered** approach — higher-conviction trades (greater m
 | Fee-Adjusted Edge | Risk Fraction |
 |---|---|
 | ≥ 4% | 25% of bankroll |
-| ≥ 2% | 20% of bankroll |
-| ≥ 1.5% | 15% of bankroll |
-| ≥ 1% | 10% of bankroll |
+| ≥ 2.5% | 20% of bankroll |
+| ≥ 1.8% | 15% of bankroll |
+| ≥ 1.2% | 10% of bankroll |
 | ≥ 0.9% | 7% of bankroll |
+| ≥ 0.7% | 5% of bankroll |
 
 Individual trades risk a precisely calculated fraction of the bankroll, proportional to estimated edge. Even a string of losses has a limited impact on total capital. The sizing tiers were calibrated against actual trade performance data — previous higher tiers (50/35/20) were reduced after loss analysis.
 
@@ -145,8 +146,9 @@ Individual trades risk a precisely calculated fraction of the bankroll, proporti
 
 If the account balance drops below certain thresholds relative to its starting value, position sizes are automatically reduced:
 
-- At **90% of starting balance**, sizes are cut in half
-- At **80% of starting balance**, sizes are cut to one-quarter
+- At **85% of starting balance**, sizes are cut in half
+- At **75% of starting balance**, sizes are cut to one-quarter
+- At **65% of starting balance**, trading halts entirely
 
 This creates a geometric de-risking curve: the more the account loses, the less it risks, making recovery from drawdowns more manageable.
 
@@ -159,7 +161,7 @@ The bot can trade multiple assets per 15-minute window, concentrating capital on
 Before any trade is placed, the system verifies:
 
 - The model's probability estimate passes a sanity check against the market price
-- The estimated edge exceeds the minimum threshold (0.9%) after accounting for all fees (at worst-case taker rates)
+- The estimated edge exceeds the price-dependent minimum (0.7%–4.0%) after accounting for all fees (at worst-case taker rates)
 - The contract price falls within acceptable bounds (87–99¢)
 - No extreme statistical indicators suggest unreliable model inputs
 - The position size respects all hard limits and drawdown adjustments
@@ -183,9 +185,8 @@ No taker (aggressive) orders are placed when less than 90 seconds remain before 
 | Metric | Value |
 |---|---|
 | Status | Live trading since February 22, 2026 |
-| Balance | ~$217 |
-| Settled trades | 107 |
-| Win rate | 93.5% (100W / 7L) |
+| Settled trades | {{TOTAL_SETTLED}} |
+| Win rate | {{WIN_RATE}} ({{TOTAL_WINS}}W / {{TOTAL_LOSSES}}L) |
 | Assets | BTC, ETH, SOL, XRP |
 | Entry prices | 87–99¢ |
 
@@ -234,12 +235,12 @@ For readers interested in the mathematical foundations, the full technical white
 
 **Volatility Model** — Uses the Realized Kernel estimator (Barndorff-Nielsen 2008) with data-adaptive bandwidth selection to produce noise-robust volatility from high-frequency returns. Multiple estimators are blended using Mincer-Zarnowitz R²-weighted EMA blending, replacing fixed weights with data-driven quality scores. Includes EGARCH(1,1) with Student-t innovations for conditional volatility (promoted to live trading), time-varying RK weights, adaptive jump detection (percentile-based thresholds per asset), and options-implied volatility integration from Deribit.
 
-**Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven: as settlement outcomes accumulate, the CalibrationEngine progresses from fixed logistic scaling to Platt Scaling to Beta Calibration (currently active with 1,900+ observations). A dynamic time-dependent probability cap relaxes as expiry approaches (93% at 10min+ → 99.5% at <1min). Final probability blends 50/50 with market-implied probability to prevent overconfidence.
+**Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven: as settlement outcomes accumulate, the CalibrationEngine progresses from fixed logistic scaling to Platt Scaling to Beta Calibration (currently active with 1,900+ observations). A dynamic time-dependent probability cap relaxes as expiry approaches (93% at 10min+ → 99.5% at <1min). Final probability blends 60/40 (60% model, 40% market) to prevent overconfidence.
 
-**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Higher fee-adjusted edge trades get larger allocations (25% at 4%+, 20% at 2%+, 15% at 1.5%+, 10% at 1%+, 7% at 0.9%+), with automatic de-risking during drawdowns. Max risk per trade: 25%.
+**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Higher fee-adjusted edge trades get larger allocations (25% at 4%+, 20% at 2.5%+, 15% at 1.8%+, 10% at 1.2%+, 7% at 0.9%+, 5% at 0.7%+), with automatic de-risking during drawdowns (half at 85%, quarter at 75%, halt at 65%). Max risk per trade: 25%.
 
 **Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Maker orders use `post_only=True` to guarantee 75% fee savings. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. No taker execution below 90 seconds to close.
 
 ---
 
-*Last updated: February 27, 2026*
+*Last updated: {{GENERATED_AT}}*

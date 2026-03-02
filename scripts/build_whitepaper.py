@@ -78,10 +78,14 @@ def build_replacements(stats):
     else:
         top_rejection = "N/A"
 
+    total_losses = total_settled - total_wins
+
     r = {
         "TOTAL_EVALUATED": f"{total:,}",
         "TOP_REJECTION": top_rejection,
         "TOTAL_SETTLED": f"{total_settled:,}",
+        "TOTAL_WINS": f"{total_wins:,}",
+        "TOTAL_LOSSES": f"{total_losses:,}",
         "OBSERVATION_PERIOD": stats.get("observation_period", "N/A"),
         "ASSETS_TRACKED": ", ".join(assets),
         "FILTER_LOW_PROB": f"{f_low:,}",

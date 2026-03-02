@@ -1,0 +1,55 @@
+name: Generate Docs
+
+on:
+  workflow_run:
+    workflows: ["Deploy to VPS"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  generate-docs:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch stats from VPS
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: botuser
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd ~/kalshi-bot-repo
+            python3 scripts/generate_whitepaper_stats.py > /tmp/whitepaper_stats.json
+            cat /tmp/whitepaper_stats.json
+
+      - name: Download stats from VPS
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          scp botuser@${{ secrets.VPS_HOST }}:/tmp/whitepaper_stats.json whitepaper_stats.json
+
+      - name: Extract config and render docs
+        run: |
+          python3 scripts/extract_config.py > config.json
+          python3 scripts/build_whitepaper.py
+
+      - name: Check freshness
+        run: python3 scripts/check_docs_freshness.py
+
+      - name: Commit rendered docs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md whitepaper_rendered.md whitepaper_investor_rendered.md whitepaper_stats.json config.json
+          git diff --cached --quiet && echo "No doc changes" && exit 0
+          git commit -m "docs: auto-update rendered docs with latest stats"
+          git push
