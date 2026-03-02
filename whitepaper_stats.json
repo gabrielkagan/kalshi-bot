@@ -1,0 +1,59 @@
+{
+  "total_evaluated": 6561,
+  "filter_breakdown": {
+    "candidate": 48,
+    "dip_addon_shadow": 16,
+    "hourly_asset_excluded": 6,
+    "hourly_observation": 42,
+    "hourly_timing_restricted": 12,
+    "insufficient_edge": 1499,
+    "observation_trade": 83,
+    "price_out_of_range": 4539,
+    "single_asset_selection": 5,
+    "sports_price_too_high": 7,
+    "sports_signal": 12,
+    "sports_weak_favorite": 2,
+    "stc_shadow": 10,
+    "strategy_wait": 138,
+    "zero_sizing": 142
+  },
+  "total_settled": 185,
+  "total_wins": 165,
+  "observation_pnl": 2125,
+  "total_trades": 48,
+  "win_rate_by_price": {
+    "80-84": {
+      "n": 0,
+      "wins": 0
+    },
+    "85-89": {
+      "n": 67,
+      "wins": 60
+    },
+    "90-94": {
+      "n": 89,
+      "wins": 76
+    },
+    "95-99": {
+      "n": 29,
+      "wins": 29
+    }
+  },
+  "assets_tracked": [
+    "BTC",
+    "CHI_TEMP",
+    "DEN_TEMP",
+    "ETH",
+    "LAX_TEMP",
+    "MIA_TEMP",
+    "MLS",
+    "NBA",
+    "NCAAB",
+    "NHL",
+    "NYC_TEMP",
+    "SOL",
+    "XRP"
+  ],
+  "observation_period": "2026-02-22 to 2026-03-02",
+  "generated_at": "2026-03-02T01:29:29Z"
+}
