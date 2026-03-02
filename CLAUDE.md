@@ -44,7 +44,9 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | MIN_EDGE_BY_PRICE | 0.7%-4.0% | Price-dependent: 87c→0.7%, 89c→0.9%, 91c→1.2%, 93c→1.8%, 95c→2.5%, 97c→4.0% |
 | MARKET_BLEND_W | 0.40 | 60% model, 40% market (data: model underconfident 0.8-2.1pp at 90%+) |
 | MAX_RISK_PER_TRADE | 0.25 | Max 25% bankroll per trade |
-| MAX_SECONDS_BEFORE_CLOSE | 300 | 5 min before close |
+| MAX_SECONDS_BEFORE_CLOSE | 900 | 15 min before close (500-900s shadow, 0-500s live) |
+| STC_SHADOW_THRESHOLD | 500 | 15M trades above this STC are shadow-only |
+| XRP_MAX_RISK_PER_TRADE | 0.12 | XRP RK vol underestimates → cap exposure |
 | MAKER_ONLY_THRESHOLD | 90.0 | No taker execution below 90s (data: taker <90s cost -$85) |
 | HOURLY_OBSERVATION_ONLY | True | Reverted — calibration too overconfident for hourly |
 | HOURLY_MARKET_BLEND_W | 0.40 | Optimal Brier per 134K simulation |
