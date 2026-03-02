@@ -117,7 +117,7 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 | Win rate | 89.2% |
 | Observation P&L | 2,404 cents |
 
-*Last updated: 2026-03-02T02:05:10Z*
+*Last updated: 2026-03-02T02:17:37Z*
 
 ## Setup
 
