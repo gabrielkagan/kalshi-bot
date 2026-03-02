@@ -80,7 +80,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | WEATHER_MIN_ENTRY_PRICE | 10 | Cents — low floor for data collection |
 | WEATHER_MAX_ENTRY_PRICE | 99 | Cents |
 | WEATHER_MARKET_BLEND_W | 0.20 | 80% model, 20% market (ensemble is primary signal) |
-| WEATHER_MIN_EDGE_PCT | 0.003 | 0.3% — lower than crypto for illiquid weather markets |
+| WEATHER_MIN_EDGE_PCT | 0.001 | 0.1% — very low for max signal collection (observation-only) |
 | WEATHER_MAX_RISK_PER_TRADE | 0.10 | Conservative sizing |
 | WEATHER_KELLY_FRACTION | 0.25 | Quarter-Kelly |
 | WEATHER_MIN_SECONDS_BEFORE_CLOSE | 3600 | At least 1 hour before settlement |

@@ -100,7 +100,7 @@ WEATHER_MIN_SECONDS_BEFORE_CLOSE = 3600   # At least 1 hour before settlement
 WEATHER_MAX_RISK_PER_TRADE = 0.10
 WEATHER_KELLY_FRACTION = 0.25
 WEATHER_MARKET_BLEND_W = 0.20            # 80% model, 20% market (ensemble is primary signal)
-WEATHER_MIN_EDGE_PCT = 0.003             # 0.3% — lower than crypto (observation-only experiment)
+WEATHER_MIN_EDGE_PCT = 0.001             # 0.1% — very low for max signal collection (observation-only)
 
 # ─── Sports Comeback Observation Mode ────────────────────────────────────
 SPORTS_ENABLED = True
@@ -1374,6 +1374,8 @@ class StateManager:
             ("wx_bias_correction", "REAL"),
             ("wx_n_members", "INTEGER"),
             ("wx_market_type", "TEXT"),
+            ("wx_actual_high_temp", "REAL"),
+            ("wx_no_side_edge", "REAL"),
             # Hourly temperature scaling columns
             ("hourly_pre_temp_prob", "REAL"),
             ("hourly_applied_temp_t", "REAL"),
@@ -1793,6 +1795,8 @@ class StateManager:
                                      wx_bias_correction: Optional[float] = None,
                                      wx_n_members: Optional[int] = None,
                                      wx_market_type: Optional[str] = None,
+                                     wx_actual_high_temp: Optional[float] = None,
+                                     wx_no_side_edge: Optional[float] = None,
                                      hourly_pre_temp_prob: Optional[float] = None,
                                      hourly_applied_temp_t: Optional[float] = None,
                                      hourly_shadow_temp_2_0: Optional[float] = None,
@@ -1819,10 +1823,10 @@ class StateManager:
                      product_type,
                      oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
                      wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
-                     wx_market_type,
+                     wx_market_type, wx_actual_high_temp, wx_no_side_edge,
                      hourly_pre_temp_prob, hourly_applied_temp_t,
                      hourly_shadow_temp_2_0, hourly_shadow_blend_50)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1840,7 +1844,7 @@ class StateManager:
                   product_type,
                   oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
                   wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
-                  wx_market_type,
+                  wx_market_type, wx_actual_high_temp, wx_no_side_edge,
                   hourly_pre_temp_prob, hourly_applied_temp_t,
                   hourly_shadow_temp_2_0, hourly_shadow_blend_50))
             self.conn.commit()
@@ -6854,6 +6858,16 @@ class OpportunityScanner:
                                            fee_mult_maker=_mcfg.fee_multiplier_maker)
                 fee_adjusted_edge = edge - est_fee_1c / 100.0
 
+                # ── Weather NO-side shadow edge ──
+                if _pt == "weather":
+                    _no_prob = 1.0 - final_prob
+                    _no_price = 100 - best_ask
+                    _no_fee = calculate_fee(1, _no_price, is_taker=True,
+                                            fee_mult_taker=_mcfg.fee_multiplier_taker,
+                                            fee_mult_maker=_mcfg.fee_multiplier_maker)
+                    _shadow_extra["wx_no_side_edge"] = round(
+                        _no_prob - _no_price / 100.0 - _no_fee / 100.0, 6)
+
                 # ── Augment _shadow_diag with Kalshi OFT fields ──
                 if ofa_signals:
                     # Kalshi-specific signals are nested under signals.kalshi_orderbook
@@ -7080,6 +7094,7 @@ class OpportunityScanner:
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
+                                wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
@@ -7209,6 +7224,7 @@ class OpportunityScanner:
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
+                                wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
@@ -7508,6 +7524,7 @@ class OpportunityScanner:
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=vol_est.get("n_members"),
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
+                                wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                             )
                         self._state.insert_evaluated_opportunity(
                             ticker, window["event_ticker"], asset, _obs_label,
@@ -8388,6 +8405,7 @@ class OrderExecutor:
                 wx_bias_correction=candidate.get("wx_bias_correction"),
                 wx_n_members=candidate.get("wx_n_members"),
                 wx_market_type=candidate.get("wx_market_type"),
+                wx_no_side_edge=candidate.get("wx_no_side_edge"),
                 hourly_pre_temp_prob=candidate.get("hourly_pre_temp_prob"),
                 hourly_applied_temp_t=candidate.get("hourly_applied_temp_t"),
                 hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
@@ -10426,6 +10444,30 @@ class SettlementTracker:
                         _wx_city = row["asset"].replace("_TEMP", "")
                         self._ml.weather_engine._model.update_bias(
                             _wx_city, actual_est, forecast_mean)
+
+                # Weather observed temperature: fetch actual high via archive API
+                if (_opp_pt == "weather" and result in ("yes", "all_yes", "no", "all_no")
+                        and row.get("wx_actual_high_temp") is None):
+                    try:
+                        _wx_city = row["asset"].replace("_TEMP", "")
+                        # Extract settlement date from evaluation_time
+                        _eval_t = row.get("evaluation_time", "")
+                        _settle_date = _eval_t[:10] if len(_eval_t) >= 10 else None
+                        if _settle_date:
+                            _today = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                            if _settle_date < _today:  # archive API has ~24h lag
+                                _wx_eng = getattr(self._ml, "weather_engine", None) if self._ml else None
+                                if _wx_eng:
+                                    _obs_high = _wx_eng._fetcher.fetch_observed_high(_wx_city, _settle_date)
+                                    if _obs_high is not None:
+                                        self._state.conn.execute(
+                                            "UPDATE evaluated_opportunities SET wx_actual_high_temp=? WHERE id=?",
+                                            (_obs_high, opp_id))
+                                        self._state.conn.commit()
+                                        logging.info("weather_observed_temp: %s %s %.1fF",
+                                                     _wx_city, _settle_date, _obs_high)
+                    except Exception as e:
+                        logging.debug("weather_observed_temp fetch failed for %s: %s", ticker, e)
 
                 logging.info(
                     f"Evaluated opp settled: {ticker} ({row['filter_stage']}) "

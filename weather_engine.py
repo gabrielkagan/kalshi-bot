@@ -219,6 +219,46 @@ class WeatherEnsembleFetcher:
                             model, target_date, elapsed, e)
             return None
 
+    def fetch_observed_high(self, city_code: str, date_str: str) -> Optional[float]:
+        """Fetch actual observed daily high temperature from Open-Meteo archive API.
+
+        Args:
+            city_code: City code (e.g., 'NYC', 'CHI')
+            date_str: Date in YYYY-MM-DD format (must be yesterday or earlier)
+
+        Returns:
+            Observed daily high in °F, or None if unavailable.
+        """
+        city = WEATHER_CITIES.get(city_code)
+        if not city:
+            return None
+        try:
+            resp = requests.get("https://archive-api.open-meteo.com/v1/archive", params={
+                "latitude": city["lat"],
+                "longitude": city["lon"],
+                "daily": "temperature_2m_max",
+                "start_date": date_str,
+                "end_date": date_str,
+                "temperature_unit": "fahrenheit",
+                "timezone": "America/New_York",
+            }, timeout=15)
+            if resp.status_code != 200:
+                logging.warning("WeatherEnsemble: archive %s %s HTTP %d",
+                                city_code, date_str, resp.status_code)
+                return None
+            data = resp.json()
+            temps = data.get("daily", {}).get("temperature_2m_max", [])
+            if temps and temps[0] is not None:
+                observed = float(temps[0])
+                logging.info("WeatherEnsemble: archive %s %s observed_high=%.1fF",
+                             city_code, date_str, observed)
+                return observed
+            return None
+        except Exception as e:
+            logging.warning("WeatherEnsemble: archive fetch %s %s failed: %s",
+                            city_code, date_str, e)
+            return None
+
     def _fetch_hrrr(self, lat: float, lon: float, target_date: str) -> Optional[float]:
         """Fetch HRRR deterministic daily high temperature."""
         try:
