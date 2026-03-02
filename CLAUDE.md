@@ -23,15 +23,17 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 
 - `bot.py` — Main bot (~10400 lines, all trading logic)
 - `analyst.py` — AI analyst system (news sentiment, loss analysis, Telegram alerts)
+- `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
 - `firebase_push.py` — Pushes live dashboard snapshots to Firebase
 - `start.sh` — Startup script (activates venv, sources .env, runs bot)
 - `.github/workflows/deploy.yml` — Auto-deploy to VPS on push to main
 
-## Current State (Feb 28, 2026)
+## Current State (Mar 2, 2026)
 
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
 - **15M performance:** 169 trades, 149W/20L (88.2%)
 - **Hourly:** Reverted to observation mode (HOURLY_OBSERVATION_ONLY = True) — 66.7% WR was unprofitable, calibration under investigation
+- **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 5 cities, collecting data. wx_market_type tracked in DB for post-hoc analysis.
 - **CalibrationEngine:** Hourly data excluded from training (was contaminating 15M model — 35.5% of training data)
 
 ## Key Config Values (bot.py)
@@ -59,6 +61,15 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | HOURLY_EXCLUDED_ASSETS | set() | Empty — collecting all asset data in observation mode |
 | HOURLY_MAX_POSITIONS_PER_WINDOW | 2 | ENB ~1.3 — limit correlated exposure |
 | HOURLY_MAX_WINDOW_RISK | 0.15 | Max aggregate risk per hourly window |
+| WEATHER_OBSERVATION_ONLY | True | Observation-only — collecting ensemble data |
+| WEATHER_MIN_ENTRY_PRICE | 10 | Cents — low floor for data collection |
+| WEATHER_MAX_ENTRY_PRICE | 99 | Cents |
+| WEATHER_MARKET_BLEND_W | 0.20 | 80% model, 20% market (ensemble is primary signal) |
+| WEATHER_MIN_EDGE_PCT | 0.003 | 0.3% — lower than crypto for illiquid weather markets |
+| WEATHER_MAX_RISK_PER_TRADE | 0.10 | Conservative sizing |
+| WEATHER_KELLY_FRACTION | 0.25 | Quarter-Kelly |
+| WEATHER_MIN_SECONDS_BEFORE_CLOSE | 3600 | At least 1 hour before settlement |
+| WEATHER_MAX_SECONDS_BEFORE_CLOSE | 86400 | Weather settles daily — always eligible |
 
 ## Calibration Pipeline
 
@@ -116,6 +127,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 - **API tier:** Advanced (30 reads/sec, 30 writes/sec)
 - **Series (15M):** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M
 - **Series (hourly):** KXBTCD, KXETHD, KXSOLD, KXXRPD
+- **Series (weather):** KXHIGHNY, KXHIGHCHI, KXHIGHMIA, KXHIGHDEN, KXHIGHLAX
 
 ## Fee Formula
 
