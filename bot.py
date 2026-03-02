@@ -6306,6 +6306,16 @@ class OpportunityScanner:
                 if threshold is None:
                     continue
 
+                # Early NBBO price filter for multi-strike events (SPX: 60-400 markets).
+                # Skip probability computation for strikes clearly outside entry range.
+                if _pt in ("spx_hourly", "hourly", "weather"):
+                    _nbbo_raw = mkt.get("yes_ask_dollars") or mkt.get("yes_ask")
+                    if _nbbo_raw is not None:
+                        _nbbo = dollars_str_to_cents(_nbbo_raw) if isinstance(_nbbo_raw, str) else int(_nbbo_raw)
+                        _pcfg_early = get_market_config(_pt)
+                        if _nbbo > 0 and not (_pcfg_early.min_entry_price <= _nbbo <= _pcfg_early.max_entry_price):
+                            continue
+
                 # Per-market copy of shadow extras (OFT fields added per-ticker below)
                 _shadow_extra = dict(_shadow_extra_base)
                 # OFT fields for DB insert — populated after ofa_signals computed

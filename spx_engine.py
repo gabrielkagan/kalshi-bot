@@ -428,6 +428,7 @@ class SPXPriceFeed:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._reconnect_delay = RECONNECT_BASE_DELAY
+        self._consecutive_stale: int = 0
 
     def start(self):
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
@@ -722,6 +723,7 @@ class SPXEngine:
         self._egarch = SPXEGARCHEstimator()
         self._vol = SPXVolatilityEngine(self._feed, self._seasonal, self._egarch)
         self._started = False
+        self._consecutive_vol_none: int = 0
 
     def start(self):
         self._feed.start()
@@ -738,15 +740,29 @@ class SPXEngine:
 
     def get_spot_price(self, asset: str = "SPX") -> Optional[float]:
         if self._feed.is_stale("SPX"):
-            logging.warning("SPXEngine: SPX price stale >%ds", STALE_PRICE_THRESHOLD)
+            self._feed._consecutive_stale += 1
+            cnt = self._feed._consecutive_stale
+            if cnt == 120 or (cnt > 120 and cnt % 600 == 0):
+                logging.critical("SPX price feed stale for %d consecutive checks", cnt)
+            else:
+                logging.warning("SPXEngine: SPX price stale >%ds", STALE_PRICE_THRESHOLD)
             return None
+        self._feed._consecutive_stale = 0
         return self._feed.get_price("SPX")
 
     def get_vix(self) -> Optional[float]:
         return self._feed.get_vix()
 
     def get_vol_estimate(self, asset: str, stc: float) -> Optional[Dict]:
-        return self._vol.update(stc)
+        result = self._vol.update(stc)
+        if result is None:
+            self._consecutive_vol_none += 1
+            cnt = self._consecutive_vol_none
+            if cnt == 60 or (cnt > 60 and cnt % 300 == 0):
+                logging.critical("SPX vol engine returned None for %d consecutive checks", cnt)
+            return None
+        self._consecutive_vol_none = 0
+        return result
 
     def get_active_windows(self, client) -> List[Dict]:
         """Query Kalshi for KXINXU events. Returns windows with product_type='spx_hourly'."""
