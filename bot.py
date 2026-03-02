@@ -6067,6 +6067,16 @@ class OpportunityScanner:
                 f"Add them to the function signature + SQL or remove from _shadow_diag."
             )
 
+        # ── Startup assertion: DB busy_timeout must be set ──
+        # Prevents the bug class where a new sqlite3.connect() call forgets
+        # PRAGMA busy_timeout, causing "database is locked" under contention.
+        # (Learned: sports_engine.py missing busy_timeout → ~2000 errors/8hr, Mar 2 2026)
+        _bt = self._state.conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert _bt >= 5000, (
+            f"StateManager busy_timeout={_bt}ms is too low (need ≥5000). "
+            f"Add: conn.execute('PRAGMA busy_timeout=10000')"
+        )
+
         # ── Startup assertion: critical config values ──
         assert MARKET_BLEND_W == 0.40, f"MARKET_BLEND_W misconfigured: {MARKET_BLEND_W}"
         assert SHADOW_CAL_PIPELINE is True, "SHADOW_CAL_PIPELINE should be True"

@@ -77,7 +77,7 @@ class FirebasePusher:
         import sqlite3
         self._db_conn = sqlite3.connect(self._db_path)
         self._db_conn.execute("PRAGMA journal_mode=WAL")
-        self._db_conn.execute("PRAGMA busy_timeout=5000")
+        self._db_conn.execute("PRAGMA busy_timeout=10000")
         self._db_conn.row_factory = sqlite3.Row
         while not self._stop.is_set():
             try:
