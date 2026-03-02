@@ -43,7 +43,7 @@ MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.25         # max 25% of bankroll at risk per trade (was 50%; reduced after loss analysis)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 MIN_SECONDS_BEFORE_CLOSE = 0
-MAX_SECONDS_BEFORE_CLOSE = 600    # scan 10 min before close (500-600s is shadow data collection)
+MAX_SECONDS_BEFORE_CLOSE = 900    # scan 15 min before close (500-900s is shadow data collection)
 STC_SHADOW_THRESHOLD = 500        # 15M trades above this STC are shadow-only (data: 300-500s 17W/0L +$127 cf)
 ONE_ASSET_PER_WINDOW = False
 
