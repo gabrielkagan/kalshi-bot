@@ -49,7 +49,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | MAX_SECONDS_BEFORE_CLOSE | 900 | 15 min before close (500-900s shadow, 0-500s live) |
 | STC_SHADOW_THRESHOLD | 500 | 15M trades above this STC are shadow-only |
 | XRP_MAX_RISK_PER_TRADE | 0.12 | XRP RK vol underestimates → cap exposure |
-| MAKER_ONLY_THRESHOLD | 90.0 | No taker execution below 90s (data: taker <90s cost -$85) |
+| MAKER_ONLY_THRESHOLD | 0.0 | Taker allowed at all STC (was 90.0, removed: taker 14W/0L 100% WR) |
 | HOURLY_OBSERVATION_ONLY | True | Reverted — calibration too overconfident for hourly |
 | HOURLY_MARKET_BLEND_W | 0.40 | Optimal Brier per 134K simulation |
 | HOURLY_MIN_ENTRY_PRICE | 70 | Hourly floor |
@@ -107,8 +107,8 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 ## Order Execution
 
 - **Always enters as maker** (post_only=True), escalates to taker if unfilled
-- **Maker-only below 90s** — no taker execution (data: taker <90s cost -$85)
-- **Escalation**: maker → poll queue → cancel-replace IOC taker (if >90s STC)
+- **Taker allowed at all STC** — MAKER_ONLY_THRESHOLD=0 (data: taker 14W/0L, 100% WR across all STC zones)
+- **Escalation**: maker → poll queue → cancel-replace IOC taker
 - **WS fill detection** with REST fallback
 - **Candidate logging**: Both observation_trade (obs mode) and candidate (live mode) logged to evaluated_opportunities DB
 

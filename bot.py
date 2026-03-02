@@ -449,7 +449,9 @@ MAKER_TIMEOUT_SECONDS = 30.0     # hard timeout for maker orders
 
 # ─── Direct Taker Threshold ──────────────────────────────────────────────
 DIRECT_TAKER_THRESHOLD = 60.0     # seconds_to_close below this → skip maker, go IOC directly
-MAKER_ONLY_THRESHOLD = 90.0       # seconds_to_close below this → maker only, no taker escalation
+MAKER_ONLY_THRESHOLD = 0.0        # seconds_to_close below this → maker only, no taker escalation
+                                  # Set to 0: taker allowed at all STC (data: 14W/0L, 100% taker WR)
+                                  # Was 90.0 — removed after verifying taker has zero losses
 
 # ─── Adaptive Escalation ─────────────────────────────────────────────────
 ESCALATION_WAIT_LONG = 15.0       # maker wait when >=180s to close
@@ -8424,6 +8426,7 @@ class OrderExecutor:
                 seconds_to_close, net_edge, cal_prob, taker_fee)
 
             candidate["entry_path"] = "direct_taker"
+            candidate["escalation_type"] = "direct_taker"
             self._recent_taker_tickers[candidate["ticker"]] = time.time()
             result = self._submit_taker(candidate)
             if result is not None:
@@ -8491,6 +8494,7 @@ class OrderExecutor:
                 ticker, count, price, rejections, net_edge, cal_prob, taker_fee)
             self._session_post_only_taker_escalations += 1
             candidate["entry_path"] = "post_only_taker"
+            candidate["escalation_type"] = "post_only_taker"
             self._recent_taker_tickers[ticker] = time.time()
             result = self._submit_taker(candidate)
             if result is not None:
@@ -9258,6 +9262,8 @@ class OrderExecutor:
                 # WS state
                 "ws_connected": (self._kalshi_feed.is_connected
                                  if self._kalshi_feed else False),
+                # Config stamps for regime-filtered analysis
+                "maker_only_threshold": MAKER_ONLY_THRESHOLD,
             }
 
             with open(FILL_MODEL_JOURNAL, "a") as f:
