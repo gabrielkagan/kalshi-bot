@@ -13,10 +13,6 @@ on:
       - 'scripts/check_docs_freshness.py'
       - '.github/workflows/whitepaper.yml'
 
-  workflow_run:
-    workflows: ["Deploy to VPS"]
-    types: [completed]
-
   workflow_dispatch:
 
 permissions:
@@ -25,7 +21,6 @@ permissions:
 jobs:
   whitepaper:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
 
