@@ -1586,7 +1586,9 @@ class StateManager:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def record_settlement(self, settlement: Dict):
+    def record_settlement(self, settlement: Dict,
+                          pnl_override: Optional[int] = None,
+                          fee_override: Optional[int] = None):
         ticker = settlement["ticker"]
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -1604,6 +1606,16 @@ class StateManager:
         pnl = revenue - total_cost
         is_taker = bool(pos.get("is_taker"))
         fee = calculate_fee(pos["count"], pos["avg_price_cents"], is_taker=is_taker)
+
+        # Cross-check P&L/fee consistency with caller (canary for divergence)
+        if pnl_override is not None and abs(pnl - pnl_override) > 2:
+            logging.error(
+                f"PNL_MISMATCH {ticker}: record_settlement computed={pnl}, "
+                f"tracker passed={pnl_override}, delta={pnl - pnl_override}")
+        if fee_override is not None and abs(fee - fee_override) > 2:
+            logging.error(
+                f"FEE_MISMATCH {ticker}: record_settlement computed={fee}, "
+                f"tracker passed={fee_override}, delta={fee - fee_override}")
 
         self.conn.execute("""
             INSERT OR REPLACE INTO settled_trades
@@ -1650,10 +1662,10 @@ class StateManager:
                          oft_prob_adjustment: Optional[float] = None,
                          oft_imbalance_ratio: Optional[float] = None,
                          oft_n_snapshots: Optional[int] = None):
-        """Insert a rejected opportunity. INSERT OR REPLACE deduplicates by ticker."""
+        """Insert a rejected opportunity. INSERT OR IGNORE keeps the first rejection reason."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
-            INSERT OR REPLACE INTO rejected_opportunities
+            INSERT OR IGNORE INTO rejected_opportunities
                 (ticker, event_ticker, asset, rejection_reason, rejection_time,
                  z_score, spot_price, threshold, volatility, market_price,
                  seconds_to_close, calibrated_prob, raw_prob, status,
@@ -1882,9 +1894,9 @@ class StateManager:
             self.conn.execute("""
                 UPDATE positions
                 SET count=?, avg_price_cents=?, total_cost_cents=?,
-                    updated_at=?
+                    is_taker=MAX(is_taker, ?), updated_at=?
                 WHERE ticker=? AND status='open'
-            """, (new_count, new_avg, new_cost, now, ticker))
+            """, (new_count, new_avg, new_cost, 1 if is_taker else 0, now, ticker))
         else:
             opened_at = now
             self.conn.execute("""
@@ -5950,7 +5962,11 @@ class PositionSizer:
         return result
 
     def _drawdown_scaler(self, balance_cents: int) -> float:
-        """Scale position based on drawdown from peak balance (high-water mark)."""
+        """Scale position based on drawdown from peak balance (high-water mark).
+
+        IMPORTANT: Only call from main thread — mutates starting_balance_cents (HWM).
+        For read-only access (e.g. Firebase dashboard), use _drawdown_scaler_readonly().
+        """
         if self.starting_balance_cents <= 0:
             return 1.0
         # Ratchet up: drawdown tracks from peak, not starting balance
@@ -5959,6 +5975,19 @@ class PositionSizer:
         ratio = balance_cents / self.starting_balance_cents
         if ratio < DRAWDOWN_HALT_THRESHOLD:
             return 0.0   # stop trading entirely
+        if ratio < DRAWDOWN_QUARTER_THRESHOLD:
+            return 0.25
+        if ratio < DRAWDOWN_HALF_THRESHOLD:
+            return 0.5
+        return 1.0
+
+    def _drawdown_scaler_readonly(self, balance_cents: int) -> float:
+        """Read-only version for dashboard display. Does NOT update HWM."""
+        if self.starting_balance_cents <= 0:
+            return 1.0
+        ratio = balance_cents / self.starting_balance_cents
+        if ratio < DRAWDOWN_HALT_THRESHOLD:
+            return 0.0
         if ratio < DRAWDOWN_QUARTER_THRESHOLD:
             return 0.25
         if ratio < DRAWDOWN_HALF_THRESHOLD:
@@ -6103,9 +6132,16 @@ class OpportunityScanner:
         ob_fetches_this_tick = 0
         candidates: List[Dict] = []
 
-        # Reset hourly per-window tracking each tick
+        # Reset hourly per-window tracking each tick, seeded from existing positions
         self._hourly_window_counts = {}
         self._hourly_window_risk = {}
+        try:
+            for pos in self._state.get_open_positions():
+                evt = pos.get("event_ticker", "")
+                if evt:
+                    self._hourly_window_counts[evt] = self._hourly_window_counts.get(evt, 0) + 1
+        except Exception:
+            pass  # Non-critical: worst case is slight over-allocation
 
         # Clean up ask history and dedup set for tickers no longer in active windows
         active_tickers = set()
@@ -8168,8 +8204,8 @@ class OrderExecutor:
                         hourly_applied_temp_t=candidate.get("hourly_applied_temp_t"),
                         hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
                         hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"))
-            except Exception:
-                pass
+            except Exception as e:
+                logging.error(f"OBSERVATION_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
             return None
 
         # ── Log candidate to evaluated_opportunities (live mode) ──
@@ -8229,8 +8265,8 @@ class OrderExecutor:
                 hourly_applied_temp_t=candidate.get("hourly_applied_temp_t"),
                 hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
                 hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"))
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"CANDIDATE_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
 
         # ── Direct taker for <60s candidates ───────────────────────
         seconds_to_close = candidate.get("seconds_to_close")
@@ -8425,6 +8461,28 @@ class OrderExecutor:
             return None
         order["_last_poll"] = now
 
+        # Reconcile cancel_pending orders: retry cancel via Kalshi API
+        if order.get("cancel_pending"):
+            try:
+                cancel_resp = self._client.cancel_order(order["order_id"])
+                if cancel_resp is not None:
+                    logging.info(f"cancel_pending resolved: {order['ticker']} cancel succeeded on retry")
+                    order.pop("cancel_pending", None)
+                    self._state.mark_order_status(order["order_id"], "canceled")
+                    self._active_orders.pop(asset, None)
+                    return None
+                # Cancel still failing — check if order was already filled
+                fills_resp = self._client.get_fills(ticker=order["ticker"])
+                if fills_resp:
+                    fills = fills_resp.get("fills", [])
+                    for f in fills:
+                        if f.get("order_id") == order["order_id"]:
+                            logging.info(f"cancel_pending resolved: {order['ticker']} was filled")
+                            order.pop("cancel_pending", None)
+                            break  # Let normal fill detection handle it below
+            except Exception as e:
+                logging.error(f"cancel_pending reconciliation error for {order['ticker']}: {e}")
+
         # 0. Check WebSocket fills (pre-drained, zero API cost)
         for ws_fill in ws_fills:
             order["fill_source"] = "websocket"
@@ -8437,7 +8495,8 @@ class OrderExecutor:
             ws_trade_id = ws_fill.get("trade_id") or ws_fill.get("id")
             if not ws_trade_id:
                 # Synthetic dedup key when trade_id missing — prevents REST double-count
-                ws_trade_id = f"syn_{ws_fill.get('order_id','')}_{ws_fill.get('count','')}_{ws_fill.get('price','')}"
+                self._ws_fill_seq = getattr(self, '_ws_fill_seq', 0) + 1
+                ws_trade_id = f"syn_{ws_fill.get('order_id','')}_{ws_fill.get('count','')}_{ws_fill.get('price','')}_{self._ws_fill_seq}"
                 logging.warning(f"WS fill missing trade_id for {order['ticker']}, using synthetic key: {ws_trade_id}")
             order.setdefault("_seen_fill_ids", set()).add(ws_trade_id)
             if order.get("filled_so_far", 0) >= order["count"]:
@@ -8668,7 +8727,10 @@ class OrderExecutor:
         logging.info(
             f"escalation_cancel_replace: {ticker} "
             f"(maker={order['price_cents']}¢ → taker={best_ask}¢)")
-        self._cancel_order(order["asset"], reason)
+        cancel_ok = self._cancel_order(order["asset"], reason)
+        if not cancel_ok:
+            logging.error(f"Cancel failed for {ticker} — NOT submitting taker to prevent double position")
+            return None
 
         # Build modified candidate with fresh best ask
         candidate = dict(order["candidate"])
@@ -9160,6 +9222,8 @@ class OrderExecutor:
 
     def _check_addon_opportunities(self):
         """Evaluate open positions for confirmation addon. Called from _tick."""
+        if OBSERVATION_MODE:
+            return  # Never execute addons in observation mode
         if not ADDON_ENABLED or not self._addon_eligible:
             return
 
@@ -9456,6 +9520,8 @@ class OrderExecutor:
           1. Shadow tier (>=50c): Every qualifying dip -> evaluated_opportunities
           2. Live tier (>=87c): Execution path (shadow or real)
         """
+        if OBSERVATION_MODE:
+            return  # Never execute dip addons in observation mode
         if not DIP_ADDON_ENABLED or not self._addon_eligible:
             return
 
@@ -9703,11 +9769,15 @@ class OrderExecutor:
 
     # ── Cancel ────────────────────────────────────────────────────────────
 
-    def _cancel_order(self, asset: str, reason: str):
-        """Cancel the active maker order for a specific asset."""
+    def _cancel_order(self, asset: str, reason: str) -> bool:
+        """Cancel the active maker order for a specific asset.
+
+        Returns True if cancel succeeded (safe to submit replacement).
+        Returns False if cancel API failed (order may still be live).
+        """
         order = self._active_orders.get(asset)
         if order is None:
-            return
+            return True  # nothing to cancel
 
         filled = order.get("filled_so_far", 0)
 
@@ -9715,6 +9785,9 @@ class OrderExecutor:
         if cancel_resp is None:
             logging.error(f"Cancel API FAILED for {order['order_id']} — order may still be resting on exchange")
             # Don't mark canceled in DB — order may still be live on Kalshi
+            order["cancel_pending"] = True
+            # Do NOT pop — order may still be live, prevent double position
+            return False
         else:
             status = "partial_canceled" if filled > 0 else "canceled"
             self._state.mark_order_status(order["order_id"], status)
@@ -9735,6 +9808,7 @@ class OrderExecutor:
             f"{' (partial fill: ' + str(filled) + '/' + str(order['count']) + ')' if filled > 0 else ''}"
         )
         self._active_orders.pop(asset, None)
+        return True
 
     def _cancel_active(self, reason: str):
         """Cancel all active maker orders. Used by _reprice_maker compat."""
@@ -9891,10 +9965,11 @@ class SettlementTracker:
             outcome = "WIN" if side == "yes" else "LOSS"
         else:
             outcome = "UNKNOWN"
-            logging.warning(
-                f"SettlementTracker: unrecognized market_result "
-                f"'{market_result}' for {ticker}"
+            logging.critical(
+                f"UNKNOWN market_result '{market_result}' for {ticker} "
+                f"— skipping settlement to prevent bad P&L recording"
             )
+            return
 
         # Cross-check: detect count mismatch between internal tracking
         # and Kalshi settlement.  For YES wins, revenue = real_count * 100.
@@ -9922,7 +9997,7 @@ class SettlementTracker:
         pnl = revenue - total_cost
 
         # Record in SQLite via existing StateManager method
-        self._state.record_settlement(settlement)
+        self._state.record_settlement(settlement, pnl_override=pnl, fee_override=fee)
 
         # Mark as processed for dedup
         self._processed_tickers.add(ticker)
@@ -10191,11 +10266,16 @@ class SettlementTracker:
                     if _CALIBRATION_ENGINE is not None:
                         _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
 
-                # Weather bias update: estimate actual temp from winning bracket
-                if _opp_pt == "weather" and result in ("yes", "all_yes"):
+                # Weather bias update: estimate actual temp from settlement
+                if _opp_pt == "weather" and result in ("yes", "all_yes", "no", "all_no"):
                     forecast_mean = row.get("spot_price")
                     actual_est = self._estimate_actual_temp_from_bracket(
                         ticker, row.get("threshold"), spot_price=forecast_mean)
+                    if result in ("no", "all_no") and actual_est is None:
+                        # NO result: temp was outside bracket — log for awareness
+                        logging.info(
+                            f"weather_bias_skip_no_result: {ticker} — cannot estimate "
+                            f"actual temp from NO settlement (outside bracket)")
                     if actual_est is not None and forecast_mean and self._ml and \
                             getattr(self._ml, "weather_engine", None):
                         _wx_city = row["asset"].replace("_TEMP", "")

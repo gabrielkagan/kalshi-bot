@@ -101,9 +101,12 @@ class FirebasePusher:
             snap["current_balance"] = round(bal["balance"] / 100, 2) if bal else 0.0
             # Read-only: peak tracking moved to main loop to avoid cross-thread mutation
             snap["peak_balance"] = getattr(self._ml, "_peak_balance", snap["current_balance"])
+            self._last_good_balance = snap["current_balance"]
+            snap["balance_stale"] = False
         except Exception:
-            snap["current_balance"] = 0.0
+            snap["current_balance"] = getattr(self, "_last_good_balance", 0.0)
             snap["peak_balance"] = getattr(self._ml, "_peak_balance", 0.0)
+            snap["balance_stale"] = True
 
         # Starting balance
         try:
@@ -114,7 +117,7 @@ class FirebasePusher:
         # Drawdown Kelly multiplier
         try:
             bal_cents = int(snap["current_balance"] * 100)
-            snap["drawdown_kelly_mult"] = self._ml.sizer._drawdown_scaler(bal_cents)
+            snap["drawdown_kelly_mult"] = self._ml.sizer._drawdown_scaler_readonly(bal_cents)
         except Exception:
             snap["drawdown_kelly_mult"] = 1.0
 
@@ -132,16 +135,21 @@ class FirebasePusher:
             logging.debug("Firebase: balance_history build failed", exc_info=True)
             snap["balance_history"] = []
 
-        # Active positions
+        # Active positions (use Firebase thread's own DB connection to avoid threading issues)
         try:
-            positions = self._ml.state.get_open_positions()
-            snap["active_positions"] = positions
+            rows = self._db_conn.execute(
+                "SELECT * FROM positions WHERE status='open'"
+            ).fetchall()
+            snap["active_positions"] = [dict(r) for r in rows]
         except Exception:
             snap["active_positions"] = []
 
-        # Resting orders
+        # Resting orders (use Firebase thread's own DB connection)
         try:
-            snap["resting_orders"] = self._ml.state.get_resting_orders()
+            rows = self._db_conn.execute(
+                "SELECT * FROM pending_orders WHERE status='resting'"
+            ).fetchall()
+            snap["resting_orders"] = [dict(r) for r in rows]
         except Exception:
             snap["resting_orders"] = []
 
@@ -1452,6 +1460,16 @@ class FirebasePusher:
                 "summary": {"lock": 0, "watch": 0, "danger": 0, "total": 0},
                 "positions": {},
             }
+
+        # Disk usage check
+        try:
+            import shutil
+            disk = shutil.disk_usage("/home/botuser")
+            snap["disk_free_gb"] = round(disk.free / (1024**3), 1)
+            if snap["disk_free_gb"] < 2:
+                logging.critical(f"LOW DISK: {snap['disk_free_gb']}GB free")
+        except Exception:
+            snap["disk_free_gb"] = None
 
         return snap
 

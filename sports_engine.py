@@ -523,6 +523,15 @@ class BayesianComebackModel:
         )
 
 
+def _team_code_in_ticker(code: str, ticker_upper: str) -> bool:
+    """Check if a team code appears in a ticker with word-boundary matching.
+
+    Prevents false positives like "NY" matching "ANYTOWN".
+    Team codes are delimited by non-alpha chars or string boundaries in Kalshi tickers.
+    """
+    return bool(re.search(rf'(?:^|[^A-Z]){re.escape(code)}(?:[^A-Z]|$)', ticker_upper))
+
+
 # ── Main Sports Engine ───────────────────────────────────────────────────────
 
 class SportsEngine:
@@ -684,7 +693,7 @@ class SportsEngine:
             # Match by checking if event_ticker contains team codes
             # This is a heuristic — exact matching depends on Kalshi ticker format
             et_upper = event_ticker.upper()
-            if game.home_code.upper() in et_upper or game.away_code.upper() in et_upper:
+            if _team_code_in_ticker(game.home_code.upper(), et_upper) or _team_code_in_ticker(game.away_code.upper(), et_upper):
                 for ticker, side in mkts.market_tickers.items():
                     ob = self._discovery.get_orderbook_snapshot(ticker)
                     if ob and "orderbook" in ob:
@@ -713,7 +722,7 @@ class SportsEngine:
         all_markets = self._discovery.get_all_markets()
         for event_ticker, mkts in all_markets.items():
             et_upper = event_ticker.upper()
-            if game.home_code.upper() in et_upper or game.away_code.upper() in et_upper:
+            if _team_code_in_ticker(game.home_code.upper(), et_upper) or _team_code_in_ticker(game.away_code.upper(), et_upper):
                 home_price = mkts.pregame_price_home
                 away_price = mkts.pregame_price_away
                 if home_price and away_price:
@@ -732,7 +741,7 @@ class SportsEngine:
         all_markets = self._discovery.get_all_markets()
         for event_ticker, mkts in all_markets.items():
             et_upper = event_ticker.upper()
-            if game.home_code.upper() in et_upper or game.away_code.upper() in et_upper:
+            if _team_code_in_ticker(game.home_code.upper(), et_upper) or _team_code_in_ticker(game.away_code.upper(), et_upper):
                 fav_side = "home" if fav_code == game.home_code else "away"
                 for ticker, side in mkts.market_tickers.items():
                     if side == fav_side:
@@ -761,7 +770,7 @@ class SportsEngine:
         all_markets = self._discovery.get_all_markets()
         for event_ticker, mkts in all_markets.items():
             et_upper = event_ticker.upper()
-            if game.home_code.upper() in et_upper or game.away_code.upper() in et_upper:
+            if _team_code_in_ticker(game.home_code.upper(), et_upper) or _team_code_in_ticker(game.away_code.upper(), et_upper):
                 fav_side = "home" if fav_code == game.home_code else "away"
                 for ticker, side in mkts.market_tickers.items():
                     if side == fav_side:
