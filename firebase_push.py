@@ -696,6 +696,14 @@ class FirebasePusher:
         except Exception:
             snap["calibration"] = None
 
+        # ── hourly calibration diagnostics ──────────────────────────────
+        hourly_cal = getattr(self._ml, "hourly_calibration", None)
+        if hourly_cal:
+            try:
+                snap["hourly_calibration"] = hourly_cal.get_diagnostics()
+            except Exception:
+                pass
+
         # ── NIG distribution parameters ────────────────────────────────
         try:
             import json as _json

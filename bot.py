@@ -311,6 +311,7 @@ NUMERICAL_SAFETY_CEILING = 0.999  # ceiling for learned calibration methods (rep
 
 # ─── Calibration Engine ─────────────────────────────────────────────────────
 CALIBRATION_STATE_PATH = "calibration_state.json"
+HOURLY_CALIBRATION_STATE_PATH = "hourly_calibration_state.json"
 CALIBRATION_MIN_SAMPLES_PLATT = 200
 CALIBRATION_MIN_SAMPLES_BETA = 350   # lowered from 500 (we have 370+ obs)
 CALIBRATION_MIN_SAMPLES_BLR = 50
@@ -394,6 +395,7 @@ def _load_dist_config() -> Dict:
 DIST_CONFIG = _load_dist_config()
 
 _CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
+_HOURLY_CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
 _TELEGRAM: Optional["TelegramNotifier"] = None
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
@@ -4942,7 +4944,11 @@ class ProbabilityEngine:
             )
             # Still compute calibrated_prob for data collection
             dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
-            if _CALIBRATION_ENGINE is not None:
+            if (product_type == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
+                    and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active()):
+                cal = _HOURLY_CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
+                result["calibration_method"] = "hourly_" + _HOURLY_CALIBRATION_ENGINE.active_method
+            elif _CALIBRATION_ENGINE is not None:
                 cal = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
                 result["calibration_method"] = _CALIBRATION_ENGINE.active_method
             else:
@@ -4953,7 +4959,11 @@ class ProbabilityEngine:
 
         # ── Calibration: adaptive (if trained) or fixed β=0.85 ──────────
         dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
-        if _CALIBRATION_ENGINE is not None:
+        if (product_type == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
+                and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active()):
+            calibrated_prob = _HOURLY_CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
+            result["calibration_method"] = "hourly_" + _HOURLY_CALIBRATION_ENGINE.active_method
+        elif _CALIBRATION_ENGINE is not None:
             calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
             result["calibration_method"] = _CALIBRATION_ENGINE.active_method
         else:
@@ -5035,8 +5045,10 @@ class CalibrationEngine:
     Until enough data is collected, falls back to the existing fixed β=0.85.
     """
 
-    def __init__(self, state_path: str = CALIBRATION_STATE_PATH):
+    def __init__(self, state_path: str = CALIBRATION_STATE_PATH,
+                 label: str = "CalibrationEngine"):
         self.state_path = state_path
+        self._label = label
         self.active_method: str = "fixed_beta"  # current method in use
         self._observations: deque = deque(maxlen=500)  # (raw_prob, binary_outcome)
         self._brier_scores: deque = deque(maxlen=CALIBRATION_BRIER_WINDOW)
@@ -5114,15 +5126,15 @@ class CalibrationEngine:
                 self._prev_brier = state["prev_brier"]
 
             logging.info(
-                "CalibrationEngine loaded: method=%s, observations=%d, "
+                "%s loaded: method=%s, observations=%d, "
                 "platt_trained=%s, beta_trained=%s, blr_trained=%s",
-                self.active_method, len(self._observations),
+                self._label, self.active_method, len(self._observations),
                 self._platt_trained, self._beta_trained, self._blr_trained,
             )
         except FileNotFoundError:
-            logging.info("No calibration state found, starting fresh (fixed_beta fallback)")
+            logging.info("%s: No state found, starting fresh (fixed_beta fallback)", self._label)
         except Exception as e:
-            logging.warning("Error loading calibration state: %s", e)
+            logging.warning("%s: Error loading state: %s", self._label, e)
 
     def _save_state(self):
         """Atomically persist learned parameters."""
@@ -5158,7 +5170,7 @@ class CalibrationEngine:
                 json.dump(state, f, indent=2)
             os.replace(tmp_path, self.state_path)
         except Exception as e:
-            logging.warning("CalibrationEngine: failed to save state: %s", e)
+            logging.warning("%s: failed to save state: %s", self._label, e)
 
     # ── Inference ──────────────────────────────────────────────────────────
 
@@ -5311,11 +5323,11 @@ class CalibrationEngine:
                 self._platt_trained = True
                 trained_methods["platt"] = self._compute_brier_for_method("platt")
                 logging.info(
-                    "CalibrationEngine: Platt trained — A=%.4f, B=%.4f, Brier=%.4f, n=%d",
-                    self._platt_A, self._platt_B, trained_methods["platt"], n,
+                    "%s: Platt trained — A=%.4f, B=%.4f, Brier=%.4f, n=%d",
+                    self._label, self._platt_A, self._platt_B, trained_methods["platt"], n,
                 )
             except Exception as e:
-                logging.warning("CalibrationEngine: Platt training failed: %s", e)
+                logging.warning("%s: Platt training failed: %s", self._label, e)
 
         if n >= CALIBRATION_MIN_SAMPLES_BETA:
             try:
@@ -5323,13 +5335,13 @@ class CalibrationEngine:
                 self._beta_trained = True
                 trained_methods["beta_cal"] = self._compute_brier_for_method("beta_cal")
                 logging.info(
-                    "CalibrationEngine: Beta Cal trained — a=%.4f, b=%.4f, c=%.4f, "
+                    "%s: Beta Cal trained — a=%.4f, b=%.4f, c=%.4f, "
                     "Brier=%.4f, n=%d",
-                    self._beta_a, self._beta_b, self._beta_c,
+                    self._label, self._beta_a, self._beta_b, self._beta_c,
                     trained_methods["beta_cal"], n,
                 )
             except Exception as e:
-                logging.warning("CalibrationEngine: Beta Cal training failed: %s", e)
+                logging.warning("%s: Beta Cal training failed: %s", self._label, e)
 
         if n >= CALIBRATION_MIN_SAMPLES_BLR:
             try:
@@ -5337,11 +5349,11 @@ class CalibrationEngine:
                 self._blr_trained = True
                 trained_methods["blr"] = self._compute_brier_for_method("blr")
                 logging.info(
-                    "CalibrationEngine: BLR trained — mu=[%.4f, %.4f], Brier=%.4f, n=%d",
-                    self._blr_mu[0], self._blr_mu[1], trained_methods["blr"], n,
+                    "%s: BLR trained — mu=[%.4f, %.4f], Brier=%.4f, n=%d",
+                    self._label, self._blr_mu[0], self._blr_mu[1], trained_methods["blr"], n,
                 )
             except Exception as e:
-                logging.warning("CalibrationEngine: BLR training failed: %s", e)
+                logging.warning("%s: BLR training failed: %s", self._label, e)
 
         # ── Fit temperature scaling and include in competition ────────────
         try:
@@ -5353,11 +5365,11 @@ class CalibrationEngine:
                 self._temperature_brier = brier_sum / len(self._observations)
                 trained_methods["temperature"] = self._temperature_brier
                 logging.info(
-                    "CalibrationEngine: Temperature scaling fitted — T=%.4f, Brier=%.4f, n=%d",
-                    temp, self._temperature_brier, n,
+                    "%s: Temperature scaling fitted — T=%.4f, Brier=%.4f, n=%d",
+                    self._label, temp, self._temperature_brier, n,
                 )
         except Exception as e:
-            logging.warning("CalibrationEngine: Temperature scaling failed: %s", e)
+            logging.warning("%s: Temperature scaling failed: %s", self._label, e)
 
         if not trained_methods:
             return False
@@ -5369,9 +5381,9 @@ class CalibrationEngine:
         # Regression guard: reject if best is worse than previous + margin
         if self._prev_brier is not None and best_brier > self._prev_brier + 0.01:
             logging.warning(
-                "CalibrationEngine: promotion REJECTED — best Brier %.4f > prev %.4f + 0.01 "
+                "%s: promotion REJECTED — best Brier %.4f > prev %.4f + 0.01 "
                 "(methods: %s)",
-                best_brier, self._prev_brier, trained_methods,
+                self._label, best_brier, self._prev_brier, trained_methods,
             )
             return False
 
@@ -5380,16 +5392,22 @@ class CalibrationEngine:
         self._prev_brier = best_brier
 
         logging.info(
-            "CalibrationEngine: PROMOTED %s -> %s (Brier=%.4f, alternatives=%s)",
-            old_method, best_method, best_brier,
+            "%s: PROMOTED %s -> %s (Brier=%.4f, alternatives=%s)",
+            self._label, old_method, best_method, best_brier,
             {k: round(v, 4) for k, v in trained_methods.items()},
         )
 
         self._save_state()
         return True
 
-    def load_training_data_from_db(self, state: "StateManager"):
+    def load_training_data_from_db(self, state: "StateManager",
+                                   product_type_include: Optional[str] = None):
         """Rebuild training data from evaluated opportunities on startup.
+
+        Args:
+            product_type_include: If set, load ONLY this product type (for
+                dedicated hourly/spx engines). Default None = existing behavior
+                (exclude non-15M types).
 
         Note: rejected_opportunities (z-score rejections) are excluded because
         their bimodal raw_prob distribution (clustered at 0 and 1) contaminates
@@ -5402,15 +5420,21 @@ class CalibrationEngine:
 
             cutoff = (datetime.datetime.now(timezone.utc)
                       - datetime.timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%S")
-            _cal_excluded = get_cal_excluded_types()
-            if _cal_excluded:
-                _excl_sorted = sorted(_cal_excluded)
-                _placeholders = ",".join("?" for _ in _excl_sorted)
-                _cal_filter = f"AND (product_type IS NULL OR product_type NOT IN ({_placeholders})) "
-                _cal_query_params = (*_excl_sorted, cutoff)
+            if product_type_include:
+                # Load ONLY this product type (for dedicated hourly/spx engines)
+                _cal_filter = "AND product_type = ? "
+                _cal_query_params = (product_type_include, cutoff)
             else:
-                _cal_filter = ""
-                _cal_query_params = (cutoff,)
+                # Existing behavior: exclude non-15M types
+                _cal_excluded = get_cal_excluded_types()
+                if _cal_excluded:
+                    _excl_sorted = sorted(_cal_excluded)
+                    _placeholders = ",".join("?" for _ in _excl_sorted)
+                    _cal_filter = f"AND (product_type IS NULL OR product_type NOT IN ({_placeholders})) "
+                    _cal_query_params = (*_excl_sorted, cutoff)
+                else:
+                    _cal_filter = ""
+                    _cal_query_params = (cutoff,)
             rows = state.conn.execute(
                 "SELECT raw_prob, market_result FROM evaluated_opportunities "
                 "WHERE status='settled' AND raw_prob IS NOT NULL "
@@ -5435,8 +5459,8 @@ class CalibrationEngine:
                 loaded += 1
 
             logging.info(
-                "CalibrationEngine: loaded %d observations from DB (total: %d)",
-                loaded, len(self._observations),
+                "%s: loaded %d observations from DB (total: %d)",
+                self._label, loaded, len(self._observations),
             )
 
             # Attempt initial training if enough data
@@ -5445,7 +5469,7 @@ class CalibrationEngine:
                 self.maybe_retrain()
 
         except Exception as e:
-            logging.warning("CalibrationEngine: failed to load from DB: %s", e)
+            logging.warning("%s: failed to load from DB: %s", self._label, e)
 
     # ── Platt Scaling ──────────────────────────────────────────────────────
 
@@ -5519,7 +5543,8 @@ class CalibrationEngine:
         # Guardrail: reject if parameters are extreme
         if abs(A) > 5.0 or abs(B) > 5.0:
             logging.warning(
-                "CalibrationEngine: Platt params extreme (A=%.4f, B=%.4f), rejecting",
+                "%s: Platt params extreme (A=%.4f, B=%.4f), rejecting",
+                self._label,
                 A, B,
             )
             return
@@ -5850,9 +5875,9 @@ class CalibrationEngine:
         }
 
         logging.info(
-            "CalibrationEngine BACKTEST: old_brier=%.4f, new_brier=%.4f, "
+            "%s BACKTEST: old_brier=%.4f, new_brier=%.4f, "
             "improvement=%.4f, cap_truncated=%d/%d, high_prob_new=%d",
-            result["old_brier"], result["new_brier"], result["brier_improvement"],
+            self._label, result["old_brier"], result["new_brier"], result["brier_improvement"],
             cap_truncated, n, high_prob_markets,
         )
         return result
@@ -6693,6 +6718,10 @@ class OpportunityScanner:
                 # T=1.0 is identity — skip scaling
                 if _temp_t is not None and _temp_t == 1.0:
                     _temp_t = None
+                # Skip temperature if hourly engine is active (already calibrated for hourly data)
+                if (_pt == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
+                        and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active()):
+                    _temp_t = None
                 if _temp_t is not None:
                     _hourly_pre_temp_prob = final_prob
                     _p = max(0.001, min(0.999, final_prob))
@@ -6730,7 +6759,13 @@ class OpportunityScanner:
                 calibrated_prob_raw = final_prob
                 # Always compute dynamic cap for counterfactual logging
                 _dyn_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=window.get("product_type"))
-                if _CALIBRATION_ENGINE is not None and _CALIBRATION_ENGINE.is_learned_method_active():
+                _active_cal = (
+                    _HOURLY_CALIBRATION_ENGINE
+                    if (_pt == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
+                        and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active())
+                    else _CALIBRATION_ENGINE
+                )
+                if _active_cal is not None and _active_cal.is_learned_method_active():
                     # Learned method: no dynamic cap, use safety ceiling only
                     final_prob = max(0.01, min(NUMERICAL_SAFETY_CEILING, final_prob + ofa_adjustment))
                 else:
@@ -10271,20 +10306,25 @@ class SettlementTracker:
                     opp_id, market_result=result,
                     counterfactual_pnl=would_have_profit)
 
-                # Feed to calibration engine (15M only — hourly/spx/weather have different
-                # calibration dynamics and contaminate the 15M model)
+                # Feed to calibration engine — route by product type
                 raw_p = row.get("raw_prob")
                 _opp_pt = row.get("product_type")
-                _is_non_crypto_15m = not get_market_config(_opp_pt).cal_eligible
                 filter_stage = row.get("filter_stage", "")
                 cal_eligible_stages = ("candidate", "observation_trade", "hourly_observation",
                                        "spx_observation", "weather_observation")
-                if (raw_p is not None and not _is_non_crypto_15m
+                if (raw_p is not None
                         and filter_stage in cal_eligible_stages
                         and result in ("yes", "all_yes", "no", "all_no")):
                     cal_binary = 1 if result in ("yes", "all_yes") else 0
-                    if _CALIBRATION_ENGINE is not None:
-                        _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
+                    if _opp_pt == "hourly":
+                        # Hourly → dedicated hourly engine (separate from 15M)
+                        if _HOURLY_CALIBRATION_ENGINE is not None:
+                            _HOURLY_CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
+                    elif get_market_config(_opp_pt).cal_eligible:
+                        # 15M → existing engine
+                        if _CALIBRATION_ENGINE is not None:
+                            _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
+                    # SPX/weather/sports: neither engine (not cal_eligible, not hourly)
 
                 # Weather bias update: estimate actual temp from settlement
                 if _opp_pt == "weather" and result in ("yes", "all_yes", "no", "all_no"):
@@ -10425,6 +10465,10 @@ class MainLoop:
         self.calibration = CalibrationEngine()
         global _CALIBRATION_ENGINE
         _CALIBRATION_ENGINE = self.calibration
+        self.hourly_calibration = CalibrationEngine(
+            state_path=HOURLY_CALIBRATION_STATE_PATH, label="HourlyCal")
+        global _HOURLY_CALIBRATION_ENGINE
+        _HOURLY_CALIBRATION_ENGINE = self.hourly_calibration
         tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
         self.telegram = TelegramNotifier(tg_token, tg_chat)
@@ -10581,6 +10625,19 @@ class MainLoop:
                 f"\U0001f9e0 Calibration: {self.calibration.active_method} trained "
                 f"({len(self.calibration._observations)} obs){bt_msg}"
             )
+
+        # Load hourly calibration training data (separate from 15M)
+        self.hourly_calibration.load_training_data_from_db(
+            self.state, product_type_include="hourly")
+        hourly_bt = self.hourly_calibration.backtest_adaptive_vs_fixed()
+        if hourly_bt:
+            logging.info("Startup hourly cal backtest: %s", hourly_bt)
+        logging.info(
+            "CONFIG_VERIFY (hourly_cal): method=%s active=%s obs=%d",
+            self.hourly_calibration.active_method,
+            self.hourly_calibration.is_learned_method_active(),
+            len(self.hourly_calibration._observations),
+        )
 
         # Start Coinbase price feed
         self.feed.start()
@@ -10922,6 +10979,8 @@ class MainLoop:
         # Periodic calibration retrain check
         if self.calibration:
             self.calibration.maybe_retrain()
+        if self.hourly_calibration:
+            self.hourly_calibration.maybe_retrain()
 
         # Periodic EGARCH MLE refit
         if self.egarch_estimator:
