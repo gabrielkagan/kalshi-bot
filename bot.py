@@ -4944,11 +4944,12 @@ class ProbabilityEngine:
             )
             # Still compute calibrated_prob for data collection
             dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
+            _cal_cfg = get_market_config(product_type)
             if (product_type == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
                     and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active()):
                 cal = _HOURLY_CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
                 result["calibration_method"] = "hourly_" + _HOURLY_CALIBRATION_ENGINE.active_method
-            elif _CALIBRATION_ENGINE is not None:
+            elif _cal_cfg.cal_eligible and _CALIBRATION_ENGINE is not None:
                 cal = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
                 result["calibration_method"] = _CALIBRATION_ENGINE.active_method
             else:
@@ -4959,11 +4960,12 @@ class ProbabilityEngine:
 
         # ── Calibration: adaptive (if trained) or fixed β=0.85 ──────────
         dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
+        _cal_cfg2 = get_market_config(product_type)
         if (product_type == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
                 and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active()):
             calibrated_prob = _HOURLY_CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
             result["calibration_method"] = "hourly_" + _HOURLY_CALIBRATION_ENGINE.active_method
-        elif _CALIBRATION_ENGINE is not None:
+        elif _cal_cfg2.cal_eligible and _CALIBRATION_ENGINE is not None:
             calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
             result["calibration_method"] = _CALIBRATION_ENGINE.active_method
         else:
@@ -6763,7 +6765,9 @@ class OpportunityScanner:
                     _HOURLY_CALIBRATION_ENGINE
                     if (_pt == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
                         and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active())
-                    else _CALIBRATION_ENGINE
+                    else (_CALIBRATION_ENGINE
+                          if get_market_config(_pt).cal_eligible
+                          else None)
                 )
                 if _active_cal is not None and _active_cal.is_learned_method_active():
                     # Learned method: no dynamic cap, use safety ceiling only
