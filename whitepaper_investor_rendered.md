@@ -10,9 +10,9 @@ This document describes an automated trading system for **Kalshi**, the first CF
 
 The system monitors real-time prices across multiple exchanges, estimates outcome probabilities using EGARCH-conditioned volatility models with per-asset distribution fitting, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
-**Live trading results (as of 2026-03-02T01:47:10Z):**
+**Live trading results (as of N/A):**
 
-- 186 settled trades with a 89.2% win rate (166W / 20L)
+- 0 settled trades with a N/A win rate (0W / 0L)
 - Live trading with real capital since February 22, 2026
 - Fully automated, always-on operation with complete audit trail
 - Also collecting calibration data on hourly markets (75 strikes/event) for future expansion
@@ -185,8 +185,8 @@ No taker (aggressive) orders are placed when less than 90 seconds remain before 
 | Metric | Value |
 |---|---|
 | Status | Live trading since February 22, 2026 |
-| Settled trades | 186 |
-| Win rate | 89.2% (166W / 20L) |
+| Settled trades | 0 |
+| Win rate | N/A (0W / 0L) |
 | Assets | BTC, ETH, SOL, XRP |
 | Entry prices | 87–99¢ |
 
@@ -243,4 +243,4 @@ For readers interested in the mathematical foundations, the full technical white
 
 ---
 
-*Last updated: 2026-03-02T01:47:10Z*
+*Last updated: N/A*
