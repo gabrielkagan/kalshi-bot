@@ -79,17 +79,20 @@ def check_config_values(path, config):
                     f"bot.py has {expected_pct}%"
                 )
 
-    # Check market blend
+    # Check market blend — only flag 50/50 when near core model/probability/blend
+    # language, not in engine-specific config tables (weather uses 50/50 legitimately)
     blend_w = constants.get("MARKET_BLEND_W", {}).get("value")
     if blend_w is not None:
         model_pct = int((1.0 - blend_w) * 100)
         market_pct = int(blend_w * 100)
-        # Look for "50/50" pattern when actual is different
-        if model_pct != 50 and re.search(r"50[/%]50|50\s*×.*50\s*×|0\.50\s*\\times.*0\.50", content):
-            issues.append(
-                f"Stale MARKET_BLEND: found 50/50 in doc, "
-                f"bot.py has {model_pct}/{market_pct}"
-            )
+        if model_pct != 50:
+            # Match 50/50 only near core blend context (model/market/calibrated/final)
+            blend_pattern = r"(?:model|calibrat|p_final|p_{final}).{0,60}(?:50[/%]50|0\.50\s*\\times.*0\.50)"
+            if re.search(blend_pattern, content, re.IGNORECASE):
+                issues.append(
+                    f"Stale MARKET_BLEND: found 50/50 in doc, "
+                    f"bot.py has {model_pct}/{market_pct}"
+                )
 
     # Check sizing tiers
     sizing = constants.get("SIZING_TIERS", {}).get("value")

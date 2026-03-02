@@ -8,15 +8,15 @@ date: "February 2026"
 
 ## What It Does
 
-This system is an automated trading bot for **Kalshi**, a CFTC-regulated prediction market exchange. It trades **15-minute cryptocurrency price threshold contracts** — binary options that pay $1 if a crypto asset (BTC, ETH, SOL, or XRP) stays above a given price at the end of a 15-minute window, and $0 otherwise.
+This system is an automated trading platform for **Kalshi**, a CFTC-regulated prediction market exchange. It began with **15-minute cryptocurrency price threshold contracts** and has expanded to cover **four distinct market verticals**: crypto (15M + hourly), S&P 500 intraday, daily weather temperature, and live sports outcomes — each with domain-specific models running in shadow or observation mode alongside the live crypto engine.
 
-The bot monitors real-time prices across multiple exchanges, estimates the probability of each outcome using microstructure-aware volatility models with EGARCH conditioning, and places trades when its model identifies a statistical edge over the market price.
+The bot monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models (EGARCH volatility for crypto/SPX, NWP ensemble forecasts for weather, Bayesian comeback likelihood for sports), and trades when it identifies a statistical edge over the market price.
 
 ## Market Opportunity
 
 Kalshi lists 15-minute crypto contracts around the clock. Each window produces fresh contracts for four assets at multiple strike prices, creating hundreds of tradeable markets per day. Because these are short-duration, binary-outcome instruments, mispricing tends to be small but frequent — an ideal environment for systematic, model-driven trading.
 
-The bot also monitors hourly crypto markets (75 strikes per event) in observation mode, collecting calibration data for future live trading.
+Beyond crypto, the platform monitors three additional verticals in shadow/observation mode: S&P 500 intraday markets (EGARCH + VIX integration), daily weather temperature markets across 5 US cities (82-member NWP ensemble), and live sports outcomes across 26 leagues (Bayesian comeback model). Each vertical uses domain-specific models while sharing the common edge detection, sizing, and execution infrastructure.
 
 ## Strategy in Plain English
 
@@ -77,6 +77,9 @@ The bot also monitors hourly crypto markets (75 strikes per event) in observatio
 | **OpportunityScanner** | Multi-stage filter pipeline evaluating all markets across active 15-minute windows and hourly observation windows |
 | **OrderExecutor** | Three-tier post_only handler, maker-first limit orders with adaptive taker escalation, WebSocket fill detection, amend-first conversion, maker-only below 90s |
 | **SettlementTracker** | Incremental settlement polling (30-second intervals) using the Kalshi settlements API |
+| **SPXEngine** | S&P 500 intraday engine: Polygon/Finnhub price feeds, EGARCH with VIX integration, intraday seasonal deseasonalization (shadow mode) |
+| **WeatherEngine** | Weather temperature engine: Open-Meteo NWP ensemble (82 members), Gaussian probability model with per-city bias correction (shadow mode) |
+| **SportsEngine** | Sports comeback engine: ESPN live scores across 26 leagues, Bayesian LR model with conservative scaling, 30-second polling (shadow mode) |
 | **TelegramNotifier** | Optional Telegram alerts for trades, settlements, and errors |
 | **MainLoop** | Continuous 1-second observation loop coordinating all components |
 
@@ -87,6 +90,11 @@ The bot also monitors hourly crypto markets (75 strikes per event) in observatio
 | Coinbase | Spot prices (BTC, ETH, SOL, XRP) | WebSocket | Real-time (5s snapshots, 10,800-point buffer = 15hr) |
 | Kraken | Spot prices (cross-exchange) | WebSocket | Real-time |
 | Deribit | Implied volatility (DVOL) for BTC/ETH | REST API | 60 seconds |
+| Polygon.io | SPX spot price | REST API | 1s polling (NYSE RTH) |
+| Finnhub | SPX/SPY fallback | REST API | 1s polling |
+| CBOE | VIX implied volatility | REST API | 60s polling |
+| Open-Meteo | NWP ensemble forecasts (GFS + ECMWF) | REST API | 15 minutes |
+| ESPN | Live sports scores, clock, period | REST API | 30 seconds |
 | Kalshi | Markets, orderbooks, balance, fills, settlements | REST API + WebSocket | On-demand + real-time |
 | Binance | Spot prices (cross-exchange) | WebSocket | Geo-blocked (HTTP 451 on VPS) |
 
@@ -261,7 +269,129 @@ The KalshiOrderFlowTracker monitors Kalshi's own orderbook for predictive signal
 
 Currently logging only — signals are computed but do not affect trading decisions.
 
-## 3.5 Execution Strategy
+## 3.5 S&P 500 Intraday Engine (Shadow Mode)
+
+The SPX engine trades S&P 500 15-minute prediction markets (KXINXU series) using the same EGARCH framework adapted for equity microstructure.
+
+### Data Sources
+
+| Source | Data | Frequency |
+|---|---|---|
+| Polygon.io | SPX spot price | 1s polling during RTH |
+| Finnhub | SPX fallback + SPY→SPX conversion (10.03×) | 1s polling |
+| CBOE VIX | Implied volatility index | 60s polling |
+
+### Intraday Seasonal Filter
+
+SPX volatility follows a well-documented U-shaped intraday pattern (high at open/close, low midday). The engine deseasonalizes returns using 13 half-hour buckets (09:30–16:00 ET) with EWMA-calibrated seasonal factors, preventing systematic bias from time-of-day effects.
+
+### EGARCH Adaptation for Equities
+
+The EGARCH(1,1) model is re-parameterized for equity-specific dynamics:
+
+- **Leverage bounds**: $\gamma \in (-0.30, -0.05)$ — approximately 4× stronger than crypto, reflecting the well-documented equity leverage effect (down moves increase volatility more than up moves)
+- **VIX integration**: When VIX-implied vol diverges >30% from realized, the engine shifts 30% weight toward VIX. On startup, EGARCH is seeded from VIX to avoid a cold-start period
+- **Market hours guard**: NYSE RTH 9:30–16:00 ET with DST awareness and holiday calendar. Engine skips the first 10 minutes post-open (auction noise)
+
+### Configuration
+
+| Config | Value |
+|---|---|
+| Status | Shadow (observation only) |
+| Entry price range | 70–99¢ |
+| STC window | 300–1800s |
+| Market blend | 60/40 (model/market) |
+| Max risk per trade | 15% |
+| Kelly fraction | 0.25 (quarter-Kelly) |
+
+## 3.6 Weather Temperature Engine (Shadow Mode)
+
+The weather engine trades daily high temperature prediction markets across five US cities using numerical weather prediction (NWP) ensemble forecasts.
+
+### Cities and Series
+
+NYC, Chicago, Miami, Denver, Los Angeles — each with Kalshi bracket and threshold markets settling daily based on the observed high temperature.
+
+### Ensemble Probability Model
+
+The engine queries the Open-Meteo API for two independent NWP ensemble systems:
+
+| Model | Members | Resolution | Provider |
+|---|---|---|---|
+| GFS Seamless | 31 | ~13 km | NOAA |
+| ECMWF IFS 0.25° | 51 | ~25 km | ECMWF |
+| HRRR (deterministic) | 1 | <15 km | NOAA |
+
+The 82 ensemble members (31 GFS + 51 ECMWF) provide a distribution of possible temperature outcomes. The engine fits a Gaussian $(\mu, \sigma)$ to the combined ensemble and computes:
+
+- **Bracket markets**: $P(\text{lower} < T < \text{upper})$ via CDF difference
+- **Threshold markets**: $P(T > \text{threshold})$ or $P(T < \text{threshold})$ via tail probability
+
+### Bias Correction
+
+An EWMA bias tracker ($\lambda = 0.90$, 7-day half-life) maintains per-city forecast error history. After each day's actual temperature is observed, the engine updates $\text{bias}_\text{city} = \lambda \times \text{bias}_\text{prev} + (1-\lambda) \times (\text{actual} - \text{forecast})$ and shifts the ensemble mean accordingly.
+
+### Configuration
+
+| Config | Value |
+|---|---|
+| Status | Shadow (observation only) |
+| Entry price range | 10–99¢ |
+| Settle window | Daily (min 1hr before close) |
+| Market blend | 50/50 (model/market) — higher market weight than crypto |
+| Max risk per trade | 10% |
+| Kelly fraction | 0.25 (quarter-Kelly) |
+| Poll interval | 15 minutes (weather changes slowly) |
+
+## 3.7 Sports Comeback Engine (Shadow Mode)
+
+The sports engine monitors live games across 26 leagues for Bayesian comeback signals — identifying situations where a pregame favorite is trailing but statistically likely to recover.
+
+### Supported Leagues
+
+**Binary outcome (home/away)**: NBA, NHL, MLB, NCAAB, NCAAF, NFL, WNBA, UFC, plus esports (CS:GO, LoL, Valorant — Kalshi price monitoring only)
+
+**Three-way outcome (home/draw/away)**: EPL, Bundesliga, La Liga, Serie A, UCL, Ligue 1, MLS, Liga MX, Europa League, Conference League, Super Lig, Eredivisie
+
+### Data Sources
+
+| Source | Data | Coverage |
+|---|---|---|
+| ESPN API | Live scores, clock, period, red cards | 14 leagues with live scoreboards |
+| Kalshi API | Game-level market prices | 26 series (2 markets/binary game, 3/three-way) |
+
+### Bayesian Comeback Model
+
+The model computes posterior comeback probability using a lookup-table of empirically calibrated likelihood ratios:
+
+$$P(\text{comeback} \mid \text{data}) = \frac{LR \times P(\text{prior})}{LR \times P(\text{prior}) + (1 - P(\text{prior}))}$$
+
+**Likelihood ratio table keys**: $(d, t, s)$ where:
+- $d$ = deficit bucket (binary: small/medium/large/blowout; three-way: 1-goal/2-goal/3+)
+- $t$ = time remaining bucket (>75%, 50–75%, 25–50%, <25%)
+- $s$ = pregame strength bucket (strong favorite ≥75%, moderate 65–75%, slight 55–65%)
+
+**Conservative scaling**: LR values are compressed 50% toward neutral ($LR_\text{scaled} = 1.0 + (LR_\text{raw} - 1.0) \times 0.5$) to prevent overconfident signals.
+
+**Model-market safety cap**: Signals are rejected when the model posterior exceeds the market price by more than 30 percentage points, indicating the model is likely wrong rather than the market.
+
+### Entry Criteria
+
+| Criteria | Binary | Three-way |
+|---|---|---|
+| Min pregame favorite prob | 65% | 60% |
+| Max Kalshi favorite price | 38¢ | 35¢ |
+| Min time remaining | 50% | 55% |
+| Signal dedup | One signal per game | One signal per game |
+
+### Game Lifecycle
+
+1. **Pregame capture**: Record Kalshi prices for each team before game starts
+2. **Live evaluation**: Poll ESPN scores every 30 seconds, compute LR on each score change
+3. **Signal dedup**: One signal per game to prevent correlated exposure
+4. **Settlement**: After game ends, record final outcome, closing prices, and simulated P&L
+
+## 3.8 Execution Strategy
 
 The executor uses a maker-first approach with three-tier post_only rejection handling, time-aware escalation, and a hard maker-only threshold.
 
@@ -309,7 +439,7 @@ Orders may partially fill (e.g., 3 of 13 contracts). The execution engine tracks
 
 Each order gets a `client_order_id` (UUID4) written to SQLite before API submission. This ensures crash recovery — if the bot restarts mid-order, it can reconcile using the persisted UUID.
 
-## 3.6 Position Sizing
+## 3.9 Position Sizing
 
 ### Edge-Tiered Sizing
 
@@ -390,13 +520,25 @@ This creates a geometric de-risking curve that preserves capital during losing s
 
 ## Markets
 
-### 15-Minute Markets (Live Trading)
+### Crypto 15-Minute (Live Trading)
 
 Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M.
 
-### Hourly Markets (Observation Mode)
+### Crypto Hourly (Observation Mode)
 
 75 strikes per event, settling every hour. Currently collecting calibration data only — no live trading. Series: KXBTCD, KXETHD, KXSOLD, KXXRPD.
+
+### S&P 500 Intraday (Shadow Mode)
+
+15-minute binary contracts on the S&P 500 during NYSE regular trading hours. Series: KXINXU. Uses equity-adapted EGARCH with VIX integration and intraday seasonal adjustment.
+
+### Weather Temperature (Shadow Mode)
+
+Daily high temperature markets across 5 US cities (NYC, Chicago, Miami, Denver, LA). Bracket and threshold contracts settling based on the observed daily high. Probability from 82-member NWP ensemble (GFS + ECMWF).
+
+### Sports Outcomes (Shadow Mode)
+
+Live game outcome markets across 26 leagues including NBA, NHL, MLB, NFL, EPL, and more. Bayesian comeback model identifies edge when pregame favorites trail in-game. Binary and three-way (soccer draw) market types.
 
 ---
 
@@ -453,11 +595,14 @@ The system supports shadow mode for experimental features — they compute and l
 
 | Feature | Status | Purpose |
 |---|---|---|
+| S&P 500 Intraday | Shadow | EGARCH + VIX vol model for SPX 15M contracts (KXINXU) |
+| Weather Temperature | Shadow | 82-member NWP ensemble for daily high temperature markets (5 cities) |
+| Sports Comeback | Shadow | Bayesian LR comeback model across 26 leagues |
+| Hourly Crypto | Observation | Collecting calibration data for hourly markets (75 strikes/event) |
 | Kalshi Order Flow | Shadow | Orderbook imbalance, depth velocity, spread convergence signals |
 | Sigmoid QLIKE | Shadow | Alternative EGARCH weight via QLIKE improvement ratio |
 | Shadow Cal Pipeline | Shadow | No-blend calibration monitoring (was promoted, caused +1.86pp overconfidence) |
 | Dip Addon | Shadow | Buy more when ask dips ≥3¢ below entry after fill |
-| Hourly Observation | Observation | Collecting calibration data for hourly markets (75 strikes/event) |
 
 Promoted features (driving live behavior):
 - **EGARCH core vol** — EGARCH(1,1) with Student-t innovations

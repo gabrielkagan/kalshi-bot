@@ -6,16 +6,17 @@ date: "February 2026"
 
 # Executive Summary
 
-This document describes an automated trading system for **Kalshi**, the first CFTC-regulated prediction market exchange in the United States. The bot trades short-duration cryptocurrency contracts — binary options that settle every 15 minutes — using a systematic, model-driven approach designed to capture small but frequent mispricings.
+This document describes an automated trading platform for **Kalshi**, the first CFTC-regulated prediction market exchange in the United States. The system trades short-duration cryptocurrency contracts — binary options that settle every 15 minutes — and is expanding into three additional market verticals: S&P 500 intraday, daily weather temperature, and live sports outcomes.
 
-The system monitors real-time prices across multiple exchanges, estimates outcome probabilities using EGARCH-conditioned volatility models with per-asset distribution fitting, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
+The platform monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
 **Live trading results (as of 2026-03-02T02:05:10Z):**
 
 - 186 settled trades with a 89.2% win rate (166W / 20L)
 - Live trading with real capital since February 22, 2026
 - Fully automated, always-on operation with complete audit trail
-- Also collecting calibration data on hourly markets (75 strikes/event) for future expansion
+- Three additional market verticals in shadow mode: S&P 500 intraday, weather temperature (5 cities), and live sports (26 leagues)
+- Each vertical uses domain-specific models while sharing the common risk and execution infrastructure
 
 ---
 
@@ -190,9 +191,56 @@ No taker (aggressive) orders are placed when less than 90 seconds remain before 
 | Assets | BTC, ETH, SOL, XRP |
 | Entry prices | 87–99¢ |
 
-## Hourly Market Expansion
+## Market Expansion Pipeline
 
-The bot is also monitoring hourly cryptocurrency markets (KXBTCD, KXETHD, KXSOLD, KXXRPD) in observation mode. These markets have 75 strikes per event and settle every hour. The system is collecting calibration data — evaluating every strike, computing probabilities, and tracking settlement outcomes — to validate the model before enabling live trading.
+The platform is actively expanding beyond 15-minute crypto into four additional verticals. Each runs in shadow/observation mode — computing probabilities, logging signals, and tracking outcomes — to validate the model before enabling live trading with real capital.
+
+### Crypto Hourly Markets
+
+Hourly cryptocurrency markets (KXBTCD, KXETHD, KXSOLD, KXXRPD) with 75 strikes per event. The system evaluates every strike, computes probabilities, and tracks settlement outcomes. Currently collecting calibration data — analysis showed the 15-minute calibration model doesn't transfer well to hourly timescales, so a dedicated hourly calibration is being developed.
+
+### S&P 500 Intraday Markets
+
+15-minute binary contracts on the S&P 500 index during NYSE regular trading hours (9:30 AM–4:00 PM ET). The SPX engine uses the same EGARCH volatility framework as crypto, adapted for equity-specific dynamics:
+
+- **Stronger leverage effect**: Down moves in equities increase volatility approximately 4× more than in crypto, requiring different EGARCH parameterization
+- **VIX integration**: The CBOE Volatility Index provides a forward-looking volatility signal not available for crypto — the engine blends it with realized estimates when the two diverge significantly
+- **Intraday seasonality**: SPX volatility follows a well-documented U-shaped pattern (high at open/close, low midday). The engine deseasonalizes returns to prevent systematic bias
+
+This vertical leverages the same infrastructure (edge detection, position sizing, execution) while accessing a much larger and more liquid underlying market.
+
+### Weather Temperature Markets
+
+Daily high temperature markets across five major US cities (New York, Chicago, Miami, Denver, Los Angeles). This vertical is fundamentally different from financial markets — it uses **weather forecast ensembles** rather than price-based models:
+
+- **82 independent forecasts**: 31 from NOAA's GFS model and 51 from ECMWF (the European weather model), each representing a plausible temperature scenario
+- **Probabilistic framework**: The spread across 82 forecasts directly maps to outcome probability — if 60 of 82 models predict the temperature will exceed a threshold, that's roughly a 73% probability
+- **Bias correction**: A per-city learning system tracks forecast errors over time and adjusts predictions accordingly
+
+Weather markets are structurally attractive because they have longer settlement windows (daily), publicly available data, and probability estimates that are independent of financial market dynamics — providing natural portfolio diversification.
+
+### Live Sports Outcomes
+
+Game outcome markets across 26 leagues including NBA, NHL, MLB, NFL, EPL, and other major soccer leagues. The sports engine identifies a specific high-value pattern: **pregame favorites trailing in-game**.
+
+When a team that was heavily favored before the game falls behind, the market often overreacts — pricing the favorite far below its historical comeback probability. The engine uses a Bayesian model calibrated on historical comeback data to identify when the market discount is excessive:
+
+- **26 leagues monitored**: Both binary outcome (US sports, UFC) and three-way outcome (soccer with draw possibility)
+- **Conservative entry**: Only signals when a strong pregame favorite (65%+ pre-game probability) is available at a significant discount (38¢ or below)
+- **One signal per game**: Prevents correlated exposure from multiple entries in the same game
+- **Safety cap**: Rejects signals where the model disagrees with the market by more than 30 percentage points — if the model thinks 90% but the market says 20%, the market is probably right
+
+### Expansion Philosophy
+
+Each new vertical follows the same disciplined pipeline:
+
+1. **Build domain-specific model** — using the best available data source for each market type
+2. **Shadow mode** — run alongside live trading, logging all signals without executing
+3. **Calibration** — track model accuracy against actual outcomes over weeks/months
+4. **Validation** — only promote to live trading when data confirms the model has genuine edge
+5. **Conservative sizing** — new verticals start with lower risk limits (10–15% vs 25% for proven crypto)
+
+This approach ensures each vertical is validated on real market data before real capital is deployed.
 
 ---
 
@@ -240,6 +288,12 @@ For readers interested in the mathematical foundations, the full technical white
 **Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Higher fee-adjusted edge trades get larger allocations (25% at 4%+, 20% at 2.5%+, 15% at 1.8%+, 10% at 1.2%+, 7% at 0.9%+, 5% at 0.7%+), with automatic de-risking during drawdowns (half at 85%, quarter at 75%, halt at 65%). Max risk per trade: 25%.
 
 **Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Maker orders use `post_only=True` to guarantee 75% fee savings. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. No taker execution below 90 seconds to close.
+
+**SPX Engine** — Adapts the crypto EGARCH framework for S&P 500 equities: stronger leverage effect bounds (4× crypto), VIX-implied volatility integration when realized and implied diverge >30%, intraday seasonal deseasonalization (13 half-hour buckets), and NYSE market hours guard with holiday calendar.
+
+**Weather Engine** — Gaussian probability model over 82-member NWP ensemble (31 GFS + 51 ECMWF). Per-city EWMA bias correction with 7-day half-life. Supports bracket, threshold, and tail probability market types.
+
+**Sports Engine** — Bayesian comeback model using empirically calibrated likelihood ratios keyed on (deficit bucket, time remaining, pregame strength). Conservative LR scaling (50% compression toward neutral). Model-market disagreement cap at 30pp. One signal per game dedup. 26 leagues with both binary and three-way (soccer draw) outcome types.
 
 ---
 

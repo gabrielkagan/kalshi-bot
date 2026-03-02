@@ -1,6 +1,6 @@
 # Kalshi Crypto Trading Bot
 
-Automated trading bot for Kalshi's 15-minute cryptocurrency prediction markets. Monitors real-time price feeds across four exchanges, estimates settlement probabilities using microstructure-aware volatility models, and trades BTC, ETH, SOL, and XRP contracts when it finds sufficient edge.
+Automated trading platform for Kalshi prediction markets. Core engine trades 15-minute cryptocurrency contracts (BTC, ETH, SOL, XRP) using microstructure-aware volatility models. Expanding into S&P 500 intraday, daily weather temperature (5 US cities), and live sports outcomes (26 leagues) — all in shadow mode collecting calibration data.
 
 ## How It Works
 
@@ -179,7 +179,11 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot.py                         — all bot logic (~10,400 lines, never rename)
+bot.py                         — core bot logic (~10,400 lines, never rename)
+spx_engine.py                  — S&P 500 intraday engine (EGARCH + VIX, shadow mode)
+weather_engine.py              — weather temperature engine (NWP ensemble, shadow mode)
+sports_engine.py               — sports comeback engine (Bayesian LR, shadow mode)
+sports_data.py                 — sports LR tables and league configuration
 firebase_push.py               — pushes live dashboard snapshots to Firebase
 start.sh                       — systemd entrypoint (venv + .env + bot.py)
 requirements.txt               — Python dependencies
