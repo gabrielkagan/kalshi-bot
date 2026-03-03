@@ -6382,6 +6382,15 @@ class OpportunityScanner:
             # Extract shadow diagnostics for per-evaluation logging
             # _shadow_diag: fields that match insert_evaluated_opportunity/insert_rejection params
             _ebs_var = vol_est.get("egarch_blend_var")
+            # Fallback: if engine didn't compute egarch_blend_var but has constituents, compute here
+            if _ebs_var is None:
+                _fb_sigma = vol_est.get("egarch_sigma")
+                _fb_bw = vol_est.get("egarch_blend_weight")
+                _fb_rk = vol_est.get("rk_rv")
+                _fb_sf = vol_est.get("seasonal_factor", 1.0)
+                if _fb_sigma and _fb_bw and _fb_bw > 0 and _fb_rk and _fb_rk > 0 and _fb_sf:
+                    _fb_erv = _fb_sigma * _fb_sf
+                    _ebs_var = _fb_bw * (_fb_erv ** 2) + (1 - _fb_bw) * (_fb_rk ** 2)
             _shadow_diag = {
                 "egarch_sigma": vol_est.get("egarch_sigma"),
                 "egarch_blend_sigma": math.sqrt(_ebs_var) if _ebs_var and _ebs_var > 0 else None,
@@ -6813,27 +6822,39 @@ class OpportunityScanner:
                     _z_scaled = _z / _temp_t
                     final_prob = 1.0 / (1.0 + math.exp(-_z_scaled))
 
-                # ── Shadow instrumentation (hourly only) ──────────
+                # ── Shadow temperature instrumentation (hourly + SPX) ──────────
                 _hourly_shadow_temp_2_0 = None
                 _hourly_shadow_temp_1_0 = None
                 _hourly_shadow_temp_2_5 = None
                 _hourly_shadow_blend_50 = None
-                if _hourly_pre_temp_prob is not None and _temp_t is not None:
-                    # R3: T=2.0 shadow — more aggressive softening for offline Brier comparison
-                    _sp = max(0.001, min(0.999, _hourly_pre_temp_prob))
+                # For hourly (T=1.45): base = pre-temp prob, shadows = T=1.0/2.0/2.5
+                # For SPX (T=1.0): base = final_prob (no temp applied), shadows = T=1.5/2.0/2.5
+                #   Note: SPX uses hourly_shadow_temp_1_0 for T=1.5 (since T=1.0 is identity/useless)
+                _shadow_base = _hourly_pre_temp_prob  # hourly: prob before T scaling
+                if _shadow_base is None and _pt == "spx_hourly":
+                    _shadow_base = final_prob  # SPX: T=1.0 means final_prob IS untempered
+                    _hourly_pre_temp_prob = final_prob  # store for DB
+                    _temp_t = 1.0  # document that no correction applied
+
+                if _shadow_base is not None:
+                    _sp = max(0.001, min(0.999, _shadow_base))
                     _sz = math.log(_sp / (1.0 - _sp))
                     _hourly_shadow_temp_2_0 = 1.0 / (1.0 + math.exp(-_sz / 2.0))
-                    _hourly_shadow_temp_1_0 = _hourly_pre_temp_prob   # T=1.0 = identity
                     _hourly_shadow_temp_2_5 = 1.0 / (1.0 + math.exp(-_sz / 2.5))
-                    # R5: 50% market blend shadow — compare vs current 40% blend
+                    if _pt == "spx_hourly":
+                        _hourly_shadow_temp_1_0 = 1.0 / (1.0 + math.exp(-_sz / 1.5))  # T=1.5 for SPX
+                    else:
+                        _hourly_shadow_temp_1_0 = _shadow_base   # T=1.0 = identity for hourly
+                    # 50% market blend shadow — compare vs current 40% blend
                     _mkt_p = best_ask / 100.0
                     _cur_w = _tempcfg.market_blend_w
                     if _cur_w < 1.0:
-                        _model_p = max(0.001, min(0.999, (_hourly_pre_temp_prob - _cur_w * _mkt_p) / (1.0 - _cur_w)))
+                        _model_p = max(0.001, min(0.999, (_shadow_base - _cur_w * _mkt_p) / (1.0 - _cur_w)))
                         _blend50_pre = 0.50 * _model_p + 0.50 * _mkt_p
                         _bp = max(0.001, min(0.999, _blend50_pre))
                         _bz = math.log(_bp / (1.0 - _bp))
-                        _hourly_shadow_blend_50 = 1.0 / (1.0 + math.exp(-_bz / _temp_t))
+                        _blend_t = _temp_t if _temp_t and _temp_t != 1.0 else 1.0
+                        _hourly_shadow_blend_50 = 1.0 / (1.0 + math.exp(-_bz / _blend_t))
 
                 # Order flow adjustment
                 ofa_signals = None
@@ -7561,6 +7582,15 @@ class OpportunityScanner:
                                 shadow_cal_prob=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("prob") if _cf else None,
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
+                                hourly_pre_temp_prob=_hourly_pre_temp_prob,
+                                hourly_applied_temp_t=_temp_t,
+                                hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
+                                hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
+                                hourly_shadow_blend_50=_hourly_shadow_blend_50,
+                            )
+                        elif _obs_pt == "spx_hourly":
+                            _obs_extra.update(
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,

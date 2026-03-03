@@ -690,6 +690,12 @@ class SPXVolatilityEngine:
         else:
             regime = "normal"
 
+        # Diagnostic: if we had all inputs but blend_var is still None, log it
+        if egarch_blend_var is None and egarch_sigma and blend_weight > 0:
+            logging.warning(
+                "SPX egarch_blend_var is None despite sigma=%.3e bw=%.3f rk=%.3e sf=%.3f egarch_rv=%s",
+                egarch_sigma, blend_weight, rk_rv, seasonal_factor, egarch_rv)
+
         return {
             "blended_rv": blended_rv,
             "regime": regime,

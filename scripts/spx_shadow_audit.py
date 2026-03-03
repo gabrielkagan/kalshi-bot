@@ -269,7 +269,7 @@ def section_filter_funnel(conn: sqlite3.Connection, since: Optional[str]) -> Lis
                SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) as no_ct
         FROM rejected_opportunities
         WHERE product_type='spx_hourly'
-              AND rejection_reason LIKE '%z_score%' {where_clause(since, 'created_at')}
+              AND rejection_reason LIKE '%z_score%' {where_clause(since, 'rejection_time')}
     """).fetchone()
 
     header("3. FILTER STAGE FUNNEL")
@@ -736,7 +736,7 @@ def section_price_range(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
 # ─── Section 10: Z-Score Rejection Analysis ──────────────────────────────────
 
 def section_zscore(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
-    wc = where_clause(since, "created_at")
+    wc = where_clause(since, "rejection_time")
 
     header("10. Z-SCORE REJECTION ANALYSIS")
 
