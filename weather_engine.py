@@ -64,10 +64,108 @@ WEATHER_CITIES: Dict[str, Dict] = {
         "series_ticker": "KXHIGHLAX",
         "nws_station": "KLAX",
     },
+    "AUS": {
+        "name": "Austin",
+        "lat": 30.2672,
+        "lon": -97.7431,
+        "series_ticker": "KXHIGHAUS",
+        "nws_station": "KAUS",
+    },
+    "ATL": {
+        "name": "Atlanta",
+        "lat": 33.7490,
+        "lon": -84.3880,
+        "series_ticker": "KXHIGHTATL",
+        "nws_station": "KATL",
+    },
+    "SFO": {
+        "name": "San Francisco",
+        "lat": 37.7749,
+        "lon": -122.4194,
+        "series_ticker": "KXHIGHTSFO",
+        "nws_station": "KSFO",
+    },
+    "DAL": {
+        "name": "Dallas",
+        "lat": 32.7767,
+        "lon": -96.7970,
+        "series_ticker": "KXHIGHTDAL",
+        "nws_station": "KDFW",
+    },
+    "PHX": {
+        "name": "Phoenix",
+        "lat": 33.4484,
+        "lon": -112.0740,
+        "series_ticker": "KXHIGHTPHX",
+        "nws_station": "KPHX",
+    },
+    "PHI": {
+        "name": "Philadelphia",
+        "lat": 39.9526,
+        "lon": -75.1652,
+        "series_ticker": "KXHIGHPHIL",
+        "nws_station": "KPHL",
+    },
+    "MIN": {
+        "name": "Minneapolis",
+        "lat": 44.9778,
+        "lon": -93.2650,
+        "series_ticker": "KXHIGHTMIN",
+        "nws_station": "KMSP",
+    },
+    "SEA": {
+        "name": "Seattle",
+        "lat": 47.6062,
+        "lon": -122.3321,
+        "series_ticker": "KXHIGHTSEA",
+        "nws_station": "KSEA",
+    },
+    "HOU": {
+        "name": "Houston",
+        "lat": 29.7604,
+        "lon": -95.3698,
+        "series_ticker": "KXHIGHTHOU",
+        "nws_station": "KIAH",
+    },
+    "BOS": {
+        "name": "Boston",
+        "lat": 42.3601,
+        "lon": -71.0589,
+        "series_ticker": "KXHIGHTBOS",
+        "nws_station": "KBOS",
+    },
+    "LAS": {
+        "name": "Las Vegas",
+        "lat": 36.1699,
+        "lon": -115.1398,
+        "series_ticker": "KXHIGHTLV",
+        "nws_station": "KLAS",
+    },
+    "OKC": {
+        "name": "Oklahoma City",
+        "lat": 35.4676,
+        "lon": -97.5164,
+        "series_ticker": "KXHIGHTOKC",
+        "nws_station": "KOKC",
+    },
+    "DCA": {
+        "name": "Washington DC",
+        "lat": 38.9072,
+        "lon": -77.0369,
+        "series_ticker": "KXHIGHTDC",
+        "nws_station": "KDCA",
+    },
+    "MSY": {
+        "name": "New Orleans",
+        "lat": 29.9511,
+        "lon": -90.0715,
+        "series_ticker": "KXHIGHTNOLA",
+        "nws_station": "KMSY",
+    },
 }
 
-# Max cities to scan per day (all 5 in observation mode for faster data collection)
-MAX_CITIES_PER_DAY = 5
+# Max cities to scan per day (all 19 in observation mode for faster data collection)
+MAX_CITIES_PER_DAY = 19
 
 
 # ═════════════════════════════════════════════════════════════════════════════

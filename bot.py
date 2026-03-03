@@ -1914,12 +1914,12 @@ class StateManager:
 
     def get_unsettled_evaluated_opportunities(self) -> List[Dict]:
         """Return evaluated opportunities with status='pending' and a market_price.
-        Excludes sports product_type — sports uses synthetic tickers that don't
-        resolve via get_market(), and has its own shadow_log for tracking."""
+        Excludes synthetic sports tickers (SPORTS-*) that don't resolve via
+        get_market().  Real Kalshi tickers (KXNBAGAME-*, etc.) are allowed."""
         rows = self.conn.execute(
             "SELECT * FROM evaluated_opportunities WHERE status='pending'"
             " AND market_price IS NOT NULL"
-            " AND (product_type IS NULL OR product_type != 'sports')"
+            " AND ticker NOT LIKE 'SPORTS-%'"
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -7457,6 +7457,7 @@ class OpportunityScanner:
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
+                                wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
