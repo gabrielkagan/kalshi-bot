@@ -278,25 +278,25 @@ CONSERVATIVE_LR_SCALE = 0.2
 
 # Reject signals where model - market > this threshold.
 # 30pp: model can be at most 30pp above market (market=20% → model max=50%)
-MAX_MODEL_MARKET_GAP = 0.20
+MAX_MODEL_MARKET_GAP = 0.80  # Was 0.20 — need wide gap data to calibrate model
 
 
 # ── Entry Criteria ───────────────────────────────────────────────────────────
 
 # Binary (NBA, NHL, MLB, etc.)
 BINARY_ENTRY_CRITERIA = {
-    "min_pregame_prob": 0.55,       # Pregame favorite must be >= 55%
-    "max_kalshi_fav_price": 80,     # Kalshi fav price must be <= 80c (was 38c — too restrictive)
-    "min_time_remaining_pct": 0.50, # At least 50% of game remaining
-    "max_deficit_bucket": "large",  # Skip blowouts
+    "min_pregame_prob": 0.50,       # Was 0.55 — include slight favorites for data collection
+    "max_kalshi_fav_price": 95,     # Was 80 — capture high-price data
+    "min_time_remaining_pct": 0.10, # Was 0.50 — capture late-game data
+    "max_deficit_bucket": "blowout", # Was "large" — include blowouts for calibration
 }
 
 # Three-way (soccer)
 THREE_WAY_ENTRY_CRITERIA = {
-    "min_pregame_prob": 0.55,       # Lower threshold for soccer (draws exist)
-    "max_kalshi_fav_price": 70,     # Tighter for soccer (3-way pricing, was 35c)
-    "min_time_remaining_pct": 0.55, # Soccer: at least 55% (40 min+)
-    "max_deficit_goals": 1,         # 1 goal ONLY — 2+ goal comebacks are rare
+    "min_pregame_prob": 0.50,       # Was 0.55 — include slight favorites
+    "max_kalshi_fav_price": 95,     # Was 70 — capture high-price data
+    "min_time_remaining_pct": 0.10, # Was 0.55 — capture late-game data
+    "max_deficit_goals": 3,         # Was 1 — capture multi-goal data for calibration
 }
 
 

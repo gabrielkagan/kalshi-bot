@@ -1326,6 +1326,7 @@ class StateManager:
             ("pregame_capture_method", "TEXT"),
             ("shadow_lr_scale_50_posterior", "REAL"),
             ("shadow_lr_scale_50_signal", "INTEGER DEFAULT 0"),
+            ("score_changed", "INTEGER"),
         ]:
             try:
                 self.conn.execute(

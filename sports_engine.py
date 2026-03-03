@@ -634,8 +634,9 @@ class SportsEngine:
         self._model = BayesianComebackModel()
         self._thread: Optional[threading.Thread] = None
         self._shutdown = threading.Event()
-        # Dedup: (game_id, home_score, away_score) → already logged
-        self._logged_scores: Set[Tuple[str, int, int]] = set()
+        # Time-based dedup: log every 60s (trailing) or 120s (leading/tied)
+        self._last_logged_time: Dict[str, float] = {}
+        self._last_logged_score: Dict[str, Tuple[int, int]] = {}
         # Track pregame favorites: game_id → (fav_code, fav_prob)
         self._pregame_favs: Dict[str, Tuple[str, float]] = {}
         # Per-game signal dedup: only fire one signal per game
@@ -741,14 +742,52 @@ class SportsEngine:
                 underdog_score = game.home_score
 
             deficit = underdog_score - fav_score
-            if deficit <= 0:
-                continue  # Favorite is winning or tied — no comeback signal
 
-            # 5. Dedup: only log on score changes
-            dedup_key = (game_id, game.home_score, game.away_score)
-            if dedup_key in self._logged_scores:
+            # 5. Time-based dedup: 60s for trailing, 120s for leading/tied
+            _now = time.time()
+            _last = self._last_logged_time.get(game_id, 0)
+            _score_key = (game.home_score, game.away_score)
+            _prev_score = self._last_logged_score.get(game_id)
+            _score_changed = (_prev_score != _score_key)
+            _is_trailing = deficit > 0
+            _interval = 60 if _is_trailing else 120
+            if not _score_changed and (_now - _last) < _interval:
                 continue
-            self._logged_scores.add(dedup_key)
+            self._last_logged_time[game_id] = _now
+            self._last_logged_score[game_id] = _score_key
+
+            # 5b. Leading/tied: log minimal state for calibration baseline
+            if not _is_trailing:
+                current_price = self._get_current_kalshi_price(game, fav_code)
+                if current_price is None:
+                    current_price = 0.0
+                ob_data = self._get_orderbook_data(game, fav_code)
+                leading_signal = ComebackSignal(
+                    comeback_prob=pregame_fav_prob,
+                    prior=pregame_fav_prob,
+                    likelihood_ratio=1.0,
+                    edge=0.0,
+                    fee_adjusted_edge=0.0,
+                    deficit_bucket="leading",
+                    time_bucket=classify_time_remaining(game.time_remaining_pct),
+                    strength_bucket=classify_strength(pregame_fav_prob, league_cfg.outcome_type),
+                    signal_fired=False,
+                    filter_stage="sports_fav_leading",
+                    rejection_reason=None,
+                    simulated_contracts=0,
+                    simulated_risk=0.0,
+                    market_implied_prob=current_price / 100.0 if current_price else 0.0,
+                )
+                self._insert_shadow_log(
+                    game=game, league_cfg=league_cfg,
+                    fav_code=fav_code, pregame_fav_prob=pregame_fav_prob,
+                    fav_score=fav_score, underdog_score=underdog_score,
+                    deficit=deficit, signal=leading_signal, ob_data=ob_data,
+                    pregame_capture_method=pregame_capture_method,
+                    market_implied_prob=current_price / 100.0 if current_price else 0.0,
+                    score_changed=_score_changed,
+                )
+                continue
 
             # 6. Get current Kalshi price
             current_price = self._get_current_kalshi_price(game, fav_code)
@@ -763,26 +802,6 @@ class SportsEngine:
                 current_kalshi_price=current_price,
                 deficit=deficit,
             )
-
-            # 7b. Per-game signal dedup — suppress correlated repeat signals
-            if signal.signal_fired and game_id in self._signaled_games:
-                signal = ComebackSignal(
-                    comeback_prob=signal.comeback_prob,
-                    prior=signal.prior,
-                    likelihood_ratio=signal.likelihood_ratio,
-                    edge=signal.edge,
-                    fee_adjusted_edge=signal.fee_adjusted_edge,
-                    deficit_bucket=signal.deficit_bucket,
-                    time_bucket=signal.time_bucket,
-                    strength_bucket=signal.strength_bucket,
-                    signal_fired=False,
-                    filter_stage="sports_already_signaled",
-                    rejection_reason=f"game {game_id} already signaled",
-                    simulated_contracts=0,
-                    simulated_risk=0.0,
-                )
-            elif signal.signal_fired:
-                self._signaled_games.add(game_id)
 
             if signal.signal_fired:
                 signal_count += 1
@@ -802,6 +821,7 @@ class SportsEngine:
                 deficit=deficit, signal=signal, ob_data=ob_data,
                 pregame_capture_method=pregame_capture_method,
                 market_implied_prob=current_price / 100.0 if current_price else 0.0,
+                score_changed=_score_changed,
             )
 
             # 10. Insert to evaluated_opportunities
@@ -1100,6 +1120,8 @@ class SportsEngine:
                 conn.commit()
                 self._settled_games.add(game_id)
                 self._signaled_games.discard(game_id)
+                self._last_logged_time.pop(game_id, None)
+                self._last_logged_score.pop(game_id, None)
                 logging.debug("SportsEngine: settled game %s (%s vs %s) "
                               "fav_won=%s, %d rows",
                               game_id, game.home_team, game.away_team,
@@ -1137,7 +1159,8 @@ class SportsEngine:
                            deficit: int, signal: ComebackSignal,
                            ob_data: Dict,
                            pregame_capture_method: str = "",
-                           market_implied_prob: float = 0.0) -> None:
+                           market_implied_prob: float = 0.0,
+                           score_changed: bool = False) -> None:
         """Insert record into sports_shadow_log."""
         try:
             conn = self._get_db_conn()
@@ -1171,10 +1194,11 @@ class SportsEngine:
                     would_signal_70c, would_signal_80c,
                     would_signal_pregame_55, would_signal_pregame_65,
                     market_implied_prob, pregame_capture_method,
-                    shadow_lr_scale_50_posterior, shadow_lr_scale_50_signal
+                    shadow_lr_scale_50_posterior, shadow_lr_scale_50_signal,
+                    score_changed
                 ) VALUES (
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
                 )
             """, (
                 game.game_id, league_cfg.espn_sport, league_cfg.display_name,
@@ -1206,6 +1230,7 @@ class SportsEngine:
                 pregame_capture_method,
                 signal.shadow_lr_scale_50_posterior,
                 1 if signal.shadow_lr_scale_50_signal else 0,
+                1 if score_changed else 0,
             ))
             conn.commit()
         except Exception:
