@@ -41,13 +41,15 @@ def connect_db(path: str) -> sqlite3.Connection:
 
 
 def _where(since: Optional[str] = None, league: Optional[str] = None,
-           prefix: str = "WHERE") -> str:
+           prefix: str = "WHERE", sport_group: Optional[str] = None) -> str:
     """Composable WHERE/AND clause builder."""
     parts = []
     if since:
         parts.append(f"evaluation_time >= '{since}'")
     if league:
         parts.append(f"league = '{league}'")
+    if sport_group:
+        parts.append(f"sport_group = '{sport_group}'")
     if not parts:
         return ""
     return f" {prefix} " + " AND ".join(parts)
@@ -145,8 +147,18 @@ def section_per_league(conn: sqlite3.Connection,
                        since: Optional[str] = None) -> List[Dict]:
     w = _where(since)
 
+    # Check if sport_group column exists
+    has_sport_group = False
+    try:
+        conn.execute("SELECT sport_group FROM sports_shadow_log LIMIT 1")
+        has_sport_group = True
+    except Exception:
+        pass
+
+    sg_col = ", COALESCE(sport_group, 'unknown') AS sg" if has_sport_group else ", 'unknown' AS sg"
+
     rows = conn.execute(f"""
-        SELECT league, sport, outcome_type,
+        SELECT league, sport, outcome_type {sg_col},
                COUNT(*) AS evals,
                SUM(CASE WHEN signal_fired=1 THEN 1 ELSE 0 END) AS signals,
                SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
@@ -164,17 +176,16 @@ def section_per_league(conn: sqlite3.Connection,
     result = [dict(r) for r in rows]
 
     subheader("PER-LEAGUE SUMMARY")
-    print(f"  {'League':<15} {'Type':<10} {'Evals':>6} {'Sigs':>5} {'Settled':>7} "
-          f"{'WR':>6} {'AvgEdge':>8} {'AvgAsk':>7} {'AvgSpread':>9} {'Games':>5}")
-    print("  " + "-" * 90)
+    print(f"  {'League':<15} {'Group':<12} {'Type':<10} {'Evals':>6} {'Sigs':>5} {'Settled':>7} "
+          f"{'WR':>6} {'AvgEdge':>8} {'AvgAsk':>7} {'Games':>5}")
+    print("  " + "-" * 95)
     for r in result:
         wr = pct(r['sig_wins'] or 0, r['settled_sigs'] or 0)
         avg_e = f"{(r['avg_edge'] or 0)*100:.1f}%" if r['avg_edge'] else "n/a"
         avg_a = f"{r['avg_ask']:.0f}c" if r['avg_ask'] else "n/a"
-        avg_s = f"{r['avg_spread']:.1f}c" if r['avg_spread'] else "n/a"
-        print(f"  {r['league']:<15} {r['outcome_type']:<10} {r['evals']:>6} "
+        print(f"  {r['league']:<15} {r['sg']:<12} {r['outcome_type']:<10} {r['evals']:>6} "
               f"{r['signals']:>5} {r['settled_sigs'] or 0:>7} {wr:>6} "
-              f"{avg_e:>8} {avg_a:>7} {avg_s:>9} {r['games']:>5}")
+              f"{avg_e:>8} {avg_a:>7} {r['games']:>5}")
 
     return result
 
@@ -916,6 +927,174 @@ def section_lr_scale_ab(conn: sqlite3.Connection, since: Optional[str] = None,
     return result
 
 
+# ── Section: Per Sport Group Summary ─────────────────────────────────────
+
+def section_per_sport_group(conn: sqlite3.Connection,
+                            since: Optional[str] = None) -> List[Dict]:
+    """Aggregate metrics by sport_group (basketball, hockey, etc.)."""
+    # Check if sport_group column exists
+    try:
+        conn.execute("SELECT sport_group FROM sports_shadow_log LIMIT 1")
+    except Exception:
+        print("  sport_group column not yet populated (need engine restart).")
+        return []
+
+    w = _where(since)
+
+    rows = conn.execute(f"""
+        SELECT COALESCE(sport_group, 'unknown') AS sport_group,
+               COUNT(*) AS evals,
+               COUNT(DISTINCT league) AS leagues,
+               COUNT(DISTINCT game_id) AS games,
+               SUM(CASE WHEN signal_fired=1 THEN 1 ELSE 0 END) AS signals,
+               SUM(CASE WHEN signal_fired=1 AND fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled_sigs,
+               SUM(CASE WHEN signal_fired=1 AND fav_won=1 THEN 1 ELSE 0 END) AS sig_wins,
+               AVG(CASE WHEN signal_fired=1 THEN fee_adjusted_edge END) AS avg_edge,
+               AVG(CASE WHEN signal_fired=1 THEN comeback_prob END) AS avg_model,
+               AVG(CASE WHEN signal_fired=1 AND yes_ask > 0 THEN yes_ask END) AS avg_ask,
+               AVG(sport_lr_scale) AS lr_scale
+        FROM sports_shadow_log {w}
+        GROUP BY sport_group
+        ORDER BY signals DESC, evals DESC
+    """).fetchall()
+
+    result = [dict(r) for r in rows]
+
+    header("PER SPORT GROUP SUMMARY")
+    print(f"  {'Group':<12} {'Lgues':>5} {'Games':>5} {'Evals':>6} {'Sigs':>5} "
+          f"{'Settled':>7} {'WR':>6} {'AvgEdge':>8} {'LRscale':>8}")
+    print("  " + "-" * 75)
+    for r in result:
+        wr = pct(r['sig_wins'] or 0, r['settled_sigs'] or 0)
+        avg_e = f"{(r['avg_edge'] or 0)*100:.1f}%" if r['avg_edge'] else "n/a"
+        lr_s = f"{r['lr_scale']:.2f}" if r['lr_scale'] else "n/a"
+        print(f"  {r['sport_group']:<12} {r['leagues']:>5} {r['games']:>5} {r['evals']:>6} "
+              f"{r['signals']:>5} {r['settled_sigs'] or 0:>7} {wr:>6} "
+              f"{avg_e:>8} {lr_s:>8}")
+
+    return result
+
+
+# ── Section: Sport Group Calibration Analysis ────────────────────────────
+
+def section_sport_group_calibration(conn: sqlite3.Connection,
+                                    since: Optional[str] = None) -> Dict:
+    """Per-sport-group calibration: model predicted vs actual WR.
+
+    Key diagnostic for Phase 2 per-sport LR scale tuning.
+    """
+    # Check if sport_group column exists
+    try:
+        conn.execute("SELECT sport_group FROM sports_shadow_log LIMIT 1")
+    except Exception:
+        print("  sport_group column not yet populated.")
+        return {}
+
+    w = _where(since)
+
+    header("SPORT GROUP CALIBRATION")
+    print("  Per-group model accuracy: predicted comeback % vs actual win rate")
+    print("  Overconfident = predicted >> actual. Underconfident = predicted << actual.")
+    print()
+
+    rows = conn.execute(f"""
+        SELECT COALESCE(sport_group, 'unknown') AS sport_group,
+               COUNT(*) AS n_signals,
+               AVG(comeback_prob) AS avg_predicted,
+               SUM(CASE WHEN fav_won=1 THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
+               AVG(CASE WHEN yes_ask > 0 THEN yes_ask END) AS avg_market,
+               AVG(sport_lr_scale) AS lr_scale,
+               AVG(likelihood_ratio) AS avg_lr
+        FROM sports_shadow_log
+        WHERE signal_fired=1 {_where(since, prefix="AND")}
+        GROUP BY sport_group
+        ORDER BY n_signals DESC
+    """).fetchall()
+
+    result = {}
+
+    if not rows:
+        print("  No signals to analyze.")
+        return result
+
+    print(f"  {'Group':<12} {'Sigs':>5} {'Settled':>7} {'Predicted':>10} {'Actual':>8} "
+          f"{'Gap':>8} {'AvgMkt':>7} {'AvgLR':>6} {'LRscale':>8} {'Status':<20}")
+    print("  " + "-" * 105)
+
+    for r in rows:
+        rdict = dict(r)
+        settled = rdict['settled'] or 0
+        wins = rdict['wins'] or 0
+        avg_pred = rdict['avg_predicted'] or 0
+        actual_wr = safe_div(wins, settled) if settled > 0 else None
+        gap = (avg_pred - actual_wr) * 100 if actual_wr is not None else None
+        avg_mkt = f"{rdict['avg_market']:.0f}c" if rdict['avg_market'] else "n/a"
+        avg_lr_str = f"{rdict['avg_lr']:.2f}" if rdict['avg_lr'] else "n/a"
+        lr_s = f"{rdict['lr_scale']:.2f}" if rdict['lr_scale'] else "n/a"
+
+        if actual_wr is not None and settled >= 5:
+            if gap > 15:
+                status = "OVERCONFIDENT"
+            elif gap < -15:
+                status = "UNDERCONFIDENT"
+            elif abs(gap) <= 5:
+                status = "well-calibrated"
+            else:
+                status = "slight bias"
+        elif settled > 0:
+            status = f"too few ({settled})"
+        else:
+            status = "no settlements"
+
+        pred_str = f"{avg_pred:.1%}" if avg_pred else "n/a"
+        actual_str = f"{actual_wr:.1%}" if actual_wr is not None else "n/a"
+        gap_str = f"{gap:+.1f}pp" if gap is not None else "n/a"
+
+        print(f"  {rdict['sport_group']:<12} {rdict['n_signals']:>5} {settled:>7} "
+              f"{pred_str:>10} {actual_str:>8} {gap_str:>8} {avg_mkt:>7} "
+              f"{avg_lr_str:>6} {lr_s:>8} {status:<20}")
+
+        rdict['actual_wr'] = actual_wr
+        rdict['calibration_gap'] = gap
+        rdict['status'] = status
+        result[rdict['sport_group']] = rdict
+
+    # LR scale recommendations
+    print()
+    recs = []
+    for group, data in result.items():
+        gap = data.get('calibration_gap')
+        settled = data.get('settled', 0)
+        lr_scale = data.get('lr_scale', 0.2)
+
+        if gap is None or settled < 10:
+            recs.append((group, "COLLECT MORE DATA",
+                         f"Only {settled} settled signals. Need 50+ for reliable calibration."))
+        elif gap > 20:
+            recs.append((group, "DECREASE lr_scale",
+                         f"Model {gap:+.1f}pp overconfident. "
+                         f"Current scale={lr_scale:.2f}, try {max(0.05, lr_scale * 0.5):.2f}"))
+        elif gap < -20:
+            recs.append((group, "INCREASE lr_scale",
+                         f"Model {gap:+.1f}pp underconfident. "
+                         f"Current scale={lr_scale:.2f}, try {min(1.0, lr_scale * 2.0):.2f}"))
+        elif abs(gap) <= 10:
+            recs.append((group, "HOLD",
+                         f"Gap={gap:+.1f}pp — calibration is reasonable at scale={lr_scale:.2f}"))
+        else:
+            direction = "decrease" if gap > 0 else "increase"
+            recs.append((group, f"MONITOR ({direction})",
+                         f"Gap={gap:+.1f}pp — borderline. Watch with more data."))
+
+    if recs:
+        subheader("LR SCALE TUNING RECOMMENDATIONS (Phase 2)")
+        for group, action, detail in recs:
+            print(f"  {group:<12} [{action}] {detail}")
+
+    return result
+
+
 # ── Section: Data-Driven Recommendations ─────────────────────────────────────
 
 def section_recommendations(conn: sqlite3.Connection, since: Optional[str] = None,
@@ -1044,6 +1223,8 @@ def main():
     parser.add_argument("--db", default="state.db", help="Path to state.db")
     parser.add_argument("--since", default=None,
                         help="Filter to data since this date (YYYY-MM-DD)")
+    parser.add_argument("--sport-group", default=None,
+                        help="Filter to a sport group (basketball, hockey, soccer, etc.)")
     parser.add_argument("--json", default=None,
                         help="Write JSON artifact to this path")
     args = parser.parse_args()
@@ -1062,12 +1243,16 @@ def main():
         print("ERROR: sports_shadow_log table not found. Has the sports engine run?")
         sys.exit(1)
 
+    sport_group_filter = getattr(args, 'sport_group', None)
+
     print()
     print("#" * 72)
     print("##  KALSHI SPORTS SHADOW AUDIT")
     print(f"##  Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     if args.since:
         print(f"##  Regime filter: since {args.since}")
+    if sport_group_filter:
+        print(f"##  Sport group filter: {sport_group_filter}")
     print("#" * 72)
 
     # ── GLOBAL OVERVIEW ──────────────────────────────────────────────────
@@ -1075,8 +1260,26 @@ def main():
     overview_data = section_overview(conn, args.since)
     league_data = section_per_league(conn, args.since)
 
+    # ── SPORT GROUP OVERVIEW ─────────────────────────────────────────────
+    sport_group_data = section_per_sport_group(conn, args.since)
+    sport_group_cal = section_sport_group_calibration(conn, args.since)
+
     # ── PER-SPORT DETAILED ANALYSIS ─────────────────────────────────────
     leagues = get_leagues_with_signals(conn, args.since)
+
+    # If --sport-group filter, only show leagues in that group
+    if sport_group_filter:
+        # Query which leagues belong to this sport group
+        try:
+            sg_leagues = conn.execute("""
+                SELECT DISTINCT league FROM sports_shadow_log
+                WHERE sport_group = ? AND signal_fired=1
+            """, (sport_group_filter,)).fetchall()
+            sg_league_names = {r['league'] for r in sg_leagues}
+            leagues = [l for l in leagues if l in sg_league_names]
+        except Exception:
+            pass  # sport_group column may not exist yet
+
     per_sport_data = {}
     settlement_data_per_sport = {}
 
@@ -1134,8 +1337,11 @@ def main():
         artifact = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "since": args.since,
+            "sport_group_filter": sport_group_filter,
             "overview": overview_data,
             "leagues": league_data,
+            "sport_groups": sport_group_data,
+            "sport_group_calibration": sport_group_cal,
             "per_sport": {},
             "cross_sport": {
                 "fav_audit_issues": fav_audit.get("issues", []),

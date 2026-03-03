@@ -629,6 +629,40 @@ def compute_sports(conn, since):
     total_with_method = sum(pregame_methods.values())
     pregame_capture_pct = round(total_with_method / total * 100, 1) if total else 0
 
+    # Per sport group breakdown (if column exists)
+    sport_groups = {}
+    try:
+        sg_rows = c.execute("""
+            SELECT COALESCE(sport_group, 'unknown') AS sg,
+                   COUNT(*) AS evals,
+                   SUM(signal_fired) AS signals,
+                   SUM(CASE WHEN signal_fired=1 AND fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
+                   SUM(CASE WHEN signal_fired=1 AND fav_won=1 THEN 1 ELSE 0 END) AS wins,
+                   COUNT(DISTINCT game_id) AS games,
+                   AVG(CASE WHEN signal_fired=1 THEN comeback_prob END) AS avg_predicted,
+                   AVG(sport_lr_scale) AS lr_scale
+            FROM sports_shadow_log
+            WHERE evaluation_time >= ?
+            GROUP BY sg
+            ORDER BY signals DESC
+        """, (since,)).fetchall()
+        for r in sg_rows:
+            sg_settled = r[3] or 0
+            sg_wins = r[4] or 0
+            sg_wr = round(sg_wins / sg_settled, 4) if sg_settled > 0 else 0
+            avg_pred = round(r[6], 4) if r[6] else 0
+            cal_gap = round((avg_pred - sg_wr) * 100, 1) if sg_settled > 0 and avg_pred else None
+            sport_groups[r[0]] = {
+                "evals": r[1], "signals": r[2] or 0,
+                "settled": sg_settled, "wins": sg_wins,
+                "win_rate": sg_wr, "games": r[5] or 0,
+                "avg_predicted": avg_pred,
+                "lr_scale": round(r[7], 2) if r[7] else None,
+                "calibration_gap_pp": cal_gap,
+            }
+    except Exception:
+        pass  # sport_group column may not exist yet
+
     return {
         "total_evals": total,
         "signals": signals,
@@ -646,6 +680,7 @@ def compute_sports(conn, since):
         "sprt_decision": sprt_decision,
         "sprt_n": sprt_n,
         "pregame_capture_pct": pregame_capture_pct,
+        "sport_groups": sport_groups,
     }
 
 
