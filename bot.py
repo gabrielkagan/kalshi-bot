@@ -7716,6 +7716,14 @@ class OpportunityScanner:
                     _obs_log_prefix = {"hourly": "HOURLY_OBS", "spx_hourly": "SPX_OBS", "weather": "WEATHER_OBS"}.get(_obs_pt, "OBS")
                     logging.info("%s: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  _obs_log_prefix, ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
+                    # Increment per-window counters even in observation mode so Layer 3b/3c
+                    # limits work for counterfactual analysis (without this, counter stays 0
+                    # and the limit is dead code — bug found by audit: 11 SPX positions in one window)
+                    if _fltcfg.max_positions_per_window is not None:
+                        _wkey = window["event_ticker"]
+                        self._hourly_window_counts[_wkey] = self._hourly_window_counts.get(_wkey, 0) + 1
+                        self._hourly_window_risk[_wkey] = self._hourly_window_risk.get(_wkey, 0.0) + \
+                            (sizing["contracts"] * best_ask) / (balance if balance > 0 else 1)
                     continue  # DO NOT add to candidates — observation gate
 
                 # ── STC SHADOW GATE (15M only) ──
