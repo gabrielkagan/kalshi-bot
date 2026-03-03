@@ -5,6 +5,8 @@ Runs against state.db to evaluate the sports comeback shadow engine.
 Designed to be run frequently (daily or after each game night) to track
 progress toward live trading readiness.
 
+Output is organized per-sport so each league can be evaluated independently.
+
 Usage:
     # Run on VPS directly:
     python3 scripts/sports_shadow_audit.py
@@ -25,7 +27,6 @@ import json
 import math
 import sqlite3
 import sys
-import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -37,6 +38,19 @@ def connect_db(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _where(since: Optional[str] = None, league: Optional[str] = None,
+           prefix: str = "WHERE") -> str:
+    """Composable WHERE/AND clause builder."""
+    parts = []
+    if since:
+        parts.append(f"evaluation_time >= '{since}'")
+    if league:
+        parts.append(f"league = '{league}'")
+    if not parts:
+        return ""
+    return f" {prefix} " + " AND ".join(parts)
 
 
 def pct(num: int, denom: int) -> str:
@@ -54,14 +68,35 @@ def header(title: str) -> None:
     print("=" * 72)
 
 
+def big_header(title: str) -> None:
+    print()
+    print()
+    print("#" * 72)
+    print(f"##  {title}")
+    print("#" * 72)
+
+
 def subheader(title: str) -> None:
     print(f"\n--- {title} ---")
 
 
-# ── Section 1: Overview ───────────────────────────────────────────────────────
+def get_leagues_with_signals(conn: sqlite3.Connection,
+                             since: Optional[str] = None) -> List[str]:
+    """Return league names that have at least 1 signal."""
+    w = _where(since, prefix="AND")
+    rows = conn.execute(f"""
+        SELECT DISTINCT league FROM sports_shadow_log
+        WHERE signal_fired=1 {w}
+        ORDER BY league
+    """).fetchall()
+    return [r['league'] for r in rows]
 
-def section_overview(conn: sqlite3.Connection, since: Optional[str] = None) -> Dict:
-    where = f"WHERE evaluation_time >= '{since}'" if since else ""
+
+# ── Section: Overview ────────────────────────────────────────────────────────
+
+def section_overview(conn: sqlite3.Connection, since: Optional[str] = None,
+                     league: Optional[str] = None) -> Dict:
+    w = _where(since, league)
 
     row = conn.execute(f"""
         SELECT COUNT(*) AS total,
@@ -74,22 +109,26 @@ def section_overview(conn: sqlite3.Connection, since: Optional[str] = None) -> D
                MIN(evaluation_time) AS first_eval,
                MAX(evaluation_time) AS last_eval,
                SUM(CASE WHEN signal_fired=1 THEN COALESCE(pnl_cents, 0) END) AS sim_pnl
-        FROM sports_shadow_log {where}
+        FROM sports_shadow_log {w}
     """).fetchone()
 
     result = {k: row[k] for k in row.keys()}
     result["since_filter"] = since
+    result["league_filter"] = league
 
-    header("1. OVERVIEW")
+    header(f"OVERVIEW{f' ({league})' if league else ''}")
     print(f"  Date range:         {result['first_eval'] or 'none'} → {result['last_eval'] or 'none'}")
     if since:
         print(f"  Regime filter:      since {since}")
+    if league:
+        print(f"  League filter:      {league}")
     print(f"  Total evaluations:  {result['total']}")
     print(f"  Signals fired:      {result['signals']} ({pct(result['signals'], result['total'])} signal rate)")
     print(f"  Settled signals:    {result['settled_sigs']}")
     print(f"  Signal wins:        {result['sig_wins']} (WR: {pct(result['sig_wins'], result['settled_sigs'])})")
     print(f"  Unique games:       {result['games']}")
-    print(f"  Leagues active:     {result['leagues']}")
+    if not league:
+        print(f"  Leagues active:     {result['leagues']}")
     print(f"  Sim PnL (settled):  ${(result['sim_pnl'] or 0)/100:.2f}")
 
     if result['settled_sigs'] == 0 and result['settled'] == 0:
@@ -100,10 +139,11 @@ def section_overview(conn: sqlite3.Connection, since: Optional[str] = None) -> D
     return result
 
 
-# ── Section 2: Per-League Breakdown ───────────────────────────────────────────
+# ── Section: Per-League Summary Table ────────────────────────────────────────
 
-def section_per_league(conn: sqlite3.Connection, since: Optional[str] = None) -> List[Dict]:
-    where = f"WHERE evaluation_time >= '{since}'" if since else ""
+def section_per_league(conn: sqlite3.Connection,
+                       since: Optional[str] = None) -> List[Dict]:
+    w = _where(since)
 
     rows = conn.execute(f"""
         SELECT league, sport, outcome_type,
@@ -116,14 +156,14 @@ def section_per_league(conn: sqlite3.Connection, since: Optional[str] = None) ->
                AVG(CASE WHEN signal_fired=1 THEN yes_ask END) AS avg_ask,
                AVG(CASE WHEN signal_fired=1 THEN spread END) AS avg_spread,
                COUNT(DISTINCT game_id) AS games
-        FROM sports_shadow_log {where}
+        FROM sports_shadow_log {w}
         GROUP BY league
         ORDER BY signals DESC, evals DESC
     """).fetchall()
 
     result = [dict(r) for r in rows]
 
-    header("2. PER-LEAGUE BREAKDOWN")
+    subheader("PER-LEAGUE SUMMARY")
     print(f"  {'League':<15} {'Type':<10} {'Evals':>6} {'Sigs':>5} {'Settled':>7} "
           f"{'WR':>6} {'AvgEdge':>8} {'AvgAsk':>7} {'AvgSpread':>9} {'Games':>5}")
     print("  " + "-" * 90)
@@ -139,10 +179,11 @@ def section_per_league(conn: sqlite3.Connection, since: Optional[str] = None) ->
     return result
 
 
-# ── Section 3: Per-Game Drill-Down ────────────────────────────────────────────
+# ── Section: Per-Game Drill-Down ─────────────────────────────────────────────
 
-def section_per_game(conn: sqlite3.Connection, since: Optional[str] = None) -> List[Dict]:
-    where = f"WHERE evaluation_time >= '{since}'" if since else ""
+def section_per_game(conn: sqlite3.Connection, since: Optional[str] = None,
+                     league: Optional[str] = None) -> List[Dict]:
+    w = _where(since, league)
 
     rows = conn.execute(f"""
         SELECT game_id, league, home_team, away_team,
@@ -159,14 +200,14 @@ def section_per_game(conn: sqlite3.Connection, since: Optional[str] = None) -> L
                MAX(fav_won) AS fav_won,
                MIN(evaluation_time) AS first_eval,
                MAX(evaluation_time) AS last_eval
-        FROM sports_shadow_log {where}
+        FROM sports_shadow_log {w}
         GROUP BY game_id
         ORDER BY first_eval
     """).fetchall()
 
     result = [dict(r) for r in rows]
 
-    header("3. PER-GAME DRILL-DOWN")
+    subheader(f"PER-GAME DRILL-DOWN{f' ({league})' if league else ''}")
     for r in result:
         settled = "WIN" if r['fav_won'] == 1 else ("LOSS" if r['fav_won'] == 0 else "UNSETTLED")
         signals_info = ""
@@ -193,23 +234,24 @@ def section_per_game(conn: sqlite3.Connection, since: Optional[str] = None) -> L
     return result
 
 
-# ── Section 4: Filter Stage Distribution ──────────────────────────────────────
+# ── Section: Filter Stage Distribution ───────────────────────────────────────
 
-def section_filter_stages(conn: sqlite3.Connection, since: Optional[str] = None) -> List[Dict]:
-    where = f"WHERE evaluation_time >= '{since}'" if since else ""
+def section_filter_stages(conn: sqlite3.Connection, since: Optional[str] = None,
+                          league: Optional[str] = None) -> List[Dict]:
+    w = _where(since, league)
 
     rows = conn.execute(f"""
         SELECT filter_stage, COUNT(*) AS cnt,
                AVG(fee_adjusted_edge) AS avg_edge,
                AVG(yes_ask) AS avg_ask
-        FROM sports_shadow_log {where}
+        FROM sports_shadow_log {w}
         GROUP BY filter_stage
         ORDER BY cnt DESC
     """).fetchall()
 
     result = [dict(r) for r in rows]
 
-    header("4. FILTER STAGE DISTRIBUTION")
+    subheader(f"FILTER STAGE DISTRIBUTION{f' ({league})' if league else ''}")
     print(f"  {'Stage':<35} {'Count':>6} {'AvgEdge':>10} {'AvgAsk':>8}")
     print("  " + "-" * 65)
     for r in result:
@@ -220,10 +262,11 @@ def section_filter_stages(conn: sqlite3.Connection, since: Optional[str] = None)
     return result
 
 
-# ── Section 5: Signal Quality Analysis ────────────────────────────────────────
+# ── Section: Signal Quality Analysis ─────────────────────────────────────────
 
-def section_signal_quality(conn: sqlite3.Connection, since: Optional[str] = None) -> Dict:
-    where = f"AND evaluation_time >= '{since}'" if since else ""
+def section_signal_quality(conn: sqlite3.Connection, since: Optional[str] = None,
+                           league: Optional[str] = None) -> Dict:
+    extra = _where(since, league, prefix="AND")
 
     rows = conn.execute(f"""
         SELECT fee_adjusted_edge, edge, comeback_prob, prior,
@@ -231,13 +274,13 @@ def section_signal_quality(conn: sqlite3.Connection, since: Optional[str] = None
                fav_won, yes_ask, yes_bid, spread, closing_price,
                league, game_id, home_team, away_team
         FROM sports_shadow_log
-        WHERE signal_fired=1 {where}
+        WHERE signal_fired=1 {extra}
         ORDER BY evaluation_time
     """).fetchall()
 
     result = {"total_signals": len(rows), "settled": 0, "wins": 0}
 
-    header("5. SIGNAL QUALITY ANALYSIS")
+    subheader(f"SIGNAL QUALITY{f' ({league})' if league else ''}")
 
     if not rows:
         print("  No signals to analyze.")
@@ -259,52 +302,94 @@ def section_signal_quality(conn: sqlite3.Connection, since: Optional[str] = None
     if posteriors:
         print(f"  Model posterior:    min={min(posteriors):.1%} avg={sum(posteriors)/len(posteriors):.1%} max={max(posteriors):.1%}")
 
-    # Model overconfidence check
-    subheader("MODEL vs MARKET (overconfidence check)")
-    for r in rows:
-        model_pct = (r['comeback_prob'] or 0) * 100
-        market_pct = r['yes_ask'] or 0
-        gap = model_pct - market_pct
-        flag = " *** EXTREME" if gap > 40 else (" ** HIGH" if gap > 25 else "")
-        print(f"  {r['league']:6s} {r['home_team']:15s} vs {r['away_team']:15s} | "
-              f"model={model_pct:.0f}% market={market_pct}c gap={gap:+.0f}pp{flag}")
+    # Model overconfidence — aggregate to ONE LINE PER GAME
+    subheader(f"MODEL vs MARKET — per game{f' ({league})' if league else ''}")
 
-    avg_gap = sum((r['comeback_prob'] or 0) * 100 - (r['yes_ask'] or 0) for r in rows) / len(rows)
-    print(f"\n  Average model-market gap: {avg_gap:+.1f}pp")
-    if avg_gap > 30:
-        print("  *** MODEL IS SEVERELY OVERCONFIDENT — LR table needs recalibration ***")
+    game_agg = defaultdict(lambda: {
+        "model_probs": [], "market_prices": [], "fav_won": None,
+        "league": "", "home_team": "", "away_team": "", "n_signals": 0
+    })
+    for r in rows:
+        g = game_agg[r['game_id']]
+        g["league"] = r['league']
+        g["home_team"] = r['home_team']
+        g["away_team"] = r['away_team']
+        g["n_signals"] += 1
+        if r['comeback_prob'] is not None:
+            g["model_probs"].append(r['comeback_prob'] * 100)
+        if r['yes_ask'] is not None:
+            g["market_prices"].append(r['yes_ask'])
+        if r['fav_won'] is not None:
+            g["fav_won"] = r['fav_won']
+
+    zero_market_count = 0
+    valid_gaps = []
+    print(f"  {'League':6s} {'Home':15s} {'Away':15s} {'Sigs':>4} "
+          f"{'AvgModel':>9} {'AvgMkt':>7} {'Gap':>7} {'Result':>8}")
+    print("  " + "-" * 75)
+    for gid, g in sorted(game_agg.items(), key=lambda x: x[1]['home_team']):
+        avg_model = sum(g["model_probs"]) / len(g["model_probs"]) if g["model_probs"] else 0
+        market_with_data = [p for p in g["market_prices"] if p > 0]
+        if not market_with_data:
+            zero_market_count += 1
+            continue
+        avg_market = sum(market_with_data) / len(market_with_data)
+        gap = avg_model - avg_market
+        valid_gaps.append(gap)
+        outcome = ("WIN" if g["fav_won"] == 1
+                    else ("LOSS" if g["fav_won"] == 0 else "UNSETTLED"))
+        flag = " ***" if gap > 40 else (" **" if gap > 25 else "")
+        print(f"  {g['league']:6s} {g['home_team']:15s} {g['away_team']:15s} "
+              f"{g['n_signals']:>4} {avg_model:>8.0f}% {avg_market:>6.0f}c "
+              f"{gap:>+6.0f}pp {outcome:>8}{flag}")
+
+    if zero_market_count:
+        print(f"\n  {zero_market_count} game(s) had market=0c (ticker matching failure, excluded from gap calc)")
+    if valid_gaps:
+        avg_gap = sum(valid_gaps) / len(valid_gaps)
+        print(f"  Average model-market gap: {avg_gap:+.1f}pp ({len(valid_gaps)} games)")
+        if avg_gap > 30:
+            print("  *** MODEL IS SEVERELY OVERCONFIDENT — LR table needs recalibration ***")
+        result["avg_model_market_gap"] = avg_gap
+    result["zero_market_games"] = zero_market_count
 
     # Settled signal analysis
     settled_rows = [r for r in rows if r['fav_won'] is not None]
     result['settled'] = len(settled_rows)
     result['wins'] = sum(1 for r in settled_rows if r['fav_won'] == 1)
     if settled_rows:
-        subheader("SETTLED SIGNAL OUTCOMES")
+        subheader(f"SETTLED SIGNAL OUTCOMES{f' ({league})' if league else ''}")
         wr = safe_div(result['wins'], result['settled'])
         print(f"  Settled: {result['settled']} | Wins: {result['wins']} | WR: {wr:.1%}")
 
     # CLV analysis
     clv_rows = [r for r in rows if r['closing_price'] is not None and r['yes_ask']]
     if clv_rows:
-        subheader("CLOSING LINE VALUE (CLV)")
+        subheader(f"CLOSING LINE VALUE (CLV){f' ({league})' if league else ''}")
         clvs = [r['closing_price'] - r['yes_ask'] for r in clv_rows]
         print(f"  Signals with CLV:   {len(clv_rows)}")
         print(f"  CLV positive:       {sum(1 for c in clvs if c > 0)}/{len(clvs)}")
         print(f"  Average CLV:        {sum(clvs)/len(clvs):.1f}c")
-    else:
-        subheader("CLOSING LINE VALUE (CLV)")
-        print("  No CLV data available (closing_price not populated).")
 
     return result
 
 
-# ── Section 6: Orderbook & Liquidity ──────────────────────────────────────────
+# ── Section: Orderbook & Liquidity ───────────────────────────────────────────
 
-def section_liquidity(conn: sqlite3.Connection, since: Optional[str] = None) -> Dict:
-    header("6. ORDERBOOK & LIQUIDITY")
+def section_liquidity(conn: sqlite3.Connection, since: Optional[str] = None,
+                      league: Optional[str] = None) -> Dict:
+    # Build WHERE for spread queries
+    parts = ["spread IS NOT NULL"]
+    if since:
+        parts.append(f"evaluation_time >= '{since}'")
+    if league:
+        parts.append(f"league = '{league}'")
+    spread_where = "WHERE " + " AND ".join(parts)
 
-    # Spread distribution
-    spread_where = f"WHERE spread IS NOT NULL AND evaluation_time >= '{since}'" if since else "WHERE spread IS NOT NULL"
+    extra = _where(since, league, prefix="AND")
+
+    subheader(f"ORDERBOOK & LIQUIDITY{f' ({league})' if league else ''}")
+
     rows = conn.execute(f"""
         SELECT spread, COUNT(*) AS cnt,
                AVG(ask_depth) AS avg_ask_depth,
@@ -314,7 +399,6 @@ def section_liquidity(conn: sqlite3.Connection, since: Optional[str] = None) -> 
         GROUP BY spread ORDER BY spread
     """).fetchall()
 
-    subheader("SPREAD DISTRIBUTION")
     print(f"  {'Spread':>7} {'Count':>6} {'Signals':>8} {'AvgAskDepth':>12} {'AvgBidDepth':>12}")
     print("  " + "-" * 50)
     for r in rows:
@@ -322,11 +406,11 @@ def section_liquidity(conn: sqlite3.Connection, since: Optional[str] = None) -> 
               f"{r['avg_ask_depth']:>12,.0f} {r['avg_bid_depth']:>12,.0f}")
 
     # Maker fill feasibility
-    subheader("MAKER EXECUTION FEASIBILITY")
+    print()
     sig_rows = conn.execute(f"""
         SELECT yes_ask, yes_bid, spread, ask_depth, bid_depth, league
         FROM sports_shadow_log
-        WHERE signal_fired=1 {f"AND evaluation_time >= '{since}'" if since else ""}
+        WHERE signal_fired=1 {extra}
     """).fetchall()
 
     tight_spread = sum(1 for r in sig_rows if r['spread'] and r['spread'] <= 3)
@@ -337,17 +421,18 @@ def section_liquidity(conn: sqlite3.Connection, since: Optional[str] = None) -> 
         mid_entry_possible = sum(1 for r in sig_rows
                                  if r['yes_bid'] and r['yes_ask']
                                  and (r['yes_ask'] - r['yes_bid']) >= 2)
-        print(f"  Signals where mid-price entry possible (spread>=2c): {mid_entry_possible}/{total_sigs}")
+        print(f"  Mid-price entry possible (spread>=2c): {mid_entry_possible}/{total_sigs}")
 
     return {"spread_distribution": [dict(r) for r in rows]}
 
 
-# ── Section 7: Deficit & Time Heatmap ─────────────────────────────────────────
+# ── Section: Deficit & Time Heatmap ──────────────────────────────────────────
 
-def section_deficit_time(conn: sqlite3.Connection, since: Optional[str] = None) -> Dict:
-    where = f"WHERE evaluation_time >= '{since}'" if since else ""
+def section_deficit_time(conn: sqlite3.Connection, since: Optional[str] = None,
+                         league: Optional[str] = None) -> Dict:
+    w = _where(since, league)
 
-    header("7. DEFICIT x TIME HEATMAP")
+    subheader(f"DEFICIT x TIME HEATMAP{f' ({league})' if league else ''}")
 
     rows = conn.execute(f"""
         SELECT
@@ -368,7 +453,7 @@ def section_deficit_time(conn: sqlite3.Connection, since: Optional[str] = None) 
             SUM(CASE WHEN fav_won=1 THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN fav_won=0 THEN 1 ELSE 0 END) AS losses,
             AVG(yes_ask) AS avg_ask
-        FROM sports_shadow_log {where}
+        FROM sports_shadow_log {w}
         GROUP BY def_bucket, time_bucket
         ORDER BY def_bucket, time_bucket
     """).fetchall()
@@ -378,26 +463,28 @@ def section_deficit_time(conn: sqlite3.Connection, since: Optional[str] = None) 
     print(f"  {'Deficit':<16} {'Time':>8} {'Evals':>6} {'Sigs':>5} {'W':>4} {'L':>4} {'AvgAsk':>7}")
     print("  " + "-" * 55)
     for r in result:
+        avg_ask_str = f"{r['avg_ask']:.0f}c" if r['avg_ask'] else "n/a"
         print(f"  {r['def_bucket']:<16} {r['time_bucket']:>8} {r['evals']:>6} "
               f"{r['signals']:>5} {r['wins'] or 0:>4} {r['losses'] or 0:>4} "
-              f"{r['avg_ask']:.0f}c" if r['avg_ask'] else "n/a")
+              f"{avg_ask_str:>7}")
 
     return result
 
 
-# ── Section 8: Favorite ID Audit ──────────────────────────────────────────────
+# ── Section: Favorite ID Audit (global only) ─────────────────────────────────
 
-def section_fav_id_audit(conn: sqlite3.Connection, since: Optional[str] = None) -> Dict:
-    where = f"WHERE evaluation_time >= '{since}'" if since else ""
+def section_fav_id_audit(conn: sqlite3.Connection,
+                         since: Optional[str] = None) -> Dict:
+    w = _where(since)
 
-    header("8. FAVORITE IDENTIFICATION AUDIT")
+    header("FAVORITE IDENTIFICATION AUDIT")
 
     rows = conn.execute(f"""
         SELECT DISTINCT game_id, league, home_team, away_team,
                home_code, away_code, pregame_fav_code, pregame_fav_prob,
                pregame_price_home, pregame_price_away,
                MAX(home_score) AS last_home, MAX(away_score) AS last_away
-        FROM sports_shadow_log {where}
+        FROM sports_shadow_log {w}
         GROUP BY game_id
     """).fetchall()
 
@@ -408,7 +495,6 @@ def section_fav_id_audit(conn: sqlite3.Connection, since: Optional[str] = None) 
         home_price = r['pregame_price_home']
         away_price = r['pregame_price_away']
 
-        # Check: if fav_code is home, pregame_price_home should be high
         is_home_fav = fav_code == r['home_code']
         if is_home_fav and home_price and away_price:
             if away_price > home_price:
@@ -455,25 +541,26 @@ def section_fav_id_audit(conn: sqlite3.Connection, since: Optional[str] = None) 
     return {"games": [dict(r) for r in rows], "issues": issues}
 
 
-# ── Section 9: Settlement Gap Check ───────────────────────────────────────────
+# ── Section: Settlement Gap Check ────────────────────────────────────────────
 
-def section_settlement_gaps(conn: sqlite3.Connection, since: Optional[str] = None) -> Dict:
-    where = f"AND evaluation_time >= '{since}'" if since else ""
+def section_settlement_gaps(conn: sqlite3.Connection, since: Optional[str] = None,
+                            league: Optional[str] = None) -> Dict:
+    extra = _where(since, league, prefix="AND")
 
-    header("9. SETTLEMENT GAP CHECK")
+    subheader(f"SETTLEMENT GAPS{f' ({league})' if league else ''}")
 
     total = conn.execute(f"""
-        SELECT COUNT(DISTINCT game_id) FROM sports_shadow_log WHERE 1=1 {where}
+        SELECT COUNT(DISTINCT game_id) FROM sports_shadow_log WHERE 1=1 {extra}
     """).fetchone()[0]
 
     settled = conn.execute(f"""
         SELECT COUNT(DISTINCT game_id) FROM sports_shadow_log
-        WHERE fav_won IS NOT NULL {where}
+        WHERE fav_won IS NOT NULL {extra}
     """).fetchone()[0]
 
     with_closing = conn.execute(f"""
         SELECT COUNT(DISTINCT game_id) FROM sports_shadow_log
-        WHERE closing_price IS NOT NULL {where}
+        WHERE closing_price IS NOT NULL {extra}
     """).fetchone()[0]
 
     print(f"  Total unique games:           {total}")
@@ -483,31 +570,26 @@ def section_settlement_gaps(conn: sqlite3.Connection, since: Optional[str] = Non
     if settled < total:
         gap = total - settled
         print(f"\n  *** {gap} games missing settlement data ***")
-        print("  Settlement backfill mechanism is needed in sports_engine.py:")
-        print("  1. When ESPN reports game_status='final', UPDATE sports_shadow_log")
-        print("     with final_home_score, final_away_score, fav_won")
-        print("  2. Poll Kalshi for market settlement result")
-        print("  3. Capture closing_price from last orderbook snapshot")
 
     return {"total_games": total, "settled_games": settled, "gap": total - settled}
 
 
-# ── Section 10: Wald Sequential Test ──────────────────────────────────────────
+# ── Section: Wald Sequential Test ────────────────────────────────────────────
 
-def section_wald_sprt(conn: sqlite3.Connection, since: Optional[str] = None) -> Dict:
-    where = f"AND evaluation_time >= '{since}'" if since else ""
+def section_wald_sprt(conn: sqlite3.Connection, since: Optional[str] = None,
+                      league: Optional[str] = None) -> Dict:
+    extra = _where(since, league, prefix="AND")
 
-    header("10. WALD SEQUENTIAL PROBABILITY RATIO TEST")
+    subheader(f"WALD SPRT{f' ({league})' if league else ''}")
 
     rows = conn.execute(f"""
         SELECT fav_won FROM sports_shadow_log
-        WHERE signal_fired=1 AND fav_won IS NOT NULL {where}
+        WHERE signal_fired=1 AND fav_won IS NOT NULL {extra}
         ORDER BY evaluation_time
     """).fetchall()
 
     if not rows:
         print("  No settled signals for sequential test.")
-        print("  Need settlement backfill before this analysis is possible.")
         return {"n": 0, "decision": "INSUFFICIENT_DATA"}
 
     p0 = 0.50  # H0: no edge
@@ -546,176 +628,119 @@ def section_wald_sprt(conn: sqlite3.Connection, since: Optional[str] = None) -> 
     return {"n": n, "wins": wins, "llr": llr, "decision": decision}
 
 
-# ── Section 11: Readiness Scorecard ───────────────────────────────────────────
+# ── Section: Readiness Scorecard ─────────────────────────────────────────────
 
-def section_readiness(conn: sqlite3.Connection, since: Optional[str] = None) -> Dict:
-    where = f"AND evaluation_time >= '{since}'" if since else ""
+def section_readiness(conn: sqlite3.Connection, since: Optional[str] = None,
+                      league: Optional[str] = None) -> Dict:
+    extra = _where(since, league, prefix="AND")
 
-    header("11. READINESS SCORECARD")
+    subheader(f"READINESS SCORECARD{f' ({league})' if league else ''}")
 
     checks = []
 
     # 1. Settlement backfill working
     settled = conn.execute(f"""
         SELECT COUNT(*) FROM sports_shadow_log
-        WHERE fav_won IS NOT NULL {where}
+        WHERE fav_won IS NOT NULL {extra}
     """).fetchone()[0]
     total = conn.execute(f"""
-        SELECT COUNT(DISTINCT game_id) FROM sports_shadow_log WHERE 1=1 {where}
+        SELECT COUNT(DISTINCT game_id) FROM sports_shadow_log WHERE 1=1 {extra}
     """).fetchone()[0]
     c1 = settled > 0
     checks.append(("Settlement backfill working", c1, f"{settled}/{total} games settled"))
 
-    # 2. 100+ settled signals
+    # 2. 100+ settled signals (50+ for per-sport)
+    min_signals = 50 if league else 100
     settled_sigs = conn.execute(f"""
         SELECT COUNT(*) FROM sports_shadow_log
-        WHERE signal_fired=1 AND fav_won IS NOT NULL {where}
+        WHERE signal_fired=1 AND fav_won IS NOT NULL {extra}
     """).fetchone()[0]
-    c2 = settled_sigs >= 100
-    checks.append(("100+ settled signals", c2, f"{settled_sigs}/100"))
+    c2 = settled_sigs >= min_signals
+    checks.append((f"{min_signals}+ settled signals", c2, f"{settled_sigs}/{min_signals}"))
 
     # 3. Win rate > 55%
     sig_wins = conn.execute(f"""
         SELECT COUNT(*) FROM sports_shadow_log
-        WHERE signal_fired=1 AND fav_won=1 {where}
+        WHERE signal_fired=1 AND fav_won=1 {extra}
     """).fetchone()[0]
     wr = safe_div(sig_wins, settled_sigs)
-    c3 = wr > 0.55 and settled_sigs >= 50
-    checks.append(("Win rate > 55% (50+ settled)", c3, f"{wr:.1%} ({settled_sigs} settled)"))
+    c3 = wr > 0.55 and settled_sigs >= 30
+    checks.append(("Win rate > 55% (30+ settled)", c3, f"{wr:.1%} ({settled_sigs} settled)"))
 
     # 4. Positive CLV
     clv_row = conn.execute(f"""
         SELECT AVG(closing_price - yes_ask) AS avg_clv
         FROM sports_shadow_log
-        WHERE signal_fired=1 AND closing_price IS NOT NULL AND yes_ask IS NOT NULL {where}
+        WHERE signal_fired=1 AND closing_price IS NOT NULL AND yes_ask IS NOT NULL {extra}
     """).fetchone()
     avg_clv = clv_row["avg_clv"] if clv_row and clv_row["avg_clv"] else None
     c4 = avg_clv is not None and avg_clv > 0
     checks.append(("Positive CLV", c4, f"{avg_clv:.1f}c" if avg_clv else "no data"))
 
-    # 5. Multiple leagues
-    n_leagues = conn.execute(f"""
-        SELECT COUNT(DISTINCT league) FROM sports_shadow_log
-        WHERE signal_fired=1 {where}
-    """).fetchone()[0]
-    c5 = n_leagues >= 3
-    checks.append(("3+ leagues with signals", c5, f"{n_leagues} leagues"))
-
-    # 6. Model calibration reasonable
+    # 5. Model calibration reasonable (gap < 20pp, excluding 0c market)
     avg_gap = conn.execute(f"""
         SELECT AVG(comeback_prob * 100 - yes_ask) AS gap
         FROM sports_shadow_log
-        WHERE signal_fired=1 AND yes_ask > 0 {where}
+        WHERE signal_fired=1 AND yes_ask > 0 {extra}
     """).fetchone()
     gap_val = avg_gap["gap"] if avg_gap and avg_gap["gap"] else None
-    c6 = gap_val is not None and abs(gap_val) < 20
-    checks.append(("Model-market gap < 20pp", c6,
+    c5 = gap_val is not None and abs(gap_val) < 20
+    checks.append(("Model-market gap < 20pp", c5,
                     f"{gap_val:.1f}pp avg" if gap_val else "no data"))
 
-    # 7. Per-game dedup implemented
+    # 6. Per-game dedup implemented
     multi = conn.execute(f"""
         SELECT COUNT(*) FROM (
             SELECT game_id, COUNT(*) as n
             FROM sports_shadow_log
-            WHERE signal_fired=1 {where}
+            WHERE signal_fired=1 {extra}
             GROUP BY game_id HAVING n > 1
         )
     """).fetchone()[0]
-    c7 = multi == 0
-    checks.append(("No multi-entry per game", c7,
+    c6 = multi == 0
+    checks.append(("No multi-entry per game", c6,
                     f"{multi} games with multiple signals"))
+
+    # 7. Positive sim PnL
+    sim_pnl = conn.execute(f"""
+        SELECT SUM(COALESCE(pnl_cents, 0)) AS pnl
+        FROM sports_shadow_log
+        WHERE signal_fired=1 {extra}
+    """).fetchone()
+    pnl_val = sim_pnl["pnl"] if sim_pnl and sim_pnl["pnl"] else 0
+    c7 = pnl_val > 0
+    checks.append(("Positive sim PnL", c7, f"${pnl_val/100:.2f}"))
 
     print()
     all_pass = True
     result_checks = []
     for desc, passed, detail in checks:
-        status = "PASS" if passed else "FAIL"
         symbol = "+" if passed else "X"
         all_pass = all_pass and passed
         print(f"  [{symbol}] {desc}: {detail}")
         result_checks.append({"check": desc, "passed": passed, "detail": detail})
 
+    passed_count = sum(1 for _, p, _ in checks if p)
+    total_checks = len(checks)
     print()
     if all_pass:
-        print("  >>> ALL CHECKS PASSED — Ready for live promotion consideration")
+        print(f"  >>> ALL {total_checks} CHECKS PASSED — Ready for live promotion consideration")
     else:
-        failing = sum(1 for _, p, _ in checks if not p)
-        print(f"  >>> NOT READY — {failing} checks failing. Continue shadow collection.")
+        failing = total_checks - passed_count
+        print(f"  >>> {passed_count}/{total_checks} checks pass — "
+              f"{'CONTINUE COLLECTING' if passed_count >= 3 else 'NOT READY'}")
 
-    return {"all_pass": all_pass, "checks": result_checks}
-
-
-# ── Section 12: Config Recommendations ────────────────────────────────────────
-
-def section_recommendations(overview_data: Dict, signal_data: Dict,
-                           settlement_data: Dict) -> None:
-    header("12. RECOMMENDATIONS (prioritized)")
-
-    recs = []
-
-    # Always recommend settlement backfill if missing
-    if settlement_data.get("gap", 0) > 0:
-        recs.append((
-            "CRITICAL",
-            "Fix settlement backfill",
-            "Add game-over detection in _tick(). When ESPN reports 'final', "
-            "UPDATE sports_shadow_log with final scores, fav_won, closing_price. "
-            "Without this, ALL performance analysis is impossible.",
-            "IMMEDIATE"
-        ))
-
-    # Favorite ID audit
-    recs.append((
-        "CRITICAL",
-        "Validate favorite identification",
-        "Log both home/away Kalshi prices explicitly with team names. "
-        "Cross-check against ESPN win probability. The home/away parsing "
-        "heuristic in KalshiSportsDiscovery may be swapping teams.",
-        "IMMEDIATE"
-    ))
-
-    # Model calibration
-    if signal_data.get("total_signals", 0) > 0:
-        recs.append((
-            "HIGH",
-            "Recalibrate LR table",
-            "Current LR values produce posteriors 40-70pp above market prices. "
-            "Use historical comeback rate data (Basketball Reference, FBref) "
-            "to derive empirical LR values. Target: model-market gap < 15pp.",
-            "WEEK 2"
-        ))
-
-    # Per-game dedup
-    recs.append((
-        "MEDIUM",
-        "Add per-game signal dedup",
-        "Currently fires signal on every score change. Add max 1 signal per "
-        "game_id (enter on first qualifying signal only). Reduces correlated "
-        "risk from multiple entries in same game.",
-        "WEEK 1"
-    ))
-
-    # Max model-market disagreement filter
-    recs.append((
-        "MEDIUM",
-        "Add model-market disagreement cap",
-        "Reject signals where model posterior exceeds market price by >30pp. "
-        "At >30pp disagreement, the model is almost certainly wrong, not the market. "
-        "This is a safety valve until LR table is recalibrated.",
-        "WEEK 1"
-    ))
-
-    for priority, title, detail, timeline in recs:
-        print(f"\n  [{priority}] {title} ({timeline})")
-        print(f"    {detail}")
+    return {"all_pass": all_pass, "checks": result_checks,
+            "passed": passed_count, "total": total_checks}
 
 
-# ── Section 13: Counterfactual Analysis ──────────────────────────────────
+# ── Section: Counterfactual Analysis ─────────────────────────────────────────
 
-def section_counterfactual(conn: sqlite3.Connection, since: Optional[str] = None) -> Dict:
-    where = f"WHERE evaluation_time >= '{since}'" if since else ""
+def section_counterfactual(conn: sqlite3.Connection, since: Optional[str] = None,
+                           league: Optional[str] = None) -> Dict:
+    w = _where(since, league)
 
-    header("13. COUNTERFACTUAL ANALYSIS (multi-threshold)")
+    subheader(f"COUNTERFACTUAL ANALYSIS{f' ({league})' if league else ''}")
 
     # Check if columns exist
     try:
@@ -733,7 +758,7 @@ def section_counterfactual(conn: sqlite3.Connection, since: Optional[str] = None
                SUM(would_signal_pregame_55) AS pregame_55,
                SUM(would_signal_pregame_65) AS pregame_65,
                SUM(signal_fired) AS live_signal
-        FROM sports_shadow_log {where}
+        FROM sports_shadow_log {w}
     """).fetchone()
 
     result = {k: row[k] for k in row.keys()}
@@ -755,7 +780,7 @@ def section_counterfactual(conn: sqlite3.Connection, since: Optional[str] = None
         print(f"  {label:<25} {val:>8} {pct(val, result['total']):>8}")
 
     # Per-threshold settled outcomes if available
-    subheader("SETTLED COUNTERFACTUAL OUTCOMES")
+    extra_w = _where(since, league)
     settled_row = conn.execute(f"""
         SELECT
             SUM(CASE WHEN would_signal_50c=1 AND fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled_50,
@@ -766,9 +791,10 @@ def section_counterfactual(conn: sqlite3.Connection, since: Optional[str] = None
             SUM(CASE WHEN would_signal_70c=1 AND fav_won=1 THEN 1 ELSE 0 END) AS wins_70,
             SUM(CASE WHEN would_signal_80c=1 AND fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled_80,
             SUM(CASE WHEN would_signal_80c=1 AND fav_won=1 THEN 1 ELSE 0 END) AS wins_80
-        FROM sports_shadow_log {where}
+        FROM sports_shadow_log {extra_w}
     """).fetchone()
 
+    print()
     for label, s_key, w_key in [
         ("Price <= 50c", "settled_50", "wins_50"),
         ("Price <= 60c", "settled_60", "wins_60"),
@@ -777,18 +803,21 @@ def section_counterfactual(conn: sqlite3.Connection, since: Optional[str] = None
     ]:
         s = settled_row[s_key] or 0
         w = settled_row[w_key] or 0
-        print(f"  {label:<25} {w}W/{s-w}L  WR={pct(w, s)}" if s > 0
-              else f"  {label:<25} no settled data")
+        if s > 0:
+            print(f"  {label:<25} {w}W/{s-w}L  WR={pct(w, s)}")
+        else:
+            print(f"  {label:<25} no settled data")
 
     return result
 
 
-# ── Section 14: Pregame Capture Rate ─────────────────────────────────────
+# ── Section: Pregame Capture Rate (global only) ─────────────────────────────
 
-def section_pregame_capture(conn: sqlite3.Connection, since: Optional[str] = None) -> Dict:
-    where = f"WHERE evaluation_time >= '{since}'" if since else ""
+def section_pregame_capture(conn: sqlite3.Connection,
+                            since: Optional[str] = None) -> Dict:
+    w = _where(since)
 
-    header("14. PREGAME CAPTURE RATE")
+    header("PREGAME CAPTURE RATE")
 
     # Check if column exists
     try:
@@ -803,7 +832,7 @@ def section_pregame_capture(conn: sqlite3.Connection, since: Optional[str] = Non
             COUNT(*) AS cnt,
             SUM(CASE WHEN pregame_price_home IS NOT NULL THEN 1 ELSE 0 END) AS has_pregame_price,
             SUM(CASE WHEN signal_fired=1 THEN 1 ELSE 0 END) AS signals
-        FROM sports_shadow_log {where}
+        FROM sports_shadow_log {w}
         GROUP BY method
         ORDER BY cnt DESC
     """).fetchall()
@@ -820,21 +849,22 @@ def section_pregame_capture(conn: sqlite3.Connection, since: Optional[str] = Non
               f"{r['has_pregame_price']:>9} {r['signals']:>8}")
 
     # Overall pregame price availability
+    where_clause = w + (" AND" if w else " WHERE") + " pregame_price_home IS NOT NULL"
     with_price = conn.execute(f"""
-        SELECT COUNT(*) FROM sports_shadow_log
-        {where + ' AND' if where else 'WHERE'} pregame_price_home IS NOT NULL
+        SELECT COUNT(*) FROM sports_shadow_log {where_clause}
     """).fetchone()[0]
     print(f"\n  Evaluations with pregame_price_home: {with_price}/{total} ({pct(with_price, total)})")
 
     return {"methods": result, "total": total, "with_pregame_price": with_price}
 
 
-# ── Section 15: LR Scale A/B ────────────────────────────────────────────
+# ── Section: LR Scale A/B ───────────────────────────────────────────────────
 
-def section_lr_scale_ab(conn: sqlite3.Connection, since: Optional[str] = None) -> Dict:
-    where = f"WHERE evaluation_time >= '{since}'" if since else ""
+def section_lr_scale_ab(conn: sqlite3.Connection, since: Optional[str] = None,
+                        league: Optional[str] = None) -> Dict:
+    w = _where(since, league)
 
-    header("15. LR SCALE A/B (live=0.2 vs shadow=0.5)")
+    subheader(f"LR SCALE A/B (live=0.2 vs shadow=0.5){f' ({league})' if league else ''}")
 
     # Check if column exists
     try:
@@ -853,7 +883,7 @@ def section_lr_scale_ab(conn: sqlite3.Connection, since: Optional[str] = None) -
             SUM(CASE WHEN shadow_lr_scale_50_signal=1 AND fav_won=1 THEN 1 ELSE 0 END) AS shadow_wins,
             AVG(CASE WHEN signal_fired=1 THEN comeback_prob END) AS live_avg_posterior,
             AVG(CASE WHEN shadow_lr_scale_50_signal=1 THEN shadow_lr_scale_50_posterior END) AS shadow_avg_posterior
-        FROM sports_shadow_log {where}
+        FROM sports_shadow_log {w}
     """).fetchone()
 
     result = {k: row[k] for k in row.keys()}
@@ -877,9 +907,7 @@ def section_lr_scale_ab(conn: sqlite3.Connection, since: Optional[str] = None) -
           f"{f'{shadow_post:.1%}' if shadow_post else 'n/a':>20}")
 
     if live_s > shadow_s:
-        print(f"\n  Scale=0.2 generates MORE signals ({live_s} vs {shadow_s}) — "
-              "lower LR produces lower posterior → lower edge → fewer signals??")
-        print("  (Check: scale=0.2 compresses LR toward 1.0 MORE, reducing model confidence)")
+        print(f"\n  Scale=0.2 generates MORE signals ({live_s} vs {shadow_s})")
     elif shadow_s > live_s:
         print(f"\n  Scale=0.5 would generate MORE signals ({shadow_s} vs {live_s})")
     else:
@@ -888,7 +916,124 @@ def section_lr_scale_ab(conn: sqlite3.Connection, since: Optional[str] = None) -
     return result
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Section: Data-Driven Recommendations ─────────────────────────────────────
+
+def section_recommendations(conn: sqlite3.Connection, since: Optional[str] = None,
+                            per_sport_data: Optional[Dict] = None,
+                            settlement_data: Optional[Dict] = None) -> None:
+    header("RECOMMENDATIONS (data-driven, per-sport)")
+
+    extra = _where(since, prefix="AND")
+
+    # Global recs
+    recs_global = []
+
+    # Settlement backfill — check actual data
+    if settlement_data:
+        total_gap = sum(v.get("gap", 0) for v in settlement_data.values())
+        if total_gap > 0:
+            recs_global.append((
+                "CRITICAL",
+                "Fix settlement backfill",
+                f"{total_gap} games across all sports missing settlement data. "
+                "Without this, ALL performance analysis is impossible.",
+                "IMMEDIATE"
+            ))
+
+    if recs_global:
+        subheader("GLOBAL")
+        for priority, title, detail, timeline in recs_global:
+            print(f"\n  [{priority}] {title} ({timeline})")
+            print(f"    {detail}")
+
+    # Per-sport recs
+    if per_sport_data:
+        for sport, data in sorted(per_sport_data.items()):
+            sport_recs = []
+
+            # Signal dedup: only if multi-entry games still exist
+            multi = conn.execute(f"""
+                SELECT COUNT(*) FROM (
+                    SELECT game_id, COUNT(*) as n
+                    FROM sports_shadow_log
+                    WHERE signal_fired=1 AND league='{sport}' {extra}
+                    GROUP BY game_id HAVING n > 1
+                )
+            """).fetchone()[0]
+            if multi > 0:
+                sport_recs.append((
+                    "MEDIUM",
+                    "Add per-game signal dedup",
+                    f"{multi} games still have multiple signals (correlated risk). "
+                    "Max 1 signal per game_id.",
+                    "WEEK 1"
+                ))
+
+            # Model calibration: only if avg gap > 15pp (excluding 0c market)
+            signal_data = data.get("signal_quality", {})
+            avg_gap = signal_data.get("avg_model_market_gap")
+            if avg_gap is not None and avg_gap > 15:
+                sport_recs.append((
+                    "HIGH",
+                    "Recalibrate LR table",
+                    f"Average model-market gap is {avg_gap:+.1f}pp (>{'+15pp'} threshold). "
+                    "Model is overconfident — use historical comeback rate data to derive empirical LR values.",
+                    "WEEK 2"
+                ))
+
+            # LR scale rec based on WR
+            readiness = data.get("readiness", {})
+            settled_check = next((c for c in readiness.get("checks", [])
+                                  if "settled signals" in c.get("check", "")), None)
+            wr_check = next((c for c in readiness.get("checks", [])
+                             if "Win rate" in c.get("check", "")), None)
+            if wr_check and not wr_check.get("passed"):
+                sport_recs.append((
+                    "HIGH",
+                    "WR below 55% — do not promote",
+                    f"Current: {wr_check['detail']}. Need more data or model improvements before live trading.",
+                    "ONGOING"
+                ))
+
+            if sport_recs:
+                subheader(f"{sport}")
+                for priority, title, detail, timeline in sport_recs:
+                    print(f"\n  [{priority}] {title} ({timeline})")
+                    print(f"    {detail}")
+
+    # Check if no recs at all
+    if not recs_global and (not per_sport_data or
+            all(not _sport_has_recs(conn, sport, since, data)
+                for sport, data in per_sport_data.items())):
+        print("\n  No data-driven recommendations at this time.")
+
+
+def _sport_has_recs(conn: sqlite3.Connection, sport: str,
+                    since: Optional[str], data: Dict) -> bool:
+    """Quick check if a sport would generate any recommendations."""
+    extra = _where(since, prefix="AND")
+    multi = conn.execute(f"""
+        SELECT COUNT(*) FROM (
+            SELECT game_id, COUNT(*) as n
+            FROM sports_shadow_log
+            WHERE signal_fired=1 AND league='{sport}' {extra}
+            GROUP BY game_id HAVING n > 1
+        )
+    """).fetchone()[0]
+    if multi > 0:
+        return True
+    signal_data = data.get("signal_quality", {})
+    if (signal_data.get("avg_model_market_gap") or 0) > 15:
+        return True
+    readiness = data.get("readiness", {})
+    wr_check = next((c for c in readiness.get("checks", [])
+                      if "Win rate" in c.get("check", "")), None)
+    if wr_check and not wr_check.get("passed"):
+        return True
+    return False
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
@@ -918,48 +1063,88 @@ def main():
         sys.exit(1)
 
     print()
-    print("=" * 72)
-    print("  KALSHI SPORTS SHADOW AUDIT")
-    print(f"  Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    print("#" * 72)
+    print("##  KALSHI SPORTS SHADOW AUDIT")
+    print(f"##  Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     if args.since:
-        print(f"  Regime filter: since {args.since}")
-    print("=" * 72)
+        print(f"##  Regime filter: since {args.since}")
+    print("#" * 72)
 
-    # Run all sections
+    # ── GLOBAL OVERVIEW ──────────────────────────────────────────────────
+    big_header("GLOBAL OVERVIEW")
     overview_data = section_overview(conn, args.since)
     league_data = section_per_league(conn, args.since)
-    game_data = section_per_game(conn, args.since)
-    filter_data = section_filter_stages(conn, args.since)
-    signal_data = section_signal_quality(conn, args.since)
-    liquidity_data = section_liquidity(conn, args.since)
-    deficit_data = section_deficit_time(conn, args.since)
-    fav_audit = section_fav_id_audit(conn, args.since)
-    settlement_data = section_settlement_gaps(conn, args.since)
-    sprt_data = section_wald_sprt(conn, args.since)
-    readiness_data = section_readiness(conn, args.since)
-    section_recommendations(overview_data, signal_data, settlement_data)
-    counterfactual_data = section_counterfactual(conn, args.since)
-    pregame_data = section_pregame_capture(conn, args.since)
-    lr_ab_data = section_lr_scale_ab(conn, args.since)
 
-    # JSON output
+    # ── PER-SPORT DETAILED ANALYSIS ─────────────────────────────────────
+    leagues = get_leagues_with_signals(conn, args.since)
+    per_sport_data = {}
+    settlement_data_per_sport = {}
+
+    for league_name in leagues:
+        big_header(f"{league_name} DETAILED ANALYSIS")
+
+        sport_data = {}
+        section_per_game(conn, args.since, league=league_name)
+        sport_data["filter_stages"] = section_filter_stages(conn, args.since, league=league_name)
+        sport_data["signal_quality"] = section_signal_quality(conn, args.since, league=league_name)
+        sport_data["liquidity"] = section_liquidity(conn, args.since, league=league_name)
+        sport_data["deficit_time"] = section_deficit_time(conn, args.since, league=league_name)
+        sport_data["sprt"] = section_wald_sprt(conn, args.since, league=league_name)
+        sport_data["readiness"] = section_readiness(conn, args.since, league=league_name)
+        sport_data["counterfactual"] = section_counterfactual(conn, args.since, league=league_name)
+        sport_data["lr_scale_ab"] = section_lr_scale_ab(conn, args.since, league=league_name)
+
+        settlement = section_settlement_gaps(conn, args.since, league=league_name)
+        sport_data["settlement"] = settlement
+        settlement_data_per_sport[league_name] = settlement
+
+        per_sport_data[league_name] = sport_data
+
+    # ── CROSS-SPORT ─────────────────────────────────────────────────────
+    big_header("CROSS-SPORT")
+    fav_audit = section_fav_id_audit(conn, args.since)
+    pregame_data = section_pregame_capture(conn, args.since)
+
+    # Global readiness summary
+    header("READINESS SUMMARY")
+    any_ready = False
+    for league_name in leagues:
+        rd = per_sport_data[league_name].get("readiness", {})
+        passed = rd.get("passed", 0)
+        total = rd.get("total", 0)
+        all_pass = rd.get("all_pass", False)
+        status = "READY" if all_pass else ("CONTINUE COLLECTING" if passed >= 3 else "NOT READY")
+        if all_pass:
+            any_ready = True
+        print(f"  {league_name:6s}:  {passed}/{total} checks pass — {status}")
+
+    print()
+    if any_ready:
+        print("  >>> At least one sport is ready for live promotion consideration")
+    else:
+        print("  >>> NOT READY (requires all checks to pass for at least one sport)")
+
+    # Recommendations
+    section_recommendations(conn, args.since,
+                            per_sport_data=per_sport_data,
+                            settlement_data=settlement_data_per_sport)
+
+    # ── JSON output ─────────────────────────────────────────────────────
     if args.json:
         artifact = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "since": args.since,
             "overview": overview_data,
             "leagues": league_data,
-            "games": game_data,
-            "filter_stages": filter_data,
-            "signal_quality": signal_data,
-            "settlement": settlement_data,
-            "sprt": sprt_data,
-            "readiness": readiness_data,
-            "fav_audit_issues": fav_audit.get("issues", []),
-            "counterfactual": counterfactual_data,
-            "pregame_capture": pregame_data,
-            "lr_scale_ab": lr_ab_data,
+            "per_sport": {},
+            "cross_sport": {
+                "fav_audit_issues": fav_audit.get("issues", []),
+                "pregame_capture": pregame_data,
+            },
         }
+        for league_name, sport_data in per_sport_data.items():
+            artifact["per_sport"][league_name] = sport_data
+
         with open(args.json, "w") as f:
             json.dump(artifact, f, indent=2, default=str)
         print(f"\n  JSON artifact written to: {args.json}")
