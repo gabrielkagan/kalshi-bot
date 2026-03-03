@@ -44,9 +44,10 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 | Config | Value | Notes |
 |--------|-------|-------|
 | OBSERVATION_MODE | False | LIVE trading |
-| MIN_ENTRY_PRICE | 87 | Cents; two losses at 86c |
+| MIN_ENTRY_PRICE | 86 | Cents (data: 86c counterfactual 93.8% WR, 30W/2L n=32) |
 | MAX_ENTRY_PRICE | 99 | Cents |
-| MIN_EDGE_BY_PRICE | 0.7%-4.0% | Price-dependent: 87c→0.7%, 89c→0.9%, 91c→1.2%, 93c→1.8%, 95c→2.5%, 97c→4.0% |
+| MIN_EDGE_PCT | 0.25 | Flat fallback for execution paths (was 0.7) |
+| MIN_EDGE_BY_PRICE | 0.25%-2.0% | Price-dependent (halved Mar 3): 86c→0.25%, 89c→0.25%, 91c→0.35%, 93c→0.9%, 95c→1.25%, 97c→2.0% |
 | MARKET_BLEND_W | 0.40 | 60% model, 40% market (data: model underconfident 0.8-2.1pp at 90%+) |
 | MAX_RISK_PER_TRADE | 0.25 | Max 25% bankroll per trade |
 | MAX_SECONDS_BEFORE_CLOSE | 900 | 15 min before close (500-900s shadow, 0-500s live) |
@@ -93,7 +94,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 3. **Hourly temperature scaling** (Layer 1): T=1.45 softens overconfident probs (95%→88.4%). Applied before OFA/dynamic cap. 15M unaffected.
 4. Dynamic cap: **bypassed** when learned calibration is active (`is_learned_method_active()` → uses 0.999 safety ceiling instead of the cap schedule). Cap schedule only applies during startup before training.
 5. Market blend: 40% weight toward market price (60% model)
-6. Fee-adjusted edge check: price-dependent minimum (0.7% at 87c up to 4.0% at 97c+)
+6. Fee-adjusted edge check: price-dependent minimum (0.25% at 86-90c up to 2.0% at 97c+)
 
 ## Hourly Three-Layer Optimization
 

@@ -407,17 +407,17 @@ _HOURLY_CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
 _TELEGRAM: Optional["TelegramNotifier"] = None
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
-MIN_EDGE_PCT = 0.7                # flat fallback (used in logging, pre-filter, counterfactuals)
+MIN_EDGE_PCT = 0.25               # flat fallback — matches lowest MIN_EDGE_BY_PRICE tier (was 0.7)
 
 # Price-dependent minimum edge: higher prices have worse asymmetry
 # At 95c: 1 loss = 19 wins. At 87c: 1 loss = 6.7 wins.
 MIN_EDGE_BY_PRICE = [
-    (97, 0.040),   # 97-99c: need 4.0% edge
-    (95, 0.025),   # 95-96c: need 2.5% edge
-    (93, 0.018),   # 93-94c: need 1.8% edge
-    (91, 0.007),   # 91-92c: need 0.7% edge (was 1.2% — data: 51 positive-edge evals rejected)
-    (89, 0.005),   # 89-90c: need 0.5% edge (was 0.9% — relaxed to capture thin-edge winners)
-    (0,  0.005),   # 86-88c: need 0.5% edge (was 0.7% — data: 91.7% WR n=48 at 87c insufficient_edge)
+    (97, 0.020),   # 97-99c: need 2.0% edge (was 4.0% — halved: grid search 40W/1L at 0-0.7% edge)
+    (95, 0.0125),  # 95-96c: need 1.25% edge (was 2.5% — halved)
+    (93, 0.009),   # 93-94c: need 0.9% edge (was 1.8% — halved: 3 rejected winners at 0.95-1.23%)
+    (91, 0.0035),  # 91-92c: need 0.35% edge (was 0.7% — halved)
+    (89, 0.0025),  # 89-90c: need 0.25% edge (was 0.5% — halved: 2 rejected winners at 0.31-0.48%)
+    (0,  0.0025),  # 86-88c: need 0.25% edge (was 0.5% — halved: 2 rejected winners at 0.26-0.49%)
 ]
 
 def get_min_edge(entry_price_cents: int) -> float:
@@ -441,7 +441,8 @@ SIZING_TIERS = [                  # (min_fee_adj_edge, risk_fraction) — aligne
     (0.012, 0.10),                # edge ≥ 1.2% → 10% risk
     (0.009, 0.07),                # edge ≥ 0.9% → 7% risk
     (0.007, 0.05),                # edge ≥ 0.7% → 5% risk
-    (0.005, 0.03),                # edge ≥ 0.5% → 3% risk (thin-edge 89-91c trades)
+    (0.005, 0.03),                # edge ≥ 0.5% → 3% risk
+    (0.0025, 0.02),               # edge ≥ 0.25% → 2% risk (thin-edge trades from halved schedule)
 ]
 DRAWDOWN_HALF_THRESHOLD = 0.85    # below 85% of starting balance → halve size (was 90%)
 DRAWDOWN_QUARTER_THRESHOLD = 0.75 # below 75% → quarter size (was 80%)
