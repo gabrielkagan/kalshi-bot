@@ -331,11 +331,17 @@ def classify_deficit_three_way(deficit: int) -> str:
 
 
 def classify_deficit_tennis(deficit: int) -> str:
-    """Classify set deficit for tennis (max 2 in best-of-5)."""
-    if deficit == 1:
-        return "small"      # Down 1 set — common comeback
+    """Classify tennis deficit (games within set or sets).
+
+    When sets are even, deficit is in games (0-6 range).
+    When sets are uneven, deficit is in sets (1-2 range).
+    """
+    if deficit <= 2:
+        return "small"      # Down 1-2 games or 1 set
+    elif deficit <= 4:
+        return "medium"     # Down 3-4 games
     else:
-        return "large"      # Down 2 sets — rare (best-of-5 only)
+        return "large"      # Down 5+ games or 2 sets
 
 
 def classify_time_remaining(pct: float) -> str:

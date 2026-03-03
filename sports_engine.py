@@ -347,6 +347,20 @@ class ESPNLiveFeed:
         home_sets = sum(1 for s in home_ls if s.get("winner", False))
         away_sets = sum(1 for s in away_ls if s.get("winner", False))
 
+        # When sets are even, use current set games for granular deficit.
+        # Sets even + down 2-5 in games → deficit=3, generates signals.
+        # Sets uneven → set deficit drives (existing behavior).
+        if home_sets == away_sets and home_ls:
+            last_home = home_ls[-1] if home_ls else {}
+            last_away = away_ls[-1] if away_ls else {}
+            h_games = int(last_home.get("value", "0") or "0")
+            a_games = int(last_away.get("value", "0") or "0")
+            home_score = h_games
+            away_score = a_games
+        else:
+            home_score = home_sets
+            away_score = away_sets
+
         # Status
         status_obj = comp.get("status", {})
         status_type = status_obj.get("type", {})
@@ -374,8 +388,8 @@ class ESPNLiveFeed:
             away_team=away_name,
             home_code=home_code,
             away_code=away_code,
-            home_score=home_sets,
-            away_score=away_sets,
+            home_score=home_score,
+            away_score=away_score,
             period=period,
             clock="",
             time_remaining_pct=time_pct,
@@ -991,12 +1005,13 @@ class SportsEngine:
                 score_changed=_score_changed,
             )
 
-            # 10. Insert to evaluated_opportunities
-            self._insert_evaluated_opportunity(
-                game=game, league_cfg=league_cfg,
-                signal=signal, current_price=current_price,
-                ob_data=ob_data,
-            )
+            # 10. Insert to evaluated_opportunities (skip dups)
+            if signal.filter_stage != "sports_signal_dup":
+                self._insert_evaluated_opportunity(
+                    game=game, league_cfg=league_cfg,
+                    signal=signal, current_price=current_price,
+                    ob_data=ob_data,
+                )
 
         if live_count > 0:
             logging.debug("SportsEngine: %d live games, %d signals",
@@ -1250,6 +1265,22 @@ class SportsEngine:
                     "bid_depth": bid_depth,
                 }
             break
+
+        # No event matched — log once per game for monitoring
+        if not any(
+            _event_matches_game(game.home_code, game.away_code, et,
+                                series_ticker=game.league)
+            for et in all_markets
+        ):
+            _ob_miss_key = f"{game.game_id}_ob_miss"
+            if _ob_miss_key not in self._signaled_games:
+                self._signaled_games.add(_ob_miss_key)
+                logging.info(
+                    "SportsEngine: no Kalshi event found for %s %s vs %s "
+                    "(%s/%s) — %d events in cache",
+                    game.league, game.home_team, game.away_team,
+                    game.home_code, game.away_code, len(all_markets))
+
         return default
 
     def _load_settled_games(self) -> None:
@@ -1471,7 +1502,7 @@ class SportsEngine:
             # Use real Kalshi ticker if available, else synthetic for dedup
             real_ticker = ob_data.get("ticker") if ob_data else ""
             real_event = ob_data.get("event_ticker") if ob_data else ""
-            ticker = real_ticker or f"SPORTS-{game.game_id}-{game.home_score}-{game.away_score}"
+            ticker = real_ticker or f"SPORTS-{game.game_id}"
             event_ticker = real_event or game.league
             now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             conn.execute("""
