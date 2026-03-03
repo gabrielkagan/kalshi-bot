@@ -155,8 +155,15 @@ class ESPNLiveFeed:
         for event in data.get("events", []):
             try:
                 if cfg.espn_sport == "tennis":
+                    # ESPN returns all genders + doubles at a tournament.
+                    # Filter to singles matching this series' gender.
+                    want_type = ("Men's Singles" if cfg.espn_league == "atp"
+                                 else "Women's Singles")
                     for grouping in event.get("groupings", []):
                         for comp in grouping.get("competitions", []):
+                            comp_type = comp.get("type", {}).get("text", "")
+                            if comp_type and comp_type != want_type:
+                                continue
                             game = self._parse_tennis_match(comp, cfg, event)
                             if game:
                                 games.append(game)
@@ -328,6 +335,9 @@ class ESPNLiveFeed:
         # Player names and derived codes
         home_name = home.get("athlete", {}).get("displayName", "Unknown")
         away_name = away.get("athlete", {}).get("displayName", "Unknown")
+        # Skip TBD/unknown players — bracket placeholders can't match Kalshi
+        if home_name in ("TBD", "Unknown") or away_name in ("TBD", "Unknown"):
+            return None
         home_code = _tennis_player_code(home_name)
         away_code = _tennis_player_code(away_name)
 
@@ -708,14 +718,17 @@ class BayesianComebackModel:
 def _tennis_player_code(display_name: str) -> str:
     """Derive 3-letter code from player name for Kalshi ticker matching.
 
-    Kalshi uses first 3 letters of last name (uppercased):
-      "Jannik Sinner"  → "SIN"
-      "Alex de Minaur"  → "DEM"  (multi-word surnames concatenated)
-      "Coco Gauff"      → "GAU"
+    Kalshi uses first 3 letters of last name (uppercased), alpha only:
+      "Jannik Sinner"         → "SIN"
+      "Alex de Minaur"        → "DEM"  (multi-word surnames concatenated)
+      "Coco Gauff"            → "GAU"
+      "Christopher O'Connell" → "OCO"  (apostrophe stripped)
     """
     parts = display_name.strip().split()
     last_name = "".join(parts[1:]) if len(parts) > 1 else parts[0]
-    return last_name[:3].upper()
+    # Strip non-alpha characters (apostrophes, hyphens, periods, etc.)
+    alpha_only = re.sub(r"[^A-Za-z]", "", last_name)
+    return alpha_only[:3].upper()
 
 
 def _team_code_in_ticker(code: str, ticker_upper: str) -> bool:
