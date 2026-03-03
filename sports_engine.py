@@ -1076,6 +1076,14 @@ class SportsEngine:
                     self._settled_games.add(game_id)
                     continue
 
+                # Pre-compute closing price ONCE per game (same for all rows)
+                # MUST happen BEFORE DB writes to avoid holding write lock
+                # during discovery iteration (caused 10s+ lock, Mar 3 2026)
+                fav_code_0 = rows[0][1]
+                closing_price = self._get_closing_price(game, fav_code_0)
+
+                # Build all update params, then batch-write
+                update_params = []
                 for row in rows:
                     row_id = row[0]
                     fav_code = row[1]
@@ -1104,19 +1112,19 @@ class SportsEngine:
                         else:
                             pnl_cents = -cost_cents - fee_cents
 
-                    # Get closing price
-                    closing_price = self._get_closing_price(game, fav_code)
+                    update_params.append((
+                        game.home_score, game.away_score,
+                        fav_won, market_result, pnl_cents,
+                        closing_price, row_id))
 
-                    conn.execute(
-                        "UPDATE sports_shadow_log SET "
-                        "final_home_score=?, final_away_score=?, "
-                        "fav_won=?, market_result=?, pnl_cents=?, "
-                        "closing_price=? WHERE id=?",
-                        (game.home_score, game.away_score,
-                         fav_won, market_result, pnl_cents,
-                         closing_price, row_id)
-                    )
-
+                # Single batch write — minimizes lock hold time
+                conn.executemany(
+                    "UPDATE sports_shadow_log SET "
+                    "final_home_score=?, final_away_score=?, "
+                    "fav_won=?, market_result=?, pnl_cents=?, "
+                    "closing_price=? WHERE id=?",
+                    update_params
+                )
                 conn.commit()
                 self._settled_games.add(game_id)
                 self._signaled_games.discard(game_id)
