@@ -11320,8 +11320,7 @@ class MainLoop:
                                 f"{_consecutive_errors} consecutive tick "
                                 f"errors in {_consecutive_errors * 5}s\n"
                                 f"Error: `{str(e)[:150]}`\n"
-                                f"Trading is DOWN. Manual intervention "
-                                f"may be needed.")
+                                f"Auto-restart in 30s if not resolved.")
                             _incident_alerted = True
                         elif _consecutive_errors % 12 == 0 and _incident_alerted:
                             # Every 60s during sustained outage: update
@@ -11330,6 +11329,23 @@ class MainLoop:
                                 f"{_consecutive_errors} consecutive errors "
                                 f"({_consecutive_errors * 5}s blocked)\n"
                                 f"Error: `{str(e)[:150]}`")
+
+                    # Auto-restart: 6 consecutive errors = 30s blocked
+                    # systemd Restart=always brings us back up clean
+                    if _consecutive_errors >= 6:
+                        logging.critical(
+                            "AUTO-RESTART: %d consecutive tick errors, "
+                            "exiting for systemd restart",
+                            _consecutive_errors)
+                        if _TELEGRAM:
+                            _TELEGRAM.send(
+                                f"\U0001f504 *AUTO-RESTART*: "
+                                f"{_consecutive_errors} consecutive errors "
+                                f"({_consecutive_errors * 5}s blocked). "
+                                f"Restarting now.")
+                            time.sleep(1)  # let Telegram send
+                        os._exit(1)
+
                     time.sleep(5)
                     continue
 
