@@ -1068,20 +1068,22 @@ def section_sport_group_calibration(conn: sqlite3.Connection,
         settled = data.get('settled', 0)
         lr_scale = data.get('lr_scale', 0.2)
 
+        lr_display = lr_scale if lr_scale is not None else 0.2
+
         if gap is None or settled < 10:
             recs.append((group, "COLLECT MORE DATA",
                          f"Only {settled} settled signals. Need 50+ for reliable calibration."))
         elif gap > 20:
             recs.append((group, "DECREASE lr_scale",
                          f"Model {gap:+.1f}pp overconfident. "
-                         f"Current scale={lr_scale:.2f}, try {max(0.05, lr_scale * 0.5):.2f}"))
+                         f"Current scale={lr_display:.2f}, try {max(0.05, lr_display * 0.5):.2f}"))
         elif gap < -20:
             recs.append((group, "INCREASE lr_scale",
                          f"Model {gap:+.1f}pp underconfident. "
-                         f"Current scale={lr_scale:.2f}, try {min(1.0, lr_scale * 2.0):.2f}"))
+                         f"Current scale={lr_display:.2f}, try {min(1.0, lr_display * 2.0):.2f}"))
         elif abs(gap) <= 10:
             recs.append((group, "HOLD",
-                         f"Gap={gap:+.1f}pp — calibration is reasonable at scale={lr_scale:.2f}"))
+                         f"Gap={gap:+.1f}pp — calibration is reasonable at scale={lr_display:.2f}"))
         else:
             direction = "decrease" if gap > 0 else "increase"
             recs.append((group, f"MONITOR ({direction})",
