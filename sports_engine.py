@@ -244,8 +244,8 @@ class ESPNLiveFeed:
 
         sport = cfg.espn_sport
         try:
-            # Parse clock "MM:SS" or "M:SS"
-            parts = clock.replace("+", ":").split(":")
+            # Parse clock "MM:SS", "M:SS", or soccer "36'" / "90'+4'"
+            parts = clock.replace("'", "").replace("+", ":").split(":")
             minutes = int(parts[0]) if parts else 0
             seconds = int(parts[1]) if len(parts) > 1 else 0
             clock_secs = minutes * 60 + seconds
@@ -603,14 +603,20 @@ def _team_code_in_ticker(code: str, ticker_upper: str) -> bool:
     return bool(re.search(rf'(?:^|[^A-Z]){re.escape(code)}(?:[^A-Z]|$)', ticker_upper))
 
 
-def _event_matches_game(home_code: str, away_code: str, event_ticker: str) -> bool:
+def _event_matches_game(home_code: str, away_code: str, event_ticker: str,
+                         series_ticker: str = "") -> bool:
     """Check if a Kalshi event ticker matches an ESPN game.
 
     Kalshi event tickers concatenate both team codes: "KXNBAGAME-26MAR03BKNMIA".
     Requires BOTH team codes present (substring match) to avoid false positives
     where one team appears in a different game's event ticker.
+
+    When series_ticker is provided, the event ticker must start with it to prevent
+    cross-series matches (e.g., MLS PHI matching NBA KXNBAGAME).
     """
     et_upper = event_ticker.upper()
+    if series_ticker and not et_upper.startswith(series_ticker.upper()):
+        return False
     return home_code.upper() in et_upper and away_code.upper() in et_upper
 
 
@@ -732,10 +738,12 @@ class SportsEngine:
                         all_mkts = (self._discovery.get_all_markets()
                                     if self._discovery else {})
                         logging.info(
-                            "SportsEngine: no Kalshi market match for %s "
-                            "%s vs %s (discovery cache: %d events: %s)",
-                            game.league, game.home_code, game.away_code,
-                            len(all_mkts), list(all_mkts.keys())[:5])
+                            "SportsEngine: no Kalshi market match for %s (%s) "
+                            "%s vs %s (discovery cache: %d events, series matches: %d)",
+                            game.league, league_cfg.display_name,
+                            game.home_code, game.away_code,
+                            len(all_mkts),
+                            sum(1 for et in all_mkts if et.upper().startswith(game.league.upper())))
                         self._last_logged_time[game_id] = time.time()
                     continue
                 self._pregame_favs[game_id] = fav_info
@@ -868,7 +876,8 @@ class SportsEngine:
         away_upper = game.away_code.upper()
 
         for event_ticker, mkts in all_markets.items():
-            if not _event_matches_game(game.home_code, game.away_code, event_ticker):
+            if not _event_matches_game(game.home_code, game.away_code, event_ticker,
+                                       series_ticker=game.league):
                 continue
 
             home_price = None
@@ -934,7 +943,8 @@ class SportsEngine:
         all_markets = self._discovery.get_all_markets()
 
         for event_ticker, mkts in all_markets.items():
-            if not _event_matches_game(game.home_code, game.away_code, event_ticker):
+            if not _event_matches_game(game.home_code, game.away_code, event_ticker,
+                                       series_ticker=game.league):
                 continue
 
             # First try cached pregame prices
@@ -992,7 +1002,8 @@ class SportsEngine:
         all_markets = self._discovery.get_all_markets()
         fav_upper = fav_code.upper()
         for event_ticker, mkts in all_markets.items():
-            if not _event_matches_game(game.home_code, game.away_code, event_ticker):
+            if not _event_matches_game(game.home_code, game.away_code, event_ticker,
+                                       series_ticker=game.league):
                 continue
             fav_side = "home" if fav_code == game.home_code else "away"
             # Primary: match by side label (works when _try_capture_pregame ran)
@@ -1039,7 +1050,8 @@ class SportsEngine:
         all_markets = self._discovery.get_all_markets()
         fav_upper = fav_code.upper()
         for event_ticker, mkts in all_markets.items():
-            if not _event_matches_game(game.home_code, game.away_code, event_ticker):
+            if not _event_matches_game(game.home_code, game.away_code, event_ticker,
+                                       series_ticker=game.league):
                 continue
             fav_side = "home" if fav_code == game.home_code else "away"
 
@@ -1237,7 +1249,8 @@ class SportsEngine:
             pregame_home = pregame_away = pregame_draw = None
             if self._discovery:
                 for et, mkts in self._discovery.get_all_markets().items():
-                    if _event_matches_game(game.home_code, game.away_code, et):
+                    if _event_matches_game(game.home_code, game.away_code, et,
+                                           series_ticker=game.league):
                         pregame_home = mkts.pregame_price_home
                         pregame_away = mkts.pregame_price_away
                         pregame_draw = mkts.pregame_price_draw
