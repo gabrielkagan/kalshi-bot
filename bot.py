@@ -1383,6 +1383,8 @@ class StateManager:
             ("hourly_applied_temp_t", "REAL"),
             # Hourly shadow instrumentation columns
             ("hourly_shadow_temp_2_0", "REAL"),
+            ("hourly_shadow_temp_1_0", "REAL"),
+            ("hourly_shadow_temp_2_5", "REAL"),
             ("hourly_shadow_blend_50", "REAL"),
         ]:
             try:
@@ -1802,6 +1804,8 @@ class StateManager:
                                      hourly_pre_temp_prob: Optional[float] = None,
                                      hourly_applied_temp_t: Optional[float] = None,
                                      hourly_shadow_temp_2_0: Optional[float] = None,
+                                     hourly_shadow_temp_1_0: Optional[float] = None,
+                                     hourly_shadow_temp_2_5: Optional[float] = None,
                                      hourly_shadow_blend_50: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -1827,8 +1831,9 @@ class StateManager:
                      wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
                      wx_market_type, wx_actual_high_temp, wx_no_side_edge,
                      hourly_pre_temp_prob, hourly_applied_temp_t,
-                     hourly_shadow_temp_2_0, hourly_shadow_blend_50)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     hourly_shadow_temp_2_0, hourly_shadow_temp_1_0, hourly_shadow_temp_2_5,
+                     hourly_shadow_blend_50)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1848,7 +1853,8 @@ class StateManager:
                   wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
                   wx_market_type, wx_actual_high_temp, wx_no_side_edge,
                   hourly_pre_temp_prob, hourly_applied_temp_t,
-                  hourly_shadow_temp_2_0, hourly_shadow_blend_50))
+                  hourly_shadow_temp_2_0, hourly_shadow_temp_1_0, hourly_shadow_temp_2_5,
+                  hourly_shadow_blend_50))
             self.conn.commit()
         except Exception as e:
             logging.warning(f"insert_evaluated_opportunity failed: {e}", exc_info=True)
@@ -6721,6 +6727,9 @@ class OpportunityScanner:
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
+                                hourly_pre_temp_prob=None, hourly_applied_temp_t=None,
+                                hourly_shadow_temp_2_0=None, hourly_shadow_temp_1_0=None,
+                                hourly_shadow_temp_2_5=None, hourly_shadow_blend_50=None,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -6795,12 +6804,16 @@ class OpportunityScanner:
 
                 # ── Shadow instrumentation (hourly only) ──────────
                 _hourly_shadow_temp_2_0 = None
+                _hourly_shadow_temp_1_0 = None
+                _hourly_shadow_temp_2_5 = None
                 _hourly_shadow_blend_50 = None
                 if _hourly_pre_temp_prob is not None and _temp_t is not None:
                     # R3: T=2.0 shadow — more aggressive softening for offline Brier comparison
                     _sp = max(0.001, min(0.999, _hourly_pre_temp_prob))
                     _sz = math.log(_sp / (1.0 - _sp))
                     _hourly_shadow_temp_2_0 = 1.0 / (1.0 + math.exp(-_sz / 2.0))
+                    _hourly_shadow_temp_1_0 = _hourly_pre_temp_prob   # T=1.0 = identity
+                    _hourly_shadow_temp_2_5 = 1.0 / (1.0 + math.exp(-_sz / 2.5))
                     # R5: 50% market blend shadow — compare vs current 40% blend
                     _mkt_p = best_ask / 100.0
                     _cur_w = _tempcfg.market_blend_w
@@ -7102,6 +7115,8 @@ class OpportunityScanner:
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
+                                hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
@@ -7232,6 +7247,8 @@ class OpportunityScanner:
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
+                                hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
@@ -7359,6 +7376,8 @@ class OpportunityScanner:
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
+                                hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
@@ -7388,6 +7407,8 @@ class OpportunityScanner:
                             hourly_pre_temp_prob=_hourly_pre_temp_prob,
                             hourly_applied_temp_t=_temp_t,
                             hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                            hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
+                            hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                             hourly_shadow_blend_50=_hourly_shadow_blend_50,
                             **_oft_db, **_shadow_diag)
                     continue
@@ -7413,6 +7434,8 @@ class OpportunityScanner:
                             hourly_pre_temp_prob=_hourly_pre_temp_prob,
                             hourly_applied_temp_t=_temp_t,
                             hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                            hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
+                            hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                             hourly_shadow_blend_50=_hourly_shadow_blend_50,
                             **_oft_db, **_shadow_diag)
                     continue
@@ -7438,6 +7461,8 @@ class OpportunityScanner:
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
+                                hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
                                 **_oft_db, **_shadow_diag)
                         continue
@@ -7465,6 +7490,8 @@ class OpportunityScanner:
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
+                                hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
                                 **_oft_db, **_shadow_diag)
                         continue
@@ -7519,6 +7546,8 @@ class OpportunityScanner:
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                                hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
+                                hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
                             )
                         elif _obs_pt == "weather":
@@ -7671,6 +7700,8 @@ class OpportunityScanner:
                     "hourly_pre_temp_prob": _hourly_pre_temp_prob,
                     "hourly_applied_temp_t": _temp_t,
                     "hourly_shadow_temp_2_0": _hourly_shadow_temp_2_0,
+                    "hourly_shadow_temp_1_0": _hourly_shadow_temp_1_0,
+                    "hourly_shadow_temp_2_5": _hourly_shadow_temp_2_5,
                     "hourly_shadow_blend_50": _hourly_shadow_blend_50,
                     **_shadow_diag,
                     **_shadow_extra,
@@ -7800,6 +7831,8 @@ class OpportunityScanner:
                                     hourly_pre_temp_prob=c.get("hourly_pre_temp_prob"),
                                     hourly_applied_temp_t=c.get("hourly_applied_temp_t"),
                                     hourly_shadow_temp_2_0=c.get("hourly_shadow_temp_2_0"),
+                                    hourly_shadow_temp_1_0=c.get("hourly_shadow_temp_1_0"),
+                                    hourly_shadow_temp_2_5=c.get("hourly_shadow_temp_2_5"),
                                     hourly_shadow_blend_50=c.get("hourly_shadow_blend_50"))
                         except Exception:
                             pass
@@ -8351,6 +8384,8 @@ class OrderExecutor:
                         hourly_pre_temp_prob=candidate.get("hourly_pre_temp_prob"),
                         hourly_applied_temp_t=candidate.get("hourly_applied_temp_t"),
                         hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
+                        hourly_shadow_temp_1_0=candidate.get("hourly_shadow_temp_1_0"),
+                        hourly_shadow_temp_2_5=candidate.get("hourly_shadow_temp_2_5"),
                         hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"))
             except Exception as e:
                 logging.error(f"OBSERVATION_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
@@ -8414,6 +8449,8 @@ class OrderExecutor:
                 hourly_pre_temp_prob=candidate.get("hourly_pre_temp_prob"),
                 hourly_applied_temp_t=candidate.get("hourly_applied_temp_t"),
                 hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
+                hourly_shadow_temp_1_0=candidate.get("hourly_shadow_temp_1_0"),
+                hourly_shadow_temp_2_5=candidate.get("hourly_shadow_temp_2_5"),
                 hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"))
         except Exception as e:
             logging.error(f"CANDIDATE_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
@@ -9795,6 +9832,9 @@ class OrderExecutor:
                             % (meta["entry_price_cents"], drop,
                                meta["entry_count"])),
                         product_type="dip_addon_shadow",
+                        hourly_pre_temp_prob=None, hourly_applied_temp_t=None,
+                        hourly_shadow_temp_2_0=None, hourly_shadow_temp_1_0=None,
+                        hourly_shadow_temp_2_5=None, hourly_shadow_blend_50=None,
                         **_dip_oft_db,
                     )
                 except Exception:
