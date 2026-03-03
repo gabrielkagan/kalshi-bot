@@ -11293,6 +11293,8 @@ class MainLoop:
 
         mode = "LIVE" if not OBSERVATION_MODE else "observation"
         logging.info(f"Entering main loop ({mode} mode)...")
+        _consecutive_errors = 0
+        _incident_alerted = False
         try:
             while not self._shutdown.is_set():
                 loop_start = time.time()
@@ -11301,11 +11303,49 @@ class MainLoop:
                 except Exception as e:
                     self._last_error = str(e)
                     self._last_error_time = time.time()
-                    logging.error("Tick error", exc_info=True)
+                    _consecutive_errors += 1
+                    logging.error("Tick error (%d consecutive)",
+                                  _consecutive_errors, exc_info=True)
+
                     if _TELEGRAM:
-                        _TELEGRAM.send(f"\u26a0\ufe0f Tick error: {str(e)[:200]}")
+                        if _consecutive_errors <= 1:
+                            # First error: standard warning with dedup
+                            _TELEGRAM.send(
+                                f"\u26a0\ufe0f Tick error: {str(e)[:200]}",
+                                dedup_key="tick_error")
+                        elif _consecutive_errors == 3 and not _incident_alerted:
+                            # 3 consecutive: CRITICAL escalation
+                            _TELEGRAM.send(
+                                f"\U0001f6a8 *INCIDENT: BOT BLOCKED*\n"
+                                f"{_consecutive_errors} consecutive tick "
+                                f"errors in {_consecutive_errors * 5}s\n"
+                                f"Error: `{str(e)[:150]}`\n"
+                                f"Trading is DOWN. Manual intervention "
+                                f"may be needed.")
+                            _incident_alerted = True
+                        elif _consecutive_errors % 12 == 0 and _incident_alerted:
+                            # Every 60s during sustained outage: update
+                            _TELEGRAM.send(
+                                f"\U0001f6a8 *INCIDENT ONGOING*: "
+                                f"{_consecutive_errors} consecutive errors "
+                                f"({_consecutive_errors * 5}s blocked)\n"
+                                f"Error: `{str(e)[:150]}`")
                     time.sleep(5)
                     continue
+
+                # Successful tick — check for recovery
+                if _consecutive_errors > 0:
+                    if _incident_alerted and _TELEGRAM:
+                        _TELEGRAM.send(
+                            f"\u2705 *INCIDENT RECOVERED*: Bot resumed "
+                            f"after {_consecutive_errors} consecutive "
+                            f"errors ({_consecutive_errors * 5}s blocked)")
+                    elif _consecutive_errors >= 2:
+                        logging.warning(
+                            "Recovered from %d consecutive tick errors",
+                            _consecutive_errors)
+                    _consecutive_errors = 0
+                    _incident_alerted = False
 
                 elapsed = time.time() - loop_start
                 sleep_time = max(0, SCAN_INTERVAL_SECONDS - elapsed)
