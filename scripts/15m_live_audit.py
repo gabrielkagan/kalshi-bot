@@ -1191,10 +1191,297 @@ def config_sensitivity(conn: sqlite3.Connection, since: str,
                   f"{takers} taker ({takers/n*100:.0f}%)")
 
 
-# ── Section 6: Data Sufficiency ─────────────────────────────────
+# ── Section 6: Calibration Grid Search ────────────────────────────
+
+def calibration_grid_search(conn: sqlite3.Connection, since: str,
+                            asset_filter: Optional[str] = None) -> dict:
+    """Grid search over edge floor x min price to find optimal filter config.
+
+    Uses the full evaluation universe (candidate + insufficient_edge) to
+    simulate what-if scenarios for different filter thresholds. Returns
+    dict with best config info for downstream use.
+    """
+    section("6. CALIBRATION GRID SEARCH")
+    asset_clause = f"AND asset = '{asset_filter}'" if asset_filter else ""
+
+    # Full universe: candidates (traded) + insufficient_edge (rejected by edge)
+    # Both have fee_adjusted_edge and market_result once settled
+    rows = conn.execute(f"""
+        SELECT market_price, fee_adjusted_edge, market_result, asset,
+               seconds_to_close, filter_stage,
+               COALESCE(counterfactual_pnl, 0) AS cf_pnl
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause}
+          AND filter_stage IN ('candidate', 'insufficient_edge')
+          AND status = 'settled'
+          AND fee_adjusted_edge IS NOT NULL
+          AND market_price IS NOT NULL
+          AND market_result IS NOT NULL
+    """, (since,)).fetchall()
+
+    n_total = len(rows)
+    if n_total < 10:
+        print(f"  Only {n_total} settled evaluations — need 10+ for grid search.")
+        return {"n_total": n_total, "best_config": None}
+
+    # Date range for daily rate
+    ts = conn.execute(f"""
+        SELECT MIN(evaluation_time), MAX(evaluation_time)
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER}
+          AND filter_stage IN ('candidate', 'insufficient_edge')
+    """, (since,)).fetchone()
+    if ts[0] and ts[1]:
+        t1 = datetime.fromisoformat(ts[0].replace("Z", ""))
+        t2 = datetime.fromisoformat(ts[1].replace("Z", ""))
+        n_days = max((t2 - t1).total_seconds() / 86400, 0.5)
+    else:
+        n_days = 1.0
+
+    # Separate positive-edge universe (would actually be tradeable)
+    pos_rows = [r for r in rows if r["fee_adjusted_edge"] >= 0]
+    total_w = sum(1 for r in pos_rows if r["market_result"] == "yes")
+    total_l = len(pos_rows) - total_w
+    total_wr = total_w / len(pos_rows) * 100 if pos_rows else 0
+
+    # Current config baseline (candidates only)
+    cands = [r for r in rows if r["filter_stage"] == "candidate"]
+    cand_w = sum(1 for r in cands if r["market_result"] == "yes")
+    cand_l = len(cands) - cand_w
+
+    def sim_pnl_maker_unit(price: int, won: bool) -> float:
+        fee = math.ceil(0.0175 * (price / 100) * (1 - price / 100))
+        return ((100 - price) - fee) if won else (-price - fee)
+
+    cand_pnl = sum(sim_pnl_maker_unit(r["market_price"],
+                   r["market_result"] == "yes") for r in cands)
+
+    print(f"  Full universe: {n_total} evaluations over {n_days:.1f} days")
+    print(f"  Positive-edge universe: {len(pos_rows)} "
+          f"({total_w}W/{total_l}L, {total_wr:.1f}%)")
+    print(f"  Current config (candidates): {len(cands)} trades "
+          f"({cand_w}W/{cand_l}L, "
+          f"{cand_w/len(cands)*100:.1f}%), "
+          f"PnL=${cand_pnl/100:.2f}")
+
+    # ── Edge floor sweep ──
+    subsection("Edge floor sweep (minimum fee-adjusted edge)")
+    edge_floors = [0.0, 0.001, 0.002, 0.003, 0.005, 0.007, 0.009,
+                   0.010, 0.012, 0.015, 0.020]
+    print(f"  {'MinEdge':>8} {'N':>4} {'W':>4} {'L':>3} {'WR':>6} "
+          f"{'FlatPnL':>9} {'$/day':>7}")
+    print("  " + "-" * 48)
+    for me in edge_floors:
+        sub = [r for r in pos_rows if r["fee_adjusted_edge"] >= me]
+        if not sub:
+            continue
+        w = sum(1 for r in sub if r["market_result"] == "yes")
+        l_ = len(sub) - w
+        wr = w / len(sub) * 100
+        pnl = sum(sim_pnl_maker_unit(r["market_price"],
+                  r["market_result"] == "yes") for r in sub)
+        daily = pnl / 100 / n_days
+        marker = " ◄ current" if abs(me - 0.007) < 0.0001 else ""
+        print(f"  {me*100:>7.2f}% {len(sub):>4} {w:>4} {l_:>3} {wr:>5.1f}% "
+              f"${pnl/100:>8.2f} ${daily:>6.2f}{marker}")
+
+    # ── Min price sweep ──
+    subsection("Min price sweep")
+    prices = [80, 82, 84, 85, 86, 87, 88, 89, 90, 91, 92]
+    print(f"  {'MinPrice':>9} {'N':>4} {'W':>4} {'L':>3} {'WR':>6} "
+          f"{'FlatPnL':>9} {'$/day':>7}")
+    print("  " + "-" * 48)
+    for mp in prices:
+        # Use current edge floor for price sweep
+        sub = [r for r in pos_rows
+               if r["fee_adjusted_edge"] >= 0.007
+               and r["market_price"] >= mp]
+        if not sub:
+            continue
+        w = sum(1 for r in sub if r["market_result"] == "yes")
+        l_ = len(sub) - w
+        wr = w / len(sub) * 100
+        pnl = sum(sim_pnl_maker_unit(r["market_price"],
+                  r["market_result"] == "yes") for r in sub)
+        daily = pnl / 100 / n_days
+        marker = " ◄ current" if mp == 87 else ""
+        print(f"  {mp:>8}c {len(sub):>4} {w:>4} {l_:>3} {wr:>5.1f}% "
+              f"${pnl/100:>8.2f} ${daily:>6.2f}{marker}")
+
+    # ── Combined grid: edge floor x min price ──
+    subsection("Combined grid: edge floor x min price")
+    grid_results = []
+    for me in edge_floors:
+        for mp in prices:
+            sub = [r for r in pos_rows
+                   if r["fee_adjusted_edge"] >= me
+                   and r["market_price"] >= mp]
+            if len(sub) < 5:
+                continue
+
+            flat_pnl = 0
+            wins = 0
+            bankroll = 10000  # $100.00 in cents
+            for r in sub:
+                won = r["market_result"] == "yes"
+                if won:
+                    wins += 1
+                flat_pnl += sim_pnl_maker_unit(r["market_price"], won)
+                # Kelly-weighted simulation
+                price = r["market_price"] / 100.0
+                edge = r["fee_adjusted_edge"]
+                b = (1 - price) / price
+                if b > 0:
+                    kelly_f = min(max(0, edge / (1 - price)) * 0.25, 0.25)
+                    bet = bankroll * kelly_f
+                    if won:
+                        bankroll += bet * b
+                    else:
+                        bankroll -= bet
+
+            n = len(sub)
+            wr = wins / n * 100
+            kelly_net = bankroll - 10000
+            daily = flat_pnl / 100 / n_days
+            grid_results.append((me, mp, n, wins, n - wins, wr,
+                                 flat_pnl, kelly_net, daily))
+
+    # Sort by flat PnL
+    grid_results.sort(key=lambda x: -x[6])
+    print(f"\n  Top 15 configs by flat PnL (equal $1 sizing):")
+    print(f"  {'MinEdge':>8} {'MinP':>5} {'N':>4} {'W':>4} {'L':>3} "
+          f"{'WR':>6} {'FlatPnL':>9} {'$/day':>7}")
+    print("  " + "-" * 55)
+    for r in grid_results[:15]:
+        marker = " ◄" if (abs(r[0] - 0.007) < 0.0001
+                          and r[1] == 87) else ""
+        print(f"  {r[0]*100:>7.2f}% {r[1]:>4}c {r[2]:>4} {r[3]:>4} {r[4]:>3} "
+              f"{r[5]:>5.1f}% ${r[6]/100:>8.2f} ${r[8]:>6.2f}{marker}")
+
+    # Sort by Kelly PnL
+    grid_results.sort(key=lambda x: -x[7])
+    print(f"\n  Top 15 configs by Kelly PnL (quarter-Kelly, 25% max risk):")
+    print(f"  {'MinEdge':>8} {'MinP':>5} {'N':>4} {'W':>4} {'L':>3} "
+          f"{'WR':>6} {'FlatPnL':>9} {'KellyPnL':>10}")
+    print("  " + "-" * 62)
+    for r in grid_results[:15]:
+        marker = " ◄" if (abs(r[0] - 0.007) < 0.0001
+                          and r[1] == 87) else ""
+        print(f"  {r[0]*100:>7.2f}% {r[1]:>4}c {r[2]:>4} {r[3]:>4} {r[4]:>3} "
+              f"{r[5]:>5.1f}% ${r[6]/100:>8.2f} ${r[7]/100:>9.2f}{marker}")
+
+    # ── Fisher exact tests ──
+    subsection("Statistical significance (Fisher exact test)")
+
+    # Key comparisons
+    comparisons = [
+        ("Current (edge>=0.7%, P>=87c) vs loosened",
+         lambda r: r["fee_adjusted_edge"] >= 0.007
+         and r["market_price"] >= 87),
+    ]
+    # Add top 3 distinct configs by flat PnL as alternatives
+    grid_results.sort(key=lambda x: -x[6])
+    seen = set()
+    for gr in grid_results:
+        key = (gr[0], gr[1])
+        if key not in seen and key != (0.007, 87) and len(comparisons) < 5:
+            seen.add(key)
+            me_val, mp_val = gr[0], gr[1]
+            comparisons.append((
+                f"edge>={me_val*100:.1f}% P>={mp_val}c vs complement",
+                lambda r, me=me_val, mp=mp_val: (
+                    r["fee_adjusted_edge"] >= me
+                    and r["market_price"] >= mp)
+            ))
+
+    best_result = None
+    for label, pred in comparisons:
+        inside = [r for r in pos_rows if pred(r)]
+        outside = [r for r in pos_rows if not pred(r)]
+
+        if not inside or not outside:
+            continue
+
+        a = sum(1 for r in inside if r["market_result"] == "yes")
+        b_ = len(inside) - a
+        c_ = sum(1 for r in outside if r["market_result"] == "yes")
+        d_ = len(outside) - c_
+
+        wr_in = a / (a + b_) * 100 if (a + b_) > 0 else 0
+        wr_out = c_ / (c_ + d_) * 100 if (c_ + d_) > 0 else 0
+        p_val = fisher_exact_2x2(a, b_, c_, d_)
+        sig = ("***" if p_val < 0.001 else "**" if p_val < 0.01
+               else "*" if p_val < 0.05 else "NS")
+        daily_n = (a + b_) / n_days
+
+        flat_in = sum(sim_pnl_maker_unit(r["market_price"],
+                      r["market_result"] == "yes") for r in inside)
+
+        print(f"  {label}")
+        print(f"    In:  {a}W/{b_}L ({wr_in:.1f}%) PnL=${flat_in/100:.2f}")
+        print(f"    Out: {c_}W/{d_}L ({wr_out:.1f}%)")
+        print(f"    Fisher p={p_val:.4f} {sig}  |  "
+              f"{a+b_} signals = {daily_n:.1f}/day")
+        print()
+
+        if best_result is None or flat_in > best_result.get("flat_pnl", 0):
+            best_result = {
+                "n": a + b_,
+                "wins": a,
+                "losses": b_,
+                "win_rate": round(wr_in, 1),
+                "flat_pnl": flat_in,
+                "fisher_p": round(p_val, 6),
+                "signals_per_day": round(daily_n, 1),
+            }
+
+    # ── Rejected opportunity analysis ──
+    subsection("Currently rejected opportunities (0-0.7% edge)")
+    rejected = [r for r in pos_rows
+                if r["fee_adjusted_edge"] < 0.007
+                and r["fee_adjusted_edge"] >= 0]
+    if rejected:
+        rej_w = sum(1 for r in rejected if r["market_result"] == "yes")
+        rej_l = len(rejected) - rej_w
+        rej_pnl = sum(sim_pnl_maker_unit(r["market_price"],
+                      r["market_result"] == "yes") for r in rejected)
+        rej_wr = rej_w / len(rejected) * 100
+
+        print(f"  Rejected (0-0.7% edge): {len(rejected)} trades, "
+              f"{rej_w}W/{rej_l}L ({rej_wr:.1f}%)")
+        print(f"  Missed flat PnL: ${rej_pnl/100:.2f} "
+              f"(${rej_pnl/100/n_days:.2f}/day)")
+        print(f"  Missed signals/day: {len(rejected)/n_days:.1f}")
+
+        # By asset
+        from collections import defaultdict
+        by_asset = defaultdict(lambda: {"w": 0, "l": 0})
+        for r in rejected:
+            a_key = r["asset"]
+            if r["market_result"] == "yes":
+                by_asset[a_key]["w"] += 1
+            else:
+                by_asset[a_key]["l"] += 1
+        print(f"\n  Per asset (rejected 0-0.7% edge):")
+        for asset in sorted(by_asset):
+            d = by_asset[asset]
+            n = d["w"] + d["l"]
+            wr = d["w"] / n * 100
+            print(f"    {asset:4s}: {d['w']}W/{d['l']}L ({wr:.0f}%)")
+    else:
+        print("  No rejected opportunities with positive edge < 0.7%")
+
+    return {
+        "n_total": n_total,
+        "n_days": round(n_days, 1),
+        "best_config": best_result,
+    }
+
+
+# ── Section 7: Data Sufficiency ─────────────────────────────────
 
 def data_sufficiency(conn: sqlite3.Connection, since: str) -> None:
-    section("6. DATA SUFFICIENCY AUDIT")
+    section("7. DATA SUFFICIENCY AUDIT")
 
     # Total regime window
     window = conn.execute(f"""
@@ -1310,11 +1597,11 @@ def data_sufficiency(conn: sqlite3.Connection, since: str) -> None:
         print(f"  {v['vol_regime'] or 'NULL':<12} {v['n']:>4} trades  [{status}]")
 
 
-# ── Section 7: Recommendations ──────────────────────────────────
+# ── Section 8: Recommendations ──────────────────────────────────
 
 def recommendations(conn: sqlite3.Connection, since: str,
                     perf: dict) -> None:
-    section("7. DATA-DRIVEN RECOMMENDATIONS")
+    section("8. DATA-DRIVEN RECOMMENDATIONS")
 
     trades = perf.get("trades", 0)
     if trades == 0:
@@ -1460,6 +1747,7 @@ def main():
     bucket_analysis(conn, since, args.asset)
     profit_leakage(conn, since, args.asset)
     config_sensitivity(conn, since, args.asset)
+    calibration_grid_search(conn, since, args.asset)
     data_sufficiency(conn, since)
     recommendations(conn, since, perf)
 
