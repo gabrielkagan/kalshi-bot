@@ -455,8 +455,8 @@ CONVERGENCE_WINDOW_SECONDS = 30.0 # seconds to measure price velocity
 MAKER_TIMEOUT_SECONDS = 30.0     # hard timeout for maker orders
 
 # ─── Direct Taker Threshold ──────────────────────────────────────────────
-DIRECT_TAKER_THRESHOLD = 75.0     # seconds_to_close below this → skip maker, go IOC directly
-                                  # Raised 60→75: 0-60s maker fill rate 7.7% (1/13), direct taker strictly better
+DIRECT_TAKER_THRESHOLD = 180.0    # seconds_to_close below this → skip maker, go IOC directly
+                                  # Raised 75→180: 0% maker fill rate (26/26 escalated to taker), 9 missed candidates/day
 MAKER_ONLY_THRESHOLD = 0.0        # seconds_to_close below this → maker only, no taker escalation
                                   # Set to 0: taker allowed at all STC (data: 14W/0L, 100% taker WR)
                                   # Was 90.0 — removed after verifying taker has zero losses
