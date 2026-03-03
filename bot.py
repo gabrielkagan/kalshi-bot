@@ -780,6 +780,7 @@ class KalshiClient:
         self.session = requests.Session()
         self._read_timestamps: List[float] = []
         self._write_timestamps: List[float] = []
+        self._rate_lock = threading.Lock()
 
     # ── Auth ──────────────────────────────────────────────────────────────
 
@@ -805,26 +806,27 @@ class KalshiClient:
     # ── Rate Limiting ─────────────────────────────────────────────────────
 
     def _rate_limit_wait(self, is_write: bool):
-        now = time.time()
-        timestamps = self._write_timestamps if is_write else self._read_timestamps
-        limit = WRITE_RATE_LIMIT if is_write else READ_RATE_LIMIT
-
-        # Purge timestamps older than 1 second
-        cutoff = now - 1.0
-        while timestamps and timestamps[0] < cutoff:
-            timestamps.pop(0)
-
-        if len(timestamps) >= limit:
-            sleep_time = timestamps[0] + 1.0 - now
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            # Purge again after sleeping
+        with self._rate_lock:
             now = time.time()
+            timestamps = self._write_timestamps if is_write else self._read_timestamps
+            limit = WRITE_RATE_LIMIT if is_write else READ_RATE_LIMIT
+
+            # Purge timestamps older than 1 second
             cutoff = now - 1.0
             while timestamps and timestamps[0] < cutoff:
                 timestamps.pop(0)
 
-        timestamps.append(time.time())
+            if len(timestamps) >= limit:
+                sleep_time = timestamps[0] + 1.0 - now
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                # Purge again after sleeping
+                now = time.time()
+                cutoff = now - 1.0
+                while timestamps and timestamps[0] < cutoff:
+                    timestamps.pop(0)
+
+            timestamps.append(time.time())
 
     # ── Core Request ──────────────────────────────────────────────────────
 
@@ -5042,7 +5044,8 @@ class ProbabilityEngine:
 
     @staticmethod
     def counterfactual_prob(spot: float, threshold: float, seconds_remaining: float,
-                            alt_blended_rv: float, asset: Optional[str] = None) -> Optional[float]:
+                            alt_blended_rv: float, asset: Optional[str] = None,
+                            product_type: Optional[str] = None) -> Optional[float]:
         """Compute calibrated_prob for a counterfactual blended_rv. Lightweight — no logging."""
         if spot <= 0 or seconds_remaining <= 0 or alt_blended_rv <= 0:
             return None
@@ -5053,7 +5056,7 @@ class ProbabilityEngine:
         if abs(z) > Z_SCORE_MAX:
             return None
         raw = ProbabilityEngine._cdf_complement(z, asset)
-        cap = ProbabilityEngine._dynamic_cap(seconds_remaining)
+        cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
         if _CALIBRATION_ENGINE is not None:
             return round(_CALIBRATION_ENGINE.calibrate(raw, cap=cap), 6)
         return round(ProbabilityEngine._calibrate(raw, cap=cap), 6)
@@ -5062,7 +5065,7 @@ class ProbabilityEngine:
     def _dynamic_cap(seconds_remaining: float, product_type: str = None) -> float:
         """Return probability cap based on time to close."""
         schedule = (HOURLY_DYNAMIC_CAP_SCHEDULE
-                    if product_type == "hourly"
+                    if product_type in ("hourly", "spx_hourly", "weather")
                     else DYNAMIC_CAP_SCHEDULE)
         for threshold_secs, cap in schedule:
             if seconds_remaining > threshold_secs:
@@ -6427,12 +6430,13 @@ class OpportunityScanner:
                         _shadow_extra["wx_n_members"] = 0
                         _fs = "data_unavailable"
                         _dedup_key_ens = (ticker, _fs)
-                        if _dedup_key_ens not in _seen:
-                            _seen.add(_dedup_key_ens)
-                            self._sm.insert_evaluated_opportunity(
-                                ticker=ticker, event_ticker=w.get("event_ticker",""),
+                        if _dedup_key_ens not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dedup_key_ens)
+                            _nbbo_val = int(_nbbo) if _nbbo_raw is not None else None
+                            self._state.insert_evaluated_opportunity(
+                                ticker=ticker, event_ticker=window.get("event_ticker", ""),
                                 asset=asset, product_type=_pt, filter_stage=_fs,
-                                market_price=int(yes_ask) if yes_ask else None,
+                                market_price=_nbbo_val,
                                 wx_ensemble_mean=None, wx_ensemble_std=None,
                                 wx_n_members=0,
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
@@ -6895,7 +6899,7 @@ class OpportunityScanner:
                     _cf_ebs = _shadow_diag.get("egarch_blend_sigma")
                     if _cf_ebs and _cf_ebs > 0:
                         _cf_prob = ProbabilityEngine.counterfactual_prob(
-                            spot, threshold, seconds_remaining, _cf_ebs, asset)
+                            spot, threshold, seconds_remaining, _cf_ebs, asset, product_type=_pt)
                         if _cf_prob is not None:
                             _cf_edge = _cf_prob - best_ask / 100.0
                             _cf_fee_edge = _cf_edge - est_fee_1c / 100.0
@@ -6909,7 +6913,7 @@ class OpportunityScanner:
                     _cf_rvo = vol_est.get("rv_only_blended")
                     if _cf_rvo and _cf_rvo > 0:
                         _cf_prob = ProbabilityEngine.counterfactual_prob(
-                            spot, threshold, seconds_remaining, _cf_rvo, asset)
+                            spot, threshold, seconds_remaining, _cf_rvo, asset, product_type=_pt)
                         if _cf_prob is not None:
                             _cf_edge = _cf_prob - best_ask / 100.0
                             _cf_fee_edge = _cf_edge - est_fee_1c / 100.0
@@ -6923,7 +6927,7 @@ class OpportunityScanner:
                 _cf_tv = _shadow_diag.get("shadow_tv_blend_rv")
                 if _cf_tv and _cf_tv > 0:
                     _cf_prob = ProbabilityEngine.counterfactual_prob(
-                        spot, threshold, seconds_remaining, _cf_tv, asset)
+                        spot, threshold, seconds_remaining, _cf_tv, asset, product_type=_pt)
                     if _cf_prob is not None:
                         _cf_edge = _cf_prob - best_ask / 100.0
                         _cf_fee_edge = _cf_edge - est_fee_1c / 100.0
@@ -6938,7 +6942,7 @@ class OpportunityScanner:
                 _cf_sig = _shadow_extra.get("mz_sigmoid_blend_rv")
                 if _cf_sig and _cf_sig > 0:
                     _cf_prob = ProbabilityEngine.counterfactual_prob(
-                        spot, threshold, seconds_remaining, _cf_sig, asset)
+                        spot, threshold, seconds_remaining, _cf_sig, asset, product_type=_pt)
                     if _cf_prob is not None:
                         _cf_edge = _cf_prob - best_ask / 100.0
                         _cf_fee_edge = _cf_edge - est_fee_1c / 100.0
@@ -8186,6 +8190,7 @@ class OrderExecutor:
         self._session_dip_addon_shadow: int = 0
         self._session_dip_addon_skipped: int = 0
         self._escalating_assets: set = set()  # Fix 5: guard against re-entry during escalation
+        self._kalshi_oft = None  # populated from scanner if available
 
     @property
     def _active_order(self) -> Optional[Dict]:
@@ -10680,6 +10685,7 @@ class MainLoop:
         self.executor = OrderExecutor(
             self.client, self.state, self.logger,
             main_loop=self, kalshi_feed=self.kalshi_feed)
+        self.executor._kalshi_oft = self.kalshi_oft
         self.tracker = SettlementTracker(self.client, self.state, self.logger)
         self._shutdown = threading.Event()
         self._active_windows: List[Dict] = []

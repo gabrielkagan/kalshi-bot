@@ -1216,27 +1216,30 @@ class SportsEngine:
                                       signal: ComebackSignal,
                                       current_price: float,
                                       ob_data: Optional[Dict] = None) -> None:
-        """Insert to evaluated_opportunities for settlement tracking."""
-        if not self._state:
-            return
+        """Insert to evaluated_opportunities for settlement tracking.
+
+        Uses own DB connection to avoid cross-thread writes to StateManager.
+        """
         try:
+            conn = self._get_db_conn()
             # Use real Kalshi ticker if available, else synthetic for dedup
             real_ticker = ob_data.get("ticker") if ob_data else ""
             real_event = ob_data.get("event_ticker") if ob_data else ""
             ticker = real_ticker or f"SPORTS-{game.game_id}-{game.home_score}-{game.away_score}"
             event_ticker = real_event or game.league
-            self._state.insert_evaluated_opportunity(
-                ticker=ticker,
-                event_ticker=event_ticker,
-                asset=league_cfg.display_name,
-                filter_stage=signal.filter_stage,
-                rejection_reason=signal.rejection_reason,
-                market_price=int(current_price) if current_price else None,
-                calibrated_prob=signal.comeback_prob,
-                edge=signal.edge,
-                fee_adjusted_edge=signal.fee_adjusted_edge,
-                product_type="sports",
-            )
+            now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            conn.execute("""
+                INSERT OR REPLACE INTO evaluated_opportunities
+                    (ticker, event_ticker, asset, filter_stage, rejection_reason,
+                     evaluation_time, market_price, calibrated_prob, edge,
+                     fee_adjusted_edge, product_type, status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (ticker, event_ticker, league_cfg.display_name,
+                  signal.filter_stage, signal.rejection_reason,
+                  now, int(current_price) if current_price else None,
+                  signal.comeback_prob, signal.edge,
+                  signal.fee_adjusted_edge, "sports", "pending"))
+            conn.commit()
         except Exception:
             logging.debug("SportsEngine eval_opp insert failed", exc_info=True)
 

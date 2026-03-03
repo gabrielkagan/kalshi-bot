@@ -84,17 +84,42 @@ class MarketHoursGuard:
     """NYSE regular trading hours checker."""
 
     @staticmethod
+    def _is_dst(dt_utc: datetime.datetime) -> bool:
+        """True if US Eastern is in DST (EDT) at the given UTC time.
+
+        US DST: starts 2nd Sunday of March at 2:00 AM ET,
+                ends 1st Sunday of November at 2:00 AM ET.
+        """
+        year = dt_utc.year
+        # Find 2nd Sunday in March
+        mar1 = datetime.date(year, 3, 1)
+        # days until first Sunday: (6 - weekday) % 7
+        first_sun_mar = mar1 + datetime.timedelta(days=(6 - mar1.weekday()) % 7)
+        second_sun_mar = first_sun_mar + datetime.timedelta(days=7)
+        # DST starts at 2:00 AM EST = 07:00 UTC
+        dst_start_utc = datetime.datetime(year, 3, second_sun_mar.day, 7, 0,
+                                          tzinfo=datetime.timezone.utc)
+
+        # Find 1st Sunday in November
+        nov1 = datetime.date(year, 11, 1)
+        first_sun_nov = nov1 + datetime.timedelta(days=(6 - nov1.weekday()) % 7)
+        # DST ends at 2:00 AM EDT = 06:00 UTC
+        dst_end_utc = datetime.datetime(year, 11, first_sun_nov.day, 6, 0,
+                                        tzinfo=datetime.timezone.utc)
+
+        return dst_start_utc <= dt_utc < dst_end_utc
+
+    @staticmethod
+    def _now_et() -> datetime.datetime:
+        """Current time in US Eastern (handles DST correctly)."""
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        offset = datetime.timedelta(hours=-4 if MarketHoursGuard._is_dst(now_utc) else -5)
+        return now_utc.astimezone(datetime.timezone(offset))
+
+    @staticmethod
     def is_market_open() -> bool:
         """True if current time is within NYSE RTH (9:30-16:00 ET), not a holiday."""
-        now_et = datetime.datetime.now(
-            datetime.timezone(datetime.timedelta(hours=-5))  # EST
-        )
-        # Check DST (EDT = UTC-4, EST = UTC-5) — simplified: March-November
-        month = now_et.month
-        if 3 <= month <= 11:
-            now_et = datetime.datetime.now(
-                datetime.timezone(datetime.timedelta(hours=-4))
-            )
+        now_et = MarketHoursGuard._now_et()
 
         date_str = now_et.strftime("%Y-%m-%d")
         if date_str in NYSE_HOLIDAYS_2026:
@@ -111,14 +136,7 @@ class MarketHoursGuard:
     @staticmethod
     def is_within_buffer() -> bool:
         """True if within 5-minute buffer around market hours (9:25-16:05 ET)."""
-        now_et = datetime.datetime.now(
-            datetime.timezone(datetime.timedelta(hours=-5))
-        )
-        month = now_et.month
-        if 3 <= month <= 11:
-            now_et = datetime.datetime.now(
-                datetime.timezone(datetime.timedelta(hours=-4))
-            )
+        now_et = MarketHoursGuard._now_et()
 
         date_str = now_et.strftime("%Y-%m-%d")
         if date_str in NYSE_HOLIDAYS_2026:
@@ -138,14 +156,7 @@ class MarketHoursGuard:
     @staticmethod
     def minutes_since_open() -> Optional[int]:
         """Minutes since market open, or None if market closed."""
-        now_et = datetime.datetime.now(
-            datetime.timezone(datetime.timedelta(hours=-5))
-        )
-        month = now_et.month
-        if 3 <= month <= 11:
-            now_et = datetime.datetime.now(
-                datetime.timezone(datetime.timedelta(hours=-4))
-            )
+        now_et = MarketHoursGuard._now_et()
         if now_et.weekday() >= 5:
             return None
         market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)

@@ -442,7 +442,7 @@ def compute_weather(conn, since):
     row = c.execute("""
         SELECT
             COUNT(*) as total_evals,
-            SUM(CASE WHEN filter_stage IN ('observation_trade', 'candidate') THEN 1 ELSE 0 END) as signals,
+            SUM(CASE WHEN filter_stage = 'weather_observation' THEN 1 ELSE 0 END) as signals,
             SUM(CASE WHEN market_result IS NOT NULL THEN 1 ELSE 0 END) as settled
         FROM evaluated_opportunities
         WHERE product_type = 'weather' AND evaluation_time >= ?
@@ -452,8 +452,7 @@ def compute_weather(conn, since):
     signals = row[1] or 0
     settled_total = row[2] or 0
 
-    # Signal W/L (weather doesn't have a dedicated observation filter_stage —
-    # all evals that pass filters are signals)
+    # Signal W/L — filter to weather_observation (signals that passed all filters)
     sig_row = c.execute("""
         SELECT
             SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as wins,
@@ -468,6 +467,7 @@ def compute_weather(conn, since):
             AVG(market_price) as avg_price
         FROM evaluated_opportunities
         WHERE product_type = 'weather'
+          AND filter_stage = 'weather_observation'
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
     """, (since,)).fetchone()
