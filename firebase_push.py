@@ -157,7 +157,7 @@ class FirebasePusher:
         snap["_snapshot_errors"] = []
         conn = self._db_conn
 
-        # Section 1: Recent trades
+        # Section 1: Recent trades (15M only for main view, all for toggle)
         try:
             try:
                 rows = conn.execute("""
@@ -170,55 +170,91 @@ class FirebasePusher:
                            COALESCE(st.edge, eo.edge) AS edge,
                            COALESCE(st.kelly_f, eo.kelly_f) AS kelly_f,
                            st.fill_latency_seconds,
-                           COALESCE(st.calibrated_prob, eo.calibrated_prob) AS calibrated_prob
+                           COALESCE(st.calibrated_prob, eo.calibrated_prob) AS calibrated_prob,
+                           st.product_type
+                    FROM settled_trades st
+                    LEFT JOIN evaluated_opportunities eo
+                        ON st.ticker = eo.ticker AND eo.filter_stage IN ('candidate', 'observation_trade')
+                    WHERE st.product_type = '15m'
+                    ORDER BY st.settled_at DESC LIMIT 10
+                """).fetchall()
+            except Exception:
+                rows = conn.execute(
+                    "SELECT * FROM settled_trades WHERE product_type='15m' ORDER BY settled_at DESC LIMIT 10"
+                ).fetchall()
+            snap["recent_trades"] = [dict(r) for r in rows]
+            # All-products recent trades for toggle
+            try:
+                all_rows = conn.execute("""
+                    SELECT st.ticker, st.event_ticker, st.asset, st.market_result,
+                           st.side, st.count, st.entry_price_cents, st.revenue_cents,
+                           st.fee_cents, st.pnl_cents, st.settled_at,
+                           COALESCE(st.strategy, eo.strategy) AS strategy,
+                           COALESCE(st.vol_regime, eo.vol_regime) AS vol_regime,
+                           COALESCE(st.seconds_to_close, eo.seconds_to_close) AS ttc,
+                           COALESCE(st.edge, eo.edge) AS edge,
+                           COALESCE(st.kelly_f, eo.kelly_f) AS kelly_f,
+                           st.fill_latency_seconds,
+                           COALESCE(st.calibrated_prob, eo.calibrated_prob) AS calibrated_prob,
+                           st.product_type
                     FROM settled_trades st
                     LEFT JOIN evaluated_opportunities eo
                         ON st.ticker = eo.ticker AND eo.filter_stage IN ('candidate', 'observation_trade')
                     ORDER BY st.settled_at DESC LIMIT 10
                 """).fetchall()
+                snap["all_products_recent_trades"] = [dict(r) for r in all_rows]
             except Exception:
-                rows = conn.execute(
-                    "SELECT * FROM settled_trades ORDER BY settled_at DESC LIMIT 10"
-                ).fetchall()
-            snap["recent_trades"] = [dict(r) for r in rows]
+                snap["all_products_recent_trades"] = []
         except Exception:
             snap["recent_trades"] = []
             snap["_snapshot_errors"].append("recent_trades")
 
-        # Section 2: Win/loss counts
+        # Section 2: Win/loss counts (15M + all products)
         try:
-            all_settled = conn.execute(
-                "SELECT side, market_result FROM settled_trades"
+            def _count_wins_losses(rows):
+                w, l = 0, 0
+                for r in rows:
+                    side, result = r["side"], r["market_result"]
+                    if result in ("yes", "all_yes"):
+                        if side == "yes": w += 1
+                        else: l += 1
+                    elif result in ("no", "all_no"):
+                        if side == "no": w += 1
+                        else: l += 1
+                return w, l
+
+            # 15M only (primary display)
+            settled_15m = conn.execute(
+                "SELECT side, market_result FROM settled_trades WHERE product_type='15m'"
             ).fetchall()
-            win = 0
-            loss = 0
-            for r in all_settled:
-                side = r["side"]
-                result = r["market_result"]
-                if result in ("yes", "all_yes"):
-                    if side == "yes":
-                        win += 1
-                    else:
-                        loss += 1
-                elif result in ("no", "all_no"):
-                    if side == "no":
-                        win += 1
-                    else:
-                        loss += 1
+            win, loss = _count_wins_losses(settled_15m)
             snap["win_count"] = win
             snap["loss_count"] = loss
             snap["win_rate"] = round(win / (win + loss), 4) if (win + loss) > 0 else 0.0
+
+            # All products (for toggle)
+            all_settled = conn.execute(
+                "SELECT side, market_result FROM settled_trades"
+            ).fetchall()
+            all_win, all_loss = _count_wins_losses(all_settled)
+            snap["all_products_win_count"] = all_win
+            snap["all_products_loss_count"] = all_loss
+            snap["all_products_win_rate"] = round(all_win / (all_win + all_loss), 4) if (all_win + all_loss) > 0 else 0.0
         except Exception:
             snap["win_count"] = 0
             snap["loss_count"] = 0
             snap["win_rate"] = 0.0
+            snap["all_products_win_count"] = 0
+            snap["all_products_loss_count"] = 0
+            snap["all_products_win_rate"] = 0.0
             snap["_snapshot_errors"].append("win_loss_counts")
 
-        # Section 3: Daily P&L
+        # Section 3: Daily P&L (15M only)
         try:
             today_midnight = now_utc.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
             row = conn.execute(
-                "SELECT COALESCE(SUM(pnl_cents - fee_cents), 0) AS daily FROM settled_trades WHERE settled_at >= ?",
+                "SELECT COALESCE(SUM(pnl_cents - fee_cents), 0) AS daily FROM settled_trades "
+                "WHERE settled_at >= ? AND product_type='15m'",
                 (today_midnight,),
             ).fetchone()
             snap["daily_pnl_cents"] = row["daily"] if row else 0
@@ -232,10 +268,11 @@ class FirebasePusher:
             snap["daily_pnl_pct"] = 0.0
             snap["_snapshot_errors"].append("daily_pnl")
 
-        # Section 4: Consecutive losses
+        # Section 4: Consecutive losses (15M only)
         try:
             recent_settled = conn.execute(
-                "SELECT side, market_result FROM settled_trades ORDER BY settled_at DESC LIMIT 20"
+                "SELECT side, market_result FROM settled_trades "
+                "WHERE product_type='15m' ORDER BY settled_at DESC LIMIT 20"
             ).fetchall()
             streak = 0
             for r in recent_settled:
@@ -250,7 +287,7 @@ class FirebasePusher:
             snap["consecutive_losses"] = 0
             snap["_snapshot_errors"].append("consecutive_losses")
 
-        # Risk metrics
+        # Risk metrics (15M only + all products for toggle)
         try:
             risk = {}
             peak = snap.get("peak_balance", 0)
@@ -258,45 +295,61 @@ class FirebasePusher:
             risk["max_drawdown_pct"] = round((peak - cur) / peak * 100, 2) if peak > 0 else 0.0
             risk["max_drawdown_dollars"] = round(peak - cur, 2)
 
-            all_pnl = conn.execute(
-                "SELECT (pnl_cents - fee_cents) AS net, settled_at FROM settled_trades"
-            ).fetchall()
-            nets = [r["net"] for r in all_pnl]
-            n = len(nets)
-            if n > 0:
-                total = sum(nets)
-                mean = total / n
-                variance = sum((x - mean) ** 2 for x in nets) / n if n > 1 else 0
-                std = variance ** 0.5
-                # Use actual trade span for Sharpe annualization
-                span_row = conn.execute(
-                    "SELECT MIN(settled_at) AS first_t, MAX(settled_at) AS last_t FROM settled_trades"
-                ).fetchone()
-                if span_row and span_row["first_t"] and span_row["last_t"]:
-                    from datetime import datetime as _dt
-                    try:
-                        t0 = _dt.fromisoformat(span_row["first_t"].replace("Z", "+00:00"))
-                        t1 = _dt.fromisoformat(span_row["last_t"].replace("Z", "+00:00"))
-                        span_days = max((t1 - t0).total_seconds() / 86400, 0.01)
-                    except Exception:
+            def _compute_risk_stats(pnl_rows, span_query_filter):
+                nets = [r["net"] for r in pnl_rows]
+                n = len(nets)
+                stats = {}
+                if n > 0:
+                    total = sum(nets)
+                    mean = total / n
+                    variance = sum((x - mean) ** 2 for x in nets) / n if n > 1 else 0
+                    std = variance ** 0.5
+                    span_row = conn.execute(
+                        f"SELECT MIN(settled_at) AS first_t, MAX(settled_at) AS last_t FROM settled_trades{span_query_filter}"
+                    ).fetchone()
+                    if span_row and span_row["first_t"] and span_row["last_t"]:
+                        from datetime import datetime as _dt
+                        try:
+                            t0 = _dt.fromisoformat(span_row["first_t"].replace("Z", "+00:00"))
+                            t1 = _dt.fromisoformat(span_row["last_t"].replace("Z", "+00:00"))
+                            span_days = max((t1 - t0).total_seconds() / 86400, 0.01)
+                        except Exception:
+                            span_days = max(snap.get("uptime_seconds", 1) / 86400, 0.01)
+                    else:
                         span_days = max(snap.get("uptime_seconds", 1) / 86400, 0.01)
+                    trades_per_day = n / span_days
+                    stats["sharpe_ratio"] = round(mean / std * (trades_per_day ** 0.5), 2) if std > 0 else 0.0
+                    stats["total_pnl_cents"] = total
+                    stats["avg_pnl_per_trade"] = round(total / n, 1)
+                    gross_wins = sum(x for x in nets if x > 0)
+                    gross_losses = abs(sum(x for x in nets if x < 0))
+                    stats["profit_factor"] = round(gross_wins / gross_losses, 2) if gross_losses > 0 else 999.0
+                    stats["total_trades"] = n
                 else:
-                    span_days = max(snap.get("uptime_seconds", 1) / 86400, 0.01)
-                trades_per_day = n / span_days
-                risk["sharpe_ratio"] = round(mean / std * (trades_per_day ** 0.5), 2) if std > 0 else 0.0
-                risk["total_pnl_cents"] = total
-                risk["avg_pnl_per_trade"] = round(total / n, 1)
-                gross_wins = sum(x for x in nets if x > 0)
-                gross_losses = abs(sum(x for x in nets if x < 0))
-                risk["profit_factor"] = round(gross_wins / gross_losses, 2) if gross_losses > 0 else 999.0
-                risk["total_trades"] = n
-            else:
-                risk.update({"sharpe_ratio": 0, "total_pnl_cents": 0, "avg_pnl_per_trade": 0,
-                              "profit_factor": 0, "total_trades": 0})
+                    stats.update({"sharpe_ratio": 0, "total_pnl_cents": 0, "avg_pnl_per_trade": 0,
+                                  "profit_factor": 0, "total_trades": 0})
+                return stats
+
+            # 15M only
+            pnl_15m = conn.execute(
+                "SELECT (pnl_cents - fee_cents) AS net FROM settled_trades WHERE product_type='15m'"
+            ).fetchall()
+            risk.update(_compute_risk_stats(pnl_15m, " WHERE product_type='15m'"))
             snap["risk_metrics"] = risk
+
+            # All products (for toggle)
+            all_pnl = conn.execute(
+                "SELECT (pnl_cents - fee_cents) AS net FROM settled_trades"
+            ).fetchall()
+            all_risk = {}
+            all_risk["max_drawdown_pct"] = risk["max_drawdown_pct"]
+            all_risk["max_drawdown_dollars"] = risk["max_drawdown_dollars"]
+            all_risk.update(_compute_risk_stats(all_pnl, ""))
+            snap["all_products_risk_metrics"] = all_risk
         except Exception:
             logging.debug("Firebase: risk_metrics build failed", exc_info=True)
             snap["risk_metrics"] = None
+            snap["all_products_risk_metrics"] = None
 
         # Execution quality
         try:
@@ -571,75 +624,70 @@ class FirebasePusher:
         except Exception:
             snap["session_stats"] = {}
 
-        # ── real_trade_analytics (from settled_trades) ─────────────────
+        # ── real_trade_analytics (from settled_trades, 15M only) ─────────
         try:
             conn = self._db_conn
             rta = {}
+            _pt_filter = " WHERE product_type='15m'"
+            _win_case = ("COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
+                         "OR (market_result IN ('no','all_no') AND side='no') THEN 1 END)")
 
             # P&L by asset
             asset_rows = conn.execute(
-                "SELECT asset, COUNT(*) AS cnt, "
-                "  COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
-                "    OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
-                "  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
-                "FROM settled_trades GROUP BY asset"
+                f"SELECT asset, COUNT(*) AS cnt, {_win_case} AS wins, "
+                f"  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
+                f"FROM settled_trades{_pt_filter} GROUP BY asset"
             ).fetchall()
             rta["by_asset"] = {r["asset"]: {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in asset_rows}
 
             # P&L by price bucket
             bucket_rows = conn.execute(
-                "SELECT CASE "
-                "  WHEN entry_price_cents BETWEEN 86 AND 89 THEN '86-89' "
-                "  WHEN entry_price_cents BETWEEN 90 AND 94 THEN '90-94' "
-                "  WHEN entry_price_cents BETWEEN 95 AND 99 THEN '95-99' "
-                "  ELSE 'other' END AS bucket, "
-                "COUNT(*) AS cnt, "
-                "COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
-                "  OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
-                "COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
-                "FROM settled_trades GROUP BY bucket"
+                f"SELECT CASE "
+                f"  WHEN entry_price_cents BETWEEN 86 AND 89 THEN '86-89' "
+                f"  WHEN entry_price_cents BETWEEN 90 AND 94 THEN '90-94' "
+                f"  WHEN entry_price_cents BETWEEN 95 AND 99 THEN '95-99' "
+                f"  ELSE 'other' END AS bucket, "
+                f"COUNT(*) AS cnt, {_win_case} AS wins, "
+                f"COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
+                f"FROM settled_trades{_pt_filter} GROUP BY bucket"
             ).fetchall()
             rta["by_bucket"] = {r["bucket"]: {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in bucket_rows}
 
             # P&L by strategy
             strat_rows = conn.execute(
-                "SELECT COALESCE(strategy, 'unknown') AS strat, COUNT(*) AS cnt, "
-                "  COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
-                "    OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
-                "  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
-                "FROM settled_trades GROUP BY strat"
+                f"SELECT COALESCE(strategy, 'unknown') AS strat, COUNT(*) AS cnt, {_win_case} AS wins, "
+                f"  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
+                f"FROM settled_trades{_pt_filter} GROUP BY strat"
             ).fetchall()
             rta["by_strategy"] = {r["strat"]: {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in strat_rows}
 
             # P&L by hour (UTC)
             hour_rows = conn.execute(
-                "SELECT CAST(SUBSTR(settled_at, 12, 2) AS INTEGER) AS hour, "
-                "  COUNT(*) AS cnt, "
-                "  COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
-                "    OR (market_result IN ('no','all_no') AND side='no') THEN 1 END) AS wins, "
-                "  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
-                "FROM settled_trades WHERE settled_at IS NOT NULL GROUP BY hour"
+                f"SELECT CAST(SUBSTR(settled_at, 12, 2) AS INTEGER) AS hour, "
+                f"  COUNT(*) AS cnt, {_win_case} AS wins, "
+                f"  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
+                f"FROM settled_trades WHERE product_type='15m' AND settled_at IS NOT NULL GROUP BY hour"
             ).fetchall()
             rta["by_hour"] = {str(r["hour"]): {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in hour_rows}
 
-            # Best and worst trade
+            # Best and worst trade (15M only)
             best = conn.execute(
-                "SELECT ticker, asset, entry_price_cents, (pnl_cents - fee_cents) AS net, settled_at "
-                "FROM settled_trades ORDER BY net DESC LIMIT 1"
+                f"SELECT ticker, asset, entry_price_cents, (pnl_cents - fee_cents) AS net, settled_at "
+                f"FROM settled_trades{_pt_filter} ORDER BY net DESC LIMIT 1"
             ).fetchone()
             worst = conn.execute(
-                "SELECT ticker, asset, entry_price_cents, (pnl_cents - fee_cents) AS net, settled_at "
-                "FROM settled_trades ORDER BY net ASC LIMIT 1"
+                f"SELECT ticker, asset, entry_price_cents, (pnl_cents - fee_cents) AS net, settled_at "
+                f"FROM settled_trades{_pt_filter} ORDER BY net ASC LIMIT 1"
             ).fetchone()
             if best:
                 rta["best_trade"] = dict(best)
             if worst:
                 rta["worst_trade"] = dict(worst)
 
-            # Cumulative P&L time series (for chart)
+            # Cumulative P&L time series (15M for chart)
             pnl_series = conn.execute(
-                "SELECT settled_at, (pnl_cents - fee_cents) AS net "
-                "FROM settled_trades ORDER BY settled_at"
+                f"SELECT settled_at, (pnl_cents - fee_cents) AS net "
+                f"FROM settled_trades{_pt_filter} ORDER BY settled_at"
             ).fetchall()
             cumulative = []
             running = 0
@@ -647,6 +695,18 @@ class FirebasePusher:
                 running += r["net"]
                 cumulative.append({"ts": r["settled_at"], "cum_pnl": running})
             rta["cumulative_pnl"] = cumulative
+
+            # All-products cumulative P&L (for toggle)
+            all_pnl_series = conn.execute(
+                "SELECT settled_at, (pnl_cents - fee_cents) AS net, product_type "
+                "FROM settled_trades ORDER BY settled_at"
+            ).fetchall()
+            all_cumulative = []
+            all_running = 0
+            for r in all_pnl_series:
+                all_running += r["net"]
+                all_cumulative.append({"ts": r["settled_at"], "cum_pnl": all_running, "pt": r["product_type"]})
+            rta["all_products_cumulative_pnl"] = all_cumulative
 
             snap["real_trade_analytics"] = rta
         except Exception:
@@ -745,9 +805,10 @@ class FirebasePusher:
         except Exception:
             logging.debug("Firebase: egarch_blend build failed", exc_info=True)
 
-        # ── counterfactual analysis ───────────────────────────────────
+        # ── counterfactual analysis (15M only) ─────────────────────────
         try:
             conn = self._db_conn
+            _cf_pt_filter = "AND (product_type IS NULL OR product_type='15m')"
 
             # By filter stage
             stage_rows = conn.execute(
@@ -756,7 +817,7 @@ class FirebasePusher:
                 "  COUNT(CASE WHEN counterfactual_pnl <= 0 THEN 1 END) AS losses, "
                 "  COALESCE(SUM(counterfactual_pnl), 0) AS net_pnl_cents "
                 "FROM evaluated_opportunities "
-                "WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL "
+                f"WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL {_cf_pt_filter} "
                 "GROUP BY filter_stage"
             ).fetchall()
             by_stage = []
@@ -785,7 +846,7 @@ class FirebasePusher:
                 "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins, "
                 "  COALESCE(SUM(counterfactual_pnl), 0) AS net_pnl_cents "
                 "FROM evaluated_opportunities "
-                "WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL "
+                f"WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL {_cf_pt_filter} "
                 "  AND market_price BETWEEN 80 AND 99 "
                 "GROUP BY bucket"
             ).fetchall()
@@ -813,7 +874,7 @@ class FirebasePusher:
                 "  COALESCE(SUM(CASE WHEN counterfactual_pnl < 0 AND filter_stage != 'observation_trade' "
                 "    THEN ABS(counterfactual_pnl) ELSE 0 END), 0) AS bullets_dodged "
                 "FROM evaluated_opportunities "
-                "WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL"
+                f"WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL {_cf_pt_filter}"
             ).fetchone()
 
             snap["counterfactual_analysis"] = {
@@ -1375,6 +1436,81 @@ class FirebasePusher:
                 snap["sports_observation"] = sp_data
         except Exception:
             logging.debug("Firebase: sports_observation build failed", exc_info=True)
+
+        # ── Data Collection Progress ───────────────────────────────────────
+        try:
+            conn = self._db_conn
+            dc = {}
+            for pt, obs_stage, target in [
+                ("hourly", "hourly_observation", 200),
+                ("spx_hourly", "spx_observation", 200),
+                ("weather", "weather_observation", 100),
+            ]:
+                try:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS total, "
+                        "  SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled, "
+                        "  MIN(evaluation_time) AS first_ts, MAX(evaluation_time) AS last_ts "
+                        "FROM evaluated_opportunities "
+                        "WHERE product_type=? AND filter_stage=?", (pt, obs_stage)
+                    ).fetchone()
+                    settled = (row["settled"] or 0) if row else 0
+                    total = (row["total"] or 0) if row else 0
+                    rate_per_day = None
+                    eta_days = None
+                    if row and row["first_ts"] and row["last_ts"] and settled > 1:
+                        from datetime import datetime as _dt
+                        try:
+                            t0 = _dt.fromisoformat(row["first_ts"].replace("Z", "+00:00"))
+                            t1 = _dt.fromisoformat(row["last_ts"].replace("Z", "+00:00"))
+                            days_elapsed = max((t1 - t0).total_seconds() / 86400, 0.01)
+                            rate_per_day = round(settled / days_elapsed, 1)
+                            remaining = max(0, target - settled)
+                            eta_days = round(remaining / rate_per_day, 1) if rate_per_day > 0 else None
+                        except Exception:
+                            pass
+                    dc[pt] = {
+                        "signals": total, "settled": settled, "target": target,
+                        "rate_per_day": rate_per_day, "eta_days": eta_days,
+                    }
+                except Exception:
+                    dc[pt] = {"signals": 0, "settled": 0, "target": target,
+                              "rate_per_day": None, "eta_days": None}
+            # Sports uses sports_shadow_log table
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS total, "
+                    "  SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled, "
+                    "  MIN(timestamp) AS first_ts, MAX(timestamp) AS last_ts "
+                    "FROM sports_shadow_log WHERE signal_fired=1"
+                ).fetchone()
+                settled = (row["settled"] or 0) if row else 0
+                total = (row["total"] or 0) if row else 0
+                target = 300
+                rate_per_day = None
+                eta_days = None
+                if row and row["first_ts"] and row["last_ts"] and settled > 1:
+                    from datetime import datetime as _dt
+                    try:
+                        t0 = _dt.fromisoformat(str(row["first_ts"]).replace("Z", "+00:00"))
+                        t1 = _dt.fromisoformat(str(row["last_ts"]).replace("Z", "+00:00"))
+                        days_elapsed = max((t1 - t0).total_seconds() / 86400, 0.01)
+                        rate_per_day = round(settled / days_elapsed, 1)
+                        remaining = max(0, target - settled)
+                        eta_days = round(remaining / rate_per_day, 1) if rate_per_day > 0 else None
+                    except Exception:
+                        pass
+                dc["sports"] = {
+                    "signals": total, "settled": settled, "target": target,
+                    "rate_per_day": rate_per_day, "eta_days": eta_days,
+                }
+            except Exception:
+                dc["sports"] = {"signals": 0, "settled": 0, "target": 300,
+                                "rate_per_day": None, "eta_days": None}
+            snap["data_collection"] = dc
+        except Exception:
+            logging.debug("Firebase: data_collection build failed", exc_info=True)
+            snap["data_collection"] = {}
 
         # ── Capital Allocation Panel ──────────────────────────────────────
         try:

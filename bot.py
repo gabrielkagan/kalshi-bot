@@ -1445,12 +1445,35 @@ class StateManager:
             ("escalation_type", "TEXT"),
             ("maker_price_cents", "INTEGER"),
             ("maker_wait_seconds", "REAL"),
+            ("product_type", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE settled_trades ADD COLUMN {col_def[0]} {col_def[1]}")
             except sqlite3.OperationalError:
                 pass  # column already exists
         self.conn.commit()
+
+        # One-time backfill: derive product_type from ticker prefix
+        null_count = self.conn.execute(
+            "SELECT COUNT(*) FROM settled_trades WHERE product_type IS NULL"
+        ).fetchone()[0]
+        if null_count > 0:
+            self.conn.execute(
+                "UPDATE settled_trades SET product_type='15m' WHERE product_type IS NULL "
+                "AND (ticker LIKE 'KXBTC15M%' OR ticker LIKE 'KXETH15M%' "
+                "OR ticker LIKE 'KXSOL15M%' OR ticker LIKE 'KXXRP15M%')")
+            self.conn.execute(
+                "UPDATE settled_trades SET product_type='hourly' WHERE product_type IS NULL "
+                "AND (ticker LIKE 'KXBTCD%' OR ticker LIKE 'KXETHD%' "
+                "OR ticker LIKE 'KXSOLD%' OR ticker LIKE 'KXXRPD%')")
+            self.conn.execute(
+                "UPDATE settled_trades SET product_type='spx_hourly' WHERE product_type IS NULL "
+                "AND ticker LIKE 'KXSPX%'")
+            self.conn.execute(
+                "UPDATE settled_trades SET product_type='weather' WHERE product_type IS NULL "
+                "AND ticker LIKE 'KXHIGH%'")
+            self.conn.commit()
+            logging.info(f"Backfilled product_type for {null_count} settled_trades rows")
 
         # Migration: add enrichment columns to positions
         for col_def in [
@@ -1661,6 +1684,17 @@ class StateManager:
             return
         pos = dict(pos_row)
 
+        # Derive product_type from ticker prefix
+        product_type = None
+        if any(ticker.startswith(p) for p in ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M")):
+            product_type = "15m"
+        elif any(ticker.startswith(p) for p in ("KXBTCD", "KXETHD", "KXSOLD", "KXXRPD")):
+            product_type = "hourly"
+        elif ticker.startswith("KXSPX"):
+            product_type = "spx_hourly"
+        elif ticker.startswith("KXHIGH"):
+            product_type = "weather"
+
         result = settlement.get("market_result", "")
         rev_d = settlement.get("revenue_dollars")
         revenue = dollars_str_to_cents(rev_d) if rev_d else (settlement.get("revenue") or 0)
@@ -1685,8 +1719,9 @@ class StateManager:
                  entry_price_cents, revenue_cents, fee_cents, pnl_cents,
                  settled_at, strategy, seconds_to_close, fill_latency_seconds,
                  vol_regime, calibrated_prob, edge, kelly_f,
-                 escalation_type, maker_price_cents, maker_wait_seconds)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 escalation_type, maker_price_cents, maker_wait_seconds,
+                 product_type)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, pos["event_ticker"], pos["asset"], result,
               pos["side"], pos["count"], pos["avg_price_cents"],
               revenue, fee, pnl, now,
@@ -1694,7 +1729,8 @@ class StateManager:
               pos.get("fill_latency_seconds"), pos.get("vol_regime"),
               pos.get("calibrated_prob"), pos.get("edge"), pos.get("kelly_f"),
               pos.get("escalation_type"), pos.get("maker_price_cents"),
-              pos.get("maker_wait_seconds")))
+              pos.get("maker_wait_seconds"),
+              product_type))
 
         self.conn.execute("""
             UPDATE positions SET status='settled', updated_at=?
