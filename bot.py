@@ -455,7 +455,8 @@ CONVERGENCE_WINDOW_SECONDS = 30.0 # seconds to measure price velocity
 MAKER_TIMEOUT_SECONDS = 30.0     # hard timeout for maker orders
 
 # ─── Direct Taker Threshold ──────────────────────────────────────────────
-DIRECT_TAKER_THRESHOLD = 60.0     # seconds_to_close below this → skip maker, go IOC directly
+DIRECT_TAKER_THRESHOLD = 75.0     # seconds_to_close below this → skip maker, go IOC directly
+                                  # Raised 60→75: 0-60s maker fill rate 7.7% (1/13), direct taker strictly better
 MAKER_ONLY_THRESHOLD = 0.0        # seconds_to_close below this → maker only, no taker escalation
                                   # Set to 0: taker allowed at all STC (data: 14W/0L, 100% taker WR)
                                   # Was 90.0 — removed after verifying taker has zero losses
@@ -1394,6 +1395,12 @@ class StateManager:
             ("hourly_shadow_temp_1_0", "REAL"),
             ("hourly_shadow_temp_2_5", "REAL"),
             ("hourly_shadow_blend_50", "REAL"),
+            # Balance at evaluation time
+            ("available_balance_cents", "INTEGER"),
+            # Order tracking columns
+            ("order_id", "TEXT"),
+            ("order_submitted_at", "TEXT"),
+            ("order_outcome", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1814,7 +1821,11 @@ class StateManager:
                                      hourly_shadow_temp_2_0: Optional[float] = None,
                                      hourly_shadow_temp_1_0: Optional[float] = None,
                                      hourly_shadow_temp_2_5: Optional[float] = None,
-                                     hourly_shadow_blend_50: Optional[float] = None):
+                                     hourly_shadow_blend_50: Optional[float] = None,
+                                     available_balance_cents: Optional[int] = None,
+                                     order_id: Optional[str] = None,
+                                     order_submitted_at: Optional[str] = None,
+                                     order_outcome: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
@@ -1840,8 +1851,10 @@ class StateManager:
                      wx_market_type, wx_actual_high_temp, wx_no_side_edge,
                      hourly_pre_temp_prob, hourly_applied_temp_t,
                      hourly_shadow_temp_2_0, hourly_shadow_temp_1_0, hourly_shadow_temp_2_5,
-                     hourly_shadow_blend_50)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     hourly_shadow_blend_50,
+                     available_balance_cents,
+                     order_id, order_submitted_at, order_outcome)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1862,10 +1875,42 @@ class StateManager:
                   wx_market_type, wx_actual_high_temp, wx_no_side_edge,
                   hourly_pre_temp_prob, hourly_applied_temp_t,
                   hourly_shadow_temp_2_0, hourly_shadow_temp_1_0, hourly_shadow_temp_2_5,
-                  hourly_shadow_blend_50))
+                  hourly_shadow_blend_50,
+                  available_balance_cents,
+                  order_id, order_submitted_at, order_outcome))
             self.conn.commit()
         except Exception as e:
             logging.warning(f"insert_evaluated_opportunity failed: {e}", exc_info=True)
+
+    def update_evaluated_opportunity_order(self, ticker: str,
+                                            order_id: Optional[str] = None,
+                                            order_submitted_at: Optional[str] = None,
+                                            order_outcome: Optional[str] = None):
+        """Update order tracking fields on the candidate row for a ticker."""
+        try:
+            parts = []
+            vals = []
+            if order_id is not None:
+                parts.append("order_id=?")
+                vals.append(order_id)
+            if order_submitted_at is not None:
+                parts.append("order_submitted_at=?")
+                vals.append(order_submitted_at)
+            if order_outcome is not None:
+                parts.append("order_outcome=?")
+                vals.append(order_outcome)
+            if not parts:
+                return
+            vals.append(ticker)
+            vals.append("candidate")
+            self.conn.execute(
+                f"UPDATE evaluated_opportunities SET {', '.join(parts)} "
+                f"WHERE ticker=? AND filter_stage=?",
+                tuple(vals)
+            )
+            self.conn.commit()
+        except Exception as e:
+            logging.warning(f"update_evaluated_opportunity_order failed: {e}", exc_info=True)
 
     def get_unsettled_evaluated_opportunities(self) -> List[Dict]:
         """Return evaluated opportunities with status='pending' and a market_price.
@@ -8465,7 +8510,8 @@ class OrderExecutor:
                         hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
                         hourly_shadow_temp_1_0=candidate.get("hourly_shadow_temp_1_0"),
                         hourly_shadow_temp_2_5=candidate.get("hourly_shadow_temp_2_5"),
-                        hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"))
+                        hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"),
+                        available_balance_cents=candidate.get("balance_at_scan"))
             except Exception as e:
                 logging.error(f"OBSERVATION_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
             return None
@@ -8530,11 +8576,12 @@ class OrderExecutor:
                 hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
                 hourly_shadow_temp_1_0=candidate.get("hourly_shadow_temp_1_0"),
                 hourly_shadow_temp_2_5=candidate.get("hourly_shadow_temp_2_5"),
-                hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"))
+                hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"),
+                available_balance_cents=candidate.get("balance_at_scan"))
         except Exception as e:
             logging.error(f"CANDIDATE_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
 
-        # ── Direct taker for <60s candidates ───────────────────────
+        # ── Direct taker for <75s candidates ───────────────────────
         seconds_to_close = candidate.get("seconds_to_close")
         # Maker-only below 90s: block direct taker, fall through to maker
         if (seconds_to_close is not None
@@ -8601,13 +8648,21 @@ class OrderExecutor:
             candidate["entry_path"] = "direct_taker"
             candidate["escalation_type"] = "direct_taker"
             self._recent_taker_tickers[candidate["ticker"]] = time.time()
+            _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             result = self._submit_taker(candidate)
             if result is not None:
                 self._session_direct_taker_fills += 1
                 logging.info("direct_taker_FILLED: %s", candidate["ticker"])
+                _taker_oid = result.get("order_id") if isinstance(result, dict) else None
+                self._state.update_evaluated_opportunity_order(
+                    candidate["ticker"], order_id=_taker_oid,
+                    order_submitted_at=_order_submit_ts, order_outcome="filled")
             else:
                 self._session_direct_taker_unfilled += 1
                 logging.warning("direct_taker_UNFILLED: %s", candidate["ticker"])
+                self._state.update_evaluated_opportunity_order(
+                    candidate["ticker"], order_submitted_at=_order_submit_ts,
+                    order_outcome="unfilled")
             return result
 
         # ── Three-tier post_only rejection escalation ──────────────
@@ -8669,15 +8724,23 @@ class OrderExecutor:
             candidate["entry_path"] = "post_only_taker"
             candidate["escalation_type"] = "post_only_taker"
             self._recent_taker_tickers[ticker] = time.time()
+            _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             result = self._submit_taker(candidate)
             if result is not None:
                 self._post_only_rejections.pop(ticker, None)
                 self._session_post_only_taker_fills += 1
                 logging.info("post_only_taker_FILLED: %s", ticker)
+                _taker_oid = result.get("order_id") if isinstance(result, dict) else None
+                self._state.update_evaluated_opportunity_order(
+                    ticker, order_id=_taker_oid,
+                    order_submitted_at=_order_submit_ts, order_outcome="filled")
             else:
                 # Clear rejections to prevent hot retry loop on persistent API errors
                 self._post_only_rejections.pop(ticker, None)
                 logging.warning("post_only_taker_UNFILLED: %s (cleared rejections, will re-evaluate)", ticker)
+                self._state.update_evaluated_opportunity_order(
+                    ticker, order_submitted_at=_order_submit_ts,
+                    order_outcome="unfilled")
             return result
 
         # Tier 2: Degraded maker (1¢ worse, one attempt)
@@ -8687,10 +8750,20 @@ class OrderExecutor:
                 ticker, rejections, POST_ONLY_DEGRADED_EXTRA_OFFSET)
             self._session_post_only_degraded_attempts += 1
             self._submit_maker(candidate, degraded=True)
+            _active = self._active_orders.get(candidate["asset"])
+            if _active:
+                self._state.update_evaluated_opportunity_order(
+                    ticker, order_id=_active["order_id"],
+                    order_submitted_at=datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
             return None
 
         # Tier 1: Normal maker (attempt 1 or 2)
         self._submit_maker(candidate)
+        _active = self._active_orders.get(candidate["asset"])
+        if _active:
+            self._state.update_evaluated_opportunity_order(
+                candidate["ticker"], order_id=_active["order_id"],
+                order_submitted_at=datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
         return None
 
     def tick(self) -> Optional[Dict]:
@@ -8738,6 +8811,8 @@ class OrderExecutor:
                     order.pop("cancel_pending", None)
                     self._state.mark_order_status(order["order_id"], "canceled")
                     self._active_orders.pop(asset, None)
+                    self._state.update_evaluated_opportunity_order(
+                        order["ticker"], order_outcome="canceled")
                     return None
                 # Cancel still failing — check if order was already filled
                 fills_resp = self._client.get_fills(ticker=order["ticker"])
@@ -8769,6 +8844,8 @@ class OrderExecutor:
             order.setdefault("_seen_fill_ids", set()).add(ws_trade_id)
             if order.get("filled_so_far", 0) >= order["count"]:
                 self._active_orders.pop(asset, None)
+                self._state.update_evaluated_opportunity_order(
+                    order["ticker"], order_outcome="filled")
                 return ws_fill
             logging.info(
                 f"Partial WS fill — keeping order active "
@@ -8782,6 +8859,8 @@ class OrderExecutor:
             self._on_fill(fill, order)
             if order.get("filled_so_far", 0) >= order["count"]:
                 self._active_orders.pop(asset, None)
+                self._state.update_evaluated_opportunity_order(
+                    order["ticker"], order_outcome="filled")
                 return fill
             logging.info(
                 f"Partial REST fill — keeping order active "
@@ -8983,6 +9062,7 @@ class OrderExecutor:
         if ob_raw is None:
             logging.warning(f"Escalation aborted: orderbook fetch failed for {ticker}")
             self._cancel_order(order["asset"], reason)
+            self._state.update_evaluated_opportunity_order(ticker, order_outcome="canceled")
             return None
 
         # Unwrap response envelope (same as _get_orderbook_cached)
@@ -8996,6 +9076,7 @@ class OrderExecutor:
         if best_ask is None:
             logging.warning(f"Escalation aborted: no asks on orderbook for {ticker}")
             self._cancel_order(order["asset"], reason)
+            self._state.update_evaluated_opportunity_order(ticker, order_outcome="canceled")
             return None
 
         if best_ask < MIN_ENTRY_PRICE or best_ask > ESCALATION_MAX_ENTRY:
@@ -9004,6 +9085,7 @@ class OrderExecutor:
                 f"[{MIN_ENTRY_PRICE}-{ESCALATION_MAX_ENTRY}¢] for {ticker}"
             )
             self._cancel_order(order["asset"], reason)
+            self._state.update_evaluated_opportunity_order(ticker, order_outcome="canceled")
             return None
 
         # Determine urgency tier for logging
@@ -9035,6 +9117,7 @@ class OrderExecutor:
         cancel_ok = self._cancel_order(order["asset"], reason)
         if not cancel_ok:
             logging.error(f"Cancel failed for {ticker} — NOT submitting taker to prevent double position")
+            self._state.update_evaluated_opportunity_order(ticker, order_outcome="canceled")
             return None
 
         # Build modified candidate with fresh best ask
@@ -9053,7 +9136,15 @@ class OrderExecutor:
                 f"ioc_count={candidate['position_size']}")
         self._recent_taker_tickers[ticker] = time.time()
 
-        return self._submit_taker(candidate)
+        result = self._submit_taker(candidate)
+        if result is not None:
+            _esc_oid = result.get("order_id") if isinstance(result, dict) else None
+            self._state.update_evaluated_opportunity_order(
+                ticker, order_id=_esc_oid, order_outcome="filled")
+        else:
+            self._state.update_evaluated_opportunity_order(
+                ticker, order_outcome="unfilled")
+        return result
 
     # ── Maker ─────────────────────────────────────────────────────────────
 
@@ -10119,6 +10210,11 @@ class OrderExecutor:
             f"{' (partial fill: ' + str(filled) + '/' + str(order['count']) + ')' if filled > 0 else ''}"
         )
         self._active_orders.pop(asset, None)
+        # Update order outcome — skip if escalating (escalation handler sets outcome)
+        if asset not in self._escalating_assets:
+            _outcome = "partial_fill" if filled > 0 else "canceled"
+            self._state.update_evaluated_opportunity_order(
+                order["ticker"], order_outcome=_outcome)
         return True
 
     def _cancel_active(self, reason: str):
