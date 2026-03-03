@@ -818,6 +818,25 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
     else:
         print("  No stc_shadow entries")
 
+    # Counterfactual: XRP shadow (15M only)
+    subsection("XRP shadow counterfactual")
+    _counterfactual_stage(conn, since, "xrp_shadow", asset_clause_eval)
+
+    # XRP live vs shadow comparison
+    xrp_live = conn.execute(f"""
+        SELECT COUNT(*) AS n,
+          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(pnl_cents) AS pnl
+        FROM settled_trades
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} AND asset='XRP'
+    """, (since,)).fetchone()
+    xrp_n = xrp_live["n"] or 0
+    if xrp_n > 0:
+        xrp_w = xrp_live["w"] or 0
+        xrp_pnl = xrp_live["pnl"] or 0
+        print(f"\n  XRP live (same period): {xrp_w}W/{xrp_n - xrp_w}L, "
+              f"PnL ${xrp_pnl/100:.2f}")
+
     # Counterfactual: insufficient_edge by price bucket
     subsection("Insufficient edge rejections — by price bucket")
     ie_price = conn.execute(f"""
@@ -1067,6 +1086,38 @@ def config_sensitivity(conn: sqlite3.Connection, since: str,
                 print(f"  {min_e:>9.1%} {len(subset):>12} {w:>3} {l:>3} "
                       f"{wr:>5.1f}% ${cf/100:>9.2f}")
 
+    # P2b: New edge thresholds — relaxed 89-91c trades
+    subsection("P2b: Relaxed edge thresholds — 89-92c trades (0.5-1.2% edge)")
+    relaxed = conn.execute(f"""
+        SELECT market_price,
+          CASE WHEN filter_stage = 'candidate' THEN 'traded'
+               WHEN filter_stage = 'insufficient_edge' THEN 'rejected'
+               ELSE filter_stage END AS outcome,
+          COUNT(*) AS n,
+          SUM(CASE WHEN status='settled' AND market_result='yes' THEN 1 ELSE 0 END) AS w,
+          SUM(CASE WHEN status='settled' AND market_result='no' THEN 1 ELSE 0 END) AS l,
+          SUM(CASE WHEN status='settled'
+              THEN COALESCE(counterfactual_pnl, 0) ELSE 0 END) AS cf_pnl,
+          ROUND(AVG(fee_adjusted_edge), 4) AS avg_edge
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
+          AND filter_stage IN ('candidate', 'insufficient_edge')
+          AND market_price BETWEEN 89 AND 92
+          AND fee_adjusted_edge BETWEEN 0.005 AND 0.012
+        GROUP BY market_price, outcome ORDER BY market_price, outcome
+    """, (since,)).fetchall()
+    if relaxed:
+        print(f"  {'Price':>6} {'Outcome':>10} {'N':>4} {'W':>3} {'L':>3} "
+              f"{'CF PnL':>10} {'Avg Edge':>10}")
+        print("  " + "-" * 52)
+        for r in relaxed:
+            print(f"  {r['market_price']:>5}c {r['outcome']:>10} {r['n']:>4} "
+                  f"{r['w'] or 0:>3} {r['l'] or 0:>3} "
+                  f"${(r['cf_pnl'] or 0)/100:>9.2f} "
+                  f"{(r['avg_edge'] or 0):>+9.4f}")
+    else:
+        print("  No 89-92c trades with 0.5-1.2% edge in period")
+
     # P3: MIN_ENTRY sweep (trades + POR)
     subsection("P3: MIN_ENTRY_PRICE sweep")
     all_entry = conn.execute(f"""
@@ -1172,6 +1223,7 @@ def data_sufficiency(conn: sqlite3.Connection, since: str) -> None:
     # Per-config data sufficiency
     configs = [
         ("STC shadow (300-600s)", "stc_shadow", 30),
+        ("XRP shadow (counterfactual)", "xrp_shadow", 20),
         ("MIN_ENTRY at 86c", "price_out_of_range", 30),
         ("Edge threshold marginal", "insufficient_edge", 50),
         ("zero_sizing", "zero_sizing", 20),
@@ -1205,6 +1257,21 @@ def data_sufficiency(conn: sqlite3.Connection, since: str) -> None:
         gap = max(0, needed - have)
         status = "SUFFICIENT" if have >= needed else "INSUFFICIENT"
         print(f"  {label:<28} {have:>5} {needed:>5} {gap:>5} {status:<14}")
+
+    # Fill microstructure data
+    subsection("Fill microstructure data")
+    fill_data = conn.execute(f"""
+        SELECT COUNT(*) AS total,
+          SUM(CASE WHEN ask_depth IS NOT NULL AND ask_depth > 0 THEN 1 ELSE 0 END) AS with_depth
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER}
+          AND filter_stage = 'candidate'
+    """, (since,)).fetchone()
+    fd_total = fill_data["total"] or 0
+    fd_depth = fill_data["with_depth"] or 0
+    print(f"  Candidates with orderbook depth: {fd_depth}/{fd_total}")
+    if fd_total > 0:
+        print(f"  Coverage: {fd_depth/fd_total*100:.0f}%")
 
     # Per-asset N
     subsection("Per-asset trade count")

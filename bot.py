@@ -42,6 +42,7 @@ MIN_ENTRY_PRICE = 87              # cents (data: two losses at 86c; 87c+ is clea
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.25         # max 25% of bankroll at risk per trade (was 50%; reduced after loss analysis)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
+XRP_15M_SHADOW = True             # XRP 15M candidates logged as shadow, not traded (data: -$32.97 all-time)
 MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 900    # scan 15 min before close (500-900s is shadow data collection)
 STC_SHADOW_THRESHOLD = 500        # 15M trades above this STC are shadow-only (data: 300-500s 17W/0L +$127 cf)
@@ -413,9 +414,9 @@ MIN_EDGE_BY_PRICE = [
     (97, 0.040),   # 97-99c: need 4.0% edge
     (95, 0.025),   # 95-96c: need 2.5% edge
     (93, 0.018),   # 93-94c: need 1.8% edge
-    (91, 0.012),   # 91-92c: need 1.2% edge
-    (89, 0.009),   # 89-90c: need 0.9% edge
-    (0,  0.007),   # 87-88c: need 0.7% edge (current flat rate)
+    (91, 0.007),   # 91-92c: need 0.7% edge (was 1.2% — data: 51 positive-edge evals rejected)
+    (89, 0.005),   # 89-90c: need 0.5% edge (was 0.9% — relaxed to capture thin-edge winners)
+    (0,  0.007),   # 87-88c: need 0.7% edge
 ]
 
 def get_min_edge(entry_price_cents: int) -> float:
@@ -438,7 +439,8 @@ SIZING_TIERS = [                  # (min_fee_adj_edge, risk_fraction) — aligne
     (0.018, 0.15),                # edge ≥ 1.8% → 15% risk
     (0.012, 0.10),                # edge ≥ 1.2% → 10% risk
     (0.009, 0.07),                # edge ≥ 0.9% → 7% risk
-    (0.007, 0.05),                # edge ≥ 0.7% → 5% risk (87-88c only)
+    (0.007, 0.05),                # edge ≥ 0.7% → 5% risk
+    (0.005, 0.03),                # edge ≥ 0.5% → 3% risk (thin-edge 89-91c trades)
 ]
 DRAWDOWN_HALF_THRESHOLD = 0.85    # below 85% of starting balance → halve size (was 90%)
 DRAWDOWN_QUARTER_THRESHOLD = 0.75 # below 75% → quarter size (was 80%)
@@ -6175,10 +6177,10 @@ class OpportunityScanner:
         assert XRP_MAX_RISK_PER_TRADE >= 0.05, f"XRP_MAX_RISK_PER_TRADE too low: {XRP_MAX_RISK_PER_TRADE}"
         logging.info(
             "CONFIG_VERIFY: MARKET_BLEND_W=%.2f SHADOW_CAL_PIPELINE=%s "
-            "MAX_RISK=%s XRP_MAX_RISK=%s SIZING_TIERS=%s DRAWDOWN_HALF=%.2f DRAWDOWN_QUARTER=%.2f "
+            "MAX_RISK=%s XRP_MAX_RISK=%s XRP_15M_SHADOW=%s SIZING_TIERS=%s DRAWDOWN_HALF=%.2f DRAWDOWN_QUARTER=%.2f "
             "DRAWDOWN_HALT=%.2f MAKER_ONLY_THRESHOLD=%.0f",
             MARKET_BLEND_W, SHADOW_CAL_PIPELINE, MAX_RISK_PER_TRADE, XRP_MAX_RISK_PER_TRADE,
-            SIZING_TIERS, DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
+            XRP_15M_SHADOW, SIZING_TIERS, DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
             DRAWDOWN_HALT_THRESHOLD, MAKER_ONLY_THRESHOLD)
 
         # ── Hourly config verify ──
@@ -7610,6 +7612,33 @@ class OpportunityScanner:
                             **_oft_db, **_shadow_diag)
                     continue
 
+                # ── XRP SHADOW GATE (15M only) ──
+                # XRP 15M: -$32.97 all-time. Log for counterfactual, don't trade.
+                if XRP_15M_SHADOW and asset == "XRP" and window.get("product_type") in (None, "15m"):
+                    _dedup_key = (ticker, "xrp_shadow")
+                    if _dedup_key not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dedup_key)
+                        _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset, "xrp_shadow",
+                            spot_price=spot, threshold=threshold, volatility=blended_rv,
+                            market_price=best_ask, seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                            vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                            calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                            breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                            ask_depth=ask_depth, best_ask_source=best_ask_source,
+                            position_size=sizing["contracts"],
+                            kelly_f=sizing["kelly_f"],
+                            drawdown_scaler=sizing["drawdown_scaler"],
+                            calibrated_prob_raw=calibrated_prob_raw,
+                            ofa_adjustment=ofa_adjustment,
+                            strategy=strategy,
+                            old_system_prob=_old_system_prob,
+                            product_type=window.get("product_type"),
+                            **_oft_db, **_shadow_diag)
+                    continue
+
                 # Track per-window counts for Layer 3b/3c limits (config-driven)
                 if _fltcfg.max_positions_per_window is not None:
                     _wkey = window["event_ticker"]
@@ -7685,6 +7714,10 @@ class OpportunityScanner:
                         "best_ask": best_ask,
                         "ask_depth": ask_depth,
                         "total_depth": total_depth,
+                        "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                        "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                        "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                  if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
                     },
                     "calibrated_prob_raw": round(calibrated_prob_raw, 6),
                     "ofa_adjustment": round(ofa_adjustment, 6),
@@ -8817,6 +8850,43 @@ class OrderExecutor:
                     total += int(entry.get("quantity", 0))
         return total
 
+    @staticmethod
+    def _best_yes_bid(ob_data: Dict) -> Optional[int]:
+        """Highest YES bid price in cents."""
+        yes_bids = ob_data.get("yes", [])
+        best = None
+        for entry in yes_bids:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                price = entry[0]
+            elif isinstance(entry, dict):
+                price = entry.get("price", 0)
+            else:
+                continue
+            price_cents = round(price * 100) if isinstance(price, float) and price < 1.0 else int(price)
+            if best is None or price_cents > best:
+                best = price_cents
+        return best
+
+    @staticmethod
+    def _best_yes_bid_depth(ob_data: Dict) -> int:
+        """Depth at the highest YES bid."""
+        yes_bids = ob_data.get("yes", [])
+        best_price = -1
+        best_qty = 0
+        for entry in yes_bids:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                price, qty = entry[0], int(entry[1])
+            elif isinstance(entry, dict):
+                price = entry.get("price", 0)
+                qty = int(entry.get("quantity", 0))
+            else:
+                continue
+            price_cents = round(price * 100) if isinstance(price, float) and price < 1.0 else int(price)
+            if price_cents > best_price:
+                best_price = price_cents
+                best_qty = qty
+        return best_qty
+
     # ── Repricing ─────────────────────────────────────────────────────────
 
     def _reprice_maker(self, new_price: int) -> bool:
@@ -9342,6 +9412,7 @@ class OrderExecutor:
                 "ask_depth": ob_snap.get("ask_depth"),
                 "total_ob_depth": ob_snap.get("total_depth"),
                 "spread_at_submit": ob_snap.get("spread"),
+                "bid_depth": ob_snap.get("bid_depth"),
                 "convergence_velocity": candidate.get("convergence_velocity"),
                 "z_score": candidate.get("z_score"),
                 "edge": candidate.get("edge"),
