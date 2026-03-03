@@ -38,7 +38,7 @@ SERIES_TICKERS = {
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
 }
-MIN_ENTRY_PRICE = 87              # cents (data: two losses at 86c; 87c+ is cleaner)
+MIN_ENTRY_PRICE = 86              # cents (data: 86c counterfactual 93.8% WR, 30W/2L n=32)
 MAX_ENTRY_PRICE = 99              # cents
 MAX_RISK_PER_TRADE = 0.25         # max 25% of bankroll at risk per trade (was 50%; reduced after loss analysis)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
@@ -417,7 +417,7 @@ MIN_EDGE_BY_PRICE = [
     (93, 0.018),   # 93-94c: need 1.8% edge
     (91, 0.007),   # 91-92c: need 0.7% edge (was 1.2% — data: 51 positive-edge evals rejected)
     (89, 0.005),   # 89-90c: need 0.5% edge (was 0.9% — relaxed to capture thin-edge winners)
-    (0,  0.007),   # 87-88c: need 0.7% edge
+    (0,  0.005),   # 86-88c: need 0.5% edge (was 0.7% — data: 91.7% WR n=48 at 87c insufficient_edge)
 ]
 
 def get_min_edge(entry_price_cents: int) -> float:
@@ -425,7 +425,7 @@ def get_min_edge(entry_price_cents: int) -> float:
     for price_floor, min_edge in MIN_EDGE_BY_PRICE:
         if entry_price_cents >= price_floor:
             return min_edge
-    return 0.007
+    return 0.005
 
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
