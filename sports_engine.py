@@ -1269,7 +1269,7 @@ class SportsEngine:
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, league_cfg.display_name,
                   signal.filter_stage, signal.rejection_reason,
-                  now, int(current_price) if current_price else None,
+                  now, int(current_price) if current_price is not None else None,
                   signal.comeback_prob, signal.edge,
                   signal.fee_adjusted_edge, "sports", "pending"))
             conn.commit()

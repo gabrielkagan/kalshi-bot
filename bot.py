@@ -7466,7 +7466,14 @@ class OpportunityScanner:
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
-                    continue
+                    # For observation-only product types, let signal flow through
+                    # to observation gate — strategy timing isn't relevant for
+                    # data collection.  strategy_wait is still logged above for
+                    # counterfactual analysis.
+                    _sw_cfg = get_market_config(window.get("product_type"))
+                    if not _sw_cfg.observation_only:
+                        continue
+                    # else: fall through to config-driven filters → observation gate
 
                 # ── Config-driven per-window filters (any market type can opt in) ──
                 _fltcfg = get_market_config(window.get("product_type"))

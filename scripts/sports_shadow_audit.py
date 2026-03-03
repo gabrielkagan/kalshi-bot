@@ -171,8 +171,13 @@ def section_per_game(conn: sqlite3.Connection, since: Optional[str] = None) -> L
         settled = "WIN" if r['fav_won'] == 1 else ("LOSS" if r['fav_won'] == 0 else "UNSETTLED")
         signals_info = ""
         if r['signals'] and r['signals'] > 0:
-            signals_info = (f" | {r['signals']} signals, deficit={r['min_deficit']}-{r['max_deficit']}, "
-                           f"ask={r['min_ask']}-{r['max_ask']}c, spread~{r['avg_spread']:.0f}c")
+            min_def = r['min_deficit'] if r['min_deficit'] is not None else '?'
+            max_def = r['max_deficit'] if r['max_deficit'] is not None else '?'
+            min_ask = r['min_ask'] if r['min_ask'] is not None else '?'
+            max_ask = r['max_ask'] if r['max_ask'] is not None else '?'
+            avg_spread = f"{r['avg_spread']:.0f}" if r['avg_spread'] is not None else '?'
+            signals_info = (f" | {r['signals']} signals, deficit={min_def}-{max_def}, "
+                           f"ask={min_ask}-{max_ask}c, spread~{avg_spread}c")
         print(f"  {r['league']:6s} | {r['home_team']:22s} vs {r['away_team']:22s}")
         print(f"         fav={r['pregame_fav_code']} ({r['pregame_fav_prob']:.0%}) | "
               f"score={r['max_home']}-{r['max_away']} | {settled}{signals_info}")
