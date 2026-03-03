@@ -30,14 +30,17 @@ from sports_data import (
     CONSERVATIVE_LR_SCALE,
     LEAGUES,
     MAX_MODEL_MARKET_GAP,
+    SPORT_GROUPS,
     THREE_WAY_ENTRY_CRITERIA,
     THREE_WAY_LR_TABLE,
     LeagueConfig,
+    SportGroupConfig,
     classify_deficit_binary,
     classify_deficit_tennis,
     classify_deficit_three_way,
     classify_strength,
     classify_time_remaining,
+    get_sport_group_config,
     lookup_lr,
 )
 
@@ -108,6 +111,8 @@ class ComebackSignal:
     shadow_lr_scale_50_posterior: float = 0.0
     shadow_lr_scale_50_signal: bool = False
     market_implied_prob: float = 0.0
+    sport_group: str = ""
+    sport_lr_scale: float = 0.2
 
 
 # ── ESPN Live Feed ───────────────────────────────────────────────────────────
@@ -567,7 +572,8 @@ class BayesianComebackModel:
 
     def evaluate(self, game: GameState, league_cfg: LeagueConfig,
                  pregame_fav_prob: float, current_kalshi_price: float,
-                 deficit: int) -> ComebackSignal:
+                 deficit: int,
+                 sport_group_cfg: Optional[SportGroupConfig] = None) -> ComebackSignal:
         """Evaluate a comeback opportunity.
 
         Args:
@@ -590,8 +596,10 @@ class BayesianComebackModel:
         time_bucket = classify_time_remaining(game.time_remaining_pct)
         strength_bucket = classify_strength(pregame_fav_prob, outcome_type)
 
-        # Look up LR
-        lr = lookup_lr(outcome_type, deficit_bucket, time_bucket, strength_bucket)
+        # Look up LR (per-sport scale)
+        sgc = sport_group_cfg or get_sport_group_config(league_cfg)
+        lr = lookup_lr(outcome_type, deficit_bucket, time_bucket, strength_bucket,
+                       lr_scale=sgc.lr_scale)
 
         # Bayesian update: posterior = (prior * LR) / (prior * LR + (1 - prior))
         prior = pregame_fav_prob
@@ -726,6 +734,8 @@ class BayesianComebackModel:
             shadow_lr_scale_50_posterior=shadow_lr_scale_50_posterior,
             shadow_lr_scale_50_signal=shadow_lr_scale_50_signal,
             market_implied_prob=market_implied_prob,
+            sport_group=sgc.group_name,
+            sport_lr_scale=sgc.lr_scale,
         )
 
 
@@ -934,6 +944,7 @@ class SportsEngine:
                 if current_price is None:
                     current_price = 0.0
                 ob_data = self._get_orderbook_data(game, fav_code)
+                _leading_sgc = get_sport_group_config(league_cfg)
                 leading_signal = ComebackSignal(
                     comeback_prob=pregame_fav_prob,
                     prior=pregame_fav_prob,
@@ -949,6 +960,8 @@ class SportsEngine:
                     simulated_contracts=0,
                     simulated_risk=0.0,
                     market_implied_prob=current_price / 100.0 if current_price else 0.0,
+                    sport_group=_leading_sgc.group_name,
+                    sport_lr_scale=_leading_sgc.lr_scale,
                 )
                 self._insert_shadow_log(
                     game=game, league_cfg=league_cfg,
@@ -967,12 +980,14 @@ class SportsEngine:
                 current_price = 0.0  # Log anyway with 0 price
 
             # 7. Compute Bayesian posterior + edge
+            sport_group_cfg = get_sport_group_config(league_cfg)
             signal = self._model.evaluate(
                 game=game,
                 league_cfg=league_cfg,
                 pregame_fav_prob=pregame_fav_prob,
                 current_kalshi_price=current_price,
                 deficit=deficit,
+                sport_group_cfg=sport_group_cfg,
             )
 
             if signal.signal_fired:
@@ -1447,10 +1462,11 @@ class SportsEngine:
                     would_signal_pregame_55, would_signal_pregame_65,
                     market_implied_prob, pregame_capture_method,
                     shadow_lr_scale_50_posterior, shadow_lr_scale_50_signal,
-                    score_changed
+                    score_changed,
+                    sport_group, sport_lr_scale
                 ) VALUES (
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
                 )
             """, (
                 game.game_id, league_cfg.espn_sport, league_cfg.display_name,
@@ -1483,6 +1499,8 @@ class SportsEngine:
                 signal.shadow_lr_scale_50_posterior,
                 1 if signal.shadow_lr_scale_50_signal else 0,
                 1 if score_changed else 0,
+                signal.sport_group,
+                signal.sport_lr_scale,
             ))
             conn.commit()
         except Exception:

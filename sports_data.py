@@ -19,7 +19,30 @@ class LeagueConfig:
     espn_league: Optional[str]  # "nba", "eng.1", None for esports
     outcome_type: str           # "binary" or "three_way"
     display_name: str           # "NBA", "EPL", etc.
+    sport_group: str = ""       # Key into SPORT_GROUPS
     enabled: bool = True
+
+
+@dataclass(frozen=True)
+class SportGroupConfig:
+    """Per-sport-group calibration config."""
+    group_name: str
+    lr_scale: float             # Replaces global CONSERVATIVE_LR_SCALE
+    lr_table_type: str          # "binary" or "three_way"
+    temperature: float = 1.0          # Phase 2 placeholder
+    min_games_for_cal: int = 50       # Phase 2 placeholder
+
+
+SPORT_GROUPS: Dict[str, SportGroupConfig] = {
+    "basketball": SportGroupConfig("basketball", 0.2, "binary"),
+    "hockey":     SportGroupConfig("hockey",     0.2, "binary"),
+    "tennis":     SportGroupConfig("tennis",     0.2, "binary"),
+    "soccer":     SportGroupConfig("soccer",     0.2, "three_way"),
+    "baseball":   SportGroupConfig("baseball",   0.2, "binary"),
+    "football":   SportGroupConfig("football",   0.2, "binary"),
+    "mma":        SportGroupConfig("mma",        0.2, "binary"),
+    "esports":    SportGroupConfig("esports",    0.2, "binary"),
+}
 
 
 # ── All 26 Kalshi game-level series ──────────────────────────────────────────
@@ -32,123 +55,145 @@ LEAGUES: Dict[str, LeagueConfig] = {
     "KXNBAGAME": LeagueConfig(
         series_ticker="KXNBAGAME", espn_sport="basketball",
         espn_league="nba", outcome_type="binary", display_name="NBA",
+        sport_group="basketball",
     ),
     "KXNHLGAME": LeagueConfig(
         series_ticker="KXNHLGAME", espn_sport="hockey",
         espn_league="nhl", outcome_type="binary", display_name="NHL",
+        sport_group="hockey",
     ),
     "KXMLBGAME": LeagueConfig(
         series_ticker="KXMLBGAME", espn_sport="baseball",
         espn_league="mlb", outcome_type="binary", display_name="MLB",
+        sport_group="baseball",
     ),
     "KXNCAABBGAME": LeagueConfig(
         series_ticker="KXNCAABBGAME", espn_sport="basketball",
         espn_league="mens-college-basketball", outcome_type="binary",
-        display_name="NCAAB",
+        display_name="NCAAB", sport_group="basketball",
     ),
     "KXNCAAFGAME": LeagueConfig(
         series_ticker="KXNCAAFGAME", espn_sport="football",
         espn_league="college-football", outcome_type="binary",
-        display_name="NCAAF",
+        display_name="NCAAF", sport_group="football",
     ),
     "KXNFLGAME": LeagueConfig(
         series_ticker="KXNFLGAME", espn_sport="football",
         espn_league="nfl", outcome_type="binary", display_name="NFL",
+        sport_group="football",
     ),
     "KXWNBAGAME": LeagueConfig(
         series_ticker="KXWNBAGAME", espn_sport="basketball",
         espn_league="wnba", outcome_type="binary", display_name="WNBA",
+        sport_group="basketball",
     ),
     "KXUFCFIGHT": LeagueConfig(
         series_ticker="KXUFCFIGHT", espn_sport="mma",
         espn_league="ufc", outcome_type="binary", display_name="UFC",
+        sport_group="mma",
     ),
     "KXATPMATCH": LeagueConfig(
         series_ticker="KXATPMATCH", espn_sport="tennis",
         espn_league="atp", outcome_type="binary", display_name="ATP Tennis",
+        sport_group="tennis",
     ),
     "KXWTAMATCH": LeagueConfig(
         series_ticker="KXWTAMATCH", espn_sport="tennis",
         espn_league="wta", outcome_type="binary", display_name="WTA Tennis",
+        sport_group="tennis",
     ),
     # Esports — no ESPN endpoint
     "KXCSGOGAME": LeagueConfig(
         series_ticker="KXCSGOGAME", espn_sport=None,
         espn_league=None, outcome_type="binary", display_name="CSGO",
+        sport_group="esports",
     ),
     "KXLOLGAME": LeagueConfig(
         series_ticker="KXLOLGAME", espn_sport=None,
         espn_league=None, outcome_type="binary", display_name="LoL",
+        sport_group="esports",
     ),
     "KXVALORANTGAME": LeagueConfig(
         series_ticker="KXVALORANTGAME", espn_sport=None,
         espn_league=None, outcome_type="binary", display_name="Valorant",
+        sport_group="esports",
     ),
 
     # ── Three-way (3 markets/game: Home, Away, Draw) ──
     "KXEPLGAME": LeagueConfig(
         series_ticker="KXEPLGAME", espn_sport="soccer",
         espn_league="eng.1", outcome_type="three_way", display_name="EPL",
+        sport_group="soccer",
     ),
     "KXBUNDESLIGAGAME": LeagueConfig(
         series_ticker="KXBUNDESLIGAGAME", espn_sport="soccer",
         espn_league="ger.1", outcome_type="three_way", display_name="Bundesliga",
+        sport_group="soccer",
     ),
     "KXLALIGAGAME": LeagueConfig(
         series_ticker="KXLALIGAGAME", espn_sport="soccer",
         espn_league="esp.1", outcome_type="three_way", display_name="La Liga",
+        sport_group="soccer",
     ),
     "KXSERIEAGAME": LeagueConfig(
         series_ticker="KXSERIEAGAME", espn_sport="soccer",
         espn_league="ita.1", outcome_type="three_way", display_name="Serie A",
+        sport_group="soccer",
     ),
     "KXUCLGAME": LeagueConfig(
         series_ticker="KXUCLGAME", espn_sport="soccer",
         espn_league="uefa.champions", outcome_type="three_way", display_name="UCL",
+        sport_group="soccer",
     ),
     "KXLIGUE1GAME": LeagueConfig(
         series_ticker="KXLIGUE1GAME", espn_sport="soccer",
         espn_league="fra.1", outcome_type="three_way", display_name="Ligue 1",
+        sport_group="soccer",
     ),
     "KXSUPERLIGGAME": LeagueConfig(
         series_ticker="KXSUPERLIGGAME", espn_sport="soccer",
         espn_league="tur.1", outcome_type="three_way", display_name="Turkish Super Lig",
+        sport_group="soccer",
     ),
     "KXMLSGAME": LeagueConfig(
         series_ticker="KXMLSGAME", espn_sport="soccer",
         espn_league="usa.1", outcome_type="three_way", display_name="MLS",
+        sport_group="soccer",
     ),
     "KXUELGAME": LeagueConfig(
         series_ticker="KXUELGAME", espn_sport="soccer",
         espn_league="uefa.europa", outcome_type="three_way",
-        display_name="Europa League",
+        display_name="Europa League", sport_group="soccer",
     ),
     "KXUECLGAME": LeagueConfig(
         series_ticker="KXUECLGAME", espn_sport="soccer",
         espn_league="uefa.europa.conf", outcome_type="three_way",
-        display_name="Conference League",
+        display_name="Conference League", sport_group="soccer",
     ),
     "KXLIGAMXGAME": LeagueConfig(
         series_ticker="KXLIGAMXGAME", espn_sport="soccer",
         espn_league="mex.1", outcome_type="three_way", display_name="Liga MX",
+        sport_group="soccer",
     ),
     "KXWCGAME": LeagueConfig(
         series_ticker="KXWCGAME", espn_sport="soccer",
         espn_league="fifa.worldcup", outcome_type="three_way",
-        display_name="World Cup",
+        display_name="World Cup", sport_group="soccer",
     ),
     "KXFIFAGAME": LeagueConfig(
         series_ticker="KXFIFAGAME", espn_sport="soccer",
         espn_league="fifa.friendly", outcome_type="three_way",
-        display_name="FIFA Intl",
+        display_name="FIFA Intl", sport_group="soccer",
     ),
     "KXAFCONGAME": LeagueConfig(
         series_ticker="KXAFCONGAME", espn_sport=None,
         espn_league=None, outcome_type="three_way", display_name="AFC/Intl",
+        sport_group="soccer",
     ),
     "KXEREDIVISIEGAME": LeagueConfig(
         series_ticker="KXEREDIVISIEGAME", espn_sport="soccer",
         espn_league="ned.1", outcome_type="three_way", display_name="Eredivisie",
+        sport_group="soccer",
     ),
 }
 
@@ -374,15 +419,24 @@ def classify_strength(pregame_prob: float, outcome_type: str) -> str:
             return "slight"
 
 
+def get_sport_group_config(league_cfg: LeagueConfig) -> SportGroupConfig:
+    """Get per-sport-group calibration config for a league."""
+    if league_cfg.sport_group in SPORT_GROUPS:
+        return SPORT_GROUPS[league_cfg.sport_group]
+    return SportGroupConfig("unknown", CONSERVATIVE_LR_SCALE, league_cfg.outcome_type)
+
+
 def lookup_lr(outcome_type: str, deficit_bucket: str,
-              time_bucket: str, strength_bucket: str) -> float:
+              time_bucket: str, strength_bucket: str,
+              lr_scale: Optional[float] = None) -> float:
     """Look up likelihood ratio from the appropriate table.
 
-    Applies CONSERVATIVE_LR_SCALE to compress raw LR toward 1.0 (neutral).
+    Applies lr_scale (or CONSERVATIVE_LR_SCALE) to compress raw LR toward 1.0.
     """
     key = (deficit_bucket, time_bucket, strength_bucket)
     if outcome_type == "three_way":
         raw_lr = THREE_WAY_LR_TABLE.get(key, 1.0)
     else:
         raw_lr = BINARY_LR_TABLE.get(key, 1.0)
-    return 1.0 + (raw_lr - 1.0) * CONSERVATIVE_LR_SCALE
+    scale = lr_scale if lr_scale is not None else CONSERVATIVE_LR_SCALE
+    return 1.0 + (raw_lr - 1.0) * scale

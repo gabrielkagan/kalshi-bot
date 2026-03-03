@@ -1335,6 +1335,8 @@ class StateManager:
             ("shadow_lr_scale_50_posterior", "REAL"),
             ("shadow_lr_scale_50_signal", "INTEGER DEFAULT 0"),
             ("score_changed", "INTEGER"),
+            ("sport_group", "TEXT"),
+            ("sport_lr_scale", "REAL"),
         ]:
             try:
                 self.conn.execute(
