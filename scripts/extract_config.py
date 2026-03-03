@@ -29,6 +29,7 @@ TRACKED_CONSTANTS = {
     "MARKET_BLEND_W": "Market blend weight (0=pure model, 1=pure market)",
     "MAX_RISK_PER_TRADE": "Max bankroll fraction per trade",
     "MAKER_ONLY_THRESHOLD": "No taker execution below this many seconds",
+    "DIRECT_TAKER_THRESHOLD": "Skip maker and go IOC below this many seconds",
     "MIN_EDGE_PCT": "Flat minimum edge fallback",
     "BALANCE_CACHE_TTL": "Balance cache TTL (seconds)",
     "Z_SCORE_MAX": "Z-score rejection threshold",
@@ -61,8 +62,27 @@ TRACKED_CONSTANTS = {
     "JUMP_ADAPTIVE": "Adaptive jump detection enabled",
     "RK_ADAPTIVE": "Adaptive RK bandwidth enabled",
 
+    # SPX
+    "SPX_HOURLY_OBSERVATION_ONLY": "SPX observation-only mode",
+    "SPX_HOURLY_MARKET_BLEND_W": "SPX market blend weight",
+    "SPX_HOURLY_MAX_POSITIONS_PER_WINDOW": "Max positions per SPX window",
+    "SPX_HOURLY_MAX_WINDOW_RISK": "Max aggregate risk per SPX window",
+
+    # Weather
+    "WEATHER_OBSERVATION_ONLY": "Weather observation-only mode",
+    "WEATHER_MARKET_BLEND_W": "Weather market blend weight",
+    "WEATHER_MIN_ENTRY_PRICE": "Weather minimum entry price (cents)",
+    "WEATHER_MAX_RISK_PER_TRADE": "Weather max risk per trade",
+
     # Calibration
+    "CALIBRATION_MIN_SAMPLES_PLATT": "Min samples for Platt calibration",
+    "CALIBRATION_MIN_SAMPLES_BETA": "Min samples for Beta calibration",
     "CALIBRATION_MIN_SAMPLES_BLR": "Min samples for BLR calibration",
+
+    # Execution
+    "ESCALATION_WAIT_LONG": "Maker wait for long STC",
+    "ESCALATION_WAIT_MEDIUM": "Maker wait for medium STC",
+    "ESCALATION_WAIT_SHORT": "Maker wait for short STC",
 }
 
 

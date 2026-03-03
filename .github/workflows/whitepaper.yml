@@ -11,6 +11,8 @@ on:
       - 'scripts/build_whitepaper.py'
       - 'scripts/extract_config.py'
       - 'scripts/check_docs_freshness.py'
+      - 'sports_data.py'
+      - 'weather_engine.py'
       - '.github/workflows/whitepaper.yml'
 
   workflow_dispatch:
