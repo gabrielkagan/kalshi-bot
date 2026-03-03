@@ -1,21 +1,22 @@
 {
-  "total_evaluated": 8642,
+  "total_evaluated": 8665,
   "filter_breakdown": {
     "candidate": 89,
     "dip_addon_shadow": 17,
     "hourly_asset_excluded": 6,
-    "hourly_observation": 210,
-    "hourly_timing_restricted": 37,
-    "hourly_window_limit": 3,
-    "insufficient_edge": 2246,
+    "hourly_observation": 212,
+    "hourly_timing_restricted": 40,
+    "hourly_window_limit": 8,
+    "insufficient_edge": 2252,
     "observation_trade": 83,
-    "price_out_of_range": 5228,
+    "price_out_of_range": 5232,
     "single_asset_selection": 5,
     "sports_deficit_too_large": 3,
+    "sports_insufficient_edge": 1,
     "sports_late_game": 3,
     "sports_model_overconfident": 2,
     "sports_price_too_high": 8,
-    "sports_signal": 76,
+    "sports_signal": 78,
     "sports_weak_favorite": 7,
     "spx_hourly_window_limit": 2,
     "spx_observation": 65,
@@ -25,9 +26,9 @@
     "xrp_shadow": 8,
     "zero_sizing": 142
   },
-  "total_settled": 211,
-  "total_wins": 188,
-  "observation_pnl": -2166,
+  "total_settled": 212,
+  "total_wins": 189,
+  "observation_pnl": -879,
   "total_trades": 89,
   "win_rate_by_price": {
     "80-84": {
@@ -35,8 +36,8 @@
       "wins": 0
     },
     "85-89": {
-      "n": 82,
-      "wins": 73
+      "n": 83,
+      "wins": 74
     },
     "90-94": {
       "n": 98,
@@ -76,8 +77,9 @@
     "SOL",
     "SPX",
     "Serie A",
+    "WTA Tennis",
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-03-03",
-  "generated_at": "2026-03-03T22:36:49Z"
+  "generated_at": "2026-03-03T23:00:22Z"
 }
