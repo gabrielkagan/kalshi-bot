@@ -727,6 +727,16 @@ class SportsEngine:
                 # Last resort: infer from current live Kalshi prices
                 fav_info = self._infer_favorite(game)
                 if not fav_info:
+                    # Log discovery miss (once per game via _last_logged_time)
+                    if game_id not in self._last_logged_time:
+                        all_mkts = (self._discovery.get_all_markets()
+                                    if self._discovery else {})
+                        logging.info(
+                            "SportsEngine: no Kalshi market match for %s "
+                            "%s vs %s (discovery cache: %d events: %s)",
+                            game.league, game.home_code, game.away_code,
+                            len(all_mkts), list(all_mkts.keys())[:5])
+                        self._last_logged_time[game_id] = time.time()
                     continue
                 self._pregame_favs[game_id] = fav_info
                 pregame_capture_method = "live_infer"
@@ -804,7 +814,16 @@ class SportsEngine:
             )
 
             if signal.signal_fired:
-                signal_count += 1
+                if game_id in self._signaled_games:
+                    # Already fired for this game — mark as duplicate
+                    signal.signal_fired = False
+                    signal.filter_stage = "sports_signal_dup"
+                    signal.rejection_reason = (
+                        "duplicate signal for game "
+                        "(first signal already fired)")
+                else:
+                    self._signaled_games.add(game_id)
+                    signal_count += 1
 
             # 8. Get orderbook snapshot for logging
             ob_data = self._get_orderbook_data(game, fav_code)
@@ -971,10 +990,12 @@ class SportsEngine:
             return None
 
         all_markets = self._discovery.get_all_markets()
+        fav_upper = fav_code.upper()
         for event_ticker, mkts in all_markets.items():
             if not _event_matches_game(game.home_code, game.away_code, event_ticker):
                 continue
             fav_side = "home" if fav_code == game.home_code else "away"
+            # Primary: match by side label (works when _try_capture_pregame ran)
             for ticker, side in mkts.market_tickers.items():
                 if side == fav_side:
                     ob = self._discovery.get_orderbook_snapshot(ticker)
@@ -984,6 +1005,22 @@ class SportsEngine:
                         if no_bids:
                             best_no_bid = max(b[0] for b in no_bids if b)
                             return 100 - best_no_bid
+            # Fallback: match team code directly in ticker
+            for ticker in mkts.market_tickers:
+                if _team_code_in_ticker(fav_upper, ticker.upper()):
+                    ob = self._discovery.get_orderbook_snapshot(ticker)
+                    if ob and "orderbook" in ob:
+                        book = ob["orderbook"]
+                        no_bids = book.get("no", [])
+                        if no_bids:
+                            best_no_bid = max(b[0] for b in no_bids if b)
+                            # Fix side label for future lookups
+                            mkts.market_tickers[ticker] = fav_side
+                            return 100 - best_no_bid
+            logging.debug(
+                "SportsEngine: event %s matched game %s but no fav ticker "
+                "for %s (sides: %s)", event_ticker, game.game_id, fav_code,
+                dict(mkts.market_tickers))
             break
         return None
 
@@ -1000,43 +1037,66 @@ class SportsEngine:
             return default
 
         all_markets = self._discovery.get_all_markets()
+        fav_upper = fav_code.upper()
         for event_ticker, mkts in all_markets.items():
             if not _event_matches_game(game.home_code, game.away_code, event_ticker):
                 continue
             fav_side = "home" if fav_code == game.home_code else "away"
+
+            # Primary: match by side label
+            matched_ticker = None
             for ticker, side in mkts.market_tickers.items():
                 if side == fav_side:
-                    ob = self._discovery.get_orderbook_snapshot(ticker)
-                    if ob and "orderbook" in ob:
-                        book = ob["orderbook"]
-                        yes_bids = book.get("yes", [])
-                        no_bids = book.get("no", [])
+                    matched_ticker = ticker
+                    break
 
-                        yes_bid = max((b[0] for b in yes_bids if b), default=None)
-                        yes_ask = None
-                        if no_bids:
-                            best_no = max(b[0] for b in no_bids if b)
-                            yes_ask = 100 - best_no
+            # Fallback: match team code directly in ticker
+            if matched_ticker is None:
+                for ticker in mkts.market_tickers:
+                    if _team_code_in_ticker(fav_upper, ticker.upper()):
+                        matched_ticker = ticker
+                        # Fix side label for future lookups
+                        mkts.market_tickers[ticker] = fav_side
+                        break
 
-                        mid = None
-                        spread = None
-                        if yes_bid is not None and yes_ask is not None:
-                            mid = (yes_bid + yes_ask) / 2.0
-                            spread = yes_ask - yes_bid
+            if matched_ticker is None:
+                logging.debug(
+                    "SportsEngine: _get_orderbook_data no fav ticker for %s "
+                    "in event %s (sides: %s)", fav_code, event_ticker,
+                    dict(mkts.market_tickers))
+                break
 
-                        ask_depth = sum(b[1] for b in no_bids if b) if no_bids else 0
-                        bid_depth = sum(b[1] for b in yes_bids if b) if yes_bids else 0
+            ob = self._discovery.get_orderbook_snapshot(matched_ticker)
+            if ob and "orderbook" in ob:
+                book = ob["orderbook"]
+                yes_bids = book.get("yes", [])
+                no_bids = book.get("no", [])
 
-                        return {
-                            "ticker": ticker,
-                            "event_ticker": event_ticker,
-                            "yes_bid": yes_bid,
-                            "yes_ask": yes_ask,
-                            "mid_price": mid,
-                            "spread": spread,
-                            "ask_depth": ask_depth,
-                            "bid_depth": bid_depth,
-                        }
+                yes_bid = max((b[0] for b in yes_bids if b), default=None)
+                yes_ask = None
+                if no_bids:
+                    best_no = max(b[0] for b in no_bids if b)
+                    yes_ask = 100 - best_no
+
+                mid = None
+                spread = None
+                if yes_bid is not None and yes_ask is not None:
+                    mid = (yes_bid + yes_ask) / 2.0
+                    spread = yes_ask - yes_bid
+
+                ask_depth = sum(b[1] for b in no_bids if b) if no_bids else 0
+                bid_depth = sum(b[1] for b in yes_bids if b) if yes_bids else 0
+
+                return {
+                    "ticker": matched_ticker,
+                    "event_ticker": event_ticker,
+                    "yes_bid": yes_bid,
+                    "yes_ask": yes_ask,
+                    "mid_price": mid,
+                    "spread": spread,
+                    "ask_depth": ask_depth,
+                    "bid_depth": bid_depth,
+                }
             break
         return default
 
