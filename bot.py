@@ -606,6 +606,8 @@ def evaluate_execution_strategy(market_data: Dict) -> Tuple[str, Dict]:
             total_ob_depth (int): total orderbook depth (contracts)
             convergence_velocity (float): upward ask movement in cents/30s
             edge (float): calibrated_prob - market_price/100
+            min_entry_price (int): product-type min entry price in cents
+            max_entry_price (int): product-type max entry price in cents
 
     Returns:
         (strategy, scores) where strategy is one of STRATEGY_* constants
@@ -617,6 +619,8 @@ def evaluate_execution_strategy(market_data: Dict) -> Tuple[str, Dict]:
     ask_depth = market_data.get("best_ask_depth", 999)
     total_depth = market_data.get("total_ob_depth", 999)
     velocity = market_data.get("convergence_velocity", 0)
+    _min_price = market_data.get("min_entry_price", MIN_ENTRY_PRICE)
+    _max_price = market_data.get("max_entry_price", MAX_ENTRY_PRICE)
     vol_regime = market_data.get("vol_regime", "normal")
     edge = market_data.get("edge", 0)
     spot = market_data.get("spot", 0)
@@ -739,11 +743,11 @@ def evaluate_execution_strategy(market_data: Dict) -> Tuple[str, Dict]:
                         f"depth={total_depth} ask={best_ask}")
 
     # ── TAKER_NOW: conditions demand immediate execution ──────────────────
-    if best_ask is not None and MIN_ENTRY_PRICE <= best_ask <= ESCALATION_MAX_ENTRY:
+    if best_ask is not None and _min_price <= best_ask <= ESCALATION_MAX_ENTRY:
         if composite >= 6.5:
             return _decide(STRATEGY_TAKER_NOW,
                             f"composite={composite:.1f}>=6.5")
-        if velocity > 5 and MIN_ENTRY_PRICE <= best_ask <= MAX_ENTRY_PRICE:
+        if velocity > 5 and _min_price <= best_ask <= _max_price:
             return _decide(STRATEGY_TAKER_NOW,
                             f"velocity={velocity:.1f}>5 ask={best_ask}")
         if certainty_score >= 6.0 and ob_score >= 6.0:
@@ -761,7 +765,7 @@ def evaluate_execution_strategy(market_data: Dict) -> Tuple[str, Dict]:
                         f"urgency={urgency_score:.1f}>=5")
 
     # ── MAKER_PATIENT: normal conditions ──────────────────────────────────
-    if edge > 0 and best_ask is not None and MIN_ENTRY_PRICE <= best_ask <= MAX_ENTRY_PRICE:
+    if edge > 0 and best_ask is not None and _min_price <= best_ask <= _max_price:
         return _decide(STRATEGY_MAKER_PATIENT,
                         f"edge={edge:.4f}>0 ask={best_ask}")
 
@@ -7281,6 +7285,8 @@ class OpportunityScanner:
                     "total_ob_depth": total_depth,
                     "convergence_velocity": self._scanner_convergence_velocity(ticker),
                     "edge": edge,
+                    "min_entry_price": _entry_floor,
+                    "max_entry_price": _entry_ceil,
                 }
                 strategy, strategy_scores = evaluate_execution_strategy(
                     strategy_data
@@ -10107,10 +10113,11 @@ class SettlementTracker:
     """
 
     def __init__(self, client: KalshiClient, state: StateManager,
-                 logger: Logger):
+                 logger: Logger, main_loop=None):
         self._client = client
         self._state = state
         self._logger = logger
+        self._ml = main_loop
         self._last_check_ts: int = 0
         self._last_poll_time: float = 0.0
         self._processed_tickers: Set[str] = set()
@@ -10417,6 +10424,24 @@ class SettlementTracker:
     # ── Evaluated Opportunity Settlement ──────────────────────────────────
 
     @staticmethod
+    def _parse_weather_market_date(ticker: str) -> Optional[str]:
+        """Extract the market date from a weather ticker as YYYY-MM-DD.
+
+        Ticker format: KXHIGHNY-26FEB28-T50 → date segment '26FEB28' → '2026-02-28'
+        """
+        parts = ticker.split("-")
+        if len(parts) < 2:
+            return None
+        raw = parts[1]  # e.g. '26FEB28', '26MAR01', '26MAR03'
+        if len(raw) < 7:
+            return None
+        try:
+            dt = datetime.datetime.strptime(raw, "%y%b%d")
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+
+    @staticmethod
     def _estimate_actual_temp_from_bracket(ticker, threshold, spot_price=None):
         """Estimate actual temperature from a settled weather bracket for bias update.
 
@@ -10555,45 +10580,35 @@ class SettlementTracker:
                             _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
                     # SPX/weather/sports: neither engine (not cal_eligible, not hourly)
 
-                # Weather bias update: estimate actual temp from settlement
-                if _opp_pt == "weather" and result in ("yes", "all_yes", "no", "all_no"):
-                    forecast_mean = row.get("spot_price")
-                    actual_est = self._estimate_actual_temp_from_bracket(
-                        ticker, row.get("threshold"), spot_price=forecast_mean)
-                    if result in ("no", "all_no") and actual_est is None:
-                        # NO result: temp was outside bracket — log for awareness
-                        logging.info(
-                            f"weather_bias_skip_no_result: {ticker} — cannot estimate "
-                            f"actual temp from NO settlement (outside bracket)")
-                    if actual_est is not None and forecast_mean and self._ml and \
-                            getattr(self._ml, "weather_engine", None):
-                        _wx_city = row["asset"].replace("_TEMP", "")
-                        self._ml.weather_engine._model.update_bias(
-                            _wx_city, actual_est, forecast_mean)
-
-                # Weather observed temperature: fetch actual high via archive API
+                # Weather: fetch actual temp from archive API + bias update
                 if (_opp_pt == "weather" and result in ("yes", "all_yes", "no", "all_no")
                         and row.get("wx_actual_high_temp") is None):
                     try:
                         _wx_city = row["asset"].replace("_TEMP", "")
-                        # Extract settlement date from evaluation_time
-                        _eval_t = row.get("evaluation_time", "")
-                        _settle_date = _eval_t[:10] if len(_eval_t) >= 10 else None
-                        if _settle_date:
+                        # Extract market date from TICKER (not evaluation_time)
+                        _market_date = self._parse_weather_market_date(ticker)
+                        if _market_date:
                             _today = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                            if _settle_date < _today:  # archive API has ~24h lag
+                            if _market_date < _today:  # archive API has ~24h lag
                                 _wx_eng = getattr(self._ml, "weather_engine", None) if self._ml else None
                                 if _wx_eng:
-                                    _obs_high = _wx_eng._fetcher.fetch_observed_high(_wx_city, _settle_date)
+                                    _obs_high = _wx_eng._fetcher.fetch_observed_high(_wx_city, _market_date)
                                     if _obs_high is not None:
                                         self._state.conn.execute(
                                             "UPDATE evaluated_opportunities SET wx_actual_high_temp=? WHERE id=?",
                                             (_obs_high, opp_id))
                                         self._state.conn.commit()
                                         logging.info("weather_observed_temp: %s %s %.1fF",
-                                                     _wx_city, _settle_date, _obs_high)
+                                                     _wx_city, _market_date, _obs_high)
+                                        # Bias update with REAL observed temp (preferred over bracket estimate)
+                                        forecast_mean = row.get("spot_price")
+                                        if forecast_mean:
+                                            _wx_eng._model.update_bias(
+                                                _wx_city, _obs_high, forecast_mean)
+                                            logging.info("weather_bias_update: %s %s actual=%.1fF forecast=%.1fF",
+                                                         _wx_city, _market_date, _obs_high, forecast_mean)
                     except Exception as e:
-                        logging.debug("weather_observed_temp fetch failed for %s: %s", ticker, e)
+                        logging.warning("weather_observed_temp fetch failed for %s: %s", ticker, e)
 
                 logging.info(
                     f"Evaluated opp settled: {ticker} ({row['filter_stage']}) "
@@ -10601,6 +10616,45 @@ class SettlementTracker:
                 )
             except Exception as e:
                 logging.debug(f"Evaluated opp settlement check failed for {ticker}: {e}")
+
+        # Backfill wx_actual_high_temp for settled weather entries that missed it
+        self._backfill_weather_actual_temps()
+
+    def _backfill_weather_actual_temps(self):
+        """Retry archive API fetch for settled weather entries missing wx_actual_high_temp."""
+        try:
+            rows = self._state.conn.execute(
+                "SELECT id, ticker, asset, spot_price FROM evaluated_opportunities "
+                "WHERE product_type='weather' AND status='settled' "
+                "AND wx_actual_high_temp IS NULL LIMIT 10"
+            ).fetchall()
+        except Exception:
+            return
+        if not rows:
+            return
+        _today = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        _wx_eng = getattr(self._ml, "weather_engine", None) if self._ml else None
+        if not _wx_eng:
+            return
+        for r in rows:
+            opp_id, ticker, asset, forecast_mean = r
+            try:
+                _wx_city = asset.replace("_TEMP", "")
+                _market_date = self._parse_weather_market_date(ticker)
+                if not _market_date or _market_date >= _today:
+                    continue
+                _obs_high = _wx_eng._fetcher.fetch_observed_high(_wx_city, _market_date)
+                if _obs_high is not None:
+                    self._state.conn.execute(
+                        "UPDATE evaluated_opportunities SET wx_actual_high_temp=? WHERE id=?",
+                        (_obs_high, opp_id))
+                    self._state.conn.commit()
+                    logging.info("weather_backfill_temp: %s %s %.1fF", _wx_city, _market_date, _obs_high)
+                    # Bias update with real observed temp
+                    if forecast_mean:
+                        _wx_eng._model.update_bias(_wx_city, _obs_high, forecast_mean)
+            except Exception as e:
+                logging.warning("weather_backfill failed for %s: %s", ticker, e)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -10807,7 +10861,8 @@ class MainLoop:
             self.client, self.state, self.logger,
             main_loop=self, kalshi_feed=self.kalshi_feed)
         self.executor._kalshi_oft = self.kalshi_oft
-        self.tracker = SettlementTracker(self.client, self.state, self.logger)
+        self.tracker = SettlementTracker(self.client, self.state, self.logger,
+                                         main_loop=self)
         self._shutdown = threading.Event()
         self._active_windows: List[Dict] = []
         self._discovery_ob_tickers: set = set()
