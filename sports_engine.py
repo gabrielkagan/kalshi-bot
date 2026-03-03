@@ -34,6 +34,7 @@ from sports_data import (
     THREE_WAY_LR_TABLE,
     LeagueConfig,
     classify_deficit_binary,
+    classify_deficit_tennis,
     classify_deficit_three_way,
     classify_strength,
     classify_time_remaining,
@@ -153,9 +154,16 @@ class ESPNLiveFeed:
         games: List[GameState] = []
         for event in data.get("events", []):
             try:
-                game = self._parse_event(event, cfg)
-                if game:
-                    games.append(game)
+                if cfg.espn_sport == "tennis":
+                    for grouping in event.get("groupings", []):
+                        for comp in grouping.get("competitions", []):
+                            game = self._parse_tennis_match(comp, cfg, event)
+                            if game:
+                                games.append(game)
+                else:
+                    game = self._parse_event(event, cfg)
+                    if game:
+                        games.append(game)
             except Exception:
                 logging.debug("Failed to parse ESPN event %s",
                               event.get("id", "?"), exc_info=True)
@@ -285,10 +293,114 @@ class ESPNLiveFeed:
             # UFC: 3 or 5 round fights, 5 min per round. Clock counts down.
             total_secs = 15 * 60  # Assume 3 rounds
             elapsed = (period - 1) * 5 * 60 + (5 * 60 - clock_secs)
+        elif sport == "tennis":
+            # Fallback: period-based estimate (best-of-3 default)
+            max_sets = 3
+            return max(0.0, min(1.0, 1.0 - (period - 1) / max_sets))
         else:
             return 0.5  # Unknown sport — conservative estimate
 
         return max(0.0, min(1.0, 1.0 - elapsed / total_secs))
+
+    def _parse_tennis_match(self, comp: dict, cfg: LeagueConfig,
+                            event: dict) -> Optional[GameState]:
+        """Parse a single tennis competition (match) into GameState.
+
+        Tennis ESPN structure differs from team sports:
+        - Events are tournaments, competitions are individual matches
+        - Players accessed via competitor["athlete"], not competitor["team"]
+        - Score = sets won (count linescores with winner=True)
+        - No clock — time estimated from sets + games in current set
+        """
+        competitors = comp.get("competitors", [])
+        if len(competitors) < 2:
+            return None
+
+        home = away = None
+        for c in competitors:
+            if c.get("homeAway") == "home":
+                home = c
+            elif c.get("homeAway") == "away":
+                away = c
+        if not home or not away:
+            home, away = competitors[0], competitors[1]
+
+        # Player names and derived codes
+        home_name = home.get("athlete", {}).get("displayName", "Unknown")
+        away_name = away.get("athlete", {}).get("displayName", "Unknown")
+        home_code = _tennis_player_code(home_name)
+        away_code = _tennis_player_code(away_name)
+
+        # Score = sets won (count linescores with winner=True)
+        home_ls = home.get("linescores", [])
+        away_ls = away.get("linescores", [])
+        home_sets = sum(1 for s in home_ls if s.get("winner", False))
+        away_sets = sum(1 for s in away_ls if s.get("winner", False))
+
+        # Status
+        status_obj = comp.get("status", {})
+        status_type = status_obj.get("type", {})
+        state = status_type.get("state", "pre")
+        game_status = {"pre": "pre", "in": "live", "post": "final"}.get(state, state)
+
+        period = status_obj.get("period", 0)
+
+        # Best-of: ATP slams are best-of-5, everything else best-of-3
+        max_sets = 3
+
+        # Time remaining from set/game progress
+        time_pct = self._tennis_time_remaining(
+            status=game_status, home_sets=home_sets, away_sets=away_sets,
+            home_ls=home_ls, away_ls=away_ls, max_sets=max_sets,
+        )
+
+        # Use competition ID (unique match), not event ID (tournament-level)
+        comp_id = str(comp.get("id", event.get("id", "")))
+
+        return GameState(
+            game_id=comp_id,
+            league=cfg.series_ticker,
+            home_team=home_name,
+            away_team=away_name,
+            home_code=home_code,
+            away_code=away_code,
+            home_score=home_sets,
+            away_score=away_sets,
+            period=period,
+            clock="",
+            time_remaining_pct=time_pct,
+            game_status=game_status,
+            scheduled_start=event.get("date", ""),
+        )
+
+    @staticmethod
+    def _tennis_time_remaining(status: str, home_sets: int, away_sets: int,
+                               home_ls: list, away_ls: list,
+                               max_sets: int) -> float:
+        """Estimate fraction of tennis match remaining.
+
+        Uses completed sets + games in current set as progress indicator.
+        No clock in tennis — this is a coarse estimate.
+        """
+        if status == "pre":
+            return 1.0
+        if status == "final":
+            return 0.0
+
+        completed_sets = home_sets + away_sets
+        # Games in current set (last linescore entry)
+        current_set_games = 0
+        if home_ls:
+            last_home = home_ls[-1] if home_ls else {}
+            last_away = away_ls[-1] if away_ls else {}
+            h_games = int(last_home.get("value", "0") or "0")
+            a_games = int(last_away.get("value", "0") or "0")
+            current_set_games = h_games + a_games
+
+        # Progress: completed sets + partial credit for current set games
+        # Assume ~10 games per set as denominator (covers tiebreaks)
+        progress = (completed_sets + current_set_games / 10.0) / max_sets
+        return max(0.0, min(1.0, 1.0 - progress))
 
 
 # ── Kalshi Sports Discovery ─────────────────────────────────────────────────
@@ -446,6 +558,8 @@ class BayesianComebackModel:
         # Classify into buckets
         if outcome_type == "three_way":
             deficit_bucket = classify_deficit_three_way(deficit)
+        elif league_cfg.espn_sport == "tennis":
+            deficit_bucket = classify_deficit_tennis(deficit)
         else:
             deficit_bucket = classify_deficit_binary(deficit)
 
@@ -589,6 +703,19 @@ class BayesianComebackModel:
             shadow_lr_scale_50_signal=shadow_lr_scale_50_signal,
             market_implied_prob=market_implied_prob,
         )
+
+
+def _tennis_player_code(display_name: str) -> str:
+    """Derive 3-letter code from player name for Kalshi ticker matching.
+
+    Kalshi uses first 3 letters of last name (uppercased):
+      "Jannik Sinner"  → "SIN"
+      "Alex de Minaur"  → "DEM"  (multi-word surnames concatenated)
+      "Coco Gauff"      → "GAU"
+    """
+    parts = display_name.strip().split()
+    last_name = "".join(parts[1:]) if len(parts) > 1 else parts[0]
+    return last_name[:3].upper()
 
 
 def _team_code_in_ticker(code: str, ticker_upper: str) -> bool:

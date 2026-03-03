@@ -63,6 +63,14 @@ LEAGUES: Dict[str, LeagueConfig] = {
         series_ticker="KXUFCFIGHT", espn_sport="mma",
         espn_league="ufc", outcome_type="binary", display_name="UFC",
     ),
+    "KXATPMATCH": LeagueConfig(
+        series_ticker="KXATPMATCH", espn_sport="tennis",
+        espn_league="atp", outcome_type="binary", display_name="ATP Tennis",
+    ),
+    "KXWTAMATCH": LeagueConfig(
+        series_ticker="KXWTAMATCH", espn_sport="tennis",
+        espn_league="wta", outcome_type="binary", display_name="WTA Tennis",
+    ),
     # Esports — no ESPN endpoint
     "KXCSGOGAME": LeagueConfig(
         series_ticker="KXCSGOGAME", espn_sport=None,
@@ -320,6 +328,14 @@ def classify_deficit_three_way(deficit: int) -> str:
         return "2_goal"
     else:
         return "3_goal"
+
+
+def classify_deficit_tennis(deficit: int) -> str:
+    """Classify set deficit for tennis (max 2 in best-of-5)."""
+    if deficit == 1:
+        return "small"      # Down 1 set — common comeback
+    else:
+        return "large"      # Down 2 sets — rare (best-of-5 only)
 
 
 def classify_time_remaining(pct: float) -> str:
