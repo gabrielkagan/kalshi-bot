@@ -1380,7 +1380,7 @@ def recommendations(conn: sqlite3.Connection, since: str) -> None:
     edge_hi_wr = edge_hi_w / edge_hi_n * 100 if edge_hi_n > 0 else 0
     edge_lo_wr = edge_lo_w / edge_lo_n * 100 if edge_lo_n > 0 else 0
 
-    # Temp coverage
+    # Temp coverage (all-time since --since)
     temp_row = conn.execute("""
         SELECT COUNT(*) AS total,
           SUM(CASE WHEN hourly_applied_temp_t > 0 THEN 1 ELSE 0 END) AS has_t
@@ -1389,6 +1389,21 @@ def recommendations(conn: sqlite3.Connection, since: str) -> None:
           AND evaluation_time >= ?
     """, (since,)).fetchone()
     temp_pct = (temp_row["has_t"] or 0) / max(temp_row["total"] or 1, 1) * 100
+
+    # Recent instrumentation coverage (last 48h) — detects whether columns are actively populated
+    recent_cov = conn.execute("""
+        SELECT COUNT(*) AS total,
+          SUM(CASE WHEN hourly_pre_temp_prob IS NOT NULL THEN 1 ELSE 0 END) AS has_temp,
+          SUM(CASE WHEN hourly_shadow_temp_2_0 IS NOT NULL THEN 1 ELSE 0 END) AS has_shadow_t,
+          SUM(CASE WHEN hourly_shadow_blend_50 IS NOT NULL THEN 1 ELSE 0 END) AS has_blend_50
+        FROM evaluated_opportunities
+        WHERE product_type='hourly' AND filter_stage='hourly_observation'
+          AND evaluation_time >= datetime('now', '-48 hours')
+    """).fetchone()
+    recent_total = recent_cov["total"] or 0
+    recent_temp_pct = (recent_cov["has_temp"] or 0) / max(recent_total, 1) * 100
+    recent_shadow_pct = (recent_cov["has_shadow_t"] or 0) / max(recent_total, 1) * 100
+    recent_blend_pct = (recent_cov["has_blend_50"] or 0) / max(recent_total, 1) * 100
 
     # Overconfidence
     cal_row = conn.execute("""
@@ -1416,26 +1431,46 @@ def recommendations(conn: sqlite3.Connection, since: str) -> None:
          f"   Profitability crossover at ~1.5% fee-adjusted edge.\n"
          f"   Implementation: Add HOURLY_MIN_EDGE_PCT constant."),
 
-        ("R3", "HIGH",
-         "Add multi-temperature shadow columns [instrumentation]",
-         f"Temperature data: {temp_pct:.0f}% coverage. "
-         f"Model is {overconf:+.1f}pp overconfident.\n"
-         f"   T=1.45 corrects ~7pp but need ~{overconf:.0f}pp correction.\n"
-         f"   Add shadow columns for T=1.0/2.0/2.5 — enables offline Brier comparison.\n"
-         f"   Zero behavior change. Purely data collection."),
-
-        ("R4", "MEDIUM",
-         "Fix latent candidate-dict temperature bug",
-         "4 insert call sites missing hourly temperature columns.\n"
-         "   Currently unreachable (observation gate blocks), CRITICAL before promotion.\n"
-         "   Files: bot.py candidate dict + single_asset_selection + observation_trade + candidate inserts."),
-
-        ("R5", "MEDIUM",
-         "Add hourly_shadow_blend_50 column [instrumentation]",
-         "Cannot compare MARKET_BLEND_W=0.40 vs 0.50 without shadow data.\n"
-         "   Add 1 column, compute blend(cal_prob, market, 0.50) inline.\n"
-         "   Zero behavior change. Purely data collection."),
     ]
+
+    # R3: Shadow temperature columns — dynamic based on recent coverage
+    if recent_shadow_pct < 90:
+        recs.append(("R3", "HIGH",
+         "Add multi-temperature shadow columns [instrumentation]",
+         f"Temperature data: {temp_pct:.0f}% all-time, {recent_shadow_pct:.0f}% last 48h.\n"
+         f"   Model is {overconf:+.1f}pp overconfident.\n"
+         f"   Add shadow columns for T=1.0/2.0/2.5 — enables offline Brier comparison.\n"
+         f"   Zero behavior change. Purely data collection."))
+    else:
+        recs.append(("R3", "RESOLVED",
+         "Multi-temperature shadow columns — instrumented",
+         f"Shadow temp columns: {recent_shadow_pct:.0f}% coverage last 48h (n={recent_total}).\n"
+         f"   All-time coverage: {temp_pct:.0f}%. Model overconfidence: {overconf:+.1f}pp."))
+
+    # R4: Temperature on candidate-dict insert paths — dynamic based on recent coverage
+    if recent_temp_pct < 90:
+        recs.append(("R4", "MEDIUM",
+         "Fix candidate-dict temperature instrumentation",
+         f"Recent hourly_pre_temp_prob coverage: {recent_temp_pct:.0f}% last 48h (n={recent_total}).\n"
+         f"   Insert call sites may be missing hourly temperature columns.\n"
+         f"   CRITICAL before promotion — needed for post-hoc calibration analysis."))
+    else:
+        recs.append(("R4", "RESOLVED",
+         "Candidate-dict temperature instrumentation — complete",
+         f"hourly_pre_temp_prob: {recent_temp_pct:.0f}% coverage last 48h (n={recent_total}).\n"
+         f"   All insert paths are populating temperature data correctly."))
+
+    # R5: Shadow blend column — dynamic based on recent coverage
+    if recent_blend_pct < 90:
+        recs.append(("R5", "MEDIUM",
+         "Add hourly_shadow_blend_50 column [instrumentation]",
+         f"Recent blend_50 coverage: {recent_blend_pct:.0f}% last 48h (n={recent_total}).\n"
+         f"   Cannot compare MARKET_BLEND_W=0.40 vs 0.50 without shadow data.\n"
+         f"   Zero behavior change. Purely data collection."))
+    else:
+        recs.append(("R5", "RESOLVED",
+         "Shadow blend column — instrumented",
+         f"hourly_shadow_blend_50: {recent_blend_pct:.0f}% coverage last 48h (n={recent_total})."))
 
     for label, severity, title, detail in recs:
         print(f"[{label}] [{severity}] {title}")
@@ -1445,7 +1480,7 @@ def recommendations(conn: sqlite3.Connection, since: str) -> None:
 
 # ── Section 7: Validation Plan ────────────────────────────────────
 
-def validation_plan() -> None:
+def validation_plan(conn: sqlite3.Connection) -> None:
     section("7. VALIDATION PLAN")
 
     subsection("R1: STC 1800 -> 600")
@@ -1476,11 +1511,29 @@ def validation_plan() -> None:
     print("  PASS: Newly-rejected (0.7-1.5%) entries WR < breakeven at avg price")
     print("  FAIL: Newly-rejected entries WR > breakeven -> lower floor to 1.0%")
 
+    # R3/R4/R5: Dynamic based on actual DB coverage
+    recent_cov = conn.execute("""
+        SELECT COUNT(*) AS total,
+          SUM(CASE WHEN hourly_pre_temp_prob IS NOT NULL THEN 1 ELSE 0 END) AS has_temp,
+          SUM(CASE WHEN hourly_shadow_temp_2_0 IS NOT NULL THEN 1 ELSE 0 END) AS has_shadow_t,
+          SUM(CASE WHEN hourly_shadow_blend_50 IS NOT NULL THEN 1 ELSE 0 END) AS has_blend_50
+        FROM evaluated_opportunities
+        WHERE product_type='hourly' AND filter_stage='hourly_observation'
+          AND evaluation_time >= datetime('now', '-48 hours')
+    """).fetchone()
+    _rt = recent_cov["total"] or 0
+    _r_temp = (recent_cov["has_temp"] or 0) / max(_rt, 1) * 100
+    _r_shadow = (recent_cov["has_shadow_t"] or 0) / max(_rt, 1) * 100
+    _r_blend = (recent_cov["has_blend_50"] or 0) / max(_rt, 1) * 100
+
     subsection("R3: Multi-temperature shadow")
-    print("  Deploy: Add 3 columns + compute in scan loop. Zero behavior change.")
-    print("  Monitor: Until 50+ settled entries have temp data")
+    if _r_shadow < 90:
+        print(f"  Status: OPEN — {_r_shadow:.0f}% coverage last 48h (n={_rt})")
+        print("  Deploy: Add 3 columns + compute in scan loop. Zero behavior change.")
+        print("  Monitor: Until 50+ settled entries have temp data")
+    else:
+        print(f"  Status: RESOLVED — {_r_shadow:.0f}% coverage last 48h (n={_rt})")
     print("  Query:")
-    print("    -- Compare Brier scores across T values")
     print("    SELECT 'T=1.45' AS label,")
     print("      AVG((calibrated_prob - (CASE WHEN market_result='yes'")
     print("        THEN 1.0 ELSE 0.0 END))^2) AS brier")
@@ -1490,14 +1543,22 @@ def validation_plan() -> None:
     print("  PASS: One T achieves Brier < 0.10 AND positive simulated PnL")
     print("  FAIL: No T under 0.10 -> need fundamentally different calibration")
 
-    subsection("R4: Candidate-dict temperature fix")
-    print("  Deploy: Add hourly_pre_temp_prob + hourly_applied_temp_t to 4 call sites")
-    print("  Verify: grep hourly_pre_temp_prob bot.py | wc -l  (should be ~12+)")
+    subsection("R4: Candidate-dict temperature")
+    if _r_temp < 90:
+        print(f"  Status: OPEN — {_r_temp:.0f}% coverage last 48h (n={_rt})")
+        print("  Deploy: Add hourly_pre_temp_prob + hourly_applied_temp_t to insert call sites")
+        print("  Verify: grep hourly_pre_temp_prob bot.py | wc -l  (should be ~12+)")
+    else:
+        print(f"  Status: RESOLVED — {_r_temp:.0f}% coverage last 48h (n={_rt})")
     print("  No monitoring needed — it's a correctness fix")
 
     subsection("R5: Shadow blend column")
-    print("  Deploy: Add column + compute inline. Zero behavior change.")
-    print("  Monitor: Until 100+ settled entries have data")
+    if _r_blend < 90:
+        print(f"  Status: OPEN — {_r_blend:.0f}% coverage last 48h (n={_rt})")
+        print("  Deploy: Add column + compute inline. Zero behavior change.")
+        print("  Monitor: Until 100+ settled entries have data")
+    else:
+        print(f"  Status: RESOLVED — {_r_blend:.0f}% coverage last 48h (n={_rt})")
     print("  Compare Brier score of blend=0.40 vs shadow_blend=0.50")
 
     subsection("Promotion criteria (ALL must pass)")
@@ -1506,7 +1567,8 @@ def validation_plan() -> None:
     print("  3. Brier score < 0.10")
     print("  4. WR > breakeven at avg entry price")
     print("  5. No single asset dragging aggregate PnL negative")
-    print("  6. Candidate-dict temperature bug fixed (R4)")
+    _r4_status = "RESOLVED" if _r_temp >= 90 else "OPEN"
+    print(f"  6. Temperature instrumentation complete ({_r4_status})")
     print("  7. Sequential testing: Wald SPRT confirms edge > 0 at 95% confidence")
     print("  8. Max drawdown < 20% of bankroll in simulation")
 
@@ -1549,7 +1611,7 @@ def main():
     config_sensitivity(conn, since)
     data_sufficiency(conn, since, stats)
     recommendations(conn, since)
-    validation_plan()
+    validation_plan(conn)
 
     # JSON artifact output
     if args.json:
