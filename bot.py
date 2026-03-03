@@ -68,8 +68,8 @@ HOURLY_TEMPERATURE_T = 1.45           # Temperature scaling: softens overconfide
 HOURLY_TEMPERATURE_ENABLED = True     # Toggle for temperature scaling
 HOURLY_CALIBRATION_ENABLED = False    # Disable hourly CalibrationEngine — uses passthrough + temperature
                                       # Engine was making calibration worse (Brier 0.12 raw → 0.20 after engine)
-HOURLY_MIN_STC_ENTRY = 300            # Min STC for entry (5 min) — EGARCH degrades beyond this
-HOURLY_MAX_STC_ENTRY = 1800           # 30 min — expanded for observation data collection
+HOURLY_MIN_STC_ENTRY = 120            # Min STC for entry (2 min) — expanded for observation data collection
+HOURLY_MAX_STC_ENTRY = 3600           # 60 min — expanded for observation data collection
 HOURLY_EXCLUDED_ASSETS = set()         # Empty in observation mode — collect all asset data
 HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time window (ENB ~1.3)
 HOURLY_MAX_WINDOW_RISK = 0.15         # Max aggregate risk across all hourly positions per window
@@ -102,6 +102,7 @@ WEATHER_MAX_RISK_PER_TRADE = 0.10
 WEATHER_KELLY_FRACTION = 0.25
 WEATHER_MARKET_BLEND_W = 0.20            # 80% model, 20% market (ensemble is primary signal)
 WEATHER_MIN_EDGE_PCT = 0.001             # 0.1% — very low for max signal collection (observation-only)
+HOURLY_MIN_EDGE_PCT = 0.001              # 0.1% — low for max signal collection (observation-only)
 
 # ─── Sports Comeback Observation Mode ────────────────────────────────────
 SPORTS_ENABLED = True
@@ -6199,11 +6200,14 @@ class OpportunityScanner:
             assert HOURLY_MAX_POSITIONS_PER_WINDOW >= 1, "Must allow at least 1 position per window"
             logging.info(
                 "CONFIG_VERIFY (hourly): ENABLED=%s OBS_ONLY=%s BLEND_W=%.2f "
-                "MIN_ENTRY=%dc MAX_RISK=%.2f MAX_STC=%ds TEMP_T=%.2f KELLY_F=%.2f",
+                "MIN_ENTRY=%dc MAX_RISK=%.2f MAX_STC=%ds MIN_STC=%ds "
+                "TEMP_T=%.2f KELLY_F=%.2f MIN_EDGE=%.3f%%",
                 HOURLY_OBSERVATION_ENABLED, HOURLY_OBSERVATION_ONLY,
                 HOURLY_MARKET_BLEND_W, HOURLY_MIN_ENTRY_PRICE,
                 HOURLY_MAX_RISK_PER_TRADE, HOURLY_MAX_SECONDS_BEFORE_CLOSE,
-                HOURLY_TEMPERATURE_T, HOURLY_KELLY_FRACTION)
+                HOURLY_MIN_STC_ENTRY,
+                HOURLY_TEMPERATURE_T, HOURLY_KELLY_FRACTION,
+                HOURLY_MIN_EDGE_PCT * 100)
 
         # ── Dip addon config verify ──
         if DIP_ADDON_ENABLED:
@@ -7042,7 +7046,12 @@ class OpportunityScanner:
                         pass
 
                 # Filter: fee-adjusted edge must meet price-dependent minimum
-                _min_edge = WEATHER_MIN_EDGE_PCT if _pt == "weather" else get_min_edge(best_ask)
+                if _pt == "weather":
+                    _min_edge = WEATHER_MIN_EDGE_PCT
+                elif _pt == "hourly":
+                    _min_edge = HOURLY_MIN_EDGE_PCT
+                else:
+                    _min_edge = get_min_edge(best_ask)
                 if fee_adjusted_edge < _min_edge:
                     scan_stats[asset]["insufficient_edge"] += 1
                     self._recent_opportunities.append({
