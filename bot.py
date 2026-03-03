@@ -66,8 +66,8 @@ HOURLY_MAX_RISK_PER_TRADE = 0.15       # Conservative start (60% of 15M's 0.25)
 # ─── Hourly Three-Layer Optimization (Researcher Recommendations) ─────────
 HOURLY_TEMPERATURE_T = 1.45           # Temperature scaling: softens overconfident probs (T>1 = less confident)
 HOURLY_TEMPERATURE_ENABLED = True     # Toggle for temperature scaling
-HOURLY_CALIBRATION_ENABLED = False    # Disable hourly CalibrationEngine — uses passthrough + temperature
-                                      # Engine was making calibration worse (Brier 0.12 raw → 0.20 after engine)
+HOURLY_CALIBRATION_ENABLED = True     # Hourly-specific CalibrationEngine — 5057 obs, all methods trainable
+                                      # Replaces passthrough + T=1.45 (was +9.7pp overconfident)
 HOURLY_MIN_STC_ENTRY = 120            # Min STC for entry (2 min) — expanded for observation data collection
 HOURLY_MAX_STC_ENTRY = 3600           # 60 min — expanded for observation data collection
 HOURLY_EXCLUDED_ASSETS = set()         # Empty in observation mode — collect all asset data
@@ -5092,6 +5092,12 @@ class ProbabilityEngine:
                     and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active()):
                 cal = _HOURLY_CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
                 result["calibration_method"] = "hourly_" + _HOURLY_CALIBRATION_ENGINE.active_method
+                # Shadow: what old passthrough + T=1.45 would have produced
+                _pt_shadow = min(raw_prob, dynamic_cap)
+                _sp = max(0.001, min(0.999, _pt_shadow))
+                _sz = math.log(_sp / (1.0 - _sp))
+                result["shadow_cal_prob"] = round(1.0 / (1.0 + math.exp(-_sz / HOURLY_TEMPERATURE_T)), 6)
+                result["shadow_cal_temperature"] = HOURLY_TEMPERATURE_T
             elif _cal_cfg.cal_eligible and _CALIBRATION_ENGINE is not None:
                 cal = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
                 result["calibration_method"] = _CALIBRATION_ENGINE.active_method
@@ -5111,6 +5117,12 @@ class ProbabilityEngine:
                 and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active()):
             calibrated_prob = _HOURLY_CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
             result["calibration_method"] = "hourly_" + _HOURLY_CALIBRATION_ENGINE.active_method
+            # Shadow: what old passthrough + T=1.45 would have produced
+            _pt_shadow = min(raw_prob, dynamic_cap)
+            _sp = max(0.001, min(0.999, _pt_shadow))
+            _sz = math.log(_sp / (1.0 - _sp))
+            result["shadow_cal_prob"] = round(1.0 / (1.0 + math.exp(-_sz / HOURLY_TEMPERATURE_T)), 6)
+            result["shadow_cal_temperature"] = HOURLY_TEMPERATURE_T
         elif _cal_cfg2.cal_eligible and _CALIBRATION_ENGINE is not None:
             calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
             result["calibration_method"] = _CALIBRATION_ENGINE.active_method
