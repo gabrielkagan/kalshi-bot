@@ -1837,6 +1837,32 @@ def validation_plan(conn: sqlite3.Connection) -> None:
     print("  8. Max drawdown < 20% of bankroll in simulation")
 
 
+def cal_engine_pipeline(conn, since: str) -> None:
+    """CalEngine observation pipeline: settled evals with raw_prob for hourly."""
+    section("CALENGINE OBSERVATION PIPELINE")
+    try:
+        row = conn.execute("""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN raw_prob IS NOT NULL THEN 1 ELSE 0 END) AS with_raw_prob,
+                   SUM(CASE WHEN status='settled' AND raw_prob IS NOT NULL THEN 1 ELSE 0 END) AS cal_eligible
+            FROM evaluated_opportunities
+            WHERE product_type='hourly' AND evaluation_time >= ?
+        """, (since,)).fetchone()
+        total = row["total"] or 0
+        with_rp = row["with_raw_prob"] or 0
+        eligible = row["cal_eligible"] or 0
+        print(f"  Total hourly evals:       {total}")
+        print(f"  With raw_prob:            {with_rp}")
+        print(f"  Settled + raw_prob (cal):  {eligible}")
+        print()
+        if eligible > 0:
+            print(f"  >>> {eligible} observations feeding hourly CalEngine")
+        else:
+            print("  >>> No CalEngine observations yet (settlement routing change may be recent)")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+
+
 # ── Main ──────────────────────────────────────────────────────────
 
 def main():
@@ -1876,6 +1902,7 @@ def main():
     cal_grid = calibration_grid_search(conn, since)
     data_sufficiency(conn, since, stats)
     recommendations(conn, since)
+    cal_engine_pipeline(conn, since)
     validation_plan(conn)
 
     # JSON artifact output

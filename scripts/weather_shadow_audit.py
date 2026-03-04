@@ -881,6 +881,52 @@ def section_recommendations(stats: dict, pipeline: dict, settlement: dict) -> No
         print()
 
 
+def section_cal_engine_obs(conn, since=None):
+    """CalEngine observation pipeline: settled evals with raw_prob for weather."""
+    header("CALENGINE OBSERVATION PIPELINE")
+    W = where_clause(since)
+    try:
+        row = conn.execute(f"""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN raw_prob IS NOT NULL THEN 1 ELSE 0 END) AS with_raw_prob,
+                   SUM(CASE WHEN status='settled' AND raw_prob IS NOT NULL THEN 1 ELSE 0 END) AS cal_eligible
+            FROM evaluated_opportunities
+            WHERE product_type='weather' {W}
+        """).fetchone()
+        total = row["total"] or 0
+        with_rp = row["with_raw_prob"] or 0
+        eligible = row["cal_eligible"] or 0
+        print(f"  Total weather evals:      {total}")
+        print(f"  With raw_prob:            {with_rp}")
+        print(f"  Settled + raw_prob (cal):  {eligible}")
+
+        # Per-city breakdown
+        city_rows = conn.execute(f"""
+            SELECT COALESCE(wx_market_type, 'unknown') AS city,
+                   SUM(CASE WHEN status='settled' AND raw_prob IS NOT NULL THEN 1 ELSE 0 END) AS cal_eligible
+            FROM evaluated_opportunities
+            WHERE product_type='weather' {W}
+            GROUP BY wx_market_type
+            ORDER BY cal_eligible DESC
+        """).fetchall()
+        if city_rows:
+            print()
+            for r in city_rows:
+                city_name = r["city"] if isinstance(r, sqlite3.Row) else r[0]
+                city_eligible = (r["cal_eligible"] if isinstance(r, sqlite3.Row) else r[1]) or 0
+                if city_eligible > 0:
+                    print(f"    {city_name:<12} {city_eligible} cal obs")
+
+        if eligible > 0:
+            print(f"\n  >>> {eligible} observations feeding per-city weather CalEngines")
+        else:
+            print("\n  >>> No CalEngine observations yet")
+        return {"total": total, "with_raw_prob": with_rp, "cal_eligible": eligible}
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        return {"error": str(e)}
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -922,6 +968,7 @@ def main():
     pre_post = section_pre_post(conn, args.since)
     bias = section_bias(conn, args.since)
     sufficiency = section_sufficiency(conn, args.since, stats, pipeline)
+    cal_obs = section_cal_engine_obs(conn, args.since)
     section_recommendations(stats, pipeline, settlement)
 
     conn.close()
@@ -941,6 +988,7 @@ def main():
             "pre_post": pre_post,
             "bias": bias,
             "sufficiency": sufficiency,
+            "cal_engine_obs": cal_obs,
         }
         with open(args.json, "w") as f:
             json.dump(artifact, f, indent=2, default=str)

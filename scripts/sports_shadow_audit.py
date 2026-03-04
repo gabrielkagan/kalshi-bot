@@ -1297,6 +1297,65 @@ def _sport_has_recs(conn: sqlite3.Connection, sport: str,
     return False
 
 
+def section_cal_engine_obs(conn: sqlite3.Connection,
+                           since: Optional[str] = None) -> Dict:
+    """CalEngine observation pipeline: settled evals with raw_prob per sport group."""
+    header("CALENGINE OBSERVATION PIPELINE")
+    print("  Settled evaluated_opportunities with raw_prob (feeds per-sport CalEngines)")
+    print()
+
+    try:
+        w = f"AND evaluation_time >= '{since}'" if since else ""
+        rows = conn.execute(f"""
+            SELECT asset,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN raw_prob IS NOT NULL THEN 1 ELSE 0 END) AS with_raw_prob,
+                   SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+                   SUM(CASE WHEN status='settled' AND raw_prob IS NOT NULL THEN 1 ELSE 0 END) AS cal_eligible
+            FROM evaluated_opportunities
+            WHERE product_type='sports' {w}
+            GROUP BY asset
+            ORDER BY total DESC
+        """).fetchall()
+
+        if not rows:
+            print("  No sports evaluated_opportunities found.")
+            return {"total": 0, "cal_eligible": 0}
+
+        print(f"  {'Asset':<15} {'Total':>7} {'HasRawProb':>11} {'Settled':>8} {'CalEligible':>12}")
+        print("  " + "-" * 55)
+
+        grand_total = 0
+        grand_eligible = 0
+        result = {}
+        for r in rows:
+            rdict = dict(r)
+            asset = rdict['asset'] or 'unknown'
+            total = rdict['total']
+            with_rp = rdict['with_raw_prob'] or 0
+            settled = rdict['settled'] or 0
+            eligible = rdict['cal_eligible'] or 0
+            grand_total += total
+            grand_eligible += eligible
+            print(f"  {asset:<15} {total:>7} {with_rp:>11} {settled:>8} {eligible:>12}")
+            result[asset] = {"total": total, "with_raw_prob": with_rp,
+                             "settled": settled, "cal_eligible": eligible}
+
+        print("  " + "-" * 55)
+        print(f"  {'TOTAL':<15} {grand_total:>7} {'':>11} {'':>8} {grand_eligible:>12}")
+        print()
+        if grand_eligible == 0:
+            print("  >>> No CalEngine observations yet — raw_prob was NULL on pre-deploy rows")
+            print("  >>> New rows after deploy will have raw_prob populated")
+        else:
+            print(f"  >>> {grand_eligible} observations available for CalEngine training")
+
+        return {"total": grand_total, "cal_eligible": grand_eligible, "by_asset": result}
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        return {"error": str(e)}
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1348,6 +1407,7 @@ def main():
     # ── SPORT GROUP OVERVIEW ─────────────────────────────────────────────
     sport_group_data = section_per_sport_group(conn, args.since)
     sport_group_cal = section_sport_group_calibration(conn, args.since)
+    cal_engine_obs = section_cal_engine_obs(conn, args.since)
 
     # ── PER-SPORT DETAILED ANALYSIS ─────────────────────────────────────
     leagues = get_leagues_with_signals(conn, args.since)
@@ -1427,6 +1487,7 @@ def main():
             "leagues": league_data,
             "sport_groups": sport_group_data,
             "sport_group_calibration": sport_group_cal,
+            "cal_engine_obs": cal_engine_obs,
             "per_sport": {},
             "cross_sport": {
                 "fav_audit_issues": fav_audit.get("issues", []),

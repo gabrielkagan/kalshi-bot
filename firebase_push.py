@@ -767,6 +767,30 @@ class FirebasePusher:
             except Exception:
                 pass
 
+        # ── Per-engine CalEngine registry diagnostics ─────────────────
+        try:
+            _cal_engines = getattr(self._ml, "_cal_engines", {})
+            _cal_meta = getattr(self._ml, "_cal_engine_meta", {})
+            if _cal_engines:
+                _reg = {}
+                for _key, _eng in _cal_engines.items():
+                    try:
+                        _d = _eng.get_diagnostics()
+                        _pt, _sub = _cal_meta.get(_key, (_key, None))
+                        _reg[_key] = {
+                            "product_type": _pt,
+                            "subtype": _sub,
+                            "n_observations": _d.get("n_observations", 0),
+                            "active_method": _d.get("active_method", "raw"),
+                            "rolling_brier": _d.get("rolling_brier"),
+                            "learned_method_active": _d.get("learned_method_active", False),
+                        }
+                    except Exception:
+                        _reg[_key] = {"n_observations": 0, "error": True}
+                snap["cal_registry"] = _reg
+        except Exception:
+            logging.debug("Firebase: cal_registry build failed", exc_info=True)
+
         # ── NIG distribution parameters ────────────────────────────────
         try:
             import json as _json

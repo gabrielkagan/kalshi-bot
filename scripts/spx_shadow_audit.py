@@ -918,6 +918,34 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     }
 
 
+def section_cal_engine_obs(conn, since=None):
+    """CalEngine observation pipeline: settled evals with raw_prob for SPX."""
+    header("CALENGINE OBSERVATION PIPELINE")
+    try:
+        w = f"AND evaluation_time >= '{since}'" if since else ""
+        row = conn.execute(f"""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN raw_prob IS NOT NULL THEN 1 ELSE 0 END) AS with_raw_prob,
+                   SUM(CASE WHEN status='settled' AND raw_prob IS NOT NULL THEN 1 ELSE 0 END) AS cal_eligible
+            FROM evaluated_opportunities
+            WHERE product_type='spx_hourly' {w}
+        """).fetchone()
+        total = row[0] or 0
+        with_rp = row[1] or 0
+        eligible = row[2] or 0
+        print(f"  Total SPX evals:          {total}")
+        print(f"  With raw_prob:            {with_rp}")
+        print(f"  Settled + raw_prob (cal):  {eligible}")
+        if eligible > 0:
+            print(f"\n  >>> {eligible} observations feeding SPX CalEngine")
+        else:
+            print("\n  >>> No CalEngine observations yet")
+        return {"total": total, "with_raw_prob": with_rp, "cal_eligible": eligible}
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        return {"error": str(e)}
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -968,6 +996,7 @@ def main():
     zscore = section_zscore(conn, since)
     vol_intraday = section_vol_intraday(conn, since)
     readiness = section_readiness(conn, since)
+    cal_obs = section_cal_engine_obs(conn, since)
 
     conn.close()
 
@@ -988,6 +1017,7 @@ def main():
             "zscore": zscore,
             "vol_intraday": vol_intraday,
             "readiness": readiness,
+            "cal_engine_obs": cal_obs,
         }
         with open(args.json, "w") as f:
             json.dump(artifact, f, indent=2, default=str)

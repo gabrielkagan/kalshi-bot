@@ -43,6 +43,20 @@ def wilson_ci(wins, total, z=1.96):
     return (round((centre - adj) / denom, 4), round((centre + adj) / denom, 4))
 
 
+def cal_engine_obs_count(conn, product_type, since):
+    """Count settled evaluated_opportunities with raw_prob for CalEngine training."""
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM evaluated_opportunities "
+            "WHERE product_type=? AND raw_prob IS NOT NULL "
+            "AND status='settled' AND evaluation_time>=?",
+            (product_type, since)
+        ).fetchone()
+        return row[0] if row else 0
+    except Exception:
+        return 0
+
+
 def ensure_table(conn):
     """Create audit_snapshots table if it doesn't exist."""
     conn.execute("""
@@ -311,6 +325,7 @@ def compute_hourly(conn, since):
         "worst_asset": worst_asset,
         "worst_asset_pnl": worst_asset_pnl,
         "by_asset": by_asset,
+        "cal_engine_obs": cal_engine_obs_count(conn, "hourly", since),
     }
 
 
@@ -429,6 +444,7 @@ def compute_spx(conn, since):
         "data_checks": checks,
         "data_checks_pass": checks_pass,
         "data_checks_total": len(checks),
+        "cal_engine_obs": cal_engine_obs_count(conn, "spx_hourly", since),
     }
 
 
@@ -527,6 +543,7 @@ def compute_weather(conn, since):
         "ensemble_coverage_pct": ensemble_coverage,
         "no_side_edge_populated": noside_edge_pct,
         "by_city": by_city,
+        "cal_engine_obs": cal_engine_obs_count(conn, "weather", since),
     }
 
 
@@ -681,6 +698,7 @@ def compute_sports(conn, since):
         "sprt_n": sprt_n,
         "pregame_capture_pct": pregame_capture_pct,
         "sport_groups": sport_groups,
+        "cal_engine_obs": cal_engine_obs_count(conn, "sports", since),
     }
 
 
