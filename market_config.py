@@ -43,6 +43,7 @@ class MarketTypeConfig:
     use_hourly_dynamic_cap: bool = False
     cal_engine_enabled: bool = False     # Whether to instantiate a CalEngine for this market
     cal_engine_state_path: str = ""      # State file path (empty = no engine)
+    cal_subtypes: Dict[str, str] = field(default_factory=dict)  # subtype_code → state_file_path
 
     # ── Fees ──
     fee_multiplier_taker: float = 0.07
@@ -147,10 +148,30 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         cal_eligible=False,
         use_hourly_dynamic_cap=True,
         cal_engine_enabled=False,
-        cal_engine_state_path="weather_calibration_state.json",
         fee_multiplier_taker=0.07,
         fee_multiplier_maker=0.0175,
         observation_filter_label="weather_observation",
+        cal_subtypes={
+            "NYC": "cal_weather_NYC.json",
+            "CHI": "cal_weather_CHI.json",
+            "MIA": "cal_weather_MIA.json",
+            "DEN": "cal_weather_DEN.json",
+            "LAX": "cal_weather_LAX.json",
+            "AUS": "cal_weather_AUS.json",
+            "ATL": "cal_weather_ATL.json",
+            "SFO": "cal_weather_SFO.json",
+            "DAL": "cal_weather_DAL.json",
+            "PHX": "cal_weather_PHX.json",
+            "PHI": "cal_weather_PHI.json",
+            "MIN": "cal_weather_MIN.json",
+            "SEA": "cal_weather_SEA.json",
+            "HOU": "cal_weather_HOU.json",
+            "BOS": "cal_weather_BOS.json",
+            "LAS": "cal_weather_LAS.json",
+            "OKC": "cal_weather_OKC.json",
+            "DCA": "cal_weather_DCA.json",
+            "MSY": "cal_weather_MSY.json",
+        },
     ),
     "sports": MarketTypeConfig(
         product_type="sports",
@@ -170,6 +191,16 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         fee_multiplier_taker=0.07,
         fee_multiplier_maker=0.0175,
         observation_filter_label="sports_observation",
+        cal_subtypes={
+            "basketball": "cal_sports_basketball.json",
+            "hockey": "cal_sports_hockey.json",
+            "soccer": "cal_sports_soccer.json",
+            "baseball": "cal_sports_baseball.json",
+            "football": "cal_sports_football.json",
+            "tennis": "cal_sports_tennis.json",
+            "mma": "cal_sports_mma.json",
+            "esports": "cal_sports_esports.json",
+        },
     ),
 }
 
@@ -315,25 +346,50 @@ def validate_market_configs() -> None:
     assert not MARKET_CONFIGS["15m"].cal_engine_enabled, "FATAL: 15m must not use cal_engine_enabled"
     assert MARKET_CONFIGS["15m"].cal_engine_state_path == "", "FATAL: 15m must not set cal_engine_state_path"
 
-    # Sports must never have CalEngine (uses BayesianComebackModel)
-    assert not MARKET_CONFIGS["sports"].cal_engine_enabled, "FATAL: sports must not use CalEngine"
-    assert MARKET_CONFIGS["sports"].cal_engine_state_path == "", "FATAL: sports has no CalEngine state"
-
     # Hourly cal_engine_enabled must match bot.py constant
     assert MARKET_CONFIGS["hourly"].cal_engine_enabled == bot.HOURLY_CALIBRATION_ENABLED, (
         f"hourly cal_engine_enabled mismatch: {MARKET_CONFIGS['hourly'].cal_engine_enabled} != {bot.HOURLY_CALIBRATION_ENABLED}")
 
-    # No engine may share state file with 15M
+    # ── CalEngine subtype invariants ──
+    # 15M must never have subtypes
+    assert not MARKET_CONFIGS["15m"].cal_subtypes, "FATAL: 15m must not have cal_subtypes"
+
+    # Subtypes and single-engine are mutually exclusive
+    for pt, cfg in MARKET_CONFIGS.items():
+        if cfg.cal_subtypes:
+            assert not cfg.cal_engine_enabled, (
+                f"FATAL: {pt} has both cal_engine_enabled and cal_subtypes — pick one")
+            assert not cfg.cal_engine_state_path, (
+                f"FATAL: {pt} has both cal_engine_state_path and cal_subtypes — pick one")
+
+    # No engine may share state file with 15M + all state paths unique
+    _all_state_paths = []
     for pt, cfg in MARKET_CONFIGS.items():
         if pt == "15m":
             continue
         if cfg.cal_engine_state_path:
             assert cfg.cal_engine_state_path != bot.CALIBRATION_STATE_PATH, (
                 f"FATAL: {pt} shares state file with 15M engine!")
+            _all_state_paths.append(cfg.cal_engine_state_path)
+        for sub_code, sub_path in cfg.cal_subtypes.items():
+            assert sub_path, f"FATAL: empty state path for {pt}/{sub_code}"
+            assert sub_path != bot.CALIBRATION_STATE_PATH, (
+                f"FATAL: {pt}/{sub_code} shares state file with 15M!")
+            _all_state_paths.append(sub_path)
+    assert len(_all_state_paths) == len(set(_all_state_paths)), (
+        f"FATAL: duplicate cal engine state paths: {_all_state_paths}")
 
-    # All state paths must be unique across engines
-    _state_paths = [cfg.cal_engine_state_path for cfg in MARKET_CONFIGS.values() if cfg.cal_engine_state_path]
-    assert len(_state_paths) == len(set(_state_paths)), f"FATAL: duplicate cal engine state paths: {_state_paths}"
+    # Weather subtypes must match WEATHER_CITIES
+    if MARKET_CONFIGS["weather"].cal_subtypes:
+        from weather_engine import WEATHER_CITIES
+        for sub in MARKET_CONFIGS["weather"].cal_subtypes:
+            assert sub in WEATHER_CITIES, f"FATAL: weather subtype '{sub}' not in WEATHER_CITIES"
+
+    # Sports subtypes must match SPORT_GROUPS
+    if MARKET_CONFIGS["sports"].cal_subtypes:
+        from sports_data import SPORT_GROUPS
+        for sub in MARKET_CONFIGS["sports"].cal_subtypes:
+            assert sub in SPORT_GROUPS, f"FATAL: sports subtype '{sub}' not in SPORT_GROUPS"
 
     import logging
     logging.info("MARKET_CONFIGS: all %d configs validated against constants", len(MARKET_CONFIGS))

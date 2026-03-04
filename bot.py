@@ -405,6 +405,61 @@ _CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None   # 15M ONLY — DO NO
 _CAL_REGISTRY: Dict[str, "CalibrationEngine"] = {}          # non-15M engines by product_type
 _TELEGRAM: Optional["TelegramNotifier"] = None
 
+
+def _derive_subtype(product_type: str, asset: Optional[str]) -> Optional[str]:
+    """Extract CalEngine subtype code from asset string.
+    Weather: 'NYC_TEMP' → 'NYC'.  Sports: 'NBA' → 'basketball' (via sport_group)."""
+    if not asset:
+        return None
+    if product_type == "weather":
+        return asset.replace("_TEMP", "") if "_TEMP" in asset else None
+    if product_type == "sports":
+        try:
+            from sports_data import LEAGUES
+            for _lcfg in LEAGUES.values():
+                if _lcfg.display_name == asset:
+                    return _lcfg.sport_group
+        except ImportError:
+            pass
+        return None
+    return None
+
+
+def _derive_asset_filter(product_type: str, subtype_code: str):
+    """Map subtype code back to DB asset filter for load_training_data_from_db().
+    Returns str for single-asset types, list for multi-league sport groups."""
+    if product_type == "weather":
+        return f"{subtype_code}_TEMP"  # "NYC" → "NYC_TEMP"
+    if product_type == "sports":
+        try:
+            from sports_data import LEAGUES
+            return [lcfg.display_name for lcfg in LEAGUES.values()
+                    if lcfg.sport_group == subtype_code]
+        except ImportError:
+            return None
+    return None
+
+
+def _resolve_cal_engine(product_type: Optional[str],
+                        asset: Optional[str] = None,
+                        require_enabled: bool = False) -> Optional["CalibrationEngine"]:
+    """Look up the correct CalibrationEngine for a (product_type, asset) pair.
+    Returns None for 15M (uses _CALIBRATION_ENGINE directly).
+    require_enabled=True: also returns None if cal_engine_enabled=False."""
+    if product_type in (None, "15m"):
+        return None
+    _cfg = get_market_config(product_type)
+    if require_enabled and not _cfg.cal_engine_enabled:
+        return None
+    # Types with subtypes: derive composite key
+    if _cfg.cal_subtypes and asset:
+        _sub = _derive_subtype(product_type, asset)
+        if _sub:
+            return _CAL_REGISTRY.get(f"{product_type}_{_sub}")
+    # Bare product_type key (hourly, spx_hourly, or no subtypes match)
+    return _CAL_REGISTRY.get(product_type)
+
+
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
 MIN_EDGE_PCT = 0.25               # flat fallback — matches lowest MIN_EDGE_BY_PRICE tier (was 0.7)
 
@@ -5090,7 +5145,7 @@ class ProbabilityEngine:
             # Still compute calibrated_prob for data collection
             dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
             _cal_cfg = get_market_config(product_type)
-            _reg_engine = _CAL_REGISTRY.get(product_type) if product_type not in (None, "15m") else None
+            _reg_engine = _resolve_cal_engine(product_type, asset, require_enabled=True)
             if _reg_engine is not None and _reg_engine.is_learned_method_active():
                 cal = _reg_engine.calibrate(raw_prob, cap=dynamic_cap)
                 result["calibration_method"] = f"{product_type}_{_reg_engine.active_method}"
@@ -5118,7 +5173,7 @@ class ProbabilityEngine:
         # ── Calibration: adaptive (if trained) or fixed β=0.85 ──────────
         dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
         _cal_cfg2 = get_market_config(product_type)
-        _reg_engine = _CAL_REGISTRY.get(product_type) if product_type not in (None, "15m") else None
+        _reg_engine = _resolve_cal_engine(product_type, asset, require_enabled=True)
         if _reg_engine is not None and _reg_engine.is_learned_method_active():
             calibrated_prob = _reg_engine.calibrate(raw_prob, cap=dynamic_cap)
             result["calibration_method"] = f"{product_type}_{_reg_engine.active_method}"
@@ -5573,13 +5628,16 @@ class CalibrationEngine:
         return True
 
     def load_training_data_from_db(self, state: "StateManager",
-                                   product_type_include: Optional[str] = None):
+                                   product_type_include: Optional[str] = None,
+                                   asset_filter=None):
         """Rebuild training data from evaluated opportunities on startup.
 
         Args:
             product_type_include: If set, load ONLY this product type (for
                 dedicated hourly/spx engines). Default None = existing behavior
                 (exclude non-15M types).
+            asset_filter: If set, additionally filter by asset column.
+                str → single asset, list → IN clause. Default None = no asset filter.
 
         Note: rejected_opportunities (z-score rejections) are excluded because
         their bimodal raw_prob distribution (clustered at 0 and 1) contaminates
@@ -5593,9 +5651,18 @@ class CalibrationEngine:
             cutoff = (datetime.datetime.now(timezone.utc)
                       - datetime.timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%S")
             if product_type_include:
-                # Load ONLY this product type (for dedicated hourly/spx engines)
-                _cal_filter = "AND product_type = ? "
-                _cal_query_params = (product_type_include, cutoff)
+                if asset_filter is not None:
+                    if isinstance(asset_filter, list):
+                        _placeholders = ",".join("?" for _ in asset_filter)
+                        _cal_filter = f"AND product_type = ? AND asset IN ({_placeholders}) "
+                        _cal_query_params = (product_type_include, *asset_filter, cutoff)
+                    else:
+                        _cal_filter = "AND product_type = ? AND asset = ? "
+                        _cal_query_params = (product_type_include, asset_filter, cutoff)
+                else:
+                    # Existing behavior: filter by product_type only
+                    _cal_filter = "AND product_type = ? "
+                    _cal_query_params = (product_type_include, cutoff)
             else:
                 # Existing behavior: exclude non-15M types
                 _cal_excluded = get_cal_excluded_types()
@@ -6913,7 +6980,7 @@ class OpportunityScanner:
                 if _temp_t is not None and _temp_t == 1.0:
                     _temp_t = None
                 # Skip temperature if registered engine is active (already calibrated)
-                _reg_engine_t = _CAL_REGISTRY.get(_pt) if _pt not in (None, "15m") else None
+                _reg_engine_t = _resolve_cal_engine(_pt, asset, require_enabled=True)
                 if _reg_engine_t is not None and _reg_engine_t.is_learned_method_active():
                     _temp_t = None
                     _hourly_pre_temp_prob = final_prob  # still record for shadow instrumentation
@@ -6970,7 +7037,7 @@ class OpportunityScanner:
                 calibrated_prob_raw = final_prob
                 # Always compute dynamic cap for counterfactual logging
                 _dyn_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=window.get("product_type"))
-                _reg_engine_c = _CAL_REGISTRY.get(_pt) if _pt not in (None, "15m") else None
+                _reg_engine_c = _resolve_cal_engine(_pt, asset, require_enabled=True)
                 if _reg_engine_c is not None and _reg_engine_c.is_learned_method_active():
                     _active_cal = _reg_engine_c
                 elif get_market_config(_pt).cal_eligible:
@@ -10768,7 +10835,7 @@ class SettlementTracker:
                         and filter_stage in cal_eligible_stages
                         and result in ("yes", "all_yes", "no", "all_no")):
                     cal_binary = 1 if result in ("yes", "all_yes") else 0
-                    _settle_engine = _CAL_REGISTRY.get(_opp_pt) if _opp_pt not in (None, "15m") else None
+                    _settle_engine = _resolve_cal_engine(_opp_pt, row.get("asset"))
                     if _settle_engine is not None:
                         _settle_engine.add_observation(raw_p, cal_binary)
                     elif get_market_config(_opp_pt).cal_eligible:
@@ -10973,10 +11040,29 @@ class MainLoop:
         global _CAL_REGISTRY
         _CAL_REGISTRY.clear()  # defensive: ensure clean state on restart
         self._cal_engines = {}
+        self._cal_engine_meta = {}  # reg_key → (product_type, subtype_code_or_None)
+
         for _pt, _cfg in MARKET_CONFIGS.items():
             if _pt == "15m":
                 continue  # 15M uses _CALIBRATION_ENGINE — NEVER in registry
-            if _cfg.cal_engine_enabled and _cfg.cal_engine_state_path:
+
+            if _cfg.cal_subtypes:
+                # Per-subtype engines (weather cities, sports groups)
+                for _sub_code, _sub_path in _cfg.cal_subtypes.items():
+                    _reg_key = f"{_pt}_{_sub_code}"
+                    assert _sub_path != CALIBRATION_STATE_PATH, (
+                        f"FATAL: {_reg_key} would share state file with 15M engine!")
+                    _engine = CalibrationEngine(
+                        state_path=_sub_path,
+                        label=f"{_pt.capitalize()}_{_sub_code}Cal")
+                    self._cal_engines[_reg_key] = _engine
+                    _CAL_REGISTRY[_reg_key] = _engine
+                    self._cal_engine_meta[_reg_key] = (_pt, _sub_code)
+                    logging.info("CalEngine registered for '%s' (state: %s, enabled=%s)",
+                                 _reg_key, _sub_path, _cfg.cal_engine_enabled)
+
+            elif _cfg.cal_engine_enabled and _cfg.cal_engine_state_path:
+                # Single engine per product_type (hourly, spx_hourly)
                 assert _cfg.cal_engine_state_path != CALIBRATION_STATE_PATH, (
                     f"FATAL: {_pt} would share state file with 15M engine!")
                 _engine = CalibrationEngine(
@@ -10984,11 +11070,13 @@ class MainLoop:
                     label=f"{_pt.capitalize()}Cal")
                 self._cal_engines[_pt] = _engine
                 _CAL_REGISTRY[_pt] = _engine
-                logging.info("CalEngine registered for '%s' (state: %s)", _pt, _cfg.cal_engine_state_path)
+                self._cal_engine_meta[_pt] = (_pt, None)
+                logging.info("CalEngine registered for '%s' (state: %s)",
+                             _pt, _cfg.cal_engine_state_path)
+
             else:
                 logging.info("CalEngine DISABLED for '%s': passthrough", _pt)
 
-        # Hard safety assertion — 15M must NEVER be in the registry
         assert "15m" not in _CAL_REGISTRY, "FATAL: 15M engine must never be in _CAL_REGISTRY"
 
         # Backward compat for firebase_push.py
@@ -11153,13 +11241,16 @@ class MainLoop:
             )
 
         # Load per-market calibration training data (separate from 15M)
-        for _pt, _engine in self._cal_engines.items():
-            _engine.load_training_data_from_db(self.state, product_type_include=_pt)
+        for _reg_key, _engine in self._cal_engines.items():
+            _load_pt, _sub_code = self._cal_engine_meta[_reg_key]
+            _load_asset = _derive_asset_filter(_load_pt, _sub_code) if _sub_code else None
+            _engine.load_training_data_from_db(
+                self.state, product_type_include=_load_pt, asset_filter=_load_asset)
             _bt = _engine.backtest_adaptive_vs_fixed()
             if _bt:
-                logging.info("Startup %s cal backtest: %s", _pt, _bt)
+                logging.info("Startup %s cal backtest: %s", _reg_key, _bt)
             logging.info("CONFIG_VERIFY (%s_cal): method=%s active=%s obs=%d",
-                         _pt, _engine.active_method,
+                         _reg_key, _engine.active_method,
                          _engine.is_learned_method_active(), len(_engine._observations))
 
         # Start Coinbase price feed
