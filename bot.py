@@ -8720,7 +8720,7 @@ class OrderExecutor:
         except Exception as e:
             logging.error(f"CANDIDATE_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
 
-        # ── Direct taker for <75s candidates ───────────────────────
+        # ── Direct taker for <180s candidates ───────────────────────
         seconds_to_close = candidate.get("seconds_to_close")
         # Maker-only below 90s: block direct taker, fall through to maker
         if (seconds_to_close is not None

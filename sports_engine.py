@@ -755,6 +755,23 @@ def _tennis_player_code(display_name: str) -> str:
     return alpha_only[:3].upper()
 
 
+# ESPN uses short 2-letter codes for some teams; Kalshi uses 3-letter codes.
+# Without expansion, "NY" fails word-boundary matching against "NYK" in tickers,
+# and "LA" false-positives as substring of "COLA" in event tickers.
+_ESPN_TO_KALSHI: Dict[str, str] = {
+    "GS": "GSW",   # Golden State Warriors (NBA)
+    "NY": "NYK",   # New York Knicks (NBA) — NYR/NYI handled by series_ticker filter
+    "NO": "NOP",   # New Orleans Pelicans (NBA)
+    "LA": "LAK",   # Los Angeles Kings (NHL)
+    "SA": "SAS",   # San Antonio Spurs (NBA)
+}
+
+
+def _expand_code(code: str) -> str:
+    """Expand short ESPN codes to Kalshi equivalents for matching."""
+    return _ESPN_TO_KALSHI.get(code.upper(), code.upper())
+
+
 def _team_code_in_ticker(code: str, ticker_upper: str) -> bool:
     """Check if a team code appears in a ticker with word-boundary matching.
 
@@ -763,8 +780,16 @@ def _team_code_in_ticker(code: str, ticker_upper: str) -> bool:
     Works for MARKET tickers (e.g. "KXNBAGAME-26MAR03BKNMIA-BKN" — hyphen separator).
     Does NOT work for EVENT tickers where codes are concatenated ("BKNMIA" has no separator).
     Use _event_matches_game() for event-level matching instead.
+
+    Tries expanded Kalshi code (e.g. NY→NYK) if direct match fails.
     """
-    return bool(re.search(rf'(?:^|[^A-Z]){re.escape(code)}(?:[^A-Z]|$)', ticker_upper))
+    expanded = _expand_code(code)
+    if bool(re.search(rf'(?:^|[^A-Z]){re.escape(expanded)}(?:[^A-Z]|$)', ticker_upper)):
+        return True
+    # Also try original code if expansion changed it (handles unknown Kalshi codes)
+    if expanded != code.upper():
+        return bool(re.search(rf'(?:^|[^A-Z]){re.escape(code.upper())}(?:[^A-Z]|$)', ticker_upper))
+    return False
 
 
 def _event_matches_game(home_code: str, away_code: str, event_ticker: str,
@@ -775,13 +800,18 @@ def _event_matches_game(home_code: str, away_code: str, event_ticker: str,
     Requires BOTH team codes present (substring match) to avoid false positives
     where one team appears in a different game's event ticker.
 
+    Uses expanded Kalshi codes (e.g. NO→NOP) to prevent false positives from
+    short codes matching inside other words (e.g. "LA" in "COLA").
+
     When series_ticker is provided, the event ticker must start with it to prevent
     cross-series matches (e.g., MLS PHI matching NBA KXNBAGAME).
     """
     et_upper = event_ticker.upper()
     if series_ticker and not et_upper.startswith(series_ticker.upper()):
         return False
-    return home_code.upper() in et_upper and away_code.upper() in et_upper
+    home_exp = _expand_code(home_code)
+    away_exp = _expand_code(away_code)
+    return home_exp in et_upper and away_exp in et_upper
 
 
 # ── Main Sports Engine ───────────────────────────────────────────────────────
