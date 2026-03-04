@@ -1141,7 +1141,7 @@ class TelegramNotifier:
                 "disable_notification": silent,
             }, timeout=5)
         except Exception as e:
-            logging.debug(f"Telegram send failed: {e}")
+            logging.warning(f"Telegram send failed: {e}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -5455,7 +5455,7 @@ class CalibrationEngine:
                 "prod_blend_w": MARKET_BLEND_W,
             }
         except Exception:
-            logging.debug("shadow_calibration_pipeline failed", exc_info=True)
+            logging.warning("shadow_calibration_pipeline failed", exc_info=True)
             return None
 
     # ── Training Data Management ───────────────────────────────────────────
@@ -8026,7 +8026,7 @@ class OpportunityScanner:
                                     hourly_shadow_temp_2_5=c.get("hourly_shadow_temp_2_5"),
                                     hourly_shadow_blend_50=c.get("hourly_shadow_blend_50"))
                         except Exception:
-                            pass
+                            logging.warning("single_asset_selection insert failed for %s", c.get("ticker"), exc_info=True)
         else:
             filtered = candidates
 

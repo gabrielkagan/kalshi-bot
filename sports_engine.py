@@ -1067,7 +1067,9 @@ class SportsEngine:
                 no_bids = book.get("no", [])
                 if not no_bids:
                     continue
-                best_no_bid = max(b[0] for b in no_bids if b)
+                best_no_bid = max((b[0] for b in no_bids if b), default=None)
+                if best_no_bid is None:
+                    continue
                 yes_ask = 100 - best_no_bid
 
                 if is_home:
@@ -1141,7 +1143,9 @@ class SportsEngine:
                 no_bids = book.get("no", [])
                 if not no_bids:
                     continue
-                best_no_bid = max(b[0] for b in no_bids if b)
+                best_no_bid = max((b[0] for b in no_bids if b), default=None)
+                if best_no_bid is None:
+                    continue
                 yes_ask = 100 - best_no_bid
 
                 if is_home:
@@ -1184,8 +1188,9 @@ class SportsEngine:
                         book = ob["orderbook"]
                         no_bids = book.get("no", [])
                         if no_bids:
-                            best_no_bid = max(b[0] for b in no_bids if b)
-                            return 100 - best_no_bid
+                            best_no_bid = max((b[0] for b in no_bids if b), default=None)
+                            if best_no_bid is not None:
+                                return 100 - best_no_bid
             # Fallback: match team code directly in ticker
             for ticker in mkts.market_tickers:
                 if _team_code_in_ticker(fav_upper, ticker.upper()):
@@ -1194,10 +1199,11 @@ class SportsEngine:
                         book = ob["orderbook"]
                         no_bids = book.get("no", [])
                         if no_bids:
-                            best_no_bid = max(b[0] for b in no_bids if b)
-                            # Fix side label for future lookups
-                            mkts.market_tickers[ticker] = fav_side
-                            return 100 - best_no_bid
+                            best_no_bid = max((b[0] for b in no_bids if b), default=None)
+                            if best_no_bid is not None:
+                                # Fix side label for future lookups
+                                mkts.market_tickers[ticker] = fav_side
+                                return 100 - best_no_bid
             logging.debug(
                 "SportsEngine: event %s matched game %s but no fav ticker "
                 "for %s (sides: %s)", event_ticker, game.game_id, fav_code,
@@ -1257,8 +1263,9 @@ class SportsEngine:
                 yes_bid = max((b[0] for b in yes_bids if b), default=None)
                 yes_ask = None
                 if no_bids:
-                    best_no = max(b[0] for b in no_bids if b)
-                    yes_ask = 100 - best_no
+                    best_no = max((b[0] for b in no_bids if b), default=None)
+                    if best_no is not None:
+                        yes_ask = 100 - best_no
 
                 mid = None
                 spread = None
@@ -1504,7 +1511,7 @@ class SportsEngine:
             ))
             conn.commit()
         except Exception:
-            logging.debug("SportsEngine shadow log insert failed", exc_info=True)
+            logging.warning("SportsEngine shadow log insert failed", exc_info=True)
 
     def _insert_evaluated_opportunity(self, game: GameState,
                                       league_cfg: LeagueConfig,
