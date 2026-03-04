@@ -11061,8 +11061,11 @@ class MainLoop:
                     logging.info("CalEngine registered for '%s' (state: %s, enabled=%s)",
                                  _reg_key, _sub_path, _cfg.cal_engine_enabled)
 
-            elif _cfg.cal_engine_enabled and _cfg.cal_engine_state_path:
+            elif _cfg.cal_engine_state_path:
                 # Single engine per product_type (hourly, spx_hourly)
+                # Always instantiate so settlement can collect observations via add_observation().
+                # require_enabled gate in _resolve_cal_engine() prevents disabled engines
+                # from affecting predictions.
                 assert _cfg.cal_engine_state_path != CALIBRATION_STATE_PATH, (
                     f"FATAL: {_pt} would share state file with 15M engine!")
                 _engine = CalibrationEngine(
@@ -11071,11 +11074,11 @@ class MainLoop:
                 self._cal_engines[_pt] = _engine
                 _CAL_REGISTRY[_pt] = _engine
                 self._cal_engine_meta[_pt] = (_pt, None)
-                logging.info("CalEngine registered for '%s' (state: %s)",
-                             _pt, _cfg.cal_engine_state_path)
+                logging.info("CalEngine registered for '%s' (state: %s, enabled=%s)",
+                             _pt, _cfg.cal_engine_state_path, _cfg.cal_engine_enabled)
 
             else:
-                logging.info("CalEngine DISABLED for '%s': passthrough", _pt)
+                logging.info("CalEngine DISABLED for '%s': no state path, passthrough", _pt)
 
         assert "15m" not in _CAL_REGISTRY, "FATAL: 15M engine must never be in _CAL_REGISTRY"
 
@@ -11593,8 +11596,8 @@ class MainLoop:
         # Periodic calibration retrain check
         if self.calibration:
             self.calibration.maybe_retrain()
-        if self.hourly_calibration:
-            self.hourly_calibration.maybe_retrain()
+        for _rk, _eng in self._cal_engines.items():
+            _eng.maybe_retrain()
 
         # Periodic EGARCH MLE refit
         if self.egarch_estimator:
