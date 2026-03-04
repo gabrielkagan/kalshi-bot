@@ -751,7 +751,7 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str] = None,
     """).fetchone()[0]
     c6 = multi == 0
     checks.append(("No multi-entry per game", c6,
-                    f"{multi} games with multiple signals"))
+                    f"{multi} games with duplicate signals (restart dedup gap)" if multi else "clean"))
 
     # 7. Positive sim PnL (deduped: one pnl per game)
     sim_pnl = conn.execute(f"""
@@ -1217,6 +1217,8 @@ def section_recommendations(conn: sqlite3.Connection, since: Optional[str] = Non
             sport_recs = []
 
             # Signal dedup: only if multi-entry games still exist
+            # Note: bot already deduplicates via in-memory _signaled_games set,
+            # but restarts clear it. If this triggers, run retroactive dedup cleanup.
             multi = conn.execute(f"""
                 SELECT COUNT(*) FROM (
                     SELECT game_id, COUNT(*) as n
@@ -1227,10 +1229,11 @@ def section_recommendations(conn: sqlite3.Connection, since: Optional[str] = Non
             """).fetchone()[0]
             if multi > 0:
                 sport_recs.append((
-                    "MEDIUM",
-                    "Add per-game signal dedup",
-                    f"{multi} games still have multiple signals (correlated risk). "
-                    "Max 1 signal per game_id.",
+                    "LOW",
+                    "Retroactive dedup cleanup needed",
+                    f"{multi} games have multiple signals (bot restart lost dedup state). "
+                    "Clean via: UPDATE sports_shadow_log SET signal_fired=0, "
+                    "filter_stage='sports_signal_dup' WHERE game_id=X AND id != (first).",
                     "WEEK 1"
                 ))
 
