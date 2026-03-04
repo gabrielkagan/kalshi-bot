@@ -39,10 +39,14 @@ WITH daily AS (
 cumulative AS (
     SELECT
         *,
-        SUM(net_pnl_cents) OVER (PARTITION BY product_type ORDER BY trade_date) AS cum_pnl_cents,
-        MAX(SUM(net_pnl_cents) OVER (PARTITION BY product_type ORDER BY trade_date))
-            OVER (PARTITION BY product_type ORDER BY trade_date) AS peak_cum_pnl_cents
+        SUM(net_pnl_cents) OVER (PARTITION BY product_type ORDER BY trade_date) AS cum_pnl_cents
     FROM daily
+),
+with_peak AS (
+    SELECT
+        *,
+        MAX(cum_pnl_cents) OVER (PARTITION BY product_type ORDER BY trade_date) AS peak_cum_pnl_cents
+    FROM cumulative
 )
 SELECT
     c.*,
@@ -50,7 +54,7 @@ SELECT
     CASE WHEN c.peak_cum_pnl_cents > 0
          THEN ROUND(((c.peak_cum_pnl_cents - c.cum_pnl_cents)::NUMERIC / c.peak_cum_pnl_cents * 100), 2)
          ELSE 0 END AS daily_drawdown_from_peak_pct
-FROM cumulative c
+FROM with_peak c
 ORDER BY c.product_type, c.trade_date;
 
 -- ============================================================================
