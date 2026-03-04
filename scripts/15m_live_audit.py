@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import json
 import math
 import sqlite3
 import sys
@@ -1738,6 +1739,8 @@ def main():
                         help="Auto-detect regime start")
     parser.add_argument("--asset", default=None,
                         help="Filter to single asset (BTC/ETH/SOL/XRP)")
+    parser.add_argument("--json", default=None,
+                        help="Write JSON artifact summary to this path")
     args = parser.parse_args()
 
     conn = connect_db(args.db)
@@ -1764,9 +1767,45 @@ def main():
     bucket_analysis(conn, since, args.asset)
     profit_leakage(conn, since, args.asset)
     config_sensitivity(conn, since, args.asset)
-    calibration_grid_search(conn, since, args.asset)
+    cal_grid = calibration_grid_search(conn, since, args.asset)
     data_sufficiency(conn, since)
     recommendations(conn, since, perf)
+
+    # JSON artifact output
+    if args.json:
+        artifact = {
+            "since": since,
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "trades": perf["trades"],
+            "wins": perf["wins"],
+            "losses": perf["losses"],
+            "pnl_cents": perf["pnl"],
+            "fees_cents": perf["fees"],
+            "win_rate": round(perf["wr"] / 100, 4) if perf["wr"] else 0,
+        }
+        # Per-asset breakdown
+        asset_rows = conn.execute(f"""
+            SELECT asset, COUNT(*) AS n,
+              SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS wins,
+              SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) AS losses,
+              SUM(pnl_cents) AS pnl
+            FROM settled_trades
+            WHERE settled_at >= ? {SETTLED_15M_FILTER}
+            GROUP BY asset
+        """, (since,)).fetchall()
+        artifact["by_asset"] = {
+            r["asset"]: {"n": r["n"], "wins": r["wins"] or 0,
+                         "losses": r["losses"] or 0, "pnl": r["pnl"] or 0}
+            for r in asset_rows
+        }
+        if cal_grid and cal_grid.get("best_config"):
+            artifact["calibration_grid"] = cal_grid
+        try:
+            with open(args.json, "w") as f:
+                json.dump(artifact, f, indent=2)
+            print(f"\nJSON artifact written to {args.json}")
+        except Exception as e:
+            print(f"\nERROR writing JSON: {e}")
 
     conn.close()
     print(f"\n{'=' * 72}")

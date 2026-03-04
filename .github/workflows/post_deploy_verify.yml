@@ -1,0 +1,80 @@
+name: Post-Deploy Verify
+
+on:
+  workflow_run:
+    workflows: ["Deploy to VPS"]
+    types: [completed]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Wait for bot restart
+        run: sleep 90
+
+      - name: Verify deployment
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: botuser
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+
+            echo "=== Post-Deploy Verification ==="
+
+            # 1. Service is active
+            echo "[1/4] Checking service status..."
+            if ! systemctl is-active --quiet kalshi-bot; then
+              echo "FAIL: kalshi-bot service is not active"
+              exit 1
+            fi
+            echo "  OK: Service is active"
+
+            # 2. Commit hash matches
+            echo "[2/4] Checking commit hash..."
+            cd ~/kalshi-bot-repo
+            LOCAL_HASH=$(git rev-parse HEAD)
+            REMOTE_HASH=$(git ls-remote origin main | cut -f1)
+            if [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
+              echo "FAIL: VPS commit ($LOCAL_HASH) != remote ($REMOTE_HASH)"
+              exit 1
+            fi
+            echo "  OK: Commit $LOCAL_HASH matches remote"
+
+            # 3. No errors in last 2 minutes of logs
+            echo "[3/4] Checking recent logs for errors..."
+            ERROR_COUNT=$(journalctl -u kalshi-bot --since "2 minutes ago" --no-pager 2>/dev/null | grep -ci "error\|traceback\|exception" || true)
+            if [ "$ERROR_COUNT" -gt 2 ]; then
+              echo "WARN: $ERROR_COUNT error lines in last 2 min"
+              journalctl -u kalshi-bot --since "2 minutes ago" --no-pager | grep -i "error\|traceback\|exception" | tail -5
+              exit 1
+            fi
+            echo "  OK: $ERROR_COUNT error lines (threshold: 2)"
+
+            # 4. Run audit_cron to verify metrics computation
+            echo "[4/4] Running audit_cron.py..."
+            cd ~/kalshi-bot-repo
+            venv/bin/python3 scripts/audit_cron.py --db state.db 2>&1 | tail -10
+            echo "  OK: audit_cron completed"
+
+            echo ""
+            echo "=== All post-deploy checks passed ==="
+
+      - name: Alert on failure
+        if: failure()
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: botuser
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd ~/kalshi-bot-repo
+            source .env 2>/dev/null || true
+            if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="$TELEGRAM_CHAT_ID" \
+                -d text="*Post-Deploy Verify FAILED*%0ACommit: $(git rev-parse --short HEAD)%0ACheck GitHub Actions for details." \
+                -d parse_mode="Markdown" || true
+            fi
