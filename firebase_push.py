@@ -13,6 +13,13 @@ import requests
 PUSH_INTERVAL = 10  # seconds
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 
+# Current config regime boundary — performance metrics filtered to this era
+# Mar 3 2026: MIN_EDGE_BY_PRICE halved, DIRECT_TAKER_THRESHOLD 60→75
+CONFIG_REGIME_SINCE = "2026-03-03T00:00:00"
+
+# Blended sim fee rate for observation products (maker ~70% @ 0.0175 + taker ~30% @ 0.07)
+SIM_FEE_RATE = 0.035
+
 # Firebase key names cannot contain . $ # [ ] /
 _FB_KEY_BAD = str.maketrans({".": "_", "$": "_", "#": "_", "[": "(", "]": ")", "/": "|"})
 
@@ -177,7 +184,12 @@ class FirebasePusher:
                            st.product_type
                     FROM settled_trades st
                     LEFT JOIN evaluated_opportunities eo
-                        ON st.ticker = eo.ticker AND eo.filter_stage IN ('candidate', 'observation_trade')
+                        ON eo.rowid = (
+                            SELECT eo2.rowid FROM evaluated_opportunities eo2
+                            WHERE eo2.ticker = st.ticker
+                              AND eo2.filter_stage IN ('candidate', 'observation_trade')
+                            ORDER BY eo2.evaluation_time DESC LIMIT 1
+                        )
                     WHERE st.product_type = '15m'
                     ORDER BY st.settled_at DESC LIMIT 10
                 """).fetchall()
@@ -202,7 +214,12 @@ class FirebasePusher:
                            st.product_type
                     FROM settled_trades st
                     LEFT JOIN evaluated_opportunities eo
-                        ON st.ticker = eo.ticker AND eo.filter_stage IN ('candidate', 'observation_trade')
+                        ON eo.rowid = (
+                            SELECT eo2.rowid FROM evaluated_opportunities eo2
+                            WHERE eo2.ticker = st.ticker
+                              AND eo2.filter_stage IN ('candidate', 'observation_trade')
+                            ORDER BY eo2.evaluation_time DESC LIMIT 1
+                        )
                     ORDER BY st.settled_at DESC LIMIT 10
                 """).fetchall()
                 snap["all_products_recent_trades"] = [dict(r) for r in all_rows]
@@ -298,6 +315,23 @@ class FirebasePusher:
             risk["max_drawdown_pct"] = round((peak - cur) / peak * 100, 2) if peak > 0 else 0.0
             risk["max_drawdown_dollars"] = round(peak - cur, 2)
 
+            def _true_max_drawdown(pnl_rows, starting_cents):
+                """Compute true peak-to-trough max drawdown from equity curve."""
+                if not pnl_rows or starting_cents <= 0:
+                    return 0.0, 0
+                cumulative = 0
+                peak_bal = starting_cents
+                max_dd_cents = 0
+                for r in pnl_rows:
+                    cumulative += r["net"]
+                    cur_bal = starting_cents + cumulative
+                    if cur_bal > peak_bal:
+                        peak_bal = cur_bal
+                    dd = peak_bal - cur_bal
+                    if dd > max_dd_cents:
+                        max_dd_cents = dd
+                return round(max_dd_cents / peak_bal * 100, 2) if peak_bal > 0 else 0.0, max_dd_cents
+
             def _compute_risk_stats(pnl_rows, span_query_filter):
                 nets = [r["net"] for r in pnl_rows]
                 n = len(nets)
@@ -305,7 +339,7 @@ class FirebasePusher:
                 if n > 0:
                     total = sum(nets)
                     mean = total / n
-                    variance = sum((x - mean) ** 2 for x in nets) / n if n > 1 else 0
+                    variance = sum((x - mean) ** 2 for x in nets) / (n - 1) if n > 1 else 0
                     std = variance ** 0.5
                     span_row = conn.execute(
                         f"SELECT MIN(settled_at) AS first_t, MAX(settled_at) AS last_t FROM settled_trades{span_query_filter}"
@@ -335,9 +369,15 @@ class FirebasePusher:
 
             # 15M only
             pnl_15m = conn.execute(
-                "SELECT (pnl_cents - fee_cents) AS net FROM settled_trades WHERE product_type='15m'"
+                "SELECT (pnl_cents - fee_cents) AS net FROM settled_trades WHERE product_type='15m' ORDER BY settled_at"
             ).fetchall()
             risk.update(_compute_risk_stats(pnl_15m, " WHERE product_type='15m'"))
+            # True max drawdown from equity curve (peak-to-trough, not just peak-to-now)
+            try:
+                start_cents = self._ml.sizer.starting_balance_cents
+                risk["true_max_drawdown_pct"], risk["true_max_drawdown_cents"] = _true_max_drawdown(pnl_15m, start_cents)
+            except Exception:
+                pass
             snap["risk_metrics"] = risk
 
             # All products (for toggle)
@@ -349,6 +389,38 @@ class FirebasePusher:
             all_risk["max_drawdown_dollars"] = risk["max_drawdown_dollars"]
             all_risk.update(_compute_risk_stats(all_pnl, ""))
             snap["all_products_risk_metrics"] = all_risk
+
+            # Regime-filtered metrics (current config only)
+            try:
+                settled_15m_regime = conn.execute(
+                    "SELECT side, market_result FROM settled_trades WHERE product_type='15m' AND settled_at >= ?",
+                    (CONFIG_REGIME_SINCE,)
+                ).fetchall()
+                r_win, r_loss = _count_wins_losses(settled_15m_regime)
+                pnl_15m_regime = conn.execute(
+                    "SELECT (pnl_cents - fee_cents) AS net FROM settled_trades "
+                    "WHERE product_type='15m' AND settled_at >= ? ORDER BY settled_at",
+                    (CONFIG_REGIME_SINCE,)
+                ).fetchall()
+                regime_risk = {}
+                regime_risk.update(_compute_risk_stats(
+                    pnl_15m_regime,
+                    f" WHERE product_type='15m' AND settled_at >= '{CONFIG_REGIME_SINCE}'"
+                ))
+                regime_risk["win_count"] = r_win
+                regime_risk["loss_count"] = r_loss
+                regime_risk["win_rate"] = round(r_win / (r_win + r_loss), 4) if (r_win + r_loss) > 0 else 0.0
+                try:
+                    regime_risk["true_max_drawdown_pct"], regime_risk["true_max_drawdown_cents"] = _true_max_drawdown(
+                        pnl_15m_regime, self._ml.sizer.starting_balance_cents
+                    )
+                except Exception:
+                    pass
+                snap["regime_risk_metrics"] = regime_risk
+                snap["config_regime_since"] = CONFIG_REGIME_SINCE
+            except Exception:
+                logging.debug("Firebase: regime_risk_metrics failed", exc_info=True)
+                snap["regime_risk_metrics"] = None
         except Exception:
             logging.debug("Firebase: risk_metrics build failed", exc_info=True)
             snap["risk_metrics"] = None
@@ -712,6 +784,33 @@ class FirebasePusher:
             rta["all_products_cumulative_pnl"] = all_cumulative
 
             snap["real_trade_analytics"] = rta
+
+            # Regime-filtered trade analytics (current config only)
+            try:
+                _regime_filter = f" WHERE product_type='15m' AND settled_at >= '{CONFIG_REGIME_SINCE}'"
+                r_asset = conn.execute(
+                    f"SELECT asset, COUNT(*) AS cnt, {_win_case} AS wins, "
+                    f"  COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
+                    f"FROM settled_trades{_regime_filter} GROUP BY asset"
+                ).fetchall()
+                r_bucket = conn.execute(
+                    f"SELECT CASE "
+                    f"  WHEN entry_price_cents BETWEEN 86 AND 89 THEN '86-89' "
+                    f"  WHEN entry_price_cents BETWEEN 90 AND 94 THEN '90-94' "
+                    f"  WHEN entry_price_cents BETWEEN 95 AND 99 THEN '95-99' "
+                    f"  ELSE 'other' END AS bucket, "
+                    f"COUNT(*) AS cnt, {_win_case} AS wins, "
+                    f"COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
+                    f"FROM settled_trades{_regime_filter} GROUP BY bucket"
+                ).fetchall()
+                snap["regime_trade_analytics"] = {
+                    "since": CONFIG_REGIME_SINCE,
+                    "by_asset": {r["asset"]: {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in r_asset},
+                    "by_bucket": {r["bucket"]: {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in r_bucket},
+                }
+            except Exception:
+                logging.debug("Firebase: regime_trade_analytics failed", exc_info=True)
+                snap["regime_trade_analytics"] = None
         except Exception:
             logging.debug("Firebase: real_trade_analytics build failed", exc_info=True)
             snap["real_trade_analytics"] = {}
@@ -745,6 +844,8 @@ class FirebasePusher:
                 "weather_observation_only": getattr(_bot_mod, "WEATHER_OBSERVATION_ONLY", True),
                 "sports_enabled": getattr(_bot_mod, "SPORTS_ENABLED", False),
                 "sports_observation_only": getattr(_bot_mod, "SPORTS_OBSERVATION_ONLY", True),
+                "config_regime_since": CONFIG_REGIME_SINCE,
+                "sim_fee_rate": SIM_FEE_RATE,
             }
         except Exception:
             snap["trading_config"] = {}
@@ -835,7 +936,7 @@ class FirebasePusher:
         # ── counterfactual analysis (15M only) ─────────────────────────
         try:
             conn = self._db_conn
-            _cf_pt_filter = "AND (product_type IS NULL OR product_type='15m')"
+            _cf_pt_filter = "AND product_type='15m'"
 
             # By filter stage
             stage_rows = conn.execute(
@@ -1167,16 +1268,18 @@ class FirebasePusher:
                         "WHERE product_type='hourly' AND status='settled'"
                     ).fetchone()
                     hourly_data["settled_count"] = row["cnt"] if row else 0
-                    # NOTE: market_result='yes' = win because bot ONLY takes YES side.
-                    # If bot ever takes NO side, this query must check side column too.
+                    # Directional win: infer side from calibrated_prob vs market_price
                     row = conn.execute(
                         "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
-                        "WHERE product_type='hourly' AND status='settled' AND market_result='yes'"
+                        "WHERE product_type='hourly' AND status='settled' AND ("
+                        "  (calibrated_prob > market_price/100.0 AND market_result='yes') OR "
+                        "  (calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no'))"
+                        ") AND calibrated_prob IS NOT NULL AND market_price IS NOT NULL"
                     ).fetchone()
                     hourly_data["settled_wins"] = row["cnt"] if row else 0
                     row = conn.execute(
                         "SELECT AVG(fee_adjusted_edge) AS avg_e FROM evaluated_opportunities "
-                        "WHERE product_type='hourly' AND market_price IS NOT NULL"
+                        "WHERE product_type='hourly' AND filter_stage='hourly_observation' AND market_price IS NOT NULL"
                     ).fetchone()
                     hourly_data["avg_edge"] = round(row["avg_e"], 6) if row and row["avg_e"] else None
                 except Exception:
@@ -1203,20 +1306,30 @@ class FirebasePusher:
                     } if rows else {}
                 except Exception:
                     hourly_data["filter_stages"] = {}
-                # Change 10: Simulated P&L from hourly observation trades
-                # NOTE: Assumes YES side only. market_result='yes' = win, payout = 100 - price.
-                # If bot ever takes NO side, sim P&L logic must account for side.
+                # Simulated P&L from hourly observation trades
+                # Direction inferred from calibrated_prob vs market_price:
+                #   calibrated_prob > market_price/100 → YES side, else NO side
                 try:
                     row = conn.execute(
                         "SELECT COUNT(*) AS cnt, "
-                        "SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS wins, "
-                        "SUM(CASE WHEN market_result='yes' "
-                        "    THEN (100 - market_price) - CAST(CEIL(0.0175 * 1 * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
-                        "    ELSE -market_price "
-                        "END) AS sim_pnl "
+                        "SUM(CASE "
+                        "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' THEN 1 "
+                        "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') THEN 1 "
+                        "  ELSE 0 END) AS wins, "
+                        "SUM(CASE "
+                        "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' "
+                        f"    THEN (100 - market_price) - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "  WHEN calibrated_prob > market_price/100.0 AND market_result IN ('no','all_no') "
+                        "    THEN -market_price "
+                        "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') "
+                        f"    THEN market_price - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "  WHEN calibrated_prob <= market_price/100.0 AND market_result='yes' "
+                        "    THEN -(100 - market_price) "
+                        "  ELSE 0 END) AS sim_pnl "
                         "FROM evaluated_opportunities "
                         "WHERE product_type='hourly' AND filter_stage='hourly_observation' "
-                        "AND status='settled' AND market_result IS NOT NULL"
+                        "AND status='settled' AND market_result IS NOT NULL "
+                        "AND calibrated_prob IS NOT NULL AND market_price IS NOT NULL"
                     ).fetchone()
                     if row and row["cnt"] > 0:
                         hourly_data["sim_trade_count"] = row["cnt"]
@@ -1261,7 +1374,10 @@ class FirebasePusher:
                     spx_data["settled_count"] = row["cnt"] if row else 0
                     row = conn.execute(
                         "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
-                        "WHERE product_type='spx_hourly' AND status='settled' AND market_result='yes'"
+                        "WHERE product_type='spx_hourly' AND status='settled' AND ("
+                        "  (calibrated_prob > market_price/100.0 AND market_result='yes') OR "
+                        "  (calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no'))"
+                        ") AND calibrated_prob IS NOT NULL AND market_price IS NOT NULL"
                     ).fetchone()
                     spx_data["settled_wins"] = row["cnt"] if row else 0
                     row = conn.execute(
@@ -1286,18 +1402,28 @@ class FirebasePusher:
                 except Exception:
                     spx_data["filter_stages"] = {}
 
-                # Simulated P&L
+                # Simulated P&L (directional: infer side from calibrated_prob vs market_price)
                 try:
                     row = conn.execute(
                         "SELECT COUNT(*) AS cnt, "
-                        "SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS wins, "
-                        "SUM(CASE WHEN market_result='yes' "
-                        "    THEN (100 - market_price) - CAST(CEIL(0.0175 * 1 * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
-                        "    ELSE -market_price "
-                        "END) AS sim_pnl "
+                        "SUM(CASE "
+                        "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' THEN 1 "
+                        "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') THEN 1 "
+                        "  ELSE 0 END) AS wins, "
+                        "SUM(CASE "
+                        "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' "
+                        f"    THEN (100 - market_price) - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "  WHEN calibrated_prob > market_price/100.0 AND market_result IN ('no','all_no') "
+                        "    THEN -market_price "
+                        "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') "
+                        f"    THEN market_price - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "  WHEN calibrated_prob <= market_price/100.0 AND market_result='yes' "
+                        "    THEN -(100 - market_price) "
+                        "  ELSE 0 END) AS sim_pnl "
                         "FROM evaluated_opportunities "
                         "WHERE product_type='spx_hourly' AND filter_stage='spx_observation' "
-                        "AND status='settled' AND market_result IS NOT NULL"
+                        "AND status='settled' AND market_result IS NOT NULL "
+                        "AND calibrated_prob IS NOT NULL AND market_price IS NOT NULL"
                     ).fetchone()
                     if row and row["cnt"] > 0:
                         spx_data["sim_trade_count"] = row["cnt"]
@@ -1334,7 +1460,10 @@ class FirebasePusher:
                     wx_data["settled_count"] = row["cnt"] if row else 0
                     row = conn.execute(
                         "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
-                        "WHERE product_type='weather' AND status='settled' AND market_result='yes'"
+                        "WHERE product_type='weather' AND status='settled' AND ("
+                        "  (calibrated_prob > market_price/100.0 AND market_result='yes') OR "
+                        "  (calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no'))"
+                        ") AND calibrated_prob IS NOT NULL AND market_price IS NOT NULL"
                     ).fetchone()
                     wx_data["settled_wins"] = row["cnt"] if row else 0
                     row = conn.execute(
@@ -1359,18 +1488,28 @@ class FirebasePusher:
                 except Exception:
                     wx_data["filter_stages"] = {}
 
-                # Simulated P&L
+                # Simulated P&L (directional: infer side from calibrated_prob vs market_price)
                 try:
                     row = conn.execute(
                         "SELECT COUNT(*) AS cnt, "
-                        "SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS wins, "
-                        "SUM(CASE WHEN market_result='yes' "
-                        "    THEN (100 - market_price) - CAST(CEIL(0.0175 * 1 * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
-                        "    ELSE -market_price "
-                        "END) AS sim_pnl "
+                        "SUM(CASE "
+                        "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' THEN 1 "
+                        "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') THEN 1 "
+                        "  ELSE 0 END) AS wins, "
+                        "SUM(CASE "
+                        "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' "
+                        f"    THEN (100 - market_price) - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "  WHEN calibrated_prob > market_price/100.0 AND market_result IN ('no','all_no') "
+                        "    THEN -market_price "
+                        "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') "
+                        f"    THEN market_price - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                        "  WHEN calibrated_prob <= market_price/100.0 AND market_result='yes' "
+                        "    THEN -(100 - market_price) "
+                        "  ELSE 0 END) AS sim_pnl "
                         "FROM evaluated_opportunities "
                         "WHERE product_type='weather' AND filter_stage='weather_observation' "
-                        "AND status='settled' AND market_result IS NOT NULL"
+                        "AND status='settled' AND market_result IS NOT NULL "
+                        "AND calibrated_prob IS NOT NULL AND market_price IS NOT NULL"
                     ).fetchone()
                     if row and row["cnt"] > 0:
                         wx_data["sim_trade_count"] = row["cnt"]
