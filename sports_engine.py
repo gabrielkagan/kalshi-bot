@@ -1533,13 +1533,13 @@ class SportsEngine:
             conn.execute("""
                 INSERT OR REPLACE INTO evaluated_opportunities
                     (ticker, event_ticker, asset, filter_stage, rejection_reason,
-                     evaluation_time, market_price, calibrated_prob, edge,
+                     evaluation_time, market_price, calibrated_prob, raw_prob, edge,
                      fee_adjusted_edge, product_type, status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, league_cfg.display_name,
                   signal.filter_stage, signal.rejection_reason,
                   now, int(current_price) if current_price is not None else None,
-                  signal.comeback_prob, signal.edge,
+                  signal.comeback_prob, signal.comeback_prob, signal.edge,
                   signal.fee_adjusted_edge, "sports", "pending"))
             conn.commit()
         except Exception:

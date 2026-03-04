@@ -10829,17 +10829,18 @@ class SettlementTracker:
                 # Feed to calibration engine — route by product type
                 raw_p = row.get("raw_prob")
                 filter_stage = row.get("filter_stage", "")
-                cal_eligible_stages = ("candidate", "observation_trade", "hourly_observation",
-                                       "spx_observation", "weather_observation")
                 if (raw_p is not None
-                        and filter_stage in cal_eligible_stages
                         and result in ("yes", "all_yes", "no", "all_no")):
                     cal_binary = 1 if result in ("yes", "all_yes") else 0
                     _settle_engine = _resolve_cal_engine(_opp_pt, row.get("asset"))
                     if _settle_engine is not None:
+                        # Dedicated engine — accept any filter_stage
                         _settle_engine.add_observation(raw_p, cal_binary)
-                    elif get_market_config(_opp_pt).cal_eligible:
-                        # 15M → existing engine
+                    elif (filter_stage in ("candidate", "observation_trade",
+                                           "hourly_observation", "spx_observation",
+                                           "weather_observation")
+                          and get_market_config(_opp_pt).cal_eligible):
+                        # 15M fallback — restricted to candidate/observation stages
                         if _CALIBRATION_ENGINE is not None:
                             _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
 
