@@ -351,7 +351,9 @@ class SupabaseSyncer:
                 SELECT ticker, event_ticker, asset, market_result, side, count,
                        entry_price_cents, revenue_cents, fee_cents, pnl_cents,
                        settled_at, strategy, seconds_to_close, fill_latency_seconds,
-                       vol_regime, calibrated_prob, edge, kelly_f
+                       vol_regime, calibrated_prob, edge, kelly_f,
+                       escalation_type, maker_price_cents, maker_wait_seconds,
+                       product_type
                 FROM settled_trades
             """).fetchall()
             if not rows:
