@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 def connect_db(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.row_factory = sqlite3.Row
     return conn
 

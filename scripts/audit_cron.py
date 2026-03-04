@@ -43,6 +43,31 @@ def wilson_ci(wins, total, z=1.96):
     return (round((centre - adj) / denom, 4), round((centre + adj) / denom, 4))
 
 
+def _sql_ceil(expr):
+    """SQL expression for ceil(expr) using SQLite integer truncation.
+
+    ceil(x) = CAST(x AS INTEGER) + (x > CAST(x AS INTEGER))
+    Works for positive values (fees are always >= 0).
+    """
+    return (f"(CAST({expr} AS INTEGER) + ({expr} > CAST({expr} AS INTEGER)))")
+
+
+def _sim_pnl_sql(fee_mult, size_expr, price_expr, result_expr):
+    """SQL CASE expression for simulated PnL with correct maker/taker fees.
+
+    Fees are subtracted on BOTH wins and losses (fee is paid at order time).
+    Uses ceil() to match bot's math.ceil() fee calculation.
+    """
+    fee_raw = f"({fee_mult} * {size_expr} * {price_expr} * (100 - {price_expr}) / 100.0)"
+    fee = _sql_ceil(fee_raw)
+    return f"""CASE
+                WHEN {result_expr} IN ('yes', 'all_yes') THEN
+                    (100 - {price_expr}) * {size_expr} - {fee}
+                WHEN {result_expr} IN ('no', 'all_no') THEN
+                    -({price_expr} * {size_expr} + {fee})
+                ELSE 0 END"""
+
+
 def cal_engine_obs_count(conn, product_type, since):
     """Count settled evaluated_opportunities with raw_prob for CalEngine training."""
     try:
@@ -89,23 +114,7 @@ def compute_15m(conn, since):
     """Compute 15M live trading summary metrics."""
     c = conn.cursor()
 
-    # Auto-detect regime: find latest gap > 4h in settled_trades
-    rows = c.execute(
-        "SELECT settled_at FROM settled_trades ORDER BY settled_at"
-    ).fetchall()
-    regime_start = since
-    if rows and len(rows) > 1:
-        for i in range(len(rows) - 1, 0, -1):
-            try:
-                t1 = datetime.fromisoformat(rows[i - 1][0].replace("Z", "+00:00"))
-                t2 = datetime.fromisoformat(rows[i][0].replace("Z", "+00:00"))
-                if (t2 - t1).total_seconds() > 14400:
-                    regime_start = rows[i][0]
-                    break
-            except (ValueError, TypeError):
-                continue
-
-    # Core performance
+    # Core performance — filter to product_type='15m' to exclude hourly/spx/etc
     row = c.execute("""
         SELECT
             COUNT(*) as total,
@@ -117,8 +126,8 @@ def compute_15m(conn, since):
             AVG(fill_latency_seconds) as avg_fill_latency,
             SUM(count) as total_contracts
         FROM settled_trades
-        WHERE settled_at >= ?
-    """, (regime_start,)).fetchone()
+        WHERE settled_at >= ? AND product_type = '15m'
+    """, (since,)).fetchone()
 
     total, wins, losses = row[0], row[1] or 0, row[2] or 0
     total_pnl = row[3] or 0
@@ -132,8 +141,8 @@ def compute_15m(conn, since):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     daily_row = c.execute("""
         SELECT SUM(pnl_cents) FROM settled_trades
-        WHERE settled_at >= ? AND date(settled_at) = ?
-    """, (regime_start, today)).fetchone()
+        WHERE settled_at >= ? AND product_type = '15m' AND date(settled_at) = ?
+    """, (since, today)).fetchone()
     daily_pnl = daily_row[0] or 0 if daily_row else 0
 
     # Per-asset breakdown
@@ -143,9 +152,9 @@ def compute_15m(conn, since):
             SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as w,
             SUM(pnl_cents) as pnl
         FROM settled_trades
-        WHERE settled_at >= ?
+        WHERE settled_at >= ? AND product_type = '15m'
         GROUP BY asset ORDER BY pnl DESC
-    """, (regime_start,)).fetchall()
+    """, (since,)).fetchall()
     by_asset = {r[0]: {"n": r[1], "wins": r[2], "pnl_cents": r[3] or 0} for r in asset_rows}
 
     # Execution mix
@@ -154,8 +163,8 @@ def compute_15m(conn, since):
             SUM(CASE WHEN escalation_type IS NULL OR escalation_type = 'none' THEN 1 ELSE 0 END) as maker,
             SUM(CASE WHEN escalation_type IS NOT NULL AND escalation_type != 'none' THEN 1 ELSE 0 END) as taker
         FROM settled_trades
-        WHERE settled_at >= ?
-    """, (regime_start,)).fetchone()
+        WHERE settled_at >= ? AND product_type = '15m'
+    """, (since,)).fetchone()
 
     return {
         "total_trades": total,
@@ -171,7 +180,7 @@ def compute_15m(conn, since):
         "by_asset": by_asset,
         "maker_fills": exec_row[0] or 0 if exec_row else 0,
         "taker_fills": exec_row[1] or 0 if exec_row else 0,
-        "regime_start": regime_start,
+        "regime_start": since,
     }
 
 
@@ -198,18 +207,13 @@ def compute_hourly(conn, since):
     settled = row[2] or 0
     signals_settled = row[3] or 0
 
-    # Signal W/L and simulated PnL (maker fees)
-    sig_row = c.execute("""
+    # Signal W/L and simulated PnL (maker fees, ceil, fee on losses)
+    _pnl = _sim_pnl_sql(0.0175, "COALESCE(position_size, 1)", "market_price", "market_result")
+    sig_row = c.execute(f"""
         SELECT
             SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as wins,
             SUM(CASE WHEN market_result = 'no' THEN 1 ELSE 0 END) as losses,
-            SUM(CASE
-                WHEN market_result = 'yes' THEN
-                    (100 - market_price) * COALESCE(position_size, 1)
-                    - CAST(0.0175 * COALESCE(position_size, 1) * (market_price / 100.0) * (1 - market_price / 100.0) * 100 + 0.5 AS INTEGER)
-                WHEN market_result = 'no' THEN
-                    -market_price * COALESCE(position_size, 1)
-                ELSE 0 END) as sim_pnl,
+            SUM({_pnl}) as sim_pnl,
             AVG(market_price) as avg_price
         FROM evaluated_opportunities
         WHERE product_type = 'hourly'
@@ -254,27 +258,22 @@ def compute_hourly(conn, since):
     if oc_row and oc_row[0] is not None and oc_row[1] is not None:
         overconfidence_pp = round((oc_row[0] - oc_row[1]) * 100, 2)
 
-    # Temperature instrumentation coverage
+    # Temperature instrumentation coverage (signals only — pre-temp stages always have NULL)
     temp_row = c.execute("""
         SELECT
             COUNT(*) as total,
             SUM(CASE WHEN hourly_pre_temp_prob IS NOT NULL THEN 1 ELSE 0 END) as has_temp,
             SUM(CASE WHEN hourly_applied_temp_t IS NOT NULL THEN 1 ELSE 0 END) as has_temp_t
         FROM evaluated_opportunities
-        WHERE product_type = 'hourly' AND evaluation_time >= ?
+        WHERE product_type = 'hourly'
+          AND filter_stage = 'hourly_observation'
+          AND evaluation_time >= ?
     """, (since,)).fetchone()
     temp_coverage = round(temp_row[1] / temp_row[0] * 100, 1) if temp_row[0] else 0
 
     # Worst asset by simulated PnL
-    worst_row = c.execute("""
-        SELECT asset,
-            SUM(CASE
-                WHEN market_result = 'yes' THEN
-                    (100 - market_price) * COALESCE(position_size, 1)
-                    - CAST(0.0175 * COALESCE(position_size, 1) * (market_price / 100.0) * (1 - market_price / 100.0) * 100 + 0.5 AS INTEGER)
-                WHEN market_result = 'no' THEN
-                    -market_price * COALESCE(position_size, 1)
-                ELSE 0 END) as pnl
+    worst_row = c.execute(f"""
+        SELECT asset, SUM({_pnl}) as pnl
         FROM evaluated_opportunities
         WHERE product_type = 'hourly'
           AND filter_stage = 'hourly_observation'
@@ -288,17 +287,11 @@ def compute_hourly(conn, since):
     worst_asset_pnl = worst_row[1] or 0 if worst_row else 0
 
     # Per-asset summary
-    asset_rows = c.execute("""
+    asset_rows = c.execute(f"""
         SELECT asset,
             SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as w,
             SUM(CASE WHEN market_result = 'no' THEN 1 ELSE 0 END) as l,
-            SUM(CASE
-                WHEN market_result = 'yes' THEN
-                    (100 - market_price) * COALESCE(position_size, 1)
-                    - CAST(0.0175 * COALESCE(position_size, 1) * (market_price / 100.0) * (1 - market_price / 100.0) * 100 + 0.5 AS INTEGER)
-                WHEN market_result = 'no' THEN
-                    -market_price * COALESCE(position_size, 1)
-                ELSE 0 END) as pnl
+            SUM({_pnl}) as pnl
         FROM evaluated_opportunities
         WHERE product_type = 'hourly'
           AND filter_stage = 'hourly_observation'
@@ -350,18 +343,13 @@ def compute_spx(conn, since):
     signals = row[1] or 0
     signals_settled = row[3] or 0
 
-    # Signal W/L and sim PnL
-    sig_row = c.execute("""
+    # Signal W/L and sim PnL (maker fee 0.0175, fee on losses, ceil)
+    _spx_pnl = _sim_pnl_sql(0.0175, "COALESCE(position_size, 1)", "market_price", "market_result")
+    sig_row = c.execute(f"""
         SELECT
             SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as wins,
             SUM(CASE WHEN market_result = 'no' THEN 1 ELSE 0 END) as losses,
-            SUM(CASE
-                WHEN market_result = 'yes' THEN
-                    (100 - market_price) * COALESCE(position_size, 1)
-                    - CAST(0.035 * COALESCE(position_size, 1) * (market_price / 100.0) * (1 - market_price / 100.0) * 100 + 0.5 AS INTEGER)
-                WHEN market_result = 'no' THEN
-                    -market_price * COALESCE(position_size, 1)
-                ELSE 0 END) as sim_pnl,
+            SUM({_spx_pnl}) as sim_pnl,
             AVG(market_price) as avg_price
         FROM evaluated_opportunities
         WHERE product_type = 'spx_hourly'
@@ -459,7 +447,8 @@ def compute_weather(conn, since):
         SELECT
             COUNT(*) as total_evals,
             SUM(CASE WHEN filter_stage = 'weather_observation' THEN 1 ELSE 0 END) as signals,
-            SUM(CASE WHEN market_result IS NOT NULL THEN 1 ELSE 0 END) as settled
+            SUM(CASE WHEN market_result IS NOT NULL THEN 1 ELSE 0 END) as settled,
+            SUM(CASE WHEN market_result IS NOT NULL AND filter_stage = 'weather_observation' THEN 1 ELSE 0 END) as signals_settled
         FROM evaluated_opportunities
         WHERE product_type = 'weather' AND evaluation_time >= ?
     """, (since,)).fetchone()
@@ -467,19 +456,15 @@ def compute_weather(conn, since):
     total_evals = row[0]
     signals = row[1] or 0
     settled_total = row[2] or 0
+    signals_settled = row[3] or 0
 
-    # Signal W/L — filter to weather_observation (signals that passed all filters)
-    sig_row = c.execute("""
+    # Signal W/L and simulated PnL (maker fees, ceil, fee on losses)
+    _pnl = _sim_pnl_sql(0.0175, "COALESCE(position_size, 1)", "market_price", "market_result")
+    sig_row = c.execute(f"""
         SELECT
-            SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as wins,
-            SUM(CASE WHEN market_result = 'no' THEN 1 ELSE 0 END) as losses,
-            SUM(CASE
-                WHEN market_result = 'yes' THEN
-                    (100 - market_price) * COALESCE(position_size, 1)
-                    - CAST(0.0175 * COALESCE(position_size, 1) * (market_price / 100.0) * (1 - market_price / 100.0) * 100 + 0.5 AS INTEGER)
-                WHEN market_result = 'no' THEN
-                    -market_price * COALESCE(position_size, 1)
-                ELSE 0 END) as sim_pnl,
+            SUM(CASE WHEN market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) as losses,
+            SUM({_pnl}) as sim_pnl,
             AVG(market_price) as avg_price
         FROM evaluated_opportunities
         WHERE product_type = 'weather'
@@ -532,10 +517,10 @@ def compute_weather(conn, since):
     return {
         "total_evals": total_evals,
         "signals": signals,
-        "settled": settled_total,
+        "settled": signals_settled,
         "wins": wins,
         "losses": losses,
-        "pending": total_evals - settled_total,
+        "pending": signals - signals_settled,
         "win_rate": wr,
         "win_rate_ci": [ci_lo, ci_hi],
         "sim_pnl_cents": sim_pnl,
@@ -613,10 +598,12 @@ def compute_sports(conn, since):
     p0, p1 = 0.50, 0.55
     llr = 0.0
     sprt_n = 0
+    # Deduplicate by game_id — multiple signals per game are correlated
     signal_rows = c.execute("""
         SELECT fav_won FROM sports_shadow_log
         WHERE signal_fired = 1 AND fav_won IS NOT NULL AND evaluation_time >= ?
-        ORDER BY evaluation_time
+        GROUP BY game_id
+        ORDER BY MIN(evaluation_time)
     """, (since,)).fetchall()
     for (outcome,) in signal_rows:
         if outcome == 1:

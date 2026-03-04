@@ -421,8 +421,8 @@ def pipeline_audit(conn: sqlite3.Connection, since: str) -> None:
     subsection("Temperature data coverage")
     temp_row = conn.execute("""
         SELECT COUNT(*) AS total,
-          SUM(CASE WHEN hourly_applied_temp_t > 0 THEN 1 ELSE 0 END) AS has_t,
-          SUM(CASE WHEN hourly_pre_temp_prob > 0 THEN 1 ELSE 0 END) AS has_pre
+          SUM(CASE WHEN hourly_applied_temp_t IS NOT NULL THEN 1 ELSE 0 END) AS has_t,
+          SUM(CASE WHEN hourly_pre_temp_prob IS NOT NULL THEN 1 ELSE 0 END) AS has_pre
         FROM evaluated_opportunities
         WHERE product_type='hourly' AND filter_stage='hourly_observation'
           AND evaluation_time >= ?
@@ -437,7 +437,7 @@ def pipeline_audit(conn: sqlite3.Connection, since: str) -> None:
     # Temperature coverage by filter stage
     temp_stages = conn.execute("""
         SELECT filter_stage, COUNT(*) AS n,
-          SUM(CASE WHEN hourly_applied_temp_t > 0 THEN 1 ELSE 0 END) AS has_t
+          SUM(CASE WHEN hourly_applied_temp_t IS NOT NULL THEN 1 ELSE 0 END) AS has_t
         FROM evaluated_opportunities
         WHERE product_type='hourly' AND evaluation_time >= ?
           AND filter_stage != 'price_out_of_range'
@@ -896,7 +896,7 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
         SELECT hourly_pre_temp_prob, market_price, market_result, position_size
         FROM evaluated_opportunities
         WHERE product_type='hourly' AND filter_stage='hourly_observation'
-          AND hourly_pre_temp_prob > 0 AND market_result IS NOT NULL
+          AND hourly_pre_temp_prob IS NOT NULL AND market_result IS NOT NULL
           AND evaluation_time >= ?
     """, (since,)).fetchall()
 
@@ -1393,7 +1393,7 @@ def data_sufficiency(conn: sqlite3.Connection, since: str, stats: dict) -> None:
     # Temperature coverage
     row = conn.execute("""
         SELECT COUNT(*) AS total,
-          SUM(CASE WHEN hourly_applied_temp_t > 0 THEN 1 ELSE 0 END) AS has_t
+          SUM(CASE WHEN hourly_applied_temp_t IS NOT NULL THEN 1 ELSE 0 END) AS has_t
         FROM evaluated_opportunities
         WHERE product_type='hourly' AND filter_stage='hourly_observation'
           AND evaluation_time >= ?
@@ -1647,7 +1647,7 @@ def recommendations(conn: sqlite3.Connection, since: str) -> None:
     # Temp coverage (all-time since --since)
     temp_row = conn.execute("""
         SELECT COUNT(*) AS total,
-          SUM(CASE WHEN hourly_applied_temp_t > 0 THEN 1 ELSE 0 END) AS has_t
+          SUM(CASE WHEN hourly_applied_temp_t IS NOT NULL THEN 1 ELSE 0 END) AS has_t
         FROM evaluated_opportunities
         WHERE product_type='hourly' AND filter_stage='hourly_observation'
           AND evaluation_time >= ?
