@@ -98,11 +98,14 @@ class FirebasePusher:
         # Balance
         try:
             bal = self._ml.client.get_balance()
-            snap["current_balance"] = round(bal["balance"] / 100, 2) if bal else 0.0
+            bal_val = round(bal["balance"] / 100, 2) if bal else 0.0
+            # Only update last_good_balance if we got a real value (not 0 from transient API state)
+            if bal_val > 0:
+                self._last_good_balance = bal_val
+            snap["current_balance"] = bal_val if bal_val > 0 else getattr(self, "_last_good_balance", 0.0)
             # Read-only: peak tracking moved to main loop to avoid cross-thread mutation
             snap["peak_balance"] = getattr(self._ml, "_peak_balance", snap["current_balance"])
-            self._last_good_balance = snap["current_balance"]
-            snap["balance_stale"] = False
+            snap["balance_stale"] = bal_val == 0
         except Exception:
             snap["current_balance"] = getattr(self, "_last_good_balance", 0.0)
             snap["peak_balance"] = getattr(self._ml, "_peak_balance", 0.0)

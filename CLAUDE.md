@@ -2,6 +2,12 @@
 
 Cryptocurrency prediction market trading bot for the Kalshi platform. Trades above/below 15-minute window markets on BTC, ETH, SOL, and XRP. Also scans hourly markets (KXBTCD, KXETHD, KXSOLD, KXXRPD) in observation mode.
 
+## Interaction Rules
+
+- **Answer first, plan later** — when asked to investigate something (a loss, an alert, performance data, an anomaly), give direct analysis with numbers FIRST. Do not explore code, write plans, or enter plan mode. Answer the question, then offer next steps.
+- **Don't re-plan finalized plans** — when continuing from a prior session with an existing plan, start implementing immediately. Do not re-audit, re-plan, or rewrite plans that were already approved.
+- **Don't deploy without explicit confirmation** — always present the change summary and wait for user approval before `git push`. Never auto-deploy.
+
 ## Critical Rules
 
 - **bot.py is sacred** — never rename it. systemd calls `start.sh` which calls `bot.py`
