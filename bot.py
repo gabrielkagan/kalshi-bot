@@ -66,8 +66,7 @@ HOURLY_MAX_RISK_PER_TRADE = 0.15       # Conservative start (60% of 15M's 0.25)
 # ─── Hourly Three-Layer Optimization (Researcher Recommendations) ─────────
 HOURLY_TEMPERATURE_T = 1.45           # Temperature scaling: softens overconfident probs (T>1 = less confident)
 HOURLY_TEMPERATURE_ENABLED = True     # Toggle for temperature scaling
-HOURLY_CALIBRATION_ENABLED = True     # Hourly-specific CalibrationEngine — 5057 obs, all methods trainable
-                                      # Replaces passthrough + T=1.45 (was +9.7pp overconfident)
+HOURLY_CALIBRATION_ENABLED = False    # REVERTED: +36pp overconfident, needs dedicated hourly training
 HOURLY_MIN_STC_ENTRY = 120            # Min STC for entry (2 min) — expanded for observation data collection
 HOURLY_MAX_STC_ENTRY = 3600           # 60 min — expanded for observation data collection
 HOURLY_EXCLUDED_ASSETS = set()         # Empty in observation mode — collect all asset data
@@ -402,8 +401,8 @@ def _load_dist_config() -> Dict:
 
 DIST_CONFIG = _load_dist_config()
 
-_CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
-_HOURLY_CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None
+_CALIBRATION_ENGINE: Optional["CalibrationEngine"] = None   # 15M ONLY — DO NOT TOUCH
+_CAL_REGISTRY: Dict[str, "CalibrationEngine"] = {}          # non-15M engines by product_type
 _TELEGRAM: Optional["TelegramNotifier"] = None
 
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
@@ -5091,16 +5090,19 @@ class ProbabilityEngine:
             # Still compute calibrated_prob for data collection
             dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
             _cal_cfg = get_market_config(product_type)
-            if (product_type == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
-                    and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active()):
-                cal = _HOURLY_CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
-                result["calibration_method"] = "hourly_" + _HOURLY_CALIBRATION_ENGINE.active_method
-                # Shadow: what old passthrough + T=1.45 would have produced
+            _reg_engine = _CAL_REGISTRY.get(product_type) if product_type not in (None, "15m") else None
+            if _reg_engine is not None and _reg_engine.is_learned_method_active():
+                cal = _reg_engine.calibrate(raw_prob, cap=dynamic_cap)
+                result["calibration_method"] = f"{product_type}_{_reg_engine.active_method}"
+                # Shadow: what passthrough + temperature would have produced
                 _pt_shadow = min(raw_prob, dynamic_cap)
-                _sp = max(0.001, min(0.999, _pt_shadow))
-                _sz = math.log(_sp / (1.0 - _sp))
-                result["shadow_cal_prob"] = round(1.0 / (1.0 + math.exp(-_sz / HOURLY_TEMPERATURE_T)), 6)
-                result["shadow_cal_temperature"] = HOURLY_TEMPERATURE_T
+                _temp_cfg = _cal_cfg.temperature_t if _cal_cfg.temperature_enabled else None
+                if _temp_cfg and _temp_cfg != 1.0:
+                    _sp = max(0.001, min(0.999, _pt_shadow))
+                    _sz = math.log(_sp / (1.0 - _sp))
+                    _pt_shadow = 1.0 / (1.0 + math.exp(-_sz / _temp_cfg))
+                result["shadow_cal_prob"] = round(_pt_shadow, 6)
+                result["shadow_cal_temperature"] = _temp_cfg
             elif _cal_cfg.cal_eligible and _CALIBRATION_ENGINE is not None:
                 cal = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
                 result["calibration_method"] = _CALIBRATION_ENGINE.active_method
@@ -5116,16 +5118,19 @@ class ProbabilityEngine:
         # ── Calibration: adaptive (if trained) or fixed β=0.85 ──────────
         dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
         _cal_cfg2 = get_market_config(product_type)
-        if (product_type == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
-                and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active()):
-            calibrated_prob = _HOURLY_CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
-            result["calibration_method"] = "hourly_" + _HOURLY_CALIBRATION_ENGINE.active_method
-            # Shadow: what old passthrough + T=1.45 would have produced
+        _reg_engine = _CAL_REGISTRY.get(product_type) if product_type not in (None, "15m") else None
+        if _reg_engine is not None and _reg_engine.is_learned_method_active():
+            calibrated_prob = _reg_engine.calibrate(raw_prob, cap=dynamic_cap)
+            result["calibration_method"] = f"{product_type}_{_reg_engine.active_method}"
+            # Shadow: what passthrough + temperature would have produced
             _pt_shadow = min(raw_prob, dynamic_cap)
-            _sp = max(0.001, min(0.999, _pt_shadow))
-            _sz = math.log(_sp / (1.0 - _sp))
-            result["shadow_cal_prob"] = round(1.0 / (1.0 + math.exp(-_sz / HOURLY_TEMPERATURE_T)), 6)
-            result["shadow_cal_temperature"] = HOURLY_TEMPERATURE_T
+            _temp_cfg = _cal_cfg2.temperature_t if _cal_cfg2.temperature_enabled else None
+            if _temp_cfg and _temp_cfg != 1.0:
+                _sp = max(0.001, min(0.999, _pt_shadow))
+                _sz = math.log(_sp / (1.0 - _sp))
+                _pt_shadow = 1.0 / (1.0 + math.exp(-_sz / _temp_cfg))
+            result["shadow_cal_prob"] = round(_pt_shadow, 6)
+            result["shadow_cal_temperature"] = _temp_cfg
         elif _cal_cfg2.cal_eligible and _CALIBRATION_ENGINE is not None:
             calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
             result["calibration_method"] = _CALIBRATION_ENGINE.active_method
@@ -6907,9 +6912,9 @@ class OpportunityScanner:
                 # T=1.0 is identity — skip scaling
                 if _temp_t is not None and _temp_t == 1.0:
                     _temp_t = None
-                # Skip temperature if hourly engine is active (already calibrated for hourly data)
-                if (_pt == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
-                        and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active()):
+                # Skip temperature if registered engine is active (already calibrated)
+                _reg_engine_t = _CAL_REGISTRY.get(_pt) if _pt not in (None, "15m") else None
+                if _reg_engine_t is not None and _reg_engine_t.is_learned_method_active():
                     _temp_t = None
                     _hourly_pre_temp_prob = final_prob  # still record for shadow instrumentation
                 if _temp_t is not None:
@@ -6965,14 +6970,13 @@ class OpportunityScanner:
                 calibrated_prob_raw = final_prob
                 # Always compute dynamic cap for counterfactual logging
                 _dyn_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=window.get("product_type"))
-                _active_cal = (
-                    _HOURLY_CALIBRATION_ENGINE
-                    if (_pt == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
-                        and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active())
-                    else (_CALIBRATION_ENGINE
-                          if get_market_config(_pt).cal_eligible
-                          else None)
-                )
+                _reg_engine_c = _CAL_REGISTRY.get(_pt) if _pt not in (None, "15m") else None
+                if _reg_engine_c is not None and _reg_engine_c.is_learned_method_active():
+                    _active_cal = _reg_engine_c
+                elif get_market_config(_pt).cal_eligible:
+                    _active_cal = _CALIBRATION_ENGINE
+                else:
+                    _active_cal = None
                 if _active_cal is not None and _active_cal.is_learned_method_active():
                     # Learned method: no dynamic cap, use safety ceiling only
                     final_prob = max(0.01, min(NUMERICAL_SAFETY_CEILING, final_prob + ofa_adjustment))
@@ -10764,15 +10768,13 @@ class SettlementTracker:
                         and filter_stage in cal_eligible_stages
                         and result in ("yes", "all_yes", "no", "all_no")):
                     cal_binary = 1 if result in ("yes", "all_yes") else 0
-                    if _opp_pt == "hourly":
-                        # Hourly → dedicated hourly engine (separate from 15M)
-                        if _HOURLY_CALIBRATION_ENGINE is not None:
-                            _HOURLY_CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
+                    _settle_engine = _CAL_REGISTRY.get(_opp_pt) if _opp_pt not in (None, "15m") else None
+                    if _settle_engine is not None:
+                        _settle_engine.add_observation(raw_p, cal_binary)
                     elif get_market_config(_opp_pt).cal_eligible:
                         # 15M → existing engine
                         if _CALIBRATION_ENGINE is not None:
                             _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
-                    # SPX/weather/sports: neither engine (not cal_eligible, not hourly)
 
                 # Weather: fetch actual temp from archive API + bias update
                 if (_opp_pt == "weather" and result in ("yes", "all_yes", "no", "all_no")
@@ -10966,15 +10968,31 @@ class MainLoop:
         self.calibration = CalibrationEngine()
         global _CALIBRATION_ENGINE
         _CALIBRATION_ENGINE = self.calibration
-        if HOURLY_CALIBRATION_ENABLED:
-            self.hourly_calibration = CalibrationEngine(
-                state_path=HOURLY_CALIBRATION_STATE_PATH, label="HourlyCal")
-            global _HOURLY_CALIBRATION_ENGINE
-            _HOURLY_CALIBRATION_ENGINE = self.hourly_calibration
-        else:
-            self.hourly_calibration = None
-            logging.info("HourlyCal DISABLED: using passthrough + temperature T=%.2f",
-                         HOURLY_TEMPERATURE_T)
+
+        # Per-market CalEngines via registry
+        global _CAL_REGISTRY
+        _CAL_REGISTRY.clear()  # defensive: ensure clean state on restart
+        self._cal_engines = {}
+        for _pt, _cfg in MARKET_CONFIGS.items():
+            if _pt == "15m":
+                continue  # 15M uses _CALIBRATION_ENGINE — NEVER in registry
+            if _cfg.cal_engine_enabled and _cfg.cal_engine_state_path:
+                assert _cfg.cal_engine_state_path != CALIBRATION_STATE_PATH, (
+                    f"FATAL: {_pt} would share state file with 15M engine!")
+                _engine = CalibrationEngine(
+                    state_path=_cfg.cal_engine_state_path,
+                    label=f"{_pt.capitalize()}Cal")
+                self._cal_engines[_pt] = _engine
+                _CAL_REGISTRY[_pt] = _engine
+                logging.info("CalEngine registered for '%s' (state: %s)", _pt, _cfg.cal_engine_state_path)
+            else:
+                logging.info("CalEngine DISABLED for '%s': passthrough", _pt)
+
+        # Hard safety assertion — 15M must NEVER be in the registry
+        assert "15m" not in _CAL_REGISTRY, "FATAL: 15M engine must never be in _CAL_REGISTRY"
+
+        # Backward compat for firebase_push.py
+        self.hourly_calibration = self._cal_engines.get("hourly")
         tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
         self.telegram = TelegramNotifier(tg_token, tg_chat)
@@ -11134,21 +11152,15 @@ class MainLoop:
                 f"({len(self.calibration._observations)} obs){bt_msg}"
             )
 
-        # Load hourly calibration training data (separate from 15M)
-        if self.hourly_calibration is not None:
-            self.hourly_calibration.load_training_data_from_db(
-                self.state, product_type_include="hourly")
-            hourly_bt = self.hourly_calibration.backtest_adaptive_vs_fixed()
-            if hourly_bt:
-                logging.info("Startup hourly cal backtest: %s", hourly_bt)
-            logging.info(
-                "CONFIG_VERIFY (hourly_cal): method=%s active=%s obs=%d",
-                self.hourly_calibration.active_method,
-                self.hourly_calibration.is_learned_method_active(),
-                len(self.hourly_calibration._observations),
-            )
-        else:
-            logging.info("CONFIG_VERIFY (hourly_cal): DISABLED (passthrough + temperature)")
+        # Load per-market calibration training data (separate from 15M)
+        for _pt, _engine in self._cal_engines.items():
+            _engine.load_training_data_from_db(self.state, product_type_include=_pt)
+            _bt = _engine.backtest_adaptive_vs_fixed()
+            if _bt:
+                logging.info("Startup %s cal backtest: %s", _pt, _bt)
+            logging.info("CONFIG_VERIFY (%s_cal): method=%s active=%s obs=%d",
+                         _pt, _engine.active_method,
+                         _engine.is_learned_method_active(), len(_engine._observations))
 
         # Start Coinbase price feed
         self.feed.start()

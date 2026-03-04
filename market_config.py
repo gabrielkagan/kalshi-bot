@@ -41,6 +41,8 @@ class MarketTypeConfig:
     temperature_enabled: bool = False
     cal_eligible: bool = True            # Include in CalibrationEngine training?
     use_hourly_dynamic_cap: bool = False
+    cal_engine_enabled: bool = False     # Whether to instantiate a CalEngine for this market
+    cal_engine_state_path: str = ""      # State file path (empty = no engine)
 
     # ── Fees ──
     fee_multiplier_taker: float = 0.07
@@ -95,6 +97,8 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         temperature_enabled=True,
         cal_eligible=False,
         use_hourly_dynamic_cap=True,
+        cal_engine_enabled=False,
+        cal_engine_state_path="hourly_calibration_state.json",
         fee_multiplier_taker=0.07,
         fee_multiplier_maker=0.0175,
         excluded_assets=frozenset(),      # Empty in observation mode
@@ -119,6 +123,8 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         temperature_enabled=False,
         cal_eligible=False,
         use_hourly_dynamic_cap=True,
+        cal_engine_enabled=False,
+        cal_engine_state_path="spx_hourly_calibration_state.json",
         fee_multiplier_taker=0.035,
         fee_multiplier_maker=0.0175,
         max_positions_per_window=2,
@@ -140,6 +146,8 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         temperature_enabled=False,
         cal_eligible=False,
         use_hourly_dynamic_cap=True,
+        cal_engine_enabled=False,
+        cal_engine_state_path="weather_calibration_state.json",
         fee_multiplier_taker=0.07,
         fee_multiplier_maker=0.0175,
         observation_filter_label="weather_observation",
@@ -301,6 +309,31 @@ def validate_market_configs() -> None:
     assert MARKET_CONFIGS["spx_hourly"].observation_filter_label == "spx_observation"
     assert MARKET_CONFIGS["weather"].observation_filter_label == "weather_observation"
     assert MARKET_CONFIGS["sports"].observation_filter_label == "sports_observation"
+
+    # ── CalEngine registry safety ──
+    # 15M must NEVER use per-market CalEngine (it uses _CALIBRATION_ENGINE directly)
+    assert not MARKET_CONFIGS["15m"].cal_engine_enabled, "FATAL: 15m must not use cal_engine_enabled"
+    assert MARKET_CONFIGS["15m"].cal_engine_state_path == "", "FATAL: 15m must not set cal_engine_state_path"
+
+    # Sports must never have CalEngine (uses BayesianComebackModel)
+    assert not MARKET_CONFIGS["sports"].cal_engine_enabled, "FATAL: sports must not use CalEngine"
+    assert MARKET_CONFIGS["sports"].cal_engine_state_path == "", "FATAL: sports has no CalEngine state"
+
+    # Hourly cal_engine_enabled must match bot.py constant
+    assert MARKET_CONFIGS["hourly"].cal_engine_enabled == bot.HOURLY_CALIBRATION_ENABLED, (
+        f"hourly cal_engine_enabled mismatch: {MARKET_CONFIGS['hourly'].cal_engine_enabled} != {bot.HOURLY_CALIBRATION_ENABLED}")
+
+    # No engine may share state file with 15M
+    for pt, cfg in MARKET_CONFIGS.items():
+        if pt == "15m":
+            continue
+        if cfg.cal_engine_state_path:
+            assert cfg.cal_engine_state_path != bot.CALIBRATION_STATE_PATH, (
+                f"FATAL: {pt} shares state file with 15M engine!")
+
+    # All state paths must be unique across engines
+    _state_paths = [cfg.cal_engine_state_path for cfg in MARKET_CONFIGS.values() if cfg.cal_engine_state_path]
+    assert len(_state_paths) == len(set(_state_paths)), f"FATAL: duplicate cal engine state paths: {_state_paths}"
 
     import logging
     logging.info("MARKET_CONFIGS: all %d configs validated against constants", len(MARKET_CONFIGS))
