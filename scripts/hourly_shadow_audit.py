@@ -60,7 +60,7 @@ def subsection(title: str) -> None:
 
 def sim_pnl_maker(price: int, size: int, won: bool) -> float:
     """Simulate PnL in cents for a maker trade."""
-    fee = math.ceil(0.0175 * size * (price / 100) * (1 - price / 100))
+    fee = math.ceil(0.0175 * size * price * (100 - price) / 100)
     if won:
         return size * (100 - price) - fee
     else:
@@ -198,14 +198,16 @@ def performance_summary(conn: sqlite3.Connection, since: str) -> dict:
             total_pnl += sim_pnl_maker(p, size, r["market_result"] == "yes")
 
         avg_p = sum(r["market_price"] for r in settled) / len(settled)
-        be_wr = avg_p  # breakeven WR in % = entry price in cents
+        # Breakeven WR accounts for maker fees: WR = (price + fee) / (100 + 0)
+        avg_fee = math.ceil(0.0175 * avg_p * (100 - avg_p) / 100)
+        be_wr = (avg_p + avg_fee) / 100 * 100  # breakeven WR in %
         avg_stc = sum(r["seconds_to_close"] or 0 for r in settled) / len(settled)
         print(f"Simulated PnL (maker): ${total_pnl/100:.2f}")
         print(f"Avg PnL/trade: ${total_pnl/100/len(settled):.2f}")
-        print(f"Avg entry price: {avg_p:.1f}c (breakeven WR: {be_wr:.0f}%)")
+        print(f"Avg entry price: {avg_p:.1f}c (breakeven WR w/fees: {be_wr:.0f}%)")
         print(f"WR vs breakeven: {wr:.1f}% vs {be_wr:.0f}% ({wr - be_wr:+.1f}pp)")
         print(f"Avg STC at entry: {avg_stc:.0f}s ({avg_stc/60:.1f}m)")
-        print(f"Fee assumption: maker ceil(0.0175 * C * P * (1-P))")
+        print(f"Fee assumption: maker ceil(0.0175 * C * P * (100-P) / 100)")
 
     # Per-asset
     subsection("Per-asset breakdown")
@@ -743,7 +745,7 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
             sizes = [int(s) if s != "None" else 1 for s in r["sizes"].split(",")]
             wpnl = 0
             for res, price, size in zip(results, prices, sizes):
-                fee = math.ceil(0.0175 * size * (price / 100) * (1 - price / 100))
+                fee = math.ceil(0.0175 * size * price * (100 - price) / 100)
                 if res == "yes":
                     wpnl += size * (100 - price) - fee
                 else:
@@ -914,11 +916,11 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
                 else:
                     scaled = pre
                 p = r["market_price"]
-                fee_pct = 0.0175 * (p / 100) * (1 - p / 100)
+                fee_pct = math.ceil(0.0175 * p * (100 - p) / 100) / 100.0
                 edge = scaled - (p / 100) - fee_pct
                 outcome = 1 if r["market_result"] == "yes" else 0
                 brier_sum += (scaled - outcome) ** 2
-                if edge > 0.007:
+                if edge > 0.0025:  # current MIN_EDGE_PCT
                     n_trades += 1
                     size = r["position_size"] or 1
                     won = r["market_result"] == "yes"
@@ -1220,10 +1222,8 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str) -> dict:
             for r in sub:
                 won = r["market_result"] == "yes"
                 if won:
-                    flat_pnl += (100 - r["market_price"])
                     wins += 1
-                else:
-                    flat_pnl -= r["market_price"]
+                flat_pnl += sim_pnl_maker(r["market_price"], 1, won)
                 # Kelly-weighted simulation
                 price = r["market_price"] / 100.0
                 edge = r["fee_adjusted_edge"]

@@ -59,15 +59,14 @@ def maker_fee(price_cents: int) -> int:
     return math.ceil(0.0175 * 100 * p * (1 - p))
 
 
-def compute_pnl(price: int, result: str, spot: float, threshold: float, n_contracts: int = 1) -> int:
-    """Compute PnL in cents. Positive = profit."""
-    # Determine side: if spot > threshold, model is betting YES (above)
-    yes_side = spot > threshold
+def compute_pnl(price: int, result: str, spot: float = 0, threshold: float = 0, n_contracts: int = 1) -> int:
+    """Compute PnL in cents. Bot always buys YES at price cents.
+    Win: (100 - price - fee) * contracts. Loss: -(price + fee) * contracts."""
     fee = maker_fee(price)
-    if yes_side:
-        per_contract = (100 - price - fee) if result == "yes" else -price
+    if result == "yes":
+        per_contract = 100 - price - fee
     else:
-        per_contract = (price - fee) if result == "no" else -(100 - price)
+        per_contract = -(price + fee)
     return per_contract * n_contracts
 
 
@@ -188,22 +187,19 @@ def section_calibration(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
         print("  No settled data available.")
         return {"buckets": [], "brier": None}
 
-    # Brier score
+    # Brier score — calibrated_prob = P(YES), bot always buys YES
     brier_sum = 0
     for r in rows:
         actual = 1.0 if r["market_result"] == "yes" else 0.0
-        # The model predicts P(above threshold) when spot > threshold
-        above = r["spot_price"] > r["threshold"]
-        predicted = r["calibrated_prob"] if above else (1 - r["calibrated_prob"])
+        predicted = r["calibrated_prob"]
         brier_sum += (predicted - actual) ** 2
     brier = brier_sum / len(rows)
 
-    # Calibration buckets
+    # Calibration buckets — bot always buys YES, win = result is "yes"
     buckets = {}
     for r in rows:
         cp = r["calibrated_prob"]
-        above = r["spot_price"] > r["threshold"]
-        win = (r["market_result"] == "yes") if above else (r["market_result"] == "no")
+        win = (r["market_result"] == "yes")
         if cp < 0.80:
             key = "0.70-0.80"
         elif cp < 0.85:

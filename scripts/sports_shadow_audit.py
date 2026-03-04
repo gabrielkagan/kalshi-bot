@@ -63,6 +63,35 @@ def safe_div(a, b, default=0.0):
     return a / b if b and b > 0 else default
 
 
+def _dedup_game_wr(conn, since=None, league=None, sport_group=None,
+                   extra_cond=""):
+    """De-dup to one outcome per game_id for signal rows.
+    Returns (n_games_with_signals, settled_games, game_wins).
+    """
+    parts = ["signal_fired=1"]
+    if since:
+        parts.append(f"evaluation_time >= '{since}'")
+    if league:
+        parts.append(f"league = '{league}'")
+    if sport_group:
+        parts.append(f"sport_group = '{sport_group}'")
+    if extra_cond:
+        parts.append(extra_cond)
+    where = "WHERE " + " AND ".join(parts)
+
+    row = conn.execute(f"""
+        SELECT COUNT(*) AS games,
+               SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
+               SUM(CASE WHEN fav_won = 1 THEN 1 ELSE 0 END) AS wins
+        FROM (
+            SELECT game_id, MAX(fav_won) AS fav_won
+            FROM sports_shadow_log {where}
+            GROUP BY game_id
+        )
+    """).fetchone()
+    return row['games'] or 0, row['settled'] or 0, row['wins'] or 0
+
+
 def header(title: str) -> None:
     print()
     print("=" * 72)
@@ -127,7 +156,14 @@ def section_overview(conn: sqlite3.Connection, since: Optional[str] = None,
     print(f"  Total evaluations:  {result['total']}")
     print(f"  Signals fired:      {result['signals']} ({pct(result['signals'], result['total'])} signal rate)")
     print(f"  Settled signals:    {result['settled_sigs']}")
-    print(f"  Signal wins:        {result['sig_wins']} (WR: {pct(result['sig_wins'], result['settled_sigs'])})")
+    print(f"  Signal wins (raw):  {result['sig_wins']} (raw WR: {pct(result['sig_wins'], result['settled_sigs'])} — NOT de-duped)")
+    g, gs, gw = _dedup_game_wr(conn, since=since, league=league)
+    result['dedup_games'] = g
+    result['dedup_settled'] = gs
+    result['dedup_wins'] = gw
+    print(f"  Game wins (dedup):  {gw}/{gs} games (WR: {pct(gw, gs)})")
+    if 0 < gs < 20:
+        print(f"                      *** NOT SIGNIFICANT (n={gs} games) ***")
     print(f"  Unique games:       {result['games']}")
     if not league:
         print(f"  Leagues active:     {result['leagues']}")
@@ -176,16 +212,19 @@ def section_per_league(conn: sqlite3.Connection,
     result = [dict(r) for r in rows]
 
     subheader("PER-LEAGUE SUMMARY")
-    print(f"  {'League':<15} {'Group':<12} {'Type':<10} {'Evals':>6} {'Sigs':>5} {'Settled':>7} "
-          f"{'WR':>6} {'AvgEdge':>8} {'AvgAsk':>7} {'Games':>5}")
+    print(f"  {'League':<15} {'Group':<12} {'Type':<10} {'Evals':>6} {'Sigs':>5} "
+          f"{'RawWR':>7} {'GameWR':>8} {'AvgEdge':>8} {'Games':>5}")
     print("  " + "-" * 95)
     for r in result:
-        wr = pct(r['sig_wins'] or 0, r['settled_sigs'] or 0)
+        raw_wr = pct(r['sig_wins'] or 0, r['settled_sigs'] or 0)
+        g, gs, gw = _dedup_game_wr(conn, since=since, league=r['league'])
+        game_wr = pct(gw, gs)
+        r['dedup_settled'] = gs
+        r['dedup_wins'] = gw
         avg_e = f"{(r['avg_edge'] or 0)*100:.1f}%" if r['avg_edge'] else "n/a"
-        avg_a = f"{r['avg_ask']:.0f}c" if r['avg_ask'] else "n/a"
         print(f"  {r['league']:<15} {r['sg']:<12} {r['outcome_type']:<10} {r['evals']:>6} "
-              f"{r['signals']:>5} {r['settled_sigs'] or 0:>7} {wr:>6} "
-              f"{avg_e:>8} {avg_a:>7} {r['games']:>5}")
+              f"{r['signals']:>5} {raw_wr:>7} {f'{gw}/{gs}':>8} "
+              f"{avg_e:>8} {r['games']:>5}")
 
     return result
 
@@ -371,7 +410,12 @@ def section_signal_quality(conn: sqlite3.Connection, since: Optional[str] = None
     if settled_rows:
         subheader(f"SETTLED SIGNAL OUTCOMES{f' ({league})' if league else ''}")
         wr = safe_div(result['wins'], result['settled'])
-        print(f"  Settled: {result['settled']} | Wins: {result['wins']} | WR: {wr:.1%}")
+        print(f"  Raw signals: {result['settled']} settled | {result['wins']} wins | WR: {wr:.1%} (NOT de-duped)")
+        g, gs, gw = _dedup_game_wr(conn, since=since, league=league)
+        dedup_wr = safe_div(gw, gs)
+        print(f"  Per game:    {gs} settled | {gw} wins | WR: {dedup_wr:.1%} (DE-DUPED)")
+        if 0 < gs < 20:
+            print(f"  *** NOT SIGNIFICANT (n={gs} games) ***")
 
     # CLV analysis
     clv_rows = [r for r in rows if r['closing_price'] is not None and r['yes_ask']]
@@ -461,8 +505,8 @@ def section_deficit_time(conn: sqlite3.Connection, since: Optional[str] = None,
             END AS time_bucket,
             COUNT(*) AS evals,
             SUM(CASE WHEN signal_fired=1 THEN 1 ELSE 0 END) AS signals,
-            SUM(CASE WHEN fav_won=1 THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN fav_won=0 THEN 1 ELSE 0 END) AS losses,
+            COUNT(DISTINCT CASE WHEN fav_won=1 THEN game_id END) AS wins,
+            COUNT(DISTINCT CASE WHEN fav_won=0 THEN game_id END) AS losses,
             AVG(yes_ask) AS avg_ask
         FROM sports_shadow_log {w}
         GROUP BY def_bucket, time_bucket
@@ -593,14 +637,17 @@ def section_wald_sprt(conn: sqlite3.Connection, since: Optional[str] = None,
 
     subheader(f"WALD SPRT{f' ({league})' if league else ''}")
 
+    # De-dup: one outcome per game_id (multiple signals per game are NOT independent)
     rows = conn.execute(f"""
-        SELECT fav_won FROM sports_shadow_log
+        SELECT MAX(fav_won) AS fav_won, MIN(evaluation_time) AS first_eval
+        FROM sports_shadow_log
         WHERE signal_fired=1 AND fav_won IS NOT NULL {extra}
-        ORDER BY evaluation_time
+        GROUP BY game_id
+        ORDER BY first_eval
     """).fetchall()
 
     if not rows:
-        print("  No settled signals for sequential test.")
+        print("  No settled games for sequential test.")
         return {"n": 0, "decision": "INSUFFICIENT_DATA"}
 
     p0 = 0.50  # H0: no edge
@@ -630,7 +677,7 @@ def section_wald_sprt(conn: sqlite3.Connection, since: Optional[str] = None,
             break
 
     wins = sum(1 for r in rows if r["fav_won"] == 1)
-    print(f"  Signals tested: {n}")
+    print(f"  Games tested (de-duped): {n}")
     print(f"  Wins:           {wins} ({pct(wins, n)})")
     print(f"  Log LR:         {llr:.3f}")
     print(f"  Boundaries:     reject H0 at {A:.3f}, accept H0 at {B:.3f}")
@@ -660,23 +707,16 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str] = None,
     c1 = settled > 0
     checks.append(("Settlement backfill working", c1, f"{settled}/{total} games settled"))
 
-    # 2. 100+ settled signals (50+ for per-sport)
-    min_signals = 50 if league else 100
-    settled_sigs = conn.execute(f"""
-        SELECT COUNT(*) FROM sports_shadow_log
-        WHERE signal_fired=1 AND fav_won IS NOT NULL {extra}
-    """).fetchone()[0]
-    c2 = settled_sigs >= min_signals
-    checks.append((f"{min_signals}+ settled signals", c2, f"{settled_sigs}/{min_signals}"))
+    # 2. 50+ settled games (25+ for per-sport) — de-duped
+    min_games = 25 if league else 50
+    g, gs, gw = _dedup_game_wr(conn, since=since, league=league)
+    c2 = gs >= min_games
+    checks.append((f"{min_games}+ settled games (de-duped)", c2, f"{gs}/{min_games}"))
 
-    # 3. Win rate > 55%
-    sig_wins = conn.execute(f"""
-        SELECT COUNT(*) FROM sports_shadow_log
-        WHERE signal_fired=1 AND fav_won=1 {extra}
-    """).fetchone()[0]
-    wr = safe_div(sig_wins, settled_sigs)
-    c3 = wr > 0.55 and settled_sigs >= 30
-    checks.append(("Win rate > 55% (30+ settled)", c3, f"{wr:.1%} ({settled_sigs} settled)"))
+    # 3. Win rate > 55% (de-duped per game)
+    wr = safe_div(gw, gs)
+    c3 = wr > 0.55 and gs >= 20
+    checks.append(("Win rate > 55% (20+ games, de-duped)", c3, f"{wr:.1%} ({gw}/{gs} games)"))
 
     # 4. Positive CLV
     clv_row = conn.execute(f"""
@@ -712,11 +752,14 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str] = None,
     checks.append(("No multi-entry per game", c6,
                     f"{multi} games with multiple signals"))
 
-    # 7. Positive sim PnL
+    # 7. Positive sim PnL (deduped: one pnl per game)
     sim_pnl = conn.execute(f"""
-        SELECT SUM(COALESCE(pnl_cents, 0)) AS pnl
-        FROM sports_shadow_log
-        WHERE signal_fired=1 {extra}
+        SELECT SUM(game_pnl) AS pnl FROM (
+            SELECT game_id, MAX(COALESCE(pnl_cents, 0)) AS game_pnl
+            FROM sports_shadow_log
+            WHERE signal_fired=1 {extra}
+            GROUP BY game_id
+        )
     """).fetchone()
     pnl_val = sim_pnl["pnl"] if sim_pnl and sim_pnl["pnl"] else 0
     c7 = pnl_val > 0
@@ -790,32 +833,61 @@ def section_counterfactual(conn: sqlite3.Connection, since: Optional[str] = None
         val = result.get(key) or 0
         print(f"  {label:<25} {val:>8} {pct(val, result['total']):>8}")
 
-    # Per-threshold settled outcomes if available
+    # Per-threshold settled outcomes — de-duped per game
     extra_w = _where(since, league)
+    # Game-level: a game "would signal" at threshold X if ANY eval in that game would
     settled_row = conn.execute(f"""
         SELECT
-            SUM(CASE WHEN would_signal_50c=1 AND fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled_50,
-            SUM(CASE WHEN would_signal_50c=1 AND fav_won=1 THEN 1 ELSE 0 END) AS wins_50,
-            SUM(CASE WHEN would_signal_60c=1 AND fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled_60,
-            SUM(CASE WHEN would_signal_60c=1 AND fav_won=1 THEN 1 ELSE 0 END) AS wins_60,
-            SUM(CASE WHEN would_signal_70c=1 AND fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled_70,
-            SUM(CASE WHEN would_signal_70c=1 AND fav_won=1 THEN 1 ELSE 0 END) AS wins_70,
-            SUM(CASE WHEN would_signal_80c=1 AND fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled_80,
-            SUM(CASE WHEN would_signal_80c=1 AND fav_won=1 THEN 1 ELSE 0 END) AS wins_80
-        FROM sports_shadow_log {extra_w}
+            SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled_50,
+            SUM(CASE WHEN fav_won = 1 THEN 1 ELSE 0 END) AS wins_50
+        FROM (
+            SELECT game_id, MAX(fav_won) AS fav_won
+            FROM sports_shadow_log {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_50c=1
+            GROUP BY game_id
+        )
+    """).fetchone()
+    settled_60 = conn.execute(f"""
+        SELECT
+            SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
+            SUM(CASE WHEN fav_won = 1 THEN 1 ELSE 0 END) AS wins
+        FROM (
+            SELECT game_id, MAX(fav_won) AS fav_won
+            FROM sports_shadow_log {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_60c=1
+            GROUP BY game_id
+        )
+    """).fetchone()
+    settled_70 = conn.execute(f"""
+        SELECT
+            SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
+            SUM(CASE WHEN fav_won = 1 THEN 1 ELSE 0 END) AS wins
+        FROM (
+            SELECT game_id, MAX(fav_won) AS fav_won
+            FROM sports_shadow_log {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_70c=1
+            GROUP BY game_id
+        )
+    """).fetchone()
+    settled_80 = conn.execute(f"""
+        SELECT
+            SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
+            SUM(CASE WHEN fav_won = 1 THEN 1 ELSE 0 END) AS wins
+        FROM (
+            SELECT game_id, MAX(fav_won) AS fav_won
+            FROM sports_shadow_log {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_80c=1
+            GROUP BY game_id
+        )
     """).fetchone()
 
-    print()
-    for label, s_key, w_key in [
-        ("Price <= 50c", "settled_50", "wins_50"),
-        ("Price <= 60c", "settled_60", "wins_60"),
-        ("Price <= 70c", "settled_70", "wins_70"),
-        ("Price <= 80c", "settled_80", "wins_80"),
+    print("\n  Per-threshold WR (de-duped per game):")
+    for label, sr in [
+        ("Price <= 50c", settled_row),
+        ("Price <= 60c", settled_60),
+        ("Price <= 70c", settled_70),
+        ("Price <= 80c", settled_80),
     ]:
-        s = settled_row[s_key] or 0
-        w = settled_row[w_key] or 0
+        s = (sr['settled'] if 'settled' in sr.keys() else sr['settled_50']) or 0
+        w = (sr['wins'] if 'wins' in sr.keys() else sr['wins_50']) or 0
         if s > 0:
-            print(f"  {label:<25} {w}W/{s-w}L  WR={pct(w, s)}")
+            print(f"  {label:<25} {w}W/{s-w}L  WR={pct(w, s)} (n={s} games)")
         else:
             print(f"  {label:<25} no settled data")
 
@@ -906,12 +978,15 @@ def section_lr_scale_ab(conn: sqlite3.Connection, since: Optional[str] = None,
     shadow_settled = result['shadow_settled'] or 0
     shadow_wins = result['shadow_wins'] or 0
 
+    # De-duped game-level WR for live signals
+    g_live, gs_live, gw_live = _dedup_game_wr(conn, since=since, league=league)
+
     print(f"  {'Metric':<30} {'Live (scale=0.2)':>18} {'Shadow (scale=0.5)':>20}")
     print("  " + "-" * 70)
     print(f"  {'Signals fired':<30} {live_s:>18} {shadow_s:>20}")
-    print(f"  {'Settled':<30} {live_settled:>18} {shadow_settled:>20}")
-    print(f"  {'Wins':<30} {live_wins:>18} {shadow_wins:>20}")
-    print(f"  {'Win rate':<30} {pct(live_wins, live_settled):>18} {pct(shadow_wins, shadow_settled):>20}")
+    print(f"  {'Settled (raw signals)':<30} {live_settled:>18} {shadow_settled:>20}")
+    print(f"  {'Raw WR':<30} {pct(live_wins, live_settled):>18} {pct(shadow_wins, shadow_settled):>20}")
+    print(f"  {'Game WR (de-duped)':<30} {f'{gw_live}/{gs_live}':>18} {'n/a':>20}")
     live_post = result['live_avg_posterior']
     shadow_post = result['shadow_avg_posterior']
     print(f"  {'Avg posterior':<30} {f'{live_post:.1%}' if live_post else 'n/a':>18} "
@@ -962,14 +1037,18 @@ def section_per_sport_group(conn: sqlite3.Connection,
 
     header("PER SPORT GROUP SUMMARY")
     print(f"  {'Group':<12} {'Lgues':>5} {'Games':>5} {'Evals':>6} {'Sigs':>5} "
-          f"{'Settled':>7} {'WR':>6} {'AvgEdge':>8} {'LRscale':>8}")
-    print("  " + "-" * 75)
+          f"{'RawWR':>7} {'GameWR':>8} {'AvgEdge':>8} {'LRscale':>8}")
+    print("  " + "-" * 80)
     for r in result:
-        wr = pct(r['sig_wins'] or 0, r['settled_sigs'] or 0)
+        raw_wr = pct(r['sig_wins'] or 0, r['settled_sigs'] or 0)
+        g, gs, gw = _dedup_game_wr(conn, since=since, sport_group=r['sport_group'])
+        game_wr = f"{gw}/{gs}" if gs > 0 else "n/a"
+        r['dedup_settled'] = gs
+        r['dedup_wins'] = gw
         avg_e = f"{(r['avg_edge'] or 0)*100:.1f}%" if r['avg_edge'] else "n/a"
         lr_s = f"{r['lr_scale']:.2f}" if r['lr_scale'] else "n/a"
         print(f"  {r['sport_group']:<12} {r['leagues']:>5} {r['games']:>5} {r['evals']:>6} "
-              f"{r['signals']:>5} {r['settled_sigs'] or 0:>7} {wr:>6} "
+              f"{r['signals']:>5} {raw_wr:>7} {game_wr:>8} "
               f"{avg_e:>8} {lr_s:>8}")
 
     return result
@@ -1018,22 +1097,23 @@ def section_sport_group_calibration(conn: sqlite3.Connection,
         print("  No signals to analyze.")
         return result
 
-    print(f"  {'Group':<12} {'Sigs':>5} {'Settled':>7} {'Predicted':>10} {'Actual':>8} "
+    print(f"  {'Group':<12} {'Sigs':>5} {'Games':>5} {'Predicted':>10} {'ActualWR':>9} "
           f"{'Gap':>8} {'AvgMkt':>7} {'AvgLR':>6} {'LRscale':>8} {'Status':<20}")
-    print("  " + "-" * 105)
+    print("  " + "-" * 110)
 
     for r in rows:
         rdict = dict(r)
-        settled = rdict['settled'] or 0
-        wins = rdict['wins'] or 0
         avg_pred = rdict['avg_predicted'] or 0
-        actual_wr = safe_div(wins, settled) if settled > 0 else None
+
+        # De-duped game-level actual WR
+        g, gs, gw = _dedup_game_wr(conn, since=since, sport_group=rdict['sport_group'])
+        actual_wr = safe_div(gw, gs) if gs > 0 else None
         gap = (avg_pred - actual_wr) * 100 if actual_wr is not None else None
         avg_mkt = f"{rdict['avg_market']:.0f}c" if rdict['avg_market'] else "n/a"
         avg_lr_str = f"{rdict['avg_lr']:.2f}" if rdict['avg_lr'] else "n/a"
         lr_s = f"{rdict['lr_scale']:.2f}" if rdict['lr_scale'] else "n/a"
 
-        if actual_wr is not None and settled >= 5:
+        if actual_wr is not None and gs >= 5:
             if gap > 15:
                 status = "OVERCONFIDENT"
             elif gap < -15:
@@ -1042,20 +1122,22 @@ def section_sport_group_calibration(conn: sqlite3.Connection,
                 status = "well-calibrated"
             else:
                 status = "slight bias"
-        elif settled > 0:
-            status = f"too few ({settled})"
+        elif gs > 0:
+            status = f"too few ({gs} games)"
         else:
             status = "no settlements"
 
         pred_str = f"{avg_pred:.1%}" if avg_pred else "n/a"
-        actual_str = f"{actual_wr:.1%}" if actual_wr is not None else "n/a"
+        actual_str = f"{actual_wr:.1%} ({gw}/{gs})" if actual_wr is not None else "n/a"
         gap_str = f"{gap:+.1f}pp" if gap is not None else "n/a"
 
-        print(f"  {rdict['sport_group']:<12} {rdict['n_signals']:>5} {settled:>7} "
-              f"{pred_str:>10} {actual_str:>8} {gap_str:>8} {avg_mkt:>7} "
+        print(f"  {rdict['sport_group']:<12} {rdict['n_signals']:>5} {gs:>5} "
+              f"{pred_str:>10} {actual_str:>9} {gap_str:>8} {avg_mkt:>7} "
               f"{avg_lr_str:>6} {lr_s:>8} {status:<20}")
 
         rdict['actual_wr'] = actual_wr
+        rdict['dedup_settled'] = gs
+        rdict['dedup_wins'] = gw
         rdict['calibration_gap'] = gap
         rdict['status'] = status
         result[rdict['sport_group']] = rdict
@@ -1070,9 +1152,10 @@ def section_sport_group_calibration(conn: sqlite3.Connection,
 
         lr_display = lr_scale if lr_scale is not None else 0.2
 
-        if gap is None or settled < 10:
+        dedup_settled = data.get('dedup_settled', 0)
+        if gap is None or dedup_settled < 10:
             recs.append((group, "COLLECT MORE DATA",
-                         f"Only {settled} settled signals. Need 50+ for reliable calibration."))
+                         f"Only {dedup_settled} settled games. Need 50+ for reliable calibration."))
         elif gap > 20:
             recs.append((group, "DECREASE lr_scale",
                          f"Model {gap:+.1f}pp overconfident. "

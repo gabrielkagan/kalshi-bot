@@ -314,30 +314,46 @@ def execution_quality(conn: sqlite3.Connection, since: str,
               f"${e['fees']/100:>6.2f} "
               f"{e['avg_wait'] or 0:>5.1f}s {e['avg_lat']:>5.1f}s")
 
-    # Fee distribution
+    # Fee distribution — classify maker vs taker by computing expected fees
     subsection("Fee distribution")
-    fee_rows = conn.execute(f"""
-        SELECT fee_cents, COUNT(*) AS n,
-          SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl
+    trade_rows = conn.execute(f"""
+        SELECT entry_price_cents, count, fee_cents, market_result, pnl_cents
         FROM settled_trades
         WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
-        GROUP BY fee_cents ORDER BY fee_cents
+        ORDER BY fee_cents
     """, (since,)).fetchall()
-    # Classify: maker fee is typically 1-2c for small positions
-    maker_count = sum(r["n"] for r in fee_rows if r["fee_cents"] <= 2)
-    taker_count = sum(r["n"] for r in fee_rows if r["fee_cents"] > 2)
-    maker_fees = sum(r["n"] * r["fee_cents"] for r in fee_rows
-                     if r["fee_cents"] <= 2)
-    taker_fees = sum(r["n"] * r["fee_cents"] for r in fee_rows
-                     if r["fee_cents"] > 2)
+    maker_count = 0
+    taker_count = 0
+    maker_fees = 0
+    taker_fees = 0
+    for tr in trade_rows:
+        p = tr["entry_price_cents"]
+        c = tr["count"]
+        expected_maker = math.ceil(0.0175 * c * p * (100 - p) / 100)
+        expected_taker = math.ceil(0.07 * c * p * (100 - p) / 100)
+        actual_fee = tr["fee_cents"]
+        # Classify: if actual fee is closer to expected maker fee, it's maker
+        if abs(actual_fee - expected_maker) <= abs(actual_fee - expected_taker):
+            maker_count += 1
+            maker_fees += actual_fee
+        else:
+            taker_count += 1
+            taker_fees += actual_fee
     total_n = maker_count + taker_count
-    print(f"  Maker fills (fee<=2c): {maker_count}/{total_n} "
-          f"({maker_count/total_n*100:.0f}%), total fees: ${maker_fees/100:.2f}")
-    print(f"  Taker fills (fee>2c):  {taker_count}/{total_n} "
-          f"({taker_count/total_n*100:.0f}%), total fees: ${taker_fees/100:.2f}")
-    print(f"  Taker fee premium:     "
-          f"${(taker_fees - taker_count * 2)/100:.2f} extra vs all-maker")
+    if total_n > 0:
+        print(f"  Maker fills: {maker_count}/{total_n} "
+              f"({maker_count/total_n*100:.0f}%), total fees: ${maker_fees/100:.2f}")
+        print(f"  Taker fills: {taker_count}/{total_n} "
+              f"({taker_count/total_n*100:.0f}%), total fees: ${taker_fees/100:.2f}")
+        maker_counterfactual = sum(
+            math.ceil(0.0175 * tr["count"] * tr["entry_price_cents"]
+                      * (100 - tr["entry_price_cents"]) / 100)
+            for tr in trade_rows)
+        print(f"  Taker fee premium:     "
+              f"${(maker_fees + taker_fees - maker_counterfactual)/100:.2f} "
+              f"extra vs all-maker")
+    else:
+        print("  No trades in period")
 
     # Contract size distribution
     subsection("Contract size distribution")
@@ -742,14 +758,15 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
             print(f"  {asset}: {cnt}/{total_losses} losses "
                   f"({pct:.0f}%){flag}")
 
-    # Counterfactual: stc_shadow (300-600s zone)
-    subsection("STC shadow zone counterfactual (300-600s)")
+    # Counterfactual: stc_shadow (500-900s zone per STC_SHADOW_THRESHOLD=500)
+    subsection("STC shadow zone counterfactual (500-900s)")
     shadow = conn.execute(f"""
         SELECT
           CASE
-            WHEN seconds_to_close BETWEEN 300 AND 400 THEN '300-400s'
-            WHEN seconds_to_close BETWEEN 400 AND 500 THEN '400-500s'
             WHEN seconds_to_close BETWEEN 500 AND 600 THEN '500-600s'
+            WHEN seconds_to_close BETWEEN 600 AND 700 THEN '600-700s'
+            WHEN seconds_to_close BETWEEN 700 AND 800 THEN '700-800s'
+            WHEN seconds_to_close BETWEEN 800 AND 900 THEN '800-900s'
             ELSE 'other'
           END AS bucket,
           COUNT(*) AS n,
@@ -785,7 +802,7 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
         print(f"  Data sufficiency: {'SUFFICIENT' if settled_n >= 30 else 'INSUFFICIENT'} "
               f"(need 30, have {settled_n})")
 
-        # Promotion candidate: combined 300-500s bucket
+        # Promotion candidate: combined 500-700s bucket (next zone to consider)
         promo = conn.execute(f"""
             SELECT COUNT(*) AS n,
               SUM(CASE WHEN status='settled' AND market_result='yes'
@@ -799,13 +816,13 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
             FROM evaluated_opportunities
             WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
               AND filter_stage = 'stc_shadow'
-              AND seconds_to_close BETWEEN 300 AND 500
+              AND seconds_to_close BETWEEN 500 AND 700
         """, (since,)).fetchone()
         pw, pl = (promo["w"] or 0), (promo["l"] or 0)
         pn_settled = pw + pl
         if pn_settled > 0:
             p_wr = pw / pn_settled * 100
-            print(f"\n  >>> PROMOTION CANDIDATE (300-500s combined):")
+            print(f"\n  >>> PROMOTION CANDIDATE (500-700s combined):")
             print(f"      {pw}W/{pl}L ({p_wr:.0f}% WR), "
                   f"CF PnL ${(promo['cf_pnl'] or 0)/100:.2f}, "
                   f"pending {promo['pending'] or 0}")
@@ -882,8 +899,8 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
             WHEN fee_adjusted_edge < -0.01 THEN '-2% to -1%'
             WHEN fee_adjusted_edge < 0 THEN '-1% to 0%'
             WHEN fee_adjusted_edge < 0.005 THEN '0% to 0.5%'
-            WHEN fee_adjusted_edge < 0.007 THEN '0.5-0.7%'
-            ELSE '0.7%+'
+            WHEN fee_adjusted_edge < 0.009 THEN '0.5-0.9%'
+            ELSE '0.9%+'
           END AS bucket,
           COUNT(*) AS n,
           SUM(CASE WHEN status='settled' AND market_result='yes'
@@ -1250,7 +1267,7 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
     cand_l = len(cands) - cand_w
 
     def sim_pnl_maker_unit(price: int, won: bool) -> float:
-        fee = math.ceil(0.0175 * (price / 100) * (1 - price / 100))
+        fee = math.ceil(0.0175 * price * (100 - price) / 100)
         return ((100 - price) - fee) if won else (-price - fee)
 
     cand_pnl = sum(sim_pnl_maker_unit(r["market_price"],
@@ -1281,7 +1298,7 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
         pnl = sum(sim_pnl_maker_unit(r["market_price"],
                   r["market_result"] == "yes") for r in sub)
         daily = pnl / 100 / n_days
-        marker = " ◄ current" if abs(me - 0.007) < 0.0001 else ""
+        marker = " ◄ ~86-90c" if abs(me - 0.0025) < 0.0001 else ""
         print(f"  {me*100:>7.2f}% {len(sub):>4} {w:>4} {l_:>3} {wr:>5.1f}% "
               f"${pnl/100:>8.2f} ${daily:>6.2f}{marker}")
 
@@ -1292,9 +1309,9 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
           f"{'FlatPnL':>9} {'$/day':>7}")
     print("  " + "-" * 48)
     for mp in prices:
-        # Use current edge floor for price sweep
+        # Use lowest current edge floor for price sweep (0.25% at 86-90c)
         sub = [r for r in pos_rows
-               if r["fee_adjusted_edge"] >= 0.007
+               if r["fee_adjusted_edge"] >= 0.0025
                and r["market_price"] >= mp]
         if not sub:
             continue
@@ -1304,7 +1321,7 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
         pnl = sum(sim_pnl_maker_unit(r["market_price"],
                   r["market_result"] == "yes") for r in sub)
         daily = pnl / 100 / n_days
-        marker = " ◄ current" if mp == 87 else ""
+        marker = " ◄ current" if mp == 86 else ""
         print(f"  {mp:>8}c {len(sub):>4} {w:>4} {l_:>3} {wr:>5.1f}% "
               f"${pnl/100:>8.2f} ${daily:>6.2f}{marker}")
 
@@ -1353,8 +1370,8 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
           f"{'WR':>6} {'FlatPnL':>9} {'$/day':>7}")
     print("  " + "-" * 55)
     for r in grid_results[:15]:
-        marker = " ◄" if (abs(r[0] - 0.007) < 0.0001
-                          and r[1] == 87) else ""
+        marker = " ◄" if (abs(r[0] - 0.0025) < 0.0001
+                          and r[1] == 86) else ""
         print(f"  {r[0]*100:>7.2f}% {r[1]:>4}c {r[2]:>4} {r[3]:>4} {r[4]:>3} "
               f"{r[5]:>5.1f}% ${r[6]/100:>8.2f} ${r[8]:>6.2f}{marker}")
 
@@ -1365,8 +1382,8 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
           f"{'WR':>6} {'FlatPnL':>9} {'KellyPnL':>10}")
     print("  " + "-" * 62)
     for r in grid_results[:15]:
-        marker = " ◄" if (abs(r[0] - 0.007) < 0.0001
-                          and r[1] == 87) else ""
+        marker = " ◄" if (abs(r[0] - 0.0025) < 0.0001
+                          and r[1] == 86) else ""
         print(f"  {r[0]*100:>7.2f}% {r[1]:>4}c {r[2]:>4} {r[3]:>4} {r[4]:>3} "
               f"{r[5]:>5.1f}% ${r[6]/100:>8.2f} ${r[7]/100:>9.2f}{marker}")
 
@@ -1375,16 +1392,16 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
 
     # Key comparisons
     comparisons = [
-        ("Current (edge>=0.7%, P>=87c) vs loosened",
-         lambda r: r["fee_adjusted_edge"] >= 0.007
-         and r["market_price"] >= 87),
+        ("Current (edge>=0.25%, P>=86c) vs loosened",
+         lambda r: r["fee_adjusted_edge"] >= 0.0025
+         and r["market_price"] >= 86),
     ]
     # Add top 3 distinct configs by flat PnL as alternatives
     grid_results.sort(key=lambda x: -x[6])
     seen = set()
     for gr in grid_results:
         key = (gr[0], gr[1])
-        if key not in seen and key != (0.007, 87) and len(comparisons) < 5:
+        if key not in seen and key != (0.0025, 86) and len(comparisons) < 5:
             seen.add(key)
             me_val, mp_val = gr[0], gr[1]
             comparisons.append((
@@ -1436,9 +1453,9 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
             }
 
     # ── Rejected opportunity analysis ──
-    subsection("Currently rejected opportunities (0-0.7% edge)")
+    subsection("Currently rejected opportunities (0-0.25% edge)")
     rejected = [r for r in pos_rows
-                if r["fee_adjusted_edge"] < 0.007
+                if r["fee_adjusted_edge"] < 0.0025
                 and r["fee_adjusted_edge"] >= 0]
     if rejected:
         rej_w = sum(1 for r in rejected if r["market_result"] == "yes")
@@ -1509,7 +1526,7 @@ def data_sufficiency(conn: sqlite3.Connection, since: str) -> None:
 
     # Per-config data sufficiency
     configs = [
-        ("STC shadow (300-600s)", "stc_shadow", 30),
+        ("STC shadow (500-900s)", "stc_shadow", 30),
         ("XRP shadow (counterfactual)", "xrp_shadow", 20),
         ("MIN_ENTRY at 86c", "price_out_of_range", 30),
         ("Edge threshold marginal", "insufficient_edge", 50),
@@ -1632,7 +1649,7 @@ def recommendations(conn: sqlite3.Connection, since: str,
     sl = shadow_row["l"] or 0
     sn = sw + sl
     if sn >= 30 and sw / sn > 0.90:
-        recs.append(("HIGH", "Promote STC shadow to live (300→400s)",
+        recs.append(("HIGH", "Promote STC shadow to live (500→600s)",
                       f"{sw}W/{sl}L ({sw/sn*100:.0f}% WR) — statistically sufficient"))
     elif sn > 0:
         recs.append(("WAIT", f"STC shadow: {sw}W/{sl}L ({sn} obs, need 30)",
@@ -1654,8 +1671,8 @@ def recommendations(conn: sqlite3.Connection, since: str,
     pw, pl = (por86["w"] or 0), (por86["l"] or 0)
     pn = pw + pl
     if pn >= 30 and pw / pn > 0.91:
-        recs.append(("MEDIUM", f"Lower MIN_ENTRY 87→86c",
-                      f"{pw}W/{pl}L ({pw/pn*100:.0f}% WR) — sufficient data"))
+        recs.append(("INFO", f"MIN_ENTRY=86c performing well",
+                      f"{pw}W/{pl}L ({pw/pn*100:.0f}% WR) — already active"))
     elif pn > 0:
         recs.append(("WAIT", f"MIN_ENTRY 86c: {pw}W/{pl}L ({pn} obs, need 30)",
                       "Keep collecting counterfactual data"))
@@ -1668,16 +1685,16 @@ def recommendations(conn: sqlite3.Connection, since: str,
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER}
           AND filter_stage = 'insufficient_edge'
-          AND fee_adjusted_edge BETWEEN 0.005 AND 0.007
+          AND fee_adjusted_edge BETWEEN 0.001 AND 0.0025
           AND status = 'settled'
     """, (since,)).fetchone()
     ew, el = (ie_marginal["w"] or 0), (ie_marginal["l"] or 0)
     en = ew + el
     if en >= 30 and ew / en > 0.92:
-        recs.append(("MEDIUM", "Lower min edge at 87c: 0.7%→0.5%",
-                      f"{ew}W/{el}L — captures marginal winners"))
+        recs.append(("MEDIUM", "Edge below current 0.25% threshold performing well",
+                      f"{ew}W/{el}L — sub-threshold candidates are winning"))
     elif en > 0:
-        recs.append(("WAIT", f"Edge threshold 0.5-0.7%: {ew}W/{el}L "
+        recs.append(("WAIT", f"Sub-threshold edge (0.1-0.25%): {ew}W/{el}L "
                       f"({en} obs, need 30)", "Accumulating data"))
 
     # R4: Taker WR monitoring

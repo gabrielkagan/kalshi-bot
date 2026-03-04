@@ -493,9 +493,9 @@ def section_blend_sim(conn: sqlite3.Connection, since: Optional[str]) -> dict:
             outcome = 1 if r["market_result"] in ("yes", "all_yes") else 0
             total_brier += (blended - outcome) ** 2
 
-            # Would this be a signal?
+            # Would this be a signal? (taker fee — bot uses taker for weather)
             edge = blended - market_p
-            fee = math.ceil(0.0175 * 100 * market_p * (1 - market_p))
+            fee = math.ceil(0.07 * 100 * market_p * (1 - market_p))
             fee_edge = edge - fee / 100.0
             if fee_edge >= min_edge_pct:
                 signal_count += 1
@@ -533,19 +533,22 @@ def section_forecast_accuracy(conn: sqlite3.Connection, since: Optional[str]) ->
         print("  DATA GAP: wx_actual_high_temp column not yet present in DB")
         return {"status": "column_missing"}
 
+    # Dedup by city + date: same forecast repeated across strikes
     rows = conn.execute(f"""
-        SELECT asset, wx_ensemble_mean, wx_actual_high_temp, wx_bias_correction
+        SELECT asset, wx_ensemble_mean, wx_actual_high_temp, wx_bias_correction,
+               DATE(evaluation_time) AS eval_date
         FROM evaluated_opportunities
         WHERE product_type='weather' {W}
           AND wx_actual_high_temp IS NOT NULL
           AND wx_ensemble_mean IS NOT NULL
+        GROUP BY asset, DATE(evaluation_time)
     """).fetchall()
 
     if not rows:
         print("  DATA GAP: wx_actual_high_temp not yet populated (archive API needs ~24h)")
         return {"status": "no_data"}
 
-    # Per-city MAE/RMSE
+    # Per-city MAE/RMSE (one observation per city/date)
     city_errors: Dict[str, List[float]] = defaultdict(list)
     for r in rows:
         city = r["asset"]

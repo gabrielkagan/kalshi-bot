@@ -6911,6 +6911,7 @@ class OpportunityScanner:
                 if (_pt == "hourly" and _HOURLY_CALIBRATION_ENGINE is not None
                         and _HOURLY_CALIBRATION_ENGINE.is_learned_method_active()):
                     _temp_t = None
+                    _hourly_pre_temp_prob = final_prob  # still record for shadow instrumentation
                 if _temp_t is not None:
                     _hourly_pre_temp_prob = final_prob
                     _p = max(0.001, min(0.999, final_prob))
