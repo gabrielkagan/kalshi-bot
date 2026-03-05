@@ -539,6 +539,10 @@ ADDON_MAX_ENTRY_PRICE = 98            # 98¢ cap — still profitable after fees
 # ─── Dip Addon ────────────────────────────────────────────────────────
 DIP_ADDON_ENABLED = True
 DIP_ADDON_SHADOW_MODE = True              # PHASE 1: Log only, don't execute
+
+# ─── Price Shadow — edge data for 70-85c markets ──────────────────────
+PRICE_SHADOW_ENABLED = True        # Shadow-evaluate POR for edge data collection
+PRICE_SHADOW_FLOOR = 70            # Lowest price to shadow-evaluate
 DIP_ADDON_MIN_DROP_CENTS = 3              # ask must drop ≥3¢ below entry
 DIP_ADDON_MIN_SECONDS_SINCE_FILL = 5.0   # wait after fill before eligible
 DIP_ADDON_MIN_STC_REMAINING = 90.0       # need ≥90s (aligns with maker-only threshold)
@@ -6490,6 +6494,8 @@ class OpportunityScanner:
             for a in _all_scan_assets
         }
 
+        _price_shadow_queue = []
+
         # 1. Filter windows by time range (config-driven thresholds)
         time_ok_windows = []
         for w in active_windows:
@@ -6921,6 +6927,23 @@ class OpportunityScanner:
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
+                    if PRICE_SHADOW_ENABLED and PRICE_SHADOW_FLOOR <= best_ask < _entry_floor:
+                        _price_shadow_queue.append({
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "best_ask": best_ask,
+                            "spot": spot,
+                            "threshold": threshold,
+                            "blended_rv": blended_rv,
+                            "seconds_remaining": seconds_remaining,
+                            "vol_regime": vol_est["regime"],
+                            "ask_depth": ask_depth,
+                            "best_ask_source": best_ask_source,
+                            "product_type": window.get("product_type"),
+                            "_shadow_diag": _shadow_diag.copy(),
+                            "_oft_db": _oft_db.copy(),
+                        })
                     continue
 
                 # Re-run probability with market price for sanity check
@@ -7976,6 +7999,9 @@ class OpportunityScanner:
             if ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
                 break
 
+        if PRICE_SHADOW_ENABLED and _price_shadow_queue:
+            self._process_price_shadow(_price_shadow_queue)
+
         if not candidates:
             self._last_scan_stats = scan_stats
             return None
@@ -8135,6 +8161,103 @@ class OpportunityScanner:
         })
         self._last_scan_stats = scan_stats
         return selected
+
+    # ── Price shadow processor ───────────────────────────────────────────
+    def _process_price_shadow(self, queue: list) -> None:
+        """Shadow-evaluate 70-85c POR rejections to collect edge data.
+
+        Runs AFTER both scan loops complete. Entire body in try/except —
+        a crash here cannot affect candidate selection or trading.
+        """
+        try:
+            for item in queue:
+                ticker = item["ticker"]
+                best_ask = item["best_ask"]
+                spot = item["spot"]
+                threshold = item["threshold"]
+                blended_rv = item["blended_rv"]
+                stc = item["seconds_remaining"]
+                asset = item["asset"]
+                _pt = item["product_type"]
+
+                # Re-run probability with market price (z-score sanity check)
+                prob_with_market = ProbabilityEngine.compute(
+                    spot, threshold, stc, blended_rv,
+                    market_price_cents=best_ask,
+                    asset=asset, product_type=_pt,
+                )
+                if not prob_with_market.get("tradeable"):
+                    continue
+
+                final_prob = prob_with_market["calibrated_prob"]
+                raw_prob = prob_with_market.get("raw_prob")
+                calibration_method = prob_with_market.get("calibration_method")
+
+                # Temperature scaling (Layer 1)
+                _hourly_pre_temp_prob = None
+                _tempcfg = get_market_config(_pt)
+                _temp_t = _tempcfg.temperature_t if _tempcfg.temperature_enabled else None
+                if _temp_t is not None and _temp_t == 1.0:
+                    _temp_t = None
+                _reg_engine_t = _resolve_cal_engine(_pt, asset, require_enabled=True)
+                if _reg_engine_t is not None and _reg_engine_t.is_learned_method_active():
+                    _temp_t = None
+                    _hourly_pre_temp_prob = final_prob
+                if _temp_t is not None:
+                    _hourly_pre_temp_prob = final_prob
+                    _p = max(0.001, min(0.999, final_prob))
+                    _z = math.log(_p / (1.0 - _p))
+                    final_prob = 1.0 / (1.0 + math.exp(-_z / _temp_t))
+
+                # Dynamic cap / learned ceiling
+                _dyn_cap = ProbabilityEngine._dynamic_cap(stc, product_type=_pt)
+                _reg_engine_c = _resolve_cal_engine(_pt, asset, require_enabled=True)
+                if _reg_engine_c is not None and _reg_engine_c.is_learned_method_active():
+                    final_prob = max(0.01, min(NUMERICAL_SAFETY_CEILING, final_prob))
+                else:
+                    final_prob = max(0.01, min(_dyn_cap, final_prob))
+
+                # Market blend (70-85c always < ENDGAME_BLEND_PRICE)
+                _mcfg = get_market_config(_pt)
+                _effective_blend_w = _mcfg.market_blend_w
+                market_implied_prob = best_ask / 100.0
+                final_prob = (1.0 - _effective_blend_w) * final_prob + _effective_blend_w * market_implied_prob
+
+                edge = final_prob - best_ask / 100.0
+
+                # Fee-adjusted edge
+                est_fee_1c = calculate_fee(1, best_ask, is_taker=True,
+                                           fee_mult_taker=_mcfg.fee_multiplier_taker,
+                                           fee_mult_maker=_mcfg.fee_multiplier_maker)
+                fee_adjusted_edge = edge - est_fee_1c / 100.0
+
+                # Dedup + DB insert
+                _dedup_key = (ticker, "price_shadow")
+                if _dedup_key in self._eval_opp_seen:
+                    continue
+                self._eval_opp_seen.add(_dedup_key)
+                self._state.insert_evaluated_opportunity(
+                    ticker, item["event_ticker"], asset,
+                    "price_shadow",
+                    spot_price=spot, threshold=threshold,
+                    volatility=blended_rv, market_price=best_ask,
+                    seconds_to_close=stc,
+                    calibrated_prob=final_prob,
+                    edge=edge, fee_adjusted_edge=fee_adjusted_edge,
+                    z_score=prob_with_market.get("z_score"),
+                    vol_regime=item["vol_regime"],
+                    breakeven_wr=best_ask / 100.0,
+                    calibrated_prob_raw=prob_with_market["calibrated_prob"],
+                    raw_prob=raw_prob,
+                    calibration_method=calibration_method,
+                    ask_depth=item["ask_depth"],
+                    best_ask_source=item["best_ask_source"],
+                    product_type=_pt,
+                    hourly_pre_temp_prob=_hourly_pre_temp_prob,
+                    hourly_applied_temp_t=_temp_t,
+                    **item["_oft_db"], **item["_shadow_diag"])
+        except Exception:
+            logging.warning("price_shadow processing error", exc_info=True)
 
     # ── Threshold parsing ─────────────────────────────────────────────────
 
