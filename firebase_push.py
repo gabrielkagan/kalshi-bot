@@ -288,23 +288,33 @@ class FirebasePusher:
             snap["daily_pnl_pct"] = 0.0
             snap["_snapshot_errors"].append("daily_pnl")
 
-        # Section 4: Consecutive losses (15M only)
+        # Section 4: Current streak (15M only) — wins or losses
         try:
             recent_settled = conn.execute(
                 "SELECT side, market_result FROM settled_trades "
-                "WHERE product_type='15m' ORDER BY settled_at DESC LIMIT 20"
+                "WHERE product_type='15m' ORDER BY settled_at DESC LIMIT 50"
             ).fetchall()
-            streak = 0
+            loss_streak = 0
+            win_streak = 0
             for r in recent_settled:
                 side, result = r["side"], r["market_result"]
                 is_win = (result in ("yes", "all_yes") and side == "yes") or \
                          (result in ("no", "all_no") and side == "no")
                 if is_win:
                     break
-                streak += 1
-            snap["consecutive_losses"] = streak
+                loss_streak += 1
+            for r in recent_settled:
+                side, result = r["side"], r["market_result"]
+                is_win = (result in ("yes", "all_yes") and side == "yes") or \
+                         (result in ("no", "all_no") and side == "no")
+                if not is_win:
+                    break
+                win_streak += 1
+            snap["consecutive_losses"] = loss_streak
+            snap["consecutive_wins"] = win_streak
         except Exception:
             snap["consecutive_losses"] = 0
+            snap["consecutive_wins"] = 0
             snap["_snapshot_errors"].append("consecutive_losses")
 
         # Risk metrics (15M only + all products for toggle)
@@ -338,24 +348,20 @@ class FirebasePusher:
                 stats = {}
                 if n > 0:
                     total = sum(nets)
-                    mean = total / n
-                    variance = sum((x - mean) ** 2 for x in nets) / (n - 1) if n > 1 else 0
-                    std = variance ** 0.5
-                    span_row = conn.execute(
-                        f"SELECT MIN(settled_at) AS first_t, MAX(settled_at) AS last_t FROM settled_trades{span_query_filter}"
-                    ).fetchone()
-                    if span_row and span_row["first_t"] and span_row["last_t"]:
-                        from datetime import datetime as _dt
-                        try:
-                            t0 = _dt.fromisoformat(span_row["first_t"].replace("Z", "+00:00"))
-                            t1 = _dt.fromisoformat(span_row["last_t"].replace("Z", "+00:00"))
-                            span_days = max((t1 - t0).total_seconds() / 86400, 0.01)
-                        except Exception:
-                            span_days = max(snap.get("uptime_seconds", 1) / 86400, 0.01)
+                    # Daily-aggregated Sharpe: group by date, compute daily mean/std, annualize sqrt(252)
+                    daily_rows = conn.execute(
+                        "SELECT DATE(settled_at) AS d, SUM(pnl_cents - fee_cents) AS daily_net "
+                        f"FROM settled_trades{span_query_filter} GROUP BY DATE(settled_at) ORDER BY d"
+                    ).fetchall()
+                    daily_nets = [r["daily_net"] for r in daily_rows if r["daily_net"] is not None]
+                    n_days = len(daily_nets)
+                    if n_days > 1:
+                        d_mean = sum(daily_nets) / n_days
+                        d_var = sum((x - d_mean) ** 2 for x in daily_nets) / (n_days - 1)
+                        d_std = d_var ** 0.5
+                        stats["sharpe_ratio"] = round(d_mean / d_std * (252 ** 0.5), 2) if d_std > 0 else 0.0
                     else:
-                        span_days = max(snap.get("uptime_seconds", 1) / 86400, 0.01)
-                    trades_per_day = n / span_days
-                    stats["sharpe_ratio"] = round(mean / std * (trades_per_day ** 0.5), 2) if std > 0 else 0.0
+                        stats["sharpe_ratio"] = 0.0
                     stats["total_pnl_cents"] = total
                     stats["avg_pnl_per_trade"] = round(total / n, 1)
                     gross_wins = sum(x for x in nets if x > 0)
@@ -693,8 +699,6 @@ class FirebasePusher:
                 "total_fills": total_fills,
                 "total_cancels": getattr(ex, "_session_ioc_unfilled", 0),
                 "active_event_tickers": len(self._ml._active_windows),
-                "events_evaluated": total_scanned,
-                "unique_markets_seen": total_scanned,
             }
         except Exception:
             snap["session_stats"] = {}
@@ -933,10 +937,11 @@ class FirebasePusher:
         except Exception:
             logging.debug("Firebase: egarch_blend build failed", exc_info=True)
 
-        # ── counterfactual analysis (15M only) ─────────────────────────
+        # ── counterfactual analysis (15M only, current regime) ──────────
         try:
             conn = self._db_conn
             _cf_pt_filter = "AND product_type='15m'"
+            _cf_regime_filter = f"AND evaluation_time >= '{CONFIG_REGIME_SINCE}'"
 
             # By filter stage
             stage_rows = conn.execute(
@@ -945,7 +950,7 @@ class FirebasePusher:
                 "  COUNT(CASE WHEN counterfactual_pnl <= 0 THEN 1 END) AS losses, "
                 "  COALESCE(SUM(counterfactual_pnl), 0) AS net_pnl_cents "
                 "FROM evaluated_opportunities "
-                f"WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL {_cf_pt_filter} "
+                f"WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL {_cf_pt_filter} {_cf_regime_filter} "
                 "GROUP BY filter_stage"
             ).fetchall()
             by_stage = []
@@ -974,11 +979,13 @@ class FirebasePusher:
                 "  COUNT(CASE WHEN counterfactual_pnl > 0 THEN 1 END) AS wins, "
                 "  COALESCE(SUM(counterfactual_pnl), 0) AS net_pnl_cents "
                 "FROM evaluated_opportunities "
-                f"WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL {_cf_pt_filter} "
+                f"WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL {_cf_pt_filter} {_cf_regime_filter} "
                 "  AND market_price BETWEEN 80 AND 99 "
                 "GROUP BY bucket"
             ).fetchall()
-            breakeven_map = {"80-84": 82, "85-89": 87, "90-94": 92, "95-99": 97}
+            # Breakeven WR = price / (100 - fee), where fee = ceil(0.07 * p * (1-p))
+            # Computed at bucket midpoints: 82c→83.5%, 87c→88.4%, 92c→93.2%, 97c→97.6%
+            breakeven_map = {"80-84": 83.5, "85-89": 88.4, "90-94": 93.2, "95-99": 97.6}
             by_bucket = []
             for r in bucket_rows:
                 total = r["total"]
@@ -1002,7 +1009,7 @@ class FirebasePusher:
                 "  COALESCE(SUM(CASE WHEN counterfactual_pnl < 0 AND filter_stage != 'observation_trade' "
                 "    THEN ABS(counterfactual_pnl) ELSE 0 END), 0) AS bullets_dodged "
                 "FROM evaluated_opportunities "
-                f"WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL {_cf_pt_filter}"
+                f"WHERE status = 'settled' AND counterfactual_pnl IS NOT NULL {_cf_pt_filter} {_cf_regime_filter}"
             ).fetchone()
 
             snap["counterfactual_analysis"] = {

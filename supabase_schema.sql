@@ -348,6 +348,7 @@ SELECT
     SUM(revenue_cents) AS revenue_cents,
     SUM(fee_cents) AS fee_cents
 FROM trades
+WHERE product_type = '15m'
 GROUP BY DATE(settled_at AT TIME ZONE 'UTC')
 ORDER BY trade_date;
 
@@ -366,6 +367,7 @@ SELECT
     SUM(pnl_cents - fee_cents) AS net_pnl_cents,
     ROUND(AVG(pnl_cents - fee_cents)::NUMERIC, 1) AS avg_net_pnl
 FROM trades
+WHERE product_type = '15m'
 GROUP BY 1
 ORDER BY 1;
 
@@ -385,7 +387,9 @@ SELECT
     END)::NUMERIC, 4) AS avg_actual,
     COUNT(*) FILTER (WHERE market_result IS NOT NULL) AS settled_count
 FROM evaluations
-WHERE calibrated_prob IS NOT NULL AND filter_stage IN ('candidate', 'observation_trade')
+WHERE calibrated_prob IS NOT NULL
+  AND filter_stage IN ('candidate', 'observation_trade')
+  AND product_type = '15m'
 GROUP BY 1
 ORDER BY 1;
 
@@ -400,6 +404,7 @@ SELECT
     COUNT(*) FILTER (WHERE counterfactual_pnl < 0) AS would_have_lost
 FROM evaluations
 WHERE filter_stage NOT IN ('candidate', 'observation_trade')
+  AND product_type = '15m'
 GROUP BY filter_stage
 ORDER BY money_left_cents DESC;
 
@@ -411,6 +416,7 @@ SELECT
     ROUND(AVG(fill_latency_seconds)::NUMERIC, 2) AS avg_fill_latency,
     ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY fill_latency_seconds)::NUMERIC, 2) AS median_fill_latency
 FROM trades
+WHERE product_type = '15m'
 GROUP BY 1;
 
 -- ============================================================================
