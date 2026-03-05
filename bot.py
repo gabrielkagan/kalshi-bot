@@ -7032,6 +7032,7 @@ class OpportunityScanner:
                 _hourly_pre_temp_prob = None
                 _tempcfg = get_market_config(window.get("product_type"))
                 _temp_t = _tempcfg.temperature_t if _tempcfg.temperature_enabled else None
+                _configured_temp_t = _temp_t  # record configured T for instrumentation (before CalEngine override)
                 # T=1.0 is identity — skip scaling
                 if _temp_t is not None and _temp_t == 1.0:
                     _temp_t = None
@@ -7428,7 +7429,7 @@ class OpportunityScanner:
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
                                 wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
-                                hourly_applied_temp_t=_temp_t,
+                                hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
@@ -7566,7 +7567,7 @@ class OpportunityScanner:
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
                                 wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
-                                hourly_applied_temp_t=_temp_t,
+                                hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
@@ -7704,7 +7705,7 @@ class OpportunityScanner:
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
                                 wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
-                                hourly_applied_temp_t=_temp_t,
+                                hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
@@ -7748,7 +7749,7 @@ class OpportunityScanner:
                             ask_depth=ask_depth, best_ask_source=best_ask_source,
                             product_type=window.get("product_type"),
                             hourly_pre_temp_prob=_hourly_pre_temp_prob,
-                            hourly_applied_temp_t=_temp_t,
+                            hourly_applied_temp_t=_configured_temp_t,
                             hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
                             hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                             hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
@@ -7781,7 +7782,7 @@ class OpportunityScanner:
                             ask_depth=ask_depth, best_ask_source=best_ask_source,
                             product_type=window.get("product_type"),
                             hourly_pre_temp_prob=_hourly_pre_temp_prob,
-                            hourly_applied_temp_t=_temp_t,
+                            hourly_applied_temp_t=_configured_temp_t,
                             hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
                             hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                             hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
@@ -7814,7 +7815,7 @@ class OpportunityScanner:
                                 ask_depth=ask_depth, best_ask_source=best_ask_source,
                                 product_type=window.get("product_type"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
-                                hourly_applied_temp_t=_temp_t,
+                                hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
@@ -7849,7 +7850,7 @@ class OpportunityScanner:
                                 ask_depth=ask_depth, best_ask_source=best_ask_source,
                                 product_type=window.get("product_type"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
-                                hourly_applied_temp_t=_temp_t,
+                                hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
@@ -7911,7 +7912,7 @@ class OpportunityScanner:
                                 shadow_cal_fee_edge=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                                 shadow_cal_temperature=(_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
-                                hourly_applied_temp_t=_temp_t,
+                                hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
@@ -7926,7 +7927,7 @@ class OpportunityScanner:
                         elif _obs_pt == "spx_hourly":
                             _obs_extra.update(
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
-                                hourly_applied_temp_t=_temp_t,
+                                hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
@@ -8126,7 +8127,7 @@ class OpportunityScanner:
                     "shadow_cal_fee_edge": (_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("fee_edge") if _cf else None,
                     "shadow_cal_temperature": (_cf.get("old_cal_system") or _cf.get("cal_pipeline", {})).get("temperature") if _cf else None,
                     "hourly_pre_temp_prob": _hourly_pre_temp_prob,
-                    "hourly_applied_temp_t": _temp_t,
+                    "hourly_applied_temp_t": _configured_temp_t,
                     "hourly_shadow_temp_2_0": _hourly_shadow_temp_2_0,
                     "hourly_shadow_temp_1_0": _hourly_shadow_temp_1_0,
                     "hourly_shadow_temp_2_5": _hourly_shadow_temp_2_5,
@@ -8351,6 +8352,7 @@ class OpportunityScanner:
                 _hourly_pre_temp_prob = None
                 _tempcfg = get_market_config(_pt)
                 _temp_t = _tempcfg.temperature_t if _tempcfg.temperature_enabled else None
+                _configured_temp_t = _temp_t  # record configured T for instrumentation (before CalEngine override)
                 if _temp_t is not None and _temp_t == 1.0:
                     _temp_t = None
                 _reg_engine_t = _resolve_cal_engine(_pt, asset, require_enabled=True)
@@ -8491,7 +8493,7 @@ class OpportunityScanner:
                     best_ask_source=item["best_ask_source"],
                     product_type=_pt,
                     hourly_pre_temp_prob=_hourly_pre_temp_prob,
-                    hourly_applied_temp_t=_temp_t,
+                    hourly_applied_temp_t=_configured_temp_t,
                     hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
                     hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                     hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,

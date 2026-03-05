@@ -717,3 +717,63 @@ class TestTVRKWeights:
             w1, w5, w15 = compute_tv_rk_weights(float(stc))
             assert abs(w1 + w5 + w15 - 1.0) < 0.06, f"Weights don't sum to ~1 at STC={stc}: {w1+w5+w15}"
             assert w1 >= 0 and w5 >= 0 and w15 >= 0, f"Negative weight at STC={stc}"
+
+
+# ============================================================================
+#  Instrumentation Integrity (Mar 5 2026)
+#     Bug: hourly_applied_temp_t was written as NULL when CalEngine was active
+#     because _temp_t was nulled for execution but also used for DB logging.
+#     Fix: capture _configured_temp_t before CalEngine override.
+# ============================================================================
+
+class TestInstrumentationIntegrity:
+    """Verify instrumentation variables are never silently nulled by execution logic."""
+
+    def test_configured_temp_t_captured_before_calengine_override(self):
+        """_configured_temp_t must be set BEFORE any code that nulls _temp_t.
+
+        The pattern: _temp_t gets nulled when CalEngine is active (correct for
+        execution), but DB writes must use _configured_temp_t which preserves
+        the configured value for instrumentation.
+        """
+        source = open(os.path.join(PROJECT_ROOT, "bot.py")).read()
+
+        # Find all assignments of _configured_temp_t
+        config_assigns = [
+            i for i, line in enumerate(source.splitlines())
+            if "_configured_temp_t = _temp_t" in line
+        ]
+        assert len(config_assigns) >= 2, (
+            f"Expected >= 2 _configured_temp_t captures (scan + price_shadow), found {len(config_assigns)}"
+        )
+
+        # Every DB write of hourly_applied_temp_t that references _temp_t
+        # must use _configured_temp_t, not bare _temp_t.
+        # Exclude lines with =None (POR rejections before temp is computed)
+        # and lines reading from candidate dicts (candidate.get(...)).
+        for i, line in enumerate(source.splitlines(), 1):
+            stripped = line.strip()
+            if "hourly_applied_temp_t=" not in stripped:
+                continue
+            if "=None" in stripped or "candidate.get(" in stripped or "c.get(" in stripped:
+                continue  # hardcoded None or dict reads are fine
+            if "_temp_t" in stripped and "_configured_temp_t" not in stripped:
+                assert False, (
+                    f"Line {i}: hourly_applied_temp_t uses _temp_t instead of "
+                    f"_configured_temp_t — instrumentation will be NULL when CalEngine "
+                    f"is active. Line: {stripped}"
+                )
+
+    def test_no_bare_temp_t_in_candidate_dict(self):
+        """The candidate dict must store _configured_temp_t, not _temp_t."""
+        source = open(os.path.join(PROJECT_ROOT, "bot.py")).read()
+
+        for i, line in enumerate(source.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith('"hourly_applied_temp_t"') and ": _temp_t" in stripped:
+                # Must be _configured_temp_t
+                assert "_configured_temp_t" in stripped, (
+                    f"Line {i}: candidate dict stores bare _temp_t for "
+                    f"hourly_applied_temp_t — will be NULL when CalEngine active. "
+                    f"Use _configured_temp_t. Line: {stripped}"
+                )
