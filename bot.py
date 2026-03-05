@@ -1456,6 +1456,12 @@ class StateManager:
             ("hourly_shadow_temp_1_0", "REAL"),
             ("hourly_shadow_temp_2_5", "REAL"),
             ("hourly_shadow_blend_50", "REAL"),
+            ("hourly_shadow_temp_1_75", "REAL"),
+            ("hourly_shadow_temp_3_0", "REAL"),
+            ("hourly_shadow_blend_20", "REAL"),
+            ("hourly_shadow_blend_30", "REAL"),
+            ("hourly_shadow_blend_60", "REAL"),
+            ("hourly_post_temp_prob", "REAL"),
             # Balance at evaluation time
             ("available_balance_cents", "INTEGER"),
             # Order tracking columns
@@ -1919,6 +1925,12 @@ class StateManager:
                                      hourly_shadow_temp_1_0: Optional[float] = None,
                                      hourly_shadow_temp_2_5: Optional[float] = None,
                                      hourly_shadow_blend_50: Optional[float] = None,
+                                     hourly_shadow_temp_1_75: Optional[float] = None,
+                                     hourly_shadow_temp_3_0: Optional[float] = None,
+                                     hourly_shadow_blend_20: Optional[float] = None,
+                                     hourly_shadow_blend_30: Optional[float] = None,
+                                     hourly_shadow_blend_60: Optional[float] = None,
+                                     hourly_post_temp_prob: Optional[float] = None,
                                      available_balance_cents: Optional[int] = None,
                                      order_id: Optional[str] = None,
                                      order_submitted_at: Optional[str] = None,
@@ -1949,9 +1961,12 @@ class StateManager:
                      hourly_pre_temp_prob, hourly_applied_temp_t,
                      hourly_shadow_temp_2_0, hourly_shadow_temp_1_0, hourly_shadow_temp_2_5,
                      hourly_shadow_blend_50,
+                     hourly_shadow_temp_1_75, hourly_shadow_temp_3_0,
+                     hourly_shadow_blend_20, hourly_shadow_blend_30, hourly_shadow_blend_60,
+                     hourly_post_temp_prob,
                      available_balance_cents,
                      order_id, order_submitted_at, order_outcome)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1973,6 +1988,9 @@ class StateManager:
                   hourly_pre_temp_prob, hourly_applied_temp_t,
                   hourly_shadow_temp_2_0, hourly_shadow_temp_1_0, hourly_shadow_temp_2_5,
                   hourly_shadow_blend_50,
+                  hourly_shadow_temp_1_75, hourly_shadow_temp_3_0,
+                  hourly_shadow_blend_20, hourly_shadow_blend_30, hourly_shadow_blend_60,
+                  hourly_post_temp_prob,
                   available_balance_cents,
                   order_id, order_submitted_at, order_outcome))
             self.conn.commit()
@@ -6924,6 +6942,9 @@ class OpportunityScanner:
                                 hourly_pre_temp_prob=None, hourly_applied_temp_t=None,
                                 hourly_shadow_temp_2_0=None, hourly_shadow_temp_1_0=None,
                                 hourly_shadow_temp_2_5=None, hourly_shadow_blend_50=None,
+                                hourly_shadow_temp_1_75=None, hourly_shadow_temp_3_0=None,
+                                hourly_shadow_blend_20=None, hourly_shadow_blend_30=None,
+                                hourly_shadow_blend_60=None, hourly_post_temp_prob=None,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -7014,39 +7035,50 @@ class OpportunityScanner:
                     _z_scaled = _z / _temp_t
                     final_prob = 1.0 / (1.0 + math.exp(-_z_scaled))
 
-                # ── Shadow temperature instrumentation (hourly + SPX) ──────────
+                # ── Shadow temperature + blend instrumentation (hourly + SPX) ──
                 _hourly_shadow_temp_2_0 = None
                 _hourly_shadow_temp_1_0 = None
                 _hourly_shadow_temp_2_5 = None
+                _hourly_shadow_temp_1_75 = None
+                _hourly_shadow_temp_3_0 = None
                 _hourly_shadow_blend_50 = None
-                # For hourly (T=1.45): base = pre-temp prob, shadows = T=1.0/2.0/2.5
-                # For SPX (T=1.0): base = final_prob (no temp applied), shadows = T=1.5/2.0/2.5
-                #   Note: SPX uses hourly_shadow_temp_1_0 for T=1.5 (since T=1.0 is identity/useless)
-                _shadow_base = _hourly_pre_temp_prob  # hourly: prob before T scaling
+                _hourly_shadow_blend_20 = None
+                _hourly_shadow_blend_30 = None
+                _hourly_shadow_blend_60 = None
+                _hourly_post_temp_prob = None
+
+                _shadow_base = _hourly_pre_temp_prob
                 if _shadow_base is None and _pt == "spx_hourly":
-                    _shadow_base = final_prob  # SPX: T=1.0 means final_prob IS untempered
-                    _hourly_pre_temp_prob = final_prob  # store for DB
-                    _temp_t = 1.0  # document that no correction applied
+                    _shadow_base = final_prob
+                    _hourly_pre_temp_prob = final_prob
+                    _temp_t = 1.0
 
                 if _shadow_base is not None:
                     _sp = max(0.001, min(0.999, _shadow_base))
                     _sz = math.log(_sp / (1.0 - _sp))
+
+                    # Temperature shadows (pre-blend)
                     _hourly_shadow_temp_2_0 = 1.0 / (1.0 + math.exp(-_sz / 2.0))
                     _hourly_shadow_temp_2_5 = 1.0 / (1.0 + math.exp(-_sz / 2.5))
+                    _hourly_shadow_temp_1_75 = 1.0 / (1.0 + math.exp(-_sz / 1.75))
+                    _hourly_shadow_temp_3_0 = 1.0 / (1.0 + math.exp(-_sz / 3.0))
                     if _pt == "spx_hourly":
-                        _hourly_shadow_temp_1_0 = 1.0 / (1.0 + math.exp(-_sz / 1.5))  # T=1.5 for SPX
+                        _hourly_shadow_temp_1_0 = 1.0 / (1.0 + math.exp(-_sz / 1.5))
                     else:
-                        _hourly_shadow_temp_1_0 = _shadow_base   # T=1.0 = identity for hourly
-                    # 50% market blend shadow — compare vs current 40% blend
-                    _mkt_p = best_ask / 100.0
-                    _cur_w = _tempcfg.market_blend_w
-                    if _cur_w < 1.0:
-                        _model_p = max(0.001, min(0.999, (_shadow_base - _cur_w * _mkt_p) / (1.0 - _cur_w)))
-                        _blend50_pre = 0.50 * _model_p + 0.50 * _mkt_p
-                        _bp = max(0.001, min(0.999, _blend50_pre))
-                        _bz = math.log(_bp / (1.0 - _bp))
-                        _blend_t = _temp_t if _temp_t and _temp_t != 1.0 else 1.0
-                        _hourly_shadow_blend_50 = 1.0 / (1.0 + math.exp(-_bz / _blend_t))
+                        _hourly_shadow_temp_1_0 = _shadow_base
+
+                    # Post-temp prob: tempered value before OFA and blend
+                    # For offline analysis: (1-W) * post_temp + W * (mkt/100) = any blend
+                    _hourly_post_temp_prob = final_prob
+
+                    # Blend shadows: full final = liveT + shadowW
+                    # Uses final_prob (tempered, pre-OFA) — isolates T×W effect
+                    if best_ask < ENDGAME_BLEND_PRICE:
+                        _mkt_p = best_ask / 100.0
+                        _hourly_shadow_blend_20 = 0.80 * final_prob + 0.20 * _mkt_p
+                        _hourly_shadow_blend_30 = 0.70 * final_prob + 0.30 * _mkt_p
+                        _hourly_shadow_blend_50 = 0.50 * final_prob + 0.50 * _mkt_p
+                        _hourly_shadow_blend_60 = 0.40 * final_prob + 0.60 * _mkt_p
 
                 # Order flow adjustment
                 ofa_signals = None
@@ -7346,6 +7378,12 @@ class OpportunityScanner:
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
+                                hourly_shadow_temp_1_75=_hourly_shadow_temp_1_75,
+                                hourly_shadow_temp_3_0=_hourly_shadow_temp_3_0,
+                                hourly_shadow_blend_20=_hourly_shadow_blend_20,
+                                hourly_shadow_blend_30=_hourly_shadow_blend_30,
+                                hourly_shadow_blend_60=_hourly_shadow_blend_60,
+                                hourly_post_temp_prob=_hourly_post_temp_prob,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -7478,6 +7516,12 @@ class OpportunityScanner:
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
+                                hourly_shadow_temp_1_75=_hourly_shadow_temp_1_75,
+                                hourly_shadow_temp_3_0=_hourly_shadow_temp_3_0,
+                                hourly_shadow_blend_20=_hourly_shadow_blend_20,
+                                hourly_shadow_blend_30=_hourly_shadow_blend_30,
+                                hourly_shadow_blend_60=_hourly_shadow_blend_60,
+                                hourly_post_temp_prob=_hourly_post_temp_prob,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -7610,6 +7654,12 @@ class OpportunityScanner:
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
+                                hourly_shadow_temp_1_75=_hourly_shadow_temp_1_75,
+                                hourly_shadow_temp_3_0=_hourly_shadow_temp_3_0,
+                                hourly_shadow_blend_20=_hourly_shadow_blend_20,
+                                hourly_shadow_blend_30=_hourly_shadow_blend_30,
+                                hourly_shadow_blend_60=_hourly_shadow_blend_60,
+                                hourly_post_temp_prob=_hourly_post_temp_prob,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         pass
@@ -7648,6 +7698,12 @@ class OpportunityScanner:
                             hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                             hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                             hourly_shadow_blend_50=_hourly_shadow_blend_50,
+                            hourly_shadow_temp_1_75=_hourly_shadow_temp_1_75,
+                            hourly_shadow_temp_3_0=_hourly_shadow_temp_3_0,
+                            hourly_shadow_blend_20=_hourly_shadow_blend_20,
+                            hourly_shadow_blend_30=_hourly_shadow_blend_30,
+                            hourly_shadow_blend_60=_hourly_shadow_blend_60,
+                            hourly_post_temp_prob=_hourly_post_temp_prob,
                             **_oft_db, **_shadow_diag)
                     continue
 
@@ -7675,6 +7731,12 @@ class OpportunityScanner:
                             hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                             hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                             hourly_shadow_blend_50=_hourly_shadow_blend_50,
+                            hourly_shadow_temp_1_75=_hourly_shadow_temp_1_75,
+                            hourly_shadow_temp_3_0=_hourly_shadow_temp_3_0,
+                            hourly_shadow_blend_20=_hourly_shadow_blend_20,
+                            hourly_shadow_blend_30=_hourly_shadow_blend_30,
+                            hourly_shadow_blend_60=_hourly_shadow_blend_60,
+                            hourly_post_temp_prob=_hourly_post_temp_prob,
                             **_oft_db, **_shadow_diag)
                     continue
 
@@ -7702,6 +7764,12 @@ class OpportunityScanner:
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
+                                hourly_shadow_temp_1_75=_hourly_shadow_temp_1_75,
+                                hourly_shadow_temp_3_0=_hourly_shadow_temp_3_0,
+                                hourly_shadow_blend_20=_hourly_shadow_blend_20,
+                                hourly_shadow_blend_30=_hourly_shadow_blend_30,
+                                hourly_shadow_blend_60=_hourly_shadow_blend_60,
+                                hourly_post_temp_prob=_hourly_post_temp_prob,
                                 **_oft_db, **_shadow_diag)
                         continue
 
@@ -7731,6 +7799,12 @@ class OpportunityScanner:
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
+                                hourly_shadow_temp_1_75=_hourly_shadow_temp_1_75,
+                                hourly_shadow_temp_3_0=_hourly_shadow_temp_3_0,
+                                hourly_shadow_blend_20=_hourly_shadow_blend_20,
+                                hourly_shadow_blend_30=_hourly_shadow_blend_30,
+                                hourly_shadow_blend_60=_hourly_shadow_blend_60,
+                                hourly_post_temp_prob=_hourly_post_temp_prob,
                                 **_oft_db, **_shadow_diag)
                         continue
 
@@ -7787,6 +7861,12 @@ class OpportunityScanner:
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
+                                hourly_shadow_temp_1_75=_hourly_shadow_temp_1_75,
+                                hourly_shadow_temp_3_0=_hourly_shadow_temp_3_0,
+                                hourly_shadow_blend_20=_hourly_shadow_blend_20,
+                                hourly_shadow_blend_30=_hourly_shadow_blend_30,
+                                hourly_shadow_blend_60=_hourly_shadow_blend_60,
+                                hourly_post_temp_prob=_hourly_post_temp_prob,
                             )
                         elif _obs_pt == "spx_hourly":
                             _obs_extra.update(
@@ -7796,6 +7876,12 @@ class OpportunityScanner:
                                 hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
                                 hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
                                 hourly_shadow_blend_50=_hourly_shadow_blend_50,
+                                hourly_shadow_temp_1_75=_hourly_shadow_temp_1_75,
+                                hourly_shadow_temp_3_0=_hourly_shadow_temp_3_0,
+                                hourly_shadow_blend_20=_hourly_shadow_blend_20,
+                                hourly_shadow_blend_30=_hourly_shadow_blend_30,
+                                hourly_shadow_blend_60=_hourly_shadow_blend_60,
+                                hourly_post_temp_prob=_hourly_post_temp_prob,
                             )
                         elif _obs_pt == "weather":
                             _obs_extra.update(
@@ -7989,6 +8075,12 @@ class OpportunityScanner:
                     "hourly_shadow_temp_1_0": _hourly_shadow_temp_1_0,
                     "hourly_shadow_temp_2_5": _hourly_shadow_temp_2_5,
                     "hourly_shadow_blend_50": _hourly_shadow_blend_50,
+                    "hourly_shadow_temp_1_75": _hourly_shadow_temp_1_75,
+                    "hourly_shadow_temp_3_0": _hourly_shadow_temp_3_0,
+                    "hourly_shadow_blend_20": _hourly_shadow_blend_20,
+                    "hourly_shadow_blend_30": _hourly_shadow_blend_30,
+                    "hourly_shadow_blend_60": _hourly_shadow_blend_60,
+                    "hourly_post_temp_prob": _hourly_post_temp_prob,
                     **_shadow_diag,
                     **_shadow_extra,
                 })
@@ -8122,7 +8214,13 @@ class OpportunityScanner:
                                     hourly_shadow_temp_2_0=c.get("hourly_shadow_temp_2_0"),
                                     hourly_shadow_temp_1_0=c.get("hourly_shadow_temp_1_0"),
                                     hourly_shadow_temp_2_5=c.get("hourly_shadow_temp_2_5"),
-                                    hourly_shadow_blend_50=c.get("hourly_shadow_blend_50"))
+                                    hourly_shadow_blend_50=c.get("hourly_shadow_blend_50"),
+                                    hourly_shadow_temp_1_75=c.get("hourly_shadow_temp_1_75"),
+                                    hourly_shadow_temp_3_0=c.get("hourly_shadow_temp_3_0"),
+                                    hourly_shadow_blend_20=c.get("hourly_shadow_blend_20"),
+                                    hourly_shadow_blend_30=c.get("hourly_shadow_blend_30"),
+                                    hourly_shadow_blend_60=c.get("hourly_shadow_blend_60"),
+                                    hourly_post_temp_prob=c.get("hourly_post_temp_prob"))
                         except Exception:
                             logging.warning("single_asset_selection insert failed for %s", c.get("ticker"), exc_info=True)
         else:
@@ -8217,6 +8315,43 @@ class OpportunityScanner:
                 else:
                     final_prob = max(0.01, min(_dyn_cap, final_prob))
 
+                # ── Shadow instrumentation ──
+                _hourly_shadow_temp_2_0 = None
+                _hourly_shadow_temp_1_0 = None
+                _hourly_shadow_temp_2_5 = None
+                _hourly_shadow_temp_1_75 = None
+                _hourly_shadow_temp_3_0 = None
+                _hourly_shadow_blend_50 = None
+                _hourly_shadow_blend_20 = None
+                _hourly_shadow_blend_30 = None
+                _hourly_shadow_blend_60 = None
+                _hourly_post_temp_prob = None
+
+                _shadow_base_ps = _hourly_pre_temp_prob
+                if _shadow_base_ps is None and _pt == "spx_hourly":
+                    _shadow_base_ps = prob_with_market["calibrated_prob"]
+                    _hourly_pre_temp_prob = _shadow_base_ps
+                    _temp_t = 1.0
+
+                if _shadow_base_ps is not None:
+                    _sp = max(0.001, min(0.999, _shadow_base_ps))
+                    _sz = math.log(_sp / (1.0 - _sp))
+                    _hourly_shadow_temp_2_0 = 1.0 / (1.0 + math.exp(-_sz / 2.0))
+                    _hourly_shadow_temp_2_5 = 1.0 / (1.0 + math.exp(-_sz / 2.5))
+                    _hourly_shadow_temp_1_75 = 1.0 / (1.0 + math.exp(-_sz / 1.75))
+                    _hourly_shadow_temp_3_0 = 1.0 / (1.0 + math.exp(-_sz / 3.0))
+                    if _pt == "spx_hourly":
+                        _hourly_shadow_temp_1_0 = 1.0 / (1.0 + math.exp(-_sz / 1.5))
+                    else:
+                        _hourly_shadow_temp_1_0 = _shadow_base_ps
+                    _hourly_post_temp_prob = final_prob
+                    # 70-85c always < ENDGAME_BLEND_PRICE
+                    _mkt_p = best_ask / 100.0
+                    _hourly_shadow_blend_20 = 0.80 * final_prob + 0.20 * _mkt_p
+                    _hourly_shadow_blend_30 = 0.70 * final_prob + 0.30 * _mkt_p
+                    _hourly_shadow_blend_50 = 0.50 * final_prob + 0.50 * _mkt_p
+                    _hourly_shadow_blend_60 = 0.40 * final_prob + 0.60 * _mkt_p
+
                 # Market blend (70-85c always < ENDGAME_BLEND_PRICE)
                 _mcfg = get_market_config(_pt)
                 _effective_blend_w = _mcfg.market_blend_w
@@ -8255,6 +8390,16 @@ class OpportunityScanner:
                     product_type=_pt,
                     hourly_pre_temp_prob=_hourly_pre_temp_prob,
                     hourly_applied_temp_t=_temp_t,
+                    hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
+                    hourly_shadow_temp_1_0=_hourly_shadow_temp_1_0,
+                    hourly_shadow_temp_2_5=_hourly_shadow_temp_2_5,
+                    hourly_shadow_blend_50=_hourly_shadow_blend_50,
+                    hourly_shadow_temp_1_75=_hourly_shadow_temp_1_75,
+                    hourly_shadow_temp_3_0=_hourly_shadow_temp_3_0,
+                    hourly_shadow_blend_20=_hourly_shadow_blend_20,
+                    hourly_shadow_blend_30=_hourly_shadow_blend_30,
+                    hourly_shadow_blend_60=_hourly_shadow_blend_60,
+                    hourly_post_temp_prob=_hourly_post_temp_prob,
                     **item["_oft_db"], **item["_shadow_diag"])
         except Exception:
             logging.warning("price_shadow processing error", exc_info=True)
@@ -8773,6 +8918,12 @@ class OrderExecutor:
                         hourly_shadow_temp_1_0=candidate.get("hourly_shadow_temp_1_0"),
                         hourly_shadow_temp_2_5=candidate.get("hourly_shadow_temp_2_5"),
                         hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"),
+                        hourly_shadow_temp_1_75=candidate.get("hourly_shadow_temp_1_75"),
+                        hourly_shadow_temp_3_0=candidate.get("hourly_shadow_temp_3_0"),
+                        hourly_shadow_blend_20=candidate.get("hourly_shadow_blend_20"),
+                        hourly_shadow_blend_30=candidate.get("hourly_shadow_blend_30"),
+                        hourly_shadow_blend_60=candidate.get("hourly_shadow_blend_60"),
+                        hourly_post_temp_prob=candidate.get("hourly_post_temp_prob"),
                         available_balance_cents=candidate.get("balance_at_scan"))
             except Exception as e:
                 logging.error(f"OBSERVATION_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
@@ -8839,6 +8990,12 @@ class OrderExecutor:
                 hourly_shadow_temp_1_0=candidate.get("hourly_shadow_temp_1_0"),
                 hourly_shadow_temp_2_5=candidate.get("hourly_shadow_temp_2_5"),
                 hourly_shadow_blend_50=candidate.get("hourly_shadow_blend_50"),
+                hourly_shadow_temp_1_75=candidate.get("hourly_shadow_temp_1_75"),
+                hourly_shadow_temp_3_0=candidate.get("hourly_shadow_temp_3_0"),
+                hourly_shadow_blend_20=candidate.get("hourly_shadow_blend_20"),
+                hourly_shadow_blend_30=candidate.get("hourly_shadow_blend_30"),
+                hourly_shadow_blend_60=candidate.get("hourly_shadow_blend_60"),
+                hourly_post_temp_prob=candidate.get("hourly_post_temp_prob"),
                 available_balance_cents=candidate.get("balance_at_scan"))
         except Exception as e:
             logging.error(f"CANDIDATE_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
@@ -10305,6 +10462,9 @@ class OrderExecutor:
                         hourly_pre_temp_prob=None, hourly_applied_temp_t=None,
                         hourly_shadow_temp_2_0=None, hourly_shadow_temp_1_0=None,
                         hourly_shadow_temp_2_5=None, hourly_shadow_blend_50=None,
+                        hourly_shadow_temp_1_75=None, hourly_shadow_temp_3_0=None,
+                        hourly_shadow_blend_20=None, hourly_shadow_blend_30=None,
+                        hourly_shadow_blend_60=None, hourly_post_temp_prob=None,
                         **_dip_oft_db,
                     )
                 except Exception:

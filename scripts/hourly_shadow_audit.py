@@ -1108,6 +1108,149 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
         print(f"  >>> hourly_shadow_temp_2_0 column not found — "
               f"needs bot instrumentation")
 
+    # ── Temperature × Blend Shadow Grid ──
+    subsection("P7: Temperature × Blend Shadow Grid")
+    grid_cols = {
+        "hourly_shadow_temp_1_75": "T=1.75",
+        "hourly_shadow_temp_3_0": "T=3.0",
+        "hourly_shadow_blend_20": "W=0.20",
+        "hourly_shadow_blend_30": "W=0.30",
+        "hourly_shadow_blend_60": "W=0.60",
+        "hourly_post_temp_prob": "post_temp",
+    }
+    available_grid = {col: label for col, label in grid_cols.items()
+                      if has_column(conn, "evaluated_opportunities", col)}
+    if not available_grid:
+        print("  >>> No grid shadow columns found — needs bot v2 instrumentation")
+    else:
+        print(f"  Grid columns available: {list(available_grid.values())}")
+
+        # Temperature grid: pre-blend comparison using post_temp_prob + market_price
+        if "hourly_post_temp_prob" in available_grid:
+            temp_blend_rows = conn.execute(f"""
+                SELECT calibrated_prob, market_price, market_result,
+                       hourly_shadow_temp_2_0, hourly_shadow_temp_1_0,
+                       hourly_shadow_temp_2_5,
+                       hourly_shadow_temp_1_75, hourly_shadow_temp_3_0,
+                       hourly_shadow_blend_20, hourly_shadow_blend_30,
+                       hourly_shadow_blend_50, hourly_shadow_blend_60,
+                       hourly_post_temp_prob, hourly_pre_temp_prob
+                FROM evaluated_opportunities
+                WHERE product_type='hourly' AND filter_stage='hourly_observation'
+                  AND hourly_post_temp_prob IS NOT NULL AND market_result IS NOT NULL
+                  AND evaluation_time >= ?
+            """, (since,)).fetchall()
+
+            if len(temp_blend_rows) >= 10:
+                n = len(temp_blend_rows)
+                outcome = [(1 if r["market_result"] == "yes" else 0) for r in temp_blend_rows]
+
+                # Brier for live system
+                brier_live = sum((r["calibrated_prob"] - o) ** 2
+                                 for r, o in zip(temp_blend_rows, outcome)) / n
+
+                # Pre-blend temps (apply live W=0.40 blend offline)
+                temp_labels = [
+                    ("T=1.0", "hourly_shadow_temp_1_0"),
+                    ("T=1.45", None),  # live — use hourly_post_temp_prob
+                    ("T=1.75", "hourly_shadow_temp_1_75"),
+                    ("T=2.0", "hourly_shadow_temp_2_0"),
+                    ("T=2.5", "hourly_shadow_temp_2_5"),
+                    ("T=3.0", "hourly_shadow_temp_3_0"),
+                ]
+                blend_labels = [
+                    ("W=0.20", "hourly_shadow_blend_20"),
+                    ("W=0.30", "hourly_shadow_blend_30"),
+                    ("W=0.40", None),  # live — use calibrated_prob
+                    ("W=0.50", "hourly_shadow_blend_50"),
+                    ("W=0.60", "hourly_shadow_blend_60"),
+                ]
+
+                print(f"\n  Temperature Brier (pre-blend, then W=0.40 live blend applied offline):")
+                print(f"  {'Temp':<8} {'Brier':>8}  {'vs live':>8}  n={n}")
+                print(f"  {'-'*30}")
+                for t_label, t_col in temp_labels:
+                    brier_vals = []
+                    for r, o in zip(temp_blend_rows, outcome):
+                        if t_col is None:
+                            # Live T: use post_temp_prob with live blend
+                            pre_blend = r["hourly_post_temp_prob"]
+                        else:
+                            pre_blend = r[t_col]
+                        if pre_blend is None:
+                            continue
+                        # Apply live W=0.40 blend
+                        mkt = r["market_price"] / 100.0 if r["market_price"] else 0.5
+                        blended = 0.60 * pre_blend + 0.40 * mkt
+                        brier_vals.append((blended - o) ** 2)
+                    if brier_vals:
+                        b = sum(brier_vals) / len(brier_vals)
+                        diff = b - brier_live
+                        marker = " <<<" if b == min(b, brier_live) and diff < -0.001 else ""
+                        print(f"  {t_label:<8} {b:>8.4f}  {diff:>+8.4f}{marker}")
+
+                print(f"\n  Blend weight Brier (live T applied, shadow W):")
+                print(f"  {'Blend':<8} {'Brier':>8}  {'vs live':>8}  n={n}")
+                print(f"  {'-'*30}")
+                for w_label, w_col in blend_labels:
+                    brier_vals = []
+                    for r, o in zip(temp_blend_rows, outcome):
+                        if w_col is None:
+                            prob = r["calibrated_prob"]
+                        else:
+                            prob = r[w_col]
+                        if prob is None:
+                            continue
+                        brier_vals.append((prob - o) ** 2)
+                    if brier_vals:
+                        b = sum(brier_vals) / len(brier_vals)
+                        diff = b - brier_live
+                        marker = " <<<" if b == min(b, brier_live) and diff < -0.001 else ""
+                        print(f"  {w_label:<8} {b:>8.4f}  {diff:>+8.4f}{marker}")
+
+                # Full T×W grid (offline computation using post_temp_prob + market_price)
+                print(f"\n  Full T×W Brier Grid (n={n}):")
+                w_values = [0.20, 0.30, 0.40, 0.50, 0.60]
+                print(f"  {'':>8}", end="")
+                for w in w_values:
+                    print(f"  W={w:.2f}", end="")
+                print()
+                print(f"  {'-'*50}")
+
+                best_brier = 999.0
+                best_combo = ""
+                for t_label, t_col in temp_labels:
+                    print(f"  {t_label:<8}", end="")
+                    for w in w_values:
+                        brier_vals = []
+                        for r, o in zip(temp_blend_rows, outcome):
+                            if t_col is None:
+                                pre_blend = r["hourly_post_temp_prob"]
+                            else:
+                                pre_blend = r[t_col]
+                            if pre_blend is None:
+                                continue
+                            mkt = r["market_price"] / 100.0 if r["market_price"] else 0.5
+                            blended = (1 - w) * pre_blend + w * mkt
+                            brier_vals.append((blended - o) ** 2)
+                        if brier_vals:
+                            b = sum(brier_vals) / len(brier_vals)
+                            if b < best_brier:
+                                best_brier = b
+                                best_combo = f"{t_label}, W={w:.2f}"
+                            print(f"  {b:.4f}", end="")
+                        else:
+                            print(f"     N/A", end="")
+                    print()
+
+                print(f"\n  >>> Best: {best_combo} (Brier={best_brier:.4f}) "
+                      f"vs live {brier_live:.4f} "
+                      f"(diff={best_brier - brier_live:+.4f})")
+            else:
+                print(f"  Grid data: {len(temp_blend_rows)} entries (need 10+ settled)")
+        else:
+            print("  >>> hourly_post_temp_prob column needed for T×W grid")
+
 
 # ── Section 5: Calibration Grid Search ────────────────────────────
 
