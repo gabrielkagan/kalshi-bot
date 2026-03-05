@@ -1461,7 +1461,7 @@ class SportsEngine:
                         conn.execute(
                             "UPDATE evaluated_opportunities SET "
                             "status='settled', market_result=?, "
-                            "counterfactual_pnl=?, settled_at=? WHERE id=?",
+                            "counterfactual_pnl=?, settled_time=? WHERE id=?",
                             ("yes" if fav_won else "no",
                              _cf_pnl, _settle_now, _eid))
                     if eo_rows:
