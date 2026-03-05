@@ -8398,6 +8398,46 @@ class OpportunityScanner:
                                            fee_mult_maker=_mcfg.fee_multiplier_maker)
                 fee_adjusted_edge = edge - est_fee_1c / 100.0
 
+                # Sizing + strategy for instrumentation (all in try/except — cannot break insert)
+                _ps_kelly_f = None
+                _ps_position = None
+                _ps_drawdown = None
+                _ps_strategy = None
+                _ps_ev = None
+                try:
+                    _ps_ev = round(
+                        (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
+                    _ps_balance = self._get_balance_cached()
+                    if _ps_balance and _ps_balance > 0:
+                        _ps_sizing = self._sizer.compute(final_prob, best_ask, _ps_balance)
+                        _ps_kelly_f = _ps_sizing["kelly_f"]
+                        _ps_position = _ps_sizing["contracts"]
+                        _ps_drawdown = _ps_sizing["drawdown_scaler"]
+                        # Apply product-type Kelly fraction + risk cap
+                        _ps_scfg = get_market_config(_pt)
+                        if _ps_scfg.kelly_fraction < 1.0:
+                            _ps_position = max(1, int(_ps_position * _ps_scfg.kelly_fraction))
+                        _ps_type_max = int((_ps_balance * _ps_scfg.max_risk_per_trade) / best_ask)
+                        if _ps_position > _ps_type_max:
+                            _ps_position = max(1, _ps_type_max)
+                        _ps_strat_data = {
+                            "z_score": prob_with_market.get("z_score"),
+                            "calibrated_prob": final_prob,
+                            "spot": spot, "threshold": threshold,
+                            "seconds_to_close": stc, "blended_rv": blended_rv,
+                            "vol_regime": item["vol_regime"],
+                            "best_yes_ask": best_ask,
+                            "best_ask_depth": item["ask_depth"],
+                            "total_ob_depth": 0,
+                            "convergence_velocity": 0,
+                            "edge": edge,
+                            "min_entry_price": _ps_scfg.min_entry_price,
+                            "max_entry_price": _ps_scfg.max_entry_price,
+                        }
+                        _ps_strategy, _ = evaluate_execution_strategy(_ps_strat_data)
+                except Exception:
+                    logging.debug("price_shadow sizing/strategy failed", exc_info=True)
+
                 # Dedup + DB insert
                 _dedup_key = (ticker, "price_shadow")
                 if _dedup_key in self._eval_opp_seen:
@@ -8415,6 +8455,11 @@ class OpportunityScanner:
                     vol_regime=item["vol_regime"],
                     breakeven_wr=best_ask / 100.0,
                     calibrated_prob_raw=prob_with_market["calibrated_prob"],
+                    kelly_f=_ps_kelly_f,
+                    position_size=_ps_position,
+                    drawdown_scaler=_ps_drawdown,
+                    strategy=_ps_strategy,
+                    expected_value=_ps_ev,
                     raw_prob=raw_prob,
                     calibration_method=calibration_method,
                     ask_depth=item["ask_depth"],
