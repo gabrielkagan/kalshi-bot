@@ -7369,6 +7369,28 @@ class OpportunityScanner:
                                 _ie_type_max = int((_ie_balance * _ie_scfg.max_risk_per_trade) / best_ask)
                                 if _ie_position > _ie_type_max:
                                     _ie_position = max(1, _ie_type_max)
+                            # Compute strategy for instrumentation (pure computation, no side effects)
+                            _ie_strategy = None
+                            try:
+                                _ie_scfg2 = get_market_config(window.get("product_type"))
+                                _ie_strat_data = {
+                                    "z_score": z_score,
+                                    "calibrated_prob": final_prob,
+                                    "spot": spot, "threshold": threshold,
+                                    "seconds_to_close": seconds_remaining,
+                                    "blended_rv": blended_rv,
+                                    "vol_regime": vol_est["regime"],
+                                    "best_yes_ask": best_ask,
+                                    "best_ask_depth": ask_depth,
+                                    "total_ob_depth": total_depth,
+                                    "convergence_velocity": self._scanner_convergence_velocity(ticker),
+                                    "edge": edge,
+                                    "min_entry_price": _ie_scfg2.min_entry_price,
+                                    "max_entry_price": _ie_scfg2.max_entry_price,
+                                }
+                                _ie_strategy, _ = evaluate_execution_strategy(_ie_strat_data)
+                            except Exception:
+                                logging.debug("IE strategy computation failed", exc_info=True)
                             self._state.insert_evaluated_opportunity(
                                 ticker, window["event_ticker"], asset,
                                 "insufficient_edge",
@@ -7378,6 +7400,7 @@ class OpportunityScanner:
                                 seconds_to_close=seconds_remaining,
                                 calibrated_prob=final_prob, edge=edge,
                                 ofa_adjustment=ofa_adjustment,
+                                strategy=_ie_strategy,
                                 z_score=z_score,
                                 vol_regime=vol_est["regime"],
                                 calibrated_prob_raw=calibrated_prob_raw,
