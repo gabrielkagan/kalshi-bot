@@ -115,6 +115,13 @@ class ComebackSignal:
     sport_lr_scale: float = 0.2
 
 
+# Approximate game duration (seconds) for seconds_to_close estimation
+_SPORT_DURATION_SEC = {
+    "basketball": 2880, "hockey": 3600, "soccer": 5400,
+    "baseball": 10800, "football": 3600, "tennis": 7200,
+    "mma": 1500, "esports": 3600,
+}
+
 # ── ESPN Live Feed ───────────────────────────────────────────────────────────
 
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports"
@@ -1005,9 +1012,8 @@ class SportsEngine:
                 continue
 
             # 6. Get current Kalshi price
-            current_price = self._get_current_kalshi_price(game, fav_code)
-            if current_price is None:
-                current_price = 0.0  # Log anyway with 0 price
+            raw_kalshi_price = self._get_current_kalshi_price(game, fav_code)
+            current_price = raw_kalshi_price if raw_kalshi_price is not None else 0.0
 
             # 7. Compute Bayesian posterior + edge
             sport_group_cfg = get_sport_group_config(league_cfg)
@@ -1055,7 +1061,7 @@ class SportsEngine:
                 self._insert_evaluated_opportunity(
                     game=game, league_cfg=league_cfg,
                     signal=signal, current_price=current_price,
-                    ob_data=ob_data,
+                    ob_data=ob_data, raw_kalshi_price=raw_kalshi_price,
                 )
 
         if live_count > 0:
@@ -1336,7 +1342,7 @@ class SportsEngine:
         return default
 
     def _load_settled_games(self) -> None:
-        """One-time load of already-settled game IDs from DB."""
+        """One-time load of already-settled game IDs and signaled games from DB."""
         try:
             conn = self._get_db_conn()
             rows = conn.execute(
@@ -1344,8 +1350,15 @@ class SportsEngine:
                 "WHERE fav_won IS NOT NULL"
             ).fetchall()
             self._settled_games = {r[0] for r in rows}
-            logging.info("SportsEngine: loaded %d settled games from DB",
-                         len(self._settled_games))
+
+            # Restore _signaled_games — unsettled games with signal_fired
+            sig_rows = conn.execute(
+                "SELECT DISTINCT game_id FROM sports_shadow_log "
+                "WHERE signal_fired=1 AND fav_won IS NULL"
+            ).fetchall()
+            self._signaled_games = {r[0] for r in sig_rows} - self._settled_games
+            logging.info("SportsEngine: loaded %d settled, %d signaled games",
+                         len(self._settled_games), len(self._signaled_games))
         except Exception:
             logging.warning("SportsEngine: failed to load settled games",
                             exc_info=True)
@@ -1421,6 +1434,43 @@ class SportsEngine:
                     update_params
                 )
                 conn.commit()
+
+                # Settle evaluated_opportunities for this game
+                try:
+                    eo_rows = conn.execute(
+                        "SELECT id, market_price, position_size "
+                        "FROM evaluated_opportunities "
+                        "WHERE status='pending' AND product_type='sports' "
+                        "AND (ticker = ? OR ticker LIKE ?)",
+                        (f"SPORTS-{game_id}",
+                         f"%{game_id}%")
+                    ).fetchall()
+                    _settle_now = datetime.datetime.now(
+                        datetime.timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%S.%fZ")
+                    for erow in eo_rows:
+                        _eid, _ep, _cnt = erow[0], erow[1], erow[2] or 1
+                        _cf_pnl = None
+                        if _ep and _ep > 0:
+                            _tf = math.ceil(
+                                0.07 * _cnt * (_ep / 100) * (1 - _ep / 100))
+                            if fav_won:
+                                _cf_pnl = int((100 - _ep) * _cnt - _tf)
+                            else:
+                                _cf_pnl = int(-(_ep * _cnt + _tf))
+                        conn.execute(
+                            "UPDATE evaluated_opportunities SET "
+                            "status='settled', market_result=?, "
+                            "counterfactual_pnl=?, settled_at=? WHERE id=?",
+                            ("yes" if fav_won else "no",
+                             _cf_pnl, _settle_now, _eid))
+                    if eo_rows:
+                        conn.commit()
+                except Exception:
+                    logging.warning(
+                        "SportsEngine eval_opp settle failed for %s",
+                        game_id, exc_info=True)
+
                 self._settled_games.add(game_id)
                 self._signaled_games.discard(game_id)
                 self._last_logged_time.pop(game_id, None)
@@ -1547,7 +1597,9 @@ class SportsEngine:
                                       league_cfg: LeagueConfig,
                                       signal: ComebackSignal,
                                       current_price: float,
-                                      ob_data: Optional[Dict] = None) -> None:
+                                      ob_data: Optional[Dict] = None,
+                                      raw_kalshi_price: Optional[float] = None,
+                                      ) -> None:
         """Insert to evaluated_opportunities for settlement tracking.
 
         Uses own DB connection to avoid cross-thread writes to StateManager.
@@ -1559,18 +1611,37 @@ class SportsEngine:
             real_event = ob_data.get("event_ticker") if ob_data else ""
             ticker = real_ticker or f"SPORTS-{game.game_id}"
             event_ticker = real_event or game.league
-            now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            now = datetime.datetime.now(datetime.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S.%fZ")
+            _dur = _SPORT_DURATION_SEC.get(league_cfg.sport_group, 3600)
+            _stc = (int(game.time_remaining_pct * _dur)
+                    if game.time_remaining_pct is not None else None)
+            # Use raw_kalshi_price for DB (None when no Kalshi market)
+            _db_price = (int(raw_kalshi_price)
+                         if raw_kalshi_price is not None else None)
             conn.execute("""
                 INSERT OR REPLACE INTO evaluated_opportunities
                     (ticker, event_ticker, asset, filter_stage, rejection_reason,
                      evaluation_time, market_price, calibrated_prob, raw_prob, edge,
-                     fee_adjusted_edge, product_type, status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     fee_adjusted_edge, product_type, status,
+                     seconds_to_close, spot_price, position_size, kelly_f,
+                     z_score, vol_regime, calibration_method, counterfactual,
+                     ask_depth)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, league_cfg.display_name,
-                  signal.filter_stage, signal.rejection_reason,
-                  now, int(current_price) if current_price is not None else None,
+                  signal.filter_stage, signal.rejection_reason, now,
+                  _db_price,
                   signal.comeback_prob, signal.comeback_prob, signal.edge,
-                  signal.fee_adjusted_edge, "sports", "pending"))
+                  signal.fee_adjusted_edge, "sports", "pending",
+                  _stc,
+                  round(signal.prior * 100, 2) if signal.prior else None,
+                  signal.simulated_contracts,
+                  signal.simulated_risk,
+                  signal.likelihood_ratio,
+                  signal.sport_group,
+                  "bayesian_comeback",
+                  1 if signal.signal_fired else 0,
+                  ob_data.get("ask_depth") if ob_data else None))
             conn.commit()
         except Exception:
             logging.debug("SportsEngine eval_opp insert failed", exc_info=True)

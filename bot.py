@@ -421,6 +421,7 @@ def _derive_subtype(product_type: str, asset: Optional[str]) -> Optional[str]:
                     return _lcfg.sport_group
         except ImportError:
             pass
+        logging.debug("_derive_subtype: no sport_group for asset=%s", asset)
         return None
     return None
 
