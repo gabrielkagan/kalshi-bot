@@ -8463,13 +8463,14 @@ class OpportunityScanner:
                     logging.debug("price_shadow sizing/strategy failed", exc_info=True)
 
                 # Dedup + DB insert
-                _dedup_key = (ticker, "price_shadow")
+                _ps_stage = "price_shadow_no_xrp" if asset != "XRP" else "price_shadow"
+                _dedup_key = (ticker, _ps_stage)
                 if _dedup_key in self._eval_opp_seen:
                     continue
                 self._eval_opp_seen.add(_dedup_key)
                 self._state.insert_evaluated_opportunity(
                     ticker, item["event_ticker"], asset,
-                    "price_shadow",
+                    _ps_stage,
                     spot_price=spot, threshold=threshold,
                     volatility=blended_rv, market_price=best_ask,
                     seconds_to_close=stc,
