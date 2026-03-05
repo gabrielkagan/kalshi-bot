@@ -7978,15 +7978,16 @@ class OpportunityScanner:
                     continue  # DO NOT add to candidates — observation gate
 
                 # ── STC SHADOW GATE (15M only) ──
-                # Markets at 500-600s STC: log full evaluation for data collection, but don't trade.
-                # 300-500s promoted to live (data: 17W/0L, +$127 cf PnL). 500-600s still collecting data.
+                # Markets at 500-900s STC: log full evaluation for data collection, but don't trade.
+                # 0-500s is LIVE. Non-XRP tagged "stc_shadow_promoted" for variant tracking.
                 if window.get("product_type") in (None, "15m") and seconds_remaining > STC_SHADOW_THRESHOLD:
-                    _dedup_key = (ticker, "stc_shadow")
+                    _stc_stage = "stc_shadow_no_xrp" if asset != "XRP" else "stc_shadow"
+                    _dedup_key = (ticker, _stc_stage)
                     if _dedup_key not in self._eval_opp_seen:
                         self._eval_opp_seen.add(_dedup_key)
                         _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
                         self._state.insert_evaluated_opportunity(
-                            ticker, window["event_ticker"], asset, "stc_shadow",
+                            ticker, window["event_ticker"], asset, _stc_stage,
                             spot_price=spot, threshold=threshold, volatility=blended_rv,
                             market_price=best_ask, seconds_to_close=seconds_remaining,
                             calibrated_prob=final_prob, edge=edge, z_score=z_score,
