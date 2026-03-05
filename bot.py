@@ -6888,10 +6888,18 @@ class OpportunityScanner:
                 _entry_ceil = _pricecfg.max_entry_price
                 if not (_entry_floor <= best_ask <= _entry_ceil):
                     scan_stats[asset]["price_out_of_range"] += 1
+                    # Compute raw edge for instrumentation (pre-temperature, pre-blend)
+                    _por_edge = cal_prob - best_ask / 100.0
+                    _por_fee = calculate_fee(
+                        1, best_ask, is_taker=True,
+                        fee_mult_taker=_pricecfg.fee_multiplier_taker,
+                        fee_mult_maker=_pricecfg.fee_multiplier_maker)
+                    _por_fee_edge = _por_edge - _por_fee / 100.0
+                    _por_z = prob_result.get("z_score")
                     self._recent_opportunities.append({
                         "ticker": ticker, "asset": asset,
                         "seconds_to_close": round(seconds_remaining, 1),
-                        "best_ask": best_ask, "edge_bps": None,
+                        "best_ask": best_ask, "edge_bps": round(_por_edge * 10000) if _por_edge else None,
                         "chosen_strategy": None,
                         "rejection_reason": "price_out_of_range",
                         "ts": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
@@ -6928,6 +6936,9 @@ class OpportunityScanner:
                                 volatility=blended_rv, market_price=best_ask,
                                 seconds_to_close=seconds_remaining,
                                 calibrated_prob=cal_prob,
+                                edge=_por_edge,
+                                fee_adjusted_edge=_por_fee_edge,
+                                z_score=_por_z,
                                 vol_regime=vol_est["regime"],
                                 breakeven_wr=best_ask / 100.0,
                                 ask_depth=ask_depth,
@@ -7341,6 +7352,23 @@ class OpportunityScanner:
                         if _dedup_key not in self._eval_opp_seen:
                             self._eval_opp_seen.add(_dedup_key)
                             _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            # Compute sizing for instrumentation (pure math, no side effects)
+                            _ie_kelly_f = None
+                            _ie_position = None
+                            _ie_drawdown = None
+                            _ie_balance = self._get_balance_cached()
+                            if _ie_balance and _ie_balance > 0:
+                                _ie_sizing = self._sizer.compute(final_prob, best_ask, _ie_balance)
+                                _ie_kelly_f = _ie_sizing["kelly_f"]
+                                _ie_position = _ie_sizing["contracts"]
+                                _ie_drawdown = _ie_sizing["drawdown_scaler"]
+                                # Apply product-type Kelly fraction + risk cap
+                                _ie_scfg = get_market_config(window.get("product_type"))
+                                if _ie_scfg.kelly_fraction < 1.0:
+                                    _ie_position = max(1, int(_ie_position * _ie_scfg.kelly_fraction))
+                                _ie_type_max = int((_ie_balance * _ie_scfg.max_risk_per_trade) / best_ask)
+                                if _ie_position > _ie_type_max:
+                                    _ie_position = max(1, _ie_type_max)
                             self._state.insert_evaluated_opportunity(
                                 ticker, window["event_ticker"], asset,
                                 "insufficient_edge",
@@ -7353,6 +7381,9 @@ class OpportunityScanner:
                                 z_score=z_score,
                                 vol_regime=vol_est["regime"],
                                 calibrated_prob_raw=calibrated_prob_raw,
+                                kelly_f=_ie_kelly_f,
+                                position_size=_ie_position,
+                                drawdown_scaler=_ie_drawdown,
                                 breakeven_wr=best_ask / 100.0,
                                 expected_value=round(_ev, 2),
                                 ask_depth=ask_depth,
