@@ -9873,6 +9873,8 @@ class OrderExecutor:
 
         order_id = (resp.get("order") or {}).get("order_id", client_oid)
         remaining_count = (resp.get("order") or {}).get("remaining_count", count)
+        _order_fill_count = fp_str_to_int((resp.get("order") or {}).get("fill_count_fp")) or (
+            (resp.get("order") or {}).get("fill_count") or 0)
         self._state.confirm_order_submitted(client_oid, order_id)
 
         order_info = {
@@ -9946,7 +9948,12 @@ class OrderExecutor:
         # but the contracts DO exist. Register a defensive position at the limit
         # price (conservative — actual fills are ≤ limit). Reconciliation at next
         # startup will correct prices from Kalshi's positions API.
-        if remaining_count == 0:
+        #
+        # CRITICAL: For IOC orders, remaining_count=0 can also mean the order was
+        # auto-canceled with zero fills. Must verify fill_count > 0 from the order
+        # response to distinguish real ghost fills from unfilled IOC cancellations.
+        # (Bug: false ghost fill on KXSOL15M-26MAR061400-00 cost -$39.16, Mar 6 2026)
+        if remaining_count == 0 and _order_fill_count > 0:
             logging.error(
                 f"GHOST_FILL_DETECTED: {ticker} remaining_count=0 but no fill "
                 f"events from API — Kalshi matched all {count} contracts. "
@@ -9976,6 +9983,12 @@ class OrderExecutor:
             if candidate.get("entry_path") != "confirmation_addon":
                 self._session_ioc_fills += 1
             return order_info
+
+        # remaining_count=0 but fill_count=0: IOC was auto-canceled, not a ghost fill
+        if remaining_count == 0 and _order_fill_count == 0:
+            logging.info(
+                f"IOC_CANCELED_NO_FILLS: {ticker} remaining_count=0 "
+                f"fill_count=0 — order was canceled unfilled, not a ghost fill")
 
         # ── Ghost fill detection (Layer B): positions API verification ──
         # remaining_count > 0 suggests genuinely unfilled, but verify against
@@ -11060,10 +11073,22 @@ class SettlementTracker:
             )
             return
 
-        # Cross-check: detect count mismatch between internal tracking
-        # and Kalshi settlement.  For YES wins, revenue = real_count * 100.
+        # Cross-check: revenue=0 on a WIN is almost certainly a false position
+        # (e.g., false ghost fill where Kalshi has no matching position).
+        # Log critical and skip to prevent recording a phantom loss.
         recorded_count = pos["count"]
         total_cost = pos["total_cost_cents"]
+        if outcome == "WIN" and revenue == 0 and recorded_count > 0:
+            logging.critical(
+                f"SETTLEMENT REVENUE ZERO ON WIN {ticker}: "
+                f"market_result={market_result} side={side} count={recorded_count} "
+                f"cost={total_cost}¢ fill_source={pos.get('fill_source')} — "
+                f"Kalshi likely has no matching position. "
+                f"Skipping settlement to prevent false -{total_cost}¢ loss.")
+            return
+
+        # Cross-check: detect count mismatch between internal tracking
+        # and Kalshi settlement.  For YES wins, revenue = real_count * 100.
         if revenue > 0 and outcome == "WIN" and side == "yes":
             implied_count = revenue // 100
             if implied_count != recorded_count:
