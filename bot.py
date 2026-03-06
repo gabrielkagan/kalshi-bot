@@ -6479,6 +6479,11 @@ class OpportunityScanner:
                 self._kalshi_oft.cleanup_stale(active_tickers)
             except Exception:
                 pass
+        if self._ml and getattr(self._ml, "hourly_alt_shadow", None):
+            try:
+                self._ml.hourly_alt_shadow.cleanup_expired(active_tickers)
+            except Exception:
+                pass
 
         # Build ticker set for product types that skip WS orderbook subscription (too many strikes)
         _hourly_tickers = set()
@@ -8001,6 +8006,26 @@ class OpportunityScanner:
                         self._hourly_window_counts[_wkey] = self._hourly_window_counts.get(_wkey, 0) + 1
                         self._hourly_window_risk[_wkey] = self._hourly_window_risk.get(_wkey, 0.0) + \
                             (sizing["contracts"] * best_ask) / (balance if balance > 0 else 1)
+
+                    # ── Hourly Alt Shadow Strategies (ETH/SOL/XRP only) ──
+                    # Evaluate Market-Making and HAR-RV shadow strategies in parallel
+                    # with the existing EGARCH pipeline. Shadow-only, cannot place orders.
+                    if (_obs_pt == "hourly"
+                            and self._ml and getattr(self._ml, "hourly_alt_shadow", None)):
+                        try:
+                            _alt_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                            self._ml.hourly_alt_shadow.evaluate_strike(
+                                asset=asset, ticker=ticker,
+                                event_ticker=window["event_ticker"],
+                                spot_price=spot, threshold=threshold,
+                                seconds_to_close=seconds_remaining,
+                                best_bid=_alt_bid, best_ask=best_ask,
+                                market_price=best_ask, ob_data=ob_data,
+                                egarch_prob=final_prob,
+                                egarch_edge=fee_adjusted_edge)
+                        except Exception:
+                            logging.debug("hourly_alt_shadow evaluate failed", exc_info=True)
+
                     continue  # DO NOT add to candidates — observation gate
 
                 # ── STC SHADOW GATE (15M only) ──
@@ -11290,6 +11315,14 @@ class SettlementTracker:
                     except Exception as e:
                         logging.warning("weather_observed_temp fetch failed for %s: %s", ticker, e)
 
+                # Settle hourly alt shadow signals for this ticker
+                if (self._ml and getattr(self._ml, "hourly_alt_shadow", None)
+                        and result in ("yes", "all_yes", "no", "all_no")):
+                    try:
+                        self._ml.hourly_alt_shadow.settle_signals(ticker, result)
+                    except Exception:
+                        logging.debug("hourly_alt_shadow settle failed for %s", ticker)
+
                 logging.info(
                     f"Evaluated opp settled: {ticker} ({row['filter_stage']}) "
                     f"-> {counterfactual_outcome} (profit={would_have_profit}¢)"
@@ -11541,6 +11574,16 @@ class MainLoop:
                 logging.info("Weather engine initialized")
             except Exception as e:
                 logging.warning(f"Weather engine unavailable: {e}")
+
+        # ── Hourly Alt Shadow Engine (ETH/SOL/XRP shadow strategies) ──────
+        self.hourly_alt_shadow = None
+        try:
+            from hourly_alt_shadow import HourlyAltShadowEngine, HOURLY_ALT_SHADOW_ENABLED
+            if HOURLY_ALT_SHADOW_ENABLED and HOURLY_OBSERVATION_ENABLED:
+                self.hourly_alt_shadow = HourlyAltShadowEngine(db_path=DB_PATH)
+                logging.info("Hourly alt shadow engine initialized (MM + HAR-RV)")
+        except Exception as e:
+            logging.warning(f"Hourly alt shadow engine unavailable: {e}")
 
         # ── Sports Engine (conditional) ────────────────────────────────────
         self.sports_engine = None
@@ -12023,6 +12066,17 @@ class MainLoop:
         # Recompute seconds_to_close and log each window (skip hourly vol diagnostics)
         utc_now = datetime.datetime.now(timezone.utc)
         prices = self.feed.get_all_prices()
+
+        # Feed price data to hourly alt shadow engine for HAR-RV return computation
+        if self.hourly_alt_shadow:
+            _alt_ts = time.time()
+            for _alt_asset, _alt_price in prices.items():
+                if _alt_price is not None and _alt_price > 0:
+                    try:
+                        self.hourly_alt_shadow.ingest_price(_alt_asset, _alt_price, _alt_ts)
+                    except Exception:
+                        pass
+
         for window in self._active_windows:
             seconds_to_close = (window["close_time"] - utc_now).total_seconds()
             window["seconds_to_close"] = seconds_to_close

@@ -1843,6 +1843,17 @@ class FirebasePusher:
         except Exception:
             snap["disk_free_gb"] = None
 
+        # ── Hourly Alt Shadow Strategies Panel ───────────────────────────
+        try:
+            _alt_eng = getattr(self._ml, "hourly_alt_shadow", None) if self._ml else None
+            if _alt_eng:
+                snap["hourly_alt_shadow"] = _alt_eng.get_dashboard_data()
+            else:
+                snap["hourly_alt_shadow"] = None
+        except Exception:
+            logging.debug("Firebase: hourly_alt_shadow build failed", exc_info=True)
+            snap["hourly_alt_shadow"] = None
+
         return snap
 
     def _compute_position_health(

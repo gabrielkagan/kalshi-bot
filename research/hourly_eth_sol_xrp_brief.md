@@ -21,8 +21,8 @@
 - **BTC (comparison)**: n=229, 84.7% WR, $4.50 PnL — the model works for BTC
 
 ### Top 3 Actionable Insights
-1. **Shadow CalEngine dramatically outperforms live**: XRP Shadow Brier 0.066 vs Live 0.559 (8.5x better). ETH Shadow 0.094 vs Live 0.334 (3.6x better). SOL Shadow 0.073 vs Live 0.382 (5.2x better). **Switching to Shadow CalEngine is the single highest-impact change.**
-2. **Per-asset temperature scaling needed**: T=2.5 for ETH (Brier 0.200 vs 0.326), T=3.0+ for SOL (Brier 0.224 vs 0.368), T>3.0 for XRP (even T=3.0 still has +46.4pp OC)
+1. **CalEngine (beta_cal) was disabled — passthrough+T=1.45 is now live**: The hourly CalEngine's beta calibration was +44pp overconfident (93.2% predicted vs 49.2% actual, n=455). The `shadow_cal_prob` column (which is just passthrough+T=1.45, NOT a separate CalEngine) had far better Brier scores. CalEngine was disabled Mar 6 2026 — passthrough+T=1.45 is now the live pipeline.
+2. **Per-asset temperature scaling needed**: T=2.76 for ETH, T~8 for SOL, T~8 for XRP (per hourly alpha research). Current T=1.45 is optimal for BTC only. SOL/XRP need T so high it flattens to ~50/50, confirming the model has no predictive power for those assets.
 3. **XRP should be excluded entirely** until the volatility model is fundamentally reworked. It contributes $-95.63 in simulated losses (53% of total ETH/SOL/XRP losses).
 
 ---
@@ -84,9 +84,9 @@ Higher model edge = dramatically worse WR. The model's confidence is anti-predic
 
 The model is well-calibrated at 95%+ but massively overconfident at 85-95%.
 
-**Shadow CalEngine**: Brier 0.094 vs Live 0.334 — **Shadow wins by 0.241**
+**Passthrough+T=1.45 vs beta_cal**: Brier 0.094 vs 0.334 — **passthrough wins by 0.241** (the `shadow_cal_prob` column IS passthrough, not a separate engine)
 
-**Temperature sensitivity**: T=1.75 achieves Brier 0.144 with near-zero overconfidence (n=24). T=2.5 achieves Brier 0.200 (n=65). Current T=1.45 is insufficient for ETH.
+**Temperature sensitivity**: T=1.75 achieves Brier 0.144 with near-zero overconfidence (n=24). T=2.76 is optimal per hourly alpha grid search. Current T=1.45 is insufficient for ETH.
 
 ---
 
@@ -138,9 +138,9 @@ SOL shows a U-shaped pattern: low and high edge are OK, but medium edge (2-5%) i
 | 0.90-0.95 | 103 | 46% | +47.6pp |
 | 0.95-1.00 | 44 | 68% | +28.0pp |
 
-**Shadow CalEngine**: Brier 0.073 vs Live 0.382 — **Shadow wins by 0.309**
+**Passthrough+T=1.45 vs beta_cal**: Brier 0.073 vs 0.382 — **passthrough wins by 0.309**
 
-**Temperature sensitivity**: Even T=3.0 only gets to Brier 0.224 with +6.1pp OC (n=41). SOL needs aggressive temperature correction OR per-asset CalEngine.
+**Temperature sensitivity**: Even T=3.0 only gets to Brier 0.224 with +6.1pp OC (n=41). Optimal T~8 per grid search — so high it flattens to ~50/50, meaning the model has no real signal for SOL.
 
 **Hour patterns**: US afternoon (14-15h UTC) strong (85-91% WR). Overnight (00-05h, 22-23h) weak (30-42% WR).
 
@@ -199,9 +199,9 @@ Higher model confidence = worse outcomes. At >5% edge, XRP wins only 23% of the 
 
 The 0.85-0.90 bucket has **74pp overconfidence** — predicting 89% but achieving 15%.
 
-**Shadow CalEngine**: Brier 0.066 vs Live 0.559 — **Shadow wins by 0.493**. This is the largest improvement of any asset.
+**Passthrough+T=1.45 vs beta_cal**: Brier 0.066 vs 0.559 — **passthrough wins by 0.493**. This is the largest improvement of any asset — beta_cal was catastrophically wrong for XRP.
 
-**Temperature**: Even T=3.0 has Brier 0.427 with +46.4pp OC. No temperature value can fix XRP — the underlying probability estimates are structurally wrong.
+**Temperature**: Even T=3.0 has Brier 0.427 with +46.4pp OC. Optimal T~8 flattens to ~50/50. No temperature value can fix XRP — the underlying probability estimates are structurally wrong.
 
 **Hour patterns**: Universally bad. 0% WR at hours 05, 11, 20. Even the "best" hours (07-10h UTC) have tiny samples.
 
@@ -237,25 +237,28 @@ XRP dominates correlated losses (8 of top 15 windows). Multiple XRP windows have
 
 ## 4. Calibration Diagnostics
 
-### 4.1 Shadow CalEngine vs Live (per asset)
+### 4.1 Passthrough+T=1.45 vs CalEngine beta_cal (per asset)
 
-| Asset | N | Live Brier | Shadow Brier | Improvement | Winner |
+| Asset | N | beta_cal Brier | Passthrough Brier | Improvement | Winner |
 |-------|---|-----------|-------------|-------------|--------|
-| ETH | 127 | 0.3344 | **0.0936** | 3.6x | Shadow |
-| SOL | 181 | 0.3815 | **0.0730** | 5.2x | Shadow |
-| XRP | 183 | 0.5588 | **0.0660** | 8.5x | Shadow |
+| ETH | 127 | 0.3344 | **0.0936** | 3.6x | Passthrough |
+| SOL | 181 | 0.3815 | **0.0730** | 5.2x | Passthrough |
+| XRP | 183 | 0.5588 | **0.0660** | 8.5x | Passthrough |
 
-**The Shadow CalEngine is dramatically better for all three assets.** The current live calibration pipeline is actively harmful — it transforms reasonable raw probabilities into overconfident nonsense.
+**Passthrough+T=1.45 is dramatically better for all three assets.** The CalEngine's beta calibration was actively harmful — it transformed reasonable raw probabilities into overconfident nonsense. **Fixed Mar 6 2026**: `HOURLY_CALIBRATION_ENABLED = False`, passthrough+T=1.45 is now the live pipeline.
+
+Note: The `shadow_cal_prob` column in the DB stores the passthrough output. Despite the column name, it is NOT a separate CalEngine — it's the raw probability with temperature scaling only.
 
 ### 4.2 Temperature Sensitivity
 
-| Asset | Current Brier | Best T | Best T Brier | OC at Best T |
+| Asset | Current (T=1.45) Brier | Optimal T | Best T Brier | OC at Best T |
 |-------|--------------|--------|-------------|-------------|
-| ETH | 0.326 | T=1.75 | 0.144 | +0.1pp |
-| SOL | 0.368 | T=3.0 | 0.224 | +6.1pp |
-| XRP | 0.549 | T=3.0 | 0.427 | +46.4pp |
+| BTC | ~0.08 | 1.45 | ~0.08 | ~0pp |
+| ETH | 0.326 | 2.76 | ~0.14 | ~0pp |
+| SOL | 0.368 | ~8 | ~0.25 | flattens to 50/50 |
+| XRP | 0.549 | ~8 | ~0.43 | flattens to 50/50 |
 
-ETH responds well to temperature correction. SOL needs aggressive T. XRP cannot be fixed by temperature alone — even T=3.0 leaves +46pp overconfidence.
+T=1.45 is optimal for BTC but insufficient for ETH. SOL and XRP need T so high that it pushes all probabilities toward 50/50 — meaning the model has no predictive signal for these assets at hourly timescales. Temperature cannot fix a model that doesn't work.
 
 ### 4.3 Market Blend Sensitivity
 
@@ -300,16 +303,16 @@ Statistical probability (raw_prob)
     |  - Blend weight is adaptive (QLIKE-based)
     |
     v
-CalibrationEngine (beta calibration)
-    |  - Dedicated hourly engine (separate from 15M)
-    |  - Trains on historical hourly outcomes
-    |  - Currently: live engine underperforming Shadow engine
+CalibrationEngine (beta calibration) — **DISABLED Mar 6 2026**
+    |  - Was +44pp overconfident (93.2% predicted vs 49.2% actual)
+    |  - Dedicated hourly engine exists but is bypassed
+    |  - Passthrough mode: raw_prob passes through unchanged
     |
     v
 Temperature scaling: T=1.45
     |  - prob_adjusted = prob^(1/T) / (prob^(1/T) + (1-prob)^(1/T))
     |  - Softens overconfident probs (95% -> 88.4%)
-    |  - Auto-disabled when CalEngine learned method is active
+    |  - Optimal for BTC only; ETH needs T=2.76, SOL/XRP need T~8
     |
     v
 Market blend: final = 0.60 * model + 0.40 * market_price/100
@@ -373,7 +376,7 @@ Per-window limits
 | Strikes per event | 1 | 75 |
 | Correlation risk | None | High |
 | EGARCH accuracy | Good | Degrades with time |
-| Calibration | Dedicated engine, works | Dedicated engine, fails |
+| Calibration | Dedicated engine, works | CalEngine disabled, passthrough+T=1.45 |
 | WR | 88.2% | 60-85% by asset |
 | Overconfidence | <2pp | 1-56pp by asset |
 
@@ -410,16 +413,16 @@ Per-window limits
 
 ## 7. Research Guidance
 
-### Priority 1: Switch to Shadow CalEngine (estimated impact: +$100-150 in sim PnL)
-The Shadow CalEngine produces dramatically better Brier scores across all three assets. This is the single highest-impact change available. Investigate what the Shadow CalEngine does differently and promote it.
+### Priority 1: Per-Asset Temperature Scaling (DONE for BTC, needed for ETH)
+CalEngine beta_cal was disabled Mar 6 — passthrough+T=1.45 is now live. This is optimal for BTC but not for ETH/SOL/XRP:
+- ETH needs T=2.76 (brings OC to ~0pp)
+- SOL needs T~8 (flattens to 50/50 — model has no signal)
+- XRP needs T~8 (same — model has no signal)
 
-### Priority 2: Per-Asset Temperature / Per-Asset CalEngine
-Current T=1.45 is one-size-fits-all. Data shows:
-- ETH needs T~1.75 (near-zero OC)
-- SOL needs T~3.0 (still +6pp OC)
-- XRP needs T>3.0 or exclusion (unfixable by temperature alone)
+Implementing per-asset temperature would help ETH. SOL/XRP are unfixable by temperature — the underlying EGARCH model doesn't predict these assets at hourly timescales.
 
-Better approach: train per-asset CalEngines with dedicated beta calibration curves.
+### Priority 2: Per-Asset CalEngines (longer term)
+Once enough per-asset observation data is collected, dedicated per-asset CalEngines could learn asset-specific calibration curves. This is a longer-term project requiring hundreds of settled observations per asset.
 
 ### Priority 3: Edge Cap at 3% for ETH
 ETH with edge<=3.0% has 89% WR and positive PnL. The edge inversion means high-edge signals should be REJECTED, not traded. Implement a MAX_EDGE filter.
@@ -445,10 +448,10 @@ Multi-position windows lose $168 total. The per-window limit (2) helps but doesn
 - Window-level rather than strike-level probability estimation
 
 ### Research Questions (Prioritized)
-1. Why does Shadow CalEngine outperform so dramatically? What's different about its training data/method?
-2. Can per-asset EGARCH parameters fix the volatility misestimation?
+1. Can per-asset EGARCH parameters fix the volatility misestimation? The model was tuned on BTC — altcoin dynamics may differ fundamentally.
+2. Why does the model produce confident predictions for assets where it has no signal? Is the EGARCH systematically underestimating altcoin volatility at hourly timescales?
 3. Is XRP's excess kurtosis / regime-switching captured by any model variant?
-4. Does ETH show mean-reversion at hourly timescales that the model misses?
+4. Does ETH show mean-reversion at hourly timescales that the model misses? (Explains 0W/24L at 80-84c)
 5. Can the edge calculation be restructured to eliminate inversion? (e.g., use market-adjusted edge instead of raw model edge)
 6. Would a separate volatility model per asset improve calibration?
 7. Can intraday seasonal patterns (US afternoon is better) be exploited with time-of-day filters?
@@ -458,15 +461,15 @@ Multi-position windows lose $168 total. The per-window limit (2) helps but doesn
 ## Appendix: Comparison with BTC (Reference)
 
 BTC works because:
-- Calibration is nearly perfect (+0.8pp OC)
+- Passthrough+T=1.45 calibration is nearly perfect (+0.8pp OC) — T was optimized for BTC
 - Edge is mildly inverted but WR exceeds breakeven at all edge levels
 - All price bands except 50-69c are profitable or near-breakeven
-- Shadow CalEngine is NOT dramatically better (the live pipeline works for BTC)
+- The EGARCH volatility model fits BTC well (it was tuned on BTC data)
 
 The key question is: **what makes BTC different?** Likely answers:
 - BTC has higher liquidity → more efficient price discovery → model predictions track market better
 - BTC's EGARCH parameters were tuned on BTC data → better fit
 - BTC has lower kurtosis / fewer regime switches than altcoins
-- The CalibrationEngine was trained primarily on BTC-like behavior (15M data is BTC-dominated)
+- T=1.45 happens to be the right temperature for BTC but not for altcoins
 
 **End of Brief**
