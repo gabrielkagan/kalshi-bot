@@ -98,7 +98,7 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         temperature_enabled=True,
         cal_eligible=False,
         use_hourly_dynamic_cap=True,
-        cal_engine_enabled=True,
+        cal_engine_enabled=False,   # Disabled: hourly beta_cal +44pp overconfident; passthrough+T=1.45 is better
         cal_engine_state_path="hourly_calibration_state.json",
         fee_multiplier_taker=0.07,
         fee_multiplier_maker=0.0175,

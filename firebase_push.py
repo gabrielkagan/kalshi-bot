@@ -1,5 +1,6 @@
 """Push bot state snapshots to Firebase Realtime Database every 10 seconds."""
 
+import math
 import os
 import time
 import logging
@@ -1022,6 +1023,59 @@ class FirebasePusher:
             }
         except Exception:
             snap["counterfactual_analysis"] = None
+
+        # ── shadow variants (hourly counterfactual configs) ───────────
+        try:
+            conn = self._db_conn
+            _sv_fee = 0.0175  # maker fee multiplier
+            # BTC_P>=70_wl2: BTC only, price >= 70c, max 2 positions per window
+            # Uses SQL window function to apply per-window position limit
+            sv_rows = conn.execute("""
+                WITH ranked AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY event_ticker ORDER BY market_price DESC
+                    ) AS rn
+                    FROM evaluated_opportunities
+                    WHERE product_type = 'hourly'
+                      AND filter_stage = 'hourly_observation'
+                      AND asset = 'BTC'
+                      AND market_price >= 70
+                      AND market_result IS NOT NULL
+                )
+                SELECT market_price, market_result, evaluation_time
+                FROM ranked WHERE rn <= 2
+                ORDER BY evaluation_time
+            """).fetchall()
+            if sv_rows:
+                sv_wins = sum(1 for r in sv_rows if r["market_result"] == "yes")
+                sv_n = len(sv_rows)
+                sv_losses = sv_n - sv_wins
+                sv_wr = round(sv_wins / sv_n, 4) if sv_n > 0 else 0
+                # Simulated PnL (maker fees, 1 lot)
+                sv_pnl = 0
+                for r in sv_rows:
+                    p = int(r["market_price"])
+                    fee = math.ceil(_sv_fee * p * (100 - p) / 100)
+                    if r["market_result"] == "yes":
+                        sv_pnl += (100 - p - fee)
+                    else:
+                        sv_pnl += -(p + fee)
+                snap["shadow_variants"] = {
+                    "btc_p70_wl2": {
+                        "label": "BTC P>=70 wl2",
+                        "description": "BTC only, price >= 70c, max 2 per window",
+                        "n": sv_n,
+                        "wins": sv_wins,
+                        "losses": sv_losses,
+                        "win_rate": sv_wr,
+                        "sim_pnl_cents": sv_pnl,
+                    },
+                }
+            else:
+                snap["shadow_variants"] = {}
+        except Exception:
+            snap["shadow_variants"] = None
+            logging.debug("Firebase: shadow_variants build failed", exc_info=True)
 
         # ── ask price distribution ────────────────────────────────────
         try:

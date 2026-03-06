@@ -179,7 +179,7 @@ class TestCalibrationPipeline:
         """Hourly has its own CalEngine (not shared with 15M)."""
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["hourly"]
-        assert cfg.cal_engine_enabled is True  # re-enabled Mar 4
+        assert cfg.cal_engine_enabled is False  # disabled: beta_cal +44pp overconfident
         assert cfg.cal_engine_state_path == "hourly_calibration_state.json"
 
     def test_spx_cal_engine_config(self):

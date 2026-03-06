@@ -66,7 +66,7 @@ HOURLY_MAX_RISK_PER_TRADE = 0.15       # Conservative start (60% of 15M's 0.25)
 # ─── Hourly Three-Layer Optimization (Researcher Recommendations) ─────────
 HOURLY_TEMPERATURE_T = 1.45           # Temperature scaling: softens overconfident probs (T>1 = less confident)
 HOURLY_TEMPERATURE_ENABLED = True     # Toggle for temperature scaling
-HOURLY_CALIBRATION_ENABLED = True     # Re-enabled: dedicated hourly CalEngine has 500+ obs, beta_cal learned (observation-only, zero risk)
+HOURLY_CALIBRATION_ENABLED = False    # Disabled: hourly beta_cal is +44pp overconfident (93.2% predicted vs 49.2% actual, n=455). Passthrough+T=1.45 is nearly perfect (-2pp OC).
 HOURLY_MIN_STC_ENTRY = 120            # Min STC for entry (2 min) — expanded for observation data collection
 HOURLY_MAX_STC_ENTRY = 3600           # 60 min — expanded for observation data collection
 HOURLY_EXCLUDED_ASSETS = set()         # Empty in observation mode — collect all asset data
