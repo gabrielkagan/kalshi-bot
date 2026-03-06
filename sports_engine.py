@@ -1359,8 +1359,153 @@ class SportsEngine:
             self._signaled_games = {r[0] for r in sig_rows} - self._settled_games
             logging.info("SportsEngine: loaded %d settled, %d signaled games",
                          len(self._settled_games), len(self._signaled_games))
+
+            # Sweep for stale unsettled games (>6 hours old, not in current ESPN poll)
+            self._settle_stale_games(conn)
         except Exception:
             logging.warning("SportsEngine: failed to load settled games",
+                            exc_info=True)
+
+    def _settle_stale_games(self, conn: sqlite3.Connection) -> None:
+        """Settle games that were never caught as 'final' by ESPN polling.
+
+        This handles the case where the bot restarted after a game ended and
+        ESPN no longer returns it in the scoreboard. Uses the last-known
+        scores from sports_shadow_log to determine the winner.
+        """
+        try:
+            stale_rows = conn.execute(
+                "SELECT DISTINCT game_id, home_code, away_code, "
+                "pregame_fav_code, MAX(home_score) AS last_home, "
+                "MAX(away_score) AS last_away, MAX(evaluation_time) AS last_eval "
+                "FROM sports_shadow_log "
+                "WHERE fav_won IS NULL "
+                "AND evaluation_time < datetime('now', '-6 hours') "
+                "GROUP BY game_id"
+            ).fetchall()
+
+            if not stale_rows:
+                return
+
+            settled_count = 0
+            for srow in stale_rows:
+                game_id = srow[0]
+                if game_id in self._settled_games:
+                    continue
+
+                home_code = srow[1]
+                away_code = srow[2]
+                fav_code = srow[3]
+                last_home = srow[4]
+                last_away = srow[5]
+
+                if last_home is None or last_away is None:
+                    continue
+                if last_home == last_away:
+                    # Can't determine winner from tied score
+                    continue
+
+                # Determine winner
+                if fav_code == home_code:
+                    fav_won = 1 if last_home > last_away else 0
+                else:
+                    fav_won = 1 if last_away > last_home else 0
+
+                market_result = "yes" if fav_won else "no"
+
+                # Get rows to update
+                rows = conn.execute(
+                    "SELECT id, signal_fired, simulated_contracts, yes_ask "
+                    "FROM sports_shadow_log "
+                    "WHERE game_id = ? AND fav_won IS NULL",
+                    (game_id,)
+                ).fetchall()
+
+                # Closing price: use last known yes_ask
+                closing_price = None
+                cp_row = conn.execute(
+                    "SELECT yes_ask FROM sports_shadow_log "
+                    "WHERE game_id = ? AND yes_ask IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 1",
+                    (game_id,)
+                ).fetchone()
+                if cp_row:
+                    closing_price = cp_row[0]
+
+                update_params = []
+                for row in rows:
+                    row_id, sig_fired, sim_contracts, entry_price = row
+                    sim_contracts = sim_contracts or 0
+
+                    pnl_cents = None
+                    if sig_fired and sim_contracts > 0 and entry_price:
+                        cost_cents = sim_contracts * entry_price
+                        p = entry_price / 100.0
+                        fee_cents = math.ceil(
+                            0.07 * sim_contracts * p * (1 - p))
+                        if fav_won:
+                            pnl_cents = sim_contracts * 100 - cost_cents - fee_cents
+                        else:
+                            pnl_cents = -cost_cents - fee_cents
+
+                    update_params.append((
+                        last_home, last_away,
+                        fav_won, market_result, pnl_cents,
+                        closing_price, row_id))
+
+                if update_params:
+                    conn.executemany(
+                        "UPDATE sports_shadow_log SET "
+                        "final_home_score=?, final_away_score=?, "
+                        "fav_won=?, market_result=?, pnl_cents=?, "
+                        "closing_price=? WHERE id=?",
+                        update_params
+                    )
+                    conn.commit()
+                    self._settled_games.add(game_id)
+                    self._signaled_games.discard(game_id)
+                    settled_count += 1
+
+                    # Also settle evaluated_opportunities
+                    try:
+                        eo_rows = conn.execute(
+                            "SELECT id, market_price, position_size "
+                            "FROM evaluated_opportunities "
+                            "WHERE status='pending' AND product_type='sports' "
+                            "AND (ticker = ? OR ticker LIKE ?)",
+                            (f"SPORTS-{game_id}", f"%{game_id}%")
+                        ).fetchall()
+                        _settle_now = datetime.datetime.now(
+                            datetime.timezone.utc).strftime(
+                            "%Y-%m-%dT%H:%M:%S.%fZ")
+                        for erow in eo_rows:
+                            _eid, _ep, _cnt = erow[0], erow[1], erow[2] or 1
+                            _cf_pnl = None
+                            if _ep and _ep > 0:
+                                _tf = math.ceil(
+                                    0.07 * _cnt * (_ep / 100) * (1 - _ep / 100))
+                                if fav_won:
+                                    _cf_pnl = int((100 - _ep) * _cnt - _tf)
+                                else:
+                                    _cf_pnl = int(-(_ep * _cnt + _tf))
+                            conn.execute(
+                                "UPDATE evaluated_opportunities SET "
+                                "status='settled', market_result=?, "
+                                "counterfactual_pnl=?, settled_time=? WHERE id=?",
+                                ("yes" if fav_won else "no",
+                                 _cf_pnl, _settle_now, _eid))
+                        if eo_rows:
+                            conn.commit()
+                    except Exception:
+                        logging.warning(
+                            "SportsEngine stale settle EO failed for %s",
+                            game_id, exc_info=True)
+
+            if settled_count > 0:
+                logging.info("SportsEngine: settled %d stale games on startup",
+                             settled_count)
+        except Exception:
+            logging.warning("SportsEngine: stale game sweep failed",
                             exc_info=True)
 
     def _settle_completed_games(self, games: Dict[str, GameState]) -> None:
