@@ -1221,18 +1221,21 @@ class DashboardSnapshotBuilder:
             if rest_f >= 3 and ws_f == 0:
                 alerts.append("WS fill detection may be broken (0 WS fills, REST taking over)")
 
-            # IOC taker path may be broken
-            if ioc_u >= 3 and ioc_f == 0:
+            # IOC taker path may be broken — only alert if no overall fills
+            # (IOC unfills are normal market friction when liquidity is thin)
+            total_fills_so_far = ws_f + rest_f
+            if ioc_u >= 3 and ioc_f == 0 and total_fills_so_far == 0:
                 alerts.append(f"IOC taker path failing ({ioc_u} unfilled, 0 fills)")
 
             # Post-only rejection storm
             if po_rej >= 10 and po_fill == 0:
                 alerts.append(f"Post-only rejection storm ({po_rej} rejects, 0 taker fills)")
 
-            # Direct taker path may be broken
+            # Direct taker path may be broken — only alert if no overall fills
+            # (Direct taker unfills are normal when spread widens before fill)
             dt_att = exec_eng.get("session_direct_taker_attempts", 0)
             dt_fill = exec_eng.get("session_direct_taker_fills", 0)
-            if dt_att >= 3 and dt_fill == 0:
+            if dt_att >= 3 and dt_fill == 0 and total_fills_so_far == 0:
                 alerts.append(f"Direct taker path failing ({dt_att} attempts, 0 fills)")
 
             # No fills at all despite orders (Change 14: exclude hourly obs candidates)
