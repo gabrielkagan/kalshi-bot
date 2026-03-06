@@ -8076,7 +8076,7 @@ class OpportunityScanner:
                 # Markets at 500-900s STC: log full evaluation for data collection, but don't trade.
                 # 0-500s is LIVE. Non-XRP tagged "stc_shadow_promoted" for variant tracking.
                 if window.get("product_type") in (None, "15m") and seconds_remaining > STC_SHADOW_THRESHOLD:
-                    _stc_stage = "stc_shadow_no_xrp" if asset != "XRP" else "stc_shadow"
+                    _stc_stage = "stc_shadow_no_xrp" if asset != "XRP" else "stc_shadow_xrp"
                     _dedup_key = (ticker, _stc_stage)
                     if _dedup_key not in self._eval_opp_seen:
                         self._eval_opp_seen.add(_dedup_key)
@@ -8559,7 +8559,7 @@ class OpportunityScanner:
                     logging.debug("price_shadow sizing/strategy failed", exc_info=True)
 
                 # Dedup + DB insert
-                _ps_stage = "price_shadow_no_xrp" if asset != "XRP" else "price_shadow"
+                _ps_stage = "price_shadow_no_xrp" if asset != "XRP" else "price_shadow_xrp"
                 _dedup_key = (ticker, _ps_stage)
                 if _dedup_key in self._eval_opp_seen:
                     continue

@@ -534,7 +534,7 @@ def stc_analysis(conn: sqlite3.Connection, since: str,
                position_size
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {ac_eval}
-          AND filter_stage = 'stc_shadow'
+          AND filter_stage IN ('stc_shadow', 'stc_shadow_xrp', 'stc_shadow_no_xrp')
     """, (since,)).fetchall()
 
     print(f"  {'STC':>10} {'N':>4} {'W':>3} {'L':>3} {'Pend':>5} "
@@ -911,7 +911,8 @@ def counterfactual_simulations(conn: sqlite3.Connection, since: str,
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {ac_eval}
           AND filter_stage IN ('candidate', 'insufficient_edge',
-                               'stc_shadow', 'price_out_of_range')
+                               'stc_shadow', 'stc_shadow_xrp', 'stc_shadow_no_xrp',
+                               'price_out_of_range')
           AND status = 'settled'
           AND fee_adjusted_edge IS NOT NULL
           AND market_price IS NOT NULL

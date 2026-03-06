@@ -818,7 +818,7 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
           SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
-          AND filter_stage = 'stc_shadow'
+          AND filter_stage IN ('stc_shadow', 'stc_shadow_xrp')
         GROUP BY bucket ORDER BY MIN(seconds_to_close)
     """, (since,)).fetchall()
     if shadow:
@@ -853,7 +853,7 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
               ROUND(AVG(market_price), 1) AS avg_p
             FROM evaluated_opportunities
             WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
-              AND filter_stage = 'stc_shadow'
+              AND filter_stage IN ('stc_shadow', 'stc_shadow_xrp')
               AND seconds_to_close BETWEEN 500 AND 700
         """, (since,)).fetchone()
         pw, pl = (promo["w"] or 0), (promo["l"] or 0)
@@ -1649,11 +1649,14 @@ def data_sufficiency(conn: sqlite3.Connection, since: str) -> None:
                   AND status = 'settled'
             """, (since, stage)).fetchone()
         else:
+            # Match both old names (stc_shadow, price_shadow) and new (_xrp variants)
             row = conn.execute(f"""
                 SELECT COUNT(*) AS n FROM evaluated_opportunities
                 WHERE evaluation_time >= ? {EVAL_15M_FILTER}
-                  AND filter_stage = ? AND status = 'settled'
-            """, (since, stage)).fetchone()
+                  AND (filter_stage = ? OR filter_stage = ? || '_xrp'
+                       OR filter_stage = ? || '_no_xrp')
+                  AND status = 'settled'
+            """, (since, stage, stage, stage)).fetchone()
         have = row["n"] or 0
         gap = max(0, needed - have)
         status = "SUFFICIENT" if have >= needed else "INSUFFICIENT"
@@ -1729,7 +1732,7 @@ def price_shadow_analysis(conn: sqlite3.Connection, since: str,
                ROUND(AVG(fee_adjusted_edge), 4) AS avg_fee_edge
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause}
-          AND filter_stage = 'price_shadow'
+          AND filter_stage IN ('price_shadow', 'price_shadow_xrp')
     """, (since,)).fetchone()
 
     n = totals["n"] or 0
@@ -1752,7 +1755,7 @@ def price_shadow_analysis(conn: sqlite3.Connection, since: str,
                ROUND(AVG(fee_adjusted_edge), 4) AS avg_fee_edge
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause}
-          AND filter_stage = 'price_shadow'
+          AND filter_stage IN ('price_shadow', 'price_shadow_xrp')
           AND status = 'settled'
           AND market_result IS NOT NULL
     """, (since,)).fetchone()
@@ -1790,7 +1793,7 @@ def price_shadow_analysis(conn: sqlite3.Connection, since: str,
                 THEN 1 ELSE 0 END) AS l
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause}
-          AND filter_stage = 'price_shadow'
+          AND filter_stage IN ('price_shadow', 'price_shadow_xrp')
         GROUP BY bucket ORDER BY bucket
     """, (since,)).fetchall()
 
@@ -1818,7 +1821,7 @@ def price_shadow_analysis(conn: sqlite3.Connection, since: str,
                    THEN 1 ELSE 0 END) AS l
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause}
-          AND filter_stage = 'price_shadow'
+          AND filter_stage IN ('price_shadow', 'price_shadow_xrp')
         GROUP BY asset ORDER BY n DESC
     """, (since,)).fetchall()
 
@@ -1842,7 +1845,7 @@ def price_shadow_analysis(conn: sqlite3.Connection, since: str,
                    seconds_to_close
             FROM evaluated_opportunities
             WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause}
-              AND filter_stage = 'price_shadow'
+              AND filter_stage IN ('price_shadow', 'price_shadow_xrp')
               AND status = 'settled'
               AND market_result IS NOT NULL
               AND fee_adjusted_edge IS NOT NULL
@@ -1866,7 +1869,7 @@ def price_shadow_analysis(conn: sqlite3.Connection, since: str,
             SELECT MIN(evaluation_time), MAX(evaluation_time)
             FROM evaluated_opportunities
             WHERE evaluation_time >= ? {EVAL_15M_FILTER}
-              AND filter_stage = 'price_shadow'
+              AND filter_stage IN ('price_shadow', 'price_shadow_xrp')
         """, (since,)).fetchone()
         if ts_range[0] and ts_range[1]:
             t1 = datetime.fromisoformat(ts_range[0].replace("Z", ""))
@@ -2125,7 +2128,7 @@ def recommendations(conn: sqlite3.Connection, since: str,
               THEN 1 ELSE 0 END) AS l
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER}
-          AND filter_stage = 'stc_shadow'
+          AND filter_stage IN ('stc_shadow', 'stc_shadow_xrp')
     """, (since,)).fetchone()
     sw = shadow_row["w"] or 0
     sl = shadow_row["l"] or 0
@@ -2207,7 +2210,7 @@ def recommendations(conn: sqlite3.Connection, since: str,
               THEN 1 ELSE 0 END) AS l
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER}
-          AND filter_stage = 'price_shadow'
+          AND filter_stage IN ('price_shadow', 'price_shadow_xrp')
     """, (since,)).fetchone()
     ps_n = ps_row["n"] or 0
     ps_w = ps_row["w"] or 0

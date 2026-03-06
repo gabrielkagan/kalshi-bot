@@ -78,7 +78,7 @@ class RecalibratedEGARCHApproach:
                     "WHERE asset = ? AND (product_type IS NULL OR product_type = '15m') "
                     "AND status = 'settled' "
                     "AND filter_stage IN ('candidate', 'xrp_shadow', 'stc_shadow', "
-                    "  'stc_shadow_no_xrp', 'stc_shadow_promoted') "
+                    "  'stc_shadow_xrp', 'stc_shadow_no_xrp', 'stc_shadow_promoted') "
                     "AND calibrated_prob IS NOT NULL AND market_result IS NOT NULL",
                     (asset,)
                 ).fetchall()

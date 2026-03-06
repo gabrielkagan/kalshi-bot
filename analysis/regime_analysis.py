@@ -349,7 +349,7 @@ def section_2(c, regime_start):
             SUM(CASE WHEN filter_stage = 'candidate' THEN 1 ELSE 0 END) as candidates,
             SUM(CASE WHEN filter_stage = 'insufficient_edge' THEN 1 ELSE 0 END) as insuf_edge,
             SUM(CASE WHEN filter_stage = 'price_out_of_range' THEN 1 ELSE 0 END) as price_oor,
-            SUM(CASE WHEN filter_stage = 'stc_shadow' THEN 1 ELSE 0 END) as stc_shadow
+            SUM(CASE WHEN filter_stage IN ('stc_shadow', 'stc_shadow_xrp', 'stc_shadow_no_xrp') THEN 1 ELSE 0 END) as stc_shadow
         FROM evaluated_opportunities
         WHERE evaluation_time > ?
           AND (product_type IS NULL OR product_type = '15m')
@@ -638,7 +638,7 @@ def section_4(c, narrow_start, broad_start):
             ROUND(AVG(seconds_to_close), 0) as avg_stc
         FROM evaluated_opportunities
         WHERE (product_type IS NULL OR product_type = '15m')
-          AND filter_stage = 'stc_shadow'
+          AND filter_stage IN ('stc_shadow', 'stc_shadow_xrp', 'stc_shadow_no_xrp')
     """).fetchone()
     if r["n"]:
         total = (r["w"] or 0) + (r["l"] or 0)

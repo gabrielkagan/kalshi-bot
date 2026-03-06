@@ -197,12 +197,12 @@ def compute_15m_shadow(conn, since):
         SELECT
             COUNT(*) as total,
             SUM(CASE WHEN filter_stage = 'stc_shadow_no_xrp' THEN 1 ELSE 0 END) as stc_non_xrp,
-            SUM(CASE WHEN filter_stage = 'stc_shadow' THEN 1 ELSE 0 END) as stc_xrp,
+            SUM(CASE WHEN filter_stage IN ('stc_shadow', 'stc_shadow_xrp') THEN 1 ELSE 0 END) as stc_xrp,
             SUM(CASE WHEN filter_stage = 'xrp_shadow' THEN 1 ELSE 0 END) as xrp_shadow,
             SUM(CASE WHEN market_result IS NOT NULL THEN 1 ELSE 0 END) as settled
         FROM evaluated_opportunities
         WHERE (product_type IS NULL OR product_type = '15m')
-          AND filter_stage IN ('stc_shadow', 'stc_shadow_no_xrp', 'xrp_shadow')
+          AND filter_stage IN ('stc_shadow', 'stc_shadow_xrp', 'stc_shadow_no_xrp', 'xrp_shadow')
           AND evaluation_time >= ?
     """, (since,)).fetchone()
 

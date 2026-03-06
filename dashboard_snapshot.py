@@ -932,16 +932,51 @@ class DashboardSnapshotBuilder:
                 "GROUP BY filter_stage"
             ).fetchall()
             by_stage = []
+            # Merge paired shadow variants into combined "all assets" rows.
+            # In the DB: price_shadow = XRP only, price_shadow_no_xrp = non-XRP.
+            # Dashboard should show: price_shadow = all assets combined.
+            # Same for stc_shadow / stc_shadow_no_xrp.
+            _merge_pairs = {
+                "price_shadow_no_xrp": "price_shadow",
+                "price_shadow_xrp": "price_shadow",
+                "stc_shadow_no_xrp": "stc_shadow",
+                "stc_shadow_xrp": "stc_shadow",
+            }
+            _merged = {}  # stage -> {total, wins, losses, net_pnl_cents}
             for r in stage_rows:
-                total = r["total"]
-                by_stage.append({
-                    "stage": r["filter_stage"],
-                    "total": total,
-                    "wins": r["wins"],
-                    "losses": r["losses"],
-                    "net_pnl_cents": r["net_pnl_cents"],
-                    "win_rate": round(r["wins"] / total, 4) if total > 0 else 0.0,
-                })
+                stage = r["filter_stage"]
+                merge_into = _merge_pairs.get(stage)
+                if merge_into:
+                    # Merge into the parent stage
+                    if merge_into not in _merged:
+                        _merged[merge_into] = {"total": 0, "wins": 0, "losses": 0, "net_pnl_cents": 0}
+                    _merged[merge_into]["total"] += r["total"]
+                    _merged[merge_into]["wins"] += r["wins"]
+                    _merged[merge_into]["losses"] += r["losses"]
+                    _merged[merge_into]["net_pnl_cents"] += r["net_pnl_cents"]
+                else:
+                    # Normal stage — pass through
+                    total = r["total"]
+                    by_stage.append({
+                        "stage": stage,
+                        "total": total,
+                        "wins": r["wins"],
+                        "losses": r["losses"],
+                        "net_pnl_cents": r["net_pnl_cents"],
+                        "win_rate": round(r["wins"] / total, 4) if total > 0 else 0.0,
+                    })
+            # Append merged stages
+            for stage, m in _merged.items():
+                total = m["total"]
+                if total > 0:
+                    by_stage.append({
+                        "stage": stage,
+                        "total": total,
+                        "wins": m["wins"],
+                        "losses": m["losses"],
+                        "net_pnl_cents": m["net_pnl_cents"],
+                        "win_rate": round(m["wins"] / total, 4),
+                    })
 
             # By price bucket
             bucket_rows = conn.execute(
@@ -2103,7 +2138,7 @@ class DashboardSnapshotBuilder:
                 f"    THEN -((100 - market_price) + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
                 "  ELSE 0 END) AS sim_pnl "
                 "FROM evaluated_opportunities "
-                "WHERE product_type='15m' AND filter_stage='stc_shadow' AND status='settled' "
+                "WHERE product_type='15m' AND filter_stage IN ('stc_shadow','stc_shadow_xrp','stc_shadow_no_xrp') AND status='settled' "
                 "AND market_result IS NOT NULL AND calibrated_prob IS NOT NULL AND market_price IS NOT NULL "
                 "AND evaluation_time >= ?",
                 (CONFIG_REGIME_SINCE,)
