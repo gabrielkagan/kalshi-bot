@@ -59,9 +59,21 @@ def maker_fee(price_cents: int) -> int:
     return math.ceil(0.0175 * 100 * p * (1 - p))
 
 
-def compute_pnl(price: int, result: str, spot: float = 0, threshold: float = 0, n_contracts: int = 1) -> int:
-    """Compute PnL in cents. Bot always buys YES at price cents.
-    Win: (100 - price - fee) * contracts. Loss: -(price + fee) * contracts."""
+def taker_fee(price_cents: int) -> int:
+    """Taker fee for SPX: ceil(0.035 * 100 * p * (1-p))."""
+    p = price_cents / 100.0
+    return math.ceil(0.035 * 100 * p * (1 - p))
+
+
+def breakeven_wr(price_cents: int) -> float:
+    """Breakeven win rate at given price (maker fee)."""
+    fee = maker_fee(price_cents)
+    return (price_cents + fee) / 100.0
+
+
+def compute_pnl(price: int, result: str, n_contracts: int = 1) -> int:
+    """Compute PnL in cents. Win: (100 - price - fee) * contracts.
+    Loss: -(price + fee) * contracts."""
     fee = maker_fee(price)
     if result == "yes":
         per_contract = 100 - price - fee
@@ -70,12 +82,22 @@ def compute_pnl(price: int, result: str, spot: float = 0, threshold: float = 0, 
     return per_contract * n_contracts
 
 
+def significance_tag(n: int) -> str:
+    """Return significance warning based on sample size."""
+    if n < 10:
+        return " *** VERY SMALL SAMPLE"
+    if n < 20:
+        return " ** NOT SIGNIFICANT"
+    if n < 30:
+        return " * SMALL SAMPLE"
+    return ""
+
+
 # ─── Section 1: Performance Summary ──────────────────────────────────────────
 
 def section_performance(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     wc = where_clause(since)
 
-    # Observations (would-be trades)
     obs = conn.execute(f"""
         SELECT ticker, market_price, calibrated_prob, edge, fee_adjusted_edge,
                kelly_f, position_size, seconds_to_close, market_result,
@@ -86,7 +108,6 @@ def section_performance(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
         ORDER BY evaluation_time
     """).fetchall()
 
-    # Strategy_wait (blocked)
     wait = conn.execute(f"""
         SELECT ticker, market_price, calibrated_prob, edge, fee_adjusted_edge,
                seconds_to_close, market_result, spot_price, threshold,
@@ -99,29 +120,25 @@ def section_performance(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
 
     header("1. PERFORMANCE SUMMARY")
 
-    # 1-contract PnL
     obs_pnl_1c = 0
+    obs_pnl_sized = 0
     obs_wins = 0
     for r in obs:
-        pnl = compute_pnl(r["market_price"], r["market_result"], r["spot_price"], r["threshold"])
-        obs_pnl_1c += pnl
-        if pnl > 0:
+        pnl_1 = compute_pnl(r["market_price"], r["market_result"])
+        pos = r["position_size"] or 1
+        pnl_s = compute_pnl(r["market_price"], r["market_result"], pos)
+        obs_pnl_1c += pnl_1
+        obs_pnl_sized += pnl_s
+        if pnl_1 > 0:
             obs_wins += 1
 
     wait_pnl_1c = 0
     wait_wins = 0
     for r in wait:
-        pnl = compute_pnl(r["market_price"], r["market_result"], r["spot_price"], r["threshold"])
+        pnl = compute_pnl(r["market_price"], r["market_result"])
         wait_pnl_1c += pnl
         if pnl > 0:
             wait_wins += 1
-
-    # Sized PnL
-    obs_pnl_sized = 0
-    for r in obs:
-        pos = r["position_size"] or 1
-        pnl = compute_pnl(r["market_price"], r["market_result"], r["spot_price"], r["threshold"], pos)
-        obs_pnl_sized += pnl
 
     total = len(obs) + len(wait)
     total_wins = obs_wins + wait_wins
@@ -132,17 +149,6 @@ def section_performance(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     print(f"  {'Win Rate':<30} {pct(obs_wins, len(obs)):>14} {pct(wait_wins, len(wait)):>14} {pct(total_wins, total):>14}")
     print(f"  {'1-contract PnL':<30} {f'{obs_pnl_1c:+d}c':>14} {f'{wait_pnl_1c:+d}c':>14} {f'{obs_pnl_1c + wait_pnl_1c:+d}c':>14}")
     print(f"  {'Sized PnL (Kelly)':<30} {f'${obs_pnl_sized / 100:.2f}':>14} {'n/a':>14} {'':>14}")
-
-    subheader("Trade-by-Trade (Observations)")
-    print(f"  {'Ticker':<35} {'Price':>5} {'Cal':>6} {'Edge%':>6} {'Kelly':>6} {'Pos':>4} {'STC':>6} {'Res':>4} {'PnL':>7}")
-    print(f"  {'-' * 85}")
-    for r in obs:
-        pos = r["position_size"] or 1
-        pnl = compute_pnl(r["market_price"], r["market_result"], r["spot_price"], r["threshold"], pos)
-        win = pnl > 0
-        print(f"  {r['ticker'][-35:]:<35} {r['market_price']:>4}c {r['calibrated_prob']:>5.3f} "
-              f"{r['fee_adjusted_edge'] * 100:>5.2f} {(r['kelly_f'] or 0):>5.3f} {pos:>4} "
-              f"{int(r['seconds_to_close']):>5}s {r['market_result']:>4} {pnl:>+6d}c")
 
     # Date range
     all_times = [r["evaluation_time"] for r in obs] + [r["evaluation_time"] for r in wait]
@@ -168,13 +174,257 @@ def section_performance(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     return result
 
 
+# ─── Section 1a: Per-Price Bucket Performance ─────────────────────────────────
+
+def section_price_buckets(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
+    wc = where_clause(since)
+
+    header("1a. PER-PRICE BUCKET PERFORMANCE")
+
+    rows = conn.execute(f"""
+        SELECT market_price, calibrated_prob, market_result, seconds_to_close,
+               position_size, kelly_f, fee_adjusted_edge, edge
+        FROM evaluated_opportunities
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
+              AND market_result IS NOT NULL {wc}
+        ORDER BY market_price
+    """).fetchall()
+
+    if not rows:
+        print("  No data.")
+        return {}
+
+    BUCKETS = [
+        ("70-74c", 70, 74),
+        ("75-79c", 75, 79),
+        ("80-84c", 80, 84),
+        ("85-89c", 85, 89),
+        ("90-94c", 90, 94),
+        ("95-99c", 95, 99),
+    ]
+
+    bucket_data = {}
+    for label, lo, hi in BUCKETS:
+        filtered = [r for r in rows if lo <= r["market_price"] <= hi]
+        if not filtered:
+            bucket_data[label] = None
+            continue
+        wins = sum(1 for r in filtered if r["market_result"] == "yes")
+        losses = len(filtered) - wins
+        pnl_1c = sum(compute_pnl(r["market_price"], r["market_result"]) for r in filtered)
+        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], r["position_size"] or 1) for r in filtered)
+        avg_price = sum(r["market_price"] for r in filtered) / len(filtered)
+        avg_edge = sum((r["fee_adjusted_edge"] or 0) for r in filtered) / len(filtered)
+        avg_pos = sum((r["position_size"] or 1) for r in filtered) / len(filtered)
+        avg_stc = sum((r["seconds_to_close"] or 0) for r in filtered) / len(filtered)
+        be_wr = breakeven_wr(int(avg_price))
+        actual_wr = wins / len(filtered)
+
+        bucket_data[label] = {
+            "n": len(filtered), "wins": wins, "losses": losses,
+            "wr": actual_wr, "be_wr": be_wr,
+            "pnl_1c": pnl_1c, "pnl_sized": pnl_sz,
+            "avg_edge": avg_edge, "avg_pos": avg_pos, "avg_stc": avg_stc,
+        }
+
+    print(f"\n  {'Bucket':>8s} {'N':>4s} {'W':>4s} {'L':>3s} {'WR':>6s} {'BE_WR':>6s} {'Gap':>6s} "
+          f"{'1c_PnL':>8s} {'Sz_PnL':>10s} {'AvgEdge':>8s} {'AvgPos':>7s} {'Verdict':>10s}")
+    print(f"  {'-' * 98}")
+
+    for label, lo, hi in BUCKETS:
+        b = bucket_data[label]
+        if b is None:
+            print(f"  {label:>8s}  {'--- no data ---':>50s}")
+            continue
+        gap = b["wr"] - b["be_wr"]
+        if gap < -0.05 and b["n"] >= 5:
+            verdict = "LOSING"
+        elif gap < 0 and b["n"] >= 5:
+            verdict = "MARGINAL"
+        elif b["n"] < 10:
+            verdict = "LOW N"
+        else:
+            verdict = "OK"
+        sig = significance_tag(b["n"])
+        print(f"  {label:>8s} {b['n']:>4d} {b['wins']:>4d} {b['losses']:>3d} {b['wr']:>5.1%} {b['be_wr']:>5.1%} {gap:>+5.1%} "
+              f"{b['pnl_1c']:>+7d}c {b['pnl_sized'] / 100:>+9.2f}$ {b['avg_edge']:>7.3%} {b['avg_pos']:>6.1f} {verdict:>10s}{sig}")
+
+    # Highlight key finding
+    losing = [(label, b) for label, b in bucket_data.items() if b and b["wr"] < b["be_wr"] and b["n"] >= 5]
+    if losing:
+        print(f"\n  *** BELOW-BREAKEVEN BUCKETS:")
+        for label, b in losing:
+            gap = b["wr"] - b["be_wr"]
+            print(f"      {label}: WR {b['wr']:.1%} vs BE {b['be_wr']:.1%} ({gap:+.1%}pp), sized PnL ${b['pnl_sized']/100:+.2f}")
+
+    return bucket_data
+
+
+# ─── Section 1b: Daily P&L Timeline ──────────────────────────────────────────
+
+def section_daily_pnl(conn: sqlite3.Connection, since: Optional[str]) -> List:
+    wc = where_clause(since)
+
+    header("1b. DAILY P&L TIMELINE")
+
+    rows = conn.execute(f"""
+        SELECT DATE(evaluation_time) as dt, market_price, market_result, position_size
+        FROM evaluated_opportunities
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
+              AND market_result IS NOT NULL {wc}
+        ORDER BY evaluation_time
+    """).fetchall()
+
+    if not rows:
+        print("  No data.")
+        return []
+
+    daily = {}
+    for r in rows:
+        dt = r["dt"]
+        if dt not in daily:
+            daily[dt] = {"w": 0, "l": 0, "pnl_1c": 0, "pnl_sz": 0, "n": 0}
+        d = daily[dt]
+        d["n"] += 1
+        is_win = r["market_result"] == "yes"
+        if is_win:
+            d["w"] += 1
+        else:
+            d["l"] += 1
+        d["pnl_1c"] += compute_pnl(r["market_price"], r["market_result"])
+        d["pnl_sz"] += compute_pnl(r["market_price"], r["market_result"], r["position_size"] or 1)
+
+    print(f"\n  {'Date':<12s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'1c PnL':>8s} {'Sized PnL':>10s} {'Cum 1c':>8s} {'Cum Sized':>10s}")
+    print(f"  {'-' * 72}")
+
+    cum_1c = 0
+    cum_sz = 0
+    result = []
+    for dt in sorted(daily.keys()):
+        d = daily[dt]
+        wr = d["w"] / d["n"]
+        cum_1c += d["pnl_1c"]
+        cum_sz += d["pnl_sz"]
+        print(f"  {dt:<12s} {d['n']:>4d} {d['w']:>3d} {d['l']:>3d} {wr:>5.0%} {d['pnl_1c']:>+7d}c {d['pnl_sz']/100:>+9.2f}$ {cum_1c:>+7d}c {cum_sz/100:>+9.2f}$")
+        result.append({"date": dt, **d, "cum_1c": cum_1c, "cum_sz": cum_sz})
+
+    # Trend
+    if len(result) >= 3:
+        first_half = result[:len(result)//2]
+        second_half = result[len(result)//2:]
+        fh_wr = sum(d["w"] for d in first_half) / max(sum(d["n"] for d in first_half), 1)
+        sh_wr = sum(d["w"] for d in second_half) / max(sum(d["n"] for d in second_half), 1)
+        if sh_wr > fh_wr + 0.05:
+            print(f"\n  Trend: IMPROVING (first half {fh_wr:.0%} → second half {sh_wr:.0%})")
+        elif sh_wr < fh_wr - 0.05:
+            print(f"\n  Trend: DETERIORATING (first half {fh_wr:.0%} → second half {sh_wr:.0%})")
+        else:
+            print(f"\n  Trend: STABLE (first half {fh_wr:.0%} → second half {sh_wr:.0%})")
+
+    return result
+
+
+# ─── Section 1c: Loss Deep Dive ──────────────────────────────────────────────
+
+def section_loss_analysis(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
+    wc = where_clause(since)
+
+    header("1c. LOSS DEEP DIVE")
+
+    losses = conn.execute(f"""
+        SELECT ticker, market_price, calibrated_prob, fee_adjusted_edge, edge,
+               seconds_to_close, position_size, kelly_f, spot_price, threshold,
+               evaluation_time, egarch_blend_weight, mz_r_squared, vol_regime,
+               event_ticker
+        FROM evaluated_opportunities
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
+              AND market_result='no' {wc}
+        ORDER BY evaluation_time
+    """).fetchall()
+
+    wins = conn.execute(f"""
+        SELECT market_price, seconds_to_close, fee_adjusted_edge, position_size
+        FROM evaluated_opportunities
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
+              AND market_result='yes' {wc}
+    """).fetchall()
+
+    if not losses:
+        print("  No losses.")
+        return {}
+
+    n_loss = len(losses)
+    n_win = len(wins)
+
+    # Aggregate loss stats
+    avg_price_l = sum(r["market_price"] for r in losses) / n_loss
+    avg_stc_l = sum(r["seconds_to_close"] for r in losses) / n_loss
+    avg_edge_l = sum((r["fee_adjusted_edge"] or 0) for r in losses) / n_loss
+    avg_pos_l = sum((r["position_size"] or 1) for r in losses) / n_loss
+    avg_kelly_l = sum((r["kelly_f"] or 0) for r in losses) / n_loss
+
+    avg_price_w = sum(r["market_price"] for r in wins) / n_win if n_win else 0
+    avg_stc_w = sum(r["seconds_to_close"] for r in wins) / n_win if n_win else 0
+    avg_edge_w = sum((r["fee_adjusted_edge"] or 0) for r in wins) / n_win if n_win else 0
+    avg_pos_w = sum((r["position_size"] or 1) for r in wins) / n_win if n_win else 0
+
+    print(f"\n  Total losses: {n_loss} out of {n_loss + n_win} ({pct(n_loss, n_loss + n_win)} loss rate)")
+    print(f"\n  {'Metric':<25s} {'Losses':>12s} {'Wins':>12s} {'Delta':>12s}")
+    print(f"  {'-' * 63}")
+    print(f"  {'Avg price':<25s} {avg_price_l:>11.1f}c {avg_price_w:>11.1f}c {avg_price_l - avg_price_w:>+11.1f}c")
+    print(f"  {'Avg STC':<25s} {avg_stc_l:>10.0f}s {avg_stc_w:>10.0f}s {avg_stc_l - avg_stc_w:>+10.0f}s")
+    print(f"  {'Avg fee-adj edge':<25s} {avg_edge_l:>11.3%} {avg_edge_w:>11.3%} {avg_edge_l - avg_edge_w:>+11.3%}")
+    print(f"  {'Avg position size':<25s} {avg_pos_l:>11.1f} {avg_pos_w:>11.1f} {avg_pos_l - avg_pos_w:>+11.1f}")
+    print(f"  {'Avg Kelly fraction':<25s} {avg_kelly_l:>11.4f} {'':>12s} {'':>12s}")
+
+    # Top 10 worst losses
+    subheader("Top 10 Worst Losses (by sized PnL)")
+    loss_list = []
+    for r in losses:
+        pos = r["position_size"] or 1
+        pnl = compute_pnl(r["market_price"], "no", pos)
+        loss_list.append((pnl, r))
+    loss_list.sort(key=lambda x: x[0])
+
+    print(f"  {'Sized PnL':>10s} {'Price':>5s} {'Pos':>4s} {'Edge':>7s} {'STC':>6s} {'Kelly':>6s} {'Window':>20s}")
+    print(f"  {'-' * 65}")
+    for pnl, r in loss_list[:10]:
+        pos = r["position_size"] or 1
+        print(f"  ${pnl / 100:>+8.2f} {r['market_price']:>4d}c {pos:>4d} {(r['fee_adjusted_edge'] or 0):>6.2%} "
+              f"{r['seconds_to_close']:>5.0f}s {(r['kelly_f'] or 0):>5.3f} {r['event_ticker'][-20:]}")
+
+    # Loss clustering by window
+    subheader("Loss Clustering by Window")
+    window_losses = {}
+    for r in losses:
+        et = r["event_ticker"]
+        if et not in window_losses:
+            window_losses[et] = 0
+        window_losses[et] += 1
+
+    multi_loss = {k: v for k, v in window_losses.items() if v > 1}
+    if multi_loss:
+        for et, cnt in sorted(multi_loss.items(), key=lambda x: -x[1]):
+            print(f"    {et}: {cnt} losses in same window")
+        print(f"\n    {len(multi_loss)}/{len(window_losses)} windows had multiple losses — correlated blowup risk")
+    else:
+        print(f"    All losses in separate windows — no clustering detected")
+
+    return {
+        "n_losses": n_loss,
+        "avg_price_loss": avg_price_l,
+        "avg_stc_loss": avg_stc_l,
+        "worst_losses": [(pnl, dict(r)) for pnl, r in loss_list[:5]],
+    }
+
+
 # ─── Section 2: Calibration Analysis ─────────────────────────────────────────
 
 def section_calibration(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     wc = where_clause(since)
 
     rows = conn.execute(f"""
-        SELECT calibrated_prob, market_result, spot_price, threshold
+        SELECT calibrated_prob, market_result, market_price
         FROM evaluated_opportunities
         WHERE product_type='spx_hourly'
               AND filter_stage IN ('spx_observation', 'strategy_wait')
@@ -187,19 +437,16 @@ def section_calibration(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
         print("  No settled data available.")
         return {"buckets": [], "brier": None}
 
-    # Brier score — calibrated_prob = P(YES), bot always buys YES
-    brier_sum = 0
-    for r in rows:
-        actual = 1.0 if r["market_result"] == "yes" else 0.0
-        predicted = r["calibrated_prob"]
-        brier_sum += (predicted - actual) ** 2
+    # Brier score
+    brier_sum = sum((r["calibrated_prob"] - (1.0 if r["market_result"] == "yes" else 0.0)) ** 2 for r in rows)
     brier = brier_sum / len(rows)
 
-    # Calibration buckets — bot always buys YES, win = result is "yes"
-    buckets = {}
+    # Calibration by predicted probability bucket
+    subheader("By Predicted Probability")
+    prob_buckets = {}
     for r in rows:
         cp = r["calibrated_prob"]
-        win = (r["market_result"] == "yes")
+        win = r["market_result"] == "yes"
         if cp < 0.80:
             key = "0.70-0.80"
         elif cp < 0.85:
@@ -210,35 +457,74 @@ def section_calibration(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
             key = "0.90-0.95"
         else:
             key = "0.95-1.00"
-        if key not in buckets:
-            buckets[key] = {"n": 0, "wins": 0, "prob_sum": 0.0}
-        buckets[key]["n"] += 1
-        buckets[key]["wins"] += int(win)
-        buckets[key]["prob_sum"] += cp
+        if key not in prob_buckets:
+            prob_buckets[key] = {"n": 0, "wins": 0, "prob_sum": 0.0}
+        prob_buckets[key]["n"] += 1
+        prob_buckets[key]["wins"] += int(win)
+        prob_buckets[key]["prob_sum"] += cp
 
     print(f"\n  Brier Score: {brier:.4f} (n={len(rows)})")
-    print(f"\n  {'Bucket':<12} {'N':>4} {'Predicted':>10} {'Actual WR':>10} {'Gap':>8}")
-    print(f"  {'-' * 48}")
+    print(f"\n  {'Bucket':<12} {'N':>4} {'Predicted':>10} {'Actual WR':>10} {'Gap':>8} {'Verdict':>12}")
+    print(f"  {'-' * 60}")
     bucket_list = []
-    for key in sorted(buckets.keys()):
-        b = buckets[key]
+    for key in sorted(prob_buckets.keys()):
+        b = prob_buckets[key]
         pred = b["prob_sum"] / b["n"]
         actual_wr = b["wins"] / b["n"]
         gap = pred - actual_wr
-        print(f"  {key:<12} {b['n']:>4} {pred:>9.3f} {actual_wr:>9.3f} {gap:>+7.3f}")
+        verdict = ""
+        if gap > 0.10 and b["n"] >= 5:
+            verdict = "OVERCONFIDENT"
+        elif gap > 0.05 and b["n"] >= 5:
+            verdict = "WARM"
+        elif gap < -0.05 and b["n"] >= 5:
+            verdict = "UNDERCONFIDENT"
+        print(f"  {key:<12} {b['n']:>4} {pred:>9.3f} {actual_wr:>9.3f} {gap:>+7.3f} {verdict:>12}{significance_tag(b['n'])}")
         bucket_list.append({
             "bucket": key, "n": b["n"], "predicted": round(pred, 4),
             "actual": round(actual_wr, 4), "gap": round(gap, 4),
         })
 
-    # Overconfidence detection
-    oc_buckets = [b for b in bucket_list if b["gap"] > 0.05 and b["n"] >= 5]
-    if oc_buckets:
-        print(f"\n  *** OVERCONFIDENCE DETECTED in {len(oc_buckets)} bucket(s) (gap > 5pp, n >= 5):")
-        for b in oc_buckets:
-            print(f"      {b['bucket']}: predicted {b['predicted']:.3f} vs actual {b['actual']:.3f} (n={b['n']})")
-    else:
-        print(f"\n  No significant overconfidence detected (min n=5 threshold).")
+    # Calibration by market price (critical for SPX!)
+    subheader("By Market Price (Actual WR vs Breakeven WR)")
+    price_buckets = {}
+    for r in rows:
+        p = r["market_price"]
+        if p < 75:
+            key = "70-74c"
+        elif p < 80:
+            key = "75-79c"
+        elif p < 85:
+            key = "80-84c"
+        elif p < 90:
+            key = "85-89c"
+        elif p < 95:
+            key = "90-94c"
+        else:
+            key = "95-99c"
+        if key not in price_buckets:
+            price_buckets[key] = {"n": 0, "wins": 0, "price_sum": 0}
+        price_buckets[key]["n"] += 1
+        price_buckets[key]["wins"] += int(r["market_result"] == "yes")
+        price_buckets[key]["price_sum"] += p
+
+    print(f"\n  {'Price Bucket':<12} {'N':>4} {'Actual WR':>10} {'BE WR':>8} {'Margin':>8} {'Verdict':>12}")
+    print(f"  {'-' * 58}")
+    for key in sorted(price_buckets.keys()):
+        b = price_buckets[key]
+        avg_p = b["price_sum"] / b["n"]
+        actual = b["wins"] / b["n"]
+        be = breakeven_wr(int(avg_p))
+        margin = actual - be
+        if margin < -0.10 and b["n"] >= 5:
+            verdict = "LOSING"
+        elif margin < 0 and b["n"] >= 5:
+            verdict = "BELOW BE"
+        elif b["n"] < 10:
+            verdict = "LOW N"
+        else:
+            verdict = "PROFITABLE"
+        print(f"  {key:<12} {b['n']:>4} {actual:>9.1%} {be:>7.1%} {margin:>+7.1%} {verdict:>12}{significance_tag(b['n'])}")
 
     return {"brier": round(brier, 4), "n": len(rows), "buckets": bucket_list}
 
@@ -258,7 +544,6 @@ def section_filter_funnel(conn: sqlite3.Connection, since: Optional[str]) -> Lis
         GROUP BY filter_stage ORDER BY cnt DESC
     """).fetchall()
 
-    # Also count rejections
     rej_rows = conn.execute(f"""
         SELECT 'z_score_rejection' as reason, COUNT(*) as cnt,
                SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) as yes_ct,
@@ -276,7 +561,6 @@ def section_filter_funnel(conn: sqlite3.Connection, since: Optional[str]) -> Lis
     print(f"  {'-' * 60}")
 
     result = []
-    # Z-score rejections first (earliest filter)
     if rej_rows and rej_rows["cnt"] > 0:
         r = rej_rows
         settled = r["yes_ct"] + r["no_ct"]
@@ -306,7 +590,7 @@ def section_ev_leakage(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     subheader("strategy_wait: Blocked Trades")
     wait_rows = conn.execute(f"""
         SELECT ticker, market_price, calibrated_prob, fee_adjusted_edge,
-               seconds_to_close, market_result, spot_price, threshold, event_ticker
+               seconds_to_close, market_result, event_ticker
         FROM evaluated_opportunities
         WHERE product_type='spx_hourly' AND filter_stage='strategy_wait'
               AND market_result IS NOT NULL {wc}
@@ -316,7 +600,7 @@ def section_ev_leakage(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     wait_pnl = 0
     wait_wins = 0
     for r in wait_rows:
-        pnl = compute_pnl(r["market_price"], r["market_result"], r["spot_price"], r["threshold"])
+        pnl = compute_pnl(r["market_price"], r["market_result"])
         if pnl > 0:
             wait_wins += 1
         wait_pnl += pnl
@@ -331,64 +615,144 @@ def section_ev_leakage(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     # Near-threshold insufficient_edge
     subheader("insufficient_edge: Near-Threshold")
     near_rows = conn.execute(f"""
-        SELECT ticker, market_price, calibrated_prob, fee_adjusted_edge,
-               seconds_to_close, market_result, spot_price, threshold
+        SELECT market_price, market_result
         FROM evaluated_opportunities
         WHERE product_type='spx_hourly' AND filter_stage='insufficient_edge'
               AND fee_adjusted_edge > -0.005
               AND market_result IS NOT NULL {wc}
-        ORDER BY fee_adjusted_edge DESC
     """).fetchall()
 
-    near_pnl = 0
-    near_wins = 0
-    for r in near_rows:
-        pnl = compute_pnl(r["market_price"], r["market_result"], r["spot_price"], r["threshold"])
-        if pnl > 0:
-            near_wins += 1
-        near_pnl += pnl
-
     if near_rows:
+        near_pnl = sum(compute_pnl(r["market_price"], r["market_result"]) for r in near_rows)
+        near_wins = sum(1 for r in near_rows if compute_pnl(r["market_price"], r["market_result"]) > 0)
         print(f"    {len(near_rows)} trades within 0.5% of edge threshold")
         print(f"    {near_wins}W/{len(near_rows) - near_wins}L ({pct(near_wins, len(near_rows))}) | PnL: {near_pnl:+d}c")
     else:
         print("    No near-threshold trades found.")
 
-    # Window limit rejections (new filter stage)
+    # Window limit rejections
     subheader("spx_hourly_window_limit: Position Limit Rejections")
     wlim_rows = conn.execute(f"""
-        SELECT COUNT(*) as cnt,
-               SUM(CASE WHEN market_result IS NOT NULL THEN 1 ELSE 0 END) as settled,
-               SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) as yes_ct,
-               SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) as no_ct
+        SELECT market_price, market_result
         FROM evaluated_opportunities
         WHERE product_type='spx_hourly'
-              AND filter_stage IN ('spx_hourly_window_limit', 'spx_hourly_window_risk_cap') {wc}
-    """).fetchone()
+              AND filter_stage IN ('spx_hourly_window_limit', 'spx_hourly_window_risk_cap')
+              AND market_result IS NOT NULL {wc}
+    """).fetchall()
 
-    if wlim_rows and wlim_rows["cnt"] > 0:
-        settled = wlim_rows["yes_ct"] + wlim_rows["no_ct"]
-        print(f"    {wlim_rows['cnt']} blocked by window limits | settled: {settled}")
-        if settled > 0:
-            # Compute PnL for blocked trades
-            blocked = conn.execute(f"""
-                SELECT market_price, market_result, spot_price, threshold
-                FROM evaluated_opportunities
-                WHERE product_type='spx_hourly'
-                      AND filter_stage IN ('spx_hourly_window_limit', 'spx_hourly_window_risk_cap')
-                      AND market_result IS NOT NULL {wc}
-            """).fetchall()
-            bl_pnl = sum(compute_pnl(r["market_price"], r["market_result"], r["spot_price"], r["threshold"]) for r in blocked)
-            bl_wins = sum(1 for r in blocked if compute_pnl(r["market_price"], r["market_result"], r["spot_price"], r["threshold"]) > 0)
-            print(f"    {bl_wins}W/{len(blocked) - bl_wins}L | PnL if traded: {bl_pnl:+d}c")
+    if wlim_rows:
+        bl_pnl = sum(compute_pnl(r["market_price"], r["market_result"]) for r in wlim_rows)
+        bl_wins = sum(1 for r in wlim_rows if compute_pnl(r["market_price"], r["market_result"]) > 0)
+        print(f"    {len(wlim_rows)} blocked by window limits")
+        print(f"    {bl_wins}W/{len(wlim_rows) - bl_wins}L | PnL if traded: {bl_pnl:+d}c")
     else:
-        print("    No window-limit rejections yet (filter just added).")
+        print("    No window-limit rejections yet.")
 
     return {
         "strategy_wait": {"count": len(wait_rows), "wins": wait_wins, "pnl_1c": wait_pnl},
-        "near_edge": {"count": len(near_rows), "wins": near_wins, "pnl_1c": near_pnl},
-        "window_limit": {"count": wlim_rows["cnt"] if wlim_rows else 0},
+        "near_edge": {"count": len(near_rows) if near_rows else 0},
+        "window_limit": {"count": len(wlim_rows) if wlim_rows else 0},
     }
+
+
+# ─── Section 4a: Position-Limited Simulation ─────────────────────────────────
+
+def section_position_limit_sim(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
+    wc = where_clause(since)
+
+    header("4a. POSITION-LIMITED SIMULATION")
+
+    rows = conn.execute(f"""
+        SELECT event_ticker, market_price, market_result, position_size, fee_adjusted_edge
+        FROM evaluated_opportunities
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
+              AND market_result IS NOT NULL {wc}
+        ORDER BY event_ticker, fee_adjusted_edge DESC
+    """).fetchall()
+
+    if not rows:
+        print("  No data.")
+        return {}
+
+    window_groups = {}
+    for r in rows:
+        et = r["event_ticker"]
+        if et not in window_groups:
+            window_groups[et] = []
+        window_groups[et].append(dict(r))
+
+    print(f"  Selecting top N entries per window by highest fee-adjusted edge.")
+    print(f"\n  {'Max/Window':>12s} {'N':>4s} {'W':>4s} {'L':>3s} {'WR':>6s} {'1c PnL':>8s} {'Sized PnL':>10s}")
+    print(f"  {'-' * 52}")
+
+    result = {}
+    for limit in [1, 2, 3, 5, "all"]:
+        pnl_1c = 0
+        pnl_sz = 0
+        n = 0
+        wins = 0
+        for et, entries in window_groups.items():
+            selected = entries if limit == "all" else entries[:limit]
+            for r in selected:
+                pos = r["position_size"] or 1
+                n += 1
+                pnl = compute_pnl(r["market_price"], r["market_result"])
+                pnl_s = compute_pnl(r["market_price"], r["market_result"], pos)
+                pnl_1c += pnl
+                pnl_sz += pnl_s
+                if pnl > 0:
+                    wins += 1
+
+        label = str(limit) if limit != "all" else "unlimited"
+        wr = wins / n if n > 0 else 0
+        print(f"  {label:>12s} {n:>4d} {wins:>4d} {n - wins:>3d} {wr:>5.1%} {pnl_1c:>+7d}c {pnl_sz / 100:>+9.2f}$")
+        result[label] = {"n": n, "wins": wins, "pnl_1c": pnl_1c, "pnl_sz": pnl_sz}
+
+    print(f"\n  Note: Position limits don't change which trades win/lose — they reduce")
+    print(f"  exposure to correlated multi-strike blowups within a single window.")
+
+    return result
+
+
+# ─── Section 4b: Min Price Sweep ──────────────────────────────────────────────
+
+def section_min_price_sweep(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
+    wc = where_clause(since)
+
+    header("4b. MIN ENTRY PRICE SWEEP")
+
+    rows = conn.execute(f"""
+        SELECT market_price, market_result, position_size
+        FROM evaluated_opportunities
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
+              AND market_result IS NOT NULL {wc}
+    """).fetchall()
+
+    if not rows:
+        print("  No data.")
+        return {}
+
+    print(f"  What if we raised MIN_ENTRY_PRICE? (currently 70c)")
+    print(f"\n  {'Min Price':>10s} {'N':>4s} {'W':>4s} {'L':>3s} {'WR':>6s} {'1c PnL':>8s} {'Sized PnL':>10s} {'Excluded':>9s}")
+    print(f"  {'-' * 60}")
+
+    result = {}
+    total = len(rows)
+    for min_p in [70, 75, 78, 80, 82, 84, 85, 87, 90, 92]:
+        filtered = [r for r in rows if r["market_price"] >= min_p]
+        n = len(filtered)
+        w = sum(1 for r in filtered if r["market_result"] == "yes")
+        pnl_1c = sum(compute_pnl(r["market_price"], r["market_result"]) for r in filtered)
+        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], r["position_size"] or 1) for r in filtered)
+        wr = w / n if n > 0 else 0
+        excluded = total - n
+        marker = " <<<" if min_p == 70 else ""
+        if pnl_sz > 0 and pnl_1c > 0:
+            marker = " *** PROFITABLE"
+        print(f"  {min_p:>9d}c {n:>4d} {w:>4d} {n - w:>3d} {wr:>5.1%} {pnl_1c:>+7d}c {pnl_sz / 100:>+9.2f}$ {excluded:>8d}{marker}")
+        result[min_p] = {"n": n, "wins": w, "pnl_1c": pnl_1c, "pnl_sz": pnl_sz}
+
+    return result
 
 
 # ─── Section 5: Vol Model Health ─────────────────────────────────────────────
@@ -429,8 +793,6 @@ def section_vol_health(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
 
     subheader("Mincer-Zarnowitz R²")
     print(f"    avg={row['avg_mz_r2']:.4f}  min={row['min_mz_r2']:.4f}  max={row['max_mz_r2']:.4f}")
-    if row["min_mz_r2"] == row["max_mz_r2"]:
-        print(f"    *** STUCK at {row['avg_mz_r2']:.4f} — MZ not adapting (expected if < {20} pairs)")
 
     subheader("EGARCH Sigma")
     print(f"    avg={row['avg_egarch']:.2e}  min={row['min_egarch']:.2e}  max={row['max_egarch']:.2e}")
@@ -440,13 +802,49 @@ def section_vol_health(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
 
     subheader("egarch_blend_sigma Fill Rate")
     fill_rate = row["blend_sigma_filled"] / row["total"]
-    status = "OK" if fill_rate > 0.5 else "*** LOW — likely missing from vol estimate return"
+    status = "OK" if fill_rate > 0.5 else "*** LOW"
     print(f"    {row['blend_sigma_filled']}/{row['total']} ({pct(row['blend_sigma_filled'], row['total'])}) — {status}")
+
+    # VIX data from counterfactual JSON
+    subheader("VIX Integration (from counterfactual column)")
+    vix_rows = conn.execute(f"""
+        SELECT counterfactual
+        FROM evaluated_opportunities
+        WHERE product_type='spx_hourly' AND counterfactual IS NOT NULL
+              AND filter_stage='spx_observation' {wc}
+    """).fetchall()
+
+    if vix_rows:
+        vix_vals = []
+        seasonal_vals = []
+        n_returns_vals = []
+        for r in vix_rows:
+            try:
+                d = json.loads(r["counterfactual"])
+                if d.get("vix_implied_rv") is not None:
+                    vix_vals.append(d["vix_implied_rv"])
+                if d.get("seasonal_factor") is not None:
+                    seasonal_vals.append(d["seasonal_factor"])
+                if d.get("n_returns") is not None:
+                    n_returns_vals.append(d["n_returns"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if vix_vals:
+            print(f"    VIX implied RV: avg={sum(vix_vals)/len(vix_vals):.2e} "
+                  f"min={min(vix_vals):.2e} max={max(vix_vals):.2e} (n={len(vix_vals)})")
+        if seasonal_vals:
+            print(f"    Seasonal factor: avg={sum(seasonal_vals)/len(seasonal_vals):.4f} "
+                  f"min={min(seasonal_vals):.4f} max={max(seasonal_vals):.4f} (n={len(seasonal_vals)})")
+        if n_returns_vals:
+            print(f"    N returns: avg={sum(n_returns_vals)/len(n_returns_vals):.0f} "
+                  f"min={min(n_returns_vals)} max={max(n_returns_vals)} (n={len(n_returns_vals)})")
+    else:
+        print(f"    No VIX data in DB yet (counterfactual column empty).")
+        print(f"    Deploy instrumentation fix to start collecting VIX diagnostics.")
 
     return {
         "blend_weight": {"avg": row["avg_blend_w"], "min": row["min_blend_w"], "max": row["max_blend_w"]},
         "mz_r_squared": {"avg": row["avg_mz_r2"], "min": row["min_mz_r2"], "max": row["max_mz_r2"]},
-        "egarch_sigma": {"avg": row["avg_egarch"], "min": row["min_egarch"], "max": row["max_egarch"]},
         "blend_sigma_fill_rate": fill_rate,
         "total_evals": row["total"],
     }
@@ -463,10 +861,7 @@ def section_correlation(conn: sqlite3.Connection, since: Optional[str]) -> List:
         SELECT event_ticker,
                COUNT(*) as n_obs,
                GROUP_CONCAT(market_price) as prices,
-               GROUP_CONCAT(market_result) as results,
-               GROUP_CONCAT(position_size) as positions,
-               MIN(seconds_to_close) as min_stc,
-               MAX(seconds_to_close) as max_stc
+               GROUP_CONCAT(market_result) as results
         FROM evaluated_opportunities
         WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
               AND market_result IS NOT NULL {wc}
@@ -477,116 +872,252 @@ def section_correlation(conn: sqlite3.Connection, since: Optional[str]) -> List:
         print("  No observation data.")
         return []
 
-    print(f"\n  {'Window':<30} {'Obs':>4} {'Prices':<25} {'Results':<25} {'PnL':>8}")
-    print(f"  {'-' * 95}")
+    print(f"\n  {'Window':<30} {'Obs':>4} {'W':>3} {'L':>3} {'WR':>5} {'1c PnL':>8} {'Sz PnL':>9}")
+    print(f"  {'-' * 70}")
 
     result = []
     max_obs = 0
+    total_sized = 0
     for r in rows:
-        prices = [int(x) for x in r["prices"].split(",")]
-        results = r["results"].split(",")
-        positions = [int(x) for x in r["positions"].split(",")] if r["positions"] else [1] * len(prices)
-
-        # Compute window PnL (need spot/threshold — estimate from ticker)
-        # Query individual rows for accurate PnL
         detail = conn.execute(f"""
-            SELECT market_price, market_result, spot_price, threshold, position_size
+            SELECT market_price, market_result, position_size
             FROM evaluated_opportunities
             WHERE event_ticker=? AND product_type='spx_hourly' AND filter_stage='spx_observation'
                   AND market_result IS NOT NULL
         """, (r["event_ticker"],)).fetchall()
 
-        window_pnl = 0
-        for d in detail:
-            pos = d["position_size"] or 1
-            window_pnl += compute_pnl(d["market_price"], d["market_result"], d["spot_price"], d["threshold"], pos)
-
         n = len(detail)
         max_obs = max(max_obs, n)
-        wins = sum(1 for d in detail if compute_pnl(d["market_price"], d["market_result"], d["spot_price"], d["threshold"]) > 0)
-        print(f"  {r['event_ticker']:<30} {n:>4} {r['prices']:<25} {r['results']:<25} {window_pnl:>+7d}c")
+        w = sum(1 for d in detail if d["market_result"] == "yes")
+        l = n - w
+        pnl_1c = sum(compute_pnl(d["market_price"], d["market_result"]) for d in detail)
+        pnl_sz = sum(compute_pnl(d["market_price"], d["market_result"], d["position_size"] or 1) for d in detail)
+        total_sized += pnl_sz
+
+        wr_str = f"{w / n:.0%}" if n > 0 else "n/a"
+        print(f"  {r['event_ticker']:<30} {n:>4} {w:>3} {l:>3} {wr_str:>5} {pnl_1c:>+7d}c {pnl_sz / 100:>+8.2f}$")
 
         result.append({
-            "window": r["event_ticker"], "n_obs": n, "wins": wins,
-            "window_pnl_sized": window_pnl,
-            "prices": prices, "results": results,
+            "window": r["event_ticker"], "n_obs": n, "wins": w,
+            "pnl_1c": pnl_1c, "pnl_sized": pnl_sz,
         })
 
-    # Risk assessment
     print(f"\n  Max observations in one window: {max_obs}")
     if max_obs > 2:
         print(f"  *** HIGH CORRELATION RISK: {max_obs} positions in a single window")
-        print(f"      With per-window limit of 2, excess would be blocked")
+
+    # Count windows that lost money
+    losing_windows = sum(1 for r in result if r["pnl_sized"] < 0)
+    print(f"  Windows losing money: {losing_windows}/{len(result)} ({pct(losing_windows, len(result))})")
 
     return result
 
 
-# ─── Section 7: Timing Analysis ──────────────────────────────────────────────
+# ─── Section 7: Timing & Temperature Analysis ────────────────────────────────
 
 def section_timing(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     wc = where_clause(since)
 
     header("7. TIMING ANALYSIS")
 
-    # By STC bucket
-    subheader("By Seconds-to-Close Bucket")
+    # By STC bucket with PnL
+    subheader("By Seconds-to-Close (with P&L)")
     stc_rows = conn.execute(f"""
-        SELECT
-            CASE
-                WHEN seconds_to_close < 600 THEN '0-600s'
-                WHEN seconds_to_close < 1200 THEN '600-1200s'
-                ELSE '1200-1800s'
-            END as bucket,
-            COUNT(*) as n,
-            SUM(CASE WHEN market_result IS NOT NULL THEN 1 ELSE 0 END) as settled,
-            AVG(market_price) as avg_price,
-            AVG(fee_adjusted_edge) as avg_edge
+        SELECT seconds_to_close, market_price, market_result, position_size,
+               fee_adjusted_edge, calibrated_prob
         FROM evaluated_opportunities
-        WHERE product_type='spx_hourly' AND filter_stage IN ('spx_observation', 'strategy_wait')
-              {wc}
-        GROUP BY bucket ORDER BY bucket
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
+              AND market_result IS NOT NULL {wc}
     """).fetchall()
 
-    print(f"\n  {'STC Bucket':<15} {'N':>4} {'Settled':>8} {'Avg Price':>10} {'Avg Edge':>10}")
-    print(f"  {'-' * 50}")
-    stc_data = []
+    stc_buckets = {"300-600s": [], "600-1200s": [], "1200-1800s": []}
     for r in stc_rows:
-        print(f"  {r['bucket']:<15} {r['n']:>4} {r['settled']:>8} {r['avg_price']:>9.1f}c {r['avg_edge'] * 100:>9.2f}%")
-        stc_data.append(dict(r))
+        stc = r["seconds_to_close"]
+        if stc < 600:
+            bk = "300-600s"
+        elif stc < 1200:
+            bk = "600-1200s"
+        else:
+            bk = "1200-1800s"
+        stc_buckets[bk].append(dict(r))
 
-    # By hour of day (UTC → ET approximation)
-    subheader("By Hour (UTC)")
-    hour_rows = conn.execute(f"""
-        SELECT strftime('%H', evaluation_time) as hour,
-               COUNT(*) as total,
-               SUM(CASE WHEN filter_stage='spx_observation' THEN 1 ELSE 0 END) as obs,
-               SUM(CASE WHEN filter_stage='strategy_wait' THEN 1 ELSE 0 END) as wait,
-               SUM(CASE WHEN filter_stage='insufficient_edge' THEN 1 ELSE 0 END) as insuf
+    print(f"\n  {'STC Bucket':<14} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'BE WR':>6} {'1c PnL':>8} {'Sz PnL':>9} {'AvgEdge':>8}")
+    print(f"  {'-' * 68}")
+    for bk in ["300-600s", "600-1200s", "1200-1800s"]:
+        entries = stc_buckets[bk]
+        if not entries:
+            print(f"  {bk:<14} {'--- no data ---':>30}")
+            continue
+        n = len(entries)
+        w = sum(1 for r in entries if r["market_result"] == "yes")
+        l = n - w
+        wr = w / n
+        avg_p = sum(r["market_price"] for r in entries) / n
+        be = breakeven_wr(int(avg_p))
+        pnl_1c = sum(compute_pnl(r["market_price"], r["market_result"]) for r in entries)
+        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], r["position_size"] or 1) for r in entries)
+        avg_edge = sum((r["fee_adjusted_edge"] or 0) for r in entries) / n
+        print(f"  {bk:<14} {n:>4} {w:>3} {l:>3} {wr:>5.1%} {be:>5.1%} {pnl_1c:>+7d}c {pnl_sz/100:>+8.2f}$ {avg_edge:>7.3%}")
+
+    return {}
+
+
+# ─── Section 7a: Temperature Tournament ──────────────────────────────────────
+
+def section_temp_tournament(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
+    wc = where_clause(since)
+
+    header("7a. TEMPERATURE TOURNAMENT")
+
+    rows = conn.execute(f"""
+        SELECT calibrated_prob, hourly_pre_temp_prob, hourly_applied_temp_t,
+               hourly_shadow_temp_1_0, hourly_shadow_temp_2_0, hourly_shadow_temp_2_5,
+               hourly_shadow_temp_1_75, hourly_shadow_temp_3_0,
+               hourly_shadow_blend_50, hourly_shadow_blend_20, hourly_shadow_blend_30,
+               hourly_shadow_blend_60, hourly_post_temp_prob, market_result, market_price
         FROM evaluated_opportunities
-        WHERE product_type='spx_hourly' {wc}
-        GROUP BY hour ORDER BY hour
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
+              AND market_result IS NOT NULL AND hourly_pre_temp_prob IS NOT NULL {wc}
     """).fetchall()
 
-    print(f"\n  {'Hour UTC':>9} {'Total':>6} {'Obs':>5} {'Wait':>5} {'InsufEdge':>10}")
-    print(f"  {'-' * 38}")
-    hour_data = []
-    for r in hour_rows:
-        print(f"  {r['hour']:>6}:00 {r['total']:>6} {r['obs']:>5} {r['wait']:>5} {r['insuf']:>10}")
-        hour_data.append(dict(r))
+    if not rows:
+        print("  No temperature shadow data available.")
+        return {}
 
-    # By strategy
-    subheader("By Strategy (obs + wait)")
-    strat_rows = conn.execute(f"""
-        SELECT strategy, COUNT(*) as cnt
+    variants = [
+        ("pre_temp (no T)", "hourly_pre_temp_prob"),
+        ("T=1.0 (identity)", "hourly_shadow_temp_1_0"),
+        ("T=1.75", "hourly_shadow_temp_1_75"),
+        ("T=2.0", "hourly_shadow_temp_2_0"),
+        ("T=2.5", "hourly_shadow_temp_2_5"),
+        ("T=3.0", "hourly_shadow_temp_3_0"),
+        ("blend_20 (80m/20mkt)", "hourly_shadow_blend_20"),
+        ("blend_30 (70m/30mkt)", "hourly_shadow_blend_30"),
+        ("blend_50 (50m/50mkt)", "hourly_shadow_blend_50"),
+        ("blend_60 (40m/60mkt)", "hourly_shadow_blend_60"),
+        ("post_temp", "hourly_post_temp_prob"),
+        ("current (final)", "calibrated_prob"),
+    ]
+
+    print(f"\n  {'Variant':<25s} {'Brier':>8s} {'N':>5s} {'AvgPred':>8s} {'vs Current':>11s}")
+    print(f"  {'-' * 60}")
+
+    results = []
+    current_brier = None
+    for name, col in variants:
+        brier_sum = 0
+        pred_sum = 0
+        count = 0
+        for r in rows:
+            val = r[col]
+            if val is None:
+                continue
+            actual = 1.0 if r["market_result"] == "yes" else 0.0
+            brier_sum += (val - actual) ** 2
+            pred_sum += val
+            count += 1
+        if count > 0:
+            brier = brier_sum / count
+            avg_pred = pred_sum / count
+            if name == "current (final)":
+                current_brier = brier
+            diff = ""
+            if current_brier is not None and name != "current (final)":
+                d = brier - current_brier
+                diff = f"{d:>+10.4f}"
+            results.append((brier, name, count, avg_pred))
+            print(f"  {name:<25s} {brier:>7.4f} {count:>5d} {avg_pred:>7.4f} {diff}")
+
+    if results:
+        best = min(results, key=lambda x: x[0])
+        worst = max(results, key=lambda x: x[0])
+        print(f"\n  Best:  {best[1]} (Brier={best[0]:.4f}, n={best[2]})")
+        print(f"  Worst: {worst[1]} (Brier={worst[0]:.4f}, n={worst[2]})")
+
+        # Significance caveat
+        if best[2] < 50:
+            print(f"  *** Best variant has n={best[2]} — NOT SIGNIFICANT for Brier comparison")
+
+    return {"variants": [{"name": n, "brier": b, "n": c, "avg_pred": p} for b, n, c, p in results]}
+
+
+# ─── Section 7b: Price x STC Cross-Tab ───────────────────────────────────────
+
+def section_cross_tab(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
+    wc = where_clause(since)
+
+    header("7b. PRICE x STC CROSS-TAB")
+
+    rows = conn.execute(f"""
+        SELECT market_price, seconds_to_close, market_result, position_size
         FROM evaluated_opportunities
-        WHERE product_type='spx_hourly' AND strategy IS NOT NULL {wc}
-        GROUP BY strategy ORDER BY cnt DESC
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
+              AND market_result IS NOT NULL {wc}
     """).fetchall()
 
-    for r in strat_rows:
-        print(f"    {r['strategy']}: {r['cnt']}")
+    if not rows:
+        print("  No data.")
+        return {}
 
-    return {"stc_buckets": stc_data, "hours": hour_data, "strategies": [dict(r) for r in strat_rows]}
+    price_labels = ["<80c", "80-84c", "85-89c", "90c+"]
+    stc_labels = ["<600s", "600-1200s", "1200s+"]
+
+    grid = {}
+    for r in rows:
+        p = r["market_price"]
+        stc = r["seconds_to_close"]
+        if p < 80:
+            pk = "<80c"
+        elif p < 85:
+            pk = "80-84c"
+        elif p < 90:
+            pk = "85-89c"
+        else:
+            pk = "90c+"
+        if stc < 600:
+            sk = "<600s"
+        elif stc < 1200:
+            sk = "600-1200s"
+        else:
+            sk = "1200s+"
+        key = (pk, sk)
+        if key not in grid:
+            grid[key] = {"w": 0, "l": 0, "pnl": 0}
+        is_win = r["market_result"] == "yes"
+        pos = r["position_size"] or 1
+        grid[key]["w" if is_win else "l"] += 1
+        grid[key]["pnl"] += compute_pnl(r["market_price"], r["market_result"], pos)
+
+    print(f"\n  Format: WinW/LossL WR Sized$PnL")
+    print(f"\n  {'':>10s}", end="")
+    for sk in stc_labels:
+        print(f"  {sk:>18s}", end="")
+    print()
+    print(f"  {'-' * 66}")
+
+    for pk in price_labels:
+        print(f"  {pk:>10s}", end="")
+        for sk in stc_labels:
+            d = grid.get((pk, sk), {"w": 0, "l": 0, "pnl": 0})
+            n = d["w"] + d["l"]
+            if n == 0:
+                print(f"  {'---':>18s}", end="")
+            else:
+                wr = d["w"] / n
+                print(f"  {d['w']}W/{d['l']}L {wr:.0%} ${d['pnl']/100:+.0f}", end="")
+        print()
+
+    # Find best and worst cells
+    cells = [(k, v) for k, v in grid.items() if v["w"] + v["l"] >= 3]
+    if cells:
+        best = max(cells, key=lambda x: x[1]["pnl"])
+        worst = min(cells, key=lambda x: x[1]["pnl"])
+        n_best = best[1]["w"] + best[1]["l"]
+        n_worst = worst[1]["w"] + worst[1]["l"]
+        print(f"\n  Best zone:  {best[0][0]} x {best[0][1]} — ${best[1]['pnl']/100:+.2f} (n={n_best}){significance_tag(n_best)}")
+        print(f"  Worst zone: {worst[0][0]} x {worst[0][1]} — ${worst[1]['pnl']/100:+.2f} (n={n_worst}){significance_tag(n_worst)}")
+
+    return {}
 
 
 # ─── Section 8: Data Quality ─────────────────────────────────────────────────
@@ -596,42 +1127,67 @@ def section_data_quality(conn: sqlite3.Connection, since: Optional[str]) -> Dict
 
     header("8. DATA QUALITY AUDIT")
 
-    # Column fill rates
-    subheader("Column Fill Rates (evaluated_opportunities, spx_hourly)")
-    cols_to_check = [
-        "ticker", "market_price", "calibrated_prob", "edge", "fee_adjusted_edge",
+    # Column fill rates for observations only (not rejections which naturally miss sizing)
+    subheader("Column Fill Rates (spx_observation entries only)")
+    total = conn.execute(f"""
+        SELECT COUNT(*) FROM evaluated_opportunities
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation' {wc}
+    """).fetchone()[0]
+
+    critical_cols = [
+        "market_price", "calibrated_prob", "edge", "fee_adjusted_edge",
         "kelly_f", "position_size", "strategy", "drawdown_scaler",
         "egarch_sigma", "egarch_blend_sigma", "egarch_blend_weight", "mz_r_squared",
         "z_score", "vol_regime", "raw_prob", "calibration_method",
-        "spot_price", "threshold", "volatility",
-        "shadow_tv_blend_rv", "mz_shadow_sigmoid_w", "mz_baseline_qlike", "mz_qlike",
+        "expected_value", "breakeven_wr",
     ]
 
-    total_row = conn.execute(f"""
-        SELECT COUNT(*) as cnt FROM evaluated_opportunities
-        WHERE product_type='spx_hourly' {wc}
-    """).fetchone()
-    total = total_row["cnt"]
+    spx_specific = [
+        "counterfactual",
+        "hourly_pre_temp_prob", "hourly_applied_temp_t",
+        "hourly_shadow_temp_2_0", "hourly_shadow_temp_1_0",
+        "hourly_shadow_temp_1_75", "hourly_shadow_temp_3_0",
+        "hourly_shadow_blend_20", "hourly_shadow_blend_30",
+        "hourly_shadow_blend_60", "hourly_post_temp_prob",
+    ]
 
-    fill_rates = {}
     issues = []
-    for col in cols_to_check:
+    print(f"\n  Total spx_observation entries: {total}")
+
+    # Critical columns
+    print(f"\n  {'Column':<30} {'Filled':>12} {'Status':>10}")
+    print(f"  {'-' * 54}")
+    for col in critical_cols:
         try:
             r = conn.execute(f"""
                 SELECT SUM(CASE WHEN {col} IS NOT NULL THEN 1 ELSE 0 END) as filled
                 FROM evaluated_opportunities
-                WHERE product_type='spx_hourly' {wc}
+                WHERE product_type='spx_hourly' AND filter_stage='spx_observation' {wc}
             """).fetchone()
             filled = r["filled"] or 0
             rate = filled / total if total > 0 else 0
-            fill_rates[col] = rate
             status = "OK" if rate > 0.9 else ("PARTIAL" if rate > 0 else "EMPTY")
             if status != "OK":
-                issues.append(col)
-            print(f"    {col:<30} {filled:>5}/{total} ({pct(filled, total):>6}) {status}")
+                issues.append((col, status, filled, total))
+            print(f"  {col:<30} {filled:>5}/{total} ({pct(filled, total):>6}) {status:>8}")
         except Exception:
-            fill_rates[col] = 0
-            print(f"    {col:<30} COLUMN NOT FOUND")
+            print(f"  {col:<30} {'NOT FOUND':>12}")
+
+    # SPX-specific columns
+    print(f"\n  SPX-specific columns:")
+    for col in spx_specific:
+        try:
+            r = conn.execute(f"""
+                SELECT SUM(CASE WHEN {col} IS NOT NULL THEN 1 ELSE 0 END) as filled
+                FROM evaluated_opportunities
+                WHERE product_type='spx_hourly' AND filter_stage='spx_observation' {wc}
+            """).fetchone()
+            filled = r["filled"] or 0
+            rate = filled / total if total > 0 else 0
+            status = "OK" if rate > 0.9 else ("PARTIAL" if rate > 0 else "EMPTY")
+            print(f"  {col:<30} {filled:>5}/{total} ({pct(filled, total):>6}) {status:>8}")
+        except Exception:
+            pass
 
     # Duplicate check
     subheader("Duplicate Check")
@@ -649,43 +1205,12 @@ def section_data_quality(conn: sqlite3.Connection, since: Optional[str]) -> Dict
     else:
         print(f"    No duplicates found.")
 
-    # Timestamp gaps
-    subheader("Timestamp Gaps (> 30 min)")
-    times = conn.execute(f"""
-        SELECT evaluation_time FROM evaluated_opportunities
-        WHERE product_type='spx_hourly' {wc}
-        ORDER BY evaluation_time
-    """).fetchall()
-
-    gaps = []
-    for i in range(1, len(times)):
-        try:
-            t1 = datetime.fromisoformat(times[i - 1]["evaluation_time"].replace("Z", "+00:00"))
-            t2 = datetime.fromisoformat(times[i]["evaluation_time"].replace("Z", "+00:00"))
-            gap_min = (t2 - t1).total_seconds() / 60
-            if gap_min > 30:
-                gaps.append({"from": times[i - 1]["evaluation_time"], "to": times[i]["evaluation_time"],
-                             "gap_min": round(gap_min, 1)})
-        except Exception:
-            pass
-
-    if gaps:
-        print(f"    {len(gaps)} gaps > 30 min (expected at hourly window boundaries):")
-        for g in gaps[:10]:
-            print(f"        {g['from'][:19]} → {g['to'][:19]} ({g['gap_min']:.0f} min)")
-    else:
-        print(f"    No gaps > 30 min found.")
-
     if issues:
-        subheader("Data Issues Summary")
-        critical = [c for c in issues if c in ("egarch_blend_sigma", "kelly_f", "position_size")]
-        cosmetic = [c for c in issues if c not in critical]
-        if critical:
-            print(f"    CRITICAL (affect analysis): {', '.join(critical)}")
-        if cosmetic:
-            print(f"    Expected (crypto-specific): {', '.join(cosmetic)}")
+        subheader("Issues Summary")
+        for col, status, filled, total in issues:
+            print(f"    {status}: {col} ({filled}/{total})")
 
-    return {"total": total, "fill_rates": fill_rates, "duplicates": len(dupes), "gaps": len(gaps)}
+    return {"total": total, "issues": len(issues)}
 
 
 # ─── Section 9: Price-Out-Of-Range Analysis ──────────────────────────────────
@@ -696,8 +1221,7 @@ def section_price_range(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     header("9. PRICE-OUT-OF-RANGE ANALYSIS")
 
     rows = conn.execute(f"""
-        SELECT market_price, calibrated_prob, market_result, seconds_to_close,
-               spot_price, threshold
+        SELECT market_price, calibrated_prob, market_result
         FROM evaluated_opportunities
         WHERE product_type='spx_hourly' AND filter_stage='price_out_of_range'
               AND market_result IS NOT NULL {wc}
@@ -708,7 +1232,6 @@ def section_price_range(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
         print("  No price_out_of_range entries.")
         return {"count": 0}
 
-    # Group by price range
     below_min = [r for r in rows if r["market_price"] < 70]
     above_max = [r for r in rows if r["market_price"] > 99]
 
@@ -716,11 +1239,9 @@ def section_price_range(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
 
     if below_min:
         subheader(f"Below MIN_ENTRY_PRICE (70c): {len(below_min)} entries")
-        wins = sum(1 for r in below_min if
-                   compute_pnl(r["market_price"], r["market_result"], r["spot_price"], r["threshold"]) > 0)
+        wins = sum(1 for r in below_min if r["market_result"] == "yes")
         print(f"    Win rate: {pct(wins, len(below_min))} ({wins}W/{len(below_min) - wins}L)")
         print(f"    Price range: {min(r['market_price'] for r in below_min)}-{max(r['market_price'] for r in below_min)}c")
-        print(f"    Avg cal prob: {sum(r['calibrated_prob'] for r in below_min) / len(below_min):.3f}")
         avg_gap = sum(abs(r["calibrated_prob"] - r["market_price"] / 100.0) for r in below_min) / len(below_min)
         print(f"    Avg model-market gap: {avg_gap * 100:.1f}pp")
         if avg_gap > 0.20:
@@ -757,37 +1278,11 @@ def section_zscore(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
 
     print(f"\n  Total z-score rejections: {row['cnt']}")
     print(f"  Settled: {settled} (yes={row['yes_ct']}, no={row['no_ct']}, unsettled={row['unsettled']})")
-    print(f"  Yes rate: {pct(row['yes_ct'], settled)} — {'FILTER WORKING (low yes = garbage correctly blocked)' if yes_rate < 0.20 else 'INVESTIGATE — high yes rate may mean filter too aggressive'}")
+    verdict = "FILTER WORKING (low yes = garbage correctly blocked)" if yes_rate < 0.20 else "INVESTIGATE — high yes rate may mean filter too aggressive"
+    print(f"  Yes rate: {pct(row['yes_ct'], settled)} — {verdict}")
     print(f"  |z| range: {row['min_abs_z']:.1f} - {row['max_abs_z']:.1f} (avg {row['avg_abs_z']:.1f})")
 
-    # Z-score distribution
-    subheader("Z-Score Distribution")
-    zbuckets = conn.execute(f"""
-        SELECT
-            CASE
-                WHEN ABS(z_score) < 50 THEN '25-50'
-                WHEN ABS(z_score) < 100 THEN '50-100'
-                WHEN ABS(z_score) < 200 THEN '100-200'
-                ELSE '200+'
-            END as bucket,
-            COUNT(*) as cnt,
-            SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) as yes_ct,
-            SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) as no_ct
-        FROM rejected_opportunities
-        WHERE product_type='spx_hourly' AND rejection_reason LIKE '%z_score%' {wc}
-        GROUP BY bucket ORDER BY bucket
-    """).fetchall()
-
-    print(f"  {'|z| Bucket':<12} {'Count':>6} {'Yes':>5} {'No':>5} {'Yes Rate':>9}")
-    print(f"  {'-' * 40}")
-    for zb in zbuckets:
-        settled_b = zb["yes_ct"] + zb["no_ct"]
-        print(f"  {zb['bucket']:<12} {zb['cnt']:>6} {zb['yes_ct']:>5} {zb['no_ct']:>5} {pct(zb['yes_ct'], settled_b):>9}")
-
-    return {
-        "count": row["cnt"], "settled": settled,
-        "yes_rate": round(yes_rate, 4), "avg_abs_z": round(row["avg_abs_z"], 1),
-    }
+    return {"count": row["cnt"], "yes_rate": round(yes_rate, 4)}
 
 
 # ─── Section 11: Volatility by Time of Day ───────────────────────────────────
@@ -814,20 +1309,15 @@ def section_vol_intraday(conn: sqlite3.Connection, since: Optional[str]) -> List
 
     print(f"\n  {'Hour UTC':>9} {'N':>5} {'Avg Vol':>12} {'Min Vol':>12} {'Max Vol':>12}")
     print(f"  {'-' * 55}")
-    result = []
     for r in rows:
         print(f"  {r['hour']:>6}:00 {r['n']:>5} {r['avg_vol']:>11.2e} {r['min_vol']:>11.2e} {r['max_vol']:>11.2e}")
-        result.append(dict(r))
 
-    # Check for U-shape pattern
     if len(rows) >= 3:
         vols = [r["avg_vol"] for r in rows]
         if vols[0] > min(vols) and vols[-1] > min(vols):
             print(f"\n  U-shape pattern detected (high open, low midday, high close)")
-        else:
-            print(f"\n  No clear U-shape pattern — may need more data")
 
-    return result
+    return [dict(r) for r in rows]
 
 
 # ─── Section 12: Readiness Assessment ────────────────────────────────────────
@@ -837,7 +1327,6 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
 
     header("12. READINESS ASSESSMENT")
 
-    # Count trading days
     days = conn.execute(f"""
         SELECT DISTINCT SUBSTR(evaluation_time, 1, 10) as dt
         FROM evaluated_opportunities
@@ -845,14 +1334,12 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     """).fetchall()
     n_days = len(days)
 
-    # Count observations
     obs_count = conn.execute(f"""
         SELECT COUNT(*) FROM evaluated_opportunities
         WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
               AND market_result IS NOT NULL {wc}
     """).fetchone()[0]
 
-    # Calibration bucket min
     cal_min = conn.execute(f"""
         SELECT
             CASE
@@ -869,7 +1356,6 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     """).fetchall()
     min_bucket_n = min((r["n"] for r in cal_min), default=0) if cal_min else 0
 
-    # Blend weight variation
     bw = conn.execute(f"""
         SELECT MIN(egarch_blend_weight) as mn, MAX(egarch_blend_weight) as mx
         FROM evaluated_opportunities
@@ -877,7 +1363,6 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     """).fetchone()
     blend_adapting = bw and bw["mn"] != bw["mx"]
 
-    # egarch_blend_sigma fill
     ebs = conn.execute(f"""
         SELECT SUM(CASE WHEN egarch_blend_sigma IS NOT NULL THEN 1 ELSE 0 END) as filled,
                COUNT(*) as total
@@ -886,13 +1371,24 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     """).fetchone()
     blend_sigma_ok = ebs and ebs["total"] > 0 and (ebs["filled"] / ebs["total"]) > 0.5
 
+    # Check if calibration is profitable at any price range
+    profitable = conn.execute(f"""
+        SELECT COUNT(*) as n,
+               SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) as wins
+        FROM evaluated_opportunities
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
+              AND market_result IS NOT NULL AND market_price >= 80 {wc}
+    """).fetchone()
+    price_80_wr = profitable["wins"] / profitable["n"] if profitable["n"] > 0 else 0
+    calibration_viable = price_80_wr > 0.85
+
     checks = [
         ("Trading days >= 10", n_days >= 10, f"{n_days} days"),
         ("Observations >= 100", obs_count >= 100, f"{obs_count} obs"),
         ("Min calibration bucket >= 30", min_bucket_n >= 30, f"min bucket n={min_bucket_n}"),
         ("MZ R² adapting (not stuck)", blend_adapting, "adapting" if blend_adapting else "STUCK"),
         ("egarch_blend_sigma populated", blend_sigma_ok, f"{ebs['filled']}/{ebs['total']}" if ebs else "no data"),
-        ("Per-window limits active", True, "max_positions=2, max_risk=0.15"),
+        ("Calibration viable (80c+ WR>85%)", calibration_viable, f"{price_80_wr:.1%} at >=80c (n={profitable['n']})"),
     ]
 
     all_pass = True
@@ -913,10 +1409,89 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
         "observations": obs_count,
         "min_cal_bucket": min_bucket_n,
         "blend_adapting": blend_adapting,
-        "blend_sigma_ok": blend_sigma_ok,
+        "calibration_viable": calibration_viable,
         "all_pass": all_pass,
     }
 
+
+# ─── Section 13: Promotion Config Test ───────────────────────────────────────
+
+def section_promotion_config(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
+    wc = where_clause(since)
+
+    header("13. PROMOTION CONFIG TEST")
+
+    rows = conn.execute(f"""
+        SELECT market_price, market_result, position_size, fee_adjusted_edge,
+               seconds_to_close, calibrated_prob, event_ticker
+        FROM evaluated_opportunities
+        WHERE product_type='spx_hourly' AND filter_stage='spx_observation'
+              AND market_result IS NOT NULL {wc}
+    """).fetchall()
+
+    if not rows:
+        print("  No data.")
+        return {}
+
+    print(f"  Simulating different config combinations on {len(rows)} observations.")
+
+    configs = [
+        {"name": "Current (70c, no limit)", "min_p": 70, "max_per_window": 999},
+        {"name": "Min 80c, no limit", "min_p": 80, "max_per_window": 999},
+        {"name": "Min 80c, max 2/window", "min_p": 80, "max_per_window": 2},
+        {"name": "Min 85c, no limit", "min_p": 85, "max_per_window": 999},
+        {"name": "Min 85c, max 2/window", "min_p": 85, "max_per_window": 2},
+        {"name": "Min 90c, no limit", "min_p": 90, "max_per_window": 999},
+        {"name": "Min 90c, max 2/window", "min_p": 90, "max_per_window": 2},
+        {"name": "Min 80c, max 3/window", "min_p": 80, "max_per_window": 3},
+    ]
+
+    print(f"\n  {'Config':<30s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'1c PnL':>8s} {'Sz PnL':>10s}")
+    print(f"  {'-' * 68}")
+
+    results = []
+    for cfg in configs:
+        # Filter by min price
+        filtered = [r for r in rows if r["market_price"] >= cfg["min_p"]]
+
+        # Apply per-window limit (select top entries by edge)
+        if cfg["max_per_window"] < 999:
+            window_groups = {}
+            for r in filtered:
+                et = r["event_ticker"]
+                if et not in window_groups:
+                    window_groups[et] = []
+                window_groups[et].append(r)
+            limited = []
+            for et, entries in window_groups.items():
+                sorted_entries = sorted(entries, key=lambda x: x["fee_adjusted_edge"] or 0, reverse=True)
+                limited.extend(sorted_entries[:cfg["max_per_window"]])
+            filtered = limited
+
+        n = len(filtered)
+        w = sum(1 for r in filtered if r["market_result"] == "yes")
+        l = n - w
+        wr = w / n if n > 0 else 0
+        pnl_1c = sum(compute_pnl(r["market_price"], r["market_result"]) for r in filtered)
+        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], r["position_size"] or 1) for r in filtered)
+
+        marker = ""
+        if pnl_1c > 0 and pnl_sz > 0:
+            marker = " *** PROFITABLE"
+        elif pnl_1c > 0:
+            marker = " * 1c profitable"
+
+        print(f"  {cfg['name']:<30s} {n:>4d} {w:>3d} {l:>3d} {wr:>5.1%} {pnl_1c:>+7d}c {pnl_sz/100:>+9.2f}${marker}")
+        results.append({"config": cfg["name"], "n": n, "wins": w, "pnl_1c": pnl_1c, "pnl_sz": pnl_sz})
+
+    # Significance warning
+    print(f"\n  *** All results based on n={len(rows)} observations over limited trading days.")
+    print(f"  *** NOT statistically significant for promotion decisions. Continue collecting data.")
+
+    return {"configs": results}
+
+
+# ─── CalEngine Observation Pipeline ───────────────────────────────────────────
 
 def section_cal_engine_obs(conn, since=None):
     """CalEngine observation pipeline: settled evals with raw_prob for SPX."""
@@ -968,7 +1543,6 @@ def main():
         print(f"ERROR: Cannot open database: {e}")
         sys.exit(1)
 
-    # Verify we have SPX data
     count = conn.execute(
         "SELECT COUNT(*) FROM evaluated_opportunities WHERE product_type='spx_hourly'"
     ).fetchone()[0]
@@ -985,17 +1559,25 @@ def main():
 
     # Run all sections
     perf = section_performance(conn, since)
+    price_bk = section_price_buckets(conn, since)
+    daily = section_daily_pnl(conn, since)
+    loss = section_loss_analysis(conn, since)
     cal = section_calibration(conn, since)
     funnel = section_filter_funnel(conn, since)
     leakage = section_ev_leakage(conn, since)
+    pos_sim = section_position_limit_sim(conn, since)
+    min_price = section_min_price_sweep(conn, since)
     vol = section_vol_health(conn, since)
     corr = section_correlation(conn, since)
     timing = section_timing(conn, since)
+    temp = section_temp_tournament(conn, since)
+    cross = section_cross_tab(conn, since)
     quality = section_data_quality(conn, since)
     price_range = section_price_range(conn, since)
     zscore = section_zscore(conn, since)
     vol_intraday = section_vol_intraday(conn, since)
     readiness = section_readiness(conn, since)
+    promotion = section_promotion_config(conn, since)
     cal_obs = section_cal_engine_obs(conn, since)
 
     conn.close()
@@ -1006,17 +1588,25 @@ def main():
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "since": args.since,
             "performance": perf,
+            "price_buckets": price_bk,
+            "daily_pnl": daily,
+            "loss_analysis": loss,
             "calibration": cal,
             "filter_funnel": funnel,
             "ev_leakage": leakage,
+            "position_sim": pos_sim,
+            "min_price_sweep": min_price,
             "vol_health": vol,
             "correlation": corr,
             "timing": timing,
+            "temp_tournament": temp,
+            "cross_tab": cross,
             "data_quality": quality,
             "price_range": price_range,
             "zscore": zscore,
             "vol_intraday": vol_intraday,
             "readiness": readiness,
+            "promotion_config": promotion,
             "cal_engine_obs": cal_obs,
         }
         with open(args.json, "w") as f:

@@ -7925,7 +7925,15 @@ class OpportunityScanner:
                                 hourly_post_temp_prob=_hourly_post_temp_prob,
                             )
                         elif _obs_pt == "spx_hourly":
+                            # SPX-specific diagnostics: VIX, seasonal, data quality
+                            _spx_diag = {
+                                "vix_implied_rv": vol_est.get("vix_implied_rv"),
+                                "seasonal_factor": vol_est.get("seasonal_factor"),
+                                "n_returns": vol_est.get("n_returns"),
+                                "rk_rv": vol_est.get("rk_rv"),
+                            }
                             _obs_extra.update(
+                                counterfactual=json.dumps(_spx_diag),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
