@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 # ---------------------------------------------------------------------------
 REGIME_SINCE = {
     "15m": "2026-02-28T00:00:00",
+    "15m_shadow": "2026-02-28T00:00:00",
     "hourly": "2026-02-28T18:30:00",
     "spx": "2026-03-02T00:00:00",
     "weather": "2026-03-02T16:54:00",
@@ -181,6 +182,120 @@ def compute_15m(conn, since):
         "maker_fills": exec_row[0] or 0 if exec_row else 0,
         "taker_fills": exec_row[1] or 0 if exec_row else 0,
         "regime_start": since,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 15M Shadow (STC + XRP + fifteenm_shadow_signals)
+# ---------------------------------------------------------------------------
+def compute_15m_shadow(conn, since):
+    """Compute 15M shadow metrics from evaluated_opportunities + fifteenm_shadow_signals."""
+    c = conn.cursor()
+
+    # STC and XRP shadow counts from evaluated_opportunities
+    row = c.execute("""
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN filter_stage = 'stc_shadow_no_xrp' THEN 1 ELSE 0 END) as stc_non_xrp,
+            SUM(CASE WHEN filter_stage = 'stc_shadow' THEN 1 ELSE 0 END) as stc_xrp,
+            SUM(CASE WHEN filter_stage = 'xrp_shadow' THEN 1 ELSE 0 END) as xrp_shadow,
+            SUM(CASE WHEN market_result IS NOT NULL THEN 1 ELSE 0 END) as settled
+        FROM evaluated_opportunities
+        WHERE (product_type IS NULL OR product_type = '15m')
+          AND filter_stage IN ('stc_shadow', 'stc_shadow_no_xrp', 'xrp_shadow')
+          AND evaluation_time >= ?
+    """, (since,)).fetchone()
+
+    total = row[0]
+    stc_non_xrp = row[1] or 0
+    stc_xrp = row[2] or 0
+    xrp_shadow = row[3] or 0
+    settled = row[4] or 0
+
+    # STC shadow (non-XRP) W/L and sim PnL
+    _pnl = _sim_pnl_sql(0.0175, "COALESCE(position_size, 1)", "market_price", "market_result")
+    stc_row = c.execute(f"""
+        SELECT
+            SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN market_result = 'no' THEN 1 ELSE 0 END) as losses,
+            SUM({_pnl}) as sim_pnl,
+            AVG(market_price) as avg_price
+        FROM evaluated_opportunities
+        WHERE (product_type IS NULL OR product_type = '15m')
+          AND filter_stage = 'stc_shadow_no_xrp'
+          AND evaluation_time >= ?
+          AND market_result IS NOT NULL
+    """, (since,)).fetchone()
+
+    stc_wins = stc_row[0] or 0
+    stc_losses = stc_row[1] or 0
+    stc_pnl = stc_row[2] or 0
+    stc_wr = round(stc_wins / (stc_wins + stc_losses), 4) if (stc_wins + stc_losses) > 0 else 0
+
+    # XRP shadow W/L and sim PnL
+    xrp_row = c.execute(f"""
+        SELECT
+            SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN market_result = 'no' THEN 1 ELSE 0 END) as losses,
+            SUM({_pnl}) as sim_pnl
+        FROM evaluated_opportunities
+        WHERE (product_type IS NULL OR product_type = '15m')
+          AND filter_stage = 'xrp_shadow'
+          AND evaluation_time >= ?
+          AND market_result IS NOT NULL
+    """, (since,)).fetchone()
+
+    xrp_wins = xrp_row[0] or 0
+    xrp_losses = xrp_row[1] or 0
+    xrp_pnl = xrp_row[2] or 0
+
+    # fifteenm_shadow_signals approach metrics (if table exists)
+    a1_stats = {}
+    a2_stats = {}
+    try:
+        # Check if table exists
+        tbl = c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fifteenm_shadow_signals'"
+        ).fetchone()
+        if tbl:
+            for asset in ("BTC", "ETH", "SOL", "XRP"):
+                for prefix, stats in [("a1", a1_stats), ("a2", a2_stats)]:
+                    r = c.execute(f"""
+                        SELECT
+                            COUNT(*) as total,
+                            SUM(CASE WHEN {prefix}_gates_passed = 1 AND market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) as wins,
+                            SUM(CASE WHEN {prefix}_gates_passed = 1 AND market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) as losses,
+                            SUM(CASE WHEN {prefix}_gates_passed = 1 THEN {prefix}_pnl_cents ELSE 0 END) as pnl
+                        FROM fifteenm_shadow_signals
+                        WHERE asset = ? AND status = 'settled'
+                    """, (asset,)).fetchone()
+                    if r and r[0] > 0:
+                        w, l = r[1] or 0, r[2] or 0
+                        stats[asset] = {
+                            "total": r[0],
+                            "wins": w,
+                            "losses": l,
+                            "wr": round(w / (w + l), 4) if (w + l) > 0 else 0,
+                            "pnl_cents": r[3] or 0,
+                        }
+    except Exception:
+        pass
+
+    return {
+        "total_shadow_evals": total,
+        "stc_non_xrp": stc_non_xrp,
+        "stc_xrp": stc_xrp,
+        "xrp_shadow": xrp_shadow,
+        "settled": settled,
+        "stc_wins": stc_wins,
+        "stc_losses": stc_losses,
+        "stc_wr": stc_wr,
+        "stc_pnl_cents": stc_pnl,
+        "xrp_wins": xrp_wins,
+        "xrp_losses": xrp_losses,
+        "xrp_pnl_cents": xrp_pnl,
+        "approach1_by_asset": a1_stats,
+        "approach2_by_asset": a2_stats,
     }
 
 
@@ -716,6 +831,7 @@ def main():
 
     systems = {
         "15m": compute_15m,
+        "15m_shadow": compute_15m_shadow,
         "hourly": compute_hourly,
         "spx": compute_spx,
         "weather": compute_weather,

@@ -67,6 +67,7 @@ REQUIRED_SNAP_KEYS = {
     # Model diagnostics
     "egarch_estimation", "egarch_blend", "nig_distribution",
     # Shadow
+    "fifteenm_shadow", "hourly_alt_shadow", "spx_harrv_shadow",
     "shadow_cal_pipeline", "shadow_variants",
     "hourly_observation", "spx_observation",
     "weather_observation", "sports_observation",
