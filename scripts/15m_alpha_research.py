@@ -1410,6 +1410,201 @@ def time_of_day_analysis(conn: sqlite3.Connection, since: str,
               f"(${(worst_hr['pnl'] or 0)/100:.2f})")
 
 
+# ── Section 13: Shadow Approaches Alpha ──────────────────────────
+
+def shadow_approaches_alpha(conn: sqlite3.Connection, since: str,
+                            asset_filter: Optional[str] = None) -> None:
+    section("13. SHADOW APPROACHES ALPHA (RecalibratedEGARCH + LightGBM)")
+
+    tbl = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='fifteenm_shadow_signals'"
+    ).fetchone()
+    if not tbl:
+        print("  fifteenm_shadow_signals table not found")
+        return
+
+    asset_clause = f"AND asset = '{asset_filter}'" if asset_filter else ""
+
+    # Data health check
+    subsection("Data health")
+    health = conn.execute(f"""
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+            MIN(evaluation_time) AS first,
+            MAX(evaluation_time) AS last,
+            COUNT(DISTINCT asset) AS assets
+        FROM fifteenm_shadow_signals
+        WHERE evaluation_time >= ? {asset_clause}
+    """, (since,)).fetchone()
+
+    total = health["total"] or 0
+    settled = health["settled"] or 0
+    print(f"  Total signals: {total}, Settled: {settled}")
+    if total > 0:
+        print(f"  Period: {health['first']} → {health['last']}")
+        print(f"  Assets covered: {health['assets']}")
+    if total == 0:
+        print("  ⚠ No data — shadow engine may not be running")
+        return
+
+    # Per-asset A1 deep dive
+    subsection("A1 (RecalibratedEGARCH) per-asset alpha")
+    for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter else [asset_filter]):
+        rows = conn.execute(f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN a1_gates_passed = 1 THEN 1 ELSE 0 END) AS passed,
+                SUM(CASE WHEN status='settled' AND a1_gates_passed = 1
+                    AND market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) AS w,
+                SUM(CASE WHEN status='settled' AND a1_gates_passed = 1
+                    AND market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) AS l,
+                SUM(CASE WHEN status='settled' AND a1_gates_passed = 1
+                    THEN a1_pnl_cents ELSE 0 END) AS pnl,
+                AVG(CASE WHEN a1_gates_passed = 1 THEN a1_fee_edge END) AS avg_edge,
+                AVG(a1_temperature) AS avg_t,
+                AVG(a1_debiased_prob) AS avg_debias,
+                SUM(CASE WHEN a1_edge_band_blocked = 1 THEN 1 ELSE 0 END) AS band_blocked
+            FROM fifteenm_shadow_signals
+            WHERE evaluation_time >= ? AND asset = ?
+        """, (since, asset)).fetchone()
+
+        t = rows["total"] or 0
+        p = rows["passed"] or 0
+        w = rows["w"] or 0
+        l = rows["l"] or 0
+        n = w + l
+
+        print(f"\n  {asset}:")
+        print(f"    Signals: {t}, Gates passed: {p} ({p/t*100:.1f}%)" if t > 0 else f"    Signals: 0")
+        if n > 0:
+            wr = w / n * 100
+            pnl = rows["pnl"] or 0
+            print(f"    Settled: {w}W/{l}L ({wr:.1f}% WR), PnL: {pnl} cents")
+            print(f"    Avg edge: {(rows['avg_edge'] or 0)*100:.2f}%, "
+                  f"Avg T: {rows['avg_t'] or 0:.3f}, "
+                  f"Avg debiased_p: {(rows['avg_debias'] or 0)*100:.1f}%")
+        bb = rows["band_blocked"] or 0
+        if bb > 0:
+            print(f"    Edge band blocked: {bb}")
+
+    # A1 gate failure analysis
+    subsection("A1 gate failure breakdown")
+    failures = conn.execute(f"""
+        SELECT asset, a1_gate_failures,
+               COUNT(*) AS n
+        FROM fifteenm_shadow_signals
+        WHERE evaluation_time >= ? AND a1_gates_passed = 0
+            {asset_clause}
+        GROUP BY asset, a1_gate_failures
+        ORDER BY n DESC
+        LIMIT 20
+    """, (since,)).fetchall()
+    if failures:
+        print(f"  {'Asset':<6} {'Failure Reason':<40} {'N':>5}")
+        print("  " + "-" * 53)
+        for f in failures:
+            reason = f["a1_gate_failures"] or "unknown"
+            print(f"  {f['asset']:<6} {reason:<40} {f['n']:>5}")
+    else:
+        print("  No gate failures recorded (all signals passing?)")
+
+    # Per-asset A2 deep dive
+    subsection("A2 (LightGBM) per-asset alpha")
+    for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter else [asset_filter]):
+        rows = conn.execute(f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN a2_gates_passed = 1 THEN 1 ELSE 0 END) AS passed,
+                SUM(CASE WHEN status='settled' AND a2_gates_passed = 1
+                    AND market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) AS w,
+                SUM(CASE WHEN status='settled' AND a2_gates_passed = 1
+                    AND market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) AS l,
+                SUM(CASE WHEN status='settled' AND a2_gates_passed = 1
+                    THEN a2_pnl_cents ELSE 0 END) AS pnl,
+                AVG(CASE WHEN a2_gates_passed = 1 THEN a2_fee_edge END) AS avg_edge,
+                MAX(a2_model_version) AS model_ver
+            FROM fifteenm_shadow_signals
+            WHERE evaluation_time >= ? AND asset = ?
+        """, (since, asset)).fetchone()
+
+        t = rows["total"] or 0
+        p = rows["passed"] or 0
+        w = rows["w"] or 0
+        l = rows["l"] or 0
+        n = w + l
+
+        print(f"\n  {asset}:")
+        print(f"    Signals: {t}, Gates passed: {p} ({p/t*100:.1f}%)" if t > 0 else f"    Signals: 0")
+        if n > 0:
+            wr = w / n * 100
+            pnl = rows["pnl"] or 0
+            print(f"    Settled: {w}W/{l}L ({wr:.1f}% WR), PnL: {pnl} cents")
+            print(f"    Avg edge: {(rows['avg_edge'] or 0)*100:.2f}%")
+        model = rows["model_ver"]
+        print(f"    Model: {model if model else 'NOT TRAINED'}")
+
+    # Comparative alpha: live vs A1 vs A2 vs market-only
+    subsection("Comparative alpha (settled signals)")
+    comp = conn.execute(f"""
+        SELECT
+            asset,
+            COUNT(*) AS n,
+            SUM(live_pnl_cents) AS live_pnl,
+            SUM(CASE WHEN a1_gates_passed = 1 THEN a1_pnl_cents ELSE 0 END) AS a1_pnl,
+            SUM(CASE WHEN a2_gates_passed = 1 THEN a2_pnl_cents ELSE 0 END) AS a2_pnl,
+            SUM(market_only_pnl_cents) AS mkt_pnl
+        FROM fifteenm_shadow_signals
+        WHERE status = 'settled' AND evaluation_time >= ? {asset_clause}
+        GROUP BY asset
+    """, (since,)).fetchall()
+
+    if comp:
+        print(f"  {'Asset':<6} {'N':>4} {'Live PnL':>10} {'A1 PnL':>10} "
+              f"{'A2 PnL':>10} {'Mkt PnL':>10}")
+        print("  " + "-" * 54)
+        totals = [0, 0, 0, 0, 0]
+        for r in comp:
+            n = r["n"] or 0
+            live = r["live_pnl"] or 0
+            a1 = r["a1_pnl"] or 0
+            a2 = r["a2_pnl"] or 0
+            mkt = r["mkt_pnl"] or 0
+            print(f"  {r['asset']:<6} {n:>4} {live:>9}c {a1:>9}c "
+                  f"{a2:>9}c {mkt:>9}c")
+            totals[0] += n
+            totals[1] += live
+            totals[2] += a1
+            totals[3] += a2
+            totals[4] += mkt
+        print("  " + "-" * 54)
+        print(f"  {'TOTAL':<6} {totals[0]:>4} {totals[1]:>9}c {totals[2]:>9}c "
+              f"{totals[3]:>9}c {totals[4]:>9}c")
+
+        # Alpha over market
+        if totals[4] != 0:
+            a1_alpha = totals[2] - totals[4]
+            a2_alpha = totals[3] - totals[4]
+            live_alpha = totals[1] - totals[4]
+            print(f"\n  Alpha vs market-only:")
+            print(f"    Live:  {live_alpha:>+8}c")
+            print(f"    A1:    {a1_alpha:>+8}c")
+            print(f"    A2:    {a2_alpha:>+8}c")
+    else:
+        print("  No settled shadow signals yet")
+
+    # LightGBM readiness
+    subsection("LightGBM training readiness")
+    for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter else [asset_filter]):
+        n = conn.execute(
+            "SELECT COUNT(*) FROM fifteenm_shadow_signals "
+            "WHERE status='settled' AND asset=?", (asset,)
+        ).fetchone()[0]
+        status = "READY" if n >= 200 else f"need {200 - n} more"
+        print(f"  {asset}: {n}/200 settled ({status})")
+
+
 # ── Main ─────────────────────────────────────────────────────────
 
 SECTIONS = {
@@ -1425,6 +1620,7 @@ SECTIONS = {
     "robustness": robustness_analysis,
     "vol": vol_regime_analysis,
     "time": time_of_day_analysis,
+    "shadow": shadow_approaches_alpha,
 }
 
 

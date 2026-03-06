@@ -1935,11 +1935,172 @@ def price_shadow_analysis(conn: sqlite3.Connection, since: str,
     return {"n": n, "settled": sn, "wins": sw, "losses": sl}
 
 
-# ── Section 9: Recommendations ──────────────────────────────────
+# ── Section 10: 15M Shadow Approaches ──────────────────────────
+
+def shadow_approaches(conn: sqlite3.Connection, since: str,
+                      asset_filter: Optional[str] = None) -> None:
+    section("10. 15M SHADOW APPROACHES (RecalibratedEGARCH + LightGBM)")
+
+    # Check if table exists
+    tbl = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='fifteenm_shadow_signals'"
+    ).fetchone()
+    if not tbl:
+        print("  fifteenm_shadow_signals table not found — shadow engine not initialized")
+        return
+
+    asset_clause = f"AND asset = '{asset_filter}'" if asset_filter else ""
+
+    # Overview
+    overview = conn.execute(f"""
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+            SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+            MIN(evaluation_time) AS first_eval,
+            MAX(evaluation_time) AS last_eval
+        FROM fifteenm_shadow_signals
+        WHERE evaluation_time >= ? {asset_clause}
+    """, (since,)).fetchone()
+
+    total = overview["total"] or 0
+    settled = overview["settled"] or 0
+    pending = overview["pending"] or 0
+
+    print(f"  Total signals:   {total}")
+    print(f"  Settled:         {settled}")
+    print(f"  Pending:         {pending}")
+    if total > 0:
+        print(f"  First eval:      {overview['first_eval']}")
+        print(f"  Last eval:       {overview['last_eval']}")
+
+    if total == 0:
+        print("\n  ⚠ No shadow signals recorded. Check fifteenm_shadow.py is running.")
+        print("    Common causes: check_same_thread missing, import error, "
+              "exception in evaluate_strike()")
+        return
+
+    # Approach 1: RecalibratedEGARCH
+    subsection("Approach 1: RecalibratedEGARCH")
+    for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter else [asset_filter]):
+        a1 = conn.execute(f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN a1_gates_passed = 1 THEN 1 ELSE 0 END) AS passed,
+                SUM(CASE WHEN status='settled' AND a1_gates_passed = 1
+                    AND market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN status='settled' AND a1_gates_passed = 1
+                    AND market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) AS losses,
+                SUM(CASE WHEN status='settled' AND a1_gates_passed = 1
+                    THEN a1_pnl_cents ELSE 0 END) AS pnl,
+                AVG(CASE WHEN a1_gates_passed = 1 THEN a1_fee_edge END) AS avg_edge,
+                AVG(a1_temperature) AS avg_temp,
+                AVG(a1_blend_w) AS avg_blend
+            FROM fifteenm_shadow_signals
+            WHERE evaluation_time >= ? AND asset = ?
+        """, (since, asset)).fetchone()
+
+        t = a1["total"] or 0
+        p = a1["passed"] or 0
+        w = a1["wins"] or 0
+        l = a1["losses"] or 0
+        pnl = a1["pnl"] or 0
+        n = w + l
+        wr = w / n * 100 if n > 0 else 0
+
+        gate_rate = p / t * 100 if t > 0 else 0
+        print(f"\n  {asset}: {t} evals, {p} passed gates ({gate_rate:.1f}%)")
+        if n > 0:
+            print(f"    Settled: {w}W/{l}L ({wr:.1f}% WR), PnL: {pnl} cents")
+        if a1["avg_edge"] is not None:
+            print(f"    Avg fee-adj edge: {a1['avg_edge']*100:.2f}%")
+        if a1["avg_temp"] is not None:
+            print(f"    Avg temperature: {a1['avg_temp']:.3f}, "
+                  f"blend_w: {a1['avg_blend']:.3f}")
+
+    # Approach 2: LightGBM
+    subsection("Approach 2: LightGBM")
+    for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter else [asset_filter]):
+        a2 = conn.execute(f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN a2_gates_passed = 1 THEN 1 ELSE 0 END) AS passed,
+                SUM(CASE WHEN status='settled' AND a2_gates_passed = 1
+                    AND market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN status='settled' AND a2_gates_passed = 1
+                    AND market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) AS losses,
+                SUM(CASE WHEN status='settled' AND a2_gates_passed = 1
+                    THEN a2_pnl_cents ELSE 0 END) AS pnl,
+                AVG(CASE WHEN a2_gates_passed = 1 THEN a2_fee_edge END) AS avg_edge,
+                MAX(a2_model_version) AS latest_model
+            FROM fifteenm_shadow_signals
+            WHERE evaluation_time >= ? AND asset = ?
+        """, (since, asset)).fetchone()
+
+        t = a2["total"] or 0
+        p = a2["passed"] or 0
+        w = a2["wins"] or 0
+        l = a2["losses"] or 0
+        pnl = a2["pnl"] or 0
+        n = w + l
+        wr = w / n * 100 if n > 0 else 0
+
+        gate_rate = p / t * 100 if t > 0 else 0
+        print(f"\n  {asset}: {t} evals, {p} passed gates ({gate_rate:.1f}%)")
+        if n > 0:
+            print(f"    Settled: {w}W/{l}L ({wr:.1f}% WR), PnL: {pnl} cents")
+        if a2["avg_edge"] is not None:
+            print(f"    Avg fee-adj edge: {a2['avg_edge']*100:.2f}%")
+        model = a2["latest_model"]
+        if model:
+            print(f"    Model version: {model}")
+        else:
+            print(f"    Model: NOT TRAINED (need {200} settled rows)")
+
+    # Training data availability for LightGBM
+    subsection("LightGBM training data")
+    training_rows = conn.execute(f"""
+        SELECT COUNT(*) AS n FROM fifteenm_shadow_signals
+        WHERE status = 'settled' {asset_clause}
+    """).fetchone()["n"] or 0
+    print(f"  Settled rows available for training: {training_rows} / 200 minimum")
+    if training_rows < 200:
+        remaining = 200 - training_rows
+        print(f"  Need {remaining} more settled signals before LightGBM can train")
+    else:
+        print(f"  ✓ Sufficient data for LightGBM training")
+
+    # Comparison: shadow vs live baseline
+    subsection("Shadow vs live baseline (settled signals)")
+    comp = conn.execute(f"""
+        SELECT
+            COUNT(*) AS n,
+            SUM(CASE WHEN market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) AS live_wins,
+            SUM(live_pnl_cents) AS live_pnl,
+            SUM(CASE WHEN a1_gates_passed = 1 THEN a1_pnl_cents ELSE 0 END) AS a1_pnl,
+            SUM(CASE WHEN a2_gates_passed = 1 THEN a2_pnl_cents ELSE 0 END) AS a2_pnl,
+            SUM(market_only_pnl_cents) AS mkt_pnl
+        FROM fifteenm_shadow_signals
+        WHERE status = 'settled' AND evaluation_time >= ? {asset_clause}
+    """, (since,)).fetchone()
+
+    n = comp["n"] or 0
+    if n > 0:
+        print(f"  Settled signals: {n}")
+        print(f"  Live baseline PnL:     {comp['live_pnl'] or 0:>8} cents")
+        print(f"  A1 (RecalEGARCH) PnL:  {comp['a1_pnl'] or 0:>8} cents")
+        print(f"  A2 (LightGBM) PnL:     {comp['a2_pnl'] or 0:>8} cents")
+        print(f"  Market-only PnL:       {comp['mkt_pnl'] or 0:>8} cents")
+    else:
+        print("  No settled signals yet for comparison")
+
+
+# ── Section 11: Recommendations ──────────────────────────────────
 
 def recommendations(conn: sqlite3.Connection, since: str,
                     perf: dict) -> None:
-    section("9. DATA-DRIVEN RECOMMENDATIONS")
+    section("11. DATA-DRIVEN RECOMMENDATIONS")
 
     trades = perf.get("trades", 0)
     if trades == 0:
@@ -2117,6 +2278,7 @@ def main():
     cal_grid = calibration_grid_search(conn, since, args.asset)
     data_sufficiency(conn, since)
     price_shadow_analysis(conn, since, args.asset)
+    shadow_approaches(conn, since, args.asset)
     recommendations(conn, since, perf)
 
     # JSON artifact output

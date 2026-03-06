@@ -26,7 +26,7 @@ python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto
 python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto --section calibration
 ```
 
-Available sections: `regime`, `asset`, `price`, `stc`, `execution`, `calibration`, `edge`, `counterfactual`, `loss`, `robustness`, `vol`, `time`
+Available sections: `regime`, `asset`, `price`, `stc`, `execution`, `calibration`, `edge`, `counterfactual`, `loss`, `robustness`, `vol`, `time`, `shadow`
 
 ### Filter by asset
 ```bash
@@ -54,6 +54,7 @@ python3 scripts/15m_alpha_research.py --db /tmp/state.db --since 2026-03-03
 | 10 | Robustness & Statistical Tests | Wilson CI, time stability, drawdown, daily Sharpe, Kelly analysis |
 | 11 | Volatility Regime | Performance by vol_regime with Wilson CIs |
 | 12 | Time-of-Day | Hourly PnL distribution, best/worst trading hours |
+| 13 | Shadow Approaches | RecalibratedEGARCH + LightGBM alpha comparison, gate failures, training readiness |
 
 ## Key design principles
 - All statistical claims include Wilson CIs and Fisher exact p-values

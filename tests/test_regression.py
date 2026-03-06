@@ -264,6 +264,7 @@ class TestBusyTimeout:
         "watchdog.py",
         "supabase_sync.py",
         "analyst.py",
+        "fifteenm_shadow.py",
     ]
 
     def test_all_production_files_have_busy_timeout(self):
@@ -330,7 +331,60 @@ class TestShadowDiagKeys:
 
 
 # ============================================================================
-#  7. Syntax Check (all commits)
+#  7. Cross-Thread SQLite (53c953b)
+#     Bug: fifteenm_shadow.py used sqlite3.connect() without
+#     check_same_thread=False. Connection created in one thread was used from
+#     another (bot main vs supabase_sync), causing ProgrammingError that was
+#     silently swallowed → 0 rows written to fifteenm_shadow_signals.
+# ============================================================================
+
+class TestCheckSameThread:
+    """Production files using SQLite from multiple threads must set check_same_thread=False."""
+
+    # Files that may have their connection used from a different thread
+    CROSS_THREAD_FILES = [
+        "fifteenm_shadow.py",
+    ]
+
+    def test_cross_thread_files_have_check_same_thread(self):
+        """Scan cross-thread SQLite files for missing check_same_thread=False."""
+        missing = []
+        for fname in self.CROSS_THREAD_FILES:
+            fpath = os.path.join(PROJECT_ROOT, fname)
+            if not os.path.exists(fpath):
+                continue
+            with open(fpath) as f:
+                content = f.read()
+            connects = [
+                i for i, line in enumerate(content.splitlines(), 1)
+                if "sqlite3.connect" in line and ":memory:" not in line
+            ]
+            for line_no in connects:
+                lines = content.splitlines()
+                # Check the connect call itself and nearby lines
+                nearby = "\n".join(lines[max(0, line_no - 1): line_no + 5])
+                if "check_same_thread" not in nearby:
+                    missing.append(f"{fname}:{line_no}")
+        assert not missing, (
+            f"Missing check_same_thread=False after sqlite3.connect: {missing}. "
+            f"These files are called from multiple threads."
+        )
+
+    def test_fifteenm_shadow_has_busy_timeout(self):
+        """fifteenm_shadow.py must also have busy_timeout (shares state.db)."""
+        fpath = os.path.join(PROJECT_ROOT, "fifteenm_shadow.py")
+        if not os.path.exists(fpath):
+            pytest.skip("fifteenm_shadow.py not found")
+        with open(fpath) as f:
+            content = f.read()
+        assert "busy_timeout" in content, (
+            "fifteenm_shadow.py missing PRAGMA busy_timeout — "
+            "it shares state.db with bot.py and supabase_sync.py"
+        )
+
+
+# ============================================================================
+#  8. Syntax Check (all commits)
 #     Pre-deploy check: bot.py and market_config.py must parse cleanly.
 # ============================================================================
 
@@ -338,7 +392,8 @@ class TestSyntaxCheck:
     """Every Python file must parse without syntax errors."""
 
     CRITICAL_FILES = ["bot.py", "market_config.py", "dashboard_snapshot.py",
-                      "sports_engine.py", "spx_engine.py", "weather_engine.py"]
+                      "sports_engine.py", "spx_engine.py", "weather_engine.py",
+                      "fifteenm_shadow.py"]
 
     @pytest.mark.parametrize("filename", CRITICAL_FILES)
     def test_file_parses(self, filename):

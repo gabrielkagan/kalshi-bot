@@ -69,7 +69,7 @@ class RecalibratedEGARCHApproach:
             return
         self._last_fit_time = now
         try:
-            conn = sqlite3.connect(self._db_path)
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout=10000")
             for asset in ("BTC", "ETH", "SOL", "XRP"):
@@ -279,7 +279,7 @@ class LightGBMApproach:
             from sklearn.isotonic import IsotonicRegression
             import numpy as np
 
-            conn = sqlite3.connect(self._db_path)
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout=10000")
             rows = conn.execute(
