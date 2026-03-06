@@ -657,7 +657,7 @@ class FifteenMShadowEngine:
             ))
             self._db_conn.commit()
         except Exception:
-            logging.debug("fifteenm_shadow log_signal failed for %s", ticker, exc_info=True)
+            logging.warning("fifteenm_shadow log_signal failed for %s", ticker, exc_info=True)
 
         # JSONL journal backup
         try:
