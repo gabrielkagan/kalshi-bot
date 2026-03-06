@@ -1553,6 +1553,201 @@ def section_cal_engine_obs(conn, since=None):
         return {"error": str(e)}
 
 
+# ─── Section 14: HAR-RV Shadow Engine ─────────────────────────────────────
+
+def section_harrv_shadow(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
+    """Analyze SPX HAR-RV shadow signals — performance, gates, model diagnostics."""
+    header("14. SPX HAR-RV SHADOW ENGINE")
+
+    # Check if table exists
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='spx_harrv_shadow_signals'"
+    ).fetchone()
+    if not table_check:
+        print("  spx_harrv_shadow_signals table not found — engine not yet deployed or no data.")
+        return {"status": "no_table"}
+
+    # Overview counts
+    counts = conn.execute("""
+        SELECT COUNT(*) as total,
+               SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled,
+               SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
+               SUM(CASE WHEN gates_passed=1 THEN 1 ELSE 0 END) as passed_gates,
+               MIN(evaluation_time) as first_eval,
+               MAX(evaluation_time) as last_eval
+        FROM spx_harrv_shadow_signals
+    """).fetchone()
+
+    total = counts["total"] or 0
+    settled = counts["settled"] or 0
+    pending = counts["pending"] or 0
+    passed = counts["passed_gates"] or 0
+
+    if total == 0:
+        print("  No HAR-RV signals recorded yet.")
+        return {"status": "no_data"}
+
+    print(f"\n  Total signals:  {total}")
+    print(f"  Settled:        {settled}")
+    print(f"  Pending:        {pending}")
+    print(f"  Passed gates:   {passed} ({pct(passed, total)})")
+    print(f"  Date range:     {(counts['first_eval'] or '')[:19]} → {(counts['last_eval'] or '')[:19]}")
+
+    # ── Settled performance ──
+    subheader("Settled Performance")
+    settled_rows = conn.execute("""
+        SELECT market_price, market_result, shadow_contracts, shadow_pnl_cents,
+               final_prob, edge, fee_adjusted_edge, gates_passed, seconds_to_close,
+               egarch_prob, egarch_edge, raw_prob, scaled_prob, mkt_only_prob,
+               har_method, rv_1h, sigma_forecast
+        FROM spx_harrv_shadow_signals
+        WHERE status='settled'
+    """).fetchall()
+
+    if not settled_rows:
+        print("  No settled signals yet.")
+    else:
+        wins = sum(1 for r in settled_rows if r["market_result"] in ("yes", "all_yes"))
+        losses = len(settled_rows) - wins
+        wr = wins / len(settled_rows)
+        total_pnl = sum((r["shadow_pnl_cents"] or 0) for r in settled_rows)
+
+        # Only signals that passed gates
+        gated = [r for r in settled_rows if r["gates_passed"]]
+        gated_wins = sum(1 for r in gated if r["market_result"] in ("yes", "all_yes"))
+
+        print(f"\n  All settled:    {len(settled_rows)} signals, {wins}W/{losses}L ({wr:.1%} WR)")
+        print(f"  Shadow PnL:     {total_pnl:+d}c (${total_pnl/100:+.2f}){significance_tag(len(settled_rows))}")
+        if gated:
+            gated_wr = gated_wins / len(gated)
+            gated_pnl = sum((r["shadow_pnl_cents"] or 0) for r in gated)
+            print(f"  Gates-passed:   {len(gated)} signals, {gated_wins}W/{len(gated)-gated_wins}L "
+                  f"({gated_wr:.1%} WR), PnL={gated_pnl:+d}c{significance_tag(len(gated))}")
+        else:
+            print(f"  Gates-passed:   0 signals (all gated out)")
+
+    # ── Brier score comparison: HAR-RV vs EGARCH vs Market ──
+    subheader("Brier Score: HAR-RV vs EGARCH vs Market")
+    brier_rows = [r for r in settled_rows if r["final_prob"] is not None] if settled_rows else []
+    if brier_rows:
+        harrv_brier_sum = 0
+        egarch_brier_sum = 0
+        mkt_brier_sum = 0
+        egarch_n = 0
+        mkt_n = 0
+        for r in brier_rows:
+            actual = 1.0 if r["market_result"] in ("yes", "all_yes") else 0.0
+            harrv_brier_sum += (r["final_prob"] - actual) ** 2
+            if r["egarch_prob"] is not None:
+                egarch_brier_sum += (r["egarch_prob"] - actual) ** 2
+                egarch_n += 1
+            if r["mkt_only_prob"] is not None:
+                mkt_brier_sum += (r["mkt_only_prob"] - actual) ** 2
+                mkt_n += 1
+
+        harrv_bs = harrv_brier_sum / len(brier_rows)
+        print(f"\n  {'Model':<25s} {'Brier':>8s} {'N':>5s}")
+        print(f"  {'-' * 40}")
+        print(f"  {'HAR-RV (final_prob)':<25s} {harrv_bs:>7.4f} {len(brier_rows):>5d}")
+        if egarch_n > 0:
+            egarch_bs = egarch_brier_sum / egarch_n
+            delta = harrv_bs - egarch_bs
+            winner = "EGARCH" if delta > 0 else "HAR-RV"
+            print(f"  {'EGARCH (egarch_prob)':<25s} {egarch_bs:>7.4f} {egarch_n:>5d}  (delta={delta:+.4f} → {winner})")
+        if mkt_n > 0:
+            mkt_bs = mkt_brier_sum / mkt_n
+            delta = harrv_bs - mkt_bs
+            winner = "Market" if delta > 0 else "HAR-RV"
+            print(f"  {'Market-only':<25s} {mkt_bs:>7.4f} {mkt_n:>5d}  (delta={delta:+.4f} → {winner})")
+
+        # raw_prob (pre-temperature, pre-blend) Brier
+        raw_rows = [r for r in brier_rows if r["raw_prob"] is not None]
+        if raw_rows:
+            raw_bs = sum((r["raw_prob"] - (1.0 if r["market_result"] in ("yes", "all_yes") else 0.0)) ** 2
+                         for r in raw_rows) / len(raw_rows)
+            print(f"  {'HAR-RV raw (no T, no mkt)':<25s} {raw_bs:>7.4f} {len(raw_rows):>5d}")
+    else:
+        print("  No settled signals with probability data.")
+
+    # ── Gate failure analysis ──
+    subheader("Gate Failure Analysis")
+    gate_rows = conn.execute("""
+        SELECT gate_failures FROM spx_harrv_shadow_signals
+        WHERE gate_failures IS NOT NULL AND gate_failures != ''
+    """).fetchall()
+
+    if gate_rows:
+        gate_counts: Dict[str, int] = {}
+        for r in gate_rows:
+            for failure in r["gate_failures"].split("; "):
+                gate_name = failure.split(":")[0].strip()
+                if gate_name:
+                    gate_counts[gate_name] = gate_counts.get(gate_name, 0) + 1
+
+        print(f"\n  {'Gate':<20s} {'Failures':>9s} {'% of signals':>14s}")
+        print(f"  {'-' * 45}")
+        for gate, cnt in sorted(gate_counts.items(), key=lambda x: -x[1]):
+            print(f"  {gate:<20s} {cnt:>9d} {pct(cnt, total):>14s}")
+    else:
+        print("  No gate failures recorded.")
+
+    # ── Model diagnostics ──
+    subheader("Model Diagnostics")
+    diag = conn.execute("""
+        SELECT har_method,
+               AVG(rv_1h) as avg_rv_1h,
+               AVG(sigma_forecast) as avg_sigma,
+               MIN(sigma_forecast) as min_sigma,
+               MAX(sigma_forecast) as max_sigma,
+               AVG(n_ols_obs) as avg_ols_obs,
+               MAX(n_ols_obs) as max_ols_obs,
+               COUNT(*) as n
+        FROM spx_harrv_shadow_signals
+        GROUP BY har_method
+    """).fetchall()
+
+    if diag:
+        print(f"\n  {'Method':<10s} {'N':>5s} {'AvgSigma':>12s} {'MinSigma':>12s} {'MaxSigma':>12s} {'OLS obs':>8s}")
+        print(f"  {'-' * 60}")
+        for r in diag:
+            print(f"  {r['har_method'] or 'unknown':<10s} {r['n']:>5d} "
+                  f"{r['avg_sigma']:>11.2e} {r['min_sigma']:>11.2e} {r['max_sigma']:>11.2e} "
+                  f"{int(r['max_ols_obs'] or 0):>8d}")
+
+    # ── By price tier ──
+    subheader("Performance by Price Tier")
+    if settled_rows:
+        tiers = {"<80c": [], "80-89c": [], "90c+": []}
+        for r in settled_rows:
+            p = r["market_price"] or 0
+            if p < 80:
+                tiers["<80c"].append(r)
+            elif p < 90:
+                tiers["80-89c"].append(r)
+            else:
+                tiers["90c+"].append(r)
+
+        print(f"\n  {'Tier':<10s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'PnL':>8s}")
+        print(f"  {'-' * 40}")
+        for label in ["<80c", "80-89c", "90c+"]:
+            subset = tiers[label]
+            if not subset:
+                print(f"  {label:<10s} {'---':>4s}")
+                continue
+            w = sum(1 for r in subset if r["market_result"] in ("yes", "all_yes"))
+            pnl = sum((r["shadow_pnl_cents"] or 0) for r in subset)
+            wr_val = w / len(subset)
+            print(f"  {label:<10s} {len(subset):>4d} {w:>3d} {len(subset)-w:>3d} "
+                  f"{wr_val:>5.1%} {pnl:>+7d}c{significance_tag(len(subset))}")
+
+    return {
+        "total_signals": total,
+        "settled": settled,
+        "pending": pending,
+        "passed_gates": passed,
+    }
+
+
 def detect_regime_start() -> str:
     """Auto-detect regime start by finding the last git commit that changed
     SPX hourly trading constants in bot.py."""
@@ -1666,6 +1861,7 @@ def main():
     readiness = section_readiness(conn, since)
     promotion = section_promotion_config(conn, since)
     cal_obs = section_cal_engine_obs(conn, since)
+    harrv = section_harrv_shadow(conn, since)
 
     conn.close()
 
@@ -1695,6 +1891,7 @@ def main():
             "readiness": readiness,
             "promotion_config": promotion,
             "cal_engine_obs": cal_obs,
+            "harrv_shadow": harrv,
         }
         with open(args.json, "w") as f:
             json.dump(artifact, f, indent=2, default=str)

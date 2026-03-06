@@ -196,7 +196,10 @@ def section_overview(conn: sqlite3.Connection, since: Optional[str] = None,
                COUNT(DISTINCT league) AS leagues,
                MIN(evaluation_time) AS first_eval,
                MAX(evaluation_time) AS last_eval,
-               SUM(CASE WHEN signal_fired=1 THEN COALESCE(pnl_cents, 0) END) AS sim_pnl
+               SUM(CASE WHEN signal_fired=1 THEN COALESCE(pnl_cents, 0) END) AS sim_pnl,
+               SUM(CASE WHEN signal_fired=1 AND fav_won IS NOT NULL THEN
+                   CASE WHEN fav_won=1 THEN (100 - yes_ask) ELSE -yes_ask END
+               END) AS sim_pnl_1c
         FROM sports_shadow_log {w}
     """).fetchone()
 
@@ -224,7 +227,8 @@ def section_overview(conn: sqlite3.Connection, since: Optional[str] = None,
     print(f"  Unique games:       {result['games']}")
     if not league:
         print(f"  Leagues active:     {result['leagues']}")
-    print(f"  Sim PnL (settled):  ${(result['sim_pnl'] or 0)/100:.2f}")
+    print(f"  Sim PnL (1c):       ${(result['sim_pnl_1c'] or 0)/100:.2f}")
+    print(f"  Sim PnL (sized):    ${(result['sim_pnl'] or 0)/100:.2f}")
 
     if result['settled_sigs'] == 0 and result['settled'] == 0:
         print("\n  *** WARNING: Zero settlements recorded. Settlement backfill is broken. ***")
@@ -515,7 +519,10 @@ def section_price_buckets(conn: sqlite3.Connection, since: Optional[str] = None,
             SUM(CASE WHEN fav_won=1 THEN 1 ELSE 0 END) AS wins,
             AVG(yes_ask) AS avg_ask,
             AVG(fee_adjusted_edge) AS avg_edge,
-            SUM(COALESCE(pnl_cents, 0)) AS raw_pnl
+            SUM(COALESCE(pnl_cents, 0)) AS raw_pnl,
+            SUM(CASE WHEN fav_won IS NOT NULL THEN
+                CASE WHEN fav_won=1 THEN (100 - yes_ask) ELSE -yes_ask END
+            END) AS raw_pnl_1c
         FROM sports_shadow_log
         WHERE signal_fired=1 AND yes_ask IS NOT NULL AND yes_ask > 0 {extra}
         GROUP BY bucket
@@ -530,8 +537,8 @@ def section_price_buckets(conn: sqlite3.Connection, since: Optional[str] = None,
 
     print(f"  {'Bucket':<8} {'Sigs':>5} {'Settled':>8} {'W':>4} {'L':>4} "
           f"{'WR':>7} {'BkEvenWR':>9} {'Edge?':>6} {'AvgEdge':>8} "
-          f"{'1c PnL':>8} {'Tag':>16}")
-    print("  " + "-" * 100)
+          f"{'1c PnL':>8} {'SizedPnL':>9} {'Tag':>16}")
+    print("  " + "-" * 110)
     for r in result:
         s = r['settled'] or 0
         w = r['wins'] or 0
@@ -541,10 +548,11 @@ def section_price_buckets(conn: sqlite3.Connection, since: Optional[str] = None,
         has_edge = "YES" if wr > be_wr and s >= 5 else ("---" if s < 5 else "NO")
         avg_e = f"{(r['avg_edge'] or 0)*100:.1f}%" if r['avg_edge'] else "n/a"
         raw_pnl = r['raw_pnl'] or 0
+        raw_pnl_1c = r['raw_pnl_1c'] or 0
         tag = significance_tag(s, p=0.5, threshold=wr) if s >= 5 else "[n<5]"
         print(f"  {r['bucket']:<8} {r['signals']:>5} {s:>8} {w:>4} {s-w:>4} "
               f"{pct(w, s):>7} {be_wr:>8.1%} {has_edge:>6} {avg_e:>8} "
-              f"${raw_pnl/100:>7.2f} {tag:>16}")
+              f"${raw_pnl_1c/100:>7.2f} ${raw_pnl/100:>8.2f} {tag:>16}")
 
     return result
 
@@ -564,6 +572,9 @@ def section_daily_pnl(conn: sqlite3.Connection, since: Optional[str] = None,
             SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
             SUM(CASE WHEN fav_won=1 THEN 1 ELSE 0 END) AS wins,
             SUM(COALESCE(pnl_cents, 0)) AS pnl_cents,
+            SUM(CASE WHEN fav_won IS NOT NULL THEN
+                CASE WHEN fav_won=1 THEN (100 - yes_ask) ELSE -yes_ask END
+            END) AS pnl_cents_1c,
             AVG(yes_ask) AS avg_ask,
             COUNT(DISTINCT game_id) AS games
         FROM sports_shadow_log
@@ -579,17 +590,21 @@ def section_daily_pnl(conn: sqlite3.Connection, since: Optional[str] = None,
         return result
 
     cumulative = 0
+    cumulative_1c = 0
     print(f"  {'Date':<12} {'Sigs':>5} {'Games':>5} {'W':>3} {'L':>3} "
-          f"{'WR':>7} {'DayPnL':>9} {'CumPnL':>9} {'AvgAsk':>8}")
-    print("  " + "-" * 72)
+          f"{'WR':>7} {'1cPnL':>8} {'Cum1c':>8} {'SizedPnL':>9} {'CumSized':>9} {'AvgAsk':>8}")
+    print("  " + "-" * 95)
     for r in result:
         s = r['settled'] or 0
         w = r['wins'] or 0
         pnl = r['pnl_cents'] or 0
+        pnl_1c = r['pnl_cents_1c'] or 0
         cumulative += pnl
+        cumulative_1c += pnl_1c
         avg_a = f"{r['avg_ask']:.0f}c" if r['avg_ask'] else "n/a"
         print(f"  {r['day']:<12} {r['signals']:>5} {r['games']:>5} {w:>3} {s-w:>3} "
-              f"{pct(w, s):>7} ${pnl/100:>8.2f} ${cumulative/100:>8.2f} {avg_a:>8}")
+              f"{pct(w, s):>7} ${pnl_1c/100:>7.2f} ${cumulative_1c/100:>7.2f} "
+              f"${pnl/100:>8.2f} ${cumulative/100:>8.2f} {avg_a:>8}")
 
     return result
 
@@ -1091,16 +1106,24 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str] = None,
 
     # 7. Positive sim PnL (deduped: one pnl per game)
     sim_pnl = conn.execute(f"""
-        SELECT SUM(game_pnl) AS pnl FROM (
-            SELECT game_id, MAX(COALESCE(pnl_cents, 0)) AS game_pnl
+        SELECT SUM(game_pnl) AS pnl,
+               SUM(game_pnl_1c) AS pnl_1c
+        FROM (
+            SELECT game_id,
+                   MAX(COALESCE(pnl_cents, 0)) AS game_pnl,
+                   MAX(CASE WHEN fav_won IS NOT NULL THEN
+                       CASE WHEN fav_won=1 THEN (100 - yes_ask) ELSE -yes_ask END
+                   END) AS game_pnl_1c
             FROM sports_shadow_log
             WHERE signal_fired=1 {extra}
             GROUP BY game_id
         )
     """).fetchone()
     pnl_val = sim_pnl["pnl"] if sim_pnl and sim_pnl["pnl"] else 0
+    pnl_val_1c = sim_pnl["pnl_1c"] if sim_pnl and sim_pnl["pnl_1c"] else 0
     c7 = pnl_val > 0
-    checks.append(("Positive sim PnL", c7, f"${pnl_val/100:.2f}"))
+    checks.append(("Positive sim PnL", c7,
+                    f"1c=${pnl_val_1c/100:.2f}, sized=${pnl_val/100:.2f}"))
 
     print()
     all_pass = True

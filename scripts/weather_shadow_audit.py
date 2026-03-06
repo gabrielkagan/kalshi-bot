@@ -623,7 +623,7 @@ def section_blend_sim(conn, since):
     W = where_clause(since)
 
     rows = conn.execute(f"""
-        SELECT raw_prob, market_price, market_result
+        SELECT raw_prob, market_price, market_result, position_size
         FROM evaluated_opportunities
         WHERE product_type='weather' {W}
           AND raw_prob IS NOT NULL AND market_price IS NOT NULL AND market_result IS NOT NULL
@@ -635,12 +635,13 @@ def section_blend_sim(conn, since):
 
     blend_weights = [0.0, 0.10, 0.20, 0.30, 0.40, 0.50]
 
-    print(f"  {'BLEND_W':>8} {'Brier':>8} {'PnL¢':>8} {'Sigs':>6} {'WR':>6} {'W':>4} {'L':>4}")
-    print(f"  {'-'*50}")
+    print(f"  {'BLEND_W':>8} {'Brier':>8} {'PnL¢':>8} {'Sized$':>9} {'Sigs':>6} {'WR':>6} {'W':>4} {'L':>4}")
+    print(f"  {'-'*60}")
 
     for bw in blend_weights:
         total_brier = 0
         total_pnl = 0
+        total_sized = 0.0
         sigs = 0
         wins = 0
 
@@ -658,13 +659,15 @@ def section_blend_sim(conn, since):
             if fee_edge >= 0.001:
                 sigs += 1
                 total_pnl += cf_pnl(mp, r["market_result"])
+                ps = r["position_size"] or 1
+                total_sized += sized_pnl(mp, r["market_result"], ps)
                 if outcome:
                     wins += 1
 
         brier = total_brier / len(rows)
         losses = sigs - wins
         wr = pct(wins, sigs) if sigs > 0 else "—"
-        print(f"  {bw:>8.2f} {brier:>8.4f} {total_pnl:>+8d} {sigs:>6} {wr:>6} {wins:>4} {losses:>4}")
+        print(f"  {bw:>8.2f} {brier:>8.4f} {total_pnl:>+8d} ${total_sized:>+8.2f} {sigs:>6} {wr:>6} {wins:>4} {losses:>4}")
 
     print(f"\n  Note: Brier computed on ALL settled data. PnL on simulated signals only.")
 
@@ -687,7 +690,7 @@ def section_stc(conn, since):
         print("  No settled observation data")
         return
 
-    buckets = defaultdict(lambda: {"w": 0, "l": 0, "pnl_1c": 0, "prices": []})
+    buckets = defaultdict(lambda: {"w": 0, "l": 0, "pnl_1c": 0, "pnl_sized": 0.0, "prices": []})
     for r in rows:
         stc = r["seconds_to_close"]
         if stc < 3600: b = "<1h"
@@ -702,10 +705,12 @@ def section_stc(conn, since):
         is_win = r["market_result"] in ("yes", "all_yes")
         buckets[b]["w" if is_win else "l"] += 1
         buckets[b]["pnl_1c"] += cf_pnl(price, r["market_result"])
+        ps = r["position_size"] or 1
+        buckets[b]["pnl_sized"] += sized_pnl(price, r["market_result"], ps)
         buckets[b]["prices"].append(price)
 
-    print(f"  {'STC Bucket':10s} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'1c PnL':>8} {'AvgPrice':>9} {'Sig':>20}")
-    print(f"  {'-'*70}")
+    print(f"  {'STC Bucket':10s} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'1c PnL':>8} {'Sized$':>9} {'AvgPrice':>9} {'Sig':>20}")
+    print(f"  {'-'*80}")
     for b in ["<1h", "1-2h", "2-4h", "4-8h", "8-12h", "12-16h", "16h+"]:
         if b not in buckets:
             continue
@@ -714,7 +719,7 @@ def section_stc(conn, since):
         wr = s["w"] / n if n > 0 else 0
         avg_p = sum(s["prices"]) / len(s["prices"]) if s["prices"] else 0
         tag = significance_tag(n)
-        print(f"  {b:10s} {n:>4} {s['w']:>3} {s['l']:>3} {wr:>5.1%} {s['pnl_1c']:>+7d}c {avg_p:>8.1f}c {tag}")
+        print(f"  {b:10s} {n:>4} {s['w']:>3} {s['l']:>3} {wr:>5.1%} {s['pnl_1c']:>+7d}c ${s['pnl_sized']:>+8.2f} {avg_p:>8.1f}c {tag}")
 
 
 # ─── Section 8: Leak / Counterfactual Analysis ───────────────────────────────
@@ -726,7 +731,7 @@ def section_leaks(conn, since):
     # IE near-misses
     subheader("insufficient_edge Counterfactual")
     ie_rows = conn.execute(f"""
-        SELECT market_price, market_result, fee_adjusted_edge
+        SELECT market_price, market_result, fee_adjusted_edge, position_size
         FROM evaluated_opportunities
         WHERE product_type='weather' {W}
           AND filter_stage='insufficient_edge' AND market_result IS NOT NULL
@@ -736,9 +741,10 @@ def section_leaks(conn, since):
         ie_wins = sum(1 for r in ie_rows if r["market_result"] in ("yes", "all_yes"))
         ie_total = len(ie_rows)
         ie_pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in ie_rows)
+        ie_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in ie_rows)
         wr = ie_wins / ie_total * 100
         print(f"  N={ie_total}, {ie_wins}W/{ie_total - ie_wins}L ({wr:.1f}%)")
-        print(f"  Counterfactual PnL: {ie_pnl:+d}c")
+        print(f"  Counterfactual PnL: {ie_pnl:+d}c (1-contract), ${ie_sized:+.2f} (sized)")
         print(f"  >>> {'FILTER CORRECT' if ie_pnl <= 0 else 'FILTER TOO STRICT'} (counterfactual {'negative' if ie_pnl <= 0 else 'positive'})")
 
         # Near-misses (edge > -0.02)
@@ -746,12 +752,13 @@ def section_leaks(conn, since):
         if near:
             near_wins = sum(1 for r in near if r["market_result"] in ("yes", "all_yes"))
             near_pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in near)
-            print(f"  Near-miss (edge > -2%): {len(near)} entries, {near_wins}W, PnL={near_pnl:+d}c")
+            near_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in near)
+            print(f"  Near-miss (edge > -2%): {len(near)} entries, {near_wins}W, PnL={near_pnl:+d}c, Sized=${near_sized:+.2f}")
 
     # strategy_wait counterfactual
     subheader("strategy_wait Counterfactual")
     sw_rows = conn.execute(f"""
-        SELECT market_price, market_result
+        SELECT market_price, market_result, position_size
         FROM evaluated_opportunities
         WHERE product_type='weather' {W}
           AND filter_stage='strategy_wait' AND market_result IS NOT NULL
@@ -761,8 +768,9 @@ def section_leaks(conn, since):
         sw_wins = sum(1 for r in sw_rows if r["market_result"] in ("yes", "all_yes"))
         sw_total = len(sw_rows)
         sw_pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in sw_rows)
+        sw_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in sw_rows)
         print(f"  N={sw_total}, {sw_wins}W/{sw_total - sw_wins}L")
-        print(f"  Counterfactual PnL: {sw_pnl:+d}c")
+        print(f"  Counterfactual PnL: {sw_pnl:+d}c (1-contract), ${sw_sized:+.2f} (sized)")
         print(f"  >>> {'FILTER CORRECT' if sw_pnl <= 0 else 'FILTER MAY BE TOO STRICT'}")
     else:
         print("  No settled strategy_wait entries")
@@ -770,7 +778,7 @@ def section_leaks(conn, since):
     # POR counterfactual
     subheader("price_out_of_range Counterfactual")
     por_rows = conn.execute(f"""
-        SELECT market_price, market_result
+        SELECT market_price, market_result, position_size
         FROM evaluated_opportunities
         WHERE product_type='weather' {W}
           AND filter_stage='price_out_of_range' AND market_result IS NOT NULL
@@ -780,7 +788,8 @@ def section_leaks(conn, since):
         por_wins = sum(1 for r in por_rows if r["market_result"] in ("yes", "all_yes"))
         por_total = len(por_rows)
         por_pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in por_rows)
-        print(f"  N={por_total}, {por_wins}W/{por_total - por_wins}L, PnL={por_pnl:+d}c")
+        por_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in por_rows)
+        print(f"  N={por_total}, {por_wins}W/{por_total - por_wins}L, PnL={por_pnl:+d}c, Sized=${por_sized:+.2f}")
     else:
         print("  No settled POR entries")
 
@@ -814,8 +823,8 @@ def section_config(conn, since):
 
     # Min entry price sweep
     subheader("WEATHER_MIN_ENTRY_PRICE sweep")
-    print(f"  {'MinPrice':>8} {'Sigs':>5} {'W':>4} {'L':>4} {'WR':>6} {'1c PnL':>8}")
-    print(f"  {'-'*40}")
+    print(f"  {'MinPrice':>8} {'Sigs':>5} {'W':>4} {'L':>4} {'WR':>6} {'1c PnL':>8} {'Sized$':>9}")
+    print(f"  {'-'*50}")
 
     for threshold in [5, 8, 10, 12, 15, 20]:
         row = conn.execute(f"""
@@ -834,19 +843,20 @@ def section_config(conn, since):
 
         # Compute PnL for this threshold
         pnl_rows = conn.execute(f"""
-            SELECT market_price, market_result FROM evaluated_opportunities
+            SELECT market_price, market_result, position_size FROM evaluated_opportunities
             WHERE product_type='weather' {W}
               AND filter_stage='weather_observation' AND market_result IS NOT NULL
               AND market_price >= ?
         """, (threshold,)).fetchall()
         pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in pnl_rows)
+        pnl_s = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in pnl_rows)
         current = " <<<" if threshold == 10 else ""
-        print(f"  {threshold:>7}c {n:>5} {w:>4} {l:>4} {wr:>6} {pnl:>+7d}c{current}")
+        print(f"  {threshold:>7}c {n:>5} {w:>4} {l:>4} {wr:>6} {pnl:>+7d}c ${pnl_s:>+8.2f}{current}")
 
     # Edge threshold sweep
     subheader("WEATHER_MIN_EDGE_PCT sweep")
     rows = conn.execute(f"""
-        SELECT fee_adjusted_edge, market_price, market_result
+        SELECT fee_adjusted_edge, market_price, market_result, position_size
         FROM evaluated_opportunities
         WHERE product_type='weather' {W}
           AND filter_stage IN ('weather_observation', 'insufficient_edge')
@@ -854,16 +864,17 @@ def section_config(conn, since):
     """).fetchall()
 
     if rows:
-        print(f"  {'MinEdge':>8} {'Sigs':>5} {'W':>4} {'L':>4} {'WR':>6} {'1c PnL':>8}")
-        print(f"  {'-'*40}")
+        print(f"  {'MinEdge':>8} {'Sigs':>5} {'W':>4} {'L':>4} {'WR':>6} {'1c PnL':>8} {'Sized$':>9}")
+        print(f"  {'-'*50}")
         for edge_thresh in [0.001, 0.003, 0.005, 0.01, 0.02, 0.05]:
             passed = [r for r in rows if r["fee_adjusted_edge"] >= edge_thresh]
             w = sum(1 for r in passed if r["market_result"] in ("yes", "all_yes"))
             l = len(passed) - w
             pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in passed)
+            pnl_s = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in passed)
             wr = pct(w, len(passed)) if passed else "—"
             current = " <<<" if edge_thresh == 0.001 else ""
-            print(f"  {edge_thresh:>7.3f} {len(passed):>5} {w:>4} {l:>4} {wr:>6} {pnl:>+7d}c{current}")
+            print(f"  {edge_thresh:>7.3f} {len(passed):>5} {w:>4} {l:>4} {wr:>6} {pnl:>+7d}c ${pnl_s:>+8.2f}{current}")
 
 
 # ─── Section 10: Bias Correction ─────────────────────────────────────────────
@@ -922,7 +933,7 @@ def section_cross_tab(conn, since):
         print("  No settled data")
         return
 
-    grid = defaultdict(lambda: {"w": 0, "l": 0, "pnl_1c": 0})
+    grid = defaultdict(lambda: {"w": 0, "l": 0, "pnl_1c": 0, "pnl_sized": 0.0})
     for r in rows:
         mt = r["wx_market_type"] or "unknown"
         price = int(r["market_price"])
@@ -935,6 +946,8 @@ def section_cross_tab(conn, since):
         is_win = r["market_result"] in ("yes", "all_yes")
         grid[key]["w" if is_win else "l"] += 1
         grid[key]["pnl_1c"] += cf_pnl(price, r["market_result"])
+        ps = r["position_size"] or 1
+        grid[key]["pnl_sized"] += sized_pnl(price, r["market_result"], ps)
 
     mtypes = sorted(set(k[0] for k in grid.keys()))
     pbuckets = ["1-15c", "16-30c", "31-60c", "61c+"]
@@ -942,9 +955,9 @@ def section_cross_tab(conn, since):
     # Header
     hdr = f"  {'':15s}"
     for pb in pbuckets:
-        hdr += f"  {pb:>20s}"
+        hdr += f"  {pb:>28s}"
     print(hdr)
-    print(f"  {'-'*80}")
+    print(f"  {'-'*100}")
 
     for mt in mtypes:
         row_str = f"  {mt:15s}"
@@ -954,9 +967,9 @@ def section_cross_tab(conn, since):
                 s = grid[key]
                 n = s["w"] + s["l"]
                 wr = s["w"] / n * 100 if n > 0 else 0
-                row_str += f"  {s['w']}W/{s['l']}L {wr:.0f}% {s['pnl_1c']:+d}c"
+                row_str += f"  {s['w']}W/{s['l']}L {wr:.0f}% {s['pnl_1c']:+d}c ${s['pnl_sized']:+.2f}"
             else:
-                row_str += f"  {'—':>20s}"
+                row_str += f"  {'—':>28s}"
         print(row_str)
 
 
@@ -981,11 +994,12 @@ def section_sufficiency(conn, since, stats, pipeline):
 
     # Check if any config produces positive PnL
     pnl_rows = conn.execute(f"""
-        SELECT market_price, market_result FROM evaluated_opportunities
+        SELECT market_price, market_result, position_size FROM evaluated_opportunities
         WHERE product_type='weather' {W}
           AND filter_stage='weather_observation' AND market_result IS NOT NULL
     """).fetchall()
     total_pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in pnl_rows) if pnl_rows else 0
+    total_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in pnl_rows) if pnl_rows else 0.0
 
     checks = [
         ("Total evaluations >= 500", stats["total"] >= 500, f"{stats['total']}/500"),
@@ -994,7 +1008,7 @@ def section_sufficiency(conn, since, stats, pipeline):
         ("Days of data >= 14", stats["span_hrs"] / 24 >= 14, f"{stats['span_hrs']/24:.1f}/14 days"),
         ("Cities signaling >= 5", sig_cities >= 5, f"{sig_cities}/5"),
         ("Ensemble coverage > 90%", ens_cov > 90, f"{ens_cov:.1f}%"),
-        ("Signal PnL positive", total_pnl > 0, f"{total_pnl:+d}c"),
+        ("Signal PnL positive", total_pnl > 0, f"{total_pnl:+d}c (1-contract), ${total_sized:+.2f} (sized)"),
     ]
 
     for desc, passed, detail in checks:

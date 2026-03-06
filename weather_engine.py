@@ -273,6 +273,10 @@ class WeatherEnsembleFetcher:
                 return None
 
             data = resp.json()
+            if data.get("error"):
+                logging.warning("WeatherEnsemble: %s API error (%.1fs): %s",
+                                model, elapsed, data.get("reason", "unknown"))
+                return None
 
             # Open-Meteo ensemble returns multiple members in daily data
             daily = data.get("daily", {})
@@ -345,6 +349,10 @@ class WeatherEnsembleFetcher:
                                 city_code, date_str, resp.status_code)
                 return None
             data = resp.json()
+            if data.get("error"):
+                logging.warning("WeatherEnsemble: archive %s %s API error: %s",
+                                city_code, date_str, data.get("reason", "unknown"))
+                return None
             temps = data.get("daily", {}).get("temperature_2m_max", [])
             if temps and temps[0] is not None:
                 observed = float(temps[0])
@@ -364,21 +372,29 @@ class WeatherEnsembleFetcher:
                 "latitude": lat,
                 "longitude": lon,
                 "daily": "temperature_2m_max",
-                "models": "hrrr_conus",
+                "models": "ncep_hrrr_conus",
                 "temperature_unit": "fahrenheit",
                 "start_date": target_date,
                 "end_date": target_date,
                 "timezone": "America/New_York",
             }, timeout=15)
 
-            if resp.status_code == 200:
-                data = resp.json()
-                daily = data.get("daily", {})
-                temps = daily.get("temperature_2m_max", [])
-                if temps and temps[0] is not None:
-                    return float(temps[0])
+            if resp.status_code != 200:
+                logging.warning("WeatherEnsemble: HRRR fetch HTTP %d", resp.status_code)
+                return None
+
+            data = resp.json()
+            if data.get("error"):
+                logging.warning("WeatherEnsemble: HRRR API error: %s", data.get("reason", "unknown"))
+                return None
+
+            daily = data.get("daily", {})
+            temps = daily.get("temperature_2m_max", [])
+            if temps and temps[0] is not None:
+                return float(temps[0])
+            logging.warning("WeatherEnsemble: HRRR returned no temperature data for %s", target_date)
         except Exception as e:
-            logging.debug("WeatherEnsembleFetcher: HRRR fetch failed: %s", e)
+            logging.warning("WeatherEnsemble: HRRR fetch failed: %s", e)
         return None
 
 
@@ -598,11 +614,38 @@ class WeatherEngine:
         self._started = False
 
     def start(self):
-        """Start background fetcher thread."""
+        """Start background fetcher thread (with API self-test)."""
+        self._self_test_apis()
         self._thread = threading.Thread(target=self._fetch_loop, daemon=True)
         self._thread.start()
         self._started = True
         logging.info("WeatherEngine: started")
+
+    def _self_test_apis(self):
+        """Validate that all Open-Meteo API model names return real data.
+
+        Runs one test call per model at startup. Logs WARNING for each failure
+        so broken integrations are immediately visible in production logs.
+        """
+        test_lat, test_lon = 40.7128, -74.0060  # NYC
+        test_date = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Test ensemble models (GFS, ECMWF)
+        for model in ("gfs_seamless", "ecmwf_ifs025"):
+            members = self._fetcher._fetch_model_ensemble(test_lat, test_lon, model, test_date)
+            if members and len(members) > 0:
+                logging.info("WeatherEngine self-test: %s OK (%d members)", model, len(members))
+            else:
+                logging.warning("WeatherEngine self-test: %s FAILED — returned no members. "
+                                "Check model name against Open-Meteo docs.", model)
+
+        # Test HRRR deterministic
+        hrrr = self._fetcher._fetch_hrrr(test_lat, test_lon, test_date)
+        if hrrr is not None:
+            logging.info("WeatherEngine self-test: ncep_hrrr_conus OK (%.1fF)", hrrr)
+        else:
+            logging.warning("WeatherEngine self-test: ncep_hrrr_conus FAILED — returned no data. "
+                            "Check model name against Open-Meteo docs.")
 
     def stop(self):
         self._stop.set()
@@ -694,6 +737,10 @@ class WeatherEngine:
                     if ensemble and ensemble.get("combined_members"):
                         self._last_ensemble[city_code] = ensemble
                 except Exception as e:
-                    logging.debug("WeatherEngine: fetch for %s failed: %s", city_code, e)
+                    logging.warning("WeatherEngine: fetch for %s failed: %s", city_code, e)
+                # Rate-limit: 19 cities × 3 API calls each = 57 calls per cycle.
+                # Open-Meteo free tier throttles at ~30 req/min.
+                # 1s between cities ≈ 3 calls/s = plenty of headroom.
+                time.sleep(1.0)
 
             self._stop.wait(WEATHER_POLL_INTERVAL)

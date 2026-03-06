@@ -1320,7 +1320,7 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
     # Both have fee_adjusted_edge and market_result once settled
     rows = conn.execute(f"""
         SELECT market_price, fee_adjusted_edge, market_result, asset,
-               seconds_to_close, filter_stage,
+               seconds_to_close, filter_stage, position_size,
                COALESCE(counterfactual_pnl, 0) AS cf_pnl
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause}
@@ -1367,6 +1367,9 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
 
     cand_pnl = sum(sim_pnl_maker_unit(r["market_price"],
                    r["market_result"] == "yes") for r in cands)
+    cand_pnl_sz = sum(sim_pnl_maker_unit(r["market_price"],
+                      r["market_result"] == "yes")
+                      * (r["position_size"] or 1) for r in cands)
 
     print(f"  Full universe: {n_total} evaluations over {n_days:.1f} days")
     print(f"  Positive-edge universe: {len(pos_rows)} "
@@ -1374,7 +1377,8 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
     print(f"  Current config (candidates): {len(cands)} trades "
           f"({cand_w}W/{cand_l}L, "
           f"{cand_w/len(cands)*100:.1f}%), "
-          f"PnL=${cand_pnl/100:.2f}")
+          f"1c PnL=${cand_pnl/100:.2f}, "
+          f"Sized PnL=${cand_pnl_sz/100:.2f}")
 
     # ── Per-tier edge threshold grid search ──
     # The bot uses MIN_EDGE_BY_PRICE — each price tier has its own threshold.
@@ -1396,8 +1400,8 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
         print(f"\n  {label} (current: {current*100:.2f}%, n={len(tier)}):")
         multipliers = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0]
         print(f"    {'Threshold':>10} {'N':>4} {'W':>3} {'L':>3} "
-              f"{'WR':>6} {'FlatPnL':>9} {'$/day':>7}")
-        print("    " + "-" * 48)
+              f"{'WR':>6} {'1c PnL':>8} {'Sized PnL':>10} {'$/day sz':>9}")
+        print("    " + "-" * 62)
         best_pnl, best_t = -999, current
         for mult in multipliers:
             t = current * mult
@@ -1409,12 +1413,16 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
             swr = sw / len(sub) * 100
             spnl = sum(sim_pnl_maker_unit(r["market_price"],
                        r["market_result"] == "yes") for r in sub)
-            daily = spnl / 100 / n_days
+            spnl_sz = sum(sim_pnl_maker_unit(r["market_price"],
+                          r["market_result"] == "yes")
+                          * (r["position_size"] or 1) for r in sub)
+            daily_sz = spnl_sz / 100 / n_days
             marker = " ◄ current" if abs(mult - 1.0) < 0.01 else ""
             print(f"    {t*100:>9.3f}% {len(sub):>4} {sw:>3} {sl:>3} "
-                  f"{swr:>5.1f}% ${spnl/100:>8.2f} ${daily:>6.2f}{marker}")
-            if spnl > best_pnl:
-                best_pnl, best_t = spnl, t
+                  f"{swr:>5.1f}% ${spnl/100:>7.2f} "
+                  f"${spnl_sz/100:>9.2f} ${daily_sz:>8.2f}{marker}")
+            if spnl_sz > best_pnl:
+                best_pnl, best_t = spnl_sz, t
         if abs(best_t - current) > 0.0001:
             tier_best.append((label, current, best_t, best_pnl))
 
@@ -1429,8 +1437,8 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
     subsection("Min price sweep")
     prices = [80, 82, 84, 85, 86, 87, 88, 89, 90, 91, 92]
     print(f"  {'MinPrice':>9} {'N':>4} {'W':>4} {'L':>3} {'WR':>6} "
-          f"{'FlatPnL':>9} {'$/day':>7}")
-    print("  " + "-" * 48)
+          f"{'1c PnL':>8} {'Sized PnL':>10} {'$/day sz':>9}")
+    print("  " + "-" * 60)
     for mp in prices:
         # Apply per-tier edge threshold for each trade (matches live behavior)
         def _passes_tier(r, min_p=mp):
@@ -1449,10 +1457,14 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
         wr = w / len(sub) * 100
         pnl = sum(sim_pnl_maker_unit(r["market_price"],
                   r["market_result"] == "yes") for r in sub)
-        daily = pnl / 100 / n_days
+        pnl_sz = sum(sim_pnl_maker_unit(r["market_price"],
+                     r["market_result"] == "yes")
+                     * (r["position_size"] or 1) for r in sub)
+        daily_sz = pnl_sz / 100 / n_days
         marker = " ◄ current" if mp == 86 else ""
         print(f"  {mp:>8}c {len(sub):>4} {w:>4} {l_:>3} {wr:>5.1f}% "
-              f"${pnl/100:>8.2f} ${daily:>6.2f}{marker}")
+              f"${pnl/100:>7.2f} ${pnl_sz/100:>9.2f} "
+              f"${daily_sz:>8.2f}{marker}")
 
     # ── Fisher exact tests ──
     subsection("Statistical significance (Fisher exact test)")
@@ -1508,9 +1520,13 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
 
         flat_in = sum(sim_pnl_maker_unit(r["market_price"],
                       r["market_result"] == "yes") for r in inside)
+        sized_in = sum(sim_pnl_maker_unit(r["market_price"],
+                       r["market_result"] == "yes")
+                       * (r["position_size"] or 1) for r in inside)
 
         print(f"  {label}")
-        print(f"    In:  {a}W/{b_}L ({wr_in:.1f}%) PnL=${flat_in/100:.2f}")
+        print(f"    In:  {a}W/{b_}L ({wr_in:.1f}%) "
+              f"1c=${flat_in/100:.2f} Sized=${sized_in/100:.2f}")
         print(f"    Out: {c_}W/{d_}L ({wr_out:.1f}%)")
         print(f"    Fisher p={p_val:.4f} {sig}  |  "
               f"{a+b_} signals = {daily_n:.1f}/day")

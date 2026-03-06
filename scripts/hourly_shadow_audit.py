@@ -635,7 +635,7 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
     # Counterfactual: insufficient_edge (near-miss vs far)
     subsection("Leak 5: Counterfactual — insufficient_edge")
     ie_rows = conn.execute("""
-        SELECT market_price, market_result, fee_adjusted_edge
+        SELECT market_price, market_result, fee_adjusted_edge, position_size
         FROM evaluated_opportunities
         WHERE product_type='hourly' AND filter_stage='insufficient_edge'
           AND market_result IS NOT NULL AND evaluation_time >= ?
@@ -653,9 +653,11 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
                 wr_s = w / len(subset) * 100
                 pnl = sum(sim_pnl_maker(r["market_price"], 1,
                                          r["market_result"] == "yes") for r in subset)
+                sized_pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+                                               r["market_result"] == "yes") for r in subset)
                 print(f"  {label}: N={len(subset)}, {w}W/{len(subset)-w}L, "
                       f"WR={wr_s:.1f}%, avg_price={avg_p:.1f}c, "
-                      f"sim_pnl=${pnl/100:.2f}")
+                      f"1c_pnl=${pnl/100:.2f}, sized_pnl=${sized_pnl/100:.2f}")
     else:
         print("  No settled insufficient_edge entries")
 
@@ -907,7 +909,7 @@ def _counterfactual_stage(conn: sqlite3.Connection, since: str,
     params = stage_variants + [since]
 
     rows = conn.execute(f"""
-        SELECT market_price, market_result, seconds_to_close, asset
+        SELECT market_price, market_result, seconds_to_close, asset, position_size
         FROM evaluated_opportunities
         WHERE product_type='hourly' AND filter_stage IN ({placeholders})
           AND market_result IS NOT NULL AND evaluation_time >= ?
@@ -919,11 +921,14 @@ def _counterfactual_stage(conn: sqlite3.Connection, since: str,
         avg_stc = sum(r["seconds_to_close"] or 0 for r in rows) / len(rows)
         pnl = sum(sim_pnl_maker(r["market_price"], 1,
                                  r["market_result"] == "yes") for r in rows)
+        sized_pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+                                       r["market_result"] == "yes") for r in rows)
         wr = w / len(rows) * 100
         print(f"  {description}")
         print(f"  N={len(rows)}, {w}W/{l_count}L, WR={wr:.1f}%, "
               f"avg_price={avg_p:.1f}c, avg_stc={avg_stc:.0f}s")
         print(f"  Simulated PnL (1-lot maker): ${pnl/100:.2f}")
+        print(f"  Simulated PnL (sized maker): ${sized_pnl/100:.2f}")
         print(f"  Breakeven WR: {avg_p:.0f}%, gap={wr - avg_p:+.1f}pp")
         # Per-asset detail if multiple
         by_asset = defaultdict(lambda: {"w": 0, "l": 0})
@@ -958,12 +963,13 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
     """, (since,)).fetchall()
 
     if len(temp_rows) >= 5:
-        print(f"  {'T':>6} {'Trades':>7} {'W':>3} {'L':>3} {'WR':>6} {'PnL':>10} {'Brier':>7}")
-        print("  " + "-" * 45)
+        print(f"  {'T':>6} {'Trades':>7} {'W':>3} {'L':>3} {'WR':>6} {'1c PnL':>10} {'Sized PnL':>11} {'Brier':>7}")
+        print("  " + "-" * 58)
         for t in [1.0, 1.2, 1.45, 1.8, 2.0, 2.5]:
             n_trades = 0
             n_wins = 0
-            pnl = 0
+            pnl_1c = 0
+            pnl_sized = 0
             brier_sum = 0
             for r in temp_rows:
                 pre = r["hourly_pre_temp_prob"]
@@ -983,11 +989,12 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
                     won = r["market_result"] == "yes"
                     if won:
                         n_wins += 1
-                    pnl += sim_pnl_maker(p, size, won)
+                    pnl_1c += sim_pnl_maker(p, 1, won)
+                    pnl_sized += sim_pnl_maker(p, size, won)
             wr = n_wins / n_trades * 100 if n_trades > 0 else 0
             brier = brier_sum / len(temp_rows)
             print(f"  {t:>5.2f} {n_trades:>7} {n_wins:>3} {n_trades - n_wins:>3} "
-                  f"{wr:>5.0f}% ${pnl/100:>9.2f} {brier:>6.4f}")
+                  f"{wr:>5.0f}% ${pnl_1c/100:>9.2f} ${pnl_sized/100:>10.2f} {brier:>6.4f}")
     else:
         print(f"  Only {len(temp_rows)} entries with pre-temp data — "
               f"insufficient for simulation")
@@ -995,8 +1002,8 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
 
     # STC range sensitivity
     subsection("P2: STC range sensitivity")
-    print(f"  {'Max STC':>9} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'PnL':>10}")
-    print("  " + "-" * 40)
+    print(f"  {'Max STC':>9} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'1c PnL':>10} {'Sized PnL':>11}")
+    print("  " + "-" * 52)
     for max_stc in [300, 600, 900, 1200, 1500, 1800]:
         rows2 = conn.execute("""
             SELECT market_price, market_result, position_size
@@ -1007,10 +1014,12 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
         """, (max_stc, since)).fetchall()
         if rows2:
             w = sum(1 for r in rows2 if r["market_result"] == "yes")
-            pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
-                                     r["market_result"] == "yes") for r in rows2)
+            pnl_1c = sum(sim_pnl_maker(r["market_price"], 1,
+                                        r["market_result"] == "yes") for r in rows2)
+            pnl_sized = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+                                           r["market_result"] == "yes") for r in rows2)
             print(f"  {max_stc:>8}s {len(rows2):>4} {w:>3} {len(rows2)-w:>3} "
-                  f"{w/len(rows2)*100:>5.0f}% ${pnl/100:>9.2f}")
+                  f"{w/len(rows2)*100:>5.0f}% ${pnl_1c/100:>9.2f} ${pnl_sized/100:>10.2f}")
         else:
             print(f"  {max_stc:>8}s    0   —")
 
@@ -1042,8 +1051,8 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
 
     # Min entry price sensitivity
     subsection("P3: Min entry price sensitivity")
-    print(f"  {'Min Price':>10} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'PnL':>10} {'Avg P':>7}")
-    print("  " + "-" * 48)
+    print(f"  {'Min Price':>10} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'1c PnL':>10} {'Sized PnL':>11} {'Avg P':>7}")
+    print("  " + "-" * 60)
     for min_p in [70, 75, 80, 85, 87, 90, 92]:
         rows3 = conn.execute("""
             SELECT market_price, market_result, position_size
@@ -1054,11 +1063,13 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
         """, (min_p, since)).fetchall()
         if rows3:
             w = sum(1 for r in rows3 if r["market_result"] == "yes")
-            pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
-                                     r["market_result"] == "yes") for r in rows3)
+            pnl_1c = sum(sim_pnl_maker(r["market_price"], 1,
+                                        r["market_result"] == "yes") for r in rows3)
+            pnl_sized = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+                                           r["market_result"] == "yes") for r in rows3)
             avg_p = sum(r["market_price"] for r in rows3) / len(rows3)
             print(f"  {min_p:>9}c {len(rows3):>4} {w:>3} {len(rows3)-w:>3} "
-                  f"{w/len(rows3)*100:>5.0f}% ${pnl/100:>9.2f} {avg_p:>6.0f}c")
+                  f"{w/len(rows3)*100:>5.0f}% ${pnl_1c/100:>9.2f} ${pnl_sized/100:>10.2f} {avg_p:>6.0f}c")
 
     # Edge threshold sensitivity
     subsection("P4: Edge threshold sensitivity")
@@ -1070,17 +1081,19 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
           AND market_result IS NOT NULL AND fee_adjusted_edge IS NOT NULL
           AND evaluation_time >= ?
     """, (since,)).fetchall()
-    print(f"  {'Min Edge':>10} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'PnL':>10} {'Avg P':>7}")
-    print("  " + "-" * 48)
+    print(f"  {'Min Edge':>10} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'1c PnL':>10} {'Sized PnL':>11} {'Avg P':>7}")
+    print("  " + "-" * 60)
     for min_edge in [0.0, 0.005, 0.007, 0.010, 0.015, 0.020, 0.030]:
         subset = [r for r in all_edge_rows if r["fee_adjusted_edge"] >= min_edge]
         if subset:
             w = sum(1 for r in subset if r["market_result"] == "yes")
-            pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
-                                     r["market_result"] == "yes") for r in subset)
+            pnl_1c = sum(sim_pnl_maker(r["market_price"], 1,
+                                        r["market_result"] == "yes") for r in subset)
+            pnl_sized = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+                                           r["market_result"] == "yes") for r in subset)
             avg_p = sum(r["market_price"] for r in subset) / len(subset)
             print(f"  {min_edge:>9.3f} {len(subset):>4} {w:>3} {len(subset)-w:>3} "
-                  f"{w/len(subset)*100:>5.0f}% ${pnl/100:>9.2f} {avg_p:>6.0f}c")
+                  f"{w/len(subset)*100:>5.0f}% ${pnl_1c/100:>9.2f} ${pnl_sized/100:>10.2f} {avg_p:>6.0f}c")
 
     # Edge Fisher test: >=1.5% vs <1.5%
     edge_hi_rows = [r for r in all_edge_rows if r["fee_adjusted_edge"] >= 0.015]
@@ -1367,8 +1380,8 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str) -> dict:
     edge_caps = [0.005, 0.007, 0.008, 0.010, 0.012, 0.015, 0.020, 0.030,
                  0.050, 1.0]
     print(f"  {'MaxEdge':>8} {'N':>4} {'W':>4} {'L':>3} {'WR':>6} "
-          f"{'FlatPnL':>9} {'$/day':>7}")
-    print("  " + "-" * 48)
+          f"{'FlatPnL':>9} {'SizedPnL':>10} {'$/day':>7}")
+    print("  " + "-" * 58)
     for me in edge_caps:
         sub = [r for r in rows if r["fee_adjusted_edge"] <= me]
         if not sub:
@@ -1380,17 +1393,19 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str) -> dict:
             (100 - r["market_price"]) if r["market_result"] == "yes"
             else -r["market_price"] for r in sub
         )
+        sized_pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+                                       r["market_result"] == "yes") for r in sub)
         daily = pnl / 100 / n_days
         label = "all" if me >= 1.0 else f"{me*100:.2f}%"
         print(f"  {label:>8} {len(sub):>4} {w:>4} {l_:>3} {wr:>5.1f}% "
-              f"${pnl/100:>8.2f} ${daily:>6.2f}")
+              f"${pnl/100:>8.2f} ${sized_pnl/100:>9.2f} ${daily:>6.2f}")
 
     # ── Min price sweep ──
     subsection("Min price sweep")
     prices = [50, 60, 65, 70, 75, 80, 85, 88, 90, 92]
     print(f"  {'MinPrice':>9} {'N':>4} {'W':>4} {'L':>3} {'WR':>6} "
-          f"{'FlatPnL':>9} {'$/day':>7}")
-    print("  " + "-" * 48)
+          f"{'FlatPnL':>9} {'SizedPnL':>10} {'$/day':>7}")
+    print("  " + "-" * 58)
     for mp in prices:
         sub = [r for r in rows if r["market_price"] >= mp]
         if not sub:
@@ -1402,9 +1417,11 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str) -> dict:
             (100 - r["market_price"]) if r["market_result"] == "yes"
             else -r["market_price"] for r in sub
         )
+        sized_pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+                                       r["market_result"] == "yes") for r in sub)
         daily = pnl / 100 / n_days
         print(f"  {mp:>8}c {len(sub):>4} {w:>4} {l_:>3} {wr:>5.1f}% "
-              f"${pnl/100:>8.2f} ${daily:>6.2f}")
+              f"${pnl/100:>8.2f} ${sized_pnl/100:>9.2f} ${daily:>6.2f}")
 
     # ── Combined grid: edge cap x min price ──
     subsection("Combined grid: edge cap x min price")

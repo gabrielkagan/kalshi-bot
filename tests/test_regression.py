@@ -816,3 +816,131 @@ class TestSubmitTakerReturnValue:
             break
 
         assert found_func, "_submit_taker function not found in bot.py"
+
+
+# ============================================================================
+#  Weather API Silent Failure Prevention
+#  Bug: HRRR model name was "hrrr_conus" (wrong) instead of "ncep_hrrr_conus".
+#       Open-Meteo returned HTTP 200 + {"error": true} which was silently
+#       swallowed. HRRR data was dead for weeks with no visibility.
+#       Root causes: wrong model name, no error field check, DEBUG-level logs.
+# ============================================================================
+
+class TestWeatherAPIDefenses:
+    """Verify weather_engine.py defenses against silent API failures."""
+
+    def test_hrrr_model_name_is_correct(self):
+        """The HRRR model name must be 'ncep_hrrr_conus', not 'hrrr_conus'.
+
+        Open-Meteo returns HTTP 200 + {"error": true} for wrong model names,
+        so a typo here silently produces no data with no errors in logs.
+        """
+        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            # Check string constants in _fetch_hrrr
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert node.value != "hrrr_conus", (
+                    f"Line {node.lineno}: Found 'hrrr_conus' — must be "
+                    f"'ncep_hrrr_conus'. Open-Meteo returns silent error for wrong names."
+                )
+
+        # Positive check: the correct name must appear
+        assert "ncep_hrrr_conus" in source, (
+            "weather_engine.py must contain 'ncep_hrrr_conus' (HRRR model name)"
+        )
+
+    def test_all_api_responses_check_error_field(self):
+        """Every Open-Meteo API call must check data.get("error") after resp.json().
+
+        Open-Meteo returns HTTP 200 + {"error": true, "reason": "..."} for
+        invalid parameters. Without this check, failures are invisible.
+        """
+        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+
+        # Find all resp.json() calls and ensure each has a nearby error check
+        json_calls = [i for i, line in enumerate(source.splitlines())
+                      if "resp.json()" in line]
+        error_checks = [i for i, line in enumerate(source.splitlines())
+                        if 'data.get("error")' in line or "data.get('error')" in line]
+
+        assert len(json_calls) > 0, "No resp.json() calls found in weather_engine.py"
+        assert len(error_checks) >= len(json_calls), (
+            f"Found {len(json_calls)} resp.json() calls but only "
+            f"{len(error_checks)} data.get('error') checks. "
+            f"Every API response must check the error field."
+        )
+
+    def test_api_failures_log_at_warning_level(self):
+        """API failures must log at WARNING, not DEBUG.
+
+        DEBUG-level logs are invisible in production — a broken API integration
+        would silently produce no data with no alerts.
+        """
+        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+
+        # Find lines that mention API failure/error AND use logging.debug
+        for i, line in enumerate(source.splitlines(), 1):
+            stripped = line.strip()
+            if ("logging.debug" in stripped and
+                any(kw in stripped.lower() for kw in
+                    ["fail", "error", "http", "returned no", "returned 0"])):
+                assert False, (
+                    f"Line {i}: API failure logged at DEBUG level — must be "
+                    f"WARNING or higher. DEBUG is invisible in production.\n"
+                    f"  {stripped}"
+                )
+
+    def test_startup_self_test_exists(self):
+        """WeatherEngine.start() must call _self_test_apis() to validate models."""
+        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        assert "_self_test_apis" in source, (
+            "weather_engine.py must have _self_test_apis() method for startup validation"
+        )
+        # Verify it's called from start()
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.FunctionDef) and node.name == "start" and
+                any(isinstance(n, ast.FunctionDef) for n in ast.iter_child_nodes(node.parent))
+                if hasattr(node, 'parent') else True):
+                body_source = ast.get_source_segment(source, node)
+                if body_source and "_self_test_apis" in body_source:
+                    return
+        # Fallback: simple text check (AST parent traversal is tricky)
+        in_start = False
+        for line in source.splitlines():
+            if "def start(self)" in line:
+                in_start = True
+            elif in_start and line.strip() and not line.startswith(" ") and not line.startswith("\t"):
+                in_start = False
+            if in_start and "_self_test_apis" in line:
+                return
+        assert False, "start() method must call _self_test_apis()"
+
+    def test_ensemble_model_names_are_valid(self):
+        """Verify GFS and ECMWF model names match Open-Meteo's API."""
+        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+
+        # These are the correct Open-Meteo model identifiers
+        valid_ensemble_models = {"gfs_seamless", "ecmwf_ifs025"}
+
+        # Find model names passed to _fetch_model_ensemble
+        tree = ast.parse(source)
+        found_models = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and
+                isinstance(node.func, ast.Attribute) and
+                node.func.attr == "_fetch_model_ensemble"):
+                # Third positional arg is the model name
+                if len(node.args) >= 3:
+                    model_arg = node.args[2]
+                    if isinstance(model_arg, ast.Constant) and isinstance(model_arg.value, str):
+                        found_models.add(model_arg.value)
+
+        assert found_models, "No _fetch_model_ensemble calls found"
+        invalid = found_models - valid_ensemble_models
+        assert not invalid, (
+            f"Invalid ensemble model names: {invalid}. "
+            f"Valid names: {valid_ensemble_models}"
+        )

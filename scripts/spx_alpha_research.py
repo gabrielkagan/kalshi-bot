@@ -282,8 +282,8 @@ def section_egarch_blend(data: List[Dict]) -> Dict:
     ]
 
     subheader("WR by EGARCH Blend Weight")
-    print(f"  {'Blend W':>10s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'Flat $':>8s} {'Verdict':>10s}")
-    print(f"  {'-' * 52}")
+    print(f"  {'Blend W':>10s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'1c $':>8s} {'Sz $':>9s} {'Verdict':>10s}")
+    print(f"  {'-' * 62}")
 
     for label, lo, hi in BUCKETS:
         subset = [d for d in blend_data if lo <= d["egarch_blend_weight"] < hi]
@@ -292,10 +292,11 @@ def section_egarch_blend(data: List[Dict]) -> Dict:
         w = sum(1 for d in subset if d["won"])
         n = len(subset)
         fpnl = sum(sim_pnl_1lot(d["price"], d["won"]) for d in subset)
+        spnl = sum(sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1) for d in subset)
         wr_val = w / n
         avg_be = sum(breakeven_wr(d["price"]) for d in subset) / n
         verdict = "OK" if wr_val > avg_be else "BELOW BE"
-        print(f"  {label:>10s} {n:>4d} {w:>3d} {n-w:>3d} {wr_val:>5.1%} {fpnl:>+7.2f} {verdict:>10s}{significance_tag(n)}")
+        print(f"  {label:>10s} {n:>4d} {w:>3d} {n-w:>3d} {wr_val:>5.1%} {fpnl:>+7.2f} {spnl:>+8.2f} {verdict:>10s}{significance_tag(n)}")
 
     # EGARCH sigma distribution
     sigma_data = [d for d in signals if d.get("egarch_sigma") is not None]
@@ -323,9 +324,10 @@ def section_egarch_blend(data: List[Dict]) -> Dict:
                 continue
             tw = sum(1 for d in t if d["won"])
             fpnl = sum(sim_pnl_1lot(d["price"], d["won"]) for d in t)
+            spnl = sum(sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1) for d in t)
             avg_sig = sum(d["egarch_blend_sigma"] for d in t) / len(t)
             print(f"    {lbl:<10s} n={len(t):>3d}  WR={tw/len(t):.1%}  "
-                  f"sigma={avg_sig:.2e}  flat=${fpnl:+.2f}{significance_tag(len(t))}")
+                  f"sigma={avg_sig:.2e}  1c=${fpnl:+.2f}  sz=${spnl:+.2f}{significance_tag(len(t))}")
 
     return {
         "avg_blend_weight": avg_w, "min_blend_weight": min_w, "max_blend_weight": max_w,
@@ -461,8 +463,8 @@ def section_intraday(data: List[Dict]) -> Dict:
 
     subheader("By Market Period")
     print(f"  {'Period':<28s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'BE WR':>6s} "
-          f"{'Flat $':>8s} {'AvgEdge':>8s} {'Verdict':>10s}")
-    print(f"  {'-' * 92}")
+          f"{'1c $':>8s} {'Sz $':>9s} {'AvgEdge':>8s} {'Verdict':>10s}")
+    print(f"  {'-' * 102}")
 
     period_results = {}
     for label, hours in PERIODS:
@@ -472,51 +474,54 @@ def section_intraday(data: List[Dict]) -> Dict:
         w = sum(1 for d in subset if d["won"])
         n = len(subset)
         fpnl = sum(sim_pnl_1lot(d["price"], d["won"]) for d in subset)
+        spnl = sum(sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1) for d in subset)
         wr_val = w / n
         avg_be = sum(breakeven_wr(d["price"]) for d in subset) / n
         avg_edge = sum(d["fee_edge"] for d in subset) / n
         verdict = "PROFITABLE" if wr_val > avg_be and n >= 5 else ("LOSING" if wr_val < avg_be and n >= 5 else "LOW N")
         print(f"  {label:<28s} {n:>4d} {w:>3d} {n-w:>3d} {wr_val:>5.1%} {avg_be:>5.1%} "
-              f"{fpnl:>+7.2f} {avg_edge:>7.3%} {verdict:>10s}{significance_tag(n)}")
+              f"{fpnl:>+7.2f} {spnl:>+8.2f} {avg_edge:>7.3%} {verdict:>10s}{significance_tag(n)}")
         period_results[label] = {"n": n, "wins": w, "wr": wr_val, "pnl": fpnl}
 
     # Hour-by-hour for granularity
     subheader("Hour-by-Hour (ET)")
-    hourly = defaultdict(lambda: {"n": 0, "w": 0, "pnl": 0.0, "vol_sum": 0.0})
+    hourly = defaultdict(lambda: {"n": 0, "w": 0, "pnl": 0.0, "spnl": 0.0, "vol_sum": 0.0})
     for d in signals:
         h = d["hour_et"]
         hourly[h]["n"] += 1
         if d["won"]:
             hourly[h]["w"] += 1
         hourly[h]["pnl"] += sim_pnl_1lot(d["price"], d["won"])
+        hourly[h]["spnl"] += sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1)
         hourly[h]["vol_sum"] += d.get("volatility") or 0
 
-    print(f"  {'Hour ET':>8s} {'N':>4s} {'WR':>6s} {'Flat $':>8s} {'Avg Vol':>12s}")
-    print(f"  {'-' * 44}")
+    print(f"  {'Hour ET':>8s} {'N':>4s} {'WR':>6s} {'1c $':>8s} {'Sz $':>9s} {'Avg Vol':>12s}")
+    print(f"  {'-' * 52}")
     for h in sorted(hourly.keys()):
         hd = hourly[h]
         avg_vol = hd["vol_sum"] / hd["n"] if hd["n"] else 0
         vol_str = f"{avg_vol:.2e}" if avg_vol > 0 else "n/a"
-        print(f"  {h:>5d}:00 {hd['n']:>4d} {hd['w']/hd['n']:>5.1%} {hd['pnl']:>+7.2f} "
+        print(f"  {h:>5d}:00 {hd['n']:>4d} {hd['w']/hd['n']:>5.1%} {hd['pnl']:>+7.2f} {hd['spnl']:>+8.2f} "
               f"{vol_str:>12s}{significance_tag(hd['n'])}")
 
     # Day of week
     subheader("Day of Week")
     dow_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    dow = defaultdict(lambda: {"n": 0, "w": 0, "pnl": 0.0})
+    dow = defaultdict(lambda: {"n": 0, "w": 0, "pnl": 0.0, "spnl": 0.0})
     for d in signals:
         if d["weekday"] is not None:
             dow[d["weekday"]]["n"] += 1
             if d["won"]:
                 dow[d["weekday"]]["w"] += 1
             dow[d["weekday"]]["pnl"] += sim_pnl_1lot(d["price"], d["won"])
+            dow[d["weekday"]]["spnl"] += sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1)
 
-    print(f"  {'Day':<5s} {'N':>4s} {'WR':>6s} {'Flat $':>8s}")
-    print(f"  {'-' * 28}")
+    print(f"  {'Day':<5s} {'N':>4s} {'WR':>6s} {'1c $':>8s} {'Sz $':>9s}")
+    print(f"  {'-' * 36}")
     for day in sorted(dow.keys()):
         dd = dow[day]
         print(f"  {dow_names[day]:<5s} {dd['n']:>4d} {dd['w']/dd['n']:>5.1%} "
-              f"{dd['pnl']:>+7.2f}{significance_tag(dd['n'])}")
+              f"{dd['pnl']:>+7.2f} {dd['spnl']:>+8.2f}{significance_tag(dd['n'])}")
 
     return {"periods": period_results}
 
@@ -726,8 +731,8 @@ def section_edge_integrity(data: List[Dict]) -> Dict:
     n = len(sorted_by_edge)
 
     subheader("WR by Fee-Adjusted Edge Quintile")
-    print(f"  {'Quintile':<12s} {'N':>4s} {'WR':>6s} {'AvgEdge':>9s} {'Flat $':>8s} {'Verdict':>10s}")
-    print(f"  {'-' * 55}")
+    print(f"  {'Quintile':<12s} {'N':>4s} {'WR':>6s} {'AvgEdge':>9s} {'1c $':>8s} {'Sz $':>9s} {'Verdict':>10s}")
+    print(f"  {'-' * 65}")
 
     quintile_results = []
     prev_wr = None
@@ -742,13 +747,14 @@ def section_edge_integrity(data: List[Dict]) -> Dict:
         wr_val = w / len(subset)
         avg_edge = sum(d["fee_edge"] for d in subset) / len(subset)
         fpnl = sum(sim_pnl_1lot(d["price"], d["won"]) for d in subset)
+        spnl = sum(sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1) for d in subset)
         verdict = "OK" if fpnl > 0 else "NEGATIVE"
         if prev_wr is not None and wr_val < prev_wr - 0.05:
             monotonic = False
             verdict = "NON-MONO"
         prev_wr = wr_val
         print(f"  {label:<12s} {len(subset):>4d} {wr_val:>5.1%} {avg_edge:>8.3%} "
-              f"{fpnl:>+7.2f} {verdict:>10s}{significance_tag(len(subset))}")
+              f"{fpnl:>+7.2f} {spnl:>+8.2f} {verdict:>10s}{significance_tag(len(subset))}")
         quintile_results.append({"label": label, "n": len(subset), "wr": wr_val, "edge": avg_edge})
 
     if monotonic:
@@ -758,8 +764,8 @@ def section_edge_integrity(data: List[Dict]) -> Dict:
 
     # Edge threshold sweep
     subheader("Edge Threshold Sweep")
-    print(f"  {'Min Edge':>10s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'Flat $':>8s} {'$/day':>8s} {'Verdict':>10s}")
-    print(f"  {'-' * 62}")
+    print(f"  {'Min Edge':>10s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'1c $':>8s} {'Sz $':>9s} {'$/day sz':>9s} {'Verdict':>10s}")
+    print(f"  {'-' * 78}")
 
     # Compute trading days for $/day
     dates = set(d["date"] for d in signals if d["date"])
@@ -771,7 +777,8 @@ def section_edge_integrity(data: List[Dict]) -> Dict:
             continue
         w = sum(1 for d in subset if d["won"])
         fpnl = sum(sim_pnl_1lot(d["price"], d["won"]) for d in subset)
-        per_day = fpnl / n_days
+        spnl = sum(sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1) for d in subset)
+        per_day_sz = spnl / n_days
         wr_val = w / len(subset) if subset else 0
         avg_be = sum(breakeven_wr(d["price"]) for d in subset) / len(subset)
         verdict = "PROFITABLE" if wr_val > avg_be and len(subset) >= 5 else "LOSING"
@@ -779,7 +786,7 @@ def section_edge_integrity(data: List[Dict]) -> Dict:
         if fpnl > 0 and len(subset) >= 10:
             marker = " ***"
         print(f"  {min_edge:>9.1%} {len(subset):>4d} {w:>3d} {len(subset)-w:>3d} "
-              f"{wr_val:>5.1%} {fpnl:>+7.2f} {per_day:>+7.2f} {verdict:>10s}{marker}")
+              f"{wr_val:>5.1%} {fpnl:>+7.2f} {spnl:>+8.2f} {per_day_sz:>+8.2f} {verdict:>10s}{marker}")
 
     return {"monotonic": monotonic, "quintiles": quintile_results}
 
@@ -936,8 +943,8 @@ def section_trading_hours(data: List[Dict]) -> Dict:
     extended = [d for d in signals if d["hour_et"] < 10 or d["hour_et"] >= 16]
 
     print(f"\n  {'Session':<20s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'BE WR':>6s} "
-          f"{'Flat $':>8s} {'AvgEdge':>8s} {'AvgSTC':>7s}")
-    print(f"  {'-' * 72}")
+          f"{'1c $':>8s} {'Sz $':>9s} {'AvgEdge':>8s} {'AvgSTC':>7s}")
+    print(f"  {'-' * 82}")
 
     for label, subset in [("Regular (10-16 ET)", regular), ("Extended", extended)]:
         if not subset:
@@ -946,12 +953,13 @@ def section_trading_hours(data: List[Dict]) -> Dict:
         w = sum(1 for d in subset if d["won"])
         n = len(subset)
         fpnl = sum(sim_pnl_1lot(d["price"], d["won"]) for d in subset)
+        spnl = sum(sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1) for d in subset)
         avg_be = sum(breakeven_wr(d["price"]) for d in subset) / n
         avg_edge = sum(d["fee_edge"] for d in subset) / n
         avg_stc = sum(d["stc"] for d in subset) / n
         wr_val = w / n
         print(f"  {label:<20s} {n:>4d} {w:>3d} {n-w:>3d} {wr_val:>5.1%} {avg_be:>5.1%} "
-              f"{fpnl:>+7.2f} {avg_edge:>7.3%} {avg_stc:>6.0f}{significance_tag(n)}")
+              f"{fpnl:>+7.2f} {spnl:>+8.2f} {avg_edge:>7.3%} {avg_stc:>6.0f}{significance_tag(n)}")
 
     # Volatility by session
     subheader("Volatility by Session")
@@ -1024,34 +1032,35 @@ def section_counterfactual(data: List[Dict]) -> Dict:
 
     # Min price sweep
     subheader("Min Entry Price Sweep")
-    print(f"  {'Min P':>6s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'Flat $':>8s} "
-          f"{'$/day':>8s} {'Excluded':>9s} {'Verdict':>10s}")
-    print(f"  {'-' * 70}")
+    print(f"  {'Min P':>6s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'1c $':>8s} "
+          f"{'Sz $':>9s} {'$/day sz':>9s} {'Excluded':>9s} {'Verdict':>10s}")
+    print(f"  {'-' * 82}")
 
     best_price = 70
-    best_daily_pnl = -999
+    best_daily_sz = -999
     for min_p in [70, 75, 78, 80, 82, 84, 85, 87, 90, 92, 95]:
         subset = [d for d in signals if d["price"] >= min_p]
         if not subset:
             continue
         w = sum(1 for d in subset if d["won"])
         fpnl = sum(sim_pnl_1lot(d["price"], d["won"]) for d in subset)
-        daily = fpnl / n_days
+        spnl = sum(sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1) for d in subset)
+        daily_sz = spnl / n_days
         excluded = len(signals) - len(subset)
         avg_be = sum(breakeven_wr(d["price"]) for d in subset) / len(subset)
         verdict = "PROFITABLE" if w / len(subset) > avg_be else "LOSING"
         marker = ""
-        if daily > best_daily_pnl and len(subset) >= 10:
-            best_daily_pnl = daily
+        if daily_sz > best_daily_sz and len(subset) >= 10:
+            best_daily_sz = daily_sz
             best_price = min_p
             marker = " *** BEST $/day"
         print(f"  {min_p:>5d}c {len(subset):>4d} {w:>3d} {len(subset)-w:>3d} "
-              f"{w/len(subset):>5.1%} {fpnl:>+7.2f} {daily:>+7.2f} {excluded:>8d} {verdict:>10s}{marker}")
+              f"{w/len(subset):>5.1%} {fpnl:>+7.2f} {spnl:>+8.2f} {daily_sz:>+8.2f} {excluded:>8d} {verdict:>10s}{marker}")
 
     # STC range sweep
     subheader("STC Range Sweep")
-    print(f"  {'STC Range':>14s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'Flat $':>8s} {'$/day':>8s}")
-    print(f"  {'-' * 54}")
+    print(f"  {'STC Range':>14s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'1c $':>8s} {'Sz $':>9s} {'$/day sz':>9s}")
+    print(f"  {'-' * 68}")
 
     for min_stc, max_stc in [(300, 600), (300, 900), (300, 1200), (300, 1800),
                               (600, 1200), (600, 1800), (900, 1800),
@@ -1061,10 +1070,11 @@ def section_counterfactual(data: List[Dict]) -> Dict:
             continue
         w = sum(1 for d in subset if d["won"])
         fpnl = sum(sim_pnl_1lot(d["price"], d["won"]) for d in subset)
-        daily = fpnl / n_days
+        spnl = sum(sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1) for d in subset)
+        daily_sz = spnl / n_days
         wr_val = w / len(subset) if subset else 0
         print(f"  {min_stc:>5d}-{max_stc:<5d}s {len(subset):>4d} {w:>3d} {len(subset)-w:>3d} "
-              f"{wr_val:>5.1%} {fpnl:>+7.2f} {daily:>+7.2f}{significance_tag(len(subset))}")
+              f"{wr_val:>5.1%} {fpnl:>+7.2f} {spnl:>+8.2f} {daily_sz:>+8.2f}{significance_tag(len(subset))}")
 
     # Market blend weight sweep
     subheader("Market Blend Weight Sweep")
@@ -1099,7 +1109,7 @@ def section_counterfactual(data: List[Dict]) -> Dict:
     return {
         "best_temperature": best_temp,
         "best_min_price": best_price,
-        "best_daily_pnl": best_daily_pnl,
+        "best_daily_pnl_sz": best_daily_sz,
     }
 
 
@@ -1126,9 +1136,10 @@ def section_robustness(data: List[Dict]) -> Dict:
             continue
         w = sum(1 for d in half if d["won"])
         fpnl = sum(sim_pnl_1lot(d["price"], d["won"]) for d in half)
+        spnl = sum(sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1) for d in half)
         wr_val = w / len(half)
         lo, hi = wilson_ci(w, len(half))
-        print(f"  {label}: n={len(half)} WR={wr_val:.1%} [{lo:.1%}-{hi:.1%}] PnL=${fpnl:+.2f}")
+        print(f"  {label}: n={len(half)} WR={wr_val:.1%} [{lo:.1%}-{hi:.1%}] 1c=${fpnl:+.2f} sz=${spnl:+.2f}")
 
     if h1 and h2:
         h1_wr = sum(1 for d in h1 if d["won"]) / len(h1)
@@ -1141,7 +1152,7 @@ def section_robustness(data: List[Dict]) -> Dict:
 
     # Daily PnL timeline
     subheader("Daily PnL Timeline")
-    daily = defaultdict(lambda: {"w": 0, "l": 0, "pnl": 0.0, "n": 0})
+    daily = defaultdict(lambda: {"w": 0, "l": 0, "pnl": 0.0, "spnl": 0.0, "n": 0})
     for d in signals:
         if d["date"]:
             daily[d["date"]]["n"] += 1
@@ -1150,11 +1161,12 @@ def section_robustness(data: List[Dict]) -> Dict:
             else:
                 daily[d["date"]]["l"] += 1
             daily[d["date"]]["pnl"] += sim_pnl_1lot(d["price"], d["won"])
+            daily[d["date"]]["spnl"] += sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1)
 
-    print(f"  {'Date':<12s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'PnL':>8s} {'Cum $':>8s}")
-    print(f"  {'-' * 50}")
+    print(f"  {'Date':<12s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'1c $':>8s} {'Sz $':>9s} {'Cum Sz':>9s}")
+    print(f"  {'-' * 62}")
 
-    cum_pnl = 0
+    cum_spnl = 0
     losing_days = 0
     winning_days = 0
     max_drawdown = 0
@@ -1162,28 +1174,28 @@ def section_robustness(data: List[Dict]) -> Dict:
     for dt in sorted(daily.keys()):
         dd = daily[dt]
         wr_val = dd["w"] / dd["n"] if dd["n"] else 0
-        cum_pnl += dd["pnl"]
-        peak = max(peak, cum_pnl)
-        dd_val = peak - cum_pnl
+        cum_spnl += dd["spnl"]
+        peak = max(peak, cum_spnl)
+        dd_val = peak - cum_spnl
         max_drawdown = max(max_drawdown, dd_val)
-        if dd["pnl"] >= 0:
+        if dd["spnl"] >= 0:
             winning_days += 1
         else:
             losing_days += 1
         print(f"  {dt:<12s} {dd['n']:>4d} {dd['w']:>3d} {dd['l']:>3d} {wr_val:>5.0%} "
-              f"{dd['pnl']:>+7.2f} {cum_pnl:>+7.2f}")
+              f"{dd['pnl']:>+7.2f} {dd['spnl']:>+8.2f} {cum_spnl:>+8.2f}")
 
     n_days = winning_days + losing_days
     if n_days:
         print(f"\n  Winning days: {winning_days}/{n_days} ({winning_days/n_days:.0%})")
         print(f"  Max drawdown: ${max_drawdown:.2f}")
 
-    # Profit factor
-    win_pnl = sum(sim_pnl_1lot(d["price"], True) for d in signals if d["won"])
-    loss_pnl_total = sum(sim_pnl_1lot(d["price"], False) for d in signals if not d["won"])
-    pf = profit_factor(win_pnl, loss_pnl_total)
+    # Profit factor (sized)
+    win_spnl = sum(sim_pnl_1lot(d["price"], True) * (d.get("position_size") or 1) for d in signals if d["won"])
+    loss_spnl = sum(sim_pnl_1lot(d["price"], False) * (d.get("position_size") or 1) for d in signals if not d["won"])
+    pf = profit_factor(win_spnl, loss_spnl)
 
-    subheader("Risk Metrics")
+    subheader("Risk Metrics (sized)")
     print(f"  Profit Factor: {pf:.2f}")
     print(f"  Max Drawdown:  ${max_drawdown:.2f}")
 
@@ -1208,13 +1220,13 @@ def section_robustness(data: List[Dict]) -> Dict:
     print(f"  Max win streak:  {max_win_streak}")
     print(f"  Max loss streak: {max_loss_streak}")
 
-    # Concentration: what % of PnL comes from top 5 trades
-    trade_pnls = sorted([sim_pnl_1lot(d["price"], d["won"]) for d in signals], reverse=True)
+    # Concentration: what % of sized PnL comes from top 5 trades
+    trade_pnls = sorted([sim_pnl_1lot(d["price"], d["won"]) * (d.get("position_size") or 1) for d in signals], reverse=True)
     total_pnl = sum(trade_pnls)
     if total_pnl > 0:
         top5_pnl = sum(trade_pnls[:5])
         concentration = top5_pnl / total_pnl
-        print(f"  Top 5 trade concentration: {concentration:.0%} of total PnL")
+        print(f"  Top 5 trade concentration: {concentration:.0%} of sized PnL")
         if concentration > 0.80:
             print(f"  *** HIGH CONCENTRATION -- profits depend on a few trades")
 
@@ -1520,6 +1532,166 @@ def section_readiness(data: List[Dict], conn: sqlite3.Connection, since: Optiona
 
 
 # ============================================================================
+#  Section 16: HAR-RV Shadow Model Comparison
+# ============================================================================
+
+def section_harrv_comparison(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
+    """Compare HAR-RV shadow signals with EGARCH pipeline head-to-head."""
+    header("16. HAR-RV vs EGARCH HEAD-TO-HEAD")
+
+    # Check if table exists
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='spx_harrv_shadow_signals'"
+    ).fetchone()
+    if not table_check:
+        print("  spx_harrv_shadow_signals table not found.")
+        return {"status": "no_table"}
+
+    wc = ""
+    if since:
+        wc = f"AND evaluation_time >= '{since}'"
+
+    settled = conn.execute(f"""
+        SELECT ticker, market_price, market_result, final_prob, raw_prob, scaled_prob,
+               egarch_prob, egarch_edge, edge, fee_adjusted_edge, gates_passed,
+               shadow_contracts, shadow_pnl_cents, seconds_to_close,
+               har_method, rv_1h, rv_1d, rv_1w, sigma_forecast,
+               temperature, market_blend_w, mkt_only_prob, gate_failures
+        FROM spx_harrv_shadow_signals
+        WHERE status='settled' {wc}
+        ORDER BY evaluation_time
+    """).fetchall()
+
+    if not settled:
+        print("  No settled HAR-RV signals.")
+        return {"status": "no_data", "n": 0}
+
+    n = len(settled)
+    wins = sum(1 for r in settled if r["market_result"] in ("yes", "all_yes"))
+    losses = n - wins
+    wr = wins / n
+    lo, hi = wilson_ci(wins, n)
+    total_pnl = sum((r["shadow_pnl_cents"] or 0) for r in settled)
+
+    print(f"\n  Settled HAR-RV signals: {n}")
+    print(f"  Win rate: {wr:.1%} [{lo:.1%}-{hi:.1%}] ({wins}W/{losses}L){significance_tag(n)}")
+    print(f"  Shadow PnL: {total_pnl:+d}c (${total_pnl/100:+.2f})")
+
+    # ── Brier comparison ──
+    subheader("Probability Model Brier Comparison")
+
+    harrv_pairs = [(r["final_prob"], r["market_result"]) for r in settled if r["final_prob"] is not None]
+    egarch_pairs = [(r["egarch_prob"], r["market_result"]) for r in settled if r["egarch_prob"] is not None]
+    raw_pairs = [(r["raw_prob"], r["market_result"]) for r in settled if r["raw_prob"] is not None]
+    mkt_pairs = [(r["mkt_only_prob"], r["market_result"]) for r in settled if r["mkt_only_prob"] is not None]
+
+    def calc_brier(pairs):
+        if not pairs:
+            return None, 0
+        bs = sum((p - (1.0 if res in ("yes", "all_yes") else 0.0)) ** 2 for p, res in pairs) / len(pairs)
+        return bs, len(pairs)
+
+    models = [
+        ("HAR-RV final (T+blend)", harrv_pairs),
+        ("HAR-RV raw (no T/blend)", raw_pairs),
+        ("EGARCH (from main pipe)", egarch_pairs),
+        ("Market-only baseline", mkt_pairs),
+    ]
+
+    print(f"\n  {'Model':<30s} {'Brier':>8s} {'N':>5s} {'vs HAR-RV':>11s}")
+    print(f"  {'-' * 56}")
+    harrv_bs = None
+    for name, pairs in models:
+        bs, cnt = calc_brier(pairs)
+        if bs is None:
+            continue
+        if name.startswith("HAR-RV final"):
+            harrv_bs = bs
+        delta = ""
+        if harrv_bs is not None and not name.startswith("HAR-RV final"):
+            d = bs - harrv_bs
+            delta = f"{d:>+10.4f}"
+        print(f"  {name:<30s} {bs:>7.4f} {cnt:>5d} {delta}")
+
+    # ── Gates-passed subset ──
+    subheader("Gates-Passed Subset")
+    gated = [r for r in settled if r["gates_passed"]]
+    if gated:
+        gw = sum(1 for r in gated if r["market_result"] in ("yes", "all_yes"))
+        gl = len(gated) - gw
+        g_wr = gw / len(gated)
+        g_pnl = sum((r["shadow_pnl_cents"] or 0) for r in gated)
+        print(f"  {len(gated)} signals passed all gates")
+        print(f"  WR: {g_wr:.1%} ({gw}W/{gl}L){significance_tag(len(gated))}")
+        print(f"  PnL: {g_pnl:+d}c (${g_pnl/100:+.2f})")
+
+        # Flat PnL simulation with maker fees
+        flat_pnl = 0
+        for r in gated:
+            p = r["market_price"] or 0
+            if r["market_result"] in ("yes", "all_yes"):
+                flat_pnl += (100 - p - maker_fee(p))
+            else:
+                flat_pnl += -(p + maker_fee(p))
+        print(f"  1-lot flat PnL (maker): {flat_pnl:+d}c (${flat_pnl/100:+.2f})")
+    else:
+        print("  No signals passed all gates — all gated out.")
+
+    # ── HAR-RV by price tier ──
+    subheader("HAR-RV Performance by Price Tier")
+    tiers = [("<80c", 0, 80), ("80-84c", 80, 85), ("85-89c", 85, 90), ("90c+", 90, 100)]
+    print(f"\n  {'Tier':<10s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'PnL':>8s} {'Brier':>8s}")
+    print(f"  {'-' * 50}")
+    for label, lo_p, hi_p in tiers:
+        subset = [r for r in settled if lo_p <= (r["market_price"] or 0) < hi_p]
+        if not subset:
+            print(f"  {label:<10s} {'---':>4s}")
+            continue
+        w = sum(1 for r in subset if r["market_result"] in ("yes", "all_yes"))
+        pnl = sum((r["shadow_pnl_cents"] or 0) for r in subset)
+        bs_pairs = [(r["final_prob"], r["market_result"]) for r in subset if r["final_prob"] is not None]
+        bs_val, _ = calc_brier(bs_pairs)
+        bs_str = f"{bs_val:.4f}" if bs_val is not None else "n/a"
+        print(f"  {label:<10s} {len(subset):>4d} {w:>3d} {len(subset)-w:>3d} "
+              f"{w/len(subset):>5.1%} {pnl:>+7d}c {bs_str:>8s}{significance_tag(len(subset))}")
+
+    # ── HAR-RV by STC bucket ──
+    subheader("HAR-RV Performance by STC")
+    stc_buckets = [("<600s", 0, 600), ("600-1200s", 600, 1200), ("1200s+", 1200, 9999)]
+    print(f"\n  {'STC':<12s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'PnL':>8s}")
+    print(f"  {'-' * 42}")
+    for label, lo_s, hi_s in stc_buckets:
+        subset = [r for r in settled if lo_s <= (r["seconds_to_close"] or 0) < hi_s]
+        if not subset:
+            print(f"  {label:<12s} {'---':>4s}")
+            continue
+        w = sum(1 for r in subset if r["market_result"] in ("yes", "all_yes"))
+        pnl = sum((r["shadow_pnl_cents"] or 0) for r in subset)
+        print(f"  {label:<12s} {len(subset):>4d} {w:>3d} {len(subset)-w:>3d} "
+              f"{w/len(subset):>5.1%} {pnl:>+7d}c{significance_tag(len(subset))}")
+
+    # ── OLS vs Prior method comparison ──
+    subheader("HAR Method: OLS vs Prior")
+    for method in ["prior", "ols"]:
+        subset = [r for r in settled if r["har_method"] == method]
+        if not subset:
+            continue
+        w = sum(1 for r in subset if r["market_result"] in ("yes", "all_yes"))
+        pnl = sum((r["shadow_pnl_cents"] or 0) for r in subset)
+        bs_pairs = [(r["final_prob"], r["market_result"]) for r in subset if r["final_prob"] is not None]
+        bs_val, _ = calc_brier(bs_pairs)
+        bs_str = f"Brier={bs_val:.4f}" if bs_val is not None else ""
+        print(f"  {method}: n={len(subset)} WR={w/len(subset):.1%} PnL={pnl:+d}c "
+              f"{bs_str}{significance_tag(len(subset))}")
+
+    return {
+        "n": n, "wins": wins, "wr": round(wr, 4),
+        "shadow_pnl_cents": total_pnl,
+        "gates_passed": len(gated) if gated else 0,
+    }
+
+
+# ============================================================================
 #  Main
 # ============================================================================
 
@@ -1582,6 +1754,7 @@ Examples:
     results["temp_tournament"] = section_temp_tournament(conn, since)
     results["data_quality"] = section_data_quality(conn, since)
     results["readiness"] = section_readiness(data, conn, since)
+    results["harrv_comparison"] = section_harrv_comparison(conn, since)
 
     conn.close()
 

@@ -433,7 +433,7 @@ def price_tier_analysis(conn: sqlite3.Connection, since: str,
     ac_eval = f"AND asset = '{asset_filter}'" if asset_filter else ""
     all_evals = conn.execute(f"""
         SELECT market_price, fee_adjusted_edge, market_result, filter_stage,
-               COALESCE(counterfactual_pnl, 0) AS cf_pnl
+               position_size, COALESCE(counterfactual_pnl, 0) AS cf_pnl
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {ac_eval}
           AND filter_stage IN ('candidate', 'insufficient_edge')
@@ -442,8 +442,8 @@ def price_tier_analysis(conn: sqlite3.Connection, since: str,
 
     if all_evals:
         print(f"  {'Tier':>8} {'Traded':>7} {'Rej':>5} {'T WR':>6} {'R WR':>6} "
-              f"{'T PnL':>9} {'R CF':>9} {'Verdict':<16}")
-        print("  " + "-" * 75)
+              f"{'T 1c':>7} {'T Sized':>9} {'R CF':>9} {'Verdict':<16}")
+        print("  " + "-" * 85)
         for label, lo, hi, thresh in TIERS:
             traded = [r for r in all_evals
                       if lo <= (r["market_price"] or 0) <= hi
@@ -456,8 +456,12 @@ def price_tier_analysis(conn: sqlite3.Connection, since: str,
             tw = sum(1 for r in traded if r["market_result"] == "yes")
             tl = len(traded) - tw
             twr = tw / len(traded) * 100 if traded else 0
-            tpnl = sum(sim_pnl_maker_unit(r["market_price"],
-                       r["market_result"] == "yes") for r in traded) / 100
+            tpnl_1c = sum(sim_pnl_maker_unit(r["market_price"],
+                          r["market_result"] == "yes") for r in traded) / 100
+            tpnl_sz = sum(sim_pnl_maker_unit(r["market_price"],
+                          r["market_result"] == "yes")
+                          * (r["position_size"] or 1)
+                          for r in traded) / 100
             rw = sum(1 for r in rejected if r["market_result"] == "yes")
             rl = len(rejected) - rw
             rwr = rw / len(rejected) * 100 if rejected else 0
@@ -473,7 +477,8 @@ def price_tier_analysis(conn: sqlite3.Connection, since: str,
                 verdict = "MONITOR"
             print(f"  {label:>8} {len(traded):>4}({tw}W) {len(rejected):>5} "
                   f"{twr:>5.1f}% {rwr:>5.1f}% "
-                  f"${tpnl:>8.2f} ${rcf:>8.2f} {verdict:<16}")
+                  f"${tpnl_1c:>6.2f} ${tpnl_sz:>8.2f} "
+                  f"${rcf:>8.2f} {verdict:<16}")
 
 
 # ── Section 4: STC Analysis ─────────────────────────────────────
@@ -524,42 +529,49 @@ def stc_analysis(conn: sqlite3.Connection, since: str,
         ("500-600s", 500, 600), ("600-700s", 600, 700),
         ("700-800s", 700, 800), ("800-900s", 800, 900),
     ]
+    shadow_rows = conn.execute(f"""
+        SELECT market_price, market_result, status, seconds_to_close,
+               position_size
+        FROM evaluated_opportunities
+        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {ac_eval}
+          AND filter_stage = 'stc_shadow'
+    """, (since,)).fetchall()
+
     print(f"  {'STC':>10} {'N':>4} {'W':>3} {'L':>3} {'Pend':>5} "
-          f"{'CF PnL':>10} {'Avg P':>6}")
-    print("  " + "-" * 50)
-    total_w, total_l, total_cf = 0, 0, 0
+          f"{'1c PnL':>8} {'Sized PnL':>10} {'AvgSz':>6} {'Avg P':>6}")
+    print("  " + "-" * 65)
+    total_w, total_l, total_1c, total_sz = 0, 0, 0.0, 0.0
     for label, lo, hi in shadow_buckets:
-        row = conn.execute(f"""
-            SELECT COUNT(*) AS n,
-              SUM(CASE WHEN status='settled' AND market_result='yes'
-                  THEN 1 ELSE 0 END) AS w,
-              SUM(CASE WHEN status='settled' AND market_result='no'
-                  THEN 1 ELSE 0 END) AS l,
-              SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
-              SUM(CASE WHEN status='settled'
-                  THEN COALESCE(counterfactual_pnl, 0) ELSE 0 END) AS cf_pnl,
-              ROUND(AVG(market_price), 1) AS avg_p
-            FROM evaluated_opportunities
-            WHERE evaluation_time >= ? {EVAL_15M_FILTER} {ac_eval}
-              AND filter_stage = 'stc_shadow'
-              AND seconds_to_close >= ? AND seconds_to_close < ?
-        """, (since, lo, hi)).fetchone()
-        n = row["n"] or 0
-        if n == 0:
+        bucket = [r for r in shadow_rows
+                  if lo <= (r["seconds_to_close"] or 0) < hi]
+        if not bucket:
             continue
-        w = row["w"] or 0
-        l_ = row["l"] or 0
+        settled = [r for r in bucket if r["status"] == "settled"
+                   and r["market_result"] is not None]
+        pending = len(bucket) - len(settled)
+        w = sum(1 for r in settled if r["market_result"] == "yes")
+        l_ = len(settled) - w
         total_w += w
         total_l += l_
-        total_cf += (row["cf_pnl"] or 0)
-        print(f"  {label:>10} {n:>4} {w:>3} {l_:>3} {row['pending'] or 0:>5} "
-              f"${(row['cf_pnl'] or 0)/100:>9.2f} {row['avg_p'] or 0:>5.0f}c")
+        pnl_1c = sum(sim_pnl_maker_unit(r["market_price"],
+                     r["market_result"] == "yes") for r in settled) / 100
+        pnl_sz = sum(sim_pnl_maker_unit(r["market_price"],
+                     r["market_result"] == "yes")
+                     * (r["position_size"] or 1) for r in settled) / 100
+        total_1c += pnl_1c
+        total_sz += pnl_sz
+        avg_sz = (sum((r["position_size"] or 1) for r in settled)
+                  / len(settled)) if settled else 0
+        avg_p = (sum(r["market_price"] for r in bucket)
+                 / len(bucket)) if bucket else 0
+        print(f"  {label:>10} {len(settled):>4} {w:>3} {l_:>3} {pending:>5} "
+              f"${pnl_1c:>7.2f} ${pnl_sz:>9.2f} {avg_sz:>5.1f} {avg_p:>5.0f}c")
 
     settled_shadow = total_w + total_l
     if settled_shadow > 0:
         swr = total_w / settled_shadow * 100
         print(f"\n  Shadow total: {total_w}W/{total_l}L ({swr:.0f}% WR), "
-              f"CF PnL ${total_cf/100:.2f}")
+              f"1c PnL ${total_1c:.2f}, Sized PnL ${total_sz:.2f}")
         print(f"  Data sufficiency: "
               f"{'SUFFICIENT' if settled_shadow >= 30 else 'INSUFFICIENT'} "
               f"(need 30, have {settled_shadow})")
@@ -894,7 +906,7 @@ def counterfactual_simulations(conn: sqlite3.Connection, since: str,
     # Full universe
     rows = conn.execute(f"""
         SELECT market_price, fee_adjusted_edge, market_result, asset,
-               seconds_to_close, filter_stage,
+               seconds_to_close, filter_stage, position_size,
                COALESCE(counterfactual_pnl, 0) AS cf_pnl
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {ac_eval}
@@ -932,12 +944,17 @@ def counterfactual_simulations(conn: sqlite3.Connection, since: str,
         w = sum(1 for r in sub if r["market_result"] == "yes")
         l_ = len(sub) - w
         wr = w / len(sub) * 100
-        pnl = sum(sim_pnl_maker_unit(r["market_price"],
-                  r["market_result"] == "yes") for r in sub) / 100
-        daily = pnl / n_days
+        pnl_1c = sum(sim_pnl_maker_unit(r["market_price"],
+                     r["market_result"] == "yes") for r in sub) / 100
+        pnl_sz = sum(sim_pnl_maker_unit(r["market_price"],
+                     r["market_result"] == "yes")
+                     * (r["position_size"] or 1) for r in sub) / 100
+        daily_1c = pnl_1c / n_days
+        daily_sz = pnl_sz / n_days
         return {
             "label": label, "n": len(sub), "w": w, "l": l_,
-            "wr": wr, "pnl": pnl, "daily": daily,
+            "wr": wr, "pnl": pnl_1c, "daily": daily_1c,
+            "pnl_sz": pnl_sz, "daily_sz": daily_sz,
         }
 
     # Current config baseline
@@ -1004,10 +1021,15 @@ def counterfactual_simulations(conn: sqlite3.Connection, since: str,
          lambda r: _current(r) and r["asset"] == "BTC"),
     ]
 
-    print(f"  Universe: {len(rows)} settled evals over {n_days:.1f} days\n")
+    print(f"  Universe: {len(rows)} settled evals over {n_days:.1f} days")
+    n_with_sz = sum(1 for r in rows
+                    if r["position_size"] is not None and r["position_size"] > 0)
+    print(f"  Position sizing available: {n_with_sz}/{len(rows)} evals")
+    print(f"  (candidate + stc_shadow have sizing; "
+          f"insufficient_edge/price_out_of_range use 1 contract)\n")
     print(f"  {'Config':<32} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} "
-          f"{'PnL':>9} {'$/day':>7}")
-    print("  " + "-" * 72)
+          f"{'1c PnL':>8} {'Sized PnL':>10} {'$/day sz':>9}")
+    print("  " + "-" * 88)
 
     results = []
     for label, pred in configs:
@@ -1016,18 +1038,18 @@ def counterfactual_simulations(conn: sqlite3.Connection, since: str,
             results.append(r)
             marker = " <<" if label.startswith("Current") else ""
             print(f"  {r['label']:<32} {r['n']:>4} {r['w']:>3} {r['l']:>3} "
-                  f"{r['wr']:>5.1f}% ${r['pnl']:>8.2f} "
-                  f"${r['daily']:>6.2f}{marker}")
+                  f"{r['wr']:>5.1f}% ${r['pnl']:>7.2f} "
+                  f"${r['pnl_sz']:>9.2f} "
+                  f"${r['daily_sz']:>8.2f}{marker}")
 
     # Highlight best
     if results:
-        best = max(results, key=lambda x: x["daily"])
+        best = max(results, key=lambda x: x["daily_sz"])
         baseline = results[0] if results else None
         if baseline and best["label"] != baseline["label"]:
-            delta = best["daily"] - baseline["daily"]
-            print(f"\n  BEST: {best['label']} (+${delta:.2f}/day vs current)")
-            print(f"  NOTE: Counterfactual only -- does NOT account for "
-                  f"sizing/bankroll changes")
+            delta = best["daily_sz"] - baseline["daily_sz"]
+            print(f"\n  BEST (sized): {best['label']} "
+                  f"(+${delta:.2f}/day vs current)")
 
 
 # ── Section 9: Loss Pattern Analysis ─────────────────────────────
