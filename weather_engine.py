@@ -212,10 +212,12 @@ class WeatherEnsembleFetcher:
         # Fetch GFS ensemble
         gfs_members = self._fetch_model_ensemble(lat, lon, "gfs_seamless", target_date)
         result["gfs_members"] = gfs_members
+        time.sleep(0.5)  # Rate-limit: 3 calls per city, Open-Meteo throttles at ~30 req/min
 
         # Fetch ECMWF ensemble
         ecmwf_members = self._fetch_model_ensemble(lat, lon, "ecmwf_ifs025", target_date)
         result["ecmwf_members"] = ecmwf_members
+        time.sleep(0.5)
 
         if not ecmwf_members:
             logging.warning("WeatherEnsemble: %s ECMWF returned no members (ecmwf_ifs025)", city_code)
@@ -638,6 +640,7 @@ class WeatherEngine:
             else:
                 logging.warning("WeatherEngine self-test: %s FAILED — returned no members. "
                                 "Check model name against Open-Meteo docs.", model)
+            time.sleep(1.0)  # Rate-limit between test calls
 
         # Test HRRR deterministic
         hrrr = self._fetcher._fetch_hrrr(test_lat, test_lon, test_date)
