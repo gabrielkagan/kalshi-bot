@@ -109,15 +109,15 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 11,840 |
+| Markets evaluated | 12,033 |
 | Observation period | 2026-02-22 to 2026-03-06 |
-| Filter pass rate | 1.2% (143 of 11,840) |
-| Top rejection reason | Price Out Of Range (6,133) |
-| Settled trades | 250 |
-| Win rate | 88.8% |
-| Observation P&L | 9,550 cents |
+| Filter pass rate | 1.2% (148 of 12,033) |
+| Top rejection reason | Price Out Of Range (6,173) |
+| Settled trades | 253 |
+| Win rate | 88.5% |
+| Observation P&L | 9,544 cents |
 
-*Last updated: 2026-03-06T16:59:29Z*
+*Last updated: 2026-03-06T20:29:05Z*
 
 ## Setup
 
@@ -207,6 +207,6 @@ The bot writes JSONL journals for every stage of its decision-making pipeline:
 | `performance` | Daily summary aggregations |
 | `fill_model` | Maker order lifecycle data for ML fill prediction |
 
-### Dashboard (Supabase)
+### Firebase Dashboard (optional)
 
-When `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are set, the bot pushes a state snapshot every 10 seconds via the Supabase syncer: balance, active positions, recent trades, win/loss record, current volatility readings, order flow signals, and session stats. In observation mode it also tracks simulated P&L.
+When `FIREBASE_DB_URL` is set, the bot pushes a state snapshot every 10 seconds: balance, active positions, recent trades, win/loss record, current volatility readings, order flow signals, and session stats. In observation mode it also tracks simulated P&L.
