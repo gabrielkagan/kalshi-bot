@@ -95,7 +95,8 @@ class FirebasePusher:
                 logging.warning("Firebase push failed", exc_info=True)
             self._stop.wait(timeout=PUSH_INTERVAL)
 
-    def _build_snapshot(self) -> Dict[str, Any]:
+    def _build_snapshot(self, db_conn=None) -> Dict[str, Any]:
+        """Build dashboard snapshot. Accepts optional db_conn for cross-thread callers."""
         snap: Dict[str, Any] = {}
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         snap["timestamp"] = now_utc.isoformat()
@@ -146,18 +147,21 @@ class FirebasePusher:
             logging.debug("Firebase: balance_history build failed", exc_info=True)
             snap["balance_history"] = []
 
-        # Active positions (use Firebase thread's own DB connection to avoid threading issues)
+        # Use provided db_conn or fall back to own connection
+        _conn = db_conn or self._db_conn
+
+        # Active positions
         try:
-            rows = self._db_conn.execute(
+            rows = _conn.execute(
                 "SELECT * FROM positions WHERE status='open'"
             ).fetchall()
             snap["active_positions"] = [dict(r) for r in rows]
         except Exception:
             snap["active_positions"] = []
 
-        # Resting orders (use Firebase thread's own DB connection)
+        # Resting orders
         try:
-            rows = self._db_conn.execute(
+            rows = _conn.execute(
                 "SELECT * FROM pending_orders WHERE status='resting'"
             ).fetchall()
             snap["resting_orders"] = [dict(r) for r in rows]
@@ -166,7 +170,7 @@ class FirebasePusher:
 
         # Track which sections failed for diagnostics
         snap["_snapshot_errors"] = []
-        conn = self._db_conn
+        conn = _conn
 
         # Section 1: Recent trades (15M only for main view, all for toggle)
         try:

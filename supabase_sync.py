@@ -278,7 +278,7 @@ class SupabaseSyncer:
         try:
             fb = getattr(self._ml, "firebase", None)
             if fb and hasattr(fb, "_build_snapshot"):
-                snapshot = fb._build_snapshot()
+                snapshot = fb._build_snapshot(db_conn=self._db)
             else:
                 snapshot = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
