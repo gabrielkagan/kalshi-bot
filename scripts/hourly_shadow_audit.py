@@ -2008,6 +2008,202 @@ def validation_plan(conn: sqlite3.Connection) -> None:
     print("  8. Max drawdown < 20% of bankroll in simulation")
 
 
+def alt_shadow_strategies(conn: sqlite3.Connection, since: str) -> None:
+    """Report on hourly alt shadow strategies (MM + HAR-RV) from hourly_alt_shadow_signals."""
+    section("ALT SHADOW STRATEGIES (MM + HAR-RV)")
+
+    # Check if the table exists
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='hourly_alt_shadow_signals'"
+    ).fetchall()]
+    if not tables:
+        print("  Table hourly_alt_shadow_signals not found — engine not yet deployed or no data.")
+        return
+
+    # ── Overall counts ──
+    subsection("Signal counts")
+    overview = conn.execute("""
+        SELECT strategy,
+               COUNT(*) AS total,
+               SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+               SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+               SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS losses,
+               SUM(shadow_pnl_cents) AS total_pnl
+        FROM hourly_alt_shadow_signals
+        WHERE evaluation_time >= ?
+        GROUP BY strategy
+    """, (since,)).fetchall()
+    if not overview:
+        print("  No alt shadow signals found since", since)
+        return
+
+    print(f"  {'Strategy':<16} {'Total':>6} {'Settled':>8} {'Pending':>8} {'W':>5} {'L':>5} {'WR':>7} {'PnL':>10}")
+    print(f"  {'-'*72}")
+    for r in overview:
+        settled = r["settled"] or 0
+        wins = r["wins"] or 0
+        losses = r["losses"] or 0
+        wr = wins / settled * 100 if settled > 0 else 0
+        pnl = (r["total_pnl"] or 0) / 100
+        print(f"  {r['strategy']:<16} {r['total']:>6} {settled:>8} {r['pending'] or 0:>8} "
+              f"{wins:>5} {losses:>5} {wr:>6.1f}% ${pnl:>8.2f}")
+
+    # ── Per-asset breakdown ──
+    subsection("Per-asset x strategy breakdown")
+    asset_rows = conn.execute("""
+        SELECT strategy, asset,
+               COUNT(*) AS n,
+               SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS losses,
+               SUM(shadow_pnl_cents) AS pnl,
+               AVG(market_price) AS avg_price,
+               AVG(seconds_to_close) AS avg_stc
+        FROM hourly_alt_shadow_signals
+        WHERE status='settled' AND evaluation_time >= ?
+        GROUP BY strategy, asset ORDER BY strategy, asset
+    """, (since,)).fetchall()
+    if asset_rows:
+        print(f"  {'Strategy':<16} {'Asset':>5} {'N':>5} {'W':>4} {'L':>4} {'WR':>7} {'PnL':>10} {'AvgPx':>6} {'AvgSTC':>7}")
+        print(f"  {'-'*72}")
+        for r in asset_rows:
+            settled = (r["wins"] or 0) + (r["losses"] or 0)
+            wr = (r["wins"] or 0) / settled * 100 if settled > 0 else 0
+            pnl = (r["pnl"] or 0) / 100
+            print(f"  {r['strategy']:<16} {r['asset']:>5} {r['n']:>5} {r['wins'] or 0:>4} "
+                  f"{r['losses'] or 0:>4} {wr:>6.1f}% ${pnl:>8.2f} {r['avg_price'] or 0:>5.0f} "
+                  f"{r['avg_stc'] or 0:>6.0f}s")
+    else:
+        print("  No settled alt shadow signals yet.")
+
+    # ── HAR-RV gate failure analysis ──
+    subsection("HAR-RV gate failures (top reasons for abstention)")
+    gate_rows = conn.execute("""
+        SELECT gate_failures, COUNT(*) AS n
+        FROM hourly_alt_shadow_signals
+        WHERE strategy='harrv_shadow' AND gate_failures IS NOT NULL
+          AND gate_failures != '' AND evaluation_time >= ?
+        GROUP BY gate_failures ORDER BY n DESC LIMIT 10
+    """, (since,)).fetchall()
+    if gate_rows:
+        for r in gate_rows:
+            print(f"  {r['n']:>5}x  {r['gate_failures']}")
+    else:
+        print("  No HAR-RV gate failure data yet (needs return accumulation).")
+
+    # ── HAR-RV return buffer status ──
+    subsection("HAR-RV diagnostics")
+    harrv_rows = conn.execute("""
+        SELECT asset,
+               MAX(n_returns_1h) AS max_n_returns,
+               AVG(rv_1h) AS avg_rv1h,
+               AVG(rv_forecast) AS avg_rv_forecast,
+               AVG(temperature) AS avg_temp,
+               COUNT(*) AS n_signals
+        FROM hourly_alt_shadow_signals
+        WHERE strategy='harrv_shadow' AND evaluation_time >= ?
+        GROUP BY asset
+    """, (since,)).fetchall()
+    if harrv_rows:
+        print(f"  {'Asset':>5} {'Signals':>8} {'MaxRets':>8} {'AvgRV1h':>10} {'AvgRVf':>10} {'AvgT':>6}")
+        print(f"  {'-'*52}")
+        for r in harrv_rows:
+            print(f"  {r['asset']:>5} {r['n_signals']:>8} {r['max_n_returns'] or 0:>8} "
+                  f"{r['avg_rv1h'] or 0:>10.6f} {r['avg_rv_forecast'] or 0:>10.6f} "
+                  f"{r['avg_temp'] or 0:>5.2f}")
+    else:
+        print("  No HAR-RV signals yet — return buffer still accumulating.")
+
+    # ── MM spread analysis ──
+    subsection("Market-Making spread analysis")
+    mm_rows = conn.execute("""
+        SELECT asset,
+               COUNT(*) AS n,
+               AVG(spread) AS avg_spread,
+               AVG(spread_buffer) AS avg_buffer,
+               AVG(midpoint) AS avg_mid,
+               SUM(mm_buy_filled) AS buy_fills,
+               SUM(mm_sell_filled) AS sell_fills
+        FROM hourly_alt_shadow_signals
+        WHERE strategy='mm_shadow' AND evaluation_time >= ?
+        GROUP BY asset
+    """, (since,)).fetchall()
+    if mm_rows:
+        print(f"  {'Asset':>5} {'N':>5} {'AvgSprd':>8} {'AvgBuf':>7} {'AvgMid':>7} {'BuyFills':>9} {'SellFills':>10}")
+        print(f"  {'-'*58}")
+        for r in mm_rows:
+            print(f"  {r['asset']:>5} {r['n']:>5} {r['avg_spread'] or 0:>7.1f} "
+                  f"{r['avg_buffer'] or 0:>6.0f} {r['avg_mid'] or 0:>6.1f} "
+                  f"{r['buy_fills'] or 0:>9} {r['sell_fills'] or 0:>10}")
+    else:
+        print("  No MM signals yet.")
+
+    # ── EGARCH comparison (where both have data for same ticker) ──
+    subsection("EGARCH vs alt shadow comparison (same tickers)")
+    comparison = conn.execute("""
+        SELECT s.strategy, s.asset,
+               COUNT(*) AS n,
+               AVG(s.final_prob) AS alt_prob,
+               AVG(s.egarch_prob) AS egarch_prob,
+               AVG(s.edge) AS alt_edge,
+               AVG(s.egarch_edge) AS egarch_edge,
+               SUM(CASE WHEN s.market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN s.market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS losses
+        FROM hourly_alt_shadow_signals s
+        WHERE s.status='settled' AND s.egarch_prob IS NOT NULL
+          AND s.evaluation_time >= ?
+        GROUP BY s.strategy, s.asset ORDER BY s.strategy, s.asset
+    """, (since,)).fetchall()
+    if comparison:
+        print(f"  {'Strategy':<16} {'Asset':>5} {'N':>4} {'AltProb':>8} {'EGProb':>8} "
+              f"{'AltEdge':>8} {'EGEdge':>8} {'WR':>7}")
+        print(f"  {'-'*72}")
+        for r in comparison:
+            settled = (r["wins"] or 0) + (r["losses"] or 0)
+            wr = (r["wins"] or 0) / settled * 100 if settled > 0 else 0
+            print(f"  {r['strategy']:<16} {r['asset']:>5} {r['n']:>4} "
+                  f"{r['alt_prob'] or 0:>7.3f} {r['egarch_prob'] or 0:>7.3f} "
+                  f"{(r['alt_edge'] or 0)*100:>7.2f}% {(r['egarch_edge'] or 0)*100:>7.2f}% "
+                  f"{wr:>6.1f}%")
+    else:
+        print("  No settled signals with EGARCH comparison data yet.")
+
+    # ── Data sufficiency for alt shadow ──
+    subsection("Alt shadow data sufficiency")
+    total_row = conn.execute("""
+        SELECT COUNT(*) AS n,
+               SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+               MIN(evaluation_time) AS first_eval,
+               MAX(evaluation_time) AS last_eval
+        FROM hourly_alt_shadow_signals
+        WHERE evaluation_time >= ?
+    """, (since,)).fetchone()
+    total_n = total_row["n"] or 0
+    settled_n = total_row["settled"] or 0
+    if total_row["first_eval"] and total_row["last_eval"]:
+        t1 = datetime.fromisoformat(total_row["first_eval"].replace("Z", ""))
+        t2 = datetime.fromisoformat(total_row["last_eval"].replace("Z", ""))
+        days = (t2 - t1).total_seconds() / 86400
+    else:
+        days = 0
+    checks = [
+        ("Total signals >= 50", total_n >= 50, f"{total_n}/50"),
+        ("Settled signals >= 30", settled_n >= 30, f"{settled_n}/30"),
+        ("Days of data >= 5", days >= 5, f"{days:.1f}/5"),
+        ("HAR-RV producing signals", any(r["strategy"] == "harrv_shadow" for r in overview),
+         "check above"),
+        ("MM producing signals", any(r["strategy"] == "mm_shadow" for r in overview),
+         "check above"),
+    ]
+    for desc, passed, detail in checks:
+        status = "PASS" if passed else "WAIT"
+        print(f"  [{status}] {desc}: {detail}")
+    n_pass = sum(1 for _, p, _ in checks if p)
+    print(f"\n  >>> {n_pass}/{len(checks)} checks passing")
+    if n_pass < len(checks):
+        print("  >>> Alt shadow still collecting data — check back in a few days")
+
+
 def cal_engine_pipeline(conn, since: str) -> None:
     """CalEngine observation pipeline: settled evals with raw_prob for hourly."""
     section("CALENGINE OBSERVATION PIPELINE")
@@ -2073,6 +2269,7 @@ def main():
     cal_grid = calibration_grid_search(conn, since)
     data_sufficiency(conn, since, stats)
     recommendations(conn, since)
+    alt_shadow_strategies(conn, since)
     cal_engine_pipeline(conn, since)
     validation_plan(conn)
 

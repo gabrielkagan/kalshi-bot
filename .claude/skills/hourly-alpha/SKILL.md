@@ -51,6 +51,7 @@ Systematic alpha research on hourly trading data. Discovers profitable configura
 | 9. Position Sizing | Per-tier Kelly fraction, recommended fraction, max risk |
 | 10. Recommended Config | Best config with bot parameter translation |
 | 11. Final Verdict | Alpha/marginal/none + actionable recommendations |
+| 12. Alt Shadow | MM + HAR-RV shadow strategy performance vs EGARCH baseline |
 
 ## Key Metrics to Watch
 - BTC-only WR vs breakeven (currently +3.5pp at P>=70c)

@@ -1322,9 +1322,147 @@ def run_research(db_path: str):
     else:
         print(f"  Status: MARGINAL -- collect more data before promoting")
 
+    # ================================================================
+    #  ALT SHADOW STRATEGIES (MM + HAR-RV)
+    # ================================================================
+    alt_shadow_report(db_path, days)
+
     print(f"\n{'=' * 80}")
     print(f"  Analysis complete. {len(configs)} configurations evaluated.")
     print(f"{'=' * 80}")
+
+
+def alt_shadow_report(db_path: str, total_days: float):
+    """Report on alt shadow strategies side-by-side with EGARCH baseline."""
+    conn = sqlite3.connect(db_path)
+    conn.execute('PRAGMA busy_timeout=5000')
+    conn.row_factory = sqlite3.Row
+
+    # Check table exists
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='hourly_alt_shadow_signals'"
+    ).fetchall()]
+    if not tables:
+        conn.close()
+        return
+
+    total = conn.execute("SELECT COUNT(*) AS n FROM hourly_alt_shadow_signals").fetchone()["n"]
+    if total == 0:
+        conn.close()
+        return
+
+    print(f"\n{'=' * 80}")
+    print(f"  ALT SHADOW STRATEGIES (MM + HAR-RV)")
+    print(f"{'=' * 80}")
+
+    # ── Per-strategy summary ──
+    rows = conn.execute("""
+        SELECT strategy,
+               COUNT(*) AS n,
+               SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+               SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS losses,
+               SUM(shadow_pnl_cents) AS pnl_cents,
+               AVG(market_price) AS avg_price
+        FROM hourly_alt_shadow_signals
+        GROUP BY strategy
+    """).fetchall()
+
+    print(f"\n  {'Strategy':<16} {'Total':>6} {'Settled':>8} {'W':>5} {'L':>5} "
+          f"{'WR':>7} {'PnL':>10} {'$/day':>8} {'AvgPx':>6}")
+    print(f"  {'-'*78}")
+    for r in rows:
+        settled = r["settled"] or 0
+        wins = r["wins"] or 0
+        losses = r["losses"] or 0
+        wr = wins / settled if settled > 0 else 0
+        pnl = (r["pnl_cents"] or 0) / 100
+        daily = pnl / max(total_days, 0.01)
+        print(f"  {r['strategy']:<16} {r['n']:>6} {settled:>8} {wins:>5} {losses:>5} "
+              f"{wr:>6.1%} ${pnl:>8.2f} ${daily:>7.2f} {r['avg_price'] or 0:>5.0f}")
+
+    # ── Per-asset per-strategy ──
+    print(f"\n  --- Per-asset breakdown (settled only) ---")
+    asset_rows = conn.execute("""
+        SELECT strategy, asset,
+               SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS losses,
+               SUM(shadow_pnl_cents) AS pnl_cents,
+               AVG(market_price) AS avg_price
+        FROM hourly_alt_shadow_signals
+        WHERE status='settled'
+        GROUP BY strategy, asset ORDER BY strategy, asset
+    """).fetchall()
+
+    if asset_rows:
+        print(f"  {'Strategy':<16} {'Asset':>5} {'W':>4} {'L':>4} {'WR':>7} {'PnL':>10} "
+              f"{'BE WR':>7} {'Gap':>7}")
+        print(f"  {'-'*66}")
+        for r in asset_rows:
+            wins = r["wins"] or 0
+            losses = r["losses"] or 0
+            n = wins + losses
+            wr = wins / n if n > 0 else 0
+            pnl = (r["pnl_cents"] or 0) / 100
+            avg_px = int(r["avg_price"] or 0)
+            be = breakeven_wr(avg_px) if avg_px > 0 else 0
+            gap = wr - be
+            print(f"  {r['strategy']:<16} {r['asset']:>5} {wins:>4} {losses:>4} "
+                  f"{wr:>6.1%} ${pnl:>8.2f} {be:>6.1%} {gap:>+6.1%}")
+    else:
+        print("  No settled alt shadow data yet.")
+
+    # ── EGARCH vs alt shadow head-to-head (matched tickers) ──
+    print(f"\n  --- EGARCH vs alt shadow (matched settled tickers) ---")
+    matched = conn.execute("""
+        SELECT s.strategy, s.asset,
+               COUNT(*) AS n,
+               SUM(CASE WHEN s.market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN s.market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS losses,
+               SUM(s.shadow_pnl_cents) AS alt_pnl,
+               AVG(s.final_prob) AS alt_prob,
+               AVG(s.egarch_prob) AS eg_prob,
+               AVG(CASE WHEN s.market_result IN ('yes','all_yes') THEN 1.0 ELSE 0.0 END) AS actual_wr
+        FROM hourly_alt_shadow_signals s
+        WHERE s.status='settled' AND s.egarch_prob IS NOT NULL
+        GROUP BY s.strategy, s.asset
+    """).fetchall()
+
+    if matched:
+        print(f"  {'Strategy':<16} {'Asset':>5} {'N':>4} {'WR':>7} {'AltProb':>8} {'EGProb':>8} "
+              f"{'AltBias':>8} {'EGBias':>8}")
+        print(f"  {'-'*72}")
+        for r in matched:
+            n = r["n"]
+            wr = r["actual_wr"] or 0
+            alt_p = r["alt_prob"] or 0
+            eg_p = r["eg_prob"] or 0
+            alt_bias = (alt_p - wr) * 100  # pp overconfidence
+            eg_bias = (eg_p - wr) * 100
+            print(f"  {r['strategy']:<16} {r['asset']:>5} {n:>4} {wr:>6.1%} "
+                  f"{alt_p:>7.3f} {eg_p:>7.3f} "
+                  f"{alt_bias:>+7.1f}pp {eg_bias:>+7.1f}pp")
+        print(f"\n  (Bias = predicted - actual; negative = underconfident, positive = overconfident)")
+    else:
+        print("  No matched settled data yet.")
+
+    # ── Data collection status ──
+    first_last = conn.execute("""
+        SELECT MIN(evaluation_time) AS first_t, MAX(evaluation_time) AS last_t
+        FROM hourly_alt_shadow_signals
+    """).fetchone()
+    if first_last["first_t"]:
+        print(f"\n  Data range: {first_last['first_t'][:16]} to {first_last['last_t'][:16]}")
+    print(f"  Total signals: {total}")
+    harrv_n = conn.execute(
+        "SELECT COUNT(*) AS n FROM hourly_alt_shadow_signals WHERE strategy='harrv_shadow'"
+    ).fetchone()["n"]
+    mm_n = total - harrv_n
+    print(f"  MM: {mm_n}, HAR-RV: {harrv_n}")
+    if harrv_n == 0:
+        print(f"  [NOTE] HAR-RV has 0 signals — return buffer still accumulating (~1h needed)")
+
+    conn.close()
 
 
 if __name__ == '__main__':
