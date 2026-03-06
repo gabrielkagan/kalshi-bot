@@ -1449,6 +1449,8 @@ class StateManager:
             ("wx_market_type", "TEXT"),
             ("wx_actual_high_temp", "REAL"),
             ("wx_no_side_edge", "REAL"),
+            ("wx_hrrr_temp", "REAL"),
+            ("wx_corrected_mean", "REAL"),
             # Hourly temperature scaling columns
             ("hourly_pre_temp_prob", "REAL"),
             ("hourly_applied_temp_t", "REAL"),
@@ -1920,6 +1922,8 @@ class StateManager:
                                      wx_market_type: Optional[str] = None,
                                      wx_actual_high_temp: Optional[float] = None,
                                      wx_no_side_edge: Optional[float] = None,
+                                     wx_hrrr_temp: Optional[float] = None,
+                                     wx_corrected_mean: Optional[float] = None,
                                      hourly_pre_temp_prob: Optional[float] = None,
                                      hourly_applied_temp_t: Optional[float] = None,
                                      hourly_shadow_temp_2_0: Optional[float] = None,
@@ -1959,6 +1963,7 @@ class StateManager:
                      oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
                      wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
                      wx_market_type, wx_actual_high_temp, wx_no_side_edge,
+                     wx_hrrr_temp, wx_corrected_mean,
                      hourly_pre_temp_prob, hourly_applied_temp_t,
                      hourly_shadow_temp_2_0, hourly_shadow_temp_1_0, hourly_shadow_temp_2_5,
                      hourly_shadow_blend_50,
@@ -1967,7 +1972,7 @@ class StateManager:
                      hourly_post_temp_prob,
                      available_balance_cents,
                      order_id, order_submitted_at, order_outcome)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1986,6 +1991,7 @@ class StateManager:
                   oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
                   wx_ensemble_mean, wx_ensemble_std, wx_bias_correction, wx_n_members,
                   wx_market_type, wx_actual_high_temp, wx_no_side_edge,
+                  wx_hrrr_temp, wx_corrected_mean,
                   hourly_pre_temp_prob, hourly_applied_temp_t,
                   hourly_shadow_temp_2_0, hourly_shadow_temp_1_0, hourly_shadow_temp_2_5,
                   hourly_shadow_blend_50,
@@ -6674,6 +6680,7 @@ class OpportunityScanner:
                     _shadow_extra["wx_bias_correction"] = _wx_prob.get("bias_correction")
                     _shadow_extra["wx_n_members"] = _wx_prob.get("n_members")
                     _shadow_extra["wx_hrrr_temp"] = _wx_prob.get("hrrr_temp")
+                    _shadow_extra["wx_corrected_mean"] = _wx_prob.get("corrected_mean")
                     logging.info(
                         "WEATHER_PROB: %s thresh=%.1fF ens_mean=%.1fF ens_std=%.2fF prob=%.4f type=%s",
                         ticker, threshold,
@@ -6951,6 +6958,8 @@ class OpportunityScanner:
                                 wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
+                                wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
                                 hourly_pre_temp_prob=None, hourly_applied_temp_t=None,
                                 hourly_shadow_temp_2_0=None, hourly_shadow_temp_1_0=None,
                                 hourly_shadow_temp_2_5=None, hourly_shadow_blend_50=None,
@@ -7428,6 +7437,8 @@ class OpportunityScanner:
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
                                 wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
+                                wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
@@ -7566,6 +7577,8 @@ class OpportunityScanner:
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
                                 wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
+                                wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
@@ -7704,6 +7717,8 @@ class OpportunityScanner:
                                 wx_n_members=_shadow_extra.get("wx_n_members"),
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
                                 wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
+                                wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
@@ -7955,6 +7970,8 @@ class OpportunityScanner:
                                 wx_n_members=vol_est.get("n_members"),
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
                                 wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
+                                wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
                             )
                         self._state.insert_evaluated_opportunity(
                             ticker, window["event_ticker"], asset, _obs_label,
@@ -9024,6 +9041,8 @@ class OrderExecutor:
                         wx_bias_correction=candidate.get("wx_bias_correction"),
                         wx_n_members=candidate.get("wx_n_members"),
                         wx_market_type=candidate.get("wx_market_type"),
+                        wx_hrrr_temp=candidate.get("wx_hrrr_temp"),
+                        wx_corrected_mean=candidate.get("wx_corrected_mean"),
                         hourly_pre_temp_prob=candidate.get("hourly_pre_temp_prob"),
                         hourly_applied_temp_t=candidate.get("hourly_applied_temp_t"),
                         hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
@@ -9096,6 +9115,8 @@ class OrderExecutor:
                 wx_n_members=candidate.get("wx_n_members"),
                 wx_market_type=candidate.get("wx_market_type"),
                 wx_no_side_edge=candidate.get("wx_no_side_edge"),
+                wx_hrrr_temp=candidate.get("wx_hrrr_temp"),
+                wx_corrected_mean=candidate.get("wx_corrected_mean"),
                 hourly_pre_temp_prob=candidate.get("hourly_pre_temp_prob"),
                 hourly_applied_temp_t=candidate.get("hourly_applied_temp_t"),
                 hourly_shadow_temp_2_0=candidate.get("hourly_shadow_temp_2_0"),
