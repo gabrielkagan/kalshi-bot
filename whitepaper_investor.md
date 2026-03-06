@@ -1,7 +1,84 @@
 ---
-title: "Kalshi Crypto Trading Bot — Investor Whitepaper"
+title: "Kalshi Crypto Trading Bot"
+subtitle: "Investor Whitepaper"
 author: "Gabriel Kagan"
 date: "March 2026"
+titlepage: true
+titlepage-color: "0D1B2A"
+titlepage-text-color: "FFFFFF"
+titlepage-rule-color: "E8A838"
+titlepage-rule-height: 4
+toc: true
+toc-own-page: true
+colorlinks: true
+linkcolor: "1B4F72"
+urlcolor: "1B4F72"
+toccolor: "1B4F72"
+header-left: "\\footnotesize Kalshi Crypto Trading Bot"
+header-right: "\\footnotesize Investor Whitepaper"
+footer-left: "\\footnotesize Gabriel Kagan"
+footer-center: ""
+footer-right: "\\footnotesize \\thepage"
+mainfont: "Source Sans Pro"
+sansfont: "Source Sans Pro"
+monofont: "Source Code Pro"
+fontsize: "11pt"
+geometry: "margin=1in"
+header-includes:
+  - |
+    ```{=latex}
+    % tcolorbox and xcolor are loaded by Eisvogel; safe to re-request
+    \usepackage{tcolorbox}
+    \usepackage{xcolor}
+    \usepackage{textcomp}
+    \usepackage{colortbl}
+
+    \definecolor{accent}{HTML}{E8A838}
+    \definecolor{darkblue}{HTML}{0D1B2A}
+    \definecolor{medblue}{HTML}{1B4F72}
+    \definecolor{calloutbg}{HTML}{EEF2F7}
+    \definecolor{calloutborder}{HTML}{1B4F72}
+    \definecolor{warningbg}{HTML}{FFF8E7}
+    \definecolor{warningborder}{HTML}{E8A838}
+
+    % Styled callout box for key metrics
+    \newtcolorbox{metricbox}{
+      colback=calloutbg,
+      colframe=calloutborder,
+      arc=3pt,
+      boxrule=1.5pt,
+      left=12pt,
+      right=12pt,
+      top=10pt,
+      bottom=10pt,
+      fontupper=\normalsize
+    }
+
+    % Warning/important callout
+    \newtcolorbox{importantbox}{
+      colback=warningbg,
+      colframe=warningborder,
+      arc=3pt,
+      boxrule=1.5pt,
+      left=12pt,
+      right=12pt,
+      top=10pt,
+      bottom=10pt,
+      fontupper=\normalsize
+    }
+
+    % Style section headers with accent color
+    \usepackage{sectsty}
+    \sectionfont{\color{darkblue}}
+    \subsectionfont{\color{medblue}}
+    \subsubsectionfont{\color{medblue}}
+
+    % Table rule color
+    \arrayrulecolor{medblue}
+
+    % Reduce ToC depth for cleaner look
+    \setcounter{tocdepth}{2}
+    ```
 ---
 
 # Executive Summary
@@ -10,16 +87,21 @@ This document describes an automated trading platform for **Kalshi**, the first 
 
 The platform monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
-> **Live trading results (as of {{GENERATED_AT}}):**
->
-> - **{{TOTAL_SETTLED}}** settled trades with a **{{WIN_RATE}}** win rate ({{TOTAL_WINS}}W / {{TOTAL_LOSSES}}L)
-> - Live trading with real capital since February 22, 2026
-> - Fully automated, always-on operation with complete audit trail
-> - Four additional market verticals in shadow mode, each validated before going live:
->   - **S&P 500 intraday** — equity-adapted volatility model with VIX integration
->   - **Weather temperature** — 19 US cities, 82-member forecast ensemble
->   - **Live sports** — 28 leagues including NFL, NBA, EPL, ATP/WTA Tennis
->   - **Hourly crypto** — extended-duration contracts collecting calibration data
+\begin{metricbox}
+\textbf{Live trading results (as of {{GENERATED_AT}}):}
+\begin{itemize}
+\item \textbf{{{TOTAL_SETTLED}}} settled trades with a \textbf{{{WIN_RATE}}} win rate ({{TOTAL_WINS}}W / {{TOTAL_LOSSES}}L)
+\item Live trading with real capital since February 22, 2026
+\item Fully automated, always-on operation with complete audit trail
+\item Four additional market verticals in shadow mode, each validated before going live:
+  \begin{itemize}
+  \item \textbf{S\&P 500 intraday} --- equity-adapted volatility model with VIX integration
+  \item \textbf{Weather temperature} --- 19 US cities, 82-member forecast ensemble
+  \item \textbf{Live sports} --- 28 leagues including NFL, NBA, EPL, ATP/WTA Tennis
+  \item \textbf{Hourly crypto} --- extended-duration contracts collecting calibration data
+  \end{itemize}
+\end{itemize}
+\end{metricbox}
 
 ---
 
@@ -80,13 +162,16 @@ The probability model uses **Normal Inverse Gaussian (NIG) distributions** fitte
 
 Most markets are not worth trading. The system applies a rigorous multi-stage filter:
 
-> **A market is rejected if any of the following apply:**
->
-> - The model's estimated probability is too low (the contract is unlikely to pay out)
-> - The Kalshi price is too high (not enough profit potential) or too low (too much uncertainty)
-> - The edge after fees is insufficient — must exceed a price-dependent minimum (0.5% at 86¢ up to 4.0% at 97¢+) after worst-case taker fees
-> - The model and the market disagree by a suspicious margin
-> - Statistical inputs appear unreliable (extreme z-scores indicating potential data issues)
+\begin{importantbox}
+\textbf{A market is rejected if any of the following apply:}
+\begin{itemize}
+\item The model's estimated probability is too low (the contract is unlikely to pay out)
+\item The Kalshi price is too high (not enough profit potential) or too low (too much uncertainty)
+\item The edge after fees is insufficient --- must exceed a price-dependent minimum (0.25\% at 86\textcent{} up to 2.0\% at 97\textcent{}+) after worst-case taker fees
+\item The model and the market disagree by a suspicious margin
+\item Statistical inputs appear unreliable (extreme z-scores indicating potential data issues)
+\end{itemize}
+\end{importantbox}
 
 The vast majority of markets are correctly identified as unprofitable and filtered out — the system is highly selective.
 
@@ -102,7 +187,8 @@ For the small number of markets that pass all filters, the bot determines the ap
 | ≥ 1.2% | 10% | Standard edge — controlled exposure |
 | ≥ 0.9% | 7% | Lower edge — minimal sizing |
 | ≥ 0.7% | 5% | Thin edge — small position |
-| ≥ 0.5% | 3% | Marginal edge — smallest allocation |
+| ≥ 0.5% | 3% | Marginal edge — small allocation |
+| ≥ 0.25% | 2% | Minimum edge — smallest allocation |
 
 Position sizes are:
 
@@ -117,7 +203,7 @@ The bot uses a fee-minimizing execution strategy with intelligent escalation:
 |---|---|
 | **Maker-first** | Places limit orders with `post_only` guarantees, earning 75% lower fees |
 | **3-tier rejection handling** | If maker rejected (locked spread): try degraded maker → taker IOC (re-verifying profitability at higher fees) |
-| **Direct taker below 75s** | When <75s remain, skip maker entirely — data shows only 7.7% fill rate at low STC; direct taker strictly better |
+| **Direct taker below 180s** | When <180s remain, skip maker entirely — data shows only 7.7% fill rate at low STC; direct taker strictly better |
 | **Real-time fill detection** | Kalshi WebSocket provides instant fill notifications at zero API cost, with REST backup |
 | **Smart escalation** | If unfilled: amend order in-place (faster than cancel + re-place), then fall back to IOC taker |
 | **Price re-validation** | Before every execution step, re-checks market conditions to confirm trade still makes sense |
@@ -172,12 +258,14 @@ This creates a geometric de-risking curve: the more the account loses, the less 
 Before any trade is placed, the system verifies:
 
 1. The model's probability estimate passes a sanity check against the market price
-2. The estimated edge exceeds the price-dependent minimum (0.5%–4.0%) after all fees (worst-case taker rates)
+2. The estimated edge exceeds the price-dependent minimum (0.25%–2.0%) after all fees (worst-case taker rates)
 3. The contract price falls within acceptable bounds (86–99¢)
 4. No extreme statistical indicators suggest unreliable model inputs
 5. The position size respects all hard limits and drawdown adjustments
 
-> **If any single check fails, the trade is refused — no exceptions.** The system is designed to say "no" far more often than "yes."
+\begin{importantbox}
+\textbf{If any single check fails, the trade is refused --- no exceptions.} The system is designed to say ``no'' far more often than ``yes.''
+\end{importantbox}
 
 ### Hard Price Boundaries
 
@@ -185,7 +273,7 @@ The bot only trades contracts priced between **86 and 99 cents**. Below 86¢, th
 
 ### Intelligent Late-Window Execution
 
-Below 75 seconds before settlement, the system switches to **direct taker execution** — skipping the maker order entirely and submitting an immediate-or-cancel order. Data showed maker fill rates of only 7.7% in this window, meaning 92% of promising opportunities were missed. Direct taker captures these while still requiring full edge and liquidity validation.
+Below 180 seconds before settlement, the system switches to **direct taker execution** — skipping the maker order entirely and submitting an immediate-or-cancel order. Data showed maker fill rates of only 7.7% at low STC, meaning 92% of promising opportunities were missed. Direct taker captures these while still requiring full edge and liquidity validation.
 
 ---
 
@@ -297,7 +385,7 @@ Every decision the bot makes is logged across three complementary systems:
 |---|---|
 | **SQLite database** | Positions, orders, fills, settlements, every market evaluation with filter stage, full order lifecycle (order_id, submission time, final outcome) |
 | **JSONL journals** | Append-only logs for scans, opportunities, rejections, trades, settlements, and maker fill model training data. Rotated daily with 30-day retention |
-| **Firebase dashboard** | Real-time web interface showing positions, P&L, volatility, orderbooks, execution health, calibration diagnostics, and all shadow system data |
+| **Supabase dashboard** | Real-time web interface showing positions, P&L, volatility, orderbooks, execution health, calibration diagnostics, and all shadow system data |
 
 This comprehensive logging enables full after-the-fact analysis of any trade or decision.
 
@@ -319,9 +407,9 @@ For readers interested in the mathematical foundations, the full technical white
 
 **Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven: as settlement outcomes accumulate, the CalibrationEngine progresses from fixed logistic scaling → Platt Scaling → Beta Calibration → Bayesian Linear Regression. A dynamic time-dependent probability cap applies during startup (93% at 10min+ → 99.5% at <1min) but is bypassed (99.9% ceiling) once learned calibration is active. Final probability blends 60/40 (60% model, 40% market) to prevent overconfidence.
 
-**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Seven tiers from 25% at 4%+ edge down to 3% at 0.5%+ edge, with automatic de-risking during drawdowns (half at 85%, quarter at 75%, halt at 65%). Max risk per trade: 25%.
+**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Eight tiers from 25% at 4%+ edge down to 2% at 0.25%+ edge, with automatic de-risking during drawdowns (half at 85%, quarter at 75%, halt at 65%). Max risk per trade: 25%.
 
-**Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Direct taker below 75s STC (data: 7.7% maker fill rate at 0–60s). Maker orders use `post_only=True` to guarantee 75% fee savings. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. Full order lifecycle tracking (order_id, submission time, outcome).
+**Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Direct taker below 180s STC (data: 7.7% maker fill rate at low STC). Maker orders use `post_only=True` to guarantee 75% fee savings. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. Full order lifecycle tracking (order_id, submission time, outcome).
 
 **SPX Engine** — Adapts the crypto EGARCH framework for S&P 500 equities: stronger leverage effect bounds (4× crypto), VIX-implied volatility integration when realized and implied diverge >30%, intraday seasonal deseasonalization (13 half-hour buckets), NYSE market hours guard with holiday calendar, half-rate fees (finance category), and per-window correlation controls (max 2 positions, 15% risk).
 

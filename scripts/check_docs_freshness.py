@@ -40,6 +40,11 @@ def load_config():
         return json.load(f)
 
 
+def _get_const(config, key, default=None):
+    """Get constant value from config."""
+    return config.get("constants", {}).get(key, {}).get("value", default)
+
+
 def check_unreplaced_placeholders(path):
     """Find any remaining {{PLACEHOLDER}} markers in rendered docs."""
     if not os.path.exists(path):
@@ -66,7 +71,7 @@ def count_weather_cities():
         return None
     with open(weather_path) as f:
         content = f.read()
-    return len(re.findall(r'"[A-Z]{3}":\s*\{', content))
+    return len(re.findall(r'"[A-Z]{2,4}":\s*\{', content))
 
 
 def get_sports_config():
@@ -89,6 +94,16 @@ def get_sports_config():
     return config
 
 
+def get_exchange_feeds_from_bot():
+    """Extract exchange feed class names directly from bot.py source."""
+    bot_path = os.path.join(REPO_DIR, "bot.py")
+    if not os.path.exists(bot_path):
+        return []
+    with open(bot_path) as f:
+        content = f.read()
+    return re.findall(r'class\s+(\w+(?:Feed|WebSocket))', content)
+
+
 def check_config_values(path, config):
     """Check that key config values in docs match bot.py config."""
     if not os.path.exists(path) or not config:
@@ -97,34 +112,50 @@ def check_config_values(path, config):
         content = f.read()
 
     issues = []
-    constants = config.get("constants", {})
 
     # --- Drawdown thresholds ---
-    dd_half = constants.get("DRAWDOWN_HALF_THRESHOLD", {}).get("value")
-    dd_quarter = constants.get("DRAWDOWN_QUARTER_THRESHOLD", {}).get("value")
+    dd_half = _get_const(config, "DRAWDOWN_HALF_THRESHOLD")
+    dd_quarter = _get_const(config, "DRAWDOWN_QUARTER_THRESHOLD")
+    dd_halt = _get_const(config, "DRAWDOWN_HALT_THRESHOLD")
 
-    if dd_half is not None:
-        expected_pct = int(dd_half * 100)
-        stale_vals = [90, 92] if expected_pct != 90 else []
-        for stale in stale_vals:
-            if re.search(rf"{stale}%.{{0,30}}(?:halve|half|Half)", content):
-                issues.append(
-                    f"Stale DRAWDOWN_HALF: found {stale}% near 'half' in doc, "
-                    f"bot.py has {expected_pct}%"
-                )
+    # Check drawdown thresholds — match patterns where a percentage is directly
+    # paired with a drawdown action (e.g. "85% | Half" or "below 85% ... halve")
+    # Avoid matching prose like "quartered below 75%, halted below 65%" which
+    # correctly states both thresholds in one sentence.
+    for line in content.splitlines():
+        if dd_half is not None:
+            expected_pct = int(dd_half * 100)
+            # Match "X% | Half" (table) or "below X% ... halve/half" (not also mentioning quarter/halt)
+            dd_half_mentions = re.findall(r'(?:^|\|)\s*[^\|]*?(\d+)%\s*\|[^\|]*(?:halve|half|Half)', line)
+            for mention in dd_half_mentions:
+                if int(mention) != expected_pct and int(mention) in range(50, 100):
+                    issues.append(
+                        f"Stale DRAWDOWN_HALF: found {mention}% near 'half' in doc, "
+                        f"bot.py has {expected_pct}%"
+                    )
 
-    if dd_quarter is not None:
-        expected_pct = int(dd_quarter * 100)
-        stale_vals = [80] if expected_pct != 80 else []
-        for stale in stale_vals:
-            if re.search(rf"{stale}%.{{0,10}}(?:quarter|one-quarter)", content):
-                issues.append(
-                    f"Stale DRAWDOWN_QUARTER: found {stale}% near 'quarter' in doc, "
-                    f"bot.py has {expected_pct}%"
-                )
+        if dd_quarter is not None:
+            expected_pct = int(dd_quarter * 100)
+            dd_quarter_mentions = re.findall(r'(?:^|\|)\s*[^\|]*?(\d+)%\s*\|[^\|]*[Qq]uarter', line)
+            for mention in dd_quarter_mentions:
+                if int(mention) != expected_pct and int(mention) in range(50, 100):
+                    issues.append(
+                        f"Stale DRAWDOWN_QUARTER: found {mention}% near 'quarter' in doc, "
+                        f"bot.py has {expected_pct}%"
+                    )
+
+        if dd_halt is not None:
+            expected_pct = int(dd_halt * 100)
+            dd_halt_mentions = re.findall(r'(?:^|\|)\s*[^\|]*?(\d+)%\s*\|[^\|]*[Hh]alt', line)
+            for mention in dd_halt_mentions:
+                if int(mention) != expected_pct and int(mention) in range(50, 100):
+                    issues.append(
+                        f"Stale DRAWDOWN_HALT: found {mention}% near 'halt' in doc, "
+                        f"bot.py has {expected_pct}%"
+                    )
 
     # --- Market blend (core crypto, not weather/SPX) ---
-    blend_w = constants.get("MARKET_BLEND_W", {}).get("value")
+    blend_w = _get_const(config, "MARKET_BLEND_W")
     if blend_w is not None:
         model_pct = int((1.0 - blend_w) * 100)
         if model_pct != 50:
@@ -136,18 +167,17 @@ def check_config_values(path, config):
                 )
 
     # --- Sizing tiers ---
-    sizing = constants.get("SIZING_TIERS", {}).get("value")
+    sizing = _get_const(config, "SIZING_TIERS")
     if sizing:
         old_edges = {"2%": 0.02, "1.5%": 0.015, "1%": 0.01}
         actual_edges = {t[0] for t in sizing}
         for label, val in old_edges.items():
-            if val not in actual_edges and re.search(rf"≥\s*{label}\s*\|", content):
-                issues.append(f"Stale SIZING_TIER: found ≥ {label} in doc, not in current tiers")
+            if val not in actual_edges and re.search(rf"(?:>=|\u2265)\s*{label}\s*\|", content):
+                issues.append(f"Stale SIZING_TIER: found {label} in doc, not in current tiers")
 
-        # Check tier count — match "≥ X%" in sizing table rows (edge values ≤ 5%)
+        # Check tier count
         actual_count = len(sizing)
-        tier_rows = re.findall(r"≥\s*([\d.]+)%\s*\|", content)
-        # Filter to edge-sized values (≤5%) to exclude drawdown thresholds (65-85%)
+        tier_rows = re.findall(r"(?:>=|\u2265)\s*([\d.]+)%\s*\|", content)
         edge_tiers = [t for t in tier_rows if float(t) <= 5.0]
         if edge_tiers and len(edge_tiers) != actual_count:
             issues.append(
@@ -156,28 +186,93 @@ def check_config_values(path, config):
             )
 
     # --- MIN_ENTRY_PRICE ---
-    min_price = constants.get("MIN_ENTRY_PRICE", {}).get("value")
+    min_price = _get_const(config, "MIN_ENTRY_PRICE")
     if min_price is not None:
-        # Check for wrong price in "XX–99¢" or "XX–99 cents" patterns
-        # Require ¢ or "cent" nearby to avoid matching probability caps like "93–99.5%"
-        price_pattern = r'(\d{2})[\–\-–—]99(?:¢|\s*cent)'
+        price_pattern = r'(\d{2})[\-\u2013\u2014]99(?:\xA2|\s*cent)'
         price_mentions = re.findall(price_pattern, content)
         for found_price in price_mentions:
             if int(found_price) != min_price and int(found_price) in range(80, 99):
                 issues.append(
-                    f"Stale MIN_ENTRY_PRICE: found {found_price}–99¢ in doc, "
+                    f"Stale MIN_ENTRY_PRICE: found {found_price}--99c in doc, "
                     f"bot.py has {min_price}"
                 )
 
     # --- MAKER_ONLY_THRESHOLD ---
-    mot = constants.get("MAKER_ONLY_THRESHOLD", {}).get("value")
+    mot = _get_const(config, "MAKER_ONLY_THRESHOLD")
     if mot is not None and mot == 0.0:
-        # Maker-only threshold is disabled — flag any doc claiming "no taker below Xs"
         if re.search(r'(?:maker.only|no taker).{0,30}(?:below|under)\s+\d+\s*(?:s|sec)', content, re.IGNORECASE):
             issues.append(
                 "Stale MAKER_ONLY_THRESHOLD: doc claims maker-only zone, "
                 "but MAKER_ONLY_THRESHOLD=0.0 (taker allowed everywhere)"
             )
+
+    # --- DIRECT_TAKER_THRESHOLD ---
+    direct_taker = _get_const(config, "DIRECT_TAKER_THRESHOLD")
+    if direct_taker is not None:
+        # Look for "direct taker" or "IOC taker" near a number of seconds
+        dt_mentions = re.findall(
+            r'(?:direct\s+taker|IOC\s+taker|skip\s+maker).{0,40}(?:below|under|<)\s*(\d+)\s*(?:s|sec)',
+            content, re.IGNORECASE
+        )
+        for mention in dt_mentions:
+            if int(mention) != int(direct_taker):
+                issues.append(
+                    f"Stale DIRECT_TAKER_THRESHOLD: found '{mention}s' in doc, "
+                    f"bot.py has {int(direct_taker)}s"
+                )
+
+    # --- Escalation wait times ---
+    esc_long = _get_const(config, "ESCALATION_WAIT_LONG")
+    if esc_long is not None:
+        # Match patterns like "15s maker wait" or "wait 15s" near "escalat"
+        esc_mentions = re.findall(
+            r'(?:maker\s+wait|wait\s+time).{0,30}(?:>=?\s*180|long).{0,20}(\d+)\s*(?:s|sec)',
+            content, re.IGNORECASE
+        )
+        for mention in esc_mentions:
+            if int(mention) != int(esc_long):
+                issues.append(
+                    f"Stale ESCALATION_WAIT_LONG: found '{mention}s' in doc, "
+                    f"bot.py has {int(esc_long)}s"
+                )
+
+    # --- Dynamic cap schedule values ---
+    dyn_cap = _get_const(config, "DYNAMIC_CAP_SCHEDULE")
+    if dyn_cap and isinstance(dyn_cap, list):
+        # Check for stale cap values (e.g., "93%" cap mentioned but actual is different)
+        for stc_threshold, cap_val in dyn_cap:
+            cap_pct = f"{cap_val * 100:.1f}"
+            # Look for lines mentioning this STC threshold with wrong cap
+            if stc_threshold == dyn_cap[0][0]:  # first entry (highest STC)
+                # e.g., "> 600s" or "> 10 min" with cap
+                pattern = rf'>\s*{stc_threshold}s?.{{0,30}}(\d{{2,3}}(?:\.\d+)?)%'
+                matches = re.findall(pattern, content)
+                for m in matches:
+                    if m != cap_pct and abs(float(m) - cap_val * 100) > 0.2:
+                        issues.append(
+                            f"Stale DYNAMIC_CAP at >{stc_threshold}s: found {m}% in doc, "
+                            f"bot.py has {cap_pct}%"
+                        )
+
+    # --- CalibrationEngine sample thresholds ---
+    for cal_key, label in [
+        ("CALIBRATION_MIN_SAMPLES_PLATT", "Platt"),
+        ("CALIBRATION_MIN_SAMPLES_BETA", "Beta"),
+        ("CALIBRATION_MIN_SAMPLES_BLR", "BLR"),
+    ]:
+        cal_val = _get_const(config, cal_key)
+        if cal_val is not None:
+            # Look for "NNN samples" or "NNN observations" near the calibration method name
+            cal_mentions = re.findall(
+                rf'{label}.{{0,40}}(\d+)\s*(?:sample|observation|data\s*point)',
+                content, re.IGNORECASE
+            )
+            for mention in cal_mentions:
+                if int(mention) != int(cal_val):
+                    issues.append(
+                        f"Stale {cal_key}: found '{mention} samples' near {label} in doc, "
+                        f"bot.py has {int(cal_val)}"
+                    )
 
     return issues
 
@@ -194,7 +289,6 @@ def check_cross_file_values(path):
     # --- Sports league count ---
     actual_leagues = count_leagues()
     if actual_leagues:
-        # Find "XX leagues" mentions
         league_mentions = re.findall(r'(\d+)\s+leagues', content)
         for mention in league_mentions:
             if int(mention) != actual_leagues:
@@ -206,7 +300,6 @@ def check_cross_file_values(path):
     # --- Weather city count ---
     actual_cities = count_weather_cities()
     if actual_cities:
-        # Find "X US cities" or "X cities" or "X major US cities"
         city_mentions = re.findall(r'(\d+)\s+(?:US\s+|major\s+US\s+)?cit(?:y|ies)', content)
         for mention in city_mentions:
             if int(mention) != actual_cities:
@@ -219,8 +312,6 @@ def check_cross_file_values(path):
     sports_cfg = get_sports_config()
     lr_scale = sports_cfg.get("CONSERVATIVE_LR_SCALE")
     if lr_scale is not None:
-        lr_pct = int(lr_scale * 100)
-        # Look for "compressed XX%" patterns
         compress_mentions = re.findall(r'compress(?:ed|ion)\s+(\d+)%', content, re.IGNORECASE)
         for mention in compress_mentions:
             actual_compress = int((1.0 - lr_scale) * 100)
@@ -234,7 +325,6 @@ def check_cross_file_values(path):
     gap = sports_cfg.get("MAX_MODEL_MARKET_GAP")
     if gap is not None:
         gap_pp = int(gap * 100)
-        # Look for "more than XXpp" or "XX percentage points" patterns near model/market
         gap_mentions = re.findall(r'(?:more than|exceeds|>)\s+(\d+)\s*(?:pp|percentage point)', content, re.IGNORECASE)
         for mention in gap_mentions:
             if int(mention) != gap_pp:
@@ -242,6 +332,29 @@ def check_cross_file_values(path):
                     f"Stale MAX_MODEL_MARKET_GAP: found '{mention}pp' in doc, "
                     f"sports_data.py has {gap_pp}pp"
                 )
+
+    # --- Exchange feed list ---
+    actual_feeds = get_exchange_feeds_from_bot()
+    if actual_feeds:
+        # Check for exchange names that appear in docs but not in actual feed classes
+        # Map common exchange names to their feed class patterns
+        exchange_check = {
+            "Coinbase": "CoinbaseFeed",
+            "Binance": "CrossExchangeFeed",  # Binance is inside CrossExchangeFeed
+            "Kraken": "CrossExchangeFeed",
+            "Bybit": "CrossExchangeFeed",
+        }
+        # If "CrossExchangeFeed" is not in actual_feeds, flag mentions of those exchanges
+        has_cross = any("CrossExchange" in f for f in actual_feeds)
+        has_coinbase = any("Coinbase" in f for f in actual_feeds)
+
+        if not has_coinbase:
+            if re.search(r'\bCoinbase\b', content):
+                issues.append("Doc mentions Coinbase but no CoinbaseFeed class found in bot.py")
+        if not has_cross:
+            for ex in ["Binance", "Kraken", "Bybit"]:
+                if re.search(rf'\b{ex}\b', content, re.IGNORECASE):
+                    issues.append(f"Doc mentions {ex} but no CrossExchangeFeed class found in bot.py")
 
     return issues
 

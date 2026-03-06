@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'bot.py'
       - 'whitepaper.md'
       - 'whitepaper_investor.md'
       - 'README.template.md'
@@ -13,6 +14,7 @@ on:
       - 'scripts/check_docs_freshness.py'
       - 'sports_data.py'
       - 'weather_engine.py'
+      - 'templates/**'
       - '.github/workflows/whitepaper.yml'
 
   workflow_dispatch:
@@ -76,12 +78,9 @@ jobs:
             -o whitepaper.pdf
             --from markdown
             --pdf-engine=xelatex
-            --toc
-            --toc-depth=3
-            -V geometry:margin=1in
-            -V fontsize=11pt
-            -V documentclass=article
-            --metadata title="Kalshi Crypto Trading Bot — Technical Whitepaper"
+            --template=templates/technical_template.latex
+            --number-sections
+            --highlight-style=tango
 
       - name: Generate investor PDF
         uses: docker://pandoc/extra:latest
@@ -91,12 +90,8 @@ jobs:
             -o whitepaper_investor.pdf
             --from markdown
             --pdf-engine=xelatex
-            --toc
-            --toc-depth=3
-            -V geometry:margin=1in
-            -V fontsize=11pt
-            -V documentclass=article
-            --metadata title="Kalshi Crypto Trading Bot — Investor Whitepaper"
+            --template eisvogel
+            --listings
 
       - name: Commit PDFs
         run: |

@@ -1,0 +1,333 @@
+% ============================================================================
+% Kalshi Trading Bot — Technical Whitepaper Template
+% Pandoc LaTeX template for docker://pandoc/extra:latest (TeX Live)
+% ============================================================================
+\documentclass[11pt,a4paper]{article}
+
+% ── Core packages ───────────────────────────────────────────────────────────
+\usepackage{fontspec}
+\usepackage{unicode-math}
+\usepackage[margin=1in,top=1.2in,bottom=1.2in]{geometry}
+\usepackage{graphicx}
+\usepackage{longtable,booktabs,array,multirow}
+\usepackage{calc}
+\usepackage{etoolbox}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{titletoc}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{fancyvrb}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable,skins}
+\usepackage{lastpage}
+\usepackage{amsmath,amssymb}
+\usepackage{tabularx}
+\usepackage{framed}
+\usepackage{hyperref}
+
+% ── Color palette (shared with investor template) ──────────────────────────
+\definecolor{navyprimary}{HTML}{1B2A4A}
+\definecolor{navydark}{HTML}{0F1B33}
+\definecolor{navylight}{HTML}{2C4270}
+\definecolor{accentwarm}{HTML}{D4883E}
+\definecolor{accentcopper}{HTML}{B8733D}
+\definecolor{textprimary}{HTML}{1A1A2E}
+\definecolor{textsecondary}{HTML}{4A4A6A}
+\definecolor{codebg}{HTML}{F5F6FA}
+\definecolor{codeborder}{HTML}{D1D5E0}
+\definecolor{tablebg}{HTML}{F0F2F8}
+\definecolor{tableheader}{HTML}{1B2A4A}
+\definecolor{calloutbg}{HTML}{FFF8F0}
+\definecolor{calloutborder}{HTML}{D4883E}
+\definecolor{linkcolor}{HTML}{2C5AA0}
+\definecolor{rulecolor}{HTML}{D1D5E0}
+\definecolor{sectionrule}{HTML}{D4883E}
+\definecolor{shadecolor}{HTML}{F5F6FA}
+
+% ── Typography ──────────────────────────────────────────────────────────────
+% pandoc/extra (TeX Live full) ships these fonts.
+% Use TeX font names; IfFontExistsTF for robustness.
+\IfFontExistsTF{Source Sans 3}{%
+  \setmainfont{Source Sans 3}[Numbers=OldStyle]
+  \setsansfont{Source Sans 3}
+}{%
+  \IfFontExistsTF{Source Sans Pro}{%
+    \setmainfont{Source Sans Pro}[Numbers=OldStyle]
+    \setsansfont{Source Sans Pro}
+  }{%
+    % Final fallback: Latin Modern (always available)
+    \setmainfont{Latin Modern Roman}
+    \setsansfont{Latin Modern Sans}
+  }%
+}
+\IfFontExistsTF{Source Code Pro}{%
+  \setmonofont{Source Code Pro}[Scale=0.88]
+}{%
+  \setmonofont{Latin Modern Mono}[Scale=0.88]
+}
+\setmathfont{Latin Modern Math}
+
+% ── Page layout ─────────────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{rulecolor}\leaders\hrule height \headrulewidth\hfill}}
+\fancyhead[L]{\small\color{textsecondary}\textsc{Kalshi Trading Bot}}
+\fancyhead[R]{\small\color{textsecondary}\textsc{Technical Whitepaper}}
+\fancyfoot[C]{\small\color{textsecondary}\thepage\hspace{4pt}of\hspace{4pt}\pageref{LastPage}}
+\fancypagestyle{plain}{%
+  \fancyhf{}
+  \renewcommand{\headrulewidth}{0pt}
+  \fancyfoot[C]{\small\color{textsecondary}\thepage\hspace{4pt}of\hspace{4pt}\pageref{LastPage}}
+}
+
+% ── Hyperlinks ──────────────────────────────────────────────────────────────
+\hypersetup{
+  colorlinks=true,
+  linkcolor=navylight,
+  urlcolor=linkcolor,
+  citecolor=navylight,
+  pdfauthor={$author$},
+  pdftitle={$title$},
+  pdfsubject={Technical Whitepaper},
+  bookmarksnumbered=true,
+}
+
+% ── Section styling ─────────────────────────────────────────────────────────
+\titleformat{\section}
+  {\LARGE\bfseries\color{navydark}}
+  {\thesection\hspace{12pt}}{0pt}
+  {}
+  [\vspace{2pt}{\color{sectionrule}\titlerule[1.5pt]}]
+\titlespacing*{\section}{0pt}{28pt plus 4pt minus 2pt}{14pt plus 2pt minus 2pt}
+
+\titleformat{\subsection}
+  {\Large\bfseries\color{navyprimary}}
+  {\thesubsection\hspace{10pt}}{0pt}
+  {}
+\titlespacing*{\subsection}{0pt}{20pt plus 3pt minus 2pt}{8pt plus 2pt minus 1pt}
+
+\titleformat{\subsubsection}
+  {\large\bfseries\color{navylight}}
+  {\thesubsubsection\hspace{8pt}}{0pt}
+  {}
+\titlespacing*{\subsubsection}{0pt}{14pt plus 2pt minus 1pt}{6pt plus 1pt minus 1pt}
+
+\titleformat{\paragraph}[runin]
+  {\normalsize\bfseries\color{navyprimary}}
+  {}{0pt}{}[.]
+\titlespacing*{\paragraph}{0pt}{8pt plus 1pt}{6pt}
+
+% ── Table of Contents styling ───────────────────────────────────────────────
+\contentsmargin{0cm}
+\titlecontents{section}[0em]
+  {\addvspace{10pt}\bfseries\color{navydark}}
+  {\thecontentslabel\hspace{8pt}}{}
+  {\hfill\contentspage}
+
+\titlecontents{subsection}[1.5em]
+  {\addvspace{3pt}\color{textprimary}}
+  {\thecontentslabel\hspace{6pt}}{}
+  {\titlerule*[6pt]{.}\contentspage}
+
+\titlecontents{subsubsection}[3.0em]
+  {\addvspace{1pt}\small\color{textsecondary}}
+  {\thecontentslabel\hspace{6pt}}{}
+  {\titlerule*[6pt]{.}\contentspage}
+
+% ── Code blocks ─────────────────────────────────────────────────────────────
+% Pandoc generates \begin{Shaded}\begin{Highlighting}...\end{Highlighting}\end{Shaded}
+% when --highlight-style is used. We style the Shaded wrapper.
+\newenvironment{Shaded}{%
+  \begin{tcolorbox}[
+    enhanced,
+    breakable,
+    colback=codebg,
+    colframe=codeborder,
+    boxrule=0.5pt,
+    arc=3pt,
+    left=10pt,
+    right=10pt,
+    top=8pt,
+    bottom=8pt,
+    fontupper=\small\ttfamily,
+  ]
+}{%
+  \end{tcolorbox}
+}
+
+% Verbatim (fenced code without language) — also styled
+\RecustomVerbatimEnvironment{verbatim}{Verbatim}{
+  fontsize=\small,
+  frame=single,
+  framerule=0.5pt,
+  rulecolor=\color{codeborder},
+  fillcolor=\color{codebg},
+  formatcom=\color{textprimary},
+  xleftmargin=10pt,
+  xrightmargin=10pt,
+}
+
+% Inline code — subtle background highlight
+\let\oldtexttt\texttt
+\renewcommand{\texttt}[1]{%
+  {\small\colorbox{codebg}{\color{navyprimary}\oldtexttt{#1}}}%
+}
+
+% ── Tables ──────────────────────────────────────────────────────────────────
+\setlength{\heavyrulewidth}{0.08em}
+\setlength{\lightrulewidth}{0.04em}
+\setlength{\aboverulesep}{0.6ex}
+\setlength{\belowrulesep}{0.6ex}
+\arrayrulecolor{rulecolor}
+
+\captionsetup[table]{
+  labelfont={bf,color=navyprimary},
+  textfont={color=textsecondary},
+  skip=8pt,
+}
+
+% ── Blockquotes as callout boxes ────────────────────────────────────────────
+\newtcolorbox{quotecallout}{
+  enhanced,
+  breakable,
+  colback=calloutbg,
+  colframe=calloutborder,
+  boxrule=0pt,
+  borderline west={3pt}{0pt}{calloutborder},
+  arc=0pt,
+  outer arc=0pt,
+  left=12pt,
+  right=12pt,
+  top=10pt,
+  bottom=10pt,
+  fontupper=\small\color{textprimary},
+}
+
+\renewenvironment{quote}
+  {\begin{quotecallout}}
+  {\end{quotecallout}}
+
+% ── Lists ───────────────────────────────────────────────────────────────────
+\setlist[itemize]{
+  leftmargin=1.5em,
+  labelsep=0.6em,
+  itemsep=3pt,
+  parsep=1pt,
+}
+\setlist[itemize,1]{label={\color{accentwarm}\textbullet}}
+\setlist[itemize,2]{label={\color{navylight}\textendash}}
+
+\setlist[enumerate]{
+  leftmargin=2em,
+  labelsep=0.6em,
+  itemsep=3pt,
+  parsep=1pt,
+}
+
+\setlist[description]{
+  leftmargin=0pt,
+  labelindent=0pt,
+  labelsep=0.8em,
+  itemsep=6pt,
+  font=\bfseries\color{navyprimary},
+}
+
+% ── Math display ────────────────────────────────────────────────────────────
+\AtBeginDocument{%
+  \abovedisplayskip=12pt plus 3pt minus 3pt
+  \belowdisplayskip=12pt plus 3pt minus 3pt
+  \abovedisplayshortskip=6pt plus 3pt
+  \belowdisplayshortskip=6pt plus 3pt
+}
+
+% ── Strong emphasis in navy ─────────────────────────────────────────────────
+\let\oldtextbf\textbf
+\renewcommand{\textbf}[1]{{\bfseries\color{navyprimary}#1}}
+
+% ── Title page ──────────────────────────────────────────────────────────────
+\newcommand{\makecovertitle}{%
+  \thispagestyle{empty}
+  \begin{center}
+    \vspace*{2cm}
+
+    {\color{navydark}\rule{\textwidth}{2pt}}
+
+    \vspace{1.5cm}
+
+    {\fontsize{32}{38}\selectfont\bfseries\color{navydark}%
+      Kalshi Trading Bot}
+
+    \vspace{0.5cm}
+
+    {\fontsize{16}{22}\selectfont\color{navylight}%
+      Technical Whitepaper}
+
+    \vspace{1.5cm}
+
+    {\color{sectionrule}\rule{0.3\textwidth}{1pt}}
+
+    \vspace{1.5cm}
+
+    {\large\color{textprimary}%
+      \bfseries $author$}
+
+    \vspace{0.4cm}
+
+    {\color{textsecondary}%
+      $date$}
+
+    \vspace{2cm}
+
+    {\color{navydark}\rule{\textwidth}{2pt}}
+
+    \vspace{1.5cm}
+
+    {\small\color{textsecondary}\itshape
+      Automated prediction market trading across crypto, equities,\\
+      weather, and sports --- powered by EGARCH volatility modeling,\\
+      NIG distributions, and adaptive execution.}
+
+  \end{center}
+  \clearpage
+}
+
+% ── Pandoc tightlist ────────────────────────────────────────────────────────
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{3pt}\setlength{\parskip}{0pt}}
+
+% ── CSLReferences (pandoc bibliography) ─────────────────────────────────────
+$if(csl-refs)$
+\newlength{\cslhangindent}
+\setlength{\cslhangindent}{1.5em}
+\newenvironment{CSLReferences}[2]{}{}
+$endif$
+
+% ── Pandoc syntax highlighting definitions ──────────────────────────────────
+% Pandoc will inject \newcommand for highlight tokens here
+$highlighting-macros$
+
+% ── Begin document ──────────────────────────────────────────────────────────
+\begin{document}
+
+\color{textprimary}
+
+\makecovertitle
+
+% ── Table of Contents ───────────────────────────────────────────────────────
+{
+  \hypersetup{linkcolor=navyprimary}
+  \setcounter{tocdepth}{3}
+  \tableofcontents
+}
+\clearpage
+
+% ── Body ────────────────────────────────────────────────────────────────────
+$body$
+
+\end{document}

@@ -4,6 +4,8 @@
 Outputs JSON that can feed into doc templates, ensuring docs always
 reflect the actual code. No imports of bot.py — pure static analysis.
 
+Also parses weather_engine.py and sports_data.py for cross-file data.
+
 Usage:
     python3 scripts/extract_config.py > config.json
     python3 scripts/extract_config.py --diff config_previous.json
@@ -11,12 +13,16 @@ Usage:
 
 import ast
 import json
+import re
 import sys
 import os
 from datetime import datetime, timezone
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-BOT_PATH = os.path.join(SCRIPT_DIR, "..", "bot.py")
+REPO_DIR = os.path.join(SCRIPT_DIR, "..")
+BOT_PATH = os.path.join(REPO_DIR, "bot.py")
+WEATHER_PATH = os.path.join(REPO_DIR, "weather_engine.py")
+SPORTS_PATH = os.path.join(REPO_DIR, "sports_data.py")
 
 # Constants to extract (name -> human-readable description)
 TRACKED_CONSTANTS = {
@@ -33,6 +39,8 @@ TRACKED_CONSTANTS = {
     "MIN_EDGE_PCT": "Flat minimum edge fallback",
     "BALANCE_CACHE_TTL": "Balance cache TTL (seconds)",
     "Z_SCORE_MAX": "Z-score rejection threshold",
+    "STC_SHADOW_THRESHOLD": "STC shadow threshold (seconds)",
+    "PRICE_BUFFER_SIZE": "CoinbaseFeed price buffer size (seconds of 1s snapshots)",
 
     # Drawdown
     "DRAWDOWN_HALF_THRESHOLD": "Halve sizing below this ratio",
@@ -83,6 +91,14 @@ TRACKED_CONSTANTS = {
     "ESCALATION_WAIT_LONG": "Maker wait for long STC",
     "ESCALATION_WAIT_MEDIUM": "Maker wait for medium STC",
     "ESCALATION_WAIT_SHORT": "Maker wait for short STC",
+
+    # Cross-exchange
+    "CROSS_EXCHANGE_ENABLED": "Cross-exchange feed enabled",
+    "CROSS_EXCHANGE_BUFFER_SIZE": "Cross-exchange price buffer size",
+    "CROSS_EXCHANGE_LEAD_THRESHOLD": "Single-exchange lead threshold",
+    "CROSS_EXCHANGE_CONSENSUS_THRESHOLD": "Consensus threshold",
+    "CROSS_EXCHANGE_CONSENSUS_MIN": "Minimum exchanges for consensus",
+    "CROSS_EXCHANGE_STALE_SECONDS": "Cross-exchange stale data timeout",
 }
 
 
@@ -135,7 +151,7 @@ def extract_compound_constants(source: str) -> dict:
                         except (ValueError, TypeError):
                             pass
 
-                    # MIN_EDGE_BY_PRICE (dict)
+                    # MIN_EDGE_BY_PRICE (list of tuples)
                     if target.id == "MIN_EDGE_BY_PRICE":
                         try:
                             value = ast.literal_eval(node.value)
@@ -161,7 +177,121 @@ def extract_compound_constants(source: str) -> dict:
                         except (ValueError, TypeError):
                             pass
 
+                    # DYNAMIC_CAP_SCHEDULE
+                    if target.id == "DYNAMIC_CAP_SCHEDULE":
+                        try:
+                            value = ast.literal_eval(node.value)
+                            extras["DYNAMIC_CAP_SCHEDULE"] = {
+                                "value": value,
+                                "line": node.lineno,
+                                "description": "Dynamic probability cap schedule (STC, cap)",
+                            }
+                        except (ValueError, TypeError):
+                            pass
+
+                    # HOURLY_DYNAMIC_CAP_SCHEDULE
+                    if target.id == "HOURLY_DYNAMIC_CAP_SCHEDULE":
+                        try:
+                            value = ast.literal_eval(node.value)
+                            extras["HOURLY_DYNAMIC_CAP_SCHEDULE"] = {
+                                "value": value,
+                                "line": node.lineno,
+                                "description": "Hourly dynamic probability cap schedule",
+                            }
+                        except (ValueError, TypeError):
+                            pass
+
+                    # CROSS_EXCHANGE_SYMBOLS
+                    if target.id == "CROSS_EXCHANGE_SYMBOLS":
+                        try:
+                            value = ast.literal_eval(node.value)
+                            extras["CROSS_EXCHANGE_SYMBOLS"] = {
+                                "value": value,
+                                "line": node.lineno,
+                                "description": "Cross-exchange symbol mapping",
+                            }
+                        except (ValueError, TypeError):
+                            pass
+
     return extras
+
+
+def extract_exchange_feeds(source: str) -> list:
+    """Extract exchange feed class names from bot.py (CoinbaseFeed, etc.)."""
+    tree = ast.parse(source)
+    feeds = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            if "Feed" in node.name or "WebSocket" in node.name:
+                feeds.append(node.name)
+    return sorted(feeds)
+
+
+def extract_weather_cities() -> dict:
+    """Parse weather_engine.py for WEATHER_CITIES dict via regex.
+
+    Returns dict with city_count, city_codes, city_names, city_tickers.
+    Uses regex instead of AST because WEATHER_CITIES uses typed Dict annotation.
+    """
+    if not os.path.exists(WEATHER_PATH):
+        return {}
+
+    with open(WEATHER_PATH) as f:
+        content = f.read()
+
+    cities = {}
+    # Parse each city entry: "CODE": { "name": "City Name", ... "series_ticker": "KXHIGH..." }
+    city_pattern = re.compile(
+        r'"([A-Z]{2,4})":\s*\{\s*'
+        r'"name":\s*"([^"]+)".*?'
+        r'"series_ticker":\s*"([^"]+)"',
+        re.DOTALL
+    )
+    for m in city_pattern.finditer(content):
+        code, name, ticker = m.groups()
+        cities[code] = {"name": name, "series_ticker": ticker}
+
+    if not cities:
+        return {}
+
+    return {
+        "weather_city_count": len(cities),
+        "weather_city_codes": sorted(cities.keys()),
+        "weather_city_names": [cities[k]["name"] for k in sorted(cities.keys())],
+        "weather_city_tickers": [cities[k]["series_ticker"] for k in sorted(cities.keys())],
+    }
+
+
+def extract_sports_leagues() -> dict:
+    """Parse sports_data.py for LEAGUES dict via regex.
+
+    Returns dict with league_count, league_tickers, league_names.
+    Uses regex instead of AST because LEAGUES uses LeagueConfig() calls.
+    """
+    if not os.path.exists(SPORTS_PATH):
+        return {}
+
+    with open(SPORTS_PATH) as f:
+        content = f.read()
+
+    leagues = {}
+    # Parse: "KXTICKER": LeagueConfig(..., display_name="Name", ...)
+    league_pattern = re.compile(
+        r'"(KX\w+)":\s*LeagueConfig\([^)]*?display_name="([^"]+)"',
+        re.DOTALL
+    )
+    for m in league_pattern.finditer(content):
+        ticker, display_name = m.groups()
+        leagues[ticker] = display_name
+
+    if not leagues:
+        return {}
+
+    return {
+        "sports_league_count": len(leagues),
+        "sports_league_tickers": sorted(leagues.keys()),
+        "sports_league_names": [leagues[k] for k in sorted(leagues.keys())],
+    }
 
 
 def diff_configs(current: dict, previous_path: str) -> list:
@@ -201,12 +331,36 @@ def main():
     compounds = extract_compound_constants(source)
     constants.update(compounds)
 
+    # Extract exchange feed classes
+    exchange_feeds = extract_exchange_feeds(source)
+
+    # Cross-file extractions
+    weather_data = extract_weather_cities()
+    sports_data = extract_sports_leagues()
+
     output = {
         "constants": constants,
         "_bot_lines": line_count,
+        "_exchange_feeds": exchange_feeds,
         "_extracted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "_bot_path": os.path.abspath(BOT_PATH),
     }
+
+    # Merge cross-file data into top-level (not under constants — these aren't bot.py constants)
+    if weather_data:
+        output["_weather"] = weather_data
+    if sports_data:
+        output["_sports"] = sports_data
+
+    # Derive exchange list from CROSS_EXCHANGE_SYMBOLS
+    cross_syms = constants.get("CROSS_EXCHANGE_SYMBOLS", {}).get("value")
+    if cross_syms and isinstance(cross_syms, dict):
+        # Get exchange names from the first asset's symbol mapping
+        first_asset = next(iter(cross_syms.values()), {})
+        if isinstance(first_asset, dict):
+            output["_exchange_names"] = ["Coinbase"] + [
+                ex.title() for ex in sorted(first_asset.keys())
+            ]
 
     # Diff mode
     if len(sys.argv) > 2 and sys.argv[1] == "--diff":
