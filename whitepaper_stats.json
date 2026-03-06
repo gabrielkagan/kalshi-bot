@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 11834,
+  "total_evaluated": 11840,
   "filter_breakdown": {
     "candidate": 143,
     "dip_addon_shadow": 25,
@@ -9,9 +9,9 @@
     "hourly_window_limit": 213,
     "insufficient_edge": 3099,
     "observation_trade": 83,
-    "price_out_of_range": 6132,
+    "price_out_of_range": 6133,
     "price_shadow": 38,
-    "price_shadow_no_xrp": 34,
+    "price_shadow_no_xrp": 35,
     "single_asset_selection": 5,
     "sports_deficit_too_large": 4,
     "sports_insufficient_edge": 38,
@@ -20,8 +20,8 @@
     "sports_price_too_high": 12,
     "sports_signal": 160,
     "sports_weak_favorite": 9,
-    "spx_hourly_window_limit": 59,
-    "spx_observation": 152,
+    "spx_hourly_window_limit": 62,
+    "spx_observation": 153,
     "stc_shadow": 83,
     "stc_shadow_no_xrp": 6,
     "strategy_wait": 328,
@@ -88,5 +88,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-03-06",
-  "generated_at": "2026-03-06T16:51:22Z"
+  "generated_at": "2026-03-06T16:54:46Z"
 }
