@@ -1390,8 +1390,10 @@ class SportsEngine:
             settled_count = 0
             for srow in stale_rows:
                 game_id = srow[0]
-                if game_id in self._settled_games:
-                    continue
+                # Don't skip games in _settled_games — they may have
+                # unsettled rows added after initial settlement (race condition
+                # where evals arrive between settlement and game_id being
+                # added to _settled_games). The SQL already filters fav_won IS NULL.
 
                 home_code = srow[1]
                 away_code = srow[2]
@@ -1513,8 +1515,8 @@ class SportsEngine:
         for game_id, game in games.items():
             if game.game_status != "final":
                 continue
-            if game_id in self._settled_games:
-                continue
+            # Don't skip games in _settled_games — late-arriving eval rows
+            # may have fav_won=NULL even after initial settlement.
 
             try:
                 conn = self._get_db_conn()

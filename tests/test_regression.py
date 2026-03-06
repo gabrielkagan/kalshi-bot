@@ -944,3 +944,52 @@ class TestWeatherAPIDefenses:
             f"Invalid ensemble model names: {invalid}. "
             f"Valid names: {valid_ensemble_models}"
         )
+
+
+# ============================================================================
+#  Sports Settlement Partial-Settlement Bug Prevention
+#  Bug: _settle_stale_games and _settle_completed_games skipped games in
+#       _settled_games set, but new eval rows could arrive after initial
+#       settlement, leaving those rows with fav_won=NULL forever.
+#       8 partially-settled games found (Mar 6 2026).
+# ============================================================================
+
+class TestSportsSettlementCompleteness:
+    """Verify sports settlement doesn't skip partially-settled games."""
+
+    def test_settle_stale_does_not_skip_settled_games(self):
+        """_settle_stale_games must NOT skip games in _settled_games.
+
+        New eval rows can arrive after initial settlement (race between
+        evaluation loop and settlement). The SQL already filters
+        fav_won IS NULL, so the _settled_games check is redundant and
+        causes rows to be permanently orphaned.
+        """
+        source = open(os.path.join(PROJECT_ROOT, "sports_engine.py")).read()
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_settle_stale_games":
+                func_source = ast.get_source_segment(source, node) or ""
+                assert "if game_id in self._settled_games" not in func_source, (
+                    "_settle_stale_games must not skip games in _settled_games. "
+                    "The SQL WHERE fav_won IS NULL already handles this. "
+                    "Skipping causes partially-settled games to have orphaned rows."
+                )
+                return
+        assert False, "_settle_stale_games not found in sports_engine.py"
+
+    def test_settle_completed_does_not_skip_settled_games(self):
+        """_settle_completed_games must NOT skip games in _settled_games."""
+        source = open(os.path.join(PROJECT_ROOT, "sports_engine.py")).read()
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_settle_completed_games":
+                func_source = ast.get_source_segment(source, node) or ""
+                assert "if game_id in self._settled_games" not in func_source, (
+                    "_settle_completed_games must not skip games in _settled_games. "
+                    "Late-arriving eval rows need settlement too."
+                )
+                return
+        assert False, "_settle_completed_games not found in sports_engine.py"
