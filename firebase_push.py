@@ -665,11 +665,24 @@ class FirebasePusher:
 
         # Rate limit pressure
         try:
+            reads = len(self._ml.client._read_timestamps)
+            writes = len(self._ml.client._write_timestamps)
             snap["rate_limits"] = {
-                "reads_last_second": len(self._ml.client._read_timestamps),
-                "writes_last_second": len(self._ml.client._write_timestamps),
+                "reads_last_second": reads,
+                "writes_last_second": writes,
                 "read_limit": 30,
                 "write_limit": 30,
+                # Dashboard-compatible fields
+                "exchange_requests": {
+                    "used": reads,
+                    "limit": 30,
+                    "remaining": max(0, 30 - reads),
+                },
+                "order_requests": {
+                    "used": writes,
+                    "limit": 30,
+                    "remaining": max(0, 30 - writes),
+                },
             }
         except Exception:
             snap["rate_limits"] = {}
@@ -731,7 +744,16 @@ class FirebasePusher:
                 f"COALESCE(SUM(pnl_cents - fee_cents), 0) AS net_pnl "
                 f"FROM settled_trades{_pt_filter} GROUP BY bucket"
             ).fetchall()
-            rta["by_bucket"] = {r["bucket"]: {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in bucket_rows}
+            _BUCKET_MIDPOINTS = {"80-84": 82, "85-89": 87, "90-94": 92, "95-99": 97, "86-89": 87.5, "90-92": 91, "93-95": 94, "96-99": 97.5}
+            by_bucket_dict = {}
+            for r in bucket_rows:
+                entry = {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]}
+                mid_p = _BUCKET_MIDPOINTS.get(r["bucket"])
+                if mid_p is not None:
+                    fee = math.ceil(SIM_FEE_RATE * (mid_p / 100.0) * (1 - mid_p / 100.0))
+                    entry["breakeven_wr"] = round((mid_p + fee) / 100.0, 4)
+                by_bucket_dict[r["bucket"]] = entry
+            rta["by_bucket"] = by_bucket_dict
 
             # P&L by strategy
             strat_rows = conn.execute(
@@ -1382,11 +1404,11 @@ class FirebasePusher:
                         "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' "
                         f"    THEN (100 - market_price) - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
                         "  WHEN calibrated_prob > market_price/100.0 AND market_result IN ('no','all_no') "
-                        "    THEN -market_price "
+                        f"    THEN -(market_price + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
                         "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') "
                         f"    THEN market_price - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
                         "  WHEN calibrated_prob <= market_price/100.0 AND market_result='yes' "
-                        "    THEN -(100 - market_price) "
+                        f"    THEN -((100 - market_price) + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
                         "  ELSE 0 END) AS sim_pnl "
                         "FROM evaluated_opportunities "
                         "WHERE product_type='hourly' AND filter_stage='hourly_observation' "
@@ -1476,11 +1498,11 @@ class FirebasePusher:
                         "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' "
                         f"    THEN (100 - market_price) - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
                         "  WHEN calibrated_prob > market_price/100.0 AND market_result IN ('no','all_no') "
-                        "    THEN -market_price "
+                        f"    THEN -(market_price + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
                         "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') "
                         f"    THEN market_price - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
                         "  WHEN calibrated_prob <= market_price/100.0 AND market_result='yes' "
-                        "    THEN -(100 - market_price) "
+                        f"    THEN -((100 - market_price) + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
                         "  ELSE 0 END) AS sim_pnl "
                         "FROM evaluated_opportunities "
                         "WHERE product_type='spx_hourly' AND filter_stage='spx_observation' "
@@ -1562,11 +1584,11 @@ class FirebasePusher:
                         "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' "
                         f"    THEN (100 - market_price) - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
                         "  WHEN calibrated_prob > market_price/100.0 AND market_result IN ('no','all_no') "
-                        "    THEN -market_price "
+                        f"    THEN -(market_price + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
                         "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') "
                         f"    THEN market_price - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
                         "  WHEN calibrated_prob <= market_price/100.0 AND market_result='yes' "
-                        "    THEN -(100 - market_price) "
+                        f"    THEN -((100 - market_price) + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
                         "  ELSE 0 END) AS sim_pnl "
                         "FROM evaluated_opportunities "
                         "WHERE product_type='weather' AND filter_stage='weather_observation' "
@@ -1864,6 +1886,339 @@ class FirebasePusher:
         except Exception:
             logging.debug("Firebase: spx_harrv_shadow build failed", exc_info=True)
             snap["spx_harrv_shadow"] = None
+
+        # ── STC Performance (15M live trades by STC bucket) ────────────
+        try:
+            conn = self._db_conn
+            stc_buckets = [
+                ("0-180", 0, 180),
+                ("180-500", 180, 500),
+                ("500-900", 500, 900),
+            ]
+            stc_perf = {}
+            for label, lo, hi in stc_buckets:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n, "
+                    "SUM(CASE WHEN (side='yes' AND market_result='yes') OR (side='no' AND market_result IN ('no','all_no')) THEN 1 ELSE 0 END) AS w, "
+                    "SUM(pnl_cents - fee_cents) AS pnl "
+                    "FROM settled_trades WHERE product_type='15m' AND seconds_to_close >= ? AND seconds_to_close < ? "
+                    "AND settled_at >= ?",
+                    (lo, hi, CONFIG_REGIME_SINCE)
+                ).fetchone()
+                stc_perf[label] = {
+                    "trades": row["n"] if row else 0,
+                    "wins": row["w"] if row and row["w"] else 0,
+                    "wr": round(row["w"] / row["n"], 4) if row and row["n"] and row["w"] else 0,
+                    "pnl_cents": row["pnl"] if row and row["pnl"] else 0,
+                }
+            snap["stc_performance"] = stc_perf
+        except Exception:
+            logging.debug("Firebase: stc_performance build failed", exc_info=True)
+
+        # ── Calibration Health (overconfidence + Brier by bucket) ──────
+        try:
+            conn = self._db_conn
+            rows = conn.execute(
+                "SELECT calibrated_prob, market_result, market_price FROM evaluated_opportunities "
+                "WHERE product_type IS NULL AND filter_stage='candidate' AND status='settled' "
+                "AND calibrated_prob IS NOT NULL AND market_result IS NOT NULL "
+                "AND settled_at >= ?",
+                (CONFIG_REGIME_SINCE,)
+            ).fetchall()
+            if rows and len(rows) > 0:
+                outcomes = []
+                preds = []
+                for r in rows:
+                    pred = r["calibrated_prob"]
+                    mp = r["market_price"]
+                    if pred > mp / 100.0:
+                        actual = 1.0 if r["market_result"] == "yes" else 0.0
+                    else:
+                        actual = 1.0 if r["market_result"] in ("no", "all_no") else 0.0
+                        pred = 1.0 - pred
+                    preds.append(pred)
+                    outcomes.append(actual)
+                overconf = sum(preds) / len(preds) - sum(outcomes) / len(outcomes)
+                brier = sum((p - o) ** 2 for p, o in zip(preds, outcomes)) / len(preds)
+                market_preds = []
+                for r in rows:
+                    mp = r["market_price"] / 100.0
+                    if r["calibrated_prob"] > mp:
+                        market_preds.append(mp)
+                    else:
+                        market_preds.append(1.0 - mp)
+                market_brier = sum((p - o) ** 2 for p, o in zip(market_preds, outcomes)) / len(market_preds)
+                buckets = {}
+                for pred_val, outcome_val in zip(preds, outcomes):
+                    bucket_key = f"{int(pred_val * 100 // 5) * 5}-{int(pred_val * 100 // 5) * 5 + 4}"
+                    if bucket_key not in buckets:
+                        buckets[bucket_key] = {"preds": [], "outcomes": []}
+                    buckets[bucket_key]["preds"].append(pred_val)
+                    buckets[bucket_key]["outcomes"].append(outcome_val)
+                brier_by_bucket = {}
+                for bk, bv in sorted(buckets.items()):
+                    n = len(bv["preds"])
+                    avg_pred = sum(bv["preds"]) / n
+                    avg_outcome = sum(bv["outcomes"]) / n
+                    brier_by_bucket[bk] = {
+                        "n": n,
+                        "avg_predicted": round(avg_pred, 4),
+                        "avg_actual": round(avg_outcome, 4),
+                        "gap_pp": round((avg_pred - avg_outcome) * 100, 2),
+                    }
+                snap["calibration_health"] = {
+                    "n": len(preds),
+                    "overconfidence_pp": round(overconf * 100, 2),
+                    "model_brier": round(brier, 4),
+                    "market_brier": round(market_brier, 4),
+                    "brier_improvement_pct": round((1 - brier / market_brier) * 100, 1) if market_brier > 0 else 0,
+                    "brier_by_bucket": brier_by_bucket,
+                }
+            else:
+                snap["calibration_health"] = {"n": 0}
+        except Exception:
+            logging.debug("Firebase: calibration_health build failed", exc_info=True)
+
+        # ── Edge Integrity (monotonicity check) ───────────────────────
+        try:
+            conn = self._db_conn
+            rows = conn.execute(
+                "SELECT fee_adjusted_edge, market_result, side FROM evaluated_opportunities "
+                "WHERE product_type IS NULL AND filter_stage='candidate' AND status='settled' "
+                "AND fee_adjusted_edge IS NOT NULL AND settled_at >= ?",
+                (CONFIG_REGIME_SINCE,)
+            ).fetchall()
+            if rows and len(rows) >= 10:
+                data = []
+                for r in rows:
+                    won = (r["side"] == "yes" and r["market_result"] == "yes") or \
+                          (r["side"] == "no" and r["market_result"] in ("no", "all_no"))
+                    data.append((r["fee_adjusted_edge"], 1 if won else 0))
+                data.sort(key=lambda x: x[0])
+                n = len(data)
+                q_size = n // 5
+                quintiles = []
+                for i in range(5):
+                    start = i * q_size
+                    end = (i + 1) * q_size if i < 4 else n
+                    chunk = data[start:end]
+                    wins = sum(c[1] for c in chunk)
+                    avg_edge = sum(c[0] for c in chunk) / len(chunk)
+                    wr = wins / len(chunk) if len(chunk) > 0 else 0
+                    quintiles.append({
+                        "label": f"Q{i+1}",
+                        "n": len(chunk),
+                        "avg_edge": round(avg_edge, 4),
+                        "wr": round(wr, 4),
+                    })
+                inversions = sum(1 for i in range(4) if quintiles[i]["wr"] > quintiles[i+1]["wr"])
+                edges = [d[0] for d in data]
+                wins_arr = [d[1] for d in data]
+                mean_e = sum(edges) / n
+                mean_w = sum(wins_arr) / n
+                num = sum((e - mean_e) * (w - mean_w) for e, w in zip(edges, wins_arr))
+                den_e = sum((e - mean_e) ** 2 for e in edges) ** 0.5
+                den_w = sum((w - mean_w) ** 2 for w in wins_arr) ** 0.5
+                corr = num / (den_e * den_w) if den_e > 0 and den_w > 0 else 0
+                snap["edge_integrity"] = {
+                    "n": n,
+                    "quintiles": quintiles,
+                    "inversions": inversions,
+                    "monotonic": inversions == 0,
+                    "correlation": round(corr, 4),
+                }
+            else:
+                snap["edge_integrity"] = {"n": len(rows) if rows else 0}
+        except Exception:
+            logging.debug("Firebase: edge_integrity build failed", exc_info=True)
+
+        # ── System Health (consolidated health signals) ────────────────
+        try:
+            health_issues = []
+            exec_eng = snap.get("execution_engine", {})
+            health_alerts = exec_eng.get("health_alerts", [])
+            for alert in health_alerts:
+                health_issues.append({"source": "execution", "message": alert})
+            feed = snap.get("feed_health", {})
+            for exch, status in (feed.items() if isinstance(feed, dict) else []):
+                if not status:
+                    health_issues.append({"source": "feed", "message": f"{exch} disconnected"})
+            cal = snap.get("calibration", {})
+            if cal.get("rolling_brier") and cal["rolling_brier"] > 0.20:
+                health_issues.append({"source": "calibration", "message": f"15M Brier elevated: {cal['rolling_brier']:.3f}"})
+            if snap.get("balance_stale"):
+                health_issues.append({"source": "balance", "message": "Balance API returning stale data"})
+            err = snap.get("last_error_message")
+            if err:
+                health_issues.append({"source": "error", "message": str(err)[:200]})
+            snap["system_health"] = {
+                "status": "healthy" if len(health_issues) == 0 else ("degraded" if len(health_issues) <= 2 else "unhealthy"),
+                "issue_count": len(health_issues),
+                "issues": health_issues[:10],
+            }
+        except Exception:
+            snap["system_health"] = {"status": "unknown", "issue_count": 0, "issues": []}
+
+        # ── Shadow Comparison (unified shadow strategy table) ──────────
+        try:
+            comparison = []
+            ho = snap.get("hourly_observation", {})
+            if ho.get("enabled"):
+                comparison.append({
+                    "product": "Crypto Hourly",
+                    "status": "SHADOW" if ho.get("observation_only") else "LIVE",
+                    "settled": ho.get("settled_count", 0),
+                    "wins": ho.get("settled_wins", 0),
+                    "wr": ho.get("sim_win_rate", 0),
+                    "sim_pnl_cents": ho.get("sim_pnl_cents", 0),
+                    "avg_edge": ho.get("avg_edge"),
+                })
+            so = snap.get("spx_observation", {})
+            if so.get("enabled"):
+                comparison.append({
+                    "product": "SPX Hourly",
+                    "status": "SHADOW" if so.get("observation_only") else "LIVE",
+                    "settled": so.get("settled_count", 0),
+                    "wins": so.get("settled_wins", 0),
+                    "wr": so.get("sim_win_rate", 0),
+                    "sim_pnl_cents": so.get("sim_pnl_cents", 0),
+                    "avg_edge": None,
+                })
+            wo = snap.get("weather_observation", {})
+            if wo.get("enabled"):
+                comparison.append({
+                    "product": "Weather",
+                    "status": "SHADOW" if wo.get("observation_only") else "LIVE",
+                    "settled": wo.get("settled_count", 0),
+                    "wins": wo.get("settled_wins", 0),
+                    "wr": wo.get("sim_win_rate", 0),
+                    "sim_pnl_cents": wo.get("sim_pnl_cents", 0),
+                    "avg_edge": wo.get("avg_edge"),
+                })
+            spo = snap.get("sports_observation", {})
+            if spo:
+                comparison.append({
+                    "product": "Sports Comeback",
+                    "status": "SHADOW",
+                    "settled": spo.get("settled_signals", 0),
+                    "wins": spo.get("settled_wins", 0),
+                    "wr": spo.get("settled_wr", 0),
+                    "sim_pnl_cents": spo.get("settled_sim_pnl_cents", 0),
+                    "avg_edge": spo.get("avg_edge"),
+                })
+            snap["shadow_comparison"] = comparison
+        except Exception:
+            snap["shadow_comparison"] = []
+
+        # ── STC Shadow Counterfactual (500-900s shadow zone) ───────────
+        try:
+            conn = self._db_conn
+            row = conn.execute(
+                "SELECT COUNT(*) AS n, "
+                "SUM(CASE "
+                "  WHEN (calibrated_prob > market_price/100.0 AND market_result='yes') "
+                "    OR (calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no')) "
+                "  THEN 1 ELSE 0 END) AS w, "
+                "SUM(CASE "
+                "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' "
+                f"    THEN (100 - market_price) - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                "  WHEN calibrated_prob > market_price/100.0 AND market_result IN ('no','all_no') "
+                f"    THEN -(market_price + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
+                "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') "
+                f"    THEN market_price - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                "  WHEN calibrated_prob <= market_price/100.0 AND market_result='yes' "
+                f"    THEN -((100 - market_price) + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
+                "  ELSE 0 END) AS sim_pnl "
+                "FROM evaluated_opportunities "
+                "WHERE product_type IS NULL AND filter_stage='stc_shadow' AND status='settled' "
+                "AND market_result IS NOT NULL AND calibrated_prob IS NOT NULL AND market_price IS NOT NULL "
+                "AND created_at >= ?",
+                (CONFIG_REGIME_SINCE,)
+            ).fetchone()
+            snap["stc_shadow_counterfactual"] = {
+                "n": row["n"] if row else 0,
+                "wins": row["w"] if row and row["w"] else 0,
+                "wr": round(row["w"] / row["n"], 4) if row and row["n"] and row["w"] else 0,
+                "sim_pnl_cents": row["sim_pnl"] if row and row["sim_pnl"] else 0,
+            }
+        except Exception:
+            snap["stc_shadow_counterfactual"] = {"n": 0, "wins": 0, "wr": 0, "sim_pnl_cents": 0}
+
+        # ── Loss Clustering (detect loss clusters within 1hr) ──────────
+        try:
+            conn = self._db_conn
+            rows = conn.execute(
+                "SELECT settled_at, pnl_cents - fee_cents AS net_pnl FROM settled_trades "
+                "WHERE product_type='15m' AND NOT ("
+                "  (side='yes' AND market_result='yes') OR "
+                "  (side='no' AND market_result IN ('no','all_no'))"
+                ") AND settled_at >= ? ORDER BY settled_at",
+                (CONFIG_REGIME_SINCE,)
+            ).fetchall()
+            clusters = []
+            if rows and len(rows) >= 2:
+                import datetime as _dt
+                current_cluster = [rows[0]]
+                for i in range(1, len(rows)):
+                    try:
+                        t_prev = _dt.datetime.fromisoformat(rows[i-1]["settled_at"].replace("Z", "+00:00"))
+                        t_curr = _dt.datetime.fromisoformat(rows[i]["settled_at"].replace("Z", "+00:00"))
+                        if (t_curr - t_prev).total_seconds() < 3600:
+                            current_cluster.append(rows[i])
+                        else:
+                            if len(current_cluster) >= 2:
+                                clusters.append({
+                                    "size": len(current_cluster),
+                                    "total_loss_cents": sum(r["net_pnl"] for r in current_cluster),
+                                })
+                            current_cluster = [rows[i]]
+                    except Exception:
+                        current_cluster = [rows[i]]
+                if len(current_cluster) >= 2:
+                    clusters.append({
+                        "size": len(current_cluster),
+                        "total_loss_cents": sum(r["net_pnl"] for r in current_cluster),
+                    })
+            snap["loss_clustering"] = {
+                "total_losses": len(rows) if rows else 0,
+                "cluster_count": len(clusters),
+                "max_cluster_size": max((c["size"] for c in clusters), default=0),
+                "worst_cluster_loss_cents": min((c["total_loss_cents"] for c in clusters), default=0),
+                "clusters": clusters[:5],
+            }
+        except Exception:
+            snap["loss_clustering"] = {"total_losses": 0, "cluster_count": 0, "max_cluster_size": 0}
+
+        # ── Pipeline Completeness (data quality for observation modules)
+        try:
+            conn = self._db_conn
+            completeness = {}
+            for pt, key_cols in [
+                ("hourly", ["calibrated_prob", "market_price", "fee_adjusted_edge", "raw_prob"]),
+                ("spx_hourly", ["calibrated_prob", "market_price", "fee_adjusted_edge"]),
+                ("weather", ["calibrated_prob", "market_price", "fee_adjusted_edge", "raw_prob"]),
+                ("sports", ["calibrated_prob", "market_price", "fee_adjusted_edge", "raw_prob"]),
+            ]:
+                total_row = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM evaluated_opportunities WHERE product_type=?", (pt,)
+                ).fetchone()
+                total = total_row["cnt"] if total_row else 0
+                if total == 0:
+                    completeness[pt] = {"total": 0, "columns": {}}
+                    continue
+                col_fills = {}
+                for col in key_cols:
+                    try:
+                        filled_row = conn.execute(
+                            f"SELECT COUNT({col}) AS cnt FROM evaluated_opportunities WHERE product_type=?", (pt,)
+                        ).fetchone()
+                        col_fills[col] = round(filled_row["cnt"] / total * 100, 1) if filled_row else 0
+                    except Exception:
+                        col_fills[col] = None
+                completeness[pt] = {"total": total, "columns": col_fills}
+            snap["pipeline_completeness"] = completeness
+        except Exception:
+            snap["pipeline_completeness"] = {}
 
         return snap
 
