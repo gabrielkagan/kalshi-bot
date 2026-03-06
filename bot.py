@@ -8026,6 +8026,24 @@ class OpportunityScanner:
                         except Exception:
                             logging.debug("hourly_alt_shadow evaluate failed", exc_info=True)
 
+                    # ── SPX HAR-RV Shadow Strategy ──
+                    # Evaluate HAR-RV shadow strategy in parallel with EGARCH
+                    if (_obs_pt == "spx_hourly"
+                            and self._ml and getattr(self._ml, "spx_harrv_shadow", None)):
+                        try:
+                            _harv_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                            self._ml.spx_harrv_shadow.evaluate_strike(
+                                ticker=ticker,
+                                event_ticker=window["event_ticker"],
+                                spot_price=spot, threshold=threshold,
+                                seconds_to_close=seconds_remaining,
+                                best_bid=_harv_bid, best_ask=best_ask,
+                                market_price=best_ask,
+                                egarch_prob=final_prob,
+                                egarch_edge=fee_adjusted_edge)
+                        except Exception:
+                            logging.debug("spx_harrv_shadow evaluate failed", exc_info=True)
+
                     continue  # DO NOT add to candidates — observation gate
 
                 # ── STC SHADOW GATE (15M only) ──
@@ -11323,6 +11341,14 @@ class SettlementTracker:
                     except Exception:
                         logging.debug("hourly_alt_shadow settle failed for %s", ticker)
 
+                # Settle SPX HAR-RV shadow signals for this ticker
+                if (self._ml and getattr(self._ml, "spx_harrv_shadow", None)
+                        and result in ("yes", "all_yes", "no", "all_no")):
+                    try:
+                        self._ml.spx_harrv_shadow.settle_signals(ticker, result)
+                    except Exception:
+                        logging.debug("spx_harrv_shadow settle failed for %s", ticker)
+
                 logging.info(
                     f"Evaluated opp settled: {ticker} ({row['filter_stage']}) "
                     f"-> {counterfactual_outcome} (profit={would_have_profit}¢)"
@@ -11584,6 +11610,17 @@ class MainLoop:
                 logging.info("Hourly alt shadow engine initialized (MM + HAR-RV)")
         except Exception as e:
             logging.warning(f"Hourly alt shadow engine unavailable: {e}")
+
+        # ── SPX HAR-RV Shadow Engine ────────────────────────────────────────
+        self.spx_harrv_shadow = None
+        if SPX_HOURLY_ENABLED:
+            try:
+                from spx_harrv_shadow import SPXHARRVShadowEngine, SPX_HARRV_SHADOW_ENABLED
+                if SPX_HARRV_SHADOW_ENABLED:
+                    self.spx_harrv_shadow = SPXHARRVShadowEngine(db_path=DB_PATH)
+                    logging.info("SPX HAR-RV shadow engine initialized")
+            except Exception as e:
+                logging.warning(f"SPX HAR-RV shadow engine unavailable: {e}")
 
         # ── Sports Engine (conditional) ────────────────────────────────────
         self.sports_engine = None
@@ -12076,6 +12113,15 @@ class MainLoop:
                         self.hourly_alt_shadow.ingest_price(_alt_asset, _alt_price, _alt_ts)
                     except Exception:
                         pass
+
+        # Feed SPX price to HAR-RV shadow engine for return computation
+        if self.spx_harrv_shadow and self.spx_engine:
+            try:
+                _spx_spot = self.spx_engine.get_spot_price("SPX")
+                if _spx_spot is not None and _spx_spot > 0:
+                    self.spx_harrv_shadow.ingest_price(_spx_spot, time.time())
+            except Exception:
+                pass
 
         for window in self._active_windows:
             seconds_to_close = (window["close_time"] - utc_now).total_seconds()

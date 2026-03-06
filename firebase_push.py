@@ -1854,6 +1854,17 @@ class FirebasePusher:
             logging.debug("Firebase: hourly_alt_shadow build failed", exc_info=True)
             snap["hourly_alt_shadow"] = None
 
+        # ── SPX HAR-RV Shadow Panel ──────────────────────────────────────
+        try:
+            _harv_eng = getattr(self._ml, "spx_harrv_shadow", None) if self._ml else None
+            if _harv_eng:
+                snap["spx_harrv_shadow"] = _harv_eng.get_dashboard_data()
+            else:
+                snap["spx_harrv_shadow"] = None
+        except Exception:
+            logging.debug("Firebase: spx_harrv_shadow build failed", exc_info=True)
+            snap["spx_harrv_shadow"] = None
+
         return snap
 
     def _compute_position_health(
