@@ -1,6 +1,6 @@
 """Async Supabase syncer — background thread that mirrors SQLite → Supabase.
 
-Architecture mirrors firebase_push.py exactly:
+Architecture mirrors dashboard_snapshot.py:
   - Daemon thread, never blocks trading
   - Own SQLite connection (WAL mode, read-only queries)
   - Kill switch file: touch .supabase_kill_switch to disable
@@ -274,11 +274,11 @@ class SupabaseSyncer:
     # ── Dashboard sync ──────────────────────────────────────────────────
 
     def _sync_dashboard(self):
-        """Push dashboard_state — single-row UPSERT, reuses firebase_push snapshot logic."""
+        """Push dashboard_state — single-row UPSERT, reuses dashboard_snapshot logic."""
         try:
-            fb = getattr(self._ml, "firebase", None)
-            if fb and hasattr(fb, "_build_snapshot"):
-                snapshot = fb._build_snapshot(db_conn=self._db)
+            sb = getattr(self._ml, "snapshot_builder", None)
+            if sb and hasattr(sb, "_build_snapshot"):
+                snapshot = sb._build_snapshot(db_conn=self._db)
             else:
                 snapshot = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 

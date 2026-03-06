@@ -1,17 +1,13 @@
-"""Push bot state snapshots to Firebase Realtime Database every 10 seconds."""
+"""Build dashboard state snapshots for Supabase sync."""
 
 import math
 import os
 import time
 import logging
 import datetime
-import threading
 import collections
 from typing import Dict, Any, List, Optional
 
-import requests
-
-PUSH_INTERVAL = 10  # seconds
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 
 # Current config regime boundary — performance metrics filtered to this era
@@ -20,18 +16,6 @@ CONFIG_REGIME_SINCE = "2026-03-03T00:00:00"
 
 # Blended sim fee rate for observation products (maker ~70% @ 0.0175 + taker ~30% @ 0.07)
 SIM_FEE_RATE = 0.035
-
-# Firebase key names cannot contain . $ # [ ] /
-_FB_KEY_BAD = str.maketrans({".": "_", "$": "_", "#": "_", "[": "(", "]": ")", "/": "|"})
-
-
-def _sanitize_keys(obj):
-    """Recursively sanitize dict keys for Firebase compatibility."""
-    if isinstance(obj, dict):
-        return {str(k).translate(_FB_KEY_BAD): _sanitize_keys(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_sanitize_keys(v) for v in obj]
-    return obj
 
 
 def _parse_ob_levels(entries):
@@ -53,50 +37,18 @@ def _parse_ob_levels(entries):
     return result
 
 
-class FirebasePusher:
-    """Daemon thread that pushes bot status to Firebase REST API."""
+class DashboardSnapshotBuilder:
+    """Builds dashboard state snapshots. Used by SupabaseSyncer."""
 
-    def __init__(self, main_loop, db_path: str = "state.db"):
+    def __init__(self, main_loop):
         self._ml = main_loop
-        self._db_url = os.environ.get("FIREBASE_DB_URL", "").rstrip("/")
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._db_path = db_path
-        self._db_conn = None  # opened on daemon thread
         # Position health tracking (dashboard enrichment)
         self._mid_history: Dict[str, collections.deque] = {}
         self._health_state: Dict[str, str] = {}
         self._health_streak: Dict[str, int] = {}
 
-    def start(self):
-        if not self._db_url:
-            logging.info("FIREBASE_DB_URL not set — Firebase push disabled")
-            return
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        logging.info("Firebase pusher started")
-
-    def stop(self):
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def _run(self):
-        import sqlite3
-        self._db_conn = sqlite3.connect(self._db_path)
-        self._db_conn.execute("PRAGMA journal_mode=WAL")
-        self._db_conn.execute("PRAGMA busy_timeout=10000")
-        self._db_conn.row_factory = sqlite3.Row
-        while not self._stop.is_set():
-            try:
-                snapshot = self._build_snapshot()
-                self._push(snapshot)
-            except Exception:
-                logging.warning("Firebase push failed", exc_info=True)
-            self._stop.wait(timeout=PUSH_INTERVAL)
-
-    def _build_snapshot(self, db_conn=None) -> Dict[str, Any]:
-        """Build dashboard snapshot. Accepts optional db_conn for cross-thread callers."""
+    def _build_snapshot(self, db_conn) -> Dict[str, Any]:
+        """Build dashboard snapshot. db_conn is a sqlite3 connection."""
         snap: Dict[str, Any] = {}
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         snap["timestamp"] = now_utc.isoformat()
@@ -144,11 +96,10 @@ class FirebasePusher:
             if len(hist) > 360:
                 snap["balance_history_4h"] = hist[::max(1, len(hist) // 360)]
         except Exception:
-            logging.debug("Firebase: balance_history build failed", exc_info=True)
+            logging.debug("Snapshot: balance_history build failed", exc_info=True)
             snap["balance_history"] = []
 
-        # Use provided db_conn or fall back to own connection
-        _conn = db_conn or self._db_conn
+        _conn = db_conn
 
         # Active positions
         try:
@@ -430,10 +381,10 @@ class FirebasePusher:
                 snap["regime_risk_metrics"] = regime_risk
                 snap["config_regime_since"] = CONFIG_REGIME_SINCE
             except Exception:
-                logging.debug("Firebase: regime_risk_metrics failed", exc_info=True)
+                logging.debug("Snapshot: regime_risk_metrics failed", exc_info=True)
                 snap["regime_risk_metrics"] = None
         except Exception:
-            logging.debug("Firebase: risk_metrics build failed", exc_info=True)
+            logging.debug("Snapshot: risk_metrics build failed", exc_info=True)
             snap["risk_metrics"] = None
             snap["all_products_risk_metrics"] = None
 
@@ -458,7 +409,7 @@ class FirebasePusher:
             eq["maker_fill_rate"] = round(maker_fills / maker_subs, 3) if maker_subs > 0 else 0.0
             snap["execution_quality"] = eq
         except Exception:
-            logging.debug("Firebase: execution_quality build failed", exc_info=True)
+            logging.debug("Snapshot: execution_quality build failed", exc_info=True)
             snap["execution_quality"] = None
 
         # Volatility from cache (read-only)
@@ -613,7 +564,7 @@ class FirebasePusher:
                 conv[asset] = round(max(velocities), 2) if velocities else 0.0
             snap["convergence_velocity"] = conv
         except Exception:
-            logging.debug("Firebase: convergence_velocity build failed", exc_info=True)
+            logging.debug("Snapshot: convergence_velocity build failed", exc_info=True)
             snap["convergence_velocity"] = None
 
         # Bot status
@@ -723,7 +674,7 @@ class FirebasePusher:
 
         # ── real_trade_analytics (from settled_trades, 15M only) ─────────
         try:
-            conn = self._db_conn
+            conn = _conn
             rta = {}
             _pt_filter = " WHERE product_type='15m'"
             _win_case = ("COUNT(CASE WHEN (market_result IN ('yes','all_yes') AND side='yes') "
@@ -840,10 +791,10 @@ class FirebasePusher:
                     "by_bucket": {r["bucket"]: {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in r_bucket},
                 }
             except Exception:
-                logging.debug("Firebase: regime_trade_analytics failed", exc_info=True)
+                logging.debug("Snapshot: regime_trade_analytics failed", exc_info=True)
                 snap["regime_trade_analytics"] = None
         except Exception:
-            logging.debug("Firebase: real_trade_analytics build failed", exc_info=True)
+            logging.debug("Snapshot: real_trade_analytics build failed", exc_info=True)
             snap["real_trade_analytics"] = {}
 
 
@@ -921,7 +872,7 @@ class FirebasePusher:
                         _reg[_key] = {"n_observations": 0, "error": True}
                 snap["cal_registry"] = _reg
         except Exception:
-            logging.debug("Firebase: cal_registry build failed", exc_info=True)
+            logging.debug("Snapshot: cal_registry build failed", exc_info=True)
 
         # ── NIG distribution parameters ────────────────────────────────
         try:
@@ -962,11 +913,11 @@ class FirebasePusher:
                     "shadow_sigmoid_w": dict(mz._shadow_sigmoid_w),
                 }
         except Exception:
-            logging.debug("Firebase: egarch_blend build failed", exc_info=True)
+            logging.debug("Snapshot: egarch_blend build failed", exc_info=True)
 
         # ── counterfactual analysis (15M only, current regime) ──────────
         try:
-            conn = self._db_conn
+            conn = _conn
             _cf_pt_filter = "AND product_type='15m'"
             _cf_regime_filter = f"AND evaluation_time >= '{CONFIG_REGIME_SINCE}'"
 
@@ -1052,7 +1003,7 @@ class FirebasePusher:
 
         # ── shadow variants (hourly counterfactual configs) ───────────
         try:
-            conn = self._db_conn
+            conn = _conn
             _sv_fee = 0.0175  # maker fee multiplier
             # BTC_P>=70_wl2: BTC only, price >= 70c, max 2 positions per window
             # Uses SQL window function to apply per-window position limit
@@ -1101,7 +1052,7 @@ class FirebasePusher:
                 snap["shadow_variants"] = {}
         except Exception:
             snap["shadow_variants"] = None
-            logging.debug("Firebase: shadow_variants build failed", exc_info=True)
+            logging.debug("Snapshot: shadow_variants build failed", exc_info=True)
 
         # ── ask price distribution ────────────────────────────────────
         try:
@@ -1165,7 +1116,7 @@ class FirebasePusher:
                     koft_data["signals"] = per_ticker
                 snap["kalshi_order_flow"] = koft_data
         except Exception:
-            logging.debug("Firebase: kalshi_oft build failed", exc_info=True)
+            logging.debug("Snapshot: kalshi_oft build failed", exc_info=True)
 
         # ── Execution engine capabilities ────────────────────────────────
         try:
@@ -1310,7 +1261,7 @@ class FirebasePusher:
 
             snap["execution_engine"] = exec_eng
         except Exception:
-            logging.debug("Firebase: execution_engine build failed", exc_info=True)
+            logging.debug("Snapshot: execution_engine build failed", exc_info=True)
             snap["execution_engine"] = {}
 
         # ── Shadow calibration pipeline ─────────────────────────────────
@@ -1328,7 +1279,7 @@ class FirebasePusher:
                     "blend_w_production": getattr(_bot_mod, 'MARKET_BLEND_W', None),
                 }
         except Exception:
-            logging.debug("Firebase: shadow_cal_pipeline build failed", exc_info=True)
+            logging.debug("Snapshot: shadow_cal_pipeline build failed", exc_info=True)
 
         # ── Hourly observation mode ──────────────────────────────────────
         try:
@@ -1348,7 +1299,7 @@ class FirebasePusher:
                     "max_positions_per_window": getattr(_bot_mod, "HOURLY_MAX_POSITIONS_PER_WINDOW", None),
                     "max_window_risk": getattr(_bot_mod, "HOURLY_MAX_WINDOW_RISK", None),
                 }
-                conn = self._db_conn
+                conn = _conn
                 # Settled hourly observations
                 try:
                     row = conn.execute(
@@ -1433,7 +1384,7 @@ class FirebasePusher:
                     hourly_data["sim_pnl_cents"] = 0
                 snap["hourly_observation"] = hourly_data
         except Exception:
-            logging.debug("Firebase: hourly_observation build failed", exc_info=True)
+            logging.debug("Snapshot: hourly_observation build failed", exc_info=True)
 
         # ── SPX Observation Panel ─────────────────────────────────────────
         try:
@@ -1453,7 +1404,7 @@ class FirebasePusher:
                     spx_data["spx_price"] = spx_eng.get_spot_price("SPX")
                     spx_data["vix_level"] = spx_eng.get_vix()
 
-                conn = self._db_conn
+                conn = _conn
                 try:
                     row = conn.execute(
                         "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
@@ -1527,7 +1478,7 @@ class FirebasePusher:
                     spx_data["sim_pnl_cents"] = 0
                 snap["spx_observation"] = spx_data
         except Exception:
-            logging.debug("Firebase: spx_observation build failed", exc_info=True)
+            logging.debug("Snapshot: spx_observation build failed", exc_info=True)
 
         # ── Weather Observation Panel ─────────────────────────────────────
         try:
@@ -1539,7 +1490,7 @@ class FirebasePusher:
                     "market_blend_w": getattr(_bot_mod, "WEATHER_MARKET_BLEND_W", None),
                     "max_risk_per_trade": getattr(_bot_mod, "WEATHER_MAX_RISK_PER_TRADE", None),
                 }
-                conn = self._db_conn
+                conn = _conn
                 try:
                     row = conn.execute(
                         "SELECT COUNT(*) AS cnt FROM evaluated_opportunities "
@@ -1613,7 +1564,7 @@ class FirebasePusher:
                     wx_data["sim_pnl_cents"] = 0
                 snap["weather_observation"] = wx_data
         except Exception:
-            logging.debug("Firebase: weather_observation build failed", exc_info=True)
+            logging.debug("Snapshot: weather_observation build failed", exc_info=True)
 
         # ── Sports Observation Panel ─────────────────────────────────────
         try:
@@ -1622,7 +1573,7 @@ class FirebasePusher:
                     "enabled": True,
                     "observation_only": getattr(_bot_mod, "SPORTS_OBSERVATION_ONLY", True),
                 }
-                conn = self._db_conn
+                conn = _conn
                 # Total shadow log entries + signals
                 try:
                     row = conn.execute(
@@ -1689,11 +1640,11 @@ class FirebasePusher:
 
                 snap["sports_observation"] = sp_data
         except Exception:
-            logging.debug("Firebase: sports_observation build failed", exc_info=True)
+            logging.debug("Snapshot: sports_observation build failed", exc_info=True)
 
         # ── Data Collection Progress ───────────────────────────────────────
         try:
-            conn = self._db_conn
+            conn = _conn
             dc = {}
             for pt, obs_stage, target in [
                 ("hourly", "hourly_observation", 200),
@@ -1763,7 +1714,7 @@ class FirebasePusher:
                                 "rate_per_day": None, "eta_days": None}
             snap["data_collection"] = dc
         except Exception:
-            logging.debug("Firebase: data_collection build failed", exc_info=True)
+            logging.debug("Snapshot: data_collection build failed", exc_info=True)
             snap["data_collection"] = {}
 
         # ── Capital Allocation Panel ──────────────────────────────────────
@@ -1777,7 +1728,7 @@ class FirebasePusher:
                     "composite_score": cap_alloc.get_composite_score(),
                 }
         except Exception:
-            logging.debug("Firebase: capital_allocation build failed", exc_info=True)
+            logging.debug("Snapshot: capital_allocation build failed", exc_info=True)
 
         # ── Orderbook visibility (dashboard only) ─────────────────────────
         try:
@@ -1834,14 +1785,14 @@ class FirebasePusher:
                             "stale": stale,
                         }
                     except Exception:
-                        logging.debug(f"Firebase: ob summary failed for {ticker}", exc_info=True)
+                        logging.debug(f"Snapshot: ob summary failed for {ticker}", exc_info=True)
 
                 snap["orderbooks"] = ob_summary
-                logging.debug(f"Firebase: orderbooks built for {sum(len(v) for v in ob_summary.values())} tickers")
+                logging.debug(f"Snapshot: orderbooks built for {sum(len(v) for v in ob_summary.values())} tickers")
             else:
                 snap["orderbooks"] = {}
         except Exception:
-            logging.debug("Firebase: orderbooks build failed", exc_info=True)
+            logging.debug("Snapshot: orderbooks build failed", exc_info=True)
             snap["orderbooks"] = {}
 
         # ── Position health (read-only enrichment for dashboard) ─────────
@@ -1853,7 +1804,7 @@ class FirebasePusher:
                 snap.get("active_positions", []), raw_obs, windows
             )
         except Exception:
-            logging.debug("Firebase: position_health build failed", exc_info=True)
+            logging.debug("Snapshot: position_health build failed", exc_info=True)
             snap["position_health"] = {
                 "summary": {"lock": 0, "watch": 0, "danger": 0, "total": 0},
                 "positions": {},
@@ -1877,7 +1828,7 @@ class FirebasePusher:
             else:
                 snap["fifteenm_shadow"] = None
         except Exception:
-            logging.debug("Firebase: fifteenm_shadow build failed", exc_info=True)
+            logging.debug("Snapshot: fifteenm_shadow build failed", exc_info=True)
             snap["fifteenm_shadow"] = None
 
         # ── Hourly Alt Shadow Strategies Panel ───────────────────────────
@@ -1888,7 +1839,7 @@ class FirebasePusher:
             else:
                 snap["hourly_alt_shadow"] = None
         except Exception:
-            logging.debug("Firebase: hourly_alt_shadow build failed", exc_info=True)
+            logging.debug("Snapshot: hourly_alt_shadow build failed", exc_info=True)
             snap["hourly_alt_shadow"] = None
 
         # ── SPX HAR-RV Shadow Panel ──────────────────────────────────────
@@ -1899,12 +1850,12 @@ class FirebasePusher:
             else:
                 snap["spx_harrv_shadow"] = None
         except Exception:
-            logging.debug("Firebase: spx_harrv_shadow build failed", exc_info=True)
+            logging.debug("Snapshot: spx_harrv_shadow build failed", exc_info=True)
             snap["spx_harrv_shadow"] = None
 
         # ── STC Performance (15M live trades by STC bucket) ────────────
         try:
-            conn = self._db_conn
+            conn = _conn
             stc_buckets = [
                 ("0-180", 0, 180),
                 ("180-500", 180, 500),
@@ -1928,11 +1879,11 @@ class FirebasePusher:
                 }
             snap["stc_performance"] = stc_perf
         except Exception:
-            logging.debug("Firebase: stc_performance build failed", exc_info=True)
+            logging.debug("Snapshot: stc_performance build failed", exc_info=True)
 
         # ── Calibration Health (overconfidence + Brier by bucket) ──────
         try:
-            conn = self._db_conn
+            conn = _conn
             rows = conn.execute(
                 "SELECT calibrated_prob, market_result, market_price FROM evaluated_opportunities "
                 "WHERE product_type='15m' AND filter_stage='candidate' AND status='settled' "
@@ -1992,11 +1943,11 @@ class FirebasePusher:
             else:
                 snap["calibration_health"] = {"n": 0}
         except Exception:
-            logging.debug("Firebase: calibration_health build failed", exc_info=True)
+            logging.debug("Snapshot: calibration_health build failed", exc_info=True)
 
         # ── Edge Integrity (monotonicity check) ───────────────────────
         try:
-            conn = self._db_conn
+            conn = _conn
             rows = conn.execute(
                 "SELECT fee_adjusted_edge, market_result, calibrated_prob, market_price "
                 "FROM evaluated_opportunities "
@@ -2049,7 +2000,7 @@ class FirebasePusher:
             else:
                 snap["edge_integrity"] = {"n": len(rows) if rows else 0}
         except Exception:
-            logging.debug("Firebase: edge_integrity build failed", exc_info=True)
+            logging.debug("Snapshot: edge_integrity build failed", exc_info=True)
 
         # ── System Health (consolidated health signals) ────────────────
         try:
@@ -2131,7 +2082,7 @@ class FirebasePusher:
 
         # ── STC Shadow Counterfactual (500-900s shadow zone) ───────────
         try:
-            conn = self._db_conn
+            conn = _conn
             row = conn.execute(
                 "SELECT COUNT(*) AS n, "
                 "SUM(CASE "
@@ -2165,7 +2116,7 @@ class FirebasePusher:
 
         # ── Loss Clustering (detect loss clusters within 1hr) ──────────
         try:
-            conn = self._db_conn
+            conn = _conn
             rows = conn.execute(
                 "SELECT settled_at, pnl_cents - fee_cents AS net_pnl FROM settled_trades "
                 "WHERE product_type='15m' AND NOT ("
@@ -2210,7 +2161,7 @@ class FirebasePusher:
 
         # ── Pipeline Completeness (data quality for observation modules)
         try:
-            conn = self._db_conn
+            conn = _conn
             completeness = {}
             for pt, key_cols in [
                 ("hourly", ["calibrated_prob", "market_price", "fee_adjusted_edge", "raw_prob"]),
@@ -2390,7 +2341,7 @@ class FirebasePusher:
                     "stc_seconds": round(stc_seconds, 1) if stc_seconds is not None else None,
                 }
             except Exception:
-                logging.debug(f"Firebase: position health failed for {ticker}", exc_info=True)
+                logging.debug(f"Snapshot: position health failed for {ticker}", exc_info=True)
 
         # Cleanup stale tickers
         stale = [t for t in self._mid_history if t not in active_tickers]
@@ -2409,20 +2360,3 @@ class FirebasePusher:
             "positions": result,
         }
 
-    def _push(self, snapshot: Dict[str, Any]):
-        url = f"{self._db_url}/bot_status.json"
-        payload = _sanitize_keys(snapshot)
-        for attempt in range(2):
-            try:
-                requests.put(url, json=payload, timeout=5)
-                self._consecutive_push_failures = 0
-                return
-            except Exception as e:
-                if attempt == 0:
-                    time.sleep(2)
-                else:
-                    self._consecutive_push_failures = getattr(self, '_consecutive_push_failures', 0) + 1
-                    logging.warning(
-                        f"Firebase PUT failed after retry: {e} "
-                        f"(consecutive={self._consecutive_push_failures})"
-                    )

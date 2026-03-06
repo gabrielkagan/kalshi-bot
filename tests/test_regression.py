@@ -259,7 +259,7 @@ class TestBusyTimeout:
 
     PRODUCTION_FILES = [
         "bot.py",
-        "firebase_push.py",
+        "dashboard_snapshot.py",
         "sports_engine.py",
         "watchdog.py",
         "supabase_sync.py",
@@ -337,7 +337,7 @@ class TestShadowDiagKeys:
 class TestSyntaxCheck:
     """Every Python file must parse without syntax errors."""
 
-    CRITICAL_FILES = ["bot.py", "market_config.py", "firebase_push.py",
+    CRITICAL_FILES = ["bot.py", "market_config.py", "dashboard_snapshot.py",
                       "sports_engine.py", "spx_engine.py", "weather_engine.py"]
 
     @pytest.mark.parametrize("filename", CRITICAL_FILES)
@@ -365,7 +365,7 @@ class TestFirebaseBalanceGlitch:
         """Simulate the $0 glitch: when bal_val is 0, use _last_good_balance."""
         last_good = 150.0
         bal_val = 0.0
-        # This is the logic from firebase_push.py:
+        # This is the logic from dashboard_snapshot.py:
         if bal_val > 0:
             last_good = bal_val
         result = bal_val if bal_val > 0 else last_good

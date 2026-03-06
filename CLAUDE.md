@@ -33,7 +33,7 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 - `spx_engine.py` — SPX hourly market engine (Polygon.io price feed, EGARCH, RK, VIX integration)
 - `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
 - `market_config.py` — Centralized MarketTypeConfig for all product types (validates against bot.py at startup)
-- `firebase_push.py` — Pushes live dashboard snapshots to Firebase
+- `dashboard_snapshot.py` — Builds dashboard state snapshots (used by Supabase syncer)
 - `start.sh` — Startup script (activates venv, sources .env, runs bot)
 - `.github/workflows/deploy.yml` — Auto-deploy to VPS on push to main
 
@@ -139,7 +139,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 
 - **Language:** Python 3, virtualenv
 - **Deployment:** DigitalOcean droplet (45.55.181.30), Ubuntu 24.04, `botuser`, systemd `kalshi-bot`
-- **Dashboard:** Firebase Realtime Database
+- **Dashboard:** Supabase Realtime (dashboard_state table)
 - **Analyst:** Claude API via `analyst.py` — Telegram alerts (high confidence only)
 
 ## Kalshi API

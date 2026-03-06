@@ -22,7 +22,7 @@ Push to main and verify the bot is running correctly on VPS after auto-deploy.
 
 3. **If any constant changed in bot.py**: grep the constant name across ALL files, especially `market_config.py`. Mismatch = crash loop on VPS.
    ```
-   grep -rn "CONSTANT_NAME" bot.py market_config.py firebase_push.py
+   grep -rn "CONSTANT_NAME" bot.py market_config.py dashboard_snapshot.py
    ```
 
 4. **If any function signature changed**: grep all call sites and verify callers pass new params.

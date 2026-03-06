@@ -15,7 +15,7 @@ echo "=== Pre-Deploy Check ==="
 
 # 1. Syntax check critical files
 echo "[1/4] Syntax checking critical files..."
-for f in bot.py market_config.py firebase_push.py sports_engine.py spx_engine.py weather_engine.py; do
+for f in bot.py market_config.py dashboard_snapshot.py sports_engine.py spx_engine.py weather_engine.py; do
     if [ -f "$f" ]; then
         python3 -c "import ast; ast.parse(open('$f').read())" 2>&1 || {
             echo "FAIL: $f has syntax errors"

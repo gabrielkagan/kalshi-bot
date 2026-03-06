@@ -184,7 +184,7 @@ spx_engine.py                  — S&P 500 intraday engine (EGARCH + VIX, shadow
 weather_engine.py              — weather temperature engine (NWP ensemble, shadow mode)
 sports_engine.py               — sports comeback engine (Bayesian LR, shadow mode)
 sports_data.py                 — sports LR tables and league configuration
-firebase_push.py               — pushes live dashboard snapshots to Firebase
+dashboard_snapshot.py          — builds dashboard state snapshots for Supabase
 start.sh                       — systemd entrypoint (venv + .env + bot.py)
 requirements.txt               — Python dependencies
 .env.example                   — credential template

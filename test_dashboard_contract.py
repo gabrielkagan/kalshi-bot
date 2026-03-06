@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Contract tests: verify firebase_push.py snapshot keys match what dashboard JS expects.
+"""Contract tests: verify dashboard_snapshot.py snapshot keys match what dashboard JS expects.
 
 Root cause analysis of bugs #1-#5 (March 6 2026):
-  The dashboard (index.html) and firebase_push.py are in DIFFERENT REPOS with no shared
+  The dashboard (index.html) and dashboard_snapshot.py are in DIFFERENT REPOS with no shared
   schema or contract. When one side renames a key, the other side silently breaks —
   rendering shows "Loading..." or "0" with no error.
 
@@ -29,10 +29,10 @@ import math
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 
-FIREBASE_PUSH_PATH = os.path.join(os.path.dirname(__file__), "firebase_push.py")
+DASHBOARD_SNAPSHOT_PATH = os.path.join(os.path.dirname(__file__), "dashboard_snapshot.py")
 DASHBOARD_PATH = "/private/tmp/gabekagan-dashboard/dashboard/index.html"
 
-# Every key that firebase_push.py writes as snap["key"]
+# Every key that dashboard_snapshot.py writes as snap["key"]
 # AND that dashboard JS reads as s.key or s["key"]
 # This is the CONTRACT — both sides must agree on these names.
 REQUIRED_SNAP_KEYS = {
@@ -108,9 +108,9 @@ SIM_PNL_FEE_PATTERNS = {
 }
 
 
-def test_firebase_push_has_keys():
-    """Verify firebase_push.py writes all required snap keys."""
-    with open(FIREBASE_PUSH_PATH) as f:
+def test_dashboard_snapshot_has_keys():
+    """Verify dashboard_snapshot.py writes all required snap keys."""
+    with open(DASHBOARD_SNAPSHOT_PATH) as f:
         source = f.read()
 
     # Find all snap["key"] = assignments
@@ -118,10 +118,10 @@ def test_firebase_push_has_keys():
 
     missing = REQUIRED_SNAP_KEYS - snap_keys
     if missing:
-        print(f"FAIL: firebase_push.py missing snap keys: {sorted(missing)}")
+        print(f"FAIL: dashboard_snapshot.py missing snap keys: {sorted(missing)}")
         return False
 
-    print(f"PASS: firebase_push.py has all {len(REQUIRED_SNAP_KEYS)} required snap keys")
+    print(f"PASS: dashboard_snapshot.py has all {len(REQUIRED_SNAP_KEYS)} required snap keys")
     return True
 
 
@@ -165,7 +165,7 @@ def test_dashboard_reads_correct_keys():
 
 def test_sim_pnl_fees_on_losses():
     """Verify sim P&L SQL includes fees on losing trades (Bug #3)."""
-    with open(FIREBASE_PUSH_PATH) as f:
+    with open(DASHBOARD_SNAPSHOT_PATH) as f:
         source = f.read()
 
     # Find all sim_pnl SQL blocks (they contain "THEN -market_price" or "THEN -(100 - market_price)")
@@ -200,7 +200,7 @@ def test_sim_pnl_fees_on_losses():
 
 def test_rate_limits_structure():
     """Verify rate_limits includes structured sub-objects for dashboard consumption."""
-    with open(FIREBASE_PUSH_PATH) as f:
+    with open(DASHBOARD_SNAPSHOT_PATH) as f:
         source = f.read()
 
     # The dashboard expects either:
@@ -235,15 +235,15 @@ def test_all_scopes_handled():
 
 
 def test_syntax():
-    """Verify firebase_push.py parses without syntax errors."""
-    with open(FIREBASE_PUSH_PATH) as f:
+    """Verify dashboard_snapshot.py parses without syntax errors."""
+    with open(DASHBOARD_SNAPSHOT_PATH) as f:
         source = f.read()
     try:
         ast.parse(source)
-        print("PASS: firebase_push.py syntax OK")
+        print("PASS: dashboard_snapshot.py syntax OK")
         return True
     except SyntaxError as e:
-        print(f"FAIL: firebase_push.py syntax error: {e}")
+        print(f"FAIL: dashboard_snapshot.py syntax error: {e}")
         return False
 
 
@@ -284,7 +284,7 @@ def test_sql_column_names():
     - evaluated_opportunities has product_type='15m', NOT NULL
     - settled_trades has 'settled_at' (correct)
     """
-    with open(FIREBASE_PUSH_PATH) as f:
+    with open(DASHBOARD_SNAPSHOT_PATH) as f:
         source = f.read()
 
     failures = []
@@ -335,7 +335,7 @@ def main():
 
     results = []
     results.append(("Syntax check", test_syntax()))
-    results.append(("Firebase snap keys", test_firebase_push_has_keys()))
+    results.append(("Firebase snap keys", test_dashboard_snapshot_has_keys()))
     results.append(("Dashboard key names", test_dashboard_reads_correct_keys()))
     results.append(("Sim P&L fees on losses", test_sim_pnl_fees_on_losses()))
     results.append(("Rate limits structure", test_rate_limits_structure()))

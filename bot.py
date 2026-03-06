@@ -2418,7 +2418,7 @@ class KalshiFeed:
     def get_all_orderbooks(self) -> Dict[str, Dict]:
         """Return a shallow copy of all cached orderbooks (thread-safe).
 
-        Used by FirebasePusher for dashboard visibility only.
+        Used by DashboardSnapshotBuilder for dashboard visibility only.
         Does NOT affect trading, scanning, or order execution.
         """
         with self._lock:
@@ -4607,7 +4607,7 @@ class EGARCHEstimator:
                 "EGARCH %s param delta: Δω=%.4f Δα=%.4f Δγ=%.4f Δβ=%.6f",
                 asset, d_omega, d_alpha, d_gamma, d_beta)
 
-        # Update params (lock protects concurrent reads from Firebase thread)
+        # Update params (lock protects concurrent reads from dashboard snapshot)
         new_params = {"omega": omega, "alpha": alpha, "gamma": gamma, "beta": beta}
         if df is not None:
             new_params["df"] = df
@@ -4831,7 +4831,7 @@ class EGARCHEstimator:
             logging.warning("EGARCH state save failed: %s", e)
 
     def get_diagnostics(self) -> Dict:
-        """Per-asset diagnostics dict for Firebase (thread-safe)."""
+        """Per-asset diagnostics dict for dashboard (thread-safe)."""
         result = {}
         now = time.time()
         for asset in ASSETS:
@@ -6258,7 +6258,7 @@ class PositionSizer:
         """Scale position based on drawdown from peak balance (high-water mark).
 
         IMPORTANT: Only call from main thread — mutates starting_balance_cents (HWM).
-        For read-only access (e.g. Firebase dashboard), use _drawdown_scaler_readonly().
+        For read-only access (e.g. dashboard), use _drawdown_scaler_readonly().
         """
         if self.starting_balance_cents <= 0:
             return 1.0
@@ -8772,7 +8772,7 @@ class OpportunityScanner:
         now = time.time()
 
         # Skip WS subscription for hourly tickers — too many strikes (75/asset),
-        # they never get unsubscribed properly, and pollute the Firebase dashboard.
+        # they never get unsubscribed properly, and pollute the dashboard.
         _hourly_prefixes = tuple(HOURLY_SERIES_TICKERS.values())
         is_hourly = ticker.startswith(_hourly_prefixes)
 
@@ -8956,7 +8956,7 @@ class OrderExecutor:
 
     @property
     def _active_order(self) -> Optional[Dict]:
-        """Backwards compat for firebase_push.py."""
+        """Backwards compat for dashboard_snapshot.py."""
         if not self._active_orders:
             return None
         return next(iter(self._active_orders.values()))
@@ -11700,7 +11700,7 @@ class MainLoop:
 
         assert "15m" not in _CAL_REGISTRY, "FATAL: 15M engine must never be in _CAL_REGISTRY"
 
-        # Backward compat for firebase_push.py
+        # Backward compat for dashboard_snapshot.py
         self.hourly_calibration = self._cal_engines.get("hourly")
         tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -11956,14 +11956,13 @@ class MainLoop:
                 logging.warning(f"Sports engine failed to start: {e}")
                 self.sports_engine = None
 
-        # Start Firebase dashboard push (if configured)
+        # Dashboard snapshot builder (used by Supabase syncer)
         try:
-            from firebase_push import FirebasePusher
-            self.firebase = FirebasePusher(self)
-            self.firebase.start()
+            from dashboard_snapshot import DashboardSnapshotBuilder
+            self.snapshot_builder = DashboardSnapshotBuilder(self)
         except Exception as e:
-            logging.info(f"Firebase dashboard not available: {e}")
-            self.firebase = None
+            logging.info(f"Dashboard snapshot builder not available: {e}")
+            self.snapshot_builder = None
 
         # Start Supabase syncer (if configured)
         try:
@@ -12226,7 +12225,7 @@ class MainLoop:
     def _tick(self):
         now = time.time()
 
-        # Update peak balance from main thread (firebase reads only)
+        # Update peak balance from main thread (dashboard reads only)
         cached_bal = self.scanner._balance_cache[0]
         if cached_bal is not None:
             bal_dollars = cached_bal / 100.0
@@ -12502,8 +12501,7 @@ class MainLoop:
                 len(self.vol._adaptive_returns_15s["XRP"]))
         if hasattr(self, 'kalshi_feed') and self.kalshi_feed:
             self.kalshi_feed.stop()
-        if hasattr(self, 'firebase'):
-            self.firebase.stop()
+        # snapshot_builder has no thread — nothing to stop
         if hasattr(self, 'supabase_syncer') and self.supabase_syncer:
             self.supabase_syncer.stop()
         if hasattr(self, 'coinglass'):

@@ -184,7 +184,7 @@ spx_engine.py                  — S&P 500 intraday engine (EGARCH + VIX, shadow
 weather_engine.py              — weather temperature engine (NWP ensemble, shadow mode)
 sports_engine.py               — sports comeback engine (Bayesian LR, shadow mode)
 sports_data.py                 — sports LR tables and league configuration
-firebase_push.py               — pushes live dashboard snapshots to Firebase
+dashboard_snapshot.py          — builds dashboard state snapshots for Supabase
 start.sh                       — systemd entrypoint (venv + .env + bot.py)
 requirements.txt               — Python dependencies
 .env.example                   — credential template
@@ -207,6 +207,6 @@ The bot writes JSONL journals for every stage of its decision-making pipeline:
 | `performance` | Daily summary aggregations |
 | `fill_model` | Maker order lifecycle data for ML fill prediction |
 
-### Firebase Dashboard (optional)
+### Dashboard (Supabase)
 
-When `FIREBASE_DB_URL` is set, the bot pushes a state snapshot every 10 seconds: balance, active positions, recent trades, win/loss record, current volatility readings, order flow signals, and session stats. In observation mode it also tracks simulated P&L.
+When `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are set, the bot pushes a state snapshot every 10 seconds via the Supabase syncer: balance, active positions, recent trades, win/loss record, current volatility readings, order flow signals, and session stats. In observation mode it also tracks simulated P&L.

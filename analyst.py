@@ -721,7 +721,6 @@ class Analyst:
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
         self._db_path = db_path
         self._client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
-        self._firebase_url = os.environ.get("FIREBASE_DB_URL")
         self._tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         self._tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
         self._analyzed_losses = self._load_analyzed_losses()
@@ -761,14 +760,8 @@ class Analyst:
         return analyzed
 
     def _push_firebase(self, path: str, data: dict) -> None:
-        """Push data to Firebase under bot_status/analyst/."""
-        if not self._firebase_url:
-            return
-        url = f"{self._firebase_url}/bot_status/analyst/{path}.json"
-        try:
-            requests.put(url, json=sanitize_keys(data), timeout=5)
-        except Exception as e:
-            log.warning("Firebase push failed for %s: %s", path, e)
+        """No-op: Firebase removed. Analyst results logged to journal only."""
+        pass
 
     def _call_llm(
         self,
