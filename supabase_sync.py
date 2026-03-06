@@ -494,7 +494,19 @@ class SupabaseSyncer:
     # ── Reconciliation ─────────────────────────────────────────────────
 
     def _reconciliation_check(self):
-        """Compare SQLite vs Supabase row counts, log discrepancies."""
+        """Compare SQLite vs Supabase row counts AND daily PnL, fix discrepancies.
+
+        Row count check: logs warnings when gap > 10 rows.
+        Daily PnL check: compares per-day PnL sums between SQLite and Supabase.
+            If any day has a mismatch, does a full re-sync of trades for that day
+            (delete + re-insert). This catches corrections/deletions on VPS side
+            (e.g., ghost fill removals) that watermark-based sync misses.
+        """
+        self._reconcile_row_counts()
+        self._reconcile_daily_pnl()
+
+    def _reconcile_row_counts(self):
+        """Compare row counts between SQLite and Supabase, log discrepancies."""
         try:
             for sqlite_tbl, sb_tbl in [
                 ("evaluated_opportunities", "evaluations"),
@@ -514,7 +526,111 @@ class SupabaseSyncer:
                     logging.warning("Supabase reconciliation: %s local=%d remote=%d gap=%d",
                                     sqlite_tbl, local, remote, gap)
         except Exception:
-            logging.debug("Supabase: reconciliation check failed", exc_info=True)
+            logging.debug("Supabase: row count reconciliation failed", exc_info=True)
+
+    def _reconcile_daily_pnl(self):
+        """Compare daily PnL totals between SQLite and Supabase. Fix mismatches.
+
+        Catches: ghost fill corrections, manual trade deletions, any VPS-side
+        data fixes that the forward-only watermark sync misses.
+        """
+        try:
+            # Get per-day PnL from SQLite
+            local_rows = self._db.execute("""
+                SELECT DATE(settled_at) AS day,
+                       SUM(pnl_cents) AS pnl,
+                       COUNT(*) AS cnt
+                FROM settled_trades
+                WHERE settled_at IS NOT NULL
+                GROUP BY DATE(settled_at)
+                ORDER BY day
+            """).fetchall()
+            if not local_rows:
+                return
+            local_daily = {r["day"]: (r["pnl"], r["cnt"]) for r in local_rows}
+
+            # Get per-day PnL from Supabase
+            resp = self._session.get(
+                f"{self._url}/rest/v1/rpc/daily_pnl_summary",
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                # RPC may not exist yet — skip silently
+                logging.debug("Supabase: daily_pnl_summary RPC not available (HTTP %d)", resp.status_code)
+                return
+
+            remote_daily = {}
+            for row in resp.json():
+                day = row.get("day")
+                if day:
+                    remote_daily[day] = (row.get("pnl", 0), row.get("cnt", 0))
+
+            # Find mismatches
+            days_to_fix = []
+            for day, (local_pnl, local_cnt) in local_daily.items():
+                remote_pnl, remote_cnt = remote_daily.get(day, (None, None))
+                if remote_pnl is None or local_pnl != remote_pnl or local_cnt != remote_cnt:
+                    days_to_fix.append(day)
+
+            # Also check for days in Supabase that don't exist locally (deleted trades)
+            for day in remote_daily:
+                if day not in local_daily:
+                    days_to_fix.append(day)
+
+            if not days_to_fix:
+                return
+
+            logging.warning("Supabase reconciliation: %d days with PnL mismatch: %s",
+                            len(days_to_fix), days_to_fix[:5])
+
+            # Fix each mismatched day: delete remote rows, re-insert from local
+            for day in days_to_fix:
+                self._fix_trades_for_day(day, day in local_daily)
+
+            # Refresh materialized views after corrections
+            if days_to_fix:
+                self._rpc("refresh_analytics_views")
+                logging.info("Supabase reconciliation: fixed %d days, refreshed views", len(days_to_fix))
+
+        except Exception:
+            logging.debug("Supabase: daily PnL reconciliation failed", exc_info=True)
+
+    def _fix_trades_for_day(self, day: str, exists_locally: bool):
+        """Delete and re-insert trades for a specific day."""
+        try:
+            # Delete remote trades for this day
+            resp = self._session.delete(
+                f"{self._url}/rest/v1/trades?settled_at=gte.{day}T00:00:00&settled_at=lt.{day}T23:59:59.999",
+                headers={"Prefer": "return=minimal"},
+                timeout=10,
+            )
+            self._request_count += 1
+            if resp.status_code not in (200, 204):
+                logging.debug("Supabase: failed to delete trades for %s (HTTP %d)", day, resp.status_code)
+                return
+
+            if not exists_locally:
+                # Day was deleted on VPS — just the delete is enough
+                logging.info("Supabase reconciliation: removed orphaned trades for %s", day)
+                return
+
+            # Re-insert from SQLite
+            rows = self._db.execute("""
+                SELECT ticker, event_ticker, asset, market_result, side, count,
+                       entry_price_cents, revenue_cents, fee_cents, pnl_cents,
+                       settled_at, strategy, seconds_to_close, fill_latency_seconds,
+                       vol_regime, calibrated_prob, edge, kelly_f,
+                       escalation_type, maker_price_cents, maker_wait_seconds,
+                       product_type
+                FROM settled_trades
+                WHERE DATE(settled_at) = ?
+            """, (day,)).fetchall()
+            if rows:
+                mapped = [{col: self._clean(r[col]) for col in r.keys()} for r in rows]
+                self._post("trades", mapped)
+                logging.info("Supabase reconciliation: re-synced %d trades for %s", len(rows), day)
+        except Exception:
+            logging.debug("Supabase: fix_trades_for_day(%s) failed", day, exc_info=True)
 
     # ── Storage check ───────────────────────────────────────────────────
 
