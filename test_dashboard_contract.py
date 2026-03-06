@@ -303,6 +303,13 @@ def test_sql_column_names():
                     f"(should be 'evaluation_time' or 'settled_time')"
                 )
 
+    # evaluated_opportunities does NOT have 'side' column — infer from calibrated_prob vs market_price
+    for i, line in enumerate(lines):
+        if "'side'" in line or '"side"' in line or ', side' in line or 'side FROM' in line.replace('outside', ''):
+            context = '\n'.join(lines[max(0, i-10):i+1])
+            if 'evaluated_opportunities' in context and 'settled_trades' not in context:
+                failures.append(f"Line {i+1}: references 'side' column on evaluated_opportunities (doesn't exist)")
+
     # evaluated_opportunities 15M product_type is '15m', not NULL
     # Check for product_type IS NULL on evaluated_opportunities queries
     for match in re.finditer(r"evaluated_opportunities.*?product_type IS NULL", source, re.DOTALL):

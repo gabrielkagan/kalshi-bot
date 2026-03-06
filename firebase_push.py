@@ -1983,16 +1983,20 @@ class FirebasePusher:
         try:
             conn = self._db_conn
             rows = conn.execute(
-                "SELECT fee_adjusted_edge, market_result, side FROM evaluated_opportunities "
+                "SELECT fee_adjusted_edge, market_result, calibrated_prob, market_price "
+                "FROM evaluated_opportunities "
                 "WHERE product_type='15m' AND filter_stage='candidate' AND status='settled' "
-                "AND fee_adjusted_edge IS NOT NULL AND evaluation_time >= ?",
+                "AND fee_adjusted_edge IS NOT NULL AND calibrated_prob IS NOT NULL "
+                "AND market_price IS NOT NULL AND evaluation_time >= ?",
                 (CONFIG_REGIME_SINCE,)
             ).fetchall()
             if rows and len(rows) >= 10:
                 data = []
                 for r in rows:
-                    won = (r["side"] == "yes" and r["market_result"] == "yes") or \
-                          (r["side"] == "no" and r["market_result"] in ("no", "all_no"))
+                    # Infer side from calibrated_prob vs market_price
+                    yes_side = r["calibrated_prob"] > r["market_price"] / 100.0
+                    won = (yes_side and r["market_result"] == "yes") or \
+                          (not yes_side and r["market_result"] in ("no", "all_no"))
                     data.append((r["fee_adjusted_edge"], 1 if won else 0))
                 data.sort(key=lambda x: x[0])
                 n = len(data)
