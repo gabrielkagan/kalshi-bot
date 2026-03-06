@@ -744,6 +744,35 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
     else:
         print("  No settled observation data")
 
+    # Market-only baseline comparison
+    subsection("Leak 10b: Market-only baseline (fair_prob = market_price / 100)")
+    mkt_rows = conn.execute("""
+        SELECT calibrated_prob, market_price, market_result
+        FROM evaluated_opportunities
+        WHERE product_type='hourly' AND filter_stage='hourly_observation'
+          AND market_result IS NOT NULL AND market_price IS NOT NULL
+          AND evaluation_time >= ?
+    """, (since,)).fetchall()
+    if mkt_rows:
+        mkt_brier = sum(
+            (r["market_price"] / 100.0 - (1.0 if r["market_result"] == "yes" else 0.0)) ** 2
+            for r in mkt_rows
+        ) / len(mkt_rows)
+        model_brier = sum(
+            (r["calibrated_prob"] - (1.0 if r["market_result"] == "yes" else 0.0)) ** 2
+            for r in mkt_rows
+        ) / len(mkt_rows)
+        delta = model_brier - mkt_brier
+        print(f"  Market-only Brier:  {mkt_brier:.4f}  (n={len(mkt_rows)})")
+        print(f"  EGARCH model Brier: {model_brier:.4f}")
+        if delta > 0:
+            print(f"  Delta: {delta:+.4f} — MARKET BEATS MODEL")
+            print(f"  *** Market price alone is better calibrated than EGARCH pipeline")
+        else:
+            print(f"  Delta: {delta:+.4f} — MODEL BEATS MARKET")
+    else:
+        print("  No data for market-only comparison")
+
     # Correlated multi-loss windows
     subsection("Leak 11: Correlated multi-loss windows")
     window_loss_rows = conn.execute("""

@@ -872,6 +872,47 @@ def section_calibration(data: List[Dict]) -> Dict:
             improvement = raw_bs - cal_bs
             print(f"  Calibration improvement: {improvement:+.4f} ({'HELPING' if improvement > 0 else 'HURTING'})")
 
+    # Market-only baseline: does market_price/100 beat EGARCH?
+    mkt_data = [d for d in settled if d.get("market_price")]
+    if mkt_data:
+        subheader("Market-Only Baseline (fair_prob = market_price / 100)")
+        mkt_probs = [d["market_price"] / 100.0 if d["market_price"] > 1.5
+                     else d["market_price"] for d in mkt_data]
+        mkt_outs = [1.0 if d["won"] else 0.0 for d in mkt_data]
+        mkt_bs = brier_score(mkt_probs, mkt_outs)
+        cal_probs_m = [d["cal_prob"] for d in mkt_data]
+        cal_bs_m = brier_score(cal_probs_m, mkt_outs)
+        print(f"  Market-only Brier:  {mkt_bs:.4f}  (fair_prob = market_price/100)")
+        print(f"  EGARCH model Brier: {cal_bs_m:.4f}  (calibrated_prob)")
+        if mkt_bs is not None and cal_bs_m is not None:
+            delta = cal_bs_m - mkt_bs
+            if delta > 0:
+                print(f"  Delta: {delta:+.4f} — MARKET BEATS MODEL")
+                print(f"  *** Edge inversion signal: market is better calibrated than EGARCH")
+                print(f"  *** Consider increasing MARKET_BLEND_W toward 0.60+")
+            else:
+                print(f"  Delta: {delta:+.4f} — MODEL BEATS MARKET")
+                print(f"  *** EGARCH adds real signal beyond market price")
+
+        # Per-price-tier market vs model comparison
+        print(f"\n  {'Tier':>8} {'N':>4} {'MktBrier':>9} {'ModelBrier':>11} {'Winner':>10}")
+        print(f"  {'-'*48}")
+        for tier_label, tier_lo, tier_hi in [("<80c", 0, 80), ("80-89c", 80, 90), ("90c+", 90, 100)]:
+            tier_d = [d for d in mkt_data
+                      if tier_lo <= (d["market_price"] if d["market_price"] > 1.5
+                                     else d["market_price"] * 100) < tier_hi]
+            if len(tier_d) < 5:
+                continue
+            t_mkt = [d["market_price"] / 100.0 if d["market_price"] > 1.5
+                     else d["market_price"] for d in tier_d]
+            t_out = [1.0 if d["won"] else 0.0 for d in tier_d]
+            t_cal = [d["cal_prob"] for d in tier_d]
+            t_mkt_bs = brier_score(t_mkt, t_out)
+            t_cal_bs = brier_score(t_cal, t_out)
+            if t_mkt_bs is not None and t_cal_bs is not None:
+                winner = "Market" if t_cal_bs > t_mkt_bs else "Model"
+                print(f"  {tier_label:>8} {len(tier_d):>4} {t_mkt_bs:>8.4f} {t_cal_bs:>10.4f} {winner:>10}")
+
     return {"brier": bs, "n": len(settled)}
 
 

@@ -526,6 +526,38 @@ def section_calibration(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
             verdict = "PROFITABLE"
         print(f"  {key:<12} {b['n']:>4} {actual:>9.1%} {be:>7.1%} {margin:>+7.1%} {verdict:>12}{significance_tag(b['n'])}")
 
+    # Market-only baseline: does market_price/100 beat EGARCH?
+    subheader("Market-Only Baseline (fair_prob = market_price / 100)")
+    mkt_rows = [r for r in rows if r["market_price"]]
+    if mkt_rows:
+        mkt_brier_sum = sum(
+            (r["market_price"] / 100.0 - (1.0 if r["market_result"] == "yes" else 0.0)) ** 2
+            for r in mkt_rows
+        )
+        mkt_brier = mkt_brier_sum / len(mkt_rows)
+        print(f"  Market-only Brier:  {mkt_brier:.4f}  (n={len(mkt_rows)})")
+        print(f"  EGARCH model Brier: {brier:.4f}")
+        delta = brier - mkt_brier
+        if delta > 0:
+            print(f"  Delta: {delta:+.4f} — MARKET BEATS MODEL")
+            print(f"  *** Edge inversion signal: market better calibrated than EGARCH")
+        else:
+            print(f"  Delta: {delta:+.4f} — MODEL BEATS MARKET")
+
+        # Per-tier breakdown
+        print(f"\n  {'Tier':>8} {'N':>4} {'MktBrier':>9} {'ModelBrier':>11} {'Winner':>10}")
+        print(f"  {'-'*48}")
+        for t_label, t_lo, t_hi in [("<80c", 0, 80), ("80-89c", 80, 90), ("90c+", 90, 100)]:
+            t_data = [r for r in mkt_rows if t_lo <= r["market_price"] < t_hi]
+            if len(t_data) < 5:
+                continue
+            t_mkt_b = sum((r["market_price"]/100.0 - (1.0 if r["market_result"]=="yes" else 0.0))**2
+                         for r in t_data) / len(t_data)
+            t_cal_b = sum((r["calibrated_prob"] - (1.0 if r["market_result"]=="yes" else 0.0))**2
+                         for r in t_data) / len(t_data)
+            winner = "Market" if t_cal_b > t_mkt_b else "Model"
+            print(f"  {t_label:>8} {len(t_data):>4} {t_mkt_b:>8.4f} {t_cal_b:>10.4f} {winner:>10}")
+
     return {"brier": round(brier, 4), "n": len(rows), "buckets": bucket_list}
 
 
