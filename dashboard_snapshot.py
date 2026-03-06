@@ -932,30 +932,33 @@ class DashboardSnapshotBuilder:
                 "GROUP BY filter_stage"
             ).fetchall()
             by_stage = []
-            # Merge paired shadow variants into combined "all assets" rows.
-            # In the DB: price_shadow = XRP only, price_shadow_no_xrp = non-XRP.
-            # Dashboard should show: price_shadow = all assets combined.
-            # Same for stc_shadow / stc_shadow_no_xrp.
-            _merge_pairs = {
-                "price_shadow": "price_shadow (all)",
-                "price_shadow_no_xrp": "price_shadow (all)",
-                "price_shadow_xrp": "price_shadow (all)",
-                "stc_shadow": "stc_shadow (all)",
-                "stc_shadow_no_xrp": "stc_shadow (all)",
-                "stc_shadow_xrp": "stc_shadow (all)",
+            # Merge shadow variants into clear display rows:
+            #   "price_shadow" = all assets combined (old pre-split + xrp + no_xrp)
+            #   "price_shadow (no XRP)" = just the no-XRP variant
+            #   Same pattern for stc_shadow.
+            # DB stages: price_shadow (old), price_shadow_xrp, price_shadow_no_xrp,
+            #            stc_shadow (old), stc_shadow_xrp, stc_shadow_no_xrp, xrp_shadow
+            _merge_rules = {
+                # stage_in_db -> list of display buckets to add to
+                "price_shadow":        ["price_shadow"],
+                "price_shadow_xrp":    ["price_shadow"],
+                "price_shadow_no_xrp": ["price_shadow", "price_shadow (no XRP)"],
+                "stc_shadow":          ["stc_shadow"],
+                "stc_shadow_xrp":      ["stc_shadow"],
+                "stc_shadow_no_xrp":   ["stc_shadow", "stc_shadow (no XRP)"],
             }
-            _merged = {}  # stage -> {total, wins, losses, net_pnl_cents}
+            _merged = {}  # display_name -> {total, wins, losses, net_pnl_cents}
             for r in stage_rows:
                 stage = r["filter_stage"]
-                merge_into = _merge_pairs.get(stage)
-                if merge_into:
-                    # Merge into the parent stage
-                    if merge_into not in _merged:
-                        _merged[merge_into] = {"total": 0, "wins": 0, "losses": 0, "net_pnl_cents": 0}
-                    _merged[merge_into]["total"] += r["total"]
-                    _merged[merge_into]["wins"] += r["wins"]
-                    _merged[merge_into]["losses"] += r["losses"]
-                    _merged[merge_into]["net_pnl_cents"] += r["net_pnl_cents"]
+                buckets = _merge_rules.get(stage)
+                if buckets:
+                    for bucket in buckets:
+                        if bucket not in _merged:
+                            _merged[bucket] = {"total": 0, "wins": 0, "losses": 0, "net_pnl_cents": 0}
+                        _merged[bucket]["total"] += r["total"]
+                        _merged[bucket]["wins"] += r["wins"]
+                        _merged[bucket]["losses"] += r["losses"]
+                        _merged[bucket]["net_pnl_cents"] += r["net_pnl_cents"]
                 else:
                     # Normal stage — pass through
                     total = r["total"]
