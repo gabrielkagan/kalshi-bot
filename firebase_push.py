@@ -983,9 +983,10 @@ class FirebasePusher:
                 "  AND market_price BETWEEN 80 AND 99 "
                 "GROUP BY bucket"
             ).fetchall()
-            # Breakeven WR = price / (100 - fee), where fee = ceil(0.07 * p * (1-p))
-            # Computed at bucket midpoints: 82c→83.5%, 87c→88.4%, 92c→93.2%, 97c→97.6%
-            breakeven_map = {"80-84": 83.5, "85-89": 88.4, "90-94": 93.2, "95-99": 97.6}
+            # Breakeven WR = (price + fee) / 100, fee = ceil(0.0175 * p * (100-p) / 100)
+            # Fee is 1c for all prices in 80-99c range (maker), so BE = (price + 1)%
+            # Midpoints: 82c→83%, 87c→88%, 92c→93%, 97c→98%
+            breakeven_map = {"80-84": 83, "85-89": 88, "90-94": 93, "95-99": 98}
             by_bucket = []
             for r in bucket_rows:
                 total = r["total"]

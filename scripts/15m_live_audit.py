@@ -1077,11 +1077,21 @@ def config_sensitivity(conn: sqlite3.Connection, since: str,
                   f"{wr:>5.1f}% ${rows['pnl']/100:>9.2f} "
                   f"{rows['avg_p']:>5.0f}c")
 
-    # P2: Edge threshold sweep (trades + rejected)
-    subsection("P2: Edge threshold sweep (trades + insufficient_edge)")
+    # P2: Per-price-tier edge analysis (matches MIN_EDGE_BY_PRICE schedule)
+    # The bot uses price-dependent edge thresholds, NOT a flat minimum.
+    # This analysis evaluates each tier independently.
+    EDGE_TIERS = [
+        ("86-88c", 86, 88, 0.0025),   # 0.25% threshold
+        ("89-90c", 89, 90, 0.0025),   # 0.25% threshold
+        ("91-92c", 91, 92, 0.0035),   # 0.35% threshold
+        ("93-94c", 93, 94, 0.009),    # 0.90% threshold
+        ("95-96c", 95, 96, 0.0125),   # 1.25% threshold
+        ("97-99c", 97, 99, 0.020),    # 2.00% threshold
+    ]
+    subsection("P2: Per-price-tier edge performance (MIN_EDGE_BY_PRICE)")
     all_edge = conn.execute(f"""
         SELECT fee_adjusted_edge, market_price, market_result,
-          position_size, status,
+          position_size, status, filter_stage,
           COALESCE(counterfactual_pnl, 0) AS cf_pnl
         FROM evaluated_opportunities
         WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
@@ -1089,52 +1099,99 @@ def config_sensitivity(conn: sqlite3.Connection, since: str,
           AND status = 'settled' AND fee_adjusted_edge IS NOT NULL
     """, (since,)).fetchall()
     if all_edge:
-        print(f"  {'Min Edge':>10} {'Would Trade':>12} {'W':>3} {'L':>3} "
-              f"{'WR':>6} {'CF PnL':>10}")
-        print("  " + "-" * 50)
-        for min_e in [0.0, 0.003, 0.005, 0.007, 0.009, 0.012, 0.015]:
-            subset = [r for r in all_edge
-                      if (r["fee_adjusted_edge"] or 0) >= min_e]
-            if subset:
-                w = sum(1 for r in subset
-                        if r["market_result"] == "yes")
-                l = len(subset) - w
-                wr = w / len(subset) * 100
-                cf = sum(r["cf_pnl"] for r in subset)
-                print(f"  {min_e:>9.1%} {len(subset):>12} {w:>3} {l:>3} "
-                      f"{wr:>5.1f}% ${cf/100:>9.2f}")
+        print(f"  {'Tier':>8} {'Thresh':>7} {'N':>4} {'W':>3} {'L':>3} "
+              f"{'WR':>6} {'Avg Edge':>9} {'Margin':>9} {'CF PnL':>10} {'Verdict':<16}")
+        print("  " + "-" * 90)
+        for label, lo, hi, thresh in EDGE_TIERS:
+            tier_rows = [r for r in all_edge
+                         if lo <= (r["market_price"] or 0) <= hi]
+            if not tier_rows:
+                continue
+            traded = [r for r in tier_rows if r["filter_stage"] == "candidate"]
+            rejected = [r for r in tier_rows if r["filter_stage"] == "insufficient_edge"]
+            w = sum(1 for r in traded if r["market_result"] == "yes")
+            l_ = len(traded) - w
+            wr = w / len(traded) * 100 if traded else 0
+            avg_edge = sum(r["fee_adjusted_edge"] for r in traded) / len(traded) if traded else 0
+            avg_margin = avg_edge - thresh  # how far above threshold
+            cf_pnl = sum(r["cf_pnl"] for r in traded) / 100
+            rej_w = sum(1 for r in rejected if r["market_result"] == "yes")
+            rej_l = len(rejected) - rej_w
+            # Verdict based on loss clustering near threshold
+            losses_near_thresh = [r for r in traded
+                                  if r["market_result"] != "yes"
+                                  and (r["fee_adjusted_edge"] or 0) < thresh + 0.01]
+            if l_ > 0 and len(losses_near_thresh) == l_:
+                verdict = "TIGHTEN?"
+            elif len(rejected) > 0 and rej_w > rej_l:
+                verdict = "LOOSEN?"
+            elif l_ == 0 and len(traded) >= 3:
+                verdict = "OK"
+            else:
+                verdict = "OK" if wr >= 75 or len(traded) < 3 else "MONITOR"
+            print(f"  {label:>8} {thresh*100:>6.2f}% {len(traded):>4} {w:>3} {l_:>3} "
+                  f"{wr:>5.1f}% {avg_edge:>+8.4f} {avg_margin:>+8.4f} "
+                  f"${cf_pnl:>9.2f} {verdict:<16}")
+            if rejected:
+                rej_cf = sum(r["cf_pnl"] for r in rejected) / 100
+                print(f"           rejected: {len(rejected)} ({rej_w}W/{rej_l}L), "
+                      f"CF PnL ${rej_cf:.2f}")
 
-    # P2b: New edge thresholds — relaxed 89-91c trades
-    subsection("P2b: Relaxed edge thresholds — 89-92c trades (0.5-1.2% edge)")
-    relaxed = conn.execute(f"""
-        SELECT market_price,
-          CASE WHEN filter_stage = 'candidate' THEN 'traded'
-               WHEN filter_stage = 'insufficient_edge' THEN 'rejected'
-               ELSE filter_stage END AS outcome,
-          COUNT(*) AS n,
-          SUM(CASE WHEN status='settled' AND market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(CASE WHEN status='settled' AND market_result='no' THEN 1 ELSE 0 END) AS l,
-          SUM(CASE WHEN status='settled'
-              THEN COALESCE(counterfactual_pnl, 0) ELSE 0 END) AS cf_pnl,
-          ROUND(AVG(fee_adjusted_edge), 4) AS avg_edge
-        FROM evaluated_opportunities
-        WHERE evaluation_time >= ? {EVAL_15M_FILTER} {asset_clause_eval}
-          AND filter_stage IN ('candidate', 'insufficient_edge')
-          AND market_price BETWEEN 89 AND 92
-          AND fee_adjusted_edge BETWEEN 0.005 AND 0.012
-        GROUP BY market_price, outcome ORDER BY market_price, outcome
-    """, (since,)).fetchall()
-    if relaxed:
-        print(f"  {'Price':>6} {'Outcome':>10} {'N':>4} {'W':>3} {'L':>3} "
-              f"{'CF PnL':>10} {'Avg Edge':>10}")
-        print("  " + "-" * 52)
-        for r in relaxed:
-            print(f"  {r['market_price']:>5}c {r['outcome']:>10} {r['n']:>4} "
-                  f"{r['w'] or 0:>3} {r['l'] or 0:>3} "
-                  f"${(r['cf_pnl'] or 0)/100:>9.2f} "
-                  f"{(r['avg_edge'] or 0):>+9.4f}")
+        # Edge margin analysis: how far above threshold were wins vs losses?
+        print()
+        subsection("P2b: Edge margin analysis (distance from tier threshold)")
+        print(f"  {'Tier':>8} {'Outcome':>8} {'N':>3} {'Avg Margin':>11} "
+              f"{'Min Margin':>11} {'Max Margin':>11}")
+        print("  " + "-" * 60)
+        for label, lo, hi, thresh in EDGE_TIERS:
+            traded = [r for r in all_edge
+                      if lo <= (r["market_price"] or 0) <= hi
+                      and r["filter_stage"] == "candidate"]
+            if not traded:
+                continue
+            wins = [r for r in traded if r["market_result"] == "yes"]
+            losses = [r for r in traded if r["market_result"] != "yes"]
+            for outcome, group in [("WIN", wins), ("LOSS", losses)]:
+                if not group:
+                    continue
+                margins = [(r["fee_adjusted_edge"] or 0) - thresh for r in group]
+                print(f"  {label:>8} {outcome:>8} {len(group):>3} "
+                      f"{sum(margins)/len(margins):>+10.4f} "
+                      f"{min(margins):>+10.4f} {max(margins):>+10.4f}")
+
+        # Per-tier threshold sensitivity: what if each tier's threshold changed?
+        print()
+        subsection("P2c: Per-tier threshold tuning (would trades change?)")
+        for label, lo, hi, current_thresh in EDGE_TIERS:
+            tier_all = [r for r in all_edge
+                        if lo <= (r["market_price"] or 0) <= hi]
+            if len(tier_all) < 3:
+                continue
+            print(f"\n  {label} (current threshold: {current_thresh*100:.2f}%):")
+            test_thresholds = sorted(set([
+                current_thresh * 0.5,
+                current_thresh * 0.75,
+                current_thresh,
+                current_thresh * 1.5,
+                current_thresh * 2.0,
+                current_thresh * 3.0,
+            ]))
+            print(f"    {'Threshold':>10} {'N':>4} {'W':>3} {'L':>3} "
+                  f"{'WR':>6} {'CF PnL':>10}")
+            print("    " + "-" * 42)
+            for t in test_thresholds:
+                sub = [r for r in tier_all if (r["fee_adjusted_edge"] or 0) >= t]
+                if not sub:
+                    continue
+                sw = sum(1 for r in sub if r["market_result"] == "yes")
+                sl = len(sub) - sw
+                swr = sw / len(sub) * 100
+                scf = sum(r["cf_pnl"] for r in sub) / 100
+                marker = " ◄ current" if abs(t - current_thresh) < 0.0001 else ""
+                print(f"    {t*100:>9.2f}% {len(sub):>4} {sw:>3} {sl:>3} "
+                      f"{swr:>5.1f}% ${scf:>9.2f}{marker}")
     else:
-        print("  No 89-92c trades with 0.5-1.2% edge in period")
+        print("  No settled edge data in period")
 
     # P3: MIN_ENTRY sweep (trades + POR)
     subsection("P3: MIN_ENTRY_PRICE sweep")
@@ -1282,38 +1339,72 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
           f"{cand_w/len(cands)*100:.1f}%), "
           f"PnL=${cand_pnl/100:.2f}")
 
-    # ── Edge floor sweep ──
-    subsection("Edge floor sweep (minimum fee-adjusted edge)")
-    edge_floors = [0.0, 0.001, 0.002, 0.003, 0.005, 0.007, 0.009,
-                   0.010, 0.012, 0.015, 0.020]
-    print(f"  {'MinEdge':>8} {'N':>4} {'W':>4} {'L':>3} {'WR':>6} "
-          f"{'FlatPnL':>9} {'$/day':>7}")
-    print("  " + "-" * 48)
-    for me in edge_floors:
-        sub = [r for r in pos_rows if r["fee_adjusted_edge"] >= me]
-        if not sub:
+    # ── Per-tier edge threshold grid search ──
+    # The bot uses MIN_EDGE_BY_PRICE — each price tier has its own threshold.
+    # This grid evaluates each tier independently rather than sweeping a flat minimum.
+    GRID_TIERS = [
+        ("86-88c", 86, 88, 0.0025),
+        ("89-90c", 89, 90, 0.0025),
+        ("91-92c", 91, 92, 0.0035),
+        ("93-94c", 93, 94, 0.009),
+        ("95-96c", 95, 96, 0.0125),
+        ("97-99c", 97, 99, 0.020),
+    ]
+    subsection("Per-tier threshold grid (matches MIN_EDGE_BY_PRICE)")
+    tier_best = []
+    for label, lo, hi, current in GRID_TIERS:
+        tier = [r for r in pos_rows if lo <= r["market_price"] <= hi]
+        if len(tier) < 3:
             continue
-        w = sum(1 for r in sub if r["market_result"] == "yes")
-        l_ = len(sub) - w
-        wr = w / len(sub) * 100
-        pnl = sum(sim_pnl_maker_unit(r["market_price"],
-                  r["market_result"] == "yes") for r in sub)
-        daily = pnl / 100 / n_days
-        marker = " ◄ ~86-90c" if abs(me - 0.0025) < 0.0001 else ""
-        print(f"  {me*100:>7.2f}% {len(sub):>4} {w:>4} {l_:>3} {wr:>5.1f}% "
-              f"${pnl/100:>8.2f} ${daily:>6.2f}{marker}")
+        print(f"\n  {label} (current: {current*100:.2f}%, n={len(tier)}):")
+        multipliers = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0]
+        print(f"    {'Threshold':>10} {'N':>4} {'W':>3} {'L':>3} "
+              f"{'WR':>6} {'FlatPnL':>9} {'$/day':>7}")
+        print("    " + "-" * 48)
+        best_pnl, best_t = -999, current
+        for mult in multipliers:
+            t = current * mult
+            sub = [r for r in tier if r["fee_adjusted_edge"] >= t]
+            if not sub:
+                continue
+            sw = sum(1 for r in sub if r["market_result"] == "yes")
+            sl = len(sub) - sw
+            swr = sw / len(sub) * 100
+            spnl = sum(sim_pnl_maker_unit(r["market_price"],
+                       r["market_result"] == "yes") for r in sub)
+            daily = spnl / 100 / n_days
+            marker = " ◄ current" if abs(mult - 1.0) < 0.01 else ""
+            print(f"    {t*100:>9.3f}% {len(sub):>4} {sw:>3} {sl:>3} "
+                  f"{swr:>5.1f}% ${spnl/100:>8.2f} ${daily:>6.2f}{marker}")
+            if spnl > best_pnl:
+                best_pnl, best_t = spnl, t
+        if abs(best_t - current) > 0.0001:
+            tier_best.append((label, current, best_t, best_pnl))
 
-    # ── Min price sweep ──
+    if tier_best:
+        print(f"\n  Tier threshold suggestions (data-limited, NOT recommendations):")
+        for label, cur, best, pnl in tier_best:
+            direction = "TIGHTEN" if best > cur else "LOOSEN"
+            print(f"    {label}: {cur*100:.2f}% -> {best*100:.3f}% "
+                  f"({direction}, +${pnl/100:.2f} flat PnL)")
+
+    # ── Min price sweep (still useful — independent of per-tier edges) ──
     subsection("Min price sweep")
     prices = [80, 82, 84, 85, 86, 87, 88, 89, 90, 91, 92]
     print(f"  {'MinPrice':>9} {'N':>4} {'W':>4} {'L':>3} {'WR':>6} "
           f"{'FlatPnL':>9} {'$/day':>7}")
     print("  " + "-" * 48)
     for mp in prices:
-        # Use lowest current edge floor for price sweep (0.25% at 86-90c)
-        sub = [r for r in pos_rows
-               if r["fee_adjusted_edge"] >= 0.0025
-               and r["market_price"] >= mp]
+        # Apply per-tier edge threshold for each trade (matches live behavior)
+        def _passes_tier(r, min_p=mp):
+            p = r["market_price"]
+            if p < min_p:
+                return False
+            for _, tlo, thi, thresh in GRID_TIERS:
+                if tlo <= p <= thi:
+                    return r["fee_adjusted_edge"] >= thresh
+            return r["fee_adjusted_edge"] >= 0.0025
+        sub = [r for r in pos_rows if _passes_tier(r)]
         if not sub:
             continue
         w = sum(1 for r in sub if r["market_result"] == "yes")
@@ -1326,91 +1417,37 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
         print(f"  {mp:>8}c {len(sub):>4} {w:>4} {l_:>3} {wr:>5.1f}% "
               f"${pnl/100:>8.2f} ${daily:>6.2f}{marker}")
 
-    # ── Combined grid: edge floor x min price ──
-    subsection("Combined grid: edge floor x min price")
-    grid_results = []
-    for me in edge_floors:
-        for mp in prices:
-            sub = [r for r in pos_rows
-                   if r["fee_adjusted_edge"] >= me
-                   and r["market_price"] >= mp]
-            if len(sub) < 5:
-                continue
-
-            flat_pnl = 0
-            wins = 0
-            bankroll = 10000  # $100.00 in cents
-            for r in sub:
-                won = r["market_result"] == "yes"
-                if won:
-                    wins += 1
-                flat_pnl += sim_pnl_maker_unit(r["market_price"], won)
-                # Kelly-weighted simulation
-                price = r["market_price"] / 100.0
-                edge = r["fee_adjusted_edge"]
-                b = (1 - price) / price
-                if b > 0:
-                    kelly_f = min(max(0, edge / (1 - price)) * 0.25, 0.25)
-                    bet = bankroll * kelly_f
-                    if won:
-                        bankroll += bet * b
-                    else:
-                        bankroll -= bet
-
-            n = len(sub)
-            wr = wins / n * 100
-            kelly_net = bankroll - 10000
-            daily = flat_pnl / 100 / n_days
-            grid_results.append((me, mp, n, wins, n - wins, wr,
-                                 flat_pnl, kelly_net, daily))
-
-    # Sort by flat PnL
-    grid_results.sort(key=lambda x: -x[6])
-    print(f"\n  Top 15 configs by flat PnL (equal $1 sizing):")
-    print(f"  {'MinEdge':>8} {'MinP':>5} {'N':>4} {'W':>4} {'L':>3} "
-          f"{'WR':>6} {'FlatPnL':>9} {'$/day':>7}")
-    print("  " + "-" * 55)
-    for r in grid_results[:15]:
-        marker = " ◄" if (abs(r[0] - 0.0025) < 0.0001
-                          and r[1] == 86) else ""
-        print(f"  {r[0]*100:>7.2f}% {r[1]:>4}c {r[2]:>4} {r[3]:>4} {r[4]:>3} "
-              f"{r[5]:>5.1f}% ${r[6]/100:>8.2f} ${r[8]:>6.2f}{marker}")
-
-    # Sort by Kelly PnL
-    grid_results.sort(key=lambda x: -x[7])
-    print(f"\n  Top 15 configs by Kelly PnL (quarter-Kelly, 25% max risk):")
-    print(f"  {'MinEdge':>8} {'MinP':>5} {'N':>4} {'W':>4} {'L':>3} "
-          f"{'WR':>6} {'FlatPnL':>9} {'KellyPnL':>10}")
-    print("  " + "-" * 62)
-    for r in grid_results[:15]:
-        marker = " ◄" if (abs(r[0] - 0.0025) < 0.0001
-                          and r[1] == 86) else ""
-        print(f"  {r[0]*100:>7.2f}% {r[1]:>4}c {r[2]:>4} {r[3]:>4} {r[4]:>3} "
-              f"{r[5]:>5.1f}% ${r[6]/100:>8.2f} ${r[7]/100:>9.2f}{marker}")
-
     # ── Fisher exact tests ──
     subsection("Statistical significance (Fisher exact test)")
 
-    # Key comparisons
+    # Key comparisons — test current tier-based config vs alternatives
+    def _current_config(r):
+        """Would this trade pass the current MIN_EDGE_BY_PRICE schedule?"""
+        p = r["market_price"]
+        e = r["fee_adjusted_edge"]
+        if p < 86:
+            return False
+        for _, tlo, thi, thresh in GRID_TIERS:
+            if tlo <= p <= thi:
+                return e >= thresh
+        return e >= 0.0025
+
     comparisons = [
-        ("Current (edge>=0.25%, P>=86c) vs loosened",
-         lambda r: r["fee_adjusted_edge"] >= 0.0025
-         and r["market_price"] >= 86),
+        ("Current tier-based config (P>=86c) vs rejected",
+         _current_config),
     ]
-    # Add top 3 distinct configs by flat PnL as alternatives
-    grid_results.sort(key=lambda x: -x[6])
-    seen = set()
-    for gr in grid_results:
-        key = (gr[0], gr[1])
-        if key not in seen and key != (0.0025, 86) and len(comparisons) < 5:
-            seen.add(key)
-            me_val, mp_val = gr[0], gr[1]
-            comparisons.append((
-                f"edge>={me_val*100:.1f}% P>={mp_val}c vs complement",
-                lambda r, me=me_val, mp=mp_val: (
-                    r["fee_adjusted_edge"] >= me
-                    and r["market_price"] >= mp)
-            ))
+    # Add per-tier tightened alternatives from tier_best
+    for label, cur, best_t, _ in tier_best[:3]:
+        comparisons.append((
+            f"{label}: tighten to {best_t*100:.2f}% (from {cur*100:.2f}%)",
+            lambda r, lo_=int(label.split('-')[0]),
+                   hi_=int(label.split('-')[1].rstrip('c')),
+                   t_=best_t: (
+                lo_ <= r["market_price"] <= hi_
+                and r["fee_adjusted_edge"] >= t_)
+            if lo_ <= r["market_price"] <= hi_
+            else _current_config(r)
+        ))
 
     best_result = None
     for label, pred in comparisons:
@@ -1453,11 +1490,17 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
                 "signals_per_day": round(daily_n, 1),
             }
 
-    # ── Rejected opportunity analysis ──
-    subsection("Currently rejected opportunities (0-0.25% edge)")
-    rejected = [r for r in pos_rows
-                if r["fee_adjusted_edge"] < 0.0025
-                and r["fee_adjusted_edge"] >= 0]
+    # ── Rejected opportunity analysis (per-tier aware) ──
+    subsection("Currently rejected opportunities (below tier threshold)")
+    def _below_tier_threshold(r):
+        """Would this trade fail its price tier's edge threshold?"""
+        p = r["market_price"]
+        e = r["fee_adjusted_edge"]
+        for _, tlo, thi, thresh in GRID_TIERS:
+            if tlo <= p <= thi:
+                return e < thresh and e >= 0
+        return e < 0.0025 and e >= 0
+    rejected = [r for r in pos_rows if _below_tier_threshold(r)]
     if rejected:
         rej_w = sum(1 for r in rejected if r["market_result"] == "yes")
         rej_l = len(rejected) - rej_w
