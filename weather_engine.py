@@ -212,12 +212,12 @@ class WeatherEnsembleFetcher:
         # Fetch GFS ensemble
         gfs_members = self._fetch_model_ensemble(lat, lon, "gfs_seamless", target_date)
         result["gfs_members"] = gfs_members
-        time.sleep(0.5)  # Rate-limit: 3 calls per city, Open-Meteo throttles at ~30 req/min
+        time.sleep(2.0)  # Rate-limit: 19 cities × 3 calls = 57 calls; Open-Meteo ~30 req/min
 
         # Fetch ECMWF ensemble
         ecmwf_members = self._fetch_model_ensemble(lat, lon, "ecmwf_ifs025", target_date)
         result["ecmwf_members"] = ecmwf_members
-        time.sleep(0.5)
+        time.sleep(2.0)
 
         if not ecmwf_members:
             logging.warning("WeatherEnsemble: %s ECMWF returned no members (ecmwf_ifs025)", city_code)
