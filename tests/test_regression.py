@@ -370,6 +370,27 @@ class TestCheckSameThread:
             f"These files are called from multiple threads."
         )
 
+    def test_fifteenm_shadow_product_type_filter(self):
+        """fifteenm_shadow.py must accept product_type='15m', not just NULL.
+        Bug: queries used 'product_type IS NULL' but 15M evals have product_type='15m'.
+        Result: 0 training rows despite hundreds of settled evals."""
+        fpath = os.path.join(PROJECT_ROOT, "fifteenm_shadow.py")
+        if not os.path.exists(fpath):
+            pytest.skip("fifteenm_shadow.py not found")
+        with open(fpath) as f:
+            content = f.read()
+        # Must NOT have bare "product_type IS NULL" without the OR clause
+        lines = content.splitlines()
+        for i, line in enumerate(lines, 1):
+            if "product_type IS NULL" in line and "OR product_type" not in line:
+                # Check if the next line has the OR
+                nearby = "\n".join(lines[max(0, i-1):i+2])
+                if "OR product_type" not in nearby:
+                    pytest.fail(
+                        f"fifteenm_shadow.py:{i} has 'product_type IS NULL' without "
+                        f"'OR product_type = \"15m\"' — 15M evals have product_type='15m'"
+                    )
+
     def test_fifteenm_shadow_has_busy_timeout(self):
         """fifteenm_shadow.py must also have busy_timeout (shares state.db)."""
         fpath = os.path.join(PROJECT_ROOT, "fifteenm_shadow.py")

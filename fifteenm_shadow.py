@@ -75,7 +75,8 @@ class RecalibratedEGARCHApproach:
             for asset in ("BTC", "ETH", "SOL", "XRP"):
                 rows = conn.execute(
                     "SELECT calibrated_prob, market_result FROM evaluated_opportunities "
-                    "WHERE asset = ? AND product_type IS NULL AND status = 'settled' "
+                    "WHERE asset = ? AND (product_type IS NULL OR product_type = '15m') "
+                    "AND status = 'settled' "
                     "AND filter_stage IN ('candidate', 'xrp_shadow', 'stc_shadow', "
                     "  'stc_shadow_no_xrp', 'stc_shadow_promoted') "
                     "AND calibrated_prob IS NOT NULL AND market_result IS NOT NULL",
@@ -282,13 +283,15 @@ class LightGBMApproach:
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout=10000")
+            # Use ALL settled 15M evals for training (not just candidates).
+            # Rejected opportunities (price_out_of_range, insufficient_edge, etc.)
+            # have known outcomes and valid features — more data = better classifier.
             rows = conn.execute(
                 "SELECT calibrated_prob, market_price, volatility, z_score, "
                 "  seconds_to_close, spot_price, threshold, market_result "
                 "FROM evaluated_opportunities "
-                "WHERE asset = ? AND product_type IS NULL AND status = 'settled' "
-                "AND filter_stage IN ('candidate', 'xrp_shadow', 'stc_shadow', "
-                "  'stc_shadow_no_xrp', 'stc_shadow_promoted') "
+                "WHERE asset = ? AND (product_type IS NULL OR product_type = '15m') "
+                "AND status = 'settled' "
                 "AND calibrated_prob IS NOT NULL AND market_result IS NOT NULL "
                 "AND market_price IS NOT NULL AND volatility IS NOT NULL",
                 (asset,)
