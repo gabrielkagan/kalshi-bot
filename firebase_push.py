@@ -1920,9 +1920,9 @@ class FirebasePusher:
             conn = self._db_conn
             rows = conn.execute(
                 "SELECT calibrated_prob, market_result, market_price FROM evaluated_opportunities "
-                "WHERE product_type IS NULL AND filter_stage='candidate' AND status='settled' "
+                "WHERE product_type='15m' AND filter_stage='candidate' AND status='settled' "
                 "AND calibrated_prob IS NOT NULL AND market_result IS NOT NULL "
-                "AND settled_at >= ?",
+                "AND evaluation_time >= ?",
                 (CONFIG_REGIME_SINCE,)
             ).fetchall()
             if rows and len(rows) > 0:
@@ -1984,8 +1984,8 @@ class FirebasePusher:
             conn = self._db_conn
             rows = conn.execute(
                 "SELECT fee_adjusted_edge, market_result, side FROM evaluated_opportunities "
-                "WHERE product_type IS NULL AND filter_stage='candidate' AND status='settled' "
-                "AND fee_adjusted_edge IS NOT NULL AND settled_at >= ?",
+                "WHERE product_type='15m' AND filter_stage='candidate' AND status='settled' "
+                "AND fee_adjusted_edge IS NOT NULL AND evaluation_time >= ?",
                 (CONFIG_REGIME_SINCE,)
             ).fetchall()
             if rows and len(rows) >= 10:
@@ -2130,9 +2130,9 @@ class FirebasePusher:
                 f"    THEN -((100 - market_price) + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
                 "  ELSE 0 END) AS sim_pnl "
                 "FROM evaluated_opportunities "
-                "WHERE product_type IS NULL AND filter_stage='stc_shadow' AND status='settled' "
+                "WHERE product_type='15m' AND filter_stage='stc_shadow' AND status='settled' "
                 "AND market_result IS NOT NULL AND calibrated_prob IS NOT NULL AND market_price IS NOT NULL "
-                "AND created_at >= ?",
+                "AND evaluation_time >= ?",
                 (CONFIG_REGIME_SINCE,)
             ).fetchone()
             snap["stc_shadow_counterfactual"] = {

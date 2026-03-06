@@ -275,6 +275,50 @@ def test_breakeven_wr_formula():
     return all_pass
 
 
+def test_sql_column_names():
+    """Verify SQL queries use correct column names for each table.
+
+    Root cause of calibration_health/edge_integrity returning null on first deploy:
+    - evaluated_opportunities has 'evaluation_time' and 'settled_time', NOT 'settled_at'
+    - evaluated_opportunities has product_type='15m', NOT NULL
+    - settled_trades has 'settled_at' (correct)
+    """
+    with open(FIREBASE_PUSH_PATH) as f:
+        source = f.read()
+
+    failures = []
+
+    # evaluated_opportunities does NOT have 'settled_at' — it's 'settled_time'/'evaluation_time'
+    # Check for lines with settled_at that are NOT on settled_trades (alias st.)
+    import re
+    lines = source.split('\n')
+    for i, line in enumerate(lines):
+        # Skip if the line references settled_trades directly or uses st. alias
+        if 'settled_at' in line and 'settled_trades' not in line and 'st.' not in line:
+            # Check if nearby lines (within 10) reference evaluated_opportunities
+            context = '\n'.join(lines[max(0, i-10):i+1])
+            if 'evaluated_opportunities' in context and 'settled_trades' not in context:
+                failures.append(
+                    f"Line {i+1}: uses 'settled_at' in evaluated_opportunities context "
+                    f"(should be 'evaluation_time' or 'settled_time')"
+                )
+
+    # evaluated_opportunities 15M product_type is '15m', not NULL
+    # Check for product_type IS NULL on evaluated_opportunities queries
+    for match in re.finditer(r"evaluated_opportunities.*?product_type IS NULL", source, re.DOTALL):
+        context = source[max(0, match.start()-100):match.end()]
+        # Get the section header
+        failures.append(f"Query on evaluated_opportunities uses 'product_type IS NULL' (15M is '15m', not NULL)")
+
+    if failures:
+        for f in failures:
+            print(f"FAIL: {f}")
+        return False
+
+    print("PASS: SQL column names match table schemas")
+    return True
+
+
 def main():
     print("=" * 60)
     print("DASHBOARD CONTRACT TESTS")
@@ -289,6 +333,7 @@ def main():
     results.append(("Rate limits structure", test_rate_limits_structure()))
     results.append(("All scopes handled", test_all_scopes_handled()))
     results.append(("Breakeven WR formula", test_breakeven_wr_formula()))
+    results.append(("SQL column names", test_sql_column_names()))
 
     print()
     print("=" * 60)
