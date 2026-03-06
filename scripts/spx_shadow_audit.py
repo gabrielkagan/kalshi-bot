@@ -1521,6 +1521,55 @@ def section_cal_engine_obs(conn, since=None):
         return {"error": str(e)}
 
 
+def detect_regime_start() -> str:
+    """Auto-detect regime start by finding the last git commit that changed
+    SPX hourly trading constants in bot.py."""
+    import subprocess
+
+    REGIME_CONSTANTS = [
+        "SPX_HOURLY_OBSERVATION_ONLY", "SPX_HOURLY_MIN_ENTRY_PRICE",
+        "SPX_HOURLY_MAX_ENTRY_PRICE", "SPX_HOURLY_MARKET_BLEND_W",
+        "SPX_HOURLY_TEMPERATURE_T", "SPX_HOURLY_KELLY_FRACTION",
+        "SPX_HOURLY_MAX_RISK_PER_TRADE", "SPX_HOURLY_FEE_MULTIPLIER",
+        "SPX_HOURLY_MAX_POSITIONS_PER_WINDOW", "SPX_HOURLY_MAX_WINDOW_RISK",
+    ]
+
+    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        result = subprocess.run(
+            ["git", "log", "--format=%H %aI", "--since=30 days ago",
+             "--", "bot.py"],
+            capture_output=True, text=True, timeout=10, cwd=repo_dir,
+        )
+        if result.returncode != 0:
+            return "2026-02-28T00:00:00"
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.split(" ", 1)
+            commit_hash, timestamp = parts[0], parts[1] if len(parts) > 1 else ""
+            diff_result = subprocess.run(
+                ["git", "diff", f"{commit_hash}^..{commit_hash}", "--", "bot.py"],
+                capture_output=True, text=True, timeout=10, cwd=repo_dir,
+            )
+            if diff_result.returncode != 0:
+                continue
+            found = False
+            for ln in diff_result.stdout.split("\n"):
+                if not (ln.startswith("+") or ln.startswith("-")):
+                    continue
+                if any(f"{c} =" in ln or f"{c}=" in ln
+                       for c in REGIME_CONSTANTS):
+                    found = True
+                    break
+            if found:
+                dt = datetime.fromisoformat(timestamp)
+                return dt.strftime("%Y-%m-%dT%H:%M:%S")
+        return "2026-02-28T00:00:00"
+    except Exception:
+        return "2026-02-28T00:00:00"
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1530,6 +1579,8 @@ def main():
     )
     parser.add_argument("--db", default="state.db", help="Path to state.db")
     parser.add_argument("--since", default=None, help="Only analyze data since YYYY-MM-DD")
+    parser.add_argument("--regime", choices=["auto"],
+                        help="Auto-detect regime start from git history")
     parser.add_argument("--json", default=None, help="Output JSON artifact path")
     args = parser.parse_args()
 
@@ -1550,12 +1601,16 @@ def main():
         print("No SPX hourly data found in evaluated_opportunities.")
         sys.exit(0)
 
-    print(f"\nSPX Shadow Engine Audit — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    if args.since:
-        print(f"Filtering to data since: {args.since}")
-    print(f"Database: {args.db} ({count} SPX evaluations)")
+    if args.regime == "auto":
+        since = detect_regime_start()
+        print(f"[Auto-detected regime start: {since}]")
+    else:
+        since = args.since
 
-    since = args.since
+    print(f"\nSPX Shadow Engine Audit — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    if since:
+        print(f"Filtering to data since: {since}")
+    print(f"Database: {args.db} ({count} SPX evaluations)")
 
     # Run all sections
     perf = section_performance(conn, since)

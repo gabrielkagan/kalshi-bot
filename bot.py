@@ -9895,7 +9895,7 @@ class OrderExecutor:
                 logging.warning(
                     f"IOC partial fill: {ticker} wanted {count} got "
                     f"{total_filled} — {unfilled} contracts unfilled")
-            return fill
+            return order_info
 
         # IOC auto-cancels unfilled portion — no manual cancel needed
         self._state.mark_order_status(order_id, "canceled")

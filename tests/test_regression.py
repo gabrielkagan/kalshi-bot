@@ -777,3 +777,42 @@ class TestInstrumentationIntegrity:
                     f"hourly_applied_temp_t — will be NULL when CalEngine active. "
                     f"Use _configured_temp_t. Line: {stripped}"
                 )
+
+
+# ============================================================================
+#  Submit-taker return value (Mar 5 2026)
+#  Bug: _submit_taker returned `fill` (the loop variable from _check_for_fill),
+#  which was always None after the while loop broke. Every successful taker fill
+#  was reported as unfilled to callers — broke session counters and dashboard.
+# ============================================================================
+
+class TestSubmitTakerReturnValue:
+    """Verify _submit_taker returns order_info (not the loop variable) on fill."""
+
+    def test_submit_taker_returns_order_info_not_fill(self):
+        """The return statement in the total_filled > 0 branch must return
+        order_info, not fill. `fill` is the while-loop variable and is always
+        None/falsy after the loop breaks."""
+        source = open(os.path.join(PROJECT_ROOT, "bot.py")).read()
+        tree = ast.parse(source)
+
+        found_func = False
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.FunctionDef)
+                    and node.name == "_submit_taker"):
+                continue
+            found_func = True
+
+            # Find ALL Return nodes in the function that return `fill`
+            for stmt in ast.walk(node):
+                if isinstance(stmt, ast.Return) and stmt.value:
+                    val = stmt.value
+                    if isinstance(val, ast.Name) and val.id == "fill":
+                        assert False, (
+                            f"Line {stmt.lineno}: _submit_taker returns "
+                            f"`fill` (loop variable, always None after "
+                            f"break). Must return `order_info`."
+                        )
+            break
+
+        assert found_func, "_submit_taker function not found in bot.py"

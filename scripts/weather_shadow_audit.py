@@ -12,6 +12,7 @@ Usage:
 import argparse
 import json
 import math
+import os
 import sqlite3
 import sys
 from collections import defaultdict
@@ -1052,24 +1053,81 @@ def section_cal_engine(conn, since):
         print("\n  >>> No CalEngine observations yet")
 
 
+def detect_regime_start() -> str:
+    """Auto-detect regime start by finding the last git commit that changed
+    weather trading constants in bot.py."""
+    import subprocess
+
+    REGIME_CONSTANTS = [
+        "WEATHER_OBSERVATION_ONLY", "WEATHER_MIN_ENTRY_PRICE",
+        "WEATHER_MAX_ENTRY_PRICE", "WEATHER_MARKET_BLEND_W",
+        "WEATHER_MIN_EDGE_PCT", "WEATHER_MAX_RISK_PER_TRADE",
+        "WEATHER_KELLY_FRACTION", "WEATHER_MIN_SECONDS_BEFORE_CLOSE",
+        "WEATHER_MAX_SECONDS_BEFORE_CLOSE",
+    ]
+
+    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        result = subprocess.run(
+            ["git", "log", "--format=%H %aI", "--since=30 days ago",
+             "--", "bot.py"],
+            capture_output=True, text=True, timeout=10, cwd=repo_dir,
+        )
+        if result.returncode != 0:
+            return "2026-02-28T00:00:00"
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.split(" ", 1)
+            commit_hash, timestamp = parts[0], parts[1] if len(parts) > 1 else ""
+            diff_result = subprocess.run(
+                ["git", "diff", f"{commit_hash}^..{commit_hash}", "--", "bot.py"],
+                capture_output=True, text=True, timeout=10, cwd=repo_dir,
+            )
+            if diff_result.returncode != 0:
+                continue
+            found = False
+            for ln in diff_result.stdout.split("\n"):
+                if not (ln.startswith("+") or ln.startswith("-")):
+                    continue
+                if any(f"{c} =" in ln or f"{c}=" in ln
+                       for c in REGIME_CONSTANTS):
+                    found = True
+                    break
+            if found:
+                dt = datetime.fromisoformat(timestamp)
+                return dt.strftime("%Y-%m-%dT%H:%M:%S")
+        return "2026-02-28T00:00:00"
+    except Exception:
+        return "2026-02-28T00:00:00"
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Weather shadow mode audit")
     parser.add_argument("--db", default="state.db")
-    parser.add_argument("--since", default="2026-03-02T16:54:00")
+    parser.add_argument("--since", default=None)
+    parser.add_argument("--regime", choices=["auto"],
+                        help="Auto-detect regime start from git history")
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
 
     conn = connect_db(args.db)
 
-    W = where_clause(args.since)
+    if args.regime == "auto":
+        since = detect_regime_start()
+        print(f"[Auto-detected regime start: {since}]")
+    else:
+        since = args.since
+
+    W = where_clause(since)
     n = conn.execute(f"SELECT COUNT(*) FROM evaluated_opportunities WHERE product_type='weather' {W}").fetchone()[0]
     if not n:
-        print(f"ERROR: No weather evaluations since {args.since}")
+        print(f"ERROR: No weather evaluations since {since}")
         sys.exit(1)
 
-    print(f"Weather Shadow Audit — since {args.since or 'all time'}")
+    print(f"Weather Shadow Audit — since {since or 'all time'}")
     print(f"DB: {args.db} ({n} weather evaluations)")
 
     stats = section_overview(conn, args.since)

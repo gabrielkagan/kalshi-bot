@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import math
+import os
 import sqlite3
 import sys
 from collections import defaultdict
@@ -114,36 +115,63 @@ def fisher_exact_2x2(a: int, b: int, c: int, d: int) -> float:
 
 
 def detect_regime_start(conn: sqlite3.Connection) -> str:
-    """Auto-detect the start of the current hourly regime by finding the
-    earliest hourly evaluation after the most recent gap > 4 hours
-    (proxy for a bot restart after config change)."""
-    rows = conn.execute("""
-        SELECT evaluation_time FROM evaluated_opportunities
-        WHERE product_type='hourly'
-        ORDER BY evaluation_time
-    """).fetchall()
-    if not rows:
+    """Auto-detect regime start by finding the last git commit that changed
+    hourly trading constants in bot.py.
+
+    Falls back to 2026-02-28 if git is unavailable."""
+    import subprocess
+
+    # Constants whose changes define a new regime for hourly trading
+    REGIME_CONSTANTS = [
+        "HOURLY_OBSERVATION_ONLY", "HOURLY_MIN_ENTRY_PRICE",
+        "HOURLY_MAX_ENTRY_PRICE", "HOURLY_MARKET_BLEND_W",
+        "HOURLY_MIN_EDGE_PCT", "HOURLY_MAX_RISK_PER_TRADE",
+        "HOURLY_KELLY_FRACTION", "HOURLY_TEMPERATURE_T",
+        "HOURLY_CALIBRATION_ENABLED", "HOURLY_MIN_STC_ENTRY",
+        "HOURLY_MAX_STC_ENTRY", "HOURLY_EXCLUDED_ASSETS",
+        "HOURLY_MAX_POSITIONS_PER_WINDOW", "HOURLY_MAX_WINDOW_RISK",
+    ]
+
+    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    try:
+        result = subprocess.run(
+            ["git", "log", "--format=%H %aI", "--since=30 days ago",
+             "--", "bot.py"],
+            capture_output=True, text=True, timeout=10, cwd=repo_dir,
+        )
+        if result.returncode != 0:
+            return "2026-02-28T00:00:00"
+
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.split(" ", 1)
+            commit_hash, timestamp = parts[0], parts[1] if len(parts) > 1 else ""
+
+            diff_result = subprocess.run(
+                ["git", "diff", f"{commit_hash}^..{commit_hash}",
+                 "--", "bot.py"],
+                capture_output=True, text=True, timeout=10, cwd=repo_dir,
+            )
+            if diff_result.returncode != 0:
+                continue
+
+            found = False
+            for ln in diff_result.stdout.split("\n"):
+                if not (ln.startswith("+") or ln.startswith("-")):
+                    continue
+                if any(f"{c} =" in ln or f"{c}=" in ln
+                       for c in REGIME_CONSTANTS):
+                    found = True
+                    break
+            if found:
+                dt = datetime.fromisoformat(timestamp)
+                return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
         return "2026-02-28T00:00:00"
-    t_list = []
-    for r in rows:
-        try:
-            t_list.append(r["evaluation_time"])
-        except Exception:
-            pass
-    # Find last gap > 4 hours as proxy for restart
-    last_big_gap_idx = 0
-    for i in range(1, len(t_list)):
-        try:
-            t1 = datetime.fromisoformat(t_list[i - 1].replace("Z", ""))
-            t2 = datetime.fromisoformat(t_list[i].replace("Z", ""))
-            if (t2 - t1).total_seconds() > 14400:  # 4 hours
-                last_big_gap_idx = i
-        except Exception:
-            pass
-    # Default to Feb 28 if no big gaps
-    if last_big_gap_idx == 0:
+    except Exception:
         return "2026-02-28T00:00:00"
-    return t_list[last_big_gap_idx]
 
 
 # ── Section 1: Shadow Performance Summary ─────────────────────────

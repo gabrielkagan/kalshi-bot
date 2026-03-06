@@ -15,17 +15,17 @@ Run a specific audit script for a single system. Takes a system argument.
 ## Steps
 
 1. **Parse the argument** to determine which system:
-   | Argument | Script | Default --since |
-   |----------|--------|----------------|
+   | Argument | Script | Default args |
+   |----------|--------|-------------|
    | `15m` | `scripts/15m_live_audit.py` | `--regime auto` |
-   | `hourly` | `scripts/hourly_shadow_audit.py` | `2026-02-28T18:30:00` |
-   | `spx` | `scripts/spx_shadow_audit.py` | `2026-03-02` |
-   | `weather` | `scripts/weather_shadow_audit.py` | `2026-03-02T16:54:00` |
-   | `sports` | `scripts/sports_shadow_audit.py` | `2026-03-01` |
-   | `all` | Run all 5 scripts sequentially | Uses defaults above |
+   | `hourly` | `scripts/hourly_shadow_audit.py` | `--regime auto` |
+   | `spx` | `scripts/spx_shadow_audit.py` | `--regime auto` |
+   | `weather` | `scripts/weather_shadow_audit.py` | `--regime auto` |
+   | `sports` | `scripts/sports_shadow_audit.py` | `--regime auto` |
+   | `all` | Run all 5 scripts sequentially | `--regime auto` for all |
 
    If no argument provided, ask the user which system.
-   If an additional date argument is provided (e.g., `/audit hourly 2026-03-01`), use it as `--since`.
+   If an additional date argument is provided (e.g., `/audit hourly 2026-03-01`), use `--since <date>` instead of `--regime auto`.
 
 2. **Checkpoint WAL + copy fresh state.db from VPS**:
    SQLite WAL mode means recent writes live in the WAL file, not the main DB.
@@ -37,9 +37,9 @@ Run a specific audit script for a single system. Takes a system argument.
 
 3. **Run the audit script**:
    ```
-   python3 scripts/<script> --db /tmp/state.db --since "<since>" 2>&1
+   python3 scripts/<script> --db /tmp/state.db --regime auto 2>&1
    ```
-   For 15m, use `--regime auto` instead of `--since`.
+   If user provided a date, use `--since "<date>"` instead of `--regime auto`.
 
 4. **Present the output** — show the full script output, then add:
    - **Top 3 findings**: most actionable insights from the audit
@@ -53,3 +53,4 @@ Run a specific audit script for a single system. Takes a system argument.
 - Present numbers with sample sizes. Small samples (n < 20) get a "NOT SIGNIFICANT" warning.
 - When running `/audit all`, present a combined summary table at the end with each system's health status
 - Performance analysis must filter to current config regime — don't mix data from old configs with current
+- All scripts use `--regime auto` which detects the last git commit that changed relevant trading constants via git diff. No more hardcoded dates.

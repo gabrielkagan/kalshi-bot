@@ -15,6 +15,7 @@ Usage:
 import argparse
 import json
 import math
+import os
 import sqlite3
 import sys
 from collections import defaultdict
@@ -99,33 +100,69 @@ EVAL_15M_FILTER = ("AND (product_type IS NULL OR product_type NOT IN "
 
 
 def detect_regime_start(conn: sqlite3.Connection) -> str:
-    """Auto-detect regime start by finding the most recent gap > 4 hours
-    in 15M settled trades (proxy for restart after config change)."""
-    rows = conn.execute(f"""
-        SELECT settled_at FROM settled_trades
-        WHERE settled_at IS NOT NULL {SETTLED_15M_FILTER}
-        ORDER BY settled_at
-    """).fetchall()
-    if not rows:
+    """Auto-detect regime start by finding the last git commit that changed
+    actual 15M live trading constants in bot.py.
+
+    Checks git diff of each commit for changes to known constant names.
+    Falls back to 2026-02-28 if git is unavailable."""
+    import subprocess
+
+    # Constants whose changes define a new regime for 15M live trading
+    REGIME_CONSTANTS = [
+        "MIN_EDGE_BY_PRICE", "MIN_EDGE_PCT", "MIN_ENTRY_PRICE",
+        "MAX_ENTRY_PRICE", "MAX_SECONDS_BEFORE_CLOSE",
+        "MARKET_BLEND_W", "MAX_RISK_PER_TRADE", "KELLY_FRACTION",
+        "DIRECT_TAKER_THRESHOLD", "MAKER_ONLY_THRESHOLD",
+        "STC_SHADOW_THRESHOLD", "OBSERVATION_MODE",
+        "XRP_MAX_RISK_PER_TRADE", "SIZING_TIERS",
+    ]
+
+    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    try:
+        # Get recent bot.py-changing commit hashes
+        result = subprocess.run(
+            ["git", "log", "--format=%H %aI", "--since=30 days ago",
+             "--", "bot.py"],
+            capture_output=True, text=True, timeout=10, cwd=repo_dir,
+        )
+        if result.returncode != 0:
+            return "2026-02-28T00:00:00"
+
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.split(" ", 1)
+            commit_hash = parts[0]
+            timestamp = parts[1] if len(parts) > 1 else ""
+
+            # Check if this commit's diff touches any regime constant
+            diff_result = subprocess.run(
+                ["git", "diff", f"{commit_hash}^..{commit_hash}",
+                 "--", "bot.py"],
+                capture_output=True, text=True, timeout=10, cwd=repo_dir,
+            )
+            if diff_result.returncode != 0:
+                continue
+
+            # Only look at added/removed lines that are constant definitions
+            # Match "CONST_NAME =" or "CONST_NAME=" to avoid matching
+            # code that merely references the constant
+            found = False
+            for ln in diff_result.stdout.split("\n"):
+                if not (ln.startswith("+") or ln.startswith("-")):
+                    continue
+                if any(f"{c} =" in ln or f"{c}=" in ln
+                       for c in REGIME_CONSTANTS):
+                    found = True
+                    break
+            if found:
+                dt = datetime.fromisoformat(timestamp)
+                return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
         return "2026-02-28T00:00:00"
-    t_list = []
-    for r in rows:
-        try:
-            t_list.append(r["settled_at"])
-        except Exception:
-            pass
-    last_big_gap_idx = 0
-    for i in range(1, len(t_list)):
-        try:
-            t1 = datetime.fromisoformat(t_list[i - 1].replace("Z", ""))
-            t2 = datetime.fromisoformat(t_list[i].replace("Z", ""))
-            if (t2 - t1).total_seconds() > 14400:
-                last_big_gap_idx = i
-        except Exception:
-            pass
-    if last_big_gap_idx == 0:
+    except Exception:
         return "2026-02-28T00:00:00"
-    return t_list[last_big_gap_idx]
 
 
 # ── Section 1: Performance Summary ──────────────────────────────

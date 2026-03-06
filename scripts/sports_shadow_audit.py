@@ -25,6 +25,7 @@ Usage:
 import argparse
 import json
 import math
+import os
 import sqlite3
 import sys
 from collections import defaultdict
@@ -1763,6 +1764,55 @@ def section_cal_engine_obs(conn: sqlite3.Connection,
         return {"error": str(e)}
 
 
+def detect_regime_start() -> str:
+    """Auto-detect regime start by finding the last git commit that changed
+    sports engine constants in sports_data.py or sports_engine.py."""
+    import subprocess
+
+    REGIME_CONSTANTS = [
+        "CONSERVATIVE_LR_SCALE", "MAX_MODEL_MARKET_GAP",
+        "BINARY_ENTRY_CRITERIA", "THREE_WAY_ENTRY_CRITERIA",
+        "BINARY_LR_TABLE", "THREE_WAY_LR_TABLE",
+        "SPORT_GROUPS", "LEAGUES",
+    ]
+
+    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        result = subprocess.run(
+            ["git", "log", "--format=%H %aI", "--since=30 days ago",
+             "--", "sports_data.py", "sports_engine.py"],
+            capture_output=True, text=True, timeout=10, cwd=repo_dir,
+        )
+        if result.returncode != 0:
+            return "2026-02-28T00:00:00"
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.split(" ", 1)
+            commit_hash, timestamp = parts[0], parts[1] if len(parts) > 1 else ""
+            diff_result = subprocess.run(
+                ["git", "diff", f"{commit_hash}^..{commit_hash}",
+                 "--", "sports_data.py", "sports_engine.py"],
+                capture_output=True, text=True, timeout=10, cwd=repo_dir,
+            )
+            if diff_result.returncode != 0:
+                continue
+            found = False
+            for ln in diff_result.stdout.split("\n"):
+                if not (ln.startswith("+") or ln.startswith("-")):
+                    continue
+                if any(f"{c} =" in ln or f"{c}=" in ln
+                       for c in REGIME_CONSTANTS):
+                    found = True
+                    break
+            if found:
+                dt = datetime.fromisoformat(timestamp)
+                return dt.strftime("%Y-%m-%dT%H:%M:%S")
+        return "2026-02-28T00:00:00"
+    except Exception:
+        return "2026-02-28T00:00:00"
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1774,11 +1824,17 @@ def main():
     parser.add_argument("--db", default="state.db", help="Path to state.db")
     parser.add_argument("--since", default=None,
                         help="Filter to data since this date (YYYY-MM-DD)")
+    parser.add_argument("--regime", choices=["auto"],
+                        help="Auto-detect regime start from git history")
     parser.add_argument("--sport-group", default=None,
                         help="Filter to a sport group (basketball, hockey, soccer, etc.)")
     parser.add_argument("--json", default=None,
                         help="Write JSON artifact to this path")
     args = parser.parse_args()
+
+    if args.regime == "auto":
+        args.since = detect_regime_start()
+        print(f"[Auto-detected regime start: {args.since}]")
 
     try:
         conn = connect_db(args.db)
