@@ -9940,6 +9940,89 @@ class OrderExecutor:
                     f"{total_filled} — {unfilled} contracts unfilled")
             return order_info
 
+        # ── Ghost fill detection (Layer A): remaining_count from order response ──
+        # Kalshi's matching engine returns remaining_count=0 when the order was
+        # fully matched. If fill polling found nothing, the fills API has latency
+        # but the contracts DO exist. Register a defensive position at the limit
+        # price (conservative — actual fills are ≤ limit). Reconciliation at next
+        # startup will correct prices from Kalshi's positions API.
+        if remaining_count == 0:
+            logging.error(
+                f"GHOST_FILL_DETECTED: {ticker} remaining_count=0 but no fill "
+                f"events from API — Kalshi matched all {count} contracts. "
+                f"Registering defensive position at limit price {price}¢")
+            self._state.record_position_from_fill(
+                ticker=ticker,
+                event_ticker=candidate["event_ticker"],
+                asset=candidate["asset"],
+                side="yes",
+                count=count,
+                price_cents=price,
+                strategy=candidate.get("strategy"),
+                seconds_to_close=order_info.get("seconds_to_close_at_submit"),
+                fill_latency=round(time.time() - order_info["submit_time"], 3),
+                vol_regime=candidate.get("vol_regime"),
+                calibrated_prob=candidate.get("calibrated_prob"),
+                edge=candidate.get("edge"),
+                kelly_f=candidate.get("kelly_f"),
+                is_taker=True,
+                fill_source="ghost_fill",
+                execution_method="ioc",
+                escalation_type=candidate.get("escalation_type"),
+                maker_price_cents=candidate.get("maker_price_cents"),
+                maker_wait_seconds=candidate.get("maker_wait_seconds"),
+            )
+            self._state.mark_order_status(order_id, "filled")
+            if candidate.get("entry_path") != "confirmation_addon":
+                self._session_ioc_fills += 1
+            return order_info
+
+        # ── Ghost fill detection (Layer B): positions API verification ──
+        # remaining_count > 0 suggests genuinely unfilled, but verify against
+        # Kalshi's positions API in case of any untracked position.
+        try:
+            _pos_resp = self._client.get_positions()
+            if _pos_resp and _pos_resp.get("market_positions"):
+                for _pos in _pos_resp["market_positions"]:
+                    if _pos.get("ticker") == ticker:
+                        _pos_count = fp_str_to_int(_pos.get("position_fp")) or (_pos.get("position") or 0)
+                        if _pos_count > 0:
+                            _pos_cost_d = _pos.get("market_exposure_dollars")
+                            _pos_cost = dollars_str_to_cents(_pos_cost_d) if _pos_cost_d else (_pos.get("market_exposure") or 0)
+                            _pos_avg = _pos_cost // _pos_count if _pos_count else price
+                            logging.error(
+                                f"GHOST_FILL_DETECTED_VIA_POSITIONS: {ticker} "
+                                f"fill polling found nothing, remaining_count={remaining_count}, "
+                                f"but positions API shows {_pos_count} contracts "
+                                f"(cost={_pos_cost}¢, avg={_pos_avg}¢)")
+                            self._state.record_position_from_fill(
+                                ticker=ticker,
+                                event_ticker=candidate["event_ticker"],
+                                asset=candidate["asset"],
+                                side="yes",
+                                count=_pos_count,
+                                price_cents=_pos_avg,
+                                strategy=candidate.get("strategy"),
+                                seconds_to_close=order_info.get("seconds_to_close_at_submit"),
+                                fill_latency=round(time.time() - order_info["submit_time"], 3),
+                                vol_regime=candidate.get("vol_regime"),
+                                calibrated_prob=candidate.get("calibrated_prob"),
+                                edge=candidate.get("edge"),
+                                kelly_f=candidate.get("kelly_f"),
+                                is_taker=True,
+                                fill_source="ghost_fill_positions_api",
+                                execution_method="ioc",
+                                escalation_type=candidate.get("escalation_type"),
+                                maker_price_cents=candidate.get("maker_price_cents"),
+                                maker_wait_seconds=candidate.get("maker_wait_seconds"),
+                            )
+                            self._state.mark_order_status(order_id, "filled")
+                            if candidate.get("entry_path") != "confirmation_addon":
+                                self._session_ioc_fills += 1
+                            return order_info
+        except Exception as e:
+            logging.warning(f"Ghost fill positions API check failed for {ticker}: {e}")
+
         # IOC auto-cancels unfilled portion — no manual cancel needed
         self._state.mark_order_status(order_id, "canceled")
         if candidate.get("entry_path") != "confirmation_addon":
