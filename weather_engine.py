@@ -4,6 +4,7 @@ import math
 import time
 import logging
 import datetime
+import sqlite3
 import threading
 from datetime import timezone
 from typing import Dict, List, Optional, Tuple
@@ -223,6 +224,8 @@ class WeatherEnsembleFetcher:
             logging.warning("WeatherEnsemble: %s ECMWF returned no members (ecmwf_ifs025)", city_code)
 
         # Fetch HRRR deterministic (higher resolution, shorter range)
+        # Sleep before HRRR to avoid timeout/SSL errors under rate-limit pressure
+        time.sleep(2.0)
         hrrr_temp = self._fetch_hrrr(lat, lon, target_date)
         result["hrrr_temp"] = hrrr_temp
 
@@ -240,9 +243,10 @@ class WeatherEnsembleFetcher:
             _mean = sum(combined) / len(combined)
             _var = sum((m - _mean) ** 2 for m in combined) / len(combined)
             _std = math.sqrt(max(_var, 0.01))
-            logging.info("WeatherEnsemble: %s n=%d mean=%.1fF std=%.1fF hrrr=%.1fF gfs=%s ecmwf=%s",
+            _hrrr_str = f"{result['hrrr_temp']:.1f}" if result.get("hrrr_temp") is not None else "None"
+            logging.info("WeatherEnsemble: %s n=%d mean=%.1fF std=%.1fF hrrr=%sF gfs=%s ecmwf=%s",
                          city_code, len(combined), _mean, _std,
-                         result.get("hrrr_temp") or 0.0,
+                         _hrrr_str,
                          len(gfs_members) if gfs_members else 0,
                          len(ecmwf_members) if ecmwf_members else 0)
 
@@ -379,7 +383,7 @@ class WeatherEnsembleFetcher:
                 "start_date": target_date,
                 "end_date": target_date,
                 "timezone": "America/New_York",
-            }, timeout=15)
+            }, timeout=30)
 
             if resp.status_code != 200:
                 logging.warning("WeatherEnsemble: HRRR fetch HTTP %d", resp.status_code)
@@ -409,12 +413,18 @@ class WeatherProbabilityModel:
 
     Pools GFS + ECMWF members (82 total), fits mean/std,
     applies EWMA bias correction from recent observation errors.
+    Bias state is persisted to SQLite so it survives restarts.
     """
 
-    def __init__(self):
+    def __init__(self, db_path: Optional[str] = None):
         # Per-city bias correction: EWMA of (actual - forecast) errors
         self._bias: Dict[str, float] = {}
         self._bias_count: Dict[str, int] = {}
+        self._db_path = db_path
+        self._bias_updated_keys: set = set()  # track (city, date) to deduplicate
+        if db_path:
+            self._init_bias_table()
+            self._load_bias()
 
     def compute_probability(self, ensemble_data: Dict, threshold_f: float,
                             city_code: str, direction: str = "above",
@@ -486,11 +496,20 @@ class WeatherProbabilityModel:
             "market_type": market_type or direction,
         }
 
-    def update_bias(self, city_code: str, actual_high: float, forecast_mean: float):
+    def update_bias(self, city_code: str, actual_high: float, forecast_mean: float,
+                    market_date: Optional[str] = None):
         """Update EWMA bias correction with an observation.
 
         Call after actual daily high is observed (typically next day).
+        Deduplicates by (city, market_date) to avoid multiple updates per day.
         """
+        # Deduplicate: only one bias update per city per market date
+        if market_date:
+            dedup_key = (city_code, market_date)
+            if dedup_key in self._bias_updated_keys:
+                return
+            self._bias_updated_keys.add(dedup_key)
+
         error = actual_high - forecast_mean
         if city_code in self._bias:
             self._bias[city_code] = (
@@ -504,6 +523,64 @@ class WeatherProbabilityModel:
 
         logging.info("WeatherProbabilityModel: %s bias updated to %.2fF (n=%d)",
                      city_code, self._bias[city_code], self._bias_count[city_code])
+        self._save_bias(city_code)
+
+    def _init_bias_table(self):
+        """Create weather_bias table if it doesn't exist."""
+        if not self._db_path:
+            return
+        try:
+            conn = sqlite3.connect(self._db_path)
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS weather_bias (
+                    city_code TEXT PRIMARY KEY,
+                    bias_value REAL NOT NULL,
+                    bias_count INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logging.warning("WeatherProbabilityModel: failed to init bias table: %s", e)
+
+    def _load_bias(self):
+        """Load persisted bias corrections from SQLite on startup."""
+        if not self._db_path:
+            return
+        try:
+            conn = sqlite3.connect(self._db_path)
+            conn.execute("PRAGMA busy_timeout=10000")
+            rows = conn.execute(
+                "SELECT city_code, bias_value, bias_count FROM weather_bias"
+            ).fetchall()
+            conn.close()
+            for city_code, bias_value, bias_count in rows:
+                self._bias[city_code] = bias_value
+                self._bias_count[city_code] = bias_count
+            if rows:
+                logging.info("WeatherProbabilityModel: loaded bias for %d cities from DB", len(rows))
+        except Exception as e:
+            logging.warning("WeatherProbabilityModel: failed to load bias: %s", e)
+
+    def _save_bias(self, city_code: str):
+        """Persist a single city's bias correction to SQLite."""
+        if not self._db_path:
+            return
+        try:
+            conn = sqlite3.connect(self._db_path)
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute(
+                "INSERT OR REPLACE INTO weather_bias (city_code, bias_value, bias_count, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                (city_code, self._bias[city_code], self._bias_count[city_code],
+                 datetime.datetime.now(timezone.utc).isoformat())
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logging.warning("WeatherProbabilityModel: failed to save bias for %s: %s", city_code, e)
 
     @staticmethod
     def _normal_cdf(z: float) -> float:
@@ -606,9 +683,9 @@ class WeatherEngine:
       - start() / stop()
     """
 
-    def __init__(self):
+    def __init__(self, db_path: Optional[str] = None):
         self._fetcher = WeatherEnsembleFetcher()
-        self._model = WeatherProbabilityModel()
+        self._model = WeatherProbabilityModel(db_path=db_path)
         self._discovery = WeatherWindowDiscovery()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None

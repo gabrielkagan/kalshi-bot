@@ -11461,7 +11461,8 @@ class SettlementTracker:
                                         forecast_mean = row.get("spot_price")
                                         if forecast_mean:
                                             _wx_eng._model.update_bias(
-                                                _wx_city, _obs_high, forecast_mean)
+                                                _wx_city, _obs_high, forecast_mean,
+                                                market_date=_market_date)
                                             logging.info("weather_bias_update: %s %s actual=%.1fF forecast=%.1fF",
                                                          _wx_city, _market_date, _obs_high, forecast_mean)
                     except Exception as e:
@@ -11533,7 +11534,9 @@ class SettlementTracker:
                     logging.info("weather_backfill_temp: %s %s %.1fF", _wx_city, _market_date, _obs_high)
                     # Bias update with real observed temp
                     if forecast_mean:
-                        _wx_eng._model.update_bias(_wx_city, _obs_high, forecast_mean)
+                        _wx_eng._model.update_bias(
+                            _wx_city, _obs_high, forecast_mean,
+                            market_date=_market_date)
             except Exception as e:
                 logging.warning("weather_backfill failed for %s: %s", ticker, e)
 
@@ -11738,7 +11741,7 @@ class MainLoop:
         if WEATHER_ENABLED:
             try:
                 from weather_engine import WeatherEngine
-                self.weather_engine = WeatherEngine()
+                self.weather_engine = WeatherEngine(db_path=DB_PATH)
                 logging.info("Weather engine initialized")
             except Exception as e:
                 logging.warning(f"Weather engine unavailable: {e}")

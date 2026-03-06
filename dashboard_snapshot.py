@@ -937,10 +937,12 @@ class DashboardSnapshotBuilder:
             # Dashboard should show: price_shadow = all assets combined.
             # Same for stc_shadow / stc_shadow_no_xrp.
             _merge_pairs = {
-                "price_shadow_no_xrp": "price_shadow",
-                "price_shadow_xrp": "price_shadow",
-                "stc_shadow_no_xrp": "stc_shadow",
-                "stc_shadow_xrp": "stc_shadow",
+                "price_shadow": "price_shadow (all)",
+                "price_shadow_no_xrp": "price_shadow (all)",
+                "price_shadow_xrp": "price_shadow (all)",
+                "stc_shadow": "stc_shadow (all)",
+                "stc_shadow_no_xrp": "stc_shadow (all)",
+                "stc_shadow_xrp": "stc_shadow (all)",
             }
             _merged = {}  # stage -> {total, wins, losses, net_pnl_cents}
             for r in stage_rows:

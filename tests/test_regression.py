@@ -1069,3 +1069,113 @@ class TestSportsSettlementCompleteness:
                 )
                 return
         assert False, "_settle_completed_games not found in sports_engine.py"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Weather Engine: Bias Persistence & HRRR Reliability (Mar 6, 2026)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestWeatherBiasPersistence:
+    """Bias corrections must survive restarts via SQLite persistence."""
+
+    def test_bias_round_trip(self, tmp_path):
+        """Bias saved by one model instance is loaded by a new instance."""
+        from unittest.mock import MagicMock
+        sys.modules.setdefault("requests", MagicMock())
+        from weather_engine import WeatherProbabilityModel
+
+        db_path = str(tmp_path / "test_weather.db")
+
+        # Instance 1: learn a bias
+        model1 = WeatherProbabilityModel(db_path=db_path)
+        model1.update_bias("CHI", actual_high=46.3, forecast_mean=44.2, market_date="2026-03-05")
+        assert abs(model1._bias["CHI"] - 2.1) < 0.01
+
+        # Instance 2: must load the bias from DB
+        model2 = WeatherProbabilityModel(db_path=db_path)
+        assert "CHI" in model2._bias, "Bias not loaded from DB on startup"
+        assert abs(model2._bias["CHI"] - 2.1) < 0.01
+        assert model2._bias_count["CHI"] == 1
+
+    def test_bias_deduplication(self, tmp_path):
+        """Same (city, date) pair must not update bias twice."""
+        from unittest.mock import MagicMock
+        sys.modules.setdefault("requests", MagicMock())
+        from weather_engine import WeatherProbabilityModel
+
+        db_path = str(tmp_path / "test_weather.db")
+        model = WeatherProbabilityModel(db_path=db_path)
+
+        model.update_bias("NYC", 50.0, 48.0, market_date="2026-03-05")
+        bias_after_first = model._bias["NYC"]
+
+        # Second call with different forecast — should be deduped
+        model.update_bias("NYC", 50.0, 45.0, market_date="2026-03-05")
+        assert model._bias["NYC"] == bias_after_first, "Duplicate bias update was not deduped"
+        assert model._bias_count["NYC"] == 1
+
+    def test_bias_no_db_still_works(self):
+        """Model without db_path still computes bias in-memory."""
+        from unittest.mock import MagicMock
+        sys.modules.setdefault("requests", MagicMock())
+        from weather_engine import WeatherProbabilityModel
+
+        model = WeatherProbabilityModel(db_path=None)
+        model.update_bias("DEN", 68.7, 66.5)
+        assert abs(model._bias["DEN"] - 2.2) < 0.01
+
+    def test_bias_table_uses_busy_timeout(self):
+        """All SQLite connections in bias persistence must use busy_timeout."""
+        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        # Find all sqlite3.connect calls in bias methods
+        import re
+        # Every sqlite3.connect in weather_engine must be followed by busy_timeout
+        connects = [(m.start(), m.group()) for m in re.finditer(r'sqlite3\.connect\(', source)]
+        for pos, _ in connects:
+            # Check the next 200 chars for busy_timeout
+            snippet = source[pos:pos + 200]
+            assert "busy_timeout" in snippet, (
+                f"sqlite3.connect at position {pos} missing PRAGMA busy_timeout"
+            )
+
+
+class TestWeatherHRRR:
+    """HRRR fetch must have rate-limit sleep and honest logging."""
+
+    def test_hrrr_has_rate_limit_sleep(self):
+        """fetch_ensemble must sleep before HRRR call to avoid timeouts."""
+        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "fetch_ensemble":
+                func_source = ast.get_source_segment(source, node) or ""
+                # Must have time.sleep before _fetch_hrrr
+                hrrr_pos = func_source.find("_fetch_hrrr")
+                assert hrrr_pos > 0, "fetch_ensemble must call _fetch_hrrr"
+                # Find the last time.sleep before hrrr call
+                before_hrrr = func_source[:hrrr_pos]
+                assert "time.sleep" in before_hrrr, (
+                    "fetch_ensemble must have time.sleep before _fetch_hrrr call "
+                    "to avoid rate-limit timeouts"
+                )
+                return
+        assert False, "fetch_ensemble not found in weather_engine.py"
+
+    def test_hrrr_log_does_not_mask_none(self):
+        """HRRR log must not use 'or 0.0' which masks None as 0.0F."""
+        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "fetch_ensemble":
+                func_source = ast.get_source_segment(source, node) or ""
+                assert "hrrr_temp\") or 0.0" not in func_source, (
+                    "HRRR log uses 'or 0.0' which masks None failures as 0.0F. "
+                    "Use explicit None check instead."
+                )
+                assert "hrrr_temp') or 0.0" not in func_source, (
+                    "HRRR log uses 'or 0.0' which masks None failures as 0.0F."
+                )
+                return
+        assert False, "fetch_ensemble not found in weather_engine.py"
