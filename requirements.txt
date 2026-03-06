@@ -4,3 +4,5 @@ websockets
 cryptography
 scipy
 numpy
+lightgbm
+scikit-learn

@@ -6479,6 +6479,11 @@ class OpportunityScanner:
                 self._kalshi_oft.cleanup_stale(active_tickers)
             except Exception:
                 pass
+        if self._ml and getattr(self._ml, "fifteenm_shadow", None):
+            try:
+                self._ml.fifteenm_shadow.cleanup_expired(active_tickers)
+            except Exception:
+                pass
         if self._ml and getattr(self._ml, "hourly_alt_shadow", None):
             try:
                 self._ml.hourly_alt_shadow.cleanup_expired(active_tickers)
@@ -8045,6 +8050,27 @@ class OpportunityScanner:
                             logging.debug("spx_harrv_shadow evaluate failed", exc_info=True)
 
                     continue  # DO NOT add to candidates — observation gate
+
+                # ── 15M Shadow Engine (all 4 assets) ──
+                # Evaluate both shadow approaches for every 15M signal that passed filters.
+                # Shadow-only: cannot place orders, logs to separate table for comparison.
+                if (window.get("product_type") in (None, "15m")
+                        and self._ml and getattr(self._ml, "fifteenm_shadow", None)):
+                    try:
+                        _15m_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                        self._ml.fifteenm_shadow.evaluate_strike(
+                            asset=asset, ticker=ticker,
+                            event_ticker=window["event_ticker"],
+                            spot_price=spot, threshold=threshold,
+                            seconds_to_close=seconds_remaining,
+                            market_price=best_ask,
+                            best_bid=_15m_bid, best_ask=best_ask,
+                            blended_rv=blended_rv,
+                            egarch_sigma=vol_est.get("egarch_sigma"),
+                            z_score=z_score, live_prob=final_prob,
+                            live_edge=edge, live_fee_edge=fee_adjusted_edge)
+                    except Exception:
+                        logging.debug("fifteenm_shadow evaluate failed", exc_info=True)
 
                 # ── STC SHADOW GATE (15M only) ──
                 # Markets at 500-900s STC: log full evaluation for data collection, but don't trade.
@@ -11441,6 +11467,14 @@ class SettlementTracker:
                     except Exception as e:
                         logging.warning("weather_observed_temp fetch failed for %s: %s", ticker, e)
 
+                # Settle 15M shadow signals for this ticker
+                if (self._ml and getattr(self._ml, "fifteenm_shadow", None)
+                        and result in ("yes", "all_yes", "no", "all_no")):
+                    try:
+                        self._ml.fifteenm_shadow.settle_signals(ticker, result)
+                    except Exception:
+                        logging.debug("fifteenm_shadow settle failed for %s", ticker)
+
                 # Settle hourly alt shadow signals for this ticker
                 if (self._ml and getattr(self._ml, "hourly_alt_shadow", None)
                         and result in ("yes", "all_yes", "no", "all_no")):
@@ -11708,6 +11742,16 @@ class MainLoop:
                 logging.info("Weather engine initialized")
             except Exception as e:
                 logging.warning(f"Weather engine unavailable: {e}")
+
+        # ── 15M Shadow Engine (recalibrated EGARCH + LightGBM) ─────────
+        self.fifteenm_shadow = None
+        try:
+            from fifteenm_shadow import FifteenMShadowEngine, FIFTEENM_SHADOW_ENABLED
+            if FIFTEENM_SHADOW_ENABLED:
+                self.fifteenm_shadow = FifteenMShadowEngine(db_path=DB_PATH)
+                logging.info("15M shadow engine initialized (recalibrated EGARCH + LightGBM)")
+        except Exception as e:
+            logging.warning(f"15M shadow engine unavailable: {e}")
 
         # ── Hourly Alt Shadow Engine (ETH/SOL/XRP shadow strategies) ──────
         self.hourly_alt_shadow = None
