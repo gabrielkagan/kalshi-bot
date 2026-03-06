@@ -707,7 +707,7 @@ class HourlyAltShadowEngine:
         """Lazily initialize DB connection and create table if needed."""
         if self._db_conn is not None:
             return
-        self._db_conn = sqlite3.connect(self._db_path)
+        self._db_conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._db_conn.execute("PRAGMA journal_mode=WAL")
         self._db_conn.execute("PRAGMA busy_timeout=10000")
         self._db_conn.row_factory = sqlite3.Row
