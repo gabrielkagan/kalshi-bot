@@ -305,7 +305,7 @@ class DashboardSnapshotBuilder:
                 stats = {}
                 if n > 0:
                     total = sum(nets)
-                    # Daily-aggregated Sharpe: group by date, compute daily mean/std, annualize sqrt(252)
+                    # Daily-aggregated Sharpe: group by date, compute daily mean/std, annualize sqrt(365) (crypto trades 24/7)
                     daily_rows = conn.execute(
                         "SELECT DATE(settled_at) AS d, SUM(pnl_cents - fee_cents) AS daily_net "
                         f"FROM settled_trades{span_query_filter} GROUP BY DATE(settled_at) ORDER BY d"
@@ -316,7 +316,7 @@ class DashboardSnapshotBuilder:
                         d_mean = sum(daily_nets) / n_days
                         d_var = sum((x - d_mean) ** 2 for x in daily_nets) / (n_days - 1)
                         d_std = d_var ** 0.5
-                        stats["sharpe_ratio"] = round(d_mean / d_std * (252 ** 0.5), 2) if d_std > 0 else 0.0
+                        stats["sharpe_ratio"] = round(d_mean / d_std * (365 ** 0.5), 2) if d_std > 0 else 0.0
                     else:
                         stats["sharpe_ratio"] = 0.0
                     stats["total_pnl_cents"] = total
