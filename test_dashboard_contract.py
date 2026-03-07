@@ -82,6 +82,7 @@ REQUIRED_SNAP_KEYS = {
     "stc_performance", "stc_shadow_counterfactual",
     "calibration_health", "edge_integrity",
     "loss_clustering", "pipeline_completeness",
+    "no_side_shadow",
 }
 
 # Dashboard JS field access patterns that MUST match firebase keys.

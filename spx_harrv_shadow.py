@@ -524,6 +524,57 @@ class SPXHARRVModel:
             max_pos = int(self._bankroll * MAX_POSITION_PCT / max(1, market_price))
             position = max(0, min(position, max_pos))
 
+        # ── NO-side evaluation ──
+        no_price = 100 - market_price
+        no_prob = 1.0 - final_prob
+        no_market_prob = no_price / 100.0
+        no_edge = no_prob - no_market_prob
+        no_est_fee = math.ceil(FEE_MULT_TAKER * 1 * no_market_prob * (1 - no_market_prob))
+        no_fee_adjusted_edge = no_edge - no_est_fee / 100.0
+
+        # NO-side gates (reuse same gate logic with NO-side parameters)
+        no_gate_failures = []
+        # Gate 1: Minimum edge
+        if no_fee_adjusted_edge < MIN_EDGE:
+            no_gate_failures.append(f"min_edge: {no_fee_adjusted_edge:.4f} < {MIN_EDGE:.4f}")
+        # Gate 2: Maximum edge (inversion protection)
+        if no_fee_adjusted_edge > MAX_EDGE:
+            no_gate_failures.append(f"max_edge: {no_fee_adjusted_edge:.4f} > {MAX_EDGE:.4f}")
+        # Gate 3: Maximum confidence (NO-side confidence)
+        if no_prob > MAX_CONFIDENCE:
+            no_gate_failures.append(f"max_confidence: {no_prob:.4f} > {MAX_CONFIDENCE:.4f}")
+        # Gate 4: Price band (applied to NO price)
+        if no_price < MIN_PRICE:
+            no_gate_failures.append(f"min_price: {no_price}c < {MIN_PRICE}c")
+        if no_price > MAX_PRICE:
+            no_gate_failures.append(f"max_price: {no_price}c > {MAX_PRICE}c")
+        # Gate 5: STC range (same as YES)
+        if seconds_to_close < MIN_STC:
+            no_gate_failures.append(f"min_stc: {seconds_to_close:.0f}s < {MIN_STC}s")
+        if seconds_to_close > MAX_STC:
+            no_gate_failures.append(f"max_stc: {seconds_to_close:.0f}s > {MAX_STC}s")
+        # Gate 6: Opening rush (same as YES)
+        if OPENING_RUSH_GATE and _is_et_opening_rush(now):
+            no_gate_failures.append("opening_rush: 10am ET window")
+        # Gate 7: Vol spike (same as YES)
+        if rv_components and len(self._trailing_rv) >= 10:
+            rv_1h_val = rv_components.get("rv_1h", 0)
+            avg_rv = sum(self._trailing_rv) / len(self._trailing_rv)
+            if avg_rv > 0 and rv_1h_val > VOL_SPIKE_THRESHOLD * avg_rv:
+                no_gate_failures.append(f"vol_spike: rv_1h={rv_1h_val:.6f} > {VOL_SPIKE_THRESHOLD}x avg={avg_rv:.6f}")
+
+        no_gates_passed = len(no_gate_failures) == 0
+
+        # NO-side Kelly sizing
+        no_kelly_f = 0.0
+        no_position = 0
+        if no_fee_adjusted_edge > 0 and no_price > 0 and no_price < 100:
+            no_be_wr = no_market_prob
+            no_kelly_f = no_fee_adjusted_edge / (1.0 - no_be_wr)
+            no_position = int(KELLY_FRACTION * no_kelly_f * self._bankroll / max(1, no_price))
+            no_max_pos = int(self._bankroll * MAX_POSITION_PCT / max(1, no_price))
+            no_position = max(0, min(no_position, no_max_pos))
+
         self._signal_count += 1
 
         # Update trailing RV
@@ -577,6 +628,14 @@ class SPXHARRVModel:
             # EGARCH baseline
             "egarch_prob": egarch_prob,
             "egarch_edge": egarch_edge,
+            # NO-side evaluation
+            "no_prob": round(no_prob, 6),
+            "no_edge": round(no_edge, 6),
+            "no_fee_edge": round(no_fee_adjusted_edge, 6),
+            "no_kelly_f": round(no_kelly_f, 4),
+            "no_contracts": no_position,
+            "no_gates_passed": no_gates_passed,
+            "no_gate_failures": no_gate_failures,
         }
 
     def get_metrics(self) -> Dict:
@@ -694,6 +753,32 @@ class SPXHARRVShadowEngine:
         """)
         self._db_conn.commit()
 
+        # ── Migration: add NO-side columns if missing ──
+        self._migrate_no_side_columns()
+
+    def _migrate_no_side_columns(self):
+        """Add NO-side evaluation columns if they don't exist yet."""
+        existing = {
+            row[1] for row in
+            self._db_conn.execute("PRAGMA table_info(spx_harrv_shadow_signals)").fetchall()
+        }
+        no_side_columns = [
+            ("no_prob", "REAL"),
+            ("no_edge", "REAL"),
+            ("no_fee_edge", "REAL"),
+            ("no_kelly_f", "REAL"),
+            ("no_contracts", "INTEGER"),
+            ("no_gates_passed", "INTEGER"),
+            ("no_gate_failures", "TEXT"),
+            ("no_pnl_cents", "INTEGER"),
+        ]
+        for col_name, col_type in no_side_columns:
+            if col_name not in existing:
+                self._db_conn.execute(
+                    f"ALTER TABLE spx_harrv_shadow_signals ADD COLUMN {col_name} {col_type}"
+                )
+        self._db_conn.commit()
+
     def ingest_price(self, price: float, timestamp: float):
         """Pass SPX price data to HAR-RV model for return computation."""
         self.model.ingest_price(price, timestamp)
@@ -746,6 +831,7 @@ class SPXHARRVShadowEngine:
             now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
             gate_failures_str = "; ".join(signal.get("gate_failures", []))
+            no_gate_failures_str = "; ".join(signal.get("no_gate_failures", []))
 
             self._db_conn.execute("""
                 INSERT OR REPLACE INTO spx_harrv_shadow_signals
@@ -760,8 +846,11 @@ class SPXHARRVShadowEngine:
                      gates_passed, gate_failures,
                      kelly_f, shadow_contracts, bankroll_cents,
                      egarch_prob, egarch_edge,
+                     no_prob, no_edge, no_fee_edge,
+                     no_kelly_f, no_contracts,
+                     no_gates_passed, no_gate_failures,
                      status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 signal["ticker"], signal["event_ticker"], "SPX", now,
                 signal["spot_price"], signal["threshold"],
@@ -781,6 +870,10 @@ class SPXHARRVShadowEngine:
                 gate_failures_str,
                 signal["kelly_f"], signal["shadow_contracts"], signal["bankroll_cents"],
                 signal.get("egarch_prob"), signal.get("egarch_edge"),
+                signal.get("no_prob"), signal.get("no_edge"), signal.get("no_fee_edge"),
+                signal.get("no_kelly_f"), signal.get("no_contracts"),
+                int(signal.get("no_gates_passed", False)),
+                no_gate_failures_str,
                 "pending",
             ))
             self._db_conn.commit()
@@ -795,6 +888,8 @@ class SPXHARRVShadowEngine:
             # Convert non-serializable types
             if "gate_failures" in entry and isinstance(entry["gate_failures"], list):
                 entry["gate_failures"] = "; ".join(entry["gate_failures"])
+            if "no_gate_failures" in entry and isinstance(entry["no_gate_failures"], list):
+                entry["no_gate_failures"] = "; ".join(entry["no_gate_failures"])
             with open(self._journal_path, "a") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
         except Exception:
@@ -807,7 +902,7 @@ class SPXHARRVShadowEngine:
 
         try:
             rows = self._db_conn.execute(
-                "SELECT id, market_price, shadow_contracts, final_prob "
+                "SELECT id, market_price, shadow_contracts, final_prob, no_contracts "
                 "FROM spx_harrv_shadow_signals "
                 "WHERE ticker=? AND status='pending'",
                 (ticker,)
@@ -817,8 +912,9 @@ class SPXHARRVShadowEngine:
                 sig_id = row["id"]
                 contracts = row["shadow_contracts"] or 0
                 price = row["market_price"] or 0
+                no_ct_raw = row["no_contracts"] or 0
 
-                # Use actual contracts if gated, otherwise 1-contract counterfactual
+                # YES-side PnL: use actual contracts if gated, otherwise 1-contract counterfactual
                 ct = contracts if contracts > 0 else 1
                 if market_result in ("yes", "all_yes"):
                     pnl = ct * (100 - price)
@@ -827,10 +923,22 @@ class SPXHARRVShadowEngine:
                 else:
                     pnl = 0
 
+                # NO-side PnL: buying NO at (100 - price) cents
+                no_price = 100 - price
+                no_ct = no_ct_raw if no_ct_raw > 0 else 1
+                if market_result in ("no", "all_no"):
+                    # NO wins: profit = (100 - no_price) per contract
+                    no_pnl = no_ct * (100 - no_price)
+                elif market_result in ("yes", "all_yes"):
+                    # NO loses: loss = no_price per contract
+                    no_pnl = -(no_ct * no_price)
+                else:
+                    no_pnl = 0
+
                 self._db_conn.execute(
                     "UPDATE spx_harrv_shadow_signals SET status='settled', "
-                    "market_result=?, shadow_pnl_cents=?, settled_time=? WHERE id=?",
-                    (market_result, pnl, now, sig_id)
+                    "market_result=?, shadow_pnl_cents=?, no_pnl_cents=?, settled_time=? WHERE id=?",
+                    (market_result, pnl, no_pnl, now, sig_id)
                 )
 
             self._db_conn.commit()

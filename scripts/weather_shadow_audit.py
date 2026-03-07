@@ -1116,6 +1116,133 @@ def detect_regime_start() -> str:
         return "2026-02-28T00:00:00"
 
 
+def section_no_side(conn, since):
+    """NO-side shadow analysis from evaluated_opportunities where side='no'."""
+    header("NO-SIDE SHADOW ANALYSIS")
+
+    if not has_column(conn, "evaluated_opportunities", "side"):
+        print("  side column not found on evaluated_opportunities — skipping")
+        return
+
+    W = where_clause(since)
+    no_count = conn.execute(f"""
+        SELECT COUNT(*) FROM evaluated_opportunities
+        WHERE product_type='weather' AND side='no' {W}
+    """).fetchone()[0]
+
+    if no_count == 0:
+        print("  No NO-side shadow entries found.")
+        return
+
+    settled_count = conn.execute(f"""
+        SELECT COUNT(*) FROM evaluated_opportunities
+        WHERE product_type='weather' AND side='no'
+          AND market_result IS NOT NULL {W}
+    """).fetchone()[0]
+
+    print(f"  NO-side signals: {no_count} total, {settled_count} settled")
+
+    if settled_count == 0:
+        print("  No settled NO-side data yet.")
+        return
+
+    # Win/loss — NO wins when market_result IN ('no','all_no')
+    rows = conn.execute(f"""
+        SELECT market_price, COALESCE(position_size, 1) AS cnt, market_result,
+               asset, edge, fee_adjusted_edge
+        FROM evaluated_opportunities
+        WHERE product_type='weather' AND side='no'
+          AND market_result IS NOT NULL {W}
+    """).fetchall()
+
+    wins = sum(1 for r in rows if r["market_result"] in ("no", "all_no"))
+    losses = sum(1 for r in rows if r["market_result"] in ("yes", "all_yes"))
+    wr = wins / (wins + losses) * 100 if (wins + losses) > 0 else 0
+
+    sim_pnl = 0
+    for r in rows:
+        p = r["market_price"] or 0
+        c = r["cnt"]
+        fee = maker_fee(p)
+        if r["market_result"] in ("no", "all_no"):
+            sim_pnl += (100 - p) * c - fee * c
+        elif r["market_result"] in ("yes", "all_yes"):
+            sim_pnl -= p * c + fee * c
+
+    print(f"  Win rate:     {wins}W/{losses}L ({wr:.1f}%)")
+    print(f"  Sim PnL:      {sim_pnl}c (${sim_pnl/100:.2f})")
+
+    # Per-asset
+    subheader("NO-side per-asset")
+    asset_data = defaultdict(lambda: {"w": 0, "l": 0})
+    for r in rows:
+        a = r["asset"]
+        if r["market_result"] in ("no", "all_no"):
+            asset_data[a]["w"] += 1
+        elif r["market_result"] in ("yes", "all_yes"):
+            asset_data[a]["l"] += 1
+
+    print(f"  {'City/Asset':<12} {'W':>4} {'L':>4} {'WR':>7}")
+    print("  " + "-" * 30)
+    for a in sorted(asset_data.keys()):
+        d = asset_data[a]
+        n = d["w"] + d["l"]
+        wr_a = d["w"] / n * 100 if n > 0 else 0
+        print(f"  {a:<12} {d['w']:>4} {d['l']:>4} {wr_a:>6.1f}%")
+
+    # Edge distribution
+    subheader("NO-side edge distribution")
+    edge_data = defaultdict(lambda: {"w": 0, "l": 0, "n": 0})
+    for r in rows:
+        fe = r["fee_adjusted_edge"]
+        if fe is None:
+            bucket = "N/A"
+        elif fe < 0:
+            bucket = "<0%"
+        elif fe < 0.005:
+            bucket = "0-0.5%"
+        elif fe < 0.01:
+            bucket = "0.5-1%"
+        elif fe < 0.02:
+            bucket = "1-2%"
+        elif fe < 0.05:
+            bucket = "2-5%"
+        else:
+            bucket = "5%+"
+        edge_data[bucket]["n"] += 1
+        if r["market_result"] in ("no", "all_no"):
+            edge_data[bucket]["w"] += 1
+        elif r["market_result"] in ("yes", "all_yes"):
+            edge_data[bucket]["l"] += 1
+
+    print(f"  {'Bucket':<10} {'N':>4} {'W':>4} {'L':>4} {'WR':>7}")
+    print("  " + "-" * 33)
+    for b in ["<0%", "0-0.5%", "0.5-1%", "1-2%", "2-5%", "5%+", "N/A"]:
+        if b in edge_data:
+            d = edge_data[b]
+            n = d["w"] + d["l"]
+            wr_b = d["w"] / n * 100 if n > 0 else 0
+            print(f"  {b:<10} {d['n']:>4} {d['w']:>4} {d['l']:>4} {wr_b:>6.1f}%")
+
+    # YES vs NO comparison
+    subheader("YES-side vs NO-side comparison")
+    yes_rows = conn.execute(f"""
+        SELECT
+            SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS w,
+            SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS l
+        FROM evaluated_opportunities
+        WHERE product_type='weather' AND (side IS NULL OR side='yes')
+          AND filter_stage='weather_observation'
+          AND market_result IS NOT NULL {W}
+    """).fetchone()
+    yes_w = yes_rows["w"] or 0
+    yes_l = yes_rows["l"] or 0
+    yes_n = yes_w + yes_l
+    yes_wr = yes_w / yes_n * 100 if yes_n > 0 else 0
+    print(f"  YES-side: {yes_w}W/{yes_l}L ({yes_wr:.1f}% WR, n={yes_n})")
+    print(f"  NO-side:  {wins}W/{losses}L ({wr:.1f}% WR, n={wins + losses})")
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1160,6 +1287,7 @@ def main():
     section_bias(conn, args.since)
     section_sufficiency(conn, args.since, stats, pipeline or {})
     section_cal_engine(conn, args.since)
+    section_no_side(conn, args.since)
 
     conn.close()
 

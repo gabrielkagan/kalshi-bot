@@ -1606,6 +1606,260 @@ def shadow_approaches_alpha(conn: sqlite3.Connection, since: str,
         print(f"  {asset}: {n}/200 settled ({status})")
 
 
+# ── Section 14: NO-Side Shadow Alpha ─────────────────────────────
+
+def no_side_alpha(conn: sqlite3.Connection, since: str,
+                  asset_filter: Optional[str] = None) -> None:
+    section("14. NO-SIDE SHADOW ALPHA")
+
+    asset_clause = f"AND asset = '{asset_filter}'" if asset_filter else ""
+
+    # ── Part A: evaluated_opportunities NO-side ──
+
+    eval_cols = [r["name"] for r in conn.execute(
+        "PRAGMA table_info(evaluated_opportunities)").fetchall()]
+    if "side" not in eval_cols:
+        print("  'side' column not found in evaluated_opportunities — "
+              "NO-side shadow not yet deployed")
+        print("  Skipping evaluated_opportunities analysis")
+    else:
+        subsection("NO-side signals (evaluated_opportunities)")
+        overview = conn.execute(f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+                SUM(CASE WHEN status='settled'
+                    AND market_result IN ('no', 'all_no')
+                    THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN status='settled'
+                    AND market_result IN ('yes', 'all_yes')
+                    THEN 1 ELSE 0 END) AS losses
+            FROM evaluated_opportunities
+            WHERE evaluation_time >= ? {EVAL_15M_FILTER}
+              AND side = 'no'
+              {asset_clause}
+        """, (since,)).fetchone()
+
+        total = overview["total"] or 0
+        settled = overview["settled"] or 0
+        wins = overview["wins"] or 0
+        losses = overview["losses"] or 0
+        n = wins + losses
+
+        print(f"  Total signals: {total}, Settled: {settled}")
+        if n > 0:
+            wr = wins / n * 100
+            lo, hi = wilson_ci(wins, n)
+            print(f"  Win rate: {wins}W/{losses}L ({wr:.1f}%) "
+                  f"[95% CI: {lo*100:.1f}%-{hi*100:.1f}%]")
+        elif total > 0:
+            print("  No settled NO-side signals yet")
+        else:
+            print("  No NO-side data found")
+
+    # ── Part B: fifteenm_shadow_signals NO-side approaches ──
+
+    tbl = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='fifteenm_shadow_signals'"
+    ).fetchone()
+    if not tbl:
+        print("\n  fifteenm_shadow_signals table not found")
+        return
+
+    shadow_cols = [r["name"] for r in conn.execute(
+        "PRAGMA table_info(fifteenm_shadow_signals)").fetchall()]
+    if "no_live_pnl_cents" not in shadow_cols:
+        print("\n  NO-side columns not found in fifteenm_shadow_signals — "
+              "schema not yet updated")
+        return
+
+    # Per-approach settled stats
+    approaches = [
+        ("no_live", "Live baseline (NO)"),
+        ("no_a1", "A1 RecalibratedEGARCH (NO)"),
+        ("no_a2", "A2 LightGBM (NO)"),
+        ("no_market_only", "Market-only (NO)"),
+    ]
+
+    for prefix, label in approaches:
+        prob_col = f"{prefix}_prob"
+        edge_col = f"{prefix}_edge"
+        contracts_col = f"{prefix}_contracts"
+        pnl_col = f"{prefix}_pnl_cents"
+        if pnl_col not in shadow_cols:
+            continue
+
+        subsection(f"{label} per-asset alpha")
+        for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter
+                      else [asset_filter]):
+            try:
+                r = conn.execute(f"""
+                    SELECT
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN {contracts_col} > 0
+                            THEN 1 ELSE 0 END) AS signaled,
+                        SUM(CASE WHEN status='settled'
+                            AND {contracts_col} > 0
+                            AND market_result IN ('no', 'all_no')
+                            THEN 1 ELSE 0 END) AS wins,
+                        SUM(CASE WHEN status='settled'
+                            AND {contracts_col} > 0
+                            AND market_result IN ('yes', 'all_yes')
+                            THEN 1 ELSE 0 END) AS losses,
+                        SUM(CASE WHEN status='settled'
+                            AND {contracts_col} > 0
+                            THEN {pnl_col} ELSE 0 END) AS pnl,
+                        AVG(CASE WHEN {contracts_col} > 0
+                            THEN {edge_col} END) AS avg_edge,
+                        AVG(CASE WHEN {contracts_col} > 0
+                            THEN {prob_col} END) AS avg_prob
+                    FROM fifteenm_shadow_signals
+                    WHERE evaluation_time >= ? AND asset = ?
+                """, (since, asset)).fetchone()
+
+                t = r["total"] or 0
+                sig = r["signaled"] or 0
+                w = r["wins"] or 0
+                l_v = r["losses"] or 0
+                pnl_v = r["pnl"] or 0
+                n_s = w + l_v
+                wr_v = w / n_s * 100 if n_s > 0 else 0
+                sig_rate = sig / t * 100 if t > 0 else 0
+
+                print(f"\n  {asset}:")
+                print(f"    Signals: {t}, Signaled (contracts>0): "
+                      f"{sig} ({sig_rate:.1f}%)")
+                if n_s > 0:
+                    lo, hi = wilson_ci(w, n_s)
+                    print(f"    Settled: {w}W/{l_v}L ({wr_v:.1f}% WR) "
+                          f"[95% CI: {lo*100:.1f}%-{hi*100:.1f}%]")
+                    print(f"    PnL: {pnl_v} cents")
+                    if r["avg_edge"] is not None:
+                        print(f"    Avg edge: {r['avg_edge']*100:.2f}%, "
+                              f"Avg prob: {(r['avg_prob'] or 0)*100:.1f}%")
+            except Exception:
+                print(f"    {asset}: query error (column mismatch?)")
+                break
+
+    # Comparative alpha: YES vs NO across all approaches
+    subsection("YES-side vs NO-side comparative PnL")
+    try:
+        comp = conn.execute(f"""
+            SELECT
+                asset,
+                COUNT(*) AS n,
+                SUM(live_pnl_cents) AS yes_live,
+                SUM(CASE WHEN a1_gates_passed = 1
+                    THEN a1_pnl_cents ELSE 0 END) AS yes_a1,
+                SUM(CASE WHEN a2_gates_passed = 1
+                    THEN a2_pnl_cents ELSE 0 END) AS yes_a2,
+                SUM(market_only_pnl_cents) AS yes_mkt,
+                SUM(no_live_pnl_cents) AS no_live,
+                SUM(CASE WHEN no_a1_contracts > 0
+                    THEN no_a1_pnl_cents ELSE 0 END) AS no_a1,
+                SUM(CASE WHEN no_a2_contracts > 0
+                    THEN no_a2_pnl_cents ELSE 0 END) AS no_a2,
+                SUM(no_market_only_pnl_cents) AS no_mkt
+            FROM fifteenm_shadow_signals
+            WHERE status = 'settled' AND evaluation_time >= ? {asset_clause}
+            GROUP BY asset
+        """, (since,)).fetchall()
+
+        if comp:
+            print(f"  {'Asset':<6} {'N':>4}  {'YES Live':>9} {'NO Live':>9} "
+                  f"{'YES A1':>9} {'NO A1':>9} {'YES A2':>9} {'NO A2':>9}")
+            print("  " + "-" * 70)
+            totals = [0] * 7
+            for r in comp:
+                n_r = r["n"] or 0
+                yl = r["yes_live"] or 0
+                nl = r["no_live"] or 0
+                ya1 = r["yes_a1"] or 0
+                na1 = r["no_a1"] or 0
+                ya2 = r["yes_a2"] or 0
+                na2 = r["no_a2"] or 0
+                print(f"  {r['asset']:<6} {n_r:>4}  {yl:>8}c {nl:>8}c "
+                      f"{ya1:>8}c {na1:>8}c {ya2:>8}c {na2:>8}c")
+                totals[0] += n_r
+                totals[1] += yl
+                totals[2] += nl
+                totals[3] += ya1
+                totals[4] += na1
+                totals[5] += ya2
+                totals[6] += na2
+            print("  " + "-" * 70)
+            print(f"  {'TOTAL':<6} {totals[0]:>4}  {totals[1]:>8}c "
+                  f"{totals[2]:>8}c {totals[3]:>8}c {totals[4]:>8}c "
+                  f"{totals[5]:>8}c {totals[6]:>8}c")
+
+            # Combined YES+NO PnL summary
+            print(f"\n  Combined (YES + NO) PnL:")
+            print(f"    Live:  YES {totals[1]:>+8}c + NO {totals[2]:>+8}c "
+                  f"= {totals[1]+totals[2]:>+8}c")
+            print(f"    A1:    YES {totals[3]:>+8}c + NO {totals[4]:>+8}c "
+                  f"= {totals[3]+totals[4]:>+8}c")
+            print(f"    A2:    YES {totals[5]:>+8}c + NO {totals[6]:>+8}c "
+                  f"= {totals[5]+totals[6]:>+8}c")
+
+            # Which side captures more edge?
+            print(f"\n  Edge capture comparison:")
+            if totals[1] != 0 or totals[2] != 0:
+                yes_total = totals[1]
+                no_total = totals[2]
+                if yes_total > no_total:
+                    print(f"    YES-side dominates by {yes_total - no_total}c "
+                          f"(live baseline)")
+                elif no_total > yes_total:
+                    print(f"    NO-side dominates by {no_total - yes_total}c "
+                          f"(live baseline)")
+                else:
+                    print(f"    YES and NO sides equal (live baseline)")
+        else:
+            print("  No settled shadow signals for comparison")
+    except Exception as e:
+        print(f"  Query error: {e}")
+
+    # NO-side market-only vs model comparison
+    subsection("NO-side model vs market-only")
+    try:
+        mkt_comp = conn.execute(f"""
+            SELECT
+                COUNT(*) AS n,
+                SUM(no_live_pnl_cents) AS live_pnl,
+                SUM(CASE WHEN no_a1_contracts > 0
+                    THEN no_a1_pnl_cents ELSE 0 END) AS a1_pnl,
+                SUM(CASE WHEN no_a2_contracts > 0
+                    THEN no_a2_pnl_cents ELSE 0 END) AS a2_pnl,
+                SUM(no_market_only_pnl_cents) AS mkt_pnl
+            FROM fifteenm_shadow_signals
+            WHERE status = 'settled' AND evaluation_time >= ? {asset_clause}
+        """, (since,)).fetchone()
+
+        n_m = mkt_comp["n"] or 0
+        if n_m > 0:
+            live_p = mkt_comp["live_pnl"] or 0
+            a1_p = mkt_comp["a1_pnl"] or 0
+            a2_p = mkt_comp["a2_pnl"] or 0
+            mkt_p = mkt_comp["mkt_pnl"] or 0
+
+            print(f"  Settled signals: {n_m}")
+            print(f"  NO live baseline:  {live_p:>8}c")
+            print(f"  NO A1:             {a1_p:>8}c")
+            print(f"  NO A2:             {a2_p:>8}c")
+            print(f"  NO market-only:    {mkt_p:>8}c")
+
+            if mkt_p != 0:
+                print(f"\n  NO-side alpha vs market-only:")
+                print(f"    Live: {live_p - mkt_p:>+8}c")
+                print(f"    A1:   {a1_p - mkt_p:>+8}c")
+                print(f"    A2:   {a2_p - mkt_p:>+8}c")
+        else:
+            print("  No settled data")
+    except Exception as e:
+        print(f"  Query error: {e}")
+
+
 # ── Main ─────────────────────────────────────────────────────────
 
 SECTIONS = {
@@ -1622,6 +1876,7 @@ SECTIONS = {
     "vol": vol_regime_analysis,
     "time": time_of_day_analysis,
     "shadow": shadow_approaches_alpha,
+    "no_side": no_side_alpha,
 }
 
 

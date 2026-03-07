@@ -1758,6 +1758,185 @@ def section_harrv_shadow(conn: sqlite3.Connection, since: Optional[str]) -> Dict
     }
 
 
+# ─── Section 15: HAR-RV NO-Side Shadow Analysis ───────────────────────────
+
+def section_harrv_no_side(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
+    """Analyze HAR-RV NO-side shadow signals — performance, gates, comparison with YES-side."""
+    header("15. HAR-RV NO-SIDE SHADOW ANALYSIS")
+
+    # Check if spx_harrv_shadow_signals table exists
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='spx_harrv_shadow_signals'"
+    ).fetchone()
+    if not table_check:
+        print("  spx_harrv_shadow_signals table not found — engine not yet deployed.")
+        return {"status": "no_table"}
+
+    # Check if NO-side columns exist (graceful degradation)
+    cols_info = conn.execute("PRAGMA table_info(spx_harrv_shadow_signals)").fetchall()
+    col_names = {c["name"] for c in cols_info}
+    no_cols_needed = {"no_prob", "no_edge", "no_fee_edge", "no_kelly_f",
+                      "no_contracts", "no_gates_passed", "no_gate_failures", "no_pnl_cents"}
+    missing = no_cols_needed - col_names
+    if missing:
+        print(f"  NO-side columns not yet present: {', '.join(sorted(missing))}")
+        print("  Engine needs update to record NO-side data.")
+        return {"status": "missing_columns", "missing": sorted(missing)}
+
+    wc = where_clause(since)
+
+    # ── Overview: NO-side signals with contracts > 0 ──
+    no_overview = conn.execute(f"""
+        SELECT COUNT(*) as total,
+               SUM(CASE WHEN no_contracts > 0 THEN 1 ELSE 0 END) as with_contracts,
+               SUM(CASE WHEN status='settled' AND no_contracts > 0 THEN 1 ELSE 0 END) as settled_with_contracts,
+               SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled_total,
+               SUM(CASE WHEN no_gates_passed=1 THEN 1 ELSE 0 END) as no_gates_passed,
+               SUM(CASE WHEN gates_passed=1 THEN 1 ELSE 0 END) as yes_gates_passed
+        FROM spx_harrv_shadow_signals
+        WHERE 1=1 {wc}
+    """).fetchone()
+
+    total = no_overview["total"] or 0
+    no_with_contracts = no_overview["with_contracts"] or 0
+    no_settled = no_overview["settled_with_contracts"] or 0
+    settled_total = no_overview["settled_total"] or 0
+    no_gp = no_overview["no_gates_passed"] or 0
+    yes_gp = no_overview["yes_gates_passed"] or 0
+
+    if total == 0:
+        print("  No HAR-RV signals recorded yet.")
+        return {"status": "no_data"}
+
+    print(f"\n  Total HAR-RV signals:           {total}")
+    print(f"  NO-side with contracts > 0:     {no_with_contracts} ({pct(no_with_contracts, total)})")
+    print(f"  NO-side settled (contracts>0):  {no_settled}")
+
+    # ── Gates comparison ──
+    subheader("Gates Pass Rate: YES vs NO")
+    print(f"\n  {'Side':<8s} {'Passed':>8s} {'Total':>7s} {'Rate':>8s}")
+    print(f"  {'-' * 35}")
+    print(f"  {'YES':<8s} {yes_gp:>8d} {total:>7d} {pct(yes_gp, total):>8s}")
+    print(f"  {'NO':<8s} {no_gp:>8d} {total:>7d} {pct(no_gp, total):>8s}")
+
+    # ── Settled NO-side performance ──
+    subheader("Settled NO-Side Performance")
+    no_settled_rows = conn.execute(f"""
+        SELECT market_price, market_result, no_contracts, no_pnl_cents,
+               no_prob, no_edge, no_fee_edge, no_gates_passed, no_gate_failures,
+               seconds_to_close, har_method
+        FROM spx_harrv_shadow_signals
+        WHERE status='settled' AND no_contracts > 0 {wc}
+    """).fetchall()
+
+    no_side_result = {"total_signals": total, "no_with_contracts": no_with_contracts,
+                      "no_settled": no_settled, "gates_yes": yes_gp, "gates_no": no_gp}
+
+    if not no_settled_rows:
+        print("  No settled NO-side signals with contracts > 0.")
+    else:
+        # NO wins when market_result IN ('no', 'all_no')
+        no_wins = sum(1 for r in no_settled_rows if r["market_result"] in ("no", "all_no"))
+        no_losses = len(no_settled_rows) - no_wins
+        no_wr = no_wins / len(no_settled_rows)
+        no_total_pnl = sum((r["no_pnl_cents"] or 0) for r in no_settled_rows)
+
+        print(f"\n  Settled NO signals:  {len(no_settled_rows)}")
+        print(f"  Win rate:            {no_wr:.1%} ({no_wins}W/{no_losses}L)"
+              f"{significance_tag(len(no_settled_rows))}")
+        print(f"  NO-side sim PnL:     {no_total_pnl:+d}c (${no_total_pnl/100:+.2f})")
+
+        # Gated NO-side subset
+        no_gated = [r for r in no_settled_rows if r["no_gates_passed"]]
+        if no_gated:
+            ng_wins = sum(1 for r in no_gated if r["market_result"] in ("no", "all_no"))
+            ng_pnl = sum((r["no_pnl_cents"] or 0) for r in no_gated)
+            ng_wr = ng_wins / len(no_gated)
+            print(f"  Gates-passed NO:     {len(no_gated)} signals, {ng_wins}W/{len(no_gated)-ng_wins}L "
+                  f"({ng_wr:.1%} WR), PnL={ng_pnl:+d}c{significance_tag(len(no_gated))}")
+        else:
+            print(f"  Gates-passed NO:     0 signals (all gated out)")
+
+        no_side_result.update({
+            "no_wins": no_wins, "no_losses": no_losses,
+            "no_wr": round(no_wr, 4), "no_pnl_cents": no_total_pnl,
+        })
+
+    # ── YES vs NO side-by-side on same settled signals ──
+    subheader("YES vs NO Side-by-Side (settled signals)")
+    both_rows = conn.execute(f"""
+        SELECT market_price, market_result, shadow_pnl_cents, no_pnl_cents,
+               shadow_contracts, no_contracts, gates_passed, no_gates_passed,
+               edge, no_edge, fee_adjusted_edge, no_fee_edge
+        FROM spx_harrv_shadow_signals
+        WHERE status='settled' {wc}
+    """).fetchall()
+
+    if both_rows:
+        yes_pnl = sum((r["shadow_pnl_cents"] or 0) for r in both_rows if (r["shadow_contracts"] or 0) > 0)
+        no_pnl = sum((r["no_pnl_cents"] or 0) for r in both_rows if (r["no_contracts"] or 0) > 0)
+        combined = yes_pnl + no_pnl
+        yes_ct = sum(1 for r in both_rows if (r["shadow_contracts"] or 0) > 0)
+        no_ct = sum(1 for r in both_rows if (r["no_contracts"] or 0) > 0)
+
+        print(f"\n  {'Side':<8s} {'Signals':>9s} {'PnL':>10s}")
+        print(f"  {'-' * 30}")
+        print(f"  {'YES':<8s} {yes_ct:>9d} {yes_pnl:>+9d}c")
+        print(f"  {'NO':<8s} {no_ct:>9d} {no_pnl:>+9d}c")
+        print(f"  {'COMBINED':<8s} {'':>9s} {combined:>+9d}c")
+
+        no_side_result["combined_pnl_cents"] = combined
+
+    # ── Check evaluated_opportunities for NO-side entries ──
+    subheader("NO-Side in evaluated_opportunities")
+    eo_cols = conn.execute("PRAGMA table_info(evaluated_opportunities)").fetchall()
+    eo_col_names = {c["name"] for c in eo_cols}
+    if "side" not in eo_col_names:
+        print("  'side' column not present in evaluated_opportunities — no NO-side evals tracked there.")
+    else:
+        eo_wc = where_clause(since)
+        eo_rows = conn.execute(f"""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled,
+                   SUM(CASE WHEN status='settled' AND market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) as no_wins
+            FROM evaluated_opportunities
+            WHERE side='no' AND product_type IN ('spx_hourly') {eo_wc}
+        """).fetchone()
+        eo_total = eo_rows["total"] or 0
+        eo_settled = eo_rows["settled"] or 0
+        eo_no_wins = eo_rows["no_wins"] or 0
+        print(f"  NO-side evals (product_type=spx_hourly):  {eo_total}")
+        print(f"  Settled:                                   {eo_settled}")
+        if eo_settled > 0:
+            print(f"  NO wins (result in no/all_no):             {eo_no_wins} ({pct(eo_no_wins, eo_settled)})")
+        no_side_result["eo_total"] = eo_total
+        no_side_result["eo_settled"] = eo_settled
+
+    # ── NO-side gate failure breakdown ──
+    subheader("NO-Side Gate Failures")
+    no_gate_rows = conn.execute(f"""
+        SELECT no_gate_failures FROM spx_harrv_shadow_signals
+        WHERE no_gate_failures IS NOT NULL AND no_gate_failures != '' {wc}
+    """).fetchall()
+
+    if no_gate_rows:
+        gate_counts: Dict[str, int] = {}
+        for r in no_gate_rows:
+            for failure in r["no_gate_failures"].split("; "):
+                gate_name = failure.split(":")[0].strip()
+                if gate_name:
+                    gate_counts[gate_name] = gate_counts.get(gate_name, 0) + 1
+
+        print(f"\n  {'Gate':<20s} {'Failures':>9s} {'% of signals':>14s}")
+        print(f"  {'-' * 45}")
+        for gate, cnt in sorted(gate_counts.items(), key=lambda x: -x[1]):
+            print(f"  {gate:<20s} {cnt:>9d} {pct(cnt, total):>14s}")
+    else:
+        print("  No NO-side gate failures recorded.")
+
+    return no_side_result
+
+
 def detect_regime_start() -> str:
     """Auto-detect regime start by finding the last git commit that changed
     SPX hourly trading constants in bot.py."""
@@ -1872,6 +2051,7 @@ def main():
     promotion = section_promotion_config(conn, since)
     cal_obs = section_cal_engine_obs(conn, since)
     harrv = section_harrv_shadow(conn, since)
+    harrv_no = section_harrv_no_side(conn, since)
 
     conn.close()
 
@@ -1902,6 +2082,7 @@ def main():
             "promotion_config": promotion,
             "cal_engine_obs": cal_obs,
             "harrv_shadow": harrv,
+            "harrv_no_side": harrv_no,
         }
         with open(args.json, "w") as f:
             json.dump(artifact, f, indent=2, default=str)

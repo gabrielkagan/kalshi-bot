@@ -635,6 +635,11 @@ class HARRVShadow:
         if rv_components:
             self._trailing_rv[asset].append(rv_components["rv_1h"])
 
+        # ── NO-side evaluation ──
+        no_result = self._evaluate_no_side(
+            final_prob, market_price, asset, fee_adjusted_edge,
+            seconds_to_close, rv_components, bankroll)
+
         return {
             "strategy": "harrv_shadow",
             "asset": asset,
@@ -676,6 +681,98 @@ class HARRVShadow:
             # EGARCH baseline (for counterfactual)
             "egarch_prob": egarch_prob,
             "egarch_edge": egarch_edge,
+            # NO-side HAR-RV
+            "no_harrv_prob": no_result["no_prob"],
+            "no_harrv_edge": no_result["no_edge"],
+            "no_harrv_fee_edge": no_result["no_fee_edge"],
+            "no_harrv_kelly_f": no_result["no_kelly_f"],
+            "no_harrv_contracts": no_result["no_contracts"],
+            "no_harrv_gates_passed": no_result["no_gates_passed"],
+            "no_harrv_gate_failures": no_result["no_gate_failures"],
+        }
+
+    def _evaluate_no_side(self, yes_final_prob: float, market_price: int,
+                          asset: str, yes_fee_edge: float,
+                          seconds_to_close: float,
+                          rv_components: Optional[Dict],
+                          bankroll: int) -> Dict:
+        """Mirror YES-side HAR-RV probability to compute NO-side metrics.
+
+        Pattern follows fifteenm_shadow.py's _evaluate_no_side_approach.
+        """
+        no_price = 100 - market_price
+        no_prob = 1.0 - yes_final_prob
+
+        # Edge
+        no_edge = no_prob - no_price / 100.0
+        no_fee = math.ceil(FEE_MULT_TAKER * 1 * (no_price / 100.0) * (1 - no_price / 100.0) * 100)
+        no_fee_edge = no_edge - no_fee / 100.0
+
+        # Gate checks (mirror YES-side gates with NO-side values)
+        failures = []
+
+        # Price band: 86-99 for NO price
+        if not (86 <= no_price <= 99):
+            failures.append(f"price_{no_price}")
+
+        # Minimum edge (use same per-asset thresholds)
+        min_edge = HARRV_MIN_EDGE.get(asset, 0.005)
+        if no_fee_edge < min_edge:
+            failures.append(f"min_edge: {no_fee_edge:.4f} < {min_edge:.4f}")
+
+        # Maximum edge (edge inversion protection)
+        max_edge = HARRV_MAX_EDGE.get(asset, 0.030)
+        if no_fee_edge > max_edge:
+            failures.append(f"max_edge: {no_fee_edge:.4f} > {max_edge:.4f}")
+
+        # Maximum confidence
+        max_conf = HARRV_MAX_CONFIDENCE.get(asset, 0.92)
+        if no_prob > max_conf:
+            failures.append(f"max_confidence: {no_prob:.4f} > {max_conf:.4f}")
+
+        # Volatility regime (same as YES-side)
+        if rv_components:
+            rv_1h = rv_components.get("rv_1h", 0)
+            trailing = self._trailing_rv.get(asset)
+            if trailing and len(trailing) >= 24:
+                avg_rv = sum(trailing) / len(trailing)
+                if avg_rv > 0 and rv_1h > HARRV_VOL_SPIKE_THRESHOLD * avg_rv:
+                    failures.append(f"vol_spike: rv_1h={rv_1h:.6f}")
+
+        # Time remaining
+        if seconds_to_close < HARRV_MIN_STC:
+            failures.append(f"min_stc: {seconds_to_close:.0f}s")
+        if seconds_to_close > HARRV_MAX_STC:
+            failures.append(f"max_stc: {seconds_to_close:.0f}s")
+
+        # Price band blacklist (check NO-side market price)
+        blacklist = HARRV_PRICE_BLACKLIST.get(asset, [])
+        for low, high in blacklist:
+            if low <= no_price <= high:
+                failures.append(f"price_blacklist: {no_price}c in [{low},{high}]")
+                break
+
+        no_gates_passed = 1 if len(failures) == 0 else 0
+        no_gate_failures_str = ",".join(failures) if failures else None
+
+        # Kelly sizing (even for gated signals, for counterfactual)
+        no_kelly_f = 0.0
+        no_contracts = 0
+        if no_fee_edge > 0 and no_price > 0 and no_price < 100:
+            be_wr = no_price / 100.0
+            no_kelly_f = no_fee_edge / (1.0 - be_wr)
+            no_contracts = int(HARRV_KELLY_FRACTION * no_kelly_f * bankroll / max(1, no_price))
+            max_pos = int(bankroll * HARRV_MAX_POSITION_PCT / max(1, no_price))
+            no_contracts = max(0, min(no_contracts, max_pos))
+
+        return {
+            "no_prob": round(no_prob, 6),
+            "no_edge": round(no_edge, 6),
+            "no_fee_edge": round(no_fee_edge, 6),
+            "no_kelly_f": round(no_kelly_f, 4),
+            "no_contracts": no_contracts,
+            "no_gates_passed": no_gates_passed,
+            "no_gate_failures": no_gate_failures_str,
         }
 
     def get_metrics(self) -> Dict:
@@ -799,6 +896,24 @@ class HourlyAltShadowEngine:
         """)
         self._db_conn.commit()
 
+        # ── Migration: NO-side HAR-RV columns ──
+        for col_name, col_type in [
+            ("no_harrv_prob", "REAL"),
+            ("no_harrv_edge", "REAL"),
+            ("no_harrv_fee_edge", "REAL"),
+            ("no_harrv_kelly_f", "REAL"),
+            ("no_harrv_contracts", "INTEGER"),
+            ("no_harrv_gates_passed", "INTEGER"),
+            ("no_harrv_gate_failures", "TEXT"),
+            ("no_harrv_pnl_cents", "INTEGER"),
+        ]:
+            try:
+                self._db_conn.execute(
+                    f"ALTER TABLE hourly_alt_shadow_signals ADD COLUMN {col_name} {col_type}")
+            except Exception:
+                pass  # Column already exists
+        self._db_conn.commit()
+
     def ingest_price(self, asset: str, price: float, timestamp: float):
         """Pass price data to HAR-RV engine for return computation."""
         self.harrv.ingest_price(asset, price, timestamp)
@@ -886,8 +1001,12 @@ class HourlyAltShadowEngine:
                      market_blend_w, edge, fee_adjusted_edge,
                      gates_passed, gate_failures,
                      kelly_f, shadow_contracts, bankroll_cents, est_fee_cents,
-                     egarch_prob, egarch_edge)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     egarch_prob, egarch_edge,
+                     no_harrv_prob, no_harrv_edge, no_harrv_fee_edge,
+                     no_harrv_kelly_f, no_harrv_contracts,
+                     no_harrv_gates_passed, no_harrv_gate_failures)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                        ?,?,?,?,?,?,?)
             """, (
                 strategy,
                 signal.get("ticker"),
@@ -928,6 +1047,13 @@ class HourlyAltShadowEngine:
                 signal.get("est_fee_cents"),
                 signal.get("egarch_prob"),
                 signal.get("egarch_edge"),
+                signal.get("no_harrv_prob"),
+                signal.get("no_harrv_edge"),
+                signal.get("no_harrv_fee_edge"),
+                signal.get("no_harrv_kelly_f"),
+                signal.get("no_harrv_contracts"),
+                signal.get("no_harrv_gates_passed"),
+                signal.get("no_harrv_gate_failures"),
             ))
             self._db_conn.commit()
         except Exception as e:
@@ -955,11 +1081,15 @@ class HourlyAltShadowEngine:
         try:
             rows = self._db_conn.execute(
                 "SELECT id, strategy, market_price, shadow_contracts, shadow_buy_price, "
-                "shadow_sell_price, final_prob, edge "
+                "shadow_sell_price, final_prob, edge, "
+                "no_harrv_contracts "
                 "FROM hourly_alt_shadow_signals "
                 "WHERE ticker=? AND status='pending'",
                 (ticker,)
             ).fetchall()
+
+            result_yes = market_result in ("yes", "all_yes")
+            result_no = market_result in ("no", "all_no")
 
             for row in rows:
                 sig_id = row["id"]
@@ -967,7 +1097,8 @@ class HourlyAltShadowEngine:
                 contracts = row["shadow_contracts"] or 0
                 price = row["market_price"] or 0
 
-                # Compute shadow PnL
+                # Compute shadow PnL (YES-side)
+                no_pnl = None
                 if strategy == "mm_shadow":
                     # MM PnL depends on fill status
                     pnl = self._compute_mm_pnl(row, market_result)
@@ -975,17 +1106,34 @@ class HourlyAltShadowEngine:
                     # HAR-RV PnL: standard directional
                     # Use actual contracts if gated, otherwise 1-contract counterfactual
                     ct = contracts if contracts > 0 else 1
-                    if market_result in ("yes", "all_yes"):
-                        pnl = ct * (100 - price)
-                    elif market_result in ("no", "all_no"):
-                        pnl = -(ct * price)
+                    fee_yes = math.ceil(FEE_MULT_TAKER * ct * (price / 100.0) * (1 - price / 100.0) * 100)
+                    if result_yes:
+                        pnl = ct * (100 - price) - fee_yes
+                    elif result_no:
+                        pnl = -(ct * price) - fee_yes
                     else:
                         pnl = 0
 
+                    # NO-side PnL
+                    no_ct = row["no_harrv_contracts"] or 0
+                    if no_ct > 0:
+                        no_price = 100 - price
+                        fee_no = math.ceil(FEE_MULT_TAKER * no_ct * (no_price / 100.0) * (1 - no_price / 100.0) * 100)
+                        # NO-side wins when result is "no"
+                        if result_no:
+                            no_pnl = no_ct * (100 - no_price) - fee_no
+                        elif result_yes:
+                            no_pnl = -(no_ct * no_price) - fee_no
+                        else:
+                            no_pnl = 0
+                    else:
+                        no_pnl = 0
+
                 self._db_conn.execute(
                     "UPDATE hourly_alt_shadow_signals SET status='settled', "
-                    "market_result=?, shadow_pnl_cents=?, settled_time=? WHERE id=?",
-                    (market_result, pnl, now, sig_id)
+                    "market_result=?, shadow_pnl_cents=?, no_harrv_pnl_cents=?, "
+                    "settled_time=? WHERE id=?",
+                    (market_result, pnl, no_pnl, now, sig_id)
                 )
 
             self._db_conn.commit()

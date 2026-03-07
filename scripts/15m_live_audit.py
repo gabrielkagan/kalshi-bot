@@ -2099,11 +2099,309 @@ def shadow_approaches(conn: sqlite3.Connection, since: str,
         print("  No settled signals yet for comparison")
 
 
-# ── Section 11: Recommendations ──────────────────────────────────
+# ── Section 12: NO-Side Shadow Analysis ──────────────────────────
+
+def no_side_analysis(conn: sqlite3.Connection, since: str,
+                     asset_filter: Optional[str] = None) -> None:
+    section("12. NO-SIDE SHADOW ANALYSIS")
+
+    # Check if side column exists on evaluated_opportunities
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(evaluated_opportunities)").fetchall()]
+    if "side" not in cols:
+        print("  side column not found on evaluated_opportunities — skipping")
+        return
+
+    asset_clause = f"AND asset = '{asset_filter}'" if asset_filter else ""
+
+    # Count NO-side entries from evaluated_opportunities (15M only)
+    no_count = conn.execute(f"""
+        SELECT COUNT(*) AS n FROM evaluated_opportunities
+        WHERE (product_type IS NULL OR product_type = '15m')
+          AND side = 'no' AND evaluation_time >= ? {asset_clause}
+    """, (since,)).fetchone()["n"]
+
+    if no_count == 0:
+        print("  No NO-side shadow entries found.")
+        return
+
+    settled_count = conn.execute(f"""
+        SELECT COUNT(*) AS n FROM evaluated_opportunities
+        WHERE (product_type IS NULL OR product_type = '15m')
+          AND side = 'no' AND market_result IS NOT NULL
+          AND evaluation_time >= ? {asset_clause}
+    """, (since,)).fetchone()["n"]
+
+    print(f"  NO-side signals: {no_count} total, {settled_count} settled")
+
+    if settled_count == 0:
+        print("  No settled NO-side data yet.")
+        return
+
+    # Win/loss — NO wins when market_result IN ('no','all_no')
+    wl = conn.execute(f"""
+        SELECT
+            SUM(CASE WHEN market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) AS losses,
+            AVG(market_price) AS avg_price,
+            AVG(edge) AS avg_edge,
+            AVG(seconds_to_close) AS avg_stc
+        FROM evaluated_opportunities
+        WHERE (product_type IS NULL OR product_type = '15m')
+          AND side = 'no' AND market_result IS NOT NULL
+          AND evaluation_time >= ? {asset_clause}
+    """, (since,)).fetchone()
+
+    wins = wl["wins"] or 0
+    losses = wl["losses"] or 0
+    wr = wins / (wins + losses) * 100 if (wins + losses) > 0 else 0
+
+    # Sim PnL (NO-side: win when result='no')
+    sim_rows = conn.execute(f"""
+        SELECT market_price, COALESCE(position_size, 1) AS cnt, market_result
+        FROM evaluated_opportunities
+        WHERE (product_type IS NULL OR product_type = '15m')
+          AND side = 'no' AND market_result IS NOT NULL
+          AND evaluation_time >= ? {asset_clause}
+    """, (since,)).fetchall()
+
+    sim_pnl = 0
+    for r in sim_rows:
+        p = r["market_price"] or 0
+        c = r["cnt"]
+        fee = math.ceil(0.0175 * c * p * (100 - p) / 100.0)
+        if r["market_result"] in ("no", "all_no"):
+            sim_pnl += (100 - p) * c - fee
+        elif r["market_result"] in ("yes", "all_yes"):
+            sim_pnl -= p * c + fee
+
+    print(f"  Win rate:     {wins}W/{losses}L ({wr:.1f}%)")
+    print(f"  Sim PnL:      {sim_pnl} cents (${sim_pnl/100:.2f})")
+    print(f"  Avg NO price: {wl['avg_price']:.1f}c")
+    if wl["avg_edge"] is not None:
+        print(f"  Avg edge:     {wl['avg_edge']*100:.2f}%")
+    if wl["avg_stc"] is not None:
+        print(f"  Avg STC:      {wl['avg_stc']:.0f}s ({wl['avg_stc']/60:.1f}m)")
+
+    # Per-asset breakdown
+    subsection("NO-side per-asset")
+    assets = conn.execute(f"""
+        SELECT asset,
+            SUM(CASE WHEN market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) AS w,
+            SUM(CASE WHEN market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) AS l,
+            AVG(market_price) AS avg_p,
+            AVG(edge) AS avg_e
+        FROM evaluated_opportunities
+        WHERE (product_type IS NULL OR product_type = '15m')
+          AND side = 'no' AND market_result IS NOT NULL
+          AND evaluation_time >= ? {asset_clause}
+        GROUP BY asset ORDER BY (w - l) DESC
+    """, (since,)).fetchall()
+
+    print(f"  {'Asset':<6} {'W':>4} {'L':>4} {'WR':>7} {'Avg P':>7} {'Avg Edge':>9}")
+    print("  " + "-" * 42)
+    for a in assets:
+        w = a["w"] or 0
+        l = a["l"] or 0
+        n = w + l
+        wr_a = w / n * 100 if n > 0 else 0
+        avg_e = f"{a['avg_e']*100:.2f}%" if a["avg_e"] is not None else "N/A"
+        print(f"  {a['asset']:<6} {w:>4} {l:>4} {wr_a:>6.1f}% {a['avg_p']:>6.1f}c {avg_e:>9}")
+
+    # Edge distribution for NO-side
+    subsection("NO-side edge distribution")
+    edge_buckets = conn.execute(f"""
+        SELECT
+            CASE
+                WHEN fee_adjusted_edge < 0 THEN '<0%'
+                WHEN fee_adjusted_edge < 0.005 THEN '0-0.5%'
+                WHEN fee_adjusted_edge < 0.01 THEN '0.5-1%'
+                WHEN fee_adjusted_edge < 0.02 THEN '1-2%'
+                WHEN fee_adjusted_edge < 0.05 THEN '2-5%'
+                ELSE '5%+'
+            END AS bucket,
+            COUNT(*) AS n,
+            SUM(CASE WHEN market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) AS w,
+            SUM(CASE WHEN market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) AS l
+        FROM evaluated_opportunities
+        WHERE (product_type IS NULL OR product_type = '15m')
+          AND side = 'no' AND market_result IS NOT NULL
+          AND fee_adjusted_edge IS NOT NULL
+          AND evaluation_time >= ? {asset_clause}
+        GROUP BY bucket ORDER BY MIN(fee_adjusted_edge)
+    """, (since,)).fetchall()
+
+    if edge_buckets:
+        print(f"  {'Bucket':<10} {'N':>4} {'W':>4} {'L':>4} {'WR':>7}")
+        print("  " + "-" * 33)
+        for b in edge_buckets:
+            w = b["w"] or 0
+            l = b["l"] or 0
+            n = b["n"]
+            wr_b = w / n * 100 if n > 0 else 0
+            print(f"  {b['bucket']:<10} {n:>4} {w:>4} {l:>4} {wr_b:>6.1f}%")
+
+    # Comparison: YES vs NO WR
+    subsection("YES-side vs NO-side comparison")
+    yes_wl = conn.execute(f"""
+        SELECT
+            SUM(CASE WHEN market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) AS w,
+            SUM(CASE WHEN market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) AS l
+        FROM evaluated_opportunities
+        WHERE (product_type IS NULL OR product_type = '15m')
+          AND (side IS NULL OR side = 'yes')
+          AND filter_stage IN ('candidate', 'stc_shadow_no_xrp', 'stc_shadow_xrp',
+                               'xrp_shadow', 'observation_trade')
+          AND market_result IS NOT NULL
+          AND evaluation_time >= ? {asset_clause}
+    """, (since,)).fetchone()
+
+    yes_w = yes_wl["w"] or 0
+    yes_l = yes_wl["l"] or 0
+    yes_n = yes_w + yes_l
+    yes_wr = yes_w / yes_n * 100 if yes_n > 0 else 0
+
+    print(f"  YES-side: {yes_w}W/{yes_l}L ({yes_wr:.1f}% WR, n={yes_n})")
+    print(f"  NO-side:  {wins}W/{losses}L ({wr:.1f}% WR, n={wins + losses})")
+
+    # fifteenm_shadow_signals NO-side approaches
+    tbl = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='fifteenm_shadow_signals'"
+    ).fetchone()
+    if tbl:
+        # Check if NO-side columns exist
+        shadow_cols = [r[1] for r in conn.execute(
+            "PRAGMA table_info(fifteenm_shadow_signals)").fetchall()]
+        has_no_cols = "no_live_pnl_cents" in shadow_cols
+
+        if not has_no_cols:
+            subsection("NO-side shadow approaches (fifteenm_shadow_signals)")
+            print("  NO-side columns not found in fifteenm_shadow_signals — "
+                  "schema not yet updated")
+        else:
+            subsection("NO-side shadow approaches (fifteenm_shadow_signals)")
+            for prefix, label in [("no_live", "NO Live baseline"),
+                                   ("no_a1", "NO A1 (RecalEGARCH)"),
+                                   ("no_a2", "NO A2 (LightGBM)"),
+                                   ("no_market_only", "NO Market-only")]:
+                prob_col = f"{prefix}_prob"
+                edge_col = f"{prefix}_edge"
+                contracts_col = f"{prefix}_contracts"
+                pnl_col = f"{prefix}_pnl_cents"
+                if pnl_col not in shadow_cols:
+                    continue
+                print(f"\n  {label}:")
+                for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter
+                              else [asset_filter]):
+                    try:
+                        r = conn.execute(f"""
+                            SELECT
+                                COUNT(*) AS total,
+                                SUM(CASE WHEN {contracts_col} > 0
+                                    THEN 1 ELSE 0 END) AS signaled,
+                                SUM(CASE WHEN status='settled'
+                                    AND {contracts_col} > 0
+                                    AND market_result IN ('no', 'all_no')
+                                    THEN 1 ELSE 0 END) AS wins,
+                                SUM(CASE WHEN status='settled'
+                                    AND {contracts_col} > 0
+                                    AND market_result IN ('yes', 'all_yes')
+                                    THEN 1 ELSE 0 END) AS losses,
+                                SUM(CASE WHEN status='settled'
+                                    AND {contracts_col} > 0
+                                    THEN {pnl_col} ELSE 0 END) AS pnl,
+                                AVG(CASE WHEN {contracts_col} > 0
+                                    THEN {edge_col} END) AS avg_edge
+                            FROM fifteenm_shadow_signals
+                            WHERE evaluation_time >= ? AND asset = ?
+                        """, (since, asset)).fetchone()
+
+                        t = r["total"] or 0
+                        sig = r["signaled"] or 0
+                        w = r["wins"] or 0
+                        l_v = r["losses"] or 0
+                        pnl_v = r["pnl"] or 0
+                        n = w + l_v
+                        wr_v = w / n * 100 if n > 0 else 0
+                        sig_rate = sig / t * 100 if t > 0 else 0
+                        avg_e = r["avg_edge"]
+                        edge_str = f", edge {avg_e*100:.2f}%" if avg_e else ""
+
+                        print(f"    {asset}: {t} evals, {sig} signaled "
+                              f"({sig_rate:.1f}%)"
+                              + (f", {w}W/{l_v}L ({wr_v:.1f}%), "
+                                 f"PnL {pnl_v}c{edge_str}" if n > 0 else ""))
+                    except Exception:
+                        print(f"    {asset}: query error (column mismatch?)")
+                        break
+
+            # NO-side comparison: live baseline vs shadow approaches
+            try:
+                comp = conn.execute(f"""
+                    SELECT
+                        COUNT(*) AS n,
+                        SUM(no_live_pnl_cents) AS live_pnl,
+                        SUM(CASE WHEN no_a1_contracts > 0
+                            THEN no_a1_pnl_cents ELSE 0 END) AS a1_pnl,
+                        SUM(CASE WHEN no_a2_contracts > 0
+                            THEN no_a2_pnl_cents ELSE 0 END) AS a2_pnl,
+                        SUM(no_market_only_pnl_cents) AS mkt_pnl
+                    FROM fifteenm_shadow_signals
+                    WHERE status = 'settled' AND evaluation_time >= ?
+                        {asset_clause}
+                """, (since,)).fetchone()
+
+                n = comp["n"] or 0
+                if n > 0:
+                    subsection("NO-side shadow PnL comparison")
+                    print(f"  Settled signals: {n}")
+                    print(f"  NO live baseline PnL:     "
+                          f"{comp['live_pnl'] or 0:>8} cents")
+                    print(f"  NO A1 (RecalEGARCH) PnL:  "
+                          f"{comp['a1_pnl'] or 0:>8} cents")
+                    print(f"  NO A2 (LightGBM) PnL:     "
+                          f"{comp['a2_pnl'] or 0:>8} cents")
+                    print(f"  NO Market-only PnL:       "
+                          f"{comp['mkt_pnl'] or 0:>8} cents")
+
+                    # YES vs NO side PnL comparison
+                    yes_comp = conn.execute(f"""
+                        SELECT
+                            SUM(live_pnl_cents) AS live_pnl,
+                            SUM(CASE WHEN a1_gates_passed = 1
+                                THEN a1_pnl_cents ELSE 0 END) AS a1_pnl,
+                            SUM(CASE WHEN a2_gates_passed = 1
+                                THEN a2_pnl_cents ELSE 0 END) AS a2_pnl,
+                            SUM(market_only_pnl_cents) AS mkt_pnl
+                        FROM fifteenm_shadow_signals
+                        WHERE status = 'settled' AND evaluation_time >= ?
+                            {asset_clause}
+                    """, (since,)).fetchone()
+
+                    print(f"\n  YES vs NO comparison:")
+                    print(f"  {'Approach':<22} {'YES PnL':>10} {'NO PnL':>10} "
+                          f"{'Combined':>10}")
+                    print("  " + "-" * 55)
+                    for lbl, y_key, n_key in [
+                        ("Live baseline", "live_pnl", "live_pnl"),
+                        ("A1 (RecalEGARCH)", "a1_pnl", "a1_pnl"),
+                        ("A2 (LightGBM)", "a2_pnl", "a2_pnl"),
+                        ("Market-only", "mkt_pnl", "mkt_pnl"),
+                    ]:
+                        y_v = yes_comp[y_key] or 0
+                        n_v = comp[n_key] or 0
+                        print(f"  {lbl:<22} {y_v:>9}c {n_v:>9}c "
+                              f"{y_v + n_v:>9}c")
+            except Exception:
+                pass  # NO-side PnL columns may not exist yet
+
+
+# ── Section 13: Recommendations ──────────────────────────────────
 
 def recommendations(conn: sqlite3.Connection, since: str,
                     perf: dict) -> None:
-    section("11. DATA-DRIVEN RECOMMENDATIONS")
+    section("13. DATA-DRIVEN RECOMMENDATIONS")
 
     trades = perf.get("trades", 0)
     if trades == 0:
@@ -2282,6 +2580,7 @@ def main():
     data_sufficiency(conn, since)
     price_shadow_analysis(conn, since, args.asset)
     shadow_approaches(conn, since, args.asset)
+    no_side_analysis(conn, since, args.asset)
     recommendations(conn, since, perf)
 
     # JSON artifact output

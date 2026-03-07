@@ -1692,6 +1692,178 @@ def section_harrv_comparison(conn: sqlite3.Connection, since: Optional[str]) -> 
 
 
 # ============================================================================
+#  Section 17: HAR-RV NO-Side Alpha Analysis
+# ============================================================================
+
+def section_harrv_no_side(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
+    """Analyze whether NO-side signals add alpha beyond YES-only."""
+    header("17. HAR-RV NO-SIDE ALPHA ANALYSIS")
+
+    # Check if table exists
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='spx_harrv_shadow_signals'"
+    ).fetchone()
+    if not table_check:
+        print("  spx_harrv_shadow_signals table not found.")
+        return {"status": "no_table"}
+
+    # Check if NO-side columns exist (graceful degradation)
+    cols_info = conn.execute("PRAGMA table_info(spx_harrv_shadow_signals)").fetchall()
+    col_names = {c["name"] for c in cols_info}
+    no_cols_needed = {"no_prob", "no_edge", "no_fee_edge", "no_kelly_f",
+                      "no_contracts", "no_gates_passed", "no_gate_failures", "no_pnl_cents"}
+    missing = no_cols_needed - col_names
+    if missing:
+        print(f"  NO-side columns not yet present: {', '.join(sorted(missing))}")
+        return {"status": "missing_columns", "missing": sorted(missing)}
+
+    wc = ""
+    if since:
+        wc = f"AND evaluation_time >= '{since}'"
+
+    # Load all settled signals
+    settled = conn.execute(f"""
+        SELECT ticker, market_price, market_result, seconds_to_close, har_method,
+               edge, fee_adjusted_edge, shadow_contracts, shadow_pnl_cents,
+               gates_passed, final_prob,
+               no_prob, no_edge, no_fee_edge, no_kelly_f,
+               no_contracts, no_gates_passed, no_gate_failures, no_pnl_cents
+        FROM spx_harrv_shadow_signals
+        WHERE status='settled' {wc}
+        ORDER BY evaluation_time
+    """).fetchall()
+
+    if not settled:
+        print("  No settled HAR-RV signals.")
+        return {"status": "no_data", "n": 0}
+
+    result = {"n_settled": len(settled)}
+
+    # ── NO-side edge distribution ──
+    subheader("NO-Side Edge Distribution")
+    no_edges = [r["no_fee_edge"] for r in settled if r["no_fee_edge"] is not None and (r["no_contracts"] or 0) > 0]
+    yes_edges = [r["fee_adjusted_edge"] for r in settled if r["fee_adjusted_edge"] is not None and (r["shadow_contracts"] or 0) > 0]
+
+    print(f"\n  {'Metric':<25s} {'YES-side':>12s} {'NO-side':>12s}")
+    print(f"  {'-' * 52}")
+    if yes_edges:
+        print(f"  {'N signals':<25s} {len(yes_edges):>12d} {len(no_edges):>12d}")
+        print(f"  {'Mean edge':<25s} {sum(yes_edges)/len(yes_edges):>11.2f}% "
+              f"{sum(no_edges)/len(no_edges):>11.2f}%" if no_edges else
+              f"  {'Mean edge':<25s} {sum(yes_edges)/len(yes_edges):>11.2f}% {'n/a':>12s}")
+        if no_edges:
+            print(f"  {'Median edge':<25s} {sorted(yes_edges)[len(yes_edges)//2]:>11.2f}% "
+                  f"{sorted(no_edges)[len(no_edges)//2]:>11.2f}%")
+            print(f"  {'Min edge':<25s} {min(yes_edges):>11.2f}% {min(no_edges):>11.2f}%")
+            print(f"  {'Max edge':<25s} {max(yes_edges):>11.2f}% {max(no_edges):>11.2f}%")
+    elif no_edges:
+        print(f"  {'N signals':<25s} {'0':>12s} {len(no_edges):>12d}")
+        print(f"  {'Mean edge':<25s} {'n/a':>12s} {sum(no_edges)/len(no_edges):>11.2f}%")
+    else:
+        print("  No YES or NO signals with contracts > 0.")
+
+    result["yes_edge_count"] = len(yes_edges)
+    result["no_edge_count"] = len(no_edges)
+
+    # ── NO-side price tier analysis ──
+    subheader("NO-Side Performance by Price Tier")
+    no_settled_rows = [r for r in settled if (r["no_contracts"] or 0) > 0]
+    if no_settled_rows:
+        # For NO-side, "price" is the YES price the engine saw — NO cost = 100 - price
+        tiers = [("<80c", 0, 80), ("80-84c", 80, 85), ("85-89c", 85, 90), ("90c+", 90, 100)]
+        print(f"\n  {'YES price':<12s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'PnL':>8s} {'AvgEdge':>8s}")
+        print(f"  {'-' * 52}")
+        for label, lo_p, hi_p in tiers:
+            subset = [r for r in no_settled_rows if lo_p <= (r["market_price"] or 0) < hi_p]
+            if not subset:
+                print(f"  {label:<12s} {'---':>4s}")
+                continue
+            # NO wins when market_result IN ('no', 'all_no')
+            w = sum(1 for r in subset if r["market_result"] in ("no", "all_no"))
+            pnl = sum((r["no_pnl_cents"] or 0) for r in subset)
+            edges = [r["no_fee_edge"] for r in subset if r["no_fee_edge"] is not None]
+            avg_edge = sum(edges) / len(edges) if edges else 0
+            wr_val = w / len(subset)
+            print(f"  {label:<12s} {len(subset):>4d} {w:>3d} {len(subset)-w:>3d} "
+                  f"{wr_val:>5.1%} {pnl:>+7d}c {avg_edge:>7.2f}%{significance_tag(len(subset))}")
+
+    # ── YES vs NO PnL comparison ──
+    subheader("YES vs NO PnL Comparison")
+    yes_total_pnl = sum((r["shadow_pnl_cents"] or 0) for r in settled if (r["shadow_contracts"] or 0) > 0)
+    no_total_pnl = sum((r["no_pnl_cents"] or 0) for r in settled if (r["no_contracts"] or 0) > 0)
+    combined_pnl = yes_total_pnl + no_total_pnl
+
+    yes_sig_count = sum(1 for r in settled if (r["shadow_contracts"] or 0) > 0)
+    no_sig_count = sum(1 for r in settled if (r["no_contracts"] or 0) > 0)
+
+    # Win rates
+    yes_wins = sum(1 for r in settled
+                   if (r["shadow_contracts"] or 0) > 0 and r["market_result"] in ("yes", "all_yes"))
+    no_wins = sum(1 for r in settled
+                  if (r["no_contracts"] or 0) > 0 and r["market_result"] in ("no", "all_no"))
+
+    print(f"\n  {'Metric':<25s} {'YES-only':>12s} {'NO-only':>12s} {'Combined':>12s}")
+    print(f"  {'-' * 65}")
+    print(f"  {'Signals':<25s} {yes_sig_count:>12d} {no_sig_count:>12d} {yes_sig_count+no_sig_count:>12d}")
+    if yes_sig_count > 0:
+        print(f"  {'Win rate':<25s} {yes_wins/yes_sig_count:>11.1%} ", end="")
+    else:
+        print(f"  {'Win rate':<25s} {'n/a':>12s} ", end="")
+    if no_sig_count > 0:
+        print(f"{no_wins/no_sig_count:>11.1%} ", end="")
+    else:
+        print(f"{'n/a':>12s} ", end="")
+    total_combined = yes_sig_count + no_sig_count
+    if total_combined > 0:
+        print(f"{(yes_wins+no_wins)/total_combined:>11.1%}")
+    else:
+        print(f"{'n/a':>12s}")
+    print(f"  {'PnL (cents)':<25s} {yes_total_pnl:>+12d} {no_total_pnl:>+12d} {combined_pnl:>+12d}")
+    print(f"  {'PnL ($)':<25s} {yes_total_pnl/100:>+11.2f} {no_total_pnl/100:>+11.2f} {combined_pnl/100:>+11.2f}")
+
+    # ── Value-add assessment ──
+    subheader("NO-Side Value-Add Assessment")
+    if no_sig_count > 0 and yes_sig_count > 0:
+        no_pnl_per_sig = no_total_pnl / no_sig_count
+        yes_pnl_per_sig = yes_total_pnl / yes_sig_count
+        print(f"  YES PnL/signal:  {yes_pnl_per_sig:+.1f}c")
+        print(f"  NO PnL/signal:   {no_pnl_per_sig:+.1f}c")
+        if no_total_pnl > 0:
+            print(f"\n  >>> NO-side ADDS value: +{no_total_pnl}c (${no_total_pnl/100:.2f}) "
+                  f"incremental PnL{significance_tag(no_sig_count)}")
+        elif no_total_pnl == 0:
+            print(f"\n  >>> NO-side neutral: 0c incremental PnL{significance_tag(no_sig_count)}")
+        else:
+            print(f"\n  >>> NO-side DESTROYS value: {no_total_pnl}c (${no_total_pnl/100:.2f}) "
+                  f"drag on PnL{significance_tag(no_sig_count)}")
+    elif no_sig_count == 0:
+        print("  No NO-side signals with contracts — cannot assess value-add.")
+    else:
+        print("  No YES-side signals — cannot compare.")
+
+    # ── Overlap analysis: signals where both YES and NO had contracts ──
+    subheader("Overlap: Both YES + NO Active")
+    overlap = [r for r in settled if (r["shadow_contracts"] or 0) > 0 and (r["no_contracts"] or 0) > 0]
+    if overlap:
+        print(f"  {len(overlap)} signals had both YES and NO contracts")
+        overlap_yes_pnl = sum((r["shadow_pnl_cents"] or 0) for r in overlap)
+        overlap_no_pnl = sum((r["no_pnl_cents"] or 0) for r in overlap)
+        print(f"  YES PnL on overlap: {overlap_yes_pnl:+d}c")
+        print(f"  NO PnL on overlap:  {overlap_no_pnl:+d}c")
+        print(f"  Net overlap PnL:    {overlap_yes_pnl + overlap_no_pnl:+d}c")
+    else:
+        print("  No signals had both YES and NO contracts simultaneously.")
+
+    result.update({
+        "yes_pnl_cents": yes_total_pnl, "no_pnl_cents": no_total_pnl,
+        "combined_pnl_cents": combined_pnl,
+        "yes_signals": yes_sig_count, "no_signals": no_sig_count,
+    })
+
+    return result
+
+
+# ============================================================================
 #  Main
 # ============================================================================
 
@@ -1755,6 +1927,7 @@ Examples:
     results["data_quality"] = section_data_quality(conn, since)
     results["readiness"] = section_readiness(data, conn, since)
     results["harrv_comparison"] = section_harrv_comparison(conn, since)
+    results["harrv_no_side"] = section_harrv_no_side(conn, since)
 
     conn.close()
 

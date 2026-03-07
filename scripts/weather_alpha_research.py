@@ -1248,6 +1248,66 @@ def run_research(db_path: str):
     else:
         print(f"\n  No NO-side edge data available")
 
+    # ── NO-side from evaluated_opportunities (side='no') ──
+    try:
+        _conn = sqlite3.connect(db_path)
+        _conn.execute("PRAGMA busy_timeout=10000")
+        _conn.row_factory = sqlite3.Row
+        _side_cols = [c[1] for c in _conn.execute(
+            "PRAGMA table_info(evaluated_opportunities)").fetchall()]
+        _has_side = "side" in _side_cols
+    except Exception:
+        _has_side = False
+        _conn = None
+
+    if _conn and not _has_side:
+        _conn.close()
+    if _has_side and _conn:
+        print(f"\n  --- evaluated_opportunities NO-side entries ---")
+        _no_rows = _conn.execute("""
+            SELECT market_price, COALESCE(position_size, 1) AS cnt, market_result,
+                   asset, fee_adjusted_edge
+            FROM evaluated_opportunities
+            WHERE product_type='weather' AND side='no'
+              AND market_result IS NOT NULL
+        """).fetchall()
+        if _no_rows:
+            _no_wins = sum(1 for r in _no_rows if r["market_result"] in ("no", "all_no"))
+            _no_losses = sum(1 for r in _no_rows if r["market_result"] in ("yes", "all_yes"))
+            _no_n = _no_wins + _no_losses
+            _no_wr = _no_wins / _no_n * 100 if _no_n > 0 else 0
+            _no_pnl = 0
+            for r in _no_rows:
+                p = r["market_price"] or 0
+                c = r["cnt"]
+                fee = maker_fee(1, p) * c
+                if r["market_result"] in ("no", "all_no"):
+                    _no_pnl += (100 - p) * c - fee
+                elif r["market_result"] in ("yes", "all_yes"):
+                    _no_pnl -= p * c + fee
+            print(f"  NO-side signals: {len(_no_rows)} settled")
+            print(f"  Win rate: {_no_wins}W/{_no_losses}L ({_no_wr:.1f}%)")
+            print(f"  Sim PnL: {_no_pnl}c (${_no_pnl/100:.2f})")
+
+            # Per-city
+            _city_data = defaultdict(lambda: {"w": 0, "l": 0})
+            for r in _no_rows:
+                a = r["asset"]
+                if r["market_result"] in ("no", "all_no"):
+                    _city_data[a]["w"] += 1
+                elif r["market_result"] in ("yes", "all_yes"):
+                    _city_data[a]["l"] += 1
+            if _city_data:
+                print(f"\n  NO-side by city/asset:")
+                for a in sorted(_city_data.keys()):
+                    d = _city_data[a]
+                    n = d["w"] + d["l"]
+                    wr_a = d["w"] / n * 100 if n > 0 else 0
+                    print(f"    {a}: {d['w']}W/{d['l']}L ({wr_a:.1f}%)")
+        else:
+            print(f"  No settled NO-side entries in evaluated_opportunities")
+        _conn.close()
+
     # ================================================================
     #  SECTION 16: LEAK / COUNTERFACTUAL
     # ================================================================

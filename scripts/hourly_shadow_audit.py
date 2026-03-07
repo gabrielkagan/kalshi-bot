@@ -2264,6 +2264,185 @@ def alt_shadow_strategies(conn: sqlite3.Connection, since: str) -> None:
         print("  >>> Alt shadow still collecting data — check back in a few days")
 
 
+def no_side_shadow_analysis(conn: sqlite3.Connection, since: str) -> None:
+    """Report NO-side shadow analysis from hourly_alt_shadow_signals and evaluated_opportunities."""
+    section("NO-SIDE SHADOW ANALYSIS")
+
+    # ── Check column existence in hourly_alt_shadow_signals ──
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='hourly_alt_shadow_signals'"
+    ).fetchall()]
+    if not tables:
+        print("  Table hourly_alt_shadow_signals not found — skipping NO-side analysis.")
+        return
+
+    has_no_contracts = has_column(conn, "hourly_alt_shadow_signals", "no_harrv_contracts")
+    has_no_pnl = has_column(conn, "hourly_alt_shadow_signals", "no_harrv_pnl_cents")
+    has_no_prob = has_column(conn, "hourly_alt_shadow_signals", "no_harrv_prob")
+    has_no_edge = has_column(conn, "hourly_alt_shadow_signals", "no_harrv_fee_edge")
+    has_no_gates = has_column(conn, "hourly_alt_shadow_signals", "no_harrv_gates_passed")
+    has_no_gate_fail = has_column(conn, "hourly_alt_shadow_signals", "no_harrv_gate_failures")
+
+    if not has_no_contracts:
+        print("  NO-side columns not found in hourly_alt_shadow_signals — engine not yet deployed.")
+        return
+
+    # ── NO-side signal counts ──
+    subsection("NO-side HAR-RV signal counts")
+    total_row = conn.execute("""
+        SELECT COUNT(*) AS total,
+               SUM(CASE WHEN no_harrv_contracts > 0 THEN 1 ELSE 0 END) AS sized,
+               SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+               SUM(CASE WHEN status='settled' AND no_harrv_contracts > 0 THEN 1 ELSE 0 END) AS sized_settled
+        FROM hourly_alt_shadow_signals
+        WHERE strategy='harrv_shadow' AND evaluation_time >= ?
+    """, (since,)).fetchone()
+    total_n = total_row["total"] or 0
+    sized_n = total_row["sized"] or 0
+    settled_n = total_row["settled"] or 0
+    sized_settled = total_row["sized_settled"] or 0
+    print(f"  Total HAR-RV signals:           {total_n}")
+    print(f"  NO-side sized (contracts > 0):  {sized_n}")
+    print(f"  Settled:                        {settled_n}")
+    print(f"  NO-side sized & settled:        {sized_settled}")
+
+    # ── Settled NO-side performance ──
+    subsection("Settled NO-side performance")
+    if sized_settled > 0:
+        perf = conn.execute("""
+            SELECT
+                SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS losses,
+                SUM(no_harrv_pnl_cents) AS total_pnl
+            FROM hourly_alt_shadow_signals
+            WHERE strategy='harrv_shadow' AND status='settled'
+              AND no_harrv_contracts > 0 AND evaluation_time >= ?
+        """, (since,)).fetchone()
+        wins = perf["wins"] or 0
+        losses = perf["losses"] or 0
+        pnl = (perf["total_pnl"] or 0) / 100.0
+        wr = wins / (wins + losses) * 100 if (wins + losses) > 0 else 0
+        lo, hi = wilson_ci(wins, wins + losses)
+        print(f"  Settled NO-side: {wins}W / {losses}L  ({wr:.1f}% WR)")
+        print(f"  Wilson 95% CI:   [{lo*100:.1f}%, {hi*100:.1f}%]")
+        print(f"  Sim PnL:         ${pnl:.2f}")
+    else:
+        print("  No settled NO-side signals with contracts > 0 yet.")
+
+    # ── Per-asset NO-side breakdown ──
+    subsection("Per-asset NO-side breakdown")
+    asset_rows = conn.execute("""
+        SELECT asset,
+               COUNT(*) AS n,
+               SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS losses,
+               SUM(no_harrv_pnl_cents) AS pnl,
+               AVG(market_price) AS avg_price
+        FROM hourly_alt_shadow_signals
+        WHERE strategy='harrv_shadow' AND status='settled'
+          AND no_harrv_contracts > 0 AND evaluation_time >= ?
+        GROUP BY asset ORDER BY asset
+    """, (since,)).fetchall()
+    if asset_rows:
+        print(f"  {'Asset':>5} {'N':>5} {'W':>4} {'L':>4} {'WR':>7} {'PnL':>10} {'AvgPx':>6}")
+        print(f"  {'-'*48}")
+        for r in asset_rows:
+            wins = r["wins"] or 0
+            losses = r["losses"] or 0
+            n = wins + losses
+            wr = wins / n * 100 if n > 0 else 0
+            pnl = (r["pnl"] or 0) / 100.0
+            print(f"  {r['asset']:>5} {r['n']:>5} {wins:>4} {losses:>4} "
+                  f"{wr:>6.1f}% ${pnl:>8.2f} {r['avg_price'] or 0:>5.0f}")
+    else:
+        print("  No settled per-asset NO-side data yet.")
+
+    # ── Gates passed: YES vs NO comparison ──
+    if has_no_gates:
+        subsection("Gates passed: YES-side vs NO-side")
+        gate_cmp = conn.execute("""
+            SELECT
+                AVG(CASE WHEN gates_passed IS NOT NULL THEN gates_passed END) AS yes_avg_gates,
+                AVG(CASE WHEN no_harrv_gates_passed IS NOT NULL THEN no_harrv_gates_passed END) AS no_avg_gates,
+                SUM(CASE WHEN gates_passed > 0 THEN 1 ELSE 0 END) AS yes_gated,
+                SUM(CASE WHEN no_harrv_gates_passed > 0 THEN 1 ELSE 0 END) AS no_gated,
+                COUNT(*) AS total
+            FROM hourly_alt_shadow_signals
+            WHERE strategy='harrv_shadow' AND evaluation_time >= ?
+        """, (since,)).fetchone()
+        yes_avg = gate_cmp["yes_avg_gates"] or 0
+        no_avg = gate_cmp["no_avg_gates"] or 0
+        yes_gated = gate_cmp["yes_gated"] or 0
+        no_gated = gate_cmp["no_gated"] or 0
+        total = gate_cmp["total"] or 0
+        print(f"  YES-side: avg gates passed = {yes_avg:.1f}, signals passing any gate = {yes_gated}/{total}")
+        print(f"  NO-side:  avg gates passed = {no_avg:.1f}, signals passing any gate = {no_gated}/{total}")
+
+    # ── NO-side gate failures ──
+    if has_no_gate_fail:
+        subsection("NO-side gate failures (top reasons)")
+        gate_fail_rows = conn.execute("""
+            SELECT no_harrv_gate_failures AS reason, COUNT(*) AS n
+            FROM hourly_alt_shadow_signals
+            WHERE strategy='harrv_shadow'
+              AND no_harrv_gate_failures IS NOT NULL
+              AND no_harrv_gate_failures != ''
+              AND evaluation_time >= ?
+            GROUP BY no_harrv_gate_failures ORDER BY n DESC LIMIT 10
+        """, (since,)).fetchall()
+        if gate_fail_rows:
+            for r in gate_fail_rows:
+                print(f"  {r['n']:>5}x  {r['reason']}")
+        else:
+            print("  No NO-side gate failure data yet.")
+
+    # ── evaluated_opportunities NO-side check ──
+    subsection("evaluated_opportunities NO-side entries")
+    has_side_col = has_column(conn, "evaluated_opportunities", "side")
+    if has_side_col:
+        eo_rows = conn.execute("""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+                   SUM(CASE WHEN status='settled' AND market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS losses
+            FROM evaluated_opportunities
+            WHERE side='no' AND product_type IN ('hourly') AND evaluation_time >= ?
+        """, (since,)).fetchone()
+        total_eo = eo_rows["total"] or 0
+        settled_eo = eo_rows["settled"] or 0
+        wins_eo = eo_rows["wins"] or 0
+        losses_eo = eo_rows["losses"] or 0
+        wr_eo = wins_eo / (wins_eo + losses_eo) * 100 if (wins_eo + losses_eo) > 0 else 0
+        print(f"  Total NO-side evals (hourly):   {total_eo}")
+        print(f"  Settled:                        {settled_eo}")
+        print(f"  Wins (market=no):               {wins_eo}")
+        print(f"  Losses (market=yes):            {losses_eo}")
+        print(f"  Win rate:                       {wr_eo:.1f}%")
+
+        # Per-asset from evaluated_opportunities
+        eo_asset = conn.execute("""
+            SELECT asset,
+                   COUNT(*) AS n,
+                   SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS losses
+            FROM evaluated_opportunities
+            WHERE side='no' AND product_type IN ('hourly')
+              AND status='settled' AND evaluation_time >= ?
+            GROUP BY asset ORDER BY asset
+        """, (since,)).fetchall()
+        if eo_asset:
+            print(f"\n  {'Asset':>5} {'N':>5} {'W':>4} {'L':>4} {'WR':>7}")
+            print(f"  {'-'*30}")
+            for r in eo_asset:
+                w = r["wins"] or 0
+                l = r["losses"] or 0
+                n = w + l
+                wr = w / n * 100 if n > 0 else 0
+                print(f"  {r['asset']:>5} {r['n']:>5} {w:>4} {l:>4} {wr:>6.1f}%")
+    else:
+        print("  Column 'side' not found in evaluated_opportunities — skipping.")
+
+
 def cal_engine_pipeline(conn, since: str) -> None:
     """CalEngine observation pipeline: settled evals with raw_prob for hourly."""
     section("CALENGINE OBSERVATION PIPELINE")
@@ -2331,6 +2510,7 @@ def main():
     recommendations(conn, since)
     alt_shadow_strategies(conn, since)
     cal_engine_pipeline(conn, since)
+    no_side_shadow_analysis(conn, since)
     validation_plan(conn)
 
     # JSON artifact output

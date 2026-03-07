@@ -566,6 +566,31 @@ class FifteenMShadowEngine:
             "ON fifteenm_shadow_signals(ticker)")
         self._db_conn.commit()
 
+        # Migration: add NO-side columns (safe to re-run)
+        for col_def in [
+            # NO-side live baseline
+            ("no_live_prob", "REAL"), ("no_live_edge", "REAL"), ("no_live_fee_edge", "REAL"),
+            # NO-side A1
+            ("no_a1_final_prob", "REAL"), ("no_a1_edge", "REAL"), ("no_a1_fee_edge", "REAL"),
+            ("no_a1_kelly_f", "REAL"), ("no_a1_contracts", "INTEGER"),
+            ("no_a1_gates_passed", "INTEGER"), ("no_a1_gate_failures", "TEXT"),
+            # NO-side A2
+            ("no_a2_prob", "REAL"), ("no_a2_edge", "REAL"), ("no_a2_fee_edge", "REAL"),
+            ("no_a2_kelly_f", "REAL"), ("no_a2_contracts", "INTEGER"),
+            ("no_a2_gates_passed", "INTEGER"), ("no_a2_gate_failures", "TEXT"),
+            # NO-side market baseline
+            ("no_market_only_prob", "REAL"),
+            # NO-side settlement PnL
+            ("no_live_pnl_cents", "INTEGER"), ("no_a1_pnl_cents", "INTEGER"),
+            ("no_a2_pnl_cents", "INTEGER"), ("no_market_only_pnl_cents", "INTEGER"),
+        ]:
+            try:
+                self._db_conn.execute(
+                    f"ALTER TABLE fifteenm_shadow_signals ADD COLUMN {col_def[0]} {col_def[1]}")
+            except Exception:
+                pass
+        self._db_conn.commit()
+
     def evaluate_strike(self, asset: str, ticker: str, event_ticker: str,
                         spot_price: float, threshold: float,
                         seconds_to_close: float, market_price: int,
@@ -592,6 +617,23 @@ class FifteenMShadowEngine:
         # Market-only baseline
         market_only_prob = market_price / 100.0
 
+        # ── NO-side shadow evaluation ──
+        # Mirror: NO_prob = 1 - YES_prob, NO_price = 100 - YES_price
+        no_price = 100 - market_price
+        no_live_prob = 1.0 - live_prob
+        no_live_edge = no_live_prob - no_price / 100.0
+        _no_fee_1c = math.ceil(FEE_MULTIPLIER * 1 * (no_price / 100) * (1 - no_price / 100) * 100)
+        no_live_fee_edge = no_live_edge - _no_fee_1c / 100.0
+
+        # NO-side A1: use 1-a1_final_prob as NO probability
+        no_a1 = self._evaluate_no_side_approach(a1, no_price)
+
+        # NO-side A2: use 1-a2_calibrated_prob as NO probability
+        no_a2 = self._evaluate_no_side_approach(a2, no_price, is_lgbm=True)
+
+        # NO-side market baseline
+        no_market_only_prob = no_price / 100.0
+
         self._log_signal(
             ticker=ticker,
             event_ticker=event_ticker,
@@ -608,15 +650,69 @@ class FifteenMShadowEngine:
             a1=a1,
             a2=a2,
             market_only_prob=market_only_prob,
+            no_live_prob=no_live_prob,
+            no_live_edge=no_live_edge,
+            no_live_fee_edge=no_live_fee_edge,
+            no_a1=no_a1,
+            no_a2=no_a2,
+            no_market_only_prob=no_market_only_prob,
         )
+
+    @staticmethod
+    def _evaluate_no_side_approach(yes_result: Dict, no_price: int,
+                                   is_lgbm: bool = False) -> Dict:
+        """Mirror a YES-side approach result to compute NO-side metrics."""
+        # Get YES-side probability (different key for A1 vs A2)
+        if is_lgbm:
+            yes_prob = yes_result.get("calibrated_prob")
+        else:
+            yes_prob = yes_result.get("final_prob")
+
+        if yes_prob is None or no_price <= 0 or no_price >= 100:
+            return {"final_prob": None, "edge": None, "fee_adjusted_edge": None,
+                    "kelly_f": None, "contracts": 0,
+                    "gates_passed": 0, "gate_failures": "no_data"}
+
+        no_prob = 1.0 - yes_prob
+        no_edge = no_prob - no_price / 100.0
+        _fee = math.ceil(FEE_MULTIPLIER * 1 * (no_price / 100) * (1 - no_price / 100) * 100)
+        no_fee_edge = no_edge - _fee / 100.0
+
+        # Gate check: price 86-99, fee-adjusted edge >= 1.5%
+        failures = []
+        if not (86 <= no_price <= 99):
+            failures.append(f"price_{no_price}")
+        if no_fee_edge < MIN_DEBIASED_EDGE:
+            failures.append(f"edge_{no_fee_edge:.4f}")
+
+        if failures:
+            return {"final_prob": no_prob, "edge": no_edge, "fee_adjusted_edge": no_fee_edge,
+                    "kelly_f": None, "contracts": 0,
+                    "gates_passed": 0, "gate_failures": ",".join(failures)}
+
+        # Kelly sizing
+        b = (100 - no_price) / no_price if no_price > 0 else 0
+        kelly_raw = (no_prob * b - (1 - no_prob)) / b if b > 0 else 0
+        kelly_f = max(0, kelly_raw * MAX_KELLY_FRACTION)
+        risk = min(kelly_f, MAX_RISK_CAP)
+        contracts = int(SHADOW_BANKROLL * risk / no_price) if no_price > 0 else 0
+
+        return {"final_prob": no_prob, "edge": no_edge, "fee_adjusted_edge": no_fee_edge,
+                "kelly_f": kelly_f, "contracts": contracts,
+                "gates_passed": 1, "gate_failures": None}
 
     def _log_signal(self, *, ticker, event_ticker, asset, spot_price, threshold,
                     seconds_to_close, market_price, best_bid, best_ask,
-                    live_prob, live_edge, live_fee_edge, a1, a2, market_only_prob):
+                    live_prob, live_edge, live_fee_edge, a1, a2, market_only_prob,
+                    no_live_prob=None, no_live_edge=None, no_live_fee_edge=None,
+                    no_a1=None, no_a2=None, no_market_only_prob=None):
         """Write signal to DB."""
         self._ensure_db()
         now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
+            # Build NO-side values (may be None if not provided)
+            _no_a1 = no_a1 or {}
+            _no_a2 = no_a2 or {}
             self._db_conn.execute("""
                 INSERT OR REPLACE INTO fifteenm_shadow_signals (
                     ticker, event_ticker, asset, evaluation_time,
@@ -630,6 +726,12 @@ class FifteenMShadowEngine:
                     a2_kelly_f, a2_contracts, a2_model_version,
                     a2_gates_passed, a2_gate_failures,
                     market_only_prob,
+                    no_live_prob, no_live_edge, no_live_fee_edge,
+                    no_a1_final_prob, no_a1_edge, no_a1_fee_edge,
+                    no_a1_kelly_f, no_a1_contracts, no_a1_gates_passed, no_a1_gate_failures,
+                    no_a2_prob, no_a2_edge, no_a2_fee_edge,
+                    no_a2_kelly_f, no_a2_contracts, no_a2_gates_passed, no_a2_gate_failures,
+                    no_market_only_prob,
                     status
                 ) VALUES (
                     ?, ?, ?, ?,
@@ -642,6 +744,12 @@ class FifteenMShadowEngine:
                     ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?,
+                    ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?,
                     ?,
                     'pending'
                 )
@@ -657,6 +765,14 @@ class FifteenMShadowEngine:
                 a2["kelly_f"], a2["contracts"], a2["model_version"],
                 a2["gates_passed"], a2["gate_failures"],
                 market_only_prob,
+                no_live_prob, no_live_edge, no_live_fee_edge,
+                _no_a1.get("final_prob"), _no_a1.get("edge"), _no_a1.get("fee_adjusted_edge"),
+                _no_a1.get("kelly_f"), _no_a1.get("contracts", 0),
+                _no_a1.get("gates_passed", 0), _no_a1.get("gate_failures"),
+                _no_a2.get("final_prob"), _no_a2.get("edge"), _no_a2.get("fee_adjusted_edge"),
+                _no_a2.get("kelly_f"), _no_a2.get("contracts", 0),
+                _no_a2.get("gates_passed", 0), _no_a2.get("gate_failures"),
+                no_market_only_prob,
             ))
             self._db_conn.commit()
         except Exception:
@@ -689,29 +805,41 @@ class FifteenMShadowEngine:
                 return
 
             result_yes = market_result in ("yes", "all_yes")
+            result_no = market_result in ("no", "all_no")
             mp = row["market_price"] or 0
+            no_mp = 100 - mp  # NO contract price
             now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-            def _compute_pnl(contracts, price):
-                """PnL for a YES position: win = (100-price)*contracts, lose = -price*contracts, minus fee."""
+            def _compute_pnl(contracts, price, is_no_side=False):
+                """PnL for a position: win/loss depends on side."""
                 if contracts <= 0:
                     return 0
                 fee = math.ceil(FEE_MULTIPLIER * contracts * (price / 100) * (1 - price / 100) * 100)
-                if result_yes:
+                # NO-side wins when result is "no", YES-side wins when result is "yes"
+                won = result_no if is_no_side else result_yes
+                if won:
                     return (100 - price) * contracts - fee
                 else:
                     return -price * contracts - fee
 
-            live_pnl = _compute_pnl(1, mp)  # normalized to 1 contract for comparison
+            live_pnl = _compute_pnl(1, mp)
             a1_pnl = _compute_pnl(row["a1_contracts"] or 0, mp)
             a2_pnl = _compute_pnl(row["a2_contracts"] or 0, mp)
-            mkt_pnl = _compute_pnl(1, mp)  # market-only = same as live baseline at same price
+            mkt_pnl = _compute_pnl(1, mp)
+
+            # NO-side PnL
+            no_live_pnl = _compute_pnl(1, no_mp, is_no_side=True)
+            no_a1_pnl = _compute_pnl(row["no_a1_contracts"] or 0, no_mp, is_no_side=True)
+            no_a2_pnl = _compute_pnl(row["no_a2_contracts"] or 0, no_mp, is_no_side=True)
+            no_mkt_pnl = _compute_pnl(1, no_mp, is_no_side=True)
 
             self._db_conn.execute(
                 "UPDATE fifteenm_shadow_signals SET status='settled', market_result=?, "
                 "live_pnl_cents=?, a1_pnl_cents=?, a2_pnl_cents=?, market_only_pnl_cents=?, "
+                "no_live_pnl_cents=?, no_a1_pnl_cents=?, no_a2_pnl_cents=?, no_market_only_pnl_cents=?, "
                 "settled_time=? WHERE ticker = ? AND status = 'pending'",
-                (market_result, live_pnl, a1_pnl, a2_pnl, mkt_pnl, now, ticker)
+                (market_result, live_pnl, a1_pnl, a2_pnl, mkt_pnl,
+                 no_live_pnl, no_a1_pnl, no_a2_pnl, no_mkt_pnl, now, ticker)
             )
             self._db_conn.commit()
         except Exception:
@@ -773,6 +901,33 @@ class FifteenMShadowEngine:
             ).fetchall()
             for r in pending:
                 result["pending"][r["asset"]] = r["cnt"]
+
+            # NO-side shadow stats
+            no_side = {}
+            for asset in ("BTC", "ETH", "SOL", "XRP"):
+                for approach_key, contracts_col, pnl_col, gates_col in [
+                    ("no_approach1", "no_a1_contracts", "no_a1_pnl_cents", "no_a1_gates_passed"),
+                    ("no_approach2", "no_a2_contracts", "no_a2_pnl_cents", "no_a2_gates_passed"),
+                ]:
+                    rows = self._db_conn.execute(
+                        f"SELECT market_result, {pnl_col}, {gates_col} "
+                        "FROM fifteenm_shadow_signals "
+                        "WHERE asset = ? AND status = 'settled'",
+                        (asset,)
+                    ).fetchall()
+                    if not rows:
+                        continue
+                    traded = [r for r in rows if r[gates_col]]
+                    n = len(traded)
+                    # NO-side wins when result is "no"
+                    wins = sum(1 for r in traded if r["market_result"] in ("no", "all_no"))
+                    pnl = sum(r[pnl_col] or 0 for r in traded)
+                    no_side.setdefault(approach_key, {})[asset] = {
+                        "n": n, "wins": wins,
+                        "wr": round(wins / n * 100, 1) if n > 0 else 0,
+                        "pnl_cents": pnl,
+                    }
+            result["no_side"] = no_side
 
         except Exception:
             logging.debug("fifteenm_shadow dashboard data failed", exc_info=True)

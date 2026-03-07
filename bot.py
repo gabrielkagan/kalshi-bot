@@ -1471,12 +1471,26 @@ class StateManager:
             ("order_id", "TEXT"),
             ("order_submitted_at", "TEXT"),
             ("order_outcome", "TEXT"),
+            # NO-side shadow: trade direction (yes=buy YES contract, no=buy NO contract)
+            ("side", "TEXT DEFAULT 'yes'"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
             except sqlite3.OperationalError:
                 pass  # column already exists
         self.conn.commit()
+
+        # Migration: update unique index to include side (enables YES + NO rows per ticker/stage)
+        # Check if index already includes side by trying to create the 3-column version;
+        # if it succeeds the old 2-column index is replaced.
+        try:
+            self.conn.execute("DROP INDEX IF EXISTS idx_eval_opp_ticker_stage")
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_opp_ticker_stage "
+                "ON evaluated_opportunities(ticker, filter_stage, side)")
+            self.conn.commit()
+        except Exception:
+            pass
 
         # Migration: add new columns to rejected_opportunities (safe to re-run)
         for col_def in [
@@ -1939,7 +1953,8 @@ class StateManager:
                                      available_balance_cents: Optional[int] = None,
                                      order_id: Optional[str] = None,
                                      order_submitted_at: Optional[str] = None,
-                                     order_outcome: Optional[str] = None):
+                                     order_outcome: Optional[str] = None,
+                                     side: str = "yes"):
         """Insert an evaluated opportunity for settlement tracking."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
@@ -1971,8 +1986,9 @@ class StateManager:
                      hourly_shadow_blend_20, hourly_shadow_blend_30, hourly_shadow_blend_60,
                      hourly_post_temp_prob,
                      available_balance_cents,
-                     order_id, order_submitted_at, order_outcome)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     order_id, order_submitted_at, order_outcome,
+                     side)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -1999,7 +2015,8 @@ class StateManager:
                   hourly_shadow_blend_20, hourly_shadow_blend_30, hourly_shadow_blend_60,
                   hourly_post_temp_prob,
                   available_balance_cents,
-                  order_id, order_submitted_at, order_outcome))
+                  order_id, order_submitted_at, order_outcome,
+                  side))
             self.conn.commit()
         except Exception as e:
             logging.warning(f"insert_evaluated_opportunity failed: {e}", exc_info=True)
@@ -6530,6 +6547,7 @@ class OpportunityScanner:
         }
 
         _price_shadow_queue = []
+        _no_side_queue = []  # NO-side shadow: markets queued for NO evaluation
 
         # 1. Filter windows by time range (config-driven thresholds)
         time_ok_windows = []
@@ -6996,6 +7014,30 @@ class OpportunityScanner:
                             "_shadow_diag": _shadow_diag.copy(),
                             "_oft_db": _oft_db.copy(),
                         })
+                    # NO-side shadow: if NO price (100-best_ask) is within entry range,
+                    # queue for NO-side evaluation (YES price is out of range but NO may be valid)
+                    _no_price_por = 100 - best_ask
+                    if _entry_floor <= _no_price_por <= _entry_ceil:
+                        _no_side_queue.append({
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "best_ask": best_ask,
+                            "spot": spot,
+                            "threshold": threshold,
+                            "blended_rv": blended_rv,
+                            "seconds_remaining": seconds_remaining,
+                            "vol_regime": vol_est["regime"],
+                            "ask_depth": ask_depth,
+                            "best_ask_source": best_ask_source,
+                            "product_type": window.get("product_type"),
+                            "_shadow_diag": _shadow_diag.copy(),
+                            "_oft_db": _oft_db.copy(),
+                            "final_prob": None,  # needs computation
+                            "cal_prob": cal_prob,
+                            "raw_prob": raw_prob_pre,
+                            "calibration_method": calibration_method_pre,
+                        })
                     continue
 
                 # Re-run probability with market price for sanity check
@@ -7171,6 +7213,28 @@ class OpportunityScanner:
                                             fee_mult_maker=_mcfg.fee_multiplier_maker)
                     _shadow_extra["wx_no_side_edge"] = round(
                         _no_prob - _no_price / 100.0 - _no_fee / 100.0, 6)
+
+                # ── NO-side shadow queue (all markets that reach edge computation) ──
+                _no_side_queue.append({
+                    "ticker": ticker,
+                    "event_ticker": window["event_ticker"],
+                    "asset": asset,
+                    "best_ask": best_ask,
+                    "spot": spot,
+                    "threshold": threshold,
+                    "blended_rv": blended_rv,
+                    "seconds_remaining": seconds_remaining,
+                    "vol_regime": vol_est["regime"],
+                    "ask_depth": ask_depth,
+                    "best_ask_source": best_ask_source,
+                    "product_type": window.get("product_type"),
+                    "_shadow_diag": _shadow_diag.copy(),
+                    "_oft_db": _oft_db.copy(),
+                    "final_prob": final_prob,  # already computed (temp+blend+cap)
+                    "cal_prob": None,  # not needed — final_prob available
+                    "raw_prob": raw_prob,
+                    "calibration_method": calibration_method,
+                })
 
                 # ── Augment _shadow_diag with Kalshi OFT fields ──
                 if ofa_signals:
@@ -8245,6 +8309,10 @@ class OpportunityScanner:
         if PRICE_SHADOW_ENABLED and _price_shadow_queue:
             self._process_price_shadow(_price_shadow_queue)
 
+        # NO-side shadow evaluation for all queued markets
+        if _no_side_queue:
+            self._process_no_side_shadow(_no_side_queue)
+
         if not candidates:
             self._last_scan_stats = scan_stats
             return None
@@ -8601,6 +8669,176 @@ class OpportunityScanner:
                     **item["_oft_db"], **item["_shadow_diag"])
         except Exception:
             logging.warning("price_shadow processing error", exc_info=True)
+
+    def _process_no_side_shadow(self, queue: list) -> None:
+        """Shadow-evaluate NO-side (buy NO contract) for all queued markets.
+
+        Mirrors the YES-side evaluation: NO_prob = 1 - YES_prob,
+        NO_price = 100 - YES_ask. Runs through the same filter pipeline
+        (price, edge, sizing) and logs to evaluated_opportunities with side='no'.
+
+        Shadow-only — never places orders. Entire body in try/except so
+        a crash here cannot affect candidate selection or live trading.
+        """
+        try:
+            for item in queue:
+                ticker = item["ticker"]
+                best_ask = item["best_ask"]
+                asset = item["asset"]
+                _pt = item["product_type"]
+                spot = item["spot"]
+                threshold = item["threshold"]
+                blended_rv = item["blended_rv"]
+                stc = item["seconds_remaining"]
+
+                # ── Compute YES-side final_prob if not pre-computed ──
+                # (POR entries don't have final_prob yet — need temp+cap+blend)
+                if item["final_prob"] is not None:
+                    yes_final_prob = item["final_prob"]
+                    raw_prob = item["raw_prob"]
+                    calibration_method = item["calibration_method"]
+                else:
+                    # Re-run probability engine (same as _process_price_shadow)
+                    prob_result = ProbabilityEngine.compute(
+                        spot, threshold, stc, blended_rv,
+                        market_price_cents=best_ask,
+                        asset=asset, product_type=_pt,
+                    )
+                    if not prob_result.get("tradeable"):
+                        continue
+                    yes_final_prob = prob_result["calibrated_prob"]
+                    raw_prob = prob_result.get("raw_prob")
+                    calibration_method = prob_result.get("calibration_method")
+
+                    # Temperature scaling (Layer 1)
+                    _tempcfg = get_market_config(_pt)
+                    _temp_t = _tempcfg.temperature_t if _tempcfg.temperature_enabled else None
+                    if _temp_t is not None and _temp_t == 1.0:
+                        _temp_t = None
+                    _reg_engine = _resolve_cal_engine(_pt, asset, require_enabled=True)
+                    if _reg_engine is not None and _reg_engine.is_learned_method_active():
+                        _temp_t = None
+                    if _temp_t is not None:
+                        _p = max(0.001, min(0.999, yes_final_prob))
+                        _z = math.log(_p / (1.0 - _p))
+                        yes_final_prob = 1.0 / (1.0 + math.exp(-_z / _temp_t))
+
+                    # Dynamic cap / learned ceiling
+                    _dyn_cap = ProbabilityEngine._dynamic_cap(stc, product_type=_pt)
+                    _reg_engine_c = _resolve_cal_engine(_pt, asset, require_enabled=True)
+                    if _reg_engine_c is not None and _reg_engine_c.is_learned_method_active():
+                        yes_final_prob = max(0.01, min(NUMERICAL_SAFETY_CEILING, yes_final_prob))
+                    else:
+                        yes_final_prob = max(0.01, min(_dyn_cap, yes_final_prob))
+
+                    # Market blend
+                    _mcfg = get_market_config(_pt)
+                    if best_ask < ENDGAME_BLEND_PRICE:
+                        mip = best_ask / 100.0
+                        yes_final_prob = (1.0 - _mcfg.market_blend_w) * yes_final_prob + _mcfg.market_blend_w * mip
+
+                # ── NO-side computation ──
+                no_prob = 1.0 - yes_final_prob
+                no_price = 100 - best_ask  # NO contract price in cents
+
+                # Price filter for NO side
+                _ncfg = get_market_config(_pt)
+                if not (_ncfg.min_entry_price <= no_price <= _ncfg.max_entry_price):
+                    # NO price out of range — skip (don't log; too much volume for OOR)
+                    continue
+
+                # Edge computation
+                no_edge = no_prob - no_price / 100.0
+                no_fee_1c = calculate_fee(1, no_price, is_taker=True,
+                                          fee_mult_taker=_ncfg.fee_multiplier_taker,
+                                          fee_mult_maker=_ncfg.fee_multiplier_maker)
+                no_fee_adj_edge = no_edge - no_fee_1c / 100.0
+
+                # Edge filter (same price-dependent schedule, applied to NO price)
+                if _pt == "weather":
+                    _no_min_edge = WEATHER_MIN_EDGE_PCT
+                elif _pt == "hourly":
+                    _no_min_edge = HOURLY_MIN_EDGE_PCT
+                else:
+                    _no_min_edge = get_min_edge(no_price)
+
+                # Determine filter stage
+                _no_kelly_f = None
+                _no_position = None
+                _no_drawdown = None
+                _no_ev = None
+                if no_fee_adj_edge < _no_min_edge:
+                    _no_filter_stage = "insufficient_edge"
+                    _no_rej = f"NO net_edge {no_fee_adj_edge:.4f} < min {_no_min_edge:.4f} @{no_price}c"
+                else:
+                    # Compute sizing for instrumentation
+                    _no_ev = round(
+                        (no_prob * (100 - no_price)) - ((1 - no_prob) * no_price) - no_fee_1c, 2)
+                    try:
+                        _no_balance = self._get_balance_cached()
+                        if _no_balance and _no_balance > 0:
+                            _no_sizing = self._sizer.compute(no_prob, no_price, _no_balance)
+                            _no_kelly_f = _no_sizing["kelly_f"]
+                            _no_position = _no_sizing["contracts"]
+                            _no_drawdown = _no_sizing["drawdown_scaler"]
+                            if _ncfg.kelly_fraction < 1.0:
+                                _no_position = max(1, int(_no_position * _ncfg.kelly_fraction))
+                            _no_type_max = int((_no_balance * _ncfg.max_risk_per_trade) / no_price)
+                            if _no_position > _no_type_max:
+                                _no_position = max(1, _no_type_max)
+                    except Exception:
+                        logging.debug("no_side sizing failed", exc_info=True)
+
+                    if _no_position is not None and _no_position <= 0:
+                        _no_filter_stage = "zero_sizing"
+                        _no_rej = "NO sizing yielded 0 contracts"
+                    else:
+                        # Passed all filters — assign appropriate shadow filter_stage
+                        if _ncfg.observation_only and _ncfg.observation_filter_label:
+                            _no_filter_stage = _ncfg.observation_filter_label
+                        elif _pt in (None, "15m"):
+                            if stc > STC_SHADOW_THRESHOLD:
+                                _no_filter_stage = "stc_shadow_no_xrp" if asset != "XRP" else "stc_shadow_xrp"
+                            elif XRP_15M_SHADOW and asset == "XRP":
+                                _no_filter_stage = "xrp_shadow"
+                            else:
+                                _no_filter_stage = "no_side_shadow"
+                        else:
+                            _no_filter_stage = "no_side_shadow"
+                        _no_rej = None
+
+                # Dedup + DB insert
+                _dedup_key = (ticker, _no_filter_stage, "no")
+                if _dedup_key in self._eval_opp_seen:
+                    continue
+                self._eval_opp_seen.add(_dedup_key)
+
+                self._state.insert_evaluated_opportunity(
+                    ticker, item["event_ticker"], asset,
+                    _no_filter_stage,
+                    rejection_reason=_no_rej,
+                    spot_price=spot, threshold=threshold,
+                    volatility=blended_rv, market_price=no_price,
+                    seconds_to_close=stc,
+                    calibrated_prob=no_prob,
+                    edge=no_edge,
+                    fee_adjusted_edge=no_fee_adj_edge,
+                    z_score=None,  # z-score is YES-side concept
+                    vol_regime=item["vol_regime"],
+                    raw_prob=1.0 - raw_prob if raw_prob is not None else None,
+                    calibration_method=calibration_method,
+                    breakeven_wr=no_price / 100.0,
+                    expected_value=_no_ev,
+                    kelly_f=_no_kelly_f,
+                    position_size=_no_position,
+                    drawdown_scaler=_no_drawdown,
+                    ask_depth=item["ask_depth"],
+                    best_ask_source=item["best_ask_source"],
+                    product_type=_pt,
+                    side="no",
+                    **item["_oft_db"], **item["_shadow_diag"])
+        except Exception:
+            logging.warning("no_side_shadow processing error", exc_info=True)
 
     # ── Threshold parsing ─────────────────────────────────────────────────
 
@@ -11370,11 +11608,19 @@ class SettlementTracker:
                     count = row.get("position_size") or 1
                     taker_fee = calculate_taker_fee(count, int(entry_price))
                     maker_fee = calculate_maker_fee(count, int(entry_price))
-                    if result in ("yes", "all_yes"):
+                    # NO-side: flip win/loss — result="yes" means NO loses, result="no" means NO wins
+                    _opp_side = row.get("side") or "yes"
+                    if _opp_side == "no":
+                        _is_win = result in ("no", "all_no")
+                        _is_loss = result in ("yes", "all_yes")
+                    else:
+                        _is_win = result in ("yes", "all_yes")
+                        _is_loss = result in ("no", "all_no")
+                    if _is_win:
                         pnl_taker = (100 - entry_price) * count - taker_fee
                         pnl_maker = (100 - entry_price) * count - maker_fee
                         counterfactual_outcome = "would_have_won"
-                    elif result in ("no", "all_no"):
+                    elif _is_loss:
                         pnl_taker = -(entry_price * count + taker_fee)
                         pnl_maker = -(entry_price * count + maker_fee)
                         counterfactual_outcome = "would_have_lost"
@@ -11420,9 +11666,12 @@ class SettlementTracker:
                     counterfactual_pnl=would_have_profit)
 
                 # Feed to calibration engine — route by product type
+                # Skip NO-side entries: they store 1-P(above) which would corrupt
+                # CalEngine's P(above) → outcome calibration
                 raw_p = row.get("raw_prob")
                 filter_stage = row.get("filter_stage", "")
-                if (raw_p is not None
+                _opp_side = row.get("side") or "yes"
+                if (raw_p is not None and _opp_side == "yes"
                         and result in ("yes", "all_yes", "no", "all_no")):
                     cal_binary = 1 if result in ("yes", "all_yes") else 0
                     _settle_engine = _resolve_cal_engine(_opp_pt, row.get("asset"))

@@ -1327,6 +1327,11 @@ def run_research(db_path: str):
     # ================================================================
     alt_shadow_report(db_path, days)
 
+    # ================================================================
+    #  NO-SIDE SHADOW ANALYSIS
+    # ================================================================
+    no_side_shadow_research(db_path, days)
+
     print(f"\n{'=' * 80}")
     print(f"  Analysis complete. {len(configs)} configurations evaluated.")
     print(f"{'=' * 80}")
@@ -1461,6 +1466,172 @@ def alt_shadow_report(db_path: str, total_days: float):
     print(f"  MM: {mm_n}, HAR-RV: {harrv_n}")
     if harrv_n == 0:
         print(f"  [NOTE] HAR-RV has 0 signals — return buffer still accumulating (~1h needed)")
+
+    conn.close()
+
+
+def no_side_shadow_research(db_path: str, total_days: float):
+    """Analyze NO-side HAR-RV signals: which assets show NO-side edge, YES vs NO comparison."""
+    conn = sqlite3.connect(db_path)
+    conn.execute('PRAGMA busy_timeout=5000')
+    conn.row_factory = sqlite3.Row
+
+    # Check table exists
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='hourly_alt_shadow_signals'"
+    ).fetchall()]
+    if not tables:
+        conn.close()
+        return
+
+    # Check NO-side columns exist
+    cols = [c["name"] for c in conn.execute("PRAGMA table_info(hourly_alt_shadow_signals)").fetchall()]
+    if "no_harrv_contracts" not in cols:
+        conn.close()
+        return
+
+    # Check if any NO-side data exists
+    no_total = conn.execute(
+        "SELECT COUNT(*) AS n FROM hourly_alt_shadow_signals "
+        "WHERE strategy='harrv_shadow' AND no_harrv_contracts > 0"
+    ).fetchone()["n"]
+    if no_total == 0:
+        conn.close()
+        return
+
+    print(f"\n{'=' * 80}")
+    print(f"  NO-SIDE SHADOW ANALYSIS (HAR-RV)")
+    print(f"{'=' * 80}")
+
+    # ── Per-asset NO-side edge discovery ──
+    print(f"\n  --- Which assets show NO-side edge? ---")
+    asset_rows = conn.execute("""
+        SELECT asset,
+               COUNT(*) AS n,
+               SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS wins,
+               SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS losses,
+               SUM(no_harrv_pnl_cents) AS pnl_cents,
+               AVG(no_harrv_prob) AS avg_no_prob,
+               AVG(no_harrv_fee_edge) AS avg_no_fee_edge,
+               AVG(market_price) AS avg_yes_price
+        FROM hourly_alt_shadow_signals
+        WHERE strategy='harrv_shadow' AND status='settled'
+          AND no_harrv_contracts > 0
+        GROUP BY asset ORDER BY asset
+    """).fetchall()
+
+    if asset_rows:
+        print(f"  {'Asset':>5} {'N':>5} {'W':>4} {'L':>4} {'WR':>7} {'PnL':>10} "
+              f"{'AvgNoProb':>10} {'AvgNoEdge':>10} {'$/day':>8}")
+        print(f"  {'-'*72}")
+        for r in asset_rows:
+            wins = r["wins"] or 0
+            losses = r["losses"] or 0
+            n = wins + losses
+            wr = wins / n if n > 0 else 0
+            pnl = (r["pnl_cents"] or 0) / 100.0
+            daily = pnl / max(total_days, 0.01)
+            avg_prob = r["avg_no_prob"] or 0
+            avg_edge = (r["avg_no_fee_edge"] or 0) * 100
+            lo, hi = wilson_ci(wins, n)
+            avg_yes_px = int(r["avg_yes_price"] or 0)
+            be = breakeven_wr(100 - avg_yes_px) if avg_yes_px > 0 else 0
+            print(f"  {r['asset']:>5} {n:>5} {wins:>4} {losses:>4} "
+                  f"{wr:>6.1%} ${pnl:>8.2f} "
+                  f"{avg_prob:>9.3f} {avg_edge:>9.2f}% ${daily:>7.2f}")
+            if n >= 10:
+                print(f"         Wilson CI: [{lo:.1%}, {hi:.1%}], BE WR: {be:.1%}, "
+                      f"gap: {(wr - be)*100:+.1f}pp")
+    else:
+        print("  No settled NO-side data yet.")
+
+    # ── YES vs NO edge distributions ──
+    print(f"\n  --- YES vs NO edge comparison (settled HAR-RV signals) ---")
+    comparison = conn.execute("""
+        SELECT
+            SUM(CASE WHEN shadow_contracts > 0 AND status='settled' THEN 1 ELSE 0 END) AS yes_n,
+            SUM(CASE WHEN shadow_contracts > 0 AND status='settled'
+                AND market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS yes_wins,
+            SUM(CASE WHEN shadow_contracts > 0 AND status='settled'
+                AND market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS yes_losses,
+            SUM(CASE WHEN shadow_contracts > 0 AND status='settled' THEN shadow_pnl_cents ELSE 0 END) AS yes_pnl,
+            AVG(CASE WHEN shadow_contracts > 0 THEN edge END) AS yes_avg_edge,
+            SUM(CASE WHEN no_harrv_contracts > 0 AND status='settled' THEN 1 ELSE 0 END) AS no_n,
+            SUM(CASE WHEN no_harrv_contracts > 0 AND status='settled'
+                AND market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS no_wins,
+            SUM(CASE WHEN no_harrv_contracts > 0 AND status='settled'
+                AND market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS no_losses,
+            SUM(CASE WHEN no_harrv_contracts > 0 AND status='settled' THEN no_harrv_pnl_cents ELSE 0 END) AS no_pnl,
+            AVG(CASE WHEN no_harrv_contracts > 0 THEN no_harrv_fee_edge END) AS no_avg_edge
+        FROM hourly_alt_shadow_signals
+        WHERE strategy='harrv_shadow'
+    """).fetchone()
+
+    yes_n = comparison["yes_n"] or 0
+    yes_wins = comparison["yes_wins"] or 0
+    yes_losses = comparison["yes_losses"] or 0
+    yes_pnl = (comparison["yes_pnl"] or 0) / 100.0
+    yes_wr = yes_wins / yes_n if yes_n > 0 else 0
+    yes_edge = (comparison["yes_avg_edge"] or 0) * 100
+
+    no_n = comparison["no_n"] or 0
+    no_wins = comparison["no_wins"] or 0
+    no_losses = comparison["no_losses"] or 0
+    no_pnl = (comparison["no_pnl"] or 0) / 100.0
+    no_wr = no_wins / no_n if no_n > 0 else 0
+    no_edge = (comparison["no_avg_edge"] or 0) * 100
+
+    print(f"  {'Side':<6} {'N':>5} {'W':>4} {'L':>4} {'WR':>7} {'Avg Edge':>9} {'Sim PnL':>10} {'$/day':>8}")
+    print(f"  {'-'*58}")
+    print(f"  {'YES':<6} {yes_n:>5} {yes_wins:>4} {yes_losses:>4} "
+          f"{yes_wr:>6.1%} {yes_edge:>8.2f}% ${yes_pnl:>8.2f} ${yes_pnl/max(total_days,0.01):>7.2f}")
+    print(f"  {'NO':<6} {no_n:>5} {no_wins:>4} {no_losses:>4} "
+          f"{no_wr:>6.1%} {no_edge:>8.2f}% ${no_pnl:>8.2f} ${no_pnl/max(total_days,0.01):>7.2f}")
+
+    # Combined PnL
+    combined_pnl = yes_pnl + no_pnl
+    print(f"\n  Combined YES+NO sim PnL: ${combined_pnl:.2f} "
+          f"(${combined_pnl/max(total_days,0.01):.2f}/day)")
+
+    # Fisher exact test for WR difference
+    if yes_n >= 5 and no_n >= 5:
+        p_val = fisher_exact_p(no_wins, no_losses, yes_wins, yes_losses)
+        print(f"\n  Fisher exact (NO WR > YES WR): p={p_val:.4f} "
+              f"({'significant' if p_val < 0.05 else 'not significant'})")
+
+    # ── Per-asset YES vs NO comparison ──
+    print(f"\n  --- Per-asset YES vs NO head-to-head ---")
+    per_asset = conn.execute("""
+        SELECT asset,
+               SUM(CASE WHEN shadow_contracts > 0 AND status='settled' THEN 1 ELSE 0 END) AS yes_n,
+               SUM(CASE WHEN shadow_contracts > 0 AND status='settled'
+                   AND market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS yes_w,
+               SUM(CASE WHEN shadow_contracts > 0 AND status='settled' THEN shadow_pnl_cents ELSE 0 END) AS yes_pnl,
+               SUM(CASE WHEN no_harrv_contracts > 0 AND status='settled' THEN 1 ELSE 0 END) AS no_n,
+               SUM(CASE WHEN no_harrv_contracts > 0 AND status='settled'
+                   AND market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS no_w,
+               SUM(CASE WHEN no_harrv_contracts > 0 AND status='settled' THEN no_harrv_pnl_cents ELSE 0 END) AS no_pnl
+        FROM hourly_alt_shadow_signals
+        WHERE strategy='harrv_shadow'
+        GROUP BY asset ORDER BY asset
+    """).fetchall()
+
+    if per_asset:
+        print(f"  {'Asset':>5} {'YES_N':>6} {'YES_WR':>7} {'YES_PnL':>9} "
+              f"{'NO_N':>6} {'NO_WR':>7} {'NO_PnL':>9} {'Combined':>9}")
+        print(f"  {'-'*66}")
+        for r in per_asset:
+            yn = r["yes_n"] or 0
+            yw = r["yes_w"] or 0
+            y_wr = yw / yn if yn > 0 else 0
+            y_pnl = (r["yes_pnl"] or 0) / 100.0
+            nn = r["no_n"] or 0
+            nw = r["no_w"] or 0
+            n_wr = nw / nn if nn > 0 else 0
+            n_pnl = (r["no_pnl"] or 0) / 100.0
+            comb = y_pnl + n_pnl
+            print(f"  {r['asset']:>5} {yn:>6} {y_wr:>6.1%} ${y_pnl:>7.2f} "
+                  f"{nn:>6} {n_wr:>6.1%} ${n_pnl:>7.2f} ${comb:>7.2f}")
 
     conn.close()
 

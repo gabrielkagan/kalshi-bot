@@ -2157,6 +2157,49 @@ class DashboardSnapshotBuilder:
         except Exception:
             snap["stc_shadow_counterfactual"] = {"n": 0, "wins": 0, "wr": 0, "sim_pnl_cents": 0}
 
+        # ── NO-side Shadow Summary ────────────────────────────────────
+        try:
+            _no_row = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' AND "
+                "  ((side='no' AND market_result IN ('no','all_no')) OR "
+                "   (side='yes' AND market_result IN ('yes','all_yes'))) "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE side='no' AND evaluation_time >= ?",
+                (CONFIG_REGIME_SINCE,)
+            ).fetchone()
+            # Per-product breakdown
+            _no_by_pt = {}
+            for _pt_row in _conn.execute(
+                "SELECT product_type, COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('no','all_no') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE side='no' AND evaluation_time >= ? "
+                "GROUP BY product_type",
+                (CONFIG_REGIME_SINCE,)
+            ).fetchall():
+                _no_by_pt[_pt_row["product_type"] or "15m"] = {
+                    "n": _pt_row["n"], "settled": _pt_row["settled"],
+                    "wins": _pt_row["wins"] or 0,
+                    "wr": round(_pt_row["wins"] / _pt_row["settled"], 4) if _pt_row["settled"] else 0,
+                    "sim_pnl_cents": _pt_row["sim_pnl"] or 0,
+                }
+            snap["no_side_shadow"] = {
+                "total_signals": _no_row["n"] if _no_row else 0,
+                "settled": _no_row["settled"] if _no_row else 0,
+                "wins": _no_row["wins"] if _no_row else 0,
+                "wr": round(_no_row["wins"] / _no_row["settled"], 4) if _no_row and _no_row["settled"] else 0,
+                "sim_pnl_cents": _no_row["sim_pnl"] if _no_row else 0,
+                "by_product_type": _no_by_pt,
+            }
+        except Exception:
+            snap["no_side_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                      "sim_pnl_cents": 0, "by_product_type": {}}
+
         # ── Loss Clustering (detect loss clusters within 1hr) ──────────
         try:
             conn = _conn

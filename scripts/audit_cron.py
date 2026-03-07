@@ -69,6 +69,27 @@ def _sim_pnl_sql(fee_mult, size_expr, price_expr, result_expr):
                 ELSE 0 END"""
 
 
+def _sim_pnl_sql_no_side(fee_mult, size_expr, price_expr, result_expr):
+    """SQL CASE for NO-side simulated PnL — win when result is 'no'/'all_no'.
+
+    Same math as YES-side but win/loss conditions are flipped.
+    Price stored is the NO price (what you'd pay for a NO contract).
+    """
+    fee_raw = f"({fee_mult} * {size_expr} * {price_expr} * (100 - {price_expr}) / 100.0)"
+    fee = _sql_ceil(fee_raw)
+    return f"""CASE
+                WHEN {result_expr} IN ('no', 'all_no') THEN
+                    (100 - {price_expr}) * {size_expr} - {fee}
+                WHEN {result_expr} IN ('yes', 'all_yes') THEN
+                    -({price_expr} * {size_expr} + {fee})
+                ELSE 0 END"""
+
+
+# YES-only filter for existing queries (handles old NULL rows and new 'yes' rows)
+YES_SIDE_FILTER = "AND (side IS NULL OR side = 'yes')"
+NO_SIDE_FILTER = "AND side = 'no'"
+
+
 def cal_engine_obs_count(conn, product_type, since):
     """Count settled evaluated_opportunities with raw_prob for CalEngine training."""
     try:
@@ -81,6 +102,77 @@ def cal_engine_obs_count(conn, product_type, since):
         return row[0] if row else 0
     except Exception:
         return 0
+
+
+def compute_no_side_metrics(conn, product_type_filter, since, fee_mult=0.0175):
+    """Compute NO-side shadow metrics for any product type.
+
+    Returns dict with NO-side signal count, settled, WR, sim PnL, per-asset breakdown.
+    Returns None if no NO-side data exists.
+    """
+    c = conn.cursor()
+    try:
+        # Check if side column exists
+        cols = [r[1] for r in c.execute("PRAGMA table_info(evaluated_opportunities)").fetchall()]
+        if "side" not in cols:
+            return None
+    except Exception:
+        return None
+
+    # Count NO-side entries
+    count_row = c.execute(f"""
+        SELECT COUNT(*) FROM evaluated_opportunities
+        WHERE {product_type_filter} AND side = 'no' AND evaluation_time >= ?
+    """, (since,)).fetchone()
+    total = count_row[0] if count_row else 0
+    if total == 0:
+        return None
+
+    # Settled NO-side W/L and sim PnL
+    _pnl = _sim_pnl_sql_no_side(fee_mult, "COALESCE(position_size, 1)", "market_price", "market_result")
+    sig_row = c.execute(f"""
+        SELECT
+            SUM(CASE WHEN market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) as losses,
+            SUM({_pnl}) as sim_pnl,
+            AVG(market_price) as avg_price
+        FROM evaluated_opportunities
+        WHERE {product_type_filter} AND side = 'no'
+          AND evaluation_time >= ?
+          AND market_result IS NOT NULL
+    """, (since,)).fetchone()
+
+    wins = sig_row[0] or 0
+    losses = sig_row[1] or 0
+    sim_pnl = sig_row[2] or 0
+    avg_price = round(sig_row[3], 1) if sig_row[3] else 0
+    settled = wins + losses
+    wr = round(wins / settled, 4) if settled > 0 else 0
+
+    # Per-asset
+    asset_rows = c.execute(f"""
+        SELECT asset,
+            SUM(CASE WHEN market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) as w,
+            SUM(CASE WHEN market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) as l,
+            SUM({_pnl}) as pnl
+        FROM evaluated_opportunities
+        WHERE {product_type_filter} AND side = 'no'
+          AND evaluation_time >= ?
+          AND market_result IS NOT NULL
+        GROUP BY asset ORDER BY pnl DESC
+    """, (since,)).fetchall()
+    by_asset = {r[0]: {"wins": r[1] or 0, "losses": r[2] or 0, "sim_pnl_cents": r[3] or 0} for r in asset_rows}
+
+    return {
+        "total": total,
+        "settled": settled,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": wr,
+        "sim_pnl_cents": sim_pnl,
+        "avg_price": avg_price,
+        "by_asset": by_asset,
+    }
 
 
 def ensure_table(conn):
@@ -281,7 +373,11 @@ def compute_15m_shadow(conn, since):
     except Exception:
         pass
 
-    return {
+    # NO-side shadow metrics
+    no_side = compute_no_side_metrics(
+        conn, "(product_type IS NULL OR product_type = '15m')", since)
+
+    result = {
         "total_shadow_evals": total,
         "stc_non_xrp": stc_non_xrp,
         "stc_xrp": stc_xrp,
@@ -297,6 +393,9 @@ def compute_15m_shadow(conn, since):
         "approach1_by_asset": a1_stats,
         "approach2_by_asset": a2_stats,
     }
+    if no_side:
+        result["no_side"] = no_side
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +515,7 @@ def compute_hourly(conn, since):
     """, (since,)).fetchall()
     by_asset = {r[0]: {"wins": r[1], "losses": r[2], "sim_pnl_cents": r[3] or 0} for r in asset_rows}
 
-    return {
+    result = {
         "total_evals": total_evals,
         "signals": signals,
         "settled": signals_settled,
@@ -435,6 +534,11 @@ def compute_hourly(conn, since):
         "by_asset": by_asset,
         "cal_engine_obs": cal_engine_obs_count(conn, "hourly", since),
     }
+    # NO-side metrics
+    no_side = compute_no_side_metrics(conn, "product_type = 'hourly'", since)
+    if no_side:
+        result["no_side"] = no_side
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +634,7 @@ def compute_spx(conn, since):
             checks_pass += 1
         checks.append({"col": col, "pct": pct, "ok": ok})
 
-    return {
+    result = {
         "total_evals": total_evals,
         "signals": signals,
         "settled": signals_settled,
@@ -549,6 +653,11 @@ def compute_spx(conn, since):
         "data_checks_total": len(checks),
         "cal_engine_obs": cal_engine_obs_count(conn, "spx_hourly", since),
     }
+    # NO-side metrics
+    no_side = compute_no_side_metrics(conn, "product_type = 'spx_hourly'", since)
+    if no_side:
+        result["no_side"] = no_side
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +738,7 @@ def compute_weather(conn, since):
     """, (since,)).fetchall()
     by_city = {r[0] or "unknown": {"n": r[1], "wins": r[2] or 0, "losses": r[3] or 0} for r in city_rows}
 
-    return {
+    result = {
         "total_evals": total_evals,
         "signals": signals,
         "settled": signals_settled,
@@ -645,6 +754,11 @@ def compute_weather(conn, since):
         "by_city": by_city,
         "cal_engine_obs": cal_engine_obs_count(conn, "weather", since),
     }
+    # NO-side metrics
+    no_side = compute_no_side_metrics(conn, "product_type = 'weather'", since)
+    if no_side:
+        result["no_side"] = no_side
+    return result
 
 
 # ---------------------------------------------------------------------------
