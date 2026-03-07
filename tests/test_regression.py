@@ -403,6 +403,56 @@ class TestCheckSameThread:
             "it shares state.db with bot.py and supabase_sync.py"
         )
 
+    def test_fifteenm_shadow_a3_gating_exists(self):
+        """fifteenm_shadow.py must have EGARCHGatingApproach (Approach 3)."""
+        fpath = os.path.join(PROJECT_ROOT, "fifteenm_shadow.py")
+        if not os.path.exists(fpath):
+            pytest.skip("fifteenm_shadow.py not found")
+        with open(fpath) as f:
+            content = f.read()
+        assert "EGARCHGatingApproach" in content, (
+            "fifteenm_shadow.py missing EGARCHGatingApproach class"
+        )
+        assert "egarch_gating" in content, (
+            "fifteenm_shadow.py missing 'egarch_gating' approach identifier"
+        )
+        assert "a3_gate_prob" in content, (
+            "fifteenm_shadow.py missing a3_gate_prob column"
+        )
+
+    def test_fifteenm_shadow_a3_both_sides(self):
+        """A3 gating must evaluate both YES and NO sides."""
+        fpath = os.path.join(PROJECT_ROOT, "fifteenm_shadow.py")
+        if not os.path.exists(fpath):
+            pytest.skip("fifteenm_shadow.py not found")
+        with open(fpath) as f:
+            content = f.read()
+        assert "no_a3_gate_prob" in content, (
+            "fifteenm_shadow.py missing NO-side A3 columns"
+        )
+        assert "no_a3_pnl_gate" in content, (
+            "fifteenm_shadow.py missing NO-side A3 PnL columns"
+        )
+
+    def test_fifteenm_shadow_a3_db_columns_match_insert(self):
+        """A3 columns in CREATE/ALTER must match INSERT statement."""
+        fpath = os.path.join(PROJECT_ROOT, "fifteenm_shadow.py")
+        if not os.path.exists(fpath):
+            pytest.skip("fifteenm_shadow.py not found")
+        with open(fpath) as f:
+            content = f.read()
+        # Must have both the column definition and the insert
+        a3_cols = ["a3_gate_prob", "a3_gate_10", "a3_gate_20", "a3_gate_30",
+                   "no_a3_gate_prob", "no_a3_gate_10", "no_a3_gate_20", "no_a3_gate_30",
+                   "a3_pnl_gate10_cents", "a3_pnl_gate20_cents", "a3_pnl_gate30_cents",
+                   "no_a3_pnl_gate10_cents", "no_a3_pnl_gate20_cents", "no_a3_pnl_gate30_cents"]
+        for col in a3_cols:
+            assert content.count(col) >= 2, (
+                f"fifteenm_shadow.py: column '{col}' appears only "
+                f"{content.count(col)} time(s) — must appear in both ALTER "
+                f"and INSERT/UPDATE"
+            )
+
 
 # ============================================================================
 #  8. Syntax Check (all commits)

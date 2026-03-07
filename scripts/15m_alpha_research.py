@@ -1596,14 +1596,66 @@ def shadow_approaches_alpha(conn: sqlite3.Connection, since: str,
         print("  No settled shadow signals yet")
 
     # LightGBM readiness
-    subsection("LightGBM training readiness")
+    subsection("LightGBM / Gating training readiness")
     for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter else [asset_filter]):
         n = conn.execute(
             "SELECT COUNT(*) FROM fifteenm_shadow_signals "
             "WHERE status='settled' AND asset=?", (asset,)
         ).fetchone()[0]
-        status = "READY" if n >= 200 else f"need {200 - n} more"
-        print(f"  {asset}: {n}/200 settled ({status})")
+        a2_status = "READY" if n >= 200 else f"need {200 - n} more"
+        a3_status = "READY" if n >= 100 else f"need {100 - n} more"
+        print(f"  {asset}: {n} settled — A2: {a2_status}, A3: {a3_status}")
+
+    # A3 (EGARCH Gating) alpha analysis
+    shadow_cols = [r["name"] for r in conn.execute(
+        "PRAGMA table_info(fifteenm_shadow_signals)").fetchall()]
+    if "a3_gate_prob" in shadow_cols:
+        subsection("A3 (EGARCH Gating) per-asset alpha")
+        for side_label, gate_pfx, pnl_pfx, live_pnl_col in [
+            ("YES-side", "a3", "a3", "live_pnl_cents"),
+            ("NO-side", "no_a3", "no_a3", "no_live_pnl_cents"),
+        ]:
+            print(f"\n  {side_label}:")
+            for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter
+                          else [asset_filter]):
+                try:
+                    r = conn.execute(f"""
+                        SELECT
+                            COUNT(*) AS n,
+                            AVG({gate_pfx}_gate_prob) AS avg_prob,
+                            SUM({live_pnl_col}) AS base_pnl,
+                            SUM({pnl_pfx}_pnl_gate10_cents) AS g10,
+                            SUM({pnl_pfx}_pnl_gate20_cents) AS g20,
+                            SUM({pnl_pfx}_pnl_gate30_cents) AS g30,
+                            SUM(CASE WHEN {gate_pfx}_gate_10 = 1 THEN 1 ELSE 0 END) AS n_gated_10,
+                            SUM(CASE WHEN {gate_pfx}_gate_20 = 1 THEN 1 ELSE 0 END) AS n_gated_20,
+                            SUM(CASE WHEN {gate_pfx}_gate_30 = 1 THEN 1 ELSE 0 END) AS n_gated_30
+                        FROM fifteenm_shadow_signals
+                        WHERE status='settled' AND asset = ?
+                            AND {gate_pfx}_gate_prob IS NOT NULL
+                            AND evaluation_time >= ? {asset_clause}
+                    """, (asset, since)).fetchone()
+
+                    n = r["n"] or 0
+                    if n == 0:
+                        print(f"    {asset}: no gating data")
+                        continue
+                    base = r["base_pnl"] or 0
+                    print(f"    {asset} (n={n}, baseline PnL={base}c):")
+                    print(f"      avg_gate_prob: {r['avg_prob']:.3f}")
+                    for thr, g_key, pnl_key, ng_key in [
+                        ("10%", "g10", "g10", "n_gated_10"),
+                        ("20%", "g20", "g20", "n_gated_20"),
+                        ("30%", "g30", "g30", "n_gated_30"),
+                    ]:
+                        pnl_v = r[pnl_key] or 0
+                        ng = r[ng_key] or 0
+                        diff = pnl_v - base
+                        gate_pct = ng / n * 100 if n > 0 else 0
+                        print(f"      @{thr}: {ng} gated ({gate_pct:.1f}%), "
+                              f"PnL={pnl_v}c ({diff:+d}c vs base)")
+                except Exception:
+                    print(f"    {asset}: query error")
 
 
 # ── Section 14: NO-Side Shadow Alpha ─────────────────────────────

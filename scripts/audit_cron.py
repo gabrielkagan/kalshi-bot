@@ -344,6 +344,7 @@ def compute_15m_shadow(conn, since):
     # fifteenm_shadow_signals approach metrics (if table exists)
     a1_stats = {}
     a2_stats = {}
+    a3_stats = {}
     try:
         # Check if table exists
         tbl = c.execute(
@@ -370,6 +371,32 @@ def compute_15m_shadow(conn, since):
                             "wr": round(w / (w + l), 4) if (w + l) > 0 else 0,
                             "pnl_cents": r[3] or 0,
                         }
+            # A3 gating metrics
+            shadow_cols = [r[1] for r in c.execute(
+                "PRAGMA table_info(fifteenm_shadow_signals)").fetchall()]
+            if "a3_gate_prob" in shadow_cols:
+                for asset in ("BTC", "ETH", "SOL", "XRP"):
+                    r = c.execute("""
+                        SELECT
+                            COUNT(*) as total,
+                            SUM(a3_pnl_gate10_cents) as pnl_g10,
+                            SUM(a3_pnl_gate20_cents) as pnl_g20,
+                            SUM(a3_pnl_gate30_cents) as pnl_g30,
+                            SUM(live_pnl_cents) as baseline_pnl,
+                            AVG(a3_gate_prob) as avg_gate_prob
+                        FROM fifteenm_shadow_signals
+                        WHERE asset = ? AND status = 'settled'
+                            AND a3_gate_prob IS NOT NULL
+                    """, (asset,)).fetchone()
+                    if r and r[0] > 0:
+                        a3_stats[asset] = {
+                            "total": r[0],
+                            "baseline_pnl": r[4] or 0,
+                            "pnl_gate10": r[1] or 0,
+                            "pnl_gate20": r[2] or 0,
+                            "pnl_gate30": r[3] or 0,
+                            "avg_gate_prob": round(r[5] or 0, 4),
+                        }
     except Exception:
         pass
 
@@ -392,6 +419,7 @@ def compute_15m_shadow(conn, since):
         "xrp_pnl_cents": xrp_pnl,
         "approach1_by_asset": a1_stats,
         "approach2_by_asset": a2_stats,
+        "approach3_gating_by_asset": a3_stats,
     }
     if no_side:
         result["no_side"] = no_side

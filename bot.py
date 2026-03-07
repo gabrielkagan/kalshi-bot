@@ -8116,7 +8116,7 @@ class OpportunityScanner:
                     continue  # DO NOT add to candidates — observation gate
 
                 # ── 15M Shadow Engine (all 4 assets) ──
-                # Evaluate both shadow approaches for every 15M signal that passed filters.
+                # Evaluate all three shadow approaches for every 15M signal that passed filters.
                 # Shadow-only: cannot place orders, logs to separate table for comparison.
                 if (window.get("product_type") in (None, "15m")
                         and self._ml and getattr(self._ml, "fifteenm_shadow", None)):
@@ -8132,7 +8132,9 @@ class OpportunityScanner:
                             blended_rv=blended_rv,
                             egarch_sigma=vol_est.get("egarch_sigma"),
                             z_score=z_score, live_prob=final_prob,
-                            live_edge=edge, live_fee_edge=fee_adjusted_edge)
+                            live_edge=edge, live_fee_edge=fee_adjusted_edge,
+                            egarch_blend_weight=egarch_blend_weight,
+                            fee_adjusted_edge=fee_adjusted_edge)
                     except Exception:
                         logging.debug("fifteenm_shadow evaluate failed", exc_info=True)
 

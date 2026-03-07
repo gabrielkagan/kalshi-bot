@@ -1942,7 +1942,7 @@ def price_shadow_analysis(conn: sqlite3.Connection, since: str,
 
 def shadow_approaches(conn: sqlite3.Connection, since: str,
                       asset_filter: Optional[str] = None) -> None:
-    section("10. 15M SHADOW APPROACHES (RecalibratedEGARCH + LightGBM)")
+    section("10. 15M SHADOW APPROACHES (RecalibratedEGARCH + LightGBM + Gating)")
 
     # Check if table exists
     tbl = conn.execute(
@@ -2061,18 +2061,104 @@ def shadow_approaches(conn: sqlite3.Connection, since: str,
         else:
             print(f"    Model: NOT TRAINED (need {200} settled rows)")
 
+    # Approach 3: EGARCH Gating Model
+    shadow_cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(fifteenm_shadow_signals)").fetchall()]
+    if "a3_gate_prob" in shadow_cols:
+        subsection("Approach 3: EGARCH Gating Model")
+        for side_label, gate_col_pfx, pnl_pfx, live_pnl_col, win_result in [
+            ("YES-side", "a3", "a3", "live_pnl_cents", ("yes", "all_yes")),
+            ("NO-side", "no_a3", "no_a3", "no_live_pnl_cents", ("no", "all_no")),
+        ]:
+            print(f"\n  {side_label}:")
+            for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter
+                          else [asset_filter]):
+                try:
+                    a3 = conn.execute(f"""
+                        SELECT
+                            COUNT(*) AS total,
+                            SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+                            AVG({gate_col_pfx}_gate_prob) AS avg_gate_prob,
+                            MAX({gate_col_pfx}_model_version) AS model_ver,
+                            -- Gate rates
+                            SUM({gate_col_pfx}_gate_10) AS gated_10,
+                            SUM({gate_col_pfx}_gate_20) AS gated_20,
+                            SUM({gate_col_pfx}_gate_30) AS gated_30,
+                            -- Counterfactual PnL at each threshold
+                            SUM(CASE WHEN status='settled'
+                                THEN {pnl_pfx}_pnl_gate10_cents END) AS pnl_g10,
+                            SUM(CASE WHEN status='settled'
+                                THEN {pnl_pfx}_pnl_gate20_cents END) AS pnl_g20,
+                            SUM(CASE WHEN status='settled'
+                                THEN {pnl_pfx}_pnl_gate30_cents END) AS pnl_g30,
+                            -- Baseline PnL (ungated)
+                            SUM(CASE WHEN status='settled'
+                                THEN {live_pnl_col} END) AS baseline_pnl,
+                            -- Losses avoided at each threshold
+                            SUM(CASE WHEN status='settled' AND {gate_col_pfx}_gate_10 = 1
+                                AND {live_pnl_col} < 0 THEN 1 ELSE 0 END) AS losses_avoided_10,
+                            SUM(CASE WHEN status='settled' AND {gate_col_pfx}_gate_20 = 1
+                                AND {live_pnl_col} < 0 THEN 1 ELSE 0 END) AS losses_avoided_20,
+                            SUM(CASE WHEN status='settled' AND {gate_col_pfx}_gate_30 = 1
+                                AND {live_pnl_col} < 0 THEN 1 ELSE 0 END) AS losses_avoided_30,
+                            -- Wins missed at each threshold
+                            SUM(CASE WHEN status='settled' AND {gate_col_pfx}_gate_10 = 1
+                                AND {live_pnl_col} > 0 THEN 1 ELSE 0 END) AS wins_missed_10,
+                            SUM(CASE WHEN status='settled' AND {gate_col_pfx}_gate_20 = 1
+                                AND {live_pnl_col} > 0 THEN 1 ELSE 0 END) AS wins_missed_20,
+                            SUM(CASE WHEN status='settled' AND {gate_col_pfx}_gate_30 = 1
+                                AND {live_pnl_col} > 0 THEN 1 ELSE 0 END) AS wins_missed_30
+                        FROM fifteenm_shadow_signals
+                        WHERE evaluation_time >= ? AND asset = ?
+                            AND {gate_col_pfx}_gate_prob IS NOT NULL
+                    """, (since, asset)).fetchone()
+
+                    t = a3["total"] or 0
+                    if t == 0:
+                        print(f"    {asset}: no gating data")
+                        continue
+                    settled = a3["settled"] or 0
+                    avg_gp = a3["avg_gate_prob"]
+                    model_ver = a3["model_ver"] or "NOT TRAINED"
+                    baseline_pnl = a3["baseline_pnl"] or 0
+
+                    print(f"    {asset}: {t} evals ({settled} settled), "
+                          f"avg gate_prob={avg_gp:.3f}, model={model_ver}")
+                    if settled > 0:
+                        print(f"      Baseline PnL: {baseline_pnl} cents")
+                        print(f"      {'Threshold':<12} {'Gated':>6} {'LossAvd':>8} "
+                              f"{'WinMiss':>8} {'Net PnL':>9} {'vs Base':>8}")
+                        print(f"      {'-'*54}")
+                        for thr, g_key, pnl_key, la_key, wm_key in [
+                            ("10%", "gated_10", "pnl_g10",
+                             "losses_avoided_10", "wins_missed_10"),
+                            ("20%", "gated_20", "pnl_g20",
+                             "losses_avoided_20", "wins_missed_20"),
+                            ("30%", "gated_30", "pnl_g30",
+                             "losses_avoided_30", "wins_missed_30"),
+                        ]:
+                            g = a3[g_key] or 0
+                            pnl_v = a3[pnl_key] or 0
+                            la = a3[la_key] or 0
+                            wm = a3[wm_key] or 0
+                            diff = pnl_v - baseline_pnl
+                            print(f"      {thr:<12} {g:>6} {la:>8} "
+                                  f"{wm:>8} {pnl_v:>8}c {diff:>+7}c")
+                except Exception:
+                    print(f"    {asset}: query error")
+                    break
+
     # Training data availability for LightGBM
-    subsection("LightGBM training data")
+    subsection("LightGBM / Gating training data")
     training_rows = conn.execute(f"""
         SELECT COUNT(*) AS n FROM fifteenm_shadow_signals
         WHERE status = 'settled' {asset_clause}
     """).fetchone()["n"] or 0
-    print(f"  Settled rows available for training: {training_rows} / 200 minimum")
-    if training_rows < 200:
-        remaining = 200 - training_rows
-        print(f"  Need {remaining} more settled signals before LightGBM can train")
-    else:
-        print(f"  ✓ Sufficient data for LightGBM training")
+    print(f"  Settled rows available for training: {training_rows}")
+    print(f"    A2 (LightGBM outcome): needs 200 — "
+          + ("✓ sufficient" if training_rows >= 200 else f"need {200 - training_rows} more"))
+    print(f"    A3 (EGARCH gating):    needs 100 — "
+          + ("✓ sufficient" if training_rows >= 100 else f"need {100 - training_rows} more"))
 
     # Comparison: shadow vs live baseline
     subsection("Shadow vs live baseline (settled signals)")
@@ -2095,6 +2181,21 @@ def shadow_approaches(conn: sqlite3.Connection, since: str,
         print(f"  A1 (RecalEGARCH) PnL:  {comp['a1_pnl'] or 0:>8} cents")
         print(f"  A2 (LightGBM) PnL:     {comp['a2_pnl'] or 0:>8} cents")
         print(f"  Market-only PnL:       {comp['mkt_pnl'] or 0:>8} cents")
+        # A3 gating comparison
+        if "a3_gate_prob" in shadow_cols:
+            a3_comp = conn.execute(f"""
+                SELECT
+                    SUM(a3_pnl_gate10_cents) AS g10,
+                    SUM(a3_pnl_gate20_cents) AS g20,
+                    SUM(a3_pnl_gate30_cents) AS g30
+                FROM fifteenm_shadow_signals
+                WHERE status = 'settled' AND evaluation_time >= ?
+                    AND a3_gate_prob IS NOT NULL {asset_clause}
+            """, (since,)).fetchone()
+            if a3_comp and a3_comp["g10"] is not None:
+                print(f"  A3 gated@10% PnL:      {a3_comp['g10'] or 0:>8} cents")
+                print(f"  A3 gated@20% PnL:      {a3_comp['g20'] or 0:>8} cents")
+                print(f"  A3 gated@30% PnL:      {a3_comp['g30'] or 0:>8} cents")
     else:
         print("  No settled signals yet for comparison")
 
@@ -2281,15 +2382,12 @@ def no_side_analysis(conn: sqlite3.Connection, since: str,
                   "schema not yet updated")
         else:
             subsection("NO-side shadow approaches (fifteenm_shadow_signals)")
-            for prefix, label in [("no_live", "NO Live baseline"),
-                                   ("no_a1", "NO A1 (RecalEGARCH)"),
-                                   ("no_a2", "NO A2 (LightGBM)"),
-                                   ("no_market_only", "NO Market-only")]:
-                prob_col = f"{prefix}_prob"
-                edge_col = f"{prefix}_edge"
+            for prefix, label in [("no_a1", "NO A1 (RecalEGARCH)"),
+                                   ("no_a2", "NO A2 (LightGBM)")]:
                 contracts_col = f"{prefix}_contracts"
                 pnl_col = f"{prefix}_pnl_cents"
-                if pnl_col not in shadow_cols:
+                edge_col = f"{prefix}_fee_edge"
+                if pnl_col not in shadow_cols or contracts_col not in shadow_cols:
                     continue
                 print(f"\n  {label}:")
                 for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter
