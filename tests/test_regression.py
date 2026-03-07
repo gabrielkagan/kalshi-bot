@@ -1179,3 +1179,48 @@ class TestWeatherHRRR:
                 )
                 return
         assert False, "fetch_ensemble not found in weather_engine.py"
+
+
+# ============================================================================
+#  16. Dedup Set Tuple Safety (abd47c8, Mar 7 2026)
+#      Bug: _eval_opp_seen contained mixed 2-tuples (ticker, stage) and
+#      3-tuples (ticker, stage, side). Cleanup comprehension destructured
+#      as (tk, stage) → ValueError on every tick → crash loop on VPS.
+#      Prevention: Never destructure _eval_opp_seen entries; use key[0]
+#      to access ticker. Test scans all set comprehensions involving the set.
+# ============================================================================
+
+class TestDedupSetTupleSafety:
+    """_eval_opp_seen may contain 2-tuples or 3-tuples. Never destructure."""
+
+    def test_no_tuple_destructuring_in_eval_opp_seen(self):
+        """Scan bot.py for any (tk, stage) unpacking of _eval_opp_seen."""
+        source = open(os.path.join(PROJECT_ROOT, "bot.py")).read()
+        # Find any set comprehension or for loop that destructures _eval_opp_seen
+        # Pattern: "for tk, stage in self._eval_opp_seen" or similar 2-var unpack
+        dangerous_patterns = [
+            r'for\s+\w+,\s*\w+\s+in\s+self\._eval_opp_seen',
+            r'for\s+\(\w+,\s*\w+\)\s+in\s+self\._eval_opp_seen',
+        ]
+        for pattern in dangerous_patterns:
+            matches = re.findall(pattern, source)
+            assert len(matches) == 0, (
+                f"Found dangerous tuple destructuring of _eval_opp_seen: {matches}. "
+                f"_eval_opp_seen contains mixed 2/3-tuples. Use key[0] instead. "
+                f"(Bug abd47c8: crash loop on VPS from ValueError)"
+            )
+
+    def test_eval_opp_seen_cleanup_uses_key_index(self):
+        """The cleanup comprehension must use key[0], not destructuring."""
+        source = open(os.path.join(PROJECT_ROOT, "bot.py")).read()
+        # Find the cleanup line
+        cleanup_match = re.search(
+            r'self\._eval_opp_seen\s*=\s*\{[^}]+\}',
+            source
+        )
+        assert cleanup_match, "_eval_opp_seen cleanup comprehension not found"
+        cleanup_code = cleanup_match.group()
+        assert "key[0]" in cleanup_code or "k[0]" in cleanup_code, (
+            f"_eval_opp_seen cleanup must use key[0] indexing, not tuple destructuring. "
+            f"Found: {cleanup_code}"
+        )
