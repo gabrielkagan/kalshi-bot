@@ -2075,7 +2075,13 @@ def alt_shadow_strategies(conn: sqlite3.Connection, since: str) -> None:
                SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
                SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS wins,
                SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS losses,
-               SUM(shadow_pnl_cents) AS total_pnl
+               SUM(shadow_pnl_cents) AS total_pnl,
+               SUM(CASE
+                   WHEN shadow_contracts > 0 THEN shadow_pnl_cents
+                   WHEN market_result IN ('yes','all_yes') THEN (100 - market_price)
+                   WHEN market_result IN ('no','all_no') THEN -market_price
+                   ELSE 0
+               END) AS cf_pnl_1c
         FROM hourly_alt_shadow_signals
         WHERE evaluation_time >= ?
         GROUP BY strategy
@@ -2084,16 +2090,17 @@ def alt_shadow_strategies(conn: sqlite3.Connection, since: str) -> None:
         print("  No alt shadow signals found since", since)
         return
 
-    print(f"  {'Strategy':<16} {'Total':>6} {'Settled':>8} {'Pending':>8} {'W':>5} {'L':>5} {'WR':>7} {'PnL':>10}")
-    print(f"  {'-'*72}")
+    print(f"  {'Strategy':<16} {'Total':>6} {'Settled':>8} {'Pending':>8} {'W':>5} {'L':>5} {'WR':>7} {'Sized PnL':>10} {'CF 1c PnL':>10}")
+    print(f"  {'-'*86}")
     for r in overview:
         settled = r["settled"] or 0
         wins = r["wins"] or 0
         losses = r["losses"] or 0
         wr = wins / settled * 100 if settled > 0 else 0
         pnl = (r["total_pnl"] or 0) / 100
+        cf_pnl = (r["cf_pnl_1c"] or 0) / 100
         print(f"  {r['strategy']:<16} {r['total']:>6} {settled:>8} {r['pending'] or 0:>8} "
-              f"{wins:>5} {losses:>5} {wr:>6.1f}% ${pnl:>8.2f}")
+              f"{wins:>5} {losses:>5} {wr:>6.1f}% ${pnl:>8.2f} ${cf_pnl:>8.2f}")
 
     # ── Per-asset breakdown ──
     subsection("Per-asset x strategy breakdown")
@@ -2103,6 +2110,12 @@ def alt_shadow_strategies(conn: sqlite3.Connection, since: str) -> None:
                SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS wins,
                SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS losses,
                SUM(shadow_pnl_cents) AS pnl,
+               SUM(CASE
+                   WHEN shadow_contracts > 0 THEN shadow_pnl_cents
+                   WHEN market_result IN ('yes','all_yes') THEN (100 - market_price)
+                   WHEN market_result IN ('no','all_no') THEN -market_price
+                   ELSE 0
+               END) AS cf_pnl_1c,
                AVG(market_price) AS avg_price,
                AVG(seconds_to_close) AS avg_stc
         FROM hourly_alt_shadow_signals
@@ -2110,14 +2123,15 @@ def alt_shadow_strategies(conn: sqlite3.Connection, since: str) -> None:
         GROUP BY strategy, asset ORDER BY strategy, asset
     """, (since,)).fetchall()
     if asset_rows:
-        print(f"  {'Strategy':<16} {'Asset':>5} {'N':>5} {'W':>4} {'L':>4} {'WR':>7} {'PnL':>10} {'AvgPx':>6} {'AvgSTC':>7}")
-        print(f"  {'-'*72}")
+        print(f"  {'Strategy':<16} {'Asset':>5} {'N':>5} {'W':>4} {'L':>4} {'WR':>7} {'Sized PnL':>10} {'CF 1c':>7} {'AvgPx':>6} {'AvgSTC':>7}")
+        print(f"  {'-'*80}")
         for r in asset_rows:
             settled = (r["wins"] or 0) + (r["losses"] or 0)
             wr = (r["wins"] or 0) / settled * 100 if settled > 0 else 0
             pnl = (r["pnl"] or 0) / 100
+            cf = (r["cf_pnl_1c"] or 0) / 100
             print(f"  {r['strategy']:<16} {r['asset']:>5} {r['n']:>5} {r['wins'] or 0:>4} "
-                  f"{r['losses'] or 0:>4} {wr:>6.1f}% ${pnl:>8.2f} {r['avg_price'] or 0:>5.0f} "
+                  f"{r['losses'] or 0:>4} {wr:>6.1f}% ${pnl:>8.2f} ${cf:>5.2f} {r['avg_price'] or 0:>5.0f} "
                   f"{r['avg_stc'] or 0:>6.0f}s")
     else:
         print("  No settled alt shadow signals yet.")

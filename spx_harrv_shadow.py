@@ -818,10 +818,12 @@ class SPXHARRVShadowEngine:
                 contracts = row["shadow_contracts"] or 0
                 price = row["market_price"] or 0
 
+                # Use actual contracts if gated, otherwise 1-contract counterfactual
+                ct = contracts if contracts > 0 else 1
                 if market_result in ("yes", "all_yes"):
-                    pnl = contracts * (100 - price) if contracts > 0 else 0
+                    pnl = ct * (100 - price)
                 elif market_result in ("no", "all_no"):
-                    pnl = -(contracts * price) if contracts > 0 else 0
+                    pnl = -(ct * price)
                 else:
                     pnl = 0
 

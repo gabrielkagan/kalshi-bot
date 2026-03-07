@@ -964,10 +964,12 @@ class HourlyAltShadowEngine:
                     pnl = self._compute_mm_pnl(row, market_result)
                 else:
                     # HAR-RV PnL: standard directional
+                    # Use actual contracts if gated, otherwise 1-contract counterfactual
+                    ct = contracts if contracts > 0 else 1
                     if market_result in ("yes", "all_yes"):
-                        pnl = contracts * (100 - price) if contracts > 0 else 0
+                        pnl = ct * (100 - price)
                     elif market_result in ("no", "all_no"):
-                        pnl = -(contracts * price) if contracts > 0 else 0
+                        pnl = -(ct * price)
                     else:
                         pnl = 0
 

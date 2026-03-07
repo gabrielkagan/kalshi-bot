@@ -1611,6 +1611,15 @@ def section_harrv_shadow(conn: sqlite3.Connection, since: Optional[str]) -> Dict
         losses = len(settled_rows) - wins
         wr = wins / len(settled_rows)
         total_pnl = sum((r["shadow_pnl_cents"] or 0) for r in settled_rows)
+        # Counterfactual 1-contract PnL (uses market_price when contracts=0)
+        cf_pnl_1c = 0
+        for r in settled_rows:
+            if (r["shadow_contracts"] or 0) > 0:
+                cf_pnl_1c += r["shadow_pnl_cents"] or 0
+            elif r["market_result"] in ("yes", "all_yes"):
+                cf_pnl_1c += 100 - (r["market_price"] or 0)
+            elif r["market_result"] in ("no", "all_no"):
+                cf_pnl_1c -= r["market_price"] or 0
 
         # Only signals that passed gates
         gated = [r for r in settled_rows if r["gates_passed"]]
@@ -1618,6 +1627,7 @@ def section_harrv_shadow(conn: sqlite3.Connection, since: Optional[str]) -> Dict
 
         print(f"\n  All settled:    {len(settled_rows)} signals, {wins}W/{losses}L ({wr:.1%} WR)")
         print(f"  Shadow PnL:     {total_pnl:+d}c (${total_pnl/100:+.2f}){significance_tag(len(settled_rows))}")
+        print(f"  CF 1c PnL:      {cf_pnl_1c:+d}c (${cf_pnl_1c/100:+.2f}) — counterfactual at 1 contract")
         if gated:
             gated_wr = gated_wins / len(gated)
             gated_pnl = sum((r["shadow_pnl_cents"] or 0) for r in gated)
