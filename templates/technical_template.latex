@@ -23,7 +23,7 @@
 \usepackage{parskip}
 \usepackage{fancyvrb}
 \usepackage{tcolorbox}
-\tcbuselibrary{breakable,skins}
+\tcbuselibrary{breakable}
 \usepackage{lastpage}
 \usepackage{amsmath,amssymb}
 \usepackage{tabularx}
@@ -145,7 +145,6 @@
 % when --highlight-style is used. We style the Shaded wrapper.
 \newenvironment{Shaded}{%
   \begin{tcolorbox}[
-    enhanced,
     breakable,
     colback=codebg,
     colframe=codeborder,
@@ -194,12 +193,13 @@
 
 % ── Blockquotes as callout boxes ────────────────────────────────────────────
 \newtcolorbox{quotecallout}{
-  enhanced,
   breakable,
   colback=calloutbg,
   colframe=calloutborder,
-  boxrule=0pt,
-  borderline west={3pt}{0pt}{calloutborder},
+  leftrule=3pt,
+  rightrule=0pt,
+  toprule=0pt,
+  bottomrule=0pt,
   arc=0pt,
   outer arc=0pt,
   left=12pt,

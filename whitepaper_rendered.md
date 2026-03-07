@@ -24,7 +24,7 @@ Beyond crypto, the platform monitors four additional verticals in shadow/observa
 2. **Estimate** — For every active market, compute the probability that the asset stays above its threshold using EGARCH-conditioned volatility with fat-tailed NIG distributions fitted per asset.
 3. **Filter** — Reject markets that are too uncertain, too expensive, or offer insufficient edge after fees.
 4. **Size** — Use edge-tiered position sizing with automatic drawdown scaling.
-5. **Execute** — Place maker (limit) orders first to minimize fees, with three-tier post_only rejection handling, time-aware taker escalation, and direct taker execution below 75 seconds.
+5. **Execute** — Place maker (limit) orders first to minimize fees, with three-tier post_only rejection handling, time-aware taker escalation, and direct taker execution below 180 seconds.
 6. **Settle** — Track outcomes via the Kalshi settlements API and log performance for continuous evaluation.
 
 ## Key Differentiators
@@ -34,7 +34,7 @@ Beyond crypto, the platform monitors four additional verticals in shadow/observa
 | **Multi-exchange intelligence** | Aggregates spot prices from Coinbase and Kraken plus derivatives signals from Deribit, detecting cross-exchange lead-lag patterns before they appear in Kalshi prices |
 | **EGARCH-conditioned volatility** | Realized Kernel estimation (Barndorff-Nielsen 2008) with data-adaptive bandwidth, MZ R²-weighted blending, and EGARCH(1,1) conditional volatility — all promoted to live trading |
 | **Per-asset NIG distributions** | Normal Inverse Gaussian CDF replaces the generic Student-t, capturing both heavy tails and asymmetry specific to each cryptocurrency |
-| **Adaptive execution** | Three-tier post_only rejection handler, maker-first with time-aware escalation, and direct taker below 75s (data: 7.7% maker fill rate at low STC — direct taker strictly better) |
+| **Adaptive execution** | Three-tier post_only rejection handler, maker-first with time-aware escalation, and direct taker below 180s (data: 7.7% maker fill rate at low STC — direct taker strictly better) |
 | **Data-driven risk controls** | Edge-tiered sizing (25% max), drawdown scaling, z-score sanity checks, learned calibration, and model-market discrepancy detection |
 | **Multi-vertical expansion** | Five market verticals sharing common risk infrastructure, each with domain-specific probability models |
 
@@ -69,18 +69,18 @@ Beyond crypto, the platform monitors four additional verticals in shadow/observa
 | **KalshiFeed** | WebSocket connection for real-time fills and orderbook delta streaming |
 | **Logger** | Structured JSONL logging across multiple journals with fill deduplication |
 | **StateManager** | SQLite-backed persistent state (WAL mode for crash resilience, `busy_timeout=10000`); tracks positions, orders, fills, settlements, and order lifecycle |
-| **CoinbaseFeed** | Real-time WebSocket feed for BTC, ETH, SOL, XRP with 10,800-point price buffer (15 hours at 5-second intervals) |
+| **CoinbaseFeed** | Real-time WebSocket feed for BTC, ETH, SOL, XRP with 300-point price buffer (5 minutes at 1-second intervals); EGARCH uses a separate 10,800-point return buffer (15 hours at 5-second intervals) |
 | **DeribitDVOLFetcher** | Daemon thread fetching implied volatility (DVOL) index for BTC and ETH every 60 seconds |
-| **CrossExchangeFeed** | WebSocket feed from Kraken for cross-exchange lead-lag detection |
+| **CrossExchangeFeed** | WebSocket feeds from Kraken, Bybit, and Binance for cross-exchange lead-lag detection (Binance geo-blocked on VPS) |
 | **KalshiOrderFlowTracker** | Shadow-mode Kalshi-native orderbook imbalance, depth velocity, and spread convergence signals |
 | **VolatilityEngine** | Realized Kernel volatility with adaptive bandwidth (H*), MZ R²-weighted blending, EGARCH(1,1) Student-t conditioning, time-varying RK weights, adaptive jump detection, and DVOL integration |
 | **EGARCHEstimator** | EGARCH(1,1) with Student-t innovations (df 3.2–3.8), MLE-fitted on 10,800 samples (15 hours), refitted hourly — live (promoted from shadow) |
 | **MZTracker** | Mincer-Zarnowitz R² regression for dynamic EGARCH blend weight estimation with EMA smoothing |
 | **ProbabilityEngine** | Win probability via NIG CDF (per-asset fitted) with data-driven calibration, dynamic caps (bypassed when learned calibration active), and market-price blending |
 | **CalibrationEngine** | Learns calibration from settlement outcomes: Fixed Logistic → Platt Scaling → Beta Calibration → Bayesian Linear Regression (auto-promotes as data accumulates) |
-| **PositionSizer** | Edge-tiered position sizing (7 tiers) with drawdown-based scaling |
+| **PositionSizer** | Edge-tiered position sizing (8 tiers) with drawdown-based scaling |
 | **OpportunityScanner** | Multi-stage filter pipeline evaluating all markets across active 15-minute windows, hourly observation windows, SPX windows, weather markets, and sports markets |
-| **OrderExecutor** | Three-tier post_only handler, maker-first limit orders with adaptive taker escalation, direct taker below 75s, WebSocket fill detection, amend-first conversion, and full order lifecycle tracking |
+| **OrderExecutor** | Three-tier post_only handler, maker-first limit orders with adaptive taker escalation, direct taker below 180s, WebSocket fill detection, amend-first conversion, and full order lifecycle tracking |
 | **SettlementTracker** | Incremental settlement polling (30-second intervals) using the Kalshi settlements API |
 | **SPXEngine** | S&P 500 intraday engine: Polygon/Finnhub price feeds, EGARCH with VIX integration, intraday seasonal deseasonalization, per-window position limits (shadow mode) |
 | **WeatherEngine** | Weather temperature engine: Open-Meteo NWP ensemble (82 members per run), Gaussian probability model with per-city bias correction, 19 US cities (shadow mode) |
@@ -93,7 +93,7 @@ Beyond crypto, the platform monitors four additional verticals in shadow/observa
 
 | Source | Data | Transport | Frequency |
 |---|---|---|---|
-| Coinbase | Spot prices (BTC, ETH, SOL, XRP) | WebSocket | Real-time (5s snapshots, 10,800-point buffer = 15hr) |
+| Coinbase | Spot prices (BTC, ETH, SOL, XRP) | WebSocket | Real-time (1s snapshots, 300-point buffer = 5min) |
 | Kraken | Spot prices (cross-exchange) | WebSocket | Real-time |
 | Deribit | Implied volatility (DVOL) for BTC/ETH | REST API | 60 seconds |
 | Polygon.io | SPX spot price | REST API | 1s polling (NYSE RTH) |
@@ -144,7 +144,7 @@ The EGARCH model captures volatility clustering and leverage effects:
 
 $$\log(\sigma_t^2) = \omega + \alpha \left(|z_{t-1}| - E[|z|]\right) + \gamma z_{t-1} + \beta \log(\sigma_{t-1}^2)$$
 
-Fitted with Student-t innovations (df typically 3.2–3.8 for crypto) via maximum likelihood on 10,800 samples (15 hours at 5-second intervals), refitted hourly. The EGARCH forecast is blended with the RK estimate using MZ R²-weighted blending — the system dynamically determines how much weight to give the conditional model vs. the realized estimate based on forecast quality.
+Fitted with Student-t innovations (df typically 3.2–3.8 for crypto) via maximum likelihood on 10,800 samples (15 hours at 5-second intervals), refitted every 2 hours. The EGARCH forecast is blended with the RK estimate using MZ R²-weighted blending — the system dynamically determines how much weight to give the conditional model vs. the realized estimate based on forecast quality.
 
 **Status: Live** — promoted from shadow mode after extensive validation. EGARCH core vol, EGARCH blend, and MZ R²-weighted blending all drive live trading decisions.
 
@@ -264,15 +264,14 @@ The minimum edge is price-dependent, reflecting the higher risk of expensive con
 
 | Entry Price | Min Edge |
 |---|---|
-| 97¢+ | 4.0% |
-| 95–96¢ | 2.5% |
-| 93–94¢ | 1.8% |
-| 91–92¢ | 1.2% |
-| 89–90¢ | 0.9% |
-| 87–88¢ | 0.7% |
-| 86¢ | 0.5% |
+| 97¢+ | 2.0% |
+| 95–96¢ | 1.25% |
+| 93–94¢ | 0.9% |
+| 91–92¢ | 0.35% |
+| 89–90¢ | 0.25% |
+| 86–88¢ | 0.25% |
 
-A flat fallback of 0.7% (MIN\_EDGE\_PCT) applies if the price-dependent schedule is unavailable.
+A flat fallback of 0.25% (MIN\_EDGE\_PCT) applies if the price-dependent schedule is unavailable.
 
 ## 3.4 Kalshi Order Flow (Shadow Mode)
 
@@ -362,7 +361,7 @@ The engine queries the Open-Meteo API for two independent NWP ensemble systems:
 |---|---|---|---|
 | GFS Seamless | 31 | ~13 km | NOAA |
 | ECMWF IFS 0.25° | 51 | ~25 km | ECMWF |
-| HRRR (deterministic) | 1 | <15 km | NOAA |
+| HRRR (deterministic) | 1 | ~3 km | NOAA |
 
 The 82 ensemble members (31 GFS + 51 ECMWF) provide a distribution of possible temperature outcomes. The engine fits a Gaussian $(\mu, \sigma)$ to the combined ensemble and computes:
 
@@ -456,9 +455,9 @@ The executor uses a maker-first approach with three-tier post_only rejection han
 
 ### Direct Taker Threshold
 
-When less than **75 seconds** remain before settlement, the system skips the maker order entirely and submits a direct IOC (immediate-or-cancel) taker order.
+When less than **180 seconds** remain before settlement, the system skips the maker order entirely and submits a direct IOC (immediate-or-cancel) taker order.
 
-> **Data justification**: Maker fill rate was only 7.7% (1/13 candidates) at 0–60s STC. Twelve missed candidates were all winners (~$49 net missed profit). Threshold raised from 60s → 75s. Edge and liquidity checks still apply.
+> **Data justification**: Maker fill rate was only 7.7% (1/13 candidates) at 0–60s STC. Twelve missed candidates were all winners (~$49 net missed profit). Threshold raised from 60s → 75s → 180s. Edge and liquidity checks still apply.
 
 ### Three-Tier Post-Only Handler
 
@@ -527,6 +526,7 @@ Position sizing is tiered by fee-adjusted edge, with higher-conviction trades re
 | ≥ 0.9% | 7% of bankroll |
 | ≥ 0.7% | 5% of bankroll |
 | ≥ 0.5% | 3% of bankroll |
+| ≥ 0.25% | 2% of bankroll |
 
 Safety ceiling: max 25% of bankroll at risk per trade.
 
@@ -556,7 +556,7 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 
 ## Position Sizing Controls
 
-- **Edge-tiered sizing**: Position size scales with conviction — 25% max at 4%+ edge, down to 3% at 0.5% edge
+- **Edge-tiered sizing**: Position size scales with conviction — 25% max at 4%+ edge, down to 2% at 0.25% edge
 - **Drawdown scaling**: Size halved below 85% of starting balance, quartered below 75%, trading halted below 65%
 - **Hard limits**: Maximum risk per trade capped at 25% of bankroll
 
@@ -564,7 +564,7 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 
 - **Multi-asset capable**: Can trade multiple assets per 15-minute window
 - **Price range guardrails**: Only trade contracts priced 86–99¢ — below 86¢ has historically poor win rates; above 99¢ offers insufficient reward
-- **Price-dependent edge threshold**: Fee-adjusted edge must exceed a price-dependent minimum (0.5% at 86¢ up to 4.0% at 97¢+) after taker fees (worst-case)
+- **Price-dependent edge threshold**: Fee-adjusted edge must exceed a price-dependent minimum (0.25% at 86¢ up to 2.0% at 97¢+) after taker fees (worst-case)
 - **Scanner uses taker fees**: Every candidate is profitable even if forced to taker execution
 
 ## Model Sanity Controls
@@ -579,7 +579,7 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 
 - **Three-tier post_only handler**: Escalates from normal maker → degraded maker → taker IOC after repeated rejections, with edge re-verification at each tier
 - **Maker-first with `post_only`**: Guarantees maker fee tier (75% cheaper), rejected if it would cross the spread
-- **Direct taker below 75 seconds**: Below 75s STC, maker orders are skipped entirely (7.7% fill rate) — direct IOC taker submitted with full edge/liquidity validation
+- **Direct taker below 180 seconds**: Below 180s STC, maker orders are skipped entirely (7.7% fill rate at low STC) — direct IOC taker submitted with full edge/liquidity validation
 - **WebSocket fill detection**: Zero-cost fill monitoring via Kalshi WebSocket, with REST polling fallback
 - **Amend-first escalation**: Uses `amend_order()` API to convert maker→taker in-place, avoiding cancel+replace race conditions
 - **IOC taker orders**: Taker escalation uses `time_in_force="immediate_or_cancel"` to prevent stale resting orders
@@ -647,7 +647,7 @@ Live game outcome markets across 28 leagues including NBA, NHL, MLB, NFL, EPL, A
 
 ### SQLite (state.db)
 
-The primary state store uses SQLite in WAL (Write-Ahead Logging) mode for crash resilience. All connections use `busy_timeout=10000` to handle concurrent access from multiple threads (bot main loop, Firebase push, sports engine).
+The primary state store uses SQLite in WAL (Write-Ahead Logging) mode for crash resilience. All connections use `busy_timeout=10000` to handle concurrent access from multiple threads (bot main loop, Supabase sync, sports engine).
 
 | Table | Purpose |
 |---|---|
@@ -670,9 +670,9 @@ Append-only journal files provide a complete audit trail:
 
 **Journal rotation**: A daily cron job (4 AM UTC) runs `rotate_journals.sh` using a copytruncate pattern — journals are compressed to `journal_archives/` with gzip and 30-day retention. The bot uses open/close per write, so rotation is safe without process interruption.
 
-## Firebase Real-Time Dashboard
+## Supabase Real-Time Dashboard
 
-A Firebase integration provides a live web dashboard showing:
+A Supabase integration provides a live web dashboard showing:
 
 - Current positions and P&L
 - Active market evaluations

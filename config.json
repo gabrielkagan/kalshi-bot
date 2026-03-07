@@ -30,6 +30,11 @@
       "line": 47,
       "description": "Entry window (seconds before close)"
     },
+    "STC_SHADOW_THRESHOLD": {
+      "value": 500,
+      "line": 48,
+      "description": "STC shadow threshold (seconds)"
+    },
     "HOURLY_OBSERVATION_ONLY": {
       "value": true,
       "line": 53,
@@ -125,6 +130,11 @@
       "line": 102,
       "description": "Weather market blend weight"
     },
+    "PRICE_BUFFER_SIZE": {
+      "value": 300,
+      "line": 143,
+      "description": "CoinbaseFeed price buffer size (seconds of 1s snapshots)"
+    },
     "RK_TV_SHADOW_MODE": {
       "value": false,
       "line": 151,
@@ -144,6 +154,36 @@
       "value": true,
       "line": 214,
       "description": "Sigmoid QLIKE shadow mode"
+    },
+    "CROSS_EXCHANGE_ENABLED": {
+      "value": true,
+      "line": 261,
+      "description": "Cross-exchange feed enabled"
+    },
+    "CROSS_EXCHANGE_BUFFER_SIZE": {
+      "value": 15,
+      "line": 271,
+      "description": "Cross-exchange price buffer size"
+    },
+    "CROSS_EXCHANGE_LEAD_THRESHOLD": {
+      "value": 0.002,
+      "line": 272,
+      "description": "Single-exchange lead threshold"
+    },
+    "CROSS_EXCHANGE_CONSENSUS_THRESHOLD": {
+      "value": 0.003,
+      "line": 273,
+      "description": "Consensus threshold"
+    },
+    "CROSS_EXCHANGE_CONSENSUS_MIN": {
+      "value": 3,
+      "line": 274,
+      "description": "Minimum exchanges for consensus"
+    },
+    "CROSS_EXCHANGE_STALE_SECONDS": {
+      "value": 30.0,
+      "line": 275,
+      "description": "Cross-exchange stale data timeout"
     },
     "KALSHI_OFT_SHADOW_MODE": {
       "value": true,
@@ -235,6 +275,84 @@
       "line": 72,
       "description": "Assets excluded from hourly trading"
     },
+    "CROSS_EXCHANGE_SYMBOLS": {
+      "value": {
+        "BTC": {
+          "binance": "btcusdt",
+          "kraken": "BTC/USD",
+          "bybit": "BTCUSDT"
+        },
+        "ETH": {
+          "binance": "ethusdt",
+          "kraken": "ETH/USD",
+          "bybit": "ETHUSDT"
+        },
+        "SOL": {
+          "binance": "solusdt",
+          "kraken": "SOL/USD",
+          "bybit": "SOLUSDT"
+        },
+        "XRP": {
+          "binance": "xrpusdt",
+          "kraken": "XRP/USD",
+          "bybit": "XRPUSDT"
+        }
+      },
+      "line": 262,
+      "description": "Cross-exchange symbol mapping"
+    },
+    "DYNAMIC_CAP_SCHEDULE": {
+      "value": [
+        [
+          600,
+          0.93
+        ],
+        [
+          300,
+          0.95
+        ],
+        [
+          120,
+          0.97
+        ],
+        [
+          60,
+          0.985
+        ],
+        [
+          0,
+          0.995
+        ]
+      ],
+      "line": 330,
+      "description": "Dynamic probability cap schedule (STC, cap)"
+    },
+    "HOURLY_DYNAMIC_CAP_SCHEDULE": {
+      "value": [
+        [
+          1800,
+          0.97
+        ],
+        [
+          900,
+          0.98
+        ],
+        [
+          300,
+          0.99
+        ],
+        [
+          60,
+          0.995
+        ],
+        [
+          0,
+          0.999
+        ]
+      ],
+      "line": 342,
+      "description": "Hourly dynamic probability cap schedule"
+    },
     "MIN_EDGE_BY_PRICE": {
       "value": [
         [
@@ -305,6 +423,146 @@
     }
   },
   "_bot_lines": 12537,
-  "_extracted_at": "2026-03-06T23:11:11Z",
-  "_bot_path": "/home/runner/work/kalshi-bot/kalshi-bot/bot.py"
+  "_exchange_feeds": [
+    "CoinbaseFeed",
+    "CrossExchangeFeed",
+    "KalshiFeed"
+  ],
+  "_extracted_at": "2026-03-06T23:44:35Z",
+  "_bot_path": "/Users/gabrielkagan/Documents/kalshi-bot/bot.py",
+  "_weather": {
+    "weather_city_count": 19,
+    "weather_city_codes": [
+      "ATL",
+      "AUS",
+      "BOS",
+      "CHI",
+      "DAL",
+      "DCA",
+      "DEN",
+      "HOU",
+      "LAS",
+      "LAX",
+      "MIA",
+      "MIN",
+      "MSY",
+      "NYC",
+      "OKC",
+      "PHI",
+      "PHX",
+      "SEA",
+      "SFO"
+    ],
+    "weather_city_names": [
+      "Atlanta",
+      "Austin",
+      "Boston",
+      "Chicago",
+      "Dallas",
+      "Washington DC",
+      "Denver",
+      "Houston",
+      "Las Vegas",
+      "Los Angeles",
+      "Miami",
+      "Minneapolis",
+      "New Orleans",
+      "New York City",
+      "Oklahoma City",
+      "Philadelphia",
+      "Phoenix",
+      "Seattle",
+      "San Francisco"
+    ],
+    "weather_city_tickers": [
+      "KXHIGHTATL",
+      "KXHIGHAUS",
+      "KXHIGHTBOS",
+      "KXHIGHCHI",
+      "KXHIGHTDAL",
+      "KXHIGHTDC",
+      "KXHIGHDEN",
+      "KXHIGHTHOU",
+      "KXHIGHTLV",
+      "KXHIGHLAX",
+      "KXHIGHMIA",
+      "KXHIGHTMIN",
+      "KXHIGHTNOLA",
+      "KXHIGHNY",
+      "KXHIGHTOKC",
+      "KXHIGHPHIL",
+      "KXHIGHTPHX",
+      "KXHIGHTSEA",
+      "KXHIGHTSFO"
+    ]
+  },
+  "_sports": {
+    "sports_league_count": 28,
+    "sports_league_tickers": [
+      "KXAFCONGAME",
+      "KXATPMATCH",
+      "KXBUNDESLIGAGAME",
+      "KXCSGOGAME",
+      "KXEPLGAME",
+      "KXEREDIVISIEGAME",
+      "KXFIFAGAME",
+      "KXLALIGAGAME",
+      "KXLIGAMXGAME",
+      "KXLIGUE1GAME",
+      "KXLOLGAME",
+      "KXMLBGAME",
+      "KXMLSGAME",
+      "KXNBAGAME",
+      "KXNCAABBGAME",
+      "KXNCAAFGAME",
+      "KXNFLGAME",
+      "KXNHLGAME",
+      "KXSERIEAGAME",
+      "KXSUPERLIGGAME",
+      "KXUCLGAME",
+      "KXUECLGAME",
+      "KXUELGAME",
+      "KXUFCFIGHT",
+      "KXVALORANTGAME",
+      "KXWCGAME",
+      "KXWNBAGAME",
+      "KXWTAMATCH"
+    ],
+    "sports_league_names": [
+      "AFC/Intl",
+      "ATP Tennis",
+      "Bundesliga",
+      "CSGO",
+      "EPL",
+      "Eredivisie",
+      "FIFA Intl",
+      "La Liga",
+      "Liga MX",
+      "Ligue 1",
+      "LoL",
+      "MLB",
+      "MLS",
+      "NBA",
+      "NCAAB",
+      "NCAAF",
+      "NFL",
+      "NHL",
+      "Serie A",
+      "Turkish Super Lig",
+      "UCL",
+      "Conference League",
+      "Europa League",
+      "UFC",
+      "Valorant",
+      "World Cup",
+      "WNBA",
+      "WTA Tennis"
+    ]
+  },
+  "_exchange_names": [
+    "Coinbase",
+    "Binance",
+    "Bybit",
+    "Kraken"
+  ]
 }
