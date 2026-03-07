@@ -1124,9 +1124,9 @@ class HourlyAltShadowEngine:
                     # MM PnL depends on fill status
                     pnl = self._compute_mm_pnl(row, market_result)
                 else:
-                    # HAR-RV PnL: standard directional
-                    # Use actual contracts if gated, otherwise 1-contract counterfactual
-                    ct = contracts if contracts > 0 else 1
+                    # HAR-RV PnL: standard directional using Kelly-sized contracts
+                    # If contracts=0 (gate failed / no edge), strategy wouldn't trade → PnL=0
+                    ct = contracts
                     fee_yes = math.ceil(FEE_MULT_TAKER * ct * (price / 100.0) * (1 - price / 100.0) * 100)
                     if result_yes:
                         pnl = ct * (100 - price) - fee_yes
