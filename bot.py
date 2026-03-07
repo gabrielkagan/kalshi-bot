@@ -1475,6 +1475,8 @@ class StateManager:
             ("order_outcome", "TEXT"),
             # NO-side shadow: trade direction (yes=buy YES contract, no=buy NO contract)
             ("side", "TEXT DEFAULT 'yes'"),
+            # Shadow taker tracking: best ask at maker order submission time
+            ("taker_ask_at_submit", "INTEGER"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2026,7 +2028,8 @@ class StateManager:
     def update_evaluated_opportunity_order(self, ticker: str,
                                             order_id: Optional[str] = None,
                                             order_submitted_at: Optional[str] = None,
-                                            order_outcome: Optional[str] = None):
+                                            order_outcome: Optional[str] = None,
+                                            taker_ask_at_submit: Optional[int] = None):
         """Update order tracking fields on the candidate row for a ticker."""
         try:
             parts = []
@@ -2040,6 +2043,9 @@ class StateManager:
             if order_outcome is not None:
                 parts.append("order_outcome=?")
                 vals.append(order_outcome)
+            if taker_ask_at_submit is not None:
+                parts.append("taker_ask_at_submit=?")
+                vals.append(taker_ask_at_submit)
             if not parts:
                 return
             vals.append(ticker)
@@ -9692,7 +9698,8 @@ class OrderExecutor:
             if _active:
                 self._state.update_evaluated_opportunity_order(
                     ticker, order_id=_active["order_id"],
-                    order_submitted_at=datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
+                    order_submitted_at=datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                    taker_ask_at_submit=candidate.get("best_yes_ask"))
             return None
 
         # Tier 1: Normal maker (attempt 1 or 2)
@@ -9701,7 +9708,8 @@ class OrderExecutor:
         if _active:
             self._state.update_evaluated_opportunity_order(
                 candidate["ticker"], order_id=_active["order_id"],
-                order_submitted_at=datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
+                order_submitted_at=datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                taker_ask_at_submit=candidate.get("best_yes_ask"))
         return None
 
     def tick(self) -> Optional[Dict]:
