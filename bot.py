@@ -8012,7 +8012,7 @@ class OpportunityScanner:
                         self._hourly_window_risk[_wkey] = self._hourly_window_risk.get(_wkey, 0.0) + \
                             (sizing["contracts"] * best_ask) / (balance if balance > 0 else 1)
 
-                    # ── Hourly Alt Shadow Strategies (ETH/SOL/XRP only) ──
+                    # ── Hourly Alt Shadow Strategies (BTC/ETH/SOL/XRP) ──
                     # Evaluate Market-Making and HAR-RV shadow strategies in parallel
                     # with the existing EGARCH pipeline. Shadow-only, cannot place orders.
                     if (_obs_pt == "hourly"

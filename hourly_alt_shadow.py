@@ -1,6 +1,6 @@
-"""Hourly Altcoin Shadow Strategies — Market-Making (A) and HAR-RV (B).
+"""Hourly Alt Shadow Strategies — Market-Making (A) and HAR-RV (B).
 
-Runs two experimental shadow strategies for ETH, SOL, XRP hourly markets
+Runs two experimental shadow strategies for BTC, ETH, SOL, XRP hourly markets
 in parallel with the existing EGARCH pipeline. Structurally cannot place
 real orders — has no access to KalshiClient or any order submission code.
 
@@ -31,8 +31,8 @@ from typing import Dict, List, Optional, Tuple
 # Master switch — set to False to disable all shadow strategy evaluation
 HOURLY_ALT_SHADOW_ENABLED = True
 
-# Target assets (hourly altcoins only — BTC excluded, it works fine with EGARCH)
-ALT_SHADOW_ASSETS = {"ETH", "SOL", "XRP"}
+# Target assets — includes BTC for comparative data (EGARCH vs HAR-RV)
+ALT_SHADOW_ASSETS = {"BTC", "ETH", "SOL", "XRP"}
 
 # ── Strategy A: Market-Making Config ──────────────────────────────────────────
 
@@ -41,6 +41,7 @@ MM_ENABLED = True
 # Per-asset spread buffers (cents each side of midpoint)
 # Conservative starting values — will be tuned with data
 MM_SPREAD_BUFFER = {
+    "BTC": 2,   # 2c each side (most liquid)
     "ETH": 3,   # 3c each side
     "SOL": 4,   # 4c each side (wider — less liquid)
     "XRP": 5,   # 5c each side (widest — least liquid)
@@ -49,6 +50,7 @@ MM_SPREAD_BUFFER = {
 # Minimum spread required to participate (cents)
 # If actual spread < this, skip — not enough room to capture
 MM_MIN_SPREAD = {
+    "BTC": 3,
     "ETH": 4,
     "SOL": 5,
     "XRP": 6,
@@ -74,6 +76,7 @@ HARRV_ENABLED = True
 # Per-asset starting coefficients (literature priors, will be updated with OLS)
 # HAR model: RV_forecast = beta0 + beta1*RV_1h + beta2*RV_1d + beta3*RV_1w
 HARRV_PRIORS = {
+    "BTC": {"beta0": 0.00005, "beta1": 0.45, "beta2": 0.35, "beta3": 0.20},
     "ETH": {"beta0": 0.0001, "beta1": 0.40, "beta2": 0.35, "beta3": 0.25},
     "SOL": {"beta0": 0.0002, "beta1": 0.35, "beta2": 0.35, "beta3": 0.30},
     "XRP": {"beta0": 0.0003, "beta1": 0.30, "beta2": 0.35, "beta3": 0.35},
@@ -81,6 +84,7 @@ HARRV_PRIORS = {
 
 # Per-asset temperature scaling (from research brief)
 HARRV_TEMPERATURE = {
+    "BTC": 1.45,   # Same as main hourly EGARCH temperature
     "ETH": 2.76,   # Research-recommended for ETH hourly
     "SOL": 4.0,    # SOL needs aggressive scaling
     "XRP": 5.0,    # XRP needs very aggressive scaling
@@ -88,6 +92,7 @@ HARRV_TEMPERATURE = {
 
 # Per-asset market blend weights (model/market) — higher market weight for altcoins
 HARRV_MARKET_BLEND = {
+    "BTC": 0.40,   # 60% model, 40% market (BTC EGARCH is well-calibrated)
     "ETH": 0.60,   # 40% model, 60% market
     "SOL": 0.70,   # 30% model, 70% market
     "XRP": 0.80,   # 20% model, 80% market
@@ -95,18 +100,21 @@ HARRV_MARKET_BLEND = {
 
 # Multi-gate abstention thresholds
 HARRV_MIN_EDGE = {
+    "BTC": 0.003,   # 0.3% minimum edge (tighter — BTC better calibrated)
     "ETH": 0.005,   # 0.5% minimum edge
     "SOL": 0.008,   # 0.8% minimum edge
     "XRP": 0.010,   # 1.0% minimum edge
 }
 
 HARRV_MAX_EDGE = {
+    "BTC": 0.040,   # 4.0% max edge (wider — BTC less prone to inversion)
     "ETH": 0.030,   # 3.0% max edge (edge inversion protection)
     "SOL": 0.025,   # 2.5% max edge
     "XRP": 0.020,   # 2.0% max edge
 }
 
 HARRV_MAX_CONFIDENCE = {
+    "BTC": 0.95,   # Block predictions above 95% (BTC well-calibrated at high prob)
     "ETH": 0.92,   # Block predictions above 92%
     "SOL": 0.88,   # Block predictions above 88%
     "XRP": 0.85,   # Block predictions above 85%
@@ -114,6 +122,7 @@ HARRV_MAX_CONFIDENCE = {
 
 # Price band blacklist — known catastrophic zones from historical data
 HARRV_PRICE_BLACKLIST = {
+    "BTC": [],            # No known dead zones for BTC hourly
     "ETH": [(80, 84)],   # 0W/24L dead zone
     "SOL": [(90, 94)],   # 38% WR catastrophic zone
     "XRP": [(70, 79)],   # 15% WR disaster zone
