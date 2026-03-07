@@ -8137,7 +8137,7 @@ class OpportunityScanner:
                             egarch_blend_weight=egarch_blend_weight,
                             fee_adjusted_edge=fee_adjusted_edge)
                     except Exception:
-                        logging.debug("fifteenm_shadow evaluate failed", exc_info=True)
+                        logging.warning("fifteenm_shadow evaluate failed", exc_info=True)
 
                 # ── STC SHADOW GATE (15M only) ──
                 # Markets at 500-900s STC: log full evaluation for data collection, but don't trade.
