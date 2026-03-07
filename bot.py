@@ -6352,7 +6352,7 @@ class OpportunityScanner:
         self._last_opportunity_ts: Optional[str] = None
         self._recent_opportunities: deque = deque(maxlen=20)
         self._ticker_ask_history: Dict[str, deque] = {}
-        self._eval_opp_seen: Set[Tuple[str, str]] = set()
+        self._eval_opp_seen: set = set()  # 2-tuples (ticker, stage) or 3-tuples (ticker, stage, side)
         self._shadow_cal_last_log: Dict[str, float] = {}
         # Hourly per-window tracking (reset each scan tick)
         self._hourly_window_counts: Dict[str, int] = {}
@@ -6489,7 +6489,7 @@ class OpportunityScanner:
                 except Exception:
                     pass
         self._eval_opp_seen = {
-            (tk, stage) for tk, stage in self._eval_opp_seen if tk in active_tickers
+            key for key in self._eval_opp_seen if key[0] in active_tickers
         }
         if self._kalshi_oft is not None:
             try:
