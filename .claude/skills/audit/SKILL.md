@@ -22,7 +22,8 @@ Run a specific audit script for a single system. Takes a system argument.
    | `spx` | `scripts/spx_shadow_audit.py` | `--regime auto` |
    | `weather` | `scripts/weather_shadow_audit.py` | `--regime auto` |
    | `sports` | `scripts/sports_shadow_audit.py` | `--regime auto` |
-   | `all` | Run all 5 scripts sequentially | `--regime auto` for all |
+   | `no_side` | `scripts/no_side_status.py` | `--db /tmp/state.db` |
+   | `all` | Run all 6 scripts sequentially | `--regime auto` for all |
 
    If no argument provided, ask the user which system.
    If an additional date argument is provided (e.g., `/audit hourly 2026-03-01`), use `--since <date>` instead of `--regime auto`.
