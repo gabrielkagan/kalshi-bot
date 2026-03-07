@@ -1685,7 +1685,9 @@ def no_side_alpha(conn: sqlite3.Connection, since: str,
                     THEN 1 ELSE 0 END) AS wins,
                 SUM(CASE WHEN status='settled'
                     AND market_result IN ('yes', 'all_yes')
-                    THEN 1 ELSE 0 END) AS losses
+                    THEN 1 ELSE 0 END) AS losses,
+                COALESCE(SUM(CASE WHEN status='settled'
+                    THEN counterfactual_pnl END), 0) AS pnl_cents
             FROM evaluated_opportunities
             WHERE evaluation_time >= ? {EVAL_15M_FILTER}
               AND side = 'no'
@@ -1696,6 +1698,7 @@ def no_side_alpha(conn: sqlite3.Connection, since: str,
         settled = overview["settled"] or 0
         wins = overview["wins"] or 0
         losses = overview["losses"] or 0
+        pnl_cents = overview["pnl_cents"] or 0
         n = wins + losses
 
         print(f"  Total signals: {total}, Settled: {settled}")
@@ -1704,10 +1707,86 @@ def no_side_alpha(conn: sqlite3.Connection, since: str,
             lo, hi = wilson_ci(wins, n)
             print(f"  Win rate: {wins}W/{losses}L ({wr:.1f}%) "
                   f"[95% CI: {lo*100:.1f}%-{hi*100:.1f}%]")
+            print(f"  Sim PnL: ${pnl_cents / 100:.2f}")
         elif total > 0:
             print("  No settled NO-side signals yet")
         else:
             print("  No NO-side data found")
+
+        # Per filter_stage breakdown
+        subsection("NO-side by filter stage")
+        stage_rows = conn.execute(f"""
+            SELECT filter_stage,
+                COUNT(*) AS total,
+                SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+                SUM(CASE WHEN status='settled'
+                    AND counterfactual_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN status='settled'
+                    AND counterfactual_pnl <= 0 THEN 1 ELSE 0 END) AS losses,
+                COALESCE(SUM(CASE WHEN status='settled'
+                    THEN counterfactual_pnl END), 0) AS pnl_cents,
+                ROUND(AVG(market_price), 1) AS avg_price,
+                ROUND(AVG(fee_adjusted_edge), 4) AS avg_edge
+            FROM evaluated_opportunities
+            WHERE evaluation_time >= ? {EVAL_15M_FILTER}
+              AND side = 'no'
+              {asset_clause}
+            GROUP BY filter_stage
+            ORDER BY total DESC
+        """, (since,)).fetchall()
+
+        if stage_rows:
+            print(f"  {'Stage':<35} {'N':>4} {'Sett':>5} "
+                  f"{'W':>4} {'L':>4} {'WR':>6} {'PnL':>10} {'AvgP':>5} {'Edge':>7}")
+            print("  " + "-" * 85)
+            for r in stage_rows:
+                s = r["settled"] or 0
+                w = r["wins"] or 0
+                l_v = r["losses"] or 0
+                n_s = w + l_v
+                wr_s = f"{w/n_s*100:.1f}%" if n_s > 0 else "n/a"
+                pnl = r["pnl_cents"] or 0
+                print(f"  {r['filter_stage']:<35} {r['total']:>4} {s:>5} "
+                      f"{w:>4} {l_v:>4} {wr_s:>6} "
+                      f"${pnl/100:>8.2f} {r['avg_price']:>5}c "
+                      f"{(r['avg_edge'] or 0)*100:>6.2f}%")
+        else:
+            print("  No NO-side data by stage")
+
+        # Per asset breakdown
+        subsection("NO-side by asset")
+        asset_rows = conn.execute(f"""
+            SELECT asset,
+                COUNT(*) AS total,
+                SUM(CASE WHEN status='settled'
+                    AND counterfactual_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                SUM(CASE WHEN status='settled'
+                    AND counterfactual_pnl <= 0 THEN 1 ELSE 0 END) AS losses,
+                COALESCE(SUM(CASE WHEN status='settled'
+                    THEN counterfactual_pnl END), 0) AS pnl_cents,
+                ROUND(AVG(market_price), 1) AS avg_price
+            FROM evaluated_opportunities
+            WHERE evaluation_time >= ? {EVAL_15M_FILTER}
+              AND side = 'no'
+              {asset_clause}
+            GROUP BY asset
+            ORDER BY pnl_cents DESC
+        """, (since,)).fetchall()
+
+        if asset_rows:
+            print(f"  {'Asset':<6} {'N':>4} {'W':>4} {'L':>4} "
+                  f"{'WR':>6} {'PnL':>10} {'AvgP':>5}")
+            print("  " + "-" * 45)
+            for r in asset_rows:
+                w = r["wins"] or 0
+                l_v = r["losses"] or 0
+                n_s = w + l_v
+                wr_s = f"{w/n_s*100:.1f}%" if n_s > 0 else "n/a"
+                pnl = r["pnl_cents"] or 0
+                print(f"  {r['asset']:<6} {r['total']:>4} {w:>4} {l_v:>4} "
+                      f"{wr_s:>6} ${pnl/100:>8.2f} {r['avg_price']:>5}c")
+        else:
+            print("  No NO-side asset data")
 
     # ── Part B: fifteenm_shadow_signals NO-side approaches ──
 

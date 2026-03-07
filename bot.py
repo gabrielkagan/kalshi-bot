@@ -544,6 +544,7 @@ DIP_ADDON_SHADOW_MODE = True              # PHASE 1: Log only, don't execute
 # ─── Price Shadow — edge data for 70-85c markets ──────────────────────
 PRICE_SHADOW_ENABLED = True        # Shadow-evaluate POR for edge data collection
 PRICE_SHADOW_FLOOR = 70            # Lowest price to shadow-evaluate
+NO_SIDE_MIN_ENTRY_PRICE = 70       # Lowest NO price for shadow collection (matches PRICE_SHADOW_FLOOR)
 DIP_ADDON_MIN_DROP_CENTS = 3              # ask must drop ≥3¢ below entry
 DIP_ADDON_MIN_SECONDS_SINCE_FILL = 5.0   # wait after fill before eligible
 DIP_ADDON_MIN_STC_REMAINING = 90.0       # need ≥90s (aligns with maker-only threshold)
@@ -7014,10 +7015,10 @@ class OpportunityScanner:
                             "_shadow_diag": _shadow_diag.copy(),
                             "_oft_db": _oft_db.copy(),
                         })
-                    # NO-side shadow: if NO price (100-best_ask) is within entry range,
+                    # NO-side shadow: if NO price (100-best_ask) is within NO-side range,
                     # queue for NO-side evaluation (YES price is out of range but NO may be valid)
                     _no_price_por = 100 - best_ask
-                    if _entry_floor <= _no_price_por <= _entry_ceil:
+                    if NO_SIDE_MIN_ENTRY_PRICE <= _no_price_por <= _entry_ceil:
                         _no_side_queue.append({
                             "ticker": ticker,
                             "event_ticker": window["event_ticker"],
@@ -8743,9 +8744,10 @@ class OpportunityScanner:
                 no_prob = 1.0 - yes_final_prob
                 no_price = 100 - best_ask  # NO contract price in cents
 
-                # Price filter for NO side
+                # Price filter for NO side (use lower floor for 15M shadow collection)
                 _ncfg = get_market_config(_pt)
-                if not (_ncfg.min_entry_price <= no_price <= _ncfg.max_entry_price):
+                _no_price_floor = NO_SIDE_MIN_ENTRY_PRICE if _pt in (None, "15m") else _ncfg.min_entry_price
+                if not (_no_price_floor <= no_price <= _ncfg.max_entry_price):
                     # NO price out of range — skip (don't log; too much volume for OOR)
                     continue
 
@@ -8796,13 +8798,18 @@ class OpportunityScanner:
                         _no_rej = "NO sizing yielded 0 contracts"
                     else:
                         # Passed all filters — assign appropriate shadow filter_stage
+                        # Mirror YES-side taxonomy with no_side_ prefix
                         if _ncfg.observation_only and _ncfg.observation_filter_label:
                             _no_filter_stage = _ncfg.observation_filter_label
                         elif _pt in (None, "15m"):
-                            if stc > STC_SHADOW_THRESHOLD:
-                                _no_filter_stage = "stc_shadow_no_xrp" if asset != "XRP" else "stc_shadow_xrp"
+                            _is_no_price_shadow = no_price < _ncfg.min_entry_price
+                            if _is_no_price_shadow:
+                                # NO price in shadow zone (70-85c) — mirrors YES price_shadow
+                                _no_filter_stage = "no_side_price_shadow_no_xrp" if asset != "XRP" else "no_side_price_shadow_xrp"
+                            elif stc > STC_SHADOW_THRESHOLD:
+                                _no_filter_stage = "no_side_stc_shadow_no_xrp" if asset != "XRP" else "no_side_stc_shadow_xrp"
                             elif XRP_15M_SHADOW and asset == "XRP":
-                                _no_filter_stage = "xrp_shadow"
+                                _no_filter_stage = "no_side_xrp_shadow"
                             else:
                                 _no_filter_stage = "no_side_shadow"
                         else:

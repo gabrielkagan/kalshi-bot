@@ -2309,6 +2309,36 @@ def no_side_analysis(conn: sqlite3.Connection, since: str,
         avg_e = f"{a['avg_e']*100:.2f}%" if a["avg_e"] is not None else "N/A"
         print(f"  {a['asset']:<6} {w:>4} {l:>4} {wr_a:>6.1f}% {a['avg_p']:>6.1f}c {avg_e:>9}")
 
+    # Per filter_stage NO-side breakdown
+    subsection("NO-side by filter stage")
+    stage_rows = conn.execute(f"""
+        SELECT filter_stage,
+            COUNT(*) AS total,
+            SUM(CASE WHEN market_result IN ('no', 'all_no') THEN 1 ELSE 0 END) AS w,
+            SUM(CASE WHEN market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) AS l,
+            COALESCE(SUM(counterfactual_pnl), 0) AS pnl_cents,
+            AVG(market_price) AS avg_p
+        FROM evaluated_opportunities
+        WHERE (product_type IS NULL OR product_type = '15m')
+          AND side = 'no' AND market_result IS NOT NULL
+          AND evaluation_time >= ? {asset_clause}
+        GROUP BY filter_stage ORDER BY total DESC
+    """, (since,)).fetchall()
+
+    if stage_rows:
+        print(f"  {'Stage':<35} {'N':>4} {'W':>4} {'L':>4} {'WR':>6} {'PnL':>10} {'AvgP':>5}")
+        print("  " + "-" * 70)
+        for r in stage_rows:
+            w = r["w"] or 0
+            l = r["l"] or 0
+            n = w + l
+            wr_s = f"{w/n*100:.1f}%" if n > 0 else "n/a"
+            pnl = r["pnl_cents"] or 0
+            print(f"  {r['filter_stage']:<35} {r['total']:>4} {w:>4} {l:>4} "
+                  f"{wr_s:>6} ${pnl/100:>8.2f} {r['avg_p']:>5.1f}c")
+    else:
+        print("  No settled NO-side data by stage")
+
     # Edge distribution for NO-side
     subsection("NO-side edge distribution")
     edge_buckets = conn.execute(f"""

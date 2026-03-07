@@ -2439,6 +2439,33 @@ def no_side_shadow_analysis(conn: sqlite3.Connection, since: str) -> None:
                 n = w + l
                 wr = w / n * 100 if n > 0 else 0
                 print(f"  {r['asset']:>5} {r['n']:>5} {w:>4} {l:>4} {wr:>6.1f}%")
+
+        # Per filter_stage NO-side breakdown
+        eo_stage = conn.execute("""
+            SELECT filter_stage,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) AS settled,
+                   SUM(CASE WHEN status='settled' AND market_result IN ('no','all_no') THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) AS losses,
+                   COALESCE(SUM(CASE WHEN status='settled' THEN counterfactual_pnl END), 0) AS pnl_cents,
+                   ROUND(AVG(market_price), 1) AS avg_price
+            FROM evaluated_opportunities
+            WHERE side='no' AND product_type IN ('hourly') AND evaluation_time >= ?
+            GROUP BY filter_stage ORDER BY total DESC
+        """, (since,)).fetchall()
+        if eo_stage:
+            print(f"\n  NO-side by filter stage:")
+            print(f"  {'Stage':<35} {'N':>4} {'Sett':>5} {'W':>4} {'L':>4} {'WR':>6} {'PnL':>10} {'AvgP':>5}")
+            print(f"  {'-'*75}")
+            for r in eo_stage:
+                s = r["settled"] or 0
+                w = r["wins"] or 0
+                l = r["losses"] or 0
+                n = w + l
+                wr_s = f"{w/n*100:.1f}%" if n > 0 else "n/a"
+                pnl = r["pnl_cents"] or 0
+                print(f"  {r['filter_stage']:<35} {r['total']:>4} {s:>5} "
+                      f"{w:>4} {l:>4} {wr_s:>6} ${pnl/100:>8.2f} {r['avg_price']:>5}c")
     else:
         print("  Column 'side' not found in evaluated_opportunities — skipping.")
 

@@ -946,6 +946,11 @@ class DashboardSnapshotBuilder:
                 "stc_shadow":          ["stc_shadow"],
                 "stc_shadow_xrp":      ["stc_shadow"],
                 "stc_shadow_no_xrp":   ["stc_shadow", "stc_shadow (no XRP)"],
+                # NO-side shadow variants (mirror YES-side taxonomy)
+                "no_side_price_shadow_xrp":    ["no_side_price_shadow"],
+                "no_side_price_shadow_no_xrp": ["no_side_price_shadow", "no_side_price_shadow (no XRP)"],
+                "no_side_stc_shadow_xrp":      ["no_side_stc_shadow"],
+                "no_side_stc_shadow_no_xrp":   ["no_side_stc_shadow", "no_side_stc_shadow (no XRP)"],
             }
             _merged = {}  # display_name -> {total, wins, losses, net_pnl_cents}
             for r in stage_rows:
