@@ -579,7 +579,8 @@ class HARRVShadow:
                  seconds_to_close: float, market_price: int,
                  best_bid: Optional[int] = None,
                  egarch_prob: Optional[float] = None,
-                 egarch_edge: Optional[float] = None) -> Optional[Dict]:
+                 egarch_edge: Optional[float] = None,
+                 no_ask: Optional[int] = None) -> Optional[Dict]:
         """Full HAR-RV evaluation pipeline for a single strike.
 
         Returns a signal dict with all diagnostic fields, or None if
@@ -638,8 +639,10 @@ class HARRVShadow:
 
         # ── NO-side evaluation ──
         no_result = self._evaluate_no_side(
-            final_prob, market_price, asset, fee_adjusted_edge,
-            seconds_to_close, rv_components, bankroll, best_bid=best_bid)
+            final_prob, market_price,
+            asset=asset, yes_fee_edge=fee_adjusted_edge,
+            seconds_to_close=seconds_to_close, rv_components=rv_components,
+            bankroll=bankroll, no_ask_actual=no_ask, best_bid=best_bid)
 
         return {
             "strategy": "harrv_shadow",
@@ -698,17 +701,21 @@ class HARRVShadow:
                           seconds_to_close: float,
                           rv_components: Optional[Dict],
                           bankroll: int,
+                          no_ask_actual: Optional[int] = None,
                           best_bid: Optional[int] = None) -> Dict:
         """Mirror YES-side HAR-RV probability to compute NO-side metrics.
 
         Pattern follows fifteenm_shadow.py's _evaluate_no_side_approach.
-        NO ask = 100 - YES bid (actual orderbook, not 100 - YES ask which is NO bid).
+        Uses actual NO ask from market NBBO when available.
         """
-        # NO ask = 100 - YES bid (from actual orderbook)
-        if best_bid is not None and best_bid > 0:
-            no_price = 100 - best_bid
+        # Use actual NO ask from market NBBO
+        if no_ask_actual is not None and no_ask_actual > 0:
+            no_price = no_ask_actual
         else:
-            no_price = 100 - market_price  # fallback if no YES bid available
+            # No actual NO ask available — return null result
+            return {"no_price": None, "no_prob": None, "no_edge": None, "no_fee_edge": None,
+                    "no_kelly_f": None, "no_contracts": 0,
+                    "no_gates_passed": 0, "no_gate_failures": "no_ask_unavailable"}
         no_prob = 1.0 - yes_final_prob
 
         # Edge
@@ -935,7 +942,8 @@ class HourlyAltShadowEngine:
                         market_price: int,
                         ob_data: Optional[Dict] = None,
                         egarch_prob: Optional[float] = None,
-                        egarch_edge: Optional[float] = None) -> List[Dict]:
+                        egarch_edge: Optional[float] = None,
+                        no_ask: Optional[int] = None) -> List[Dict]:
         """Evaluate both strategies for a single strike.
 
         Returns list of signal dicts (0-2 entries, one per strategy).
@@ -976,7 +984,8 @@ class HourlyAltShadowEngine:
                     seconds_to_close, market_price,
                     best_bid=best_bid,
                     egarch_prob=egarch_prob,
-                    egarch_edge=egarch_edge)
+                    egarch_edge=egarch_edge,
+                    no_ask=no_ask)
                 if harrv_signal is not None:
                     signals.append(harrv_signal)
                     self._seen.add(harrv_key)

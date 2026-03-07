@@ -474,7 +474,8 @@ class SPXHARRVModel:
                  seconds_to_close: float, market_price: int,
                  best_bid: Optional[int] = None, best_ask: Optional[int] = None,
                  egarch_prob: Optional[float] = None,
-                 egarch_edge: Optional[float] = None) -> Optional[Dict]:
+                 egarch_edge: Optional[float] = None,
+                 no_ask: Optional[int] = None) -> Optional[Dict]:
         """Full HAR-RV evaluation pipeline for a single SPX strike.
 
         Returns a signal dict with all diagnostic fields, or None if
@@ -525,59 +526,70 @@ class SPXHARRVModel:
             position = max(0, min(position, max_pos))
 
         # ── NO-side evaluation ──
-        # NO ask = 100 - YES bid (actual orderbook, not 100 - YES ask which is NO bid)
-        if best_bid is not None and best_bid > 0:
-            no_price = 100 - best_bid
+        # Use actual NO ask from market NBBO when available
+        if no_ask is not None and no_ask > 0:
+            no_price = no_ask
         else:
-            no_price = 100 - market_price  # fallback if no YES bid
-        no_prob = 1.0 - final_prob
-        no_market_prob = no_price / 100.0
-        no_edge = no_prob - no_market_prob
-        no_est_fee = math.ceil(FEE_MULT_TAKER * 1 * no_market_prob * (1 - no_market_prob))
-        no_fee_adjusted_edge = no_edge - no_est_fee / 100.0
+            no_price = None  # no actual NO ask available
 
-        # NO-side gates (reuse same gate logic with NO-side parameters)
-        no_gate_failures = []
-        # Gate 1: Minimum edge
-        if no_fee_adjusted_edge < MIN_EDGE:
-            no_gate_failures.append(f"min_edge: {no_fee_adjusted_edge:.4f} < {MIN_EDGE:.4f}")
-        # Gate 2: Maximum edge (inversion protection)
-        if no_fee_adjusted_edge > MAX_EDGE:
-            no_gate_failures.append(f"max_edge: {no_fee_adjusted_edge:.4f} > {MAX_EDGE:.4f}")
-        # Gate 3: Maximum confidence (NO-side confidence)
-        if no_prob > MAX_CONFIDENCE:
-            no_gate_failures.append(f"max_confidence: {no_prob:.4f} > {MAX_CONFIDENCE:.4f}")
-        # Gate 4: Price band (applied to NO price)
-        if no_price < MIN_PRICE:
-            no_gate_failures.append(f"min_price: {no_price}c < {MIN_PRICE}c")
-        if no_price > MAX_PRICE:
-            no_gate_failures.append(f"max_price: {no_price}c > {MAX_PRICE}c")
-        # Gate 5: STC range (same as YES)
-        if seconds_to_close < MIN_STC:
-            no_gate_failures.append(f"min_stc: {seconds_to_close:.0f}s < {MIN_STC}s")
-        if seconds_to_close > MAX_STC:
-            no_gate_failures.append(f"max_stc: {seconds_to_close:.0f}s > {MAX_STC}s")
-        # Gate 6: Opening rush (same as YES)
-        if OPENING_RUSH_GATE and _is_et_opening_rush(now):
-            no_gate_failures.append("opening_rush: 10am ET window")
-        # Gate 7: Vol spike (same as YES)
-        if rv_components and len(self._trailing_rv) >= 10:
-            rv_1h_val = rv_components.get("rv_1h", 0)
-            avg_rv = sum(self._trailing_rv) / len(self._trailing_rv)
-            if avg_rv > 0 and rv_1h_val > VOL_SPIKE_THRESHOLD * avg_rv:
-                no_gate_failures.append(f"vol_spike: rv_1h={rv_1h_val:.6f} > {VOL_SPIKE_THRESHOLD}x avg={avg_rv:.6f}")
+        if no_price is not None:
+            no_prob = 1.0 - final_prob
+            no_market_prob = no_price / 100.0
+            no_edge = no_prob - no_market_prob
+            no_est_fee = math.ceil(FEE_MULT_TAKER * 1 * no_market_prob * (1 - no_market_prob))
+            no_fee_adjusted_edge = no_edge - no_est_fee / 100.0
 
-        no_gates_passed = len(no_gate_failures) == 0
+            # NO-side gates (reuse same gate logic with NO-side parameters)
+            no_gate_failures = []
+            # Gate 1: Minimum edge
+            if no_fee_adjusted_edge < MIN_EDGE:
+                no_gate_failures.append(f"min_edge: {no_fee_adjusted_edge:.4f} < {MIN_EDGE:.4f}")
+            # Gate 2: Maximum edge (inversion protection)
+            if no_fee_adjusted_edge > MAX_EDGE:
+                no_gate_failures.append(f"max_edge: {no_fee_adjusted_edge:.4f} > {MAX_EDGE:.4f}")
+            # Gate 3: Maximum confidence (NO-side confidence)
+            if no_prob > MAX_CONFIDENCE:
+                no_gate_failures.append(f"max_confidence: {no_prob:.4f} > {MAX_CONFIDENCE:.4f}")
+            # Gate 4: Price band (applied to NO price)
+            if no_price < MIN_PRICE:
+                no_gate_failures.append(f"min_price: {no_price}c < {MIN_PRICE}c")
+            if no_price > MAX_PRICE:
+                no_gate_failures.append(f"max_price: {no_price}c > {MAX_PRICE}c")
+            # Gate 5: STC range (same as YES)
+            if seconds_to_close < MIN_STC:
+                no_gate_failures.append(f"min_stc: {seconds_to_close:.0f}s < {MIN_STC}s")
+            if seconds_to_close > MAX_STC:
+                no_gate_failures.append(f"max_stc: {seconds_to_close:.0f}s > {MAX_STC}s")
+            # Gate 6: Opening rush (same as YES)
+            if OPENING_RUSH_GATE and _is_et_opening_rush(now):
+                no_gate_failures.append("opening_rush: 10am ET window")
+            # Gate 7: Vol spike (same as YES)
+            if rv_components and len(self._trailing_rv) >= 10:
+                rv_1h_val = rv_components.get("rv_1h", 0)
+                avg_rv = sum(self._trailing_rv) / len(self._trailing_rv)
+                if avg_rv > 0 and rv_1h_val > VOL_SPIKE_THRESHOLD * avg_rv:
+                    no_gate_failures.append(f"vol_spike: rv_1h={rv_1h_val:.6f} > {VOL_SPIKE_THRESHOLD}x avg={avg_rv:.6f}")
 
-        # NO-side Kelly sizing
-        no_kelly_f = 0.0
-        no_position = 0
-        if no_fee_adjusted_edge > 0 and no_price > 0 and no_price < 100:
-            no_be_wr = no_market_prob
-            no_kelly_f = no_fee_adjusted_edge / (1.0 - no_be_wr)
-            no_position = int(KELLY_FRACTION * no_kelly_f * self._bankroll / max(1, no_price))
-            no_max_pos = int(self._bankroll * MAX_POSITION_PCT / max(1, no_price))
-            no_position = max(0, min(no_position, no_max_pos))
+            no_gates_passed = len(no_gate_failures) == 0
+
+            # NO-side Kelly sizing
+            no_kelly_f = 0.0
+            no_position = 0
+            if no_fee_adjusted_edge > 0 and no_price > 0 and no_price < 100:
+                no_be_wr = no_market_prob
+                no_kelly_f = no_fee_adjusted_edge / (1.0 - no_be_wr)
+                no_position = int(KELLY_FRACTION * no_kelly_f * self._bankroll / max(1, no_price))
+                no_max_pos = int(self._bankroll * MAX_POSITION_PCT / max(1, no_price))
+                no_position = max(0, min(no_position, no_max_pos))
+        else:
+            # No actual NO ask — skip NO-side
+            no_prob = 1.0 - final_prob
+            no_edge = None
+            no_fee_adjusted_edge = None
+            no_kelly_f = 0.0
+            no_position = 0
+            no_gates_passed = False
+            no_gate_failures = ["no_ask_unavailable"]
 
         self._signal_count += 1
 
@@ -795,7 +807,8 @@ class SPXHARRVShadowEngine:
                         best_bid: Optional[int] = None, best_ask: Optional[int] = None,
                         market_price: Optional[int] = None,
                         egarch_prob: Optional[float] = None,
-                        egarch_edge: Optional[float] = None):
+                        egarch_edge: Optional[float] = None,
+                        no_ask: Optional[int] = None):
         """Evaluate a single SPX strike and log the result.
 
         Called from bot.py's SPX observation gate.
@@ -819,7 +832,8 @@ class SPXHARRVShadowEngine:
             seconds_to_close=seconds_to_close,
             market_price=market_price,
             best_bid=best_bid, best_ask=best_ask,
-            egarch_prob=egarch_prob, egarch_edge=egarch_edge)
+            egarch_prob=egarch_prob, egarch_edge=egarch_edge,
+            no_ask=no_ask)
 
         if signal is None:
             return  # Insufficient return data for HAR-RV

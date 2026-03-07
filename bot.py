@@ -6936,6 +6936,9 @@ class OpportunityScanner:
                             fee_mult_taker=get_market_config("15m").fee_multiplier_taker,
                             fee_mult_maker=get_market_config("15m").fee_multiplier_maker)
                         _15m_pre_fee_edge = _15m_pre_edge - _15m_pre_fee / 100.0
+                        _15m_pre_no_ask_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                        _15m_pre_no_ask = (dollars_str_to_cents(_15m_pre_no_ask_raw) if isinstance(_15m_pre_no_ask_raw, str)
+                                           else int(_15m_pre_no_ask_raw)) if _15m_pre_no_ask_raw is not None else None
                         self._ml.fifteenm_shadow.evaluate_strike(
                             asset=asset, ticker=ticker,
                             event_ticker=window["event_ticker"],
@@ -6950,7 +6953,8 @@ class OpportunityScanner:
                             live_edge=_15m_pre_edge,
                             live_fee_edge=_15m_pre_fee_edge,
                             egarch_blend_weight=_shadow_diag.get("egarch_blend_weight"),
-                            fee_adjusted_edge=_15m_pre_fee_edge)
+                            fee_adjusted_edge=_15m_pre_fee_edge,
+                            no_ask=_15m_pre_no_ask)
                     except Exception:
                         logging.warning("fifteenm_shadow pre-filter evaluate failed", exc_info=True)
 
@@ -7051,12 +7055,13 @@ class OpportunityScanner:
                             "_shadow_diag": _shadow_diag.copy(),
                             "_oft_db": _oft_db.copy(),
                         })
-                    # NO-side shadow: compute actual NO ask from orderbook
-                    # NO ask = 100 - highest YES bid (NOT 100 - YES ask, which is NO bid)
+                    # NO-side shadow: read actual NO ask from market NBBO
                     _no_ask_por = None
-                    _yes_bid_por = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
-                    if _yes_bid_por is not None and _yes_bid_por > 0:
-                        _no_ask_por = 100 - _yes_bid_por
+                    _no_ask_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                    if _no_ask_raw is not None:
+                        _no_ask_por = dollars_str_to_cents(_no_ask_raw) if isinstance(_no_ask_raw, str) else int(_no_ask_raw)
+                    if _no_ask_por is not None and _no_ask_por <= 0:
+                        _no_ask_por = None
                     if _no_ask_por is not None and NO_SIDE_MIN_ENTRY_PRICE <= _no_ask_por <= _entry_ceil:
                         _no_side_queue.append({
                             "ticker": ticker,
@@ -7248,9 +7253,12 @@ class OpportunityScanner:
                 # ── Weather NO-side shadow edge ──
                 if _pt == "weather":
                     _no_prob = 1.0 - final_prob
-                    # NO ask = 100 - highest YES bid (actual orderbook, not inferred)
-                    _wx_yes_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
-                    _wx_no_ask = (100 - _wx_yes_bid) if (_wx_yes_bid is not None and _wx_yes_bid > 0) else None
+                    # NO ask from market NBBO
+                    _wx_no_ask_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                    _wx_no_ask = (dollars_str_to_cents(_wx_no_ask_raw) if isinstance(_wx_no_ask_raw, str)
+                                  else int(_wx_no_ask_raw)) if _wx_no_ask_raw is not None else None
+                    if _wx_no_ask is not None and _wx_no_ask <= 0:
+                        _wx_no_ask = None
                     if _wx_no_ask is not None:
                         _no_fee = calculate_fee(1, _wx_no_ask, is_taker=True,
                                                 fee_mult_taker=_mcfg.fee_multiplier_taker,
@@ -7259,9 +7267,12 @@ class OpportunityScanner:
                             _no_prob - _wx_no_ask / 100.0 - _no_fee / 100.0, 6)
 
                 # ── NO-side shadow queue (all markets that reach edge computation) ──
-                # NO ask = 100 - highest YES bid (actual orderbook, not inferred)
-                _yes_bid_eq = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
-                _no_ask_eq = (100 - _yes_bid_eq) if (_yes_bid_eq is not None and _yes_bid_eq > 0) else None
+                # NO ask from market NBBO
+                _no_ask_eq_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                _no_ask_eq = (dollars_str_to_cents(_no_ask_eq_raw) if isinstance(_no_ask_eq_raw, str)
+                              else int(_no_ask_eq_raw)) if _no_ask_eq_raw is not None else None
+                if _no_ask_eq is not None and _no_ask_eq <= 0:
+                    _no_ask_eq = None
                 if _no_ask_eq is not None:
                     _no_side_queue.append({
                         "ticker": ticker,
@@ -8132,6 +8143,9 @@ class OpportunityScanner:
                             and self._ml and getattr(self._ml, "hourly_alt_shadow", None)):
                         try:
                             _alt_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                            _alt_no_ask_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                            _alt_no_ask = (dollars_str_to_cents(_alt_no_ask_raw) if isinstance(_alt_no_ask_raw, str)
+                                           else int(_alt_no_ask_raw)) if _alt_no_ask_raw is not None else None
                             self._ml.hourly_alt_shadow.evaluate_strike(
                                 asset=asset, ticker=ticker,
                                 event_ticker=window["event_ticker"],
@@ -8140,7 +8154,8 @@ class OpportunityScanner:
                                 best_bid=_alt_bid, best_ask=best_ask,
                                 market_price=best_ask, ob_data=ob_data,
                                 egarch_prob=final_prob,
-                                egarch_edge=fee_adjusted_edge)
+                                egarch_edge=fee_adjusted_edge,
+                                no_ask=_alt_no_ask)
                         except Exception:
                             logging.debug("hourly_alt_shadow evaluate failed", exc_info=True)
 
@@ -8150,6 +8165,9 @@ class OpportunityScanner:
                             and self._ml and getattr(self._ml, "spx_harrv_shadow", None)):
                         try:
                             _harv_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                            _harv_no_ask_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                            _harv_no_ask = (dollars_str_to_cents(_harv_no_ask_raw) if isinstance(_harv_no_ask_raw, str)
+                                            else int(_harv_no_ask_raw)) if _harv_no_ask_raw is not None else None
                             self._ml.spx_harrv_shadow.evaluate_strike(
                                 ticker=ticker,
                                 event_ticker=window["event_ticker"],
@@ -8158,7 +8176,8 @@ class OpportunityScanner:
                                 best_bid=_harv_bid, best_ask=best_ask,
                                 market_price=best_ask,
                                 egarch_prob=final_prob,
-                                egarch_edge=fee_adjusted_edge)
+                                egarch_edge=fee_adjusted_edge,
+                                no_ask=_harv_no_ask)
                         except Exception:
                             logging.debug("spx_harrv_shadow evaluate failed", exc_info=True)
 
@@ -8170,6 +8189,9 @@ class OpportunityScanner:
                         and self._ml and getattr(self._ml, "fifteenm_shadow", None)):
                     try:
                         _15m_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                        _15m_no_ask_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                        _15m_no_ask = (dollars_str_to_cents(_15m_no_ask_raw) if isinstance(_15m_no_ask_raw, str)
+                                       else int(_15m_no_ask_raw)) if _15m_no_ask_raw is not None else None
                         self._ml.fifteenm_shadow.evaluate_strike(
                             asset=asset, ticker=ticker,
                             event_ticker=window["event_ticker"],
@@ -8182,7 +8204,8 @@ class OpportunityScanner:
                             z_score=z_score, live_prob=final_prob,
                             live_edge=edge, live_fee_edge=fee_adjusted_edge,
                             egarch_blend_weight=_shadow_diag.get("egarch_blend_weight"),
-                            fee_adjusted_edge=fee_adjusted_edge)
+                            fee_adjusted_edge=fee_adjusted_edge,
+                            no_ask=_15m_no_ask)
                     except Exception:
                         logging.warning("fifteenm_shadow evaluate failed", exc_info=True)
 
@@ -8724,9 +8747,8 @@ class OpportunityScanner:
         """Shadow-evaluate NO-side (buy NO contract) for all queued markets.
 
         Mirrors the YES-side evaluation: NO_prob = 1 - YES_prob,
-        NO_ask = 100 - highest_YES_bid (actual orderbook). Runs through
-        the same filter pipeline (price, edge, sizing) and logs to
-        evaluated_opportunities with side='no'.
+        NO_ask from market NBBO. Runs through the same filter pipeline
+        (price, edge, sizing) and logs to evaluated_opportunities with side='no'.
 
         Shadow-only — never places orders. Entire body in try/except so
         a crash here cannot affect candidate selection or live trading.
@@ -8790,7 +8812,7 @@ class OpportunityScanner:
 
                 # ── NO-side computation ──
                 no_prob = 1.0 - yes_final_prob
-                no_price = item["no_ask"]  # actual NO ask from orderbook (100 - YES bid)
+                no_price = item["no_ask"]  # actual NO ask from market NBBO
 
                 # Price filter for NO side (use lower floor for 15M shadow collection)
                 _ncfg = get_market_config(_pt)

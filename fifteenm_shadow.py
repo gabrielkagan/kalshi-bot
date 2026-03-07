@@ -935,6 +935,8 @@ class FifteenMShadowEngine:
             ("a3_pnl_gate30_cents", "INTEGER"),
             ("no_a3_pnl_gate10_cents", "INTEGER"), ("no_a3_pnl_gate20_cents", "INTEGER"),
             ("no_a3_pnl_gate30_cents", "INTEGER"),
+            # Actual NO ask from market NBBO (not derived from YES bid)
+            ("no_ask", "INTEGER"),
         ]:
             try:
                 self._db_conn.execute(
@@ -952,7 +954,8 @@ class FifteenMShadowEngine:
                         live_edge: float, live_fee_edge: float,
                         egarch_blend_weight: Optional[float] = None,
                         fee_adjusted_edge: Optional[float] = None,
-                        kelly_f: Optional[float] = None):
+                        kelly_f: Optional[float] = None,
+                        no_ask: Optional[int] = None):
         """Run all three shadow approaches and log results. One entry per ticker."""
         if ticker in self._seen:
             return
@@ -980,11 +983,11 @@ class FifteenMShadowEngine:
         market_only_prob = market_price / 100.0
 
         # ── NO-side shadow evaluation ──
-        # NO ask = 100 - YES bid (actual orderbook, not 100 - YES ask which is NO bid)
-        if best_bid is not None and best_bid > 0:
-            no_price = 100 - best_bid
+        # Use actual NO ask from market NBBO when available
+        if no_ask is not None and no_ask > 0:
+            no_price = no_ask
         else:
-            no_price = None  # no YES bid available — skip NO-side
+            no_price = None  # no NO ask available — skip NO-side
         no_live_prob = 1.0 - live_prob
         if no_price is not None:
             no_live_edge = no_live_prob - no_price / 100.0
@@ -1010,11 +1013,11 @@ class FifteenMShadowEngine:
             no_live_edge = None
             no_live_fee_edge = None
             _no_null = {"final_prob": None, "edge": None, "fee_adjusted_edge": None,
-                        "kelly_f": None, "contracts": 0, "gates_passed": 0, "gate_failures": "no_yes_bid"}
+                        "kelly_f": None, "contracts": 0, "gates_passed": 0, "gate_failures": "no_ask_unavailable"}
             no_a1 = _no_null
             no_a2 = _no_null.copy()
             no_a3 = {"a3_gate_prob": None, "a3_loss_prob": None, "a3_recommendation": "skip",
-                      "a3_model_status": "no_yes_bid", "a3_features_used": 0}
+                      "a3_model_status": "no_ask_unavailable", "a3_features_used": 0}
             no_market_only_prob = None
 
         self._log_signal(
@@ -1041,6 +1044,7 @@ class FifteenMShadowEngine:
             no_a2=no_a2,
             no_a3=no_a3,
             no_market_only_prob=no_market_only_prob,
+            no_ask=no_ask,
         )
 
     @staticmethod
@@ -1091,7 +1095,8 @@ class FifteenMShadowEngine:
                     live_prob, live_edge, live_fee_edge, a1, a2, a3,
                     market_only_prob,
                     no_live_prob=None, no_live_edge=None, no_live_fee_edge=None,
-                    no_a1=None, no_a2=None, no_a3=None, no_market_only_prob=None):
+                    no_a1=None, no_a2=None, no_a3=None, no_market_only_prob=None,
+                    no_ask=None):
         """Write signal to DB."""
         self._ensure_db()
         now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -1123,6 +1128,7 @@ class FifteenMShadowEngine:
                     a3_model_version, a3_no_side_warning,
                     no_a3_gate_prob, no_a3_gate_prob_raw, no_a3_gate_10, no_a3_gate_20, no_a3_gate_30,
                     no_a3_model_version, no_a3_no_side_warning,
+                    no_ask,
                     status
                 ) VALUES (
                     ?, ?, ?, ?,
@@ -1146,6 +1152,7 @@ class FifteenMShadowEngine:
                     ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?,
+                    ?,
                     'pending'
                 )
             """, (
@@ -1174,6 +1181,7 @@ class FifteenMShadowEngine:
                 _no_a3.get("gate_prob"), _no_a3.get("gate_prob_raw"),
                 _no_a3.get("gate_10"), _no_a3.get("gate_20"), _no_a3.get("gate_30"),
                 _no_a3.get("model_version"), _no_a3.get("no_side_warning"),
+                no_ask,
             ))
             self._db_conn.commit()
         except Exception:
@@ -1212,9 +1220,13 @@ class FifteenMShadowEngine:
             result_yes = market_result in ("yes", "all_yes")
             result_no = market_result in ("no", "all_no")
             mp = row["market_price"] or 0
-            # NO ask = 100 - YES bid (actual orderbook). Fallback to 100-mp for old data.
-            _bb = row["best_bid"]
-            no_mp = (100 - _bb) if (_bb and _bb > 0) else (100 - mp)
+            # Use stored actual NO ask from market NBBO. Fallback to 100-best_bid for old data.
+            _stored_no_ask = row["no_ask"] if "no_ask" in row.keys() else None
+            if _stored_no_ask and _stored_no_ask > 0:
+                no_mp = _stored_no_ask
+            else:
+                _bb = row["best_bid"]
+                no_mp = (100 - _bb) if (_bb and _bb > 0) else (100 - mp)
             now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
             def _compute_pnl(contracts, price, is_no_side=False):

@@ -1380,14 +1380,14 @@ class TestShadowCallsiteVariables:
 
 # ============================================================================
 #  NO-Side Orderbook Pricing (Mar 7 2026)
-#  Bug: NO price was computed as `100 - best_ask` (= NO bid, NOT NO ask).
-#  Correct: NO ask = 100 - highest_YES_bid (from actual orderbook).
-#  This was silently wrong in all NO-side shadow evaluation — every NO-side
-#  edge, sizing, and filter decision used the wrong price.
+#  Bug: NO price was derived as `100 - YES_bid` or `100 - market_price`.
+#  Correct: NO ask is its own price from market NBBO (`no_ask` field).
+#  YES and NO prices do NOT always sum to 100 — arbitrage can exist.
+#  Fix: read actual `no_ask` from Kalshi market NBBO, pass through call chain.
 # ============================================================================
 
 class TestNoSideOrderbookPricing:
-    """NO-side pricing must use actual orderbook YES bid, never infer from YES ask."""
+    """NO-side pricing must use actual NO ask from market NBBO, never derived from YES prices."""
 
     def _get_bot_source(self):
         fpath = os.path.join(PROJECT_ROOT, "bot.py")
@@ -1409,8 +1409,8 @@ class TestNoSideOrderbookPricing:
             body = m.group(1)
             assert '"no_ask"' in body or "'no_ask'" in body, (
                 f"_no_side_queue.append #{i+1} does not pass 'no_ask' key. "
-                f"NO price must come from actual orderbook (100 - YES bid), "
-                f"not be inferred later from YES ask."
+                f"NO price must come from actual market NBBO no_ask field, "
+                f"not derived from YES-side prices."
             )
 
     def test_process_no_side_uses_item_no_ask(self):
@@ -1464,11 +1464,11 @@ class TestNoSideOrderbookPricing:
             f"Found {len(violations)} location(s) computing NO price as "
             f"'100 - best_ask' (= NO BID, wrong!):\n" +
             "\n".join(violations) +
-            "\n\nNO ASK = 100 - highest_YES_bid. Use OrderExecutor._best_yes_bid(ob_data)."
+            "\n\nNO ASK comes from market NBBO no_ask field, not derived from YES prices."
         )
 
-    def test_weather_no_side_uses_orderbook(self):
-        """Weather NO-side edge must use actual orderbook, not 100 - best_ask."""
+    def test_weather_no_side_uses_market_nbbo(self):
+        """Weather NO-side edge must use actual NO ask from market NBBO."""
         source = self._get_bot_source()
         # Find the weather NO-side section
         wx_match = re.search(
@@ -1479,22 +1479,22 @@ class TestNoSideOrderbookPricing:
         wx_body = wx_match.group(1)
         assert "100 - best_ask" not in wx_body, (
             "Weather NO-side edge still uses '100 - best_ask'. "
-            "Must use actual orderbook YES bid to compute NO ask."
+            "Must use actual NO ask from market NBBO."
         )
-        assert "_best_yes_bid" in wx_body, (
-            "Weather NO-side edge does not call _best_yes_bid to get actual orderbook data."
+        # Must read no_ask from market data
+        assert "no_ask" in wx_body, (
+            "Weather NO-side edge does not read 'no_ask' from market NBBO."
         )
 
-    def test_shadow_engines_no_side_uses_best_bid(self):
-        """All shadow engines must compute NO ask from YES bid, not YES ask.
+    def test_shadow_engines_accept_no_ask_param(self):
+        """All shadow engines must accept `no_ask` parameter for actual NO ask from market NBBO.
 
-        NO ask = 100 - YES bid (actual orderbook).
-        NOT: 100 - market_price (which is YES ask, giving NO bid — wrong).
+        NO ask is its own price from the NBBO, not derived from YES prices.
         """
         engines = [
             ("fifteenm_shadow.py", "evaluate_strike"),
             ("spx_harrv_shadow.py", "evaluate"),
-            ("hourly_alt_shadow.py", "_evaluate_no_side"),
+            ("hourly_alt_shadow.py", "evaluate_strike"),
         ]
         for fname, method in engines:
             fpath = os.path.join(PROJECT_ROOT, fname)
@@ -1503,26 +1503,11 @@ class TestNoSideOrderbookPricing:
             with open(fpath) as f:
                 source = f.read()
 
-            # Find the NO-side section in the method
-            method_match = re.search(
-                rf'def {method}\(.*?\n(    def |\Z)',
-                source, re.DOTALL
+            # Method signature must accept no_ask parameter
+            sig_match = re.search(rf'def {method}\([^)]+\)', source, re.DOTALL)
+            assert sig_match, f"{fname}: method {method} not found"
+            sig = sig_match.group(0)
+            assert "no_ask" in sig, (
+                f"{fname}.{method}() does not accept 'no_ask' parameter. "
+                f"NO price must come from actual market NBBO, not derived from YES prices."
             )
-            assert method_match, f"{fname}: method {method} not found"
-            body = method_match.group(0)
-
-            # Find NO-side price computation
-            no_price_lines = [
-                line.strip() for line in body.split('\n')
-                if re.match(r'\s*no_price\s*=', line.strip())
-                and not line.strip().startswith('#')
-            ]
-
-            for line in no_price_lines:
-                # Must NOT be `100 - market_price` without best_bid guard
-                assert "100 - market_price" not in line or "fallback" in line.lower(), (
-                    f"{fname}: NO price computed as '100 - market_price' "
-                    f"(= 100 - YES_ask = NO BID, wrong). "
-                    f"Must use 100 - best_bid (= NO ASK from actual orderbook). "
-                    f"Line: {line}"
-                )

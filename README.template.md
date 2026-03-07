@@ -173,7 +173,7 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Kalshi API Notes
 
 - **Auth**: RSA-PSS signature --- the signing path must include the `/trade-api/v2` prefix
-- **Orderbook quirk**: Returns only bids --- best YES ask = `100 - highest_NO_bid`
+- **Orderbook**: Returns separate YES and NO orderbooks. Market NBBO provides `yes_ask`, `yes_bid`, `no_ask`, `no_bid`. YES + NO prices do NOT always sum to 100.
 - **Order type**: All orders are limit orders (no market orders as of Feb 2026)
 - **Settlements**: Bot uses the settlements API for outcome detection, never z-score heuristics or balance deltas
 - **Fee formula**: taker = `ceil(0.07 * C * P * (1-P))`, maker = `ceil(0.0175 * C * P * (1-P))` --- ceil on total, not per contract

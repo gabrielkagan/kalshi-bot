@@ -145,7 +145,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 ## Kalshi API
 
 - **Auth:** RSA-PSS signature with `/trade-api/v2` prefix
-- **Orderbook:** Returns only bids — best YES ask = `100 - highest_NO_bid`
+- **Orderbook:** Returns separate YES and NO orderbooks. Market NBBO provides `yes_ask`, `yes_bid`, `no_ask`, `no_bid`. YES + NO prices do NOT always sum to 100.
 - **All orders are limit orders** (no market orders)
 - **API tier:** Advanced (30 reads/sec, 30 writes/sec)
 - **Series (15M):** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M
