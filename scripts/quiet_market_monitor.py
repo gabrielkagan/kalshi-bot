@@ -173,7 +173,7 @@ def main():
     # Count settled trades in last 4h
     row = conn.execute(
         """SELECT COUNT(*) FROM settled_trades
-           WHERE settled_time >= ?""",
+           WHERE settled_at >= ?""",
         (cutoff_4h,),
     ).fetchone()
     trades_4h = row[0] if row else 0
@@ -189,8 +189,8 @@ def main():
 
     # Last trade info
     last_trade = conn.execute(
-        """SELECT settled_time FROM settled_trades
-           ORDER BY settled_time DESC LIMIT 1""",
+        """SELECT settled_at FROM settled_trades
+           ORDER BY settled_at DESC LIMIT 1""",
     ).fetchone()
     last_trade_time = last_trade[0] if last_trade else None
 

@@ -354,7 +354,7 @@ async def _tool_get_data_health(args: dict) -> list[TextContent]:
                     SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) AS wins,
                     SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) AS losses
                 FROM settled_trades
-                WHERE settled_time >= datetime('now', '-24 hours')
+                WHERE settled_at >= datetime('now', '-24 hours')
                 GROUP BY product_type
                 """
             ).fetchall()
