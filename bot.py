@@ -5095,7 +5095,7 @@ class MincerZarnowitzTracker:
                 json.dump(state, f)
             os.replace(tmp_path, EGARCH_BLEND_STATE_PATH)
         except Exception:
-            logging.debug("MZ tracker: save_state failed", exc_info=True)
+            logging.warning("MZ tracker: save_state failed", exc_info=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -7033,7 +7033,7 @@ class OpportunityScanner:
                                 hourly_shadow_blend_60=None, hourly_post_temp_prob=None,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
-                        pass
+                        logging.warning("insert_evaluated_opportunity failed (price_out_of_range)", exc_info=True)
                     if PRICE_SHADOW_ENABLED and PRICE_SHADOW_FLOOR <= best_ask < _entry_floor:
                         _price_shadow_queue.append({
                             "ticker": ticker,
@@ -7576,7 +7576,7 @@ class OpportunityScanner:
                                 hourly_post_temp_prob=_hourly_post_temp_prob,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
-                        pass
+                        logging.warning("insert_evaluated_opportunity failed (hourly_observation)", exc_info=True)
                     continue
 
                 # Compute position size via Kelly criterion
@@ -7716,7 +7716,7 @@ class OpportunityScanner:
                                 hourly_post_temp_prob=_hourly_post_temp_prob,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
-                        pass
+                        logging.warning("insert_evaluated_opportunity failed (spx/weather observation)", exc_info=True)
                     continue
 
                 # Evaluate execution strategy for this market
@@ -7856,7 +7856,7 @@ class OpportunityScanner:
                                 hourly_post_temp_prob=_hourly_post_temp_prob,
                                 **_oft_db, **_shadow_diag)
                     except Exception:
-                        pass
+                        logging.warning("insert_evaluated_opportunity failed (strategy_wait)", exc_info=True)
                     # For observation-only product types, let signal flow through
                     # to observation gate — strategy timing isn't relevant for
                     # data collection.  strategy_wait is still logged above for
@@ -8290,7 +8290,7 @@ class OpportunityScanner:
                         **_shadow_extra,
                     })
                 except Exception:
-                    pass
+                    logging.warning("insert_evaluated_opportunity failed (candidate)", exc_info=True)
 
                 candidates.append({
                     "ticker": ticker,
@@ -11507,8 +11507,8 @@ class SettlementTracker:
                 if result:
                     self._process_rejection_settlement(market, ticker)
             except Exception as e:
-                logging.debug(
-                    f"Rejection settlement check failed for {ticker}: {e}")
+                logging.warning(
+                    f"Rejection settlement check failed for {ticker}: {e}", exc_info=True)
 
     def _process_rejection_settlement(self, market: Dict, ticker: str):
         """Compute counterfactual P&L for a rejected opportunity that settled."""
@@ -11624,7 +11624,7 @@ class SettlementTracker:
         try:
             rows = self._state.get_unsettled_evaluated_opportunities()
         except Exception as e:
-            logging.debug(f"get_unsettled_evaluated_opportunities failed: {e}")
+            logging.warning(f"get_unsettled_evaluated_opportunities failed: {e}", exc_info=True)
             return
 
         if not rows:
@@ -11788,7 +11788,7 @@ class SettlementTracker:
                     try:
                         self._ml.hourly_alt_shadow.settle_signals(ticker, result)
                     except Exception:
-                        logging.debug("hourly_alt_shadow settle failed for %s", ticker)
+                        logging.warning("hourly_alt_shadow settle failed for %s", ticker, exc_info=True)
 
                 # Settle SPX HAR-RV shadow signals for this ticker
                 if (self._ml and getattr(self._ml, "spx_harrv_shadow", None)
@@ -11796,14 +11796,14 @@ class SettlementTracker:
                     try:
                         self._ml.spx_harrv_shadow.settle_signals(ticker, result)
                     except Exception:
-                        logging.debug("spx_harrv_shadow settle failed for %s", ticker)
+                        logging.warning("spx_harrv_shadow settle failed for %s", ticker, exc_info=True)
 
                 logging.info(
                     f"Evaluated opp settled: {ticker} ({row['filter_stage']}) "
                     f"-> {counterfactual_outcome} (profit={would_have_profit}¢)"
                 )
             except Exception as e:
-                logging.debug(f"Evaluated opp settlement check failed for {ticker}: {e}")
+                logging.warning(f"Evaluated opp settlement check failed for {ticker}: {e}", exc_info=True)
 
         # Backfill wx_actual_high_temp for settled weather entries that missed it
         self._backfill_weather_actual_temps()
