@@ -1274,3 +1274,89 @@ class TestDedupSetTupleSafety:
             f"_eval_opp_seen cleanup must use key[0] indexing, not tuple destructuring. "
             f"Found: {cleanup_code}"
         )
+
+
+# ============================================================================
+#  14. Shadow Engine Callsite Variable Safety (6b017bb)
+#      Bug: egarch_blend_weight was used as a bare variable at the
+#      fifteenm_shadow.evaluate_strike() callsite, but it was never assigned
+#      as a local variable in scan(). It only existed as
+#      _shadow_diag["egarch_blend_weight"]. This caused NameError on every
+#      call, silently swallowed by `except Exception: logging.debug(...)`.
+#      The shadow engine was dead code for weeks.
+# ============================================================================
+
+class TestShadowCallsiteVariables:
+    """All variables at fifteenm_shadow callsites must be defined names."""
+
+    def _get_scan_source(self):
+        """Return the source of the scan() method."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            source = f.read()
+        return source
+
+    def test_shadow_callsite_no_bare_egarch_blend_weight(self):
+        """egarch_blend_weight must come from _shadow_diag or vol_est, not bare."""
+        source = self._get_scan_source()
+        # Find all fifteenm_shadow.evaluate_strike calls
+        calls = re.findall(
+            r'fifteenm_shadow\.evaluate_strike\([^)]+\)',
+            source, re.DOTALL
+        )
+        assert len(calls) >= 1, "No fifteenm_shadow.evaluate_strike calls found"
+        for call in calls:
+            # The bug: egarch_blend_weight=egarch_blend_weight (bare var)
+            # Correct: egarch_blend_weight=_shadow_diag.get("egarch_blend_weight")
+            #      or: egarch_blend_weight=vol_est.get("egarch_blend_weight")
+            if "egarch_blend_weight=" in call:
+                rhs = re.search(
+                    r'egarch_blend_weight\s*=\s*(\S+)',
+                    call
+                )
+                assert rhs, "Could not parse egarch_blend_weight= assignment"
+                value = rhs.group(1).rstrip(",)")
+                assert value != "egarch_blend_weight", (
+                    f"fifteenm_shadow callsite uses bare 'egarch_blend_weight' "
+                    f"variable — this is a NameError! Must use "
+                    f"_shadow_diag.get('egarch_blend_weight') or "
+                    f"vol_est.get('egarch_blend_weight'). "
+                    f"(Bug 6b017bb: shadow engine was dead code for weeks)"
+                )
+
+    def test_shadow_callsite_pre_filter_exists(self):
+        """fifteenm_shadow must be called BEFORE the price filter for full coverage."""
+        source = self._get_scan_source()
+        # Find the price filter
+        price_filter_pos = source.find("# Filter: ask must be in entry price range")
+        assert price_filter_pos > 0, "Price filter comment not found in bot.py"
+        # Find the first shadow callsite
+        first_shadow_pos = source.find("fifteenm_shadow.evaluate_strike")
+        assert first_shadow_pos > 0, "No fifteenm_shadow.evaluate_strike found"
+        assert first_shadow_pos < price_filter_pos, (
+            "fifteenm_shadow.evaluate_strike must appear BEFORE the price "
+            "filter to evaluate all 15M signals, not just those in price range"
+        )
+
+    def test_no_logging_debug_in_shadow_except(self):
+        """Shadow engine exception handlers must use warning+, not debug.
+
+        debug-level exceptions are invisible in production (INFO level) and
+        silently swallow real errors like NameError, making the shadow engine
+        appear to work when it's actually dead code.
+        """
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines):
+            if "fifteenm_shadow" in line and "logging.debug" in line:
+                # Allow debug in non-except contexts
+                # Check if previous non-empty line is 'except'
+                for j in range(i - 1, max(0, i - 3), -1):
+                    if lines[j].strip().startswith("except"):
+                        pytest.fail(
+                            f"bot.py:{i+1}: fifteenm_shadow error handler uses "
+                            f"logging.debug — must use logging.warning to catch "
+                            f"silent failures like NameError "
+                            f"(Bug 6b017bb: dead code for weeks)"
+                        )

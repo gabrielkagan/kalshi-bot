@@ -6918,6 +6918,41 @@ class OpportunityScanner:
                 except Exception:
                     pass
 
+                # ── 15M Shadow Engine (pre-filter: all signals) ──
+                # Evaluate shadow approaches for ALL 15M signals, not just those
+                # passing the price filter.  _seen dedup in shadow engine prevents
+                # double-eval if the signal also passes filters and hits the
+                # post-filter call below.  Uses cal_prob (pre-temperature/blend)
+                # as live_prob approximation — shadow approaches do their own cal.
+                if (window.get("product_type") in (None, "15m")
+                        and self._ml and getattr(self._ml, "fifteenm_shadow", None)
+                        and best_ask is not None and cal_prob is not None):
+                    try:
+                        _15m_pre_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                        _15m_pre_edge = cal_prob - best_ask / 100.0
+                        _15m_pre_fee = calculate_fee(
+                            1, best_ask, is_taker=True,
+                            fee_mult_taker=get_market_config("15m").fee_multiplier_taker,
+                            fee_mult_maker=get_market_config("15m").fee_multiplier_maker)
+                        _15m_pre_fee_edge = _15m_pre_edge - _15m_pre_fee / 100.0
+                        self._ml.fifteenm_shadow.evaluate_strike(
+                            asset=asset, ticker=ticker,
+                            event_ticker=window["event_ticker"],
+                            spot_price=spot, threshold=threshold,
+                            seconds_to_close=seconds_remaining,
+                            market_price=best_ask,
+                            best_bid=_15m_pre_bid, best_ask=best_ask,
+                            blended_rv=blended_rv,
+                            egarch_sigma=vol_est.get("egarch_sigma"),
+                            z_score=prob_result.get("z_score", 0.0),
+                            live_prob=cal_prob,
+                            live_edge=_15m_pre_edge,
+                            live_fee_edge=_15m_pre_fee_edge,
+                            egarch_blend_weight=_shadow_diag.get("egarch_blend_weight"),
+                            fee_adjusted_edge=_15m_pre_fee_edge)
+                    except Exception:
+                        logging.warning("fifteenm_shadow pre-filter evaluate failed", exc_info=True)
+
                 # Filter: ask must be in entry price range
                 _pricecfg = get_market_config(window.get("product_type"))
                 _entry_floor = _pricecfg.min_entry_price
@@ -8116,9 +8151,8 @@ class OpportunityScanner:
 
                     continue  # DO NOT add to candidates — observation gate
 
-                # ── 15M Shadow Engine (all 4 assets) ──
-                # Evaluate all three shadow approaches for every 15M signal that passed filters.
-                # Shadow-only: cannot place orders, logs to separate table for comparison.
+                # ── 15M Shadow Engine (post-filter) ──
+                # _seen dedup in shadow engine prevents double-eval with pre-filter call.
                 if (window.get("product_type") in (None, "15m")
                         and self._ml and getattr(self._ml, "fifteenm_shadow", None)):
                     try:
@@ -8134,7 +8168,7 @@ class OpportunityScanner:
                             egarch_sigma=vol_est.get("egarch_sigma"),
                             z_score=z_score, live_prob=final_prob,
                             live_edge=edge, live_fee_edge=fee_adjusted_edge,
-                            egarch_blend_weight=egarch_blend_weight,
+                            egarch_blend_weight=_shadow_diag.get("egarch_blend_weight"),
                             fee_adjusted_edge=fee_adjusted_edge)
                     except Exception:
                         logging.warning("fifteenm_shadow evaluate failed", exc_info=True)
@@ -11732,7 +11766,7 @@ class SettlementTracker:
                     try:
                         self._ml.fifteenm_shadow.settle_signals(ticker, result)
                     except Exception:
-                        logging.debug("fifteenm_shadow settle failed for %s", ticker)
+                        logging.warning("fifteenm_shadow settle failed for %s", ticker, exc_info=True)
 
                 # Settle hourly alt shadow signals for this ticker
                 if (self._ml and getattr(self._ml, "hourly_alt_shadow", None)
