@@ -150,9 +150,10 @@ class ParamOptimizerResult(BaseModel):
 
 
 def calculate_fee(count: int, price_cents: int, is_taker: bool) -> int:
-    """Fee in cents. Ceil applied to TOTAL, not per contract."""
-    rate = 0.07 if is_taker else 0.0175
-    return math.ceil(rate * count * price_cents * (100 - price_cents) / 100)
+    """Fee in cents. Kalshi charges $0 on maker fills."""
+    if not is_taker:
+        return 0
+    return math.ceil(0.07 * count * price_cents * (100 - price_cents) / 100)
 
 
 def calculate_taker_fee(count: int, price_cents: int) -> int:

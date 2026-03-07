@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 # ── Fee model ──────────────────────────────────────────────────────────
 def maker_fee(count: int, price_cents: int) -> int:
-    return math.ceil(0.0175 * count * price_cents * (100 - price_cents) / 100)
+    return 0  # Kalshi charges $0 on maker fills
 
 
 def taker_fee(count: int, price_cents: int) -> int:

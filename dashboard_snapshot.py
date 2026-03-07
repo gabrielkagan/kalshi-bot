@@ -14,8 +14,9 @@ ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 # Mar 3 2026: MIN_EDGE_BY_PRICE halved, DIRECT_TAKER_THRESHOLD 60→75
 CONFIG_REGIME_SINCE = "2026-03-03T00:00:00"
 
-# Blended sim fee rate for observation products (maker ~70% @ 0.0175 + taker ~30% @ 0.07)
-SIM_FEE_RATE = 0.035
+# Sim fee rate for observation products: maker = $0, taker ~30% @ 0.07 → blended ~0.021
+# But since most shadow trades would enter as maker (fee=$0), use taker-only rate for conservative sim
+SIM_FEE_RATE = 0.021
 
 
 def _parse_ob_levels(entries):
@@ -1006,10 +1007,9 @@ class DashboardSnapshotBuilder:
                 "  AND market_price BETWEEN 80 AND 99 "
                 "GROUP BY bucket"
             ).fetchall()
-            # Breakeven WR = (price + fee) / 100, fee = ceil(0.0175 * p * (100-p) / 100)
-            # Fee is 1c for all prices in 80-99c range (maker), so BE = (price + 1)%
-            # Midpoints: 82c→83%, 87c→88%, 92c→93%, 97c→98%
-            breakeven_map = {"80-84": 83, "85-89": 88, "90-94": 93, "95-99": 98}
+            # Breakeven WR = price / 100 (maker fee = $0)
+            # Midpoints: 82c→82%, 87c→87%, 92c→92%, 97c→97%
+            breakeven_map = {"80-84": 82, "85-89": 87, "90-94": 92, "95-99": 97}
             by_bucket = []
             for r in bucket_rows:
                 total = r["total"]
@@ -1049,7 +1049,7 @@ class DashboardSnapshotBuilder:
         # ── shadow variants (hourly counterfactual configs) ───────────
         try:
             conn = _conn
-            _sv_fee = 0.0175  # maker fee multiplier
+            _sv_fee = 0.0  # maker fee = $0 (Kalshi charges nothing on maker fills)
             # BTC_P>=70_wl2: BTC only, price >= 70c, max 2 positions per window
             # Uses SQL window function to apply per-window position limit
             sv_rows = conn.execute("""

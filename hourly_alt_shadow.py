@@ -148,7 +148,7 @@ HARRV_OLS_WINDOW = 168        # 7 days of hourly observations for rolling OLS
 
 # Fee calculation (crypto hourly — same as main bot)
 FEE_MULT_TAKER = 0.07
-FEE_MULT_MAKER = 0.0175
+FEE_MULT_MAKER = 0.0  # Kalshi charges $0 on maker fills
 
 # Journal path
 SHADOW_JOURNAL_PATH = "hourly_alt_shadow_journal.jsonl"
@@ -1255,8 +1255,9 @@ def _norm_cdf(x: float) -> float:
 def calculate_shadow_fee(contracts: int, price_cents: int,
                          is_taker: bool = True) -> int:
     """Calculate fee for shadow PnL computation. Mirrors bot.py's calculate_fee."""
+    if not is_taker:
+        return 0  # Kalshi charges $0 on maker fills
     if contracts <= 0 or price_cents <= 0 or price_cents >= 100:
         return 0
     p = price_cents / 100.0
-    mult = FEE_MULT_TAKER if is_taker else FEE_MULT_MAKER
-    return math.ceil(mult * contracts * p * (1 - p))
+    return math.ceil(FEE_MULT_TAKER * contracts * p * (1 - p))

@@ -45,7 +45,7 @@ SHADOW_BANKROLL = 50000  # cents ($500 simulated bankroll)
 MAX_KELLY_FRACTION = 0.25  # quarter-Kelly
 MAX_RISK_CAP = 0.03  # 3% bankroll hard cap per signal
 MIN_DEBIASED_EDGE = 0.015  # 1.5pp minimum edge after debiasing
-FEE_MULTIPLIER = 0.0175  # maker fee rate
+FEE_MULTIPLIER = 0.0  # Kalshi charges $0 on maker fills
 
 
 class RecalibratedEGARCHApproach:

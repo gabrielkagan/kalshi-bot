@@ -34,9 +34,8 @@ def connect_db(path: str) -> sqlite3.Connection:
 
 
 def maker_fee(price_cents: int, count: int = 1) -> int:
-    """Maker fee for SPX (finance category): ceil(0.0175 * count * p * (1-p))."""
-    p = price_cents / 100.0
-    return math.ceil(0.0175 * count * p * (1 - p) * 100)
+    """Maker fee for SPX — Kalshi charges $0 on maker fills."""
+    return 0
 
 
 def taker_fee(price_cents: int, count: int = 1) -> int:

@@ -61,7 +61,7 @@ def subsection(title: str) -> None:
 
 def sim_pnl_maker(price: int, size: int, won: bool) -> float:
     """Simulate PnL in cents for a maker trade."""
-    fee = math.ceil(0.0175 * size * price * (100 - price) / 100)
+    fee = 0  # Kalshi charges $0 on maker fills
     if won:
         return size * (100 - price) - fee
     else:
@@ -227,7 +227,7 @@ def performance_summary(conn: sqlite3.Connection, since: str) -> dict:
 
         avg_p = sum(r["market_price"] for r in settled) / len(settled)
         # Breakeven WR accounts for maker fees: WR = (price + fee) / (100 + 0)
-        avg_fee = math.ceil(0.0175 * avg_p * (100 - avg_p) / 100)
+        avg_fee = 0  # Kalshi charges $0 on maker fills
         be_wr = (avg_p + avg_fee) / 100 * 100  # breakeven WR in %
         avg_stc = sum(r["seconds_to_close"] or 0 for r in settled) / len(settled)
         print(f"Simulated PnL (maker): ${total_pnl/100:.2f}")
@@ -235,7 +235,7 @@ def performance_summary(conn: sqlite3.Connection, since: str) -> dict:
         print(f"Avg entry price: {avg_p:.1f}c (breakeven WR w/fees: {be_wr:.0f}%)")
         print(f"WR vs breakeven: {wr:.1f}% vs {be_wr:.0f}% ({wr - be_wr:+.1f}pp)")
         print(f"Avg STC at entry: {avg_stc:.0f}s ({avg_stc/60:.1f}m)")
-        print(f"Fee assumption: maker ceil(0.0175 * C * P * (100-P) / 100)")
+        print(f"Fee assumption: maker $0 (Kalshi charges $0 on maker fills)")
 
     # Per-asset
     subsection("Per-asset breakdown")
@@ -804,7 +804,7 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
             sizes = [int(s) if s != "None" else 1 for s in r["sizes"].split(",")]
             wpnl = 0
             for res, price, size in zip(results, prices, sizes):
-                fee = math.ceil(0.0175 * size * price * (100 - price) / 100)
+                fee = 0  # Kalshi charges $0 on maker fills
                 if res == "yes":
                     wpnl += size * (100 - price) - fee
                 else:
@@ -979,7 +979,7 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
                 else:
                     scaled = pre
                 p = r["market_price"]
-                fee_pct = math.ceil(0.0175 * p * (100 - p) / 100) / 100.0
+                fee_pct = 0.0  # Kalshi charges $0 on maker fills
                 edge = scaled - (p / 100) - fee_pct
                 outcome = 1 if r["market_result"] == "yes" else 0
                 brier_sum += (scaled - outcome) ** 2

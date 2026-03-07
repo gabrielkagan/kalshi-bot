@@ -27,85 +27,97 @@ sys.path.insert(0, PROJECT_ROOT)
 # ============================================================================
 
 class TestFeeCalculation:
-    """Verify fee math matches Kalshi spec: ceil(rate × C × P × (100−P) / 100)."""
+    """Verify fee math matches Kalshi billing: taker = ceil(rate × C × P × (100−P) / 100), maker = $0."""
 
-    def _fee(self, count, price, is_taker, mult_t=0.07, mult_m=0.0175):
-        rate = mult_t if is_taker else mult_m
-        return math.ceil(rate * count * price * (100 - price) / 100)
+    def _taker_fee(self, count, price, mult_t=0.07):
+        return math.ceil(mult_t * count * price * (100 - price) / 100)
 
     def test_taker_fee_basic(self):
         # 1 contract at 90c: ceil(0.07 * 1 * 90 * 10 / 100) = ceil(0.63) = 1
-        assert self._fee(1, 90, True) == 1
+        assert self._taker_fee(1, 90) == 1
         # 10 contracts: ceil(0.07 * 10 * 90 * 10 / 100) = ceil(6.3) = 7
-        assert self._fee(10, 90, True) == 7
+        assert self._taker_fee(10, 90) == 7
 
-    def test_maker_fee_basic(self):
-        # 1 contract at 90c: ceil(0.0175 * 1 * 90 * 10 / 100) = ceil(0.1575) = 1
-        assert self._fee(1, 90, False) == 1
-        # 10 contracts: ceil(0.0175 * 10 * 90 * 10 / 100) = ceil(1.575) = 2
-        assert self._fee(10, 90, False) == 2
+    def test_maker_fee_is_zero(self):
+        """Kalshi charges $0 on maker fills (verified against 100 API fills)."""
+        from bot import calculate_fee, calculate_maker_fee
+        for count in [1, 5, 10, 25]:
+            for price in [50, 70, 86, 90, 95, 99]:
+                assert calculate_fee(count, price, is_taker=False) == 0, (
+                    f"Maker fee should be $0: count={count} price={price}")
+                assert calculate_maker_fee(count, price) == 0, (
+                    f"calculate_maker_fee should return 0: count={count} price={price}")
 
     def test_fee_at_50c_maximum_variance(self):
         # P*(1-P) maximized at 50c
-        assert self._fee(1, 50, True) == math.ceil(0.07 * 1 * 50 * 50 / 100)
+        assert self._taker_fee(1, 50) == math.ceil(0.07 * 1 * 50 * 50 / 100)
 
     def test_fee_at_99c_near_certain(self):
         # 1 contract at 99c: ceil(0.07 * 1 * 99 * 1 / 100) = ceil(0.0693) = 1
-        assert self._fee(1, 99, True) == 1
+        assert self._taker_fee(1, 99) == 1
 
     def test_fee_at_1c_near_impossible(self):
-        assert self._fee(1, 1, True) == 1
+        assert self._taker_fee(1, 1) == 1
 
     def test_fee_scales_with_count(self):
-        fee_1 = self._fee(1, 90, True)
-        fee_10 = self._fee(10, 90, True)
-        # ceil(10x) >= 10*ceil(1x) is not guaranteed, but fee should scale
+        fee_1 = self._taker_fee(1, 90)
+        fee_10 = self._taker_fee(10, 90)
         assert fee_10 >= fee_1
         assert fee_10 == math.ceil(0.07 * 10 * 90 * 10 / 100)
 
-    def test_maker_is_4x_cheaper_than_taker(self):
-        # Rate ratio: 0.07 / 0.0175 = 4.0
-        for price in [86, 90, 95]:
-            taker = self._fee(10, price, True)
-            maker = self._fee(10, price, False)
-            assert taker >= maker * 3  # at least 3x due to ceiling
-
     def test_spx_fee_multiplier(self):
         # SPX uses 0.035 taker (half of crypto 0.07). At 10 contracts the difference shows.
-        crypto = self._fee(10, 90, True, mult_t=0.07)
-        spx = self._fee(10, 90, True, mult_t=0.035)
+        crypto = self._taker_fee(10, 90, mult_t=0.07)
+        spx = self._taker_fee(10, 90, mult_t=0.035)
         assert spx < crypto
         assert spx == math.ceil(0.035 * 10 * 90 * 10 / 100)  # ceil(3.15) = 4
 
-    def test_sim_pnl_win_no_double_fee(self):
-        """Bug 017a2f0: sim PnL on wins should be (100-price)*count - fee, not subtract fee twice."""
+    def test_sim_pnl_win_maker_no_fee(self):
+        """Maker wins: full revenue, no fee deducted."""
         price, count = 90, 10
-        fee = self._fee(count, price, False)
-        pnl_win = (100 - price) * count - fee
-        # Win: revenue is (100-price)*count, minus fee once
-        assert pnl_win == (100 - 90) * 10 - fee
-        assert pnl_win > 0  # 90c wins should be profitable
+        pnl_win = (100 - price) * count  # maker fee = 0
+        assert pnl_win == 100
+        assert pnl_win > 0
 
-    def test_sim_pnl_loss_no_double_fee(self):
-        """Bug 017a2f0: sim PnL on losses should be -price*count - fee, NOT -price*count - 2*fee."""
+    def test_sim_pnl_loss_maker_no_fee(self):
+        """Maker losses: only entry cost lost, no fee."""
         price, count = 90, 10
-        fee = self._fee(count, price, False)
-        pnl_loss = -price * count - fee
-        # Loss cost is just entry cost + fee
-        assert pnl_loss == -(price * count + fee)
+        pnl_loss = -(price * count)  # maker fee = 0
+        assert pnl_loss == -900
+
+    def test_sim_pnl_win_taker(self):
+        """Taker wins: revenue minus taker fee."""
+        price, count = 90, 10
+        fee = self._taker_fee(count, price)
+        pnl_win = (100 - price) * count - fee
+        assert pnl_win == 100 - fee
+        assert pnl_win > 0
+
+    def test_sim_pnl_loss_taker(self):
+        """Taker losses: entry cost plus taker fee."""
+        price, count = 90, 10
+        fee = self._taker_fee(count, price)
+        pnl_loss = -(price * count + fee)
+        assert pnl_loss == -(900 + fee)
 
     def test_bot_fee_function_matches(self):
-        """Verify bot.py calculate_fee matches our reference implementation."""
+        """Verify bot.py calculate_fee matches Kalshi billing: taker = formula, maker = $0."""
         from bot import calculate_fee
         for count in [1, 5, 10, 25]:
             for price in [50, 70, 86, 90, 95, 99]:
-                for is_taker in [True, False]:
-                    expected = self._fee(count, price, is_taker)
-                    actual = calculate_fee(count, price, is_taker)
-                    assert actual == expected, (
-                        f"Fee mismatch: count={count} price={price} taker={is_taker}: "
-                        f"expected={expected} actual={actual}"
-                    )
+                # Taker: ceil formula
+                expected_taker = self._taker_fee(count, price)
+                actual_taker = calculate_fee(count, price, is_taker=True)
+                assert actual_taker == expected_taker, (
+                    f"Taker fee mismatch: count={count} price={price}: "
+                    f"expected={expected_taker} actual={actual_taker}"
+                )
+                # Maker: always $0
+                actual_maker = calculate_fee(count, price, is_taker=False)
+                assert actual_maker == 0, (
+                    f"Maker fee should be $0: count={count} price={price}: "
+                    f"actual={actual_maker}"
+                )
 
 
 # ============================================================================
@@ -192,7 +204,11 @@ class TestCalibrationPipeline:
         from market_config import MARKET_CONFIGS
         assert MARKET_CONFIGS["15m"].fee_multiplier_taker == 0.07
         assert MARKET_CONFIGS["spx_hourly"].fee_multiplier_taker == 0.035
-        assert MARKET_CONFIGS["spx_hourly"].fee_multiplier_maker == 0.0175
+        assert MARKET_CONFIGS["spx_hourly"].fee_multiplier_maker == 0.0  # Kalshi $0 maker fee
+        # All product types should have maker fee = 0
+        for name, cfg in MARKET_CONFIGS.items():
+            assert cfg.fee_multiplier_maker == 0.0, (
+                f"{name} fee_multiplier_maker should be 0.0, got {cfg.fee_multiplier_maker}")
 
 
 # ============================================================================

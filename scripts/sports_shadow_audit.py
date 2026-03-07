@@ -66,9 +66,8 @@ def safe_div(a, b, default=0.0):
 
 
 def maker_fee(price_cents: float, contracts: int = 1) -> float:
-    """Maker fee in cents."""
-    p = price_cents / 100.0
-    return math.ceil(0.0175 * contracts * p * (1 - p))
+    """Kalshi charges $0 on maker fills."""
+    return 0
 
 
 def taker_fee(price_cents: float, contracts: int = 1) -> float:

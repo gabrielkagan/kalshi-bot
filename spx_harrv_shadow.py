@@ -102,7 +102,7 @@ MAX_POSITION_PCT = 0.15      # max 15% of bankroll per trade
 
 # Fee calculation (SPX is finance category — half of crypto)
 FEE_MULT_TAKER = 0.035
-FEE_MULT_MAKER = 0.0175
+FEE_MULT_MAKER = 0.0  # Kalshi charges $0 on maker fills
 
 # Journal path
 SHADOW_JOURNAL_PATH = "spx_harrv_shadow_journal.jsonl"

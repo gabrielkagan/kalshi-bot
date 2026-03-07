@@ -104,7 +104,7 @@ def cal_engine_obs_count(conn, product_type, since):
         return 0
 
 
-def compute_no_side_metrics(conn, product_type_filter, since, fee_mult=0.0175):
+def compute_no_side_metrics(conn, product_type_filter, since, fee_mult=0.0):  # Kalshi charges $0 on maker fills
     """Compute NO-side shadow metrics for any product type.
 
     Returns dict with NO-side signal count, settled, WR, sim PnL, per-asset breakdown.
@@ -305,7 +305,7 @@ def compute_15m_shadow(conn, since):
     settled = row[4] or 0
 
     # STC shadow (non-XRP) W/L and sim PnL
-    _pnl = _sim_pnl_sql(0.0175, "COALESCE(position_size, 1)", "market_price", "market_result")
+    _pnl = _sim_pnl_sql(0.0, "COALESCE(position_size, 1)", "market_price", "market_result")  # Kalshi charges $0 on maker fills
     stc_row = c.execute(f"""
         SELECT
             SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as wins,
@@ -449,8 +449,8 @@ def compute_hourly(conn, since):
     settled = row[2] or 0
     signals_settled = row[3] or 0
 
-    # Signal W/L and simulated PnL (maker fees, ceil, fee on losses)
-    _pnl = _sim_pnl_sql(0.0175, "COALESCE(position_size, 1)", "market_price", "market_result")
+    # Signal W/L and simulated PnL (maker fees = $0, fee on losses)
+    _pnl = _sim_pnl_sql(0.0, "COALESCE(position_size, 1)", "market_price", "market_result")  # Kalshi charges $0 on maker fills
     sig_row = c.execute(f"""
         SELECT
             SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as wins,
@@ -590,8 +590,8 @@ def compute_spx(conn, since):
     signals = row[1] or 0
     signals_settled = row[3] or 0
 
-    # Signal W/L and sim PnL (maker fee 0.0175, fee on losses, ceil)
-    _spx_pnl = _sim_pnl_sql(0.0175, "COALESCE(position_size, 1)", "market_price", "market_result")
+    # Signal W/L and sim PnL (maker fee = $0)
+    _spx_pnl = _sim_pnl_sql(0.0, "COALESCE(position_size, 1)", "market_price", "market_result")  # Kalshi charges $0 on maker fills
     sig_row = c.execute(f"""
         SELECT
             SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as wins,
@@ -710,8 +710,8 @@ def compute_weather(conn, since):
     settled_total = row[2] or 0
     signals_settled = row[3] or 0
 
-    # Signal W/L and simulated PnL (maker fees, ceil, fee on losses)
-    _pnl = _sim_pnl_sql(0.0175, "COALESCE(position_size, 1)", "market_price", "market_result")
+    # Signal W/L and simulated PnL (maker fees = $0, fee on losses)
+    _pnl = _sim_pnl_sql(0.0, "COALESCE(position_size, 1)", "market_price", "market_result")  # Kalshi charges $0 on maker fills
     sig_row = c.execute(f"""
         SELECT
             SUM(CASE WHEN market_result IN ('yes', 'all_yes') THEN 1 ELSE 0 END) as wins,

@@ -110,7 +110,7 @@ def fisher_exact_2x2(a: int, b: int, c: int, d: int) -> float:
 
 def sim_pnl_maker_unit(price: int, won: bool) -> float:
     """Simulate per-contract PnL for a 1-contract maker trade at given price."""
-    fee = math.ceil(0.0175 * price * (100 - price) / 100)
+    fee = 0  # Kalshi charges $0 on maker fills
     return ((100 - price) - fee) if won else (-price - fee)
 
 
@@ -130,7 +130,7 @@ def edge_tier_threshold(price: int) -> float:
 
 def breakeven_wr(price: int, maker: bool = True) -> float:
     """Compute breakeven win rate at a given price with fees."""
-    fee = math.ceil((0.0175 if maker else 0.07) * price * (100 - price) / 100)
+    fee = 0 if maker else math.ceil(0.07 * price * (100 - price) / 100)  # Kalshi charges $0 on maker fills
     return (price + fee) / 100.0
 
 
@@ -655,7 +655,7 @@ def execution_analysis(conn: sqlite3.Connection, since: str,
     for tr in trade_rows:
         p = tr["entry_price_cents"]
         c = tr["count"]
-        expected_maker = math.ceil(0.0175 * c * p * (100 - p) / 100)
+        expected_maker = 0  # Kalshi charges $0 on maker fills
         expected_taker = math.ceil(0.07 * c * p * (100 - p) / 100)
         is_maker = abs(tr["fee_cents"] - expected_maker) <= abs(
             tr["fee_cents"] - expected_taker)
@@ -687,10 +687,7 @@ def execution_analysis(conn: sqlite3.Connection, since: str,
                                      taker_w, taker_n - taker_w)
             print(f"  Fisher (maker vs taker WR): p={p_val:.4f} {sig_str(p_val)}")
             # Fee savings
-            all_maker_fee = sum(
-                math.ceil(0.0175 * tr["count"] * tr["entry_price_cents"]
-                          * (100 - tr["entry_price_cents"]) / 100)
-                for tr in trade_rows)
+            all_maker_fee = 0  # Kalshi charges $0 on maker fills
             actual_fees = sum(tr["fee_cents"] for tr in trade_rows)
             print(f"  Taker fee premium: ${(actual_fees - all_maker_fee)/100:.2f} "
                   f"extra vs all-maker scenario")
@@ -1806,44 +1803,68 @@ def no_side_alpha(conn: sqlite3.Connection, since: str,
         return
 
     # Per-approach settled stats
+    # Each approach has different column naming — specify exact columns.
+    # has_contracts: True = gated (filter by contracts>0), False = baseline (all signals count)
     approaches = [
-        ("no_live", "Live baseline (NO)"),
-        ("no_a1", "A1 RecalibratedEGARCH (NO)"),
-        ("no_a2", "A2 LightGBM (NO)"),
-        ("no_market_only", "Market-only (NO)"),
+        {"prefix": "no_live", "label": "Live baseline (NO)",
+         "prob_col": "no_live_prob", "edge_col": "no_live_edge",
+         "pnl_col": "no_live_pnl_cents", "has_contracts": False},
+        {"prefix": "no_a1", "label": "A1 RecalibratedEGARCH (NO)",
+         "prob_col": "no_a1_final_prob", "edge_col": "no_a1_edge",
+         "pnl_col": "no_a1_pnl_cents", "contracts_col": "no_a1_contracts",
+         "has_contracts": True},
+        {"prefix": "no_a2", "label": "A2 LightGBM (NO)",
+         "prob_col": "no_a2_prob", "edge_col": "no_a2_edge",
+         "pnl_col": "no_a2_pnl_cents", "contracts_col": "no_a2_contracts",
+         "has_contracts": True},
+        {"prefix": "no_market_only", "label": "Market-only (NO)",
+         "prob_col": "no_market_only_prob", "edge_col": None,
+         "pnl_col": "no_market_only_pnl_cents", "has_contracts": False},
     ]
 
-    for prefix, label in approaches:
-        prob_col = f"{prefix}_prob"
-        edge_col = f"{prefix}_edge"
-        contracts_col = f"{prefix}_contracts"
-        pnl_col = f"{prefix}_pnl_cents"
+    for appr in approaches:
+        pnl_col = appr["pnl_col"]
+        prob_col = appr["prob_col"]
+        edge_col = appr["edge_col"]
+        has_contracts = appr["has_contracts"]
+        contracts_col = appr.get("contracts_col")
+
         if pnl_col not in shadow_cols:
             continue
+        if prob_col not in shadow_cols:
+            continue
 
-        subsection(f"{label} per-asset alpha")
+        subsection(f"{appr['label']} per-asset alpha")
         for asset in (["BTC", "ETH", "SOL", "XRP"] if not asset_filter
                       else [asset_filter]):
             try:
+                if has_contracts:
+                    # Gated approach: only count signals where contracts > 0
+                    sig_filter = f"{contracts_col} > 0"
+                else:
+                    # Baseline approach: all signals count
+                    sig_filter = f"{pnl_col} IS NOT NULL"
+
+                edge_select = (f"AVG(CASE WHEN {sig_filter} "
+                               f"THEN {edge_col} END)") if edge_col else "NULL"
                 r = conn.execute(f"""
                     SELECT
                         COUNT(*) AS total,
-                        SUM(CASE WHEN {contracts_col} > 0
+                        SUM(CASE WHEN {sig_filter}
                             THEN 1 ELSE 0 END) AS signaled,
                         SUM(CASE WHEN status='settled'
-                            AND {contracts_col} > 0
+                            AND {sig_filter}
                             AND market_result IN ('no', 'all_no')
                             THEN 1 ELSE 0 END) AS wins,
                         SUM(CASE WHEN status='settled'
-                            AND {contracts_col} > 0
+                            AND {sig_filter}
                             AND market_result IN ('yes', 'all_yes')
                             THEN 1 ELSE 0 END) AS losses,
                         SUM(CASE WHEN status='settled'
-                            AND {contracts_col} > 0
+                            AND {sig_filter}
                             THEN {pnl_col} ELSE 0 END) AS pnl,
-                        AVG(CASE WHEN {contracts_col} > 0
-                            THEN {edge_col} END) AS avg_edge,
-                        AVG(CASE WHEN {contracts_col} > 0
+                        {edge_select} AS avg_edge,
+                        AVG(CASE WHEN {sig_filter}
                             THEN {prob_col} END) AS avg_prob
                     FROM fifteenm_shadow_signals
                     WHERE evaluation_time >= ? AND asset = ?
@@ -1859,8 +1880,12 @@ def no_side_alpha(conn: sqlite3.Connection, since: str,
                 sig_rate = sig / t * 100 if t > 0 else 0
 
                 print(f"\n  {asset}:")
-                print(f"    Signals: {t}, Signaled (contracts>0): "
-                      f"{sig} ({sig_rate:.1f}%)")
+                if has_contracts:
+                    print(f"    Signals: {t}, Signaled (contracts>0): "
+                          f"{sig} ({sig_rate:.1f}%)")
+                else:
+                    print(f"    Signals: {t}, With data: "
+                          f"{sig} ({sig_rate:.1f}%)")
                 if n_s > 0:
                     lo, hi = wilson_ci(w, n_s)
                     print(f"    Settled: {w}W/{l_v}L ({wr_v:.1f}% WR) "
@@ -1869,8 +1894,8 @@ def no_side_alpha(conn: sqlite3.Connection, since: str,
                     if r["avg_edge"] is not None:
                         print(f"    Avg edge: {r['avg_edge']*100:.2f}%, "
                               f"Avg prob: {(r['avg_prob'] or 0)*100:.1f}%")
-            except Exception:
-                print(f"    {asset}: query error (column mismatch?)")
+            except Exception as e:
+                print(f"    {asset}: query error: {e}")
                 break
 
     # Comparative alpha: YES vs NO across all approaches

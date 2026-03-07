@@ -86,7 +86,7 @@ SPX_HOURLY_MAX_RISK_PER_TRADE = 0.15
 SPX_HOURLY_TEMPERATURE_T = 1.0           # Start neutral, tune with data
 SPX_HOURLY_KELLY_FRACTION = 0.25
 SPX_HOURLY_FEE_MULTIPLIER_TAKER = 0.035  # Finance category: half of crypto's 0.07
-SPX_HOURLY_FEE_MULTIPLIER_MAKER = 0.0175
+SPX_HOURLY_FEE_MULTIPLIER_MAKER = 0.0  # Kalshi charges $0 on maker fills
 SPX_HOURLY_MAX_POSITIONS_PER_WINDOW = 2  # Max concurrent SPX positions per hourly window
 SPX_HOURLY_MAX_WINDOW_RISK = 0.15        # Max aggregate risk across SPX positions per window
 
@@ -560,19 +560,20 @@ DIP_ADDON_SHADOW_FLOOR = 50              # shadow logs ALL dips down to 50¢ for
 # ═════════════════════════════════════════════════════════════════════════════
 
 def calculate_fee(count: int, price_cents: int, is_taker: bool,
-                   fee_mult_taker: float = 0.07, fee_mult_maker: float = 0.0175) -> int:
+                   fee_mult_taker: float = 0.07, fee_mult_maker: float = 0.0) -> int:
     """Fee in cents. Ceil applied to TOTAL, not per contract.
 
     Taker:  ceil(fee_mult_taker × count × price × (100−price) / 100)
-    Maker:  ceil(fee_mult_maker × count × price × (100−price) / 100)
+    Maker:  $0 — Kalshi charges no fee on maker fills (verified against API).
 
     The division by 100 converts from the raw product (price in cents ×
     complement in cents) back to cents.  Equivalent to the CLAUDE.md formula
     ceil(rate × C × P × (1−P)) evaluated in dollars, then converted to cents.
     SPX finance category gets 50% discount (fee_mult_taker=0.035).
     """
-    rate = fee_mult_taker if is_taker else fee_mult_maker
-    return math.ceil(rate * count * price_cents * (100 - price_cents) / 100)
+    if not is_taker:
+        return 0
+    return math.ceil(fee_mult_taker * count * price_cents * (100 - price_cents) / 100)
 
 
 def calculate_taker_fee(count: int, price_cents: int) -> int:
@@ -581,8 +582,8 @@ def calculate_taker_fee(count: int, price_cents: int) -> int:
 
 
 def calculate_maker_fee(count: int, price_cents: int) -> int:
-    """Convenience wrapper — maker fee in cents."""
-    return calculate_fee(count, price_cents, is_taker=False)
+    """Convenience wrapper — maker fee in cents. Kalshi charges $0 on maker fills."""
+    return 0
 
 
 # ── Shadow Time-Varying RK Weights ─────────────────────────────────────────

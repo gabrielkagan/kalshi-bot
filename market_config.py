@@ -47,7 +47,7 @@ class MarketTypeConfig:
 
     # ── Fees ──
     fee_multiplier_taker: float = 0.07
-    fee_multiplier_maker: float = 0.0175
+    fee_multiplier_maker: float = 0.0  # Kalshi charges $0 on maker fills
 
     # ── Per-window risk management (None = no limit) ──
     excluded_assets: FrozenSet[str] = field(default_factory=frozenset)
@@ -81,7 +81,7 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         cal_eligible=True,
         use_hourly_dynamic_cap=False,
         fee_multiplier_taker=0.07,
-        fee_multiplier_maker=0.0175,
+        fee_multiplier_maker=0.0,  # Kalshi charges $0 on maker fills
     ),
     "hourly": MarketTypeConfig(
         product_type="hourly",
@@ -101,7 +101,7 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         cal_engine_enabled=False,   # Disabled: hourly beta_cal +44pp overconfident; passthrough+T=1.45 is better
         cal_engine_state_path="hourly_calibration_state.json",
         fee_multiplier_taker=0.07,
-        fee_multiplier_maker=0.0175,
+        fee_multiplier_maker=0.0,  # Kalshi charges $0 on maker fills
         excluded_assets=frozenset(),      # Empty in observation mode
         min_stc_entry=120,
         max_stc_entry=3600,
@@ -127,7 +127,7 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         cal_engine_enabled=False,
         cal_engine_state_path="spx_hourly_calibration_state.json",
         fee_multiplier_taker=0.035,
-        fee_multiplier_maker=0.0175,
+        fee_multiplier_maker=0.0,  # Kalshi charges $0 on maker fills
         max_positions_per_window=2,
         max_window_risk=0.15,
         observation_filter_label="spx_observation",
@@ -149,7 +149,7 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         use_hourly_dynamic_cap=True,
         cal_engine_enabled=False,
         fee_multiplier_taker=0.07,
-        fee_multiplier_maker=0.0175,
+        fee_multiplier_maker=0.0,  # Kalshi charges $0 on maker fills
         observation_filter_label="weather_observation",
         cal_subtypes={
             "NYC": "cal_weather_NYC.json",
@@ -189,7 +189,7 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         cal_eligible=False,
         use_hourly_dynamic_cap=False,
         fee_multiplier_taker=0.07,
-        fee_multiplier_maker=0.0175,
+        fee_multiplier_maker=0.0,  # Kalshi charges $0 on maker fills
         observation_filter_label="sports_observation",
         cal_subtypes={
             "basketball": "cal_sports_basketball.json",

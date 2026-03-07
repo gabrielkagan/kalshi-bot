@@ -155,7 +155,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 ## Fee Formula
 
 - **Taker:** `ceil(0.07 * C * P * (1-P))` — ~1% of edge at typical prices
-- **Maker:** `ceil(0.0175 * C * P * (1-P))` — 4x cheaper
+- **Maker:** $0 — Kalshi charges no fee on maker fills
 
 ## Data Storage
 

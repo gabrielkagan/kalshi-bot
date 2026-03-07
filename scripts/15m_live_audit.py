@@ -367,7 +367,7 @@ def execution_quality(conn: sqlite3.Connection, since: str,
     for tr in trade_rows:
         p = tr["entry_price_cents"]
         c = tr["count"]
-        expected_maker = math.ceil(0.0175 * c * p * (100 - p) / 100)
+        expected_maker = 0  # Kalshi charges $0 on maker fills
         expected_taker = math.ceil(0.07 * c * p * (100 - p) / 100)
         actual_fee = tr["fee_cents"]
         # Classify: if actual fee is closer to expected maker fee, it's maker
@@ -383,10 +383,7 @@ def execution_quality(conn: sqlite3.Connection, since: str,
               f"({maker_count/total_n*100:.0f}%), total fees: ${maker_fees/100:.2f}")
         print(f"  Taker fills: {taker_count}/{total_n} "
               f"({taker_count/total_n*100:.0f}%), total fees: ${taker_fees/100:.2f}")
-        maker_counterfactual = sum(
-            math.ceil(0.0175 * tr["count"] * tr["entry_price_cents"]
-                      * (100 - tr["entry_price_cents"]) / 100)
-            for tr in trade_rows)
+        maker_counterfactual = 0  # Kalshi charges $0 on maker fills
         print(f"  Taker fee premium:     "
               f"${(maker_fees + taker_fees - maker_counterfactual)/100:.2f} "
               f"extra vs all-maker")
@@ -1227,6 +1224,62 @@ def config_sensitivity(conn: sqlite3.Connection, since: str,
                 marker = " ◄ current" if abs(t - current_thresh) < 0.0001 else ""
                 print(f"    {t*100:>9.2f}% {len(sub):>4} {sw:>3} {sl:>3} "
                       f"{swr:>5.1f}% ${scf:>9.2f}{marker}")
+        # P2d: Dollar-impact analysis — what $ would each threshold change cost/save?
+        print()
+        subsection("P2d: Dollar impact of threshold changes (wins$ cut vs losses$ avoided)")
+        print("  For each tier, shows the MARGINAL impact of raising the threshold:")
+        print("  trades that would be REMOVED and their actual $ outcome.\n")
+        for label, lo, hi, current_thresh in EDGE_TIERS:
+            tier_traded = [r for r in all_edge
+                           if lo <= (r["market_price"] or 0) <= hi
+                           and r["filter_stage"] == "candidate"]
+            if len(tier_traded) < 2:
+                continue
+            # Test thresholds above current
+            test_thresholds = sorted(set([
+                current_thresh * 1.5,
+                current_thresh * 2.0,
+                current_thresh * 3.0,
+                current_thresh * 4.0,
+            ]))
+            # Only keep thresholds that would actually cut trades
+            test_thresholds = [t for t in test_thresholds
+                               if any((r["fee_adjusted_edge"] or 0) < t
+                                      for r in tier_traded)]
+            if not test_thresholds:
+                continue
+            print(f"  {label} (current: {current_thresh*100:.2f}%):")
+            print(f"    {'New Thresh':>10} {'Wins Cut':>9} {'Win$ Cut':>10} "
+                  f"{'Losses Avoided':>15} {'Loss$ Saved':>12} {'Net $':>10}")
+            print("    " + "-" * 70)
+            for t in test_thresholds:
+                # Trades that pass current but fail new threshold
+                cut = [r for r in tier_traded
+                       if (r["fee_adjusted_edge"] or 0) >= current_thresh
+                       and (r["fee_adjusted_edge"] or 0) < t]
+                if not cut:
+                    continue
+                cut_wins = [r for r in cut if r["market_result"] == "yes"]
+                cut_losses = [r for r in cut if r["market_result"] != "yes"]
+                win_dollars = sum(r["cf_pnl"] for r in cut_wins) / 100
+                loss_dollars = sum(r["cf_pnl"] for r in cut_losses) / 100
+                # loss_dollars is negative, so saving = -loss_dollars
+                loss_saved = abs(loss_dollars)
+                net = loss_saved - win_dollars  # positive = net benefit
+                print(f"    {t*100:>9.2f}% {len(cut_wins):>9} "
+                      f"${win_dollars:>9.2f} {len(cut_losses):>15} "
+                      f"${loss_saved:>11.2f} ${net:>+9.2f}")
+            # Also show the specific losses in this tier with their edge values
+            tier_losses = [r for r in tier_traded
+                           if r["market_result"] != "yes"]
+            if tier_losses:
+                print(f"    Losses in tier: ", end="")
+                for r in tier_losses:
+                    edge_pct = (r["fee_adjusted_edge"] or 0) * 100
+                    loss_usd = r["cf_pnl"] / 100
+                    print(f"edge={edge_pct:.2f}% ${loss_usd:.2f}", end="  ")
+                print()
+            print()
     else:
         print("  No settled edge data in period")
 
@@ -1362,7 +1415,7 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
     cand_l = len(cands) - cand_w
 
     def sim_pnl_maker_unit(price: int, won: bool) -> float:
-        fee = math.ceil(0.0175 * price * (100 - price) / 100)
+        fee = 0  # Kalshi charges $0 on maker fills
         return ((100 - price) - fee) if won else (-price - fee)
 
     cand_pnl = sum(sim_pnl_maker_unit(r["market_price"],
@@ -1852,7 +1905,7 @@ def price_shadow_analysis(conn: sqlite3.Connection, since: str,
         """, (since,)).fetchall()
 
         def sim_pnl_maker(price: int, won: bool) -> float:
-            fee = math.ceil(0.0175 * price * (100 - price) / 100)
+            fee = 0  # Kalshi charges $0 on maker fills
             return ((100 - price) - fee) if won else (-price - fee)
 
         total_pnl = 0
@@ -2270,7 +2323,7 @@ def no_side_analysis(conn: sqlite3.Connection, since: str,
     for r in sim_rows:
         p = r["market_price"] or 0
         c = r["cnt"]
-        fee = math.ceil(0.0175 * c * p * (100 - p) / 100.0)
+        fee = 0  # Kalshi charges $0 on maker fills
         if r["market_result"] in ("no", "all_no"):
             sim_pnl += (100 - p) * c - fee
         elif r["market_result"] in ("yes", "all_yes"):
