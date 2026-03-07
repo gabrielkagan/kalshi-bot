@@ -525,7 +525,11 @@ class SPXHARRVModel:
             position = max(0, min(position, max_pos))
 
         # ── NO-side evaluation ──
-        no_price = 100 - market_price
+        # NO ask = 100 - YES bid (actual orderbook, not 100 - YES ask which is NO bid)
+        if best_bid is not None and best_bid > 0:
+            no_price = 100 - best_bid
+        else:
+            no_price = 100 - market_price  # fallback if no YES bid
         no_prob = 1.0 - final_prob
         no_market_prob = no_price / 100.0
         no_edge = no_prob - no_market_prob
@@ -629,6 +633,7 @@ class SPXHARRVModel:
             "egarch_prob": egarch_prob,
             "egarch_edge": egarch_edge,
             # NO-side evaluation
+            "no_price": no_price,
             "no_prob": round(no_prob, 6),
             "no_edge": round(no_edge, 6),
             "no_fee_edge": round(no_fee_adjusted_edge, 6),
@@ -763,6 +768,7 @@ class SPXHARRVShadowEngine:
             self._db_conn.execute("PRAGMA table_info(spx_harrv_shadow_signals)").fetchall()
         }
         no_side_columns = [
+            ("no_price", "INTEGER"),
             ("no_prob", "REAL"),
             ("no_edge", "REAL"),
             ("no_fee_edge", "REAL"),
@@ -846,11 +852,11 @@ class SPXHARRVShadowEngine:
                      gates_passed, gate_failures,
                      kelly_f, shadow_contracts, bankroll_cents,
                      egarch_prob, egarch_edge,
-                     no_prob, no_edge, no_fee_edge,
+                     no_price, no_prob, no_edge, no_fee_edge,
                      no_kelly_f, no_contracts,
                      no_gates_passed, no_gate_failures,
                      status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 signal["ticker"], signal["event_ticker"], "SPX", now,
                 signal["spot_price"], signal["threshold"],
@@ -870,6 +876,7 @@ class SPXHARRVShadowEngine:
                 gate_failures_str,
                 signal["kelly_f"], signal["shadow_contracts"], signal["bankroll_cents"],
                 signal.get("egarch_prob"), signal.get("egarch_edge"),
+                signal.get("no_price"),
                 signal.get("no_prob"), signal.get("no_edge"), signal.get("no_fee_edge"),
                 signal.get("no_kelly_f"), signal.get("no_contracts"),
                 int(signal.get("no_gates_passed", False)),
@@ -902,7 +909,7 @@ class SPXHARRVShadowEngine:
 
         try:
             rows = self._db_conn.execute(
-                "SELECT id, market_price, shadow_contracts, final_prob, no_contracts "
+                "SELECT id, market_price, shadow_contracts, final_prob, no_contracts, no_price "
                 "FROM spx_harrv_shadow_signals "
                 "WHERE ticker=? AND status='pending'",
                 (ticker,)
@@ -923,8 +930,8 @@ class SPXHARRVShadowEngine:
                 else:
                     pnl = 0
 
-                # NO-side PnL: buying NO at (100 - price) cents
-                no_price = 100 - price
+                # NO-side PnL: use stored NO ask if available, fallback for old data
+                no_price = row["no_price"] if row["no_price"] else (100 - price)
                 no_ct = no_ct_raw if no_ct_raw > 0 else 1
                 if market_result in ("no", "all_no"):
                     # NO wins: profit = (100 - no_price) per contract

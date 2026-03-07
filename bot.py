@@ -7050,15 +7050,19 @@ class OpportunityScanner:
                             "_shadow_diag": _shadow_diag.copy(),
                             "_oft_db": _oft_db.copy(),
                         })
-                    # NO-side shadow: if NO price (100-best_ask) is within NO-side range,
-                    # queue for NO-side evaluation (YES price is out of range but NO may be valid)
-                    _no_price_por = 100 - best_ask
-                    if NO_SIDE_MIN_ENTRY_PRICE <= _no_price_por <= _entry_ceil:
+                    # NO-side shadow: compute actual NO ask from orderbook
+                    # NO ask = 100 - highest YES bid (NOT 100 - YES ask, which is NO bid)
+                    _no_ask_por = None
+                    _yes_bid_por = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                    if _yes_bid_por is not None and _yes_bid_por > 0:
+                        _no_ask_por = 100 - _yes_bid_por
+                    if _no_ask_por is not None and NO_SIDE_MIN_ENTRY_PRICE <= _no_ask_por <= _entry_ceil:
                         _no_side_queue.append({
                             "ticker": ticker,
                             "event_ticker": window["event_ticker"],
                             "asset": asset,
                             "best_ask": best_ask,
+                            "no_ask": _no_ask_por,
                             "spot": spot,
                             "threshold": threshold,
                             "blended_rv": blended_rv,
@@ -7243,34 +7247,42 @@ class OpportunityScanner:
                 # ── Weather NO-side shadow edge ──
                 if _pt == "weather":
                     _no_prob = 1.0 - final_prob
-                    _no_price = 100 - best_ask
-                    _no_fee = calculate_fee(1, _no_price, is_taker=True,
-                                            fee_mult_taker=_mcfg.fee_multiplier_taker,
-                                            fee_mult_maker=_mcfg.fee_multiplier_maker)
-                    _shadow_extra["wx_no_side_edge"] = round(
-                        _no_prob - _no_price / 100.0 - _no_fee / 100.0, 6)
+                    # NO ask = 100 - highest YES bid (actual orderbook, not inferred)
+                    _wx_yes_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                    _wx_no_ask = (100 - _wx_yes_bid) if (_wx_yes_bid is not None and _wx_yes_bid > 0) else None
+                    if _wx_no_ask is not None:
+                        _no_fee = calculate_fee(1, _wx_no_ask, is_taker=True,
+                                                fee_mult_taker=_mcfg.fee_multiplier_taker,
+                                                fee_mult_maker=_mcfg.fee_multiplier_maker)
+                        _shadow_extra["wx_no_side_edge"] = round(
+                            _no_prob - _wx_no_ask / 100.0 - _no_fee / 100.0, 6)
 
                 # ── NO-side shadow queue (all markets that reach edge computation) ──
-                _no_side_queue.append({
-                    "ticker": ticker,
-                    "event_ticker": window["event_ticker"],
-                    "asset": asset,
-                    "best_ask": best_ask,
-                    "spot": spot,
-                    "threshold": threshold,
-                    "blended_rv": blended_rv,
-                    "seconds_remaining": seconds_remaining,
-                    "vol_regime": vol_est["regime"],
-                    "ask_depth": ask_depth,
-                    "best_ask_source": best_ask_source,
-                    "product_type": window.get("product_type"),
-                    "_shadow_diag": _shadow_diag.copy(),
-                    "_oft_db": _oft_db.copy(),
-                    "final_prob": final_prob,  # already computed (temp+blend+cap)
-                    "cal_prob": None,  # not needed — final_prob available
-                    "raw_prob": raw_prob,
-                    "calibration_method": calibration_method,
-                })
+                # NO ask = 100 - highest YES bid (actual orderbook, not inferred)
+                _yes_bid_eq = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                _no_ask_eq = (100 - _yes_bid_eq) if (_yes_bid_eq is not None and _yes_bid_eq > 0) else None
+                if _no_ask_eq is not None:
+                    _no_side_queue.append({
+                        "ticker": ticker,
+                        "event_ticker": window["event_ticker"],
+                        "asset": asset,
+                        "best_ask": best_ask,
+                        "no_ask": _no_ask_eq,
+                        "spot": spot,
+                        "threshold": threshold,
+                        "blended_rv": blended_rv,
+                        "seconds_remaining": seconds_remaining,
+                        "vol_regime": vol_est["regime"],
+                        "ask_depth": ask_depth,
+                        "best_ask_source": best_ask_source,
+                        "product_type": window.get("product_type"),
+                        "_shadow_diag": _shadow_diag.copy(),
+                        "_oft_db": _oft_db.copy(),
+                        "final_prob": final_prob,  # already computed (temp+blend+cap)
+                        "cal_prob": None,  # not needed — final_prob available
+                        "raw_prob": raw_prob,
+                        "calibration_method": calibration_method,
+                    })
 
                 # ── Augment _shadow_diag with Kalshi OFT fields ──
                 if ofa_signals:
@@ -8711,8 +8723,9 @@ class OpportunityScanner:
         """Shadow-evaluate NO-side (buy NO contract) for all queued markets.
 
         Mirrors the YES-side evaluation: NO_prob = 1 - YES_prob,
-        NO_price = 100 - YES_ask. Runs through the same filter pipeline
-        (price, edge, sizing) and logs to evaluated_opportunities with side='no'.
+        NO_ask = 100 - highest_YES_bid (actual orderbook). Runs through
+        the same filter pipeline (price, edge, sizing) and logs to
+        evaluated_opportunities with side='no'.
 
         Shadow-only — never places orders. Entire body in try/except so
         a crash here cannot affect candidate selection or live trading.
@@ -8776,7 +8789,7 @@ class OpportunityScanner:
 
                 # ── NO-side computation ──
                 no_prob = 1.0 - yes_final_prob
-                no_price = 100 - best_ask  # NO contract price in cents
+                no_price = item["no_ask"]  # actual NO ask from orderbook (100 - YES bid)
 
                 # Price filter for NO side (use lower floor for 15M shadow collection)
                 _ncfg = get_market_config(_pt)
@@ -8825,7 +8838,7 @@ class OpportunityScanner:
                             if _no_position > _no_type_max:
                                 _no_position = max(1, _no_type_max)
                     except Exception:
-                        logging.debug("no_side sizing failed", exc_info=True)
+                        logging.warning("no_side sizing failed", exc_info=True)
 
                     if _no_position is not None and _no_position <= 0:
                         _no_filter_stage = "zero_sizing"

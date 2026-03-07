@@ -980,28 +980,42 @@ class FifteenMShadowEngine:
         market_only_prob = market_price / 100.0
 
         # ── NO-side shadow evaluation ──
-        # Mirror: NO_prob = 1 - YES_prob, NO_price = 100 - YES_price
-        no_price = 100 - market_price
+        # NO ask = 100 - YES bid (actual orderbook, not 100 - YES ask which is NO bid)
+        if best_bid is not None and best_bid > 0:
+            no_price = 100 - best_bid
+        else:
+            no_price = None  # no YES bid available — skip NO-side
         no_live_prob = 1.0 - live_prob
-        no_live_edge = no_live_prob - no_price / 100.0
-        _no_fee_1c = math.ceil(FEE_MULTIPLIER * 1 * (no_price / 100) * (1 - no_price / 100) * 100)
-        no_live_fee_edge = no_live_edge - _no_fee_1c / 100.0
+        if no_price is not None:
+            no_live_edge = no_live_prob - no_price / 100.0
+            _no_fee_1c = math.ceil(FEE_MULTIPLIER * 1 * (no_price / 100) * (1 - no_price / 100) * 100)
+            no_live_fee_edge = no_live_edge - _no_fee_1c / 100.0
 
-        # NO-side A1: use 1-a1_final_prob as NO probability
-        no_a1 = self._evaluate_no_side_approach(a1, no_price)
+            # NO-side A1: use 1-a1_final_prob as NO probability
+            no_a1 = self._evaluate_no_side_approach(a1, no_price)
 
-        # NO-side A2: use 1-a2_calibrated_prob as NO probability
-        no_a2 = self._evaluate_no_side_approach(a2, no_price, is_lgbm=True)
+            # NO-side A2: use 1-a2_calibrated_prob as NO probability
+            no_a2 = self._evaluate_no_side_approach(a2, no_price, is_lgbm=True)
 
-        # Approach 3: EGARCH Gating (NO-side)
-        no_a3 = self._approach3.evaluate(
-            asset, spot_price, threshold, seconds_to_close,
-            blended_rv, market_price, z_score, live_prob,
-            best_bid, best_ask, egarch_sigma, egarch_blend_weight,
-            fee_adjusted_edge, kelly_f, side="no")
+            # Approach 3: EGARCH Gating (NO-side)
+            no_a3 = self._approach3.evaluate(
+                asset, spot_price, threshold, seconds_to_close,
+                blended_rv, market_price, z_score, live_prob,
+                best_bid, best_ask, egarch_sigma, egarch_blend_weight,
+                fee_adjusted_edge, kelly_f, side="no")
 
-        # NO-side market baseline
-        no_market_only_prob = no_price / 100.0
+            # NO-side market baseline
+            no_market_only_prob = no_price / 100.0
+        else:
+            no_live_edge = None
+            no_live_fee_edge = None
+            _no_null = {"final_prob": None, "edge": None, "fee_adjusted_edge": None,
+                        "kelly_f": None, "contracts": 0, "gates_passed": 0, "gate_failures": "no_yes_bid"}
+            no_a1 = _no_null
+            no_a2 = _no_null.copy()
+            no_a3 = {"a3_gate_prob": None, "a3_loss_prob": None, "a3_recommendation": "skip",
+                      "a3_model_status": "no_yes_bid", "a3_features_used": 0}
+            no_market_only_prob = None
 
         self._log_signal(
             ticker=ticker,
@@ -1198,7 +1212,9 @@ class FifteenMShadowEngine:
             result_yes = market_result in ("yes", "all_yes")
             result_no = market_result in ("no", "all_no")
             mp = row["market_price"] or 0
-            no_mp = 100 - mp  # NO contract price
+            # NO ask = 100 - YES bid (actual orderbook). Fallback to 100-mp for old data.
+            _bb = row["best_bid"]
+            no_mp = (100 - _bb) if (_bb and _bb > 0) else (100 - mp)
             now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
             def _compute_pnl(contracts, price, is_no_side=False):

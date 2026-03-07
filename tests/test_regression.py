@@ -1360,3 +1360,153 @@ class TestShadowCallsiteVariables:
                             f"silent failures like NameError "
                             f"(Bug 6b017bb: dead code for weeks)"
                         )
+
+
+# ============================================================================
+#  NO-Side Orderbook Pricing (Mar 7 2026)
+#  Bug: NO price was computed as `100 - best_ask` (= NO bid, NOT NO ask).
+#  Correct: NO ask = 100 - highest_YES_bid (from actual orderbook).
+#  This was silently wrong in all NO-side shadow evaluation — every NO-side
+#  edge, sizing, and filter decision used the wrong price.
+# ============================================================================
+
+class TestNoSideOrderbookPricing:
+    """NO-side pricing must use actual orderbook YES bid, never infer from YES ask."""
+
+    def _get_bot_source(self):
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            return f.read()
+
+    def test_no_side_queue_passes_no_ask(self):
+        """All _no_side_queue.append() calls must include 'no_ask' key."""
+        source = self._get_bot_source()
+        # Find all _no_side_queue.append blocks
+        appends = list(re.finditer(
+            r'_no_side_queue\.append\(\{([^}]+)\}',
+            source, re.DOTALL
+        ))
+        assert len(appends) >= 2, (
+            f"Expected at least 2 _no_side_queue.append calls, found {len(appends)}"
+        )
+        for i, m in enumerate(appends):
+            body = m.group(1)
+            assert '"no_ask"' in body or "'no_ask'" in body, (
+                f"_no_side_queue.append #{i+1} does not pass 'no_ask' key. "
+                f"NO price must come from actual orderbook (100 - YES bid), "
+                f"not be inferred later from YES ask."
+            )
+
+    def test_process_no_side_uses_item_no_ask(self):
+        """_process_no_side_shadow must get NO price from item['no_ask'], not 100 - best_ask."""
+        source = self._get_bot_source()
+        # Find the _process_no_side_shadow method
+        method_match = re.search(
+            r'def _process_no_side_shadow\(self.*?\n(    def |\Z)',
+            source, re.DOTALL
+        )
+        assert method_match, "_process_no_side_shadow not found"
+        method_body = method_match.group(0)
+
+        # Must NOT have `no_price = 100 - best_ask`
+        assert "100 - best_ask" not in method_body, (
+            "_process_no_side_shadow still uses '100 - best_ask' to compute NO price. "
+            "This gives NO BID, not NO ASK. Must use item['no_ask'] from actual orderbook."
+        )
+
+        # Must have item["no_ask"] or item.get("no_ask")
+        assert 'item["no_ask"]' in method_body or "item.get(\"no_ask\")" in method_body or "item['no_ask']" in method_body, (
+            "_process_no_side_shadow does not read 'no_ask' from queue item. "
+            "NO price must come from actual orderbook data passed through the queue."
+        )
+
+    def test_no_inferred_no_price_anywhere(self):
+        """No NO-side pricing code should use `100 - best_ask` as a NO ask price.
+
+        `100 - best_ask` = `100 - YES_ask` = NO BID (what you'd get selling NO).
+        NO ASK (what you'd pay buying NO) = `100 - YES_bid`.
+        Using the wrong one means every NO-side edge calculation is wrong.
+        """
+        source = self._get_bot_source()
+        lines = source.split('\n')
+        violations = []
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # Skip comments
+            if stripped.startswith('#'):
+                continue
+            # Skip EV calculations (those correctly use 100 - best_ask for YES-side payoff)
+            if '_ev =' in line or '_ev=' in line:
+                continue
+            # Skip YES-side market blend (correctly uses best_ask)
+            if 'mip = best_ask' in line:
+                continue
+            # Check for NO-price patterns using 100 - best_ask
+            if re.search(r'_?no_?price\s*=\s*100\s*-\s*best_ask', line):
+                violations.append(f"bot.py:{i+1}: {stripped}")
+        assert not violations, (
+            f"Found {len(violations)} location(s) computing NO price as "
+            f"'100 - best_ask' (= NO BID, wrong!):\n" +
+            "\n".join(violations) +
+            "\n\nNO ASK = 100 - highest_YES_bid. Use OrderExecutor._best_yes_bid(ob_data)."
+        )
+
+    def test_weather_no_side_uses_orderbook(self):
+        """Weather NO-side edge must use actual orderbook, not 100 - best_ask."""
+        source = self._get_bot_source()
+        # Find the weather NO-side section
+        wx_match = re.search(
+            r'# ── Weather NO-side shadow edge ──(.*?)(?=\n\s+# ──|\n\s+_no_side_queue)',
+            source, re.DOTALL
+        )
+        assert wx_match, "Weather NO-side shadow edge section not found"
+        wx_body = wx_match.group(1)
+        assert "100 - best_ask" not in wx_body, (
+            "Weather NO-side edge still uses '100 - best_ask'. "
+            "Must use actual orderbook YES bid to compute NO ask."
+        )
+        assert "_best_yes_bid" in wx_body, (
+            "Weather NO-side edge does not call _best_yes_bid to get actual orderbook data."
+        )
+
+    def test_shadow_engines_no_side_uses_best_bid(self):
+        """All shadow engines must compute NO ask from YES bid, not YES ask.
+
+        NO ask = 100 - YES bid (actual orderbook).
+        NOT: 100 - market_price (which is YES ask, giving NO bid — wrong).
+        """
+        engines = [
+            ("fifteenm_shadow.py", "evaluate_strike"),
+            ("spx_harrv_shadow.py", "evaluate"),
+            ("hourly_alt_shadow.py", "_evaluate_no_side"),
+        ]
+        for fname, method in engines:
+            fpath = os.path.join(PROJECT_ROOT, fname)
+            if not os.path.exists(fpath):
+                continue
+            with open(fpath) as f:
+                source = f.read()
+
+            # Find the NO-side section in the method
+            method_match = re.search(
+                rf'def {method}\(.*?\n(    def |\Z)',
+                source, re.DOTALL
+            )
+            assert method_match, f"{fname}: method {method} not found"
+            body = method_match.group(0)
+
+            # Find NO-side price computation
+            no_price_lines = [
+                line.strip() for line in body.split('\n')
+                if re.match(r'\s*no_price\s*=', line.strip())
+                and not line.strip().startswith('#')
+            ]
+
+            for line in no_price_lines:
+                # Must NOT be `100 - market_price` without best_bid guard
+                assert "100 - market_price" not in line or "fallback" in line.lower(), (
+                    f"{fname}: NO price computed as '100 - market_price' "
+                    f"(= 100 - YES_ask = NO BID, wrong). "
+                    f"Must use 100 - best_bid (= NO ASK from actual orderbook). "
+                    f"Line: {line}"
+                )

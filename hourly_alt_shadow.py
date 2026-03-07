@@ -577,6 +577,7 @@ class HARRVShadow:
     def evaluate(self, asset: str, ticker: str, event_ticker: str,
                  spot_price: float, threshold: float,
                  seconds_to_close: float, market_price: int,
+                 best_bid: Optional[int] = None,
                  egarch_prob: Optional[float] = None,
                  egarch_edge: Optional[float] = None) -> Optional[Dict]:
         """Full HAR-RV evaluation pipeline for a single strike.
@@ -638,7 +639,7 @@ class HARRVShadow:
         # ── NO-side evaluation ──
         no_result = self._evaluate_no_side(
             final_prob, market_price, asset, fee_adjusted_edge,
-            seconds_to_close, rv_components, bankroll)
+            seconds_to_close, rv_components, bankroll, best_bid=best_bid)
 
         return {
             "strategy": "harrv_shadow",
@@ -682,6 +683,7 @@ class HARRVShadow:
             "egarch_prob": egarch_prob,
             "egarch_edge": egarch_edge,
             # NO-side HAR-RV
+            "no_harrv_price": no_result["no_price"],
             "no_harrv_prob": no_result["no_prob"],
             "no_harrv_edge": no_result["no_edge"],
             "no_harrv_fee_edge": no_result["no_fee_edge"],
@@ -695,12 +697,18 @@ class HARRVShadow:
                           asset: str, yes_fee_edge: float,
                           seconds_to_close: float,
                           rv_components: Optional[Dict],
-                          bankroll: int) -> Dict:
+                          bankroll: int,
+                          best_bid: Optional[int] = None) -> Dict:
         """Mirror YES-side HAR-RV probability to compute NO-side metrics.
 
         Pattern follows fifteenm_shadow.py's _evaluate_no_side_approach.
+        NO ask = 100 - YES bid (actual orderbook, not 100 - YES ask which is NO bid).
         """
-        no_price = 100 - market_price
+        # NO ask = 100 - YES bid (from actual orderbook)
+        if best_bid is not None and best_bid > 0:
+            no_price = 100 - best_bid
+        else:
+            no_price = 100 - market_price  # fallback if no YES bid available
         no_prob = 1.0 - yes_final_prob
 
         # Edge
@@ -766,6 +774,7 @@ class HARRVShadow:
             no_contracts = max(0, min(no_contracts, max_pos))
 
         return {
+            "no_price": no_price,
             "no_prob": round(no_prob, 6),
             "no_edge": round(no_edge, 6),
             "no_fee_edge": round(no_fee_edge, 6),
@@ -898,6 +907,7 @@ class HourlyAltShadowEngine:
 
         # ── Migration: NO-side HAR-RV columns ──
         for col_name, col_type in [
+            ("no_harrv_price", "INTEGER"),
             ("no_harrv_prob", "REAL"),
             ("no_harrv_edge", "REAL"),
             ("no_harrv_fee_edge", "REAL"),
@@ -955,7 +965,7 @@ class HourlyAltShadowEngine:
                     self._seen.add(mm_key)
                     self.mm.record_shadow_order(mm_signal)
             except Exception as e:
-                logging.debug("MM shadow evaluate failed for %s: %s", ticker, e)
+                logging.warning("MM shadow evaluate failed for %s", ticker, exc_info=True)
 
         # Strategy B: HAR-RV
         if harrv_key not in self._seen:
@@ -964,13 +974,14 @@ class HourlyAltShadowEngine:
                     asset, ticker, event_ticker,
                     spot_price, threshold,
                     seconds_to_close, market_price,
+                    best_bid=best_bid,
                     egarch_prob=egarch_prob,
                     egarch_edge=egarch_edge)
                 if harrv_signal is not None:
                     signals.append(harrv_signal)
                     self._seen.add(harrv_key)
             except Exception as e:
-                logging.debug("HAR-RV shadow evaluate failed for %s: %s", ticker, e)
+                logging.warning("HAR-RV shadow evaluate failed for %s", ticker, exc_info=True)
 
         # Persist signals
         for sig in signals:
@@ -1002,11 +1013,11 @@ class HourlyAltShadowEngine:
                      gates_passed, gate_failures,
                      kelly_f, shadow_contracts, bankroll_cents, est_fee_cents,
                      egarch_prob, egarch_edge,
-                     no_harrv_prob, no_harrv_edge, no_harrv_fee_edge,
+                     no_harrv_price, no_harrv_prob, no_harrv_edge, no_harrv_fee_edge,
                      no_harrv_kelly_f, no_harrv_contracts,
                      no_harrv_gates_passed, no_harrv_gate_failures)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                        ?,?,?,?,?,?,?)
+                        ?,?,?,?,?,?,?,?)
             """, (
                 strategy,
                 signal.get("ticker"),
@@ -1047,6 +1058,7 @@ class HourlyAltShadowEngine:
                 signal.get("est_fee_cents"),
                 signal.get("egarch_prob"),
                 signal.get("egarch_edge"),
+                signal.get("no_harrv_price"),
                 signal.get("no_harrv_prob"),
                 signal.get("no_harrv_edge"),
                 signal.get("no_harrv_fee_edge"),
@@ -1068,7 +1080,7 @@ class HourlyAltShadowEngine:
             with open(self._journal_path, "a") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
         except Exception:
-            pass
+            logging.warning("hourly_alt_shadow journal write failed", exc_info=True)
 
     def settle_signals(self, ticker: str, market_result: str):
         """Called when a market settles. Update all shadow signals for this ticker.
@@ -1082,7 +1094,7 @@ class HourlyAltShadowEngine:
             rows = self._db_conn.execute(
                 "SELECT id, strategy, market_price, shadow_contracts, shadow_buy_price, "
                 "shadow_sell_price, final_prob, edge, "
-                "no_harrv_contracts "
+                "no_harrv_contracts, no_harrv_price "
                 "FROM hourly_alt_shadow_signals "
                 "WHERE ticker=? AND status='pending'",
                 (ticker,)
@@ -1117,7 +1129,11 @@ class HourlyAltShadowEngine:
                     # NO-side PnL
                     no_ct = row["no_harrv_contracts"] or 0
                     if no_ct > 0:
-                        no_price = 100 - price
+                        # Use stored NO ask if available, fallback for old data
+                        try:
+                            no_price = row["no_harrv_price"] if row["no_harrv_price"] else (100 - price)
+                        except (IndexError, KeyError):
+                            no_price = 100 - price  # column doesn't exist in old schema
                         fee_no = math.ceil(FEE_MULT_TAKER * no_ct * (no_price / 100.0) * (1 - no_price / 100.0) * 100)
                         # NO-side wins when result is "no"
                         if result_no:
