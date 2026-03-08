@@ -1239,6 +1239,16 @@ class StateManager:
         self.conn.row_factory = sqlite3.Row
         self._last_balance_cents: Optional[int] = None
         self._create_tables()
+        # Seed balance cache from most recent DB value to avoid NULL gap after restart
+        try:
+            row = self.conn.execute(
+                "SELECT available_balance_cents FROM evaluated_opportunities "
+                "WHERE available_balance_cents IS NOT NULL ORDER BY evaluation_time DESC LIMIT 1"
+            ).fetchone()
+            if row:
+                self._last_balance_cents = row[0]
+        except Exception:
+            pass
 
     def _create_tables(self):
         self.conn.executescript("""
