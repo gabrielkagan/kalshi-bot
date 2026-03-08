@@ -594,7 +594,7 @@ DIP_ADDON_SHADOW_MODE = True              # PHASE 1: Log only, don't execute
 # ─── Price Shadow — edge data for 70-85c markets ──────────────────────
 PRICE_SHADOW_ENABLED = True        # Shadow-evaluate POR for edge data collection
 PRICE_SHADOW_FLOOR = 70            # Lowest price to shadow-evaluate
-NO_SIDE_MIN_ENTRY_PRICE = 70       # Lowest NO price for shadow collection (matches PRICE_SHADOW_FLOOR)
+NO_SIDE_MIN_ENTRY_PRICE = 5        # Lowest NO price for shadow data collection (all product types)
 DIP_ADDON_MIN_DROP_CENTS = 3              # ask must drop ≥3¢ below entry
 DIP_ADDON_MIN_SECONDS_SINCE_FILL = 5.0   # wait after fill before eligible
 DIP_ADDON_MIN_STC_REMAINING = 90.0       # need ≥90s (aligns with maker-only threshold)
@@ -7352,6 +7352,9 @@ class OpportunityScanner:
                             "cal_prob": cal_prob,
                             "raw_prob": raw_prob_pre,
                             "calibration_method": calibration_method_pre,
+                            "hourly_pre_temp_prob": None,  # POR path — before temp computation
+                            "hourly_applied_temp_t": None,
+                            "hourly_post_temp_prob": None,
                         })
                     continue
 
@@ -7564,6 +7567,9 @@ class OpportunityScanner:
                         "cal_prob": None,  # not needed — final_prob available
                         "raw_prob": raw_prob,
                         "calibration_method": calibration_method,
+                        "hourly_pre_temp_prob": _hourly_pre_temp_prob,
+                        "hourly_applied_temp_t": _configured_temp_t,
+                        "hourly_post_temp_prob": _hourly_post_temp_prob,
                     })
 
                 # ── Augment _shadow_diag with Kalshi OFT fields ──
@@ -9472,7 +9478,7 @@ class OpportunityScanner:
 
                 # Price filter for NO side (use lower floor for 15M shadow collection)
                 _ncfg = get_market_config(_pt)
-                _no_price_floor = NO_SIDE_MIN_ENTRY_PRICE if _pt in (None, "15m") else _ncfg.min_entry_price
+                _no_price_floor = NO_SIDE_MIN_ENTRY_PRICE  # universal floor for NO-side shadow collection
                 if not (_no_price_floor <= no_price <= _ncfg.max_entry_price):
                     # NO price out of range — skip (don't log; too much volume for OOR)
                     continue
@@ -9549,6 +9555,15 @@ class OpportunityScanner:
                 self._eval_opp_seen.add(_dedup_key)
 
                 _sx = item.get("_shadow_extra", {})
+                # Debug: warn if weather NO-side is missing ensemble data
+                if _pt == "weather" and not _sx.get("wx_ensemble_mean"):
+                    logging.warning(
+                        "NO_SIDE_DIAG: weather %s missing wx_ensemble_mean in _shadow_extra, keys=%s",
+                        ticker, list(_sx.keys()))
+                # Hourly temperature fields (passed through queue)
+                _no_hourly_pre = item.get("hourly_pre_temp_prob")
+                _no_hourly_t = item.get("hourly_applied_temp_t")
+                _no_hourly_post = item.get("hourly_post_temp_prob")
                 self._state.insert_evaluated_opportunity(
                     ticker, item["event_ticker"], asset,
                     _no_filter_stage,
@@ -9580,6 +9595,9 @@ class OpportunityScanner:
                     wx_hrrr_temp=_sx.get("wx_hrrr_temp"),
                     wx_corrected_mean=_sx.get("wx_corrected_mean"),
                     wx_no_side_edge=_sx.get("wx_no_side_edge"),
+                    hourly_pre_temp_prob=_no_hourly_pre,
+                    hourly_applied_temp_t=_no_hourly_t,
+                    hourly_post_temp_prob=_no_hourly_post,
                     **item["_oft_db"], **item["_shadow_diag"])
         except Exception:
             logging.warning("no_side_shadow processing error", exc_info=True)

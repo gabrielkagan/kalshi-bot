@@ -1767,6 +1767,7 @@ class SportsEngine:
         """Insert to evaluated_opportunities for settlement tracking.
 
         Uses own DB connection to avoid cross-thread writes to StateManager.
+        Inserts YES-side row, then a NO-side shadow row for data collection.
         """
         try:
             conn = self._get_db_conn()
@@ -1790,8 +1791,8 @@ class SportsEngine:
                      fee_adjusted_edge, product_type, status,
                      seconds_to_close, spot_price, position_size, kelly_f,
                      z_score, vol_regime, calibration_method, counterfactual,
-                     ask_depth)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     ask_depth, side)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, league_cfg.display_name,
                   signal.filter_stage, signal.rejection_reason, now,
                   _db_price,
@@ -1805,10 +1806,51 @@ class SportsEngine:
                   signal.sport_group,
                   "bayesian_comeback",
                   1 if signal.signal_fired else 0,
-                  ob_data.get("ask_depth") if ob_data else None))
+                  ob_data.get("ask_depth") if ob_data else None,
+                  "yes"))
             conn.commit()
         except Exception:
             logging.debug("SportsEngine eval_opp insert failed", exc_info=True)
+
+        # ── NO-side shadow row ──
+        # Collect raw NO-side data: NO prob = 1 - comeback_prob, NO price from orderbook
+        try:
+            if raw_kalshi_price is not None and raw_kalshi_price > 0:
+                _no_price = 100 - int(raw_kalshi_price)
+                if _no_price >= 5:  # match NO_SIDE_MIN_ENTRY_PRICE
+                    _no_prob = 1.0 - signal.comeback_prob
+                    _no_edge = _no_prob - _no_price / 100.0
+                    # Taker fee for NO side (sports uses 0.07 crypto taker fee)
+                    _no_fee = math.ceil(0.07 * 1 * _no_price * (100 - _no_price) / 100) / 100.0
+                    _no_fee_edge = _no_edge - _no_fee
+                    _no_stage = "no_side_shadow"
+                    conn = self._get_db_conn()
+                    conn.execute("""
+                        INSERT OR REPLACE INTO evaluated_opportunities
+                            (ticker, event_ticker, asset, filter_stage, rejection_reason,
+                             evaluation_time, market_price, calibrated_prob, raw_prob, edge,
+                             fee_adjusted_edge, product_type, status,
+                             seconds_to_close, spot_price, position_size, kelly_f,
+                             z_score, vol_regime, calibration_method, counterfactual,
+                             ask_depth, side)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """, (ticker, event_ticker, league_cfg.display_name,
+                          _no_stage, None, now,
+                          _no_price,
+                          _no_prob, 1.0 - signal.comeback_prob, _no_edge,
+                          _no_fee_edge, "sports", "pending",
+                          _stc,
+                          round(signal.prior * 100, 2) if signal.prior else None,
+                          None, None,  # no sizing for NO shadow
+                          signal.likelihood_ratio,
+                          signal.sport_group,
+                          "bayesian_comeback_no",
+                          0,  # not a signal
+                          ob_data.get("bid_depth") if ob_data else None,
+                          "no"))
+                    conn.commit()
+        except Exception:
+            logging.warning("SportsEngine NO-side eval_opp insert failed", exc_info=True)
 
     def stop(self) -> None:
         """Signal shutdown."""

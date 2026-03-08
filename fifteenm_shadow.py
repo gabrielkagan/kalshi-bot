@@ -46,6 +46,7 @@ MAX_KELLY_FRACTION = 0.25  # quarter-Kelly
 MAX_RISK_CAP = 0.03  # 3% bankroll hard cap per signal
 MIN_DEBIASED_EDGE = 0.015  # 1.5pp minimum edge after debiasing
 SHADOW_MIN_ENTRY_PRICE = 70  # Lower floor for shadow data collection (live bot uses 86)
+SHADOW_NO_SIDE_MIN_PRICE = 5  # Very low floor for NO-side shadow collection (most NO asks are 5-50c)
 FEE_MULTIPLIER = 0.0  # Kalshi charges $0 on maker fills
 
 
@@ -1068,9 +1069,9 @@ class FifteenMShadowEngine:
         _fee = math.ceil(FEE_MULTIPLIER * 1 * (no_price / 100) * (1 - no_price / 100) * 100)
         no_fee_edge = no_edge - _fee / 100.0
 
-        # Gate check: shadow uses lower price floor for data collection
+        # Gate check: NO-side uses very low floor for comprehensive data collection
         failures = []
-        if not (SHADOW_MIN_ENTRY_PRICE <= no_price <= 99):
+        if not (SHADOW_NO_SIDE_MIN_PRICE <= no_price <= 99):
             failures.append(f"price_{no_price}")
         if no_fee_edge < MIN_DEBIASED_EDGE:
             failures.append(f"edge_{no_fee_edge:.4f}")
