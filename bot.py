@@ -1237,6 +1237,7 @@ class StateManager:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=10000")
         self.conn.row_factory = sqlite3.Row
+        self._last_balance_cents: Optional[int] = None
         self._create_tables()
 
     def _create_tables(self):
@@ -1403,6 +1404,47 @@ class StateManager:
                 ON sports_shadow_log(signal_fired);
         """)
         self.conn.commit()
+
+        # Unified shadow view: combines 15M shadow engines + hourly alt shadows
+        # Safe to re-run; depends on fifteenm_shadow_signals + hourly_alt_shadow_signals
+        try:
+            self.conn.executescript("""
+                DROP VIEW IF EXISTS unified_shadow_signals;
+                CREATE VIEW unified_shadow_signals AS
+                SELECT 'fifteenm' AS source, 'A1_recal_egarch' AS approach,
+                       asset, evaluation_time, market_price,
+                       a1_final_prob AS prob, a1_fee_edge AS fee_edge,
+                       a1_kelly_f AS kelly_f, a1_contracts AS contracts,
+                       a1_gates_passed AS gates_passed, a1_pnl_cents AS pnl_cents,
+                       status, market_result, settled_time
+                FROM fifteenm_shadow_signals WHERE a1_final_prob IS NOT NULL
+                UNION ALL
+                SELECT 'fifteenm', 'A2_lightgbm',
+                       asset, evaluation_time, market_price,
+                       a2_calibrated_prob, a2_fee_edge,
+                       a2_kelly_f, a2_contracts,
+                       a2_gates_passed, a2_pnl_cents,
+                       status, market_result, settled_time
+                FROM fifteenm_shadow_signals WHERE a2_raw_prob IS NOT NULL
+                UNION ALL
+                SELECT 'fifteenm', 'A3_gating',
+                       asset, evaluation_time, market_price,
+                       a3_gate_prob, NULL, NULL, NULL,
+                       a3_gate_10, a3_pnl_gate10_cents,
+                       status, market_result, settled_time
+                FROM fifteenm_shadow_signals WHERE a3_gate_prob IS NOT NULL
+                UNION ALL
+                SELECT 'hourly_alt', strategy,
+                       asset, evaluation_time, market_price,
+                       final_prob, fee_adjusted_edge,
+                       kelly_f, shadow_contracts,
+                       gates_passed, shadow_pnl_cents,
+                       status, market_result, settled_time
+                FROM hourly_alt_shadow_signals;
+            """)
+            self.conn.commit()
+        except Exception:
+            logging.debug("unified_shadow_signals view creation skipped (tables may not exist yet)")
 
         # Migration: add new columns to sports_shadow_log (safe to re-run)
         for col_def in [
@@ -1980,6 +2022,11 @@ class StateManager:
                                      order_outcome: Optional[str] = None,
                                      side: str = "yes"):
         """Insert an evaluated opportunity for settlement tracking."""
+        # Auto-fill balance from cache so ALL filter stages have a recent value
+        if available_balance_cents is not None:
+            self._last_balance_cents = available_balance_cents
+        elif self._last_balance_cents is not None:
+            available_balance_cents = self._last_balance_cents
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
             self.conn.execute("""
