@@ -6223,6 +6223,9 @@ class PositionSizer:
         # Compute fee-adjusted edge
         fee_1c = calculate_taker_fee(1, price_cents)
         b = (100 - price_cents - fee_1c) / (price_cents + fee_1c)
+        if b <= 0:
+            result["reason"] = "zero payout after fees"
+            return result
         p = win_prob
         q = 1.0 - p
         kelly_edge = (b * p - q) / b

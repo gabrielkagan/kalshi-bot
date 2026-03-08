@@ -1592,3 +1592,48 @@ class TestV2VariantSafety:
         assert "v2_variant_alpha" in source, (
             "hourly_alpha_research.py must have v2_variant_alpha function"
         )
+
+
+# ============================================================================
+#  Kelly Sizing Division by Zero (a7408ec → fix)
+#     Bug: PositionSizer.compute() did not guard b <= 0 after fees.
+#     At price_cents=99 with taker fee=1c, b = (100-99-1)/(99+1) = 0,
+#     causing ZeroDivisionError in kelly_edge = (b*p - q) / b.
+#     Pre-existing bug exposed by V2 variant adding a second sizer.compute() callsite.
+# ============================================================================
+
+class TestKellySizerZeroPayout:
+    """Verify PositionSizer.compute() handles zero-payout prices safely."""
+
+    def test_compute_guard_exists_in_source(self):
+        """Source code must guard b <= 0 before Kelly division."""
+        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+            source = f.read()
+        # Find the compute method and verify it has a b <= 0 guard
+        assert "if b <= 0:" in source, (
+            "PositionSizer.compute() must guard b <= 0 to prevent division by zero"
+        )
+
+    def test_guard_precedes_kelly_division(self):
+        """The b <= 0 guard must appear BEFORE the kelly_edge division in compute()."""
+        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+            source = f.read()
+        guard_pos = source.find("if b <= 0:")
+        division_pos = source.find("kelly_edge = (b * p - q) / b")
+        assert guard_pos > 0, "b <= 0 guard must exist"
+        assert division_pos > 0, "Kelly division must exist"
+        assert guard_pos < division_pos, (
+            "b <= 0 guard must come BEFORE kelly_edge division, "
+            f"but guard is at char {guard_pos} and division at {division_pos}"
+        )
+
+    def test_guard_returns_early(self):
+        """The b <= 0 guard must return result (not just pass)."""
+        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+            source = f.read()
+        # Find the guard and verify the next few lines contain 'return result'
+        guard_idx = source.find("if b <= 0:")
+        block = source[guard_idx:guard_idx + 200]
+        assert "return result" in block, (
+            "b <= 0 guard must return result to prevent reaching Kelly division"
+        )
