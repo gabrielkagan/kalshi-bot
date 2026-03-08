@@ -214,6 +214,8 @@ class WeatherEnsembleFetcher:
         self._cache: Dict[str, Dict] = {}  # key: "CITY_YYYY-MM-DD" -> ensemble data
         self._cache_ts: Dict[str, float] = {}
         self._lock = threading.Lock()
+        self._backoff_until: float = 0.0  # timestamp: skip all fetches until this time
+        self._consecutive_429s: int = 0
 
     def fetch_ensemble(self, city_code: str, target_date: Optional[str] = None) -> Optional[Dict]:
         """Fetch GFS + ECMWF ensemble for a city's daily high temperature.
@@ -237,6 +239,9 @@ class WeatherEnsembleFetcher:
                 if cache_age > 1800:  # 30 min
                     logging.warning("WeatherEnsemble: %s serving stale cache (%.0fs old)", city_code, cache_age)
                 return cached
+            # Backoff: skip fetches if recently rate-limited by Open-Meteo
+            if time.time() < self._backoff_until:
+                return cached  # return stale cache (or None) during backoff
 
         lat, lon = city["lat"], city["lon"]
         result = {}
@@ -290,6 +295,8 @@ class WeatherEnsembleFetcher:
     def _fetch_model_ensemble(self, lat: float, lon: float, model: str,
                               target_date: str) -> Optional[List[float]]:
         """Fetch ensemble members' daily high temperature from Open-Meteo."""
+        if time.time() < self._backoff_until:
+            return None
         t0 = time.time()
         try:
             resp = requests.get(OPEN_METEO_ENSEMBLE_URL, params={
@@ -307,6 +314,13 @@ class WeatherEnsembleFetcher:
             if resp.status_code != 200:
                 logging.warning("WeatherEnsemble: %s %s returned HTTP %d (%.1fs)",
                                 model, target_date, resp.status_code, elapsed)
+                if resp.status_code == 429:
+                    self._consecutive_429s += 1
+                    # Exponential backoff: 60s, 120s, 240s, 480s, max 900s (15 min)
+                    backoff_secs = min(60 * (2 ** (self._consecutive_429s - 1)), 900)
+                    self._backoff_until = time.time() + backoff_secs
+                    logging.warning("WeatherEnsemble: 429 backoff #%d — pausing %.0fs",
+                                    self._consecutive_429s, backoff_secs)
                 return None
 
             data = resp.json()
@@ -345,6 +359,9 @@ class WeatherEnsembleFetcher:
             logging.debug("WeatherEnsembleFetcher: %s %d members, mean=%.1fF, range=[%.1f, %.1f]",
                           model, len(members), _m, min(members), max(members))
 
+            # Successful fetch — reset backoff
+            self._consecutive_429s = 0
+            self._backoff_until = 0.0
             return members
 
         except requests.RequestException as e:
@@ -404,6 +421,8 @@ class WeatherEnsembleFetcher:
 
     def _fetch_hrrr(self, lat: float, lon: float, target_date: str) -> Optional[float]:
         """Fetch HRRR deterministic daily high temperature."""
+        if time.time() < self._backoff_until:
+            return None
         try:
             resp = requests.get(OPEN_METEO_FORECAST_URL, params={
                 "latitude": lat,
@@ -418,6 +437,10 @@ class WeatherEnsembleFetcher:
 
             if resp.status_code != 200:
                 logging.warning("WeatherEnsemble: HRRR fetch HTTP %d", resp.status_code)
+                if resp.status_code == 429:
+                    self._consecutive_429s += 1
+                    backoff_secs = min(60 * (2 ** (self._consecutive_429s - 1)), 900)
+                    self._backoff_until = time.time() + backoff_secs
                 return None
 
             data = resp.json()
