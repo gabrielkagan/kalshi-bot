@@ -61,10 +61,10 @@ MAX_TG_MESSAGES = 5
 # ---------------------------------------------------------------------------
 EXPECTED_COLUMN_COUNTS = {
     "settled_trades": 22,
-    "evaluated_opportunities": 75,
+    "evaluated_opportunities": 79,
     "rejected_opportunities": 28,
-    "positions": 6,
-    "pending_orders": 7,
+    "positions": 23,
+    "pending_orders": 12,
 }
 
 # ---------------------------------------------------------------------------
@@ -102,23 +102,30 @@ def send_telegram(message: str, token: str, chat_id: str) -> bool:
         log.warning("Telegram credentials not configured")
         return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({
-        "chat_id": chat_id,
-        "text": message[:4096],
-        "parse_mode": "Markdown",
-    }).encode()
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
-    except Exception as e:
-        log.warning("Telegram send failed: %s", e)
-        return False
+    # Try with Markdown first, fall back to plain text on parse errors
+    for parse_mode in ("Markdown", None):
+        body = {"chat_id": chat_id, "text": message[:4096]}
+        if parse_mode:
+            body["parse_mode"] = parse_mode
+        payload = json.dumps(body).encode()
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status == 200
+        except urllib.error.HTTPError as e:
+            if e.code == 400 and parse_mode:
+                log.info("Markdown parse failed, retrying without parse_mode")
+                continue
+            log.warning("Telegram send failed: %s", e)
+            return False
+        except Exception as e:
+            log.warning("Telegram send failed: %s", e)
+            return False
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -444,8 +451,10 @@ def check_duplicate_trades(db: sqlite3.Connection, verbose: bool) -> list[tuple[
     if not has_column(db, "settled_trades", "event_ticker") or not has_column(db, "settled_trades", "side"):
         return alerts
 
+    # Only check 15m — hourly legitimately allows multiple positions per window
     rows = db.execute(
         "SELECT event_ticker, side, count(*) as cnt FROM settled_trades "
+        "WHERE product_type = '15m' "
         "GROUP BY event_ticker, side HAVING cnt > 1"
     ).fetchall()
 
