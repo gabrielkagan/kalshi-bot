@@ -147,9 +147,11 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         temperature_enabled=False,
         cal_eligible=False,
         use_hourly_dynamic_cap=True,
-        cal_engine_enabled=False,
+        cal_engine_enabled=True,   # Enabled: per-city CalEngines learning in shadow
         fee_multiplier_taker=0.07,
         fee_multiplier_maker=0.0,  # Kalshi charges $0 on maker fills
+        min_stc_entry=3600.0,      # 1h minimum (matching WEATHER_MIN_SECONDS_BEFORE_CLOSE)
+        max_stc_entry=43200.0,     # 12h maximum (audit: 4-12h calibrated, 12h+ catastrophic)
         observation_filter_label="weather_observation",
         cal_subtypes={
             "NYC": "cal_weather_NYC.json",
@@ -321,6 +323,12 @@ def validate_market_configs() -> None:
         f"weather kelly_f: {cfg_w.kelly_fraction} != {bot.WEATHER_KELLY_FRACTION}")
     assert cfg_w.market_blend_w == bot.WEATHER_MARKET_BLEND_W, (
         f"weather blend_w: {cfg_w.market_blend_w} != {bot.WEATHER_MARKET_BLEND_W}")
+    assert cfg_w.min_stc_entry == bot.WEATHER_MIN_STC_ENTRY, (
+        f"weather min_stc_entry: {cfg_w.min_stc_entry} != {bot.WEATHER_MIN_STC_ENTRY}")
+    assert cfg_w.max_stc_entry == bot.WEATHER_MAX_STC_ENTRY, (
+        f"weather max_stc_entry: {cfg_w.max_stc_entry} != {bot.WEATHER_MAX_STC_ENTRY}")
+    assert cfg_w.cal_engine_enabled == bot.WEATHER_CAL_ENGINE_ENABLED, (
+        f"weather cal_enabled: {cfg_w.cal_engine_enabled} != {bot.WEATHER_CAL_ENGINE_ENABLED}")
 
     # ── Sports ──
     cfg_sp = MARKET_CONFIGS["sports"]
@@ -354,11 +362,10 @@ def validate_market_configs() -> None:
     # 15M must never have subtypes
     assert not MARKET_CONFIGS["15m"].cal_subtypes, "FATAL: 15m must not have cal_subtypes"
 
-    # Subtypes and single-engine are mutually exclusive
+    # Subtypes and single-engine state path are mutually exclusive.
+    # cal_engine_enabled + cal_subtypes is OK: enables subtype engines for predictions.
     for pt, cfg in MARKET_CONFIGS.items():
         if cfg.cal_subtypes:
-            assert not cfg.cal_engine_enabled, (
-                f"FATAL: {pt} has both cal_engine_enabled and cal_subtypes — pick one")
             assert not cfg.cal_engine_state_path, (
                 f"FATAL: {pt} has both cal_engine_state_path and cal_subtypes — pick one")
 

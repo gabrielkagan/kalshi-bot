@@ -28,6 +28,37 @@ TOTAL_ENSEMBLE_MEMBERS = GFS_MEMBERS + ECMWF_MEMBERS  # 82
 # Bias correction EWMA
 BIAS_EWMA_LAMBDA = 0.90  # ~7-day half-life with daily updates
 
+# Per-city ensemble std correction factors (error_to_std_ratio from Mar 1-8 audit).
+# Ensemble spread systematically underestimates true forecast uncertainty.
+# Multiply ensemble_std by this factor before computing probabilities.
+# Default 1.5x for cities without enough verification data yet.
+WEATHER_STD_CORRECTION_DEFAULT = 1.5
+WEATHER_STD_CORRECTION: Dict[str, float] = {
+    "SFO": 3.3,   # MAE=4.85, std=1.47 → ratio 3.3x
+    "PHI": 1.6,   # MAE=3.70, std=2.32 → ratio 1.6x
+    "MIA": 1.4,   # MAE=1.30, std=0.92 → ratio 1.4x
+    "LAS": 1.2,   # MAE=3.13, std=2.72 → ratio 1.2x
+    "DCA": 1.0,   # MAE=2.82, std=2.84 → already calibrated
+    "DAL": 1.0,   # MAE=2.55, std=2.58 → already calibrated
+    "NYC": 0.8,   # MAE=1.72, std=2.09 → overdispersive
+    "PHX": 0.4,   # MAE=0.62, std=1.55 → very overdispersive
+    "CHI": 0.8,   # MAE=1.73, std=2.14 → overdispersive
+    "MIN": 0.4,   # MAE=0.97, std=2.28 → very overdispersive
+    "DEN": 0.4,   # MAE=0.70, std=1.82 → very overdispersive
+    "OKC": 0.3,   # MAE=0.70, std=2.79 → very overdispersive
+    "ATL": 0.4,   # MAE=0.72, std=1.74 → very overdispersive
+    "HOU": 0.6,   # MAE=0.95, std=1.63 → overdispersive
+    "AUS": 0.5,   # MAE=1.18, std=2.28 → overdispersive
+    "SEA": 0.9,   # MAE=1.31, std=1.47 → close
+    "LAX": 1.0,   # MAE=1.74, std=1.80 → calibrated
+    "BOS": 1.3,   # MAE=1.63, std=1.27 → slightly underdispersive
+    "MSY": 1.3,   # MAE=2.16, std=1.71 → slightly underdispersive
+}
+
+# Shadow trade signal focus: which market types and cities to evaluate
+WEATHER_SHADOW_FOCUS_MARKET_TYPES = {"lower_tail"}
+WEATHER_SHADOW_FOCUS_CITIES = {"DCA", "MIN", "PHI", "BOS", "NYC"}
+
 # Cities with Kalshi weather markets
 WEATHER_CITIES: Dict[str, Dict] = {
     "NYC": {
@@ -455,7 +486,12 @@ class WeatherProbabilityModel:
         # Fit Gaussian to ensemble
         mean = sum(members) / len(members)
         variance = sum((m - mean) ** 2 for m in members) / len(members)
-        std = math.sqrt(max(variance, 0.01))  # floor at 0.01F to avoid division by zero
+        raw_std = math.sqrt(max(variance, 0.01))  # floor at 0.01F to avoid division by zero
+
+        # Apply per-city std correction (ensemble spread underestimates true uncertainty)
+        std_correction = WEATHER_STD_CORRECTION.get(
+            city_code, WEATHER_STD_CORRECTION_DEFAULT)
+        std = raw_std * std_correction
 
         # Apply bias correction
         bias = self._bias.get(city_code, 0.0)
@@ -483,11 +519,33 @@ class WeatherProbabilityModel:
         # Clamp
         raw_prob = max(0.001, min(0.999, raw_prob))
 
+        # Also compute uncorrected probability for comparison logging
+        if market_type == "bracket" and bracket_bounds:
+            lower, upper = bracket_bounds
+            z_lower_uc = (lower - corrected_mean) / raw_std
+            z_upper_uc = (upper - corrected_mean) / raw_std
+            uncorrected_prob = self._normal_cdf(z_upper_uc) - self._normal_cdf(z_lower_uc)
+        elif market_type == "lower_tail":
+            z_uc = (threshold_f - corrected_mean) / raw_std
+            uncorrected_prob = self._normal_cdf(z_uc)
+        elif market_type == "upper_tail":
+            z_uc = (threshold_f - corrected_mean) / raw_std
+            uncorrected_prob = 1.0 - self._normal_cdf(z_uc)
+        else:
+            z_uc = (threshold_f - corrected_mean) / raw_std
+            uncorrected_prob = 1.0 - self._normal_cdf(z_uc)
+            if direction == "below":
+                uncorrected_prob = 1.0 - uncorrected_prob
+        uncorrected_prob = max(0.001, min(0.999, uncorrected_prob))
+
         return {
             "raw_prob": raw_prob,
-            "calibrated_prob": raw_prob,  # no additional calibration yet
+            "calibrated_prob": raw_prob,  # CalEngine may override downstream
+            "uncorrected_prob": uncorrected_prob,  # prob without std correction
             "ensemble_mean": round(mean, 1),
-            "ensemble_std": round(std, 2),
+            "ensemble_std": round(std, 2),         # corrected std
+            "raw_ensemble_std": round(raw_std, 2),  # original ensemble spread
+            "std_correction_factor": std_correction,
             "bias_correction": round(bias, 2),
             "corrected_mean": round(corrected_mean, 1),
             "n_members": len(members),

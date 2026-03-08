@@ -97,10 +97,13 @@ WEATHER_MIN_ENTRY_PRICE = 10
 WEATHER_MAX_ENTRY_PRICE = 99
 WEATHER_MAX_SECONDS_BEFORE_CLOSE = 86400  # Weather settles daily — always eligible
 WEATHER_MIN_SECONDS_BEFORE_CLOSE = 3600   # At least 1 hour before settlement
+WEATHER_MIN_STC_ENTRY = 3600.0           # 1h min for shadow trade signals
+WEATHER_MAX_STC_ENTRY = 43200.0          # 12h max — audit: 4-12h calibrated, 12h+ catastrophic
 WEATHER_MAX_RISK_PER_TRADE = 0.10
 WEATHER_KELLY_FRACTION = 0.25
 WEATHER_MARKET_BLEND_W = 0.20            # 80% model, 20% market (ensemble is primary signal)
 WEATHER_MIN_EDGE_PCT = 0.001             # 0.1% — very low for max signal collection (observation-only)
+WEATHER_CAL_ENGINE_ENABLED = True        # Per-city CalEngines learning in shadow
 HOURLY_MIN_EDGE_PCT = 0.001              # 0.1% — low for max signal collection (observation-only)
 
 # ─── Sports Comeback Observation Mode ────────────────────────────────────
@@ -7344,6 +7347,7 @@ class OpportunityScanner:
                             "product_type": window.get("product_type"),
                             "_shadow_diag": _shadow_diag.copy(),
                             "_oft_db": _oft_db.copy(),
+                            "_shadow_extra": _shadow_extra.copy(),
                             "final_prob": None,  # needs computation
                             "cal_prob": cal_prob,
                             "raw_prob": raw_prob_pre,
@@ -7555,6 +7559,7 @@ class OpportunityScanner:
                         "product_type": window.get("product_type"),
                         "_shadow_diag": _shadow_diag.copy(),
                         "_oft_db": _oft_db.copy(),
+                        "_shadow_extra": _shadow_extra.copy(),
                         "final_prob": final_prob,  # already computed (temp+blend+cap)
                         "cal_prob": None,  # not needed — final_prob available
                         "raw_prob": raw_prob,
@@ -8506,6 +8511,14 @@ class OpportunityScanner:
                             breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                             ask_depth=ask_depth, best_ask_source=best_ask_source,
                             product_type=window.get("product_type"),
+                            wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                            wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                            wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                            wx_n_members=_shadow_extra.get("wx_n_members"),
+                            wx_market_type=_shadow_extra.get("wx_market_type"),
+                            wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                            wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
+                            wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                             hourly_pre_temp_prob=_hourly_pre_temp_prob,
                             hourly_applied_temp_t=_configured_temp_t,
                             hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
@@ -8539,6 +8552,14 @@ class OpportunityScanner:
                                 breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                                 ask_depth=ask_depth, best_ask_source=best_ask_source,
                                 product_type=window.get("product_type"),
+                                wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                                wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                                wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                                wx_n_members=_shadow_extra.get("wx_n_members"),
+                                wx_market_type=_shadow_extra.get("wx_market_type"),
+                                wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
+                                wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
@@ -8574,6 +8595,14 @@ class OpportunityScanner:
                                 breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
                                 ask_depth=ask_depth, best_ask_source=best_ask_source,
                                 product_type=window.get("product_type"),
+                                wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                                wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                                wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                                wx_n_members=_shadow_extra.get("wx_n_members"),
+                                wx_market_type=_shadow_extra.get("wx_market_type"),
+                                wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
+                                wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                                 hourly_pre_temp_prob=_hourly_pre_temp_prob,
                                 hourly_applied_temp_t=_configured_temp_t,
                                 hourly_shadow_temp_2_0=_hourly_shadow_temp_2_0,
@@ -8586,6 +8615,49 @@ class OpportunityScanner:
                                 hourly_shadow_blend_30=_hourly_shadow_blend_30,
                                 hourly_shadow_blend_60=_hourly_shadow_blend_60,
                                 hourly_post_temp_prob=_hourly_post_temp_prob,
+                                **_oft_db, **_shadow_diag)
+                        continue
+
+                # ── WEATHER FOCUS FILTER ──
+                # Shadow trade signals only for lower_tail in NE/Midwest cities.
+                # Other weather markets still logged as raw data in earlier filter stages
+                # (price_out_of_range, insufficient_edge, timing_restricted) but don't
+                # reach the observation gate for shadow trade simulation.
+                if _pt == "weather":
+                    from weather_engine import WEATHER_SHADOW_FOCUS_MARKET_TYPES, WEATHER_SHADOW_FOCUS_CITIES
+                    _wx_mtype_here = _shadow_extra.get("wx_market_type")
+                    _wx_city_here = asset.replace("_TEMP", "") if asset else ""
+                    _wx_excluded_reason = None
+                    if _wx_mtype_here and _wx_mtype_here not in WEATHER_SHADOW_FOCUS_MARKET_TYPES:
+                        _wx_excluded_reason = f"weather_excluded_mtype_{_wx_mtype_here}"
+                    elif _wx_city_here not in WEATHER_SHADOW_FOCUS_CITIES:
+                        _wx_excluded_reason = "weather_excluded_city"
+                    if _wx_excluded_reason:
+                        _dedup_key = (ticker, _wx_excluded_reason)
+                        if _dedup_key not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dedup_key)
+                            _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset, _wx_excluded_reason,
+                                spot_price=spot, threshold=threshold, volatility=blended_rv,
+                                market_price=best_ask, seconds_to_close=seconds_remaining,
+                                calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                                vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                                calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                                breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                                ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                product_type=_pt,
+                                wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                                wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                                wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                                wx_n_members=_shadow_extra.get("wx_n_members"),
+                                wx_market_type=_shadow_extra.get("wx_market_type"),
+                                wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
+                                wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
+                                kelly_f=sizing.get("kelly_f") if sizing else None,
+                                position_size=sizing.get("contracts") if sizing else None,
+                                drawdown_scaler=sizing.get("drawdown_scaler") if sizing else None,
                                 **_oft_db, **_shadow_diag)
                         continue
 
@@ -9476,6 +9548,7 @@ class OpportunityScanner:
                     continue
                 self._eval_opp_seen.add(_dedup_key)
 
+                _sx = item.get("_shadow_extra", {})
                 self._state.insert_evaluated_opportunity(
                     ticker, item["event_ticker"], asset,
                     _no_filter_stage,
@@ -9499,6 +9572,14 @@ class OpportunityScanner:
                     best_ask_source=item["best_ask_source"],
                     product_type=_pt,
                     side="no",
+                    wx_ensemble_mean=_sx.get("wx_ensemble_mean"),
+                    wx_ensemble_std=_sx.get("wx_ensemble_std"),
+                    wx_bias_correction=_sx.get("wx_bias_correction"),
+                    wx_n_members=_sx.get("wx_n_members"),
+                    wx_market_type=_sx.get("wx_market_type"),
+                    wx_hrrr_temp=_sx.get("wx_hrrr_temp"),
+                    wx_corrected_mean=_sx.get("wx_corrected_mean"),
+                    wx_no_side_edge=_sx.get("wx_no_side_edge"),
                     **item["_oft_db"], **item["_shadow_diag"])
         except Exception:
             logging.warning("no_side_shadow processing error", exc_info=True)
