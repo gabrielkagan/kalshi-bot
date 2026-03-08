@@ -9836,9 +9836,11 @@ class OrderExecutor:
             candidate["escalation_type"] = "sol_taker_override"
             self._recent_taker_tickers[candidate["ticker"]] = time.time()
             _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            self._session_direct_taker_attempts += 1
             result = self._submit_taker(candidate)
             if result is not None:
                 logging.info("sol_taker_override_FILLED: %s", candidate["ticker"])
+                self._session_direct_taker_fills += 1
                 _taker_oid = result.get("order_id") if isinstance(result, dict) else None
                 self._state.update_evaluated_opportunity_order(
                     candidate["ticker"], order_id=_taker_oid,
@@ -9846,6 +9848,7 @@ class OrderExecutor:
                     taker_ask_at_submit=candidate.get("best_yes_ask"))
             else:
                 logging.warning("sol_taker_override_UNFILLED: %s", candidate["ticker"])
+                self._session_direct_taker_unfilled += 1
                 self._state.update_evaluated_opportunity_order(
                     candidate["ticker"], order_submitted_at=_order_submit_ts,
                     order_outcome="unfilled",
