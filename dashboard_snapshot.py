@@ -2333,6 +2333,192 @@ class DashboardSnapshotBuilder:
                                                   "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
                                                   "discount_factor": 0.60}
 
+        # ── Decided Contract Shadow ─────────────────────────────
+        try:
+            _dc_row = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage IN ('decided_contract_t1','decided_contract_t2')"
+            ).fetchone()
+            # Per-asset breakdown
+            _dc_by_asset = {}
+            for _da in _conn.execute(
+                "SELECT asset, COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage IN ('decided_contract_t1','decided_contract_t2') "
+                "GROUP BY asset"
+            ).fetchall():
+                _dc_by_asset[_da["asset"]] = {
+                    "n": _da["n"], "settled": _da["settled"],
+                    "wins": _da["wins"] or 0,
+                    "wr": round(_da["wins"] / _da["settled"], 4) if _da["settled"] else 0,
+                    "sim_pnl_cents": _da["sim_pnl"] or 0,
+                }
+            # Per-tier breakdown (t1 vs t2)
+            _dc_by_tier = {}
+            for _dt in _conn.execute(
+                "SELECT filter_stage as tier, COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage IN ('decided_contract_t1','decided_contract_t2') "
+                "GROUP BY filter_stage ORDER BY filter_stage"
+            ).fetchall():
+                _dc_by_tier[_dt["tier"]] = {
+                    "n": _dt["n"], "settled": _dt["settled"],
+                    "wins": _dt["wins"] or 0,
+                    "wr": round(_dt["wins"] / _dt["settled"], 4) if _dt["settled"] else 0,
+                    "sim_pnl_cents": _dt["sim_pnl"] or 0,
+                }
+            snap["decided_contract_shadow"] = {
+                "total_signals": _dc_row["n"] if _dc_row else 0,
+                "settled": _dc_row["settled"] if _dc_row else 0,
+                "wins": _dc_row["wins"] if _dc_row else 0,
+                "wr": round(_dc_row["wins"] / _dc_row["settled"], 4) if _dc_row and _dc_row["settled"] else 0,
+                "sim_pnl_cents": _dc_row["sim_pnl"] if _dc_row else 0,
+                "by_asset": _dc_by_asset,
+                "by_tier": _dc_by_tier,
+            }
+        except Exception:
+            logging.debug("decided_contract_shadow snapshot failed", exc_info=True)
+            snap["decided_contract_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                                "sim_pnl_cents": 0, "by_asset": {}, "by_tier": {}}
+
+        # ── Relaxed Edge Shadow ─────────────────────────────
+        try:
+            _re_row = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='relaxed_edge_shadow'"
+            ).fetchone()
+            # Per-asset breakdown
+            _re_by_asset = {}
+            for _ra in _conn.execute(
+                "SELECT asset, COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='relaxed_edge_shadow' "
+                "GROUP BY asset"
+            ).fetchall():
+                _re_by_asset[_ra["asset"]] = {
+                    "n": _ra["n"], "settled": _ra["settled"],
+                    "wins": _ra["wins"] or 0,
+                    "wr": round(_ra["wins"] / _ra["settled"], 4) if _ra["settled"] else 0,
+                    "sim_pnl_cents": _ra["sim_pnl"] or 0,
+                }
+            # Per-price-tier breakdown
+            _re_by_tier = {}
+            for _rt in _conn.execute(
+                "SELECT CASE "
+                "  WHEN market_price >= 92 THEN '92' "
+                "  WHEN market_price >= 90 THEN '90-91' "
+                "  ELSE '88-89' END as tier, "
+                "COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='relaxed_edge_shadow' "
+                "GROUP BY tier ORDER BY tier"
+            ).fetchall():
+                _re_by_tier[_rt["tier"]] = {
+                    "n": _rt["n"], "settled": _rt["settled"],
+                    "wins": _rt["wins"] or 0,
+                    "wr": round(_rt["wins"] / _rt["settled"], 4) if _rt["settled"] else 0,
+                    "sim_pnl_cents": _rt["sim_pnl"] or 0,
+                }
+            snap["relaxed_edge_shadow"] = {
+                "total_signals": _re_row["n"] if _re_row else 0,
+                "settled": _re_row["settled"] if _re_row else 0,
+                "wins": _re_row["wins"] if _re_row else 0,
+                "wr": round(_re_row["wins"] / _re_row["settled"], 4) if _re_row and _re_row["settled"] else 0,
+                "sim_pnl_cents": _re_row["sim_pnl"] if _re_row else 0,
+                "by_asset": _re_by_asset,
+                "by_price_tier": _re_by_tier,
+            }
+        except Exception:
+            logging.debug("relaxed_edge_shadow snapshot failed", exc_info=True)
+            snap["relaxed_edge_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                            "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {}}
+
+        # ── Calibration Gap (15M model vs realized by price) ──────────
+        try:
+            _cal_gap_by_price = {}
+            for _cg in _conn.execute(
+                "SELECT market_price, COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "AVG(calibrated_prob) as avg_model_prob "
+                "FROM evaluated_opportunities "
+                "WHERE product_type='15m' "
+                "  AND filter_stage IN ('candidate','insufficient_edge') "
+                "  AND market_price BETWEEN 86 AND 99 "
+                "  AND created_at >= datetime('now', '-14 days') "
+                "GROUP BY market_price ORDER BY market_price"
+            ).fetchall():
+                _price = _cg["market_price"]
+                _settled = _cg["settled"] or 0
+                _wins = _cg["wins"] or 0
+                _wr = round(_wins / _settled, 4) if _settled else 0
+                _avg_prob = round(_cg["avg_model_prob"], 4) if _cg["avg_model_prob"] else 0
+                _cal_gap_by_price[str(_price)] = {
+                    "n": _cg["n"],
+                    "settled": _settled,
+                    "wins": _wins,
+                    "wr": _wr,
+                    "avg_model_prob": _avg_prob,
+                    "gap": round(_wr - _avg_prob, 4) if _settled else None,
+                }
+            snap["calibration_gap"] = {"by_price": _cal_gap_by_price}
+        except Exception:
+            logging.debug("calibration_gap snapshot failed", exc_info=True)
+            snap["calibration_gap"] = {"by_price": {}}
+
+        # ── Capital Utilization ──────────────────────────────
+        try:
+            # Deployed capital: sum of total_cost_cents for open positions
+            _deployed_row = _conn.execute(
+                "SELECT COALESCE(SUM(total_cost_cents), 0) as deployed "
+                "FROM positions WHERE status='open'"
+            ).fetchone()
+            _deployed_cents = _deployed_row["deployed"] if _deployed_row else 0
+            # Available capital from balance (already in snap as dollars)
+            _available_cents = int(snap.get("current_balance", 0) * 100)
+            _total_cents = _deployed_cents + _available_cents
+            _utilization_pct = round(_deployed_cents / _total_cents, 4) if _total_cents > 0 else 0
+            # Average trades per day (last 7 days)
+            _trades_7d_row = _conn.execute(
+                "SELECT COUNT(*) as cnt FROM settled_trades "
+                "WHERE settled_at >= datetime('now', '-7 days')"
+            ).fetchone()
+            _trades_7d = _trades_7d_row["cnt"] if _trades_7d_row else 0
+            _avg_trades_per_day = round(_trades_7d / 7.0, 2)
+            _avg_idle_hours = round(24.0 / _avg_trades_per_day, 2) if _avg_trades_per_day > 0 else 24.0
+            snap["capital_utilization"] = {
+                "deployed_cents": _deployed_cents,
+                "available_cents": _available_cents,
+                "utilization_pct": _utilization_pct,
+                "avg_trades_per_day": _avg_trades_per_day,
+                "avg_idle_hours": _avg_idle_hours,
+            }
+        except Exception:
+            logging.debug("capital_utilization snapshot failed", exc_info=True)
+            snap["capital_utilization"] = {"deployed_cents": 0, "available_cents": 0, "utilization_pct": 0,
+                                            "avg_trades_per_day": 0, "avg_idle_hours": 24.0}
+
         # ── Loss Clustering (detect loss clusters within 1hr) ──────────
         try:
             conn = _conn

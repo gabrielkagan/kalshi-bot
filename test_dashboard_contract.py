@@ -85,6 +85,10 @@ REQUIRED_SNAP_KEYS = {
     "no_side_shadow",
     "weekend_discount_shadow",
     "overnight_discount_shadow",
+    "decided_contract_shadow",
+    "relaxed_edge_shadow",
+    "calibration_gap",
+    "capital_utilization",
 }
 
 # Dashboard JS field access patterns that MUST match firebase keys.

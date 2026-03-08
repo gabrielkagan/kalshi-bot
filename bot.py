@@ -477,6 +477,33 @@ OVERNIGHT_EDGE_DISCOUNT = 0.60    # multiply MIN_EDGE_BY_PRICE by this during ov
 OVERNIGHT_QUIET_START = 4         # UTC hour — quiet zone starts (inclusive)
 OVERNIGHT_QUIET_END = 11          # UTC hour — quiet zone ends (inclusive)
 
+# ─── Low-STC Sizing Cap (Fix #3) ─────────────────────────────────────────
+# Data: 0-100s STC is -$84/14d (12W/2L). Catastrophic losses at very short STC
+# wipe all gains. Halve position to limit downside on last-second reversals.
+LOW_STC_SIZING_CAP = 0.50           # position multiplier when STC < threshold
+LOW_STC_SIZING_CAP_THRESHOLD = 100  # seconds — apply cap below this STC
+
+# ─── Decided Contract Shadow (Fix #2) ─────────────────────────────────────
+# When z-score is very negative (spot far above strike) with short STC,
+# the contract is essentially decided but the EGARCH pipeline can't compute
+# edge because calibration squashes probability below market price.
+# T1: z ≤ -5 → 32/32 = 100% WR. T2: z ≤ -3 at 93-96c → 52/54 = 96.3% WR.
+DECIDED_CONTRACT_SHADOW = os.environ.get("DECIDED_CONTRACT_SHADOW", "1") == "1"
+DECIDED_CONTRACT_Z_T1 = -5.0       # Tier 1 z threshold
+DECIDED_CONTRACT_Z_T2 = -3.0       # Tier 2 z threshold (narrower price range)
+DECIDED_CONTRACT_MIN_PRICE = 93     # Minimum ask price (cents) for decided signal
+DECIDED_CONTRACT_T2_MAX_PRICE = 96  # T2 only applies up to 96c
+DECIDED_CONTRACT_MAX_STC = 300      # Only within 5 minutes of close
+
+# ─── Relaxed Edge Shadow (Fix #1) ──────────────────────────────────────
+# Edge thresholds at 88-93c may be too conservative. Data shows rejected trades
+# at these prices win well above breakeven: 88c=97.2% WR, 89c=93.3%, 91c=94.4%.
+# Shadow with halved thresholds to validate before promoting.
+RELAXED_EDGE_SHADOW = os.environ.get("RELAXED_EDGE_SHADOW", "1") == "1"
+RELAXED_EDGE_DISCOUNT = 0.50        # 50% of normal edge threshold (halved)
+RELAXED_EDGE_MIN_PRICE = 88         # Lower bound of relaxed range
+RELAXED_EDGE_MAX_PRICE = 93         # Upper bound (exclusive — 93+ has stricter thresholds for good reason)
+
 # Price-dependent minimum edge: higher prices have worse asymmetry
 # At 95c: 1 loss = 19 wins. At 87c: 1 loss = 6.7 wins.
 MIN_EDGE_BY_PRICE = [
@@ -7994,6 +8021,127 @@ class OpportunityScanner:
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (overnight_discount_shadow)", exc_info=True)
 
+                    # ── Decided Contract Shadow (Fix #2) ──────────────────────
+                    # When z-score is very negative (spot far above strike) near expiry,
+                    # the contract is essentially decided. EGARCH can't compute edge
+                    # because calibration squashes prob below market price.
+                    # T1 (z ≤ -5, 93-99c): 32/32 = 100% WR. T2 (z ≤ -3, 93-96c): 52/54 = 96.3% WR.
+                    if (DECIDED_CONTRACT_SHADOW
+                            and _pt in (None, "15m")
+                            and z_score is not None
+                            and best_ask >= DECIDED_CONTRACT_MIN_PRICE
+                            and best_ask <= MAX_ENTRY_PRICE
+                            and seconds_remaining < DECIDED_CONTRACT_MAX_STC):
+                        _dc_tier = None
+                        if z_score <= DECIDED_CONTRACT_Z_T1:
+                            _dc_tier = "decided_contract_t1"
+                        elif (z_score <= DECIDED_CONTRACT_Z_T2
+                              and best_ask <= DECIDED_CONTRACT_T2_MAX_PRICE):
+                            _dc_tier = "decided_contract_t2"
+
+                        if _dc_tier:
+                            # Fixed sizing: 12.5% risk (half of MAX_RISK, not Kelly —
+                            # model edge is negative so Kelly would size to 0)
+                            _dc_balance = self._get_balance_cached()
+                            _dc_position = None
+                            _dc_kelly_f = None
+                            _dc_ev = None
+                            if _dc_balance and _dc_balance > 0:
+                                _dc_risk = MAX_RISK_PER_TRADE * 0.5
+                                _dc_position = max(1, int((_dc_balance * _dc_risk) / best_ask))
+                                # EV with assumed ~99% win prob for T1, ~96% for T2
+                                _dc_assumed_p = 0.99 if _dc_tier == "decided_contract_t1" else 0.96
+                                _dc_ev = round((_dc_assumed_p * (100 - best_ask))
+                                               - ((1 - _dc_assumed_p) * best_ask) - est_fee_1c, 2)
+                                _dc_kelly_f = round((_dc_assumed_p - best_ask / 100.0), 6)
+
+                            _dc_dedup = (ticker, _dc_tier)
+                            if _dc_dedup not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_dc_dedup)
+                                try:
+                                    self._state.insert_evaluated_opportunity(
+                                        ticker, window["event_ticker"], asset,
+                                        _dc_tier,
+                                        rejection_reason=f"shadow: z={z_score:.1f} stc={seconds_remaining:.0f}s price={best_ask}c",
+                                        spot_price=spot, threshold=threshold,
+                                        volatility=blended_rv, market_price=best_ask,
+                                        seconds_to_close=seconds_remaining,
+                                        calibrated_prob=final_prob, edge=edge,
+                                        ofa_adjustment=ofa_adjustment,
+                                        z_score=z_score,
+                                        vol_regime=vol_est["regime"],
+                                        calibrated_prob_raw=calibrated_prob_raw,
+                                        kelly_f=_dc_kelly_f,
+                                        position_size=_dc_position,
+                                        breakeven_wr=best_ask / 100.0,
+                                        expected_value=_dc_ev,
+                                        ask_depth=ask_depth,
+                                        best_ask_source=best_ask_source,
+                                        raw_prob=raw_prob,
+                                        calibration_method=calibration_method,
+                                        fee_adjusted_edge=fee_adjusted_edge,
+                                        product_type=window.get("product_type"),
+                                        **_shadow_diag)
+                                except Exception:
+                                    logging.warning("insert_evaluated_opportunity failed (%s)", _dc_tier, exc_info=True)
+
+                    # ── Relaxed Edge Shadow (Fix #1) ──────────────────────────
+                    # Edge thresholds at 88-93c may be too conservative.
+                    # Data: insufficient_edge rejections at 88c=97.2% WR, 89c=93.3%,
+                    # 91c=94.4% — all well above breakeven. Shadow with halved thresholds.
+                    if (RELAXED_EDGE_SHADOW
+                            and _pt in (None, "15m")
+                            and best_ask >= RELAXED_EDGE_MIN_PRICE
+                            and best_ask < RELAXED_EDGE_MAX_PRICE):
+                        _rel_min_edge = _min_edge * RELAXED_EDGE_DISCOUNT
+                        if fee_adjusted_edge >= _rel_min_edge:
+                            _rel_balance = self._get_balance_cached()
+                            _rel_position = None
+                            _rel_kelly_f = None
+                            _rel_ev = None
+                            if _rel_balance and _rel_balance > 0:
+                                _rel_sizing = self._sizer.compute(final_prob, best_ask, _rel_balance)
+                                _rel_kelly_f = _rel_sizing["kelly_f"]
+                                _rel_position = _rel_sizing["contracts"]
+                                _rel_scfg = get_market_config(window.get("product_type"))
+                                if _rel_scfg.kelly_fraction < 1.0:
+                                    _rel_position = max(1, int(_rel_position * _rel_scfg.kelly_fraction))
+                                _rel_type_max = int((_rel_balance * _rel_scfg.max_risk_per_trade) / best_ask)
+                                if _rel_position > _rel_type_max:
+                                    _rel_position = max(1, _rel_type_max)
+                                _rel_ev = round((final_prob * (100 - best_ask))
+                                                - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
+
+                            _rel_dedup = (ticker, "relaxed_edge_shadow")
+                            if _rel_dedup not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_rel_dedup)
+                                try:
+                                    self._state.insert_evaluated_opportunity(
+                                        ticker, window["event_ticker"], asset,
+                                        "relaxed_edge_shadow",
+                                        rejection_reason=f"shadow: edge {fee_adjusted_edge:.4f} >= relaxed {_rel_min_edge:.4f} (orig {_min_edge:.4f} x {RELAXED_EDGE_DISCOUNT})",
+                                        spot_price=spot, threshold=threshold,
+                                        volatility=blended_rv, market_price=best_ask,
+                                        seconds_to_close=seconds_remaining,
+                                        calibrated_prob=final_prob, edge=edge,
+                                        ofa_adjustment=ofa_adjustment,
+                                        z_score=z_score,
+                                        vol_regime=vol_est["regime"],
+                                        calibrated_prob_raw=calibrated_prob_raw,
+                                        kelly_f=_rel_kelly_f,
+                                        position_size=_rel_position,
+                                        breakeven_wr=best_ask / 100.0,
+                                        expected_value=_rel_ev,
+                                        ask_depth=ask_depth,
+                                        best_ask_source=best_ask_source,
+                                        raw_prob=raw_prob,
+                                        calibration_method=calibration_method,
+                                        fee_adjusted_edge=fee_adjusted_edge,
+                                        product_type=window.get("product_type"),
+                                        **_shadow_diag)
+                                except Exception:
+                                    logging.warning("insert_evaluated_opportunity failed (relaxed_edge_shadow)", exc_info=True)
+
                     continue
 
                 # Compute position size via Kelly criterion
@@ -8033,6 +8181,16 @@ class OpportunityScanner:
                         logging.info("XRP risk cap: %d -> %d contracts (%.0f%% max risk)",
                                      sizing["contracts"], _xrp_max, XRP_MAX_RISK_PER_TRADE * 100)
                         sizing["contracts"] = _xrp_max
+
+                # Low-STC sizing cap: halve position when STC < 100s
+                # Data: 0-100s STC is -$84/14d (12W/2L, catastrophic losses wipe gains)
+                if (_pt in (None, "15m") and seconds_remaining < LOW_STC_SIZING_CAP_THRESHOLD
+                        and LOW_STC_SIZING_CAP < 1.0 and sizing["contracts"] > 0):
+                    _pre_stc_cap = sizing["contracts"]
+                    sizing["contracts"] = max(1, int(sizing["contracts"] * LOW_STC_SIZING_CAP))
+                    if sizing["contracts"] < _pre_stc_cap:
+                        logging.info("Low-STC cap: %d -> %d contracts (STC=%.0fs, cap=%.1fx)",
+                                     _pre_stc_cap, sizing["contracts"], seconds_remaining, LOW_STC_SIZING_CAP)
 
                 # Cap by existing exposure (positions + resting orders) to prevent
                 # accumulation across scan ticks on the same ticker
