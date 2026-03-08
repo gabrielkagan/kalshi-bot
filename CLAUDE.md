@@ -8,6 +8,41 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 - **Don't re-plan finalized plans** — when continuing from a prior session with an existing plan, start implementing immediately. Do not re-audit, re-plan, or rewrite plans that were already approved.
 - **Don't deploy without explicit confirmation** — always present the change summary and wait for user approval before `git push`. Never auto-deploy.
 
+## Common Workflows
+
+These are the standard procedures for recurring tasks. Follow these steps without asking for permission to start.
+
+### Investigate a loss or anomaly
+1. Query state.db for the specific trade(s) — get entry price, settlement, PnL, fees, STC, asset, product_type
+2. Check what the model predicted (raw_prob, calibrated_prob, blended_prob) from evaluated_opportunities
+3. Check if settlement was correct (verify against actual price data)
+4. Check if the loss was a config issue, model issue, or just variance
+5. Present findings with actual numbers FIRST, then offer next steps
+
+### Performance analysis
+1. Identify current config regime (check git log for last major config change)
+2. Filter settled_trades to current regime only
+3. Use actual Kelly sizing in any PnL calculations — never flat 1-contract
+4. Report: n trades, W/L, win rate, total PnL, PnL per trade, Brier score if applicable
+5. Break down by asset, by STC zone, by price bucket if relevant
+
+### Add a new shadow strategy
+1. Add a shadow flag constant (e.g., NEW_FEATURE_SHADOW = True)
+2. Wire into scan() — run shadow logic, log to evaluated_opportunities with appropriate filter_stage
+3. Add DB columns if needed (remember: update INSERT + signature + SQL in same commit)
+4. Add dashboard metric to dashboard_snapshot.py
+5. Do NOT make it live — shadow only until explicitly told to promote
+
+### Deploy a change
+1. Make the code change
+2. Run `python3 -c "import ast; ast.parse(open('bot.py').read())"` — syntax check
+3. Grep for any affected call sites if signatures changed
+4. Grep for any affected constants in market_config.py
+5. Present a change summary — wait for user approval
+6. `git add`, `git commit`, `git push` (triggers auto-deploy)
+7. Verify deployment: confirm VPS pulled latest commit hash
+8. Post-deploy: verify expected DB entries are being created
+
 ## Critical Rules
 
 - **bot.py is sacred** — never rename it. systemd calls `start.sh` which calls `bot.py`
@@ -29,25 +64,73 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 - **All sim PnL and counterfactual analysis MUST use actual Kelly sizing** — never use 1-contract flat sizing. Position size comes from the Kelly formula with the bot's actual risk parameters. Flat sizing produces misleading PnL numbers.
 - **Never present analysis without checking actual data first** — no assumptions about column values, schema, enum strings, or data shape. Always run `PRAGMA table_info()` and `SELECT DISTINCT` before building queries. (Learned: wrong column values, wrong regime detection, wrong filter_stage assumptions all caused bad analysis.)
 
+## Anti-Patterns — Do NOT Do These
+
+- **Don't refactor bot.py into multiple files** — systemd/start.sh/deploy pipeline all depend on the single-file structure. Engines (spx_engine.py, weather_engine.py, analyst.py) are the exception because they run as separate threads/processes.
+- **Don't add async** — the bot is synchronous by design, threading is used only for WS feeds and engine threads
+- **Don't suggest switching from SQLite** — single-writer is fine for our throughput, latency matters, and the DB is local to the VPS
+- **Don't suggest switching from JSONL journals** — they're append-only, zero-overhead, and rotated daily via cron
+- **Don't create test files without being asked** — focus on the change, add regression tests only when specified in Critical Rules
+- **Don't refactor code "for readability" during a bugfix** — fix the bug, nothing else
+- **Don't change Kelly fraction, blend weights, or edge thresholds without data justification** — these are tuned from backtests and live data
+
 ## Project Structure
 
-- `bot.py` — Main bot (~10400 lines, all trading logic)
+- `bot.py` — Main bot (~13600 lines, all trading logic)
 - `analyst.py` — AI analyst system (news sentiment, loss analysis, Telegram alerts)
 - `spx_engine.py` — SPX hourly market engine (Polygon.io price feed, EGARCH, RK, VIX integration)
 - `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
 - `market_config.py` — Centralized MarketTypeConfig for all product types (validates against bot.py at startup)
 - `dashboard_snapshot.py` — Builds dashboard state snapshots (used by Supabase syncer)
 - `start.sh` — Startup script (activates venv, sources .env, runs bot)
+- `fifteenm_shadow.py` — 15M shadow strategies (A1 RecalibratedEGARCH, A2 LightGBM, A3 EGARCH gating)
+- `hourly_alt_shadow.py` — Hourly alternative shadow strategies (HAR-RV, market-making sim)
+- `sports_engine.py` — Sports comeback market engine (ESPN live data, Bayesian posterior)
+- `auditor.py` — Deterministic health checks, runs hourly via cron, Telegram alerts
+- `auditor_state.db` — Alert deduplication state (gitignored via *.db pattern)
+- `researcher.py` — 3x daily performance reports to Telegram, runs via cron (7:30am/12:30pm/7:30pm ET)
+- `researcher_state.db` — Report history and period tracking (gitignored via *.db pattern)
 - `.github/workflows/deploy.yml` — Auto-deploy to VPS on push to main
 
-## Current State (Mar 2, 2026)
+## bot.py Layout (approximate line ranges)
+
+- **Lines 1–600:** Imports, constants, config (trading params, API config, volatility engine, calibration, sizing, execution)
+- **Lines 600–700:** Utility functions (fee calculation, TV RK weights, dollar/cent conversions)
+- **Lines 700–890:** `evaluate_execution_strategy()` — diagnostic only, does not control execution
+- **Lines 894–1162:** `KalshiClient` — API wrapper, order management, orderbook fetching
+- **Lines 1163–1225:** `Logger` — JSONL trade/event logging
+- **Lines 1226–1261:** `TelegramNotifier` — Telegram alerts
+- **Lines 1262–2375:** `StateManager` — DB init (`_create_tables` at 1283), position tracking, settlement processing
+- **Lines 2376–2537:** `CoinbaseFeed` — WebSocket price feed, OHLCV snapshots
+- **Lines 2538–2869:** `KalshiFeed` — WebSocket orderbook stream, fill detection
+- **Lines 2870–2950:** `DeribitDVOLFetcher` — Implied volatility index
+- **Lines 2951–3268:** `CrossExchangeFeed` — Kraken, Binance, Gemini order flow
+- **Lines 3269–3345:** `CoinGlassFetcher` — Derivative funding rates
+- **Lines 3346–3628:** `OrderFlowEngine` + `KalshiOrderFlowTracker` — Kalshi OB flow signals
+- **Lines 3629–4552:** `VolatilityEngine` — Realized Kernel (RK), GARCH, RV estimation, TV RK weights
+- **Lines 4553–5084:** `EGARCHEstimator` — EGARCH(1,1) with Student-t, MLE fitting
+- **Lines 5105–5278:** `MincerZarnowitzTracker` — R² tracking, EGARCH weight optimization
+- **Lines 5279–5485:** `ProbabilityEngine` — Z-score, normal CDF, market blend
+- **Lines 5486–6350:** `CalibrationEngine` — Beta/Platt/isotonic, `_CAL_REGISTRY`, shadow pipeline
+- **Lines 6351–6490:** `PositionSizer` — Kelly sizing, risk parity, drawdown caps
+- **Lines 6491–9896:** `OpportunityScanner` — `scan()` at 6713, market discovery, filter pipeline, shadow signals
+- **Lines 9897–12021:** `OrderExecutor` — `execute()` at 9992, maker→taker escalation, fill detection
+- **Lines 12022–12633:** `SettlementTracker` — Settlement detection, CalEngine routing, PnL computation
+- **Lines 12634–12718:** `discover_active_windows()` — Market discovery from Kalshi API
+- **Lines 12719–13620:** `MainLoop` — `run()` at 13482, init, WS subscription, periodic tasks
+- **Lines 13621–13623:** `main()` — Entry point
+
+## Current State (Mar 8, 2026)
 
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
-- **15M performance:** 169 trades, 149W/20L (88.2%)
-- **Hourly:** Reverted to observation mode (HOURLY_OBSERVATION_ONLY = True) — 66.7% WR was unprofitable, calibration under investigation
-- **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — EGARCH+RK blend, VIX integration, intraday seasonal filter. Per-window limits: max 2 positions, 15% risk cap.
-- **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 5 cities, collecting data. wx_market_type tracked in DB for post-hoc analysis.
-- **CalibrationEngine:** Hourly data excluded from training (was contaminating 15M model — 35.5% of training data)
+- **15M performance:** 237 trades, 218W/19L (92.0%)
+- **XRP_15M_SHADOW = True** — XRP 15M candidates shadow-only, not traded live
+- **Hourly:** Observation mode (HOURLY_OBSERVATION_ONLY = True) — calibration disabled (HOURLY_CALIBRATION_ENABLED = False), T=1.45 softening
+- **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — EGARCH+RK blend, VIX integration
+- **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 5 cities
+- **Sports:** Observation mode (SPORTS_OBSERVATION_ONLY = True) — hardcoded, never live without explicit promotion
+- **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating) — all shadow-only in fifteenm_shadow.py
+- **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled
 
 ## Key Config Values (bot.py)
 
@@ -166,3 +249,71 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 - `opportunity_journal.jsonl` — filter stage tracking
 - `scan_journal.jsonl` — per-tick scan summaries (~330MB/day)
 - `fill_model_journal.jsonl` — maker order lifecycle for ML fill prediction
+
+## DB Schema Reference
+
+### settled_trades
+| Column | Type | Notes |
+|--------|------|-------|
+| ticker | TEXT PK | Market ticker |
+| event_ticker | TEXT | Event-level ticker |
+| asset | TEXT | BTC, ETH, SOL, XRP |
+| market_result | TEXT | Settlement result |
+| side | TEXT | yes/no |
+| count | INTEGER | Contracts |
+| entry_price_cents | INTEGER | Entry price in cents |
+| revenue_cents | INTEGER | Settlement revenue |
+| fee_cents | INTEGER | Fees paid |
+| pnl_cents | INTEGER | Net PnL in cents |
+| settled_at | TEXT | Settlement timestamp |
+| product_type | TEXT | 15m, hourly, spx_hourly, weather, sports |
+
+### evaluated_opportunities
+| Column | Type | Notes |
+|--------|------|-------|
+| id | INTEGER PK | Auto-increment |
+| ticker | TEXT | Market ticker |
+| event_ticker | TEXT | Event-level ticker |
+| asset | TEXT | Asset symbol |
+| filter_stage | TEXT | candidate, observation_trade, shadow, edge_too_low, etc. |
+| rejection_reason | TEXT | Why rejected (if applicable) |
+| evaluation_time | TEXT | When evaluated |
+| spot_price | REAL | Underlying price |
+| threshold | REAL | Strike threshold |
+| volatility | REAL | Vol estimate used |
+| market_price | INTEGER | Market price in cents |
+| seconds_to_close | REAL | STC at evaluation |
+| calibrated_prob | REAL | Final calibrated probability |
+| edge | REAL | Edge percentage |
+| ofa_adjustment | REAL | Order flow adjustment |
+| status | TEXT | open/settled |
+| market_result | TEXT | Settlement result (backfilled) |
+| counterfactual_pnl | REAL | Simulated PnL |
+| product_type | TEXT | 15m, hourly, spx_hourly, weather, sports |
+
+### rejected_opportunities
+| Column | Type | Notes |
+|--------|------|-------|
+| ticker | TEXT PK | Market ticker |
+| event_ticker | TEXT | Event-level ticker |
+| asset | TEXT | Asset symbol |
+| rejection_reason | TEXT | Full descriptive string (NOT short labels) |
+| rejection_time | TEXT | When rejected |
+| z_score | REAL | Z-score at rejection |
+| spot_price | REAL | Underlying price |
+| threshold | REAL | Strike threshold |
+| volatility | REAL | Vol estimate |
+| market_price | INTEGER | Market price in cents |
+| seconds_to_close | REAL | STC at rejection |
+| calibrated_prob | REAL | Calibrated probability |
+| status | TEXT | open/settled |
+| product_type | TEXT | 15m, hourly, spx_hourly, weather, sports |
+
+### Other Tables
+- **positions** — Open position tracking (ticker PK, asset, side, count, avg_price_cents, status)
+- **pending_orders** — In-flight order tracking (order_id PK, ticker, side, action, count, price_cents, status)
+- **garch_params** — Persisted GARCH parameters per asset
+- **egarch_params** — Persisted EGARCH(1,1) parameters per asset
+- **sports_shadow_log** — Sports comeback shadow signals (game_id, sport, league, teams, comeback_prob, edge, market_result, pnl_cents)
+- **fifteenm_shadow_signals** — 15M shadow A1/A2/A3 signals (in fifteenm_shadow.py)
+- **hourly_alt_shadow_signals** — Hourly alternative shadow signals (in hourly_alt_shadow.py)
