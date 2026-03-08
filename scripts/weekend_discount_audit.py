@@ -36,44 +36,15 @@ def maker_fee(contracts: int, price_cents: int) -> int:
     return math.ceil(0.0175 * contracts * price_cents * (100 - price_cents) / 100)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Weekend Edge Discount Shadow Audit")
-    parser.add_argument("--db", required=True, help="Path to state.db")
-    parser.add_argument("--asset", default=None, help="Filter to specific asset")
-    parser.add_argument("--discount", type=float, default=None,
-                        help="Override discount factor for what-if analysis")
-    args = parser.parse_args()
-
-    conn = sqlite3.connect(args.db)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=10000")
-
-    # ── Fetch all weekend discount shadow signals ─────────────────────
-    query = """
-        SELECT e.*,
-            CASE WHEN status='settled' AND market_result IN ('yes','all_yes') THEN 1
-                 WHEN status='settled' AND market_result IN ('no','all_no') THEN 0
-                 ELSE NULL END as won,
-            DATE(evaluation_time) as eval_date,
-            strftime('%W', evaluation_time) as week_num
-        FROM evaluated_opportunities e
-        WHERE filter_stage = 'weekend_discount_shadow'
-    """
-    params = []
-    if args.asset:
-        query += " AND asset = ?"
-        params.append(args.asset.upper())
-    query += " ORDER BY evaluation_time"
-
-    rows = conn.execute(query, params).fetchall()
-
+def audit_discount_shadow(conn, filter_stage, label, schedule_desc, rows, args):
+    """Shared audit logic for weekend and overnight discount shadows."""
     if not rows:
         print("=" * 70)
-        print("WEEKEND EDGE DISCOUNT SHADOW — NO DATA")
+        print(f"{label} — NO DATA")
         print("=" * 70)
-        print("\nNo weekend_discount_shadow signals found in DB.")
-        print("This feature activates on Saturdays and Sundays (UTC) only.")
-        print("If recently deployed, wait for the next weekend.")
+        print(f"\nNo {filter_stage} signals found in DB.")
+        print(f"This feature activates {schedule_desc}.")
+        print("If recently deployed, wait for the next qualifying period.")
         return
 
     # ── Categorize ────────────────────────────────────────────────────
@@ -83,11 +54,10 @@ def main():
     wins = sum(1 for r in settled if r["won"] == 1)
     losses = len(settled) - wins
 
-    # Compute sim PnL from counterfactual_pnl (already computed by settlement)
     sim_pnl_cents = sum(r["counterfactual_pnl"] or 0 for r in settled)
 
     print("=" * 70)
-    print("WEEKEND EDGE DISCOUNT SHADOW — AUDIT REPORT")
+    print(f"{label} — AUDIT REPORT")
     print(f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     if args.asset:
         print(f"Filter: asset={args.asset.upper()}")
@@ -149,7 +119,6 @@ def main():
         if price >= 89: return "89-90"
         return "86-88"
 
-    # Edge thresholds for reference
     tier_thresholds = {"86-88": 0.25, "89-90": 0.25, "91-92": 0.35, "93-94": 0.90, "95+": 1.25}
 
     by_tier = defaultdict(lambda: {"n": 0, "settled": 0, "wins": 0, "pnl": 0, "edges": []})
@@ -177,26 +146,25 @@ def main():
         thr = tier_thresholds.get(t, 0)
         print(f"  {t:<8} {thr:>5.2f}% {d['n']:>5} {s:>8} {wr_str:>8} {avg_e:>10} {pnl_str:>10}")
 
-    # ── Section 4: Per-Weekend Breakdown ──────────────────────────────
+    # ── Section 4: Per-Period Breakdown ───────────────────────────────
     print(f"\n{'─'*50}")
-    print("4. PER-WEEKEND BREAKDOWN")
+    print("4. PER-PERIOD BREAKDOWN")
     print(f"{'─'*50}")
-    by_weekend = defaultdict(lambda: {"n": 0, "settled": 0, "wins": 0, "pnl": 0})
+    by_period = defaultdict(lambda: {"n": 0, "settled": 0, "wins": 0, "pnl": 0})
     for r in rows:
-        # Group by ISO week
         wk = r["week_num"]
         dt = r["eval_date"]
         key = f"W{wk} ({dt[:10]})"
-        by_weekend[key]["n"] += 1
+        by_period[key]["n"] += 1
         if r["status"] == "settled" and r["won"] is not None:
-            by_weekend[key]["settled"] += 1
+            by_period[key]["settled"] += 1
             if r["won"]:
-                by_weekend[key]["wins"] += 1
-            by_weekend[key]["pnl"] += r["counterfactual_pnl"] or 0
+                by_period[key]["wins"] += 1
+            by_period[key]["pnl"] += r["counterfactual_pnl"] or 0
 
-    print(f"  {'Weekend':<25} {'Sig':>5} {'Settled':>8} {'W/L':>8} {'WR':>8} {'PnL':>10}")
-    for wk in sorted(by_weekend):
-        d = by_weekend[wk]
+    print(f"  {'Period':<25} {'Sig':>5} {'Settled':>8} {'W/L':>8} {'WR':>8} {'PnL':>10}")
+    for wk in sorted(by_period):
+        d = by_period[wk]
         s = d["settled"]
         w = d["wins"]
         l = s - w
@@ -233,13 +201,11 @@ def main():
     n_settled = len(settled)
     checks = []
 
-    # Check 1: Sample size
     if n_settled >= GRAD_MIN_SETTLED:
         checks.append(("Sample size >= 60", True, f"{n_settled} settled"))
     else:
         checks.append(("Sample size >= 60", False, f"{n_settled}/{GRAD_MIN_SETTLED} ({GRAD_MIN_SETTLED - n_settled} more needed)"))
 
-    # Check 2: Overall WR
     if n_settled > 0:
         overall_wr = wins / n_settled
         lo, _ = wilson_ci(wins, n_settled)
@@ -250,11 +216,10 @@ def main():
     else:
         checks.append(("Overall WR >= 85%", False, "No settled data"))
 
-    # Check 3: No asset below 75%
     asset_issues = []
     for a in sorted(by_asset):
         d = by_asset[a]
-        if d["settled"] >= 5:  # only check assets with enough data
+        if d["settled"] >= 5:
             a_wr = d["wins"] / d["settled"]
             if a_wr < GRAD_MIN_ASSET_WR:
                 asset_issues.append(f"{a}: {a_wr:.1%}")
@@ -263,7 +228,6 @@ def main():
     else:
         checks.append(("No asset WR < 75%", False, ", ".join(asset_issues)))
 
-    # Check 4: No edge inversion (lower tiers should not drag)
     tier_order = ["86-88", "89-90", "91-92", "93-94", "95+"]
     tier_wrs = {}
     for t in tier_order:
@@ -287,15 +251,14 @@ def main():
 
     print()
     if n_settled < GRAD_MIN_SETTLED:
-        weekends_per_week = 1
-        est_signals_per_wknd = total / max(1, len(by_weekend))
+        est_signals_per_period = total / max(1, len(by_period))
         remaining = GRAD_MIN_SETTLED - n_settled
-        est_weekends = math.ceil(remaining / max(1, est_signals_per_wknd))
+        est_periods = math.ceil(remaining / max(1, est_signals_per_period))
         print(f"  VERDICT: NEED MORE DATA")
-        print(f"  Estimated {est_weekends} more weekend(s) needed at ~{est_signals_per_wknd:.0f} signals/weekend")
+        print(f"  Estimated {est_periods} more period(s) needed at ~{est_signals_per_period:.0f} signals/period")
     elif passing == total_checks:
         print(f"  VERDICT: YES — READY TO PROMOTE")
-        print(f"  All {passing}/{total_checks} checks pass. Apply WEEKEND_EDGE_DISCOUNT to live edge check.")
+        print(f"  All {passing}/{total_checks} checks pass.")
     else:
         print(f"  VERDICT: NO — NOT READY ({passing}/{total_checks} checks pass)")
         for name, ok, detail in checks:
@@ -323,6 +286,66 @@ def main():
         print(f"  {t:<20} {r['asset']:<6} {r['market_price']:>5}c {edge_str:>7} {res:>8} {pnl:>8}")
 
     print(f"\n{'='*70}")
+
+
+def _fetch_shadow_rows(conn, filter_stage, asset=None):
+    """Fetch shadow signal rows for a given filter_stage."""
+    query = f"""
+        SELECT e.*,
+            CASE WHEN status='settled' AND market_result IN ('yes','all_yes') THEN 1
+                 WHEN status='settled' AND market_result IN ('no','all_no') THEN 0
+                 ELSE NULL END as won,
+            DATE(evaluation_time) as eval_date,
+            strftime('%W', evaluation_time) as week_num
+        FROM evaluated_opportunities e
+        WHERE filter_stage = ?
+    """
+    params = [filter_stage]
+    if asset:
+        query += " AND asset = ?"
+        params.append(asset.upper())
+    query += " ORDER BY evaluation_time"
+    return conn.execute(query, params).fetchall()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Quiet-Market Edge Discount Shadow Audit")
+    parser.add_argument("--db", required=True, help="Path to state.db")
+    parser.add_argument("--asset", default=None, help="Filter to specific asset")
+    parser.add_argument("--discount", type=float, default=None,
+                        help="Override discount factor for what-if analysis")
+    parser.add_argument("--weekend-only", action="store_true", help="Only show weekend section")
+    parser.add_argument("--overnight-only", action="store_true", help="Only show overnight section")
+    args = parser.parse_args()
+
+    conn = sqlite3.connect(args.db)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=10000")
+
+    show_weekend = not args.overnight_only
+    show_overnight = not args.weekend_only
+
+    if show_weekend:
+        rows = _fetch_shadow_rows(conn, "weekend_discount_shadow", args.asset)
+        audit_discount_shadow(
+            conn, "weekend_discount_shadow",
+            "WEEKEND EDGE DISCOUNT SHADOW",
+            "on Saturdays and Sundays (UTC) only",
+            rows, args,
+        )
+
+    if show_weekend and show_overnight:
+        print("\n\n")
+
+    if show_overnight:
+        rows = _fetch_shadow_rows(conn, "overnight_discount_shadow", args.asset)
+        audit_discount_shadow(
+            conn, "overnight_discount_shadow",
+            "OVERNIGHT EDGE DISCOUNT SHADOW",
+            "on weekday quiet hours (04:00-11:00 UTC / 23:00-06:00 ET)",
+            rows, args,
+        )
+
     conn.close()
 
 

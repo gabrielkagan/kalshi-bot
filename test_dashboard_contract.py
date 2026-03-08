@@ -84,6 +84,7 @@ REQUIRED_SNAP_KEYS = {
     "loss_clustering", "pipeline_completeness",
     "no_side_shadow",
     "weekend_discount_shadow",
+    "overnight_discount_shadow",
 }
 
 # Dashboard JS field access patterns that MUST match firebase keys.

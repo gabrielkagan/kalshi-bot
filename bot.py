@@ -473,6 +473,9 @@ MIN_EDGE_PCT = 0.25               # flat fallback — matches lowest MIN_EDGE_BY
 #   - No single asset dragging below 75% WR
 #   - No edge inversion (lower tiers not dragging overall)
 WEEKEND_EDGE_DISCOUNT = 0.60      # multiply MIN_EDGE_BY_PRICE by this on Sat/Sun
+OVERNIGHT_EDGE_DISCOUNT = 0.60    # multiply MIN_EDGE_BY_PRICE by this during overnight quiet hours (04-11 UTC)
+OVERNIGHT_QUIET_START = 4         # UTC hour — quiet zone starts (inclusive)
+OVERNIGHT_QUIET_END = 11          # UTC hour — quiet zone ends (inclusive)
 
 # Price-dependent minimum edge: higher prices have worse asymmetry
 # At 95c: 1 loss = 19 wins. At 87c: 1 loss = 6.7 wins.
@@ -7847,6 +7850,92 @@ class OpportunityScanner:
                                         **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (weekend_discount_shadow)", exc_info=True)
+
+                    # ── Overnight Edge Discount Shadow ─────────────────────────
+                    # On weekday quiet hours (04-11 UTC), re-evaluate 15M
+                    # insufficient_edge at relaxed thresholds (0.6x). Shadow-only.
+                    # Skip if weekend discount already applied (don't double-count).
+                    _now_utc = datetime.datetime.now(timezone.utc)
+                    _is_weekend = _now_utc.weekday() >= 5
+                    if (_pt in (None, "15m")
+                            and not _is_weekend
+                            and OVERNIGHT_QUIET_START <= _now_utc.hour <= OVERNIGHT_QUIET_END
+                            and best_ask >= MIN_ENTRY_PRICE):
+                        _ovn_discounted_min = _min_edge * OVERNIGHT_EDGE_DISCOUNT
+                        if fee_adjusted_edge >= _ovn_discounted_min:
+                            _ovn_balance = self._get_balance_cached()
+                            _ovn_kelly_f = None
+                            _ovn_position = None
+                            _ovn_ev = None
+                            if _ovn_balance and _ovn_balance > 0:
+                                _ovn_sizing = self._sizer.compute(final_prob, best_ask, _ovn_balance)
+                                _ovn_kelly_f = _ovn_sizing["kelly_f"]
+                                _ovn_position = _ovn_sizing["contracts"]
+                                _ovn_scfg = get_market_config(window.get("product_type"))
+                                if _ovn_scfg.kelly_fraction < 1.0:
+                                    _ovn_position = max(1, int(_ovn_position * _ovn_scfg.kelly_fraction))
+                                _ovn_type_max = int((_ovn_balance * _ovn_scfg.max_risk_per_trade) / best_ask)
+                                if _ovn_position > _ovn_type_max:
+                                    _ovn_position = max(1, _ovn_type_max)
+                                _ovn_ev = round((final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
+                            try:
+                                self._logger.log_opportunity({
+                                    "filter_stage": "overnight_discount_shadow",
+                                    "ticker": ticker,
+                                    "event_ticker": window["event_ticker"],
+                                    "asset": asset,
+                                    "side": "yes",
+                                    "market_price": best_ask,
+                                    "model_prob": round(final_prob, 6),
+                                    "edge": round(edge, 6),
+                                    "fee_adjusted_edge": round(fee_adjusted_edge, 6),
+                                    "kelly_f": round(_ovn_kelly_f, 6) if _ovn_kelly_f else None,
+                                    "position_size": _ovn_position,
+                                    "expected_value": _ovn_ev,
+                                    "seconds_to_close": round(seconds_remaining, 1),
+                                    "spot_price": spot,
+                                    "threshold": threshold,
+                                    "volatility": blended_rv,
+                                    "vol_regime": vol_est["regime"],
+                                    "discount_factor": OVERNIGHT_EDGE_DISCOUNT,
+                                    "original_min_edge": round(_min_edge, 6),
+                                    "discounted_min_edge": round(_ovn_discounted_min, 6),
+                                    "edge_vs_discounted": round(fee_adjusted_edge - _ovn_discounted_min, 6),
+                                    "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
+                                    "ofa_adjustment": round(ofa_adjustment, 6),
+                                    "z_score": z_score,
+                                })
+                            except Exception:
+                                logging.debug("overnight_discount_shadow log failed", exc_info=True)
+                            _ovn_dedup = (ticker, "overnight_discount_shadow")
+                            if _ovn_dedup not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_ovn_dedup)
+                                try:
+                                    self._state.insert_evaluated_opportunity(
+                                        ticker, window["event_ticker"], asset,
+                                        "overnight_discount_shadow",
+                                        rejection_reason=f"shadow: edge {fee_adjusted_edge:.4f} >= discounted_min {_ovn_discounted_min:.4f} (orig {_min_edge:.4f} x {OVERNIGHT_EDGE_DISCOUNT})",
+                                        spot_price=spot, threshold=threshold,
+                                        volatility=blended_rv, market_price=best_ask,
+                                        seconds_to_close=seconds_remaining,
+                                        calibrated_prob=final_prob, edge=edge,
+                                        ofa_adjustment=ofa_adjustment,
+                                        z_score=z_score,
+                                        vol_regime=vol_est["regime"],
+                                        calibrated_prob_raw=calibrated_prob_raw,
+                                        kelly_f=_ovn_kelly_f,
+                                        position_size=_ovn_position,
+                                        breakeven_wr=best_ask / 100.0,
+                                        expected_value=_ovn_ev,
+                                        ask_depth=ask_depth,
+                                        best_ask_source=best_ask_source,
+                                        raw_prob=raw_prob,
+                                        calibration_method=calibration_method,
+                                        fee_adjusted_edge=fee_adjusted_edge,
+                                        product_type=window.get("product_type"),
+                                        **_shadow_diag)
+                                except Exception:
+                                    logging.warning("insert_evaluated_opportunity failed (overnight_discount_shadow)", exc_info=True)
 
                     continue
 

@@ -2270,6 +2270,69 @@ class DashboardSnapshotBuilder:
                                                "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
                                                "discount_factor": 0.60}
 
+        # ── Overnight Edge Discount Shadow ─────────────────────────────
+        try:
+            _ovn_row = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='overnight_discount_shadow'"
+            ).fetchone()
+            _ovn_by_asset = {}
+            for _oa in _conn.execute(
+                "SELECT asset, COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='overnight_discount_shadow' "
+                "GROUP BY asset"
+            ).fetchall():
+                _ovn_by_asset[_oa["asset"]] = {
+                    "n": _oa["n"], "settled": _oa["settled"],
+                    "wins": _oa["wins"] or 0,
+                    "wr": round(_oa["wins"] / _oa["settled"], 4) if _oa["settled"] else 0,
+                    "sim_pnl_cents": _oa["sim_pnl"] or 0,
+                }
+            _ovn_by_tier = {}
+            for _ot in _conn.execute(
+                "SELECT CASE "
+                "  WHEN market_price >= 95 THEN '95+' "
+                "  WHEN market_price >= 93 THEN '93-94' "
+                "  WHEN market_price >= 91 THEN '91-92' "
+                "  WHEN market_price >= 89 THEN '89-90' "
+                "  ELSE '86-88' END as tier, "
+                "COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='overnight_discount_shadow' "
+                "GROUP BY tier ORDER BY tier"
+            ).fetchall():
+                _ovn_by_tier[_ot["tier"]] = {
+                    "n": _ot["n"], "settled": _ot["settled"],
+                    "wins": _ot["wins"] or 0,
+                    "wr": round(_ot["wins"] / _ot["settled"], 4) if _ot["settled"] else 0,
+                    "sim_pnl_cents": _ot["sim_pnl"] or 0,
+                }
+            snap["overnight_discount_shadow"] = {
+                "total_signals": _ovn_row["n"] if _ovn_row else 0,
+                "settled": _ovn_row["settled"] if _ovn_row else 0,
+                "wins": _ovn_row["wins"] if _ovn_row else 0,
+                "wr": round(_ovn_row["wins"] / _ovn_row["settled"], 4) if _ovn_row and _ovn_row["settled"] else 0,
+                "sim_pnl_cents": _ovn_row["sim_pnl"] if _ovn_row else 0,
+                "by_asset": _ovn_by_asset,
+                "by_price_tier": _ovn_by_tier,
+                "discount_factor": 0.60,
+            }
+        except Exception:
+            snap["overnight_discount_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                                  "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
+                                                  "discount_factor": 0.60}
+
         # ── Loss Clustering (detect loss clusters within 1hr) ──────────
         try:
             conn = _conn
