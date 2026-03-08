@@ -678,7 +678,7 @@ class TestEscalationTypeCompleteness:
         fpath = os.path.join(PROJECT_ROOT, "bot.py")
         with open(fpath) as f:
             content = f.read()
-        required_types = ["direct_taker", "post_only_taker"]
+        required_types = ["direct_taker", "post_only_taker", "sol_taker_override"]
         for etype in required_types:
             assert f'"{etype}"' in content or f"'{etype}'" in content, (
                 f"escalation_type '{etype}' not found in bot.py"
@@ -899,6 +899,8 @@ class TestInstrumentationIntegrity:
                 continue
             if "=None" in stripped or "candidate.get(" in stripped or "c.get(" in stripped:
                 continue  # hardcoded None or dict reads are fine
+            if "excluded." in stripped:
+                continue  # SQL ON CONFLICT excluded pseudo-table references
             if "_temp_t" in stripped and "_configured_temp_t" not in stripped:
                 assert False, (
                     f"Line {i}: hourly_applied_temp_t uses _temp_t instead of "

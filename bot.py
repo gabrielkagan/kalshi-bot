@@ -527,8 +527,15 @@ MAKER_ONLY_THRESHOLD = 0.0        # seconds_to_close below this → maker only, 
                                   # Set to 0: taker allowed at all STC (data: 14W/0L, 100% taker WR)
                                   # Was 90.0 — removed after verifying taker has zero losses
 
+# ─── Per-Asset Taker Override ──────────────────────────────────────────
+SOL_TAKER_FIRST = True            # SOL: bypass maker entirely, go direct IOC at all STC
+                                  # Data: 44.7% maker fill rate, $101/wk missed, 95% unfilled WR
+                                  # Taker fee delta ~$2/wk vs $101 missed — clear win
+
 # ─── Adaptive Escalation ─────────────────────────────────────────────────
 ESCALATION_WAIT_LONG = 15.0       # maker wait when >=180s to close
+BTC_ESCALATION_WAIT_OVERRIDE = 7.0  # BTC: 7s instead of 15s at STC>=180s
+                                    # Data: ask_confirmed avg 2.7s, escalation_wait avg 19.5s, slip 3.4c
 ESCALATION_WAIT_MEDIUM = 7.0      # maker wait when 120-180s to close (86% fills within 7s)
 ESCALATION_WAIT_SHORT = 5.0       # maker wait when 60-120s to close
 EARLY_ESCALATION_MIN_MOVE = 2      # ask must move ≥2¢ above maker price to trigger
@@ -1973,7 +1980,7 @@ class StateManager:
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
             self.conn.execute("""
-                INSERT OR REPLACE INTO evaluated_opportunities
+                INSERT INTO evaluated_opportunities
                     (ticker, event_ticker, asset, filter_stage, rejection_reason,
                      evaluation_time, spot_price, threshold, volatility,
                      market_price, seconds_to_close, calibrated_prob,
@@ -2003,6 +2010,67 @@ class StateManager:
                      order_id, order_submitted_at, order_outcome,
                      side)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
+                    event_ticker=excluded.event_ticker, asset=excluded.asset,
+                    rejection_reason=excluded.rejection_reason,
+                    evaluation_time=excluded.evaluation_time,
+                    spot_price=excluded.spot_price, threshold=excluded.threshold,
+                    volatility=excluded.volatility, market_price=excluded.market_price,
+                    seconds_to_close=excluded.seconds_to_close,
+                    calibrated_prob=excluded.calibrated_prob,
+                    edge=excluded.edge, ofa_adjustment=excluded.ofa_adjustment,
+                    strategy=excluded.strategy, position_size=excluded.position_size,
+                    kelly_f=excluded.kelly_f, z_score=excluded.z_score,
+                    vol_regime=excluded.vol_regime,
+                    calibrated_prob_raw=excluded.calibrated_prob_raw,
+                    breakeven_wr=excluded.breakeven_wr,
+                    expected_value=excluded.expected_value,
+                    drawdown_scaler=excluded.drawdown_scaler,
+                    ask_depth=excluded.ask_depth,
+                    best_ask_source=excluded.best_ask_source,
+                    ofa_confidence=excluded.ofa_confidence,
+                    raw_prob=excluded.raw_prob,
+                    calibration_method=excluded.calibration_method,
+                    old_system_prob=excluded.old_system_prob,
+                    fee_adjusted_edge=excluded.fee_adjusted_edge,
+                    egarch_sigma=excluded.egarch_sigma,
+                    egarch_blend_sigma=excluded.egarch_blend_sigma,
+                    egarch_blend_weight=excluded.egarch_blend_weight,
+                    mz_r_squared=excluded.mz_r_squared,
+                    shadow_tv_blend_rv=excluded.shadow_tv_blend_rv,
+                    mz_shadow_sigmoid_w=excluded.mz_shadow_sigmoid_w,
+                    mz_baseline_qlike=excluded.mz_baseline_qlike,
+                    mz_qlike=excluded.mz_qlike,
+                    counterfactual=excluded.counterfactual,
+                    shadow_cal_prob=excluded.shadow_cal_prob,
+                    shadow_cal_fee_edge=excluded.shadow_cal_fee_edge,
+                    shadow_cal_temperature=excluded.shadow_cal_temperature,
+                    product_type=excluded.product_type,
+                    oft_prob_adjustment=excluded.oft_prob_adjustment,
+                    oft_imbalance_ratio=excluded.oft_imbalance_ratio,
+                    oft_n_snapshots=excluded.oft_n_snapshots,
+                    wx_ensemble_mean=excluded.wx_ensemble_mean,
+                    wx_ensemble_std=excluded.wx_ensemble_std,
+                    wx_bias_correction=excluded.wx_bias_correction,
+                    wx_n_members=excluded.wx_n_members,
+                    wx_market_type=excluded.wx_market_type,
+                    wx_actual_high_temp=excluded.wx_actual_high_temp,
+                    wx_no_side_edge=excluded.wx_no_side_edge,
+                    wx_hrrr_temp=excluded.wx_hrrr_temp,
+                    wx_corrected_mean=excluded.wx_corrected_mean,
+                    hourly_pre_temp_prob=excluded.hourly_pre_temp_prob,
+                    hourly_applied_temp_t=excluded.hourly_applied_temp_t,
+                    hourly_shadow_temp_2_0=excluded.hourly_shadow_temp_2_0,
+                    hourly_shadow_temp_1_0=excluded.hourly_shadow_temp_1_0,
+                    hourly_shadow_temp_2_5=excluded.hourly_shadow_temp_2_5,
+                    hourly_shadow_blend_50=excluded.hourly_shadow_blend_50,
+                    hourly_shadow_temp_1_75=excluded.hourly_shadow_temp_1_75,
+                    hourly_shadow_temp_3_0=excluded.hourly_shadow_temp_3_0,
+                    hourly_shadow_blend_20=excluded.hourly_shadow_blend_20,
+                    hourly_shadow_blend_30=excluded.hourly_shadow_blend_30,
+                    hourly_shadow_blend_60=excluded.hourly_shadow_blend_60,
+                    hourly_post_temp_prob=excluded.hourly_post_temp_prob,
+                    available_balance_cents=excluded.available_balance_cents
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -9719,8 +9787,72 @@ class OrderExecutor:
         except Exception as e:
             logging.error(f"CANDIDATE_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
 
-        # ── Direct taker for <180s candidates ───────────────────────
+        # ── SOL taker-first override ──────────────────────────────
+        # SOL: bypass maker entirely, go direct IOC at all STC values.
+        # Data: 44.7% maker fill rate, $101/wk missed, 95% unfilled WR.
         seconds_to_close = candidate.get("seconds_to_close")
+        if SOL_TAKER_FIRST and candidate.get("asset") == "SOL":
+            count = candidate["position_size"]
+            price = candidate["best_yes_ask"]
+            cal_prob = candidate["calibrated_prob"]
+
+            if count <= 0:
+                logging.warning("sol_taker_override_SKIPPED: %s position_size=%d", candidate["ticker"], count)
+                return None
+
+            taker_fee = calculate_taker_fee(count, price)
+            net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+
+            if net_edge < MIN_EDGE_PCT / 100.0:
+                logging.info(
+                    "sol_taker_override_SKIPPED: %s net_edge=%.4f < min=%.4f taker_fee=%d¢",
+                    candidate["ticker"], net_edge, MIN_EDGE_PCT / 100.0, taker_fee)
+                return None
+
+            fresh_ask = self._get_addon_best_ask(candidate["ticker"])
+            if fresh_ask is None:
+                logging.info("sol_taker_override_SKIPPED: %s no asks on orderbook", candidate["ticker"])
+                return None
+
+            if fresh_ask != price:
+                logging.info("sol_taker_override_price_update: %s scanner=%d¢ fresh=%d¢",
+                             candidate["ticker"], price, fresh_ask)
+                price = fresh_ask
+                candidate["best_yes_ask"] = fresh_ask
+                taker_fee = calculate_taker_fee(count, price)
+                net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+                if net_edge < MIN_EDGE_PCT / 100.0:
+                    logging.info("sol_taker_override_SKIPPED: %s fresh_ask=%d¢ net_edge=%.4f < min",
+                                 candidate["ticker"], price, net_edge)
+                    return None
+
+            logging.info(
+                "sol_taker_override_ENTRY: %s %dx @ %d¢ "
+                "seconds_to_close=%.0f net_edge=%.4f cal_prob=%.4f taker_fee=%d¢",
+                candidate["ticker"], count, price,
+                seconds_to_close or 0, net_edge, cal_prob, taker_fee)
+
+            candidate["entry_path"] = "sol_taker_override"
+            candidate["escalation_type"] = "sol_taker_override"
+            self._recent_taker_tickers[candidate["ticker"]] = time.time()
+            _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            result = self._submit_taker(candidate)
+            if result is not None:
+                logging.info("sol_taker_override_FILLED: %s", candidate["ticker"])
+                _taker_oid = result.get("order_id") if isinstance(result, dict) else None
+                self._state.update_evaluated_opportunity_order(
+                    candidate["ticker"], order_id=_taker_oid,
+                    order_submitted_at=_order_submit_ts, order_outcome="filled",
+                    taker_ask_at_submit=candidate.get("best_yes_ask"))
+            else:
+                logging.warning("sol_taker_override_UNFILLED: %s", candidate["ticker"])
+                self._state.update_evaluated_opportunity_order(
+                    candidate["ticker"], order_submitted_at=_order_submit_ts,
+                    order_outcome="unfilled",
+                    taker_ask_at_submit=candidate.get("best_yes_ask"))
+            return result
+
+        # ── Direct taker for <180s candidates ───────────────────────
         # Maker-only below 90s: block direct taker, fall through to maker
         if (seconds_to_close is not None
                 and seconds_to_close < MAKER_ONLY_THRESHOLD
@@ -10051,7 +10183,7 @@ class OrderExecutor:
                                                        reason="ask_confirmed")
 
             # ── Standard time-based escalation (existing code) ─────
-            escalation_wait = self._escalation_wait(remaining)
+            escalation_wait = self._escalation_wait(remaining, asset=order.get("asset", ""))
             # Queue-aware: escalate earlier if deep in queue and time is short
             queue_pos = order.get("queue_position")
             if queue_pos is not None and queue_pos > 20 and remaining < 60:
@@ -10066,9 +10198,12 @@ class OrderExecutor:
         return None
 
     @staticmethod
-    def _escalation_wait(remaining: float) -> float:
+    def _escalation_wait(remaining: float, asset: str = "") -> float:
         """Urgency-based maker wait before escalating to taker."""
         if remaining >= 180:
+            # BTC: shorter wait (7s vs 15s) — ask_confirmed avg 2.7s, slip 3.4c
+            if asset == "BTC" and BTC_ESCALATION_WAIT_OVERRIDE is not None:
+                return BTC_ESCALATION_WAIT_OVERRIDE
             return ESCALATION_WAIT_LONG     # 15s — ample time, let maker fill
         elif remaining >= 120:
             return ESCALATION_WAIT_MEDIUM   # 7s — 86% of fills happen within 7s
