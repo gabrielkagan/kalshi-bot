@@ -45,6 +45,7 @@ SHADOW_BANKROLL = 50000  # cents ($500 simulated bankroll)
 MAX_KELLY_FRACTION = 0.25  # quarter-Kelly
 MAX_RISK_CAP = 0.03  # 3% bankroll hard cap per signal
 MIN_DEBIASED_EDGE = 0.015  # 1.5pp minimum edge after debiasing
+SHADOW_MIN_ENTRY_PRICE = 70  # Lower floor for shadow data collection (live bot uses 86)
 FEE_MULTIPLIER = 0.0  # Kalshi charges $0 on maker fills
 
 
@@ -172,8 +173,8 @@ class RecalibratedEGARCHApproach:
             gate_failures.append(f"debiased_edge_{debiased_edge:.4f}")
             gates_passed = False
 
-        # Price band
-        if not (86 <= market_price <= 99):
+        # Price band (shadow uses lower floor for data collection)
+        if not (SHADOW_MIN_ENTRY_PRICE <= market_price <= 99):
             gate_failures.append(f"price_{market_price}")
             gates_passed = False
 
@@ -416,7 +417,7 @@ class LightGBMApproach:
             gates_passed = True
             gate_failures = []
 
-            if not (86 <= market_price <= 99):
+            if not (SHADOW_MIN_ENTRY_PRICE <= market_price <= 99):
                 gate_failures.append(f"price_{market_price}")
                 gates_passed = False
             if not (0 < seconds_to_close <= 900):
@@ -1067,9 +1068,9 @@ class FifteenMShadowEngine:
         _fee = math.ceil(FEE_MULTIPLIER * 1 * (no_price / 100) * (1 - no_price / 100) * 100)
         no_fee_edge = no_edge - _fee / 100.0
 
-        # Gate check: price 86-99, fee-adjusted edge >= 1.5%
+        # Gate check: shadow uses lower price floor for data collection
         failures = []
-        if not (86 <= no_price <= 99):
+        if not (SHADOW_MIN_ENTRY_PRICE <= no_price <= 99):
             failures.append(f"price_{no_price}")
         if no_fee_edge < MIN_DEBIASED_EDGE:
             failures.append(f"edge_{no_fee_edge:.4f}")
