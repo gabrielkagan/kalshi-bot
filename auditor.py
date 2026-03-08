@@ -244,31 +244,19 @@ def check_missing_sides(db: sqlite3.Connection, verbose: bool) -> list[tuple[str
     if verbose:
         print(f"  Side distribution (7d): {dict(side_counts)}, total={total}")
 
-    # Check if NO side ever exists at all
+    # NOTE: NO-side is shadow-only by design — the bot only trades YES live.
+    # Only alert if NO-side trades appear unexpectedly (would indicate a bug).
     all_no = db.execute(
         "SELECT count(*) as cnt FROM settled_trades WHERE side='no'"
     ).fetchone()["cnt"]
-    if all_no == 0:
+    if all_no > 0:
         alerts.append((
-            "missing_side",
-            "no_side_ever",
-            "🔍 *AUDITOR ALERT: Missing Side*\n\n"
-            "No NO-side trades found in history. The bot may not be considering NO contracts.\n\n"
-            "Suggested action: Check bot logic for NO-side evaluation.",
+            "unexpected_no_side",
+            "no_side_live",
+            "🔍 *AUDITOR ALERT: Unexpected NO-Side Trade*\n\n"
+            f"Found {all_no} NO-side settled trades. The bot should only trade YES live.\n\n"
+            "Suggested action: Check if NO-side was accidentally promoted from shadow.",
         ))
-
-    # Check extreme skew
-    if total >= 50:
-        for side, cnt in side_counts.items():
-            ratio = cnt / total
-            if ratio > 0.95:
-                alerts.append((
-                    "side_skew",
-                    f"skew_{side}",
-                    f"🔍 *AUDITOR ALERT: Side Skew*\n\n"
-                    f"{side.upper()} side is {ratio:.0%} of trades ({cnt}/{total} in 7d).\n\n"
-                    f"Suggested action: Review whether both sides are being evaluated.",
-                ))
     return alerts
 
 
@@ -756,7 +744,7 @@ def check_db_size(db: sqlite3.Connection, verbose: bool) -> list[tuple[str, str,
         size_mb = SCAN_JOURNAL_PATH.stat().st_size / (1024 * 1024)
         if verbose:
             print(f"  scan_journal.jsonl size: {size_mb:.1f} MB")
-        if size_mb > 500:  # ~330MB/day expected, alert if >500
+        if size_mb > 1500:  # ~330MB/day, rotated at 4AM UTC, can reach ~1.2GB before rotation
             alerts.append((
                 "journal_size",
                 "scan_journal_large",
