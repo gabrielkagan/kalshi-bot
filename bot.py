@@ -464,6 +464,16 @@ def _resolve_cal_engine(product_type: Optional[str],
 # ─── Opportunity Scanner ────────────────────────────────────────────────────
 MIN_EDGE_PCT = 0.25               # flat fallback — matches lowest MIN_EDGE_BY_PRICE tier (was 0.7)
 
+# Weekend Edge Discount — shadow-only counterfactual for Sat/Sun quiet markets
+# When RV drops on weekends, model edges shrink below thresholds even though WR stays high.
+# This logs what WOULD have traded at relaxed thresholds for graduation analysis.
+# Graduation criteria (shadow → live):
+#   - 4-6 weekends of data (~80-120 settled signals)
+#   - WR >= 85% on settled markets
+#   - No single asset dragging below 75% WR
+#   - No edge inversion (lower tiers not dragging overall)
+WEEKEND_EDGE_DISCOUNT = 0.60      # multiply MIN_EDGE_BY_PRICE by this on Sat/Sun
+
 # Price-dependent minimum edge: higher prices have worse asymmetry
 # At 95c: 1 loss = 19 wins. At 87c: 1 loss = 6.7 wins.
 MIN_EDGE_BY_PRICE = [
@@ -7684,6 +7694,92 @@ class OpportunityScanner:
                             ofa_adjustment, z_score, vol_est,
                             calibrated_prob_raw, est_fee_1c,
                             ask_depth, best_ask_source, _cf, _shadow_diag)
+
+                    # ── Weekend Edge Discount Shadow ──────────────────────────
+                    # On Sat/Sun, re-evaluate 15M insufficient_edge rejections
+                    # at relaxed thresholds (0.6x). Shadow-only — no orders.
+                    if (_pt in (None, "15m")
+                            and datetime.datetime.now(timezone.utc).weekday() >= 5
+                            and best_ask >= MIN_ENTRY_PRICE):
+                        _wknd_discounted_min = _min_edge * WEEKEND_EDGE_DISCOUNT
+                        if fee_adjusted_edge >= _wknd_discounted_min:
+                            # Would pass at discounted threshold — log as shadow candidate
+                            _wknd_balance = self._get_balance_cached()
+                            _wknd_kelly_f = None
+                            _wknd_position = None
+                            _wknd_ev = None
+                            if _wknd_balance and _wknd_balance > 0:
+                                _wknd_sizing = self._sizer.compute(final_prob, best_ask, _wknd_balance)
+                                _wknd_kelly_f = _wknd_sizing["kelly_f"]
+                                _wknd_position = _wknd_sizing["contracts"]
+                                # Apply product-type Kelly fraction + risk cap
+                                _wknd_scfg = get_market_config(window.get("product_type"))
+                                if _wknd_scfg.kelly_fraction < 1.0:
+                                    _wknd_position = max(1, int(_wknd_position * _wknd_scfg.kelly_fraction))
+                                _wknd_type_max = int((_wknd_balance * _wknd_scfg.max_risk_per_trade) / best_ask)
+                                if _wknd_position > _wknd_type_max:
+                                    _wknd_position = max(1, _wknd_type_max)
+                                _wknd_ev = round((final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
+                            try:
+                                self._logger.log_opportunity({
+                                    "filter_stage": "weekend_discount_shadow",
+                                    "ticker": ticker,
+                                    "event_ticker": window["event_ticker"],
+                                    "asset": asset,
+                                    "side": "yes",
+                                    "market_price": best_ask,
+                                    "model_prob": round(final_prob, 6),
+                                    "edge": round(edge, 6),
+                                    "fee_adjusted_edge": round(fee_adjusted_edge, 6),
+                                    "kelly_f": round(_wknd_kelly_f, 6) if _wknd_kelly_f else None,
+                                    "position_size": _wknd_position,
+                                    "expected_value": _wknd_ev,
+                                    "seconds_to_close": round(seconds_remaining, 1),
+                                    "spot_price": spot,
+                                    "threshold": threshold,
+                                    "volatility": blended_rv,
+                                    "vol_regime": vol_est["regime"],
+                                    "discount_factor": WEEKEND_EDGE_DISCOUNT,
+                                    "original_min_edge": round(_min_edge, 6),
+                                    "discounted_min_edge": round(_wknd_discounted_min, 6),
+                                    "edge_vs_discounted": round(fee_adjusted_edge - _wknd_discounted_min, 6),
+                                    "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
+                                    "ofa_adjustment": round(ofa_adjustment, 6),
+                                    "z_score": z_score,
+                                })
+                            except Exception:
+                                logging.debug("weekend_discount_shadow log failed", exc_info=True)
+                            # Also insert into evaluated_opportunities for settlement tracking
+                            _wknd_dedup = (ticker, "weekend_discount_shadow")
+                            if _wknd_dedup not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_wknd_dedup)
+                                try:
+                                    self._state.insert_evaluated_opportunity(
+                                        ticker, window["event_ticker"], asset,
+                                        "weekend_discount_shadow",
+                                        rejection_reason=f"shadow: edge {fee_adjusted_edge:.4f} >= discounted_min {_wknd_discounted_min:.4f} (orig {_min_edge:.4f} x {WEEKEND_EDGE_DISCOUNT})",
+                                        spot_price=spot, threshold=threshold,
+                                        volatility=blended_rv, market_price=best_ask,
+                                        seconds_to_close=seconds_remaining,
+                                        calibrated_prob=final_prob, edge=edge,
+                                        ofa_adjustment=ofa_adjustment,
+                                        z_score=z_score,
+                                        vol_regime=vol_est["regime"],
+                                        calibrated_prob_raw=calibrated_prob_raw,
+                                        kelly_f=_wknd_kelly_f,
+                                        position_size=_wknd_position,
+                                        breakeven_wr=best_ask / 100.0,
+                                        expected_value=_wknd_ev,
+                                        ask_depth=ask_depth,
+                                        best_ask_source=best_ask_source,
+                                        raw_prob=raw_prob,
+                                        calibration_method=calibration_method,
+                                        fee_adjusted_edge=fee_adjusted_edge,
+                                        product_type=window.get("product_type"),
+                                        **_shadow_diag)
+                                except Exception:
+                                    logging.warning("insert_evaluated_opportunity failed (weekend_discount_shadow)", exc_info=True)
+
                     continue
 
                 # Compute position size via Kelly criterion

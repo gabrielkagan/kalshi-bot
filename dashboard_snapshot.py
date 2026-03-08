@@ -2205,6 +2205,71 @@ class DashboardSnapshotBuilder:
             snap["no_side_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
                                       "sim_pnl_cents": 0, "by_product_type": {}}
 
+        # ── Weekend Edge Discount Shadow ─────────────────────────────
+        try:
+            _wknd_row = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='weekend_discount_shadow'"
+            ).fetchone()
+            # Per-asset breakdown
+            _wknd_by_asset = {}
+            for _wa in _conn.execute(
+                "SELECT asset, COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='weekend_discount_shadow' "
+                "GROUP BY asset"
+            ).fetchall():
+                _wknd_by_asset[_wa["asset"]] = {
+                    "n": _wa["n"], "settled": _wa["settled"],
+                    "wins": _wa["wins"] or 0,
+                    "wr": round(_wa["wins"] / _wa["settled"], 4) if _wa["settled"] else 0,
+                    "sim_pnl_cents": _wa["sim_pnl"] or 0,
+                }
+            # Per-price-tier breakdown
+            _wknd_by_tier = {}
+            for _wt in _conn.execute(
+                "SELECT CASE "
+                "  WHEN market_price >= 95 THEN '95+' "
+                "  WHEN market_price >= 93 THEN '93-94' "
+                "  WHEN market_price >= 91 THEN '91-92' "
+                "  WHEN market_price >= 89 THEN '89-90' "
+                "  ELSE '86-88' END as tier, "
+                "COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='weekend_discount_shadow' "
+                "GROUP BY tier ORDER BY tier"
+            ).fetchall():
+                _wknd_by_tier[_wt["tier"]] = {
+                    "n": _wt["n"], "settled": _wt["settled"],
+                    "wins": _wt["wins"] or 0,
+                    "wr": round(_wt["wins"] / _wt["settled"], 4) if _wt["settled"] else 0,
+                    "sim_pnl_cents": _wt["sim_pnl"] or 0,
+                }
+            snap["weekend_discount_shadow"] = {
+                "total_signals": _wknd_row["n"] if _wknd_row else 0,
+                "settled": _wknd_row["settled"] if _wknd_row else 0,
+                "wins": _wknd_row["wins"] if _wknd_row else 0,
+                "wr": round(_wknd_row["wins"] / _wknd_row["settled"], 4) if _wknd_row and _wknd_row["settled"] else 0,
+                "sim_pnl_cents": _wknd_row["sim_pnl"] if _wknd_row else 0,
+                "by_asset": _wknd_by_asset,
+                "by_price_tier": _wknd_by_tier,
+                "discount_factor": 0.60,
+            }
+        except Exception:
+            snap["weekend_discount_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                               "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
+                                               "discount_factor": 0.60}
+
         # ── Loss Clustering (detect loss clusters within 1hr) ──────────
         try:
             conn = _conn

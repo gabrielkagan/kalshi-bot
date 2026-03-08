@@ -83,6 +83,7 @@ REQUIRED_SNAP_KEYS = {
     "calibration_health", "edge_integrity",
     "loss_clustering", "pipeline_completeness",
     "no_side_shadow",
+    "weekend_discount_shadow",
 }
 
 # Dashboard JS field access patterns that MUST match firebase keys.
