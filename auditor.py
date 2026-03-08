@@ -102,11 +102,14 @@ def send_telegram(message: str, token: str, chat_id: str) -> bool:
         log.warning("Telegram credentials not configured")
         return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    # Try with Markdown first, fall back to plain text on parse errors
-    for parse_mode in ("Markdown", None):
-        body = {"chat_id": chat_id, "text": message[:4096]}
-        if parse_mode:
-            body["parse_mode"] = parse_mode
+    # Escape underscores so Telegram doesn't consume them as italic
+    escaped = message.replace("_", "\\_")
+    for attempt_msg in (escaped, message):
+        body = {
+            "chat_id": chat_id,
+            "text": attempt_msg[:4096],
+            "parse_mode": "Markdown",
+        }
         payload = json.dumps(body).encode()
         req = urllib.request.Request(
             url, data=payload,
@@ -117,8 +120,8 @@ def send_telegram(message: str, token: str, chat_id: str) -> bool:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return resp.status == 200
         except urllib.error.HTTPError as e:
-            if e.code == 400 and parse_mode:
-                log.info("Markdown parse failed, retrying without parse_mode")
+            if e.code == 400 and attempt_msg == escaped:
+                log.info("Escaped Markdown failed, retrying with original")
                 continue
             log.warning("Telegram send failed: %s", e)
             return False
