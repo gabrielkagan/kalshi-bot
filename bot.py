@@ -6458,6 +6458,85 @@ class OpportunityScanner:
         # ── Validate market_config.py matches bot.py constants ──
         validate_market_configs()
 
+    # ── V2 variant helper (shadow cal pipeline: temperature + no blend) ──
+
+    def _insert_hourly_v2_variant(
+        self, ticker: str, window: Dict, asset: str,
+        raw_prob: Optional[float], best_ask: int, seconds_remaining: float,
+        spot: float, threshold: float, blended_rv: float,
+        ofa_adjustment: float, z_score: float, vol_est: Dict,
+        calibrated_prob_raw: float, est_fee_1c: float,
+        ask_depth: Optional[int], best_ask_source: Optional[str],
+        _cf: Dict, _shadow_diag: Dict,
+    ):
+        """Insert a V2 variant row for hourly signals using the shadow cal pipeline.
+
+        V2 uses temperature scaling + no market blend (vs V1's beta cal + 40% blend).
+        Gets its own edge, sizing, and filter_stage for independent PnL simulation.
+        Settlement works automatically since it shares the same table + ticker.
+        """
+        _v2_data = _cf.get("cal_pipeline") or _cf.get("old_cal_system")
+        if not _v2_data:
+            return
+        _v2_prob = _v2_data.get("prob")
+        if _v2_prob is None:
+            return
+        _v2_dedup = (ticker, "hourly_observation_v2")
+        if _v2_dedup in self._eval_opp_seen:
+            return
+        self._eval_opp_seen.add(_v2_dedup)
+
+        _v2_edge = _v2_prob - best_ask / 100.0
+        _v2_fee_edge = _v2_data.get("fee_edge")
+        if _v2_fee_edge is None:
+            _v2_fee_edge = _v2_edge - est_fee_1c / 100.0
+        _v2_ev = (_v2_prob * (100 - best_ask)) - ((1 - _v2_prob) * best_ask) - est_fee_1c
+
+        # V2 sizing (Kelly with V2 probability)
+        _v2_contracts = 0
+        _v2_kelly_f = None
+        _v2_drawdown = None
+        _v2_balance = self._get_balance_cached()
+        if _v2_balance and _v2_balance > 0:
+            _v2_sizing = self._sizer.compute(_v2_prob, best_ask, _v2_balance)
+            _v2_kelly_f = _v2_sizing["kelly_f"]
+            _v2_contracts = _v2_sizing["contracts"]
+            _v2_drawdown = _v2_sizing["drawdown_scaler"]
+            _v2_scfg = get_market_config("hourly")
+            if _v2_scfg.kelly_fraction < 1.0:
+                _v2_contracts = max(1, int(_v2_contracts * _v2_scfg.kelly_fraction))
+            _v2_max = int((_v2_balance * _v2_scfg.max_risk_per_trade) / best_ask)
+            if _v2_contracts > _v2_max:
+                _v2_contracts = max(1, _v2_max)
+
+        try:
+            self._state.insert_evaluated_opportunity(
+                ticker, window["event_ticker"], asset,
+                "hourly_observation_v2",
+                spot_price=spot, threshold=threshold,
+                volatility=blended_rv, market_price=best_ask,
+                seconds_to_close=seconds_remaining,
+                calibrated_prob=_v2_prob, edge=_v2_edge,
+                ofa_adjustment=ofa_adjustment,
+                z_score=z_score,
+                vol_regime=vol_est["regime"],
+                calibrated_prob_raw=calibrated_prob_raw,
+                kelly_f=_v2_kelly_f,
+                position_size=_v2_contracts,
+                drawdown_scaler=_v2_drawdown,
+                breakeven_wr=best_ask / 100.0,
+                expected_value=round(_v2_ev, 2),
+                ask_depth=ask_depth,
+                best_ask_source=best_ask_source,
+                raw_prob=raw_prob,
+                calibration_method="shadow_cal_v2",
+                fee_adjusted_edge=_v2_fee_edge,
+                product_type="hourly",
+                shadow_cal_temperature=_v2_data.get("temperature"),
+                **_shadow_diag)
+        except Exception:
+            logging.warning("insert_evaluated_opportunity failed (hourly_observation_v2)", exc_info=True)
+
     # ── Public entry point ────────────────────────────────────────────────
 
     def scan(self, active_windows: List[Dict]) -> Optional[List[Dict]]:
@@ -7594,6 +7673,14 @@ class OpportunityScanner:
                                 **_oft_db, **_shadow_diag)
                     except Exception:
                         logging.warning("insert_evaluated_opportunity failed (hourly_observation)", exc_info=True)
+                    # V2 variant: shadow cal pipeline (temperature + no blend)
+                    if _pt == "hourly" and _cf:
+                        self._insert_hourly_v2_variant(
+                            ticker, window, asset, raw_prob, best_ask,
+                            seconds_remaining, spot, threshold, blended_rv,
+                            ofa_adjustment, z_score, vol_est,
+                            calibrated_prob_raw, est_fee_1c,
+                            ask_depth, best_ask_source, _cf, _shadow_diag)
                     continue
 
                 # Compute position size via Kelly criterion
@@ -8133,6 +8220,14 @@ class OpportunityScanner:
                     _obs_log_prefix = {"hourly": "HOURLY_OBS", "spx_hourly": "SPX_OBS", "weather": "WEATHER_OBS"}.get(_obs_pt, "OBS")
                     logging.info("%s: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  _obs_log_prefix, ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
+                    # V2 variant: shadow cal pipeline (temperature + no blend)
+                    if _obs_pt == "hourly" and _cf:
+                        self._insert_hourly_v2_variant(
+                            ticker, window, asset, raw_prob, best_ask,
+                            seconds_remaining, spot, threshold, blended_rv,
+                            ofa_adjustment, z_score, vol_est,
+                            calibrated_prob_raw, est_fee_1c,
+                            ask_depth, best_ask_source, _cf, _shadow_diag)
                     # Increment per-window counters even in observation mode so Layer 3b/3c
                     # limits work for counterfactual analysis (without this, counter stays 0
                     # and the limit is dead code — bug found by audit: 11 SPX positions in one window)
@@ -11759,7 +11854,10 @@ class SettlementTracker:
                 filter_stage = row.get("filter_stage", "")
                 _opp_side = row.get("side") or "yes"
                 if (raw_p is not None and _opp_side == "yes"
-                        and result in ("yes", "all_yes", "no", "all_no")):
+                        and result in ("yes", "all_yes", "no", "all_no")
+                        and not filter_stage.endswith("_v2")):
+                    # Skip V2 variant rows — they share the same raw_prob as V1
+                    # and would double-feed the CalEngine
                     cal_binary = 1 if result in ("yes", "all_yes") else 0
                     _settle_engine = _resolve_cal_engine(_opp_pt, row.get("asset"))
                     if _settle_engine is not None:

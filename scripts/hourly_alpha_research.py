@@ -1332,9 +1332,115 @@ def run_research(db_path: str):
     # ================================================================
     no_side_shadow_research(db_path, days)
 
+    # ================================================================
+    #  V2 VARIANT COMPARISON
+    # ================================================================
+    v2_variant_alpha(db_path, days)
+
     print(f"\n{'=' * 80}")
     print(f"  Analysis complete. {len(configs)} configurations evaluated.")
     print(f"{'=' * 80}")
+
+
+def v2_variant_alpha(db_path: str, total_days: float):
+    """Compare V1 vs V2 calibration variant alpha in the hourly pipeline."""
+    conn = sqlite3.connect(db_path)
+    conn.execute('PRAGMA busy_timeout=5000')
+    conn.row_factory = sqlite3.Row
+
+    v2_count = conn.execute("""
+        SELECT COUNT(*) AS n FROM evaluated_opportunities
+        WHERE product_type='hourly' AND filter_stage='hourly_observation_v2'
+    """).fetchone()["n"] or 0
+
+    if v2_count == 0:
+        conn.close()
+        return
+
+    print(f"\n{'=' * 80}")
+    print(f"  V2 VARIANT COMPARISON (shadow_cal: temperature + no blend)")
+    print(f"{'=' * 80}")
+
+    # Side-by-side performance
+    for label, stage in [("V1 (beta_cal + blend)", "hourly_observation"),
+                         ("V2 (temp_scale, no blend)", "hourly_observation_v2")]:
+        rows = conn.execute("""
+            SELECT asset, market_price, calibrated_prob, fee_adjusted_edge,
+                   seconds_to_close, position_size, market_result
+            FROM evaluated_opportunities
+            WHERE product_type='hourly' AND filter_stage=?
+              AND market_result IS NOT NULL
+        """, (stage,)).fetchall()
+
+        if not rows:
+            print(f"\n  --- {label}: No settled data ---")
+            continue
+
+        wins = sum(1 for r in rows if r["market_result"] == "yes")
+        n = len(rows)
+        wr = wins / n * 100
+        avg_p = sum(r["market_price"] for r in rows) / n
+        be = avg_p  # maker
+        sized_pnl = sum(
+            sim_pnl_1lot(r["market_price"], r["market_result"] == "yes") * (r["position_size"] or 1)
+            for r in rows)
+        flat_pnl = sum(sim_pnl_1lot(r["market_price"], r["market_result"] == "yes") for r in rows)
+        brier = sum((r["calibrated_prob"] - (1 if r["market_result"] == "yes" else 0))**2
+                     for r in rows) / n
+        oc = sum(r["calibrated_prob"] for r in rows) / n * 100 - wr
+
+        print(f"\n  --- {label} ---")
+        print(f"  N={n}, {wins}W/{n-wins}L, WR={wr:.1f}%, Avg P={avg_p:.0f}c, BE={be:.0f}%")
+        print(f"  Flat PnL: ${flat_pnl:.2f} (${flat_pnl/total_days:.2f}/day)")
+        print(f"  Sized PnL: ${sized_pnl:.2f} (${sized_pnl/total_days:.2f}/day)")
+        print(f"  Brier: {brier:.4f}, Overconfidence: {oc:+.1f}pp")
+
+        # Per-asset
+        by_asset = defaultdict(list)
+        for r in rows:
+            by_asset[r["asset"]].append(r)
+        print(f"    {'Asset':<6} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'PnL':>8} {'AvgP':>5}")
+        print(f"    {'-'*42}")
+        for asset in sorted(by_asset):
+            ar = by_asset[asset]
+            w = sum(1 for r in ar if r["market_result"] == "yes")
+            pnl = sum(sim_pnl_1lot(r["market_price"], r["market_result"] == "yes") * (r["position_size"] or 1)
+                      for r in ar)
+            ap = sum(r["market_price"] for r in ar) / len(ar)
+            print(f"    {asset:<6} {len(ar):>4} {w:>3} {len(ar)-w:>3} "
+                  f"{w/len(ar)*100:>5.1f}% ${pnl:>6.2f} {ap:>4.0f}c")
+
+    # Matched Brier comparison
+    matched = conn.execute("""
+        SELECT v1.ticker, v1.market_result,
+               v1.calibrated_prob AS v1_prob, v1.position_size AS v1_size,
+               v2.calibrated_prob AS v2_prob, v2.position_size AS v2_size,
+               v1.market_price
+        FROM evaluated_opportunities v1
+        JOIN evaluated_opportunities v2
+          ON v1.ticker = v2.ticker
+        WHERE v1.filter_stage='hourly_observation'
+          AND v2.filter_stage='hourly_observation_v2'
+          AND v1.product_type='hourly' AND v2.product_type='hourly'
+          AND v1.market_result IS NOT NULL
+    """).fetchall()
+
+    if matched:
+        n = len(matched)
+        v1_brier = sum((r["v1_prob"] - (1 if r["market_result"] == "yes" else 0))**2 for r in matched) / n
+        v2_brier = sum((r["v2_prob"] - (1 if r["market_result"] == "yes" else 0))**2 for r in matched) / n
+        v1_pnl = sum(sim_pnl_1lot(r["market_price"], r["market_result"] == "yes") * (r["v1_size"] or 1)
+                     for r in matched)
+        v2_pnl = sum(sim_pnl_1lot(r["market_price"], r["market_result"] == "yes") * (r["v2_size"] or 1)
+                     for r in matched)
+        delta = v1_brier - v2_brier
+        winner = "V2" if delta > 0 else "V1"
+        print(f"\n  --- Matched comparison ({n} tickers) ---")
+        print(f"  V1 Brier: {v1_brier:.4f}, V2 Brier: {v2_brier:.4f}")
+        print(f"  {winner} wins by {abs(delta):.4f}")
+        print(f"  V1 sized PnL: ${v1_pnl:.2f}, V2 sized PnL: ${v2_pnl:.2f}")
+
+    conn.close()
 
 
 def alt_shadow_report(db_path: str, total_days: float):

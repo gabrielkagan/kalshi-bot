@@ -2496,6 +2496,135 @@ def cal_engine_pipeline(conn, since: str) -> None:
         print(f"  ERROR: {e}")
 
 
+# ── V2 Variant Comparison ────────────────────────────────────────
+
+def v2_variant_comparison(conn: sqlite3.Connection, since: str):
+    """Compare V1 (beta cal + 40% blend) vs V2 (temperature + no blend) performance."""
+    section("V2 VARIANT COMPARISON (shadow_cal pipeline)")
+
+    # Check if V2 data exists
+    v2_count = conn.execute("""
+        SELECT COUNT(*) AS n FROM evaluated_opportunities
+        WHERE product_type='hourly' AND filter_stage='hourly_observation_v2'
+          AND evaluation_time >= ?
+    """, (since,)).fetchone()["n"] or 0
+
+    if v2_count == 0:
+        print("  No V2 variant data yet. V2 rows will appear after next deploy.")
+        print("  V2 = shadow cal pipeline (temperature scaling + no market blend)")
+        return
+
+    # V1 and V2 side-by-side
+    for label, stage in [("V1 (beta_cal + 40% blend)", "hourly_observation"),
+                         ("V2 (temp_scale + no blend)", "hourly_observation_v2")]:
+        rows = conn.execute("""
+            SELECT evaluation_time, ticker, asset, market_price, calibrated_prob,
+              fee_adjusted_edge, seconds_to_close, position_size, market_result
+            FROM evaluated_opportunities
+            WHERE product_type='hourly' AND filter_stage=?
+              AND market_result IS NOT NULL AND evaluation_time >= ?
+            ORDER BY evaluation_time
+        """, (stage, since)).fetchall()
+
+        settled = list(rows)
+        wins = [r for r in settled if r["market_result"] == "yes"]
+        losses = [r for r in settled if r["market_result"] == "no"]
+        total_pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+                                       r["market_result"] == "yes") for r in settled)
+        avg_p = sum(r["market_price"] for r in settled) / len(settled) if settled else 0
+        avg_prob = sum(r["calibrated_prob"] or 0 for r in settled) / len(settled) if settled else 0
+        wr = len(wins) / len(settled) * 100 if settled else 0
+        be_wr = avg_p  # maker fee = 0
+        brier = sum((r["calibrated_prob"] - (1 if r["market_result"] == "yes" else 0))**2
+                     for r in settled) / len(settled) if settled else 0
+
+        print(f"\n  --- {label} ---")
+        print(f"  Settled: {len(settled)}, {len(wins)}W/{len(losses)}L, WR={wr:.1f}%")
+        print(f"  Sim PnL (maker): ${total_pnl/100:.2f}")
+        print(f"  Avg price: {avg_p:.1f}c, BE WR: {be_wr:.0f}%, Gap: {wr - be_wr:+.1f}pp")
+        print(f"  Avg model prob: {avg_prob*100:.1f}%, Overconfidence: {avg_prob*100 - wr:+.1f}pp")
+        print(f"  Brier: {brier:.4f}")
+
+        # Per-asset
+        by_asset = defaultdict(list)
+        for r in settled:
+            by_asset[r["asset"]].append(r)
+        if by_asset:
+            print(f"  {'Asset':<8} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'Sim PnL':>10} {'Avg P':>7}")
+            print(f"  {'-'*50}")
+            for asset in sorted(by_asset):
+                ar = by_asset[asset]
+                w = sum(1 for r in ar if r["market_result"] == "yes")
+                pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+                                         r["market_result"] == "yes") for r in ar)
+                ap = sum(r["market_price"] for r in ar) / len(ar)
+                print(f"  {asset:<8} {len(ar):>4} {w:>3} {len(ar)-w:>3} "
+                      f"{w/len(ar)*100:>5.1f}% ${pnl/100:>9.2f} {ap:>6.1f}c")
+
+    # Matched ticker comparison (V1 vs V2 on same tickers)
+    matched = conn.execute("""
+        SELECT v1.ticker, v1.asset, v1.market_price, v1.market_result,
+               v1.calibrated_prob AS v1_prob, v1.fee_adjusted_edge AS v1_edge,
+               v1.position_size AS v1_size,
+               v2.calibrated_prob AS v2_prob, v2.fee_adjusted_edge AS v2_edge,
+               v2.position_size AS v2_size
+        FROM evaluated_opportunities v1
+        JOIN evaluated_opportunities v2
+          ON v1.ticker = v2.ticker
+        WHERE v1.filter_stage='hourly_observation'
+          AND v2.filter_stage='hourly_observation_v2'
+          AND v1.product_type='hourly' AND v2.product_type='hourly'
+          AND v1.market_result IS NOT NULL
+          AND v1.evaluation_time >= ?
+    """, (since,)).fetchall()
+
+    if matched:
+        subsection("Matched ticker comparison")
+        v1_brier = sum((r["v1_prob"] - (1 if r["market_result"] == "yes" else 0))**2
+                       for r in matched) / len(matched)
+        v2_brier = sum((r["v2_prob"] - (1 if r["market_result"] == "yes" else 0))**2
+                       for r in matched) / len(matched)
+        v1_pnl = sum(sim_pnl_maker(r["market_price"], r["v1_size"] or 1,
+                                    r["market_result"] == "yes") for r in matched)
+        v2_pnl = sum(sim_pnl_maker(r["market_price"], r["v2_size"] or 1,
+                                    r["market_result"] == "yes") for r in matched)
+        v1_oc = sum(r["v1_prob"] for r in matched) / len(matched) * 100 - \
+                sum(1 for r in matched if r["market_result"] == "yes") / len(matched) * 100
+        v2_oc = sum(r["v2_prob"] for r in matched) / len(matched) * 100 - \
+                sum(1 for r in matched if r["market_result"] == "yes") / len(matched) * 100
+        print(f"  Matched tickers: {len(matched)}")
+        print(f"  V1 Brier: {v1_brier:.4f}, Overconfidence: {v1_oc:+.1f}pp")
+        print(f"  V2 Brier: {v2_brier:.4f}, Overconfidence: {v2_oc:+.1f}pp")
+        delta = v1_brier - v2_brier
+        winner = "V2" if delta > 0 else "V1"
+        print(f"  Delta: {delta:+.4f} — {winner} wins by {abs(delta):.4f}")
+        print(f"  V1 sized PnL: ${v1_pnl/100:.2f}, V2 sized PnL: ${v2_pnl/100:.2f}")
+
+    # V2-only signals (V2 passed edge but V1 didn't — signals from insufficient_edge)
+    v2_only = conn.execute("""
+        SELECT COUNT(*) AS n,
+          SUM(CASE WHEN v2.market_result='yes' THEN 1 ELSE 0 END) AS wins,
+          SUM(CASE WHEN v2.market_result='no' THEN 1 ELSE 0 END) AS losses
+        FROM evaluated_opportunities v2
+        LEFT JOIN evaluated_opportunities v1
+          ON v1.ticker = v2.ticker AND v1.filter_stage='hourly_observation'
+          AND v1.product_type='hourly'
+        WHERE v2.filter_stage='hourly_observation_v2'
+          AND v2.product_type='hourly'
+          AND v2.market_result IS NOT NULL
+          AND v2.evaluation_time >= ?
+          AND v1.id IS NULL
+    """, (since,)).fetchone()
+
+    v2_only_n = v2_only["n"] or 0
+    if v2_only_n > 0:
+        subsection("V2-only signals (V1 rejected as insufficient_edge)")
+        v2w = v2_only["wins"] or 0
+        v2l = v2_only["losses"] or 0
+        print(f"  N={v2_only_n}, {v2w}W/{v2l}L, WR={v2w/v2_only_n*100:.1f}%")
+        print(f"  These are signals where V2 found edge but V1 didn't")
+
+
 # ── Main ──────────────────────────────────────────────────────────
 
 def main():
@@ -2538,6 +2667,7 @@ def main():
     alt_shadow_strategies(conn, since)
     cal_engine_pipeline(conn, since)
     no_side_shadow_analysis(conn, since)
+    v2_variant_comparison(conn, since)
     validation_plan(conn)
 
     # JSON artifact output

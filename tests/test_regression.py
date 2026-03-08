@@ -1511,3 +1511,84 @@ class TestNoSideOrderbookPricing:
                 f"{fname}.{method}() does not accept 'no_ask' parameter. "
                 f"NO price must come from actual market NBBO, not derived from YES prices."
             )
+
+
+# ============================================================================
+#  V2 Variant (hourly shadow cal pipeline)
+#  Ensure V2 rows are inserted correctly, not double-feeding CalEngine,
+#  and dedup keys are safe.
+# ============================================================================
+
+class TestV2VariantSafety:
+    """V2 variant (hourly_observation_v2) must coexist safely with V1."""
+
+    def test_v2_filter_stage_in_calengine_exclusion(self):
+        """V2 rows must NOT feed CalEngine (would double-count raw_prob)."""
+        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+            source = f.read()
+        # The CalEngine feed section must exclude _v2 filter stages
+        assert 'not filter_stage.endswith("_v2")' in source, (
+            "CalEngine settlement feed must exclude _v2 variant rows. "
+            "V2 shares raw_prob with V1 — feeding both double-counts observations."
+        )
+
+    def test_v2_dedup_key_is_2tuple(self):
+        """V2 dedup key must be a 2-tuple (ticker, 'hourly_observation_v2')."""
+        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+            source = f.read()
+        # The helper method must use the correct dedup key format
+        assert '(ticker, "hourly_observation_v2")' in source, (
+            "_insert_hourly_v2_variant must use 2-tuple dedup key "
+            "matching _eval_opp_seen format"
+        )
+
+    def test_v2_helper_method_exists(self):
+        """_insert_hourly_v2_variant helper must exist on OpportunityScanner."""
+        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+            source = f.read()
+        assert "def _insert_hourly_v2_variant(" in source, (
+            "V2 variant helper method missing from bot.py"
+        )
+
+    def test_v2_called_at_both_gates(self):
+        """V2 must be inserted at both insufficient_edge and hourly_observation gates."""
+        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+            source = f.read()
+        call_count = source.count("self._insert_hourly_v2_variant(")
+        assert call_count >= 2, (
+            f"_insert_hourly_v2_variant called {call_count} times, expected >= 2. "
+            f"Must be called at both the insufficient_edge and hourly_observation gates "
+            f"so V2 captures signals regardless of V1's edge decision."
+        )
+
+    def test_v2_uses_shadow_cal_prob(self):
+        """V2 must use shadow cal pipeline probability, not live probability."""
+        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+            source = f.read()
+        # The helper should reference cal_pipeline or old_cal_system
+        assert 'calibration_method="shadow_cal_v2"' in source, (
+            "V2 variant must tag calibration_method as 'shadow_cal_v2' "
+            "for audit script filtering"
+        )
+
+    def test_v2_audit_section_exists(self):
+        """Audit script must have V2 comparison section."""
+        with open(os.path.join(PROJECT_ROOT, "scripts", "hourly_shadow_audit.py")) as f:
+            source = f.read()
+        assert "hourly_observation_v2" in source, (
+            "hourly_shadow_audit.py must query hourly_observation_v2 for variant comparison"
+        )
+        assert "v2_variant_comparison" in source, (
+            "hourly_shadow_audit.py must have v2_variant_comparison function"
+        )
+
+    def test_v2_alpha_section_exists(self):
+        """Alpha research script must have V2 comparison section."""
+        with open(os.path.join(PROJECT_ROOT, "scripts", "hourly_alpha_research.py")) as f:
+            source = f.read()
+        assert "hourly_observation_v2" in source, (
+            "hourly_alpha_research.py must query hourly_observation_v2 for variant comparison"
+        )
+        assert "v2_variant_alpha" in source, (
+            "hourly_alpha_research.py must have v2_variant_alpha function"
+        )
