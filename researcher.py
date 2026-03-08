@@ -590,9 +590,10 @@ def section_shadow_status(ctx: ReportContext) -> str:
         ]:
             row = ctx.db.execute(
                 "SELECT count(*) as total, "
-                "sum(CASE WHEN status='settled' AND shadow_pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
+                "sum(CASE WHEN status='settled' AND shadow_pnl_cents != 0 AND shadow_pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
+                "sum(CASE WHEN status='settled' AND shadow_pnl_cents != 0 THEN 1 ELSE 0 END) as traded, "
                 "sum(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "sum(CASE WHEN status='settled' THEN shadow_pnl_cents ELSE 0 END) as pnl, "
+                "sum(CASE WHEN status='settled' AND shadow_pnl_cents != 0 THEN shadow_pnl_cents ELSE 0 END) as pnl, "
                 "sum(CASE WHEN evaluation_time >= ? THEN 1 ELSE 0 END) as new_obs "
                 "FROM hourly_alt_shadow_signals WHERE strategy = ?",
                 (ctx.start_iso, strategy_val),
@@ -600,13 +601,15 @@ def section_shadow_status(ctx: ReportContext) -> str:
             if row and row["total"] > 0:
                 n = row["total"]
                 settled = row["settled"] or 0
+                traded = row["traded"] or 0
                 wins = row["wins"] or 0
                 pnl = row["pnl"] or 0
                 new_obs = row["new_obs"] or 0
-                status = _shadow_status_label(settled, wins, settled, pnl)
+                status = _shadow_status_label(n, wins, traded, pnl)
+                wr_str = f"{safe_div(wins, traded):.0%}" if traded > 0 else "N/A"
                 parts.append(
                     f"*{label}:* {n} obs (+{new_obs} new)\n"
-                    f"  Settled: {settled} | WR: {safe_div(wins, settled):.0%} | "
+                    f"  Traded: {traded}/{settled} settled | WR: {wr_str} | "
                     f"PnL: {_fmt_pnl(pnl)}\n"
                     f"  Status: {status}"
                 )
@@ -642,14 +645,19 @@ def section_shadow_status(ctx: ReportContext) -> str:
 
 
 def _shadow_stats(db, table, prob_col, pnl_col, period_start_iso):
-    """Get shadow stats for a fifteenm_shadow approach."""
+    """Get shadow stats for a fifteenm_shadow approach.
+
+    pnl_col=0 means the strategy would NOT have traded (gates not passed).
+    Only count rows with pnl != 0 as 'traded' for WR calculation.
+    """
     if not has_column(db, table, prob_col):
         return None
     row = db.execute(
         f"SELECT count(*) as total, "
-        f"sum(CASE WHEN status='settled' AND {pnl_col} > 0 THEN 1 ELSE 0 END) as wins, "
+        f"sum(CASE WHEN status='settled' AND {pnl_col} != 0 AND {pnl_col} > 0 THEN 1 ELSE 0 END) as wins, "
+        f"sum(CASE WHEN status='settled' AND {pnl_col} != 0 THEN 1 ELSE 0 END) as traded, "
         f"sum(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-        f"sum(CASE WHEN status='settled' THEN {pnl_col} ELSE 0 END) as pnl, "
+        f"sum(CASE WHEN status='settled' AND {pnl_col} != 0 THEN {pnl_col} ELSE 0 END) as pnl, "
         f"sum(CASE WHEN evaluation_time >= ? THEN 1 ELSE 0 END) as new_obs "
         f"FROM {table} WHERE {prob_col} IS NOT NULL",
         (period_start_iso,),
@@ -662,23 +670,26 @@ def _shadow_stats(db, table, prob_col, pnl_col, period_start_iso):
 def _format_shadow(label, stats):
     n = stats["total"]
     settled = stats["settled"] or 0
+    traded = stats.get("traded", settled) or 0
     wins = stats["wins"] or 0
     pnl = stats["pnl"] or 0
     new_obs = stats["new_obs"] or 0
-    status = _shadow_status_label(n, wins, settled, pnl)
+    status = _shadow_status_label(n, wins, traded, pnl)
+    wr_str = f"{safe_div(wins, traded):.0%}" if traded > 0 else "N/A"
     return (
         f"*{label}:* {n} obs (+{new_obs} new)\n"
-        f"  Settled: {settled} | WR: {safe_div(wins, settled):.0%} | "
+        f"  Traded: {traded}/{settled} settled | WR: {wr_str} | "
         f"PnL: {_fmt_pnl(pnl)}\n"
         f"  Status: {status}"
     )
 
 
-def _shadow_status_label(n, wins, settled, pnl_cents):
-    if settled < 30:
+def _shadow_status_label(n, wins, traded, pnl_cents):
+    """traded = rows where strategy would have entered (pnl != 0)."""
+    if traded < 10:
         return "Collecting data"
-    wr = safe_div(wins, settled)
-    if settled >= 100 and wr > 0.80 and pnl_cents > 0:
+    wr = safe_div(wins, traded)
+    if traded >= 50 and wr > 0.80 and pnl_cents > 0:
         return "Ready for review ✅"
     if wr > 0.75 and pnl_cents > 0:
         return "Showing promise"
