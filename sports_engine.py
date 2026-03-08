@@ -31,6 +31,9 @@ from sports_data import (
     LEAGUES,
     MAX_MODEL_MARKET_GAP,
     SPORT_GROUPS,
+    SPORTS_SHADOW_MIN_LR,
+    SPORTS_SHADOW_MIN_PRICE,
+    SPORTS_SHADOW_SIGNAL_GROUPS,
     THREE_WAY_ENTRY_CRITERIA,
     THREE_WAY_LR_TABLE,
     LeagueConfig,
@@ -664,6 +667,20 @@ class BayesianComebackModel:
             rejection_reason = (
                 f"model_market_gap={posterior - current_prob:.4f} > "
                 f"{MAX_MODEL_MARKET_GAP}")
+        elif sgc.group_name not in SPORTS_SHADOW_SIGNAL_GROUPS:
+            filter_stage = "sports_excluded_sport"
+            rejection_reason = (
+                f"sport_group={sgc.group_name} not in "
+                f"{SPORTS_SHADOW_SIGNAL_GROUPS}")
+        elif current_kalshi_price < SPORTS_SHADOW_MIN_PRICE:
+            filter_stage = "sports_excluded_price"
+            rejection_reason = (
+                f"kalshi_price={current_kalshi_price}c < "
+                f"{SPORTS_SHADOW_MIN_PRICE}c min")
+        elif lr < SPORTS_SHADOW_MIN_LR:
+            filter_stage = "sports_excluded_lr"
+            rejection_reason = (
+                f"lr={lr:.4f} < {SPORTS_SHADOW_MIN_LR} min")
         else:
             signal_fired = True
             filter_stage = "sports_signal"

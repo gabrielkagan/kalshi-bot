@@ -7,7 +7,7 @@ and entry criteria. No runtime dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Set, Tuple
 
 
 @dataclass(frozen=True)
@@ -332,6 +332,19 @@ CONSERVATIVE_LR_SCALE = 0.2
 # Reject signals where model - market > this threshold.
 # 30pp: model can be at most 30pp above market (market=20% → model max=50%)
 MAX_MODEL_MARKET_GAP = 0.80  # Was 0.20 — need wide gap data to calibrate model
+
+# ── Shadow Signal Focus ─────────────────────────────────────────────────────
+# Only generate shadow trade signals for these sport groups.
+# Raw observations are still logged for ALL sports regardless.
+SPORTS_SHADOW_SIGNAL_GROUPS: Set[str] = {"basketball"}
+
+# Minimum Kalshi price (cents) to generate a shadow trade signal.
+# Below this, model is catastrophically overconfident (30.2% WR at 20-39c).
+SPORTS_SHADOW_MIN_PRICE: int = 60
+
+# Minimum likelihood ratio to generate a shadow trade signal.
+# LR < 1.2 has 34% WR vs 67% for LR >= 1.2.
+SPORTS_SHADOW_MIN_LR: float = 1.2
 
 
 # ── Entry Criteria ───────────────────────────────────────────────────────────
