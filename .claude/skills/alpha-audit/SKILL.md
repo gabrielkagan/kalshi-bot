@@ -47,6 +47,13 @@ python3 scripts/shadow_eval.py --db /tmp/state.db --days 14
 ```
 Outputs: per-strategy performance, breakeven analysis, Wilson CI, promotion decision (PROMOTE / KEEP / KILL).
 
+**Now includes hourly shadow strategies:**
+- Crypto hourly shadows: MM (market-making) and HAR-RV per asset (BTC, ETH, SOL)
+- SPX hourly shadow: HAR-RV with OLS fitting status
+- MM fill rates (confirmed vs hypothetical fills)
+- Per-asset routing recommendation (which approach works best per asset)
+- Promotion readiness for each hourly shadow strategy
+
 ### 4. Interpret results
 
 **Promotion thresholds:**
@@ -59,7 +66,9 @@ Outputs: per-strategy performance, breakeven analysis, Wilson CI, promotion deci
 - Filter funnel: is insufficient_edge still the dominant rejection? (Expected: ~25-30%)
 - Calibration gap: model prob vs realized WR by price band — any systematic underestimate?
 - Capital utilization: % of bankroll deployed, trades per day, idle hours
-- Shadow strategies: any approaching promotion thresholds?
+- 15M shadow strategies: any approaching promotion thresholds?
+- **Crypto hourly shadows:** MM fill rates, per-asset WR and PnL, routing recommendations
+- **SPX hourly shadow:** HAR-RV fitting status (prior vs OLS), gate pass rate
 - Regressions: has any live metric degraded since last audit?
 
 ### 5. Recommend actions

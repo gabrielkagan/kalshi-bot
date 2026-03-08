@@ -7148,6 +7148,18 @@ class OpportunityScanner:
                 ask_depth = OrderExecutor._best_ask_depth(ob_data)
                 total_depth = OrderExecutor._total_ob_depth(ob_data)
 
+                # ── MM fill simulation: check if shadow buy orders would fill ──
+                # For hourly tickers with active MM shadow orders, check if the
+                # current ask has dropped to/below the shadow buy price.
+                if (_pt == "hourly"
+                        and self._ml and getattr(self._ml, "hourly_alt_shadow", None)):
+                    try:
+                        _mm_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                        self._ml.hourly_alt_shadow.check_mm_fills(
+                            ticker, best_ask, _mm_bid or 0)
+                    except Exception:
+                        pass  # Fill check is advisory, don't break scan
+
                 # Record orderbook snapshot for flow tracking
                 try:
                     if self._kalshi_oft is not None and ob_data:

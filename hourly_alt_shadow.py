@@ -32,7 +32,9 @@ from typing import Dict, List, Optional, Tuple
 HOURLY_ALT_SHADOW_ENABLED = True
 
 # Target assets — includes BTC for comparative data (EGARCH vs HAR-RV)
-ALT_SHADOW_ASSETS = {"BTC", "ETH", "SOL", "XRP"}
+# XRP excluded: EGARCH 38.7% WR (-57.6pp overconfident), MM -$72 PnL.
+# Raw hourly data still collected via main EGARCH pipeline for future research.
+ALT_SHADOW_ASSETS = {"BTC", "ETH", "SOL"}
 
 # ── Strategy A: Market-Making Config ──────────────────────────────────────────
 
@@ -263,7 +265,10 @@ class MarketMakingShadow:
         }
 
     def check_fills(self, ticker: str, current_ask: int, current_bid: int) -> Dict:
-        """Check if any shadow orders would have been filled given current prices.
+        """Check if shadow orders would have been filled given current prices.
+
+        A maker buy fills when the market ask drops to or below the buy price
+        (someone hits our resting bid). Once filled, stays filled permanently.
 
         Returns dict with buy_filled/sell_filled booleans.
         """
@@ -271,12 +276,25 @@ class MarketMakingShadow:
         if not order:
             return {"buy_filled": False, "sell_filled": False}
 
-        buy_filled = current_ask <= order.get("shadow_buy_price", 0)
-        sell_filled = current_bid >= order.get("shadow_sell_price", 999)
+        # Sticky fills: once filled, stays filled for the rest of the window
+        buy_already = order.get("_buy_filled", False)
+        sell_already = order.get("_sell_filled", False)
+
+        if not buy_already and current_ask > 0:
+            if current_ask <= order.get("shadow_buy_price", 0):
+                order["_buy_filled"] = True
+                order["_buy_fill_ts"] = time.time()
+                buy_already = True
+
+        if not sell_already and current_bid > 0:
+            if current_bid >= order.get("shadow_sell_price", 999):
+                order["_sell_filled"] = True
+                order["_sell_fill_ts"] = time.time()
+                sell_already = True
 
         return {
-            "buy_filled": buy_filled,
-            "sell_filled": sell_filled,
+            "buy_filled": buy_already,
+            "sell_filled": sell_already,
             "buy_price": order.get("shadow_buy_price"),
             "sell_price": order.get("shadow_sell_price"),
         }
@@ -290,6 +308,8 @@ class MarketMakingShadow:
             "ts": time.time(),
             "asset": signal.get("asset"),
             "event_ticker": signal.get("event_ticker"),
+            "_buy_filled": False,
+            "_sell_filled": False,
         }
 
     def cleanup_expired(self, active_tickers: set):
@@ -1166,22 +1186,57 @@ class HourlyAltShadowEngine:
             logging.warning("hourly_alt_shadow settle failed for %s: %s", ticker, e)
 
     def _compute_mm_pnl(self, row, market_result: str) -> int:
-        """Compute market-making shadow PnL based on fill status."""
-        buy_price = row["shadow_buy_price"]
-        sell_price = row["shadow_sell_price"]
-        contracts = row["shadow_contracts"] or 0
+        """Compute market-making shadow PnL based on fill status.
 
-        pnl = 0
-        # If both sides fill, profit = sell_price - buy_price per contract
-        # If only buy fills: depends on settlement
-        # If only sell fills: depends on settlement
-        # Simplified: assume we only trade the buy side (YES direction)
-        if buy_price and contracts > 0:
-            if market_result in ("yes", "all_yes"):
-                pnl = contracts * (100 - buy_price)
-            elif market_result in ("no", "all_no"):
-                pnl = -(contracts * buy_price)
-        return pnl
+        Only counts PnL if the buy order would have actually filled
+        (mm_buy_filled=1). Unfilled orders get PnL=0 — no phantom profits.
+        """
+        buy_price = row["shadow_buy_price"]
+        contracts = row["shadow_contracts"] or 0
+        buy_filled = row["mm_buy_filled"] if row["mm_buy_filled"] else 0
+
+        if not buy_filled or not buy_price or contracts <= 0:
+            return 0  # No fill = no position = no PnL
+
+        # Buy filled: PnL depends on settlement
+        if market_result in ("yes", "all_yes"):
+            return contracts * (100 - buy_price)
+        elif market_result in ("no", "all_no"):
+            return -(contracts * buy_price)
+        return 0
+
+    def check_mm_fills(self, ticker: str, best_ask: int, best_bid: int):
+        """Check if any MM shadow orders for this ticker would have filled.
+
+        Called from bot.py on each scan tick with current orderbook data.
+        When a fill is detected, updates the DB row with fill status and timestamp.
+        """
+        result = self.mm.check_fills(ticker, best_ask, best_bid)
+        if not result.get("buy_filled") and not result.get("sell_filled"):
+            return  # No fills to record
+
+        # Update DB with fill status
+        self._ensure_db()
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        try:
+            updates = []
+            params = []
+            if result.get("buy_filled"):
+                updates.append("mm_buy_filled = MAX(mm_buy_filled, 1)")
+                updates.append("mm_buy_fill_time = COALESCE(mm_buy_fill_time, ?)")
+                params.append(now)
+            if result.get("sell_filled"):
+                updates.append("mm_sell_filled = MAX(mm_sell_filled, 1)")
+                updates.append("mm_sell_fill_time = COALESCE(mm_sell_fill_time, ?)")
+                params.append(now)
+            if updates:
+                sql = (f"UPDATE hourly_alt_shadow_signals SET {', '.join(updates)} "
+                       f"WHERE ticker=? AND strategy='mm_shadow' AND status='pending'")
+                params.append(ticker)
+                self._db_conn.execute(sql, params)
+                self._db_conn.commit()
+        except Exception as e:
+            logging.warning("MM fill update failed for %s: %s", ticker, e)
 
     def cleanup_expired(self, active_tickers: set):
         """Clean up tracking state for expired tickers."""
