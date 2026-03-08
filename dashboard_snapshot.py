@@ -2595,6 +2595,103 @@ class DashboardSnapshotBuilder:
         except Exception:
             snap["pipeline_completeness"] = {}
 
+        # ── SOL Path C Shadow ──────────────────────────────────────
+        try:
+            _pc_total = _conn.execute(
+                "SELECT COUNT(*) as n FROM sol_pathc_shadow"
+            ).fetchone()
+            _pc_settled_rows = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN market_result IN ('no','all_no') THEN 1 ELSE 0 END) as losses, "
+                "SUM(live_pnl_cents) as live_pnl, "
+                "SUM(pathc_maker_pnl_cents) as maker_pnl, "
+                "SUM(pathc_esc_pnl_cents) as esc_pnl, "
+                "SUM(pathc_best_pnl_cents) as best_pnl, "
+                "SUM(CASE WHEN obs_maker_price_touched=1 THEN 1 ELSE 0 END) as touch_count, "
+                "SUM(CASE WHEN obs_maker_would_fill=1 THEN 1 ELSE 0 END) as fill_count, "
+                "AVG(live_stc) as avg_stc "
+                "FROM sol_pathc_shadow WHERE status='settled'"
+            ).fetchone()
+            _pc_n = _pc_total["n"] if _pc_total else 0
+            _pc_s = _pc_settled_rows["n"] if _pc_settled_rows and _pc_settled_rows["n"] else 0
+            snap["sol_pathc_shadow"] = {
+                "total_signals": _pc_n,
+                "settled": _pc_s,
+                "wins": _pc_settled_rows["wins"] or 0 if _pc_settled_rows else 0,
+                "losses": _pc_settled_rows["losses"] or 0 if _pc_settled_rows else 0,
+                "live_pnl_cents": _pc_settled_rows["live_pnl"] or 0 if _pc_settled_rows else 0,
+                "pathc_maker_pnl_cents": _pc_settled_rows["maker_pnl"] or 0 if _pc_settled_rows else 0,
+                "pathc_esc_pnl_cents": _pc_settled_rows["esc_pnl"] or 0 if _pc_settled_rows else 0,
+                "pathc_best_pnl_cents": _pc_settled_rows["best_pnl"] or 0 if _pc_settled_rows else 0,
+                "maker_touch_rate": round((_pc_settled_rows["touch_count"] or 0) / _pc_s, 4) if _pc_s else 0,
+                "maker_fill_rate": round((_pc_settled_rows["fill_count"] or 0) / _pc_s, 4) if _pc_s else 0,
+                "avg_stc": round(_pc_settled_rows["avg_stc"] or 0, 1) if _pc_settled_rows else 0,
+                "pnl_delta_cents": ((_pc_settled_rows["best_pnl"] or 0) - (_pc_settled_rows["live_pnl"] or 0)) if _pc_settled_rows else 0,
+            }
+        except Exception:
+            logging.debug("sol_pathc_shadow snapshot failed", exc_info=True)
+            snap["sol_pathc_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "losses": 0,
+                                         "live_pnl_cents": 0, "pathc_best_pnl_cents": 0, "pnl_delta_cents": 0}
+
+        # ── ETH Filter Shadow (query-only, no bot.py table) ──────────
+        try:
+            _eth_rows = _conn.execute(
+                "SELECT st.ticker, st.entry_price_cents, st.pnl_cents, st.fee_cents, "
+                "st.market_result, st.count, "
+                "eo.calibrated_prob, eo.edge, eo.seconds_to_close "
+                "FROM settled_trades st "
+                "LEFT JOIN evaluated_opportunities eo ON st.ticker=eo.ticker AND eo.filter_stage='candidate' "
+                "WHERE st.asset='ETH' AND st.product_type='15m' "
+                "AND st.settled_at >= datetime('now', '-14 days')"
+            ).fetchall()
+            _eth_total = len(_eth_rows)
+            _eth_wins = sum(1 for r in _eth_rows if r["market_result"] in ("yes", "all_yes"))
+            _eth_losses = _eth_total - _eth_wins
+            _eth_pnl = sum((r["pnl_cents"] or 0) - (r["fee_cents"] or 0) for r in _eth_rows)
+
+            # Simulate filters: price floors and edge thresholds
+            _filters = {}
+            for _fname, _fn in [
+                ("price_89", lambda r: (r["entry_price_cents"] or 0) >= 89),
+                ("price_90", lambda r: (r["entry_price_cents"] or 0) >= 90),
+                ("price_91", lambda r: (r["entry_price_cents"] or 0) >= 91),
+                ("price_92", lambda r: (r["entry_price_cents"] or 0) >= 92),
+                ("price_93", lambda r: (r["entry_price_cents"] or 0) >= 93),
+                ("edge_1pct", lambda r: (r["edge"] or 0) >= 0.01),
+                ("edge_3pct", lambda r: (r["edge"] or 0) >= 0.03),
+                ("edge_4pct", lambda r: (r["edge"] or 0) >= 0.04),
+                ("edge_5pct", lambda r: (r["edge"] or 0) >= 0.05),
+                ("price_90_and_edge_1pct", lambda r: (r["entry_price_cents"] or 0) >= 90 and (r["edge"] or 0) >= 0.01),
+                ("price_92_and_edge_1pct", lambda r: (r["entry_price_cents"] or 0) >= 92 and (r["edge"] or 0) >= 0.01),
+                ("price_90_and_edge_3pct", lambda r: (r["entry_price_cents"] or 0) >= 90 and (r["edge"] or 0) >= 0.03),
+            ]:
+                _kept = [r for r in _eth_rows if _fn(r)]
+                _blocked = [r for r in _eth_rows if not _fn(r)]
+                _kept_wins = sum(1 for r in _kept if r["market_result"] in ("yes", "all_yes"))
+                _kept_pnl = sum((r["pnl_cents"] or 0) - (r["fee_cents"] or 0) for r in _kept)
+                _blocked_pnl = sum((r["pnl_cents"] or 0) - (r["fee_cents"] or 0) for r in _blocked)
+                _filters[_fname] = {
+                    "kept": len(_kept),
+                    "blocked": len(_blocked),
+                    "kept_wr": round(_kept_wins / len(_kept), 4) if _kept else 0,
+                    "kept_pnl_cents": _kept_pnl,
+                    "blocked_pnl_cents": _blocked_pnl,
+                    "net_impact_cents": _kept_pnl - _eth_pnl,
+                }
+            snap["eth_filter_shadow"] = {
+                "total_trades": _eth_total,
+                "wins": _eth_wins,
+                "losses": _eth_losses,
+                "wr": round(_eth_wins / _eth_total, 4) if _eth_total else 0,
+                "total_pnl_cents": _eth_pnl,
+                "filters": _filters,
+            }
+        except Exception:
+            logging.debug("eth_filter_shadow snapshot failed", exc_info=True)
+            snap["eth_filter_shadow"] = {"total_trades": 0, "wins": 0, "losses": 0,
+                                          "wr": 0, "total_pnl_cents": 0, "filters": {}}
+
         return snap
 
     def _compute_position_health(

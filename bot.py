@@ -1402,6 +1402,51 @@ class StateManager:
         """)
         self.conn.commit()
 
+        # SOL Path C shadow table: compares live taker override vs hypothetical maker-with-escalation
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS sol_pathc_shadow (
+                ticker TEXT PRIMARY KEY,
+                evaluation_time TEXT,
+                asset TEXT DEFAULT 'SOL',
+                -- Live taker state (what actually happened)
+                live_ask INTEGER,
+                live_depth INTEGER,
+                live_edge REAL,
+                live_stc REAL,
+                live_contracts INTEGER,
+                live_entry_price INTEGER,
+                live_cal_prob REAL,
+                -- Path C maker hypothetical
+                pathc_maker_price INTEGER,
+                pathc_maker_offset INTEGER,
+                pathc_depth_at_maker INTEGER,
+                position_size INTEGER,
+                -- Deferred observation (continuous monitoring during escalation window)
+                obs_time TEXT,
+                obs_elapsed_seconds REAL,
+                obs_best_ask INTEGER,
+                obs_depth INTEGER,
+                obs_maker_would_fill INTEGER DEFAULT 0,
+                obs_maker_price_touched INTEGER DEFAULT 0,
+                -- Path C escalation taker hypothetical (if maker wouldn't fill)
+                pathc_esc_ask INTEGER,
+                pathc_esc_depth INTEGER,
+                pathc_esc_edge REAL,
+                -- Settlement
+                status TEXT DEFAULT 'pending',
+                market_result TEXT,
+                settled_time TEXT,
+                -- Counterfactual PnL
+                live_pnl_cents INTEGER,
+                pathc_maker_pnl_cents INTEGER,
+                pathc_maker_contracts INTEGER,
+                pathc_esc_pnl_cents INTEGER,
+                pathc_esc_contracts INTEGER,
+                pathc_best_pnl_cents INTEGER
+            );
+        """)
+        self.conn.commit()
+
         # Sports shadow log table (independent from crypto)
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS sports_shadow_log (
@@ -2249,6 +2294,92 @@ class StateManager:
             (market_result, counterfactual_pnl, now, opp_id)
         )
         self.conn.commit()
+
+    # ── SOL Path C Shadow ──────────────────────────────────────────────
+
+    def insert_sol_pathc_shadow(self, ticker, evaluation_time, live_ask,
+                                live_depth, live_edge, live_stc,
+                                live_contracts, live_entry_price, live_cal_prob,
+                                pathc_maker_price, pathc_maker_offset,
+                                pathc_depth_at_maker, position_size):
+        """Insert initial SOL Path C shadow row at taker submission time."""
+        try:
+            self.conn.execute("""
+                INSERT OR REPLACE INTO sol_pathc_shadow
+                    (ticker, evaluation_time, live_ask, live_depth,
+                     live_edge, live_stc, live_contracts, live_entry_price,
+                     live_cal_prob, pathc_maker_price, pathc_maker_offset,
+                     pathc_depth_at_maker, position_size, status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (ticker, evaluation_time, live_ask, live_depth,
+                  live_edge, live_stc, live_contracts, live_entry_price,
+                  live_cal_prob, pathc_maker_price, pathc_maker_offset,
+                  pathc_depth_at_maker, position_size, "pending"))
+            self.conn.commit()
+        except Exception as e:
+            logging.warning(f"insert_sol_pathc_shadow failed: {e}", exc_info=True)
+
+    def update_sol_pathc_observation(self, ticker, obs_time, obs_elapsed,
+                                     obs_best_ask, obs_depth,
+                                     obs_maker_would_fill, obs_maker_price_touched,
+                                     pathc_esc_ask, pathc_esc_depth, pathc_esc_edge):
+        """Update deferred observation columns after escalation wait."""
+        try:
+            self.conn.execute("""
+                UPDATE sol_pathc_shadow SET
+                    obs_time=?, obs_elapsed_seconds=?, obs_best_ask=?,
+                    obs_depth=?, obs_maker_would_fill=?,
+                    obs_maker_price_touched=?,
+                    pathc_esc_ask=?, pathc_esc_depth=?, pathc_esc_edge=?
+                WHERE ticker=?
+            """, (obs_time, obs_elapsed, obs_best_ask, obs_depth,
+                  obs_maker_would_fill, obs_maker_price_touched,
+                  pathc_esc_ask, pathc_esc_depth, pathc_esc_edge, ticker))
+            self.conn.commit()
+        except Exception as e:
+            logging.warning(f"update_sol_pathc_observation failed: {e}", exc_info=True)
+
+    def update_sol_pathc_touch(self, ticker):
+        """Set obs_maker_price_touched=1 when ask drops to/below maker price."""
+        try:
+            self.conn.execute(
+                "UPDATE sol_pathc_shadow SET obs_maker_price_touched=1 WHERE ticker=?",
+                (ticker,))
+            self.conn.commit()
+        except Exception as e:
+            logging.warning(f"update_sol_pathc_touch failed: {e}", exc_info=True)
+
+    def settle_sol_pathc_shadow(self, ticker, market_result, live_pnl,
+                                pathc_maker_pnl, pathc_maker_contracts,
+                                pathc_esc_pnl, pathc_esc_contracts,
+                                pathc_best_pnl):
+        """Settle a SOL Path C shadow row with counterfactual PnL."""
+        try:
+            now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            self.conn.execute("""
+                UPDATE sol_pathc_shadow SET
+                    status='settled', market_result=?, settled_time=?,
+                    live_pnl_cents=?, pathc_maker_pnl_cents=?,
+                    pathc_maker_contracts=?,
+                    pathc_esc_pnl_cents=?, pathc_esc_contracts=?,
+                    pathc_best_pnl_cents=?
+                WHERE ticker=?
+            """, (market_result, now, live_pnl, pathc_maker_pnl,
+                  pathc_maker_contracts, pathc_esc_pnl, pathc_esc_contracts,
+                  pathc_best_pnl, ticker))
+            self.conn.commit()
+        except Exception as e:
+            logging.warning(f"settle_sol_pathc_shadow failed: {e}", exc_info=True)
+
+    def get_pending_sol_pathc_shadows(self):
+        """Get all pending sol_pathc_shadow rows for settlement."""
+        try:
+            rows = self.conn.execute(
+                "SELECT * FROM sol_pathc_shadow WHERE status='pending'"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
 
     # ── Bot Order Lifecycle ─────────────────────────────────────────────
 
@@ -9953,6 +10084,8 @@ class OrderExecutor:
         self._session_dip_addon_skipped: int = 0
         self._escalating_assets: set = set()  # Fix 5: guard against re-entry during escalation
         self._kalshi_oft = None  # populated from scanner if available
+        # SOL Path C shadow: pending observations {ticker → dict}
+        self._sol_pathc_pending: Dict[str, Dict] = {}
 
     @property
     def _active_order(self) -> Optional[Dict]:
@@ -10268,6 +10401,59 @@ class OrderExecutor:
                     candidate["ticker"], order_submitted_at=_order_submit_ts,
                     order_outcome="unfilled",
                     taker_ask_at_submit=candidate.get("best_yes_ask"))
+
+            # ── SOL Path C shadow: log what maker path would have done ──
+            try:
+                _pathc_fv = price  # current best ask (possibly refreshed)
+                _pathc_offset = MAKER_PRICE_OFFSET if _pathc_fv >= 90 else MAKER_PRICE_OFFSET + 1
+                _pathc_maker_price = _pathc_fv - _pathc_offset
+
+                # Get depth at the hypothetical maker price level
+                _pathc_depth = 0
+                try:
+                    scanner = self._ml.scanner if self._ml else None
+                    if scanner:
+                        _pc_ob, _ = scanner._get_orderbook_cached(candidate["ticker"])
+                        if _pc_ob:
+                            _pathc_depth = OpportunityScanner._best_ask_depth(_pc_ob)
+                except Exception:
+                    pass
+
+                _pathc_pos_size = candidate["position_size"]
+                _eval_time = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+                self._state.insert_sol_pathc_shadow(
+                    ticker=candidate["ticker"],
+                    evaluation_time=_eval_time,
+                    live_ask=price,
+                    live_depth=_pathc_depth,
+                    live_edge=net_edge,
+                    live_stc=seconds_to_close or 0,
+                    live_contracts=count,
+                    live_entry_price=price,
+                    live_cal_prob=cal_prob,
+                    pathc_maker_price=_pathc_maker_price,
+                    pathc_maker_offset=_pathc_offset,
+                    pathc_depth_at_maker=_pathc_depth,
+                    position_size=_pathc_pos_size,
+                )
+
+                # Schedule for deferred observation (check every tick during escalation window)
+                _esc_wait = ESCALATION_WAIT_LONG  # SOL uses default 15s
+                self._sol_pathc_pending[candidate["ticker"]] = {
+                    "start_time": time.time(),
+                    "escalation_wait": _esc_wait,
+                    "maker_price": _pathc_maker_price,
+                    "position_size": _pathc_pos_size,
+                    "cal_prob": cal_prob,
+                    "touched": False,
+                }
+                logging.info(
+                    "sol_pathc_shadow_LOGGED: %s maker_price=%d¢ offset=%d depth=%d pos_size=%d",
+                    candidate["ticker"], _pathc_maker_price, _pathc_offset, _pathc_depth, _pathc_pos_size)
+            except Exception:
+                logging.warning("sol_pathc_shadow logging failed", exc_info=True)
+
             return result
 
         # ── Direct taker for <180s candidates ───────────────────────
@@ -10483,6 +10669,82 @@ class OrderExecutor:
             if r is not None:
                 result = r
         return result
+
+    def _tick_sol_pathc_observations(self):
+        """Check orderbook every tick for pending SOL Path C shadow entries.
+
+        During the escalation window (default 15s), continuously monitor the
+        orderbook. If best ask ever touches the hypothetical maker price,
+        set obs_maker_price_touched=1 (sticky). After escalation window expires,
+        write final observation snapshot and remove from pending.
+        """
+        if not self._sol_pathc_pending:
+            return
+
+        now = time.time()
+        completed = []
+
+        for ticker, info in self._sol_pathc_pending.items():
+            elapsed = now - info["start_time"]
+            maker_price = info["maker_price"]
+
+            # Fetch current orderbook
+            obs_ask = self._get_addon_best_ask(ticker)
+            obs_depth = 0
+            if obs_ask is not None:
+                try:
+                    scanner = self._ml.scanner if self._ml else None
+                    if scanner:
+                        _ob, _ = scanner._get_orderbook_cached(ticker)
+                        if _ob:
+                            obs_depth = OpportunityScanner._best_ask_depth(_ob)
+                except Exception:
+                    pass
+
+            # Check if ask has touched maker price (sticky boolean)
+            if obs_ask is not None and obs_ask <= maker_price:
+                if not info["touched"]:
+                    info["touched"] = True
+                    try:
+                        self._state.update_sol_pathc_touch(ticker)
+                    except Exception:
+                        logging.warning("sol_pathc_touch update failed for %s", ticker, exc_info=True)
+
+            maker_would_fill = 1 if (obs_ask is not None and obs_ask <= maker_price) else 0
+
+            # After escalation window: write final observation and compute escalation snapshot
+            if elapsed >= info["escalation_wait"]:
+                # Compute escalation taker edge
+                esc_edge = None
+                if obs_ask is not None:
+                    esc_taker_fee = calculate_taker_fee(info["position_size"], obs_ask)
+                    esc_edge = info["cal_prob"] - (obs_ask / 100.0) - (esc_taker_fee / (info["position_size"] * 100.0))
+
+                obs_time = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                try:
+                    self._state.update_sol_pathc_observation(
+                        ticker=ticker,
+                        obs_time=obs_time,
+                        obs_elapsed=round(elapsed, 1),
+                        obs_best_ask=obs_ask,
+                        obs_depth=obs_depth,
+                        obs_maker_would_fill=maker_would_fill,
+                        obs_maker_price_touched=1 if info["touched"] else 0,
+                        pathc_esc_ask=obs_ask,
+                        pathc_esc_depth=obs_depth,
+                        pathc_esc_edge=esc_edge,
+                    )
+                    logging.info(
+                        "sol_pathc_obs_FINAL: %s elapsed=%.1fs ask=%s depth=%d touched=%s esc_edge=%s",
+                        ticker, elapsed, obs_ask, obs_depth, info["touched"],
+                        f"{esc_edge:.4f}" if esc_edge is not None else "None")
+                except Exception:
+                    logging.warning("sol_pathc_observation write failed for %s", ticker, exc_info=True)
+
+                completed.append(ticker)
+
+        for ticker in completed:
+            self._sol_pathc_pending.pop(ticker, None)
 
     def _tick_one(self, order: Dict, asset: str,
                   ws_fills: list) -> Optional[Dict]:
@@ -12578,6 +12840,88 @@ class SettlementTracker:
                     except Exception:
                         logging.warning("spx_harrv_shadow settle failed for %s", ticker, exc_info=True)
 
+                # Settle SOL Path C shadow entry for this ticker
+                if result in ("yes", "all_yes", "no", "all_no"):
+                    try:
+                        _pc_row = self._state.conn.execute(
+                            "SELECT * FROM sol_pathc_shadow WHERE ticker=? AND status='pending'",
+                            (ticker,)).fetchone()
+                        if _pc_row:
+                            _pc = dict(_pc_row)
+                            _is_win = result in ("yes", "all_yes")
+                            _live_price = _pc["live_entry_price"]
+                            _live_contracts = _pc["live_contracts"]
+                            _pos_size = _pc["position_size"]
+
+                            # Live PnL (taker at live ask)
+                            _live_fee = calculate_taker_fee(_live_contracts, _live_price)
+                            if _is_win:
+                                _live_pnl = (100 - _live_price) * _live_contracts - _live_fee
+                            else:
+                                _live_pnl = -(_live_price * _live_contracts + _live_fee)
+
+                            # Path C maker PnL: min(position_size, depth_at_maker) contracts
+                            _maker_price = _pc["pathc_maker_price"]
+                            _maker_depth = _pc["pathc_depth_at_maker"] or 0
+                            _maker_touched = _pc["obs_maker_price_touched"] or 0
+                            _maker_contracts = min(_pos_size, _maker_depth) if _maker_touched else 0
+                            _maker_fee = calculate_maker_fee(_maker_contracts, _maker_price) if _maker_contracts > 0 else 0
+                            if _maker_contracts > 0:
+                                if _is_win:
+                                    _maker_pnl = (100 - _maker_price) * _maker_contracts - _maker_fee
+                                else:
+                                    _maker_pnl = -(_maker_price * _maker_contracts + _maker_fee)
+                            else:
+                                _maker_pnl = 0
+
+                            # Path C escalation taker PnL: min(position_size, esc_depth) contracts
+                            _esc_ask = _pc["pathc_esc_ask"]
+                            _esc_depth = _pc["pathc_esc_depth"] or 0
+                            if _esc_ask is not None and _esc_depth > 0:
+                                _esc_contracts = min(_pos_size, _esc_depth)
+                                _esc_fee = calculate_taker_fee(_esc_contracts, _esc_ask)
+                                if _is_win:
+                                    _esc_pnl = (100 - _esc_ask) * _esc_contracts - _esc_fee
+                                else:
+                                    _esc_pnl = -(_esc_ask * _esc_contracts + _esc_fee)
+                            else:
+                                _esc_contracts = 0
+                                _esc_pnl = 0
+
+                            # Best PnL = realistic Path C outcome:
+                            # If maker touched → maker fills, then escalate remainder
+                            # If maker NOT touched → full escalation taker (like live)
+                            if _maker_touched and _maker_contracts > 0:
+                                # Maker got some fills; escalate remainder
+                                _remainder = max(0, _pos_size - _maker_contracts)
+                                if _remainder > 0 and _esc_ask is not None and _esc_depth > 0:
+                                    _rem_contracts = min(_remainder, _esc_depth)
+                                    _rem_fee = calculate_taker_fee(_rem_contracts, _esc_ask)
+                                    if _is_win:
+                                        _rem_pnl = (100 - _esc_ask) * _rem_contracts - _rem_fee
+                                    else:
+                                        _rem_pnl = -(_esc_ask * _rem_contracts + _rem_fee)
+                                else:
+                                    _rem_pnl = 0
+                                _best_pnl = _maker_pnl + _rem_pnl
+                            else:
+                                # No maker fill → full escalation taker
+                                _best_pnl = _esc_pnl
+
+                            self._state.settle_sol_pathc_shadow(
+                                ticker=ticker, market_result=result,
+                                live_pnl=_live_pnl,
+                                pathc_maker_pnl=_maker_pnl,
+                                pathc_maker_contracts=_maker_contracts,
+                                pathc_esc_pnl=_esc_pnl,
+                                pathc_esc_contracts=_esc_contracts,
+                                pathc_best_pnl=_best_pnl)
+                            logging.info(
+                                "sol_pathc_settled: %s result=%s live_pnl=%d maker_pnl=%d esc_pnl=%d best_pnl=%d",
+                                ticker, result, _live_pnl, _maker_pnl, _esc_pnl, _best_pnl)
+                    except Exception:
+                        logging.warning("sol_pathc_shadow settle failed for %s", ticker, exc_info=True)
+
                 logging.info(
                     f"Evaluated opp settled: {ticker} ({row['filter_stage']}) "
                     f"-> {counterfactual_outcome} (profit={would_have_profit}¢)"
@@ -13442,6 +13786,12 @@ class MainLoop:
 
         # Poll active executor orders (maker fill check — one per asset)
         self.executor.tick()
+
+        # SOL Path C shadow: check orderbook every tick during escalation window
+        try:
+            self.executor._tick_sol_pathc_observations()
+        except Exception:
+            logging.debug("sol_pathc_obs tick failed", exc_info=True)
 
         # Check confirmation addon opportunities on open positions
         try:
