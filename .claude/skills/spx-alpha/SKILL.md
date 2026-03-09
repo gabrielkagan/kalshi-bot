@@ -15,14 +15,10 @@ Systematic alpha research on SPX hourly observation data. Analyzes EGARCH blend 
 
 ## Steps
 
-1. **Copy fresh state.db** (unless recently copied):
-   ```
-   ssh botuser@45.55.181.30 "cd ~/kalshi-bot-repo && python3 -c \"import sqlite3; c=sqlite3.connect('state.db'); c.execute('PRAGMA wal_checkpoint(PASSIVE)'); c.close()\""
-   scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-   ```
+1. **Sync the database.** Follow `.claude/skills/references/db-sync.md` to sync the database. If user says "fresh", always re-sync regardless of cache age.
 
 2. **Run the alpha research script**:
-   ```
+   ```bash
    python3 scripts/spx_alpha_research.py --db /tmp/state.db 2>&1
    ```
 
@@ -35,7 +31,7 @@ Systematic alpha research on SPX hourly observation data. Analyzes EGARCH blend 
    - Multi-position window correlation risk
    - Readiness assessment for live trading promotion
 
-4. **Track evolution** -- note whether:
+4. **Track evolution** — note whether:
    - Observation count is growing toward readiness thresholds
    - Calibration is improving or degrading
    - EGARCH blend is adapting to SPX-specific dynamics
@@ -64,30 +60,43 @@ Systematic alpha research on SPX hourly observation data. Analyzes EGARCH blend 
 
 ## Key Differences from Crypto Hourly
 
-- **Finance fee category**: taker 0.035 (half of crypto's 0.07), maker 0.0175
+- **Finance fee category**: taker 0.035 (half of crypto's 0.07), maker 0.0175. This means breakeven WR is lower at every price point, making SPX intrinsically easier to profit from than crypto hourly.
 - **Single asset**: SPX only (no multi-asset exclusion needed)
-- **Market hours**: 9:30 AM - 4:00 PM ET cash session (strong intraday patterns)
-- **VIX integration**: Uses implied volatility from VIX for vol estimation
-- **EGARCH+RK blend**: Same as crypto but SPX-specific calibration needed
+- **Market hours**: 9:30 AM - 4:00 PM ET cash session (strong intraday patterns — open and close tend to be more volatile)
+- **VIX integration**: Uses implied volatility from VIX for vol estimation (crypto has no equivalent)
+- **EGARCH+RK blend**: Same architecture as crypto but SPX-specific calibration needed
 - **T=1.0**: No temperature correction yet (needs data to determine optimal)
 
-## Readiness Checklist
+## Readiness Checklist — with WHY for each threshold
 
-| Check | Threshold | Rationale |
-|-------|-----------|-----------|
-| Trading days | >= 10 | Minimum for regime coverage |
-| Observations | >= 100 | Minimum for statistical significance |
-| Min calibration bucket | >= 20 | Need data across full probability range |
-| Blend weight adapting | Not stuck | EGARCH model must be responsive |
-| 80c+ WR > 85% | Breakeven+margin | Must beat breakeven at tradeable prices |
-| Overall WR > breakeven | Positive edge | Net profitable after fees |
-| Positive flat PnL | > $0 | 1-contract profitability |
+| # | Check | Threshold | WHY |
+|---|-------|-----------|-----|
+| 1 | Trading days | ≥ 10 | SPX has strong day-of-week effects (Monday sell-off, Friday pinning). 10 days covers 2 full weeks, giving at least 1-2 observations per weekday. Below 10, you might have zero Friday data and miss a systematic pattern. |
+| 2 | Observations | ≥ 100 | At 100 observations with 75% WR, Wilson 95% CI is (65%-83%). At 50, it's (61%-86%) — too wide to distinguish a 75% strategy from a 65% one. 100 is the minimum where the CI is narrow enough to compare against breakeven. |
+| 3 | Min calibration bucket | ≥ 20 per bucket | Calibration maps predicted probability → actual outcome. With <20 per bucket, a single outlier can shift the calibration curve by 5+ pp. 20 gives standard error of ~10pp at 75% WR — still noisy but usable. |
+| 4 | Blend weight adapting | Not stuck at prior | The EGARCH blend starts at a prior weight and should adapt as SPX data arrives. If it's stuck at the prior after 10+ days, the Mincer-Zarnowitz tracker may not be receiving data or the SPX vol dynamics are too different from the prior. Either way, the model isn't learning. |
+| 5 | 80c+ WR > 85% | Breakeven+margin | At 80c with finance fees (taker 0.035), breakeven WR is ~81.4%. The +3.6pp margin covers estimation error and ensures profitability survives out-of-sample degradation. Without margin, a strategy that's exactly at breakeven in-sample will lose money live (regression to mean). |
+| 6 | Overall WR > breakeven | Positive edge | The weighted-average WR across all price tiers must exceed the weighted-average breakeven. This catches the scenario where high-price trades win but low-price trades lose badly enough to offset. |
+| 7 | Positive flat PnL | > $0 | Even with Kelly sizing, check flat 1-contract PnL as a sanity check. If flat PnL is negative but Kelly PnL is positive, the strategy is only profitable because Kelly over-sizes the wins — fragile. Both should be positive. |
+
+**A system must pass ALL 7 checks to be considered for promotion.** Passing 6/7 is NOT enough — each check catches a different failure mode.
 
 ## Interpretation Guide
 
-- **Brier Score**: < 0.10 excellent, 0.10-0.15 good, > 0.15 poor
-- **Profit Factor**: > 1.5 strong, > 1.3 credible, < 1.2 noise
-- **Edge monotonicity**: Higher edge must produce higher WR or signal is noise
-- **Wilson CI lower bound > BE**: Required for statistical confidence in profitability
-- **ENB**: < 1.5 means positions are highly correlated within windows
-- **Temperature**: > 1.2 suggests overconfidence, < 0.9 suggests underconfidence
+- **Brier Score**: < 0.10 excellent, 0.10-0.15 good, > 0.15 poor. WHY these ranges? Brier = 0 is perfect, Brier = 0.25 is coin-flip calibration. Below 0.10 means the model is well-calibrated; above 0.15 means it's making confident predictions that are often wrong.
+- **Profit Factor**: > 1.5 strong, > 1.3 credible, < 1.2 noise. PF = gross_wins / gross_losses. Below 1.2, a single bad day can flip cumulative PnL negative.
+- **Edge monotonicity**: Higher edge must produce higher WR or signal is noise. If 5% edge has lower WR than 2% edge, the edge signal is not informative — the model can't rank opportunities correctly.
+- **Wilson CI lower bound > BE**: Required for statistical confidence in profitability. See alpha-audit skill for full explanation.
+- **ENB (Effective Number of Bets)**: < 1.5 means positions are highly correlated within windows. Two positions that always win/lose together is really one bet with double the risk. ENB near 1.0 means the per-window position limit isn't helping.
+- **Temperature**: > 1.2 suggests overconfidence (model probabilities are too extreme), < 0.9 suggests underconfidence. Optimal T makes calibration buckets match observed WR.
+
+## Error Handling
+
+| Situation | Action |
+|-----------|--------|
+| Script not found | Check: `ls scripts/spx*`. The script may not exist yet — offer to run the hourly audit script instead (`scripts/spx_shadow_audit.py`). |
+| Very few observations (n < 30) | Report what exists but add **"INSUFFICIENT DATA"** on every finding. Don't run the readiness checklist — it's meaningless at n<30. Say: "Need N more observations before meaningful analysis. Current rate: ~X/day, est. Y days." |
+| No SPX data at all | SPX engine may not be running during market hours, or it may be a weekend. Check if `spx_engine.py` is active: `ssh botuser@45.55.181.30 "journalctl -u kalshi-bot --no-pager -n 50 \| grep -i spx"`. |
+| EGARCH blend weight is stuck at prior | Flag this prominently: "EGARCH blend not adapting — model is running on crypto priors, not SPX-calibrated. Readiness check #4 FAILS." |
+| Script output shows negative PnL at all price tiers | The model may not work for SPX. Report honestly: "No profitable price tier found. SPX hourly is not ready for promotion. Consider: is the vol model appropriate for equity index dynamics?" |
+| Readiness checklist shows 5/7 or 6/7 passing | Don't say "almost ready." Say which checks fail, what data/changes are needed to pass them, and estimate timeline. "Checks #2 and #3 fail — need 52 more observations (~6 trading days at current rate)." |

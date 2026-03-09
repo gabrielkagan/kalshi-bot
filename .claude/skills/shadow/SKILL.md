@@ -9,13 +9,12 @@ Comprehensive report across ALL shadow/observation systems — 15M live, hourly,
 
 ## Steps
 
-1. **Copy state.db from VPS**
-   ```
-   scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-   ```
+1. **Sync the database.** Follow `.claude/skills/references/db-sync.md` to sync the database.
 
 2. **Check for pre-computed audit snapshots** (fast path — runs in <1s):
    ```sql
+   PRAGMA busy_timeout=10000;
+
    SELECT audit_type, computed_at, regime_since, metrics_json
    FROM audit_snapshots
    WHERE id IN (
@@ -29,6 +28,8 @@ Comprehensive report across ALL shadow/observation systems — 15M live, hourly,
    **If ALL 5 systems have rows AND all `computed_at` < 1 hour old → use fast path (skip to step 5).**
    **If the table doesn't exist or rows are stale (>1h) → fall back to full audit (step 3).**
 
+   **WHY 1 hour staleness threshold?** Audit snapshots are computed by cron every hour. Data older than 1 hour may miss recent trades or settlements. During active trading hours, fresh data matters; during quiet hours, 1h-old data is fine. The threshold balances speed (fast path) vs accuracy (full audit).
+
    Each row's `metrics_json` is a JSON blob with these common fields:
    - `total_evals`, `signals`, `settled`, `wins`, `losses`, `pending`
    - `win_rate`, `win_rate_ci` (Wilson 95% CI), `sim_pnl_cents`, `avg_entry_price`
@@ -40,23 +41,17 @@ Comprehensive report across ALL shadow/observation systems — 15M live, hourly,
    - **weather**: `ensemble_coverage_pct`, `no_side_edge_populated`, `by_city`
    - **sports**: `sprt_llr`, `sprt_decision`, `sprt_n`, `games_covered`, `leagues`, `pregame_capture_pct`
 
-3. **Full audit fallback** — Run all 5 audit scripts with appropriate `--since` flags:
+3. **Full audit fallback** — Run all 5 audit scripts with `--regime auto`:
 
-   **Regime timestamps** (grep bot.py and CLAUDE.md for latest, or use these defaults):
-   - 15M: `--regime auto` (auto-detect from gaps)
-   - Hourly: `--since 2026-02-28T18:30:00` (three-layer optimization)
-   - SPX: `--since 2026-03-02` (per-window limits deploy)
-   - Weather: `--since 2026-03-02T16:54:00` (ensemble fix + instrumentation)
-   - Sports: `--since 2026-03-01` (price ceiling + LR scale changes)
-
-   Run each, capture output:
-   ```
+   ```bash
    python3 scripts/15m_live_audit.py --db /tmp/state.db --regime auto 2>&1
-   python3 scripts/hourly_shadow_audit.py --db /tmp/state.db --since "2026-02-28T18:30:00" 2>&1
-   python3 scripts/spx_shadow_audit.py --db /tmp/state.db --since "2026-03-02" 2>&1
-   python3 scripts/weather_shadow_audit.py --db /tmp/state.db --since "2026-03-02T16:54:00" 2>&1
-   python3 scripts/sports_shadow_audit.py --db /tmp/state.db --since "2026-03-01" 2>&1
+   python3 scripts/hourly_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
+   python3 scripts/spx_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
+   python3 scripts/weather_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
+   python3 scripts/sports_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
    ```
+
+   **Always use `--regime auto`** — it auto-detects the last relevant config change from git history. Never hardcode regime dates (they go stale).
 
 4. **Read current shadow constants** from bot.py:
    - Grep for `_SHADOW_MODE`, `_OBSERVATION_ONLY`, and `SHADOW_` constants
@@ -64,25 +59,47 @@ Comprehensive report across ALL shadow/observation systems — 15M live, hourly,
 
 5. **Produce unified summary table**:
 
-   | System | Mode | Signals | Settled | WR | Sim PnL | Brier | Key Issue | Promotion Ready? |
-   |--------|------|---------|---------|----|---------| ------|-----------|-----------------|
+   ```
+   ## Shadow Status (as of HH:MM UTC)
 
-   For each system, extract from audit snapshots or script output:
-   - Signal count and settled count
-   - Win rate and simulated PnL
-   - Brier score (if available)
-   - Top issue or blocker
-   - Promotion readiness: READY / NEEDS MORE DATA / NOT READY (with reason)
+   | System  | Mode       | Settled | WR (95% CI)       | Sim PnL | Key Issue            | Ready?          |
+   |---------|------------|--------:|------------------:|--------:|:---------------------|:----------------|
+   | 15M     | LIVE       | 237     | 92.0% (87.8-95.0) | +$142   | —                    | LIVE            |
+   | Hourly  | Obs only   | 391     | 67.5% (62.6-72.1) | -$1318  | Overconfident +19pp  | NOT READY       |
+   | SPX     | Obs only   | 48      | 72.9% (58.2-84.7) | -$22    | Low n, need 100+     | NEEDS MORE DATA |
+   | Weather | Obs only   | 156     | 61.5% (53.4-69.1) | -$203   | Ensemble gaps        | NOT READY       |
+   | Sports  | Obs only   | 89      | 58.4% (47.5-68.8) | -$94    | SPRT: CONTINUE       | NEEDS MORE DATA |
 
-   When using pre-computed snapshots, note the `computed_at` timestamp and label: *"(pre-computed N min ago)"*
+   (pre-computed 23 min ago)
+   ```
+
+   When using pre-computed snapshots, note the `computed_at` timestamp.
 
 6. **Shadow column instrumentation check**:
    - For each system, check if shadow columns are populating (non-null counts)
    - Flag any columns with 0% coverage as DATA GAP
 
 7. **Report format** — Present the unified table FIRST, then per-system highlights:
-   - 15M: live trading performance, any losses to investigate
-   - Hourly: overconfidence metric, worst asset, STC sensitivity
-   - SPX: EGARCH quality, per-window position limits working
-   - Weather: ensemble coverage, NO-side edge, observed temp accumulation
-   - Sports: comeback detection accuracy, signal volume, game coverage
+   - **15M**: live trading performance, any losses to investigate, shadow variant progress (A1/A2/A3)
+   - **Hourly**: overconfidence metric, worst asset, CalEngine status
+   - **SPX**: EGARCH quality, observation count, trading days covered
+   - **Weather**: ensemble coverage, per-city breakdown, data freshness
+   - **Sports**: SPRT decision status, game coverage, per-sport WR
+
+## Error Handling
+
+| Situation | Action |
+|-----------|--------|
+| `audit_snapshots` table doesn't exist | Fall back to full audit (step 3). This is normal on first run or if auditor cron hasn't run yet. |
+| Some systems have snapshots but not all | Use snapshots for available systems, run individual audit scripts for missing ones. Note which are pre-computed vs fresh. |
+| Snapshots exist but are very stale (>6h) | Flag: "Snapshots are N hours old — auditor cron may not be running. Running full audit." Fall back to step 3. Consider investigating the cron job. |
+| One audit script fails | Continue running the others. Show the error inline for the failed system, report the rest normally. Don't abort the whole report. |
+| A system shows 0 settled but has evals | The system is collecting data but nothing has settled yet. Report the eval count and when the first eval was created. Say "collecting — no settlements yet." |
+| Script output is empty or just warnings | The system may not have enough data in the current regime. Report: "No data in current regime for [system]." |
+
+## IMPORTANT
+- Present the unified summary table FIRST — the user wants the bird's-eye view before details
+- Always use `--regime auto` instead of hardcoded dates (dates go stale)
+- When using pre-computed snapshots, always show the timestamp so the user knows data freshness
+- If any system looks alarming (WR dropping, unexpected losses), flag it and offer the system-specific `-alpha` skill for deeper analysis
+- This is a SUMMARY skill — don't do deep analysis here. If the user asks follow-up questions about one system, route to the appropriate `-alpha` skill
