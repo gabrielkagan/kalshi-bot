@@ -73,6 +73,7 @@ class RecalibratedEGARCHApproach:
         try:
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=10000")
             for asset in ("BTC", "ETH", "SOL", "XRP"):
                 rows = conn.execute(
@@ -284,6 +285,7 @@ class LightGBMApproach:
 
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=10000")
             # Use ALL settled 15M evals for training (not just candidates).
             # Rejected opportunities (price_out_of_range, insufficient_edge, etc.)
@@ -590,6 +592,7 @@ class EGARCHGatingApproach:
 
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=10000")
             rows = conn.execute(
                 "SELECT asset, calibrated_prob, market_price, volatility, z_score, "

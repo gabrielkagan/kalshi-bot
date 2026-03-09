@@ -12978,6 +12978,19 @@ class SettlementTracker:
         if not rows:
             return
 
+        # Volume warning — high pending count means observation modes are flooding the table
+        if len(rows) > 50:
+            logging.warning(
+                "eval_opp_settlement: %d pending rows (>50 threshold) — "
+                "check observation mode volume (weather=%d, hourly=%d, spx=%d, sports=%d, 15m=%d)",
+                len(rows),
+                sum(1 for r in rows if r.get("product_type") == "weather"),
+                sum(1 for r in rows if r.get("product_type") == "hourly"),
+                sum(1 for r in rows if r.get("product_type") == "spx_hourly"),
+                sum(1 for r in rows if r.get("product_type") == "sports"),
+                sum(1 for r in rows if r.get("product_type") == "15m"),
+            )
+
         # Group rows by ticker — one API call per unique ticker
         from collections import defaultdict
         ticker_groups: dict = defaultdict(list)

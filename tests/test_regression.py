@@ -271,39 +271,89 @@ class TestConfigSync:
 # ============================================================================
 
 class TestBusyTimeout:
-    """Every sqlite3.connect in production code must set busy_timeout."""
+    """Every sqlite3.connect in production code must set busy_timeout.
+    PM-001 (Mar 9 2026): analyst.py was missed by the old hardcoded list.
+    Now scans ALL .py files automatically."""
 
-    PRODUCTION_FILES = [
-        "bot.py",
-        "dashboard_snapshot.py",
-        "sports_engine.py",
-        "watchdog.py",
-        "supabase_sync.py",
-        "analyst.py",
-        "fifteenm_shadow.py",
+    # Files exempt from busy_timeout (test files, one-off scripts, in-memory DBs)
+    EXEMPT_PATTERNS = {"test_", "migrate_to_", "generate_whitepaper"}
+
+    def _find_all_py_files(self):
+        """Find all .py files in project root and scripts/."""
+        py_files = []
+        for dirpath in [PROJECT_ROOT, os.path.join(PROJECT_ROOT, "scripts"),
+                        os.path.join(PROJECT_ROOT, "analysis")]:
+            if not os.path.isdir(dirpath):
+                continue
+            for fname in os.listdir(dirpath):
+                if fname.endswith(".py"):
+                    py_files.append(os.path.join(dirpath, fname))
+        return py_files
+
+    def test_all_sqlite_connects_have_busy_timeout(self):
+        """Scan ALL .py files for sqlite3.connect without busy_timeout.
+        Catches any new file that opens a DB connection without it."""
+        missing = []
+        for fpath in self._find_all_py_files():
+            fname = os.path.basename(fpath)
+            if any(pat in fname for pat in self.EXEMPT_PATTERNS):
+                continue
+            with open(fpath) as f:
+                content = f.read()
+            if "sqlite3.connect" not in content:
+                continue
+            lines = content.splitlines()
+            connects = [
+                i for i, line in enumerate(lines, 1)
+                if "sqlite3.connect" in line and ":memory:" not in line
+                and not line.lstrip().startswith("#")
+            ]
+            for line_no in connects:
+                nearby = "\n".join(lines[line_no - 1: min(line_no + 10, len(lines))])
+                if "busy_timeout" not in nearby and "timeout" not in nearby:
+                    missing.append(f"{fname}:{line_no}")
+        assert not missing, (
+            f"Missing PRAGMA busy_timeout after sqlite3.connect: {missing}. "
+            f"Rule: every sqlite3.connect() on state.db MUST set busy_timeout. "
+            f"See POSTMORTEMS.md PM-001."
+        )
+
+    # Production files that write to state.db and MUST set WAL mode
+    WAL_REQUIRED_FILES = [
+        "bot.py", "supabase_sync.py", "sports_engine.py",
+        "fifteenm_shadow.py", "hourly_alt_shadow.py", "spx_harrv_shadow.py",
     ]
 
-    def test_all_production_files_have_busy_timeout(self):
-        """Scan production Python files for sqlite3.connect without busy_timeout."""
+    def test_production_writers_have_wal_mode(self):
+        """Production files that write to state.db must set journal_mode=WAL.
+        Read-only connections (mode=ro) are exempt — WAL is set by the writer.
+        Analysis/audit scripts are read-only and don't need WAL."""
         missing = []
-        for fname in self.PRODUCTION_FILES:
+        for fname in self.WAL_REQUIRED_FILES:
             fpath = os.path.join(PROJECT_ROOT, fname)
             if not os.path.exists(fpath):
                 continue
             with open(fpath) as f:
                 content = f.read()
-            # Find all sqlite3.connect calls
+            if "sqlite3.connect" not in content:
+                continue
+            lines = content.splitlines()
             connects = [
-                i for i, line in enumerate(content.splitlines(), 1)
+                i for i, line in enumerate(lines, 1)
                 if "sqlite3.connect" in line and ":memory:" not in line
+                and not line.lstrip().startswith("#")
             ]
             for line_no in connects:
-                # Check next 10 lines for busy_timeout (may be after row_factory etc.)
-                lines = content.splitlines()
-                nearby = "\n".join(lines[line_no - 1: line_no + 10])
-                if "busy_timeout" not in nearby and "timeout" not in nearby:
+                nearby = "\n".join(lines[line_no - 1: min(line_no + 10, len(lines))])
+                if "mode=ro" in nearby or "query_only" in nearby:
+                    continue
+                if "journal_mode=WAL" not in nearby and "journal_mode" not in nearby:
                     missing.append(f"{fname}:{line_no}")
-        assert not missing, f"Missing busy_timeout after sqlite3.connect: {missing}"
+        assert not missing, (
+            f"Missing PRAGMA journal_mode=WAL after sqlite3.connect: {missing}. "
+            f"Rule: every read-write sqlite3.connect() on state.db MUST set WAL mode. "
+            f"See POSTMORTEMS.md PM-001."
+        )
 
 
 # ============================================================================
@@ -1638,4 +1688,63 @@ class TestKellySizerZeroPayout:
         block = source[guard_idx:guard_idx + 200]
         assert "return result" in block, (
             "b <= 0 guard must return result to prevent reaching Kelly division"
+        )
+
+
+# ============================================================================
+#  PM-001 (38754ef, Mar 9 2026): Database contention hardening
+#     Bug: _poll_evaluated_opportunities() did 91 per-row commits colliding
+#     with supabase_sync's 165 queries/10s → "database is locked" + 100% CPU.
+# ============================================================================
+
+class TestNoBatchCommitInLoops:
+    """conn.commit() must not appear inside for/while loops in bot.py.
+    Per-row commits multiply the contention window with concurrent DB readers.
+    Rule: accumulate writes, commit once at the end. See POSTMORTEMS.md PM-001."""
+
+    # Known exceptions: methods where per-iteration commit is intentional and safe
+    # (e.g., _backfill_weather_actual_temps operates on max 10 rows with HTTP delays)
+    EXEMPT_METHODS = {
+        "_backfill_weather_actual_temps",
+        "_create_tables",
+    }
+
+    def test_no_commit_inside_for_loops_in_bot(self):
+        """Static analysis: find .commit() calls nested inside for/while loops."""
+        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+            source = f.read()
+
+        tree = ast.parse(source)
+        violations = []
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.For, ast.While)):
+                continue
+            # Walk the loop body looking for .commit() calls
+            for child in ast.walk(node):
+                if (isinstance(child, ast.Call)
+                        and isinstance(child.func, ast.Attribute)
+                        and child.func.attr == "commit"):
+                    # Check if this loop is inside an exempt method
+                    exempt = False
+                    for parent in ast.walk(tree):
+                        if (isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
+                                and parent.name in self.EXEMPT_METHODS):
+                            if hasattr(parent, 'lineno') and hasattr(node, 'lineno'):
+                                if (parent.lineno <= node.lineno
+                                        and hasattr(parent, 'end_lineno')
+                                        and parent.end_lineno >= node.lineno):
+                                    exempt = True
+                                    break
+                    if not exempt:
+                        violations.append(
+                            f"bot.py:{child.lineno} — .commit() inside loop "
+                            f"starting at line {node.lineno}"
+                        )
+                    break  # Only flag once per loop
+
+        assert not violations, (
+            f"Found .commit() inside loops (causes DB contention): {violations}. "
+            f"Rule: never commit inside a loop — always batch. "
+            f"See POSTMORTEMS.md PM-001."
         )

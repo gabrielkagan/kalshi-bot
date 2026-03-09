@@ -612,6 +612,7 @@ class WeatherProbabilityModel:
             return
         try:
             conn = sqlite3.connect(self._db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=10000")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS weather_bias (
@@ -632,6 +633,7 @@ class WeatherProbabilityModel:
             return
         try:
             conn = sqlite3.connect(self._db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=10000")
             rows = conn.execute(
                 "SELECT city_code, bias_value, bias_count FROM weather_bias"
@@ -651,6 +653,7 @@ class WeatherProbabilityModel:
             return
         try:
             conn = sqlite3.connect(self._db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=10000")
             conn.execute(
                 "INSERT OR REPLACE INTO weather_bias (city_code, bias_value, bias_count, updated_at) "

@@ -104,6 +104,7 @@ def check_losses() -> tuple:
         return 0, None, None
     try:
         conn = sqlite3.connect(str(DB_PATH))
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
         rows = conn.execute(
             "SELECT ticker, pnl_cents FROM settled_trades ORDER BY rowid DESC LIMIT 10"
@@ -131,6 +132,7 @@ def check_balance() -> float:
         return 999.0  # don't alert
     try:
         conn = sqlite3.connect(str(DB_PATH))
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
         total_pnl = conn.execute(
             "SELECT SUM(pnl_cents) FROM settled_trades"

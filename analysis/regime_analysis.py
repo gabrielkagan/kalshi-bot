@@ -788,6 +788,7 @@ def main():
         print(f"ERROR: Cannot open database '{args.db}': {e}", file=sys.stderr)
         sys.exit(1)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=10000")
 
     print(f"Database: {args.db}")
     print(f"Regimes: narrow={args.narrow}, medium={args.medium}, broad={args.broad}")

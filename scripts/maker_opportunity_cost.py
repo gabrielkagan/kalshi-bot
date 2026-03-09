@@ -26,6 +26,7 @@ TAKER_FEE_MULT = 0.07
 def run(db_path: str, since: str = None, asset_filter: str = None):
     c = sqlite3.connect(db_path)
     c.row_factory = sqlite3.Row
+    c.execute("PRAGMA busy_timeout=10000")
 
     since_clause = f"AND e.evaluation_time >= '{since}'" if since else ""
     asset_clause = f"AND e.asset = '{asset_filter}'" if asset_filter else ""
