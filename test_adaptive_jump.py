@@ -4,6 +4,11 @@
 Copies adaptive jump logic inline to avoid importing bot.py which has heavy
 dependencies (websockets, etc.).
 
+DRIFT RISK: The AdaptiveJumpEngine logic is copied from VolatilityEngine in
+bot.py. If the production code changes, these inline copies may drift out of
+sync. The jump detection code has not been extracted to models.py yet because
+it's embedded in VolatilityEngine (not a standalone class).
+
 Run: python3 test_adaptive_jump.py
 """
 

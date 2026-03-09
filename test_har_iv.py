@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Standalone tests for HAR-IV models — no pip dependencies required.
 
-Tests the DVOL-squared continuous regressor in HAR model variants,
-hourly DVOL averaging, VRP computation, and dvol_fraction gating.
+NOTE: HAR model was deleted from production (misapplied at sub-hourly
+timescales). These tests cover dead code and are skipped in CI.
+Kept for reference in case HAR-IV is revisited.
 
 Run: python3 test_har_iv.py
 """
+import sys
+import pytest
+pytest.skip("HAR-IV model deleted from production — tests cover dead code", allow_module_level=True)
 
 import math
 import random
-import sys
 import os
 import time
 import json

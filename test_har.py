@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Standalone tests for HAREstimator — no pip dependencies required.
 
-Copies the HAREstimator class logic inline to avoid importing bot.py
-which has heavy dependencies (websockets, etc.).
+NOTE: HAR model was deleted from production (misapplied at sub-hourly
+timescales). These tests cover dead code and are skipped in CI.
+Kept for reference in case HAR is revisited.
 
 Run: python3 test_har.py
 """
+import sys
+import pytest
+pytest.skip("HAR model deleted from production — tests cover dead code", allow_module_level=True)
 
 import math
 import random
-import sys
 import os
 import time
 import json

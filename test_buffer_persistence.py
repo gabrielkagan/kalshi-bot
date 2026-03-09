@@ -3,6 +3,15 @@
 
 Copies minimal estimator logic inline to avoid importing bot.py.
 
+NOTE: HAR model was deleted from production. HAR tests here cover dead code
+but are kept to verify the buffer persistence pattern (EGARCH uses the same
+pattern and is still live).
+
+DRIFT RISK: The EGARCHEstimator here is a simplified inline copy focused on
+buffer save/load. The production class (models.py) has additional fields
+(version, last_refit_per_asset, threading locks). If the state format changes,
+these tests may drift.
+
 Run: python3 test_buffer_persistence.py
 """
 

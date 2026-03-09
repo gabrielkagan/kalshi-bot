@@ -2,6 +2,11 @@
 
 Standalone test file with inline copies of the relevant static methods
 so tests run without importing bot.py's full dependency tree.
+
+DRIFT RISK: These methods are copied from VolatilityEngine in bot.py.
+If the production code changes, these inline copies may drift out of sync.
+The RK/bandwidth code has not been extracted to models.py yet because it's
+embedded in VolatilityEngine (not a standalone class).
 """
 
 import math

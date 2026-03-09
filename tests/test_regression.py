@@ -951,7 +951,11 @@ class TestInstrumentationIntegrity:
                 continue  # hardcoded None or dict reads are fine
             if "excluded." in stripped:
                 continue  # SQL ON CONFLICT excluded pseudo-table references
-            if "_temp_t" in stripped and "_configured_temp_t" not in stripped:
+            # Check the VALUE side only (after the =), not the column name which
+            # itself contains "_temp_t" as a substring of "hourly_applied_temp_t".
+            eq_idx = stripped.find("hourly_applied_temp_t=") + len("hourly_applied_temp_t=")
+            value_part = stripped[eq_idx:]
+            if "_temp_t" in value_part and "_configured_temp_t" not in value_part:
                 assert False, (
                     f"Line {i}: hourly_applied_temp_t uses _temp_t instead of "
                     f"_configured_temp_t — instrumentation will be NULL when CalEngine "
@@ -1659,16 +1663,17 @@ class TestKellySizerZeroPayout:
 
     def test_compute_guard_exists_in_source(self):
         """Source code must guard b <= 0 before Kelly division."""
-        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+        # PositionSizer lives in models.py (extracted from bot.py)
+        with open(os.path.join(PROJECT_ROOT, "models.py")) as f:
             source = f.read()
-        # Find the compute method and verify it has a b <= 0 guard
         assert "if b <= 0:" in source, (
             "PositionSizer.compute() must guard b <= 0 to prevent division by zero"
         )
 
     def test_guard_precedes_kelly_division(self):
         """The b <= 0 guard must appear BEFORE the kelly_edge division in compute()."""
-        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+        # PositionSizer lives in models.py (extracted from bot.py)
+        with open(os.path.join(PROJECT_ROOT, "models.py")) as f:
             source = f.read()
         guard_pos = source.find("if b <= 0:")
         division_pos = source.find("kelly_edge = (b * p - q) / b")
@@ -1681,9 +1686,9 @@ class TestKellySizerZeroPayout:
 
     def test_guard_returns_early(self):
         """The b <= 0 guard must return result (not just pass)."""
-        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+        # PositionSizer lives in models.py (extracted from bot.py)
+        with open(os.path.join(PROJECT_ROOT, "models.py")) as f:
             source = f.read()
-        # Find the guard and verify the next few lines contain 'return result'
         guard_idx = source.find("if b <= 0:")
         block = source[guard_idx:guard_idx + 200]
         assert "return result" in block, (
