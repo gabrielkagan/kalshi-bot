@@ -1779,6 +1779,101 @@ class DashboardSnapshotBuilder:
         except Exception:
             logging.debug("Snapshot: sports_observation build failed", exc_info=True)
 
+        # ── Sports Strong Config Analysis ─────────────────────────────────
+        try:
+            conn = _conn
+            sc_data = {}
+
+            def _wilson_ci(wins, total, z=1.96):
+                """Wilson score interval (lower, upper)."""
+                if total == 0:
+                    return (0.0, 0.0)
+                p = wins / total
+                denom = 1 + z * z / total
+                centre = (p + z * z / (2 * total)) / denom
+                spread = z * ((p * (1 - p) + z * z / (4 * total)) / total) ** 0.5 / denom
+                return (max(0.0, centre - spread), min(1.0, centre + spread))
+
+            def _build_sports_subset(where_clause, params=()):
+                """Build stats for a subset of sports_shadow_log."""
+                row = conn.execute(
+                    "SELECT COUNT(*) AS total, "
+                    "SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled, "
+                    "SUM(CASE WHEN fav_won=1 THEN 1 ELSE 0 END) AS wins, "
+                    "SUM(CASE WHEN fav_won=0 THEN 1 ELSE 0 END) AS losses, "
+                    "SUM(COALESCE(pnl_cents, 0)) AS sim_pnl, "
+                    "AVG(CASE WHEN fav_won IS NOT NULL THEN "
+                    "  (comeback_prob - fav_won) * (comeback_prob - fav_won) END) AS brier_raw, "
+                    "AVG(CASE WHEN fav_won IS NOT NULL AND platt_prob IS NOT NULL THEN "
+                    "  (platt_prob - fav_won) * (platt_prob - fav_won) END) AS brier_platt "
+                    f"FROM sports_shadow_log WHERE {where_clause}",
+                    params
+                ).fetchone()
+                if not row or not row["total"]:
+                    return {}
+                settled = row["settled"] or 0
+                wins = row["wins"] or 0
+                losses = row["losses"] or 0
+                wr = round(wins / settled, 4) if settled > 0 else 0
+                ci_lo, ci_hi = _wilson_ci(wins, settled)
+                return {
+                    "total": row["total"],
+                    "settled": settled,
+                    "wins": wins,
+                    "losses": losses,
+                    "win_rate": wr,
+                    "wilson_ci_lo": round(ci_lo, 4),
+                    "wilson_ci_hi": round(ci_hi, 4),
+                    "sim_pnl_cents": row["sim_pnl"] or 0,
+                    "brier_raw": round(row["brier_raw"], 4) if row["brier_raw"] else None,
+                    "brier_platt": round(row["brier_platt"], 4) if row["brier_platt"] else None,
+                }
+
+            # All sports — strong config (trailing + signal-like rows)
+            sc_data["all"] = _build_sports_subset(
+                "is_strong_config=1 AND filter_stage NOT IN ('sports_fav_leading')")
+            # NBA only — strong config
+            sc_data["nba"] = _build_sports_subset(
+                "is_strong_config=1 AND sport_group='basketball' "
+                "AND filter_stage NOT IN ('sports_fav_leading')")
+            # Platt calibrator diagnostics (if available)
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n, "
+                    "AVG(platt_prob) AS avg_platt, AVG(comeback_prob) AS avg_raw "
+                    "FROM sports_shadow_log WHERE platt_prob IS NOT NULL"
+                ).fetchone()
+                platt_diag = {}
+                if row and row["n"]:
+                    platt_diag["n_rows"] = row["n"]
+                    platt_diag["avg_platt"] = round(row["avg_platt"], 4) if row["avg_platt"] else None
+                    platt_diag["avg_raw"] = round(row["avg_raw"], 4) if row["avg_raw"] else None
+                # Read fitted A/B params from sports_platt_params
+                try:
+                    prow = conn.execute(
+                        "SELECT a, b, n_train, h1_brier, h2_brier_raw, "
+                        "h2_brier_cal, fitted, updated_at "
+                        "FROM sports_platt_params WHERE id=1"
+                    ).fetchone()
+                    if prow and prow["fitted"]:
+                        platt_diag["a"] = round(prow["a"], 4)
+                        platt_diag["b"] = round(prow["b"], 4)
+                        platt_diag["n_train"] = prow["n_train"]
+                        platt_diag["h1_brier"] = round(prow["h1_brier"], 4) if prow["h1_brier"] else None
+                        platt_diag["h2_brier_raw"] = round(prow["h2_brier_raw"], 4) if prow["h2_brier_raw"] else None
+                        platt_diag["h2_brier_cal"] = round(prow["h2_brier_cal"], 4) if prow["h2_brier_cal"] else None
+                        platt_diag["updated_at"] = prow["updated_at"]
+                except Exception:
+                    pass  # Table may not exist yet
+                if platt_diag:
+                    sc_data["platt"] = platt_diag
+            except Exception:
+                pass
+
+            snap["sports_strong_config"] = sc_data
+        except Exception:
+            logging.debug("Snapshot: sports_strong_config build failed", exc_info=True)
+
         # ── Data Collection Progress ───────────────────────────────────────
         try:
             conn = _conn

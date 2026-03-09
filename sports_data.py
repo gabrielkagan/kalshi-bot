@@ -338,6 +338,11 @@ MAX_MODEL_MARKET_GAP = 0.80  # Was 0.20 — need wide gap data to calibrate mode
 # Raw observations are still logged for ALL sports regardless.
 SPORTS_SHADOW_SIGNAL_GROUPS: Set[str] = {"basketball"}
 
+# Sport groups to exclude from ALL evaluation (no shadow log, no eval opps).
+# Historical data preserved in DB; only new evaluations are skipped.
+# Tennis: 52.2% WR (n=92 games), model Brier worse than market, -$1.64 sim PnL.
+SPORTS_EXCLUDED_GROUPS: Set[str] = {"tennis"}
+
 # Minimum Kalshi price (cents) to generate a shadow trade signal.
 # Below this, model is catastrophically overconfident (30.2% WR at 20-39c).
 SPORTS_SHADOW_MIN_PRICE: int = 60

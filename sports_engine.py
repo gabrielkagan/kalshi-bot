@@ -31,6 +31,7 @@ from sports_data import (
     LEAGUES,
     MAX_MODEL_MARKET_GAP,
     SPORT_GROUPS,
+    SPORTS_EXCLUDED_GROUPS,
     SPORTS_SHADOW_MIN_LR,
     SPORTS_SHADOW_MIN_PRICE,
     SPORTS_SHADOW_SIGNAL_GROUPS,
@@ -116,6 +117,7 @@ class ComebackSignal:
     market_implied_prob: float = 0.0
     sport_group: str = ""
     sport_lr_scale: float = 0.2
+    is_strong_config: bool = False
 
 
 # Approximate game duration (seconds) for seconds_to_close estimation
@@ -735,6 +737,13 @@ class BayesianComebackModel:
 
         market_implied_prob = current_kalshi_price / 100.0
 
+        # Composite flag: pregame >= 60%, price <= 70c, time > 25%
+        is_strong_config = (
+            pregame_fav_prob >= 0.60
+            and current_kalshi_price <= 70
+            and game.time_remaining_pct > 0.25
+        )
+
         return ComebackSignal(
             comeback_prob=posterior,
             prior=prior,
@@ -760,7 +769,165 @@ class BayesianComebackModel:
             market_implied_prob=market_implied_prob,
             sport_group=sgc.group_name,
             sport_lr_scale=sgc.lr_scale,
+            is_strong_config=is_strong_config,
         )
+
+
+class PlattCalibrator:
+    """Platt scaling (logistic recalibration) for sports comeback probabilities.
+
+    Fits a 2-parameter logistic: P(win | raw_prob) = 1 / (1 + exp(-(a*x + b)))
+    where x = raw comeback_prob, target = fav_won (0/1).
+
+    - Fits on H1 (first half of settled data by evaluation_time)
+    - Validates on H2 (second half)
+    - Logs both raw and calibrated probs for comparison
+    - No sklearn dependency — manual MLE via gradient descent
+    """
+
+    MIN_TRAINING_ROWS = 30
+    REFIT_INTERVAL_SEC = 6 * 3600  # Refit every 6 hours
+
+    def __init__(self):
+        self._a: float = 1.0  # slope (start at identity-ish)
+        self._b: float = 0.0  # intercept
+        self._fitted: bool = False
+        self._n_train: int = 0
+        self._h1_brier: float = 0.0
+        self._h2_brier_raw: float = 0.0
+        self._h2_brier_cal: float = 0.0
+        self._last_fit_time: float = 0.0
+
+    def fit_from_db(self, conn: sqlite3.Connection) -> bool:
+        """Fit on settled sports_shadow_log rows with H1/H2 split."""
+        try:
+            rows = conn.execute(
+                "SELECT comeback_prob, fav_won FROM sports_shadow_log "
+                "WHERE fav_won IS NOT NULL AND comeback_prob IS NOT NULL "
+                "AND filter_stage NOT IN ('sports_fav_leading') "
+                "ORDER BY evaluation_time"
+            ).fetchall()
+        except Exception:
+            logging.warning("PlattCalibrator: DB query failed", exc_info=True)
+            return False
+
+        n = len(rows)
+        if n < self.MIN_TRAINING_ROWS:
+            logging.info("PlattCalibrator: only %d rows, need %d — skipping fit",
+                         n, self.MIN_TRAINING_ROWS)
+            return False
+
+        probs = [float(r[0]) for r in rows]
+        targets = [int(r[1]) for r in rows]
+
+        # H1/H2 split
+        mid = n // 2
+        x_h1, y_h1 = probs[:mid], targets[:mid]
+        x_h2, y_h2 = probs[mid:], targets[mid:]
+
+        # Fit logistic on H1 via gradient descent
+        a, b = self._fit_logistic(x_h1, y_h1)
+        if a is None:
+            logging.warning("PlattCalibrator: fitting failed")
+            return False
+
+        self._a = a
+        self._b = b
+        self._fitted = True
+        self._n_train = len(x_h1)
+        self._last_fit_time = time.time()
+
+        # Compute Brier scores for validation
+        self._h1_brier = self._brier(x_h1, y_h1, a, b)
+        self._h2_brier_raw = sum(
+            (p - y) ** 2 for p, y in zip(x_h2, y_h2)) / len(x_h2)
+        self._h2_brier_cal = self._brier(x_h2, y_h2, a, b)
+
+        logging.info(
+            "PlattCalibrator: fitted on %d H1 rows (a=%.3f, b=%.3f). "
+            "H2 Brier raw=%.4f → cal=%.4f (Δ=%+.4f, n=%d)",
+            len(x_h1), a, b,
+            self._h2_brier_raw, self._h2_brier_cal,
+            self._h2_brier_cal - self._h2_brier_raw, len(x_h2))
+
+        # Persist params for dashboard snapshot
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO sports_platt_params "
+                "(id, a, b, n_train, h1_brier, h2_brier_raw, h2_brier_cal, "
+                "fitted, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?, 1, ?)",
+                (a, b, len(x_h1), self._h1_brier, self._h2_brier_raw,
+                 self._h2_brier_cal, datetime.utcnow().isoformat()))
+            conn.commit()
+        except Exception:
+            logging.warning("PlattCalibrator: failed to persist params", exc_info=True)
+
+        return True
+
+    @staticmethod
+    def _fit_logistic(x: list, y: list,
+                      lr: float = 0.5, n_iter: int = 200) -> Tuple:
+        """Fit 2-param logistic via gradient descent with MLE.
+
+        Returns (a, b) or (None, None) on failure.
+        """
+        a, b = 1.0, 0.0  # Start near identity
+        n = len(x)
+        if n == 0:
+            return None, None
+        eps = 1e-12
+        for _ in range(n_iter):
+            grad_a, grad_b = 0.0, 0.0
+            for xi, yi in zip(x, y):
+                logit = a * xi + b
+                # Clip to avoid overflow
+                logit = max(-20.0, min(20.0, logit))
+                pred = 1.0 / (1.0 + math.exp(-logit))
+                pred = max(eps, min(1.0 - eps, pred))
+                err = yi - pred
+                grad_a += err * xi
+                grad_b += err
+            a += lr * grad_a / n
+            b += lr * grad_b / n
+        return a, b
+
+    @staticmethod
+    def _brier(x: list, y: list, a: float, b: float) -> float:
+        """Compute Brier score using calibrated probs."""
+        n = len(x)
+        if n == 0:
+            return 0.0
+        total = 0.0
+        for xi, yi in zip(x, y):
+            logit = max(-20.0, min(20.0, a * xi + b))
+            pred = 1.0 / (1.0 + math.exp(-logit))
+            total += (pred - yi) ** 2
+        return total / n
+
+    def calibrate(self, raw_prob: float) -> float:
+        """Apply Platt scaling. Returns raw_prob if not fitted."""
+        if not self._fitted:
+            return raw_prob
+        logit = self._a * raw_prob + self._b
+        logit = max(-20.0, min(20.0, logit))
+        return 1.0 / (1.0 + math.exp(-logit))
+
+    def needs_refit(self) -> bool:
+        """Whether enough time has passed to refit."""
+        return time.time() - self._last_fit_time > self.REFIT_INTERVAL_SEC
+
+    @property
+    def diagnostics(self) -> Dict:
+        """Return diagnostics for logging/dashboard."""
+        return {
+            "fitted": self._fitted,
+            "a": round(self._a, 4),
+            "b": round(self._b, 4),
+            "n_train": self._n_train,
+            "h1_brier": round(self._h1_brier, 4),
+            "h2_brier_raw": round(self._h2_brier_raw, 4),
+            "h2_brier_cal": round(self._h2_brier_cal, 4),
+        }
 
 
 def _tennis_player_code(display_name: str) -> str:
@@ -856,6 +1023,7 @@ class SportsEngine:
         self._espn = ESPNLiveFeed()
         self._discovery = KalshiSportsDiscovery(kalshi_client) if kalshi_client else None
         self._model = BayesianComebackModel()
+        self._platt = PlattCalibrator()
         self._thread: Optional[threading.Thread] = None
         self._shutdown = threading.Event()
         # Time-based dedup: log every 60s (trailing) or 120s (leading/tied)
@@ -891,6 +1059,11 @@ class SportsEngine:
     def _run_loop(self) -> None:
         """Main event loop."""
         logging.info("SportsEngine starting tick loop (interval=%ds)", self.TICK_INTERVAL)
+        # Initial Platt calibrator fit from historical data
+        try:
+            self._platt.fit_from_db(self._get_db_conn())
+        except Exception:
+            logging.warning("SportsEngine Platt initial fit failed", exc_info=True)
         while not self._shutdown.is_set():
             try:
                 self._tick()
@@ -924,17 +1097,31 @@ class SportsEngine:
         live_count = 0
         signal_count = 0
 
+        # Periodic Platt refit (every 6 hours)
+        if self._platt.needs_refit():
+            try:
+                self._platt.fit_from_db(self._get_db_conn())
+            except Exception:
+                logging.debug("SportsEngine Platt refit failed", exc_info=True)
+
         for game_id, game in games.items():
             if game.game_status != "live":
-                # For pre-game: try to capture pregame prices
+                # For pre-game: try to capture pregame prices (skip excluded groups)
                 if game.game_status == "pre" and self._discovery:
-                    self._try_capture_pregame(game)
+                    _pre_cfg = LEAGUES.get(game.league)
+                    if _pre_cfg and _pre_cfg.sport_group not in SPORTS_EXCLUDED_GROUPS:
+                        self._try_capture_pregame(game)
                 continue
 
-            live_count += 1
             league_cfg = LEAGUES.get(game.league)
             if not league_cfg:
                 continue
+
+            # Skip excluded sport groups entirely (e.g., tennis)
+            if league_cfg.sport_group in SPORTS_EXCLUDED_GROUPS:
+                continue
+
+            live_count += 1
 
             # 3. Identify pregame favorite (with retry chain)
             fav_info = self._pregame_favs.get(game_id)
@@ -984,7 +1171,10 @@ class SportsEngine:
             _last = self._last_logged_time.get(game_id, 0)
             _score_key = (game.home_score, game.away_score)
             _prev_score = self._last_logged_score.get(game_id)
-            _score_changed = (_prev_score != _score_key)
+            # score_changed: True if score differs from last observation.
+            # On first observation (_prev_score is None), set False to avoid
+            # restart false positives — we don't know WHEN the score changed.
+            _score_changed = (_prev_score is not None and _prev_score != _score_key)
             _is_trailing = deficit > 0
             _interval = 60 if _is_trailing else 120
             if not _score_changed and (_now - _last) < _interval:
@@ -1043,6 +1233,14 @@ class SportsEngine:
                 sport_group_cfg=sport_group_cfg,
             )
 
+            # 7b. Platt scaling: calibrate raw posterior
+            platt_prob = self._platt.calibrate(signal.comeback_prob)
+            current_prob = current_price / 100.0
+            platt_edge = platt_prob - current_prob
+            # Fee: same as model uses (edge - fee_adjusted_edge = fee_pct)
+            fee_pct = signal.edge - signal.fee_adjusted_edge
+            platt_fee_adj_edge = platt_edge - fee_pct
+
             if signal.signal_fired:
                 if game_id in self._signaled_games:
                     # Already fired for this game — mark as duplicate
@@ -1071,6 +1269,9 @@ class SportsEngine:
                 pregame_capture_method=pregame_capture_method,
                 market_implied_prob=current_price / 100.0 if current_price else 0.0,
                 score_changed=_score_changed,
+                platt_prob=platt_prob,
+                platt_edge=platt_edge,
+                platt_fee_adj_edge=platt_fee_adj_edge,
             )
 
             # 10. Insert to evaluated_opportunities (skip dups)
@@ -1677,7 +1878,10 @@ class SportsEngine:
                            ob_data: Dict,
                            pregame_capture_method: str = "",
                            market_implied_prob: float = 0.0,
-                           score_changed: bool = False) -> None:
+                           score_changed: bool = False,
+                           platt_prob: Optional[float] = None,
+                           platt_edge: Optional[float] = None,
+                           platt_fee_adj_edge: Optional[float] = None) -> None:
         """Insert record into sports_shadow_log."""
         try:
             conn = self._get_db_conn()
@@ -1714,10 +1918,13 @@ class SportsEngine:
                     market_implied_prob, pregame_capture_method,
                     shadow_lr_scale_50_posterior, shadow_lr_scale_50_signal,
                     score_changed,
-                    sport_group, sport_lr_scale
+                    sport_group, sport_lr_scale,
+                    is_strong_config,
+                    platt_prob, platt_edge, platt_fee_adj_edge
                 ) VALUES (
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                    ?,?,?,?
                 )
             """, (
                 game.game_id, league_cfg.espn_sport, league_cfg.display_name,
@@ -1752,6 +1959,8 @@ class SportsEngine:
                 1 if score_changed else 0,
                 signal.sport_group,
                 signal.sport_lr_scale,
+                1 if signal.is_strong_config else 0,
+                platt_prob, platt_edge, platt_fee_adj_edge,
             ))
             conn.commit()
         except Exception:

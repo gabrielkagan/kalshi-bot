@@ -1383,6 +1383,18 @@ class StateManager:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS sports_platt_params (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                a REAL NOT NULL DEFAULT 1.0,
+                b REAL NOT NULL DEFAULT 0.0,
+                n_train INTEGER NOT NULL DEFAULT 0,
+                h1_brier REAL,
+                h2_brier_raw REAL,
+                h2_brier_cal REAL,
+                fitted INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE INDEX IF NOT EXISTS idx_positions_asset
                 ON positions(asset);
             CREATE INDEX IF NOT EXISTS idx_positions_status
@@ -1584,6 +1596,10 @@ class StateManager:
             ("score_changed", "INTEGER"),
             ("sport_group", "TEXT"),
             ("sport_lr_scale", "REAL"),
+            ("is_strong_config", "INTEGER DEFAULT 0"),
+            ("platt_prob", "REAL"),
+            ("platt_edge", "REAL"),
+            ("platt_fee_adj_edge", "REAL"),
         ]:
             try:
                 self.conn.execute(
