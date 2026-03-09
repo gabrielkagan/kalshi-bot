@@ -2311,15 +2311,18 @@ class StateManager:
 
     def mark_evaluated_opportunity_settled(self, opp_id: int,
                                              market_result: Optional[str] = None,
-                                             counterfactual_pnl: Optional[int] = None):
-        """Set status='settled' for an evaluated opportunity by id."""
+                                             counterfactual_pnl: Optional[int] = None,
+                                             commit: bool = True):
+        """Set status='settled' for an evaluated opportunity by id.
+        Set commit=False to batch multiple updates in a single transaction."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute(
             "UPDATE evaluated_opportunities SET status='settled', "
             "market_result=?, counterfactual_pnl=?, settled_time=? WHERE id=?",
             (market_result, counterfactual_pnl, now, opp_id)
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     # ── SOL Path C Shadow ──────────────────────────────────────────────
 
@@ -12964,7 +12967,8 @@ class SettlementTracker:
         return None
 
     def _poll_evaluated_opportunities(self):
-        """Check if any evaluated opportunities have settled for counterfactual tracking."""
+        """Check if any evaluated opportunities have settled for counterfactual tracking.
+        Groups rows by ticker to avoid redundant API calls and batches DB commits."""
         try:
             rows = self._state.get_unsettled_evaluated_opportunities()
         except Exception as e:
@@ -12974,265 +12978,291 @@ class SettlementTracker:
         if not rows:
             return
 
+        # Group rows by ticker — one API call per unique ticker
+        from collections import defaultdict
+        ticker_groups: dict = defaultdict(list)
         for row in rows:
-            ticker = row["ticker"]
-            opp_id = row["id"]
+            ticker_groups[row["ticker"]].append(row)
+
+        # Fetch market result once per unique ticker
+        ticker_results: dict = {}
+        for ticker in ticker_groups:
             try:
                 resp = self._client.get_market(ticker)
                 if not resp:
                     continue
                 market = resp.get("market", resp)
                 result = market.get("result", "")
-                if not result:
-                    continue
+                if result:
+                    ticker_results[ticker] = result
+            except Exception as e:
+                logging.warning(f"get_market failed for {ticker}: {e}")
 
-                entry_price = row["market_price"]
-                _opp_pt = row.get("product_type")
-                if entry_price is None:
-                    would_have_profit = None
-                    taker_fee = 0
-                    maker_fee = 0
-                    pnl_taker = None
-                    pnl_maker = None
-                    count = row.get("position_size") or 1
-                    counterfactual_outcome = "unknown_no_price"
-                elif _opp_pt == "weather" and entry_price < WEATHER_MIN_ENTRY_PRICE:
-                    # Untradeable price — CF PnL is meaningless noise
-                    count = row.get("position_size") or 1
-                    would_have_profit = 0
-                    counterfactual_outcome = "untradeable_price"
-                    taker_fee = 0
-                    maker_fee = 0
-                    pnl_taker = 0
-                    pnl_maker = 0
-                else:
-                    count = row.get("position_size") or 1
-                    taker_fee = calculate_taker_fee(count, int(entry_price))
-                    maker_fee = calculate_maker_fee(count, int(entry_price))
-                    # NO-side: flip win/loss — result="yes" means NO loses, result="no" means NO wins
-                    _opp_side = row.get("side") or "yes"
-                    if _opp_side == "no":
-                        _is_win = result in ("no", "all_no")
-                        _is_loss = result in ("yes", "all_yes")
-                    else:
-                        _is_win = result in ("yes", "all_yes")
-                        _is_loss = result in ("no", "all_no")
-                    if _is_win:
-                        pnl_taker = (100 - entry_price) * count - taker_fee
-                        pnl_maker = (100 - entry_price) * count - maker_fee
-                        counterfactual_outcome = "would_have_won"
-                    elif _is_loss:
-                        pnl_taker = -(entry_price * count + taker_fee)
-                        pnl_maker = -(entry_price * count + maker_fee)
-                        counterfactual_outcome = "would_have_lost"
-                    else:
-                        pnl_taker = None
-                        pnl_maker = None
+        if not ticker_results:
+            return
+
+        logging.info("eval_opp_settlement: %d unique tickers settled (from %d pending rows)",
+                     len(ticker_results), len(rows))
+
+        # Process all rows, batching DB commits
+        _settled_count = 0
+        for ticker, result in ticker_results.items():
+            for row in ticker_groups[ticker]:
+                opp_id = row["id"]
+                try:
+                    entry_price = row["market_price"]
+                    _opp_pt = row.get("product_type")
+                    if entry_price is None:
+                        would_have_profit = None
                         taker_fee = 0
                         maker_fee = 0
-                        counterfactual_outcome = f"unknown_result_{result}"
-                    would_have_profit = pnl_taker  # conservative (taker)
+                        pnl_taker = None
+                        pnl_maker = None
+                        count = row.get("position_size") or 1
+                        counterfactual_outcome = "unknown_no_price"
+                    elif _opp_pt == "weather" and entry_price < WEATHER_MIN_ENTRY_PRICE:
+                        # Untradeable price — CF PnL is meaningless noise
+                        count = row.get("position_size") or 1
+                        would_have_profit = 0
+                        counterfactual_outcome = "untradeable_price"
+                        taker_fee = 0
+                        maker_fee = 0
+                        pnl_taker = 0
+                        pnl_maker = 0
+                    else:
+                        count = row.get("position_size") or 1
+                        taker_fee = calculate_taker_fee(count, int(entry_price))
+                        maker_fee = calculate_maker_fee(count, int(entry_price))
+                        # NO-side: flip win/loss — result="yes" means NO loses, result="no" means NO wins
+                        _opp_side = row.get("side") or "yes"
+                        if _opp_side == "no":
+                            _is_win = result in ("no", "all_no")
+                            _is_loss = result in ("yes", "all_yes")
+                        else:
+                            _is_win = result in ("yes", "all_yes")
+                            _is_loss = result in ("no", "all_no")
+                        if _is_win:
+                            pnl_taker = (100 - entry_price) * count - taker_fee
+                            pnl_maker = (100 - entry_price) * count - maker_fee
+                            counterfactual_outcome = "would_have_won"
+                        elif _is_loss:
+                            pnl_taker = -(entry_price * count + taker_fee)
+                            pnl_maker = -(entry_price * count + maker_fee)
+                            counterfactual_outcome = "would_have_lost"
+                        else:
+                            pnl_taker = None
+                            pnl_maker = None
+                            taker_fee = 0
+                            maker_fee = 0
+                            counterfactual_outcome = f"unknown_result_{result}"
+                        would_have_profit = pnl_taker  # conservative (taker)
 
-                self._logger.log_rejection({
-                    "type": "evaluated_settlement",
-                    "ticker": ticker,
-                    "event_ticker": row["event_ticker"],
-                    "asset": row["asset"],
-                    "filter_stage": row["filter_stage"],
-                    "rejection_reason": row.get("rejection_reason"),
-                    "market_result": result,
-                    "entry_price_if_traded": entry_price,
-                    "counterfactual_outcome": counterfactual_outcome,
-                    "would_have_profit_cents": would_have_profit,
-                    "assumed_contracts": count,
-                    "taker_fee_cents": taker_fee,
-                    "maker_fee_cents": maker_fee,
-                    "pnl_taker_cents": pnl_taker,
-                    "pnl_maker_cents": pnl_maker,
-                    "calibrated_prob": row.get("calibrated_prob"),
-                    "edge": row.get("edge"),
-                    "strategy": row.get("strategy"),
-                    "position_size": row.get("position_size"),
-                    "kelly_f": row.get("kelly_f"),
-                    "vol_regime": row.get("vol_regime"),
-                    "z_score": row.get("z_score"),
-                    "raw_prob": row.get("raw_prob"),
-                    "calibration_method": row.get("calibration_method"),
-                    "fee_adjusted_edge": row.get("fee_adjusted_edge"),
-                    "old_system_prob": row.get("old_system_prob"),
-                })
+                    self._logger.log_rejection({
+                        "type": "evaluated_settlement",
+                        "ticker": ticker,
+                        "event_ticker": row["event_ticker"],
+                        "asset": row["asset"],
+                        "filter_stage": row["filter_stage"],
+                        "rejection_reason": row.get("rejection_reason"),
+                        "market_result": result,
+                        "entry_price_if_traded": entry_price,
+                        "counterfactual_outcome": counterfactual_outcome,
+                        "would_have_profit_cents": would_have_profit,
+                        "assumed_contracts": count,
+                        "taker_fee_cents": taker_fee,
+                        "maker_fee_cents": maker_fee,
+                        "pnl_taker_cents": pnl_taker,
+                        "pnl_maker_cents": pnl_maker,
+                        "calibrated_prob": row.get("calibrated_prob"),
+                        "edge": row.get("edge"),
+                        "strategy": row.get("strategy"),
+                        "position_size": row.get("position_size"),
+                        "kelly_f": row.get("kelly_f"),
+                        "vol_regime": row.get("vol_regime"),
+                        "z_score": row.get("z_score"),
+                        "raw_prob": row.get("raw_prob"),
+                        "calibration_method": row.get("calibration_method"),
+                        "fee_adjusted_edge": row.get("fee_adjusted_edge"),
+                        "old_system_prob": row.get("old_system_prob"),
+                    })
 
-                self._state.mark_evaluated_opportunity_settled(
-                    opp_id, market_result=result,
-                    counterfactual_pnl=would_have_profit)
+                    # Batch: mark settled without per-row commit
+                    self._state.mark_evaluated_opportunity_settled(
+                        opp_id, market_result=result,
+                        counterfactual_pnl=would_have_profit,
+                        commit=False)
+                    _settled_count += 1
 
-                # Feed to calibration engine — route by product type
-                # Skip NO-side entries: they store 1-P(above) which would corrupt
-                # CalEngine's P(above) → outcome calibration
-                raw_p = row.get("raw_prob")
-                filter_stage = row.get("filter_stage", "")
-                _opp_side = row.get("side") or "yes"
-                if (raw_p is not None and _opp_side == "yes"
-                        and result in ("yes", "all_yes", "no", "all_no")
-                        and not filter_stage.endswith("_v2")):
-                    # Skip V2 variant rows — they share the same raw_prob as V1
-                    # and would double-feed the CalEngine
-                    cal_binary = 1 if result in ("yes", "all_yes") else 0
-                    _settle_engine = _resolve_cal_engine(_opp_pt, row.get("asset"))
-                    if _settle_engine is not None:
-                        # Dedicated engine — accept any filter_stage
-                        _settle_engine.add_observation(raw_p, cal_binary)
-                    elif (filter_stage in ("candidate", "observation_trade",
-                                           "hourly_observation", "spx_observation",
-                                           "weather_observation")
-                          and get_market_config(_opp_pt).cal_eligible):
-                        # 15M fallback — restricted to candidate/observation stages
-                        if _CALIBRATION_ENGINE is not None:
-                            _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
+                    # Feed to calibration engine — route by product type
+                    # Skip NO-side entries: they store 1-P(above) which would corrupt
+                    # CalEngine's P(above) → outcome calibration
+                    raw_p = row.get("raw_prob")
+                    filter_stage = row.get("filter_stage", "")
+                    _opp_side = row.get("side") or "yes"
+                    if (raw_p is not None and _opp_side == "yes"
+                            and result in ("yes", "all_yes", "no", "all_no")
+                            and not filter_stage.endswith("_v2")):
+                        # Skip V2 variant rows — they share the same raw_prob as V1
+                        # and would double-feed the CalEngine
+                        cal_binary = 1 if result in ("yes", "all_yes") else 0
+                        _settle_engine = _resolve_cal_engine(_opp_pt, row.get("asset"))
+                        if _settle_engine is not None:
+                            # Dedicated engine — accept any filter_stage
+                            _settle_engine.add_observation(raw_p, cal_binary)
+                        elif (filter_stage in ("candidate", "observation_trade",
+                                               "hourly_observation", "spx_observation",
+                                               "weather_observation")
+                              and get_market_config(_opp_pt).cal_eligible):
+                            # 15M fallback — restricted to candidate/observation stages
+                            if _CALIBRATION_ENGINE is not None:
+                                _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
 
-                # Weather: fetch actual temp from archive API + bias update
-                if (_opp_pt == "weather" and result in ("yes", "all_yes", "no", "all_no")
-                        and row.get("wx_actual_high_temp") is None):
-                    try:
-                        _wx_city = row["asset"].replace("_TEMP", "")
-                        # Extract market date from TICKER (not evaluation_time)
-                        _market_date = self._parse_weather_market_date(ticker)
-                        if _market_date:
-                            _today = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                            if _market_date < _today:  # archive API has ~24h lag
-                                _wx_eng = getattr(self._ml, "weather_engine", None) if self._ml else None
-                                if _wx_eng:
-                                    _obs_high = _wx_eng._fetcher.fetch_observed_high(_wx_city, _market_date)
-                                    if _obs_high is not None:
-                                        self._state.conn.execute(
-                                            "UPDATE evaluated_opportunities SET wx_actual_high_temp=? WHERE id=?",
-                                            (_obs_high, opp_id))
-                                        self._state.conn.commit()
-                                        logging.info("weather_observed_temp: %s %s %.1fF",
-                                                     _wx_city, _market_date, _obs_high)
-                                        # Bias update with REAL observed temp (preferred over bracket estimate)
-                                        forecast_mean = row.get("spot_price")
-                                        if forecast_mean:
-                                            _wx_eng._model.update_bias(
-                                                _wx_city, _obs_high, forecast_mean,
-                                                market_date=_market_date)
-                                            logging.info("weather_bias_update: %s %s actual=%.1fF forecast=%.1fF",
-                                                         _wx_city, _market_date, _obs_high, forecast_mean)
-                    except Exception as e:
-                        logging.warning("weather_observed_temp fetch failed for %s: %s", ticker, e)
+                    # Weather: fetch actual temp from archive API + bias update
+                    if (_opp_pt == "weather" and result in ("yes", "all_yes", "no", "all_no")
+                            and row.get("wx_actual_high_temp") is None):
+                        try:
+                            _wx_city = row["asset"].replace("_TEMP", "")
+                            # Extract market date from TICKER (not evaluation_time)
+                            _market_date = self._parse_weather_market_date(ticker)
+                            if _market_date:
+                                _today = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                                if _market_date < _today:  # archive API has ~24h lag
+                                    _wx_eng = getattr(self._ml, "weather_engine", None) if self._ml else None
+                                    if _wx_eng:
+                                        _obs_high = _wx_eng._fetcher.fetch_observed_high(_wx_city, _market_date)
+                                        if _obs_high is not None:
+                                            self._state.conn.execute(
+                                                "UPDATE evaluated_opportunities SET wx_actual_high_temp=? WHERE id=?",
+                                                (_obs_high, opp_id))
+                                            # No per-row commit — included in batch below
+                                            logging.info("weather_observed_temp: %s %s %.1fF",
+                                                         _wx_city, _market_date, _obs_high)
+                                            # Bias update with REAL observed temp (preferred over bracket estimate)
+                                            forecast_mean = row.get("spot_price")
+                                            if forecast_mean:
+                                                _wx_eng._model.update_bias(
+                                                    _wx_city, _obs_high, forecast_mean,
+                                                    market_date=_market_date)
+                                                logging.info("weather_bias_update: %s %s actual=%.1fF forecast=%.1fF",
+                                                             _wx_city, _market_date, _obs_high, forecast_mean)
+                        except Exception as e:
+                            logging.warning("weather_observed_temp fetch failed for %s: %s", ticker, e)
 
-                # Settle 15M shadow signals for this ticker
-                if (self._ml and getattr(self._ml, "fifteenm_shadow", None)
-                        and result in ("yes", "all_yes", "no", "all_no")):
+                    logging.info(
+                        f"Evaluated opp settled: {ticker} ({row['filter_stage']}) "
+                        f"-> {counterfactual_outcome} (profit={would_have_profit}¢)"
+                    )
+                except Exception as e:
+                    logging.warning(f"Evaluated opp settlement check failed for {ticker}: {e}", exc_info=True)
+
+            # Settle shadow signals once per ticker (not per row)
+            if result in ("yes", "all_yes", "no", "all_no"):
+                if self._ml and getattr(self._ml, "fifteenm_shadow", None):
                     try:
                         self._ml.fifteenm_shadow.settle_signals(ticker, result)
                     except Exception:
                         logging.warning("fifteenm_shadow settle failed for %s", ticker, exc_info=True)
 
-                # Settle hourly alt shadow signals for this ticker
-                if (self._ml and getattr(self._ml, "hourly_alt_shadow", None)
-                        and result in ("yes", "all_yes", "no", "all_no")):
+                if self._ml and getattr(self._ml, "hourly_alt_shadow", None):
                     try:
                         self._ml.hourly_alt_shadow.settle_signals(ticker, result)
                     except Exception:
                         logging.warning("hourly_alt_shadow settle failed for %s", ticker, exc_info=True)
 
-                # Settle SPX HAR-RV shadow signals for this ticker
-                if (self._ml and getattr(self._ml, "spx_harrv_shadow", None)
-                        and result in ("yes", "all_yes", "no", "all_no")):
+                if self._ml and getattr(self._ml, "spx_harrv_shadow", None):
                     try:
                         self._ml.spx_harrv_shadow.settle_signals(ticker, result)
                     except Exception:
                         logging.warning("spx_harrv_shadow settle failed for %s", ticker, exc_info=True)
 
                 # Settle SOL Path C shadow entry for this ticker
-                if result in ("yes", "all_yes", "no", "all_no"):
-                    try:
-                        _pc_row = self._state.conn.execute(
-                            "SELECT * FROM sol_pathc_shadow WHERE ticker=? AND status='pending'",
-                            (ticker,)).fetchone()
-                        if _pc_row:
-                            _pc = dict(_pc_row)
-                            _is_win = result in ("yes", "all_yes")
-                            _live_price = _pc["live_entry_price"]
-                            _live_contracts = _pc["live_contracts"]
-                            _pos_size = _pc["position_size"]
+                try:
+                    _pc_row = self._state.conn.execute(
+                        "SELECT * FROM sol_pathc_shadow WHERE ticker=? AND status='pending'",
+                        (ticker,)).fetchone()
+                    if _pc_row:
+                        _pc = dict(_pc_row)
+                        _is_win = result in ("yes", "all_yes")
+                        _live_price = _pc["live_entry_price"]
+                        _live_contracts = _pc["live_contracts"]
+                        _pos_size = _pc["position_size"]
 
-                            # Live PnL (taker at live ask)
-                            _live_fee = calculate_taker_fee(_live_contracts, _live_price)
+                        # Live PnL (taker at live ask)
+                        _live_fee = calculate_taker_fee(_live_contracts, _live_price)
+                        if _is_win:
+                            _live_pnl = (100 - _live_price) * _live_contracts - _live_fee
+                        else:
+                            _live_pnl = -(_live_price * _live_contracts + _live_fee)
+
+                        # Path C maker PnL: min(position_size, depth_at_maker) contracts
+                        _maker_price = _pc["pathc_maker_price"]
+                        _maker_depth = _pc["pathc_depth_at_maker"] or 0
+                        _maker_touched = _pc["obs_maker_price_touched"] or 0
+                        _maker_contracts = min(_pos_size, _maker_depth) if _maker_touched else 0
+                        _maker_fee = calculate_maker_fee(_maker_contracts, _maker_price) if _maker_contracts > 0 else 0
+                        if _maker_contracts > 0:
                             if _is_win:
-                                _live_pnl = (100 - _live_price) * _live_contracts - _live_fee
+                                _maker_pnl = (100 - _maker_price) * _maker_contracts - _maker_fee
                             else:
-                                _live_pnl = -(_live_price * _live_contracts + _live_fee)
+                                _maker_pnl = -(_maker_price * _maker_contracts + _maker_fee)
+                        else:
+                            _maker_pnl = 0
 
-                            # Path C maker PnL: min(position_size, depth_at_maker) contracts
-                            _maker_price = _pc["pathc_maker_price"]
-                            _maker_depth = _pc["pathc_depth_at_maker"] or 0
-                            _maker_touched = _pc["obs_maker_price_touched"] or 0
-                            _maker_contracts = min(_pos_size, _maker_depth) if _maker_touched else 0
-                            _maker_fee = calculate_maker_fee(_maker_contracts, _maker_price) if _maker_contracts > 0 else 0
-                            if _maker_contracts > 0:
+                        # Path C escalation taker PnL: min(position_size, esc_depth) contracts
+                        _esc_ask = _pc["pathc_esc_ask"]
+                        _esc_depth = _pc["pathc_esc_depth"] or 0
+                        if _esc_ask is not None and _esc_depth > 0:
+                            _esc_contracts = min(_pos_size, _esc_depth)
+                            _esc_fee = calculate_taker_fee(_esc_contracts, _esc_ask)
+                            if _is_win:
+                                _esc_pnl = (100 - _esc_ask) * _esc_contracts - _esc_fee
+                            else:
+                                _esc_pnl = -(_esc_ask * _esc_contracts + _esc_fee)
+                        else:
+                            _esc_contracts = 0
+                            _esc_pnl = 0
+
+                        # Best PnL = realistic Path C outcome:
+                        # If maker touched → maker fills, then escalate remainder
+                        # If maker NOT touched → full escalation taker (like live)
+                        if _maker_touched and _maker_contracts > 0:
+                            # Maker got some fills; escalate remainder
+                            _remainder = max(0, _pos_size - _maker_contracts)
+                            if _remainder > 0 and _esc_ask is not None and _esc_depth > 0:
+                                _rem_contracts = min(_remainder, _esc_depth)
+                                _rem_fee = calculate_taker_fee(_rem_contracts, _esc_ask)
                                 if _is_win:
-                                    _maker_pnl = (100 - _maker_price) * _maker_contracts - _maker_fee
+                                    _rem_pnl = (100 - _esc_ask) * _rem_contracts - _rem_fee
                                 else:
-                                    _maker_pnl = -(_maker_price * _maker_contracts + _maker_fee)
+                                    _rem_pnl = -(_esc_ask * _rem_contracts + _rem_fee)
                             else:
-                                _maker_pnl = 0
+                                _rem_pnl = 0
+                            _best_pnl = _maker_pnl + _rem_pnl
+                        else:
+                            # No maker fill → full escalation taker
+                            _best_pnl = _esc_pnl
 
-                            # Path C escalation taker PnL: min(position_size, esc_depth) contracts
-                            _esc_ask = _pc["pathc_esc_ask"]
-                            _esc_depth = _pc["pathc_esc_depth"] or 0
-                            if _esc_ask is not None and _esc_depth > 0:
-                                _esc_contracts = min(_pos_size, _esc_depth)
-                                _esc_fee = calculate_taker_fee(_esc_contracts, _esc_ask)
-                                if _is_win:
-                                    _esc_pnl = (100 - _esc_ask) * _esc_contracts - _esc_fee
-                                else:
-                                    _esc_pnl = -(_esc_ask * _esc_contracts + _esc_fee)
-                            else:
-                                _esc_contracts = 0
-                                _esc_pnl = 0
+                        self._state.settle_sol_pathc_shadow(
+                            ticker=ticker, market_result=result,
+                            live_pnl=_live_pnl,
+                            pathc_maker_pnl=_maker_pnl,
+                            pathc_maker_contracts=_maker_contracts,
+                            pathc_esc_pnl=_esc_pnl,
+                            pathc_esc_contracts=_esc_contracts,
+                            pathc_best_pnl=_best_pnl)
+                        logging.info(
+                            "sol_pathc_settled: %s result=%s live_pnl=%d maker_pnl=%d esc_pnl=%d best_pnl=%d",
+                            ticker, result, _live_pnl, _maker_pnl, _esc_pnl, _best_pnl)
+                except Exception:
+                    logging.warning("sol_pathc_shadow settle failed for %s", ticker, exc_info=True)
 
-                            # Best PnL = realistic Path C outcome:
-                            # If maker touched → maker fills, then escalate remainder
-                            # If maker NOT touched → full escalation taker (like live)
-                            if _maker_touched and _maker_contracts > 0:
-                                # Maker got some fills; escalate remainder
-                                _remainder = max(0, _pos_size - _maker_contracts)
-                                if _remainder > 0 and _esc_ask is not None and _esc_depth > 0:
-                                    _rem_contracts = min(_remainder, _esc_depth)
-                                    _rem_fee = calculate_taker_fee(_rem_contracts, _esc_ask)
-                                    if _is_win:
-                                        _rem_pnl = (100 - _esc_ask) * _rem_contracts - _rem_fee
-                                    else:
-                                        _rem_pnl = -(_esc_ask * _rem_contracts + _rem_fee)
-                                else:
-                                    _rem_pnl = 0
-                                _best_pnl = _maker_pnl + _rem_pnl
-                            else:
-                                # No maker fill → full escalation taker
-                                _best_pnl = _esc_pnl
-
-                            self._state.settle_sol_pathc_shadow(
-                                ticker=ticker, market_result=result,
-                                live_pnl=_live_pnl,
-                                pathc_maker_pnl=_maker_pnl,
-                                pathc_maker_contracts=_maker_contracts,
-                                pathc_esc_pnl=_esc_pnl,
-                                pathc_esc_contracts=_esc_contracts,
-                                pathc_best_pnl=_best_pnl)
-                            logging.info(
-                                "sol_pathc_settled: %s result=%s live_pnl=%d maker_pnl=%d esc_pnl=%d best_pnl=%d",
-                                ticker, result, _live_pnl, _maker_pnl, _esc_pnl, _best_pnl)
-                    except Exception:
-                        logging.warning("sol_pathc_shadow settle failed for %s", ticker, exc_info=True)
-
-                logging.info(
-                    f"Evaluated opp settled: {ticker} ({row['filter_stage']}) "
-                    f"-> {counterfactual_outcome} (profit={would_have_profit}¢)"
-                )
+        # Single batch commit for all settlement updates
+        if _settled_count > 0:
+            try:
+                self._state.conn.commit()
+                logging.info("eval_opp_settlement: batch committed %d rows", _settled_count)
             except Exception as e:
-                logging.warning(f"Evaluated opp settlement check failed for {ticker}: {e}", exc_info=True)
+                logging.warning("eval_opp_settlement batch commit failed: %s", e, exc_info=True)
 
         # Backfill wx_actual_high_temp for settled weather entries that missed it
         self._backfill_weather_actual_temps()
