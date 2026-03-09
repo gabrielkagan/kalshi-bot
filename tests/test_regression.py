@@ -1753,3 +1753,215 @@ class TestNoBatchCommitInLoops:
             f"Rule: never commit inside a loop — always batch. "
             f"See POSTMORTEMS.md PM-001."
         )
+
+
+# ============================================================================
+#  NO-Side Win/Loss Counting (1ced6bf, Mar 9 2026)
+#  Bug: audit_cron.py counted market_result='yes' as a win regardless of
+#  bet side. For NO-side bets, market_result='yes' is a LOSS. This inflated
+#  hourly WR from 62.1% to 65.1% and hid +22.8pp overconfidence behind
+#  a fake +10.1pp number. 164 NO-side entries started appearing Mar 8.
+# ============================================================================
+
+class TestNoSideWinCounting:
+    """Verify audit win/loss counting is side-aware.
+
+    Bug: audit_cron.py computed wins as SUM(CASE WHEN market_result='yes' THEN 1 END)
+    without checking the 'side' column. For NO-side bets, this inverts W/L.
+    The correct logic: win = (side matches market_result).
+
+    Caught Mar 9 2026 when hourly shadow report showed 65.1% WR but
+    manual side-aware counting showed 62.1%.
+    """
+
+    @pytest.fixture
+    def audit_db(self, tmp_path):
+        """Create an in-memory DB with synthetic evaluated_opportunities."""
+        db_path = str(tmp_path / "test_audit.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("""
+            CREATE TABLE evaluated_opportunities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT, event_ticker TEXT, asset TEXT,
+                filter_stage TEXT, evaluation_time TEXT,
+                spot_price REAL, threshold REAL, volatility REAL,
+                market_price INTEGER, seconds_to_close REAL,
+                calibrated_prob REAL, edge REAL,
+                status TEXT, market_result TEXT,
+                product_type TEXT, side TEXT,
+                position_size INTEGER, raw_prob REAL,
+                ofa_adjustment REAL, counterfactual_pnl REAL,
+                rejection_reason TEXT,
+                hourly_pre_temp_prob REAL, hourly_applied_temp_t REAL,
+                fee_adjusted_edge REAL, egarch_blend_weight REAL,
+                egarch_blend_sigma REAL, wx_ensemble_mean REAL,
+                wx_market_type TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE settled_trades (
+                ticker TEXT PRIMARY KEY, event_ticker TEXT, asset TEXT,
+                market_result TEXT, side TEXT, count INTEGER,
+                entry_price_cents INTEGER, revenue_cents INTEGER,
+                fee_cents INTEGER, pnl_cents INTEGER,
+                settled_at TEXT, product_type TEXT,
+                fill_latency_seconds REAL, escalation_type TEXT
+            )
+        """)
+        # Insert test data: 4 scenarios covering all side x result combos
+        base_time = "2026-03-09T12:00:00"
+        scenarios = [
+            # (side, market_result, should_be_win)
+            ("yes", "yes", True),   # YES bet, market YES → WIN
+            ("yes", "no", False),   # YES bet, market NO → LOSS
+            ("no", "no", True),     # NO bet, market NO → WIN
+            ("no", "yes", False),   # NO bet, market YES → LOSS
+        ]
+        for i, (side, result, _) in enumerate(scenarios):
+            conn.execute("""
+                INSERT INTO evaluated_opportunities
+                    (ticker, event_ticker, asset, filter_stage, evaluation_time,
+                     market_price, calibrated_prob, status, market_result,
+                     product_type, side, position_size)
+                VALUES (?, ?, 'BTC', 'hourly_observation', ?,
+                        85, 0.90, 'settled', ?, 'hourly', ?, 1)
+            """, (f"TICK-{i}", f"EVT-{i}", base_time, result, side))
+        conn.commit()
+        return db_path
+
+    def test_yes_bet_yes_result_is_win(self, audit_db):
+        conn = sqlite3.connect(audit_db)
+        row = conn.execute("""
+            SELECT COALESCE(side,'yes') = market_result AS is_win
+            FROM evaluated_opportunities WHERE ticker = 'TICK-0'
+        """).fetchone()
+        assert row[0] == 1, "YES bet + market YES should be a win"
+
+    def test_yes_bet_no_result_is_loss(self, audit_db):
+        conn = sqlite3.connect(audit_db)
+        row = conn.execute("""
+            SELECT COALESCE(side,'yes') = market_result AS is_win
+            FROM evaluated_opportunities WHERE ticker = 'TICK-1'
+        """).fetchone()
+        assert row[0] == 0, "YES bet + market NO should be a loss"
+
+    def test_no_bet_no_result_is_win(self, audit_db):
+        conn = sqlite3.connect(audit_db)
+        row = conn.execute("""
+            SELECT COALESCE(side,'yes') = market_result AS is_win
+            FROM evaluated_opportunities WHERE ticker = 'TICK-2'
+        """).fetchone()
+        assert row[0] == 1, "NO bet + market NO should be a win"
+
+    def test_no_bet_yes_result_is_loss(self, audit_db):
+        conn = sqlite3.connect(audit_db)
+        row = conn.execute("""
+            SELECT COALESCE(side,'yes') = market_result AS is_win
+            FROM evaluated_opportunities WHERE ticker = 'TICK-3'
+        """).fetchone()
+        assert row[0] == 0, "NO bet + market YES should be a loss"
+
+    def test_yes_side_filter_excludes_no_bets(self, audit_db):
+        """YES_SIDE_FILTER must exclude NO-side rows from YES-side aggregation."""
+        conn = sqlite3.connect(audit_db)
+        YES_SIDE_FILTER = "AND (side IS NULL OR side = 'yes')"
+        row = conn.execute(f"""
+            SELECT COUNT(*) FROM evaluated_opportunities
+            WHERE product_type = 'hourly' {YES_SIDE_FILTER}
+        """).fetchone()
+        assert row[0] == 2, f"YES_SIDE_FILTER should return 2 rows, got {row[0]}"
+
+    def test_aggregate_win_count_is_side_aware(self, audit_db):
+        """The corrected audit pattern: wins = rows where side matches market_result."""
+        conn = sqlite3.connect(audit_db)
+        YES_SIDE_FILTER = "AND (side IS NULL OR side = 'yes')"
+        row = conn.execute(f"""
+            SELECT
+                SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as yes_wins,
+                COUNT(*) as total
+            FROM evaluated_opportunities
+            WHERE product_type = 'hourly' {YES_SIDE_FILTER}
+        """).fetchone()
+        # Only YES-side rows: TICK-0 (yes/yes=win) and TICK-1 (yes/no=loss)
+        # yes_wins = 1 (TICK-0), total = 2
+        assert row[0] == 1, f"Should count 1 YES-side win, got {row[0]}"
+        assert row[1] == 2, f"Should have 2 YES-side rows, got {row[1]}"
+
+    def test_buggy_pattern_would_overcount_wins(self, audit_db):
+        """Demonstrate that the OLD buggy pattern overcounts wins for NO-side bets."""
+        conn = sqlite3.connect(audit_db)
+        # OLD buggy query: no YES_SIDE_FILTER, counts market_result='yes' as win
+        row = conn.execute("""
+            SELECT
+                SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as buggy_wins,
+                COUNT(*) as total
+            FROM evaluated_opportunities
+            WHERE product_type = 'hourly'
+        """).fetchone()
+        # Without filter: 4 rows total, market_result='yes' on TICK-0 and TICK-3
+        # TICK-3 is a NO-side loss but the buggy query counts it as a win
+        assert row[0] == 2, f"Buggy query should show 2 'wins', got {row[0]}"
+        assert row[1] == 4, f"Should have 4 total rows, got {row[1]}"
+        # The CORRECT answer is 1 YES-side win, not 2
+
+    def test_compute_hourly_uses_yes_side_filter(self):
+        """Static analysis: compute_hourly queries must include YES_SIDE_FILTER."""
+        audit_path = os.path.join(PROJECT_ROOT, "scripts", "audit_cron.py")
+        with open(audit_path) as f:
+            source = f.read()
+
+        # Find compute_hourly function body
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "compute_hourly":
+                func_source = ast.get_source_segment(source, node)
+                # Count SQL queries that aggregate market_result without YES_SIDE_FILTER
+                # The W/L, Brier, overconfidence, worst-asset, and per-asset queries
+                # should all include YES_SIDE_FILTER
+                assert "YES_SIDE_FILTER" in func_source, (
+                    "compute_hourly must use YES_SIDE_FILTER for side-aware counting"
+                )
+                # Count occurrences — there should be at least 5 (W/L, Brier, OC, worst, per-asset)
+                count = func_source.count("YES_SIDE_FILTER")
+                assert count >= 5, (
+                    f"compute_hourly has {count} YES_SIDE_FILTER refs, expected >= 5 "
+                    f"(W/L, Brier, overconfidence, worst-asset, per-asset)"
+                )
+                break
+        else:
+            pytest.fail("compute_hourly function not found in audit_cron.py")
+
+    def test_compute_spx_uses_yes_side_filter(self):
+        """Static analysis: compute_spx queries must include YES_SIDE_FILTER."""
+        audit_path = os.path.join(PROJECT_ROOT, "scripts", "audit_cron.py")
+        with open(audit_path) as f:
+            source = f.read()
+
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "compute_spx":
+                func_source = ast.get_source_segment(source, node)
+                assert "YES_SIDE_FILTER" in func_source, (
+                    "compute_spx must use YES_SIDE_FILTER for side-aware counting"
+                )
+                break
+        else:
+            pytest.fail("compute_spx function not found in audit_cron.py")
+
+    def test_compute_weather_uses_yes_side_filter(self):
+        """Static analysis: compute_weather queries must include YES_SIDE_FILTER."""
+        audit_path = os.path.join(PROJECT_ROOT, "scripts", "audit_cron.py")
+        with open(audit_path) as f:
+            source = f.read()
+
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "compute_weather":
+                func_source = ast.get_source_segment(source, node)
+                assert "YES_SIDE_FILTER" in func_source, (
+                    "compute_weather must use YES_SIDE_FILTER for side-aware counting"
+                )
+                break
+        else:
+            pytest.fail("compute_weather function not found in audit_cron.py")
