@@ -16,32 +16,62 @@ Run comprehensive alpha research on the 15-minute crypto prediction market tradi
 - When the user asks about alpha, edge, or profit drivers
 
 ## Prerequisites
-1. Copy state.db from VPS: `scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db`
-2. Script location: `scripts/15m_alpha_research.py`
+1. Script location: `scripts/15m_alpha_research.py`
 
 ## Usage
 
-### Full analysis (all 12 sections)
+### Full analysis (all 13 sections)
 ```bash
-python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto
+python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto 2>&1
 ```
 
 ### Single section
 ```bash
-python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto --section calibration
+python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto --section calibration 2>&1
 ```
 
 Available sections: `regime`, `asset`, `price`, `stc`, `execution`, `calibration`, `edge`, `counterfactual`, `loss`, `robustness`, `vol`, `time`, `shadow`
 
 ### Filter by asset
 ```bash
-python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto --asset XRP
+python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto --asset XRP 2>&1
 ```
 
 ### Custom date range
 ```bash
-python3 scripts/15m_alpha_research.py --db /tmp/state.db --since 2026-03-03
+python3 scripts/15m_alpha_research.py --db /tmp/state.db --since 2026-03-03 2>&1
 ```
+
+## Steps
+
+1. **Sync the database.** Follow `.claude/skills/references/db-sync.md` to sync the database.
+
+2. **Run the script** (full or targeted section).
+
+3. **Present findings** with example summary:
+
+   ```
+   ## 15M Alpha Research (regime: Mar 3 – present)
+
+   ### Performance
+   - 237 trades: 218W/19L (92.0%, Wilson 95% CI: 87.8-95.0%)
+   - Total PnL: +$142.30, fees: $12.40
+   - Daily avg: +$14.23/day (10 trading days)
+
+   ### Top 3 Findings
+   1. [VERIFIED] STC 500-900s shadow zone: 32 counterfactual trades, 93.8% WR, +$28
+      → Promotion candidate if WR holds above breakeven CI
+   2. [VERIFIED] XRP contributes 42% of losses but only 15% of trades
+      → XRP_15M_SHADOW=True is correctly protecting against this
+   3. [VERIFIED] Edge inversion at 97c+: higher edge → lower WR (n=12, p=0.08)
+      → Current MIN_EDGE_BY_PRICE of 2.0% at 97c may be insufficient
+
+   ### Recommendations
+   - No config changes recommended (all findings are within expected variance)
+   - Continue monitoring STC 500-900s shadow (need 50+ settled for promotion)
+   ```
+
+4. **For loss investigations**, always include individual loss detail from Section 9.
 
 ## Sections
 
@@ -60,6 +90,18 @@ python3 scripts/15m_alpha_research.py --db /tmp/state.db --since 2026-03-03
 | 11 | Volatility Regime | Performance by vol_regime with Wilson CIs |
 | 12 | Time-of-Day | Hourly PnL distribution, best/worst trading hours |
 | 13 | Shadow Approaches | RecalibratedEGARCH + LightGBM alpha comparison, gate failures, training readiness |
+
+## Error Handling
+
+| Situation | Action |
+|-----------|--------|
+| Script not found | Check: `ls scripts/15m*`. May have been renamed. |
+| `--regime auto` picks wrong date | The regime detector looks for the last commit that changed 15M trading constants. If it picks too recent a date (small n), override with `--since <date>` using the actual config change timestamp from CLAUDE.md or git log. |
+| 0 settled trades in regime | Regime may be very new. Widen with `--since` to include more data. Note: mixing regimes is risky (see CLAUDE.md rules), but some analysis (calibration, vol regime) is regime-agnostic. |
+| Section output is empty | That section may not have enough data (e.g., vol_regime needs vol_regime column populated). Skip it and note: "Section N: insufficient data." |
+| Loss section shows a trade the user didn't know about | This is the point — surface it. Show the trade details and whether it was correctly executed. |
+| Script hangs or takes >60s | The DB may be very large. Try running a single section: `--section regime` to verify the script works, then run full. |
+| Shadow section shows 0 signals | fifteenm_shadow engine may not be running. Check: `SELECT COUNT(*) FROM fifteenm_shadow_signals`. If 0, the engine needs investigation. |
 
 ## Key design principles
 - All statistical claims include Wilson CIs and Fisher exact p-values
