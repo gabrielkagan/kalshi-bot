@@ -1,3 +1,8 @@
+---
+name: maker-cost
+description: "Track cost of maker-first execution — fill rates, unfilled opportunity cost, per-asset breakdown, capture rate analysis. Use when: \"how much are we leaving on the table?\", \"maker vs taker\", \"fill rate check\", \"maker opportunity cost\""
+---
+
 # Maker Opportunity Cost Report
 
 Tracks the cost of maker-first execution by computing hypothetical taker P&L for every unfilled maker order. Includes shadow taker tracking data (best ask at maker submission time) for realistic counterfactual pricing.

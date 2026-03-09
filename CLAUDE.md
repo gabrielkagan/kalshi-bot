@@ -43,6 +43,51 @@ These are the standard procedures for recurring tasks. Follow these steps withou
 7. Verify deployment: confirm VPS pulled latest commit hash
 8. Post-deploy: verify expected DB entries are being created
 
+## Skill Routing Guide
+
+When the user's request is ambiguous, use these rules to pick the right skill.
+
+### Operations
+| Skill | Use when... |
+|---|---|
+| `/status` | Quick pulse check — "how's it going?", "anything happening?", "is data flowing?" |
+| `/investigate` | Emergency — anomaly, unexpected trade, dashboard alert, suspected bug |
+| `/deploy` | Push to main + full deploy verification (syntax, constants, VPS, DB entries) |
+| `/data-health` | Instrumentation quality — NULL rates, data gaps, shadow coverage |
+
+### Performance & Shadow Analysis
+| Skill | Use when... |
+|---|---|
+| `/audit` | Run one system's audit script with regime-filtered numbers and Wilson CIs |
+| `/alpha-audit` | Cross-system funnel analysis — rejections, counterfactual PnL, shadow readiness |
+| `/shadow` | Bird's-eye summary across ALL 5 shadow/observation systems |
+| `/variant-status` | Focused shadow variant comparison (A1/A2/A3, hourly alts) with Kelly-sized PnL |
+
+### Deep Research (single-system)
+| Skill | Use when... |
+|---|---|
+| `/15m-alpha` | 13-section 15M deep dive (regime, price tiers, STC, calibration, losses) |
+| `/hourly-alpha` | 12-section hourly research (600+ config grid search, robustness) |
+| `/spx-alpha` | 15-section SPX research (EGARCH blend, VIX regimes, readiness checklist) |
+| `/weather-alpha` | 18-section weather research (ensemble quality, HRRR, bias correction) |
+| `/sports-alpha` | 16-section sports research (SPRT test, deficit analysis, CLV) |
+
+### Specialized
+| Skill | Use when... |
+|---|---|
+| `/maker-cost` | Maker vs taker opportunity cost — fill rates, unfilled cost |
+| `/no-side` | NO-side shadow data — volume, pricing verification, settlements |
+| `/weekend-discount` | Weekend/overnight edge discount shadow evaluation |
+| `/research-package` | Compile self-contained data package for external researcher |
+
+### Decision Rules for Ambiguous Pairs
+
+- **Status vs Audit:** Quick 30-second answer → `/status`. Statistically rigorous numbers with CIs → `/audit`.
+- **Audit vs Alpha-Audit:** One system's raw numbers → `/audit`. Cross-system funnel tracing, "where are we leaving money?" → `/alpha-audit`.
+- **Shadow vs Variant-Status:** All 5 systems at a glance → `/shadow`. Deep dive on specific variants with promotion timeline → `/variant-status`.
+- **Alpha-Audit vs *-Alpha:** Pipeline-wide opportunity analysis → `/alpha-audit`. Single-system deep research with grid search and config recommendations → use the system-specific `-alpha` skill.
+- **Status vs Variant-Status:** "How's it going?" → `/status`. "How are A1 and A2 looking?" with PnL numbers → `/variant-status`.
+
 ## Critical Rules
 
 - **bot.py is sacred** — never rename it. systemd calls `start.sh` which calls `bot.py`

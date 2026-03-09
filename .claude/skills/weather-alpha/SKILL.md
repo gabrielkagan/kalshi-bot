@@ -1,3 +1,8 @@
+---
+name: weather-alpha
+description: "Deep weather alpha research — ensemble quality, HRRR comparison, bias correction, per-city analysis, config grid search. Use when: \"weather deep dive\", \"weather alpha research\", \"is weather ready?\", \"how's the ensemble doing?\", \"weather shadow analysis\""
+---
+
 # Weather Alpha Research Skill
 
 ## Purpose

@@ -1,3 +1,8 @@
+---
+name: sports-alpha
+description: "Deep sports comeback alpha research — SPRT sequential test, deficit analysis, per-sport breakdown, CLV, calibration. Use when: \"sports deep dive\", \"sports alpha research\", \"is sports ready?\", \"how are comebacks doing?\", \"sports shadow analysis\""
+---
+
 # Sports Comeback Alpha Analyzer
 
 Systematic alpha research on sports comeback prediction market data. Discovers profitable configurations by sport group, league, deficit, timing, and pregame strength. Validates robustness with Wilson CIs, Fisher tests, SPRT, and time stability.

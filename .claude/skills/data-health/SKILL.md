@@ -1,3 +1,8 @@
+---
+name: data-health
+description: "Check instrumentation quality — NULL rates, data gaps, shadow coverage, data freshness across all systems. Use when: \"fix data gaps\", \"is data flowing?\", \"check shadow column coverage\", \"data quality check\", \"are we missing rows?\""
+---
+
 # Data Health Check
 
 Check instrumentation quality, data gaps, NULL rates, and shadow coverage across all systems.

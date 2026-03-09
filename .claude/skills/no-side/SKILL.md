@@ -1,3 +1,8 @@
+---
+name: no-side
+description: "NO-side shadow data report — volume, pricing verification, settlement outcomes, approach comparisons. Use when: \"how is NO side going?\", \"verify NO-side pricing\", \"NO-side shadow status\", \"check NO-side data\""
+---
+
 # NO-Side Shadow Status Report
 
 Comprehensive NO-side shadow data report. Shows data volume, pricing verification, settlement outcomes, approach comparisons, and health checks.

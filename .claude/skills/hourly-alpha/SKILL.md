@@ -1,3 +1,8 @@
+---
+name: hourly-alpha
+description: "Deep hourly alpha research — 600+ config grid search, robustness validation, BTC-only analysis, CalEngine Brier, edge inversion checks. Use when: \"hourly deep dive\", \"should we promote hourly?\", \"optimize hourly config\", \"hourly alpha research\", \"is hourly ready?\""
+---
+
 # Hourly Strategy Alpha Analyzer (Enhanced)
 
 Systematic alpha research on hourly trading data. Discovers profitable configurations through exhaustive multi-dimensional grid search, validates robustness with statistical tests, tracks regime changes, and provides nuanced per-price-tier recommendations.

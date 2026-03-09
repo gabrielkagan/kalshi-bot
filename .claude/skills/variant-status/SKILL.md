@@ -1,3 +1,8 @@
+---
+name: variant-status
+description: "Focused shadow variant comparison with Kelly-sized sim PnL and promotion timeline estimates. Use when: \"how are A1 and A2 looking?\", \"variant comparison\", \"which variant is closest to promotion?\", \"shadow variant performance\""
+---
+
 # Shadow Variant Comparison
 
 Focused comparison of shadow variant performance with actual Kelly sizing. Shows which variants are ready for promotion decisions.

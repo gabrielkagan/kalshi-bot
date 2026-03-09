@@ -1,3 +1,8 @@
+---
+name: investigate
+description: "Emergency investigation — anomaly, unexpected trade, dashboard alert, or suspected bug. Use when: \"something looks wrong\", \"investigate this trade\", \"why did we take a trade at X cents?\", \"I saw this error\", \"treat this as an emergency\""
+---
+
 # Emergency Investigation
 
 Investigate an anomaly, unexpected trade, dashboard alert, or suspected bug. Answer first with data, then root cause, then fix options.

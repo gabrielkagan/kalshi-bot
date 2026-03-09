@@ -1,3 +1,8 @@
+---
+name: 15m-alpha
+description: "Deep 15M alpha research — regime-filtered performance, price tier analysis, STC zones, calibration diagnostics, loss patterns, shadow approaches. Use when: \"investigate 15M performance\", \"diagnose a loss\", \"should we change 15M config?\", \"15M deep dive\", \"what's driving losses?\""
+---
+
 # 15M Alpha Research Skill
 
 ## Description

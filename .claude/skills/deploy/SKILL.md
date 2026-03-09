@@ -1,3 +1,8 @@
+---
+name: deploy
+description: "Push to main and verify VPS auto-deploy — syntax check, constant validation, service restart, DB entry verification. Use when: \"deploy\", \"push it\", \"deploy this change\""
+---
+
 # Deploy to VPS
 
 Push to main and verify the bot is running correctly on VPS after auto-deploy.

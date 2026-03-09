@@ -1,3 +1,8 @@
+---
+name: status
+description: "Quick pulse check — is data flowing, any trades, anything notable. Not a full audit. Use when: \"how's it going?\", \"anything happening?\", \"what's happening?\", \"quick check\", \"is the bot running?\""
+---
+
 # Quick Status Check
 
 Lightweight pulse check across all systems. Not a full audit — just "is data flowing, any trades, anything notable."

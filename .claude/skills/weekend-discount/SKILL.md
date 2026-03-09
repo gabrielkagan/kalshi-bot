@@ -1,3 +1,8 @@
+---
+name: weekend-discount
+description: "Evaluate weekend/overnight edge discount shadow strategies — graduation criteria, per-asset WR, edge inversion checks. Use when: \"how's the weekend discount doing?\", \"overnight discount status\", \"should we promote any discounts?\", \"quiet-market shadow check\""
+---
+
 # Quiet-Market Edge Discount Shadow Audit
 
 Evaluate weekend and overnight edge discount shadow strategies — performance, graduation readiness, and comparison.

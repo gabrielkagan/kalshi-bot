@@ -1,3 +1,8 @@
+---
+name: spx-alpha
+description: "Deep SPX hourly alpha research — EGARCH blend, VIX regimes, intraday patterns, 7-point readiness checklist. Use when: \"SPX deep dive\", \"SPX alpha research\", \"is SPX ready for live?\", \"SPX hourly analysis\", \"check SPX readiness\""
+---
+
 # SPX Hourly Alpha Research
 
 Systematic alpha research on SPX hourly observation data. Analyzes EGARCH blend performance, VIX regime effects, intraday patterns, calibration quality, edge integrity, multi-position correlation, and counterfactual config optimization.

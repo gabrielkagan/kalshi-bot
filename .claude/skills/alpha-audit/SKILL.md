@@ -1,3 +1,8 @@
+---
+name: alpha-audit
+description: "Full-funnel opportunity audit — traces the decision pipeline, analyzes rejections, computes counterfactual PnL, evaluates shadow promotion readiness. Use when: \"run the alpha audit\", \"find where we're leaving money\", \"check the shadow strategies\", \"are any shadows ready to go live?\", \"what are we filtering out?\""
+---
+
 # Alpha Audit — Opportunity & Shadow Strategy Analysis
 
 ## Description

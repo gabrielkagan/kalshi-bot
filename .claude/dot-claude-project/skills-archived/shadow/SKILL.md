@@ -1,8 +1,3 @@
----
-name: shadow
-description: "Bird's-eye summary across ALL 5 shadow/observation systems (15M, hourly, SPX, weather, sports). Use when: \"shadow overview\", \"how are all the shadows doing?\", \"shadow status report\", \"all shadows at a glance\", \"check all shadows\""
----
-
 # Shadow Feature Status Report
 
 Comprehensive report across ALL shadow/observation systems — 15M live, hourly, SPX, weather, and sports.
