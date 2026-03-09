@@ -85,6 +85,7 @@ REQUIRED_SNAP_KEYS = {
     "no_side_shadow",
     "weekend_discount_shadow",
     "overnight_discount_shadow",
+    "overnight_lp_shadow",
     "decided_contract_shadow",
     "relaxed_edge_shadow",
     "calibration_gap",

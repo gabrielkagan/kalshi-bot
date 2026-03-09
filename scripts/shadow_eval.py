@@ -22,6 +22,7 @@ KNOWN_SHADOW_STAGES = {
     "relaxed_edge_shadow",
     "weekend_discount_shadow",
     "overnight_discount_shadow",
+    "overnight_lp_shadow",
     "stc_shadow",
     "stc_shadow_no_xrp",
     "stc_shadow_xrp",

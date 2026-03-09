@@ -34,6 +34,7 @@ SHADOW_STAGES = [
     "relaxed_edge_shadow",
     "weekend_discount_shadow",
     "overnight_discount_shadow",
+    "overnight_lp_shadow",
 ]
 
 STC_BUCKETS = [

@@ -480,6 +480,32 @@ OVERNIGHT_EDGE_DISCOUNT = 0.60    # multiply MIN_EDGE_BY_PRICE by this during ov
 OVERNIGHT_QUIET_START = 4         # UTC hour — quiet zone starts (inclusive)
 OVERNIGHT_QUIET_END = 11          # UTC hour — quiet zone ends (inclusive)
 
+# ─── Overnight Low-Price Shadow ──────────────────────────────────────────
+# Thesis: overnight market makers are slow/absent, so 50-85c YES contracts
+# have stale pricing — model correctly puts outcomes at 90%+ probability.
+# Settlement data: 50-69c overnight @ cal_prob>0.80 → 89.9% WR (n=325).
+# Shadow-only — collects data for graduation analysis before live trading.
+# Graduation criteria:
+#   - ≥80 settled signals
+#   - ≥85% WR on taker simulation
+#   - No single asset below 75% WR (n≥10)
+#   - Positive Kelly-sized sim PnL on taker
+#   - No edge inversion by price tier
+#   - ≥10 overnight sessions of data
+OVERNIGHT_LP_SHADOW = True
+OVERNIGHT_LP_MIN_ENTRY_PRICE = 50   # Lowest YES price to shadow-evaluate
+OVERNIGHT_LP_MAX_ENTRY_PRICE = 85   # Highest (live 86+ pipeline unchanged)
+OVERNIGHT_LP_MIN_CAL_PROB = 0.82    # Higher than live — forces high model confidence in untested price territory
+OVERNIGHT_LP_MIN_EDGE_PCT = 0.10    # 10% min — symmetric payoffs need bigger edge than 86+c asymmetric
+OVERNIGHT_LP_MAX_RISK_PER_TRADE = 0.10  # 10% (vs 25% live) — tighter for symmetric payoff
+OVERNIGHT_LP_KELLY_FRACTION = 0.125 # Eighth-Kelly — extra conservative (calibration trained on 86-99c)
+OVERNIGHT_LP_MIN_STC = 120         # At least 2 min to close (avoid scramble)
+OVERNIGHT_LP_MAX_STC = 600         # Max 10 min — trade when outcome is nearly decided
+OVERNIGHT_LP_HOURS_START = 0       # UTC hour — overnight LP window start (inclusive)
+OVERNIGHT_LP_HOURS_END = 12        # UTC hour — overnight LP window end (exclusive)
+OVERNIGHT_LP_VOL_SPIKE_MULT = 2.0  # Circuit breaker: skip if trailing vol > 2x overnight median
+OVERNIGHT_LP_VOL_HISTORY_DAYS = 7  # Days of overnight vol history for median computation
+
 # ─── Low-STC Sizing Cap (Fix #3) ─────────────────────────────────────────
 # Data: 0-100s STC is -$84/14d (12W/2L). Catastrophic losses at very short STC
 # wipe all gains. Halve position to limit downside on last-second reversals.
@@ -6668,6 +6694,14 @@ class OpportunityScanner:
         self._hourly_window_counts: Dict[str, int] = {}
         self._hourly_window_risk: Dict[str, float] = {}
 
+        # Overnight LP shadow: per-asset vol history for circuit breaker
+        # Stores (timestamp, blended_rv) tuples during overnight hours
+        # ~8640 obs/night at 5s ticks × 7 days ≈ 60K max
+        self._overnight_rv_history: Dict[str, deque] = {
+            a: deque(maxlen=70000) for a in ASSETS
+        }
+        self._overnight_lp_vol_skip_count: int = 0  # session counter for dashboard
+
         # ── Startup assertion: _shadow_diag keys must be accepted by DB insert fns ──
         # Prevents the bug class where a new key in _shadow_diag causes a crash
         # at every **_shadow_diag splat into insert_rejection/insert_evaluated_opportunity.
@@ -6937,6 +6971,7 @@ class OpportunityScanner:
 
         _price_shadow_queue = []
         _no_side_queue = []  # NO-side shadow: markets queued for NO evaluation
+        _overnight_lp_queue = []  # Overnight low-price shadow: 50-85c YES during overnight hours
 
         # 1. Filter windows by time range (config-driven thresholds)
         time_ok_windows = []
@@ -7443,6 +7478,30 @@ class OpportunityScanner:
                             "event_ticker": window["event_ticker"],
                             "asset": asset,
                             "best_ask": best_ask,
+                            "spot": spot,
+                            "threshold": threshold,
+                            "blended_rv": blended_rv,
+                            "seconds_remaining": seconds_remaining,
+                            "vol_regime": vol_est["regime"],
+                            "ask_depth": ask_depth,
+                            "best_ask_source": best_ask_source,
+                            "product_type": window.get("product_type"),
+                            "_shadow_diag": _shadow_diag.copy(),
+                            "_oft_db": _oft_db.copy(),
+                        })
+                    # Overnight LP shadow: queue 50-85c 15M contracts during overnight hours
+                    _olp_utc_hour = datetime.datetime.now(timezone.utc).hour
+                    if (OVERNIGHT_LP_SHADOW
+                            and _pt in (None, "15m")
+                            and OVERNIGHT_LP_HOURS_START <= _olp_utc_hour < OVERNIGHT_LP_HOURS_END
+                            and OVERNIGHT_LP_MIN_ENTRY_PRICE <= best_ask <= OVERNIGHT_LP_MAX_ENTRY_PRICE
+                            and OVERNIGHT_LP_MIN_STC <= seconds_remaining <= OVERNIGHT_LP_MAX_STC):
+                        _overnight_lp_queue.append({
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "best_ask": best_ask,
+                            "best_bid": mkt.get("yes_bid") or (100 - (mkt.get("no_ask") or 100)),
                             "spot": spot,
                             "threshold": threshold,
                             "blended_rv": blended_rv,
@@ -9179,6 +9238,10 @@ class OpportunityScanner:
         if _no_side_queue:
             self._process_no_side_shadow(_no_side_queue)
 
+        # Overnight LP shadow evaluation for 50-85c contracts during overnight hours
+        if _overnight_lp_queue:
+            self._process_overnight_lp_shadow(_overnight_lp_queue)
+
         if not candidates:
             self._last_scan_stats = scan_stats
             return None
@@ -9535,6 +9598,248 @@ class OpportunityScanner:
                     **item["_oft_db"], **item["_shadow_diag"])
         except Exception:
             logging.warning("price_shadow processing error", exc_info=True)
+
+    def _process_overnight_lp_shadow(self, queue: list) -> None:
+        """Shadow-evaluate 50-85c YES contracts during overnight hours (00-12 UTC).
+
+        Thesis: overnight market makers are slow/absent, so cheap YES contracts
+        have stale pricing. The model correctly predicts 90%+ probability on
+        outcomes the market only quotes at 50-60c.
+
+        Includes vol-spike circuit breaker (2x overnight median → skip asset)
+        and dual execution simulation (taker at best_ask, maker at best_bid+1).
+
+        Shadow-only — never places orders. Entire body in try/except so
+        a crash here cannot affect candidate selection or live trading.
+        """
+        try:
+            now_ts = time.time()
+            _cutoff_ts = now_ts - OVERNIGHT_LP_VOL_HISTORY_DAYS * 86400
+
+            for item in queue:
+                ticker = item["ticker"]
+                best_ask = item["best_ask"]
+                best_bid = item.get("best_bid")
+                spot = item["spot"]
+                threshold = item["threshold"]
+                blended_rv = item["blended_rv"]
+                stc = item["seconds_remaining"]
+                asset = item["asset"]
+                _pt = item["product_type"]
+
+                # ── Vol-spike circuit breaker ──
+                # Prune entries older than OVERNIGHT_LP_VOL_HISTORY_DAYS
+                while (self._overnight_rv_history[asset]
+                       and self._overnight_rv_history[asset][0][0] < _cutoff_ts):
+                    self._overnight_rv_history[asset].popleft()
+                # Compute median from PRIOR history (before appending current value,
+                # so the current observation doesn't bias the median toward itself)
+                _rv_vals = [rv for _, rv in self._overnight_rv_history[asset]]
+                # Record current blended_rv AFTER extracting prior history
+                self._overnight_rv_history[asset].append((now_ts, blended_rv))
+                # Need at least 100 prior observations (~8 min of 5s ticks) before
+                # the breaker activates. On cold start / night one, the breaker is
+                # disabled — we want data collection, not false blocks.
+                _rv_median = None
+                _vol_breaker_active = len(_rv_vals) >= 100
+                if _vol_breaker_active:
+                    _rv_sorted = sorted(_rv_vals)
+                    _rv_median = _rv_sorted[len(_rv_sorted) // 2]
+                if _vol_breaker_active and blended_rv > OVERNIGHT_LP_VOL_SPIKE_MULT * _rv_median:
+                    self._overnight_lp_vol_skip_count += 1
+                    try:
+                        self._logger.log_opportunity({
+                            "filter_stage": "overnight_lp_vol_skip",
+                            "ticker": ticker,
+                            "asset": asset,
+                            "blended_rv": round(blended_rv, 8),
+                            "overnight_median_rv": round(_rv_median, 8),
+                            "spike_ratio": round(blended_rv / _rv_median, 4) if _rv_median > 0 else None,
+                            "threshold_mult": OVERNIGHT_LP_VOL_SPIKE_MULT,
+                            "seconds_to_close": round(stc, 1),
+                            "market_price": best_ask,
+                        })
+                    except Exception:
+                        pass
+                    continue
+
+                # Re-run probability engine with market price
+                prob_result = ProbabilityEngine.compute(
+                    spot, threshold, stc, blended_rv,
+                    market_price_cents=best_ask,
+                    asset=asset, product_type=_pt,
+                )
+                if not prob_result.get("tradeable"):
+                    continue
+
+                final_prob = prob_result["calibrated_prob"]
+                raw_prob = prob_result.get("raw_prob")
+                calibration_method = prob_result.get("calibration_method")
+                z_score = prob_result.get("z_score")
+
+                # Temperature scaling (same as main pipeline)
+                _tempcfg = get_market_config(_pt)
+                _temp_t = _tempcfg.temperature_t if _tempcfg.temperature_enabled else None
+                if _temp_t is not None and _temp_t == 1.0:
+                    _temp_t = None
+                _reg_engine = _resolve_cal_engine(_pt, asset, require_enabled=True)
+                if _reg_engine is not None and _reg_engine.is_learned_method_active():
+                    _temp_t = None
+                if _temp_t is not None:
+                    _p = max(0.001, min(0.999, final_prob))
+                    _z = math.log(_p / (1.0 - _p))
+                    final_prob = 1.0 / (1.0 + math.exp(-_z / _temp_t))
+
+                # Dynamic cap / learned ceiling
+                _dyn_cap = ProbabilityEngine._dynamic_cap(stc, product_type=_pt)
+                _reg_engine_c = _resolve_cal_engine(_pt, asset, require_enabled=True)
+                if _reg_engine_c is not None and _reg_engine_c.is_learned_method_active():
+                    final_prob = max(0.01, min(NUMERICAL_SAFETY_CEILING, final_prob))
+                else:
+                    final_prob = max(0.01, min(_dyn_cap, final_prob))
+
+                # Market blend
+                _mcfg = get_market_config(_pt)
+                _effective_blend_w = _mcfg.market_blend_w
+                market_implied_prob = best_ask / 100.0
+                final_prob = (1.0 - _effective_blend_w) * final_prob + _effective_blend_w * market_implied_prob
+
+                # ── Min cal_prob gate ──
+                if final_prob < OVERNIGHT_LP_MIN_CAL_PROB:
+                    continue
+
+                # Edge computation
+                edge = final_prob - best_ask / 100.0
+                est_fee_1c = calculate_fee(1, best_ask, is_taker=True,
+                                           fee_mult_taker=_mcfg.fee_multiplier_taker,
+                                           fee_mult_maker=_mcfg.fee_multiplier_maker)
+                fee_adjusted_edge = edge - est_fee_1c / 100.0
+
+                # ── Min edge gate ──
+                if fee_adjusted_edge < OVERNIGHT_LP_MIN_EDGE_PCT:
+                    continue
+
+                # ── Sizing (taker simulation — primary metric) ──
+                _olp_kelly_f = None
+                _olp_position_taker = None
+                _olp_ev_taker = None
+                _olp_drawdown = None
+                _olp_balance = self._get_balance_cached()
+                if _olp_balance and _olp_balance > 0:
+                    _olp_sizing = self._sizer.compute(final_prob, best_ask, _olp_balance)
+                    _olp_kelly_f = _olp_sizing["kelly_f"]
+                    _olp_position_taker = _olp_sizing["contracts"]
+                    _olp_drawdown = _olp_sizing["drawdown_scaler"]
+                    # Apply overnight LP Kelly fraction + risk cap
+                    if OVERNIGHT_LP_KELLY_FRACTION < 1.0:
+                        _olp_position_taker = max(1, int(_olp_position_taker * OVERNIGHT_LP_KELLY_FRACTION))
+                    _olp_type_max = int((_olp_balance * OVERNIGHT_LP_MAX_RISK_PER_TRADE) / best_ask)
+                    if _olp_position_taker > _olp_type_max:
+                        _olp_position_taker = max(1, _olp_type_max)
+                    _olp_ev_taker = round(
+                        (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
+
+                # ── Maker simulation ──
+                # Post at best_bid + 1c (penny improvement)
+                _olp_maker_price = None
+                _olp_position_maker = None
+                _olp_ev_maker = None
+                _olp_maker_fee_adj_edge = None
+                if best_bid is not None and best_bid > 0:
+                    _olp_maker_price = best_bid + 1
+                    if _olp_maker_price <= best_ask:  # sanity: maker must be below ask
+                        _maker_edge = final_prob - _olp_maker_price / 100.0
+                        _maker_fee_1c = calculate_fee(1, _olp_maker_price, is_taker=False,
+                                                      fee_mult_taker=_mcfg.fee_multiplier_taker,
+                                                      fee_mult_maker=_mcfg.fee_multiplier_maker)
+                        _olp_maker_fee_adj_edge = _maker_edge - _maker_fee_1c / 100.0
+                        if _olp_balance and _olp_balance > 0:
+                            _m_sizing = self._sizer.compute(final_prob, _olp_maker_price, _olp_balance)
+                            _olp_position_maker = _m_sizing["contracts"]
+                            if OVERNIGHT_LP_KELLY_FRACTION < 1.0:
+                                _olp_position_maker = max(1, int(_olp_position_maker * OVERNIGHT_LP_KELLY_FRACTION))
+                            _m_type_max = int((_olp_balance * OVERNIGHT_LP_MAX_RISK_PER_TRADE) / _olp_maker_price)
+                            if _olp_position_maker > _m_type_max:
+                                _olp_position_maker = max(1, _m_type_max)
+                            _olp_ev_maker = round(
+                                (final_prob * (100 - _olp_maker_price)) -
+                                ((1 - final_prob) * _olp_maker_price) - _maker_fee_1c, 2)
+                    else:
+                        _olp_maker_price = None  # bid+1 crossed the ask — no valid maker price
+
+                # ── JSONL log ──
+                try:
+                    self._logger.log_opportunity({
+                        "filter_stage": "overnight_lp_shadow",
+                        "ticker": ticker,
+                        "event_ticker": item["event_ticker"],
+                        "asset": asset,
+                        "side": "yes",
+                        "market_price": best_ask,
+                        "model_prob": round(final_prob, 6),
+                        "edge": round(edge, 6),
+                        "fee_adjusted_edge": round(fee_adjusted_edge, 6),
+                        "kelly_f": round(_olp_kelly_f, 6) if _olp_kelly_f else None,
+                        "taker_position_size": _olp_position_taker,
+                        "taker_ev": _olp_ev_taker,
+                        "maker_price": _olp_maker_price,
+                        "maker_position_size": _olp_position_maker,
+                        "maker_ev": _olp_ev_maker,
+                        "maker_fee_adj_edge": round(_olp_maker_fee_adj_edge, 6) if _olp_maker_fee_adj_edge else None,
+                        "best_bid": best_bid,
+                        "seconds_to_close": round(stc, 1),
+                        "spot_price": spot,
+                        "threshold": threshold,
+                        "volatility": blended_rv,
+                        "vol_regime": item["vol_regime"],
+                        "overnight_median_rv": round(_rv_median, 8) if _rv_median is not None else None,
+                        "vol_spike_ratio": round(blended_rv / _rv_median, 4) if _rv_median and _rv_median > 0 else None,
+                        "vol_breaker_active": _vol_breaker_active,
+                        "raw_prob": round(raw_prob, 6) if raw_prob is not None else None,
+                        "z_score": z_score,
+                        "ask_depth": item["ask_depth"],
+                    })
+                except Exception:
+                    logging.debug("overnight_lp_shadow log failed", exc_info=True)
+
+                # ── DB insert (taker simulation as primary) ──
+                _dedup_key = (ticker, "overnight_lp_shadow")
+                if _dedup_key in self._eval_opp_seen:
+                    continue
+                self._eval_opp_seen.add(_dedup_key)
+                try:
+                    self._state.insert_evaluated_opportunity(
+                        ticker, item["event_ticker"], asset,
+                        "overnight_lp_shadow",
+                        rejection_reason=(
+                            f"shadow: cal_prob {final_prob:.4f} >= {OVERNIGHT_LP_MIN_CAL_PROB}, "
+                            f"fee_adj_edge {fee_adjusted_edge:.4f} >= {OVERNIGHT_LP_MIN_EDGE_PCT}, "
+                            f"taker@{best_ask}c maker@{_olp_maker_price}c"
+                        ),
+                        spot_price=spot, threshold=threshold,
+                        volatility=blended_rv, market_price=best_ask,
+                        seconds_to_close=stc,
+                        calibrated_prob=final_prob, edge=edge,
+                        fee_adjusted_edge=fee_adjusted_edge,
+                        ofa_adjustment=None,
+                        z_score=z_score,
+                        vol_regime=item["vol_regime"],
+                        calibrated_prob_raw=prob_result["calibrated_prob"],
+                        kelly_f=_olp_kelly_f,
+                        position_size=_olp_position_taker,
+                        drawdown_scaler=_olp_drawdown,
+                        breakeven_wr=best_ask / 100.0,
+                        expected_value=_olp_ev_taker,
+                        ask_depth=item["ask_depth"],
+                        best_ask_source=item["best_ask_source"],
+                        raw_prob=raw_prob,
+                        calibration_method=calibration_method,
+                        product_type=_pt,
+                        **item["_oft_db"], **item["_shadow_diag"])
+                except Exception:
+                    logging.warning("insert_evaluated_opportunity failed (overnight_lp_shadow)", exc_info=True)
+        except Exception:
+            logging.warning("overnight_lp_shadow processing error", exc_info=True)
 
     def _process_no_side_shadow(self, queue: list) -> None:
         """Shadow-evaluate NO-side (buy NO contract) for all queued markets.

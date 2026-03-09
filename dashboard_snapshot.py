@@ -2333,6 +2333,98 @@ class DashboardSnapshotBuilder:
                                                   "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
                                                   "discount_factor": 0.60}
 
+        # ── Overnight LP Shadow ─────────────────────────────────
+        try:
+            _olp_row = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='overnight_lp_shadow'"
+            ).fetchone()
+            # Per-asset breakdown
+            _olp_by_asset = {}
+            for _oa in _conn.execute(
+                "SELECT asset, COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='overnight_lp_shadow' "
+                "GROUP BY asset"
+            ).fetchall():
+                _olp_by_asset[_oa["asset"]] = {
+                    "n": _oa["n"], "settled": _oa["settled"],
+                    "wins": _oa["wins"] or 0,
+                    "wr": round(_oa["wins"] / _oa["settled"], 4) if _oa["settled"] else 0,
+                    "sim_pnl_cents": _oa["sim_pnl"] or 0,
+                }
+            # Per-price-tier breakdown (50-65, 65-75, 75-85)
+            _olp_by_tier = {}
+            for _ot in _conn.execute(
+                "SELECT CASE "
+                "  WHEN market_price >= 75 THEN '75-85' "
+                "  WHEN market_price >= 65 THEN '65-74' "
+                "  ELSE '50-64' END as tier, "
+                "COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities WHERE filter_stage='overnight_lp_shadow' "
+                "GROUP BY tier ORDER BY tier"
+            ).fetchall():
+                _olp_by_tier[_ot["tier"]] = {
+                    "n": _ot["n"], "settled": _ot["settled"],
+                    "wins": _ot["wins"] or 0,
+                    "wr": round(_ot["wins"] / _ot["settled"], 4) if _ot["settled"] else 0,
+                    "sim_pnl_cents": _ot["sim_pnl"] or 0,
+                }
+            # Edge distribution
+            _olp_edge = _conn.execute(
+                "SELECT ROUND(MIN(fee_adjusted_edge), 4) as min_edge, "
+                "ROUND(AVG(fee_adjusted_edge), 4) as avg_edge, "
+                "ROUND(MAX(fee_adjusted_edge), 4) as max_edge "
+                "FROM evaluated_opportunities WHERE filter_stage='overnight_lp_shadow'"
+            ).fetchone()
+            snap["overnight_lp_shadow"] = {
+                "total_signals": _olp_row["n"] if _olp_row else 0,
+                "settled": _olp_row["settled"] if _olp_row else 0,
+                "wins": _olp_row["wins"] if _olp_row else 0,
+                "wr": round(_olp_row["wins"] / _olp_row["settled"], 4) if _olp_row and _olp_row["settled"] else 0,
+                "sim_pnl_cents": _olp_row["sim_pnl"] if _olp_row else 0,
+                "by_asset": _olp_by_asset,
+                "by_price_tier": _olp_by_tier,
+                "edge_distribution": {
+                    "min": _olp_edge["min_edge"] if _olp_edge else None,
+                    "avg": _olp_edge["avg_edge"] if _olp_edge else None,
+                    "max": _olp_edge["max_edge"] if _olp_edge else None,
+                },
+                "config": {
+                    "price_range": "50-85c",
+                    "hours": "00-12 UTC",
+                    "min_cal_prob": 0.82,
+                    "min_edge": 0.10,
+                    "kelly_fraction": 0.125,
+                    "max_risk": 0.10,
+                    "stc_range": "120-600s",
+                    "vol_spike_mult": 2.0,
+                },
+            }
+        except Exception:
+            snap["overnight_lp_shadow"] = {
+                "total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
+                "edge_distribution": {"min": None, "avg": None, "max": None},
+                "config": {
+                    "price_range": "50-85c", "hours": "00-12 UTC",
+                    "min_cal_prob": 0.82, "min_edge": 0.10,
+                    "kelly_fraction": 0.125, "max_risk": 0.10,
+                    "stc_range": "120-600s", "vol_spike_mult": 2.0,
+                },
+            }
+
         # ── Decided Contract Shadow ─────────────────────────────
         try:
             _dc_row = _conn.execute(
