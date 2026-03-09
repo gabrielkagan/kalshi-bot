@@ -208,11 +208,12 @@ def compute_15m(conn, since):
     c = conn.cursor()
 
     # Core performance — filter to product_type='15m' to exclude hourly/spx/etc
-    row = c.execute("""
+    # Side-aware win counting: win = (side matches market_result)
+    row = c.execute(f"""
         SELECT
             COUNT(*) as total,
-            SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as wins,
-            SUM(CASE WHEN market_result = 'no' THEN 1 ELSE 0 END) as losses,
+            SUM(CASE WHEN COALESCE(side,'yes') = market_result THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN COALESCE(side,'yes') != market_result THEN 1 ELSE 0 END) as losses,
             SUM(pnl_cents) as total_pnl,
             SUM(fee_cents) as total_fees,
             AVG(entry_price_cents) as avg_entry,
@@ -238,11 +239,11 @@ def compute_15m(conn, since):
     """, (since, today)).fetchone()
     daily_pnl = daily_row[0] or 0 if daily_row else 0
 
-    # Per-asset breakdown
-    asset_rows = c.execute("""
+    # Per-asset breakdown (side-aware win counting)
+    asset_rows = c.execute(f"""
         SELECT asset,
             COUNT(*) as n,
-            SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as w,
+            SUM(CASE WHEN COALESCE(side,'yes') = market_result THEN 1 ELSE 0 END) as w,
             SUM(pnl_cents) as pnl
         FROM settled_trades
         WHERE settled_at >= ? AND product_type = '15m'
@@ -304,7 +305,7 @@ def compute_15m_shadow(conn, since):
     xrp_shadow = row[3] or 0
     settled = row[4] or 0
 
-    # STC shadow (non-XRP) W/L and sim PnL
+    # STC shadow (non-XRP) W/L and sim PnL — YES-side only
     _pnl = _sim_pnl_sql(0.0, "COALESCE(position_size, 1)", "market_price", "market_result")  # Kalshi charges $0 on maker fills
     stc_row = c.execute(f"""
         SELECT
@@ -317,6 +318,7 @@ def compute_15m_shadow(conn, since):
           AND filter_stage = 'stc_shadow_no_xrp'
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
+          {YES_SIDE_FILTER}
     """, (since,)).fetchone()
 
     stc_wins = stc_row[0] or 0
@@ -324,7 +326,7 @@ def compute_15m_shadow(conn, since):
     stc_pnl = stc_row[2] or 0
     stc_wr = round(stc_wins / (stc_wins + stc_losses), 4) if (stc_wins + stc_losses) > 0 else 0
 
-    # XRP shadow W/L and sim PnL
+    # XRP shadow W/L and sim PnL — YES-side only
     xrp_row = c.execute(f"""
         SELECT
             SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as wins,
@@ -335,6 +337,7 @@ def compute_15m_shadow(conn, since):
           AND filter_stage = 'xrp_shadow'
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
+          {YES_SIDE_FILTER}
     """, (since,)).fetchone()
 
     xrp_wins = xrp_row[0] or 0
@@ -353,6 +356,8 @@ def compute_15m_shadow(conn, since):
         if tbl:
             for asset in ("BTC", "ETH", "SOL", "XRP"):
                 for prefix, stats in [("a1", a1_stats), ("a2", a2_stats)]:
+                    # fifteenm_shadow_signals has no side column — YES/NO stored in separate column prefixes
+                    # a1_/a2_ columns are inherently YES-side; market_result='yes' = win for YES-side
                     r = c.execute(f"""
                         SELECT
                             COUNT(*) as total,
@@ -449,7 +454,7 @@ def compute_hourly(conn, since):
     settled = row[2] or 0
     signals_settled = row[3] or 0
 
-    # Signal W/L and simulated PnL (maker fees = $0, fee on losses)
+    # Signal W/L and simulated PnL — YES-side only (NO-side handled by compute_no_side_metrics)
     _pnl = _sim_pnl_sql(0.0, "COALESCE(position_size, 1)", "market_price", "market_result")  # Kalshi charges $0 on maker fills
     sig_row = c.execute(f"""
         SELECT
@@ -462,6 +467,7 @@ def compute_hourly(conn, since):
           AND filter_stage = 'hourly_observation'
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
+          {YES_SIDE_FILTER}
     """, (since,)).fetchone()
 
     wins = sig_row[0] or 0
@@ -471,8 +477,8 @@ def compute_hourly(conn, since):
     wr = round(wins / (wins + losses), 4) if (wins + losses) > 0 else 0
     ci_lo, ci_hi = wilson_ci(wins, wins + losses)
 
-    # Brier score on signals
-    brier_row = c.execute("""
+    # Brier score on signals — YES-side only (calibrated_prob predicts YES outcome)
+    brier_row = c.execute(f"""
         SELECT AVG((calibrated_prob - CASE WHEN market_result = 'yes' THEN 1.0 ELSE 0.0 END)
                     * (calibrated_prob - CASE WHEN market_result = 'yes' THEN 1.0 ELSE 0.0 END))
         FROM evaluated_opportunities
@@ -481,11 +487,12 @@ def compute_hourly(conn, since):
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
           AND calibrated_prob IS NOT NULL
+          {YES_SIDE_FILTER}
     """, (since,)).fetchone()
     brier = round(brier_row[0], 4) if brier_row and brier_row[0] is not None else None
 
-    # Overconfidence: avg predicted - avg actual
-    oc_row = c.execute("""
+    # Overconfidence: avg predicted - avg actual — YES-side only
+    oc_row = c.execute(f"""
         SELECT
             AVG(calibrated_prob) as avg_pred,
             AVG(CASE WHEN market_result = 'yes' THEN 1.0 ELSE 0.0 END) as avg_actual
@@ -495,6 +502,7 @@ def compute_hourly(conn, since):
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
           AND calibrated_prob IS NOT NULL
+          {YES_SIDE_FILTER}
     """, (since,)).fetchone()
     overconfidence_pp = None
     if oc_row and oc_row[0] is not None and oc_row[1] is not None:
@@ -513,7 +521,7 @@ def compute_hourly(conn, since):
     """, (since,)).fetchone()
     temp_coverage = round(temp_row[1] / temp_row[0] * 100, 1) if temp_row[0] else 0
 
-    # Worst asset by simulated PnL
+    # Worst asset by simulated PnL — YES-side only
     worst_row = c.execute(f"""
         SELECT asset, SUM({_pnl}) as pnl
         FROM evaluated_opportunities
@@ -521,6 +529,7 @@ def compute_hourly(conn, since):
           AND filter_stage = 'hourly_observation'
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
+          {YES_SIDE_FILTER}
         GROUP BY asset
         ORDER BY pnl ASC
         LIMIT 1
@@ -528,7 +537,7 @@ def compute_hourly(conn, since):
     worst_asset = worst_row[0] if worst_row else None
     worst_asset_pnl = worst_row[1] or 0 if worst_row else 0
 
-    # Per-asset summary
+    # Per-asset summary — YES-side only
     asset_rows = c.execute(f"""
         SELECT asset,
             SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as w,
@@ -539,6 +548,7 @@ def compute_hourly(conn, since):
           AND filter_stage = 'hourly_observation'
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
+          {YES_SIDE_FILTER}
         GROUP BY asset ORDER BY pnl DESC
     """, (since,)).fetchall()
     by_asset = {r[0]: {"wins": r[1], "losses": r[2], "sim_pnl_cents": r[3] or 0} for r in asset_rows}
@@ -590,7 +600,7 @@ def compute_spx(conn, since):
     signals = row[1] or 0
     signals_settled = row[3] or 0
 
-    # Signal W/L and sim PnL (maker fee = $0)
+    # Signal W/L and sim PnL — YES-side only (NO-side handled by compute_no_side_metrics)
     _spx_pnl = _sim_pnl_sql(0.0, "COALESCE(position_size, 1)", "market_price", "market_result")  # Kalshi charges $0 on maker fills
     sig_row = c.execute(f"""
         SELECT
@@ -603,6 +613,7 @@ def compute_spx(conn, since):
           AND filter_stage = 'spx_observation'
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
+          {YES_SIDE_FILTER}
     """, (since,)).fetchone()
 
     wins = sig_row[0] or 0
@@ -612,8 +623,8 @@ def compute_spx(conn, since):
     wr = round(wins / (wins + losses), 4) if (wins + losses) > 0 else 0
     ci_lo, ci_hi = wilson_ci(wins, wins + losses)
 
-    # Brier score
-    brier_row = c.execute("""
+    # Brier score — YES-side only
+    brier_row = c.execute(f"""
         SELECT AVG((calibrated_prob - CASE WHEN market_result = 'yes' THEN 1.0 ELSE 0.0 END)
                     * (calibrated_prob - CASE WHEN market_result = 'yes' THEN 1.0 ELSE 0.0 END))
         FROM evaluated_opportunities
@@ -622,6 +633,7 @@ def compute_spx(conn, since):
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
           AND calibrated_prob IS NOT NULL
+          {YES_SIDE_FILTER}
     """, (since,)).fetchone()
     brier = round(brier_row[0], 4) if brier_row and brier_row[0] is not None else None
 
@@ -710,7 +722,7 @@ def compute_weather(conn, since):
     settled_total = row[2] or 0
     signals_settled = row[3] or 0
 
-    # Signal W/L and simulated PnL (maker fees = $0, fee on losses)
+    # Signal W/L and simulated PnL — YES-side only (NO-side handled by compute_no_side_metrics)
     _pnl = _sim_pnl_sql(0.0, "COALESCE(position_size, 1)", "market_price", "market_result")  # Kalshi charges $0 on maker fills
     sig_row = c.execute(f"""
         SELECT
@@ -723,6 +735,7 @@ def compute_weather(conn, since):
           AND filter_stage = 'weather_observation'
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
+          {YES_SIDE_FILTER}
     """, (since,)).fetchone()
 
     wins = sig_row[0] or 0
@@ -752,8 +765,8 @@ def compute_weather(conn, since):
     """, (since,)).fetchone()
     noside_edge_pct = round(noside_row[0] / noside_row[1] * 100, 1) if noside_row[1] else 0
 
-    # By wx_market_type (city)
-    city_rows = c.execute("""
+    # By wx_market_type (city) — YES-side only
+    city_rows = c.execute(f"""
         SELECT wx_market_type,
             COUNT(*) as n,
             SUM(CASE WHEN market_result = 'yes' THEN 1 ELSE 0 END) as w,
@@ -762,6 +775,7 @@ def compute_weather(conn, since):
         WHERE product_type = 'weather'
           AND evaluation_time >= ?
           AND market_result IS NOT NULL
+          {YES_SIDE_FILTER}
         GROUP BY wx_market_type
     """, (since,)).fetchall()
     by_city = {r[0] or "unknown": {"n": r[1], "wins": r[2] or 0, "losses": r[3] or 0} for r in city_rows}
