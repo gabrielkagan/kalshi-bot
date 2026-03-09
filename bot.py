@@ -71,6 +71,18 @@ HOURLY_MIN_STC_ENTRY = 120            # Min STC for entry (2 min) — expanded f
 HOURLY_MAX_STC_ENTRY = 3600           # 60 min — expanded for observation data collection
 HOURLY_EXCLUDED_ASSETS = set()         # Empty in observation mode — collect all asset data
 HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time window (ENB ~1.3)
+
+# ─── Hourly Config A (shadow promotion candidate) ────────────────────────────
+# Filters applied as a SECOND insert (filter_stage='hourly_config_a') alongside
+# the unfiltered baseline ('hourly_observation'). Does NOT affect live trading.
+# Graduation criteria (all must hold for 7+ days post-filter):
+#   - WR ≥ 78%
+#   - Wilson 95% CI lower bound ≥ 72%
+#   - Brier < 0.25
+#   - No single day with WR < 60%
+#   - Flat sim PnL positive
+HOURLY_CONFIG_A_EXCLUDED = {'XRP'}    # XRP: 42% WR, -$89 sim PnL, 12-33pp below non-XRP every UTC bucket
+HOURLY_CONFIG_A_MAX_EDGE = 0.007      # Edge ≤ 0.7%: filters out overconfident high-edge noise (8-15% edge = 32% WR)
 HOURLY_MAX_WINDOW_RISK = 0.15         # Max aggregate risk across all hourly positions per window
 HOURLY_KELLY_FRACTION = 0.25          # Quarter-Kelly: 44% of growth rate, ~3% halving probability
 
@@ -8982,6 +8994,39 @@ class OpportunityScanner:
                             ofa_adjustment, z_score, vol_est,
                             calibrated_prob_raw, est_fee_1c,
                             ask_depth, best_ask_source, _cf, _shadow_diag)
+                    # ── Config A shadow variant (no_XRP + edge ≤ 0.7%) ──
+                    if (_obs_pt == "hourly"
+                            and asset not in HOURLY_CONFIG_A_EXCLUDED
+                            and fee_adjusted_edge <= HOURLY_CONFIG_A_MAX_EDGE):
+                        _ca_dedup = (ticker, "hourly_config_a")
+                        if _ca_dedup not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_ca_dedup)
+                            _ca_ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            try:
+                                self._state.insert_evaluated_opportunity(
+                                    ticker, window["event_ticker"], asset,
+                                    "hourly_config_a",
+                                    spot_price=spot, threshold=threshold,
+                                    volatility=blended_rv, market_price=best_ask,
+                                    seconds_to_close=seconds_remaining,
+                                    calibrated_prob=final_prob, edge=edge,
+                                    ofa_adjustment=ofa_adjustment,
+                                    z_score=z_score, vol_regime=vol_est["regime"],
+                                    raw_prob=raw_prob,
+                                    calibrated_prob_raw=calibrated_prob_raw,
+                                    calibration_method=calibration_method,
+                                    fee_adjusted_edge=fee_adjusted_edge,
+                                    breakeven_wr=best_ask / 100.0,
+                                    expected_value=round(_ca_ev, 2),
+                                    ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                    position_size=sizing["contracts"],
+                                    kelly_f=sizing["kelly_f"],
+                                    drawdown_scaler=sizing["drawdown_scaler"],
+                                    strategy=strategy, old_system_prob=_old_system_prob,
+                                    product_type="hourly",
+                                    **_oft_db, **_shadow_diag)
+                            except Exception:
+                                logging.warning("insert_evaluated_opportunity failed (hourly_config_a)", exc_info=True)
                     # Increment per-window counters even in observation mode so Layer 3b/3c
                     # limits work for counterfactual analysis (without this, counter stays 0
                     # and the limit is dead code — bug found by audit: 11 SPX positions in one window)

@@ -92,6 +92,7 @@ REQUIRED_SNAP_KEYS = {
     "capital_utilization",
     "sol_pathc_shadow",
     "eth_filter_shadow",
+    "hourly_config_a",
 }
 
 # Dashboard JS field access patterns that MUST match firebase keys.

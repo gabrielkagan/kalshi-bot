@@ -1454,6 +1454,75 @@ class DashboardSnapshotBuilder:
         except Exception:
             logging.debug("Snapshot: hourly_observation build failed", exc_info=True)
 
+        # ── Hourly Config A (no_XRP + edge ≤ 0.7%) ──────────────────────
+        try:
+            _ca = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl, "
+                "AVG(CASE WHEN status='settled' AND calibrated_prob IS NOT NULL "
+                "  THEN (calibrated_prob - CASE WHEN market_result IN ('yes','all_yes') "
+                "    THEN 1.0 ELSE 0.0 END) * (calibrated_prob - CASE WHEN market_result IN ('yes','all_yes') "
+                "    THEN 1.0 ELSE 0.0 END) END) as brier "
+                "FROM evaluated_opportunities "
+                "WHERE product_type='hourly' AND filter_stage='hourly_config_a'"
+            ).fetchone()
+            _ca_by_day = _conn.execute(
+                "SELECT date(evaluation_time) as day, COUNT(*) as n, "
+                "SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) as wins "
+                "FROM evaluated_opportunities "
+                "WHERE product_type='hourly' AND filter_stage='hourly_config_a' AND status='settled' "
+                "GROUP BY day ORDER BY day"
+            ).fetchall()
+            _ca_min_day_wr = None
+            _ca_days = 0
+            for _d in _ca_by_day:
+                _ca_days += 1
+                _dwr = (_d["wins"] or 0) / _d["n"] if _d["n"] else 0
+                if _ca_min_day_wr is None or _dwr < _ca_min_day_wr:
+                    _ca_min_day_wr = _dwr
+            _ca_settled = (_ca["settled"] or 0) if _ca else 0
+            _ca_wins = (_ca["wins"] or 0) if _ca else 0
+            _ca_wr = round(_ca_wins / _ca_settled, 4) if _ca_settled else 0
+            # Wilson lower bound
+            _ca_wlo = 0
+            if _ca_settled > 0:
+                _p = _ca_wins / _ca_settled
+                _z = 1.96
+                _d = 1 + _z**2 / _ca_settled
+                _ca_wlo = round((_p + _z**2 / (2 * _ca_settled) - _z * ((_p * (1 - _p) / _ca_settled + _z**2 / (4 * _ca_settled**2)) ** 0.5)) / _d, 4)
+            snap["hourly_config_a"] = {
+                "total_signals": _ca["n"] if _ca else 0,
+                "settled": _ca_settled,
+                "wins": _ca_wins,
+                "wr": _ca_wr,
+                "wilson_lower": _ca_wlo,
+                "brier": round(_ca["brier"], 4) if _ca and _ca["brier"] else None,
+                "sim_pnl_cents": _ca["sim_pnl"] if _ca else 0,
+                "days": _ca_days,
+                "min_day_wr": round(_ca_min_day_wr, 4) if _ca_min_day_wr is not None else None,
+                "filters": {"excluded_assets": ["XRP"], "max_edge": 0.007},
+                "graduation": {
+                    "days_required": 7,
+                    "min_wr": 0.78,
+                    "min_wilson_lower": 0.72,
+                    "max_brier": 0.25,
+                    "min_day_wr": 0.60,
+                    "pnl_positive": True,
+                },
+            }
+        except Exception:
+            logging.debug("hourly_config_a snapshot failed", exc_info=True)
+            snap["hourly_config_a"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                        "wilson_lower": 0, "brier": None, "sim_pnl_cents": 0,
+                                        "days": 0, "min_day_wr": None,
+                                        "filters": {"excluded_assets": ["XRP"], "max_edge": 0.007},
+                                        "graduation": {"days_required": 7, "min_wr": 0.78,
+                                                       "min_wilson_lower": 0.72, "max_brier": 0.25,
+                                                       "min_day_wr": 0.60, "pnl_positive": True}}
+
         # ── SPX Observation Panel ─────────────────────────────────────────
         try:
             if getattr(_bot_mod, "SPX_HOURLY_ENABLED", False):
