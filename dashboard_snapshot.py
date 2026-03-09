@@ -41,16 +41,23 @@ def _parse_ob_levels(entries):
 class DashboardSnapshotBuilder:
     """Builds dashboard state snapshots. Used by SupabaseSyncer."""
 
+    # TTL cache for slow-changing sections (settled trades, shadows, counterfactual)
+    _SLOW_CACHE_TTL = 60  # seconds
+
     def __init__(self, main_loop):
         self._ml = main_loop
         # Position health tracking (dashboard enrichment)
         self._mid_history: Dict[str, collections.deque] = {}
         self._health_state: Dict[str, str] = {}
         self._health_streak: Dict[str, int] = {}
+        # TTL cache for slow-changing snapshot sections
+        self._slow_cache: Dict[str, Any] = {}
+        self._slow_cache_ts: float = 0
 
     def _build_snapshot(self, db_conn) -> Dict[str, Any]:
         """Build dashboard snapshot. db_conn is a sqlite3 connection."""
         snap: Dict[str, Any] = {}
+        _query_count = 0  # track actual queries this cycle
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         snap["timestamp"] = now_utc.isoformat()
 
@@ -101,6 +108,19 @@ class DashboardSnapshotBuilder:
             snap["balance_history"] = []
 
         _conn = db_conn
+
+        # Single read transaction — consistent snapshot, doesn't block WAL checkpointing
+        try:
+            _conn.execute("BEGIN DEFERRED")
+        except Exception:
+            pass  # may already be in a transaction
+
+        # Check if slow-changing sections need refresh
+        _now_mono = time.time()
+        _run_slow = (_now_mono - self._slow_cache_ts) >= self._SLOW_CACHE_TTL
+        if not _run_slow:
+            # Merge cached slow sections into snap
+            snap.update(self._slow_cache)
 
         # Active positions
         try:
@@ -1902,29 +1922,36 @@ class DashboardSnapshotBuilder:
             snap["spx_harrv_shadow"] = None
 
         # ── STC Performance (15M live trades by STC bucket) ────────────
+        # Combined into single query (was 3 queries in loop)
         try:
-            conn = _conn
-            stc_buckets = [
-                ("0-180", 0, 180),
-                ("180-500", 180, 500),
-                ("500-900", 500, 900),
-            ]
+            _stc_rows = _conn.execute(
+                "SELECT CASE "
+                "  WHEN seconds_to_close < 180 THEN '0-180' "
+                "  WHEN seconds_to_close < 500 THEN '180-500' "
+                "  ELSE '500-900' END AS bucket, "
+                "COUNT(*) AS n, "
+                "SUM(CASE WHEN (side='yes' AND market_result='yes') OR "
+                "  (side='no' AND market_result IN ('no','all_no')) THEN 1 ELSE 0 END) AS w, "
+                "SUM(pnl_cents - fee_cents) AS pnl "
+                "FROM settled_trades WHERE product_type='15m' "
+                "AND seconds_to_close >= 0 AND seconds_to_close < 900 "
+                "AND settled_at >= ? "
+                "GROUP BY bucket",
+                (CONFIG_REGIME_SINCE,)
+            ).fetchall()
+            _query_count += 1
             stc_perf = {}
-            for label, lo, hi in stc_buckets:
-                row = conn.execute(
-                    "SELECT COUNT(*) AS n, "
-                    "SUM(CASE WHEN (side='yes' AND market_result='yes') OR (side='no' AND market_result IN ('no','all_no')) THEN 1 ELSE 0 END) AS w, "
-                    "SUM(pnl_cents - fee_cents) AS pnl "
-                    "FROM settled_trades WHERE product_type='15m' AND seconds_to_close >= ? AND seconds_to_close < ? "
-                    "AND settled_at >= ?",
-                    (lo, hi, CONFIG_REGIME_SINCE)
-                ).fetchone()
-                stc_perf[label] = {
+            for row in _stc_rows:
+                stc_perf[row["bucket"]] = {
                     "trades": row["n"] if row else 0,
                     "wins": row["w"] if row and row["w"] else 0,
                     "wr": round(row["w"] / row["n"], 4) if row and row["n"] and row["w"] else 0,
                     "pnl_cents": row["pnl"] if row and row["pnl"] else 0,
                 }
+            # Ensure all buckets present even if empty
+            for b in ("0-180", "180-500", "500-900"):
+                if b not in stc_perf:
+                    stc_perf[b] = {"trades": 0, "wins": 0, "wr": 0, "pnl_cents": 0}
             snap["stc_performance"] = stc_perf
         except Exception:
             logging.debug("Snapshot: stc_performance build failed", exc_info=True)
@@ -2205,345 +2232,232 @@ class DashboardSnapshotBuilder:
             snap["no_side_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
                                       "sim_pnl_cents": 0, "by_product_type": {}}
 
-        # ── Weekend Edge Discount Shadow ─────────────────────────────
+        # ── Shadow Panels (combined: 17 queries → 3) ─────────────────
+        _SHADOW_STAGES = (
+            'weekend_discount_shadow', 'overnight_discount_shadow',
+            'overnight_lp_shadow', 'decided_contract_t1',
+            'decided_contract_t2', 'relaxed_edge_shadow',
+        )
+        _shadow_defaults = {
+            "weekend_discount_shadow": {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                        "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
+                                        "discount_factor": 0.60},
+            "overnight_discount_shadow": {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                          "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
+                                          "discount_factor": 0.60},
+            "overnight_lp_shadow": {
+                "total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
+                "edge_distribution": {"min": None, "avg": None, "max": None},
+                "config": {"price_range": "50-85c", "hours": "00-12 UTC",
+                           "min_cal_prob": 0.82, "min_edge": 0.10,
+                           "kelly_fraction": 0.125, "max_risk": 0.10,
+                           "stc_range": "120-600s", "vol_spike_mult": 2.0},
+            },
+            "decided_contract_shadow": {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                        "sim_pnl_cents": 0, "by_asset": {}, "by_tier": {}},
+            "relaxed_edge_shadow": {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                    "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {}},
+        }
         try:
-            _wknd_row = _conn.execute(
-                "SELECT COUNT(*) as n, "
+            # Query 1: per filter_stage × asset (covers totals + by_asset for all 5 panels)
+            _sh_by_asset = _conn.execute(
+                "SELECT filter_stage, asset, COUNT(*) as n, "
                 "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
                 "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
                 "  THEN 1 ELSE 0 END) as wins, "
                 "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='weekend_discount_shadow'"
-            ).fetchone()
-            # Per-asset breakdown
-            _wknd_by_asset = {}
-            for _wa in _conn.execute(
-                "SELECT asset, COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='weekend_discount_shadow' "
-                "GROUP BY asset"
-            ).fetchall():
-                _wknd_by_asset[_wa["asset"]] = {
-                    "n": _wa["n"], "settled": _wa["settled"],
-                    "wins": _wa["wins"] or 0,
-                    "wr": round(_wa["wins"] / _wa["settled"], 4) if _wa["settled"] else 0,
-                    "sim_pnl_cents": _wa["sim_pnl"] or 0,
-                }
-            # Per-price-tier breakdown
-            _wknd_by_tier = {}
-            for _wt in _conn.execute(
-                "SELECT CASE "
-                "  WHEN market_price >= 95 THEN '95+' "
-                "  WHEN market_price >= 93 THEN '93-94' "
-                "  WHEN market_price >= 91 THEN '91-92' "
-                "  WHEN market_price >= 89 THEN '89-90' "
-                "  ELSE '86-88' END as tier, "
-                "COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='weekend_discount_shadow' "
-                "GROUP BY tier ORDER BY tier"
-            ).fetchall():
-                _wknd_by_tier[_wt["tier"]] = {
-                    "n": _wt["n"], "settled": _wt["settled"],
-                    "wins": _wt["wins"] or 0,
-                    "wr": round(_wt["wins"] / _wt["settled"], 4) if _wt["settled"] else 0,
-                    "sim_pnl_cents": _wt["sim_pnl"] or 0,
-                }
-            snap["weekend_discount_shadow"] = {
-                "total_signals": _wknd_row["n"] if _wknd_row else 0,
-                "settled": _wknd_row["settled"] if _wknd_row else 0,
-                "wins": _wknd_row["wins"] if _wknd_row else 0,
-                "wr": round(_wknd_row["wins"] / _wknd_row["settled"], 4) if _wknd_row and _wknd_row["settled"] else 0,
-                "sim_pnl_cents": _wknd_row["sim_pnl"] if _wknd_row else 0,
-                "by_asset": _wknd_by_asset,
-                "by_price_tier": _wknd_by_tier,
-                "discount_factor": 0.60,
-            }
-        except Exception:
-            snap["weekend_discount_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
-                                               "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
-                                               "discount_factor": 0.60}
+                "FROM evaluated_opportunities "
+                "WHERE filter_stage IN ('weekend_discount_shadow','overnight_discount_shadow',"
+                "'overnight_lp_shadow','decided_contract_t1','decided_contract_t2','relaxed_edge_shadow') "
+                "GROUP BY filter_stage, asset"
+            ).fetchall()
+            _query_count += 1
 
-        # ── Overnight Edge Discount Shadow ─────────────────────────────
-        try:
-            _ovn_row = _conn.execute(
-                "SELECT COUNT(*) as n, "
+            # Query 2: per filter_stage × market_price (for price tier bucketing in Python)
+            _sh_by_price = _conn.execute(
+                "SELECT filter_stage, market_price, COUNT(*) as n, "
                 "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
                 "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
                 "  THEN 1 ELSE 0 END) as wins, "
                 "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='overnight_discount_shadow'"
-            ).fetchone()
-            _ovn_by_asset = {}
-            for _oa in _conn.execute(
-                "SELECT asset, COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='overnight_discount_shadow' "
-                "GROUP BY asset"
-            ).fetchall():
-                _ovn_by_asset[_oa["asset"]] = {
-                    "n": _oa["n"], "settled": _oa["settled"],
-                    "wins": _oa["wins"] or 0,
-                    "wr": round(_oa["wins"] / _oa["settled"], 4) if _oa["settled"] else 0,
-                    "sim_pnl_cents": _oa["sim_pnl"] or 0,
-                }
-            _ovn_by_tier = {}
-            for _ot in _conn.execute(
-                "SELECT CASE "
-                "  WHEN market_price >= 95 THEN '95+' "
-                "  WHEN market_price >= 93 THEN '93-94' "
-                "  WHEN market_price >= 91 THEN '91-92' "
-                "  WHEN market_price >= 89 THEN '89-90' "
-                "  ELSE '86-88' END as tier, "
-                "COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='overnight_discount_shadow' "
-                "GROUP BY tier ORDER BY tier"
-            ).fetchall():
-                _ovn_by_tier[_ot["tier"]] = {
-                    "n": _ot["n"], "settled": _ot["settled"],
-                    "wins": _ot["wins"] or 0,
-                    "wr": round(_ot["wins"] / _ot["settled"], 4) if _ot["settled"] else 0,
-                    "sim_pnl_cents": _ot["sim_pnl"] or 0,
-                }
-            snap["overnight_discount_shadow"] = {
-                "total_signals": _ovn_row["n"] if _ovn_row else 0,
-                "settled": _ovn_row["settled"] if _ovn_row else 0,
-                "wins": _ovn_row["wins"] if _ovn_row else 0,
-                "wr": round(_ovn_row["wins"] / _ovn_row["settled"], 4) if _ovn_row and _ovn_row["settled"] else 0,
-                "sim_pnl_cents": _ovn_row["sim_pnl"] if _ovn_row else 0,
-                "by_asset": _ovn_by_asset,
-                "by_price_tier": _ovn_by_tier,
-                "discount_factor": 0.60,
-            }
-        except Exception:
-            snap["overnight_discount_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
-                                                  "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
-                                                  "discount_factor": 0.60}
+                "FROM evaluated_opportunities "
+                "WHERE filter_stage IN ('weekend_discount_shadow','overnight_discount_shadow',"
+                "'overnight_lp_shadow','decided_contract_t1','decided_contract_t2','relaxed_edge_shadow') "
+                "GROUP BY filter_stage, market_price"
+            ).fetchall()
+            _query_count += 1
 
-        # ── Overnight LP Shadow ─────────────────────────────────
-        try:
-            _olp_row = _conn.execute(
-                "SELECT COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='overnight_lp_shadow'"
-            ).fetchone()
-            # Per-asset breakdown
-            _olp_by_asset = {}
-            for _oa in _conn.execute(
-                "SELECT asset, COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='overnight_lp_shadow' "
-                "GROUP BY asset"
-            ).fetchall():
-                _olp_by_asset[_oa["asset"]] = {
-                    "n": _oa["n"], "settled": _oa["settled"],
-                    "wins": _oa["wins"] or 0,
-                    "wr": round(_oa["wins"] / _oa["settled"], 4) if _oa["settled"] else 0,
-                    "sim_pnl_cents": _oa["sim_pnl"] or 0,
-                }
-            # Per-price-tier breakdown (50-65, 65-75, 75-85)
-            _olp_by_tier = {}
-            for _ot in _conn.execute(
-                "SELECT CASE "
-                "  WHEN market_price >= 75 THEN '75-85' "
-                "  WHEN market_price >= 65 THEN '65-74' "
-                "  ELSE '50-64' END as tier, "
-                "COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='overnight_lp_shadow' "
-                "GROUP BY tier ORDER BY tier"
-            ).fetchall():
-                _olp_by_tier[_ot["tier"]] = {
-                    "n": _ot["n"], "settled": _ot["settled"],
-                    "wins": _ot["wins"] or 0,
-                    "wr": round(_ot["wins"] / _ot["settled"], 4) if _ot["settled"] else 0,
-                    "sim_pnl_cents": _ot["sim_pnl"] or 0,
-                }
-            # Edge distribution
+            # Query 3: edge distribution for overnight LP only
             _olp_edge = _conn.execute(
                 "SELECT ROUND(MIN(fee_adjusted_edge), 4) as min_edge, "
                 "ROUND(AVG(fee_adjusted_edge), 4) as avg_edge, "
                 "ROUND(MAX(fee_adjusted_edge), 4) as max_edge "
                 "FROM evaluated_opportunities WHERE filter_stage='overnight_lp_shadow'"
             ).fetchone()
-            snap["overnight_lp_shadow"] = {
-                "total_signals": _olp_row["n"] if _olp_row else 0,
-                "settled": _olp_row["settled"] if _olp_row else 0,
-                "wins": _olp_row["wins"] if _olp_row else 0,
-                "wr": round(_olp_row["wins"] / _olp_row["settled"], 4) if _olp_row and _olp_row["settled"] else 0,
-                "sim_pnl_cents": _olp_row["sim_pnl"] if _olp_row else 0,
-                "by_asset": _olp_by_asset,
-                "by_price_tier": _olp_by_tier,
-                "edge_distribution": {
-                    "min": _olp_edge["min_edge"] if _olp_edge else None,
-                    "avg": _olp_edge["avg_edge"] if _olp_edge else None,
-                    "max": _olp_edge["max_edge"] if _olp_edge else None,
-                },
-                "config": {
-                    "price_range": "50-85c",
-                    "hours": "00-12 UTC",
-                    "min_cal_prob": 0.82,
-                    "min_edge": 0.10,
-                    "kelly_fraction": 0.125,
-                    "max_risk": 0.10,
-                    "stc_range": "120-600s",
-                    "vol_spike_mult": 2.0,
-                },
-            }
-        except Exception:
-            snap["overnight_lp_shadow"] = {
-                "total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
-                "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
-                "edge_distribution": {"min": None, "avg": None, "max": None},
-                "config": {
-                    "price_range": "50-85c", "hours": "00-12 UTC",
-                    "min_cal_prob": 0.82, "min_edge": 0.10,
-                    "kelly_fraction": 0.125, "max_risk": 0.10,
-                    "stc_range": "120-600s", "vol_spike_mult": 2.0,
-                },
+            _query_count += 1
+
+            # --- Disaggregate by_asset data ---
+            # Build {filter_stage: {asset: {n, settled, wins, sim_pnl}}}
+            _sh_asset_map = {}
+            for r in _sh_by_asset:
+                fs = r["filter_stage"]
+                _sh_asset_map.setdefault(fs, {})[r["asset"]] = {
+                    "n": r["n"], "settled": r["settled"],
+                    "wins": r["wins"] or 0,
+                    "wr": round(r["wins"] / r["settled"], 4) if r["settled"] else 0,
+                    "sim_pnl_cents": r["sim_pnl"] or 0,
+                }
+
+            # Compute totals per filter_stage by summing across assets
+            _sh_totals = {}
+            for fs, assets in _sh_asset_map.items():
+                _sh_totals[fs] = {
+                    "n": sum(a["n"] for a in assets.values()),
+                    "settled": sum(a["settled"] for a in assets.values()),
+                    "wins": sum(a["wins"] for a in assets.values()),
+                    "sim_pnl": sum(a["sim_pnl_cents"] for a in assets.values()),
+                }
+
+            # --- Disaggregate by_price data with per-panel tier bucketing ---
+            def _bucket_standard(mp):
+                """86-88, 89-90, 91-92, 93-94, 95+"""
+                if mp is None:
+                    return "unknown"
+                if mp >= 95: return "95+"
+                if mp >= 93: return "93-94"
+                if mp >= 91: return "91-92"
+                if mp >= 89: return "89-90"
+                return "86-88"
+
+            def _bucket_lp(mp):
+                """50-64, 65-74, 75-85"""
+                if mp is None:
+                    return "unknown"
+                if mp >= 75: return "75-85"
+                if mp >= 65: return "65-74"
+                return "50-64"
+
+            def _bucket_relaxed(mp):
+                """88-89, 90-91, 92"""
+                if mp is None:
+                    return "unknown"
+                if mp >= 92: return "92"
+                if mp >= 90: return "90-91"
+                return "88-89"
+
+            _tier_bucketers = {
+                "weekend_discount_shadow": _bucket_standard,
+                "overnight_discount_shadow": _bucket_standard,
+                "overnight_lp_shadow": _bucket_lp,
+                "relaxed_edge_shadow": _bucket_relaxed,
             }
 
-        # ── Decided Contract Shadow ─────────────────────────────
-        try:
-            _dc_row = _conn.execute(
-                "SELECT COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage IN ('decided_contract_t1','decided_contract_t2')"
-            ).fetchone()
-            # Per-asset breakdown
+            # Build {filter_stage: {tier: {n, settled, wins, sim_pnl}}}
+            _sh_tier_map = {}
+            for r in _sh_by_price:
+                fs = r["filter_stage"]
+                bucketer = _tier_bucketers.get(fs)
+                if bucketer:
+                    tier = bucketer(r["market_price"])
+                else:
+                    # decided_contract uses filter_stage as tier — skip price bucketing
+                    continue
+                bucket = _sh_tier_map.setdefault(fs, {}).setdefault(tier, {"n": 0, "settled": 0, "wins": 0, "sim_pnl": 0})
+                bucket["n"] += r["n"]
+                bucket["settled"] += (r["settled"] or 0)
+                bucket["wins"] += (r["wins"] or 0)
+                bucket["sim_pnl"] += (r["sim_pnl"] or 0)
+
+            # Finalize tier dicts with wr
+            for fs, tiers in _sh_tier_map.items():
+                for tier, vals in tiers.items():
+                    vals["sim_pnl_cents"] = vals.pop("sim_pnl")
+                    vals["wr"] = round(vals["wins"] / vals["settled"], 4) if vals["settled"] else 0
+
+            # --- Helper to build a panel snap dict ---
+            def _panel_snap(fs, totals_dict, by_asset_dict, by_tier_dict):
+                t = totals_dict.get(fs, {"n": 0, "settled": 0, "wins": 0, "sim_pnl": 0})
+                return {
+                    "total_signals": t["n"],
+                    "settled": t["settled"],
+                    "wins": t["wins"],
+                    "wr": round(t["wins"] / t["settled"], 4) if t["settled"] else 0,
+                    "sim_pnl_cents": t["sim_pnl"],
+                    "by_asset": by_asset_dict.get(fs, {}),
+                    "by_price_tier": by_tier_dict.get(fs, {}),
+                }
+
+            # Weekend discount
+            _wknd = _panel_snap("weekend_discount_shadow", _sh_totals, _sh_asset_map, _sh_tier_map)
+            _wknd["discount_factor"] = 0.60
+            snap["weekend_discount_shadow"] = _wknd
+
+            # Overnight discount
+            _ovn = _panel_snap("overnight_discount_shadow", _sh_totals, _sh_asset_map, _sh_tier_map)
+            _ovn["discount_factor"] = 0.60
+            snap["overnight_discount_shadow"] = _ovn
+
+            # Overnight LP (extra: edge distribution + config)
+            _olp = _panel_snap("overnight_lp_shadow", _sh_totals, _sh_asset_map, _sh_tier_map)
+            _olp["edge_distribution"] = {
+                "min": _olp_edge["min_edge"] if _olp_edge else None,
+                "avg": _olp_edge["avg_edge"] if _olp_edge else None,
+                "max": _olp_edge["max_edge"] if _olp_edge else None,
+            }
+            _olp["config"] = {
+                "price_range": "50-85c", "hours": "00-12 UTC",
+                "min_cal_prob": 0.82, "min_edge": 0.10,
+                "kelly_fraction": 0.125, "max_risk": 0.10,
+                "stc_range": "120-600s", "vol_spike_mult": 2.0,
+            }
+            snap["overnight_lp_shadow"] = _olp
+
+            # Decided contract (tier = filter_stage t1/t2, not price bucket)
+            _dc_t1 = _sh_totals.get("decided_contract_t1", {"n": 0, "settled": 0, "wins": 0, "sim_pnl": 0})
+            _dc_t2 = _sh_totals.get("decided_contract_t2", {"n": 0, "settled": 0, "wins": 0, "sim_pnl": 0})
+            _dc_total_n = _dc_t1["n"] + _dc_t2["n"]
+            _dc_total_s = _dc_t1["settled"] + _dc_t2["settled"]
+            _dc_total_w = _dc_t1["wins"] + _dc_t2["wins"]
+            _dc_total_pnl = _dc_t1["sim_pnl"] + _dc_t2["sim_pnl"]
+            # Merge by_asset across t1+t2
             _dc_by_asset = {}
-            for _da in _conn.execute(
-                "SELECT asset, COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage IN ('decided_contract_t1','decided_contract_t2') "
-                "GROUP BY asset"
-            ).fetchall():
-                _dc_by_asset[_da["asset"]] = {
-                    "n": _da["n"], "settled": _da["settled"],
-                    "wins": _da["wins"] or 0,
-                    "wr": round(_da["wins"] / _da["settled"], 4) if _da["settled"] else 0,
-                    "sim_pnl_cents": _da["sim_pnl"] or 0,
-                }
-            # Per-tier breakdown (t1 vs t2)
+            for fs in ("decided_contract_t1", "decided_contract_t2"):
+                for asset, vals in _sh_asset_map.get(fs, {}).items():
+                    if asset not in _dc_by_asset:
+                        _dc_by_asset[asset] = {"n": 0, "settled": 0, "wins": 0, "sim_pnl_cents": 0}
+                    _dc_by_asset[asset]["n"] += vals["n"]
+                    _dc_by_asset[asset]["settled"] += vals["settled"]
+                    _dc_by_asset[asset]["wins"] += vals["wins"]
+                    _dc_by_asset[asset]["sim_pnl_cents"] += vals["sim_pnl_cents"]
+            for vals in _dc_by_asset.values():
+                vals["wr"] = round(vals["wins"] / vals["settled"], 4) if vals["settled"] else 0
+            # by_tier: t1 vs t2 from totals
             _dc_by_tier = {}
-            for _dt in _conn.execute(
-                "SELECT filter_stage as tier, COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage IN ('decided_contract_t1','decided_contract_t2') "
-                "GROUP BY filter_stage ORDER BY filter_stage"
-            ).fetchall():
-                _dc_by_tier[_dt["tier"]] = {
-                    "n": _dt["n"], "settled": _dt["settled"],
-                    "wins": _dt["wins"] or 0,
-                    "wr": round(_dt["wins"] / _dt["settled"], 4) if _dt["settled"] else 0,
-                    "sim_pnl_cents": _dt["sim_pnl"] or 0,
-                }
+            for fs in ("decided_contract_t1", "decided_contract_t2"):
+                t = _sh_totals.get(fs)
+                if t and t["n"] > 0:
+                    _dc_by_tier[fs] = {
+                        "n": t["n"], "settled": t["settled"], "wins": t["wins"],
+                        "wr": round(t["wins"] / t["settled"], 4) if t["settled"] else 0,
+                        "sim_pnl_cents": t["sim_pnl"],
+                    }
             snap["decided_contract_shadow"] = {
-                "total_signals": _dc_row["n"] if _dc_row else 0,
-                "settled": _dc_row["settled"] if _dc_row else 0,
-                "wins": _dc_row["wins"] if _dc_row else 0,
-                "wr": round(_dc_row["wins"] / _dc_row["settled"], 4) if _dc_row and _dc_row["settled"] else 0,
-                "sim_pnl_cents": _dc_row["sim_pnl"] if _dc_row else 0,
-                "by_asset": _dc_by_asset,
-                "by_tier": _dc_by_tier,
+                "total_signals": _dc_total_n, "settled": _dc_total_s,
+                "wins": _dc_total_w,
+                "wr": round(_dc_total_w / _dc_total_s, 4) if _dc_total_s else 0,
+                "sim_pnl_cents": _dc_total_pnl,
+                "by_asset": _dc_by_asset, "by_tier": _dc_by_tier,
             }
-        except Exception:
-            logging.debug("decided_contract_shadow snapshot failed", exc_info=True)
-            snap["decided_contract_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
-                                                "sim_pnl_cents": 0, "by_asset": {}, "by_tier": {}}
 
-        # ── Relaxed Edge Shadow ─────────────────────────────
-        try:
-            _re_row = _conn.execute(
-                "SELECT COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='relaxed_edge_shadow'"
-            ).fetchone()
-            # Per-asset breakdown
-            _re_by_asset = {}
-            for _ra in _conn.execute(
-                "SELECT asset, COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='relaxed_edge_shadow' "
-                "GROUP BY asset"
-            ).fetchall():
-                _re_by_asset[_ra["asset"]] = {
-                    "n": _ra["n"], "settled": _ra["settled"],
-                    "wins": _ra["wins"] or 0,
-                    "wr": round(_ra["wins"] / _ra["settled"], 4) if _ra["settled"] else 0,
-                    "sim_pnl_cents": _ra["sim_pnl"] or 0,
-                }
-            # Per-price-tier breakdown
-            _re_by_tier = {}
-            for _rt in _conn.execute(
-                "SELECT CASE "
-                "  WHEN market_price >= 92 THEN '92' "
-                "  WHEN market_price >= 90 THEN '90-91' "
-                "  ELSE '88-89' END as tier, "
-                "COUNT(*) as n, "
-                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
-                "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
-                "  THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
-                "FROM evaluated_opportunities WHERE filter_stage='relaxed_edge_shadow' "
-                "GROUP BY tier ORDER BY tier"
-            ).fetchall():
-                _re_by_tier[_rt["tier"]] = {
-                    "n": _rt["n"], "settled": _rt["settled"],
-                    "wins": _rt["wins"] or 0,
-                    "wr": round(_rt["wins"] / _rt["settled"], 4) if _rt["settled"] else 0,
-                    "sim_pnl_cents": _rt["sim_pnl"] or 0,
-                }
-            snap["relaxed_edge_shadow"] = {
-                "total_signals": _re_row["n"] if _re_row else 0,
-                "settled": _re_row["settled"] if _re_row else 0,
-                "wins": _re_row["wins"] if _re_row else 0,
-                "wr": round(_re_row["wins"] / _re_row["settled"], 4) if _re_row and _re_row["settled"] else 0,
-                "sim_pnl_cents": _re_row["sim_pnl"] if _re_row else 0,
-                "by_asset": _re_by_asset,
-                "by_price_tier": _re_by_tier,
-            }
+            # Relaxed edge
+            _re = _panel_snap("relaxed_edge_shadow", _sh_totals, _sh_asset_map, _sh_tier_map)
+            snap["relaxed_edge_shadow"] = _re
+
         except Exception:
-            logging.debug("relaxed_edge_shadow snapshot failed", exc_info=True)
-            snap["relaxed_edge_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
-                                            "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {}}
+            logging.debug("shadow_panels combined snapshot failed", exc_info=True)
+            for _sk, _sd in _shadow_defaults.items():
+                snap.setdefault(_sk, _sd)
 
         # ── Calibration Gap (15M model vs realized by price) ──────────
         try:
@@ -2657,32 +2571,37 @@ class DashboardSnapshotBuilder:
             snap["loss_clustering"] = {"total_losses": 0, "cluster_count": 0, "max_cluster_size": 0}
 
         # ── Pipeline Completeness (data quality for observation modules)
+        # Combined into single query (was 19 queries in nested loop)
         try:
-            conn = _conn
+            _pc_rows = _conn.execute(
+                "SELECT product_type, COUNT(*) AS total, "
+                "COUNT(calibrated_prob) AS cp, COUNT(market_price) AS mp, "
+                "COUNT(fee_adjusted_edge) AS fae, COUNT(raw_prob) AS rp "
+                "FROM evaluated_opportunities "
+                "WHERE product_type IN ('hourly','spx_hourly','weather','sports') "
+                "GROUP BY product_type"
+            ).fetchall()
+            _query_count += 1
+            _pc_col_map = {
+                "hourly": ["calibrated_prob", "market_price", "fee_adjusted_edge", "raw_prob"],
+                "spx_hourly": ["calibrated_prob", "market_price", "fee_adjusted_edge"],
+                "weather": ["calibrated_prob", "market_price", "fee_adjusted_edge", "raw_prob"],
+                "sports": ["calibrated_prob", "market_price", "fee_adjusted_edge", "raw_prob"],
+            }
+            _col_alias = {"calibrated_prob": "cp", "market_price": "mp",
+                          "fee_adjusted_edge": "fae", "raw_prob": "rp"}
             completeness = {}
-            for pt, key_cols in [
-                ("hourly", ["calibrated_prob", "market_price", "fee_adjusted_edge", "raw_prob"]),
-                ("spx_hourly", ["calibrated_prob", "market_price", "fee_adjusted_edge"]),
-                ("weather", ["calibrated_prob", "market_price", "fee_adjusted_edge", "raw_prob"]),
-                ("sports", ["calibrated_prob", "market_price", "fee_adjusted_edge", "raw_prob"]),
-            ]:
-                total_row = conn.execute(
-                    "SELECT COUNT(*) AS cnt FROM evaluated_opportunities WHERE product_type=?", (pt,)
-                ).fetchone()
-                total = total_row["cnt"] if total_row else 0
-                if total == 0:
-                    completeness[pt] = {"total": 0, "columns": {}}
+            _pc_by_pt = {r["product_type"]: r for r in _pc_rows}
+            for pt, key_cols in _pc_col_map.items():
+                r = _pc_by_pt.get(pt)
+                if not r or r["total"] == 0:
+                    completeness[pt] = {"total": r["total"] if r else 0, "columns": {}}
                     continue
                 col_fills = {}
                 for col in key_cols:
-                    try:
-                        filled_row = conn.execute(
-                            f"SELECT COUNT({col}) AS cnt FROM evaluated_opportunities WHERE product_type=?", (pt,)
-                        ).fetchone()
-                        col_fills[col] = round(filled_row["cnt"] / total * 100, 1) if filled_row else 0
-                    except Exception:
-                        col_fills[col] = None
-                completeness[pt] = {"total": total, "columns": col_fills}
+                    alias = _col_alias.get(col, col)
+                    col_fills[col] = round(r[alias] / r["total"] * 100, 1) if r[alias] else 0
+                completeness[pt] = {"total": r["total"], "columns": col_fills}
             snap["pipeline_completeness"] = completeness
         except Exception:
             snap["pipeline_completeness"] = {}
@@ -2783,6 +2702,26 @@ class DashboardSnapshotBuilder:
             logging.debug("eth_filter_shadow snapshot failed", exc_info=True)
             snap["eth_filter_shadow"] = {"total_trades": 0, "wins": 0, "losses": 0,
                                           "wr": 0, "total_pnl_cents": 0, "filters": {}}
+
+        # ── Save slow-changing sections to TTL cache ──────────────────
+        if _run_slow:
+            _SLOW_SNAP_KEYS = {
+                "weekend_discount_shadow", "overnight_discount_shadow",
+                "overnight_lp_shadow", "decided_contract_shadow", "relaxed_edge_shadow",
+                "calibration_gap", "capital_utilization", "loss_clusters",
+                "pipeline_completeness", "sol_pathc_shadow", "eth_filter_shadow",
+            }
+            self._slow_cache = {k: v for k, v in snap.items() if k in _SLOW_SNAP_KEYS}
+            self._slow_cache_ts = _now_mono
+
+        # End read transaction
+        try:
+            _conn.execute("COMMIT")
+        except Exception:
+            pass  # may not have started a transaction
+
+        logging.debug("dashboard snapshot: %d tracked queries this cycle (run_slow=%s)",
+                      _query_count, _run_slow)
 
         return snap
 
