@@ -211,12 +211,16 @@ class TestCalEngineInvariants:
         assert cfg.cal_engine_state_path == ""
         assert not cfg.cal_subtypes
 
-    def test_subtypes_and_single_engine_mutually_exclusive(self):
+    def test_subtypes_and_single_state_path_mutually_exclusive(self):
+        """cal_subtypes + cal_engine_state_path is invalid (pick one).
+
+        Note: cal_subtypes + cal_engine_enabled is OK — it means subtype
+        engines are enabled for predictions (e.g., weather per-city CalEngines).
+        This matches validate_market_configs() in market_config.py (line ~366).
+        """
         from market_config import MARKET_CONFIGS
         for pt, cfg in MARKET_CONFIGS.items():
             if cfg.cal_subtypes:
-                assert not cfg.cal_engine_enabled, (
-                    f"{pt}: has both cal_engine_enabled and cal_subtypes")
                 assert not cfg.cal_engine_state_path, (
                     f"{pt}: has both cal_engine_state_path and cal_subtypes")
 
