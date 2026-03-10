@@ -1523,6 +1523,79 @@ class DashboardSnapshotBuilder:
                                                        "min_wilson_lower": 0.72, "max_brier": 0.25,
                                                        "min_day_wr": 0.60, "pnl_positive": True}}
 
+        # ── Config B: BTC 70-89c wl2 (promotion candidate) ────────────────
+        try:
+            _cb = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND "
+                "  ((side='yes' AND market_result IN ('yes','all_yes')) OR "
+                "   (side='no' AND market_result IN ('no','all_no'))) THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl, "
+                "AVG(CASE WHEN status='settled' AND calibrated_prob IS NOT NULL "
+                "  THEN (calibrated_prob - CASE WHEN market_result IN ('yes','all_yes') "
+                "    THEN 1.0 ELSE 0.0 END) * (calibrated_prob - CASE WHEN market_result IN ('yes','all_yes') "
+                "    THEN 1.0 ELSE 0.0 END) END) as brier "
+                "FROM evaluated_opportunities "
+                "WHERE product_type='hourly' AND filter_stage='hourly_config_b'"
+            ).fetchone()
+            _cb_by_day = _conn.execute(
+                "SELECT date(evaluation_time) as day, COUNT(*) as n, "
+                "SUM(CASE WHEN (side='yes' AND market_result IN ('yes','all_yes')) OR "
+                "  (side='no' AND market_result IN ('no','all_no')) THEN 1 ELSE 0 END) as wins "
+                "FROM evaluated_opportunities "
+                "WHERE product_type='hourly' AND filter_stage='hourly_config_b' AND status='settled' "
+                "GROUP BY day ORDER BY day"
+            ).fetchall()
+            _cb_min_day_wr = None
+            _cb_days = 0
+            for _d in _cb_by_day:
+                _cb_days += 1
+                _dwr = (_d["wins"] or 0) / _d["n"] if _d["n"] else 0
+                if _cb_min_day_wr is None or _dwr < _cb_min_day_wr:
+                    _cb_min_day_wr = _dwr
+            _cb_settled = (_cb["settled"] or 0) if _cb else 0
+            _cb_wins = (_cb["wins"] or 0) if _cb else 0
+            _cb_wr = round(_cb_wins / _cb_settled, 4) if _cb_settled else 0
+            _cb_wlo = 0
+            if _cb_settled > 0:
+                _p = _cb_wins / _cb_settled
+                _z = 1.96
+                _d = 1 + _z**2 / _cb_settled
+                _cb_wlo = round((_p + _z**2 / (2 * _cb_settled) - _z * ((_p * (1 - _p) / _cb_settled + _z**2 / (4 * _cb_settled**2)) ** 0.5)) / _d, 4)
+            # Breakeven WR for avg price in 70-89c range (~81c)
+            _cb_avg_price = 81
+            _cb_be_wr = round((_cb_avg_price + 2) / 100, 4)  # ~83% for avg 81c + ~2c fee
+            snap["hourly_config_b"] = {
+                "total_signals": _cb["n"] if _cb else 0,
+                "settled": _cb_settled,
+                "wins": _cb_wins,
+                "wr": _cb_wr,
+                "wilson_lower": _cb_wlo,
+                "brier": round(_cb["brier"], 4) if _cb and _cb["brier"] else None,
+                "sim_pnl_cents": _cb["sim_pnl"] if _cb else 0,
+                "days": _cb_days,
+                "min_day_wr": round(_cb_min_day_wr, 4) if _cb_min_day_wr is not None else None,
+                "breakeven_wr": _cb_be_wr,
+                "wilson_margin_over_be": round(_cb_wlo - _cb_be_wr, 4) if _cb_wlo else 0,
+                "filters": {"asset": "BTC", "min_price": 70, "max_price": 89, "max_per_window": 2},
+                "graduation": {
+                    "min_n": 100,
+                    "min_wr": 0.88,
+                    "min_wilson_margin_over_be": 0.03,
+                    "pnl_positive": True,
+                },
+            }
+        except Exception:
+            logging.debug("hourly_config_b snapshot failed", exc_info=True)
+            snap["hourly_config_b"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                        "wilson_lower": 0, "brier": None, "sim_pnl_cents": 0,
+                                        "days": 0, "min_day_wr": None, "breakeven_wr": 0.83,
+                                        "wilson_margin_over_be": 0,
+                                        "filters": {"asset": "BTC", "min_price": 70, "max_price": 89, "max_per_window": 2},
+                                        "graduation": {"min_n": 100, "min_wr": 0.88,
+                                                       "min_wilson_margin_over_be": 0.03, "pnl_positive": True}}
+
         # ── SPX Observation Panel ─────────────────────────────────────────
         try:
             if getattr(_bot_mod, "SPX_HOURLY_ENABLED", False):

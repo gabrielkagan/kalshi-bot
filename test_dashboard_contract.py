@@ -93,6 +93,7 @@ REQUIRED_SNAP_KEYS = {
     "sol_pathc_shadow",
     "eth_filter_shadow",
     "hourly_config_a",
+    "hourly_config_b",
     "sports_strong_config",
 }
 

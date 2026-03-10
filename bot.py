@@ -47,6 +47,7 @@ MIN_ENTRY_PRICE = 86              # cents (data: 86c counterfactual 93.8% WR, 30
 MAX_ENTRY_PRICE = 99              # cents
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 XRP_15M_SHADOW = True             # XRP 15M candidates logged as shadow, not traded (data: -$32.97 all-time)
+XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 900    # scan 15 min before close (500-900s is shadow data collection)
 STC_SHADOW_THRESHOLD = 500        # 15M trades above this STC are shadow-only (data: 300-500s 17W/0L +$127 cf)
@@ -88,6 +89,14 @@ HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time
 HOURLY_CONFIG_A_EXCLUDED = {'XRP'}    # XRP: 42% WR, -$89 sim PnL, 12-33pp below non-XRP every UTC bucket
 HOURLY_CONFIG_A_MAX_EDGE = 0.007      # Edge ≤ 0.7%: filters out overconfident high-edge noise (8-15% edge = 32% WR)
 HOURLY_MAX_WINDOW_RISK = 0.15         # Max aggregate risk across all hourly positions per window
+# ─── BTC 70-89c wl2 Variant (promotion candidate) ───────────────────────────
+# Backtest: 67t, 62W/5L, 92.5% WR, flat $7.47, Kelly $92.48, Brier 0.076
+# 70-89c tier has 11pp margin over breakeven vs 2.7pp for 86c+
+# Graduation: n>=100, WR>=88%, positive PnL, Wilson CI lower >= 3pp above breakeven
+HOURLY_CONFIG_B_ASSET = 'BTC'
+HOURLY_CONFIG_B_MIN_PRICE = 70
+HOURLY_CONFIG_B_MAX_PRICE = 89
+HOURLY_CONFIG_B_MAX_PER_WINDOW = 2    # Price-sorted: top 2 by price within window
 HOURLY_KELLY_FRACTION = 0.25          # Quarter-Kelly: 44% of growth rate, ~3% halving probability
 
 # ─── SPX Hourly Observation Mode ──────────────────────────────────────────────
@@ -5860,6 +5869,7 @@ class OpportunityScanner:
         # Reset hourly per-window tracking each tick, seeded from existing positions
         self._hourly_window_counts = {}
         self._hourly_window_risk = {}
+        self._config_b_window_counts = {}  # Config B (BTC 70-89c wl2) separate counter
         try:
             for pos in self._state.get_open_positions():
                 evt = pos.get("event_ticker", "")
@@ -7988,6 +7998,47 @@ class OpportunityScanner:
                                     **_oft_db, **_shadow_diag)
                             except Exception:
                                 logging.warning("insert_evaluated_opportunity failed (hourly_config_a)", exc_info=True)
+                    # ── Config B: BTC 70-89c wl2 (promotion candidate) ──
+                    # Tracks the high-alpha low-price tier for BTC hourly.
+                    # Uses its own per-window counter (_cb_window_counts) with price-sorted
+                    # top-2 selection (same as backtest methodology).
+                    if (_obs_pt == "hourly"
+                            and asset == HOURLY_CONFIG_B_ASSET
+                            and HOURLY_CONFIG_B_MIN_PRICE <= best_ask <= HOURLY_CONFIG_B_MAX_PRICE
+                            and fee_adjusted_edge > 0):
+                        _cb_wkey = window["event_ticker"]
+                        _cb_count = self._config_b_window_counts.get(_cb_wkey, 0)
+                        if _cb_count < HOURLY_CONFIG_B_MAX_PER_WINDOW:
+                            _cb_dedup = (ticker, "hourly_config_b")
+                            if _cb_dedup not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_cb_dedup)
+                                self._config_b_window_counts[_cb_wkey] = _cb_count + 1
+                                _cb_ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                                try:
+                                    self._state.insert_evaluated_opportunity(
+                                        ticker, window["event_ticker"], asset,
+                                        "hourly_config_b",
+                                        spot_price=spot, threshold=threshold,
+                                        volatility=blended_rv, market_price=best_ask,
+                                        seconds_to_close=seconds_remaining,
+                                        calibrated_prob=final_prob, edge=edge,
+                                        ofa_adjustment=ofa_adjustment,
+                                        z_score=z_score, vol_regime=vol_est["regime"],
+                                        raw_prob=raw_prob,
+                                        calibrated_prob_raw=calibrated_prob_raw,
+                                        calibration_method=calibration_method,
+                                        fee_adjusted_edge=fee_adjusted_edge,
+                                        breakeven_wr=best_ask / 100.0,
+                                        expected_value=round(_cb_ev, 2),
+                                        ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                        position_size=sizing["contracts"],
+                                        kelly_f=sizing["kelly_f"],
+                                        drawdown_scaler=sizing["drawdown_scaler"],
+                                        strategy=strategy, old_system_prob=_old_system_prob,
+                                        product_type="hourly",
+                                        **_oft_db, **_shadow_diag)
+                                except Exception:
+                                    logging.warning("insert_evaluated_opportunity failed (hourly_config_b)", exc_info=True)
                     # Increment per-window counters even in observation mode so Layer 3b/3c
                     # limits work for counterfactual analysis (without this, counter stays 0
                     # and the limit is dead code — bug found by audit: 11 SPX positions in one window)
@@ -8106,6 +8157,7 @@ class OpportunityScanner:
                     if _dedup_key not in self._eval_opp_seen:
                         self._eval_opp_seen.add(_dedup_key)
                         _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                        _xrp_88_tag = "xrp_88_eligible" if best_ask >= XRP_SHADOW_MIN_PRICE else "xrp_88_ineligible"
                         self._state.insert_evaluated_opportunity(
                             ticker, window["event_ticker"], asset, "xrp_shadow",
                             spot_price=spot, threshold=threshold, volatility=blended_rv,
@@ -8123,6 +8175,7 @@ class OpportunityScanner:
                             strategy=strategy,
                             old_system_prob=_old_system_prob,
                             product_type=window.get("product_type"),
+                            counterfactual=_xrp_88_tag,
                             **_oft_db, **_shadow_diag)
                     continue
 
