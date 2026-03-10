@@ -43,8 +43,10 @@ SERIES_TICKERS = {
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
 }
-MIN_ENTRY_PRICE = 86              # cents (data: 86c counterfactual 93.8% WR, 30W/2L n=32)
+MIN_ENTRY_PRICE = 86              # cents (global floor — SOL uses this; BTC/ETH overridden below)
 MAX_ENTRY_PRICE = 99              # cents
+BTC_MIN_ENTRY_PRICE = 88          # cents (data: BTC 86-87c is 3W/3L -$19.23, Kelly asymmetry 6.5x loss/win)
+ETH_MIN_ENTRY_PRICE = 88          # cents (data: ETH 86-87c is 5W/1L -$23.69, single 87c loss wipes 5 wins)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 XRP_15M_SHADOW = True             # XRP 15M candidates logged as shadow, not traded (data: -$32.97 all-time)
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
@@ -6532,6 +6534,47 @@ class OpportunityScanner:
                             "hourly_applied_temp_t": None,
                             "hourly_post_temp_prob": None,
                         })
+                    continue
+
+                # ── Per-asset price floor (15M only) ─────────────────────────
+                # BTC/ETH 86-87c is Kelly-negative (6.5x loss/win asymmetry).
+                # SOL keeps global 86c floor (9W/0L +$38.85 at 86-87c).
+                # Shadow-log filtered trades for ongoing monitoring.
+                _asset_floor = MIN_ENTRY_PRICE  # default (SOL, XRP)
+                if _pt in (None, "15m"):
+                    if asset == "BTC":
+                        _asset_floor = BTC_MIN_ENTRY_PRICE
+                    elif asset == "ETH":
+                        _asset_floor = ETH_MIN_ENTRY_PRICE
+                if _pt in (None, "15m") and best_ask < _asset_floor:
+                    _frs_edge = cal_prob - best_ask / 100.0
+                    _frs_fee = calculate_fee(
+                        1, best_ask, is_taker=True,
+                        fee_mult_taker=_pricecfg.fee_multiplier_taker,
+                        fee_mult_maker=_pricecfg.fee_multiplier_maker)
+                    _frs_fee_edge = _frs_edge - _frs_fee / 100.0
+                    _dedup_key = (ticker, "floor_raise_shadow")
+                    if _dedup_key not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dedup_key)
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset,
+                            "floor_raise_shadow",
+                            rejection_reason=f"{asset} floor {_asset_floor}c (was {MIN_ENTRY_PRICE}c), ask={best_ask}c",
+                            spot_price=spot, threshold=threshold,
+                            volatility=blended_rv, market_price=best_ask,
+                            seconds_to_close=seconds_remaining,
+                            calibrated_prob=cal_prob,
+                            edge=_frs_edge,
+                            fee_adjusted_edge=_frs_fee_edge,
+                            z_score=prob_result.get("z_score"),
+                            vol_regime=vol_est["regime"],
+                            breakeven_wr=best_ask / 100.0,
+                            ask_depth=ask_depth,
+                            best_ask_source=best_ask_source,
+                            raw_prob=raw_prob_pre,
+                            calibration_method=calibration_method_pre,
+                            product_type=window.get("product_type"),
+                            **_oft_db, **_shadow_diag)
                     continue
 
                 # Re-run probability with market price for sanity check
