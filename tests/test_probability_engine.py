@@ -199,24 +199,26 @@ class TestRawProbability(unittest.TestCase):
 
 
 class TestZScoreMax(unittest.TestCase):
-    """Test Z_SCORE_MAX safety cutoff."""
+    """Test z-score is computed but does not gate tradeability.
+
+    Z_SCORE_MAX gate was removed — price + edge filters are sufficient.
+    Z-score is still computed and logged for diagnostics.
+    """
 
     @classmethod
     def setUpClass(cls):
-        from bot import ProbabilityEngine, Z_SCORE_MAX
+        from bot import ProbabilityEngine
         cls.PE = ProbabilityEngine
-        cls.Z_MAX = Z_SCORE_MAX
 
-    def test_extreme_z_not_tradeable(self):
-        """Absurd z-score → tradeable=False (vol estimate likely wrong)."""
+    def test_extreme_z_still_tradeable(self):
+        """Extreme z-score → still tradeable (gate removed, other filters catch bad trades)."""
         # Very low vol + spot near threshold → huge z
         result = self.PE.compute(
             spot=68000.0, threshold=67999.0,
             seconds_remaining=300.0, blended_rv=1e-10,
         )
-        if result["z_score"] is not None and abs(result["z_score"]) > self.Z_MAX:
-            self.assertFalse(result["tradeable"])
-            self.assertIn("z_score", result["reason"])
+        self.assertIsNotNone(result["z_score"])
+        self.assertTrue(result["tradeable"])
 
     def test_normal_z_tradeable(self):
         """Normal z-score → tradeable=True (all else being equal)."""
@@ -224,9 +226,7 @@ class TestZScoreMax(unittest.TestCase):
             spot=68100.0, threshold=68000.0,
             seconds_remaining=300.0, blended_rv=0.0001,
         )
-        # z should be moderate
         self.assertIsNotNone(result["z_score"])
-        self.assertLess(abs(result["z_score"]), self.Z_MAX)
         self.assertTrue(result["tradeable"])
 
 

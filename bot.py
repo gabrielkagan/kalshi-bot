@@ -4644,45 +4644,6 @@ class ProbabilityEngine:
         raw_prob = ProbabilityEngine._cdf_complement(z_score, asset)
         result["raw_prob"] = round(raw_prob, 6)
 
-        # ── Safety: refuse if z-score is absurdly large ──────────────────
-        # Computed AFTER raw_prob so rejection rows still have probability data.
-        if abs(z_score) > Z_SCORE_MAX:
-            result["reason"] = (
-                f"|z_score|={abs(z_score):.1f} > {Z_SCORE_MAX} — "
-                f"volatility estimate likely wrong, refusing to trade"
-            )
-            logging.warning(
-                f"ProbabilityEngine: {result['reason']} "
-                f"(spot={spot}, threshold={threshold}, rv={blended_rv:.8f})"
-            )
-            # Still compute calibrated_prob for data collection
-            dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
-            _cal_cfg = get_market_config(product_type)
-            _reg_engine = _resolve_cal_engine(product_type, asset, require_enabled=True)
-            if _reg_engine is not None and _reg_engine.is_learned_method_active():
-                cal = _reg_engine.calibrate(raw_prob, cap=dynamic_cap)
-                result["calibration_method"] = f"{product_type}_{_reg_engine.active_method}"
-                # Shadow: what passthrough + temperature would have produced
-                _pt_shadow = min(raw_prob, dynamic_cap)
-                _temp_cfg = _cal_cfg.temperature_t if _cal_cfg.temperature_enabled else None
-                if _temp_cfg and _temp_cfg != 1.0:
-                    _sp = max(0.001, min(0.999, _pt_shadow))
-                    _sz = math.log(_sp / (1.0 - _sp))
-                    _pt_shadow = 1.0 / (1.0 + math.exp(-_sz / _temp_cfg))
-                result["shadow_cal_prob"] = round(_pt_shadow, 6)
-                result["shadow_cal_temperature"] = _temp_cfg
-            elif _cal_cfg.cal_eligible and _CALIBRATION_ENGINE is not None:
-                cal = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
-                result["calibration_method"] = _CALIBRATION_ENGINE.active_method
-            elif not _cal_cfg.cal_eligible:
-                cal = min(raw_prob, dynamic_cap)
-                result["calibration_method"] = "passthrough"
-            else:
-                cal = ProbabilityEngine._calibrate(raw_prob, cap=dynamic_cap)
-                result["calibration_method"] = "fixed_beta"
-            result["calibrated_prob"] = round(cal, 6)
-            return result
-
         # ── Calibration: adaptive (if trained) or fixed β=0.85 ──────────
         dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
         _cal_cfg2 = get_market_config(product_type)
@@ -4736,8 +4697,6 @@ class ProbabilityEngine:
         if sigma_move <= 0:
             return None
         z = (threshold - spot) / sigma_move
-        if abs(z) > Z_SCORE_MAX:
-            return None
         raw = ProbabilityEngine._cdf_complement(z, asset)
         cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
         if _CALIBRATION_ENGINE is not None:
