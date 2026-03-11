@@ -1,4 +1,4 @@
-"""15M Shadow Engine — two alternative approaches for 15M crypto markets.
+"""15M Shadow Engine — four alternative approaches for 15M crypto markets.
 
 Approach 1 (RecalibratedEGARCH): Per-asset temperature scaling + market blend + edge band filters.
   Uses the SAME blended_rv from the live pipeline (doesn't re-fit EGARCH). Applies per-asset
@@ -8,7 +8,24 @@ Approach 2 (LightGBM): Per-asset binary classifier predicting settlement outcome
   already available in the pipeline (blended_rv, z_score, market_price, STC, spread, etc.).
   Trained on settled evaluated_opportunities, isotonic-calibrated, retrained daily.
 
-Both approaches are shadow-only — they cannot place orders and have no access to KalshiClient.
+Approach 3 (EGARCHGating): Predicts loss probability to gate trades. Uses a pooled LightGBM
+  model across assets, isotonic-calibrated.
+
+Approach 4 (LateWindow): YES-side shadow for 55-74c asks in the final 5 minutes before
+  settlement. Targets the regime where outcome uncertainty has largely collapsed but the market
+  is quoting below the live pipeline's 86c+ entry floor. Taker-only execution (best_ask + 1c fee).
+  Z-score is not a concern: production z-score uses sqrt(t/5) scaling (not daily), so near-money
+  strikes at <5min produce z~1-10, well under the z=25 cap.
+
+  Promotion criteria (not gated, just documented):
+    - n >= 200 settled signals
+    - Brier score < 0.15
+    - Simulated PnL positive overall and for >= 3 of 4 assets
+    - Win rate >= 85%
+    - No single-day drawdown > $15
+    - ~2-3 weeks of data
+
+All approaches are shadow-only — they cannot place orders and have no access to KalshiClient.
 Results logged to fifteenm_shadow_signals table for post-hoc comparison with live baseline.
 """
 
@@ -48,6 +65,75 @@ MIN_DEBIASED_EDGE = 0.015  # 1.5pp minimum edge after debiasing
 SHADOW_MIN_ENTRY_PRICE = 70  # Lower floor for shadow data collection (live bot uses 86)
 SHADOW_NO_SIDE_MIN_PRICE = 5  # Very low floor for NO-side shadow collection (most NO asks are 5-50c)
 FEE_MULTIPLIER = 0.0  # Kalshi charges $0 on maker fills
+
+# ── Approach 4 Defaults ─────────────────────────────────────────────────────
+A4_MIN_ASK = 55           # cents — lower bound of late-window price range
+A4_MAX_ASK = 74           # cents — upper bound (75-85c is marginal, dropped for clean signal)
+A4_MAX_STC = 300.0        # seconds — final 5 minutes before settlement
+A4_MIN_EDGE = 0.10        # 10% model edge minimum (cal_prob - ask/100)
+A4_TAKER_FEE = 1          # cents — ceil(0.07 * 1 * p * (1-p)) = 1c at 55-74c
+
+
+class LateWindowApproach:
+    """Approach 4: Late-window YES-side shadow — buys 55-74c asks in final 5 minutes.
+
+    Taker-only execution: entry = best_ask + 1c fee.
+    No Kelly sizing, no balance check — pure signal quality tracking.
+    """
+
+    def evaluate(self, asset: str, spot_price: float, threshold: float,
+                 seconds_to_close: float, market_price: int,
+                 best_bid: Optional[int], best_ask: Optional[int],
+                 live_prob: float) -> Dict:
+        """Evaluate A4 late-window criteria. Returns signal dict."""
+        result: Dict = {
+            "gates_passed": 0,
+            "gate_failures": None,
+            "edge": None,
+            "distance_ratio": None,
+            "entry": None,
+        }
+
+        failures = []
+
+        # Gate 1: STC <= 300s (final 5 minutes)
+        if seconds_to_close > A4_MAX_STC:
+            failures.append(f"stc_{seconds_to_close:.0f}")
+
+        # Gate 2: YES best ask in 55-74c range
+        if best_ask is None:
+            failures.append("no_ask")
+        elif not (A4_MIN_ASK <= best_ask <= A4_MAX_ASK):
+            failures.append(f"price_{best_ask}")
+
+        # Gate 3: valid model probability
+        if live_prob is None or live_prob <= 0 or live_prob >= 1:
+            failures.append("no_prob")
+
+        # Early exit if basic gates fail
+        if failures:
+            result["gate_failures"] = ",".join(failures)
+            return result
+
+        # Gate 4: model edge >= 10%
+        edge = live_prob - best_ask / 100.0
+        result["edge"] = round(edge, 6)
+        if edge < A4_MIN_EDGE - 1e-9:
+            failures.append(f"edge_{edge:.4f}")
+
+        # Compute distance ratio regardless of gate outcome (for data collection)
+        if spot_price and spot_price > 0 and threshold:
+            result["distance_ratio"] = round(abs(spot_price - threshold) / spot_price, 6)
+
+        if failures:
+            result["gate_failures"] = ",".join(failures)
+            return result
+
+        # All gates passed — compute entry
+        result["gates_passed"] = 1
+        result["entry"] = best_ask + A4_TAKER_FEE  # taker fill at ask + 1c fee
+
+        return result
 
 
 class RecalibratedEGARCHApproach:
@@ -829,6 +915,7 @@ class FifteenMShadowEngine:
         self._approach1 = RecalibratedEGARCHApproach(db_path)
         self._approach2 = LightGBMApproach(db_path)
         self._approach3 = EGARCHGatingApproach(db_path)
+        self._approach4 = LateWindowApproach()
         logging.info("FifteenMShadowEngine initialized")
 
     def _ensure_db(self):
@@ -942,6 +1029,13 @@ class FifteenMShadowEngine:
             ("no_a3_pnl_gate30_cents", "INTEGER"),
             # Actual NO ask from market NBBO (not derived from YES bid)
             ("no_ask", "INTEGER"),
+            # Approach 4: Late-window YES-side (55-74c, STC <= 300s, taker-only)
+            ("a4_gates_passed", "INTEGER"),
+            ("a4_gate_failures", "TEXT"),
+            ("a4_edge", "REAL"),
+            ("a4_distance_ratio", "REAL"),
+            ("a4_entry", "INTEGER"),
+            ("a4_pnl_cents", "INTEGER"),
         ]:
             try:
                 self._db_conn.execute(
@@ -983,6 +1077,11 @@ class FifteenMShadowEngine:
             blended_rv, market_price, z_score, live_prob,
             best_bid, best_ask, egarch_sigma, egarch_blend_weight,
             fee_adjusted_edge, kelly_f, side="yes")
+
+        # Approach 4: Late-window YES-side
+        a4 = self._approach4.evaluate(
+            asset, spot_price, threshold, seconds_to_close,
+            market_price, best_bid, best_ask, live_prob)
 
         # Market-only baseline
         market_only_prob = market_price / 100.0
@@ -1041,6 +1140,7 @@ class FifteenMShadowEngine:
             a1=a1,
             a2=a2,
             a3=a3,
+            a4=a4,
             market_only_prob=market_only_prob,
             no_live_prob=no_live_prob,
             no_live_edge=no_live_edge,
@@ -1097,7 +1197,7 @@ class FifteenMShadowEngine:
 
     def _log_signal(self, *, ticker, event_ticker, asset, spot_price, threshold,
                     seconds_to_close, market_price, best_bid, best_ask,
-                    live_prob, live_edge, live_fee_edge, a1, a2, a3,
+                    live_prob, live_edge, live_fee_edge, a1, a2, a3, a4,
                     market_only_prob,
                     no_live_prob=None, no_live_edge=None, no_live_fee_edge=None,
                     no_a1=None, no_a2=None, no_a3=None, no_market_only_prob=None,
@@ -1110,6 +1210,7 @@ class FifteenMShadowEngine:
             _no_a1 = no_a1 or {}
             _no_a2 = no_a2 or {}
             _no_a3 = no_a3 or {}
+            _a4 = a4 or {}
             self._db_conn.execute("""
                 INSERT OR REPLACE INTO fifteenm_shadow_signals (
                     ticker, event_ticker, asset, evaluation_time,
@@ -1134,6 +1235,7 @@ class FifteenMShadowEngine:
                     no_a3_gate_prob, no_a3_gate_prob_raw, no_a3_gate_10, no_a3_gate_20, no_a3_gate_30,
                     no_a3_model_version, no_a3_no_side_warning,
                     no_ask,
+                    a4_gates_passed, a4_gate_failures, a4_edge, a4_distance_ratio, a4_entry,
                     status
                 ) VALUES (
                     ?, ?, ?, ?,
@@ -1158,6 +1260,7 @@ class FifteenMShadowEngine:
                     ?, ?, ?, ?, ?,
                     ?, ?,
                     ?,
+                    ?, ?, ?, ?, ?,
                     'pending'
                 )
             """, (
@@ -1187,6 +1290,8 @@ class FifteenMShadowEngine:
                 _no_a3.get("gate_10"), _no_a3.get("gate_20"), _no_a3.get("gate_30"),
                 _no_a3.get("model_version"), _no_a3.get("no_side_warning"),
                 no_ask,
+                _a4.get("gates_passed", 0), _a4.get("gate_failures"),
+                _a4.get("edge"), _a4.get("distance_ratio"), _a4.get("entry"),
             ))
             self._db_conn.commit()
         except Exception:
@@ -1207,6 +1312,8 @@ class FifteenMShadowEngine:
                     "a3_gate_10": a3.get("gate_10"), "a3_gate_20": a3.get("gate_20"),
                     "a3_gate_30": a3.get("gate_30"),
                     "no_a3_gate_prob": _no_a3.get("gate_prob"),
+                    "a4_passed": _a4.get("gates_passed", 0),
+                    "a4_edge": _a4.get("edge"), "a4_entry": _a4.get("entry"),
                 }) + "\n")
         except Exception:
             pass
@@ -1268,17 +1375,27 @@ class FifteenMShadowEngine:
             no_a3_pnl_g20 = 0 if row["no_a3_gate_20"] else no_live_pnl
             no_a3_pnl_g30 = 0 if row["no_a3_gate_30"] else no_live_pnl
 
+            # A4 late-window PnL: taker fill at entry (ask + 1c fee)
+            a4_entry = row["a4_entry"] if "a4_entry" in row.keys() else None
+            a4_passed = row["a4_gates_passed"] if "a4_gates_passed" in row.keys() else 0
+            if a4_passed and a4_entry and a4_entry > 0:
+                a4_pnl = (100 - a4_entry) if result_yes else (-a4_entry)
+            else:
+                a4_pnl = 0
+
             self._db_conn.execute(
                 "UPDATE fifteenm_shadow_signals SET status='settled', market_result=?, "
                 "live_pnl_cents=?, a1_pnl_cents=?, a2_pnl_cents=?, market_only_pnl_cents=?, "
                 "no_live_pnl_cents=?, no_a1_pnl_cents=?, no_a2_pnl_cents=?, no_market_only_pnl_cents=?, "
                 "a3_pnl_gate10_cents=?, a3_pnl_gate20_cents=?, a3_pnl_gate30_cents=?, "
                 "no_a3_pnl_gate10_cents=?, no_a3_pnl_gate20_cents=?, no_a3_pnl_gate30_cents=?, "
+                "a4_pnl_cents=?, "
                 "settled_time=? WHERE ticker = ? AND status = 'pending'",
                 (market_result, live_pnl, a1_pnl, a2_pnl, mkt_pnl,
                  no_live_pnl, no_a1_pnl, no_a2_pnl, no_mkt_pnl,
                  a3_pnl_g10, a3_pnl_g20, a3_pnl_g30,
                  no_a3_pnl_g10, no_a3_pnl_g20, no_a3_pnl_g30,
+                 a4_pnl,
                  now, ticker)
             )
             self._db_conn.commit()
@@ -1307,6 +1424,17 @@ class FifteenMShadowEngine:
             "approach3": {
                 "name": "egarch_gating",
                 "metrics": self._approach3.get_metrics(),
+                "settled": {},
+            },
+            "approach4": {
+                "name": "late_window",
+                "config": {
+                    "min_ask": A4_MIN_ASK,
+                    "max_ask": A4_MAX_ASK,
+                    "max_stc": A4_MAX_STC,
+                    "min_edge": A4_MIN_EDGE,
+                    "taker_fee": A4_TAKER_FEE,
+                },
                 "settled": {},
             },
             "pending": {},
@@ -1378,6 +1506,28 @@ class FifteenMShadowEngine:
                         "n": n_total,
                         "live_pnl_cents": live_pnl_total,
                         "thresholds": thresholds_data,
+                    }
+
+            # Approach 4 (late-window) per-asset stats
+            for asset in ("BTC", "ETH", "SOL", "XRP"):
+                a4_rows = self._db_conn.execute(
+                    "SELECT market_result, a4_pnl_cents, a4_gates_passed, a4_edge, a4_entry "
+                    "FROM fifteenm_shadow_signals "
+                    "WHERE asset = ? AND status = 'settled' AND a4_gates_passed = 1",
+                    (asset,)
+                ).fetchall()
+                if a4_rows:
+                    n = len(a4_rows)
+                    wins = sum(1 for r in a4_rows if r["market_result"] in ("yes", "all_yes"))
+                    pnl = sum(r["a4_pnl_cents"] or 0 for r in a4_rows)
+                    avg_edge = sum(r["a4_edge"] or 0 for r in a4_rows) / n
+                    avg_entry = sum(r["a4_entry"] or 0 for r in a4_rows) / n
+                    result["approach4"]["settled"][asset] = {
+                        "n": n, "wins": wins,
+                        "wr": round(wins / n * 100, 1) if n > 0 else 0,
+                        "pnl_cents": pnl,
+                        "avg_edge": round(avg_edge, 4),
+                        "avg_entry": round(avg_entry, 1),
                     }
 
             # Pending counts per asset

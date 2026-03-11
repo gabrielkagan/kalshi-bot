@@ -1408,6 +1408,13 @@ class StateManager:
                        status, market_result, settled_time
                 FROM fifteenm_shadow_signals WHERE a3_gate_prob IS NOT NULL
                 UNION ALL
+                SELECT 'fifteenm', 'A4_late_window',
+                       asset, evaluation_time, market_price,
+                       live_prob, a4_edge, NULL, NULL,
+                       a4_gates_passed, a4_pnl_cents,
+                       status, market_result, settled_time
+                FROM fifteenm_shadow_signals WHERE a4_gates_passed = 1
+                UNION ALL
                 SELECT 'hourly_alt', strategy,
                        asset, evaluation_time, market_price,
                        final_prob, fee_adjusted_edge,
