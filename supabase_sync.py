@@ -22,7 +22,7 @@ ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 KILL_SWITCH_FILE = os.path.join(os.path.dirname(__file__) or ".", ".supabase_kill_switch")
 
 # Sync intervals
-DASHBOARD_INTERVAL = 10      # seconds — dashboard_state UPSERT
+DASHBOARD_INTERVAL = 30      # seconds — dashboard_state UPSERT
 INCREMENTAL_INTERVAL = 30    # seconds — evaluations, rejections, vol_params
 SNAPSHOT_INTERVAL = 900       # seconds — volatility snapshots, scan summaries (15 min)
 STORAGE_CHECK_INTERVAL = 1800 # seconds — pg_database_size check (30 min)
@@ -164,9 +164,7 @@ class SupabaseSyncer:
         try:
             self._maybe_refresh_session()
             url = f"{self._url}/rest/v1/{table}"
-            headers = {"Prefer": "resolution=merge-duplicates"}
-            if on_conflict:
-                headers["Prefer"] = f"resolution=merge-duplicates,return=minimal"
+            headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
             resp = self._session.post(url, json=rows, headers=headers, timeout=10)
             self._request_count += 1
             if resp.status_code in (200, 201):
