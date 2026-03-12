@@ -35,6 +35,14 @@ STALE_PRICE_THRESHOLD = 60  # seconds before price considered stale
 RECONNECT_BASE_DELAY = 1.0
 RECONNECT_MAX_DELAY = 60.0
 
+# Polygon circuit breaker: back off for 5 min on 403/auth failure
+POLYGON_BACKOFF_SECONDS = 300
+# Fallback poll interval when Polygon is down (stay under Finnhub 60/min limit)
+FINNHUB_ONLY_POLL_INTERVAL = 3.0
+# Observability thresholds
+NO_PRICE_ERROR_THRESHOLD = 60       # log ERROR after 60 consecutive failures
+NO_PRICE_CRITICAL_THRESHOLD = 300   # log CRITICAL after 300 consecutive failures
+
 # EGARCH settings
 SPX_EGARCH_GAMMA_BOUNDS = (-0.30, -0.05)  # leverage asymmetry 4x stronger than crypto
 SPX_EGARCH_REFIT_INTERVAL = 14400  # 4 hours (less volatile)
@@ -440,6 +448,11 @@ class SPXPriceFeed:
         self._thread: Optional[threading.Thread] = None
         self._reconnect_delay = RECONNECT_BASE_DELAY
         self._consecutive_stale: int = 0
+        # Polygon circuit breaker
+        self._polygon_backoff_until: float = 0.0
+        self._polygon_in_backoff: bool = False
+        # Observability
+        self._consecutive_no_price: int = 0
 
     def start(self):
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
@@ -479,7 +492,12 @@ class SPXPriceFeed:
         return time.time() - last > STALE_PRICE_THRESHOLD
 
     def _poll_loop(self):
-        """Main polling loop: fetch SPX every second, VIX every 60s during market hours."""
+        """Main polling loop: fetch SPX every second, VIX every 60s during market hours.
+
+        Circuit breaker: when Polygon returns 403, back off for POLYGON_BACKOFF_SECONDS
+        and slow the poll interval to FINNHUB_ONLY_POLL_INTERVAL (3s) to stay under
+        Finnhub's 60 req/min free-tier limit.
+        """
         vix_last = 0.0
         while not self._stop.is_set():
             try:
@@ -487,8 +505,17 @@ class SPXPriceFeed:
                     self._stop.wait(30)
                     continue
 
-                # Fetch SPX
-                spx = self._fetch_spx_polygon()
+                now = time.time()
+
+                # Check if Polygon backoff has expired
+                if self._polygon_in_backoff and now >= self._polygon_backoff_until:
+                    self._polygon_in_backoff = False
+                    logging.info("SPXPriceFeed: Polygon backoff expired, re-enabling")
+
+                # Fetch SPX — skip Polygon if in backoff
+                spx = None
+                if not self._polygon_in_backoff:
+                    spx = self._fetch_spx_polygon()
                 if spx is None:
                     spx = self._fetch_spx_finnhub()
 
@@ -498,10 +525,21 @@ class SPXPriceFeed:
                         self._buffers["SPX"].append(spx)
                         self._last_update["SPX"] = time.time()
                     self._reconnect_delay = RECONNECT_BASE_DELAY
+                    self._consecutive_no_price = 0
+                else:
+                    self._consecutive_no_price += 1
+                    cnt = self._consecutive_no_price
+                    if cnt == NO_PRICE_CRITICAL_THRESHOLD:
+                        logging.critical(
+                            "SPXPriceFeed: %d consecutive poll cycles with no price update "
+                            "(polygon_backoff=%s)", cnt, self._polygon_in_backoff)
+                    elif cnt == NO_PRICE_ERROR_THRESHOLD:
+                        logging.error(
+                            "SPXPriceFeed: %d consecutive poll cycles with no price update "
+                            "(polygon_backoff=%s)", cnt, self._polygon_in_backoff)
 
-                # Fetch VIX (less frequently)
-                now = time.time()
-                if now - vix_last >= VIX_POLL_INTERVAL:
+                # Fetch VIX (less frequently) — skip if Polygon is in backoff
+                if not self._polygon_in_backoff and now - vix_last >= VIX_POLL_INTERVAL:
                     vix = self._fetch_vix_polygon()
                     if vix is not None:
                         with self._lock:
@@ -510,7 +548,9 @@ class SPXPriceFeed:
                             self._last_update["VIX"] = time.time()
                     vix_last = now
 
-                self._stop.wait(1.0)  # 1 second poll interval
+                # Slow poll when in fallback-only mode to respect Finnhub rate limit
+                poll_interval = FINNHUB_ONLY_POLL_INTERVAL if self._polygon_in_backoff else 1.0
+                self._stop.wait(poll_interval)
 
             except Exception as e:
                 logging.warning("SPXPriceFeed: poll error: %s", e)
@@ -518,7 +558,11 @@ class SPXPriceFeed:
                 self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
 
     def _fetch_spx_polygon(self) -> Optional[float]:
-        """Fetch SPX last price from Polygon.io snapshot endpoint."""
+        """Fetch SPX last price from Polygon.io snapshot endpoint.
+
+        Triggers circuit breaker on 403 (auth failure) — backs off for
+        POLYGON_BACKOFF_SECONDS to avoid hammering a dead endpoint.
+        """
         if not self._polygon_key:
             return None
         try:
@@ -534,12 +578,21 @@ class SPXPriceFeed:
                     value = results[0].get("value") or results[0].get("session", {}).get("close")
                     if value and value > 0:
                         return float(value)
+            elif resp.status_code in (401, 403):
+                self._polygon_in_backoff = True
+                self._polygon_backoff_until = time.time() + POLYGON_BACKOFF_SECONDS
+                logging.warning(
+                    "SPXPriceFeed: Polygon returned %d — circuit breaker engaged, "
+                    "backing off for %ds", resp.status_code, POLYGON_BACKOFF_SECONDS)
         except Exception as e:
             logging.debug("SPXPriceFeed: Polygon SPX fetch failed: %s", e)
         return None
 
     def _fetch_vix_polygon(self) -> Optional[float]:
-        """Fetch VIX from Polygon.io."""
+        """Fetch VIX from Polygon.io.
+
+        Also triggers circuit breaker on 403 (shares backoff state with SPX fetch).
+        """
         if not self._polygon_key:
             return None
         try:
@@ -555,12 +608,22 @@ class SPXPriceFeed:
                     value = results[0].get("value") or results[0].get("session", {}).get("close")
                     if value and value > 0:
                         return float(value)
+            elif resp.status_code in (401, 403):
+                if not self._polygon_in_backoff:
+                    self._polygon_in_backoff = True
+                    self._polygon_backoff_until = time.time() + POLYGON_BACKOFF_SECONDS
+                    logging.warning(
+                        "SPXPriceFeed: Polygon VIX returned %d — circuit breaker engaged",
+                        resp.status_code)
         except Exception as e:
             logging.debug("SPXPriceFeed: Polygon VIX fetch failed: %s", e)
         return None
 
     def _fetch_spx_finnhub(self) -> Optional[float]:
-        """Fallback: fetch SPY price from Finnhub and multiply by ratio."""
+        """Fallback: fetch SPY price from Finnhub and multiply by ratio.
+
+        On 429 (rate limited), triggers reconnect backoff to slow down polling.
+        """
         if not self._finnhub_key:
             return None
         try:
@@ -573,6 +636,15 @@ class SPXPriceFeed:
                 price = data.get("c")  # current price
                 if price and price > 0:
                     return float(price) * SPY_TO_SPX_RATIO
+            elif resp.status_code == 429:
+                logging.warning(
+                    "SPXPriceFeed: Finnhub rate limited (429) — triggering backoff "
+                    "(delay=%.1fs)", self._reconnect_delay)
+                # Bump reconnect delay so the outer loop slows down
+                self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
+                raise ConnectionError("Finnhub 429 rate limited")
+        except ConnectionError:
+            raise  # re-raise to trigger backoff in _poll_loop
         except Exception as e:
             logging.debug("SPXPriceFeed: Finnhub fallback failed: %s", e)
         return None
