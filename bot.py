@@ -8061,6 +8061,8 @@ class OpportunityScanner:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_config_b)", exc_info=True)
                     # ── Configs C–G: data-driven shadow variants ──
                     if _obs_pt == "hourly":
+                        logging.debug("CG_LOOP: ticker=%s asset=%s stc=%.0f edge=%.4f n_cfgs=%d",
+                                      ticker, asset, seconds_remaining, fee_adjusted_edge, len(HOURLY_SHADOW_CONFIGS))
                         for _scfg in HOURLY_SHADOW_CONFIGS:
                             _sname = _scfg["name"]
                             if "included_assets" in _scfg and asset not in _scfg["included_assets"]:
