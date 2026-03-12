@@ -10,6 +10,80 @@ from typing import Dict, Any, List, Optional
 
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 
+# Configs C–G filter metadata for dashboard rendering
+_HOURLY_VARIANT_DEFS = [
+    ("hourly_config_c", {"included_assets": ["BTC", "ETH"], "min_stc": 600, "max_stc": 1800}),
+    ("hourly_config_d", {"excluded_assets": ["XRP"], "max_edge": 0.05}),
+    ("hourly_config_e", {"included_assets": ["BTC", "ETH"], "min_stc": 1200, "max_stc": 1800}),
+    ("hourly_config_f", {"max_edge": 0.012}),
+    ("hourly_config_g", {"included_assets": ["BTC"], "min_stc": 900, "max_stc": 1800}),
+]
+_HOURLY_VARIANT_GRADUATION = {
+    "days_required": 7, "min_wr": 0.72, "min_wilson_lower": 0.65,
+    "max_brier": 0.30, "min_day_wr": 0.50, "pnl_positive": True,
+}
+
+
+def _build_hourly_variant_snap(conn, filter_stage, filters_dict, graduation_dict):
+    """Build snapshot dict for a single hourly shadow variant."""
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) as n, "
+            "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+            "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+            "  THEN 1 ELSE 0 END) as wins, "
+            "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl, "
+            "AVG(CASE WHEN status='settled' AND calibrated_prob IS NOT NULL "
+            "  THEN (calibrated_prob - CASE WHEN market_result IN ('yes','all_yes') "
+            "    THEN 1.0 ELSE 0.0 END) * (calibrated_prob - CASE WHEN market_result IN ('yes','all_yes') "
+            "    THEN 1.0 ELSE 0.0 END) END) as brier "
+            "FROM evaluated_opportunities "
+            "WHERE product_type='hourly' AND filter_stage=?",
+            (filter_stage,)
+        ).fetchone()
+        by_day = conn.execute(
+            "SELECT date(evaluation_time) as day, COUNT(*) as n, "
+            "SUM(CASE WHEN market_result IN ('yes','all_yes') THEN 1 ELSE 0 END) as wins "
+            "FROM evaluated_opportunities "
+            "WHERE product_type='hourly' AND filter_stage=? AND status='settled' "
+            "GROUP BY day ORDER BY day",
+            (filter_stage,)
+        ).fetchall()
+        min_day_wr = None
+        days = 0
+        for d in by_day:
+            days += 1
+            dwr = (d["wins"] or 0) / d["n"] if d["n"] else 0
+            if min_day_wr is None or dwr < min_day_wr:
+                min_day_wr = dwr
+        settled = (row["settled"] or 0) if row else 0
+        wins = (row["wins"] or 0) if row else 0
+        wr = round(wins / settled, 4) if settled else 0
+        wlo = 0
+        if settled > 0:
+            p = wins / settled
+            z = 1.96
+            denom = 1 + z**2 / settled
+            wlo = round((p + z**2 / (2 * settled) - z * ((p * (1 - p) / settled + z**2 / (4 * settled**2)) ** 0.5)) / denom, 4)
+        return {
+            "total_signals": row["n"] if row else 0,
+            "settled": settled, "wins": wins, "wr": wr,
+            "wilson_lower": wlo,
+            "brier": round(row["brier"], 4) if row and row["brier"] else None,
+            "sim_pnl_cents": row["sim_pnl"] if row else 0,
+            "days": days,
+            "min_day_wr": round(min_day_wr, 4) if min_day_wr is not None else None,
+            "filters": filters_dict, "graduation": graduation_dict,
+        }
+    except Exception:
+        logging.debug("%s snapshot failed", filter_stage, exc_info=True)
+        return {
+            "total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+            "wilson_lower": 0, "brier": None, "sim_pnl_cents": 0,
+            "days": 0, "min_day_wr": None,
+            "filters": filters_dict, "graduation": graduation_dict,
+        }
+
 # Current config regime boundary — performance metrics filtered to this era
 # Mar 3 2026: MIN_EDGE_BY_PRICE halved, DIRECT_TAKER_THRESHOLD 60→75
 CONFIG_REGIME_SINCE = "2026-03-03T00:00:00"
@@ -1595,6 +1669,10 @@ class DashboardSnapshotBuilder:
                                         "filters": {"asset": "BTC", "min_price": 70, "max_price": 89, "max_per_window": 2},
                                         "graduation": {"min_n": 100, "min_wr": 0.88,
                                                        "min_wilson_margin_over_be": 0.03, "pnl_positive": True}}
+
+        # ── Hourly Configs C–G (shadow promotion candidates) ─────────────
+        for _vfs, _vfilters in _HOURLY_VARIANT_DEFS:
+            snap[_vfs] = _build_hourly_variant_snap(_conn, _vfs, _vfilters, _HOURLY_VARIANT_GRADUATION)
 
         # ── SPX Observation Panel ─────────────────────────────────────────
         try:

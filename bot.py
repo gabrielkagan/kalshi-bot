@@ -99,6 +99,17 @@ HOURLY_CONFIG_B_ASSET = 'BTC'
 HOURLY_CONFIG_B_MIN_PRICE = 70
 HOURLY_CONFIG_B_MAX_PRICE = 89
 HOURLY_CONFIG_B_MAX_PER_WINDOW = 2    # Price-sorted: top 2 by price within window
+# ─── Hourly Configs C–G (shadow promotion candidates, Mar 12 2026) ──────────
+# Five diverse configs from hourly alpha research. All shadow-only —
+# insert as filter_stage='hourly_config_X' alongside the unfiltered baseline.
+# Graduation: WR≥72%, Wilson LB≥65%, Brier<0.30, 7+ days, PnL positive.
+HOURLY_SHADOW_CONFIGS = [
+    {"name": "hourly_config_c", "included_assets": {"BTC", "ETH"}, "min_stc": 600, "max_stc": 1800},
+    {"name": "hourly_config_d", "excluded_assets": {"XRP"}, "max_edge": 0.05},
+    {"name": "hourly_config_e", "included_assets": {"BTC", "ETH"}, "min_stc": 1200, "max_stc": 1800},
+    {"name": "hourly_config_f", "max_edge": 0.012},
+    {"name": "hourly_config_g", "included_assets": {"BTC"}, "min_stc": 900, "max_stc": 1800},
+]
 HOURLY_KELLY_FRACTION = 0.25          # Quarter-Kelly: 44% of growth rate, ~3% halving probability
 
 # ─── SPX Hourly Observation Mode ──────────────────────────────────────────────
@@ -8048,6 +8059,50 @@ class OpportunityScanner:
                                         **_oft_db, **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_config_b)", exc_info=True)
+                    # ── Configs C–G: data-driven shadow variants ──
+                    if _obs_pt == "hourly":
+                        for _scfg in HOURLY_SHADOW_CONFIGS:
+                            _sname = _scfg["name"]
+                            if "included_assets" in _scfg and asset not in _scfg["included_assets"]:
+                                continue
+                            if "excluded_assets" in _scfg and asset in _scfg["excluded_assets"]:
+                                continue
+                            if "min_stc" in _scfg and seconds_remaining < _scfg["min_stc"]:
+                                continue
+                            if "max_stc" in _scfg and seconds_remaining > _scfg["max_stc"]:
+                                continue
+                            if "max_edge" in _scfg and fee_adjusted_edge > _scfg["max_edge"]:
+                                continue
+                            _s_dedup = (ticker, _sname)
+                            if _s_dedup in self._eval_opp_seen:
+                                continue
+                            self._eval_opp_seen.add(_s_dedup)
+                            _s_ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            try:
+                                self._state.insert_evaluated_opportunity(
+                                    ticker, window["event_ticker"], asset,
+                                    _sname,
+                                    spot_price=spot, threshold=threshold,
+                                    volatility=blended_rv, market_price=best_ask,
+                                    seconds_to_close=seconds_remaining,
+                                    calibrated_prob=final_prob, edge=edge,
+                                    ofa_adjustment=ofa_adjustment,
+                                    z_score=z_score, vol_regime=vol_est["regime"],
+                                    raw_prob=raw_prob,
+                                    calibrated_prob_raw=calibrated_prob_raw,
+                                    calibration_method=calibration_method,
+                                    fee_adjusted_edge=fee_adjusted_edge,
+                                    breakeven_wr=best_ask / 100.0,
+                                    expected_value=round(_s_ev, 2),
+                                    ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                    position_size=sizing["contracts"],
+                                    kelly_f=sizing["kelly_f"],
+                                    drawdown_scaler=sizing["drawdown_scaler"],
+                                    strategy=strategy, old_system_prob=_old_system_prob,
+                                    product_type="hourly",
+                                    **_oft_db, **_shadow_diag)
+                            except Exception:
+                                logging.warning("insert_evaluated_opportunity failed (%s)", _sname, exc_info=True)
                     # Increment per-window counters even in observation mode so Layer 3b/3c
                     # limits work for counterfactual analysis (without this, counter stays 0
                     # and the limit is dead code — bug found by audit: 11 SPX positions in one window)
