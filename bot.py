@@ -109,6 +109,8 @@ HOURLY_SHADOW_CONFIGS = [
     {"name": "hourly_config_e", "included_assets": {"BTC", "ETH"}, "min_stc": 1200, "max_stc": 1800},
     {"name": "hourly_config_f", "max_edge": 0.012},
     {"name": "hourly_config_g", "included_assets": {"BTC"}, "min_stc": 900, "max_stc": 1800},
+    {"name": "hourly_config_h", "temperature": 2.0, "blend_w": 0.0},
+    {"name": "hourly_config_i", "included_assets": {"BTC", "ETH"}, "min_stc": 600, "max_stc": 1800, "temperature": 2.0, "blend_w": 0.0},
 ]
 HOURLY_KELLY_FRACTION = 0.25          # Quarter-Kelly: 44% of growth rate, ~3% halving probability
 
@@ -8256,7 +8258,24 @@ class OpportunityScanner:
                             if _s_dedup in self._eval_opp_seen:
                                 continue
                             self._eval_opp_seen.add(_s_dedup)
-                            _s_ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            # Recompute prob for configs with custom temperature/blend
+                            _s_final = final_prob
+                            _s_edge = edge
+                            _s_fee_edge = fee_adjusted_edge
+                            if "temperature" in _scfg or "blend_w" in _scfg:
+                                _s_base = _hourly_pre_temp_prob
+                                if _s_base is not None:
+                                    _s_t = _scfg.get("temperature", _configured_temp_t or 1.0)
+                                    _sp = max(0.001, min(0.999, _s_base))
+                                    _slz = math.log(_sp / (1.0 - _sp))
+                                    _s_final = 1.0 / (1.0 + math.exp(-_slz / _s_t))
+                                    _s_final = max(0.01, min(NUMERICAL_SAFETY_CEILING, _s_final + ofa_adjustment))
+                                    _s_bw = _scfg.get("blend_w", _effective_blend_w)
+                                    if best_ask < ENDGAME_BLEND_PRICE and _s_bw > 0:
+                                        _s_final = (1.0 - _s_bw) * _s_final + _s_bw * (best_ask / 100.0)
+                                    _s_edge = _s_final - best_ask / 100.0
+                                    _s_fee_edge = _s_edge - est_fee_1c / 100.0
+                            _s_ev = (_s_final * (100 - best_ask)) - ((1 - _s_final) * best_ask) - est_fee_1c
                             try:
                                 self._state.insert_evaluated_opportunity(
                                     ticker, window["event_ticker"], asset,
@@ -8264,13 +8283,13 @@ class OpportunityScanner:
                                     spot_price=spot, threshold=threshold,
                                     volatility=blended_rv, market_price=best_ask,
                                     seconds_to_close=seconds_remaining,
-                                    calibrated_prob=final_prob, edge=edge,
+                                    calibrated_prob=_s_final, edge=_s_edge,
                                     ofa_adjustment=ofa_adjustment,
                                     z_score=z_score, vol_regime=vol_est["regime"],
                                     raw_prob=raw_prob,
                                     calibrated_prob_raw=calibrated_prob_raw,
                                     calibration_method=calibration_method,
-                                    fee_adjusted_edge=fee_adjusted_edge,
+                                    fee_adjusted_edge=_s_fee_edge,
                                     breakeven_wr=best_ask / 100.0,
                                     expected_value=round(_s_ev, 2),
                                     ask_depth=ask_depth, best_ask_source=best_ask_source,
