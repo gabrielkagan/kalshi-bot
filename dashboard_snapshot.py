@@ -2802,6 +2802,48 @@ class DashboardSnapshotBuilder:
                 "sim_pnl_cents": _dc_total_pnl,
                 "by_asset": _dc_by_asset, "by_tier": _dc_by_tier,
             }
+            # ── Decided Contract LIVE performance ──
+            _dc_live = {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0,
+                        "by_tier": {}, "by_asset": {}, "window_cap_skips": 0}
+            try:
+                for _row in _conn.execute(
+                    "SELECT strategy, asset, COUNT(*) as n, "
+                    "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
+                    "SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as losses, "
+                    "SUM(pnl_cents) as pnl "
+                    "FROM settled_trades WHERE strategy IN ('decided_t1','decided_t2') "
+                    "GROUP BY strategy, asset"
+                ).fetchall():
+                    strat, asset_name, n, w, l, pnl = _row
+                    _dc_live["trades"] += n
+                    _dc_live["wins"] += w
+                    _dc_live["losses"] += l
+                    _dc_live["pnl_cents"] += pnl
+                    _dc_live["by_tier"].setdefault(strat, {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0})
+                    _dc_live["by_tier"][strat]["trades"] += n
+                    _dc_live["by_tier"][strat]["wins"] += w
+                    _dc_live["by_tier"][strat]["losses"] += l
+                    _dc_live["by_tier"][strat]["pnl_cents"] += pnl
+                    _dc_live["by_asset"].setdefault(asset_name, {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0})
+                    _dc_live["by_asset"][asset_name]["trades"] += n
+                    _dc_live["by_asset"][asset_name]["wins"] += w
+                    _dc_live["by_asset"][asset_name]["losses"] += l
+                    _dc_live["by_asset"][asset_name]["pnl_cents"] += pnl
+                _dc_live["wr"] = round(_dc_live["wins"] / _dc_live["trades"], 4) if _dc_live["trades"] else 0
+                for v in _dc_live["by_tier"].values():
+                    v["wr"] = round(v["wins"] / v["trades"], 4) if v["trades"] else 0
+                for v in _dc_live["by_asset"].values():
+                    v["wr"] = round(v["wins"] / v["trades"], 4) if v["trades"] else 0
+                # Count window cap skips
+                _skip_count = _conn.execute(
+                    "SELECT COUNT(*) FROM evaluated_opportunities "
+                    "WHERE filter_stage='decided_window_cap_skip'"
+                ).fetchone()
+                _dc_live["window_cap_skips"] = _skip_count[0] if _skip_count else 0
+                _query_count += 2
+            except Exception:
+                logging.debug("decided_contract_live snapshot failed", exc_info=True)
+            snap["decided_contract_live"] = _dc_live
 
             # Relaxed edge
             _re = _panel_snap("relaxed_edge_shadow", _sh_totals, _sh_asset_map, _sh_tier_map)
@@ -3060,7 +3102,8 @@ class DashboardSnapshotBuilder:
         if _run_slow:
             _SLOW_SNAP_KEYS = {
                 "weekend_discount_shadow", "overnight_discount_shadow",
-                "overnight_lp_shadow", "decided_contract_shadow", "relaxed_edge_shadow",
+                "overnight_lp_shadow", "decided_contract_shadow", "decided_contract_live",
+                "relaxed_edge_shadow",
                 "calibration_gap", "capital_utilization", "loss_clusters",
                 "pipeline_completeness", "sol_pathc_shadow", "eth_filter_shadow",
             }

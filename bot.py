@@ -469,6 +469,12 @@ DECIDED_CONTRACT_Z_T2 = -3.0       # Tier 2 z threshold (narrower price range)
 DECIDED_CONTRACT_MIN_PRICE = 93     # Minimum ask price (cents) for decided signal
 DECIDED_CONTRACT_T2_MAX_PRICE = 96  # T2 only applies up to 96c
 DECIDED_CONTRACT_MAX_STC = 300      # Only within 5 minutes of close
+# ── Decided Contract LIVE overlay ──
+# Incremental strategy on top of main pipeline. Env-var kill switches (no deploy needed).
+DECIDED_T1_ENABLED = os.environ.get("DECIDED_T1_ENABLED", "0") == "1"
+DECIDED_T2_ENABLED = os.environ.get("DECIDED_T2_ENABLED", "0") == "1"
+DECIDED_CONTRACT_RISK = 0.125               # Fixed 12.5% bankroll per signal
+DECIDED_CONTRACT_MAX_WINDOW_RISK = 0.25     # 25% bankroll cap per settlement window
 
 # ─── Relaxed Edge Shadow (Fix #1) ──────────────────────────────────────
 # Edge thresholds at 88-93c may be too conservative. Data shows rejected trades
@@ -5861,11 +5867,18 @@ class OpportunityScanner:
         self._hourly_window_counts = {}
         self._hourly_window_risk = {}
         self._config_b_window_counts = {}  # Config B (BTC 70-89c wl2) separate counter
+        self._dc_window_risk = {}  # Decided contract per-window risk tracker
+        self._dc_window_cap_skips = 0  # Session counter for window cap skips
         try:
             for pos in self._state.get_open_positions():
                 evt = pos.get("event_ticker", "")
                 if evt:
                     self._hourly_window_counts[evt] = self._hourly_window_counts.get(evt, 0) + 1
+                    # Seed DC window risk from existing decided positions
+                    strat = pos.get("strategy", "")
+                    if strat in ("decided_t1", "decided_t2"):
+                        _dc_cost = pos.get("count", 0) * pos.get("avg_price_cents", 0)
+                        self._dc_window_risk[evt] = self._dc_window_risk.get(evt, 0.0) + _dc_cost
         except Exception:
             pass  # Non-critical: worst case is slight over-allocation
 
@@ -7252,11 +7265,12 @@ class OpportunityScanner:
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (overnight_discount_shadow)", exc_info=True)
 
-                    # ── Decided Contract Shadow (Fix #2) ──────────────────────
+                    # ── Decided Contract (overlay strategy + shadow) ─────────
                     # When z-score is very negative (spot far above strike) near expiry,
                     # the contract is essentially decided. EGARCH can't compute edge
                     # because calibration squashes prob below market price.
-                    # T1 (z ≤ -5, 93-99c): 32/32 = 100% WR. T2 (z ≤ -3, 93-96c): 52/54 = 96.3% WR.
+                    # T1 (z ≤ -5, 93-99c): 34/34 = 100% WR. T2 (z ≤ -3, 93-96c): 8/8 = 100% WR.
+                    # Shadow always runs. Live overlay fires when DECIDED_T1/T2_ENABLED.
                     if (DECIDED_CONTRACT_SHADOW
                             and _pt in (None, "15m")
                             and z_score is not None
@@ -7271,14 +7285,13 @@ class OpportunityScanner:
                             _dc_tier = "decided_contract_t2"
 
                         if _dc_tier:
-                            # Fixed sizing: 12.5% risk (half of MAX_RISK, not Kelly —
-                            # model edge is negative so Kelly would size to 0)
+                            # Fixed sizing: 12.5% risk (not Kelly — model edge is negative)
                             _dc_balance = self._get_balance_cached()
                             _dc_position = None
                             _dc_kelly_f = None
                             _dc_ev = None
                             if _dc_balance and _dc_balance > 0:
-                                _dc_risk = MAX_RISK_PER_TRADE * 0.5
+                                _dc_risk = DECIDED_CONTRACT_RISK
                                 _dc_position = max(1, int((_dc_balance * _dc_risk) / best_ask))
                                 # EV with assumed ~99% win prob for T1, ~96% for T2
                                 _dc_assumed_p = 0.99 if _dc_tier == "decided_contract_t1" else 0.96
@@ -7286,6 +7299,7 @@ class OpportunityScanner:
                                                - ((1 - _dc_assumed_p) * best_ask) - est_fee_1c, 2)
                                 _dc_kelly_f = round((_dc_assumed_p - best_ask / 100.0), 6)
 
+                            # Always log shadow signal (continues accumulating shadow stats)
                             _dc_dedup = (ticker, _dc_tier)
                             if _dc_dedup not in self._eval_opp_seen:
                                 self._eval_opp_seen.add(_dc_dedup)
@@ -7315,6 +7329,113 @@ class OpportunityScanner:
                                         **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (%s)", _dc_tier, exc_info=True)
+
+                            # ── Live overlay: queue as candidate if tier enabled ──
+                            _dc_live_enabled = (
+                                (_dc_tier == "decided_contract_t1" and DECIDED_T1_ENABLED)
+                                or (_dc_tier == "decided_contract_t2" and DECIDED_T2_ENABLED))
+                            if (_dc_live_enabled
+                                    and not OBSERVATION_MODE
+                                    and _dc_balance and _dc_balance > 0
+                                    and _dc_position and _dc_position > 0):
+                                # Per-window risk cap: 25% bankroll across all DC signals
+                                _dc_wkey = window["event_ticker"]
+                                _dc_existing_risk = self._dc_window_risk.get(_dc_wkey, 0.0)
+                                _dc_this_cost = _dc_position * best_ask
+                                _dc_max_cost = _dc_balance * DECIDED_CONTRACT_MAX_WINDOW_RISK
+                                if _dc_existing_risk + _dc_this_cost > _dc_max_cost:
+                                    # Reduce position to fit within cap
+                                    _dc_remaining = _dc_max_cost - _dc_existing_risk
+                                    if _dc_remaining >= best_ask:
+                                        _dc_position = max(1, int(_dc_remaining / best_ask))
+                                        _dc_this_cost = _dc_position * best_ask
+                                    else:
+                                        # Window cap exceeded — log skip and don't trade
+                                        _dc_skip_dedup = (ticker, "decided_window_cap_skip")
+                                        if _dc_skip_dedup not in self._eval_opp_seen:
+                                            self._eval_opp_seen.add(_dc_skip_dedup)
+                                            try:
+                                                self._state.insert_evaluated_opportunity(
+                                                    ticker, window["event_ticker"], asset,
+                                                    "decided_window_cap_skip",
+                                                    rejection_reason=f"window cap: existing={_dc_existing_risk:.0f}c max={_dc_max_cost:.0f}c tier={_dc_tier}",
+                                                    spot_price=spot, threshold=threshold,
+                                                    volatility=blended_rv, market_price=best_ask,
+                                                    seconds_to_close=seconds_remaining,
+                                                    calibrated_prob=final_prob, edge=edge,
+                                                    z_score=z_score,
+                                                    vol_regime=vol_est["regime"],
+                                                    raw_prob=raw_prob,
+                                                    fee_adjusted_edge=fee_adjusted_edge,
+                                                    product_type=window.get("product_type"),
+                                                    **_shadow_diag)
+                                            except Exception:
+                                                logging.warning("insert_evaluated_opportunity failed (decided_window_cap_skip)", exc_info=True)
+                                        self._dc_window_cap_skips += 1
+                                        logging.info("DC_WINDOW_CAP: %s %s skipped (existing=%.0fc max=%.0fc)",
+                                                     _dc_tier, ticker, _dc_existing_risk, _dc_max_cost)
+                                        _dc_live_enabled = False  # skip candidate below
+
+                                # Cap by existing exposure on same ticker
+                                if _dc_live_enabled:
+                                    _dc_existing_exposure = 0
+                                    for pos in self._state.get_open_positions():
+                                        if pos["ticker"] == ticker:
+                                            _dc_existing_exposure += pos["count"]
+                                            break
+                                    for resting in self._state.get_resting_orders(ticker=ticker):
+                                        _dc_existing_exposure += resting["count"]
+                                    if _dc_existing_exposure > 0:
+                                        _dc_position = max(0, _dc_position - _dc_existing_exposure)
+
+                                if _dc_live_enabled and _dc_position > 0:
+                                    _dc_strat = "decided_t1" if _dc_tier == "decided_contract_t1" else "decided_t2"
+                                    self._dc_window_risk[_dc_wkey] = _dc_existing_risk + _dc_position * best_ask
+                                    logging.info("DC_CANDIDATE: %s %s %dx@%dc z=%.1f stc=%.0fs",
+                                                 _dc_strat, ticker, _dc_position, best_ask, z_score, seconds_remaining)
+                                    candidates.append({
+                                        "ticker": ticker,
+                                        "event_ticker": window["event_ticker"],
+                                        "asset": asset,
+                                        "product_type": window.get("product_type"),
+                                        "spot": spot,
+                                        "threshold": threshold,
+                                        "seconds_to_close": round(seconds_remaining, 1),
+                                        "blended_rv": blended_rv,
+                                        "calibrated_prob": round(_dc_assumed_p, 6),
+                                        "z_score": z_score,
+                                        "best_yes_ask": best_ask,
+                                        "best_ask_source": best_ask_source,
+                                        "edge": round(_dc_assumed_p - best_ask / 100.0, 6),
+                                        "position_size": _dc_position,
+                                        "kelly_f": _dc_kelly_f,
+                                        "drawdown_scaler": 1.0,
+                                        "vol_regime": vol_est["regime"],
+                                        "balance_at_scan": _dc_balance,
+                                        "strategy": _dc_strat,
+                                        "strategy_scores": {"certainty": 1.0, "certainty_detail": "decided",
+                                                            "orderbook": 0.5, "orderbook_detail": "n/a",
+                                                            "urgency": 1.0, "urgency_detail": "decided",
+                                                            "composite": 1.0, "reason": "decided_contract"},
+                                        "ob_snapshot": {
+                                            "best_ask": best_ask,
+                                            "ask_depth": ask_depth,
+                                            "total_depth": total_depth,
+                                            "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                                            "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                                            "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                                      if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
+                                        },
+                                        "calibrated_prob_raw": round(calibrated_prob_raw, 6),
+                                        "ofa_adjustment": round(ofa_adjustment, 6),
+                                        "ofa_confidence": ofa_signals["confidence"] if ofa_signals else "none",
+                                        "raw_prob": raw_prob,
+                                        "calibration_method": calibration_method,
+                                        "old_system_prob": round(_old_system_prob, 6),
+                                        "fee_adjusted_edge": round(fee_adjusted_edge, 6),
+                                        **_shadow_diag,
+                                        **_shadow_extra,
+                                    })
 
                     # ── Relaxed Edge Shadow (Fix #1) ──────────────────────────
                     # Edge thresholds at 88-93c may be too conservative.
@@ -8430,6 +8551,11 @@ class OpportunityScanner:
             self._last_scan_stats = scan_stats
             return None
 
+        # ── Separate decided contract candidates (additive overlay, bypass single-asset filter) ──
+        _dc_candidates = [c for c in candidates if c.get("strategy", "").startswith("decided_")]
+        _main_candidates = [c for c in candidates if not c.get("strategy", "").startswith("decided_")]
+        candidates = _main_candidates  # single-asset filter only applies to main pipeline
+
         # ── Single-asset-per-timeslot: pick highest edge per 15-min window ──
         if ONE_ASSET_PER_WINDOW:
             # Group candidates by timeslot (shared across assets)
@@ -8574,6 +8700,11 @@ class OpportunityScanner:
         # 15M: single global best (existing behavior)
         if fifteenm_cands:
             selected.append(max(fifteenm_cands, key=lambda c: c["edge"]))
+
+        # Decided contract overlay: add all DC candidates (already window-capped in scan)
+        # Priority by payoff: lower price = higher payoff, so sort ascending by price
+        _dc_candidates.sort(key=lambda c: c["best_yes_ask"])
+        selected.extend(_dc_candidates)
 
         if not selected:
             self._last_scan_stats = scan_stats
