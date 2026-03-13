@@ -156,6 +156,10 @@ WEATHER_SHADOW_CONFIGS = [
     {"name": "weather_shadow_short_stc", "max_stc": 28800},  # 8 hours
     {"name": "weather_shadow_capped30_short_stc", "max_price": 30, "max_stc": 28800},  # both filters
 ]
+# Weather NO-side shadow: model overconfident on YES (+25.5pp at 75-90% bucket) → strong NO signal.
+# Signal fires when YES prob ≥ 55% (cheap NO contracts) and NO edge after fees is positive.
+# Fixed 1-contract sizing (Kelly oversizes on low-edge NO signals).
+WEATHER_NO_SHADOW_MIN_YES_PROB = 0.55  # Only shadow when model is confident YES (NO is cheap)
 HOURLY_MIN_EDGE_PCT = 0.001              # 0.1% — low for max signal collection (observation-only)
 
 # ─── Sports Comeback Observation Mode ────────────────────────────────────
@@ -8158,6 +8162,54 @@ class OpportunityScanner:
                                     **_oft_db, **_shadow_diag)
                             except Exception:
                                 logging.warning("insert_evaluated_opportunity failed (%s)", _wsname, exc_info=True)
+                        # ── Weather NO-side shadow ──
+                        # Model is +25.5pp overconfident on YES → strong NO signal.
+                        # Fire when YES prob ≥ 55% and NO edge after fees is positive.
+                        if final_prob >= WEATHER_NO_SHADOW_MIN_YES_PROB and _no_ask_eq is not None:
+                            _wn_dedup = (ticker, "weather_no_shadow")
+                            if _wn_dedup not in self._eval_opp_seen:
+                                _wn_no_prob = 1.0 - final_prob
+                                _wn_no_fee = calculate_fee(1, _no_ask_eq, is_taker=True,
+                                                           fee_mult_taker=_mcfg.fee_multiplier_taker,
+                                                           fee_mult_maker=_mcfg.fee_multiplier_maker)
+                                _wn_no_edge = _wn_no_prob - _no_ask_eq / 100.0
+                                _wn_no_fee_edge = _wn_no_edge - _wn_no_fee / 100.0
+                                if _wn_no_fee_edge > 0:
+                                    self._eval_opp_seen.add(_wn_dedup)
+                                    _wn_ev = (_wn_no_prob * (100 - _no_ask_eq)) - ((1 - _wn_no_prob) * _no_ask_eq) - _wn_no_fee
+                                    try:
+                                        self._state.insert_evaluated_opportunity(
+                                            ticker, window["event_ticker"], asset,
+                                            "weather_no_shadow",
+                                            spot_price=spot, threshold=threshold,
+                                            volatility=blended_rv, market_price=_no_ask_eq,
+                                            seconds_to_close=seconds_remaining,
+                                            calibrated_prob=_wn_no_prob, edge=_wn_no_edge,
+                                            ofa_adjustment=ofa_adjustment,
+                                            z_score=z_score, vol_regime=vol_est["regime"],
+                                            raw_prob=1.0 - raw_prob if raw_prob is not None else None,
+                                            calibrated_prob_raw=1.0 - calibrated_prob_raw if calibrated_prob_raw is not None else None,
+                                            calibration_method=calibration_method,
+                                            fee_adjusted_edge=_wn_no_fee_edge,
+                                            breakeven_wr=_no_ask_eq / 100.0,
+                                            expected_value=round(_wn_ev, 2),
+                                            ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                            position_size=1,  # Fixed 1-contract sizing
+                                            kelly_f=0.0,
+                                            drawdown_scaler=1.0,
+                                            strategy=strategy, old_system_prob=_old_system_prob,
+                                            product_type="weather", side="no",
+                                            wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                                            wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                                            wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                                            wx_n_members=_shadow_extra.get("wx_n_members"),
+                                            wx_market_type=_shadow_extra.get("wx_market_type"),
+                                            wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                            wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
+                                            wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
+                                            **_oft_db, **_shadow_diag)
+                                    except Exception:
+                                        logging.warning("insert_evaluated_opportunity failed (weather_no_shadow)", exc_info=True)
                     # V2 variant: shadow cal pipeline (temperature + no blend)
                     if _obs_pt == "hourly" and _cf:
                         self._insert_hourly_v2_variant(

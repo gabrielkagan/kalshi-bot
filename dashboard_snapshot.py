@@ -1676,6 +1676,84 @@ class DashboardSnapshotBuilder:
         for _vfs, _vfilters in _HOURLY_VARIANT_DEFS:
             snap[_vfs] = _build_hourly_variant_snap(_conn, _vfs, _vfilters, _HOURLY_VARIANT_GRADUATION)
 
+        # ── Weather NO-side Shadow ────────────────────────────────────────
+        try:
+            _wn = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('no','all_no') "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl, "
+                "AVG(CASE WHEN status='settled' AND calibrated_prob IS NOT NULL "
+                "  THEN (calibrated_prob - CASE WHEN market_result IN ('no','all_no') "
+                "    THEN 1.0 ELSE 0.0 END) * (calibrated_prob - CASE WHEN market_result IN ('no','all_no') "
+                "    THEN 1.0 ELSE 0.0 END) END) as brier "
+                "FROM evaluated_opportunities "
+                "WHERE filter_stage='weather_no_shadow' AND side='no'",
+            ).fetchone()
+            _wn_settled = (_wn["settled"] or 0) if _wn else 0
+            _wn_wins = (_wn["wins"] or 0) if _wn else 0
+            _wn_wr = round(_wn_wins / _wn_settled, 4) if _wn_settled else 0
+            _wn_wlo = 0
+            if _wn_settled > 0:
+                _p = _wn_wins / _wn_settled
+                _z = 1.96
+                _d = 1 + _z**2 / _wn_settled
+                _wn_wlo = round((_p + _z**2 / (2 * _wn_settled) - _z * ((_p * (1 - _p) / _wn_settled + _z**2 / (4 * _wn_settled**2)) ** 0.5)) / _d, 4)
+            # Per-city breakdown
+            _wn_by_city = {}
+            for _cr in _conn.execute(
+                "SELECT asset, COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('no','all_no') THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities "
+                "WHERE filter_stage='weather_no_shadow' AND side='no' "
+                "GROUP BY asset ORDER BY asset",
+            ).fetchall():
+                _wn_by_city[_cr["asset"]] = {
+                    "n": _cr["n"], "settled": _cr["settled"] or 0,
+                    "wins": _cr["wins"] or 0,
+                    "wr": round((_cr["wins"] or 0) / _cr["settled"], 4) if _cr["settled"] else 0,
+                    "sim_pnl_cents": _cr["sim_pnl"] or 0,
+                }
+            # Per YES-probability bucket (model's YES confidence → NO opportunity)
+            _wn_by_yes_bucket = {}
+            for _br in _conn.execute(
+                "SELECT CASE "
+                "  WHEN (1.0 - calibrated_prob) < 0.70 THEN '55-70pct' "
+                "  WHEN (1.0 - calibrated_prob) < 0.85 THEN '70-85pct' "
+                "  ELSE '85pct_plus' END as bucket, "
+                "COUNT(*) as n, "
+                "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                "SUM(CASE WHEN status='settled' AND market_result IN ('no','all_no') THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
+                "FROM evaluated_opportunities "
+                "WHERE filter_stage='weather_no_shadow' AND side='no' "
+                "GROUP BY bucket ORDER BY bucket",
+            ).fetchall():
+                _wn_by_yes_bucket[_br["bucket"]] = {
+                    "n": _br["n"], "settled": _br["settled"] or 0,
+                    "wins": _br["wins"] or 0,
+                    "wr": round((_br["wins"] or 0) / _br["settled"], 4) if _br["settled"] else 0,
+                    "sim_pnl_cents": _br["sim_pnl"] or 0,
+                }
+            snap["weather_no_shadow"] = {
+                "total_signals": _wn["n"] if _wn else 0,
+                "settled": _wn_settled, "wins": _wn_wins, "wr": _wn_wr,
+                "wilson_lower": _wn_wlo,
+                "brier": round(_wn["brier"], 4) if _wn and _wn["brier"] else None,
+                "sim_pnl_cents": _wn["sim_pnl"] if _wn else 0,
+                "by_city": _wn_by_city,
+                "by_yes_bucket": _wn_by_yes_bucket,
+            }
+        except Exception:
+            snap["weather_no_shadow"] = {
+                "total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                "wilson_lower": 0, "brier": None, "sim_pnl_cents": 0,
+                "by_city": {}, "by_yes_bucket": {},
+            }
+
         # ── SPX Observation Panel ─────────────────────────────────────────
         try:
             if getattr(_bot_mod, "SPX_HOURLY_ENABLED", False):
