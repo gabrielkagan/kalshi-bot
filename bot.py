@@ -142,6 +142,18 @@ WEATHER_KELLY_FRACTION = 0.25
 WEATHER_MARKET_BLEND_W = 0.20            # 80% model, 20% market (ensemble is primary signal)
 WEATHER_MIN_EDGE_PCT = 0.001             # 0.1% — very low for max signal collection (observation-only)
 WEATHER_CAL_ENGINE_ENABLED = True        # Per-city CalEngines learning in shadow
+# ─── Weather Shadow Variants (Mar 12 2026) ──────────────────────────────────
+# Two focused shadow configs alongside the uncapped baseline (weather_observation).
+# Research: model well-calibrated <25% predicted (≤30c), catastrophically overconfident >40%.
+#   - Capped30: price ≤30c — restricts to calibrated regime (+0.8pp to +4.3pp gap)
+#   - ShortSTC: STC ≤8h — ensemble freshest, 46.7% WR vs 18.4% for 16-24h
+# Both insert as filter_stage='weather_shadow_X' alongside uncapped baseline.
+# Graduation: WR above breakeven, Wilson CI lower > BE, 30+ days, PnL positive.
+WEATHER_SHADOW_CONFIGS = [
+    {"name": "weather_shadow_capped30", "max_price": 30},
+    {"name": "weather_shadow_short_stc", "max_stc": 28800},  # 8 hours
+    {"name": "weather_shadow_capped30_short_stc", "max_price": 30, "max_stc": 28800},  # both filters
+]
 HOURLY_MIN_EDGE_PCT = 0.001              # 0.1% — low for max signal collection (observation-only)
 
 # ─── Sports Comeback Observation Mode ────────────────────────────────────
@@ -7977,6 +7989,52 @@ class OpportunityScanner:
                     _obs_log_prefix = {"hourly": "HOURLY_OBS", "spx_hourly": "SPX_OBS", "weather": "WEATHER_OBS"}.get(_obs_pt, "OBS")
                     logging.info("%s: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  _obs_log_prefix, ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
+                    # ── Weather Shadow Variants (capped30, short_stc) ──
+                    if _obs_pt == "weather":
+                        for _wscfg in WEATHER_SHADOW_CONFIGS:
+                            _wsname = _wscfg["name"]
+                            if "max_price" in _wscfg and best_ask > _wscfg["max_price"]:
+                                continue
+                            if "max_stc" in _wscfg and seconds_remaining > _wscfg["max_stc"]:
+                                continue
+                            _ws_dedup = (ticker, _wsname)
+                            if _ws_dedup in self._eval_opp_seen:
+                                continue
+                            self._eval_opp_seen.add(_ws_dedup)
+                            _ws_ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            try:
+                                self._state.insert_evaluated_opportunity(
+                                    ticker, window["event_ticker"], asset,
+                                    _wsname,
+                                    spot_price=spot, threshold=threshold,
+                                    volatility=blended_rv, market_price=best_ask,
+                                    seconds_to_close=seconds_remaining,
+                                    calibrated_prob=final_prob, edge=edge,
+                                    ofa_adjustment=ofa_adjustment,
+                                    z_score=z_score, vol_regime=vol_est["regime"],
+                                    raw_prob=raw_prob,
+                                    calibrated_prob_raw=calibrated_prob_raw,
+                                    calibration_method=calibration_method,
+                                    fee_adjusted_edge=fee_adjusted_edge,
+                                    breakeven_wr=best_ask / 100.0,
+                                    expected_value=round(_ws_ev, 2),
+                                    ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                    position_size=sizing["contracts"],
+                                    kelly_f=sizing["kelly_f"],
+                                    drawdown_scaler=sizing["drawdown_scaler"],
+                                    strategy=strategy, old_system_prob=_old_system_prob,
+                                    product_type="weather",
+                                    wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                                    wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                                    wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                                    wx_n_members=_shadow_extra.get("wx_n_members"),
+                                    wx_market_type=_shadow_extra.get("wx_market_type"),
+                                    wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                    wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
+                                    wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
+                                    **_oft_db, **_shadow_diag)
+                            except Exception:
+                                logging.warning("insert_evaluated_opportunity failed (%s)", _wsname, exc_info=True)
                     # V2 variant: shadow cal pipeline (temperature + no blend)
                     if _obs_pt == "hourly" and _cf:
                         self._insert_hourly_v2_variant(

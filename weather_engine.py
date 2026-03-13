@@ -27,6 +27,8 @@ TOTAL_ENSEMBLE_MEMBERS = GFS_MEMBERS + ECMWF_MEMBERS  # 82
 
 # Bias correction EWMA
 BIAS_EWMA_LAMBDA = 0.90  # ~7-day half-life with daily updates
+BIAS_MIN_SIGNALS = 30    # Min settled signals before applying bias correction per city
+                         # Computing correction from <30 signals is just fitting noise
 
 # Per-city ensemble std correction factors (error_to_std_ratio from Mar 1-8 audit).
 # Ensemble spread systematically underestimates true forecast uncertainty.
@@ -516,8 +518,13 @@ class WeatherProbabilityModel:
             city_code, WEATHER_STD_CORRECTION_DEFAULT)
         std = raw_std * std_correction
 
-        # Apply bias correction
-        bias = self._bias.get(city_code, 0.0)
+        # Apply bias correction — only when city has enough settled signals
+        # to produce a meaningful correction. Below threshold, leave uncorrected.
+        _bias_count = self._bias_count.get(city_code, 0)
+        if _bias_count >= BIAS_MIN_SIGNALS:
+            bias = self._bias.get(city_code, 0.0)
+        else:
+            bias = 0.0
         corrected_mean = mean + bias
 
         # Compute probability based on market type
@@ -570,6 +577,7 @@ class WeatherProbabilityModel:
             "raw_ensemble_std": round(raw_std, 2),  # original ensemble spread
             "std_correction_factor": std_correction,
             "bias_correction": round(bias, 2),
+            "bias_count": _bias_count,  # how many updates learned; applied only when >= BIAS_MIN_SIGNALS
             "corrected_mean": round(corrected_mean, 1),
             "n_members": len(members),
             "hrrr_temp": ensemble_data.get("hrrr_temp"),

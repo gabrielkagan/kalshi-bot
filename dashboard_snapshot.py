@@ -1850,6 +1850,44 @@ class DashboardSnapshotBuilder:
                     wx_data["sim_trade_count"] = 0
                     wx_data["sim_win_rate"] = 0
                     wx_data["sim_pnl_cents"] = 0
+                # Weather shadow variants sim PnL
+                wx_variants = {}
+                for _wv_stage in ("weather_shadow_capped30", "weather_shadow_short_stc",
+                                  "weather_shadow_capped30_short_stc"):
+                    try:
+                        row = conn.execute(
+                            "SELECT COUNT(*) AS cnt, "
+                            "SUM(CASE "
+                            "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' THEN 1 "
+                            "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') THEN 1 "
+                            "  ELSE 0 END) AS wins, "
+                            "SUM(CASE "
+                            "  WHEN calibrated_prob > market_price/100.0 AND market_result='yes' "
+                            f"    THEN (100 - market_price) - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                            "  WHEN calibrated_prob > market_price/100.0 AND market_result IN ('no','all_no') "
+                            f"    THEN -(market_price + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
+                            "  WHEN calibrated_prob <= market_price/100.0 AND market_result IN ('no','all_no') "
+                            f"    THEN market_price - CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER) "
+                            "  WHEN calibrated_prob <= market_price/100.0 AND market_result='yes' "
+                            f"    THEN -((100 - market_price) + CAST(CEIL({SIM_FEE_RATE} * (market_price / 100.0) * (1 - market_price / 100.0)) AS INTEGER)) "
+                            "  ELSE 0 END) AS sim_pnl "
+                            "FROM evaluated_opportunities "
+                            "WHERE product_type='weather' AND filter_stage=? "
+                            "AND status='settled' AND market_result IS NOT NULL "
+                            "AND calibrated_prob IS NOT NULL AND market_price IS NOT NULL",
+                            (_wv_stage,)
+                        ).fetchone()
+                        if row and row["cnt"] > 0:
+                            wx_variants[_wv_stage] = {
+                                "count": row["cnt"],
+                                "wins": row["wins"] or 0,
+                                "win_rate": round((row["wins"] or 0) / row["cnt"], 4),
+                                "sim_pnl_cents": row["sim_pnl"] or 0,
+                            }
+                    except Exception:
+                        pass
+                wx_data["shadow_variants"] = wx_variants
+
                 snap["weather_observation"] = wx_data
         except Exception:
             logging.debug("Snapshot: weather_observation build failed", exc_info=True)
