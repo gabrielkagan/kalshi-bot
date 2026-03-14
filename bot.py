@@ -45,10 +45,11 @@ SERIES_TICKERS = {
 }
 MIN_ENTRY_PRICE = 86              # cents (global floor — SOL uses this; BTC/ETH overridden below)
 MAX_ENTRY_PRICE = 99              # cents
-BTC_MIN_ENTRY_PRICE = 88          # cents (data: BTC 86-87c is 3W/3L -$19.23, Kelly asymmetry 6.5x loss/win)
+BTC_MIN_ENTRY_PRICE = 89          # cents (data: 86-88c below taker BE, 89c is 93.3% WR, +$87 PnL)
 ETH_MIN_ENTRY_PRICE = 88          # cents (data: ETH 86-87c is 5W/1L -$23.69, single 87c loss wipes 5 wins)
+XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
-XRP_15M_SHADOW = True             # XRP 15M candidates logged as shadow, not traded (data: -$32.97 all-time)
+XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/2L 95.3% WR at >=92c)
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 900    # scan 15 min before close (600-900s is shadow data collection)
@@ -6545,15 +6546,17 @@ class OpportunityScanner:
                     continue
 
                 # ── Per-asset price floor (15M only) ─────────────────────────
-                # BTC/ETH 86-87c is Kelly-negative (6.5x loss/win asymmetry).
-                # SOL keeps global 86c floor (9W/0L +$38.85 at 86-87c).
-                # Shadow-log filtered trades for ongoing monitoring.
-                _asset_floor = MIN_ENTRY_PRICE  # default (SOL, XRP)
+                # BTC 89c+: 86-88c below taker BE. ETH 88c+. SOL 86c global floor.
+                # XRP 92c+: PnL-negative at every floor below 90c.
+                # Shadow variants: ETH 76c, SOL 80c — forward validation of lower floors.
+                _asset_floor = MIN_ENTRY_PRICE  # default (SOL)
                 if _pt in (None, "15m"):
                     if asset == "BTC":
                         _asset_floor = BTC_MIN_ENTRY_PRICE
                     elif asset == "ETH":
                         _asset_floor = ETH_MIN_ENTRY_PRICE
+                    elif asset == "XRP":
+                        _asset_floor = XRP_MIN_ENTRY_PRICE
                 if _pt in (None, "15m") and best_ask < _asset_floor:
                     _frs_edge = cal_prob - best_ask / 100.0
                     _frs_fee = calculate_fee(
@@ -6561,13 +6564,19 @@ class OpportunityScanner:
                         fee_mult_taker=_pricecfg.fee_multiplier_taker,
                         fee_mult_maker=_pricecfg.fee_multiplier_maker)
                     _frs_fee_edge = _frs_edge - _frs_fee / 100.0
-                    _dedup_key = (ticker, "floor_raise_shadow")
+                    # Tag aggressive-floor shadow variants for forward validation
+                    _frs_stage = "floor_raise_shadow"
+                    if asset == "ETH" and best_ask >= 76:
+                        _frs_stage = "eth_low_floor_shadow"
+                    elif asset == "SOL" and best_ask >= 80:
+                        _frs_stage = "sol_low_floor_shadow"
+                    _dedup_key = (ticker, _frs_stage)
                     if _dedup_key not in self._eval_opp_seen:
                         self._eval_opp_seen.add(_dedup_key)
                         self._state.insert_evaluated_opportunity(
                             ticker, window["event_ticker"], asset,
-                            "floor_raise_shadow",
-                            rejection_reason=f"{asset} floor {_asset_floor}c (was {MIN_ENTRY_PRICE}c), ask={best_ask}c",
+                            _frs_stage,
+                            rejection_reason=f"{asset} floor {_asset_floor}c (global {MIN_ENTRY_PRICE}c), ask={best_ask}c",
                             spot_price=spot, threshold=threshold,
                             volatility=blended_rv, market_price=best_ask,
                             seconds_to_close=seconds_remaining,

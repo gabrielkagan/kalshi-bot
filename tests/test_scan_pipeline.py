@@ -576,20 +576,22 @@ class TestPerWindowFilters(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestXRPShadowGate(unittest.TestCase):
-    """XRP 15M trades shadow-only when XRP_15M_SHADOW=True.
+    """XRP 15M promoted to live with per-asset floor (XRP_MIN_ENTRY_PRICE=92c).
 
-    Guards against: XRP trades leaking to live (XRP all-time PnL is negative).
+    XRP_15M_SHADOW=False — XRP trades live at 92c+, gated by per-asset floor.
+    Guards against: XRP trading at low prices where it has no edge.
     """
 
-    def test_xrp_shadow_enabled(self):
-        self.assertTrue(XRP_15M_SHADOW)
+    def test_xrp_shadow_disabled(self):
+        """XRP shadow gate is OFF — XRP trades live at 92c+."""
+        self.assertFalse(XRP_15M_SHADOW)
 
-    def test_xrp_gate_logic(self):
-        """XRP + 15M + shadow=True → shadow."""
+    def test_xrp_gate_inactive(self):
+        """XRP + 15M + shadow=False → NOT shadow (trades live)."""
         asset = "XRP"
         product_type = "15m"
         is_shadow = (XRP_15M_SHADOW and asset == "XRP" and product_type == "15m")
-        self.assertTrue(is_shadow)
+        self.assertFalse(is_shadow)
 
     def test_btc_not_affected(self):
         """BTC should not be affected by XRP shadow gate."""

@@ -45,8 +45,10 @@ MIN_SETTLED_FOR_PARAM_OPTIMIZER = 500
 # !! Keep in sync with bot.py — last verified 2026-02-28 !!
 CURRENT_CONFIG = {
     "MIN_ENTRY_PRICE": 86,
-    "BTC_MIN_ENTRY_PRICE": 88,
+    "BTC_MIN_ENTRY_PRICE": 89,
     "ETH_MIN_ENTRY_PRICE": 88,
+    "XRP_MIN_ENTRY_PRICE": 92,
+    "XRP_15M_SHADOW": False,
     "MAX_ENTRY_PRICE": 99,
     "MIN_EDGE_BY_PRICE": "86c→0.25%, 89c→0.25%, 91c→0.35%, 93c→0.9%, 95c→1.25%, 97c→2.0%",
     "MARKET_BLEND_W": 0.40,

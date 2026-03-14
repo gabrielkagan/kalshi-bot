@@ -1043,6 +1043,9 @@ class DashboardSnapshotBuilder:
                 "stc_shadow":          ["stc_shadow"],
                 "stc_shadow_xrp":      ["stc_shadow"],
                 "stc_shadow_no_xrp":   ["stc_shadow", "stc_shadow (no XRP)"],
+                # Per-asset low-price floor shadow variants
+                "eth_low_floor_shadow": ["eth_low_floor_shadow"],
+                "sol_low_floor_shadow": ["sol_low_floor_shadow"],
                 # NO-side shadow variants (mirror YES-side taxonomy)
                 "no_side_price_shadow_xrp":    ["no_side_price_shadow"],
                 "no_side_price_shadow_no_xrp": ["no_side_price_shadow", "no_side_price_shadow (no XRP)"],
