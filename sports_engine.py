@@ -1053,7 +1053,7 @@ class SportsEngine:
             self._db_conn = sqlite3.connect(self._db_path)
             self._db_conn.row_factory = sqlite3.Row
             self._db_conn.execute("PRAGMA journal_mode=WAL")
-            self._db_conn.execute("PRAGMA busy_timeout=10000")
+            self._db_conn.execute("PRAGMA busy_timeout=30000")
         return self._db_conn
 
     def _run_loop(self) -> None:

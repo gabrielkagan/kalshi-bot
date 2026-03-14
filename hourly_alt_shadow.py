@@ -851,7 +851,7 @@ class HourlyAltShadowEngine:
             return
         self._db_conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._db_conn.execute("PRAGMA journal_mode=WAL")
-        self._db_conn.execute("PRAGMA busy_timeout=10000")
+        self._db_conn.execute("PRAGMA busy_timeout=30000")
         self._db_conn.row_factory = sqlite3.Row
         self._create_tables()
         self._initialized = True
@@ -989,8 +989,7 @@ class HourlyAltShadowEngine:
                     spot_price, threshold,
                     seconds_to_close, ob_data)
                 if mm_signal is not None:
-                    signals.append(mm_signal)
-                    self._seen.add(mm_key)
+                    signals.append(("mm", mm_key, mm_signal))
                     self.mm.record_shadow_order(mm_signal)
             except Exception as e:
                 logging.warning("MM shadow evaluate failed for %s", ticker, exc_info=True)
@@ -1007,19 +1006,21 @@ class HourlyAltShadowEngine:
                     egarch_edge=egarch_edge,
                     no_ask=no_ask)
                 if harrv_signal is not None:
-                    signals.append(harrv_signal)
-                    self._seen.add(harrv_key)
+                    signals.append(("harrv", harrv_key, harrv_signal))
             except Exception as e:
                 logging.warning("HAR-RV shadow evaluate failed for %s", ticker, exc_info=True)
 
-        # Persist signals
-        for sig in signals:
+        # Persist signals — only add to _seen after successful DB write
+        result_signals = []
+        for _strategy, _dedup_key, sig in signals:
             try:
-                self._log_signal(sig)
+                if self._log_signal(sig):
+                    self._seen.add(_dedup_key)
+                result_signals.append(sig)
             except Exception as e:
                 logging.debug("Shadow signal logging failed: %s", e)
 
-        return signals
+        return result_signals
 
     def _log_signal(self, signal: Dict):
         """Write signal to DB and JSONL journal."""
@@ -1097,8 +1098,10 @@ class HourlyAltShadowEngine:
                 signal.get("no_harrv_gate_failures"),
             ))
             self._db_conn.commit()
+            _db_ok = True
         except Exception as e:
             logging.warning("hourly_alt_shadow DB insert failed: %s", e)
+            _db_ok = False
 
         # JSONL journal (backup)
         try:
@@ -1110,6 +1113,8 @@ class HourlyAltShadowEngine:
                 f.write(json.dumps(entry, default=str) + "\n")
         except Exception:
             logging.warning("hourly_alt_shadow journal write failed", exc_info=True)
+
+        return _db_ok
 
     def settle_signals(self, ticker: str, market_result: str):
         """Called when a market settles. Update all shadow signals for this ticker.

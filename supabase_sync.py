@@ -76,7 +76,7 @@ class SupabaseSyncer:
         )
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA busy_timeout=5000")
+        self._db.execute("PRAGMA busy_timeout=30000")
 
         # Load watermarks from Supabase (best-effort)
         self._load_watermarks()

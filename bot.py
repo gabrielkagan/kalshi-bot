@@ -1177,7 +1177,7 @@ class StateManager:
     def __init__(self, db_path: str = DB_PATH):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA busy_timeout=10000")
+        self.conn.execute("PRAGMA busy_timeout=30000")
         self.conn.row_factory = sqlite3.Row
         self._last_balance_cents: Optional[int] = None
         self._create_tables()
@@ -5716,7 +5716,7 @@ class OpportunityScanner:
         _bt = self._state.conn.execute("PRAGMA busy_timeout").fetchone()[0]
         assert _bt >= 5000, (
             f"StateManager busy_timeout={_bt}ms is too low (need ≥5000). "
-            f"Add: conn.execute('PRAGMA busy_timeout=10000')"
+            f"Add: conn.execute('PRAGMA busy_timeout=30000')"
         )
 
         # ── Startup assertion: critical config values ──
@@ -12983,6 +12983,7 @@ class MainLoop:
         self._active_windows: List[Dict] = []
         self._discovery_ob_tickers: set = set()
         self._last_market_refresh: float = 0.0
+        self._last_wal_checkpoint: float = 0.0
         self._last_error: Optional[str] = None
         self._last_error_time: float = 0.0
         self._start_time: float = time.time()
@@ -13404,6 +13405,15 @@ class MainLoop:
         # Check settlements periodically (self-throttled)
         self.tracker.tick()
         self._log_daily_summary()
+
+        # Periodic WAL checkpoint (every 60s) — prevents WAL bloat that causes
+        # "database is locked" across shadow engines with 7 concurrent connections.
+        if now - self._last_wal_checkpoint >= 60.0:
+            try:
+                self.state.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self._last_wal_checkpoint = now
+            except Exception:
+                logging.debug("WAL checkpoint failed (busy)", exc_info=True)
 
         # Periodic calibration retrain check
         if self.calibration:

@@ -160,7 +160,7 @@ class RecalibratedEGARCHApproach:
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("PRAGMA busy_timeout=30000")
             for asset in ("BTC", "ETH", "SOL", "XRP"):
                 rows = conn.execute(
                     "SELECT calibrated_prob, market_result FROM evaluated_opportunities "
@@ -372,7 +372,7 @@ class LightGBMApproach:
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("PRAGMA busy_timeout=30000")
             # Use ALL settled 15M evals for training (not just candidates).
             # Rejected opportunities (price_out_of_range, insufficient_edge, etc.)
             # have known outcomes and valid features — more data = better classifier.
@@ -679,7 +679,7 @@ class EGARCHGatingApproach:
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("PRAGMA busy_timeout=30000")
             rows = conn.execute(
                 "SELECT asset, calibrated_prob, market_price, volatility, z_score, "
                 "  seconds_to_close, spot_price, threshold, market_result, "
@@ -924,7 +924,7 @@ class FifteenMShadowEngine:
         self._db_conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._db_conn.row_factory = sqlite3.Row
         self._db_conn.execute("PRAGMA journal_mode=WAL")
-        self._db_conn.execute("PRAGMA busy_timeout=10000")
+        self._db_conn.execute("PRAGMA busy_timeout=30000")
         self._create_tables()
 
     def _create_tables(self):
@@ -1058,7 +1058,9 @@ class FifteenMShadowEngine:
         """Run all three shadow approaches and log results. One entry per ticker."""
         if ticker in self._seen:
             return
-        self._seen.add(ticker)
+        # NOTE: _seen.add(ticker) is deferred until AFTER successful DB write.
+        # If _log_signal fails (e.g. database is locked), the ticker will be
+        # retried on the next scan cycle instead of being permanently lost.
 
         # Approach 1: Recalibrated EGARCH
         a1 = self._approach1.evaluate(
@@ -1124,7 +1126,7 @@ class FifteenMShadowEngine:
                       "a3_model_status": "no_ask_unavailable", "a3_features_used": 0}
             no_market_only_prob = None
 
-        self._log_signal(
+        wrote_ok = self._log_signal(
             ticker=ticker,
             event_ticker=event_ticker,
             asset=asset,
@@ -1151,6 +1153,8 @@ class FifteenMShadowEngine:
             no_market_only_prob=no_market_only_prob,
             no_ask=no_ask,
         )
+        if wrote_ok:
+            self._seen.add(ticker)
 
     @staticmethod
     def _evaluate_no_side_approach(yes_result: Dict, no_price: int,
@@ -1294,8 +1298,10 @@ class FifteenMShadowEngine:
                 _a4.get("edge"), _a4.get("distance_ratio"), _a4.get("entry"),
             ))
             self._db_conn.commit()
+            _db_ok = True
         except Exception:
             logging.warning("fifteenm_shadow log_signal failed for %s", ticker, exc_info=True)
+            _db_ok = False
 
         # JSONL journal backup
         try:
@@ -1317,6 +1323,8 @@ class FifteenMShadowEngine:
                 }) + "\n")
         except Exception:
             pass
+
+        return _db_ok
 
     def settle_signals(self, ticker: str, market_result: str):
         """Settle a shadow signal when the market resolves."""

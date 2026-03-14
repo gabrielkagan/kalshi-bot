@@ -211,7 +211,7 @@ def write_journal(entry: dict, path: str = ANALYST_JOURNAL) -> None:
 def _open_db(db_path: str) -> sqlite3.Connection:
     """Open state.db read-only with WAL compatibility."""
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA query_only = ON")
     conn.row_factory = sqlite3.Row
     return conn

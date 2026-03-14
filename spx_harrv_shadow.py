@@ -694,7 +694,7 @@ class SPXHARRVShadowEngine:
             return
         self._db_conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._db_conn.execute("PRAGMA journal_mode=WAL")
-        self._db_conn.execute("PRAGMA busy_timeout=10000")
+        self._db_conn.execute("PRAGMA busy_timeout=30000")
         self._db_conn.row_factory = sqlite3.Row
         self._create_tables()
         self._initialized = True
@@ -823,7 +823,8 @@ class SPXHARRVShadowEngine:
         key = ticker
         if key in self._seen:
             return
-        self._seen.add(key)
+        # NOTE: _seen.add deferred until after successful DB write to avoid
+        # permanent data loss when _log_signal fails (e.g. database is locked).
 
         # Run HAR-RV evaluation
         signal = self.model.evaluate(
@@ -838,8 +839,9 @@ class SPXHARRVShadowEngine:
         if signal is None:
             return  # Insufficient return data for HAR-RV
 
-        # Log to DB
-        self._log_signal(signal)
+        # Log to DB — only mark as seen if write succeeds
+        if self._log_signal(signal):
+            self._seen.add(key)
 
         # Log to JSONL journal
         self._log_journal(signal)
@@ -898,8 +900,10 @@ class SPXHARRVShadowEngine:
                 "pending",
             ))
             self._db_conn.commit()
+            return True
         except Exception as e:
             logging.warning("spx_harrv_shadow DB insert failed: %s", e)
+            return False
 
     def _log_journal(self, signal: Dict):
         """Append signal to JSONL journal as backup."""
