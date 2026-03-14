@@ -51,8 +51,8 @@ XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → 
 XRP_15M_SHADOW = True             # XRP 15M candidates logged as shadow, not traded (data: -$32.97 all-time)
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 MIN_SECONDS_BEFORE_CLOSE = 0
-MAX_SECONDS_BEFORE_CLOSE = 900    # scan 15 min before close (500-900s is shadow data collection)
-STC_SHADOW_THRESHOLD = 500        # 15M trades above this STC are shadow-only (data: 300-500s 17W/0L +$127 cf)
+MAX_SECONDS_BEFORE_CLOSE = 900    # scan 15 min before close (600-900s is shadow data collection)
+STC_SHADOW_THRESHOLD = 600        # 15M trades above this STC are shadow-only (data: 500-600s 91.2% WR, +$47 marginal PnL)
 ONE_ASSET_PER_WINDOW = False
 
 # ─── Hourly Observation Mode ──────────────────────────────────────────────────

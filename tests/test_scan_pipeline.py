@@ -453,45 +453,45 @@ class TestEdgeThresholdFilter(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestSTCShadowGate(unittest.TestCase):
-    """STC > STC_SHADOW_THRESHOLD (500s) → shadow-only for 15M.
+    """STC > STC_SHADOW_THRESHOLD (600s) → shadow-only for 15M.
 
     Guards against: dead code bug (98c954d) where gate checked
     product_type is None but 15M has product_type='15m'.
     """
 
     def test_threshold_value(self):
-        """STC_SHADOW_THRESHOLD should be 500."""
-        self.assertEqual(STC_SHADOW_THRESHOLD, 500)
+        """STC_SHADOW_THRESHOLD should be 600."""
+        self.assertEqual(STC_SHADOW_THRESHOLD, 600)
 
     def test_live_zone(self):
-        """STC=400 (< 500) → should pass gate (live zone)."""
-        self.assertLess(400, STC_SHADOW_THRESHOLD)
+        """STC=500 (< 600) → should pass gate (live zone)."""
+        self.assertLess(500, STC_SHADOW_THRESHOLD)
 
     def test_shadow_zone(self):
-        """STC=600 (> 500) → should be shadow."""
-        self.assertGreater(600, STC_SHADOW_THRESHOLD)
+        """STC=700 (> 600) → should be shadow."""
+        self.assertGreater(700, STC_SHADOW_THRESHOLD)
 
     def test_boundary_at_threshold(self):
-        """STC=500 exactly → should be shadow (> not >=, but depends on gate logic).
+        """STC=600 exactly → should be live (> not >=).
         The gate uses `seconds_remaining > STC_SHADOW_THRESHOLD`."""
-        # 500 is NOT > 500, so it should be live
-        self.assertFalse(500 > STC_SHADOW_THRESHOLD)
-        # 501 IS > 500, so it should be shadow
-        self.assertTrue(501 > STC_SHADOW_THRESHOLD)
+        # 600 is NOT > 600, so it should be live
+        self.assertFalse(600 > STC_SHADOW_THRESHOLD)
+        # 601 IS > 600, so it should be shadow
+        self.assertTrue(601 > STC_SHADOW_THRESHOLD)
 
     def test_gate_checks_product_type_15m(self):
         """Gate must check product_type == '15m', NOT product_type is None.
         Bug 98c954d: gate used `is None` but 15M has product_type='15m'."""
         product_type = "15m"
-        seconds_remaining = 600
+        seconds_remaining = 700
         # The correct gate logic:
         is_shadow = (product_type == "15m" and seconds_remaining > STC_SHADOW_THRESHOLD)
-        self.assertTrue(is_shadow, "15M at 600s STC should be shadow")
+        self.assertTrue(is_shadow, "15M at 700s STC should be shadow")
 
     def test_hourly_not_affected_by_stc_shadow(self):
         """Hourly markets should NOT be gated by 15M STC shadow threshold."""
         product_type = "hourly"
-        seconds_remaining = 600
+        seconds_remaining = 700
         is_shadow = (product_type == "15m" and seconds_remaining > STC_SHADOW_THRESHOLD)
         self.assertFalse(is_shadow, "Hourly should not trigger 15M STC shadow gate")
 

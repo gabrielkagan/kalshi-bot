@@ -160,9 +160,9 @@ class TestEdgeThresholds:
             prev = edge
 
     def test_stc_shadow_threshold_boundary(self):
-        """STC_SHADOW_THRESHOLD=500 means 0-500s is live, 500-900s is shadow."""
+        """STC_SHADOW_THRESHOLD=600 means 0-600s is live, 600-900s is shadow."""
         from bot import STC_SHADOW_THRESHOLD, MAX_SECONDS_BEFORE_CLOSE
-        assert STC_SHADOW_THRESHOLD == 500
+        assert STC_SHADOW_THRESHOLD == 600
         assert MAX_SECONDS_BEFORE_CLOSE == 900
         # Shadow zone is [STC_SHADOW_THRESHOLD, MAX_SECONDS_BEFORE_CLOSE]
         assert STC_SHADOW_THRESHOLD < MAX_SECONDS_BEFORE_CLOSE
@@ -836,7 +836,7 @@ class TestCodebaseHygiene:
         assert bot.MIN_ENTRY_PRICE == 86
         assert bot.MAX_ENTRY_PRICE == 99
         assert bot.MAX_SECONDS_BEFORE_CLOSE == 900
-        assert bot.STC_SHADOW_THRESHOLD == 500
+        assert bot.STC_SHADOW_THRESHOLD == 600
         assert bot.OBSERVATION_MODE is False
 
 
