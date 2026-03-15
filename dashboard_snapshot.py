@@ -2004,6 +2004,120 @@ class DashboardSnapshotBuilder:
         except Exception:
             logging.debug("Snapshot: spx_variants build failed", exc_info=True)
 
+        # ── Hourly NO-Side Overconfidence Tracker ────────────────────────
+        # The hourly model is massively overconfident on YES → actual NO rate
+        # far exceeds breakeven at cheap NO prices.  Data comes from YES-side
+        # evals (side='yes') where we check how often market_result='no'.
+        # NO-side shadow (side='no') can't capture this because the model's
+        # low NO prob means it sees negative edge on exactly the best signals.
+        _HNO_ASSETS = ["XRP", "SOL"]
+        _HNO_MIN_YES_PRED = {"XRP": 0.87, "SOL": 0.90}
+        _HNO_MAX_YES_PRICE = 97  # NO price >= 3c — below this, NO contracts don't exist
+        _HNO_BUCKETS = [
+            ("87-90%", 0.87, 0.90),
+            ("90-93%", 0.90, 0.93),
+            ("93-95%", 0.93, 0.95),
+            ("95-97%", 0.95, 0.97),
+            ("97%+",   0.97, 1.01),
+        ]
+        _HNO_FEE = 0.07  # crypto taker
+        try:
+            hno = {}
+            for _ha in _HNO_ASSETS:
+                _min_pred = _HNO_MIN_YES_PRED[_ha]
+                # Overall asset summary
+                _sql_all = (
+                    "SELECT COUNT(*) as n, "
+                    "SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) as no_wins, "
+                    "AVG(market_price) as avg_yes_price "
+                    "FROM evaluated_opportunities "
+                    "WHERE product_type='hourly' AND side='yes' "
+                    "AND market_result IS NOT NULL "
+                    f"AND calibrated_prob >= {_min_pred} "
+                    f"AND market_price <= {_HNO_MAX_YES_PRICE} AND asset=?"
+                )
+                _ra = _conn.execute(_sql_all, (_ha,)).fetchone()
+                _n = _ra["n"] if _ra else 0
+                _nw = (_ra["no_wins"] or 0) if _ra else 0
+                _avg_yes = (_ra["avg_yes_price"] or 90) if _ra else 90
+                _avg_no = 100 - _avg_yes
+                _wr = round(_nw / _n, 4) if _n > 0 else 0
+                # Wilson CI lower
+                _wlo = 0.0
+                if _n > 0:
+                    _p = _nw / _n
+                    _z = 1.96
+                    _d = 1 + _z ** 2 / _n
+                    _wlo = round((_p + _z ** 2 / (2 * _n) - _z * ((_p * (1 - _p) / _n + _z ** 2 / (4 * _n ** 2)) ** 0.5)) / _d, 4)
+                # Sim PnL: flat 1-contract, buy NO at (100 - market_price)
+                _sql_pnl = (
+                    "SELECT SUM(CASE WHEN market_result='no' "
+                    "  THEN (market_price - CAST(CEIL(0.07 * (market_price/100.0) * (1.0 - market_price/100.0) * 100) AS INTEGER)) "
+                    "  ELSE -((100 - market_price) + CAST(CEIL(0.07 * ((100-market_price)/100.0) * (market_price/100.0) * 100) AS INTEGER)) "
+                    "END) as pnl "
+                    "FROM evaluated_opportunities "
+                    "WHERE product_type='hourly' AND side='yes' "
+                    "AND market_result IS NOT NULL "
+                    f"AND calibrated_prob >= {_min_pred} "
+                    f"AND market_price <= {_HNO_MAX_YES_PRICE} AND asset=?"
+                )
+                _rp = _conn.execute(_sql_pnl, (_ha,)).fetchone()
+                _sim_pnl = (_rp["pnl"] or 0) if _rp else 0
+                # Pending
+                _pend_r = _conn.execute(
+                    "SELECT COUNT(*) as c FROM evaluated_opportunities "
+                    "WHERE product_type='hourly' AND side='yes' "
+                    "AND market_result IS NULL "
+                    f"AND calibrated_prob >= {_min_pred} "
+                    f"AND market_price <= {_HNO_MAX_YES_PRICE} AND asset=?", (_ha,)
+                ).fetchone()
+                _pend = (_pend_r["c"] or 0) if _pend_r else 0
+                # Breakeven WR at avg NO price
+                _no_p = _avg_no / 100.0
+                _fee_c = math.ceil(_HNO_FEE * 100 * _no_p * (1 - _no_p))
+                _be_wr = round((_avg_no + _fee_c) / 100.0, 4)
+
+                # Per-bucket breakdown
+                buckets = []
+                for _blabel, _blo, _bhi in _HNO_BUCKETS:
+                    if _blo < _min_pred:
+                        continue
+                    _bsql = (
+                        "SELECT COUNT(*) as n, "
+                        "SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) as nw, "
+                        "AVG(market_price) as avg_yp "
+                        "FROM evaluated_opportunities "
+                        "WHERE product_type='hourly' AND side='yes' "
+                        "AND market_result IS NOT NULL "
+                        f"AND calibrated_prob >= {_blo} AND calibrated_prob < {_bhi} "
+                        f"AND market_price <= {_HNO_MAX_YES_PRICE} "
+                        "AND asset=?"
+                    )
+                    _br = _conn.execute(_bsql, (_ha,)).fetchone()
+                    _bn = _br["n"] if _br else 0
+                    _bnw = (_br["nw"] or 0) if _br else 0
+                    if _bn > 0:
+                        buckets.append({
+                            "label": _blabel,
+                            "n": _bn,
+                            "no_wins": _bnw,
+                            "wr": round(_bnw / _bn, 4),
+                            "avg_no_price": round(100 - (_br["avg_yp"] or 90), 1),
+                        })
+
+                hno[_ha] = {
+                    "settled": _n, "no_wins": _nw,
+                    "wr": _wr, "wilson_lower": _wlo,
+                    "sim_pnl_cents": _sim_pnl, "pending": _pend,
+                    "avg_no_price": round(_avg_no, 1),
+                    "be_wr": _be_wr,
+                    "min_yes_pred": _min_pred,
+                    "buckets": buckets,
+                }
+            snap["hourly_no_side"] = hno
+        except Exception:
+            logging.debug("Snapshot: hourly_no_side build failed", exc_info=True)
+
         # ── Weather Observation Panel ─────────────────────────────────────
         try:
             if getattr(_bot_mod, "WEATHER_ENABLED", False):
