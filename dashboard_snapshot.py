@@ -19,6 +19,10 @@ _HOURLY_VARIANT_DEFS = [
     ("hourly_config_g", {"included_assets": ["BTC"], "min_stc": 900, "max_stc": 1800}),
     ("hourly_config_h", {"temperature": 2.0, "blend_w": 0.0}),
     ("hourly_config_i", {"included_assets": ["BTC", "ETH"], "min_stc": 600, "max_stc": 1800, "temperature": 2.0, "blend_w": 0.0}),
+    ("hourly_config_j", {"temperature": 2.5, "blend_w": 0.0}),
+    ("hourly_config_k", {"temperature": 2.0, "blend_w": 0.20}),
+    ("hourly_config_l", {"excluded_assets": ["XRP"], "temperature": 2.0, "blend_w": 0.0}),
+    ("hourly_config_m", {"included_assets": ["BTC", "ETH"], "min_stc": 600, "max_stc": 1800, "temperature": 2.5, "blend_w": 0.0}),
 ]
 _HOURLY_VARIANT_GRADUATION = {
     "days_required": 7, "min_wr": 0.72, "min_wilson_lower": 0.65,
