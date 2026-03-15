@@ -1492,6 +1492,7 @@ class StateManager:
             ("platt_prob", "REAL"),
             ("platt_edge", "REAL"),
             ("platt_fee_adj_edge", "REAL"),
+            ("nba_variant", "TEXT"),
         ]:
             try:
                 self.conn.execute(
@@ -1499,6 +1500,25 @@ class StateManager:
             except Exception:
                 pass  # Column already exists
         self.conn.commit()
+
+        # One-time backfill: classify existing basketball signals into variants
+        try:
+            self.conn.execute("""
+                UPDATE sports_shadow_log SET nba_variant = 'core'
+                WHERE sport_group = 'basketball' AND nba_variant IS NULL
+                AND pregame_fav_prob >= 0.65 AND deficit <= 1
+                AND period = 1 AND time_remaining_pct > 0.75
+                AND yes_ask <= 70
+            """)
+            self.conn.execute("""
+                UPDATE sports_shadow_log SET nba_variant = 'wide'
+                WHERE sport_group = 'basketball' AND nba_variant IS NULL
+                AND pregame_fav_prob >= 0.65 AND deficit <= 3
+                AND time_remaining_pct > 0.25
+            """)
+            self.conn.commit()
+        except Exception:
+            pass  # Safe to fail — backfill is best-effort
 
         # Migration: add new columns to evaluated_opportunities (safe to re-run)
         for col_def in [

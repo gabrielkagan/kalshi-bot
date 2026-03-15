@@ -2226,6 +2226,104 @@ class DashboardSnapshotBuilder:
         except Exception:
             logging.debug("Snapshot: sports_strong_config build failed", exc_info=True)
 
+        # ── Sports NBA Variants (Core + Wide) ────────────────────────────
+        try:
+            conn = _conn
+            sv_data = {}
+
+            def _wilson_ci_v(wins, total, z=1.96):
+                """Wilson score interval (lower, upper)."""
+                if total == 0:
+                    return (0.0, 0.0)
+                p = wins / total
+                denom = 1 + z * z / total
+                centre = (p + z * z / (2 * total)) / denom
+                spread = z * ((p * (1 - p) + z * z / (4 * total)) / total) ** 0.5 / denom
+                return (max(0.0, centre - spread), min(1.0, centre + spread))
+
+            def _build_variant_stats(variant_name):
+                """Build stats for an NBA variant from sports_shadow_log."""
+                # nba_variant is set on all basketball evals (not just signals)
+                # For settled signal stats, filter to signal_fired=1
+                row = conn.execute(
+                    "SELECT COUNT(*) AS total, "
+                    "SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled, "
+                    "SUM(CASE WHEN fav_won=1 THEN 1 ELSE 0 END) AS wins, "
+                    "SUM(CASE WHEN fav_won=0 THEN 1 ELSE 0 END) AS losses, "
+                    "SUM(COALESCE(pnl_cents, 0)) AS sim_pnl "
+                    "FROM sports_shadow_log "
+                    "WHERE signal_fired=1 AND nba_variant=? "
+                    "AND fav_won IS NOT NULL AND pnl_cents IS NOT NULL",
+                    (variant_name,)
+                ).fetchone()
+                if not row or not row["settled"]:
+                    return {"games": 0, "wins": 0, "losses": 0,
+                            "win_rate": 0, "wilson_ci_lo": 0, "wilson_ci_hi": 0,
+                            "sim_pnl_cents": 0, "game_log": []}
+                settled = row["settled"] or 0
+                wins = row["wins"] or 0
+                losses = row["losses"] or 0
+                wr = round(wins / settled, 4) if settled > 0 else 0
+                ci_lo, ci_hi = _wilson_ci_v(wins, settled)
+
+                # Game log: one row per game (deduped by game_id, take first signal)
+                game_rows = conn.execute(
+                    "SELECT DATE(evaluation_time) AS dt, "
+                    "home_team, away_team, "
+                    "ROUND(100*pregame_fav_prob,0) AS pregame, "
+                    "deficit, period, "
+                    "ROUND(100*time_remaining_pct,0) AS trp, "
+                    "yes_ask, fav_won, pnl_cents "
+                    "FROM sports_shadow_log "
+                    "WHERE signal_fired=1 AND nba_variant=? "
+                    "AND fav_won IS NOT NULL AND pnl_cents IS NOT NULL "
+                    "ORDER BY evaluation_time",
+                    (variant_name,)
+                ).fetchall()
+                game_log = []
+                for gr in game_rows:
+                    game_log.append({
+                        "date": gr["dt"] or "",
+                        "teams": f"{gr['home_team'] or '?'} v {gr['away_team'] or '?'}",
+                        "pregame": int(gr["pregame"] or 0),
+                        "deficit": gr["deficit"] or 0,
+                        "period": gr["period"] or 0,
+                        "trp": int(gr["trp"] or 0),
+                        "ask": gr["yes_ask"] or 0,
+                        "won": bool(gr["fav_won"]),
+                        "pnl": gr["pnl_cents"] or 0,
+                    })
+
+                return {
+                    "games": settled,
+                    "wins": wins,
+                    "losses": losses,
+                    "win_rate": wr,
+                    "wilson_ci_lo": round(ci_lo, 4),
+                    "wilson_ci_hi": round(ci_hi, 4),
+                    "sim_pnl_cents": row["sim_pnl"] or 0,
+                    "game_log": game_log,
+                }
+
+            sv_data["core"] = _build_variant_stats("core")
+            sv_data["wide"] = _build_variant_stats("wide")
+
+            # Also count unsettled signals for each variant (pending games)
+            for vname in ("core", "wide"):
+                try:
+                    prow = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM sports_shadow_log "
+                        "WHERE signal_fired=1 AND nba_variant=? AND fav_won IS NULL",
+                        (vname,)
+                    ).fetchone()
+                    sv_data[vname]["pending"] = prow["cnt"] if prow else 0
+                except Exception:
+                    sv_data[vname]["pending"] = 0
+
+            snap["sports_variants"] = sv_data
+        except Exception:
+            logging.debug("Snapshot: sports_variants build failed", exc_info=True)
+
         # ── Data Collection Progress ───────────────────────────────────────
         try:
             conn = _conn

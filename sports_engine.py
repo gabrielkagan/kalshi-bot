@@ -118,6 +118,11 @@ class ComebackSignal:
     sport_group: str = ""
     sport_lr_scale: float = 0.2
     is_strong_config: bool = False
+    # NBA variant classification for shadow tracking
+    # "core" = pregame≥65%, deficit≤1, Q1 (TRP>75%), price≤70c
+    # "wide" = pregame≥65%, deficit≤3, TRP>25%
+    # "" = doesn't qualify for either variant
+    nba_variant: str = ""
 
 
 # Approximate game duration (seconds) for seconds_to_close estimation
@@ -744,6 +749,25 @@ class BayesianComebackModel:
             and game.time_remaining_pct > 0.25
         )
 
+        # NBA variant classification (basketball only)
+        nba_variant = ""
+        if sgc.group_name == "basketball":
+            _is_core = (
+                pregame_fav_prob >= 0.65
+                and deficit <= 1
+                and game.period == 1 and game.time_remaining_pct > 0.75
+                and current_kalshi_price <= 70
+            )
+            _is_wide = (
+                pregame_fav_prob >= 0.65
+                and deficit <= 3
+                and game.time_remaining_pct > 0.25
+            )
+            if _is_core:
+                nba_variant = "core"
+            elif _is_wide:
+                nba_variant = "wide"
+
         return ComebackSignal(
             comeback_prob=posterior,
             prior=prior,
@@ -770,6 +794,7 @@ class BayesianComebackModel:
             sport_group=sgc.group_name,
             sport_lr_scale=sgc.lr_scale,
             is_strong_config=is_strong_config,
+            nba_variant=nba_variant,
         )
 
 
@@ -1920,11 +1945,12 @@ class SportsEngine:
                     score_changed,
                     sport_group, sport_lr_scale,
                     is_strong_config,
-                    platt_prob, platt_edge, platt_fee_adj_edge
+                    platt_prob, platt_edge, platt_fee_adj_edge,
+                    nba_variant
                 ) VALUES (
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                     ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,?
+                    ?,?,?,?,?
                 )
             """, (
                 game.game_id, league_cfg.espn_sport, league_cfg.display_name,
@@ -1961,6 +1987,7 @@ class SportsEngine:
                 signal.sport_lr_scale,
                 1 if signal.is_strong_config else 0,
                 platt_prob, platt_edge, platt_fee_adj_edge,
+                signal.nba_variant or None,
             ))
             conn.commit()
         except Exception:

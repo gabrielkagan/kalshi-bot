@@ -341,7 +341,9 @@ SPORTS_SHADOW_SIGNAL_GROUPS: Set[str] = {"basketball"}
 # Sport groups to exclude from ALL evaluation (no shadow log, no eval opps).
 # Historical data preserved in DB; only new evaluations are skipped.
 # Tennis: 52.2% WR (n=92 games), model Brier worse than market, -$1.64 sim PnL.
-SPORTS_EXCLUDED_GROUPS: Set[str] = {"tennis"}
+# Hockey: 50.0% WR (n=28 games), coin flip, no signal.
+# Soccer: 40.0% WR (n=5 games), no signal, insufficient data.
+SPORTS_EXCLUDED_GROUPS: Set[str] = {"tennis", "hockey", "soccer"}
 
 # Minimum Kalshi price (cents) to generate a shadow trade signal.
 # Below this, model is catastrophically overconfident (30.2% WR at 20-39c).
