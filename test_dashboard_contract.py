@@ -95,6 +95,7 @@ REQUIRED_SNAP_KEYS = {
     "hourly_config_a",
     "hourly_config_b",
     "sports_strong_config",
+    "weather_no_live",
 }
 
 # Dashboard JS field access patterns that MUST match firebase keys.

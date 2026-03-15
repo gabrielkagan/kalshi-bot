@@ -1757,6 +1757,82 @@ class DashboardSnapshotBuilder:
                 "by_city": {}, "by_yes_bucket": {},
             }
 
+        # ── Weather NO-side Live Performance ─────────────────────────────
+        try:
+            _wnl = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN "
+                "  (side='no' AND market_result IN ('no','all_no')) OR "
+                "  (side='yes' AND market_result IN ('yes','all_yes')) "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(pnl_cents - fee_cents) as pnl "
+                "FROM settled_trades "
+                "WHERE product_type='weather' AND side='no'",
+            ).fetchone()
+            _wnl_n = (_wnl["n"] or 0) if _wnl else 0
+            _wnl_wins = (_wnl["wins"] or 0) if _wnl else 0
+            _wnl_wr = round(_wnl_wins / _wnl_n, 4) if _wnl_n else 0
+            _wnl_pnl = (_wnl["pnl"] or 0) if _wnl else 0
+
+            # Per-city breakdown
+            _wnl_by_city = {}
+            for _cr in _conn.execute(
+                "SELECT asset, COUNT(*) as n, "
+                "SUM(CASE WHEN "
+                "  (side='no' AND market_result IN ('no','all_no')) OR "
+                "  (side='yes' AND market_result IN ('yes','all_yes')) "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(pnl_cents - fee_cents) as pnl "
+                "FROM settled_trades "
+                "WHERE product_type='weather' AND side='no' "
+                "GROUP BY asset ORDER BY asset",
+            ).fetchall():
+                _wnl_by_city[_cr["asset"]] = {
+                    "n": _cr["n"],
+                    "wins": _cr["wins"] or 0,
+                    "wr": round((_cr["wins"] or 0) / _cr["n"], 4) if _cr["n"] else 0,
+                    "pnl_cents": _cr["pnl"] or 0,
+                }
+
+            # Per YES-probability bucket (calibrated_prob is NO-prob; YES = 1 - calibrated_prob)
+            _wnl_by_bucket = {}
+            for _br in _conn.execute(
+                "SELECT CASE "
+                "  WHEN (1.0 - calibrated_prob) < 0.70 THEN '55-70pct' "
+                "  WHEN (1.0 - calibrated_prob) < 0.85 THEN '70-85pct' "
+                "  ELSE '85pct_plus' END as bucket, "
+                "COUNT(*) as n, "
+                "SUM(CASE WHEN "
+                "  (side='no' AND market_result IN ('no','all_no')) OR "
+                "  (side='yes' AND market_result IN ('yes','all_yes')) "
+                "  THEN 1 ELSE 0 END) as wins, "
+                "SUM(pnl_cents - fee_cents) as pnl "
+                "FROM settled_trades "
+                "WHERE product_type='weather' AND side='no' "
+                "  AND calibrated_prob IS NOT NULL "
+                "GROUP BY bucket ORDER BY bucket",
+            ).fetchall():
+                _wnl_by_bucket[_br["bucket"]] = {
+                    "n": _br["n"],
+                    "wins": _br["wins"] or 0,
+                    "wr": round((_br["wins"] or 0) / _br["n"], 4) if _br["n"] else 0,
+                    "pnl_cents": _br["pnl"] or 0,
+                }
+
+            snap["weather_no_live"] = {
+                "trades": _wnl_n, "wins": _wnl_wins, "wr": _wnl_wr,
+                "pnl_cents": _wnl_pnl,
+                "by_city": _wnl_by_city,
+                "by_yes_bucket": _wnl_by_bucket,
+                "live": getattr(_bot_mod, "WEATHER_NO_SIDE_LIVE", False),
+            }
+        except Exception:
+            snap["weather_no_live"] = {
+                "trades": 0, "wins": 0, "wr": 0, "pnl_cents": 0,
+                "by_city": {}, "by_yes_bucket": {},
+                "live": getattr(_bot_mod, "WEATHER_NO_SIDE_LIVE", False),
+            }
+
         # ── SPX Observation Panel ─────────────────────────────────────────
         try:
             if getattr(_bot_mod, "SPX_HOURLY_ENABLED", False):
