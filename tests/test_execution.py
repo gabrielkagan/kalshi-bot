@@ -141,7 +141,7 @@ class TestMakerFirstExecution(unittest.TestCase):
         ex._client.place_order.return_value = {
             "order": {"order_id": "ord-123"}
         }
-        # Use SOL (default floor=86, no per-asset override) so 88-2=86 clears the floor.
+        # Use SOL (default floor=80, no per-asset override) so 88-2=86 clears the floor.
         # BTC has BTC_MIN_ENTRY_PRICE=89 which would block 86.
         candidate = _make_candidate(
             best_yes_ask=88, seconds_to_close=400,
@@ -151,7 +151,7 @@ class TestMakerFirstExecution(unittest.TestCase):
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg, \
              patch("bot.SOL_TAKER_FIRST", False):
-            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=80)
             ex.execute(candidate)
 
         call_args = ex._client.place_order.call_args
@@ -163,15 +163,15 @@ class TestMakerFirstExecution(unittest.TestCase):
     def test_maker_below_min_entry_skipped(self):
         """If maker price after offset < MIN_ENTRY_PRICE, skip order."""
         ex = _make_executor()
-        # best_yes_ask=87, offset=2 → maker price=85 < MIN_ENTRY_PRICE=86
-        candidate = _make_candidate(best_yes_ask=87, seconds_to_close=400)
+        # best_yes_ask=81, offset=2 → maker price=79 < MIN_ENTRY_PRICE=80
+        candidate = _make_candidate(best_yes_ask=81, seconds_to_close=400)
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=80)
             ex.execute(candidate)
 
-        # place_order should NOT be called (maker price 85 < min 86)
+        # place_order should NOT be called (maker price 79 < min 80)
         ex._client.place_order.assert_not_called()
 
     def test_maker_persists_to_db_before_api(self):

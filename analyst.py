@@ -44,9 +44,9 @@ MIN_SETTLED_FOR_PARAM_OPTIMIZER = 500
 # Current bot config (for param optimizer context)
 # !! Keep in sync with bot.py — last verified 2026-02-28 !!
 CURRENT_CONFIG = {
-    "MIN_ENTRY_PRICE": 86,
+    "MIN_ENTRY_PRICE": 80,
     "BTC_MIN_ENTRY_PRICE": 89,
-    "ETH_MIN_ENTRY_PRICE": 88,
+    "ETH_MIN_ENTRY_PRICE": 80,
     "XRP_MIN_ENTRY_PRICE": 92,
     "XRP_15M_SHADOW": False,
     "MAX_ENTRY_PRICE": 99,

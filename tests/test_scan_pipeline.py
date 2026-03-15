@@ -721,20 +721,20 @@ class TestPriceRangeFilter(unittest.TestCase):
     """
 
     def test_min_entry_price(self):
-        """MIN_ENTRY_PRICE = 86."""
-        self.assertEqual(MIN_ENTRY_PRICE, 86)
+        """MIN_ENTRY_PRICE = 80."""
+        self.assertEqual(MIN_ENTRY_PRICE, 80)
 
     def test_max_entry_price(self):
         """MAX_ENTRY_PRICE = 99."""
         self.assertEqual(MAX_ENTRY_PRICE, 99)
 
     def test_in_range(self):
-        for price in [86, 90, 95, 99]:
+        for price in [80, 86, 90, 95, 99]:
             self.assertTrue(MIN_ENTRY_PRICE <= price <= MAX_ENTRY_PRICE,
                             f"{price}c should be in range")
 
     def test_below_range(self):
-        for price in [50, 70, 85]:
+        for price in [50, 70, 79]:
             self.assertFalse(MIN_ENTRY_PRICE <= price <= MAX_ENTRY_PRICE,
                              f"{price}c should be below range")
 

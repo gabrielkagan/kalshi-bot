@@ -43,10 +43,10 @@ SERIES_TICKERS = {
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
 }
-MIN_ENTRY_PRICE = 86              # cents (global floor — SOL uses this; BTC/ETH overridden below)
+MIN_ENTRY_PRICE = 80              # cents (global floor — SOL uses this; BTC/ETH/XRP overridden below)
 MAX_ENTRY_PRICE = 99              # cents
 BTC_MIN_ENTRY_PRICE = 89          # cents (data: 86-88c below taker BE, 89c is 93.3% WR, +$87 PnL)
-ETH_MIN_ENTRY_PRICE = 88          # cents (data: ETH 86-87c is 5W/1L -$23.69, single 87c loss wipes 5 wins)
+ETH_MIN_ENTRY_PRICE = 80          # cents (data: price shadow 80-85c 89.7% WR, 58 signals, +$1.30 sim PnL)
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/2L 95.3% WR at >=92c)
@@ -510,7 +510,7 @@ MIN_EDGE_BY_PRICE = [
     (93, 0.009),   # 93-94c: need 0.9% edge (was 1.8% — halved: 3 rejected winners at 0.95-1.23%)
     (91, 0.0035),  # 91-92c: need 0.35% edge (was 0.7% — halved)
     (89, 0.0025),  # 89-90c: need 0.25% edge (was 0.5% — halved: 2 rejected winners at 0.31-0.48%)
-    (0,  0.0025),  # 86-88c: need 0.25% edge (was 0.5% — halved: 2 rejected winners at 0.26-0.49%)
+    (0,  0.0025),  # 80-88c: need 0.25% edge (floor lowered to 80c for ETH/SOL)
 ]
 
 def get_min_edge(entry_price_cents: int) -> float:
@@ -6576,9 +6576,9 @@ class OpportunityScanner:
                     continue
 
                 # ── Per-asset price floor (15M only) ─────────────────────────
-                # BTC 89c+: 86-88c below taker BE. ETH 88c+. SOL 86c global floor.
+                # BTC 89c+: 86-88c below taker BE. ETH 80c+. SOL 80c+ (global floor).
                 # XRP 92c+: PnL-negative at every floor below 90c.
-                # Shadow variants: ETH 76c, SOL 80c — forward validation of lower floors.
+                # Shadow: ETH 76-79c via eth_low_floor_shadow for further floor drop eval.
                 _asset_floor = MIN_ENTRY_PRICE  # default (SOL)
                 if _pt in (None, "15m"):
                     if asset == "BTC":
@@ -6598,8 +6598,6 @@ class OpportunityScanner:
                     _frs_stage = "floor_raise_shadow"
                     if asset == "ETH" and best_ask >= 76:
                         _frs_stage = "eth_low_floor_shadow"
-                    elif asset == "SOL" and best_ask >= 80:
-                        _frs_stage = "sol_low_floor_shadow"
                     _dedup_key = (ticker, _frs_stage)
                     if _dedup_key not in self._eval_opp_seen:
                         self._eval_opp_seen.add(_dedup_key)

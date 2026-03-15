@@ -23,7 +23,7 @@ Push to main and verify the bot is running correctly on VPS after auto-deploy.
    ```bash
    grep -n "^OBSERVATION_MODE\|^MAX_SECONDS_BEFORE_CLOSE\|^MIN_ENTRY_PRICE\|^MAX_ENTRY_PRICE\|^HOURLY_OBSERVATION_ONLY\|^SPX_HOURLY_OBSERVATION_ONLY\|^WEATHER_OBSERVATION_ONLY" bot.py
    ```
-   Expected: OBSERVATION_MODE=False, MIN_ENTRY_PRICE=86, MAX_ENTRY_PRICE=99, MAX_SECONDS_BEFORE_CLOSE=900, all observation modes True.
+   Expected: OBSERVATION_MODE=False, MIN_ENTRY_PRICE=80, MAX_ENTRY_PRICE=99, MAX_SECONDS_BEFORE_CLOSE=900, all observation modes True.
 
 3. **If any constant changed in bot.py**: grep the constant name across ALL files, especially `market_config.py`. Mismatch = crash loop on VPS.
    ```bash

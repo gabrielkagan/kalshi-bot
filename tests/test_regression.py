@@ -833,7 +833,7 @@ class TestCodebaseHygiene:
         """Verify critical trading constants haven't drifted unexpectedly."""
         import bot
         # These are the "known good" values as of Mar 4, 2026
-        assert bot.MIN_ENTRY_PRICE == 86
+        assert bot.MIN_ENTRY_PRICE == 80
         assert bot.MAX_ENTRY_PRICE == 99
         assert bot.MAX_SECONDS_BEFORE_CLOSE == 900
         assert bot.STC_SHADOW_THRESHOLD == 600
