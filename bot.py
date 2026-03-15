@@ -10734,10 +10734,19 @@ class OrderExecutor:
             self._state.update_evaluated_opportunity_order(ticker, order_outcome="canceled")
             return None
 
-        if best_ask < MIN_ENTRY_PRICE or best_ask > ESCALATION_MAX_ENTRY:
+        # Per-asset price floor for escalation (mirrors scanner + maker)
+        _esc_floor = MIN_ENTRY_PRICE
+        _esc_asset = order.get("asset")
+        if _esc_asset == "BTC":
+            _esc_floor = BTC_MIN_ENTRY_PRICE
+        elif _esc_asset == "ETH":
+            _esc_floor = ETH_MIN_ENTRY_PRICE
+        elif _esc_asset == "XRP":
+            _esc_floor = XRP_MIN_ENTRY_PRICE
+        if best_ask < _esc_floor or best_ask > ESCALATION_MAX_ENTRY:
             logging.warning(
                 f"Escalation aborted: price {best_ask}¢ out of range "
-                f"[{MIN_ENTRY_PRICE}-{ESCALATION_MAX_ENTRY}¢] for {ticker}"
+                f"[{_esc_floor}-{ESCALATION_MAX_ENTRY}¢] for {ticker}"
             )
             self._cancel_order(order["asset"], reason)
             self._state.update_evaluated_opportunity_order(ticker, order_outcome="canceled")
@@ -10823,7 +10832,20 @@ class OrderExecutor:
         price = fair_value - offset
         if degraded:
             price -= POST_ONLY_DEGRADED_EXTRA_OFFSET
-        if price < MIN_ENTRY_PRICE:
+        # Per-asset price floor (mirrors scanner check at ~L6560)
+        _pt = candidate.get("product_type")
+        _asset = candidate.get("asset")
+        _floor = MIN_ENTRY_PRICE
+        if _pt in (None, "15m"):
+            if _asset == "BTC":
+                _floor = BTC_MIN_ENTRY_PRICE
+            elif _asset == "ETH":
+                _floor = ETH_MIN_ENTRY_PRICE
+            elif _asset == "XRP":
+                _floor = XRP_MIN_ENTRY_PRICE
+        if price < _floor:
+            logging.warning("Maker price %dc below %s floor %dc for %s — skipping",
+                            price, _asset, _floor, ticker)
             return
 
         client_oid = str(uuid.uuid4())
