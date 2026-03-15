@@ -1931,6 +1931,79 @@ class DashboardSnapshotBuilder:
         except Exception:
             logging.debug("Snapshot: spx_observation build failed", exc_info=True)
 
+        # ── SPX Shadow Calibration Variants ──────────────────────────────
+        # Five variants exploring temperature + blend + filter combinations
+        # using pre-computed shadow columns on spx_observation rows.
+        _SPX_VARIANT_DEFS = [
+            ("spx_a", "T=2.0 no blend", "hourly_shadow_temp_2_0", None, None),
+            ("spx_b", "T=2.5 no blend", "hourly_shadow_temp_2_5", None, None),
+            ("spx_c", "T=2.0 90c+", "hourly_shadow_temp_2_0", "market_price >= 90", None),
+            ("spx_d", "post_temp no blend", "hourly_post_temp_prob", None, None),
+            ("spx_e", "T=2.0 high vol", "hourly_shadow_temp_2_0", "vol_regime = 'high'", None),
+        ]
+        # SPX finance fee rate: taker 0.035 (half crypto)
+        _SPX_FEE = 0.035
+        try:
+            spx_variants = {}
+            for _vid, _vlabel, _prob_col, _extra_filter, _ in _SPX_VARIANT_DEFS:
+                try:
+                    _where = (
+                        f"product_type='spx_hourly' AND filter_stage='spx_observation' "
+                        f"AND status='settled' AND market_result IS NOT NULL "
+                        f"AND {_prob_col} IS NOT NULL"
+                    )
+                    if _extra_filter:
+                        _where += f" AND {_extra_filter}"
+                    _sql = (
+                        f"SELECT COUNT(*) as n, "
+                        f"SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) as wins, "
+                        f"AVG(CASE WHEN market_result='yes' "
+                        f"  THEN (1-{_prob_col})*(1-{_prob_col}) "
+                        f"  ELSE {_prob_col}*{_prob_col} END) as brier, "
+                        f"SUM(CASE WHEN {_prob_col} > market_price/100.0 THEN "
+                        f"  CASE WHEN market_result='yes' "
+                        f"    THEN (100 - market_price) - CAST(CEIL({_SPX_FEE} * (market_price/100.0) * (1.0 - market_price/100.0) * 100) AS INTEGER) "
+                        f"  ELSE -(market_price + CAST(CEIL({_SPX_FEE} * (market_price/100.0) * (1.0 - market_price/100.0) * 100) AS INTEGER)) "
+                        f"  END ELSE 0 END) as sim_pnl "
+                        f"FROM evaluated_opportunities WHERE {_where}"
+                    )
+                    _r = _conn.execute(_sql).fetchone()
+                    _n = _r["n"] if _r else 0
+                    _w = (_r["wins"] or 0) if _r else 0
+                    _wr = round(_w / _n, 4) if _n > 0 else 0
+                    _wlo = 0.0
+                    if _n > 0:
+                        _p = _w / _n
+                        _z = 1.96
+                        _denom = 1 + _z ** 2 / _n
+                        _wlo = round((_p + _z ** 2 / (2 * _n) - _z * ((_p * (1 - _p) / _n + _z ** 2 / (4 * _n ** 2)) ** 0.5)) / _denom, 4)
+                    # Pending count
+                    _pw = (
+                        f"product_type='spx_hourly' AND filter_stage='spx_observation' "
+                        f"AND status != 'settled' AND {_prob_col} IS NOT NULL"
+                    )
+                    if _extra_filter:
+                        _pw += f" AND {_extra_filter}"
+                    _pend = _conn.execute(f"SELECT COUNT(*) as c FROM evaluated_opportunities WHERE {_pw}").fetchone()
+                    spx_variants[_vid] = {
+                        "label": _vlabel,
+                        "settled": _n, "wins": _w, "losses": _n - _w,
+                        "wr": _wr, "wilson_lower": _wlo,
+                        "brier": round(_r["brier"], 4) if _r and _r["brier"] else None,
+                        "sim_pnl_cents": (_r["sim_pnl"] or 0) if _r else 0,
+                        "pending": (_pend["c"] or 0) if _pend else 0,
+                    }
+                except Exception:
+                    logging.debug("SPX variant %s failed", _vid, exc_info=True)
+                    spx_variants[_vid] = {
+                        "label": _vlabel, "settled": 0, "wins": 0, "losses": 0,
+                        "wr": 0, "wilson_lower": 0, "brier": None,
+                        "sim_pnl_cents": 0, "pending": 0,
+                    }
+            snap["spx_variants"] = spx_variants
+        except Exception:
+            logging.debug("Snapshot: spx_variants build failed", exc_info=True)
+
         # ── Weather Observation Panel ─────────────────────────────────────
         try:
             if getattr(_bot_mod, "WEATHER_ENABLED", False):
