@@ -329,6 +329,13 @@ def validate_market_configs() -> None:
         f"weather max_stc_entry: {cfg_w.max_stc_entry} != {bot.WEATHER_MAX_STC_ENTRY}")
     assert cfg_w.cal_engine_enabled == bot.WEATHER_CAL_ENGINE_ENABLED, (
         f"weather cal_enabled: {cfg_w.cal_engine_enabled} != {bot.WEATHER_CAL_ENGINE_ENABLED}")
+    # Weather NO-side live constants exist and have valid types
+    assert isinstance(bot.WEATHER_NO_SIDE_LIVE, bool), (
+        f"WEATHER_NO_SIDE_LIVE must be bool, got {type(bot.WEATHER_NO_SIDE_LIVE)}")
+    assert isinstance(bot.WEATHER_NO_SIDE_MIN_STC, (int, float)), (
+        f"WEATHER_NO_SIDE_MIN_STC must be numeric, got {type(bot.WEATHER_NO_SIDE_MIN_STC)}")
+    assert bot.WEATHER_NO_SIDE_MIN_STC >= 3600, (
+        f"WEATHER_NO_SIDE_MIN_STC must be >= 1h, got {bot.WEATHER_NO_SIDE_MIN_STC}")
 
     # ── Sports ──
     cfg_sp = MARKET_CONFIGS["sports"]

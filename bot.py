@@ -161,6 +161,12 @@ WEATHER_SHADOW_CONFIGS = [
 # Signal fires when YES prob ≥ 55% (cheap NO contracts) and NO edge after fees is positive.
 # Fixed 1-contract sizing (Kelly oversizes on low-edge NO signals).
 WEATHER_NO_SHADOW_MIN_YES_PROB = 0.55  # Only shadow when model is confident YES (NO is cheap)
+# Weather NO-side live execution — bypasses WEATHER_OBSERVATION_ONLY for NO-side only.
+# YES-side remains fully gated by WEATHER_OBSERVATION_ONLY = True.
+# Data: 397 settled, 73.6% WR, +$181 sim PnL, 40pp+ cushion above breakeven.
+# Gate: STC >= 8h (short STC NO loses), fixed 1-contract sizing, all 19 cities.
+WEATHER_NO_SIDE_LIVE = False             # Kill switch — flip True on March 20 after 14-day gate
+WEATHER_NO_SIDE_MIN_STC = 28800.0        # 8 hours — short STC NO-side loses money
 HOURLY_MIN_EDGE_PCT = 0.001              # 0.1% — low for max signal collection (observation-only)
 
 # ─── Sports Comeback Observation Mode ────────────────────────────────────
@@ -8219,6 +8225,85 @@ class OpportunityScanner:
                                             **_oft_db, **_shadow_diag)
                                     except Exception:
                                         logging.warning("insert_evaluated_opportunity failed (weather_no_shadow)", exc_info=True)
+                                    # ── Weather NO-side live candidate ──
+                                    # Bypasses WEATHER_OBSERVATION_ONLY for NO-side only.
+                                    # Gates: WEATHER_NO_SIDE_LIVE, STC >= 8h, positive fee-adj edge.
+                                    if (WEATHER_NO_SIDE_LIVE
+                                            and seconds_remaining >= WEATHER_NO_SIDE_MIN_STC
+                                            and _wn_no_fee_edge > 0):
+                                        _wn_cand_dedup = (ticker, "weather_no_candidate")
+                                        if _wn_cand_dedup not in self._eval_opp_seen:
+                                            self._eval_opp_seen.add(_wn_cand_dedup)
+                                            # Log as candidate in evaluated_opportunities
+                                            try:
+                                                self._state.insert_evaluated_opportunity(
+                                                    ticker, window["event_ticker"], asset,
+                                                    "candidate",
+                                                    spot_price=spot, threshold=threshold,
+                                                    volatility=blended_rv, market_price=_no_ask_eq,
+                                                    seconds_to_close=seconds_remaining,
+                                                    calibrated_prob=_wn_no_prob, edge=_wn_no_edge,
+                                                    ofa_adjustment=ofa_adjustment,
+                                                    z_score=z_score, vol_regime=vol_est["regime"],
+                                                    raw_prob=1.0 - raw_prob if raw_prob is not None else None,
+                                                    calibrated_prob_raw=1.0 - calibrated_prob_raw if calibrated_prob_raw is not None else None,
+                                                    calibration_method=calibration_method,
+                                                    fee_adjusted_edge=_wn_no_fee_edge,
+                                                    breakeven_wr=_no_ask_eq / 100.0,
+                                                    expected_value=round(_wn_ev, 2),
+                                                    ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                                    position_size=1, kelly_f=0.0, drawdown_scaler=1.0,
+                                                    strategy=strategy, old_system_prob=_old_system_prob,
+                                                    product_type="weather", side="no",
+                                                    wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                                                    wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                                                    wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                                                    wx_n_members=_shadow_extra.get("wx_n_members"),
+                                                    wx_market_type=_shadow_extra.get("wx_market_type"),
+                                                    wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                                    wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
+                                                    wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
+                                                    **_oft_db, **_shadow_diag)
+                                            except Exception:
+                                                logging.warning("insert_evaluated_opportunity failed (weather_no_candidate)", exc_info=True)
+                                            candidates.append({
+                                                "ticker": ticker,
+                                                "event_ticker": window["event_ticker"],
+                                                "asset": asset,
+                                                "product_type": "weather",
+                                                "side": "no",
+                                                "spot": spot,
+                                                "threshold": threshold,
+                                                "seconds_to_close": round(seconds_remaining, 1),
+                                                "blended_rv": blended_rv,
+                                                "calibrated_prob": round(_wn_no_prob, 6),
+                                                "z_score": z_score,
+                                                "best_yes_ask": _no_ask_eq,  # NO price for execution
+                                                "best_ask_source": best_ask_source,
+                                                "edge": round(_wn_no_edge, 6),
+                                                "position_size": 1,  # Fixed 1-contract
+                                                "kelly_f": 0.0,
+                                                "drawdown_scaler": 1.0,
+                                                "vol_regime": vol_est["regime"],
+                                                "balance_at_scan": balance,
+                                                "strategy": strategy,
+                                                "strategy_scores": {},
+                                                "ob_snapshot": {},
+                                                "calibrated_prob_raw": round(1.0 - calibrated_prob_raw, 6) if calibrated_prob_raw is not None else None,
+                                                "ofa_adjustment": round(ofa_adjustment, 6),
+                                                "ofa_confidence": "none",
+                                                "raw_prob": 1.0 - raw_prob if raw_prob is not None else None,
+                                                "calibration_method": calibration_method,
+                                                "old_system_prob": round(1.0 - _old_system_prob, 6),
+                                                "fee_adjusted_edge": round(_wn_no_fee_edge, 6),
+                                                "kalshi_oft_signals": {},
+                                                "counterfactual_json": None,
+                                            })
+                                            logging.info(
+                                                "WEATHER_NO_CANDIDATE: %s no_price=%d edge=%.2f%% "
+                                                "no_prob=%.1f%% stc=%.0fs",
+                                                ticker, _no_ask_eq, _wn_no_fee_edge * 100,
+                                                _wn_no_prob * 100, seconds_remaining)
                     # V2 variant: shadow cal pipeline (temperature + no blend)
                     if _obs_pt == "hourly" and _cf:
                         self._insert_hourly_v2_variant(
@@ -9825,11 +9910,16 @@ class OrderExecutor:
     def execute(self, candidate: Dict) -> Optional[Dict]:
         """Always submit maker order. Escalation to taker happens in tick()."""
         # Observation safety belt — should never reach here for obs-only types
+        # Exception: weather NO-side bypasses observation_only when WEATHER_NO_SIDE_LIVE=True
         _exec_cfg = get_market_config(candidate.get("product_type"))
         if _exec_cfg.observation_only:
-            logging.error("SAFETY: %s candidate reached execute() — should never happen. Ticker=%s",
-                          _exec_cfg.product_type, candidate.get("ticker"))
-            return None
+            _is_weather_no_live = (candidate.get("product_type") == "weather"
+                                  and candidate.get("side") == "no"
+                                  and WEATHER_NO_SIDE_LIVE)
+            if not _is_weather_no_live:
+                logging.error("SAFETY: %s candidate reached execute() — should never happen. Ticker=%s",
+                              _exec_cfg.product_type, candidate.get("ticker"))
+                return None
 
         asset = candidate["asset"]
         if asset in self._active_orders or asset in self._escalating_assets:
@@ -10675,10 +10765,12 @@ class OrderExecutor:
         order = self._active_order
         self._session_amend_attempts += 1
         try:
+            _side = order.get("side", "yes")
+            _price_kwarg = {"no_price": new_price} if _side == "no" else {"yes_price": new_price}
             resp = self._client.amend_order(
                 order_id=order["order_id"], ticker=order["ticker"],
-                side="yes", action="buy", yes_price=new_price,
-                count=order["count"])
+                side=_side, action="buy", count=order["count"],
+                **_price_kwarg)
             if resp is None:
                 logging.warning(
                     f"amend_failed_fallback: {order['ticker']} "
@@ -10835,7 +10927,8 @@ class OrderExecutor:
         # Per-asset price floor (mirrors scanner check at ~L6560)
         _pt = candidate.get("product_type")
         _asset = candidate.get("asset")
-        _floor = MIN_ENTRY_PRICE
+        _mcfg_exec = get_market_config(_pt)
+        _floor = _mcfg_exec.min_entry_price
         if _pt in (None, "15m"):
             if _asset == "BTC":
                 _floor = BTC_MIN_ENTRY_PRICE
@@ -10851,17 +10944,18 @@ class OrderExecutor:
         client_oid = str(uuid.uuid4())
 
         # Persist before submission
+        _side = candidate.get("side", "yes")
         self._state.insert_bot_order(
             client_oid, ticker, candidate["event_ticker"],
-            candidate["asset"], "yes", count, price, False
+            candidate["asset"], _side, count, price, False
         )
 
         # Submit with post_only to guarantee maker fees (4x cheaper)
+        _price_kwarg = {"no_price": price} if _side == "no" else {"yes_price": price}
         resp = self._client.place_order(
-            ticker=ticker, side="yes", action="buy",
-            count=count, yes_price=price,
-            client_order_id=client_oid,
-            post_only=True,
+            ticker=ticker, side=_side, action="buy",
+            count=count, client_order_id=client_oid,
+            post_only=True, **_price_kwarg,
         )
 
         if resp is None:
@@ -10889,6 +10983,7 @@ class OrderExecutor:
             "ticker": ticker,
             "event_ticker": candidate["event_ticker"],
             "asset": candidate["asset"],
+            "side": _side,
             "price_cents": price,
             "count": count,
             "is_taker": False,
@@ -10933,17 +11028,18 @@ class OrderExecutor:
         client_oid = str(uuid.uuid4())
 
         # Persist before submission
+        _side = candidate.get("side", "yes")
         self._state.insert_bot_order(
             client_oid, ticker, candidate["event_ticker"],
-            candidate["asset"], "yes", count, price, True
+            candidate["asset"], _side, count, price, True
         )
 
         # Submit as IOC — exchange auto-cancels any unfilled remainder
+        _price_kwarg = {"no_price": price} if _side == "no" else {"yes_price": price}
         resp = self._client.place_order(
-            ticker=ticker, side="yes", action="buy",
-            count=count, yes_price=price,
-            client_order_id=client_oid,
-            time_in_force="immediate_or_cancel",
+            ticker=ticker, side=_side, action="buy",
+            count=count, client_order_id=client_oid,
+            time_in_force="immediate_or_cancel", **_price_kwarg,
         )
 
         if resp is None:
@@ -11216,7 +11312,7 @@ class OrderExecutor:
             ticker=ticker,
             event_ticker=order["event_ticker"],
             asset=order["asset"],
-            side="yes",
+            side=order.get("side", "yes"),
             count=fill_count,
             price_cents=fill_price,
             strategy=candidate.get("strategy"),
@@ -12290,6 +12386,9 @@ class SettlementTracker:
             counterfactual_outcome = "unknown_no_price"
         else:
             # Counterfactual: bought 1 YES contract at entry_price (include taker fee)
+            # Note: rejected_opportunities are always YES-side. NO-side goes through
+            # evaluated_opportunities which has its own side-aware settlement in
+            # _poll_evaluated_opportunities().
             assumed_fee = calculate_taker_fee(1, int(entry_price))
             if result in ("yes", "all_yes"):
                 would_have_profit = (100 - entry_price) - assumed_fee  # cents
@@ -12670,6 +12769,7 @@ class SettlementTracker:
                 logging.warning("sol_pathc_shadow settle failed for %s", ticker, exc_info=True)
 
         # Weather: fetch actual temps (API calls — after lock released)
+        _wx_dirty = False
         for (opp_id, ticker, row) in _weather_updates:
             try:
                 _wx_city = row["asset"].replace("_TEMP", "")
@@ -12684,7 +12784,7 @@ class SettlementTracker:
                                 self._state.conn.execute(
                                     "UPDATE evaluated_opportunities SET wx_actual_high_temp=? WHERE id=?",
                                     (_obs_high, opp_id))
-                                self._state.conn.commit()
+                                _wx_dirty = True
                                 logging.info("weather_observed_temp: %s %s %.1fF",
                                              _wx_city, _market_date, _obs_high)
                                 forecast_mean = row.get("spot_price")
@@ -12696,6 +12796,8 @@ class SettlementTracker:
                                                  _wx_city, _market_date, _obs_high, forecast_mean)
             except Exception as e:
                 logging.warning("weather_observed_temp fetch failed for %s: %s", ticker, e)
+        if _wx_dirty:
+            self._state.conn.commit()
 
         # Backfill wx_actual_high_temp for settled weather entries that missed it
         self._backfill_weather_actual_temps()

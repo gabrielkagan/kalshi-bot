@@ -108,7 +108,7 @@ class TestMakerFirstExecution(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         # Verify place_order was called with post_only=True
@@ -126,7 +126,7 @@ class TestMakerFirstExecution(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         call_args = ex._client.place_order.call_args
@@ -141,11 +141,17 @@ class TestMakerFirstExecution(unittest.TestCase):
         ex._client.place_order.return_value = {
             "order": {"order_id": "ord-123"}
         }
-        candidate = _make_candidate(best_yes_ask=88, seconds_to_close=400)
+        # Use SOL (default floor=86, no per-asset override) so 88-2=86 clears the floor.
+        # BTC has BTC_MIN_ENTRY_PRICE=89 which would block 86.
+        candidate = _make_candidate(
+            best_yes_ask=88, seconds_to_close=400,
+            asset="SOL", ticker="KXSOL15M-26MAR091200-S100",
+        )
 
         with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+             patch("bot.get_market_config") as mock_cfg, \
+             patch("bot.SOL_TAKER_FIRST", False):
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         call_args = ex._client.place_order.call_args
@@ -162,7 +168,7 @@ class TestMakerFirstExecution(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         # place_order should NOT be called (maker price 85 < min 86)
@@ -179,7 +185,7 @@ class TestMakerFirstExecution(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         self.assertEqual(call_order, ["db", "api"],
@@ -195,7 +201,7 @@ class TestMakerFirstExecution(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         call_args = ex._client.place_order.call_args
@@ -210,7 +216,7 @@ class TestMakerFirstExecution(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 
         self.assertIsNone(result)
@@ -224,7 +230,7 @@ class TestMakerFirstExecution(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         ex._state.mark_order_status.assert_called()
@@ -257,7 +263,7 @@ class TestObservationModeSafety(unittest.TestCase):
         with patch("bot.OBSERVATION_MODE", True), \
              patch("bot.get_market_config") as mock_cfg, \
              patch("bot._TELEGRAM", None):
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 
         self.assertIsNone(result)
@@ -293,7 +299,7 @@ class TestDirectTakerPath(unittest.TestCase):
              patch("bot.get_market_config") as mock_cfg, \
              patch("bot.time") as mock_time, \
              patch("bot.fp_str_to_int", return_value=5):
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()  # Don't actually sleep
             # Need _get_addon_best_ask to return a price for liquidity check
@@ -330,7 +336,7 @@ class TestDirectTakerPath(unittest.TestCase):
              patch("bot.get_market_config") as mock_cfg, \
              patch("bot.time") as mock_time, \
              patch("bot.fp_str_to_int", return_value=0):
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
             ex._get_addon_best_ask = MagicMock(return_value=92)
@@ -351,7 +357,7 @@ class TestDirectTakerPath(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 
         self.assertIsNone(result)
@@ -387,7 +393,7 @@ class TestSOLTakerOverride(unittest.TestCase):
              patch("bot.time") as mock_time, \
              patch("bot.SOL_TAKER_FIRST", True), \
              patch("bot.fp_str_to_int", return_value=5):
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
             ex._get_addon_best_ask = MagicMock(return_value=92)
@@ -414,7 +420,7 @@ class TestSOLTakerOverride(unittest.TestCase):
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg, \
              patch("bot.SOL_TAKER_FIRST", False):
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         call_args = ex._client.place_order.call_args
@@ -603,7 +609,7 @@ class TestPostOnlyRejectionTiers(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         call_args = ex._client.place_order.call_args
@@ -625,7 +631,7 @@ class TestPostOnlyRejectionTiers(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         call_args = ex._client.place_order.call_args
@@ -662,7 +668,7 @@ class TestPostOnlyRejectionTiers(unittest.TestCase):
              patch("bot.get_market_config") as mock_cfg, \
              patch("bot.time") as mock_time, \
              patch("bot.fp_str_to_int", return_value=5):
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
             ex._get_addon_best_ask = MagicMock(return_value=92)
@@ -980,7 +986,7 @@ class TestCooldownAndDedup(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 
         self.assertIsNone(result)
@@ -998,7 +1004,7 @@ class TestCooldownAndDedup(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         # Should have submitted an order
@@ -1012,7 +1018,7 @@ class TestCooldownAndDedup(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 
         self.assertIsNone(result)
@@ -1056,7 +1062,7 @@ class TestEdgeCases(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 
         self.assertIsNone(result)
@@ -1078,7 +1084,7 @@ class TestEdgeCases(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg:
-            mock_cfg.return_value = MagicMock(observation_only=False)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
         # ETH order should be submitted
