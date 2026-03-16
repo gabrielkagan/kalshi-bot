@@ -109,6 +109,8 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **After ANY bug fix**: do root cause analysis, explain why it happened, and add a regression test to prevent recurrence. Never just fix and move on.
 - **All sim PnL and counterfactual analysis MUST use actual Kelly sizing** — never use 1-contract flat sizing. Position size comes from the Kelly formula with the bot's actual risk parameters. Flat sizing produces misleading PnL numbers.
 - **Never present analysis without checking actual data first** — no assumptions about column values, schema, enum strings, or data shape. Always run `PRAGMA table_info()` and `SELECT DISTINCT` before building queries. (Learned: wrong column values, wrong regime detection, wrong filter_stage assumptions all caused bad analysis.)
+- **Never use `PRAGMA wal_checkpoint(TRUNCATE)` — use PASSIVE** — TRUNCATE requires an exclusive lock that blocks all readers/writers. With supabase_sync running 192 SELECTs every 30s, TRUNCATE creates a deadlock triangle: checkpoint waits for reader to finish → reader holds shared lock → settlement writer waits for checkpoint's exclusive lock. PASSIVE checkpoints whatever pages it can without blocking. (Learned: 11,258 "database is locked" errors in 12h, Mar 16 2026. Root cause: TRUNCATE + supabase_sync reader + 228-row settlement batch.)
+- **Keep DB write batches small (≤50 rows per commit)** — large batches hold the write lock long enough to conflict with concurrent readers and checkpoints. Settlement Phase 2 now chunks into batches of 50. (Learned: 228-row batch from weather expansion held lock long enough to deadlock, Mar 16 2026.)
 
 ## Anti-Patterns — Do NOT Do These
 

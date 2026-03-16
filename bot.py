@@ -12665,20 +12665,30 @@ class SettlementTracker:
                     logging.warning(f"Evaluated opp settlement check failed for {ticker}: {e}", exc_info=True)
 
         # ── Phase 2: Fast DB writes (short lock, no API calls) ──
+        # Commit in chunks of 50 to keep write-lock duration short.
+        # Large batches (200+) hold the lock long enough to deadlock with
+        # supabase_sync reader + WAL checkpoint. (Mar 16 2026)
+        _SETTLEMENT_BATCH_SIZE = 50
         _settled_count = 0
         if _settlement_batch:
-            try:
-                for (opp_id, ticker, result, row,
-                     would_have_profit, counterfactual_outcome) in _settlement_batch:
-                    self._state.mark_evaluated_opportunity_settled(
-                        opp_id, market_result=result,
-                        counterfactual_pnl=would_have_profit,
-                        commit=False)
-                    _settled_count += 1
-                self._state.conn.commit()
-                logging.info("eval_opp_settlement: batch committed %d rows", _settled_count)
-            except Exception as e:
-                logging.warning("eval_opp_settlement batch commit failed: %s", e, exc_info=True)
+            for _chunk_start in range(0, len(_settlement_batch), _SETTLEMENT_BATCH_SIZE):
+                _chunk = _settlement_batch[_chunk_start:_chunk_start + _SETTLEMENT_BATCH_SIZE]
+                try:
+                    for (opp_id, ticker, result, row,
+                         would_have_profit, counterfactual_outcome) in _chunk:
+                        self._state.mark_evaluated_opportunity_settled(
+                            opp_id, market_result=result,
+                            counterfactual_pnl=would_have_profit,
+                            commit=False)
+                        _settled_count += 1
+                    self._state.conn.commit()
+                except Exception as e:
+                    logging.warning("eval_opp_settlement batch commit failed (chunk %d-%d): %s",
+                                    _chunk_start, _chunk_start + len(_chunk), e, exc_info=True)
+            if _settled_count:
+                logging.info("eval_opp_settlement: committed %d rows in %d chunks",
+                             _settled_count,
+                             (len(_settlement_batch) + _SETTLEMENT_BATCH_SIZE - 1) // _SETTLEMENT_BATCH_SIZE)
 
         # ── Phase 3: Post-commit work (CalEngine, shadow settlement, weather) ──
         # These run AFTER the write lock is released.
@@ -13156,6 +13166,49 @@ class MainLoop:
         self._session_maker_fills: int = 0
         self._last_summary_date: Optional[str] = None
         self._observation_mode: bool = OBSERVATION_MODE
+        self._last_db_health_check: float = 0.0
+        self._db_locked_count: int = 0
+
+    # ── DB Health Watchdog ────────────────────────────────────────────────
+
+    def _check_db_health(self):
+        """Run every 5 minutes. Alert via Telegram if DB contention is unhealthy."""
+        alerts = []
+
+        # 1. Locked error count since last check
+        if self._db_locked_count > 10:
+            alerts.append(f"🔒 {self._db_locked_count} locked errors in last 5 min")
+        self._db_locked_count = 0  # reset after check
+
+        # 2. WAL file size
+        try:
+            db_path = self.state.conn.execute(
+                "PRAGMA database_list").fetchone()[2]
+            wal_path = db_path + "-wal"
+            if os.path.exists(wal_path):
+                wal_mb = os.path.getsize(wal_path) / (1024 * 1024)
+                if wal_mb > 50:
+                    alerts.append(f"📁 WAL file {wal_mb:.1f} MB (>50 MB)")
+        except Exception:
+            pass
+
+        # 3. Pending evaluated_opportunities (unsettled backlog)
+        try:
+            pending = self.state.conn.execute(
+                "SELECT COUNT(*) FROM evaluated_opportunities "
+                "WHERE status='open' AND filter_stage IN "
+                "('candidate','observation_trade','shadow','weather_shadow',"
+                "'sports_shadow','spx_observation','no_side_shadow')"
+            ).fetchone()[0]
+            if pending > 500:
+                alerts.append(f"📊 {pending} pending evals (>500)")
+        except Exception:
+            pass
+
+        if alerts:
+            msg = "⚠️ *DB Health Alert*\n" + "\n".join(alerts)
+            self.telegram.send(msg, dedup_key="db_health_alert")
+            logging.warning("DB health alert: %s", "; ".join(alerts))
 
     # ── Signal Handling ───────────────────────────────────────────────────
 
@@ -13569,12 +13622,24 @@ class MainLoop:
 
         # Periodic WAL checkpoint (every 60s) — prevents WAL bloat that causes
         # "database is locked" across shadow engines with 7 concurrent connections.
+        # Uses PASSIVE (not TRUNCATE) — TRUNCATE requires exclusive lock that
+        # deadlocks with supabase_sync reader + settlement writer. PASSIVE
+        # checkpoints whatever pages it can without blocking. (Mar 16 2026)
         if now - self._last_wal_checkpoint >= 60.0:
             try:
-                self.state.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.state.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                 self._last_wal_checkpoint = now
             except Exception:
+                self._db_locked_count += 1
                 logging.debug("WAL checkpoint failed (busy)", exc_info=True)
+
+        # DB health watchdog (every 5 minutes)
+        if now - self._last_db_health_check >= 300.0:
+            try:
+                self._check_db_health()
+            except Exception:
+                logging.debug("DB health check failed", exc_info=True)
+            self._last_db_health_check = now
 
         # Periodic calibration retrain check
         if self.calibration:
