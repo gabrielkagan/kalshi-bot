@@ -6010,6 +6010,12 @@ class OpportunityScanner:
             _tcfg = get_market_config(w.get("product_type"))
             if _tcfg.min_seconds_before_close <= stc <= _tcfg.max_seconds_before_close:
                 time_ok_windows.append(w)
+            elif w.get("product_type") == "spx_hourly" and not hasattr(self, '_spx_stc_filter_logged'):
+                self._spx_stc_filter_logged = True
+                logging.warning(
+                    "SPX_DIAG: window %s filtered by STC: stc=%.0f range=[%.0f, %.0f]",
+                    w.get("event_ticker", "?"), stc,
+                    _tcfg.min_seconds_before_close, _tcfg.max_seconds_before_close)
         if not time_ok_windows:
             return None
 
