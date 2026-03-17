@@ -6039,6 +6039,16 @@ class OpportunityScanner:
             if _pt == "spx_hourly" and self._ml and getattr(self._ml, "spx_engine", None):
                 spot = self._ml.spx_engine.get_spot_price(asset)
                 if spot is None or spot <= 0:
+                    if not hasattr(self, '_spx_spot_none_logged'):
+                        self._spx_spot_none_logged = True
+                        _spx_feed = self._ml.spx_engine._feed
+                        _spx_buf_len = len(_spx_feed._buffers.get("SPX", []))
+                        _spx_stale = _spx_feed.is_stale("SPX")
+                        logging.warning(
+                            "SPX_DIAG: spot=None/<=0 for %s — buf_size=%d stale=%s "
+                            "polygon_backoff=%s spot_val=%s",
+                            asset, _spx_buf_len, _spx_stale,
+                            _spx_feed._polygon_in_backoff, spot)
                     continue
                 seconds_remaining = window["seconds_to_close"]
                 vol_est = self._ml.spx_engine.get_vol_estimate(asset, seconds_remaining)
@@ -6056,6 +6066,17 @@ class OpportunityScanner:
                 vol_est = self._vol.update(asset, seconds_to_close=seconds_remaining)
 
             if vol_est is None or vol_est["blended_rv"] <= 0:
+                if _pt == "spx_hourly" and not hasattr(self, '_spx_vol_none_logged'):
+                    self._spx_vol_none_logged = True
+                    _spx_feed = self._ml.spx_engine._feed
+                    _spx_returns = _spx_feed.get_returns("SPX", n=120)
+                    logging.warning(
+                        "SPX_DIAG: vol_est=%s for %s — spot=%.2f n_returns=%d "
+                        "buf_size=%d stc=%.0f",
+                        "None" if vol_est is None else f"rv={vol_est.get('blended_rv')}",
+                        asset, spot, len(_spx_returns),
+                        len(_spx_feed._buffers.get("SPX", [])),
+                        seconds_remaining)
                 continue
 
             blended_rv = vol_est["blended_rv"]
