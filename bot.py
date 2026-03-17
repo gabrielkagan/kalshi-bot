@@ -6214,6 +6214,14 @@ class OpportunityScanner:
                         spot, threshold, seconds_remaining, blended_rv,
                         asset=asset, product_type=window.get("product_type")
                     )
+                    if _pt == "spx_hourly" and not hasattr(self, '_spx_prob_logged'):
+                        self._spx_prob_logged = True
+                        logging.warning(
+                            "SPX_DIAG: prob_result for %s — tradeable=%s cal_prob=%s z=%s "
+                            "spot=%.1f thresh=%.1f rv=%.6f stc=%.0f reason=%s",
+                            ticker, prob_result.get("tradeable"), prob_result.get("calibrated_prob"),
+                            prob_result.get("z_score"), spot, threshold, blended_rv,
+                            seconds_remaining, prob_result.get("reason", ""))
                 cal_prob = prob_result.get("calibrated_prob")
                 raw_prob_pre = prob_result.get("raw_prob")
                 calibration_method_pre = prob_result.get("calibration_method")
