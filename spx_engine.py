@@ -682,7 +682,14 @@ class SPXVolatilityEngine:
         """Compute blended volatility estimate for SPX.
 
         Returns dict matching crypto VolatilityEngine output format.
+
+        When Polygon is in backoff (Finnhub-only mode), the 3-second price
+        updates produce near-zero returns that would collapse EGARCH sigma.
+        In this mode, we use EGARCH-only with the loaded/persisted sigma
+        and skip RK estimation (which would also be near-zero from low-freq data).
         """
+        finnhub_only = self._feed._polygon_in_backoff
+
         returns = self._feed.get_returns("SPX", n=120)
         if len(returns) < 10:
             return None
@@ -695,78 +702,92 @@ class SPXVolatilityEngine:
             if vix is not None:
                 self._egarch.seed_from_vix(vix)
 
-        # Deseasonalize returns and feed to EGARCH
-        for r in returns[-5:]:  # only process recent returns to avoid re-processing
-            deseas_r = self._seasonal.deseasonalize_return(r)
-            self._seasonal.add_return(r)
-            self._egarch.recursive_update(deseas_r)
+        # Only feed returns to EGARCH when using high-frequency Polygon data.
+        # Finnhub's 3-second SPY quotes produce near-zero returns that would
+        # collapse EGARCH sigma to ~0 after a few hundred updates.
+        if not finnhub_only:
+            for r in returns[-5:]:
+                deseas_r = self._seasonal.deseasonalize_return(r)
+                self._seasonal.add_return(r)
+                self._egarch.recursive_update(deseas_r)
 
-        # Check bucket transition for seasonal filter
-        current_bucket = self._seasonal._get_bucket_index()
-        if self._last_bucket_idx is not None and current_bucket != self._last_bucket_idx:
-            self._seasonal.end_bucket(self._last_bucket_idx)
-        self._last_bucket_idx = current_bucket
+            # Check bucket transition for seasonal filter
+            current_bucket = self._seasonal._get_bucket_index()
+            if self._last_bucket_idx is not None and current_bucket != self._last_bucket_idx:
+                self._seasonal.end_bucket(self._last_bucket_idx)
+            self._last_bucket_idx = current_bucket
 
-        # Maybe refit EGARCH
-        self._egarch.maybe_refit()
-
-        # Realized Kernel estimate
-        rk_rv = self._compute_realized_kernel(returns)
-        if rk_rv is None or rk_rv <= 0:
-            return None
+            # Maybe refit EGARCH
+            self._egarch.maybe_refit()
 
         # EGARCH estimate (re-seasonalized)
         egarch_sigma = self._egarch.get_sigma()
-        seasonal_factor = self._seasonal.get_seasonal_factor()
+        seasonal_factor = self._seasonal.get_seasonal_factor() if not finnhub_only else 1.0
         egarch_rv = egarch_sigma * seasonal_factor if egarch_sigma else None
 
-        # Blend RK and EGARCH via variance-space blend (matches crypto pattern)
-        egarch_blend_var = None
-        if egarch_rv and egarch_rv > 0:
-            # Record MZ pair for R-squared tracking
-            egarch_var = egarch_rv ** 2
-            rk_var = rk_rv ** 2
-            self._mz_pairs.append((egarch_var, rk_var))
-            self._maybe_recompute_mz()
-
-            # Use MZ R-squared as blend weight for EGARCH
-            blend_weight = max(0.0, min(0.8, self._mz_r_squared))
-
-            if blend_weight > 0:
-                # Variance-space blend: avoids Jensen's inequality bias
-                egarch_blend_var = blend_weight * egarch_var + (1 - blend_weight) * rk_var
-                blended_rv = math.sqrt(egarch_blend_var)
-            else:
-                blended_rv = rk_rv
-        else:
-            blended_rv = rk_rv
-            blend_weight = 0.0
-
-        # VIX integration: shift toward implied when divergent
-        vix = self._feed.get_vix()
-        vix_implied_rv = None
-        if vix is not None:
-            # Convert VIX (annualized %) to per-tick vol matching our returns
-            annual_vol = vix / 100.0
-            vix_implied_rv = annual_vol / math.sqrt(252 * 6.5 * 3600)
-            divergence = abs(blended_rv - vix_implied_rv) / max(blended_rv, 1e-12)
-            if divergence > VIX_DIVERGENCE_THRESHOLD:
-                # Shift 30% toward VIX-implied
-                blended_rv = 0.70 * blended_rv + 0.30 * vix_implied_rv
-
-        # Determine regime
-        if blended_rv > rk_rv * 1.5:
-            regime = "high"
-        elif blended_rv < rk_rv * 0.7:
-            regime = "low"
-        else:
+        if finnhub_only:
+            # Finnhub-only mode: use EGARCH sigma directly, skip RK
+            # (RK from 3s SPY quotes would be near-zero and misleading)
+            if egarch_rv is None or egarch_rv <= 0:
+                return None
+            blended_rv = egarch_rv
+            blend_weight = 1.0
+            rk_rv = None
+            egarch_blend_var = egarch_rv ** 2
+            vix_implied_rv = None
             regime = "normal"
 
-        # Diagnostic: if we had all inputs but blend_var is still None, log it
-        if egarch_blend_var is None and egarch_sigma and blend_weight > 0:
-            logging.warning(
-                "SPX egarch_blend_var is None despite sigma=%.3e bw=%.3f rk=%.3e sf=%.3f egarch_rv=%s",
-                egarch_sigma, blend_weight, rk_rv, seasonal_factor, egarch_rv)
+            if not hasattr(self, '_finnhub_only_logged'):
+                self._finnhub_only_logged = True
+                logging.info(
+                    "SPX vol: Finnhub-only mode — using EGARCH sigma=%.6f "
+                    "(skipping RK/MZ, polygon_backoff=True)", egarch_sigma)
+        else:
+            # Normal mode: RK + EGARCH blend
+            rk_rv = self._compute_realized_kernel(returns)
+            if rk_rv is None or rk_rv <= 0:
+                return None
+
+            egarch_blend_var = None
+            if egarch_rv and egarch_rv > 0:
+                egarch_var = egarch_rv ** 2
+                rk_var = rk_rv ** 2
+                self._mz_pairs.append((egarch_var, rk_var))
+                self._maybe_recompute_mz()
+
+                blend_weight = max(0.0, min(0.8, self._mz_r_squared))
+
+                if blend_weight > 0:
+                    egarch_blend_var = blend_weight * egarch_var + (1 - blend_weight) * rk_var
+                    blended_rv = math.sqrt(egarch_blend_var)
+                else:
+                    blended_rv = rk_rv
+            else:
+                blended_rv = rk_rv
+                blend_weight = 0.0
+
+            # VIX integration: shift toward implied when divergent
+            vix = self._feed.get_vix()
+            vix_implied_rv = None
+            if vix is not None:
+                annual_vol = vix / 100.0
+                vix_implied_rv = annual_vol / math.sqrt(252 * 6.5 * 3600)
+                divergence = abs(blended_rv - vix_implied_rv) / max(blended_rv, 1e-12)
+                if divergence > VIX_DIVERGENCE_THRESHOLD:
+                    blended_rv = 0.70 * blended_rv + 0.30 * vix_implied_rv
+
+            # Determine regime
+            if blended_rv > rk_rv * 1.5:
+                regime = "high"
+            elif blended_rv < rk_rv * 0.7:
+                regime = "low"
+            else:
+                regime = "normal"
+
+            if egarch_blend_var is None and egarch_sigma and blend_weight > 0:
+                logging.warning(
+                    "SPX egarch_blend_var is None despite sigma=%.3e bw=%.3f rk=%.3e sf=%.3f egarch_rv=%s",
+                    egarch_sigma, blend_weight, rk_rv, seasonal_factor, egarch_rv)
 
         return {
             "blended_rv": blended_rv,

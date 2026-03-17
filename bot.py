@@ -6010,16 +6010,6 @@ class OpportunityScanner:
             _tcfg = get_market_config(w.get("product_type"))
             if _tcfg.min_seconds_before_close <= stc <= _tcfg.max_seconds_before_close:
                 time_ok_windows.append(w)
-            elif w.get("product_type") == "spx_hourly":
-                if not hasattr(self, '_spx_stc_filter_count'):
-                    self._spx_stc_filter_count = 0
-                self._spx_stc_filter_count += 1
-                if self._spx_stc_filter_count <= 3 or self._spx_stc_filter_count % 60 == 0:
-                    logging.warning(
-                        "SPX_DIAG: window %s filtered by STC: stc=%.0f range=[%.0f, %.0f] (count=%d)",
-                        w.get("event_ticker", "?"), stc,
-                        _tcfg.min_seconds_before_close, _tcfg.max_seconds_before_close,
-                        self._spx_stc_filter_count)
         if not time_ok_windows:
             return None
 
@@ -6048,14 +6038,6 @@ class OpportunityScanner:
             # Route price/vol to appropriate engine based on product type
             if _pt == "spx_hourly" and self._ml and getattr(self._ml, "spx_engine", None):
                 spot = self._ml.spx_engine.get_spot_price(asset)
-                if not hasattr(self, '_spx_eval_entered'):
-                    self._spx_eval_entered = 0
-                self._spx_eval_entered += 1
-                if self._spx_eval_entered <= 3 or self._spx_eval_entered % 30 == 0:
-                    logging.warning(
-                        "SPX_DIAG: entered eval path #%d — spot=%s stc=%.0f n_markets=%d",
-                        self._spx_eval_entered, spot,
-                        window.get("seconds_to_close", -1), len(window.get("markets", [])))
                 if spot is None or spot <= 0:
                     continue
                 seconds_remaining = window["seconds_to_close"]
@@ -6074,17 +6056,6 @@ class OpportunityScanner:
                 vol_est = self._vol.update(asset, seconds_to_close=seconds_remaining)
 
             if vol_est is None or vol_est["blended_rv"] <= 0:
-                if _pt == "spx_hourly" and not hasattr(self, '_spx_vol_none_logged'):
-                    self._spx_vol_none_logged = True
-                    _spx_feed = self._ml.spx_engine._feed
-                    _spx_returns = _spx_feed.get_returns("SPX", n=120)
-                    logging.warning(
-                        "SPX_DIAG: vol_est=%s for %s — spot=%.2f n_returns=%d "
-                        "buf_size=%d stc=%.0f",
-                        "None" if vol_est is None else f"rv={vol_est.get('blended_rv')}",
-                        asset, spot, len(_spx_returns),
-                        len(_spx_feed._buffers.get("SPX", [])),
-                        seconds_remaining)
                 continue
 
             blended_rv = vol_est["blended_rv"]
@@ -6144,16 +6115,6 @@ class OpportunityScanner:
 
                 scan_stats[asset]["evaluated"] += 1
                 self._session_total_scanned += 1
-                if _pt == "spx_hourly":
-                    if not hasattr(self, '_spx_market_eval_count'):
-                        self._spx_market_eval_count = 0
-                    self._spx_market_eval_count += 1
-                    if self._spx_market_eval_count <= 5:
-                        logging.warning(
-                            "SPX_DIAG: market eval #%d ticker=%s ask=%sc threshold=%s",
-                            self._spx_market_eval_count, ticker,
-                            dollars_str_to_cents(mkt.get('yes_ask_dollars')) if mkt.get('yes_ask_dollars') else '?',
-                            threshold)
 
                 # Pre-filter: compute probability without market price
                 if _pt == "weather" and self._ml and getattr(self._ml, "weather_engine", None):
@@ -6214,14 +6175,6 @@ class OpportunityScanner:
                         spot, threshold, seconds_remaining, blended_rv,
                         asset=asset, product_type=window.get("product_type")
                     )
-                    if _pt == "spx_hourly" and not hasattr(self, '_spx_prob_logged'):
-                        self._spx_prob_logged = True
-                        logging.warning(
-                            "SPX_DIAG: prob_result for %s — tradeable=%s cal_prob=%s z=%s "
-                            "spot=%.1f thresh=%.1f rv=%.6f stc=%.0f reason=%s",
-                            ticker, prob_result.get("tradeable"), prob_result.get("calibrated_prob"),
-                            prob_result.get("z_score"), spot, threshold, blended_rv,
-                            seconds_remaining, prob_result.get("reason", ""))
                 cal_prob = prob_result.get("calibrated_prob")
                 raw_prob_pre = prob_result.get("raw_prob")
                 calibration_method_pre = prob_result.get("calibration_method")
