@@ -6048,17 +6048,15 @@ class OpportunityScanner:
             # Route price/vol to appropriate engine based on product type
             if _pt == "spx_hourly" and self._ml and getattr(self._ml, "spx_engine", None):
                 spot = self._ml.spx_engine.get_spot_price(asset)
+                if not hasattr(self, '_spx_eval_entered'):
+                    self._spx_eval_entered = 0
+                self._spx_eval_entered += 1
+                if self._spx_eval_entered <= 3 or self._spx_eval_entered % 30 == 0:
+                    logging.warning(
+                        "SPX_DIAG: entered eval path #%d — spot=%s stc=%.0f n_markets=%d",
+                        self._spx_eval_entered, spot,
+                        window.get("seconds_to_close", -1), len(window.get("markets", [])))
                 if spot is None or spot <= 0:
-                    if not hasattr(self, '_spx_spot_none_logged'):
-                        self._spx_spot_none_logged = True
-                        _spx_feed = self._ml.spx_engine._feed
-                        _spx_buf_len = len(_spx_feed._buffers.get("SPX", []))
-                        _spx_stale = _spx_feed.is_stale("SPX")
-                        logging.warning(
-                            "SPX_DIAG: spot=None/<=0 for %s — buf_size=%d stale=%s "
-                            "polygon_backoff=%s spot_val=%s",
-                            asset, _spx_buf_len, _spx_stale,
-                            _spx_feed._polygon_in_backoff, spot)
                     continue
                 seconds_remaining = window["seconds_to_close"]
                 vol_est = self._ml.spx_engine.get_vol_estimate(asset, seconds_remaining)
@@ -6146,6 +6144,16 @@ class OpportunityScanner:
 
                 scan_stats[asset]["evaluated"] += 1
                 self._session_total_scanned += 1
+                if _pt == "spx_hourly":
+                    if not hasattr(self, '_spx_market_eval_count'):
+                        self._spx_market_eval_count = 0
+                    self._spx_market_eval_count += 1
+                    if self._spx_market_eval_count <= 5:
+                        logging.warning(
+                            "SPX_DIAG: market eval #%d ticker=%s ask=%sc threshold=%s",
+                            self._spx_market_eval_count, ticker,
+                            dollars_str_to_cents(mkt.get('yes_ask_dollars')) if mkt.get('yes_ask_dollars') else '?',
+                            threshold)
 
                 # Pre-filter: compute probability without market price
                 if _pt == "weather" and self._ml and getattr(self._ml, "weather_engine", None):
