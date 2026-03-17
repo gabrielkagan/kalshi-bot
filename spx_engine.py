@@ -4,6 +4,8 @@ import os
 import json
 import math
 import time
+import asyncio
+import random
 import logging
 import datetime
 import threading
@@ -13,32 +15,38 @@ from typing import Dict, List, Optional
 
 import requests
 
+try:
+    import websockets
+    HAS_WEBSOCKETS = True
+except ImportError:
+    websockets = None
+    HAS_WEBSOCKETS = False
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 SPX_SERIES_TICKER = "KXINXU"
 SPX_ASSET = "SPX"
 
-# Polygon.io WebSocket
-POLYGON_WS_URL = "wss://socket.polygon.io/indices"
-POLYGON_REST_URL = "https://api.polygon.io"
-
-# Finnhub fallback (free tier, SPY as proxy)
+# Finnhub — primary data source for SPY (proxy for SPX)
+FINNHUB_WS_URL = "wss://ws.finnhub.io"
 FINNHUB_REST_URL = "https://finnhub.io/api/v1"
 SPY_TO_SPX_RATIO = 10.03  # approximate SPY * 10.03 ≈ SPX
 
-# VIX polling interval
+# VIX polling interval (Finnhub REST)
 VIX_POLL_INTERVAL = 60  # seconds
+# REST fallback poll interval when WebSocket is down (stay under Finnhub 60/min limit)
+REST_FALLBACK_POLL_INTERVAL = 3.0
 
 # Price feed settings
-PRICE_BUFFER_SIZE = 300  # 5 minutes of second-by-second data
+PRICE_BUFFER_SIZE = 300  # 5 minutes of second-by-second data (snapshot loop runs at 1/s)
 STALE_PRICE_THRESHOLD = 60  # seconds before price considered stale
 RECONNECT_BASE_DELAY = 1.0
 RECONNECT_MAX_DELAY = 60.0
 
-# Polygon circuit breaker: back off for 5 min on 403/auth failure
-POLYGON_BACKOFF_SECONDS = 300
-# Fallback poll interval when Polygon is down (stay under Finnhub 60/min limit)
-FINNHUB_ONLY_POLL_INTERVAL = 3.0
+# WebSocket settings
+WS_SNAPSHOT_INTERVAL = 1.0  # seconds — sample WS price into buffer (matches old polling rate)
+WS_RATE_LOG_INTERVAL = 300  # seconds — log WS message rate every 5 min
+
 # Observability thresholds
 NO_PRICE_ERROR_THRESHOLD = 60       # log ERROR after 60 consecutive failures
 NO_PRICE_CRITICAL_THRESHOLD = 300   # log CRITICAL after 300 consecutive failures
@@ -428,14 +436,18 @@ class SPXEGARCHEstimator:
 # ═════════════════════════════════════════════════════════════════════════════
 
 class SPXPriceFeed:
-    """SPX + VIX price feed via Polygon.io REST polling + Finnhub fallback.
+    """SPX + VIX price feed via Finnhub WebSocket (primary) + REST fallback.
 
-    Uses REST polling rather than WebSocket for simplicity (1 req/sec during market hours).
-    Polygon free tier allows 5 calls/min; paid tiers allow much more.
+    Primary: Finnhub WebSocket pushes tick-by-tick SPY trades (~hundreds/sec during
+    market hours). A snapshot loop samples the latest price every 1 second into the
+    returns buffer. This gives EGARCH real price changes on every observation.
+
+    Fallback: When the WebSocket is disconnected, falls back to Finnhub REST polling
+    (every 3s). The vol engine detects this via `ws_active` and freezes EGARCH sigma
+    to prevent the zero-return collapse.
     """
 
     def __init__(self, polygon_key: Optional[str] = None, finnhub_key: Optional[str] = None):
-        self._polygon_key = polygon_key or os.environ.get("POLYGON_API_KEY", "")
         self._finnhub_key = finnhub_key or os.environ.get("FINNHUB_API_KEY", "")
         self._prices: Dict[str, float] = {}
         self._buffers: Dict[str, deque] = {
@@ -445,26 +457,52 @@ class SPXPriceFeed:
         self._last_update: Dict[str, float] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._poll_thread: Optional[threading.Thread] = None
         self._reconnect_delay = RECONNECT_BASE_DELAY
         self._consecutive_stale: int = 0
-        # Polygon circuit breaker
-        self._polygon_backoff_until: float = 0.0
-        self._polygon_in_backoff: bool = False
-        # Observability
         self._consecutive_no_price: int = 0
 
+        # Finnhub WebSocket state
+        self._ws_connected: bool = False
+        self._ws_thread: Optional[threading.Thread] = None
+        self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws_stop: Optional[asyncio.Event] = None
+        self._ws_msg_count: int = 0
+        self._ws_last_rate_log: float = 0.0
+        self._ws_msg_count_at_last_log: int = 0
+
+    @property
+    def ws_active(self) -> bool:
+        """True when Finnhub WebSocket is connected and feeding tick data."""
+        return self._ws_connected
+
     def start(self):
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
-        self._thread.start()
-        logging.info("SPXPriceFeed: started (polygon=%s, finnhub=%s)",
-                     "yes" if self._polygon_key else "no",
+        # Start Finnhub WebSocket feed (primary)
+        if HAS_WEBSOCKETS and self._finnhub_key:
+            self._ws_thread = threading.Thread(target=self._ws_run_thread, daemon=True,
+                                               name="spx-finnhub-ws")
+            self._ws_thread.start()
+            logging.info("SPXPriceFeed: Finnhub WebSocket thread started")
+        else:
+            logging.warning("SPXPriceFeed: websockets not available or no FINNHUB_API_KEY — "
+                            "running REST-only mode (EGARCH will use frozen sigma)")
+
+        # Start REST fallback + VIX polling
+        self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True,
+                                             name="spx-rest-poll")
+        self._poll_thread.start()
+        logging.info("SPXPriceFeed: started (ws=%s, finnhub_rest=%s)",
+                     "yes" if HAS_WEBSOCKETS and self._finnhub_key else "no",
                      "yes" if self._finnhub_key else "no")
 
     def stop(self):
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
+        if self._ws_loop and self._ws_stop:
+            self._ws_loop.call_soon_threadsafe(self._ws_stop.set)
+        if self._poll_thread:
+            self._poll_thread.join(timeout=5)
+        if self._ws_thread:
+            self._ws_thread.join(timeout=5)
 
     def get_price(self, symbol: str = "SPX") -> Optional[float]:
         with self._lock:
@@ -491,12 +529,139 @@ class SPXPriceFeed:
             last = self._last_update.get(symbol, 0)
         return time.time() - last > STALE_PRICE_THRESHOLD
 
-    def _poll_loop(self):
-        """Main polling loop: fetch SPX every second, VIX every 60s during market hours.
+    # ─── Finnhub WebSocket (primary data source) ─────────────────────────────
 
-        Circuit breaker: when Polygon returns 403, back off for POLYGON_BACKOFF_SECONDS
-        and slow the poll interval to FINNHUB_ONLY_POLL_INTERVAL (3s) to stay under
-        Finnhub's 60 req/min free-tier limit.
+    def _ws_run_thread(self):
+        """Thread entry point: run asyncio event loop for WebSocket."""
+        self._ws_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._ws_loop)
+        self._ws_stop = asyncio.Event()
+        try:
+            self._ws_loop.run_until_complete(self._ws_main())
+        except Exception:
+            logging.error("SPXPriceFeed: WebSocket thread crashed", exc_info=True)
+        finally:
+            self._ws_loop.close()
+
+    async def _ws_main(self):
+        """Run WebSocket connection and snapshot loop concurrently."""
+        await asyncio.gather(
+            self._ws_connect_loop(),
+            self._ws_snapshot_loop(),
+        )
+
+    async def _ws_connect_loop(self):
+        """Connect to Finnhub WS, subscribe to SPY trades, reconnect on failure."""
+        backoff = RECONNECT_BASE_DELAY
+        url = f"{FINNHUB_WS_URL}?token={self._finnhub_key}"
+
+        while not self._ws_stop.is_set():
+            try:
+                async with websockets.connect(url, ping_interval=30, ping_timeout=10) as ws:
+                    self._ws_connected = True
+                    backoff = RECONNECT_BASE_DELAY
+                    logging.info("SPXPriceFeed: Finnhub WS connected — subscribing to SPY")
+
+                    # Subscribe to SPY trades
+                    await ws.send(json.dumps({"type": "subscribe", "symbol": "SPY"}))
+
+                    async for raw in ws:
+                        if self._ws_stop.is_set():
+                            break
+                        self._ws_handle_message(raw)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                was_connected = self._ws_connected
+                self._ws_connected = False
+                if was_connected:
+                    logging.warning("SPXPriceFeed: Finnhub WS disconnected: %s — "
+                                    "falling back to REST polling", e)
+                else:
+                    logging.debug("SPXPriceFeed: Finnhub WS connect failed: %s — "
+                                  "retrying in %.1fs", e, backoff)
+
+                # Exponential backoff with jitter
+                jitter = backoff * random.uniform(0, 0.25)
+                try:
+                    await asyncio.wait_for(self._ws_stop.wait(), timeout=backoff + jitter)
+                    break  # stop event was set
+                except asyncio.TimeoutError:
+                    pass  # timeout elapsed, retry
+                backoff = min(backoff * 2, RECONNECT_MAX_DELAY)
+
+        self._ws_connected = False
+        logging.info("SPXPriceFeed: WebSocket loop stopped")
+
+    def _ws_handle_message(self, raw: str):
+        """Parse Finnhub trade message: {"data":[{"p":567.89,"s":"SPY","t":...,"v":100}],"type":"trade"}"""
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return
+
+        if data.get("type") != "trade":
+            return
+
+        trades = data.get("data")
+        if not trades:
+            return
+
+        # Use the last trade in the batch (most recent price)
+        last_trade = trades[-1]
+        price = last_trade.get("p")
+        if not price or price <= 0:
+            return
+
+        spx_price = float(price) * SPY_TO_SPX_RATIO
+        with self._lock:
+            self._prices["SPX"] = spx_price
+            self._last_update["SPX"] = time.time()
+            self._ws_msg_count += 1
+
+    async def _ws_snapshot_loop(self):
+        """Sample the latest WS price into the returns buffer every 1 second.
+
+        This gives EGARCH the same 1-second-spaced data it expects, but now
+        each observation is a real last-traded price (not a polled cache hit).
+        """
+        while not self._ws_stop.is_set():
+            try:
+                await asyncio.wait_for(self._ws_stop.wait(), timeout=WS_SNAPSHOT_INTERVAL)
+                break  # stop event set
+            except asyncio.TimeoutError:
+                pass  # normal — tick every interval
+
+            if not self._ws_connected:
+                continue
+
+            with self._lock:
+                price = self._prices.get("SPX")
+                if price is not None:
+                    self._buffers["SPX"].append(price)
+
+            # Periodic rate logging
+            now = time.time()
+            if now - self._ws_last_rate_log >= WS_RATE_LOG_INTERVAL:
+                count = self._ws_msg_count
+                delta = count - self._ws_msg_count_at_last_log
+                elapsed = now - self._ws_last_rate_log if self._ws_last_rate_log > 0 else WS_RATE_LOG_INTERVAL
+                rate = delta / elapsed if elapsed > 0 else 0
+                logging.info("SPXPriceFeed: WS rate=%.1f msg/s (total=%d, buffer=%d)",
+                             rate, count, len(self._buffers.get("SPX", [])))
+                self._ws_last_rate_log = now
+                self._ws_msg_count_at_last_log = count
+
+    # ─── REST fallback + VIX polling ─────────────────────────────────────────
+
+    def _poll_loop(self):
+        """REST fallback for SPX + VIX polling.
+
+        SPX: Only polls REST when WebSocket is disconnected. The vol engine
+        detects REST-only mode via `ws_active` and freezes EGARCH sigma.
+        VIX: Polls every 60s (Finnhub free tier — returns None, but ready
+        if a data source becomes available).
         """
         vix_last = 0.0
         while not self._stop.is_set():
@@ -507,40 +672,9 @@ class SPXPriceFeed:
 
                 now = time.time()
 
-                # Check if Polygon backoff has expired
-                if self._polygon_in_backoff and now >= self._polygon_backoff_until:
-                    self._polygon_in_backoff = False
-                    logging.info("SPXPriceFeed: Polygon backoff expired, re-enabling")
-
-                # Fetch SPX — skip Polygon if in backoff
-                spx = None
-                if not self._polygon_in_backoff:
-                    spx = self._fetch_spx_polygon()
-                if spx is None:
-                    spx = self._fetch_spx_finnhub()
-
-                if spx is not None:
-                    with self._lock:
-                        self._prices["SPX"] = spx
-                        self._buffers["SPX"].append(spx)
-                        self._last_update["SPX"] = time.time()
-                    self._reconnect_delay = RECONNECT_BASE_DELAY
-                    self._consecutive_no_price = 0
-                else:
-                    self._consecutive_no_price += 1
-                    cnt = self._consecutive_no_price
-                    if cnt == NO_PRICE_CRITICAL_THRESHOLD:
-                        logging.critical(
-                            "SPXPriceFeed: %d consecutive poll cycles with no price update "
-                            "(polygon_backoff=%s)", cnt, self._polygon_in_backoff)
-                    elif cnt == NO_PRICE_ERROR_THRESHOLD:
-                        logging.error(
-                            "SPXPriceFeed: %d consecutive poll cycles with no price update "
-                            "(polygon_backoff=%s)", cnt, self._polygon_in_backoff)
-
-                # Fetch VIX (less frequently) — skip if Polygon is in backoff
-                if not self._polygon_in_backoff and now - vix_last >= VIX_POLL_INTERVAL:
-                    vix = self._fetch_vix_polygon()
+                # VIX: try Finnhub REST every 60s
+                if now - vix_last >= VIX_POLL_INTERVAL:
+                    vix = self._fetch_vix_finnhub()
                     if vix is not None:
                         with self._lock:
                             self._prices["VIX"] = vix
@@ -548,8 +682,30 @@ class SPXPriceFeed:
                             self._last_update["VIX"] = time.time()
                     vix_last = now
 
-                # Slow poll when in fallback-only mode to respect Finnhub rate limit
-                poll_interval = FINNHUB_ONLY_POLL_INTERVAL if self._polygon_in_backoff else 1.0
+                # SPX: only poll REST if WebSocket is down
+                if not self._ws_connected:
+                    spx = self._fetch_spx_finnhub()
+                    if spx is not None:
+                        with self._lock:
+                            self._prices["SPX"] = spx
+                            self._buffers["SPX"].append(spx)
+                            self._last_update["SPX"] = time.time()
+                        self._reconnect_delay = RECONNECT_BASE_DELAY
+                        self._consecutive_no_price = 0
+                    else:
+                        self._consecutive_no_price += 1
+                        cnt = self._consecutive_no_price
+                        if cnt == NO_PRICE_CRITICAL_THRESHOLD:
+                            logging.critical(
+                                "SPXPriceFeed: %d consecutive REST poll failures "
+                                "(ws_connected=%s)", cnt, self._ws_connected)
+                        elif cnt == NO_PRICE_ERROR_THRESHOLD:
+                            logging.error(
+                                "SPXPriceFeed: %d consecutive REST poll failures "
+                                "(ws_connected=%s)", cnt, self._ws_connected)
+
+                # When WS is active, poll loop just does VIX; sleep longer
+                poll_interval = VIX_POLL_INTERVAL if self._ws_connected else REST_FALLBACK_POLL_INTERVAL
                 self._stop.wait(poll_interval)
 
             except Exception as e:
@@ -557,72 +713,37 @@ class SPXPriceFeed:
                 self._stop.wait(min(self._reconnect_delay, RECONNECT_MAX_DELAY))
                 self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
 
-    def _fetch_spx_polygon(self) -> Optional[float]:
-        """Fetch SPX last price from Polygon.io snapshot endpoint.
+    def _fetch_vix_finnhub(self) -> Optional[float]:
+        """Fetch VIX from Finnhub REST.
 
-        Triggers circuit breaker on 403 (auth failure) — backs off for
-        POLYGON_BACKOFF_SECONDS to avoid hammering a dead endpoint.
+        Finnhub free tier does not include index quotes (^VIX returns error).
+        This method is a placeholder that will start working if the user upgrades
+        to a Finnhub plan that includes index data. Returns None on free tier.
         """
-        if not self._polygon_key:
+        if not self._finnhub_key:
             return None
         try:
-            url = f"{POLYGON_REST_URL}/v3/snapshot/indices"
-            resp = requests.get(url, params={
-                "ticker.any_of": "I:SPX",
-                "apiKey": self._polygon_key,
+            resp = requests.get(f"{FINNHUB_REST_URL}/quote", params={
+                "symbol": "^VIX",
+                "token": self._finnhub_key,
             }, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
-                results = data.get("results", [])
-                if results:
-                    value = results[0].get("value") or results[0].get("session", {}).get("close")
-                    if value and value > 0:
-                        return float(value)
-            elif resp.status_code in (401, 403):
-                self._polygon_in_backoff = True
-                self._polygon_backoff_until = time.time() + POLYGON_BACKOFF_SECONDS
-                logging.warning(
-                    "SPXPriceFeed: Polygon returned %d — circuit breaker engaged, "
-                    "backing off for %ds", resp.status_code, POLYGON_BACKOFF_SECONDS)
+                if "error" in data:
+                    return None  # "Market data subscription required for CFD indices"
+                price = data.get("c")
+                if price and price > 0:
+                    return float(price)
         except Exception as e:
-            logging.debug("SPXPriceFeed: Polygon SPX fetch failed: %s", e)
-        return None
-
-    def _fetch_vix_polygon(self) -> Optional[float]:
-        """Fetch VIX from Polygon.io.
-
-        Also triggers circuit breaker on 403 (shares backoff state with SPX fetch).
-        """
-        if not self._polygon_key:
-            return None
-        try:
-            url = f"{POLYGON_REST_URL}/v3/snapshot/indices"
-            resp = requests.get(url, params={
-                "ticker.any_of": "I:VIX",
-                "apiKey": self._polygon_key,
-            }, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                results = data.get("results", [])
-                if results:
-                    value = results[0].get("value") or results[0].get("session", {}).get("close")
-                    if value and value > 0:
-                        return float(value)
-            elif resp.status_code in (401, 403):
-                if not self._polygon_in_backoff:
-                    self._polygon_in_backoff = True
-                    self._polygon_backoff_until = time.time() + POLYGON_BACKOFF_SECONDS
-                    logging.warning(
-                        "SPXPriceFeed: Polygon VIX returned %d — circuit breaker engaged",
-                        resp.status_code)
-        except Exception as e:
-            logging.debug("SPXPriceFeed: Polygon VIX fetch failed: %s", e)
+            logging.debug("SPXPriceFeed: Finnhub VIX fetch failed: %s", e)
         return None
 
     def _fetch_spx_finnhub(self) -> Optional[float]:
-        """Fallback: fetch SPY price from Finnhub and multiply by ratio.
+        """Fallback: fetch SPY price from Finnhub REST and multiply by ratio.
 
-        On 429 (rate limited), triggers reconnect backoff to slow down polling.
+        Used when WebSocket is disconnected. The vol engine detects this via
+        ws_active and freezes EGARCH sigma (REST polling produces duplicate
+        prices that would collapse EGARCH).
         """
         if not self._finnhub_key:
             return None
@@ -638,15 +759,14 @@ class SPXPriceFeed:
                     return float(price) * SPY_TO_SPX_RATIO
             elif resp.status_code == 429:
                 logging.warning(
-                    "SPXPriceFeed: Finnhub rate limited (429) — triggering backoff "
+                    "SPXPriceFeed: Finnhub rate limited (429) — backing off "
                     "(delay=%.1fs)", self._reconnect_delay)
-                # Bump reconnect delay so the outer loop slows down
                 self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
                 raise ConnectionError("Finnhub 429 rate limited")
         except ConnectionError:
-            raise  # re-raise to trigger backoff in _poll_loop
+            raise
         except Exception as e:
-            logging.debug("SPXPriceFeed: Finnhub fallback failed: %s", e)
+            logging.debug("SPXPriceFeed: Finnhub REST fallback failed: %s", e)
         return None
 
 
@@ -683,12 +803,15 @@ class SPXVolatilityEngine:
 
         Returns dict matching crypto VolatilityEngine output format.
 
-        When Polygon is in backoff (Finnhub-only mode), the 3-second price
-        updates produce near-zero returns that would collapse EGARCH sigma.
-        In this mode, we use EGARCH-only with the loaded/persisted sigma
-        and skip RK estimation (which would also be near-zero from low-freq data).
+        When Finnhub WebSocket is active: full pipeline — EGARCH recursive update,
+        RK estimation, seasonal deseasonalization, MZ blend, VIX integration.
+
+        When WebSocket is down (REST fallback): 3-second polled prices produce
+        duplicate/near-zero returns that collapse EGARCH sigma. In this mode,
+        freeze EGARCH at last persisted sigma and skip RK (same as the old
+        Polygon-backoff band-aid, but now it's only for WS disconnects).
         """
-        finnhub_only = self._feed._polygon_in_backoff
+        ws_active = self._feed.ws_active
 
         returns = self._feed.get_returns("SPX", n=120)
         if len(returns) < 10:
@@ -702,10 +825,12 @@ class SPXVolatilityEngine:
             if vix is not None:
                 self._egarch.seed_from_vix(vix)
 
-        # Only feed returns to EGARCH when using high-frequency Polygon data.
-        # Finnhub's 3-second SPY quotes produce near-zero returns that would
-        # collapse EGARCH sigma to ~0 after a few hundred updates.
-        if not finnhub_only:
+        # Only feed returns to EGARCH when WebSocket provides tick-level data.
+        # REST polling returns duplicate prices → zero returns → EGARCH sigma collapse.
+        if ws_active:
+            # Reset fallback flag so we re-log if WS drops again
+            if hasattr(self, '_rest_fallback_logged'):
+                del self._rest_fallback_logged
             for r in returns[-5:]:
                 deseas_r = self._seasonal.deseasonalize_return(r)
                 self._seasonal.add_return(r)
@@ -722,12 +847,12 @@ class SPXVolatilityEngine:
 
         # EGARCH estimate (re-seasonalized)
         egarch_sigma = self._egarch.get_sigma()
-        seasonal_factor = self._seasonal.get_seasonal_factor() if not finnhub_only else 1.0
+        seasonal_factor = self._seasonal.get_seasonal_factor() if ws_active else 1.0
         egarch_rv = egarch_sigma * seasonal_factor if egarch_sigma else None
 
-        if finnhub_only:
-            # Finnhub-only mode: use EGARCH sigma directly, skip RK
-            # (RK from 3s SPY quotes would be near-zero and misleading)
+        if not ws_active:
+            # REST fallback: freeze EGARCH sigma, skip RK
+            # (RK from 3s polled prices would be near-zero and misleading)
             if egarch_rv is None or egarch_rv <= 0:
                 return None
             blended_rv = egarch_rv
@@ -737,11 +862,11 @@ class SPXVolatilityEngine:
             vix_implied_rv = None
             regime = "normal"
 
-            if not hasattr(self, '_finnhub_only_logged'):
-                self._finnhub_only_logged = True
-                logging.info(
-                    "SPX vol: Finnhub-only mode — using EGARCH sigma=%.6f "
-                    "(skipping RK/MZ, polygon_backoff=True)", egarch_sigma)
+            if not hasattr(self, '_rest_fallback_logged'):
+                self._rest_fallback_logged = True
+                logging.warning(
+                    "SPX vol: REST fallback mode — using frozen EGARCH sigma=%.6f "
+                    "(WS disconnected, skipping RK/MZ)", egarch_sigma)
         else:
             # Normal mode: RK + EGARCH blend
             rk_rv = self._compute_realized_kernel(returns)
