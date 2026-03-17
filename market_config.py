@@ -112,7 +112,7 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
     "spx_hourly": MarketTypeConfig(
         product_type="spx_hourly",
         enabled=True,
-        observation_only=False,            # LIVE — promoted Mar 17 2026
+        observation_only=True,             # Reverted — Polygon 403 breaks vol engine
         min_entry_price=90,                # 90c+ floor (SPX-C: 90.9% WR)
         max_entry_price=99,
         min_seconds_before_close=300,

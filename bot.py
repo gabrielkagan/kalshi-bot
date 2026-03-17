@@ -123,7 +123,7 @@ HOURLY_KELLY_FRACTION = 0.25          # Quarter-Kelly: 44% of growth rate, ~3% h
 # Promoted Mar 17 2026: SPX-D CalEngine (post_temp), 472 settled at 85.2% WR,
 # Brier 0.138, forward confirmed 45 signals at 86.7% WR / 0.147 Brier.
 SPX_HOURLY_ENABLED = True
-SPX_HOURLY_OBSERVATION_ONLY = False      # LIVE — promoted Mar 17 2026
+SPX_HOURLY_OBSERVATION_ONLY = True       # Reverted — Polygon 403 breaks vol engine
 SPX_HOURLY_MIN_ENTRY_PRICE = 90          # 90c+ floor (SPX-C: 90.9% WR at 90c+)
 SPX_HOURLY_MAX_ENTRY_PRICE = 99
 SPX_HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800
