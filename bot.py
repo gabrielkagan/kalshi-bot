@@ -119,21 +119,24 @@ HOURLY_SHADOW_CONFIGS = [
 ]
 HOURLY_KELLY_FRACTION = 0.25          # Quarter-Kelly: 44% of growth rate, ~3% halving probability
 
-# ─── SPX Hourly Observation Mode ──────────────────────────────────────────────
+# ─── SPX Hourly — LIVE TRADING ────────────────────────────────────────────────
+# Promoted Mar 17 2026: SPX-D CalEngine (post_temp), 472 settled at 85.2% WR,
+# Brier 0.138, forward confirmed 45 signals at 86.7% WR / 0.147 Brier.
 SPX_HOURLY_ENABLED = True
-SPX_HOURLY_OBSERVATION_ONLY = True       # Shadow first — collect data before live
-SPX_HOURLY_MIN_ENTRY_PRICE = 70
+SPX_HOURLY_OBSERVATION_ONLY = False      # LIVE — promoted Mar 17 2026
+SPX_HOURLY_MIN_ENTRY_PRICE = 90          # 90c+ floor (SPX-C: 90.9% WR at 90c+)
 SPX_HOURLY_MAX_ENTRY_PRICE = 99
 SPX_HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800
 SPX_HOURLY_MIN_SECONDS_BEFORE_CLOSE = 300
-SPX_HOURLY_MARKET_BLEND_W = 0.40
-SPX_HOURLY_MAX_RISK_PER_TRADE = 0.15
-SPX_HOURLY_TEMPERATURE_T = 1.0           # Start neutral, tune with data
-SPX_HOURLY_KELLY_FRACTION = 0.25
+SPX_HOURLY_MARKET_BLEND_W = 0.00         # No blend — CalEngine calibration only (SPX-D)
+SPX_HOURLY_MAX_RISK_PER_TRADE = 0.10     # Conservative (down from 0.15)
+SPX_HOURLY_TEMPERATURE_T = 1.0           # CalEngine handles temperature internally
+SPX_HOURLY_KELLY_FRACTION = 0.125        # Eighth-Kelly: ultra-conservative for new live system
 SPX_HOURLY_FEE_MULTIPLIER_TAKER = 0.035  # Finance category: half of crypto's 0.07
 SPX_HOURLY_FEE_MULTIPLIER_MAKER = 0.0  # Kalshi charges $0 on maker fills
 SPX_HOURLY_MAX_POSITIONS_PER_WINDOW = 2  # Max concurrent SPX positions per hourly window
 SPX_HOURLY_MAX_WINDOW_RISK = 0.15        # Max aggregate risk across SPX positions per window
+SPX_HOURLY_BANKROLL_FRACTION = 0.15      # SPX sizes off 15% of total balance — crypto unaffected
 
 # ─── Weather Observation Mode ─────────────────────────────────────────────────
 WEATHER_ENABLED = True
@@ -7550,7 +7553,13 @@ class OpportunityScanner:
                 elif _strategy_key == "hourly":
                     _strategy_key = "crypto_hourly"
                 _sizing_balance = balance
-                if self._ml and getattr(self._ml, "capital_allocator", None):
+                # SPX bankroll fraction: size off a virtual sub-bankroll so SPX
+                # can never reduce crypto's available capital
+                if _pt == "spx_hourly":
+                    _sizing_balance = int(balance * SPX_HOURLY_BANKROLL_FRACTION)
+                    if _sizing_balance <= 0:
+                        _sizing_balance = 1  # safety: never zero
+                elif self._ml and getattr(self._ml, "capital_allocator", None):
                     try:
                         _sizing_balance = self._ml.capital_allocator.get_budget_cents(
                             _strategy_key, balance, locked_by_strategy=None)
@@ -7565,7 +7574,7 @@ class OpportunityScanner:
                 if _scfg.kelly_fraction < 1.0:
                     _full_kelly_contracts = sizing["contracts"]
                     sizing["contracts"] = max(1, int(sizing["contracts"] * _scfg.kelly_fraction))
-                    _type_max = int((balance * _scfg.max_risk_per_trade) / best_ask)
+                    _type_max = int((_sizing_balance * _scfg.max_risk_per_trade) / best_ask)
                     if sizing["contracts"] > _type_max:
                         sizing["contracts"] = max(1, _type_max)
 
@@ -10005,7 +10014,8 @@ class OrderExecutor:
                     self._last_obs_ticker = candidate['ticker']
                     _ba = candidate.get("best_yes_ask")
                     _cp = candidate.get("calibrated_prob")
-                    _fee1 = calculate_taker_fee(1, _ba) if _ba else 0
+                    _obs_fee_cfg = get_market_config(candidate.get("product_type"))
+                    _fee1 = calculate_fee(1, _ba, is_taker=True, fee_mult_taker=_obs_fee_cfg.fee_multiplier_taker) if _ba else 0
                     _ev = (_cp * (100 - _ba)) - ((1 - _cp) * _ba) - _fee1 if (_ba and _cp) else None
                     self._state.insert_evaluated_opportunity(
                         candidate["ticker"], candidate["event_ticker"],
@@ -10078,7 +10088,8 @@ class OrderExecutor:
         try:
             _ba = candidate.get("best_yes_ask")
             _cp = candidate.get("calibrated_prob")
-            _fee1 = calculate_taker_fee(1, _ba) if _ba else 0
+            _cand_fee_cfg = get_market_config(candidate.get("product_type"))
+            _fee1 = calculate_fee(1, _ba, is_taker=True, fee_mult_taker=_cand_fee_cfg.fee_multiplier_taker) if _ba else 0
             _ev = (_cp * (100 - _ba)) - ((1 - _cp) * _ba) - _fee1 if (_ba and _cp) else None
             self._state.insert_evaluated_opportunity(
                 candidate["ticker"], candidate["event_ticker"],

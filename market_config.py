@@ -112,19 +112,19 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
     "spx_hourly": MarketTypeConfig(
         product_type="spx_hourly",
         enabled=True,
-        observation_only=True,
-        min_entry_price=70,
+        observation_only=False,            # LIVE — promoted Mar 17 2026
+        min_entry_price=90,                # 90c+ floor (SPX-C: 90.9% WR)
         max_entry_price=99,
         min_seconds_before_close=300,
         max_seconds_before_close=1800,
-        max_risk_per_trade=0.15,
-        kelly_fraction=0.25,
-        market_blend_w=0.40,
+        max_risk_per_trade=0.10,           # Conservative (down from 0.15)
+        kelly_fraction=0.125,              # Eighth-Kelly
+        market_blend_w=0.00,               # No blend — CalEngine only (SPX-D)
         temperature_t=1.0,
         temperature_enabled=False,
         cal_eligible=False,
         use_hourly_dynamic_cap=True,
-        cal_engine_enabled=False,
+        cal_engine_enabled=True,           # SPX-D: CalEngine learned temperature
         cal_engine_state_path="spx_hourly_calibration_state.json",
         fee_multiplier_taker=0.035,
         fee_multiplier_maker=0.0,  # Kalshi charges $0 on maker fills
@@ -304,6 +304,12 @@ def validate_market_configs() -> None:
         f"spx max_pos: {cfg_s.max_positions_per_window} != {bot.SPX_HOURLY_MAX_POSITIONS_PER_WINDOW}")
     assert cfg_s.max_window_risk == bot.SPX_HOURLY_MAX_WINDOW_RISK, (
         f"spx max_wrisk: {cfg_s.max_window_risk} != {bot.SPX_HOURLY_MAX_WINDOW_RISK}")
+    assert cfg_s.cal_engine_enabled is True, (
+        "spx_hourly cal_engine_enabled must be True — SPX-D CalEngine is the live calibration")
+    assert isinstance(bot.SPX_HOURLY_BANKROLL_FRACTION, float), (
+        f"SPX_HOURLY_BANKROLL_FRACTION must be float, got {type(bot.SPX_HOURLY_BANKROLL_FRACTION)}")
+    assert 0 < bot.SPX_HOURLY_BANKROLL_FRACTION <= 1.0, (
+        f"SPX_HOURLY_BANKROLL_FRACTION must be in (0, 1.0], got {bot.SPX_HOURLY_BANKROLL_FRACTION}")
 
     # ── Weather ──
     cfg_w = MARKET_CONFIGS["weather"]

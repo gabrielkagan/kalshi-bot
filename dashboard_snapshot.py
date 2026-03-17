@@ -1848,6 +1848,7 @@ class DashboardSnapshotBuilder:
                     "max_risk_per_trade": getattr(_bot_mod, "SPX_HOURLY_MAX_RISK_PER_TRADE", None),
                     "kelly_fraction": getattr(_bot_mod, "SPX_HOURLY_KELLY_FRACTION", None),
                     "fee_multiplier_taker": getattr(_bot_mod, "SPX_HOURLY_FEE_MULTIPLIER_TAKER", None),
+                    "bankroll_fraction": getattr(_bot_mod, "SPX_HOURLY_BANKROLL_FRACTION", None),
                 }
                 spx_eng = getattr(self._ml, "spx_engine", None)
                 spx_data["market_open"] = spx_eng.is_market_open() if spx_eng else False
@@ -2003,6 +2004,66 @@ class DashboardSnapshotBuilder:
             snap["spx_variants"] = spx_variants
         except Exception:
             logging.debug("Snapshot: spx_variants build failed", exc_info=True)
+
+        # ── SPX Live Trading Performance ───────────────────────────────
+        # Real trades from settled_trades WHERE product_type='spx_hourly'
+        _SPX_FEE_LIVE = getattr(_bot_mod, "SPX_HOURLY_FEE_MULTIPLIER_TAKER", 0.035)
+        try:
+            spx_live = {"trades": 0, "wins": 0, "losses": 0, "wr": 0, "pnl_cents": 0, "fee_cents": 0}
+            _sl = _conn.execute(
+                "SELECT COUNT(*) AS cnt, "
+                "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) AS wins, "
+                "SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) AS losses, "
+                "SUM(pnl_cents) AS total_pnl, "
+                "SUM(fee_cents) AS total_fees, "
+                "AVG(entry_price_cents) AS avg_entry "
+                "FROM settled_trades WHERE product_type='spx_hourly'"
+            ).fetchone()
+            if _sl and _sl["cnt"] > 0:
+                spx_live["trades"] = _sl["cnt"]
+                spx_live["wins"] = _sl["wins"] or 0
+                spx_live["losses"] = _sl["losses"] or 0
+                spx_live["wr"] = round(spx_live["wins"] / _sl["cnt"], 4)
+                spx_live["pnl_cents"] = _sl["total_pnl"] or 0
+                spx_live["fee_cents"] = _sl["total_fees"] or 0
+                spx_live["avg_entry_price"] = round(_sl["avg_entry"]) if _sl["avg_entry"] else None
+
+            # Per-price-tier breakdown
+            _tiers = _conn.execute(
+                "SELECT "
+                "CASE WHEN entry_price_cents >= 95 THEN '95-99' "
+                "     WHEN entry_price_cents >= 93 THEN '93-94' "
+                "     ELSE '90-92' END AS tier, "
+                "COUNT(*) AS cnt, "
+                "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) AS wins, "
+                "SUM(pnl_cents) AS pnl "
+                "FROM settled_trades WHERE product_type='spx_hourly' "
+                "GROUP BY tier ORDER BY tier"
+            ).fetchall()
+            spx_live["by_tier"] = {
+                r["tier"]: {"trades": r["cnt"], "wins": r["wins"] or 0,
+                            "wr": round((r["wins"] or 0) / r["cnt"], 4),
+                            "pnl_cents": r["pnl"] or 0}
+                for r in _tiers
+            } if _tiers else {}
+
+            # Recent SPX trades
+            _recent = _conn.execute(
+                "SELECT ticker, entry_price_cents, count, pnl_cents, fee_cents, "
+                "settled_at, market_result, side "
+                "FROM settled_trades WHERE product_type='spx_hourly' "
+                "ORDER BY settled_at DESC LIMIT 5"
+            ).fetchall()
+            spx_live["recent"] = [dict(r) for r in _recent] if _recent else []
+
+            # Effective bankroll
+            _bfrac = getattr(_bot_mod, "SPX_HOURLY_BANKROLL_FRACTION", 0.15)
+            spx_live["bankroll_fraction"] = _bfrac
+
+            snap["spx_live"] = spx_live
+        except Exception:
+            logging.debug("Snapshot: spx_live build failed", exc_info=True)
+            snap["spx_live"] = {"trades": 0, "wins": 0, "losses": 0, "wr": 0, "pnl_cents": 0, "fee_cents": 0}
 
         # ── Hourly NO-Side Overconfidence Tracker ────────────────────────
         # The hourly model is massively overconfident on YES → actual NO rate

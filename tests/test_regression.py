@@ -584,16 +584,17 @@ class TestStrategyWaitGate:
 
     def test_observation_products_are_observation_only(self):
         from market_config import MARKET_CONFIGS
-        # These must be observation_only=True
-        for pt in ["hourly", "spx_hourly", "weather", "sports"]:
+        # These must be observation_only=True (SPX promoted to live Mar 17 2026)
+        for pt in ["hourly", "weather", "sports"]:
             assert MARKET_CONFIGS[pt].observation_only is True, (
                 f"{pt} should be observation_only=True"
             )
 
     def test_live_product_is_not_observation(self):
         from market_config import MARKET_CONFIGS
-        # 15M is live
+        # 15M and SPX are live
         assert MARKET_CONFIGS["15m"].observation_only is False
+        assert MARKET_CONFIGS["spx_hourly"].observation_only is False
 
 
 # ============================================================================
@@ -747,9 +748,10 @@ class TestObservationModeSafety:
         import bot
         assert bot.HOURLY_OBSERVATION_ONLY is True
 
-    def test_spx_is_observation_only(self):
+    def test_spx_is_live(self):
+        """SPX promoted to live Mar 17 2026."""
         import bot
-        assert bot.SPX_HOURLY_OBSERVATION_ONLY is True
+        assert bot.SPX_HOURLY_OBSERVATION_ONLY is False
 
     def test_weather_is_observation_only(self):
         import bot
