@@ -885,6 +885,10 @@ class PlattCalibrator:
                  self._h2_brier_cal, datetime.utcnow().isoformat()))
             conn.commit()
         except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             logging.warning("PlattCalibrator: failed to persist params", exc_info=True)
 
         return True
@@ -1742,6 +1746,10 @@ class SportsEngine:
                         if eo_rows:
                             conn.commit()
                     except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
                         logging.warning(
                             "SportsEngine stale settle EO failed for %s",
                             game_id, exc_info=True)
@@ -1857,6 +1865,10 @@ class SportsEngine:
                     if eo_rows:
                         conn.commit()
                 except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
                     logging.warning(
                         "SportsEngine eval_opp settle failed for %s",
                         game_id, exc_info=True)
@@ -1991,6 +2003,10 @@ class SportsEngine:
             ))
             conn.commit()
         except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             logging.warning("SportsEngine shadow log insert failed", exc_info=True)
 
     def _insert_evaluated_opportunity(self, game: GameState,
@@ -2046,6 +2062,10 @@ class SportsEngine:
                   "yes"))
             conn.commit()
         except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             logging.debug("SportsEngine eval_opp insert failed", exc_info=True)
 
         # ── NO-side shadow row ──
@@ -2086,6 +2106,10 @@ class SportsEngine:
                           "no"))
                     conn.commit()
         except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             logging.warning("SportsEngine NO-side eval_opp insert failed", exc_info=True)
 
     def stop(self) -> None:

@@ -1100,6 +1100,10 @@ class HourlyAltShadowEngine:
             self._db_conn.commit()
             _db_ok = True
         except Exception as e:
+            try:
+                self._db_conn.rollback()
+            except Exception:
+                pass
             logging.warning("hourly_alt_shadow DB insert failed: %s", e)
             _db_ok = False
 
@@ -1188,6 +1192,10 @@ class HourlyAltShadowEngine:
 
             self._db_conn.commit()
         except Exception as e:
+            try:
+                self._db_conn.rollback()
+            except Exception:
+                pass
             logging.warning("hourly_alt_shadow settle failed for %s: %s", ticker, e)
 
     def _compute_mm_pnl(self, row, market_result: str) -> int:
@@ -1241,6 +1249,10 @@ class HourlyAltShadowEngine:
                 self._db_conn.execute(sql, params)
                 self._db_conn.commit()
         except Exception as e:
+            try:
+                self._db_conn.rollback()
+            except Exception:
+                pass
             logging.warning("MM fill update failed for %s: %s", ticker, e)
 
     def cleanup_expired(self, active_tickers: set):

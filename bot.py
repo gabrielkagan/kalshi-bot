@@ -2205,6 +2205,10 @@ class StateManager:
                   side))
             self.conn.commit()
         except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
             logging.warning(f"insert_evaluated_opportunity failed: {e}", exc_info=True)
 
     def update_evaluated_opportunity_order(self, ticker: str,
@@ -12694,6 +12698,10 @@ class SettlementTracker:
                         _settled_count += 1
                     self._state.conn.commit()
                 except Exception as e:
+                    try:
+                        self._state.conn.rollback()
+                    except Exception:
+                        pass
                     logging.warning("eval_opp_settlement batch commit failed (chunk %d-%d): %s",
                                     _chunk_start, _chunk_start + len(_chunk), e, exc_info=True)
             if _settled_count:

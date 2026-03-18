@@ -1300,6 +1300,10 @@ class FifteenMShadowEngine:
             self._db_conn.commit()
             _db_ok = True
         except Exception:
+            try:
+                self._db_conn.rollback()
+            except Exception:
+                pass
             logging.warning("fifteenm_shadow log_signal failed for %s", ticker, exc_info=True)
             _db_ok = False
 

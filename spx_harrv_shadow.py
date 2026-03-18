@@ -902,6 +902,10 @@ class SPXHARRVShadowEngine:
             self._db_conn.commit()
             return True
         except Exception as e:
+            try:
+                self._db_conn.rollback()
+            except Exception:
+                pass
             logging.warning("spx_harrv_shadow DB insert failed: %s", e)
             return False
 
@@ -968,6 +972,10 @@ class SPXHARRVShadowEngine:
 
             self._db_conn.commit()
         except Exception as e:
+            try:
+                self._db_conn.rollback()
+            except Exception:
+                pass
             logging.warning("spx_harrv_shadow settle failed for %s: %s", ticker, e)
 
     def cleanup_expired(self, active_tickers: set):
