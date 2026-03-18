@@ -843,6 +843,8 @@ class DashboardSnapshotBuilder:
                 rta["worst_trade"] = dict(worst)
 
             # Cumulative P&L time series (15M for chart)
+            # Thin to ~100 points max to reduce Supabase Realtime egress
+            # (~50KB savings per push × 2880/day = ~145MB/day saved)
             pnl_series = conn.execute(
                 f"SELECT settled_at, (pnl_cents - fee_cents) AS net "
                 f"FROM settled_trades{_pt_filter} ORDER BY settled_at"
@@ -852,6 +854,12 @@ class DashboardSnapshotBuilder:
             for r in pnl_series:
                 running += r["net"]
                 cumulative.append({"ts": r["settled_at"], "cum_pnl": running})
+            _MAX_CHART_POINTS = 100
+            if len(cumulative) > _MAX_CHART_POINTS:
+                _step = len(cumulative) / _MAX_CHART_POINTS
+                _thinned = [cumulative[int(i * _step)] for i in range(_MAX_CHART_POINTS - 1)]
+                _thinned.append(cumulative[-1])  # always include latest
+                cumulative = _thinned
             rta["cumulative_pnl"] = cumulative
 
             # All-products cumulative P&L (for toggle)
@@ -864,6 +872,11 @@ class DashboardSnapshotBuilder:
             for r in all_pnl_series:
                 all_running += r["net"]
                 all_cumulative.append({"ts": r["settled_at"], "cum_pnl": all_running, "pt": r["product_type"]})
+            if len(all_cumulative) > _MAX_CHART_POINTS:
+                _step = len(all_cumulative) / _MAX_CHART_POINTS
+                _thinned = [all_cumulative[int(i * _step)] for i in range(_MAX_CHART_POINTS - 1)]
+                _thinned.append(all_cumulative[-1])
+                all_cumulative = _thinned
             rta["all_products_cumulative_pnl"] = all_cumulative
 
             snap["real_trade_analytics"] = rta
