@@ -882,7 +882,7 @@ class PlattCalibrator:
                 "(id, a, b, n_train, h1_brier, h2_brier_raw, h2_brier_cal, "
                 "fitted, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?, 1, ?)",
                 (a, b, len(x_h1), self._h1_brier, self._h2_brier_raw,
-                 self._h2_brier_cal, datetime.utcnow().isoformat()))
+                 self._h2_brier_cal, datetime.datetime.utcnow().isoformat()))
             conn.commit()
         except Exception:
             try:
