@@ -8,6 +8,7 @@ Guards against:
 - Candidate flow: DC candidates bypass single-asset-per-window filter
 - Sizing: fixed 12.5% bankroll risk, not Kelly
 - Strategy tagging: decided_t1 / decided_t2 in candidate dict
+- Execution routing: decided contracts go direct taker IOC, not maker-first
 """
 
 import re
@@ -55,10 +56,10 @@ class TestDecidedContractConstants(unittest.TestCase):
         self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_RISK"), 0.125)
         self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_MAX_WINDOW_RISK"), 0.25)
 
-    def test_kill_switches_default_off(self):
-        """Kill switches must default to '0' (deploy with flags off)."""
-        self.assertIn('DECIDED_T1_ENABLED = os.environ.get("DECIDED_T1_ENABLED", "0") == "1"', self.source)
-        self.assertIn('DECIDED_T2_ENABLED = os.environ.get("DECIDED_T2_ENABLED", "0") == "1"', self.source)
+    def test_kill_switches_default_on(self):
+        """Kill switches default to '1' (enabled) — direct taker routing active."""
+        self.assertIn('DECIDED_T1_ENABLED = os.environ.get("DECIDED_T1_ENABLED", "1") == "1"', self.source)
+        self.assertIn('DECIDED_T2_ENABLED = os.environ.get("DECIDED_T2_ENABLED", "1") == "1"', self.source)
 
     def test_kill_switches_env_var_controlled(self):
         """Both toggles are env-var driven (no deploy needed to flip)."""
@@ -287,6 +288,44 @@ class TestDecidedContractCandidateBypass(unittest.TestCase):
         self.assertGreater(single_asset_pos, 0)
         self.assertLess(bypass_pos, single_asset_pos,
                         "DC separation must come before single-asset filter")
+
+
+class TestDecidedContractDirectTaker(unittest.TestCase):
+    """DC candidates must route to direct taker IOC, not maker-first."""
+
+    def test_dc_taker_block_exists(self):
+        """execute() must have a decided contract taker override block."""
+        source = _read_bot()
+        self.assertIn("dc_taker_ENTRY:", source)
+        self.assertIn("dc_taker_FILLED:", source)
+        self.assertIn("dc_taker_UNFILLED:", source)
+
+    def test_dc_taker_before_maker(self):
+        """DC taker override must come before the standard maker path."""
+        source = _read_bot()
+        dc_taker_pos = source.find("Decided contract taker override")
+        direct_taker_pos = source.find("Direct taker for <180s candidates")
+        maker_pos = source.find("Three-tier post_only rejection escalation")
+        self.assertGreater(dc_taker_pos, 0, "DC taker block not found")
+        self.assertLess(dc_taker_pos, direct_taker_pos,
+                        "DC taker must come before standard direct taker")
+        self.assertLess(dc_taker_pos, maker_pos,
+                        "DC taker must come before maker path")
+
+    def test_dc_taker_routes_both_tiers(self):
+        """Both decided_t1 and decided_t2 must trigger direct taker."""
+        source = _read_bot()
+        dc_block_start = source.find("Decided contract taker override")
+        dc_block = source[dc_block_start:dc_block_start + 2500]
+        self.assertIn('"decided_t1"', dc_block)
+        self.assertIn('"decided_t2"', dc_block)
+
+    def test_dc_taker_sets_escalation_type(self):
+        """DC taker must set escalation_type for settled_trades tracking."""
+        source = _read_bot()
+        dc_block_start = source.find("Decided contract taker override")
+        dc_block = source[dc_block_start:dc_block_start + 3500]
+        self.assertIn('candidate["escalation_type"]', dc_block)
 
 
 class TestDecidedContractDashboard(unittest.TestCase):
