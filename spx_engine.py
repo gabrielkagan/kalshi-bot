@@ -39,7 +39,7 @@ REST_FALLBACK_POLL_INTERVAL = 3.0
 
 # Price feed settings
 PRICE_BUFFER_SIZE = 300  # 5 minutes of second-by-second data (snapshot loop runs at 1/s)
-STALE_PRICE_THRESHOLD = 60  # seconds before price considered stale
+STALE_PRICE_THRESHOLD = 180  # seconds — Finnhub free tier delivers ~1.2 SPY trades/min
 RECONNECT_BASE_DELAY = 1.0
 RECONNECT_MAX_DELAY = 60.0
 
