@@ -554,7 +554,7 @@ BTC_ESCALATION_WAIT_OVERRIDE = 7.0  # BTC: 7s instead of 15s at STC>=180s
                                     # Data: ask_confirmed avg 2.7s, escalation_wait avg 19.5s, slip 3.4c
 ESCALATION_WAIT_MEDIUM = 7.0      # maker wait when 120-180s to close (86% fills within 7s)
 ESCALATION_WAIT_SHORT = 5.0       # maker wait when 60-120s to close
-EARLY_ESCALATION_MIN_MOVE = 2      # ask must move ≥2¢ above maker price to trigger
+EARLY_ESCALATION_MIN_MOVE = 5      # ask must move ≥5¢ above maker price to trigger (was 2; raised to reduce adverse selection — 4L at 2-4c slip cost $50.62/2wk)
 
 # ─── Post-only rejection → taker escalation ────────────────────────────
 POST_ONLY_MAX_SAME_PRICE = 2          # Tier 1: max attempts at same maker price before degrading
@@ -10745,6 +10745,19 @@ class OrderExecutor:
             if current_ask is not None:
                 order["_ask_history"].append((now, current_ask))
                 ask_move = current_ask - order["price_cents"]
+                if ask_move >= 2 and ask_move < EARLY_ESCALATION_MIN_MOVE:
+                    # Shadow: log skipped early escalations (2-4c) for data collection
+                    if not order.get("_ask_confirmed_skipped_logged"):
+                        order["_ask_confirmed_skipped_logged"] = True
+                        _skip_candidate = order["candidate"]
+                        _skip_count = order["count"]
+                        _skip_fee = calculate_taker_fee(_skip_count, current_ask)
+                        _skip_edge = _skip_candidate["calibrated_prob"] - (current_ask / 100.0) - (_skip_fee / (_skip_count * 100.0))
+                        logging.info(
+                            "ask_confirmed_SKIPPED: %s ask=%d¢ (maker=%d¢ +%d¢) "
+                            "net_edge=%.4f elapsed=%.1fs threshold=%d¢",
+                            order["ticker"], current_ask, order["price_cents"],
+                            ask_move, _skip_edge, elapsed, EARLY_ESCALATION_MIN_MOVE)
                 if ask_move >= EARLY_ESCALATION_MIN_MOVE:
                     candidate = order["candidate"]
                     cal_prob = candidate["calibrated_prob"]
