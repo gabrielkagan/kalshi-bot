@@ -625,7 +625,7 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 ## Position Sizing Controls
 
 - **Edge-tiered sizing**: Position size scales with conviction — 25% max at 4%+ edge, down to 2% at 0.25% edge
-- **Drawdown scaling**: Size halved below 85% of starting balance, quartered below 75%, trading halted below 65%
+- **Drawdown scaling**: Size halved below 85% of rolling 7-day peak balance, quartered below 75%, trading halted below 65%
 - **Hard limits**: Maximum risk per trade capped at 25% of bankroll
 
 ## Market Selection Controls

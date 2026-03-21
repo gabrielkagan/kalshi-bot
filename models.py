@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 from config import (
     ASSETS,
+    HWM_LOOKBACK_SECONDS,
     EGARCH_ALPHA_BOUNDS,
     EGARCH_BETA_BOUNDS,
     EGARCH_BUFFER_SAVE_INTERVAL,
@@ -887,6 +888,16 @@ class PositionSizer:
 
     def __init__(self, starting_balance_cents: int = 0):
         self.starting_balance_cents = starting_balance_cents
+        self._balance_history: deque = deque(maxlen=60480)  # 7 days at 10s intervals
+        self._override_hwm_cents: Optional[int] = None
+        # Check env var for manual HWM override (dollars)
+        override = os.environ.get("OVERRIDE_HWM")
+        if override:
+            try:
+                self._override_hwm_cents = int(float(override) * 100)
+                logging.info("HWM override: $%.2f (%d cents)", float(override), self._override_hwm_cents)
+            except ValueError:
+                logging.warning("Invalid OVERRIDE_HWM value: %s", override)
 
     def compute(self, win_prob: float, price_cents: int,
                 balance_cents: int) -> Dict:
@@ -972,18 +983,36 @@ class PositionSizer:
             balance_cents / 100, raw_contracts, contracts)
         return result
 
-    def _drawdown_scaler(self, balance_cents: int) -> float:
-        """Scale position based on drawdown from peak balance (high-water mark).
+    def record_balance(self, balance_cents: int):
+        """Record current balance for rolling HWM computation. Call each scan cycle."""
+        self._balance_history.append((time.time(), balance_cents))
 
-        IMPORTANT: Only call from main thread — mutates starting_balance_cents (HWM).
+    def get_rolling_hwm(self) -> int:
+        """Get high-water mark: max balance over last 7 days (or env override)."""
+        if self._override_hwm_cents is not None:
+            return self._override_hwm_cents
+        if not self._balance_history:
+            return self.starting_balance_cents
+        cutoff = time.time() - HWM_LOOKBACK_SECONDS
+        recent = [b for t, b in self._balance_history if t >= cutoff]
+        if not recent:
+            # All entries older than 7 days — use most recent
+            return self._balance_history[-1][1]
+        return max(recent)
+
+    def _drawdown_scaler(self, balance_cents: int) -> float:
+        """Scale position based on drawdown from rolling 7-day peak HWM.
+
+        IMPORTANT: Only call from main thread — records balance + updates HWM.
         For read-only access (e.g. dashboard), use _drawdown_scaler_readonly().
         """
-        if self.starting_balance_cents <= 0:
+        self.record_balance(balance_cents)
+        hwm = self.get_rolling_hwm()
+        if hwm <= 0:
             return 1.0
-        # Ratchet up: drawdown tracks from peak, not starting balance
-        if balance_cents > self.starting_balance_cents:
-            self.starting_balance_cents = balance_cents
-        ratio = balance_cents / self.starting_balance_cents
+        # Keep starting_balance_cents in sync for backward compat (dashboard reads it)
+        self.starting_balance_cents = hwm
+        ratio = balance_cents / hwm
         if ratio < DRAWDOWN_HALT_THRESHOLD:
             return 0.0   # stop trading entirely
         if ratio < DRAWDOWN_QUARTER_THRESHOLD:
@@ -994,9 +1023,10 @@ class PositionSizer:
 
     def _drawdown_scaler_readonly(self, balance_cents: int) -> float:
         """Read-only version for dashboard display. Does NOT update HWM."""
-        if self.starting_balance_cents <= 0:
+        hwm = self.get_rolling_hwm()
+        if hwm <= 0:
             return 1.0
-        ratio = balance_cents / self.starting_balance_cents
+        ratio = balance_cents / hwm
         if ratio < DRAWDOWN_HALT_THRESHOLD:
             return 0.0
         if ratio < DRAWDOWN_QUARTER_THRESHOLD:

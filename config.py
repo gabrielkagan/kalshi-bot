@@ -144,4 +144,5 @@ SIZING_TIERS = [                  # (min_fee_adj_edge, risk_fraction) — aligne
 DRAWDOWN_HALF_THRESHOLD = 0.85    # below 85% of starting balance → halve size (was 90%)
 DRAWDOWN_QUARTER_THRESHOLD = 0.75 # below 75% → quarter size (was 80%)
 DRAWDOWN_HALT_THRESHOLD = 0.65    # below 65% → stop trading entirely (NEW)
+HWM_LOOKBACK_SECONDS = 7 * 86400  # rolling 7-day peak for HWM (prevents stale HWM after withdrawals)
 MAX_RISK_PER_TRADE = 0.25         # max 25% of bankroll at risk per trade (was 50%; reduced after loss analysis)

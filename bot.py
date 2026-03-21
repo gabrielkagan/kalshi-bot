@@ -50,6 +50,7 @@ ETH_MIN_ENTRY_PRICE = 80          # cents (data: price shadow 80-85c 89.7% WR, 5
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 BTC_MAX_RISK_PER_TRADE = 0.12    # BTC oversizing causes outsized losses (data: -$282 from 95c+ losses at full Kelly)
+SOL_MIN_EDGE = 0.018             # SOL-specific edge floor (data: 73.9% WR below 1.8%, 95.4% above; 16.8pp CalEngine overconfidence)
 XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/2L 95.3% WR at >=92c)
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 MIN_SECONDS_BEFORE_CLOSE = 0
@@ -7172,6 +7173,8 @@ class OpportunityScanner:
                     _min_edge = HOURLY_MIN_EDGE_PCT
                 else:
                     _min_edge = get_min_edge(best_ask)
+                    if asset == "SOL":
+                        _min_edge = max(_min_edge, SOL_MIN_EDGE)
                 if fee_adjusted_edge < _min_edge:
                     scan_stats[asset]["insufficient_edge"] += 1
                     self._recent_opportunities.append({
@@ -13940,6 +13943,7 @@ class MainLoop:
             sys.exit(1)
         balance_cents = balance_resp.get("balance") or 0
         self.sizer.starting_balance_cents = balance_cents
+        self.sizer.record_balance(balance_cents)  # Seed rolling HWM
         self._peak_balance = balance_cents / 100
         logging.info(f"Connected to Kalshi. Balance: ${balance_cents / 100:.2f}")
         if _TELEGRAM:

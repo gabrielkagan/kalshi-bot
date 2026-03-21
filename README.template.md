@@ -84,9 +84,9 @@ Edge-tiered sizing with drawdown scaling:
 | >= 0.25% | 2% of bankroll |
 
 - Safety ceiling: max 25% of bankroll at risk per trade
-- At 85% of peak balance: halve position sizes
-- At 75% of peak balance: quarter position sizes
-- At 65% of peak balance: halt trading entirely
+- At 85% of rolling 7-day peak balance: halve position sizes
+- At 75% of rolling 7-day peak balance: quarter position sizes
+- At 65% of rolling 7-day peak balance: halt trading entirely
 - Can trade multiple assets per 15-minute window
 
 ### State & Persistence

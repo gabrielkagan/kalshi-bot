@@ -167,7 +167,7 @@ Most markets are not worth trading. The system applies a rigorous multi-stage fi
 \begin{itemize}
 \item The model's estimated probability is too low (the contract is unlikely to pay out)
 \item The Kalshi price is too high (not enough profit potential) or too low (too much uncertainty)
-\item The edge after fees is insufficient --- must exceed a price-dependent minimum (0.25\% at 86\textcent{} up to 2.0\% at 97\textcent{}+) after worst-case taker fees
+\item The edge after fees is insufficient --- must exceed a price-dependent minimum (0.25\% at 80\textcent{} up to 2.0\% at 97\textcent{}+) after worst-case taker fees
 \item The model and the market disagree by a suspicious margin
 \item Statistical inputs appear unreliable (extreme z-scores indicating potential data issues)
 \end{itemize}
@@ -192,7 +192,7 @@ For the small number of markets that pass all filters, the bot determines the ap
 
 Position sizes are:
 
-- **Automatically reduced during drawdowns** — below 85% of starting balance, sizes halve; below 75%, they quarter; below 65%, trading halts entirely
+- **Automatically reduced during drawdowns** — below 85% of rolling 7-day peak balance, sizes halve; below 75%, they quarter; below 65%, trading halts entirely
 - **Hard-capped** — no single trade can exceed 25% of bankroll regardless of model confidence
 
 ## 5. Execute
@@ -201,11 +201,13 @@ The bot uses a fee-minimizing execution strategy with intelligent escalation:
 
 | Execution Phase | Description |
 |---|---|
-| **Maker-first** | Places limit orders with `post_only` guarantees, earning 75% lower fees |
+| **Maker-first** | Places limit orders with `post_only` guarantees — $0 maker fee (taker fee only on escalation) |
 | **3-tier rejection handling** | If maker rejected (locked spread): try degraded maker → taker IOC (re-verifying profitability at higher fees) |
 | **Direct taker below 180s** | When <180s remain, skip maker entirely — data shows only 7.7% fill rate at low STC; direct taker strictly better |
 | **Real-time fill detection** | Kalshi WebSocket provides instant fill notifications at zero API cost, with REST backup |
 | **Smart escalation** | If unfilled: amend order in-place (faster than cancel + re-place), then fall back to IOC taker |
+| **Per-asset optimization** | SOL bypasses maker entirely (direct taker) due to thin orderbooks; BTC uses shorter escalation wait (7s vs 15s) |
+| **Near-certain overlay** | Decided contract system (three live tiers: T1, T1B, T2) identifies near-certain outcomes via extreme z-scores and routes to direct taker with fixed 12.5% sizing. T1B added after research showed 100% win rate (40/40) in its z-score zone |
 | **Price re-validation** | Before every execution step, re-checks market conditions to confirm trade still makes sense |
 
 ---
@@ -228,7 +230,7 @@ Most quantitative models assume returns follow a simple bell curve (Gaussian) or
 
 ### Fee Optimization
 
-Kalshi charges different fees for different order types. The bot's maker-first execution strategy with three-tier escalation captures the 75% fee discount available to limit orders whenever possible, directly improving the profit margin on every trade. When forced to pay taker fees (locked spreads), the system re-verifies profitability before proceeding. This seemingly small advantage compounds significantly over hundreds of trades.
+Kalshi charges no fee on maker (limit) orders — taker fees apply only when the bot escalates to IOC execution. The bot's maker-first execution strategy avoids taker fees whenever possible, directly improving the profit margin on every trade. When forced to pay taker fees (locked spreads, SOL taker-first, decided contract overlay), the system re-verifies profitability before proceeding. This fee advantage compounds significantly over hundreds of trades.
 
 ---
 
@@ -259,7 +261,7 @@ Before any trade is placed, the system verifies:
 
 1. The model's probability estimate passes a sanity check against the market price
 2. The estimated edge exceeds the price-dependent minimum (0.25%–2.0%) after all fees (worst-case taker rates)
-3. The contract price falls within acceptable bounds (86–99¢)
+3. The contract price falls within acceptable bounds (80–99¢, with per-asset floors)
 4. No extreme statistical indicators suggest unreliable model inputs
 5. The position size respects all hard limits and drawdown adjustments
 
@@ -269,7 +271,7 @@ Before any trade is placed, the system verifies:
 
 ### Hard Price Boundaries
 
-The bot only trades contracts priced between **86 and 99 cents**. Below 86¢, the probability of payout drops significantly. Above 99¢, the potential profit is too small to justify the risk. This guardrail eliminates an entire class of low-quality trades.
+The bot only trades contracts priced between **80 and 99 cents**, with per-asset minimums (BTC 89¢, ETH 80¢, SOL 80¢, XRP 92¢). Below these floors, the probability of payout after fees is insufficient. Above 99¢, the potential profit is too small to justify the risk. These guardrails eliminate an entire class of low-quality trades.
 
 ### Intelligent Late-Window Execution
 
@@ -287,7 +289,7 @@ Below 180 seconds before settlement, the system switches to **direct taker execu
 | **Settled trades** | 258 |
 | **Win rate** | 88.8% (229W / 29L) |
 | **Assets** | BTC, ETH, SOL, XRP |
-| **Entry prices** | 86–99¢ |
+| **Entry prices** | 80–99¢ (per-asset: BTC 89¢+, ETH 80¢+, SOL 80¢+, XRP 92¢+) |
 
 ---
 
@@ -297,7 +299,7 @@ The platform is actively expanding beyond 15-minute crypto into four additional 
 
 ### Crypto Hourly Markets
 
-Hourly cryptocurrency markets (KXBTCD, KXETHD, KXSOLD, KXXRPD) with 75 strikes per event. The system evaluates every strike, computes probabilities, and tracks settlement outcomes. Currently collecting calibration data — the hourly system was briefly promoted to live trading and reverted after analysis showed the 15-minute calibration model doesn't transfer well to hourly timescales. A dedicated hourly calibration with temperature scaling (T=1.45) is being developed, along with per-window position limits (max 2) and risk caps (15%) to prevent correlated multi-strike losses.
+Hourly cryptocurrency markets (KXBTCD, KXETHD, KXSOLD, KXXRPD) with 75 strikes per event. The system evaluates every strike, computes probabilities, and tracks settlement outcomes. Currently collecting calibration data — the hourly system was briefly promoted to live trading and reverted after analysis showed the 15-minute calibration model doesn't transfer well to hourly timescales. The dedicated hourly CalEngine has been disabled due to +44pp overconfidence; a temperature scaling approach (T=1.45) is used instead. BTC is the only viable hourly asset — ETH, SOL, and XRP are structurally unprofitable after fees at the hourly timescale. Per-window position limits (max 2) and risk caps (15%) prevent correlated multi-strike losses.
 
 ### S&P 500 Intraday Markets
 
@@ -308,10 +310,10 @@ Hourly cryptocurrency markets (KXBTCD, KXETHD, KXSOLD, KXXRPD) with 75 strikes p
 | **Leverage effect** | Down moves increase equity volatility ~4× more than crypto — different EGARCH bounds |
 | **VIX integration** | Forward-looking volatility signal blended with realized when they diverge significantly |
 | **Intraday seasonality** | U-shaped pattern deseasonalized via 13 half-hour buckets to prevent time-of-day bias |
-| **Lower fees** | Finance category — half the crypto fee multiplier (0.035 vs 0.07 taker) |
+| **Lower fees** | Finance category — half the crypto fee multiplier (0.035 vs 0.07 taker), $0 maker |
 | **Correlation controls** | Max 2 positions and 15% risk per window to prevent multi-strike blowups |
 
-This vertical leverages the same infrastructure while accessing a much larger and more liquid underlying market.
+This vertical leverages the same infrastructure while accessing a much larger and more liquid underlying market. It was briefly promoted to live trading on March 17 but reverted the same day after the primary price data feed (Polygon.io) began returning errors. Currently in observation mode with a fallback price feed, collecting calibration data with conservative eighth-Kelly sizing.
 
 ### Weather Temperature Markets
 
@@ -324,7 +326,7 @@ Daily high temperature markets across **19 major US cities** — from New York a
 | **Bias correction** | Per-city learning system tracks and corrects forecast errors over time |
 | **Model-heavy blend** | 80% model / 20% market — ensemble forecasts are the primary signal |
 
-Weather markets are structurally attractive because they have longer settlement windows (daily), publicly available data, and probability estimates that are independent of financial market dynamics — providing natural portfolio diversification.
+Research to date indicates this vertical does not currently have a tradeable edge. The YES-side win rate is below breakeven, and the model shows significant overconfidence relative to outcomes. A NO-side pricing pipeline has been built but is not yet enabled. Per-city calibration engines are learning to correct the model's biases over time. The vertical remains in observation mode to determine whether improved calibration can uncover a viable strategy.
 
 ### Live Sports Outcomes
 
@@ -339,6 +341,8 @@ When a team or player that was heavily favored before the game falls behind, the
 | **Conservative model** | Likelihood ratios compressed 80% toward neutral to prevent overconfidence |
 | **Data collection mode** | Entry criteria relaxed to capture wide range of scenarios for calibration |
 | **One signal per game** | Prevents correlated exposure from multiple entries in the same game |
+
+Early results are promising for basketball specifically — the comeback model shows statistically significant edge (Fisher p=0.035) for NBA games. Other sport groups are closer to breakeven or negative. The engine is collecting more data through sequential statistical testing (SPRT) before a promotion decision, likely focused on basketball first rather than all sports simultaneously.
 
 ### Expansion Philosophy
 
@@ -385,7 +389,7 @@ Every decision the bot makes is logged across three complementary systems:
 |---|---|
 | **SQLite database** | Positions, orders, fills, settlements, every market evaluation with filter stage, full order lifecycle (order_id, submission time, final outcome) |
 | **JSONL journals** | Append-only logs for scans, opportunities, rejections, trades, settlements, and maker fill model training data. Rotated daily with 30-day retention |
-| **Supabase dashboard** | Real-time web interface showing positions, P&L, volatility, orderbooks, execution health, calibration diagnostics, and all shadow system data |
+| **Supabase dashboard** | Real-time web interface (30s sync interval) showing positions, P&L, volatility, orderbooks, execution health, calibration diagnostics, and all shadow system data |
 
 This comprehensive logging enables full after-the-fact analysis of any trade or decision.
 
@@ -407,9 +411,9 @@ For readers interested in the mathematical foundations, the full technical white
 
 **Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven: as settlement outcomes accumulate, the CalibrationEngine progresses from fixed logistic scaling → Platt Scaling → Beta Calibration → Bayesian Linear Regression. A dynamic time-dependent probability cap applies during startup (93% at 10min+ → 99.5% at <1min) but is bypassed (99.9% ceiling) once learned calibration is active. Final probability blends 60/40 (60% model, 40% market) to prevent overconfidence.
 
-**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Eight tiers from 25% at 4%+ edge down to 2% at 0.25%+ edge, with automatic de-risking during drawdowns (half at 85%, quarter at 75%, halt at 65%). Max risk per trade: 25%.
+**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Eight tiers from 25% at 4%+ edge down to 2% at 0.25%+ edge, with automatic de-risking during drawdowns (half at 85%, quarter at 75%, halt at 65%). Max risk per trade: 25% (15M), 12% (XRP), 15% (hourly), 10% (SPX/weather). 15M uses full Kelly; hourly/weather use quarter-Kelly (0.25); SPX uses eighth-Kelly (0.125). Low-STC cap halves position below 100s.
 
-**Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Direct taker below 180s STC (data: 7.7% maker fill rate at low STC). Maker orders use `post_only=True` to guarantee 75% fee savings. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. Full order lifecycle tracking (order_id, submission time, outcome).
+**Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Direct taker below 180s STC (data: 7.7% maker fill rate at low STC). Maker orders use `post_only=True` for $0 maker fee. SOL bypasses maker entirely (direct taker at all STC). BTC uses 7s escalation wait (vs 15s default). Decided contract overlay (T1/T1B/T2) routes near-certain outcomes to direct taker with fixed 12.5% sizing — T1B (z ≤ -4, 95¢+) added based on 40/40 = 100% WR in that zone; 6 expansion shadows collecting data for future tiers. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. Full order lifecycle tracking (order_id, submission time, outcome).
 
 **SPX Engine** — Adapts the crypto EGARCH framework for S&P 500 equities: stronger leverage effect bounds (4× crypto), VIX-implied volatility integration when realized and implied diverge >30%, intraday seasonal deseasonalization (13 half-hour buckets), NYSE market hours guard with holiday calendar, half-rate fees (finance category), and per-window correlation controls (max 2 positions, 15% risk).
 

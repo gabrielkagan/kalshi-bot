@@ -192,7 +192,7 @@ For the small number of markets that pass all filters, the bot determines the ap
 
 Position sizes are:
 
-- **Automatically reduced during drawdowns** — below 85% of starting balance, sizes halve; below 75%, they quarter; below 65%, trading halts entirely
+- **Automatically reduced during drawdowns** — below 85% of rolling 7-day peak balance, sizes halve; below 75%, they quarter; below 65%, trading halts entirely
 - **Hard-capped** — no single trade can exceed 25% of bankroll regardless of model confidence
 
 ## 5. Execute

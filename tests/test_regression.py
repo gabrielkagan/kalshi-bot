@@ -1981,3 +1981,113 @@ class TestNoSideWinCounting:
                 break
         else:
             pytest.fail("compute_weather function not found in audit_cron.py")
+
+
+# ============================================================================
+# Rolling 7-Day HWM (replaces static startup HWM)
+#     Bug: Static startup HWM ratchets up but never down. After withdrawal,
+#     stale HWM makes balance look like 50% drawdown → half-Kelly for weeks.
+# ============================================================================
+
+class TestRollingHWM:
+    """PositionSizer must use rolling 7-day peak, not static startup HWM."""
+
+    def test_balance_history_exists(self):
+        from models import PositionSizer
+        sizer = PositionSizer(starting_balance_cents=10000)
+        assert hasattr(sizer, "_balance_history")
+
+    def test_record_balance(self):
+        from models import PositionSizer
+        sizer = PositionSizer(starting_balance_cents=10000)
+        sizer.record_balance(11000)
+        assert len(sizer._balance_history) == 1
+
+    def test_rolling_hwm_uses_max(self):
+        from models import PositionSizer
+        sizer = PositionSizer(starting_balance_cents=10000)
+        sizer.record_balance(12000)
+        sizer.record_balance(11000)
+        sizer.record_balance(10500)
+        assert sizer.get_rolling_hwm() == 12000
+
+    def test_rolling_hwm_ages_out(self):
+        """Old peaks beyond lookback should not count."""
+        import time as _time
+        from models import PositionSizer
+        from config import HWM_LOOKBACK_SECONDS
+        sizer = PositionSizer(starting_balance_cents=10000)
+        # Insert an old high balance beyond lookback window
+        old_ts = _time.time() - HWM_LOOKBACK_SECONDS - 3600
+        sizer._balance_history.append((old_ts, 50000))
+        # Insert a recent lower balance
+        sizer.record_balance(10000)
+        assert sizer.get_rolling_hwm() == 10000
+
+    def test_drawdown_scaler_uses_rolling_hwm(self):
+        from models import PositionSizer
+        sizer = PositionSizer(starting_balance_cents=10000)
+        sizer.record_balance(10000)
+        # At current balance = HWM, scaler should be 1.0
+        scaler = sizer._drawdown_scaler(10000)
+        assert scaler == 1.0
+
+    def test_override_hwm_env_var(self):
+        import os
+        from models import PositionSizer
+        os.environ["OVERRIDE_HWM"] = "100.00"
+        try:
+            sizer = PositionSizer(starting_balance_cents=5000)
+            assert sizer.get_rolling_hwm() == 10000  # $100 = 10000 cents
+        finally:
+            del os.environ["OVERRIDE_HWM"]
+
+    def test_no_stale_hwm_after_withdrawal(self):
+        """After withdrawal, drawdown scaler should recover when old peak ages out."""
+        import time as _time
+        from models import PositionSizer
+        from config import HWM_LOOKBACK_SECONDS
+        sizer = PositionSizer(starting_balance_cents=100000)  # $1000
+        # Old peak at $1000
+        old_ts = _time.time() - HWM_LOOKBACK_SECONDS - 1
+        sizer._balance_history.append((old_ts, 100000))
+        # Current balance $550 (after withdrawal)
+        sizer.record_balance(55000)
+        # HWM should be 55000 (old peak aged out), so ratio = 1.0
+        assert sizer.get_rolling_hwm() == 55000
+        scaler = sizer._drawdown_scaler(55000)
+        assert scaler == 1.0
+
+
+# ============================================================================
+# SOL 1.8% Edge Floor
+#     Data: SOL 73.9% WR below 1.8% edge, 95.4% above.
+#     CalEngine 16.8pp overconfident for low-edge SOL.
+# ============================================================================
+
+class TestSOLEdgeFloor:
+    """SOL must have a higher minimum edge than the price-dependent schedule."""
+
+    def test_sol_min_edge_exists(self):
+        import bot
+        assert hasattr(bot, "SOL_MIN_EDGE")
+        assert bot.SOL_MIN_EDGE >= 0.015
+
+    def test_sol_min_edge_higher_than_default(self):
+        import bot
+        # At most common SOL prices (80-92c), default edge is 0.25-0.35%
+        # SOL floor should be much higher
+        for price in [80, 85, 88, 90, 91]:
+            default_edge = bot.get_min_edge(price)
+            assert bot.SOL_MIN_EDGE > default_edge, (
+                f"SOL_MIN_EDGE {bot.SOL_MIN_EDGE} should exceed default "
+                f"{default_edge} at {price}c"
+            )
+
+    def test_sol_min_edge_in_scan_code(self):
+        """Verify SOL edge floor is applied in the scan edge check."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            content = f.read()
+        assert "SOL_MIN_EDGE" in content
+        assert 'asset == "SOL"' in content or "asset == 'SOL'" in content
