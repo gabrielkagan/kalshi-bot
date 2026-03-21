@@ -7085,6 +7085,82 @@ class OpportunityScanner:
                     except Exception:
                         pass
 
+                # ── DC Shadow Variants (edge-independent) ─────────────────
+                # These evaluate BEFORE the edge gate so they see all signals,
+                # not just edge-rejected ones. Targets where z-score implies
+                # near-certain outcome but price/tier rules exclude from live DC.
+                if (DECIDED_CONTRACT_SHADOW
+                        and _pt in (None, "15m")
+                        and z_score is not None
+                        and seconds_remaining < DECIDED_CONTRACT_MAX_STC):
+
+                    def _dc_shadow_insert_pre(stage, rej_detail, **kwargs):
+                        _dcs_dedup = (ticker, stage)
+                        if _dcs_dedup not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dcs_dedup)
+                            try:
+                                self._state.insert_evaluated_opportunity(
+                                    ticker, window["event_ticker"], asset, stage,
+                                    rejection_reason=rej_detail,
+                                    spot_price=spot, threshold=threshold,
+                                    volatility=blended_rv,
+                                    market_price=kwargs.get("market_price", best_ask),
+                                    seconds_to_close=seconds_remaining,
+                                    calibrated_prob=kwargs.get("calibrated_prob", final_prob),
+                                    edge=kwargs.get("edge", edge),
+                                    ofa_adjustment=ofa_adjustment,
+                                    z_score=z_score,
+                                    vol_regime=vol_est["regime"],
+                                    raw_prob=raw_prob,
+                                    fee_adjusted_edge=kwargs.get("fee_adjusted_edge", fee_adjusted_edge),
+                                    product_type=window.get("product_type"),
+                                    side=kwargs.get("side"),
+                                    **_shadow_diag)
+                            except Exception:
+                                logging.warning("insert_evaluated_opportunity failed (%s)", stage, exc_info=True)
+
+                    # T1B at 93-94c (live T1B fires at 95c+, this captures 93-94c)
+                    if (DECIDED_CONTRACT_Z_T1 < z_score <= DECIDED_CONTRACT_Z_T1B
+                            and 93 <= best_ask < DECIDED_CONTRACT_T1B_MIN_PRICE):
+                        _dc_shadow_insert_pre("dc_shadow_t1b_93c",
+                                              "shadow: z={:.1f} price={}c (T1B 93-94c expansion)".format(z_score, best_ask))
+
+                    # T2 price floor 90c for BTC/ETH/SOL (live T2 requires 93c+)
+                    if (z_score <= DECIDED_CONTRACT_Z_T2
+                            and 90 <= best_ask < DECIDED_CONTRACT_MIN_PRICE
+                            and asset in ("BTC", "ETH", "SOL")):
+                        _dc_shadow_insert_pre("dc_shadow_t2_90c",
+                                              "shadow: z={:.1f} price={}c asset={} (T2 90c floor)".format(z_score, best_ask, asset))
+
+                    # T2 price floor 90c for XRP only
+                    if (z_score <= DECIDED_CONTRACT_Z_T2
+                            and 90 <= best_ask < DECIDED_CONTRACT_MIN_PRICE
+                            and asset == "XRP"):
+                        _dc_shadow_insert_pre("dc_shadow_t2_90c_xrp",
+                                              "shadow: z={:.1f} price={}c (T2 90c XRP)".format(z_score, best_ask))
+
+                    # NO-side decided (z≥5 → YES nearly worthless, NO is the bet)
+                    if z_score >= 5.0 and best_ask <= 20:
+                        _no_ask_dc_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                        _no_ask_dc = None
+                        if _no_ask_dc_raw is not None:
+                            _no_ask_dc = (dollars_str_to_cents(_no_ask_dc_raw)
+                                          if isinstance(_no_ask_dc_raw, str)
+                                          else int(_no_ask_dc_raw))
+                        if _no_ask_dc is not None and _no_ask_dc > 0 and _no_ask_dc <= 93:
+                            _no_fee = calculate_fee(1, _no_ask_dc, is_taker=True,
+                                                    fee_mult_taker=get_market_config("15m").fee_multiplier_taker,
+                                                    fee_mult_maker=get_market_config("15m").fee_multiplier_maker)
+                            _dc_shadow_insert_pre("dc_shadow_no_side",
+                                                  "shadow: z={:.1f} no_ask={}c yes_price={}c fee={}c (NO-side decided)".format(
+                                                      z_score, _no_ask_dc, best_ask, _no_fee),
+                                                  market_price=_no_ask_dc,
+                                                  calibrated_prob=1.0 - (best_ask / 100.0),
+                                                  edge=round((1.0 - best_ask / 100.0) - _no_ask_dc / 100.0, 6),
+                                                  fee_adjusted_edge=round(
+                                                      (1.0 - best_ask / 100.0) - _no_ask_dc / 100.0 - _no_fee / 100.0, 6),
+                                                  side="no")
+
                 # Filter: fee-adjusted edge must meet price-dependent minimum
                 if _pt == "weather":
                     _min_edge = WEATHER_MIN_EDGE_PCT
@@ -7689,14 +7765,13 @@ class OpportunityScanner:
                                         **_shadow_extra,
                                     })
 
-                    # ── Decided Contract Shadow Expansion Variants ─────────
-                    # Six variants probing expansion zones. Log-only — no orders.
-                    # Each variant skips signals already caught by live T1/T1B/T2.
+                    # ── DC Shadow z-score expansion (edge-dependent) ─────────
+                    # These two variants target z-scores near -2 to -2.5 where
+                    # edge is genuinely insufficient. They correctly live here.
                     if (DECIDED_CONTRACT_SHADOW
                             and _pt in (None, "15m")
                             and z_score is not None
                             and seconds_remaining < DECIDED_CONTRACT_MAX_STC):
-                        # Common insert helper for DC shadow variants
                         def _dc_shadow_insert(stage, rej_detail):
                             _dcs_dedup = (ticker, stage)
                             if _dcs_dedup not in self._eval_opp_seen:
@@ -7719,79 +7794,17 @@ class OpportunityScanner:
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (%s)", stage, exc_info=True)
 
-                        # 2A: T1B at 93-94c (already live at 95c+, shadow at 93-94c)
-                        if (DECIDED_CONTRACT_Z_T1 < z_score <= DECIDED_CONTRACT_Z_T1B
-                                and 93 <= best_ask < DECIDED_CONTRACT_T1B_MIN_PRICE):
-                            _dc_shadow_insert("dc_shadow_t1b_93c",
-                                              f"shadow: z={z_score:.1f} price={best_ask}c (T1B 93-94c expansion)")
-
-                        # 2B: T2 z≤-2.5 at 93-96c (loosening from z≤-3)
+                        # T2 z≤-2.5 at 93-96c (loosening from z≤-3)
                         if (DECIDED_CONTRACT_Z_T2 < z_score <= -2.5
                                 and 93 <= best_ask <= DECIDED_CONTRACT_T2_MAX_PRICE):
                             _dc_shadow_insert("dc_shadow_t2_z25",
                                               f"shadow: z={z_score:.1f} price={best_ask}c (T2 z≤-2.5 expansion)")
 
-                        # 2C: T2 price floor 90c for BTC/ETH/SOL (currently 93c)
-                        if (z_score <= DECIDED_CONTRACT_Z_T2
-                                and 90 <= best_ask < DECIDED_CONTRACT_MIN_PRICE
-                                and asset in ("BTC", "ETH", "SOL")):
-                            _dc_shadow_insert("dc_shadow_t2_90c",
-                                              f"shadow: z={z_score:.1f} price={best_ask}c asset={asset} (T2 90c floor)")
-
-                        # 2D: T2 price floor 90c for XRP only (10/11 = 90.9%)
-                        if (z_score <= DECIDED_CONTRACT_Z_T2
-                                and 90 <= best_ask < DECIDED_CONTRACT_MIN_PRICE
-                                and asset == "XRP"):
-                            _dc_shadow_insert("dc_shadow_t2_90c_xrp",
-                                              f"shadow: z={z_score:.1f} price={best_ask}c (T2 90c XRP)")
-
-                        # 2E: T2 z≤-2 at 93-96c (deeper loosening from z≤-3)
+                        # T2 z≤-2 at 93-96c (deeper loosening from z≤-3)
                         if (-2.5 < z_score <= -2.0
                                 and 93 <= best_ask <= DECIDED_CONTRACT_T2_MAX_PRICE):
                             _dc_shadow_insert("dc_shadow_t2_z2",
                                               f"shadow: z={z_score:.1f} price={best_ask}c (T2 z≤-2 expansion)")
-
-                        # 2F: NO-side decided (z≥5 → YES nearly worthless, NO is the bet)
-                        if z_score is not None and z_score >= 5.0 and best_ask <= 20:
-                            # Read actual NO ask from NBBO
-                            _no_ask_dc_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
-                            _no_ask_dc = None
-                            if _no_ask_dc_raw is not None:
-                                _no_ask_dc = (dollars_str_to_cents(_no_ask_dc_raw)
-                                              if isinstance(_no_ask_dc_raw, str)
-                                              else int(_no_ask_dc_raw))
-                            if _no_ask_dc is not None and _no_ask_dc > 0 and _no_ask_dc <= 93:
-                                _dcs_no_dedup = (ticker, "dc_shadow_no_side")
-                                if _dcs_no_dedup not in self._eval_opp_seen:
-                                    self._eval_opp_seen.add(_dcs_no_dedup)
-                                    # Simulate NO taker PnL: win pays (100-entry), lose costs entry
-                                    _no_fee = calculate_fee(1, _no_ask_dc, is_taker=True,
-                                                            fee_mult_taker=get_market_config("15m").fee_multiplier_taker,
-                                                            fee_mult_maker=get_market_config("15m").fee_multiplier_maker)
-                                    try:
-                                        self._state.insert_evaluated_opportunity(
-                                            ticker, window["event_ticker"], asset,
-                                            "dc_shadow_no_side",
-                                            rejection_reason=(f"shadow: z={z_score:.1f} no_ask={_no_ask_dc}c "
-                                                              f"yes_price={best_ask}c fee={_no_fee}c (NO-side decided)"),
-                                            spot_price=spot, threshold=threshold,
-                                            volatility=blended_rv,
-                                            market_price=_no_ask_dc,  # store NO ask as market_price
-                                            seconds_to_close=seconds_remaining,
-                                            calibrated_prob=1.0 - (best_ask / 100.0),  # NO prob = 1 - YES price
-                                            edge=round((1.0 - best_ask / 100.0) - _no_ask_dc / 100.0, 6),
-                                            ofa_adjustment=ofa_adjustment,
-                                            z_score=z_score,
-                                            vol_regime=vol_est["regime"],
-                                            raw_prob=raw_prob,
-                                            fee_adjusted_edge=round(
-                                                (1.0 - best_ask / 100.0) - _no_ask_dc / 100.0 - _no_fee / 100.0, 6),
-                                            product_type=window.get("product_type"),
-                                            side="no",
-                                            **_shadow_diag)
-                                    except Exception:
-                                        logging.warning("insert_evaluated_opportunity failed (dc_shadow_no_side)",
-                                                        exc_info=True)
 
                     # ── Relaxed Edge Shadow (Fix #1) ──────────────────────────
                     # Edge thresholds at 88-93c may be too conservative.
