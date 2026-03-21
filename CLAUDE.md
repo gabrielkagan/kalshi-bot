@@ -203,6 +203,10 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | BTC_MAX_RISK_PER_TRADE | 0.12 | BTC oversizing causes outsized losses → cap exposure |
 | SOL_MIN_EDGE | 0.018 | SOL-specific edge floor (data: 73.9% WR below, 95.4% above; 16.8pp CalEngine overconfidence) |
 | SOL_TAKER_FIRST | True | SOL bypasses maker entirely, direct IOC at all STC |
+| IOC_TICKER_COOLDOWN | 15 | Seconds cooldown per ticker after IOC attempt (was 60) |
+| IOC_RETRY_OFFSET | 1 | Cents above ask for taker-first IOC + retry offset |
+| MAX_CONCURRENT_TAKER_PER_ASSET | 3 | Safety cap on simultaneous taker positions per asset |
+| DIP_ADDON_ENABLED | False | Killed — 55.2% WR, no edge |
 | DECIDED_T1_ENABLED | True | Decided contract overlay: z≤-5, any price (env var) |
 | DECIDED_CONTRACT_Z_T1B | -4.0 | T1B z-score threshold (between T1's -5 and T2's -3) |
 | DECIDED_CONTRACT_T1B_MIN_PRICE | 95 | T1B minimum price in cents |
@@ -276,7 +280,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | Kalshi Order Flow (OFT) | Shadow — collecting data |
 | Sigmoid QLIKE mapping | Shadow — alternative EGARCH weight |
 | Cal pipeline (no-blend) | Shadow — monitoring after revert |
-| Dip addon (DIP_ADDON_SHADOW_MODE) | Shadow — logging dip-buy signals, not executing |
+| Dip addon (DIP_ADDON_ENABLED=False) | **Killed** — 55.2% WR (29 settled), no edge |
 | 15M shadow A4 (LateWindow 55-74c) | Shadow — low-price late-window approach |
 | JUMP_ADAPTIVE, RK_ADAPTIVE | **Promoted** — driving live |
 | EGARCH core + blend | **Promoted** — driving live |

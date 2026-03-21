@@ -1327,6 +1327,16 @@ class DashboardSnapshotBuilder:
             exec_eng["dip_addon_attempts"] = getattr(ex, "_session_dip_addon_attempts", 0)
             exec_eng["dip_addon_fills"] = getattr(ex, "_session_dip_addon_fills", 0)
             exec_eng["dip_addon_skipped"] = getattr(ex, "_session_dip_addon_skipped", 0)
+            # Order suppression tracking
+            exec_eng["order_suppressions"] = {
+                "asset_lock": getattr(ex, "_session_suppressed_asset_lock", 0),
+                "ticker_cooldown": getattr(ex, "_session_suppressed_ticker_cooldown", 0),
+                "no_asks": getattr(ex, "_session_suppressed_no_asks", 0),
+                "edge_recalc": getattr(ex, "_session_suppressed_edge_recalc", 0),
+                "zero_size": getattr(ex, "_session_suppressed_zero_size", 0),
+            }
+            exec_eng["session_ioc_retries"] = getattr(ex, "_session_ioc_retries", 0)
+            exec_eng["session_ioc_retry_fills"] = getattr(ex, "_session_ioc_retry_fills", 0)
 
             # Escalation funnel
             po_rej = exec_eng.get("session_post_only_rejections", 0)

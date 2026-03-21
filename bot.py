@@ -565,6 +565,10 @@ MAKER_ONLY_THRESHOLD = 0.0        # seconds_to_close below this → maker only, 
 SOL_TAKER_FIRST = True            # SOL: bypass maker entirely, go direct IOC at all STC
                                   # Data: 44.7% maker fill rate, $101/wk missed, 95% unfilled WR
                                   # Taker fee delta ~$2/wk vs $101 missed — clear win
+TAKER_FIRST_ASSETS = {"SOL"} if SOL_TAKER_FIRST else set()
+IOC_TICKER_COOLDOWN = 15          # seconds cooldown after IOC attempt per ticker (was 60 — too long for 15min windows)
+IOC_RETRY_OFFSET = 1              # cents above ask for taker-first IOC (1c worse entry, much higher fill rate)
+MAX_CONCURRENT_TAKER_PER_ASSET = 3  # safety cap: max simultaneous taker positions per asset
 
 # ─── Adaptive Escalation ─────────────────────────────────────────────────
 ESCALATION_WAIT_LONG = 15.0       # maker wait when >=180s to close
@@ -589,8 +593,8 @@ ADDON_MAX_PER_POSITION = 1            # max 1 addon per position
 ADDON_MAX_ENTRY_PRICE = 98            # 98¢ cap — still profitable after fees
 
 # ─── Dip Addon ────────────────────────────────────────────────────────
-DIP_ADDON_ENABLED = True
-DIP_ADDON_SHADOW_MODE = True              # PHASE 1: Log only, don't execute
+DIP_ADDON_ENABLED = False                 # Killed: 55.2% WR, no edge (29 settled, 16W/13L)
+DIP_ADDON_SHADOW_MODE = False             # Was PHASE 1 shadow — data conclusive, no edge
 
 # ─── Price Shadow — edge data for 70-85c markets ──────────────────────
 PRICE_SHADOW_ENABLED = True        # Shadow-evaluate POR for edge data collection
@@ -10465,6 +10469,14 @@ class OrderExecutor:
         self._session_dip_addon_shadow: int = 0
         self._session_dip_addon_skipped: int = 0
         self._escalating_assets: set = set()  # Fix 5: guard against re-entry during escalation
+        # Order suppression tracking — every gate logs when it blocks
+        self._session_suppressed_asset_lock: int = 0
+        self._session_suppressed_ticker_cooldown: int = 0
+        self._session_suppressed_no_asks: int = 0
+        self._session_suppressed_edge_recalc: int = 0
+        self._session_suppressed_zero_size: int = 0
+        self._session_ioc_retries: int = 0
+        self._session_ioc_retry_fills: int = 0
         self._kalshi_oft = None  # populated from scanner if available
         # SOL Path C shadow: pending observations {ticker → dict}
         self._sol_pathc_pending: Dict[str, Dict] = {}
@@ -10519,14 +10531,30 @@ class OrderExecutor:
                 return None
 
         asset = candidate["asset"]
-        if asset in self._active_orders or asset in self._escalating_assets:
-            return None
-
-        # Cooldown: skip tickers recently attempted via synchronous IOC
         ticker = candidate["ticker"]
+
+        # Gate 1: Per-asset lock for maker-first assets only.
+        # Taker-first (SOL): IOC resolves synchronously (<1s), no concurrent order risk.
+        # Maker-first (BTC/ETH/XRP): per-asset lock prevents two resting makers.
+        if asset not in TAKER_FIRST_ASSETS:
+            if asset in self._active_orders or asset in self._escalating_assets:
+                logging.warning(
+                    "ORDER_SUPPRESSED asset_lock: %s %s active_ticker=%s escalating=%s",
+                    asset, ticker,
+                    self._active_orders.get(asset, {}).get("ticker", "none"),
+                    asset in self._escalating_assets)
+                self._session_suppressed_asset_lock += 1
+                return None
+
+        # Gate 2: Ticker cooldown — skip tickers recently attempted via IOC
         cooldown_ts = self._recent_taker_tickers.get(ticker)
         if cooldown_ts is not None:
-            if time.time() - cooldown_ts < 60:
+            _cd_remaining = IOC_TICKER_COOLDOWN - (time.time() - cooldown_ts)
+            if _cd_remaining > 0:
+                logging.warning(
+                    "ORDER_SUPPRESSED ticker_cooldown: %s remaining=%.0fs",
+                    ticker, _cd_remaining)
+                self._session_suppressed_ticker_cooldown += 1
                 return None
             del self._recent_taker_tickers[ticker]
 
@@ -10734,21 +10762,28 @@ class OrderExecutor:
             cal_prob = candidate["calibrated_prob"]
 
             if count <= 0:
-                logging.warning("sol_taker_override_SKIPPED: %s position_size=%d", candidate["ticker"], count)
+                logging.warning("ORDER_SUPPRESSED zero_size: %s asset=SOL price=%d",
+                                candidate["ticker"], price)
+                self._session_suppressed_zero_size += 1
                 return None
 
             taker_fee = calculate_taker_fee(count, price)
             net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
 
             if net_edge < MIN_EDGE_PCT / 100.0:
-                logging.info(
-                    "sol_taker_override_SKIPPED: %s net_edge=%.4f < min=%.4f taker_fee=%d¢",
-                    candidate["ticker"], net_edge, MIN_EDGE_PCT / 100.0, taker_fee)
+                logging.warning(
+                    "ORDER_SUPPRESSED edge_taker_fee: %s asset=SOL net_edge=%.4f < min=%.4f "
+                    "price=%d taker_fee=%d¢ stc=%.0f",
+                    candidate["ticker"], net_edge, MIN_EDGE_PCT / 100.0, price, taker_fee,
+                    seconds_to_close or 0)
+                self._session_suppressed_edge_recalc += 1
                 return None
 
             fresh_ask = self._get_addon_best_ask(candidate["ticker"])
             if fresh_ask is None:
-                logging.info("sol_taker_override_SKIPPED: %s no asks on orderbook", candidate["ticker"])
+                logging.warning("ORDER_SUPPRESSED no_asks: %s asset=SOL price=%d stc=%.0f",
+                                candidate["ticker"], price, seconds_to_close or 0)
+                self._session_suppressed_no_asks += 1
                 return None
 
             if fresh_ask != price:
@@ -10759,9 +10794,22 @@ class OrderExecutor:
                 taker_fee = calculate_taker_fee(count, price)
                 net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
                 if net_edge < MIN_EDGE_PCT / 100.0:
-                    logging.info("sol_taker_override_SKIPPED: %s fresh_ask=%d¢ net_edge=%.4f < min",
-                                 candidate["ticker"], price, net_edge)
+                    logging.warning(
+                        "ORDER_SUPPRESSED edge_recalc: %s asset=SOL fresh_ask=%d net_edge=%.4f < min=%.4f",
+                        candidate["ticker"], price, net_edge, MIN_EDGE_PCT / 100.0)
+                    self._session_suppressed_edge_recalc += 1
                     return None
+
+            # Apply ask+1c offset for fill certainty on taker-first
+            ioc_price = min(price + IOC_RETRY_OFFSET, 99)
+            if ioc_price != price:
+                _offset_fee = calculate_taker_fee(count, ioc_price)
+                _offset_edge = cal_prob - (ioc_price / 100.0) - (_offset_fee / (count * 100.0))
+                if _offset_edge >= MIN_EDGE_PCT / 100.0:
+                    price = ioc_price
+                    candidate["best_yes_ask"] = ioc_price
+                    net_edge = _offset_edge
+                    taker_fee = _offset_fee
 
             logging.info(
                 "sol_taker_override_ENTRY: %s %dx @ %d¢ "
@@ -10784,12 +10832,38 @@ class OrderExecutor:
                     order_submitted_at=_order_submit_ts, order_outcome="filled",
                     taker_ask_at_submit=candidate.get("best_yes_ask"))
             else:
-                logging.warning("sol_taker_override_UNFILLED: %s", candidate["ticker"])
-                self._session_direct_taker_unfilled += 1
-                self._state.update_evaluated_opportunity_order(
-                    candidate["ticker"], order_submitted_at=_order_submit_ts,
-                    order_outcome="unfilled",
-                    taker_ask_at_submit=candidate.get("best_yes_ask"))
+                # IOC retry: refresh ask, try once more at fresh_ask + offset
+                _retry_ask = self._get_addon_best_ask(candidate["ticker"])
+                _retry_result = None
+                if _retry_ask is not None:
+                    _retry_price = min(_retry_ask + IOC_RETRY_OFFSET, 99)
+                    # Don't chase more than 2c above original submission price
+                    if _retry_price <= price + 2:
+                        _retry_fee = calculate_taker_fee(count, _retry_price)
+                        _retry_edge = cal_prob - (_retry_price / 100.0) - (_retry_fee / (count * 100.0))
+                        if _retry_edge >= MIN_EDGE_PCT / 100.0:
+                            logging.info("sol_taker_IOC_RETRY: %s retry_price=%d¢ retry_edge=%.4f",
+                                         candidate["ticker"], _retry_price, _retry_edge)
+                            candidate["best_yes_ask"] = _retry_price
+                            candidate["escalation_type"] = "ioc_retry"
+                            self._session_ioc_retries += 1
+                            _retry_result = self._submit_taker(candidate)
+                            if _retry_result is not None:
+                                logging.info("sol_taker_IOC_RETRY_FILLED: %s", candidate["ticker"])
+                                self._session_ioc_retry_fills += 1
+                                result = _retry_result
+                                _taker_oid = result.get("order_id") if isinstance(result, dict) else None
+                                self._state.update_evaluated_opportunity_order(
+                                    candidate["ticker"], order_id=_taker_oid,
+                                    order_submitted_at=_order_submit_ts, order_outcome="filled",
+                                    taker_ask_at_submit=candidate.get("best_yes_ask"))
+                if _retry_result is None:
+                    logging.warning("sol_taker_override_UNFILLED: %s", candidate["ticker"])
+                    self._session_direct_taker_unfilled += 1
+                    self._state.update_evaluated_opportunity_order(
+                        candidate["ticker"], order_submitted_at=_order_submit_ts,
+                        order_outcome="unfilled",
+                        taker_ask_at_submit=candidate.get("best_yes_ask"))
 
             # ── SOL Path C shadow: log what maker path would have done ──
             try:
@@ -10857,7 +10931,9 @@ class OrderExecutor:
             cal_prob = candidate["calibrated_prob"]
 
             if count <= 0:
-                logging.warning("dc_taker_SKIPPED: %s position_size=%d", candidate["ticker"], count)
+                logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=%s price=%d",
+                                candidate["ticker"], asset, _dc_strategy, price)
+                self._session_suppressed_zero_size += 1
                 return None
 
             taker_fee = calculate_taker_fee(count, price)
@@ -10866,15 +10942,18 @@ class OrderExecutor:
             # Decided contracts use assumed probs (99%/96%), not model edge.
             # Only skip if net_edge is deeply negative (fee exceeds profit).
             if net_edge < -0.01:
-                logging.info(
-                    "dc_taker_SKIPPED: %s net_edge=%.4f < -0.01 "
+                logging.warning(
+                    "ORDER_SUPPRESSED edge_taker_fee: %s asset=%s strategy=%s net_edge=%.4f < -0.01 "
                     "price=%d¢ cal_prob=%.4f taker_fee=%d¢",
-                    candidate["ticker"], net_edge, price, cal_prob, taker_fee)
+                    candidate["ticker"], asset, _dc_strategy, net_edge, price, cal_prob, taker_fee)
+                self._session_suppressed_edge_recalc += 1
                 return None
 
             fresh_ask = self._get_addon_best_ask(candidate["ticker"])
             if fresh_ask is None:
-                logging.info("dc_taker_SKIPPED: %s no asks on orderbook", candidate["ticker"])
+                logging.warning("ORDER_SUPPRESSED no_asks: %s asset=%s strategy=%s price=%d stc=%.0f",
+                                candidate["ticker"], asset, _dc_strategy, price, seconds_to_close or 0)
+                self._session_suppressed_no_asks += 1
                 # Set 60s cooldown to prevent rapid-fire re-scan of empty orderbook
                 if self._ml and hasattr(self._ml, "scanner"):
                     self._ml.scanner._dc_skip_cooldown[candidate["ticker"]] = time.time() + 60
@@ -10933,7 +11012,9 @@ class OrderExecutor:
             cal_prob = candidate["calibrated_prob"]
 
             if count <= 0:
-                logging.warning("direct_taker_SKIPPED: %s position_size=%d", candidate["ticker"], count)
+                logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s path=direct_taker price=%d",
+                                candidate["ticker"], asset, price)
+                self._session_suppressed_zero_size += 1
                 self._session_direct_taker_skipped += 1
                 return None
 
@@ -10941,21 +11022,22 @@ class OrderExecutor:
             net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
 
             if net_edge < MIN_EDGE_PCT / 100.0:
-                logging.info(
-                    "direct_taker_SKIPPED: %s net_edge=%.4f < min=%.4f "
-                    "seconds_to_close=%.0f taker_fee=%d¢",
-                    candidate["ticker"], net_edge, MIN_EDGE_PCT / 100.0,
-                    seconds_to_close, taker_fee)
+                logging.warning(
+                    "ORDER_SUPPRESSED edge_taker_fee: %s asset=%s path=direct_taker "
+                    "net_edge=%.4f < min=%.4f price=%d taker_fee=%d¢ stc=%.0f",
+                    candidate["ticker"], asset, net_edge, MIN_EDGE_PCT / 100.0,
+                    price, taker_fee, seconds_to_close)
+                self._session_suppressed_edge_recalc += 1
                 self._session_direct_taker_skipped += 1
                 return None
 
             # Verify actual liquidity before submitting IOC
             fresh_ask = self._get_addon_best_ask(candidate["ticker"])
             if fresh_ask is None:
-                logging.info(
-                    "direct_taker_SKIPPED: %s no asks on orderbook "
-                    "seconds_to_close=%.0f",
-                    candidate["ticker"], seconds_to_close)
+                logging.warning(
+                    "ORDER_SUPPRESSED no_asks: %s asset=%s path=direct_taker stc=%.0f",
+                    candidate["ticker"], asset, seconds_to_close)
+                self._session_suppressed_no_asks += 1
                 self._session_direct_taker_skipped += 1
                 return None
 
