@@ -80,7 +80,7 @@ jobs:
             --pdf-engine=xelatex
             --template=templates/technical_template.latex
             --number-sections
-            --syntax-highlighting=tango
+            --highlight-style=tango
 
       - name: Generate investor PDF
         uses: docker://pandoc/extra:latest
