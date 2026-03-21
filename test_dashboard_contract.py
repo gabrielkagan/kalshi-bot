@@ -94,6 +94,7 @@ REQUIRED_SNAP_KEYS = {
     "capital_utilization",
     "sol_pathc_shadow",
     "eth_filter_shadow",
+    "low_price_shadow",
     "hourly_config_a",
     "hourly_config_b",
     "sports_strong_config",

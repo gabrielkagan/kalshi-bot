@@ -594,6 +594,16 @@ DIP_ADDON_SHADOW_MODE = True              # PHASE 1: Log only, don't execute
 PRICE_SHADOW_ENABLED = True        # Shadow-evaluate POR for edge data collection
 PRICE_SHADOW_FLOOR = 70            # Lowest price to shadow-evaluate
 NO_SIDE_MIN_ENTRY_PRICE = 5        # Lowest NO price for shadow data collection (all product types)
+
+# ─── Low-Price Shadow — dual-sizing sim for 70-79c expansion ─────────
+LOW_PRICE_SHADOW_ENABLED = True    # Shadow-evaluate 70-79c 15M signals
+LOW_PRICE_SHADOW_MIN_PRICE = 70    # Floor
+LOW_PRICE_SHADOW_MAX_PRICE = 79    # Ceiling (80c+ already live for some assets)
+LOW_PRICE_SHADOW_MAX_STC = 600     # Match live STC gate
+LP_MAX_RISK_PER_TRADE = 0.10       # Capped sizing: 10% bankroll cap
+LP_KELLY_FRACTION = 0.25           # Capped sizing: quarter-Kelly
+LP_WINDOW_CAP = 2                  # Max signals per 15M window (correlation cap)
+LP_HOUR_CAP = 4                    # Max signals per hour (correlation cap)
 DIP_ADDON_MIN_DROP_CENTS = 3              # ask must drop ≥3¢ below entry
 DIP_ADDON_MIN_SECONDS_SINCE_FILL = 5.0   # wait after fill before eligible
 DIP_ADDON_MIN_STC_REMAINING = 90.0       # need ≥90s (aligns with maker-only threshold)
@@ -1441,6 +1451,33 @@ class StateManager:
                 ON sports_shadow_log(league);
             CREATE INDEX IF NOT EXISTS idx_sports_shadow_signal
                 ON sports_shadow_log(signal_fired);
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS low_price_shadow_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                event_ticker TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                window_id TEXT,
+                market_price INTEGER,
+                seconds_to_close REAL,
+                calibrated_prob REAL, raw_prob REAL,
+                edge REAL, fee_adjusted_edge REAL,
+                z_score REAL, vol_regime TEXT, volatility REAL,
+                spot_price REAL, threshold REAL,
+                full_kelly_risk_fraction REAL, full_kelly_contracts INTEGER,
+                capped_risk_fraction REAL, capped_contracts INTEGER,
+                window_signal_count INTEGER, hour_signal_count INTEGER,
+                evaluation_time TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                market_result TEXT,
+                counterfactual_pnl_full REAL,
+                counterfactual_pnl_capped REAL,
+                settled_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_lps_ticker ON low_price_shadow_signals(ticker);
+            CREATE INDEX IF NOT EXISTS idx_lps_status ON low_price_shadow_signals(status);
+            CREATE INDEX IF NOT EXISTS idx_lps_asset ON low_price_shadow_signals(asset);
         """)
         self.conn.commit()
 
@@ -5745,6 +5782,10 @@ class OpportunityScanner:
         }
         self._overnight_lp_vol_skip_count: int = 0  # session counter for dashboard
 
+        # Low-price shadow: per-window and per-hour correlation tracking (reset each tick)
+        self._lp_window_counts: Dict[str, int] = {}
+        self._lp_hour_signals: Dict[str, int] = {}  # key = "HH" UTC hour string
+
         # ── Startup assertion: _shadow_diag keys must be accepted by DB insert fns ──
         # Prevents the bug class where a new key in _shadow_diag causes a crash
         # at every **_shadow_diag splat into insert_rejection/insert_evaluated_opportunity.
@@ -5930,6 +5971,8 @@ class OpportunityScanner:
         self._config_b_window_counts = {}  # Config B (BTC 70-89c wl2) separate counter
         self._dc_window_risk = {}  # Decided contract per-window risk tracker
         self._dc_window_cap_skips = 0  # Session counter for window cap skips
+        self._lp_window_counts = {}  # Low-price shadow: per-window signal count
+        self._lp_hour_signals = {}  # Low-price shadow: per-hour signal count
         try:
             for pos in self._state.get_open_positions():
                 evt = pos.get("event_ticker", "")
@@ -6029,6 +6072,7 @@ class OpportunityScanner:
         _price_shadow_queue = []
         _no_side_queue = []  # NO-side shadow: markets queued for NO evaluation
         _overnight_lp_queue = []  # Overnight low-price shadow: 50-85c YES during overnight hours
+        _low_price_shadow_queue = []  # Low-price shadow: 70-79c 15M signals
 
         # 1. Filter windows by time range (config-driven thresholds)
         time_ok_windows = []
@@ -6569,6 +6613,28 @@ class OpportunityScanner:
                             "product_type": window.get("product_type"),
                             "_shadow_diag": _shadow_diag.copy(),
                             "_oft_db": _oft_db.copy(),
+                        })
+                    # Low-price shadow: queue 70-79c 15M signals for dual-sizing analysis
+                    if (LOW_PRICE_SHADOW_ENABLED
+                            and _pt in (None, "15m")
+                            and LOW_PRICE_SHADOW_MIN_PRICE <= best_ask <= LOW_PRICE_SHADOW_MAX_PRICE
+                            and seconds_remaining <= LOW_PRICE_SHADOW_MAX_STC):
+                        _low_price_shadow_queue.append({
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "best_ask": best_ask,
+                            "spot": spot,
+                            "threshold": threshold,
+                            "blended_rv": blended_rv,
+                            "seconds_remaining": seconds_remaining,
+                            "vol_regime": vol_est["regime"],
+                            "ask_depth": ask_depth,
+                            "best_ask_source": best_ask_source,
+                            "product_type": window.get("product_type"),
+                            "_shadow_diag": _shadow_diag.copy(),
+                            "_oft_db": _oft_db.copy(),
+                            "has_prob": False,
                         })
                     # NO-side shadow: read actual NO ask from market NBBO
                     _no_ask_por = None
@@ -7166,6 +7232,37 @@ class OpportunityScanner:
                             ofa_adjustment, z_score, vol_est,
                             calibrated_prob_raw, est_fee_1c,
                             ask_depth, best_ask_source, _cf, _shadow_diag)
+
+                    # ── Low-price shadow: queue IE signals at 70-79c ──
+                    if (LOW_PRICE_SHADOW_ENABLED
+                            and _pt in (None, "15m")
+                            and LOW_PRICE_SHADOW_MIN_PRICE <= best_ask <= LOW_PRICE_SHADOW_MAX_PRICE
+                            and seconds_remaining <= LOW_PRICE_SHADOW_MAX_STC):
+                        _low_price_shadow_queue.append({
+                            "ticker": ticker,
+                            "event_ticker": window["event_ticker"],
+                            "asset": asset,
+                            "best_ask": best_ask,
+                            "spot": spot,
+                            "threshold": threshold,
+                            "blended_rv": blended_rv,
+                            "seconds_remaining": seconds_remaining,
+                            "vol_regime": vol_est["regime"],
+                            "ask_depth": ask_depth,
+                            "best_ask_source": best_ask_source,
+                            "product_type": window.get("product_type"),
+                            "_shadow_diag": _shadow_diag.copy(),
+                            "_oft_db": _oft_db.copy(),
+                            "has_prob": True,
+                            "final_prob": final_prob,
+                            "raw_prob": raw_prob,
+                            "calibration_method": calibration_method,
+                            "edge": edge,
+                            "fee_adjusted_edge": fee_adjusted_edge,
+                            "z_score": z_score,
+                            "est_fee_1c": est_fee_1c,
+                            "calibrated_prob_raw": calibrated_prob_raw,
+                        })
 
                     # ── Weekend Edge Discount (Live + Shadow) ────────────────
                     # On Sat/Sun, re-evaluate 15M insufficient_edge rejections
@@ -8956,6 +9053,10 @@ class OpportunityScanner:
         if _overnight_lp_queue:
             self._process_overnight_lp_shadow(_overnight_lp_queue)
 
+        # Low-price shadow: dual-sizing sim for 70-79c expansion analysis
+        if LOW_PRICE_SHADOW_ENABLED and _low_price_shadow_queue:
+            self._process_low_price_shadow(_low_price_shadow_queue)
+
         if not candidates:
             self._last_scan_stats = scan_stats
             return None
@@ -9568,6 +9669,228 @@ class OpportunityScanner:
                     logging.warning("insert_evaluated_opportunity failed (overnight_lp_shadow)", exc_info=True)
         except Exception:
             logging.warning("overnight_lp_shadow processing error", exc_info=True)
+
+    def _process_low_price_shadow(self, queue: list) -> None:
+        """Shadow-evaluate 70-79c 15M signals with dual sizing simulation.
+
+        Collects data for potential MIN_ENTRY_PRICE expansion. Logs to both
+        evaluated_opportunities (for settlement linking) and low_price_shadow_signals
+        (for correlation tracking and capped-sizing counterfactuals).
+
+        Two sizing simulations per signal:
+        - Full Kelly: current sizer output (what would happen if we just lowered the floor)
+        - Capped Kelly: LP_KELLY_FRACTION × LP_MAX_RISK_PER_TRADE (conservative alternative)
+
+        Correlation tracking: per-window and per-hour signal counts to measure
+        simultaneous low-price exposure.
+
+        Shadow-only — never places orders. Entire body in try/except so
+        a crash here cannot affect candidate selection or live trading.
+        """
+        try:
+            for item in queue:
+                ticker = item["ticker"]
+                best_ask = item["best_ask"]
+                spot = item["spot"]
+                threshold = item["threshold"]
+                blended_rv = item["blended_rv"]
+                stc = item["seconds_remaining"]
+                asset = item["asset"]
+                _pt = item["product_type"]
+                event_ticker = item["event_ticker"]
+
+                # Dedup: skip if already processed for this ticker
+                _dedup_key = (ticker, "low_price_shadow")
+                if _dedup_key in self._eval_opp_seen:
+                    continue
+                self._eval_opp_seen.add(_dedup_key)
+
+                if item.get("has_prob"):
+                    # IE path: prob already computed
+                    final_prob = item["final_prob"]
+                    raw_prob = item["raw_prob"]
+                    calibration_method = item["calibration_method"]
+                    z_score = item["z_score"]
+                    edge = item["edge"]
+                    fee_adjusted_edge = item["fee_adjusted_edge"]
+                    est_fee_1c = item["est_fee_1c"]
+                    calibrated_prob_raw = item["calibrated_prob_raw"]
+                else:
+                    # POR path: need to compute probability
+                    prob_result = ProbabilityEngine.compute(
+                        spot, threshold, stc, blended_rv,
+                        market_price_cents=best_ask,
+                        asset=asset, product_type=_pt,
+                    )
+                    if not prob_result.get("tradeable"):
+                        continue
+                    final_prob = prob_result["calibrated_prob"]
+                    raw_prob = prob_result.get("raw_prob")
+                    calibration_method = prob_result.get("calibration_method")
+                    z_score = prob_result.get("z_score")
+                    calibrated_prob_raw = final_prob
+
+                    # Temperature scaling
+                    _tempcfg = get_market_config(_pt)
+                    _temp_t = _tempcfg.temperature_t if _tempcfg.temperature_enabled else None
+                    if _temp_t is not None and _temp_t == 1.0:
+                        _temp_t = None
+                    _reg_engine = _resolve_cal_engine(_pt, asset, require_enabled=True)
+                    if _reg_engine is not None and _reg_engine.is_learned_method_active():
+                        _temp_t = None
+                    if _temp_t is not None:
+                        _p = max(0.001, min(0.999, final_prob))
+                        _z = math.log(_p / (1.0 - _p))
+                        final_prob = 1.0 / (1.0 + math.exp(-_z / _temp_t))
+
+                    # Dynamic cap / learned ceiling
+                    _dyn_cap = ProbabilityEngine._dynamic_cap(stc, product_type=_pt)
+                    _reg_engine_c = _resolve_cal_engine(_pt, asset, require_enabled=True)
+                    if _reg_engine_c is not None and _reg_engine_c.is_learned_method_active():
+                        final_prob = max(0.01, min(NUMERICAL_SAFETY_CEILING, final_prob))
+                    else:
+                        final_prob = max(0.01, min(_dyn_cap, final_prob))
+
+                    # Market blend
+                    _mcfg = get_market_config(_pt)
+                    _effective_blend_w = _mcfg.market_blend_w
+                    market_implied_prob = best_ask / 100.0
+                    final_prob = (1.0 - _effective_blend_w) * final_prob + _effective_blend_w * market_implied_prob
+
+                    # Edge computation
+                    edge = final_prob - best_ask / 100.0
+                    est_fee_1c = calculate_fee(1, best_ask, is_taker=True,
+                                               fee_mult_taker=_mcfg.fee_multiplier_taker,
+                                               fee_mult_maker=_mcfg.fee_multiplier_maker)
+                    fee_adjusted_edge = edge - est_fee_1c / 100.0
+
+                # ── Full Kelly sizing (what would happen if we just lowered the floor) ──
+                _full_kelly_f = None
+                _full_position = None
+                _full_drawdown = None
+                _lp_balance = self._get_balance_cached()
+                if _lp_balance and _lp_balance > 0:
+                    _full_sizing = self._sizer.compute(final_prob, best_ask, _lp_balance)
+                    _full_kelly_f = _full_sizing["kelly_f"]
+                    _full_position = _full_sizing["contracts"]
+                    _full_drawdown = _full_sizing["drawdown_scaler"]
+                    # Apply standard 15M Kelly fraction + risk cap
+                    _scfg = get_market_config(_pt)
+                    if _scfg.kelly_fraction < 1.0:
+                        _full_position = max(1, int(_full_position * _scfg.kelly_fraction))
+                    _type_max = int((_lp_balance * _scfg.max_risk_per_trade) / best_ask)
+                    if _full_position > _type_max:
+                        _full_position = max(1, _type_max)
+
+                # ── Capped Kelly sizing (conservative alternative) ──
+                _capped_kelly_f = None
+                _capped_position = None
+                if _lp_balance and _lp_balance > 0:
+                    _cap_sizing = self._sizer.compute(final_prob, best_ask, _lp_balance)
+                    _capped_kelly_f = _cap_sizing["kelly_f"]
+                    _capped_position = _cap_sizing["contracts"]
+                    # Apply LP-specific caps
+                    if LP_KELLY_FRACTION < 1.0:
+                        _capped_position = max(1, int(_capped_position * LP_KELLY_FRACTION))
+                    _cap_type_max = int((_lp_balance * LP_MAX_RISK_PER_TRADE) / best_ask)
+                    if _capped_position > _cap_type_max:
+                        _capped_position = max(1, _cap_type_max)
+
+                # ── Correlation tracking ──
+                _window_count = self._lp_window_counts.get(event_ticker, 0) + 1
+                self._lp_window_counts[event_ticker] = _window_count
+                _utc_hour = datetime.datetime.now(timezone.utc).strftime("%H")
+                _hour_count = self._lp_hour_signals.get(_utc_hour, 0) + 1
+                self._lp_hour_signals[_utc_hour] = _hour_count
+
+                # ── JSONL log ──
+                try:
+                    self._logger.log_opportunity({
+                        "filter_stage": "low_price_shadow",
+                        "ticker": ticker,
+                        "event_ticker": event_ticker,
+                        "asset": asset,
+                        "market_price": best_ask,
+                        "model_prob": round(final_prob, 6),
+                        "edge": round(edge, 6),
+                        "fee_adjusted_edge": round(fee_adjusted_edge, 6),
+                        "full_kelly_f": round(_full_kelly_f, 6) if _full_kelly_f else None,
+                        "full_contracts": _full_position,
+                        "capped_kelly_f": round(_capped_kelly_f, 6) if _capped_kelly_f else None,
+                        "capped_contracts": _capped_position,
+                        "window_signal_count": _window_count,
+                        "hour_signal_count": _hour_count,
+                        "seconds_to_close": round(stc, 1),
+                        "spot_price": spot,
+                        "threshold": threshold,
+                        "volatility": blended_rv,
+                        "vol_regime": item["vol_regime"],
+                        "z_score": z_score,
+                    })
+                except Exception:
+                    logging.debug("low_price_shadow log failed", exc_info=True)
+
+                # ── DB insert to evaluated_opportunities (for settlement linking) ──
+                try:
+                    self._state.insert_evaluated_opportunity(
+                        ticker, event_ticker, asset,
+                        "low_price_shadow",
+                        rejection_reason=(
+                            "shadow: 70-79c dual-sizing sim, "
+                            "full={} capped={} w_ct={} h_ct={}".format(
+                                _full_position, _capped_position,
+                                _window_count, _hour_count)
+                        ),
+                        spot_price=spot, threshold=threshold,
+                        volatility=blended_rv, market_price=best_ask,
+                        seconds_to_close=stc,
+                        calibrated_prob=final_prob, edge=edge,
+                        fee_adjusted_edge=fee_adjusted_edge,
+                        ofa_adjustment=None,
+                        z_score=z_score,
+                        vol_regime=item["vol_regime"],
+                        calibrated_prob_raw=calibrated_prob_raw,
+                        kelly_f=_full_kelly_f,
+                        position_size=_full_position,
+                        drawdown_scaler=_full_drawdown,
+                        breakeven_wr=best_ask / 100.0,
+                        expected_value=round(
+                            (final_prob * (100 - best_ask)) -
+                            ((1 - final_prob) * best_ask) - est_fee_1c, 2),
+                        ask_depth=item["ask_depth"],
+                        best_ask_source=item["best_ask_source"],
+                        raw_prob=raw_prob,
+                        calibration_method=calibration_method,
+                        product_type=_pt,
+                        **item["_oft_db"], **item["_shadow_diag"])
+                except Exception:
+                    logging.warning("insert_evaluated_opportunity failed (low_price_shadow)", exc_info=True)
+
+                # ── Insert to dedicated table (for correlation & dual-sizing analysis) ──
+                try:
+                    self._state.conn.execute(
+                        "INSERT INTO low_price_shadow_signals "
+                        "(ticker, event_ticker, asset, window_id, market_price, "
+                        "seconds_to_close, calibrated_prob, raw_prob, edge, fee_adjusted_edge, "
+                        "z_score, vol_regime, volatility, spot_price, threshold, "
+                        "full_kelly_risk_fraction, full_kelly_contracts, "
+                        "capped_risk_fraction, capped_contracts, "
+                        "window_signal_count, hour_signal_count, evaluation_time) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (ticker, event_ticker, asset, event_ticker, best_ask,
+                         stc, round(final_prob, 6),
+                         round(raw_prob, 6) if raw_prob is not None else None,
+                         round(edge, 6), round(fee_adjusted_edge, 6),
+                         z_score, item["vol_regime"], blended_rv, spot, threshold,
+                         _full_kelly_f, _full_position,
+                         _capped_kelly_f, _capped_position,
+                         _window_count, _hour_count,
+                         datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+                    self._state.conn.commit()
+                except Exception:
+                    logging.warning("low_price_shadow_signals insert failed", exc_info=True)
+        except Exception:
+            logging.warning("low_price_shadow processing error", exc_info=True)
 
     def _process_no_side_shadow(self, queue: list) -> None:
         """Shadow-evaluate NO-side (buy NO contract) for all queued markets.
@@ -13118,6 +13441,45 @@ class SettlementTracker:
                         ticker, result, _live_pnl, _maker_pnl, _esc_pnl, _best_pnl)
             except Exception:
                 logging.warning("sol_pathc_shadow settle failed for %s", ticker, exc_info=True)
+
+        # Settle low_price_shadow_signals
+        for ticker, result in ticker_results.items():
+            if result not in ("yes", "all_yes", "no", "all_no"):
+                continue
+            try:
+                _lps_rows = self._state.conn.execute(
+                    "SELECT id, market_price, full_kelly_contracts, capped_contracts "
+                    "FROM low_price_shadow_signals WHERE ticker=? AND status='open'",
+                    (ticker,)).fetchall()
+                for _lps in _lps_rows:
+                    _lps_id = _lps["id"]
+                    _lps_price = _lps["market_price"]
+                    _is_win = result in ("yes", "all_yes")
+                    # Full Kelly PnL
+                    _full_ct = _lps["full_kelly_contracts"] or 1
+                    _full_fee = calculate_taker_fee(_full_ct, _lps_price)
+                    if _is_win:
+                        _full_pnl = (100 - _lps_price) * _full_ct - _full_fee
+                    else:
+                        _full_pnl = -(_lps_price * _full_ct + _full_fee)
+                    # Capped Kelly PnL
+                    _cap_ct = _lps["capped_contracts"] or 1
+                    _cap_fee = calculate_taker_fee(_cap_ct, _lps_price)
+                    if _is_win:
+                        _cap_pnl = (100 - _lps_price) * _cap_ct - _cap_fee
+                    else:
+                        _cap_pnl = -(_lps_price * _cap_ct + _cap_fee)
+                    self._state.conn.execute(
+                        "UPDATE low_price_shadow_signals SET status='settled', "
+                        "market_result=?, counterfactual_pnl_full=?, counterfactual_pnl_capped=?, "
+                        "settled_at=? WHERE id=?",
+                        (result, _full_pnl, _cap_pnl,
+                         datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                         _lps_id))
+                if _lps_rows:
+                    self._state.conn.commit()
+            except Exception:
+                logging.warning("low_price_shadow settle failed for %s", ticker, exc_info=True)
 
         # Weather: fetch actual temps (API calls — after lock released)
         _wx_dirty = False

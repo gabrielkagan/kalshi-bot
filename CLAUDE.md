@@ -125,7 +125,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 
 ## Project Structure
 
-- `bot.py` — Main bot (~14000 lines, all trading logic)
+- `bot.py` — Main bot (~14600 lines, all trading logic)
 - `analyst.py` — AI analyst system (news sentiment, loss analysis, Telegram alerts)
 - `spx_engine.py` — SPX hourly market engine (Polygon.io price feed, EGARCH, RK, VIX integration)
 - `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
@@ -181,7 +181,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
 - **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
-- **Tests:** 737 tests across 15+ test files
+- **Tests:** 774 tests across 15+ test files
 
 ## Key Config Values (bot.py)
 
@@ -289,6 +289,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | SOL taker-first | **Promoted** — SOL bypasses maker, direct IOC |
 | XRP live (was shadow) | **Promoted** — XRP live at 92c+ floor |
 | Weekend edge discount | **Promoted** — live on Sat/Sun (89c+, STC<=600s, no DC overlap); sub-89c/STC>600s shadow |
+| Low-price shadow (70-79c) | Shadow — dual-sizing sim (full Kelly vs capped LP_KELLY=0.25, LP_MAX_RISK=0.10) with correlation tracking |
 
 ## Order Execution
 

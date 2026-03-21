@@ -3112,7 +3112,7 @@ class DashboardSnapshotBuilder:
             'weekend_discount_shadow', 'overnight_discount_shadow',
             'overnight_lp_shadow', 'decided_contract_t1',
             'decided_contract_t1b', 'decided_contract_t2',
-            'relaxed_edge_shadow',
+            'relaxed_edge_shadow', 'low_price_shadow',
         )
         _shadow_defaults = {
             "weekend_discount_shadow": {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
@@ -3134,6 +3134,11 @@ class DashboardSnapshotBuilder:
                                         "sim_pnl_cents": 0, "by_asset": {}, "by_tier": {}},
             "relaxed_edge_shadow": {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
                                     "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {}},
+            "low_price_shadow": {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
+                                  "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
+                                  "config": {"price_range": "70-79c", "max_stc": 600,
+                                             "lp_kelly_fraction": 0.25, "lp_max_risk": 0.10,
+                                             "window_cap": 2, "hour_cap": 4}},
         }
         try:
             # Query 1: per filter_stage × asset (covers totals + by_asset for all 5 panels)
@@ -3145,7 +3150,7 @@ class DashboardSnapshotBuilder:
                 "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
                 "FROM evaluated_opportunities "
                 "WHERE filter_stage IN ('weekend_discount_shadow','overnight_discount_shadow',"
-                "'overnight_lp_shadow','decided_contract_t1','decided_contract_t1b','decided_contract_t2','relaxed_edge_shadow') "
+                "'overnight_lp_shadow','decided_contract_t1','decided_contract_t1b','decided_contract_t2','relaxed_edge_shadow','low_price_shadow') "
                 "GROUP BY filter_stage, asset"
             ).fetchall()
             _query_count += 1
@@ -3159,7 +3164,7 @@ class DashboardSnapshotBuilder:
                 "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
                 "FROM evaluated_opportunities "
                 "WHERE filter_stage IN ('weekend_discount_shadow','overnight_discount_shadow',"
-                "'overnight_lp_shadow','decided_contract_t1','decided_contract_t1b','decided_contract_t2','relaxed_edge_shadow') "
+                "'overnight_lp_shadow','decided_contract_t1','decided_contract_t1b','decided_contract_t2','relaxed_edge_shadow','low_price_shadow') "
                 "GROUP BY filter_stage, market_price"
             ).fetchall()
             _query_count += 1
@@ -3222,11 +3227,19 @@ class DashboardSnapshotBuilder:
                 if mp >= 90: return "90-91"
                 return "88-89"
 
+            def _bucket_low_price(mp):
+                """70-74, 75-79"""
+                if mp is None:
+                    return "unknown"
+                if mp >= 75: return "75-79"
+                return "70-74"
+
             _tier_bucketers = {
                 "weekend_discount_shadow": _bucket_standard,
                 "overnight_discount_shadow": _bucket_standard,
                 "overnight_lp_shadow": _bucket_lp,
                 "relaxed_edge_shadow": _bucket_relaxed,
+                "low_price_shadow": _bucket_low_price,
             }
 
             # Build {filter_stage: {tier: {n, settled, wins, sim_pnl}}}
@@ -3318,6 +3331,51 @@ class DashboardSnapshotBuilder:
                 "stc_range": "120-600s", "vol_spike_mult": 2.0,
             }
             snap["overnight_lp_shadow"] = _olp
+
+            # Low-price shadow (70-79c dual-sizing sim + correlation)
+            _lps = _panel_snap("low_price_shadow", _sh_totals, _sh_asset_map, _sh_tier_map)
+            _lps["config"] = {
+                "price_range": "70-79c", "max_stc": 600,
+                "lp_kelly_fraction": 0.25, "lp_max_risk": 0.10,
+                "window_cap": 2, "hour_cap": 4,
+            }
+            # Pull capped-sizing PnL and correlation stats from dedicated table
+            try:
+                _lps_stats = _conn.execute(
+                    "SELECT COUNT(*) as n, "
+                    "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                    "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                    "  THEN 1 ELSE 0 END) as wins, "
+                    "SUM(CASE WHEN status='settled' THEN counterfactual_pnl_full ELSE 0 END) as pnl_full, "
+                    "SUM(CASE WHEN status='settled' THEN counterfactual_pnl_capped ELSE 0 END) as pnl_capped, "
+                    "ROUND(AVG(window_signal_count), 2) as avg_window_ct, "
+                    "MAX(window_signal_count) as max_window_ct, "
+                    "ROUND(AVG(hour_signal_count), 2) as avg_hour_ct, "
+                    "MAX(hour_signal_count) as max_hour_ct "
+                    "FROM low_price_shadow_signals"
+                ).fetchone()
+                _query_count += 1
+                if _lps_stats and _lps_stats["n"]:
+                    _lps["capped_pnl_cents"] = _lps_stats["pnl_capped"] or 0
+                    _lps["full_pnl_cents"] = _lps_stats["pnl_full"] or 0
+                    _lps["correlation"] = {
+                        "avg_window_ct": _lps_stats["avg_window_ct"],
+                        "max_window_ct": _lps_stats["max_window_ct"],
+                        "avg_hour_ct": _lps_stats["avg_hour_ct"],
+                        "max_hour_ct": _lps_stats["max_hour_ct"],
+                    }
+                else:
+                    _lps["capped_pnl_cents"] = 0
+                    _lps["full_pnl_cents"] = 0
+                    _lps["correlation"] = {"avg_window_ct": 0, "max_window_ct": 0,
+                                            "avg_hour_ct": 0, "max_hour_ct": 0}
+            except Exception:
+                logging.debug("low_price_shadow dedicated table query failed", exc_info=True)
+                _lps["capped_pnl_cents"] = 0
+                _lps["full_pnl_cents"] = 0
+                _lps["correlation"] = {"avg_window_ct": 0, "max_window_ct": 0,
+                                        "avg_hour_ct": 0, "max_hour_ct": 0}
+            snap["low_price_shadow"] = _lps
 
             # Decided contract (tier = filter_stage t1/t1b/t2, not price bucket)
             _dc_tiers_live = ("decided_contract_t1", "decided_contract_t1b", "decided_contract_t2")
@@ -3708,6 +3766,7 @@ class DashboardSnapshotBuilder:
                 "dc_expansion_shadow", "relaxed_edge_shadow",
                 "calibration_gap", "capital_utilization", "loss_clusters",
                 "pipeline_completeness", "sol_pathc_shadow", "eth_filter_shadow",
+                "low_price_shadow",
             }
             self._slow_cache = {k: v for k, v in snap.items() if k in _SLOW_SNAP_KEYS}
             self._slow_cache_ts = _now_mono

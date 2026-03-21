@@ -203,7 +203,7 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot.py                         -- core bot logic (~14,000 lines, never rename)
+bot.py                         -- core bot logic (~14,600 lines, never rename)
 models.py                     -- pure-math model classes (EGARCHEstimator, fee calc, TV RK weights)
 config.py                     -- shared constants (sizing tiers, drawdown thresholds, EGARCH params)
 market_config.py               -- centralized MarketTypeConfig (validates against bot.py at startup)
@@ -267,7 +267,7 @@ weather_shadow_audit.py        -- weather shadow audit
 weekend_discount_audit.py      -- weekend/overnight edge discount audit
 ```
 
-### Tests (737 tests)
+### Tests (774 tests)
 
 ```
 test_adaptive_jump.py          -- adaptive jump detection tests
