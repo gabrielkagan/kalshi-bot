@@ -3111,7 +3111,8 @@ class DashboardSnapshotBuilder:
         _SHADOW_STAGES = (
             'weekend_discount_shadow', 'overnight_discount_shadow',
             'overnight_lp_shadow', 'decided_contract_t1',
-            'decided_contract_t2', 'relaxed_edge_shadow',
+            'decided_contract_t1b', 'decided_contract_t2',
+            'relaxed_edge_shadow',
         )
         _shadow_defaults = {
             "weekend_discount_shadow": {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
@@ -3144,7 +3145,7 @@ class DashboardSnapshotBuilder:
                 "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
                 "FROM evaluated_opportunities "
                 "WHERE filter_stage IN ('weekend_discount_shadow','overnight_discount_shadow',"
-                "'overnight_lp_shadow','decided_contract_t1','decided_contract_t2','relaxed_edge_shadow') "
+                "'overnight_lp_shadow','decided_contract_t1','decided_contract_t1b','decided_contract_t2','relaxed_edge_shadow') "
                 "GROUP BY filter_stage, asset"
             ).fetchall()
             _query_count += 1
@@ -3158,7 +3159,7 @@ class DashboardSnapshotBuilder:
                 "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl "
                 "FROM evaluated_opportunities "
                 "WHERE filter_stage IN ('weekend_discount_shadow','overnight_discount_shadow',"
-                "'overnight_lp_shadow','decided_contract_t1','decided_contract_t2','relaxed_edge_shadow') "
+                "'overnight_lp_shadow','decided_contract_t1','decided_contract_t1b','decided_contract_t2','relaxed_edge_shadow') "
                 "GROUP BY filter_stage, market_price"
             ).fetchall()
             _query_count += 1
@@ -3288,16 +3289,18 @@ class DashboardSnapshotBuilder:
             }
             snap["overnight_lp_shadow"] = _olp
 
-            # Decided contract (tier = filter_stage t1/t2, not price bucket)
-            _dc_t1 = _sh_totals.get("decided_contract_t1", {"n": 0, "settled": 0, "wins": 0, "sim_pnl": 0})
-            _dc_t2 = _sh_totals.get("decided_contract_t2", {"n": 0, "settled": 0, "wins": 0, "sim_pnl": 0})
-            _dc_total_n = _dc_t1["n"] + _dc_t2["n"]
-            _dc_total_s = _dc_t1["settled"] + _dc_t2["settled"]
-            _dc_total_w = _dc_t1["wins"] + _dc_t2["wins"]
-            _dc_total_pnl = _dc_t1["sim_pnl"] + _dc_t2["sim_pnl"]
-            # Merge by_asset across t1+t2
+            # Decided contract (tier = filter_stage t1/t1b/t2, not price bucket)
+            _dc_tiers_live = ("decided_contract_t1", "decided_contract_t1b", "decided_contract_t2")
+            _dc_total_n = _dc_total_s = _dc_total_w = _dc_total_pnl = 0
+            for _dct in _dc_tiers_live:
+                _dctv = _sh_totals.get(_dct, {"n": 0, "settled": 0, "wins": 0, "sim_pnl": 0})
+                _dc_total_n += _dctv["n"]
+                _dc_total_s += _dctv["settled"]
+                _dc_total_w += _dctv["wins"]
+                _dc_total_pnl += _dctv["sim_pnl"]
+            # Merge by_asset across t1/t1b/t2
             _dc_by_asset = {}
-            for fs in ("decided_contract_t1", "decided_contract_t2"):
+            for fs in _dc_tiers_live:
                 for asset, vals in _sh_asset_map.get(fs, {}).items():
                     if asset not in _dc_by_asset:
                         _dc_by_asset[asset] = {"n": 0, "settled": 0, "wins": 0, "sim_pnl_cents": 0}
@@ -3307,9 +3310,9 @@ class DashboardSnapshotBuilder:
                     _dc_by_asset[asset]["sim_pnl_cents"] += vals["sim_pnl_cents"]
             for vals in _dc_by_asset.values():
                 vals["wr"] = round(vals["wins"] / vals["settled"], 4) if vals["settled"] else 0
-            # by_tier: t1 vs t2 from totals
+            # by_tier: t1/t1b/t2 from totals
             _dc_by_tier = {}
-            for fs in ("decided_contract_t1", "decided_contract_t2"):
+            for fs in _dc_tiers_live:
                 t = _sh_totals.get(fs)
                 if t and t["n"] > 0:
                     _dc_by_tier[fs] = {
@@ -3333,7 +3336,7 @@ class DashboardSnapshotBuilder:
                     "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
                     "SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as losses, "
                     "SUM(pnl_cents) as pnl "
-                    "FROM settled_trades WHERE strategy IN ('decided_t1','decided_t2') "
+                    "FROM settled_trades WHERE strategy IN ('decided_t1','decided_t1b','decided_t2') "
                     "GROUP BY strategy, asset"
                 ).fetchall():
                     strat, asset_name, n, w, l, pnl = _row
@@ -3366,6 +3369,52 @@ class DashboardSnapshotBuilder:
             except Exception:
                 logging.debug("decided_contract_live snapshot failed", exc_info=True)
             snap["decided_contract_live"] = _dc_live
+
+            # ── Decided Contract Expansion Shadow ──
+            _DC_EXPANSION_STAGES = (
+                'dc_shadow_t1b_93c', 'dc_shadow_t2_z25', 'dc_shadow_t2_90c',
+                'dc_shadow_t2_90c_xrp', 'dc_shadow_t2_z2', 'dc_shadow_no_side',
+            )
+            try:
+                _dc_exp = {}
+                for _dce_row in _conn.execute(
+                    "SELECT filter_stage, COUNT(*) as n, "
+                    "SUM(CASE WHEN status='settled' THEN 1 ELSE 0 END) as settled, "
+                    "SUM(CASE WHEN status='settled' AND market_result IN ('yes','all_yes') "
+                    "  THEN 1 ELSE 0 END) as wins, "
+                    "SUM(CASE WHEN status='settled' AND market_result NOT IN ('yes','all_yes') "
+                    "  THEN 1 ELSE 0 END) as losses, "
+                    "SUM(CASE WHEN status='settled' THEN counterfactual_pnl ELSE 0 END) as sim_pnl, "
+                    "MAX(evaluation_time) as last_signal "
+                    "FROM evaluated_opportunities "
+                    "WHERE filter_stage IN ('dc_shadow_t1b_93c','dc_shadow_t2_z25',"
+                    "'dc_shadow_t2_90c','dc_shadow_t2_90c_xrp','dc_shadow_t2_z2','dc_shadow_no_side') "
+                    "GROUP BY filter_stage"
+                ).fetchall():
+                    fs = _dce_row["filter_stage"]
+                    n = _dce_row["n"]
+                    s = _dce_row["settled"] or 0
+                    w = _dce_row["wins"] or 0
+                    _dc_exp[fs] = {
+                        "signals": n, "settled": s, "wins": w,
+                        "losses": (_dce_row["losses"] or 0),
+                        "wr": round(w / s, 4) if s else 0,
+                        "sim_pnl_cents": _dce_row["sim_pnl"] or 0,
+                        "last_signal": _dce_row["last_signal"],
+                    }
+                _query_count += 1
+                # Ensure all stages have an entry (even if no data yet)
+                for _dce_s in _DC_EXPANSION_STAGES:
+                    _dc_exp.setdefault(_dce_s, {
+                        "signals": 0, "settled": 0, "wins": 0, "losses": 0,
+                        "wr": 0, "sim_pnl_cents": 0, "last_signal": None,
+                    })
+            except Exception:
+                logging.debug("dc_expansion_shadow snapshot failed", exc_info=True)
+                _dc_exp = {s: {"signals": 0, "settled": 0, "wins": 0, "losses": 0,
+                               "wr": 0, "sim_pnl_cents": 0, "last_signal": None}
+                           for s in _DC_EXPANSION_STAGES}
+            snap["dc_expansion_shadow"] = _dc_exp
 
             # Relaxed edge
             _re = _panel_snap("relaxed_edge_shadow", _sh_totals, _sh_asset_map, _sh_tier_map)
@@ -3625,7 +3674,7 @@ class DashboardSnapshotBuilder:
             _SLOW_SNAP_KEYS = {
                 "weekend_discount_shadow", "overnight_discount_shadow",
                 "overnight_lp_shadow", "decided_contract_shadow", "decided_contract_live",
-                "relaxed_edge_shadow",
+                "dc_expansion_shadow", "relaxed_edge_shadow",
                 "calibration_gap", "capital_utilization", "loss_clusters",
                 "pipeline_completeness", "sol_pathc_shadow", "eth_filter_shadow",
             }

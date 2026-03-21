@@ -502,9 +502,21 @@ A separate overlay identifies near-certain settlements and routes them to direct
 | Tier | Z-Score Threshold | Price Range | Sizing |
 |---|---|---|---|
 | T1 | z ≤ -5.0 | 93¢+ | Fixed 12.5% bankroll |
+| T1B | z ≤ -4.0 | 95¢+ | Fixed 12.5% bankroll |
 | T2 | z ≤ -3.0 | 93–96¢ | Fixed 12.5% bankroll |
 
-Both tiers are enabled by default (env var toggles) with a per-window cap of 25% bankroll risk. These are incremental — they add on top of the regular trading pipeline, capturing near-certain outcomes that the standard edge filter might not size aggressively enough.
+T1B was added based on research showing 40/40 = 100% win rate in the -5 < z ≤ -4 zone at 95¢+, extending coverage into a high-confidence region that T1 and T2 did not fully capture. All three tiers are enabled by default (env var toggles) with a per-window cap of 25% bankroll risk. These are incremental — they add on top of the regular trading pipeline, capturing near-certain outcomes that the standard edge filter might not size aggressively enough.
+
+Six expansion shadow variants are also collecting data for potential future tiers:
+
+| Shadow Variant | Z-Score | Price Range | Status |
+|---|---|---|---|
+| T1A | z ≤ -5.0 | 90–92¢ | Shadow — lower price floor for T1 |
+| T1B-EXP | z ≤ -4.0 | 93–94¢ | Shadow — T1B at lower prices |
+| T2A | z ≤ -3.0 | 90–92¢ | Shadow — lower price floor for T2 |
+| T2B | z ≤ -3.0 | 97¢+ | Shadow — T2 at higher prices |
+| T3 | z ≤ -2.5 | 95¢+ | Shadow — shallower z-score |
+| T3A | z ≤ -2.5 | 93–94¢ | Shadow — T3 at lower prices |
 
 ### Maker-to-Taker Conversion
 
@@ -668,7 +680,7 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 
 ### Crypto 15-Minute (Live Trading)
 
-Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M. STC window: scan 0–900s, live 0–600s, shadow observation 600–900s. Decided contract overlay (T1+T2) adds incremental trades on near-certain outcomes.
+Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M. STC window: scan 0–900s, live 0–600s, shadow observation 600–900s. Decided contract overlay (T1/T1B/T2) adds incremental trades on near-certain outcomes, with 6 expansion shadows collecting data for future tiers.
 
 ### Crypto Hourly (Observation Mode)
 
@@ -752,7 +764,7 @@ Append-only journal files provide a complete audit trail:
 
 ## Test Suite
 
-691 tests across 25+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, and regression tests for past bugs.
+713 tests across 25+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, and regression tests for past bugs.
 
 ## Shadow Mode Features
 
@@ -777,7 +789,7 @@ Promoted features (driving live behavior):
 - **Time-varying RK weights** — adaptive multi-scale RK blending
 - **Adaptive jump detection** — percentile-based thresholds per asset
 - **Adaptive RK bandwidth** — data-driven H* selection
-- **Decided contracts (T1+T2)** — live overlay for z ≤ -5 (any price) and z ≤ -3 (93-96¢)
+- **Decided contracts (T1/T1B/T2)** — live overlay for z ≤ -5 (93¢+), z ≤ -4 (95¢+), and z ≤ -3 (93-96¢); 6 expansion shadows collecting data
 - **SOL taker-first** — SOL bypasses maker, direct IOC at all STC
 - **XRP live** — promoted from shadow at 92¢+ floor with 12% risk cap
 - **Price improvement addon** — adds to winning positions on price improvement

@@ -172,7 +172,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **15M live assets:** BTC (89c+), ETH (80c+), SOL (80c+, taker-first), XRP (92c+, 12% risk cap)
 - **XRP_15M_SHADOW = False** — XRP promoted to live at 92c+ (data: 41W/2L, 95.3% WR)
 - **SOL_TAKER_FIRST = True** — SOL bypasses maker entirely, direct IOC at all STC
-- **Decided contracts LIVE:** T1 (z≤-5) and T2 (z≤-3, 93-96c) both enabled as incremental overlay
+- **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), and T2 (z≤-3, 93-96c) all enabled as incremental overlay
 - **STC window:** scan 0-900s, live 0-600s, shadow 600-900s (STC_SHADOW_THRESHOLD=600)
 - **Hourly:** Observation mode (HOURLY_OBSERVATION_ONLY = True) — calibration disabled (HOURLY_CALIBRATION_ENABLED = False), T=1.45 softening, STC 120-3600s
 - **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — was briefly live Mar 17, reverted due to Polygon 403 breaking vol engine. SPX-D CalEngine, 90c+ floor, eighth-Kelly, no market blend
@@ -180,7 +180,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **Sports:** Observation mode (SPORTS_OBSERVATION_ONLY = True) — hardcoded, never live without explicit promotion. Basketball best group (69.2% WR, n=39), SPRT still CONTINUE_COLLECTING
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
-- **Tests:** 691 tests across 15+ test files
+- **Tests:** 713 tests across 15+ test files
 
 ## Key Config Values (bot.py)
 
@@ -201,6 +201,9 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | XRP_MAX_RISK_PER_TRADE | 0.12 | XRP RK vol underestimates → cap exposure |
 | SOL_TAKER_FIRST | True | SOL bypasses maker entirely, direct IOC at all STC |
 | DECIDED_T1_ENABLED | True | Decided contract overlay: z≤-5, any price (env var) |
+| DECIDED_CONTRACT_Z_T1B | -4.0 | T1B z-score threshold (between T1's -5 and T2's -3) |
+| DECIDED_CONTRACT_T1B_MIN_PRICE | 95 | T1B minimum price in cents |
+| DECIDED_T1B_ENABLED | True | Decided contract overlay: z≤-4, 95c+ (env var) |
 | DECIDED_T2_ENABLED | True | Decided contract overlay: z≤-3, 93-96c (env var) |
 | HOURLY_OBSERVATION_ONLY | True | Reverted — calibration too overconfident for hourly |
 | HOURLY_MARKET_BLEND_W | 0.40 | Optimal Brier per 134K simulation |
@@ -271,7 +274,13 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | JUMP_ADAPTIVE, RK_ADAPTIVE | **Promoted** — driving live |
 | EGARCH core + blend | **Promoted** — driving live |
 | TV RK weights | **Promoted** — driving live |
-| Decided contracts (T1+T2) | **Promoted** — live overlay for z≤-5 (any price) and z≤-3 (93-96c) |
+| Decided contracts (T1+T1B+T2) | **Promoted** — live overlay: T1 z≤-5 (any price), T1B z≤-4 (95c+), T2 z≤-3 (93-96c) |
+| DC shadow: dc_shadow_t1b_93c | Shadow — T1B at 93c+ floor variant |
+| DC shadow: dc_shadow_t2_z25 | Shadow — T2 at z≤-2.5 variant |
+| DC shadow: dc_shadow_t2_90c | Shadow — T2 at 90c+ floor variant |
+| DC shadow: dc_shadow_t2_90c_xrp | Shadow — T2 at 90c+ XRP-only variant |
+| DC shadow: dc_shadow_t2_z2 | Shadow — T2 at z≤-2 variant |
+| DC shadow: dc_shadow_no_side | Shadow — NO-side decided contract variant |
 | SOL taker-first | **Promoted** — SOL bypasses maker, direct IOC |
 | XRP live (was shadow) | **Promoted** — XRP live at 92c+ floor |
 
@@ -279,7 +288,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 
 - **Default: maker-first** (post_only=True), escalates to taker if unfilled
 - **SOL exception: taker-first** — SOL_TAKER_FIRST=True bypasses maker, direct IOC at all STC
-- **Decided contract overlay**: T1 (z≤-5 any price) and T2 (z≤-3, 93-96c) route to direct taker for near-certain settlements
+- **Decided contract overlay**: T1 (z≤-5, any price), T1B (z≤-4, 95c+), and T2 (z≤-3, 93-96c) route to direct taker for near-certain settlements
 - **Taker allowed at all STC** — MAKER_ONLY_THRESHOLD=0
 - **Escalation**: maker → poll queue → cancel-replace IOC taker
 - **WS fill detection** with REST fallback

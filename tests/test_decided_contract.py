@@ -1,14 +1,16 @@
 """Tests for Decided Contract overlay strategy.
 
 Guards against:
-- Signal detection: T1 (z ≤ -5, 93-99c, STC < 300s) and T2 (z ≤ -3, 93-96c)
+- Signal detection: T1 (z ≤ -5, 93c+), T1B (z ≤ -4, 95c+), T2 (z ≤ -3, 93-96c)
 - Per-window risk cap: 25% bankroll cap with payoff-priority ordering
-- Kill switches: DECIDED_T1_ENABLED / DECIDED_T2_ENABLED independently toggle tiers
+- Kill switches: DECIDED_T1/T1B/T2_ENABLED independently toggle tiers
 - Shadow continuity: shadow signals always logged regardless of live enable state
+- Shadow expansion: 6 variants probe expansion zones (log-only, no orders)
 - Candidate flow: DC candidates bypass single-asset-per-window filter
 - Sizing: fixed 12.5% bankroll risk, not Kelly
-- Strategy tagging: decided_t1 / decided_t2 in candidate dict
+- Strategy tagging: decided_t1 / decided_t1b / decided_t2 in candidate dict
 - Execution routing: decided contracts go direct taker IOC, not maker-first
+- Cooldown: 60s skip after "no asks on orderbook" prevents rapid-fire log spam
 """
 
 import re
@@ -49,8 +51,10 @@ class TestDecidedContractConstants(unittest.TestCase):
 
     def test_constants_exist_and_correct(self):
         self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_Z_T1"), -5.0)
+        self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_Z_T1B"), -4.0)
         self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_Z_T2"), -3.0)
         self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_MIN_PRICE"), 93)
+        self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_T1B_MIN_PRICE"), 95)
         self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_T2_MAX_PRICE"), 96)
         self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_MAX_STC"), 300)
         self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_RISK"), 0.125)
@@ -59,11 +63,13 @@ class TestDecidedContractConstants(unittest.TestCase):
     def test_kill_switches_default_on(self):
         """Kill switches default to '1' (enabled) — direct taker routing active."""
         self.assertIn('DECIDED_T1_ENABLED = os.environ.get("DECIDED_T1_ENABLED", "1") == "1"', self.source)
+        self.assertIn('DECIDED_T1B_ENABLED = os.environ.get("DECIDED_T1B_ENABLED", "1") == "1"', self.source)
         self.assertIn('DECIDED_T2_ENABLED = os.environ.get("DECIDED_T2_ENABLED", "1") == "1"', self.source)
 
     def test_kill_switches_env_var_controlled(self):
-        """Both toggles are env-var driven (no deploy needed to flip)."""
+        """All tier toggles are env-var driven (no deploy needed to flip)."""
         self.assertIn('os.environ.get("DECIDED_T1_ENABLED"', self.source)
+        self.assertIn('os.environ.get("DECIDED_T1B_ENABLED"', self.source)
         self.assertIn('os.environ.get("DECIDED_T2_ENABLED"', self.source)
 
 
@@ -104,14 +110,41 @@ class TestDecidedContractSignalDetection(unittest.TestCase):
         self.assertFalse(300 < MAX_STC)
         self.assertFalse(500 < MAX_STC)
 
-    def test_t1_priority_over_t2(self):
-        """T1 check comes before T2 — z ≤ -5 gets T1 not T2."""
+    def test_t1b_gate_logic(self):
+        """T1B fires when -5 < z ≤ -4 AND price ≥ 95c."""
+        Z_T1 = -5.0
+        Z_T1B = -4.0
+        T1B_MIN_PRICE = 95
+        # z = -4.5: meets T1B but not T1
+        self.assertFalse(-4.5 <= Z_T1)  # not T1
+        self.assertTrue(-4.5 <= Z_T1B)  # meets T1B z
+        self.assertTrue(96 >= T1B_MIN_PRICE)  # meets T1B price
+        # z = -4.5 at 94c: does NOT meet T1B (price too low)
+        self.assertFalse(94 >= T1B_MIN_PRICE)
+        # z = -5.1 at 96c: fires T1, not T1B
+        self.assertTrue(-5.1 <= Z_T1)
+
+    def test_t1b_does_not_overlap_t1(self):
+        """T1B only catches signals that T1 misses (z in (-5, -4])."""
+        Z_T1 = -5.0
+        Z_T1B = -4.0
+        for z in [-6.0, -5.5, -5.0]:
+            self.assertTrue(z <= Z_T1, f"z={z} should fire T1, not T1B")
+        for z in [-4.9, -4.5, -4.0]:
+            self.assertFalse(z <= Z_T1, f"z={z} should NOT fire T1")
+            self.assertTrue(z <= Z_T1B, f"z={z} should fire T1B")
+
+    def test_t1_priority_over_t1b_over_t2(self):
+        """T1 check comes before T1B, T1B before T2 in code."""
         source = _read_bot()
-        t1_pos = source.find("decided_contract_t1")
-        t2_pos = source.find("decided_contract_t2")
+        t1_pos = source.find('"decided_contract_t1"')
+        t1b_pos = source.find('"decided_contract_t1b"')
+        t2_pos = source.find('"decided_contract_t2"')
         self.assertGreater(t1_pos, 0)
+        self.assertGreater(t1b_pos, 0)
         self.assertGreater(t2_pos, 0)
-        self.assertLess(t1_pos, t2_pos, "T1 check must come before T2 in code")
+        self.assertLess(t1_pos, t1b_pos, "T1 check must come before T1B in code")
+        self.assertLess(t1b_pos, t2_pos, "T1B check must come before T2 in code")
 
 
 class TestDecidedContractWindowCap(unittest.TestCase):
@@ -184,39 +217,48 @@ class TestDecidedContractWindowCap(unittest.TestCase):
 class TestDecidedContractKillSwitches(unittest.TestCase):
     """Test that kill switches work independently."""
 
-    def test_t1_enabled_t2_disabled(self):
-        t1_enabled, t2_enabled = True, False
-        tier = "decided_contract_t1"
-        live = (tier == "decided_contract_t1" and t1_enabled) or \
-               (tier == "decided_contract_t2" and t2_enabled)
-        self.assertTrue(live)
+    def test_t1_enabled_others_disabled(self):
+        t1, t1b, t2 = True, False, False
+        for tier, expected in [("decided_contract_t1", True),
+                               ("decided_contract_t1b", False),
+                               ("decided_contract_t2", False)]:
+            live = ((tier == "decided_contract_t1" and t1) or
+                    (tier == "decided_contract_t1b" and t1b) or
+                    (tier == "decided_contract_t2" and t2))
+            self.assertEqual(live, expected, f"tier={tier}")
 
-        tier = "decided_contract_t2"
-        live = (tier == "decided_contract_t1" and t1_enabled) or \
-               (tier == "decided_contract_t2" and t2_enabled)
-        self.assertFalse(live)
+    def test_t1b_enabled_others_disabled(self):
+        t1, t1b, t2 = False, True, False
+        tier = "decided_contract_t1b"
+        live = ((tier == "decided_contract_t1" and t1) or
+                (tier == "decided_contract_t1b" and t1b) or
+                (tier == "decided_contract_t2" and t2))
+        self.assertTrue(live)
 
     def test_t2_enabled_t1_disabled(self):
-        t1_enabled, t2_enabled = False, True
+        t1, t1b, t2 = False, False, True
         tier = "decided_contract_t2"
-        live = (tier == "decided_contract_t1" and t1_enabled) or \
-               (tier == "decided_contract_t2" and t2_enabled)
+        live = ((tier == "decided_contract_t1" and t1) or
+                (tier == "decided_contract_t1b" and t1b) or
+                (tier == "decided_contract_t2" and t2))
         self.assertTrue(live)
 
-    def test_both_disabled(self):
-        t1_enabled, t2_enabled = False, False
-        for tier in ("decided_contract_t1", "decided_contract_t2"):
-            live = (tier == "decided_contract_t1" and t1_enabled) or \
-                   (tier == "decided_contract_t2" and t2_enabled)
+    def test_all_disabled(self):
+        t1, t1b, t2 = False, False, False
+        for tier in ("decided_contract_t1", "decided_contract_t1b", "decided_contract_t2"):
+            live = ((tier == "decided_contract_t1" and t1) or
+                    (tier == "decided_contract_t1b" and t1b) or
+                    (tier == "decided_contract_t2" and t2))
             self.assertFalse(live)
 
     def test_kill_switch_code_structure(self):
-        """Both tier checks must be present in the live overlay block."""
+        """All tier checks must be present in the live overlay block."""
         source = _read_bot()
         overlay_start = source.find("# ── Live overlay: queue as candidate if tier enabled")
         self.assertGreater(overlay_start, 0)
-        overlay_block = source[overlay_start:overlay_start + 300]
+        overlay_block = source[overlay_start:overlay_start + 400]
         self.assertIn("DECIDED_T1_ENABLED", overlay_block)
+        self.assertIn("DECIDED_T1B_ENABLED", overlay_block)
         self.assertIn("DECIDED_T2_ENABLED", overlay_block)
 
 
@@ -252,15 +294,19 @@ class TestDecidedContractStrategyTag(unittest.TestCase):
     def test_strategy_tags_in_code(self):
         source = _read_bot()
         self.assertIn('"decided_t1"', source)
+        self.assertIn('"decided_t1b"', source)
         self.assertIn('"decided_t2"', source)
 
     def test_strategy_mapping(self):
         tier_to_strat = {
             "decided_contract_t1": "decided_t1",
+            "decided_contract_t1b": "decided_t1b",
             "decided_contract_t2": "decided_t2",
         }
         for tier, expected in tier_to_strat.items():
-            strat = "decided_t1" if tier == "decided_contract_t1" else "decided_t2"
+            strat = {"decided_contract_t1": "decided_t1",
+                     "decided_contract_t1b": "decided_t1b",
+                     "decided_contract_t2": "decided_t2"}[tier]
             self.assertEqual(strat, expected)
 
 
@@ -312,12 +358,13 @@ class TestDecidedContractDirectTaker(unittest.TestCase):
         self.assertLess(dc_taker_pos, maker_pos,
                         "DC taker must come before maker path")
 
-    def test_dc_taker_routes_both_tiers(self):
-        """Both decided_t1 and decided_t2 must trigger direct taker."""
+    def test_dc_taker_routes_all_tiers(self):
+        """All decided tiers (t1, t1b, t2) must trigger direct taker."""
         source = _read_bot()
         dc_block_start = source.find("Decided contract taker override")
         dc_block = source[dc_block_start:dc_block_start + 2500]
         self.assertIn('"decided_t1"', dc_block)
+        self.assertIn('"decided_t1b"', dc_block)
         self.assertIn('"decided_t2"', dc_block)
 
     def test_dc_taker_sets_escalation_type(self):
@@ -338,6 +385,7 @@ class TestDecidedContractDashboard(unittest.TestCase):
     def test_snapshot_queries_strategy(self):
         source = _read_dash()
         self.assertIn("decided_t1", source)
+        self.assertIn("decided_t1b", source)
         self.assertIn("decided_t2", source)
 
     def test_snapshot_has_window_cap_skips(self):
@@ -370,7 +418,7 @@ class TestDecidedContractCodeIntegrity(unittest.TestCase):
         self.assertIn("self._dc_window_risk = {}", self.source)
 
     def test_dc_window_seeded_from_positions(self):
-        self.assertIn('("decided_t1", "decided_t2")', self.source)
+        self.assertIn('("decided_t1", "decided_t1b", "decided_t2")', self.source)
 
     def test_continue_still_present(self):
         """The continue after shadow blocks must still be present for non-promoted signals."""
@@ -385,6 +433,175 @@ class TestDecidedContractCodeIntegrity(unittest.TestCase):
         # Verify decided_t1 appears in a candidates.append context
         dc_append_pos = self.source.find('"strategy": _dc_strat')
         self.assertGreater(dc_append_pos, 0)
+
+
+class TestDecidedContractT1B(unittest.TestCase):
+    """Specific tests for T1B tier (z≤-4, 95c+)."""
+
+    def setUp(self):
+        self.source = _read_bot()
+
+    def test_t1b_constants_defined(self):
+        self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_Z_T1B"), -4.0)
+        self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_T1B_MIN_PRICE"), 95)
+
+    def test_t1b_tier_in_signal_detection(self):
+        """T1B must appear in the decided contract signal detection block."""
+        dc_start = self.source.find("Decided Contract (overlay strategy")
+        dc_block = self.source[dc_start:dc_start + 2000]
+        self.assertIn("decided_contract_t1b", dc_block)
+        self.assertIn("DECIDED_CONTRACT_Z_T1B", dc_block)
+        self.assertIn("DECIDED_CONTRACT_T1B_MIN_PRICE", dc_block)
+
+    def test_t1b_assumed_prob(self):
+        """T1B assumed probability should be between T1 (99%) and T2 (96%)."""
+        # Find the assumed prob assignment
+        self.assertIn("0.97 if _dc_tier == \"decided_contract_t1b\"", self.source)
+
+    def test_t1b_in_execution_routing(self):
+        """T1B must route to direct taker in execute()."""
+        dc_taker_pos = self.source.find("Decided contract taker override")
+        dc_block = self.source[dc_taker_pos:dc_taker_pos + 500]
+        self.assertIn('"decided_t1b"', dc_block)
+
+
+class TestDecidedContractShadowVariants(unittest.TestCase):
+    """Test shadow expansion variant filter_stages."""
+
+    def setUp(self):
+        self.source = _read_bot()
+
+    def test_shadow_stages_constant_defined(self):
+        """DC_SHADOW_STAGES frozenset must list all 6 variants."""
+        self.assertIn("DC_SHADOW_STAGES", self.source)
+        for stage in ("dc_shadow_t1b_93c", "dc_shadow_t2_z25", "dc_shadow_t2_90c",
+                       "dc_shadow_t2_90c_xrp", "dc_shadow_t2_z2", "dc_shadow_no_side"):
+            self.assertIn(stage, self.source, f"Shadow stage {stage} not found in bot.py")
+
+    def test_shadow_variants_in_scan(self):
+        """All 6 shadow variants must have insert_evaluated_opportunity calls."""
+        shadow_block_start = self.source.find("Decided Contract Shadow Expansion Variants")
+        self.assertGreater(shadow_block_start, 0, "Shadow expansion block not found")
+        # NO-side variant is longer — need a bigger block
+        next_section = self.source.find("Relaxed Edge Shadow", shadow_block_start)
+        shadow_block = self.source[shadow_block_start:next_section]
+        for stage in ("dc_shadow_t1b_93c", "dc_shadow_t2_z25", "dc_shadow_t2_90c",
+                       "dc_shadow_t2_90c_xrp", "dc_shadow_t2_z2", "dc_shadow_no_side"):
+            self.assertIn(f'"{stage}"', shadow_block, f"Shadow stage {stage} not in scan block")
+
+    def test_shadow_t1b_93c_gate(self):
+        """dc_shadow_t1b_93c: -5 < z ≤ -4 AND 93c ≤ price < 95c."""
+        # The gate logic from the code
+        Z_T1 = -5.0
+        Z_T1B = -4.0
+        T1B_MIN = 95
+        # z = -4.5 at 94c → should match
+        z, price = -4.5, 94
+        matches = (Z_T1 < z <= Z_T1B and 93 <= price < T1B_MIN)
+        self.assertTrue(matches)
+        # z = -4.5 at 95c → should NOT match (covered by live T1B)
+        matches = (Z_T1 < -4.5 <= Z_T1B and 93 <= 95 < T1B_MIN)
+        self.assertFalse(matches)
+
+    def test_shadow_t2_z25_gate(self):
+        """dc_shadow_t2_z25: -3 < z ≤ -2.5 AND 93c ≤ price ≤ 96c."""
+        Z_T2 = -3.0
+        z, price = -2.7, 95
+        matches = (Z_T2 < z <= -2.5 and 93 <= price <= 96)
+        self.assertTrue(matches)
+        # z = -3.2 → covered by live T2, should NOT match shadow
+        matches = (Z_T2 < -3.2 <= -2.5 and 93 <= 95 <= 96)
+        self.assertFalse(matches)
+
+    def test_shadow_t2_90c_gate(self):
+        """dc_shadow_t2_90c: z ≤ -3 AND 90c ≤ price < 93c AND BTC/ETH/SOL."""
+        Z_T2 = -3.0
+        MIN = 93
+        for asset in ("BTC", "ETH", "SOL"):
+            matches = (-3.5 <= Z_T2 and 90 <= 91 < MIN and asset in ("BTC", "ETH", "SOL"))
+            self.assertTrue(matches, f"Should match for {asset}")
+        # XRP → should NOT match (has its own shadow)
+        matches = (-3.5 <= Z_T2 and 90 <= 91 < MIN and "XRP" in ("BTC", "ETH", "SOL"))
+        self.assertFalse(matches)
+
+    def test_shadow_no_side_gate(self):
+        """dc_shadow_no_side: z ≥ 5 AND best_ask ≤ 20 (YES nearly worthless)."""
+        self.assertIn("z_score >= 5.0", self.source)
+        self.assertIn("best_ask <= 20", self.source)
+
+    def test_no_side_stores_no_ask(self):
+        """NO-side shadow must read actual NO ask from NBBO, store as market_price."""
+        # Find in the scan block (not constants)
+        scan_start = self.source.find("Decided Contract Shadow Expansion Variants")
+        no_side_pos = self.source.find("dc_shadow_no_side", scan_start)
+        shadow_block = self.source[no_side_pos:no_side_pos + 2500]
+        self.assertIn("no_ask", shadow_block)
+        self.assertIn('side="no"', shadow_block)
+
+
+class TestDecidedContractCooldown(unittest.TestCase):
+    """Test 60s cooldown after 'no asks on orderbook' skip."""
+
+    def setUp(self):
+        self.source = _read_bot()
+
+    def test_cooldown_dict_initialized(self):
+        self.assertIn("_dc_skip_cooldown", self.source)
+        self.assertIn("_dc_skip_cooldown: Dict[str, float] = {}", self.source)
+
+    def test_cooldown_set_on_no_asks(self):
+        """Cooldown must be set when executor skips due to 'no asks on orderbook'."""
+        no_asks_pos = self.source.find('dc_taker_SKIPPED: %s no asks on orderbook')
+        self.assertGreater(no_asks_pos, 0)
+        after_skip = self.source[no_asks_pos:no_asks_pos + 300]
+        self.assertIn("_dc_skip_cooldown", after_skip)
+        self.assertIn("60", after_skip)
+
+    def test_cooldown_checked_before_candidate(self):
+        """Scanner must check cooldown before creating DC candidate."""
+        dc_candidate_pos = self.source.find("DC_CANDIDATE:")
+        before_candidate = self.source[dc_candidate_pos - 800:dc_candidate_pos]
+        self.assertIn("_dc_skip_cooldown", before_candidate)
+
+    def test_cooldown_cleaned_in_scan(self):
+        """Expired cooldown entries must be cleaned in scan()."""
+        self.assertIn("Clean expired DC skip cooldowns", self.source)
+
+    def test_cooldown_math(self):
+        """60s cooldown: set at time T, check at T+59 → blocked, T+61 → allowed."""
+        import time as _time
+        now = _time.time()
+        cooldown = {
+            "ticker_a": now + 60,   # active
+            "ticker_b": now - 1,    # expired
+        }
+        # ticker_a should be blocked
+        self.assertTrue(now < cooldown["ticker_a"])
+        # ticker_b should be allowed
+        self.assertFalse(now < cooldown["ticker_b"])
+
+
+class TestDecidedContractDashboardExpansion(unittest.TestCase):
+    """Test dashboard snapshot includes DC expansion shadow data."""
+
+    def test_expansion_shadow_in_snapshot(self):
+        source = _read_dash()
+        self.assertIn("dc_expansion_shadow", source)
+        for stage in ("dc_shadow_t1b_93c", "dc_shadow_t2_z25", "dc_shadow_t2_90c",
+                       "dc_shadow_t2_90c_xrp", "dc_shadow_t2_z2", "dc_shadow_no_side"):
+            self.assertIn(stage, source, f"Shadow stage {stage} not in dashboard_snapshot.py")
+
+    def test_t1b_in_shadow_stages(self):
+        source = _read_dash()
+        self.assertIn("decided_contract_t1b", source)
+
+    def test_expansion_in_slow_cache(self):
+        source = _read_dash()
+        self.assertIn("dc_expansion_shadow", source)
+        # Should be in slow-changing cache
+        slow_cache_pos = source.find("_SLOW_SNAP_KEYS")
+        slow_block = source[slow_cache_pos:slow_cache_pos + 300]
+        self.assertIn("dc_expansion_shadow", slow_block)
 
 
 if __name__ == "__main__":

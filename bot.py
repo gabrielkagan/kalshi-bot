@@ -491,10 +491,23 @@ DECIDED_CONTRACT_T2_MAX_PRICE = 96  # T2 only applies up to 96c
 DECIDED_CONTRACT_MAX_STC = 300      # Only within 5 minutes of close
 # ── Decided Contract LIVE overlay ──
 # Incremental strategy on top of main pipeline. Env-var kill switches (no deploy needed).
+DECIDED_CONTRACT_Z_T1B = -4.0      # Tier 1B z threshold (relaxed T1 with higher price floor)
+DECIDED_CONTRACT_T1B_MIN_PRICE = 95 # T1B only at 95c+ (40/40=100% WR at -5<z≤-4, 95c+)
 DECIDED_T1_ENABLED = os.environ.get("DECIDED_T1_ENABLED", "1") == "1"
+DECIDED_T1B_ENABLED = os.environ.get("DECIDED_T1B_ENABLED", "1") == "1"
 DECIDED_T2_ENABLED = os.environ.get("DECIDED_T2_ENABLED", "1") == "1"
 DECIDED_CONTRACT_RISK = 0.125               # Fixed 12.5% bankroll per signal
 DECIDED_CONTRACT_MAX_WINDOW_RISK = 0.25     # 25% bankroll cap per settlement window
+# ── Decided Contract Shadow Expansion ──
+# Six shadow variants to evaluate expansion candidates. None place orders.
+DC_SHADOW_STAGES = frozenset({
+    "dc_shadow_t1b_93c",    # T1B at 93-94c (13/14, 1 loss at small n)
+    "dc_shadow_t2_z25",     # T2 relaxed to z≤-2.5 (47/48)
+    "dc_shadow_t2_90c",     # T2 price floor 90c BTC/ETH/SOL (29/29)
+    "dc_shadow_t2_90c_xrp", # T2 price floor 90c XRP only (10/11)
+    "dc_shadow_t2_z2",      # T2 relaxed to z≤-2 (105/111)
+    "dc_shadow_no_side",    # NO-side decided (z≥5, 166/166)
+})
 
 # ─── Relaxed Edge Shadow (Fix #1) ──────────────────────────────────────
 # Edge thresholds at 88-93c may be too conservative. Data shows rejected trades
@@ -5715,6 +5728,7 @@ class OpportunityScanner:
         self._recent_opportunities: deque = deque(maxlen=20)
         self._ticker_ask_history: Dict[str, deque] = {}
         self._eval_opp_seen: set = set()  # 2-tuples (ticker, stage) or 3-tuples (ticker, stage, side)
+        self._dc_skip_cooldown: Dict[str, float] = {}  # ticker → expiry timestamp (60s after "no asks" skip)
         self._shadow_cal_last_log: Dict[str, float] = {}
         # Hourly per-window tracking (reset each scan tick)
         self._hourly_window_counts: Dict[str, int] = {}
@@ -5920,7 +5934,7 @@ class OpportunityScanner:
                     self._hourly_window_counts[evt] = self._hourly_window_counts.get(evt, 0) + 1
                     # Seed DC window risk from existing decided positions
                     strat = pos.get("strategy", "")
-                    if strat in ("decided_t1", "decided_t2"):
+                    if strat in ("decided_t1", "decided_t1b", "decided_t2"):
                         _dc_cost = pos.get("count", 0) * pos.get("avg_price_cents", 0)
                         self._dc_window_risk[evt] = self._dc_window_risk.get(evt, 0.0) + _dc_cost
         except Exception:
@@ -5947,6 +5961,12 @@ class OpportunityScanner:
                     pass
         self._eval_opp_seen = {
             key for key in self._eval_opp_seen if key[0] in active_tickers
+        }
+        # Clean expired DC skip cooldowns
+        _now_cd = time.time()
+        self._dc_skip_cooldown = {
+            t: exp for t, exp in self._dc_skip_cooldown.items()
+            if exp > _now_cd and t in active_tickers
         }
         if self._kalshi_oft is not None:
             try:
@@ -7319,8 +7339,8 @@ class OpportunityScanner:
                     # When z-score is very negative (spot far above strike) near expiry,
                     # the contract is essentially decided. EGARCH can't compute edge
                     # because calibration squashes prob below market price.
-                    # T1 (z ≤ -5, 93-99c): 34/34 = 100% WR. T2 (z ≤ -3, 93-96c): 8/8 = 100% WR.
-                    # Shadow always runs. Live overlay fires when DECIDED_T1/T2_ENABLED.
+                    # T1 (z ≤ -5, 93c+), T1B (z ≤ -4, 95c+), T2 (z ≤ -3, 93-96c).
+                    # Shadow always runs. Live overlay fires when DECIDED_T1/T1B/T2_ENABLED.
                     if (DECIDED_CONTRACT_SHADOW
                             and _pt in (None, "15m")
                             and z_score is not None
@@ -7330,6 +7350,9 @@ class OpportunityScanner:
                         _dc_tier = None
                         if z_score <= DECIDED_CONTRACT_Z_T1:
                             _dc_tier = "decided_contract_t1"
+                        elif (z_score <= DECIDED_CONTRACT_Z_T1B
+                              and best_ask >= DECIDED_CONTRACT_T1B_MIN_PRICE):
+                            _dc_tier = "decided_contract_t1b"
                         elif (z_score <= DECIDED_CONTRACT_Z_T2
                               and best_ask <= DECIDED_CONTRACT_T2_MAX_PRICE):
                             _dc_tier = "decided_contract_t2"
@@ -7343,8 +7366,10 @@ class OpportunityScanner:
                             if _dc_balance and _dc_balance > 0:
                                 _dc_risk = DECIDED_CONTRACT_RISK
                                 _dc_position = max(1, int((_dc_balance * _dc_risk) / best_ask))
-                                # EV with assumed ~99% win prob for T1, ~96% for T2
-                                _dc_assumed_p = 0.99 if _dc_tier == "decided_contract_t1" else 0.96
+                                # EV with assumed win prob: T1 ~99%, T1B ~97%, T2 ~96%
+                                _dc_assumed_p = (0.99 if _dc_tier == "decided_contract_t1"
+                                                 else 0.97 if _dc_tier == "decided_contract_t1b"
+                                                 else 0.96)
                                 _dc_ev = round((_dc_assumed_p * (100 - best_ask))
                                                - ((1 - _dc_assumed_p) * best_ask) - est_fee_1c, 2)
                                 _dc_kelly_f = round((_dc_assumed_p - best_ask / 100.0), 6)
@@ -7383,6 +7408,7 @@ class OpportunityScanner:
                             # ── Live overlay: queue as candidate if tier enabled ──
                             _dc_live_enabled = (
                                 (_dc_tier == "decided_contract_t1" and DECIDED_T1_ENABLED)
+                                or (_dc_tier == "decided_contract_t1b" and DECIDED_T1B_ENABLED)
                                 or (_dc_tier == "decided_contract_t2" and DECIDED_T2_ENABLED))
                             if (_dc_live_enabled
                                     and not OBSERVATION_MODE
@@ -7439,7 +7465,13 @@ class OpportunityScanner:
                                         _dc_position = max(0, _dc_position - _dc_existing_exposure)
 
                                 if _dc_live_enabled and _dc_position > 0:
-                                    _dc_strat = "decided_t1" if _dc_tier == "decided_contract_t1" else "decided_t2"
+                                    # Cooldown: skip if this ticker was recently skipped due to "no asks"
+                                    if ticker in self._dc_skip_cooldown and time.time() < self._dc_skip_cooldown[ticker]:
+                                        _dc_live_enabled = False
+                                if _dc_live_enabled and _dc_position > 0:
+                                    _dc_strat = {"decided_contract_t1": "decided_t1",
+                                                 "decided_contract_t1b": "decided_t1b",
+                                                 "decided_contract_t2": "decided_t2"}[_dc_tier]
                                     self._dc_window_risk[_dc_wkey] = _dc_existing_risk + _dc_position * best_ask
                                     logging.info("DC_CANDIDATE: %s %s %dx@%dc z=%.1f stc=%.0fs",
                                                  _dc_strat, ticker, _dc_position, best_ask, z_score, seconds_remaining)
@@ -7486,6 +7518,110 @@ class OpportunityScanner:
                                         **_shadow_diag,
                                         **_shadow_extra,
                                     })
+
+                    # ── Decided Contract Shadow Expansion Variants ─────────
+                    # Six variants probing expansion zones. Log-only — no orders.
+                    # Each variant skips signals already caught by live T1/T1B/T2.
+                    if (DECIDED_CONTRACT_SHADOW
+                            and _pt in (None, "15m")
+                            and z_score is not None
+                            and seconds_remaining < DECIDED_CONTRACT_MAX_STC):
+                        # Common insert helper for DC shadow variants
+                        def _dc_shadow_insert(stage, rej_detail):
+                            _dcs_dedup = (ticker, stage)
+                            if _dcs_dedup not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_dcs_dedup)
+                                try:
+                                    self._state.insert_evaluated_opportunity(
+                                        ticker, window["event_ticker"], asset, stage,
+                                        rejection_reason=rej_detail,
+                                        spot_price=spot, threshold=threshold,
+                                        volatility=blended_rv, market_price=best_ask,
+                                        seconds_to_close=seconds_remaining,
+                                        calibrated_prob=final_prob, edge=edge,
+                                        ofa_adjustment=ofa_adjustment,
+                                        z_score=z_score,
+                                        vol_regime=vol_est["regime"],
+                                        raw_prob=raw_prob,
+                                        fee_adjusted_edge=fee_adjusted_edge,
+                                        product_type=window.get("product_type"),
+                                        **_shadow_diag)
+                                except Exception:
+                                    logging.warning("insert_evaluated_opportunity failed (%s)", stage, exc_info=True)
+
+                        # 2A: T1B at 93-94c (already live at 95c+, shadow at 93-94c)
+                        if (DECIDED_CONTRACT_Z_T1 < z_score <= DECIDED_CONTRACT_Z_T1B
+                                and 93 <= best_ask < DECIDED_CONTRACT_T1B_MIN_PRICE):
+                            _dc_shadow_insert("dc_shadow_t1b_93c",
+                                              f"shadow: z={z_score:.1f} price={best_ask}c (T1B 93-94c expansion)")
+
+                        # 2B: T2 z≤-2.5 at 93-96c (loosening from z≤-3)
+                        if (DECIDED_CONTRACT_Z_T2 < z_score <= -2.5
+                                and 93 <= best_ask <= DECIDED_CONTRACT_T2_MAX_PRICE):
+                            _dc_shadow_insert("dc_shadow_t2_z25",
+                                              f"shadow: z={z_score:.1f} price={best_ask}c (T2 z≤-2.5 expansion)")
+
+                        # 2C: T2 price floor 90c for BTC/ETH/SOL (currently 93c)
+                        if (z_score <= DECIDED_CONTRACT_Z_T2
+                                and 90 <= best_ask < DECIDED_CONTRACT_MIN_PRICE
+                                and asset in ("BTC", "ETH", "SOL")):
+                            _dc_shadow_insert("dc_shadow_t2_90c",
+                                              f"shadow: z={z_score:.1f} price={best_ask}c asset={asset} (T2 90c floor)")
+
+                        # 2D: T2 price floor 90c for XRP only (10/11 = 90.9%)
+                        if (z_score <= DECIDED_CONTRACT_Z_T2
+                                and 90 <= best_ask < DECIDED_CONTRACT_MIN_PRICE
+                                and asset == "XRP"):
+                            _dc_shadow_insert("dc_shadow_t2_90c_xrp",
+                                              f"shadow: z={z_score:.1f} price={best_ask}c (T2 90c XRP)")
+
+                        # 2E: T2 z≤-2 at 93-96c (deeper loosening from z≤-3)
+                        if (-2.5 < z_score <= -2.0
+                                and 93 <= best_ask <= DECIDED_CONTRACT_T2_MAX_PRICE):
+                            _dc_shadow_insert("dc_shadow_t2_z2",
+                                              f"shadow: z={z_score:.1f} price={best_ask}c (T2 z≤-2 expansion)")
+
+                        # 2F: NO-side decided (z≥5 → YES nearly worthless, NO is the bet)
+                        if z_score is not None and z_score >= 5.0 and best_ask <= 20:
+                            # Read actual NO ask from NBBO
+                            _no_ask_dc_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                            _no_ask_dc = None
+                            if _no_ask_dc_raw is not None:
+                                _no_ask_dc = (dollars_str_to_cents(_no_ask_dc_raw)
+                                              if isinstance(_no_ask_dc_raw, str)
+                                              else int(_no_ask_dc_raw))
+                            if _no_ask_dc is not None and _no_ask_dc > 0 and _no_ask_dc <= 93:
+                                _dcs_no_dedup = (ticker, "dc_shadow_no_side")
+                                if _dcs_no_dedup not in self._eval_opp_seen:
+                                    self._eval_opp_seen.add(_dcs_no_dedup)
+                                    # Simulate NO taker PnL: win pays (100-entry), lose costs entry
+                                    _no_fee = calculate_fee(1, _no_ask_dc, is_taker=True,
+                                                            fee_mult_taker=get_market_config("15m").fee_multiplier_taker,
+                                                            fee_mult_maker=get_market_config("15m").fee_multiplier_maker)
+                                    try:
+                                        self._state.insert_evaluated_opportunity(
+                                            ticker, window["event_ticker"], asset,
+                                            "dc_shadow_no_side",
+                                            rejection_reason=(f"shadow: z={z_score:.1f} no_ask={_no_ask_dc}c "
+                                                              f"yes_price={best_ask}c fee={_no_fee}c (NO-side decided)"),
+                                            spot_price=spot, threshold=threshold,
+                                            volatility=blended_rv,
+                                            market_price=_no_ask_dc,  # store NO ask as market_price
+                                            seconds_to_close=seconds_remaining,
+                                            calibrated_prob=1.0 - (best_ask / 100.0),  # NO prob = 1 - YES price
+                                            edge=round((1.0 - best_ask / 100.0) - _no_ask_dc / 100.0, 6),
+                                            ofa_adjustment=ofa_adjustment,
+                                            z_score=z_score,
+                                            vol_regime=vol_est["regime"],
+                                            raw_prob=raw_prob,
+                                            fee_adjusted_edge=round(
+                                                (1.0 - best_ask / 100.0) - _no_ask_dc / 100.0 - _no_fee / 100.0, 6),
+                                            product_type=window.get("product_type"),
+                                            side="no",
+                                            **_shadow_diag)
+                                    except Exception:
+                                        logging.warning("insert_evaluated_opportunity failed (dc_shadow_no_side)",
+                                                        exc_info=True)
 
                     # ── Relaxed Edge Shadow (Fix #1) ──────────────────────────
                     # Edge thresholds at 88-93c may be too conservative.
@@ -10289,7 +10425,7 @@ class OrderExecutor:
         # Route directly to IOC taker. Fee math: at 95c, taker fee ~1.7c,
         # profit per win ~5c.  Data: 125 unfilled decided signals = $151/2wk.
         _dc_strategy = candidate.get("strategy")
-        if _dc_strategy in ("decided_t1", "decided_t2"):
+        if _dc_strategy in ("decided_t1", "decided_t1b", "decided_t2"):
             count = candidate["position_size"]
             price = candidate["best_yes_ask"]
             cal_prob = candidate["calibrated_prob"]
@@ -10313,6 +10449,9 @@ class OrderExecutor:
             fresh_ask = self._get_addon_best_ask(candidate["ticker"])
             if fresh_ask is None:
                 logging.info("dc_taker_SKIPPED: %s no asks on orderbook", candidate["ticker"])
+                # Set 60s cooldown to prevent rapid-fire re-scan of empty orderbook
+                if self._ml and hasattr(self._ml, "scanner"):
+                    self._ml.scanner._dc_skip_cooldown[candidate["ticker"]] = time.time() + 60
                 return None
 
             if fresh_ask != price:

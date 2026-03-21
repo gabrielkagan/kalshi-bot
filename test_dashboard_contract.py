@@ -87,6 +87,7 @@ REQUIRED_SNAP_KEYS = {
     "overnight_discount_shadow",
     "overnight_lp_shadow",
     "decided_contract_shadow",
+    "dc_expansion_shadow",
     "relaxed_edge_shadow",
     "calibration_gap",
     "capital_utilization",
