@@ -66,6 +66,7 @@ SIMPLE_CONSTANTS = [
     ("MAX_RISK_PER_TRADE", "Max risk per trade"),
     ("XRP_MAX_RISK_PER_TRADE", "XRP max risk per trade"),
     ("BTC_MAX_RISK_PER_TRADE", "BTC max risk per trade"),
+    ("SOL_MIN_EDGE", "SOL min edge"),
     ("HOURLY_MAX_RISK_PER_TRADE", "Hourly max risk per trade"),
     ("SPX_HOURLY_MAX_RISK_PER_TRADE", "SPX max risk per trade"),
     ("SPX_HOURLY_MIN_ENTRY_PRICE", "SPX min entry price"),

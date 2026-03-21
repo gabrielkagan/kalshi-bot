@@ -201,6 +201,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | STC_SHADOW_THRESHOLD | 600 | 15M trades above this STC are shadow-only (data: 500-600s 91.2% WR, +$47 marginal) |
 | XRP_MAX_RISK_PER_TRADE | 0.12 | XRP RK vol underestimates → cap exposure |
 | BTC_MAX_RISK_PER_TRADE | 0.12 | BTC oversizing causes outsized losses → cap exposure |
+| SOL_MIN_EDGE | 0.018 | SOL-specific edge floor (data: 73.9% WR below, 95.4% above; 16.8pp CalEngine overconfidence) |
 | SOL_TAKER_FIRST | True | SOL bypasses maker entirely, direct IOC at all STC |
 | DECIDED_T1_ENABLED | True | Decided contract overlay: z≤-5, any price (env var) |
 | DECIDED_CONTRACT_Z_T1B | -4.0 | T1B z-score threshold (between T1's -5 and T2's -3) |
