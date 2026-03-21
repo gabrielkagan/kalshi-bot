@@ -264,8 +264,8 @@ The minimum edge is price-dependent, reflecting the higher risk of expensive con
 
 | Entry Price | Min Edge |
 |---|---|
-| 97¢+ | 2.0% |
-| 95–96¢ | 1.25% |
+| 97¢+ | 1.0% |
+| 95–96¢ | 0.75% |
 | 93–94¢ | 0.9% |
 | 91–92¢ | 0.35% |
 | 89–90¢ | 0.25% |
@@ -632,7 +632,7 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 
 - **Multi-asset capable**: Can trade multiple assets per 15-minute window
 - **Price range guardrails**: Only trade contracts priced 80–99¢ (global floor), with per-asset overrides: BTC 89¢, ETH 80¢, SOL 80¢, XRP 92¢. Below these floors, win rates are insufficient after fees; above 99¢ offers insufficient reward
-- **Price-dependent edge threshold**: Fee-adjusted edge must exceed a price-dependent minimum (0.25% at 80¢ up to 2.0% at 97¢+) after taker fees (worst-case)
+- **Price-dependent edge threshold**: Fee-adjusted edge must exceed a price-dependent minimum (0.25% at 80¢ up to 1.0% at 97¢+) after taker fees (worst-case)
 - **Scanner uses taker fees**: Every candidate is profitable even if forced to taker execution
 
 ## Model Sanity Controls

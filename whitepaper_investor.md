@@ -260,7 +260,7 @@ This creates a geometric de-risking curve: the more the account loses, the less 
 Before any trade is placed, the system verifies:
 
 1. The model's probability estimate passes a sanity check against the market price
-2. The estimated edge exceeds the price-dependent minimum (0.25%–2.0%) after all fees (worst-case taker rates)
+2. The estimated edge exceeds the price-dependent minimum (0.25%–1.0%) after all fees (worst-case taker rates)
 3. The contract price falls within acceptable bounds (80–99¢, with per-asset floors)
 4. No extreme statistical indicators suggest unreliable model inputs
 5. The position size respects all hard limits and drawdown adjustments

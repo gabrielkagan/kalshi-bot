@@ -652,6 +652,20 @@ class TestXRPSizingCap:
         assert bot.MAX_RISK_PER_TRADE >= 0.20
 
 
+class TestBTCSizingCap:
+    """BTC must have a tighter risk cap than global (matching XRP pattern)."""
+
+    def test_btc_risk_cap_exists(self):
+        import bot
+        assert hasattr(bot, "BTC_MAX_RISK_PER_TRADE")
+        assert bot.BTC_MAX_RISK_PER_TRADE < bot.MAX_RISK_PER_TRADE
+
+    def test_btc_cap_is_reasonable(self):
+        import bot
+        assert bot.BTC_MAX_RISK_PER_TRADE <= 0.15
+        assert bot.BTC_MAX_RISK_PER_TRADE >= 0.05
+
+
 # ============================================================================
 # 12. IOC Time-in-Force String (68c440b)
 #     Bug: time_in_force="ioc" should be "immediate_or_cancel".

@@ -12,7 +12,7 @@ Deribit DVOL ──────────┤     Engine          Engine      F
 CoinGlass funding ─────┘
 ```
 
-Every second, the bot scans all active 15-minute windows across all four assets and executes when the fee-adjusted edge exceeds a price-dependent minimum (0.25% at 86c up to 2.0% at 97c+).
+Every second, the bot scans all active 15-minute windows across all four assets and executes when the fee-adjusted edge exceeds a price-dependent minimum (0.25% at 86c up to 1.0% at 97c+).
 
 ## Architecture
 

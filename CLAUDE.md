@@ -194,12 +194,13 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | XRP_MIN_ENTRY_PRICE | 92 | Cents (data: PnL negative at every floor <90c, PF=1.68 at ≥92c) |
 | MAX_ENTRY_PRICE | 99 | Cents |
 | MIN_EDGE_PCT | 0.25 | Flat fallback for execution paths (was 0.7) |
-| MIN_EDGE_BY_PRICE | 0.25%-2.0% | Price-dependent: 80-88c→0.25%, 89-90c→0.25%, 91-92c→0.35%, 93-94c→0.9%, 95-96c→1.25%, 97-99c→2.0% |
+| MIN_EDGE_BY_PRICE | 0.25%-1.0% | Price-dependent: 80-88c→0.25%, 89-90c→0.25%, 91-92c→0.35%, 93-94c→0.9%, 95-96c→0.75%, 97-99c→1.0% |
 | MARKET_BLEND_W | 0.40 | 60% model, 40% market (data: model underconfident 0.8-2.1pp at 90%+) |
 | MAX_RISK_PER_TRADE | 0.25 | Max 25% bankroll per trade |
 | MAX_SECONDS_BEFORE_CLOSE | 900 | 15 min before close (600-900s shadow, 0-600s live) |
 | STC_SHADOW_THRESHOLD | 600 | 15M trades above this STC are shadow-only (data: 500-600s 91.2% WR, +$47 marginal) |
 | XRP_MAX_RISK_PER_TRADE | 0.12 | XRP RK vol underestimates → cap exposure |
+| BTC_MAX_RISK_PER_TRADE | 0.12 | BTC oversizing causes outsized losses → cap exposure |
 | SOL_TAKER_FIRST | True | SOL bypasses maker entirely, direct IOC at all STC |
 | DECIDED_T1_ENABLED | True | Decided contract overlay: z≤-5, any price (env var) |
 | DECIDED_CONTRACT_Z_T1B | -4.0 | T1B z-score threshold (between T1's -5 and T2's -3) |
@@ -252,7 +253,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 3. **Hourly temperature scaling** (Layer 1): T=1.45 softens overconfident probs (95%→88.4%). Applied before OFA/dynamic cap. 15M unaffected.
 4. Dynamic cap: **bypassed** when learned calibration is active (`is_learned_method_active()` → uses 0.999 safety ceiling instead of the cap schedule). Cap schedule only applies during startup before training.
 5. Market blend: 40% weight toward market price (60% model)
-6. Fee-adjusted edge check: price-dependent minimum (0.25% at 80-90c up to 2.0% at 97c+)
+6. Fee-adjusted edge check: price-dependent minimum (0.25% at 80-90c up to 1.0% at 97c+)
 
 ## Hourly Three-Layer Optimization
 

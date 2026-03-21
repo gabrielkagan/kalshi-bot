@@ -49,6 +49,7 @@ BTC_MIN_ENTRY_PRICE = 89          # cents (data: 86-88c below taker BE, 89c is 9
 ETH_MIN_ENTRY_PRICE = 80          # cents (data: price shadow 80-85c 89.7% WR, 58 signals, +$1.30 sim PnL)
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
+BTC_MAX_RISK_PER_TRADE = 0.12    # BTC oversizing causes outsized losses (data: -$282 from 95c+ losses at full Kelly)
 XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/2L 95.3% WR at >=92c)
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 MIN_SECONDS_BEFORE_CLOSE = 0
@@ -524,8 +525,8 @@ RELAXED_EDGE_MAX_PRICE = 93         # Upper bound (exclusive — 93+ has stricte
 # Price-dependent minimum edge: higher prices have worse asymmetry
 # At 95c: 1 loss = 19 wins. At 87c: 1 loss = 6.7 wins.
 MIN_EDGE_BY_PRICE = [
-    (97, 0.020),   # 97-99c: need 2.0% edge (was 4.0% — halved: grid search 40W/1L at 0-0.7% edge)
-    (95, 0.0125),  # 95-96c: need 1.25% edge (was 2.5% — halved)
+    (97, 0.010),   # 97-99c: need 1.0% edge (was 2.0% — data: 4 incremental signals, all wins)
+    (95, 0.0075),  # 95-96c: need 0.75% edge (was 1.25% — data: 72 incremental signals, 97.2% WR, time-stable)
     (93, 0.009),   # 93-94c: need 0.9% edge (was 1.8% — halved: 3 rejected winners at 0.95-1.23%)
     (91, 0.0035),  # 91-92c: need 0.35% edge (was 0.7% — halved)
     (89, 0.0025),  # 89-90c: need 0.25% edge (was 0.5% — halved: 2 rejected winners at 0.31-0.48%)
@@ -5822,11 +5823,14 @@ class OpportunityScanner:
         assert XRP_MAX_RISK_PER_TRADE <= MAX_RISK_PER_TRADE, (
             f"XRP risk {XRP_MAX_RISK_PER_TRADE} > 15M risk {MAX_RISK_PER_TRADE}")
         assert XRP_MAX_RISK_PER_TRADE >= 0.05, f"XRP_MAX_RISK_PER_TRADE too low: {XRP_MAX_RISK_PER_TRADE}"
+        assert BTC_MAX_RISK_PER_TRADE <= MAX_RISK_PER_TRADE, (
+            f"BTC risk {BTC_MAX_RISK_PER_TRADE} > 15M risk {MAX_RISK_PER_TRADE}")
+        assert BTC_MAX_RISK_PER_TRADE >= 0.05, f"BTC_MAX_RISK_PER_TRADE too low: {BTC_MAX_RISK_PER_TRADE}"
         logging.info(
             "CONFIG_VERIFY: MARKET_BLEND_W=%.2f SHADOW_CAL_PIPELINE=%s "
-            "MAX_RISK=%s XRP_MAX_RISK=%s XRP_15M_SHADOW=%s SIZING_TIERS=%s DRAWDOWN_HALF=%.2f DRAWDOWN_QUARTER=%.2f "
+            "MAX_RISK=%s XRP_MAX_RISK=%s BTC_MAX_RISK=%s XRP_15M_SHADOW=%s SIZING_TIERS=%s DRAWDOWN_HALF=%.2f DRAWDOWN_QUARTER=%.2f "
             "DRAWDOWN_HALT=%.2f MAKER_ONLY_THRESHOLD=%.0f",
-            MARKET_BLEND_W, SHADOW_CAL_PIPELINE, MAX_RISK_PER_TRADE, XRP_MAX_RISK_PER_TRADE,
+            MARKET_BLEND_W, SHADOW_CAL_PIPELINE, MAX_RISK_PER_TRADE, XRP_MAX_RISK_PER_TRADE, BTC_MAX_RISK_PER_TRADE,
             XRP_15M_SHADOW, SIZING_TIERS, DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
             DRAWDOWN_HALT_THRESHOLD, MAKER_ONLY_THRESHOLD)
 
@@ -7901,13 +7905,19 @@ class OpportunityScanner:
                     if sizing["contracts"] > _type_max:
                         sizing["contracts"] = max(1, _type_max)
 
-                # Asset-specific risk cap (XRP RK vol systematically underestimates)
+                # Asset-specific risk caps
                 if asset == "XRP" and _pt in (None, "15m"):
                     _xrp_max = int((_sizing_balance * XRP_MAX_RISK_PER_TRADE) / best_ask)
                     if sizing["contracts"] > _xrp_max >= 1:
                         logging.info("XRP risk cap: %d -> %d contracts (%.0f%% max risk)",
                                      sizing["contracts"], _xrp_max, XRP_MAX_RISK_PER_TRADE * 100)
                         sizing["contracts"] = _xrp_max
+                elif asset == "BTC" and _pt in (None, "15m"):
+                    _btc_max = int((_sizing_balance * BTC_MAX_RISK_PER_TRADE) / best_ask)
+                    if sizing["contracts"] > _btc_max >= 1:
+                        logging.info("BTC risk cap: %d -> %d contracts (%.0f%% max risk)",
+                                     sizing["contracts"], _btc_max, BTC_MAX_RISK_PER_TRADE * 100)
+                        sizing["contracts"] = _btc_max
 
                 # Low-STC sizing cap: halve position when STC < 100s
                 # Data: 0-100s STC is -$84/14d (12W/2L, catastrophic losses wipe gains)
