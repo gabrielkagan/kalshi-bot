@@ -3264,10 +3264,40 @@ class DashboardSnapshotBuilder:
                     "by_price_tier": by_tier_dict.get(fs, {}),
                 }
 
-            # Weekend discount
+            # Weekend discount shadow
             _wknd = _panel_snap("weekend_discount_shadow", _sh_totals, _sh_asset_map, _sh_tier_map)
             _wknd["discount_factor"] = 0.60
             snap["weekend_discount_shadow"] = _wknd
+
+            # Weekend discount live
+            _wknd_live = {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0, "wr": 0, "by_asset": {}}
+            try:
+                for _wl_row in _conn.execute(
+                    "SELECT asset, COUNT(*) as n, "
+                    "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
+                    "SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as losses, "
+                    "SUM(pnl_cents) as pnl "
+                    "FROM settled_trades WHERE strategy = 'weekend_discount' "
+                    "GROUP BY asset"
+                ).fetchall():
+                    a, n, w, l, p = _wl_row
+                    _wknd_live["trades"] += n
+                    _wknd_live["wins"] += w
+                    _wknd_live["losses"] += l
+                    _wknd_live["pnl_cents"] += p
+                    _wknd_live["by_asset"][a] = {"trades": n, "wins": w, "losses": l,
+                                                  "pnl_cents": p, "wr": round(w / n, 4) if n else 0}
+                _wknd_live["wr"] = round(_wknd_live["wins"] / _wknd_live["trades"], 4) if _wknd_live["trades"] else 0
+                # Shadow signal count (evaluated_opportunities with live filter_stage)
+                _wl_sig = _conn.execute(
+                    "SELECT COUNT(*) FROM evaluated_opportunities "
+                    "WHERE filter_stage = 'weekend_discount'"
+                ).fetchone()
+                _wknd_live["signals"] = _wl_sig[0] if _wl_sig else 0
+                _query_count += 2
+            except Exception:
+                logging.debug("weekend_discount_live snapshot failed", exc_info=True)
+            snap["weekend_discount_live"] = _wknd_live
 
             # Overnight discount
             _ovn = _panel_snap("overnight_discount_shadow", _sh_totals, _sh_asset_map, _sh_tier_map)
@@ -3672,7 +3702,8 @@ class DashboardSnapshotBuilder:
         # ── Save slow-changing sections to TTL cache ──────────────────
         if _run_slow:
             _SLOW_SNAP_KEYS = {
-                "weekend_discount_shadow", "overnight_discount_shadow",
+                "weekend_discount_live", "weekend_discount_shadow",
+                "overnight_discount_shadow",
                 "overnight_lp_shadow", "decided_contract_shadow", "decided_contract_live",
                 "dc_expansion_shadow", "relaxed_edge_shadow",
                 "calibration_gap", "capital_utilization", "loss_clusters",

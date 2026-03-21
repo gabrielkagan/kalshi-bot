@@ -764,7 +764,7 @@ Append-only journal files provide a complete audit trail:
 
 ## Test Suite
 
-713 tests across 25+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, and regression tests for past bugs.
+737 tests across 25+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, weekend discount, and regression tests for past bugs.
 
 ## Shadow Mode Features
 
@@ -793,6 +793,7 @@ Promoted features (driving live behavior):
 - **SOL taker-first** — SOL bypasses maker, direct IOC at all STC
 - **XRP live** — promoted from shadow at 92¢+ floor with 12% risk cap
 - **Price improvement addon** — adds to winning positions on price improvement
+- **Weekend edge discount** — live on Sat/Sun (89¢+, STC≤600s, no DC overlap); sub-89¢ and STC>600s remain shadow
 
 ---
 

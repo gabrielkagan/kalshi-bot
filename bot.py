@@ -442,6 +442,9 @@ MIN_EDGE_PCT = 0.25               # flat fallback — matches lowest MIN_EDGE_BY
 #   - No single asset dragging below 75% WR
 #   - No edge inversion (lower tiers not dragging overall)
 WEEKEND_EDGE_DISCOUNT = 0.60      # multiply MIN_EDGE_BY_PRICE by this on Sat/Sun
+WEEKEND_DISCOUNT_LIVE = True      # Promote weekend discount to live trading (kill switch)
+WEEKEND_DISCOUNT_MIN_PRICE = 89   # 89c+ only (sub-89c is PnL-negative in shadow data)
+WEEKEND_DISCOUNT_MAX_STC = 600    # STC gate — 600-900s is 57% WR, kills PnL
 OVERNIGHT_EDGE_DISCOUNT = 0.60    # multiply MIN_EDGE_BY_PRICE by this during overnight quiet hours (04-11 UTC)
 OVERNIGHT_QUIET_START = 4         # UTC hour — quiet zone starts (inclusive)
 OVERNIGHT_QUIET_END = 11          # UTC hour — quiet zone ends (inclusive)
@@ -7164,23 +7167,27 @@ class OpportunityScanner:
                             calibrated_prob_raw, est_fee_1c,
                             ask_depth, best_ask_source, _cf, _shadow_diag)
 
-                    # ── Weekend Edge Discount Shadow ──────────────────────────
+                    # ── Weekend Edge Discount (Live + Shadow) ────────────────
                     # On Sat/Sun, re-evaluate 15M insufficient_edge rejections
-                    # at relaxed thresholds (0.6x). Shadow-only — no orders.
+                    # at relaxed thresholds (0.6x MIN_EDGE_BY_PRICE).
+                    # Live: 89c+, STC ≤ 600s, no DC overlap → candidate
+                    # Shadow: sub-89c, high STC, or DC overlap → log only
                     if (_pt in (None, "15m")
                             and datetime.datetime.now(timezone.utc).weekday() >= 5
                             and best_ask >= MIN_ENTRY_PRICE):
                         _wknd_discounted_min = _min_edge * WEEKEND_EDGE_DISCOUNT
                         if fee_adjusted_edge >= _wknd_discounted_min:
-                            # Would pass at discounted threshold — log as shadow candidate
+                            # Compute sizing (shared by live and shadow paths)
                             _wknd_balance = self._get_balance_cached()
                             _wknd_kelly_f = None
                             _wknd_position = None
                             _wknd_ev = None
+                            _wknd_drawdown = None
                             if _wknd_balance and _wknd_balance > 0:
                                 _wknd_sizing = self._sizer.compute(final_prob, best_ask, _wknd_balance)
                                 _wknd_kelly_f = _wknd_sizing["kelly_f"]
                                 _wknd_position = _wknd_sizing["contracts"]
+                                _wknd_drawdown = _wknd_sizing["drawdown_scaler"]
                                 # Apply product-type Kelly fraction + risk cap
                                 _wknd_scfg = get_market_config(window.get("product_type"))
                                 if _wknd_scfg.kelly_fraction < 1.0:
@@ -7189,9 +7196,28 @@ class OpportunityScanner:
                                 if _wknd_position > _wknd_type_max:
                                     _wknd_position = max(1, _wknd_type_max)
                                 _wknd_ev = round((final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
+
+                            # Check live eligibility gates
+                            _wknd_dc_overlap = (z_score is not None
+                                                and z_score <= DECIDED_CONTRACT_Z_T2
+                                                and best_ask >= DECIDED_CONTRACT_MIN_PRICE
+                                                and seconds_remaining < DECIDED_CONTRACT_MAX_STC)
+                            _wknd_live_eligible = (
+                                WEEKEND_DISCOUNT_LIVE
+                                and not OBSERVATION_MODE
+                                and best_ask >= WEEKEND_DISCOUNT_MIN_PRICE
+                                and seconds_remaining <= WEEKEND_DISCOUNT_MAX_STC
+                                and not _wknd_dc_overlap
+                                and _wknd_balance and _wknd_balance > 0
+                                and _wknd_position and _wknd_position > 0)
+
+                            # Determine filter stage for DB insert
+                            _wknd_stage = "weekend_discount" if _wknd_live_eligible else "weekend_discount_shadow"
+
+                            # JSONL log (always — both live and shadow)
                             try:
                                 self._logger.log_opportunity({
-                                    "filter_stage": "weekend_discount_shadow",
+                                    "filter_stage": _wknd_stage,
                                     "ticker": ticker,
                                     "event_ticker": window["event_ticker"],
                                     "asset": asset,
@@ -7217,16 +7243,17 @@ class OpportunityScanner:
                                     "z_score": z_score,
                                 })
                             except Exception:
-                                logging.debug("weekend_discount_shadow log failed", exc_info=True)
-                            # Also insert into evaluated_opportunities for settlement tracking
-                            _wknd_dedup = (ticker, "weekend_discount_shadow")
+                                logging.debug("weekend_discount log failed", exc_info=True)
+
+                            # DB insert (always — for settlement tracking)
+                            _wknd_dedup = (ticker, _wknd_stage)
                             if _wknd_dedup not in self._eval_opp_seen:
                                 self._eval_opp_seen.add(_wknd_dedup)
                                 try:
                                     self._state.insert_evaluated_opportunity(
                                         ticker, window["event_ticker"], asset,
-                                        "weekend_discount_shadow",
-                                        rejection_reason=f"shadow: edge {fee_adjusted_edge:.4f} >= discounted_min {_wknd_discounted_min:.4f} (orig {_min_edge:.4f} x {WEEKEND_EDGE_DISCOUNT})",
+                                        _wknd_stage,
+                                        rejection_reason=f"{'live' if _wknd_live_eligible else 'shadow'}: edge {fee_adjusted_edge:.4f} >= discounted_min {_wknd_discounted_min:.4f} (orig {_min_edge:.4f} x {WEEKEND_EDGE_DISCOUNT})",
                                         spot_price=spot, threshold=threshold,
                                         volatility=blended_rv, market_price=best_ask,
                                         seconds_to_close=seconds_remaining,
@@ -7247,7 +7274,53 @@ class OpportunityScanner:
                                         product_type=window.get("product_type"),
                                         **_shadow_diag)
                                 except Exception:
-                                    logging.warning("insert_evaluated_opportunity failed (weekend_discount_shadow)", exc_info=True)
+                                    logging.warning("insert_evaluated_opportunity failed (%s)", _wknd_stage, exc_info=True)
+
+                            # Live path: append to candidates for execution
+                            if _wknd_live_eligible:
+                                logging.info(
+                                    "WKND_DISCOUNT_CANDIDATE: %s %dx@%dc edge=%.4f disc_min=%.4f stc=%.0fs",
+                                    ticker, _wknd_position, best_ask,
+                                    fee_adjusted_edge, _wknd_discounted_min, seconds_remaining)
+                                candidates.append({
+                                    "ticker": ticker,
+                                    "event_ticker": window["event_ticker"],
+                                    "asset": asset,
+                                    "product_type": window.get("product_type"),
+                                    "spot": spot,
+                                    "threshold": threshold,
+                                    "seconds_to_close": round(seconds_remaining, 1),
+                                    "blended_rv": blended_rv,
+                                    "calibrated_prob": round(final_prob, 6),
+                                    "z_score": z_score,
+                                    "best_yes_ask": best_ask,
+                                    "best_ask_source": best_ask_source,
+                                    "edge": round(edge, 6),
+                                    "fee_adjusted_edge": round(fee_adjusted_edge, 6),
+                                    "position_size": _wknd_position,
+                                    "kelly_f": _wknd_kelly_f,
+                                    "drawdown_scaler": _wknd_drawdown or 1.0,
+                                    "vol_regime": vol_est["regime"],
+                                    "balance_at_scan": _wknd_balance,
+                                    "strategy": "weekend_discount",
+                                    "ob_snapshot": {
+                                        "best_ask": best_ask,
+                                        "ask_depth": ask_depth,
+                                        "total_depth": total_depth,
+                                        "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                                        "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                                        "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                                  if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
+                                    },
+                                    "calibrated_prob_raw": round(calibrated_prob_raw, 6),
+                                    "ofa_adjustment": round(ofa_adjustment, 6),
+                                    "ofa_confidence": ofa_signals["confidence"] if ofa_signals else "none",
+                                    "raw_prob": raw_prob,
+                                    "calibration_method": calibration_method,
+                                    "old_system_prob": round(_old_system_prob, 6),
+                                    **_shadow_diag,
+                                    **_shadow_extra,
+                                })
 
                     # ── Overnight Edge Discount Shadow ─────────────────────────
                     # On weekday quiet hours (04-11 UTC), re-evaluate 15M
@@ -8889,7 +8962,11 @@ class OpportunityScanner:
 
         # ── Separate decided contract candidates (additive overlay, bypass single-asset filter) ──
         _dc_candidates = [c for c in candidates if c.get("strategy", "").startswith("decided_")]
-        _main_candidates = [c for c in candidates if not c.get("strategy", "").startswith("decided_")]
+        _dc_tickers = {c["ticker"] for c in _dc_candidates}
+        # Remove weekend discount candidates that overlap with DC (DC takes priority)
+        _main_candidates = [c for c in candidates
+                            if not c.get("strategy", "").startswith("decided_")
+                            and not (c.get("strategy") == "weekend_discount" and c["ticker"] in _dc_tickers)]
         candidates = _main_candidates  # single-asset filter only applies to main pipeline
 
         # ── Single-asset-per-timeslot: pick highest edge per 15-min window ──

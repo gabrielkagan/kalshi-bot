@@ -77,7 +77,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 |---|---|
 | `/maker-cost` | Maker vs taker opportunity cost — fill rates, unfilled cost |
 | `/no-side` | NO-side shadow data — volume, pricing verification, settlements |
-| `/weekend-discount` | Weekend/overnight edge discount shadow evaluation |
+| `/weekend-discount` | Weekend/overnight edge discount — live performance and shadow tails |
 | `/research-package` | Compile self-contained data package for external researcher |
 
 ### Decision Rules for Ambiguous Pairs
@@ -180,7 +180,8 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **Sports:** Observation mode (SPORTS_OBSERVATION_ONLY = True) — hardcoded, never live without explicit promotion. Basketball best group (69.2% WR, n=39), SPRT still CONTINUE_COLLECTING
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
-- **Tests:** 713 tests across 15+ test files
+- **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
+- **Tests:** 737 tests across 15+ test files
 
 ## Key Config Values (bot.py)
 
@@ -239,6 +240,10 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | WEATHER_MIN_SECONDS_BEFORE_CLOSE | 3600 | At least 1 hour before settlement |
 | WEATHER_MAX_SECONDS_BEFORE_CLOSE | 86400 | Weather settles daily — always eligible |
 | WEATHER_NO_SIDE_LIVE | False | NO-side execution wired but kill-switched off |
+| WEEKEND_DISCOUNT_LIVE | True | Weekend edge discount promoted to live (Sat/Sun only) |
+| WEEKEND_DISCOUNT_MIN_PRICE | 89 | Cents — 89c+ floor for live weekend discount trades |
+| WEEKEND_DISCOUNT_MAX_STC | 600 | STC gate for live weekend discount trades |
+| WEEKEND_EDGE_DISCOUNT | 0.60 | 40% edge reduction applied on weekends (unchanged) |
 
 ## Calibration Pipeline
 
@@ -283,6 +288,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | DC shadow: dc_shadow_no_side | Shadow — NO-side decided contract variant |
 | SOL taker-first | **Promoted** — SOL bypasses maker, direct IOC |
 | XRP live (was shadow) | **Promoted** — XRP live at 92c+ floor |
+| Weekend edge discount | **Promoted** — live on Sat/Sun (89c+, STC<=600s, no DC overlap); sub-89c/STC>600s shadow |
 
 ## Order Execution
 

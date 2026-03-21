@@ -83,6 +83,7 @@ REQUIRED_SNAP_KEYS = {
     "calibration_health", "edge_integrity",
     "loss_clustering", "pipeline_completeness",
     "no_side_shadow",
+    "weekend_discount_live",
     "weekend_discount_shadow",
     "overnight_discount_shadow",
     "overnight_lp_shadow",
