@@ -111,6 +111,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **Never present analysis without checking actual data first** — no assumptions about column values, schema, enum strings, or data shape. Always run `PRAGMA table_info()` and `SELECT DISTINCT` before building queries. (Learned: wrong column values, wrong regime detection, wrong filter_stage assumptions all caused bad analysis.)
 - **Never use `PRAGMA wal_checkpoint(TRUNCATE)` — use PASSIVE** — TRUNCATE requires an exclusive lock that blocks all readers/writers. With supabase_sync running 192 SELECTs every 30s, TRUNCATE creates a deadlock triangle: checkpoint waits for reader to finish → reader holds shared lock → settlement writer waits for checkpoint's exclusive lock. PASSIVE checkpoints whatever pages it can without blocking. (Learned: 11,258 "database is locked" errors in 12h, Mar 16 2026. Root cause: TRUNCATE + supabase_sync reader + 228-row settlement batch.)
 - **Keep DB write batches small (≤50 rows per commit)** — large batches hold the write lock long enough to conflict with concurrent readers and checkpoints. Settlement Phase 2 now chunks into batches of 50. (Learned: 228-row batch from weather expansion held lock long enough to deadlock, Mar 16 2026.)
+- **Update docs with code changes** — if you change a config value, threshold, or shadow strategy status, update the corresponding claim in README.md, whitepaper.md, whitepaper_investor.md, and/or CLAUDE.md in THE SAME COMMIT. Run `python3 scripts/doc_drift_check.py` before committing to verify. (Learned: 3+ full manual doc rewrites caused by accumulated drift, Mar 2026.)
 
 ## Anti-Patterns — Do NOT Do These
 
@@ -124,14 +125,14 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 
 ## Project Structure
 
-- `bot.py` — Main bot (~13600 lines, all trading logic)
+- `bot.py` — Main bot (~14000 lines, all trading logic)
 - `analyst.py` — AI analyst system (news sentiment, loss analysis, Telegram alerts)
 - `spx_engine.py` — SPX hourly market engine (Polygon.io price feed, EGARCH, RK, VIX integration)
 - `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
 - `market_config.py` — Centralized MarketTypeConfig for all product types (validates against bot.py at startup)
 - `dashboard_snapshot.py` — Builds dashboard state snapshots (used by Supabase syncer)
 - `start.sh` — Startup script (activates venv, sources .env, runs bot)
-- `fifteenm_shadow.py` — 15M shadow strategies (A1 RecalibratedEGARCH, A2 LightGBM, A3 EGARCH gating)
+- `fifteenm_shadow.py` — 15M shadow strategies (A1 RecalibratedEGARCH, A2 LightGBM, A3 EGARCH gating, A4 LateWindow)
 - `hourly_alt_shadow.py` — Hourly alternative shadow strategies (HAR-RV, market-making sim)
 - `sports_engine.py` — Sports comeback market engine (ESPN live data, Bayesian posterior)
 - `auditor.py` — Deterministic health checks, runs hourly via cron, Telegram alerts
@@ -143,58 +144,64 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 ## bot.py Layout (approximate line ranges)
 
 - **Lines 1–600:** Imports, constants, config (trading params, API config, volatility engine, calibration, sizing, execution)
-- **Lines 600–700:** Utility functions (fee calculation, TV RK weights, dollar/cent conversions)
-- **Lines 700–890:** `evaluate_execution_strategy()` — diagnostic only, does not control execution
-- **Lines 894–1162:** `KalshiClient` — API wrapper, order management, orderbook fetching
-- **Lines 1163–1225:** `Logger` — JSONL trade/event logging
-- **Lines 1226–1261:** `TelegramNotifier` — Telegram alerts
-- **Lines 1262–2375:** `StateManager` — DB init (`_create_tables` at 1283), position tracking, settlement processing
-- **Lines 2376–2537:** `CoinbaseFeed` — WebSocket price feed, OHLCV snapshots
-- **Lines 2538–2869:** `KalshiFeed` — WebSocket orderbook stream, fill detection
-- **Lines 2870–2950:** `DeribitDVOLFetcher` — Implied volatility index
-- **Lines 2951–3268:** `CrossExchangeFeed` — Kraken, Binance, Gemini order flow
-- **Lines 3269–3345:** `CoinGlassFetcher` — Derivative funding rates
-- **Lines 3346–3628:** `OrderFlowEngine` + `KalshiOrderFlowTracker` — Kalshi OB flow signals
-- **Lines 3629–4552:** `VolatilityEngine` — Realized Kernel (RK), GARCH, RV estimation, TV RK weights
-- **Lines 4553–5084:** `EGARCHEstimator` — EGARCH(1,1) with Student-t, MLE fitting
-- **Lines 5105–5278:** `MincerZarnowitzTracker` — R² tracking, EGARCH weight optimization
-- **Lines 5279–5485:** `ProbabilityEngine` — Z-score, normal CDF, market blend
-- **Lines 5486–6350:** `CalibrationEngine` — Beta/Platt/isotonic, `_CAL_REGISTRY`, shadow pipeline
-- **Lines 6351–6490:** `PositionSizer` — Kelly sizing, risk parity, drawdown caps
-- **Lines 6491–9896:** `OpportunityScanner` — `scan()` at 6713, market discovery, filter pipeline, shadow signals
-- **Lines 9897–12021:** `OrderExecutor` — `execute()` at 9992, maker→taker escalation, fill detection
-- **Lines 12022–12633:** `SettlementTracker` — Settlement detection, CalEngine routing, PnL computation
-- **Lines 12634–12718:** `discover_active_windows()` — Market discovery from Kalshi API
-- **Lines 12719–13620:** `MainLoop` — `run()` at 13482, init, WS subscription, periodic tasks
-- **Lines 13621–13623:** `main()` — Entry point
+- **Lines 600–620:** Utility functions (FP/dollar string helpers)
+- **Lines 620–815:** `evaluate_execution_strategy()` — diagnostic only, does not control execution
+- **Lines 820–1085:** `KalshiClient` — API wrapper, order management, orderbook fetching
+- **Lines 1089–1150:** `Logger` — JSONL trade/event logging
+- **Lines 1152–1185:** `TelegramNotifier` — Telegram alerts
+- **Lines 1188–2480:** `StateManager` — DB init (`_create_tables` at 1209), position tracking, settlement processing
+- **Lines 2483–2635:** `CoinbaseFeed` — WebSocket price feed, OHLCV snapshots
+- **Lines 2645–2970:** `KalshiFeed` — WebSocket orderbook stream, fill detection
+- **Lines 2977–3050:** `DeribitDVOLFetcher` — Implied volatility index
+- **Lines 3058–3370:** `CrossExchangeFeed` — Kraken, Binance, Bybit order flow
+- **Lines 3376–3450:** `CoinGlassFetcher` — Derivative funding rates
+- **Lines 3453–3730:** `OrderFlowEngine` + `KalshiOrderFlowTracker` — Kalshi OB flow signals
+- **Lines 3736–4640:** `VolatilityEngine` — Realized Kernel (RK), GARCH, RV estimation, TV RK weights
+- **Lines 4643–4805:** `ProbabilityEngine` — Z-score, NIG CDF, market blend
+- **Lines 4809–5670:** `CalibrationEngine` — Beta/Platt/isotonic, `_CAL_REGISTRY`, shadow pipeline
+- **Lines 5674–9844:** `OpportunityScanner` — `scan()` at 5904, market discovery, filter pipeline, shadow signals
+- **Lines 9848–12220:** `OrderExecutor` — `execute()` at 9945, maker→taker escalation, fill detection
+- **Lines 12223–12980:** `SettlementTracker` — Settlement detection, CalEngine routing, PnL computation
+- **Lines 12983–13065:** `discover_active_windows()` — Market discovery from Kalshi API
+- **Lines 13068–14030:** `MainLoop` — `run()` at 13902, init, WS subscription, periodic tasks
+- **Lines 14030–14043:** Entry point
 
-## Current State (Mar 8, 2026)
+## Current State (Mar 20, 2026)
 
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
-- **15M performance:** 237 trades, 218W/19L (92.0%)
-- **XRP_15M_SHADOW = True** — XRP 15M candidates shadow-only, not traded live
-- **Hourly:** Observation mode (HOURLY_OBSERVATION_ONLY = True) — calibration disabled (HOURLY_CALIBRATION_ENABLED = False), T=1.45 softening
-- **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — EGARCH+RK blend, VIX integration
-- **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 5 cities
-- **Sports:** Observation mode (SPORTS_OBSERVATION_ONLY = True) — hardcoded, never live without explicit promotion
-- **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating) — all shadow-only in fifteenm_shadow.py
-- **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled
+- **15M live assets:** BTC (89c+), ETH (80c+), SOL (80c+, taker-first), XRP (92c+, 12% risk cap)
+- **XRP_15M_SHADOW = False** — XRP promoted to live at 92c+ (data: 41W/2L, 95.3% WR)
+- **SOL_TAKER_FIRST = True** — SOL bypasses maker entirely, direct IOC at all STC
+- **Decided contracts LIVE:** T1 (z≤-5) and T2 (z≤-3, 93-96c) both enabled as incremental overlay
+- **STC window:** scan 0-900s, live 0-600s, shadow 600-900s (STC_SHADOW_THRESHOLD=600)
+- **Hourly:** Observation mode (HOURLY_OBSERVATION_ONLY = True) — calibration disabled (HOURLY_CALIBRATION_ENABLED = False), T=1.45 softening, STC 120-3600s
+- **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — was briefly live Mar 17, reverted due to Polygon 403 breaking vol engine. SPX-D CalEngine, 90c+ floor, eighth-Kelly, no market blend
+- **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 19 cities. NO-side execution pipeline wired but WEATHER_NO_SIDE_LIVE = False
+- **Sports:** Observation mode (SPORTS_OBSERVATION_ONLY = True) — hardcoded, never live without explicit promotion. Basketball best group (69.2% WR, n=39), SPRT still CONTINUE_COLLECTING
+- **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
+- **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
+- **Tests:** 691 tests across 15+ test files
 
 ## Key Config Values (bot.py)
 
 | Config | Value | Notes |
 |--------|-------|-------|
 | OBSERVATION_MODE | False | LIVE trading |
-| MIN_ENTRY_PRICE | 86 | Cents (data: 86c counterfactual 93.8% WR, 30W/2L n=32) |
+| MIN_ENTRY_PRICE | 80 | Cents (global floor — SOL uses this; BTC/ETH/XRP overridden per-asset) |
+| BTC_MIN_ENTRY_PRICE | 89 | Cents (data: 86-88c below taker BE, 89c is 93.3% WR) |
+| ETH_MIN_ENTRY_PRICE | 80 | Cents (data: 80-85c 89.7% WR, 58 signals) |
+| XRP_MIN_ENTRY_PRICE | 92 | Cents (data: PnL negative at every floor <90c, PF=1.68 at ≥92c) |
 | MAX_ENTRY_PRICE | 99 | Cents |
 | MIN_EDGE_PCT | 0.25 | Flat fallback for execution paths (was 0.7) |
-| MIN_EDGE_BY_PRICE | 0.25%-2.0% | Price-dependent (halved Mar 3): 86c→0.25%, 89c→0.25%, 91c→0.35%, 93c→0.9%, 95c→1.25%, 97c→2.0% |
+| MIN_EDGE_BY_PRICE | 0.25%-2.0% | Price-dependent: 80-88c→0.25%, 89-90c→0.25%, 91-92c→0.35%, 93-94c→0.9%, 95-96c→1.25%, 97-99c→2.0% |
 | MARKET_BLEND_W | 0.40 | 60% model, 40% market (data: model underconfident 0.8-2.1pp at 90%+) |
 | MAX_RISK_PER_TRADE | 0.25 | Max 25% bankroll per trade |
-| MAX_SECONDS_BEFORE_CLOSE | 900 | 15 min before close (500-900s shadow, 0-500s live) |
-| STC_SHADOW_THRESHOLD | 500 | 15M trades above this STC are shadow-only |
+| MAX_SECONDS_BEFORE_CLOSE | 900 | 15 min before close (600-900s shadow, 0-600s live) |
+| STC_SHADOW_THRESHOLD | 600 | 15M trades above this STC are shadow-only (data: 500-600s 91.2% WR, +$47 marginal) |
 | XRP_MAX_RISK_PER_TRADE | 0.12 | XRP RK vol underestimates → cap exposure |
-| MAKER_ONLY_THRESHOLD | 0.0 | Taker allowed at all STC (was 90.0, removed: taker 14W/0L 100% WR) |
+| SOL_TAKER_FIRST | True | SOL bypasses maker entirely, direct IOC at all STC |
+| DECIDED_T1_ENABLED | True | Decided contract overlay: z≤-5, any price (env var) |
+| DECIDED_T2_ENABLED | True | Decided contract overlay: z≤-3, 93-96c (env var) |
 | HOURLY_OBSERVATION_ONLY | True | Reverted — calibration too overconfident for hourly |
 | HOURLY_MARKET_BLEND_W | 0.40 | Optimal Brier per 134K simulation |
 | HOURLY_MIN_ENTRY_PRICE | 50 | Lowered from 70 for data collection |
@@ -202,20 +209,21 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | HOURLY_TEMPERATURE_T | 1.45 | Softens overconfident probs: 95%→88.4% |
 | HOURLY_KELLY_FRACTION | 0.25 | Quarter-Kelly sizing for hourly |
 | HOURLY_CALIBRATION_ENABLED | False | Engine disabled — passthrough + T=1.45 (engine was hurting: Brier 0.12→0.20) |
-| HOURLY_MIN_STC_ENTRY | 300 | Min 5 min STC — EGARCH degrades below this |
-| HOURLY_MAX_STC_ENTRY | 1800 | Max 30 min STC — expanded for observation data collection |
+| HOURLY_MIN_STC_ENTRY | 120 | Min 2 min STC — expanded for observation data collection |
+| HOURLY_MAX_STC_ENTRY | 3600 | Max 60 min STC — expanded for observation data collection |
 | HOURLY_EXCLUDED_ASSETS | set() | Empty — collecting all asset data in observation mode |
 | HOURLY_MAX_POSITIONS_PER_WINDOW | 2 | ENB ~1.3 — limit correlated exposure |
 | HOURLY_MAX_WINDOW_RISK | 0.15 | Max aggregate risk per hourly window |
-| SPX_HOURLY_OBSERVATION_ONLY | True | Shadow-only — collecting data, no live trades |
-| SPX_HOURLY_MIN_ENTRY_PRICE | 70 | Cents — lower than crypto for data collection |
+| SPX_HOURLY_OBSERVATION_ONLY | True | Reverted — Polygon 403 broke vol engine (was briefly live Mar 17) |
+| SPX_HOURLY_MIN_ENTRY_PRICE | 90 | Cents (SPX-C: 90.9% WR at 90c+) |
 | SPX_HOURLY_MAX_ENTRY_PRICE | 99 | Cents |
-| SPX_HOURLY_MARKET_BLEND_W | 0.40 | 60% model, 40% market |
+| SPX_HOURLY_MARKET_BLEND_W | 0.00 | No blend — CalEngine calibration only (SPX-D) |
 | SPX_HOURLY_TEMPERATURE_T | 1.0 | No temperature correction yet — need data |
-| SPX_HOURLY_KELLY_FRACTION | 0.25 | Quarter-Kelly |
-| SPX_HOURLY_MAX_RISK_PER_TRADE | 0.15 | Conservative sizing |
+| SPX_HOURLY_KELLY_FRACTION | 0.125 | Eighth-Kelly: ultra-conservative |
+| SPX_HOURLY_MAX_RISK_PER_TRADE | 0.10 | Conservative (down from 0.15) |
 | SPX_HOURLY_FEE_MULTIPLIER_TAKER | 0.035 | Finance category — half of crypto's 0.07 |
-| SPX_HOURLY_FEE_MULTIPLIER_MAKER | 0.0175 | Same as crypto maker |
+| SPX_HOURLY_FEE_MULTIPLIER_MAKER | 0.0 | Kalshi charges $0 on maker fills |
+| SPX_HOURLY_BANKROLL_FRACTION | 0.15 | SPX sizes off 15% of total balance — crypto unaffected |
 | SPX_HOURLY_MAX_POSITIONS_PER_WINDOW | 2 | Prevent correlated multi-strike blowups |
 | SPX_HOURLY_MAX_WINDOW_RISK | 0.15 | Max aggregate risk per SPX window |
 | WEATHER_OBSERVATION_ONLY | True | Observation-only — collecting ensemble data |
@@ -227,6 +235,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | WEATHER_KELLY_FRACTION | 0.25 | Quarter-Kelly |
 | WEATHER_MIN_SECONDS_BEFORE_CLOSE | 3600 | At least 1 hour before settlement |
 | WEATHER_MAX_SECONDS_BEFORE_CLOSE | 86400 | Weather settles daily — always eligible |
+| WEATHER_NO_SIDE_LIVE | False | NO-side execution wired but kill-switched off |
 
 ## Calibration Pipeline
 
@@ -235,7 +244,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 3. **Hourly temperature scaling** (Layer 1): T=1.45 softens overconfident probs (95%→88.4%). Applied before OFA/dynamic cap. 15M unaffected.
 4. Dynamic cap: **bypassed** when learned calibration is active (`is_learned_method_active()` → uses 0.999 safety ceiling instead of the cap schedule). Cap schedule only applies during startup before training.
 5. Market blend: 40% weight toward market price (60% model)
-6. Fee-adjusted edge check: price-dependent minimum (0.25% at 86-90c up to 2.0% at 97c+)
+6. Fee-adjusted edge check: price-dependent minimum (0.25% at 80-90c up to 2.0% at 97c+)
 
 ## Hourly Three-Layer Optimization
 
@@ -244,7 +253,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | Layer | Filter Stage | Purpose |
 |-------|-------------|---------|
 | 1 | Temperature scaling (T=1.45) | Softens 15M calibration that doesn't transfer to hourly |
-| 2 | STC timing (300-1800s) | EGARCH degrades outside; expanded to 1800s for observation data |
+| 2 | STC timing (120-3600s) | Expanded for observation data collection (2 min to 60 min) |
 | 3a | Asset exclusion (disabled) | Disabled in observation mode — collecting all asset data |
 | 3b | Per-window position limit (2) | ENB ~1.3 independent bets per window |
 | 3c | Per-window risk cap (15%) | Prevents correlated multi-asset blowups |
@@ -257,14 +266,21 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | Kalshi Order Flow (OFT) | Shadow — collecting data |
 | Sigmoid QLIKE mapping | Shadow — alternative EGARCH weight |
 | Cal pipeline (no-blend) | Shadow — monitoring after revert |
+| Dip addon (DIP_ADDON_SHADOW_MODE) | Shadow — logging dip-buy signals, not executing |
+| 15M shadow A4 (LateWindow 55-74c) | Shadow — low-price late-window approach |
 | JUMP_ADAPTIVE, RK_ADAPTIVE | **Promoted** — driving live |
 | EGARCH core + blend | **Promoted** — driving live |
 | TV RK weights | **Promoted** — driving live |
+| Decided contracts (T1+T2) | **Promoted** — live overlay for z≤-5 (any price) and z≤-3 (93-96c) |
+| SOL taker-first | **Promoted** — SOL bypasses maker, direct IOC |
+| XRP live (was shadow) | **Promoted** — XRP live at 92c+ floor |
 
 ## Order Execution
 
-- **Always enters as maker** (post_only=True), escalates to taker if unfilled
-- **Taker allowed at all STC** — MAKER_ONLY_THRESHOLD=0 (data: taker 14W/0L, 100% WR across all STC zones)
+- **Default: maker-first** (post_only=True), escalates to taker if unfilled
+- **SOL exception: taker-first** — SOL_TAKER_FIRST=True bypasses maker, direct IOC at all STC
+- **Decided contract overlay**: T1 (z≤-5 any price) and T2 (z≤-3, 93-96c) route to direct taker for near-certain settlements
+- **Taker allowed at all STC** — MAKER_ONLY_THRESHOLD=0
 - **Escalation**: maker → poll queue → cancel-replace IOC taker
 - **WS fill detection** with REST fallback
 - **Candidate logging**: Both observation_trade (obs mode) and candidate (live mode) logged to evaluated_opportunities DB
@@ -284,7 +300,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 - **API tier:** Advanced (30 reads/sec, 30 writes/sec)
 - **Series (15M):** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M
 - **Series (hourly):** KXBTCD, KXETHD, KXSOLD, KXXRPD
-- **Series (weather):** KXHIGHNY, KXHIGHCHI, KXHIGHMIA, KXHIGHDEN, KXHIGHLAX
+- **Series (weather):** 19 cities — KXHIGHNY, KXHIGHCHI, KXHIGHMIA, KXHIGHDEN, KXHIGHLAX, KXHIGHAUS, KXHIGHTATL, KXHIGHTSFO, KXHIGHTDAL, KXHIGHTPHX, KXHIGHPHIL, KXHIGHTMIN, KXHIGHTSEA, KXHIGHTHOU, KXHIGHTBOS, KXHIGHTLV, KXHIGHTOKC, KXHIGHTDC, KXHIGHTNOLA
 
 ## Fee Formula
 

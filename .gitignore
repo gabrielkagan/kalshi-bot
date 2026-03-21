@@ -10,3 +10,4 @@ logs/
 *.db-wal
 calibration_state.json
 backfill_data/
+DOC_DRIFT_REPORT.txt
