@@ -1452,7 +1452,7 @@ class StateManager:
             CREATE INDEX IF NOT EXISTS idx_sports_shadow_signal
                 ON sports_shadow_log(signal_fired);
         """)
-        self.conn.execute("""
+        self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS low_price_shadow_signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticker TEXT NOT NULL,
