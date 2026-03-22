@@ -2071,7 +2071,7 @@ class TestSOLEdgeFloor:
     def test_sol_min_edge_exists(self):
         import bot
         assert hasattr(bot, "SOL_MIN_EDGE")
-        assert bot.SOL_MIN_EDGE >= 0.015
+        assert bot.SOL_MIN_EDGE >= 0.008
 
     def test_sol_min_edge_higher_than_default(self):
         import bot

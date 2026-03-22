@@ -172,7 +172,8 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **15M live assets:** BTC (89c+), ETH (80c+), SOL (80c+, taker-first), XRP (92c+, 12% risk cap)
 - **XRP_15M_SHADOW = False** — XRP promoted to live at 92c+ (data: 41W/2L, 95.3% WR)
 - **SOL_TAKER_FIRST = True** — SOL bypasses maker entirely, direct IOC at all STC
-- **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), and T2 (z≤-3, 93-96c) all enabled as incremental overlay
+- **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c), T2-Z2 (z≤-2, 93-96c) all enabled as incremental overlay
+- **Overnight discount LIVE:** OVERNIGHT_DISCOUNT_LIVE=True on weekday 04-11 UTC — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
 - **STC window:** scan 0-900s, live 0-600s, shadow 600-900s (STC_SHADOW_THRESHOLD=600)
 - **Hourly:** Observation mode (HOURLY_OBSERVATION_ONLY = True) — calibration disabled (HOURLY_CALIBRATION_ENABLED = False), T=1.45 softening, STC 120-3600s
 - **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — was briefly live Mar 17, reverted due to Polygon 403 breaking vol engine. SPX-D CalEngine, 90c+ floor, eighth-Kelly, no market blend
@@ -201,7 +202,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | STC_SHADOW_THRESHOLD | 600 | 15M trades above this STC are shadow-only (data: 500-600s 91.2% WR, +$47 marginal) |
 | XRP_MAX_RISK_PER_TRADE | 0.12 | XRP RK vol underestimates → cap exposure |
 | BTC_MAX_RISK_PER_TRADE | 0.12 | BTC oversizing causes outsized losses → cap exposure |
-| SOL_MIN_EDGE | 0.018 | SOL-specific edge floor (data: 73.9% WR below, 95.4% above; 16.8pp CalEngine overconfidence) |
+| SOL_MIN_EDGE | 0.010 | SOL-specific edge floor (data: >=1.0% = 94.2% WR on 258 trades; <1.0% drops to 82%) |
 | SOL_TAKER_FIRST | True | SOL bypasses maker entirely, direct IOC at all STC |
 | IOC_TICKER_COOLDOWN | 15 | Seconds cooldown per ticker after IOC attempt (was 60) |
 | IOC_RETRY_OFFSET | 1 | Cents above ask for taker-first IOC + retry offset |
@@ -212,6 +213,13 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | DECIDED_CONTRACT_T1B_MIN_PRICE | 95 | T1B minimum price in cents |
 | DECIDED_T1B_ENABLED | True | Decided contract overlay: z≤-4, 95c+ (env var) |
 | DECIDED_T2_ENABLED | True | Decided contract overlay: z≤-3, 93-96c (env var) |
+| DECIDED_T2_Z25_ENABLED | True | Decided contract overlay: z≤-2.5, 93-96c (env var, data: 7/7 WR) |
+| DECIDED_T2_Z2_ENABLED | True | Decided contract overlay: z≤-2, 93-96c (env var, data: 19/19 WR) |
+| DECIDED_CONTRACT_T2_Z25_RISK | 0.15 | T2-Z25 fixed sizing (15% — deeper z, higher confidence) |
+| DECIDED_CONTRACT_T2_Z2_RISK | 0.125 | T2-Z2 fixed sizing (12.5% — shallower z, more conservative) |
+| OVERNIGHT_DISCOUNT_LIVE | True | Promote overnight discount to live trading (kill switch) |
+| OVERNIGHT_DISCOUNT_MIN_PRICE | 89 | Cents — 89c+ floor for live overnight discount trades |
+| OVERNIGHT_DISCOUNT_MAX_STC | 600 | STC gate for live overnight discount trades |
 | HOURLY_OBSERVATION_ONLY | True | Reverted — calibration too overconfident for hourly |
 | HOURLY_MARKET_BLEND_W | 0.40 | Optimal Brier per 134K simulation |
 | HOURLY_MIN_ENTRY_PRICE | 50 | Lowered from 70 for data collection |
@@ -285,16 +293,15 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | JUMP_ADAPTIVE, RK_ADAPTIVE | **Promoted** — driving live |
 | EGARCH core + blend | **Promoted** — driving live |
 | TV RK weights | **Promoted** — driving live |
-| Decided contracts (T1+T1B+T2) | **Promoted** — live overlay: T1 z≤-5 (any price), T1B z≤-4 (95c+), T2 z≤-3 (93-96c) |
+| Decided contracts (T1+T1B+T2+T2-Z25+T2-Z2) | **Promoted** — live overlay: T1 z≤-5 (any price), T1B z≤-4 (95c+), T2 z≤-3 (93-96c), T2-Z25 z≤-2.5 (93-96c), T2-Z2 z≤-2 (93-96c) |
 | DC shadow: dc_shadow_t1b_93c | Shadow — T1B at 93c+ floor variant |
-| DC shadow: dc_shadow_t2_z25 | Shadow — T2 at z≤-2.5 variant |
 | DC shadow: dc_shadow_t2_90c | Shadow — T2 at 90c+ floor variant |
 | DC shadow: dc_shadow_t2_90c_xrp | Shadow — T2 at 90c+ XRP-only variant |
-| DC shadow: dc_shadow_t2_z2 | Shadow — T2 at z≤-2 variant |
 | DC shadow: dc_shadow_no_side | Shadow — NO-side decided contract variant |
 | SOL taker-first | **Promoted** — SOL bypasses maker, direct IOC |
 | XRP live (was shadow) | **Promoted** — XRP live at 92c+ floor |
 | Weekend edge discount | **Promoted** — live on Sat/Sun (89c+, STC<=600s, no DC overlap); sub-89c/STC>600s shadow |
+| Overnight edge discount | **Promoted** — live on weekday 04-11 UTC (89c+, STC<=600s, no DC overlap); sub-89c/STC>600s shadow |
 | Low-price shadow (70-79c) | Shadow — dual-sizing sim (full Kelly vs capped LP_KELLY=0.25, LP_MAX_RISK=0.10) with correlation tracking |
 
 ## Order Execution

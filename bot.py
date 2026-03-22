@@ -50,7 +50,7 @@ ETH_MIN_ENTRY_PRICE = 80          # cents (data: price shadow 80-85c 89.7% WR, 5
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 BTC_MAX_RISK_PER_TRADE = 0.12    # BTC oversizing causes outsized losses (data: -$282 from 95c+ losses at full Kelly)
-SOL_MIN_EDGE = 0.018             # SOL-specific edge floor (data: 73.9% WR below 1.8%, 95.4% above; 16.8pp CalEngine overconfidence)
+SOL_MIN_EDGE = 0.010             # SOL-specific edge floor (data: >=1.0% = 94.2% WR on 258 trades; <1.0% drops to 82%)
 XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/2L 95.3% WR at >=92c)
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 MIN_SECONDS_BEFORE_CLOSE = 0
@@ -450,6 +450,9 @@ WEEKEND_DISCOUNT_MAX_STC = 600    # STC gate — 600-900s is 57% WR, kills PnL
 OVERNIGHT_EDGE_DISCOUNT = 0.60    # multiply MIN_EDGE_BY_PRICE by this during overnight quiet hours (04-11 UTC)
 OVERNIGHT_QUIET_START = 4         # UTC hour — quiet zone starts (inclusive)
 OVERNIGHT_QUIET_END = 11          # UTC hour — quiet zone ends (inclusive)
+OVERNIGHT_DISCOUNT_LIVE = True    # Promote overnight discount to live trading (kill switch)
+OVERNIGHT_DISCOUNT_MIN_PRICE = 89 # 89c+ only (data: 75/80 = 93.8% WR at 89c+, taker-sim +$208)
+OVERNIGHT_DISCOUNT_MAX_STC = 600  # STC gate — match weekend discount STC cap
 
 # ─── Overnight Low-Price Shadow ──────────────────────────────────────────
 # Thesis: overnight market makers are slow/absent, so 50-85c YES contracts
@@ -501,6 +504,12 @@ DECIDED_CONTRACT_T1B_MIN_PRICE = 95 # T1B only at 95c+ (40/40=100% WR at -5<z≤
 DECIDED_T1_ENABLED = os.environ.get("DECIDED_T1_ENABLED", "1") == "1"
 DECIDED_T1B_ENABLED = os.environ.get("DECIDED_T1B_ENABLED", "1") == "1"
 DECIDED_T2_ENABLED = os.environ.get("DECIDED_T2_ENABLED", "1") == "1"
+DECIDED_T2_Z25_ENABLED = os.environ.get("DECIDED_T2_Z25_ENABLED", "1") == "1"
+DECIDED_T2_Z2_ENABLED = os.environ.get("DECIDED_T2_Z2_ENABLED", "1") == "1"
+DECIDED_CONTRACT_Z_T2_Z25 = -2.5            # Tier 2-Z25: -3 < z ≤ -2.5, 93-96c (data: 7/7 = 100% WR)
+DECIDED_CONTRACT_Z_T2_Z2 = -2.0             # Tier 2-Z2: -2.5 < z ≤ -2, 93-96c (data: 19/19 = 100% WR)
+DECIDED_CONTRACT_T2_Z25_RISK = 0.15         # 15% fixed sizing (deeper z → higher confidence)
+DECIDED_CONTRACT_T2_Z2_RISK = 0.125         # 12.5% fixed sizing (shallower z → more conservative)
 DECIDED_CONTRACT_RISK = 0.125               # Fixed 12.5% bankroll per signal
 DECIDED_CONTRACT_MAX_WINDOW_RISK = 0.25     # 25% bankroll cap per settlement window
 # ── Decided Contract Shadow Expansion ──
@@ -7506,9 +7515,11 @@ class OpportunityScanner:
                                     **_shadow_extra,
                                 })
 
-                    # ── Overnight Edge Discount Shadow ─────────────────────────
+                    # ── Overnight Edge Discount (Live + Shadow) ────────────────
                     # On weekday quiet hours (04-11 UTC), re-evaluate 15M
-                    # insufficient_edge at relaxed thresholds (0.6x). Shadow-only.
+                    # insufficient_edge at relaxed thresholds (0.6x).
+                    # Live: 89c+, STC ≤ 600s, no DC overlap → candidate
+                    # Shadow: sub-89c, high STC, or DC overlap → log only
                     # Skip if weekend discount already applied (don't double-count).
                     _now_utc = datetime.datetime.now(timezone.utc)
                     _is_weekend = _now_utc.weekday() >= 5
@@ -7522,10 +7533,12 @@ class OpportunityScanner:
                             _ovn_kelly_f = None
                             _ovn_position = None
                             _ovn_ev = None
+                            _ovn_drawdown = None
                             if _ovn_balance and _ovn_balance > 0:
                                 _ovn_sizing = self._sizer.compute(final_prob, best_ask, _ovn_balance)
                                 _ovn_kelly_f = _ovn_sizing["kelly_f"]
                                 _ovn_position = _ovn_sizing["contracts"]
+                                _ovn_drawdown = _ovn_sizing["drawdown_scaler"]
                                 _ovn_scfg = get_market_config(window.get("product_type"))
                                 if _ovn_scfg.kelly_fraction < 1.0:
                                     _ovn_position = max(1, int(_ovn_position * _ovn_scfg.kelly_fraction))
@@ -7533,9 +7546,27 @@ class OpportunityScanner:
                                 if _ovn_position > _ovn_type_max:
                                     _ovn_position = max(1, _ovn_type_max)
                                 _ovn_ev = round((final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
+
+                            # Check live eligibility gates
+                            _ovn_dc_overlap = (z_score is not None
+                                               and z_score <= DECIDED_CONTRACT_Z_T2_Z2
+                                               and best_ask >= DECIDED_CONTRACT_MIN_PRICE
+                                               and seconds_remaining < DECIDED_CONTRACT_MAX_STC)
+                            _ovn_live_eligible = (
+                                OVERNIGHT_DISCOUNT_LIVE
+                                and not OBSERVATION_MODE
+                                and best_ask >= OVERNIGHT_DISCOUNT_MIN_PRICE
+                                and seconds_remaining <= OVERNIGHT_DISCOUNT_MAX_STC
+                                and not _ovn_dc_overlap
+                                and _ovn_balance and _ovn_balance > 0
+                                and _ovn_position and _ovn_position > 0)
+
+                            # Determine filter stage for DB insert
+                            _ovn_stage = "overnight_discount" if _ovn_live_eligible else "overnight_discount_shadow"
+
                             try:
                                 self._logger.log_opportunity({
-                                    "filter_stage": "overnight_discount_shadow",
+                                    "filter_stage": _ovn_stage,
                                     "ticker": ticker,
                                     "event_ticker": window["event_ticker"],
                                     "asset": asset,
@@ -7561,15 +7592,17 @@ class OpportunityScanner:
                                     "z_score": z_score,
                                 })
                             except Exception:
-                                logging.debug("overnight_discount_shadow log failed", exc_info=True)
-                            _ovn_dedup = (ticker, "overnight_discount_shadow")
+                                logging.debug("overnight_discount log failed", exc_info=True)
+
+                            # DB insert (always — for settlement tracking)
+                            _ovn_dedup = (ticker, _ovn_stage)
                             if _ovn_dedup not in self._eval_opp_seen:
                                 self._eval_opp_seen.add(_ovn_dedup)
                                 try:
                                     self._state.insert_evaluated_opportunity(
                                         ticker, window["event_ticker"], asset,
-                                        "overnight_discount_shadow",
-                                        rejection_reason=f"shadow: edge {fee_adjusted_edge:.4f} >= discounted_min {_ovn_discounted_min:.4f} (orig {_min_edge:.4f} x {OVERNIGHT_EDGE_DISCOUNT})",
+                                        _ovn_stage,
+                                        rejection_reason=f"{'live' if _ovn_live_eligible else 'shadow'}: edge {fee_adjusted_edge:.4f} >= discounted_min {_ovn_discounted_min:.4f} (orig {_min_edge:.4f} x {OVERNIGHT_EDGE_DISCOUNT})",
                                         spot_price=spot, threshold=threshold,
                                         volatility=blended_rv, market_price=best_ask,
                                         seconds_to_close=seconds_remaining,
@@ -7590,7 +7623,47 @@ class OpportunityScanner:
                                         product_type=window.get("product_type"),
                                         **_shadow_diag)
                                 except Exception:
-                                    logging.warning("insert_evaluated_opportunity failed (overnight_discount_shadow)", exc_info=True)
+                                    logging.warning("insert_evaluated_opportunity failed (%s)", _ovn_stage, exc_info=True)
+
+                            # Live path: append to candidates for execution
+                            if _ovn_live_eligible:
+                                logging.info(
+                                    "OVN_DISCOUNT_CANDIDATE: %s %dx@%dc edge=%.4f disc_min=%.4f stc=%.0fs",
+                                    ticker, _ovn_position, best_ask,
+                                    fee_adjusted_edge, _ovn_discounted_min, seconds_remaining)
+                                candidates.append({
+                                    "ticker": ticker,
+                                    "event_ticker": window["event_ticker"],
+                                    "asset": asset,
+                                    "product_type": window.get("product_type"),
+                                    "spot": spot,
+                                    "threshold": threshold,
+                                    "seconds_to_close": round(seconds_remaining, 1),
+                                    "blended_rv": blended_rv,
+                                    "calibrated_prob": round(final_prob, 6),
+                                    "z_score": z_score,
+                                    "best_yes_ask": best_ask,
+                                    "best_ask_source": best_ask_source,
+                                    "edge": round(edge, 6),
+                                    "fee_adjusted_edge": round(fee_adjusted_edge, 6),
+                                    "position_size": _ovn_position,
+                                    "kelly_f": _ovn_kelly_f,
+                                    "drawdown_scaler": _ovn_drawdown or 1.0,
+                                    "vol_regime": vol_est["regime"],
+                                    "balance_at_scan": _ovn_balance,
+                                    "strategy": "overnight_discount",
+                                    "ob_snapshot": {
+                                        "best_ask": best_ask,
+                                        "ask_depth": ask_depth,
+                                        "total_depth": total_depth,
+                                        "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                                        "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                                        "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                                  if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
+                                    },
+                                    "calibrated_prob_raw": round(calibrated_prob_raw, 6),
+                                    "est_fee_1c": est_fee_1c,
+                                })
 
                     # ── Decided Contract (overlay strategy + shadow) ─────────
                     # When z-score is very negative (spot far above strike) near expiry,
@@ -7613,20 +7686,30 @@ class OpportunityScanner:
                         elif (z_score <= DECIDED_CONTRACT_Z_T2
                               and best_ask <= DECIDED_CONTRACT_T2_MAX_PRICE):
                             _dc_tier = "decided_contract_t2"
+                        elif (z_score <= DECIDED_CONTRACT_Z_T2_Z25
+                              and best_ask <= DECIDED_CONTRACT_T2_MAX_PRICE):
+                            _dc_tier = "decided_contract_t2_z25"
+                        elif (z_score <= DECIDED_CONTRACT_Z_T2_Z2
+                              and best_ask <= DECIDED_CONTRACT_T2_MAX_PRICE):
+                            _dc_tier = "decided_contract_t2_z2"
 
                         if _dc_tier:
-                            # Fixed sizing: 12.5% risk (not Kelly — model edge is negative)
+                            # Fixed sizing per tier (not Kelly — model edge is negative)
                             _dc_balance = self._get_balance_cached()
                             _dc_position = None
                             _dc_kelly_f = None
                             _dc_ev = None
                             if _dc_balance and _dc_balance > 0:
-                                _dc_risk = DECIDED_CONTRACT_RISK
+                                _dc_risk = (DECIDED_CONTRACT_T2_Z25_RISK if _dc_tier == "decided_contract_t2_z25"
+                                            else DECIDED_CONTRACT_T2_Z2_RISK if _dc_tier == "decided_contract_t2_z2"
+                                            else DECIDED_CONTRACT_RISK)
                                 _dc_position = max(1, int((_dc_balance * _dc_risk) / best_ask))
-                                # EV with assumed win prob: T1 ~99%, T1B ~97%, T2 ~96%
+                                # EV with assumed win prob: T1 ~99%, T1B ~97%, T2 ~96%, T2-Z25 ~96%, T2-Z2 ~95%
                                 _dc_assumed_p = (0.99 if _dc_tier == "decided_contract_t1"
                                                  else 0.97 if _dc_tier == "decided_contract_t1b"
-                                                 else 0.96)
+                                                 else 0.96 if _dc_tier == "decided_contract_t2"
+                                                 else 0.96 if _dc_tier == "decided_contract_t2_z25"
+                                                 else 0.95)
                                 _dc_ev = round((_dc_assumed_p * (100 - best_ask))
                                                - ((1 - _dc_assumed_p) * best_ask) - est_fee_1c, 2)
                                 _dc_kelly_f = round((_dc_assumed_p - best_ask / 100.0), 6)
@@ -7666,7 +7749,9 @@ class OpportunityScanner:
                             _dc_live_enabled = (
                                 (_dc_tier == "decided_contract_t1" and DECIDED_T1_ENABLED)
                                 or (_dc_tier == "decided_contract_t1b" and DECIDED_T1B_ENABLED)
-                                or (_dc_tier == "decided_contract_t2" and DECIDED_T2_ENABLED))
+                                or (_dc_tier == "decided_contract_t2" and DECIDED_T2_ENABLED)
+                                or (_dc_tier == "decided_contract_t2_z25" and DECIDED_T2_Z25_ENABLED)
+                                or (_dc_tier == "decided_contract_t2_z2" and DECIDED_T2_Z2_ENABLED))
                             if (_dc_live_enabled
                                     and not OBSERVATION_MODE
                                     and _dc_balance and _dc_balance > 0
@@ -7728,7 +7813,9 @@ class OpportunityScanner:
                                 if _dc_live_enabled and _dc_position > 0:
                                     _dc_strat = {"decided_contract_t1": "decided_t1",
                                                  "decided_contract_t1b": "decided_t1b",
-                                                 "decided_contract_t2": "decided_t2"}[_dc_tier]
+                                                 "decided_contract_t2": "decided_t2",
+                                                 "decided_contract_t2_z25": "decided_t2_z25",
+                                                 "decided_contract_t2_z2": "decided_t2_z2"}[_dc_tier]
                                     self._dc_window_risk[_dc_wkey] = _dc_existing_risk + _dc_position * best_ask
                                     logging.info("DC_CANDIDATE: %s %s %dx@%dc z=%.1f stc=%.0fs",
                                                  _dc_strat, ticker, _dc_position, best_ask, z_score, seconds_remaining)
@@ -9094,10 +9181,10 @@ class OpportunityScanner:
         # ── Separate decided contract candidates (additive overlay, bypass single-asset filter) ──
         _dc_candidates = [c for c in candidates if c.get("strategy", "").startswith("decided_")]
         _dc_tickers = {c["ticker"] for c in _dc_candidates}
-        # Remove weekend discount candidates that overlap with DC (DC takes priority)
+        # Remove weekend/overnight discount candidates that overlap with DC (DC takes priority)
         _main_candidates = [c for c in candidates
                             if not c.get("strategy", "").startswith("decided_")
-                            and not (c.get("strategy") == "weekend_discount" and c["ticker"] in _dc_tickers)]
+                            and not (c.get("strategy") in ("weekend_discount", "overnight_discount") and c["ticker"] in _dc_tickers)]
         candidates = _main_candidates  # single-asset filter only applies to main pipeline
 
         # ── Single-asset-per-timeslot: pick highest edge per 15-min window ──
