@@ -6,7 +6,6 @@
 
 % ── Core packages ───────────────────────────────────────────────────────────
 \usepackage{fontspec}
-\usepackage{unicode-math}
 \usepackage[margin=1in,top=1.2in,bottom=1.2in]{geometry}
 \usepackage{graphicx}
 \usepackage{longtable,booktabs,array,multirow}
@@ -52,27 +51,8 @@
 \definecolor{shadecolor}{HTML}{F5F6FA}
 
 % ── Typography ──────────────────────────────────────────────────────────────
-% pandoc/extra (TeX Live full) ships these fonts.
-% Use TeX font names; IfFontExistsTF for robustness.
-\IfFontExistsTF{Source Sans 3}{%
-  \setmainfont{Source Sans 3}[Numbers=OldStyle]
-  \setsansfont{Source Sans 3}
-}{%
-  \IfFontExistsTF{Source Sans Pro}{%
-    \setmainfont{Source Sans Pro}[Numbers=OldStyle]
-    \setsansfont{Source Sans Pro}
-  }{%
-    % Final fallback: Latin Modern (always available)
-    \setmainfont{Latin Modern Roman}
-    \setsansfont{Latin Modern Sans}
-  }%
-}
-\IfFontExistsTF{Source Code Pro}{%
-  \setmonofont{Source Code Pro}[Scale=0.88]
-}{%
-  \setmonofont{Latin Modern Mono}[Scale=0.88]
-}
-\setmathfont{Latin Modern Math}
+% Let xelatex use default Latin Modern fonts (always available).
+% Explicit \setmainfont calls break when pandoc/extra changes font names.
 
 % ── Page layout ─────────────────────────────────────────────────────────────
 \pagestyle{fancy}
