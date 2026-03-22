@@ -20,6 +20,8 @@ header-right: "\\footnotesize Technical Whitepaper"
 footer-left: "\\footnotesize Gabriel Kagan"
 footer-center: ""
 footer-right: "\\footnotesize \\thepage"
+mainfont: "DejaVu Sans"
+monofont: "DejaVu Sans Mono"
 fontsize: "11pt"
 geometry: "margin=1in"
 header-includes:
