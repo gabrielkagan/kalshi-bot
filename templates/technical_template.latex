@@ -24,7 +24,8 @@
 \usepackage{fancyvrb}
 \usepackage{tcolorbox}
 \tcbuselibrary{breakable}
-\usepackage{lastpage}
+% lastpage removed — pandoc/extra:latest dropped it; we count pages manually
+\AtEndDocument{\label{VeryLastPage}}
 \usepackage{amsmath,amssymb}
 \usepackage{tabularx}
 \usepackage{framed}
@@ -79,11 +80,11 @@
 \renewcommand{\headrule}{\hbox to\headwidth{\color{rulecolor}\leaders\hrule height \headrulewidth\hfill}}
 \fancyhead[L]{\small\color{textsecondary}\textsc{Kalshi Trading Bot}}
 \fancyhead[R]{\small\color{textsecondary}\textsc{Technical Whitepaper}}
-\fancyfoot[C]{\small\color{textsecondary}\thepage\hspace{4pt}of\hspace{4pt}\pageref{LastPage}}
+\fancyfoot[C]{\small\color{textsecondary}\thepage\hspace{4pt}of\hspace{4pt}\pageref{VeryLastPage}}
 \fancypagestyle{plain}{%
   \fancyhf{}
   \renewcommand{\headrulewidth}{0pt}
-  \fancyfoot[C]{\small\color{textsecondary}\thepage\hspace{4pt}of\hspace{4pt}\pageref{LastPage}}
+  \fancyfoot[C]{\small\color{textsecondary}\thepage\hspace{4pt}of\hspace{4pt}\pageref{VeryLastPage}}
 }
 
 % ── Hyperlinks ──────────────────────────────────────────────────────────────
