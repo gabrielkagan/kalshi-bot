@@ -71,7 +71,7 @@ jobs:
         run: python3 scripts/check_docs_freshness.py || true
 
       - name: Generate technical PDF
-        uses: docker://pandoc/extra:3.6-ubuntu
+        uses: docker://pandoc/extra:3.5-ubuntu
         with:
           args: >-
             whitepaper_rendered.md
@@ -83,7 +83,7 @@ jobs:
             --listings
 
       - name: Generate investor PDF
-        uses: docker://pandoc/extra:3.6-ubuntu
+        uses: docker://pandoc/extra:3.5-ubuntu
         with:
           args: >-
             whitepaper_investor_rendered.md
