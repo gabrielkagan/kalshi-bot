@@ -95,7 +95,6 @@ jobs:
           --from markdown
           --pdf-engine=xelatex
           --template eisvogel
-          --listings
 
       - name: Commit PDFs
         run: |
