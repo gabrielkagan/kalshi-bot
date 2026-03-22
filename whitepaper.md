@@ -12,9 +12,9 @@ toc: true
 toc-own-page: true
 numbersections: true
 colorlinks: true
-linkcolor: "2C4270"
-urlcolor: "2C5AA0"
-toccolor: "2C4270"
+linkcolor: "navylink"
+urlcolor: "bluelink"
+toccolor: "navylink"
 header-left: "\\footnotesize Kalshi Trading Bot"
 header-right: "\\footnotesize Technical Whitepaper"
 footer-left: "\\footnotesize Gabriel Kagan"
@@ -30,6 +30,8 @@ header-includes:
     \usepackage{xcolor}
     \usepackage{colortbl}
 
+    \definecolor{navylink}{HTML}{2C4270}
+    \definecolor{bluelink}{HTML}{2C5AA0}
     \definecolor{navyprimary}{HTML}{1B2A4A}
     \definecolor{navydark}{HTML}{0F1B33}
     \definecolor{navylight}{HTML}{2C4270}

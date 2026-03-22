@@ -11,9 +11,9 @@ titlepage-rule-height: 4
 toc: true
 toc-own-page: true
 colorlinks: true
-linkcolor: "1B4F72"
-urlcolor: "1B4F72"
-toccolor: "1B4F72"
+linkcolor: "investorlink"
+urlcolor: "investorlink"
+toccolor: "investorlink"
 header-left: "\\footnotesize Kalshi Crypto Trading Bot"
 header-right: "\\footnotesize Investor Whitepaper"
 footer-left: "\\footnotesize Gabriel Kagan"
@@ -30,6 +30,7 @@ header-includes:
     \usepackage{textcomp}
     \usepackage{colortbl}
 
+    \definecolor{investorlink}{HTML}{1B4F72}
     \definecolor{accent}{HTML}{E8A838}
     \definecolor{darkblue}{HTML}{0D1B2A}
     \definecolor{medblue}{HTML}{1B4F72}
