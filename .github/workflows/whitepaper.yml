@@ -70,28 +70,32 @@ jobs:
       - name: Check docs freshness
         run: python3 scripts/check_docs_freshness.py || true
 
+      - name: Install pandoc and TeX Live
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pandoc texlive-xetex texlive-latex-extra texlive-fonts-extra texlive-fonts-recommended lmodern fonts-source-sans-pro fonts-source-code-pro > /dev/null 2>&1
+          wget -q https://github.com/Wandmalfarbe/pandoc-latex-template/releases/latest/download/Eisvogel.tar.gz
+          mkdir -p ~/.local/share/pandoc/templates
+          tar xf Eisvogel.tar.gz -C ~/.local/share/pandoc/templates eisvogel.latex
+
       - name: Generate technical PDF
-        uses: docker://pandoc/extra:3.5-ubuntu
-        with:
-          args: >-
-            whitepaper_rendered.md
-            -o whitepaper.pdf
-            --from markdown
-            --pdf-engine=xelatex
-            --template eisvogel
-            --highlight-style=tango
-            --listings
+        run: >-
+          pandoc whitepaper_rendered.md
+          -o whitepaper.pdf
+          --from markdown
+          --pdf-engine=xelatex
+          --template eisvogel
+          --highlight-style=tango
+          --listings
 
       - name: Generate investor PDF
-        uses: docker://pandoc/extra:3.5-ubuntu
-        with:
-          args: >-
-            whitepaper_investor_rendered.md
-            -o whitepaper_investor.pdf
-            --from markdown
-            --pdf-engine=xelatex
-            --template eisvogel
-            --listings
+        run: >-
+          pandoc whitepaper_investor_rendered.md
+          -o whitepaper_investor.pdf
+          --from markdown
+          --pdf-engine=xelatex
+          --template eisvogel
+          --listings
 
       - name: Commit PDFs
         run: |
