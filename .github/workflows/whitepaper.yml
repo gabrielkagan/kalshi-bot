@@ -77,7 +77,7 @@ jobs:
             whitepaper_rendered.md
             -o whitepaper.pdf
             --from markdown
-            --pdf-engine=xelatex
+            --pdf-engine=lualatex
             --template=templates/technical_template.latex
             --number-sections
             --highlight-style=tango
@@ -89,7 +89,7 @@ jobs:
             whitepaper_investor_rendered.md
             -o whitepaper_investor.pdf
             --from markdown
-            --pdf-engine=xelatex
+            --pdf-engine=lualatex
             --template eisvogel
             --listings
 
