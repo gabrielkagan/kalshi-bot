@@ -1,7 +1,71 @@
 ---
-title: "Kalshi Crypto Trading Bot — Technical Whitepaper"
+title: "Kalshi Crypto Trading Bot"
+subtitle: "Technical Whitepaper"
 author: "Gabriel Kagan"
 date: "March 2026"
+titlepage: true
+titlepage-color: "0F1B33"
+titlepage-text-color: "FFFFFF"
+titlepage-rule-color: "D4883E"
+titlepage-rule-height: 4
+toc: true
+toc-own-page: true
+numbersections: true
+colorlinks: true
+linkcolor: "2C4270"
+urlcolor: "2C5AA0"
+toccolor: "2C4270"
+header-left: "\\footnotesize Kalshi Trading Bot"
+header-right: "\\footnotesize Technical Whitepaper"
+footer-left: "\\footnotesize Gabriel Kagan"
+footer-center: ""
+footer-right: "\\footnotesize \\thepage"
+fontsize: "11pt"
+geometry: "margin=1in"
+header-includes:
+  - |
+    ```{=latex}
+    \usepackage{tcolorbox}
+    \tcbuselibrary{breakable}
+    \usepackage{xcolor}
+    \usepackage{colortbl}
+
+    \definecolor{navyprimary}{HTML}{1B2A4A}
+    \definecolor{navydark}{HTML}{0F1B33}
+    \definecolor{navylight}{HTML}{2C4270}
+    \definecolor{accentwarm}{HTML}{D4883E}
+    \definecolor{codebg}{HTML}{F5F6FA}
+    \definecolor{codeborder}{HTML}{D1D5E0}
+    \definecolor{calloutbg}{HTML}{FFF8F0}
+    \definecolor{calloutborder}{HTML}{D4883E}
+
+    % Styled code blocks
+    \newenvironment{Shaded}{%
+      \begin{tcolorbox}[
+        breakable,
+        colback=codebg,
+        colframe=codeborder,
+        boxrule=0.5pt,
+        arc=3pt,
+        left=10pt, right=10pt, top=8pt, bottom=8pt,
+        fontupper=\small\ttfamily,
+      ]
+    }{%
+      \end{tcolorbox}
+    }
+
+    % Blockquotes as callout boxes
+    \newtcolorbox{quotecallout}{
+      breakable,
+      colback=calloutbg,
+      colframe=calloutborder,
+      leftrule=3pt, rightrule=0pt, toprule=0pt, bottomrule=0pt,
+      arc=0pt, outer arc=0pt,
+      left=12pt, right=12pt, top=10pt, bottom=10pt,
+      fontupper=\small,
+    }
+    \renewenvironment{quote}{\begin{quotecallout}}{\end{quotecallout}}
+    ```
 ---
 
 # Part 1: Executive Summary

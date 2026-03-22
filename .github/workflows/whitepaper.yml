@@ -71,25 +71,25 @@ jobs:
         run: python3 scripts/check_docs_freshness.py || true
 
       - name: Generate technical PDF
-        uses: docker://pandoc/extra:3.6.4-ubuntu
+        uses: docker://pandoc/extra:3.6-ubuntu
         with:
           args: >-
             whitepaper_rendered.md
             -o whitepaper.pdf
             --from markdown
-            --pdf-engine=lualatex
-            --template=templates/technical_template.latex
-            --number-sections
+            --pdf-engine=xelatex
+            --template eisvogel
             --highlight-style=tango
+            --listings
 
       - name: Generate investor PDF
-        uses: docker://pandoc/extra:3.6.4-ubuntu
+        uses: docker://pandoc/extra:3.6-ubuntu
         with:
           args: >-
             whitepaper_investor_rendered.md
             -o whitepaper_investor.pdf
             --from markdown
-            --pdf-engine=lualatex
+            --pdf-engine=xelatex
             --template eisvogel
             --listings
 
