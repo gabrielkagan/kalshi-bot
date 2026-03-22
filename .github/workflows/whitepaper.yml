@@ -76,7 +76,7 @@ jobs:
           sudo apt-get install -y -qq pandoc texlive-xetex texlive-latex-extra texlive-fonts-extra texlive-fonts-recommended lmodern
           wget -q https://github.com/Wandmalfarbe/pandoc-latex-template/releases/latest/download/Eisvogel.tar.gz
           mkdir -p ~/.local/share/pandoc/templates
-          tar xf Eisvogel.tar.gz -C ~/.local/share/pandoc/templates --strip-components=1 "*/eisvogel.latex"
+          tar xf Eisvogel.tar.gz -C ~/.local/share/pandoc/templates --strip-components=1 --wildcards "*/eisvogel.latex"
 
       - name: Generate technical PDF
         run: >-
