@@ -26,7 +26,8 @@
 \tcbuselibrary{breakable}
 % lastpage removed — pandoc/extra:latest dropped it; we count pages manually
 \AtEndDocument{\label{VeryLastPage}}
-\usepackage{amsmath,amssymb}
+\usepackage{amsmath}
+% amssymb removed — conflicts with unicode-math (\eth redefined)
 \usepackage{tabularx}
 \usepackage{framed}
 \usepackage{hyperref}
