@@ -11,8 +11,14 @@ matches the corresponding legacy constant in bot.py.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, Optional
+
+
+def _bot_hourly_live() -> bool:
+    """Read HOURLY_LIVE_ENABLED env var without importing bot.py (avoids circular import)."""
+    return os.environ.get("HOURLY_LIVE_ENABLED", "0") == "1"
 
 
 @dataclass(frozen=True)
@@ -86,9 +92,9 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
     "hourly": MarketTypeConfig(
         product_type="hourly",
         enabled=True,
-        observation_only=True,
+        observation_only=not _bot_hourly_live(),  # Derived from HOURLY_LIVE_ENABLED env var
         min_entry_price=50,
-        max_entry_price=99,
+        max_entry_price=59,                # Sub-60c only — edge lives at low prices
         min_seconds_before_close=0,
         max_seconds_before_close=1800,
         max_risk_per_trade=0.15,
@@ -102,9 +108,9 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         cal_engine_state_path="hourly_calibration_state.json",
         fee_multiplier_taker=0.07,
         fee_multiplier_maker=0.0,  # Kalshi charges $0 on maker fills
-        excluded_assets=frozenset(),      # Empty in observation mode
-        min_stc_entry=120,
-        max_stc_entry=3600,
+        excluded_assets=frozenset({"SOL", "XRP"}),  # BTC+ETH only
+        min_stc_entry=600,                 # 10 min minimum
+        max_stc_entry=1800,                # 30 min maximum
         max_positions_per_window=2,
         max_window_risk=0.15,
         observation_filter_label="hourly_observation",
@@ -249,8 +255,8 @@ def validate_market_configs() -> None:
         f"hourly obs_only: {cfg_h.observation_only} != {bot.HOURLY_OBSERVATION_ONLY}")
     assert cfg_h.min_entry_price == bot.HOURLY_MIN_ENTRY_PRICE, (
         f"hourly min_entry: {cfg_h.min_entry_price} != {bot.HOURLY_MIN_ENTRY_PRICE}")
-    assert cfg_h.max_entry_price == bot.MAX_ENTRY_PRICE, (
-        f"hourly max_entry: {cfg_h.max_entry_price} != {bot.MAX_ENTRY_PRICE}")
+    assert cfg_h.max_entry_price == bot.HOURLY_MAX_ENTRY_PRICE, (
+        f"hourly max_entry: {cfg_h.max_entry_price} != {bot.HOURLY_MAX_ENTRY_PRICE}")
     assert cfg_h.min_seconds_before_close == bot.HOURLY_MIN_SECONDS_BEFORE_CLOSE, (
         f"hourly min_stc: {cfg_h.min_seconds_before_close} != {bot.HOURLY_MIN_SECONDS_BEFORE_CLOSE}")
     assert cfg_h.max_seconds_before_close == bot.HOURLY_MAX_SECONDS_BEFORE_CLOSE, (

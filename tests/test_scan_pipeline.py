@@ -566,9 +566,9 @@ class TestPerWindowFilters(unittest.TestCase):
         """STC below HOURLY_MIN_STC_ENTRY → filtered out."""
         self.assertLess(60, HOURLY_MIN_STC_ENTRY)
 
-    def test_asset_exclusion_empty(self):
-        """HOURLY_EXCLUDED_ASSETS is empty in observation mode."""
-        self.assertEqual(len(HOURLY_EXCLUDED_ASSETS), 0)
+    def test_asset_exclusion_btc_eth_only(self):
+        """HOURLY_EXCLUDED_ASSETS contains SOL and XRP (BTC+ETH only)."""
+        self.assertEqual(HOURLY_EXCLUDED_ASSETS, {"SOL", "XRP"})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -60,9 +60,10 @@ MAX_SECONDS_BEFORE_CLOSE = 900    # scan 15 min before close (600-900s is shadow
 STC_SHADOW_THRESHOLD = 600        # 15M trades above this STC are shadow-only (data: 500-600s 91.2% WR, +$47 marginal PnL)
 ONE_ASSET_PER_WINDOW = False
 
-# ─── Hourly Observation Mode ──────────────────────────────────────────────────
+# ─── Hourly Live Trading (sub-60c, BTC+ETH only) ────────────────────────────
 HOURLY_OBSERVATION_ENABLED = True     # Master switch for hourly data collection
-HOURLY_OBSERVATION_ONLY = True        # REVERTED: 68.8% WR (need 90%+), 26pp overconfident, -$97 overnight
+HOURLY_LIVE_ENABLED = os.environ.get("HOURLY_LIVE_ENABLED", "0") == "1"  # Kill switch: must be set on VPS
+HOURLY_OBSERVATION_ONLY = not HOURLY_LIVE_ENABLED  # Derived from kill switch
 HOURLY_SERIES_TICKERS = {
     "BTC": "KXBTCD",
     "ETH": "KXETHD",
@@ -72,16 +73,21 @@ HOURLY_SERIES_TICKERS = {
 HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800  # 30 min before close
 HOURLY_MIN_SECONDS_BEFORE_CLOSE = 0
 HOURLY_MARKET_BLEND_W = 0.40            # Optimal Brier per 134K simulation (0.70 was second-worst)
-HOURLY_MIN_ENTRY_PRICE = 50            # Lowered for data collection (was 70)
+HOURLY_MIN_ENTRY_PRICE = 50            # Floor for data collection
+HOURLY_MAX_ENTRY_PRICE = 59            # Sub-60c only — edge lives at low prices, 70-79c is death zone
 HOURLY_MAX_RISK_PER_TRADE = 0.15       # Conservative start (60% of 15M's 0.25)
+HOURLY_BANKROLL_FRACTION = 0.10        # Hourly sizes off 10% of balance (like SPX's 0.15)
+HOURLY_FIXED_CONTRACTS = 10            # Fixed sizing — bypass Kelly entirely
+HOURLY_MAX_EDGE = 0.05                 # Reject >5% edge (10%+ zone has 24.2% WR — edge inversion)
+HOURLY_TAKER_ONLY = True               # IOC only — no maker orders, no per-asset lock contention with 15M
 
 # ─── Hourly Three-Layer Optimization (Researcher Recommendations) ─────────
 HOURLY_TEMPERATURE_T = 1.45           # Temperature scaling: softens overconfident probs (T>1 = less confident)
 HOURLY_TEMPERATURE_ENABLED = True     # Toggle for temperature scaling
 HOURLY_CALIBRATION_ENABLED = False    # Disabled: hourly beta_cal is +44pp overconfident (93.2% predicted vs 49.2% actual, n=455). Passthrough+T=1.45 is nearly perfect (-2pp OC).
-HOURLY_MIN_STC_ENTRY = 120            # Min STC for entry (2 min) — expanded for observation data collection
-HOURLY_MAX_STC_ENTRY = 3600           # 60 min — expanded for observation data collection
-HOURLY_EXCLUDED_ASSETS = set()         # Empty in observation mode — collect all asset data
+HOURLY_MIN_STC_ENTRY = 600             # 10 min minimum (5-10m zone is 56.5% WR — too thin)
+HOURLY_MAX_STC_ENTRY = 1800            # 30 min maximum (25-30m is the sweet spot at 69.4% WR)
+HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP"}  # BTC+ETH only — XRP is 42.9% WR (toxic), SOL marginal
 HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time window (ENB ~1.3)
 
 # ─── Hourly Config A (shadow promotion candidate) ────────────────────────────
@@ -114,10 +120,8 @@ HOURLY_SHADOW_CONFIGS = [
     {"name": "hourly_config_e", "included_assets": {"BTC", "ETH"}, "min_stc": 1200, "max_stc": 1800},
     {"name": "hourly_config_f", "max_edge": 0.012},
     {"name": "hourly_config_g", "included_assets": {"BTC"}, "min_stc": 900, "max_stc": 1800},
-    {"name": "hourly_config_h", "temperature": 2.0, "blend_w": 0.0},
+    # Killed configs h, j, k — 55% WR, deeply negative PnL, wasting DB writes
     {"name": "hourly_config_i", "included_assets": {"BTC", "ETH"}, "min_stc": 600, "max_stc": 1800, "temperature": 2.0, "blend_w": 0.0},
-    {"name": "hourly_config_j", "temperature": 2.5, "blend_w": 0.0},
-    {"name": "hourly_config_k", "temperature": 2.0, "blend_w": 0.20},
     {"name": "hourly_config_l", "excluded_assets": {"XRP"}, "temperature": 2.0, "blend_w": 0.0},
     {"name": "hourly_config_m", "included_assets": {"BTC", "ETH"}, "min_stc": 600, "max_stc": 1800, "temperature": 2.5, "blend_w": 0.0},
 ]
@@ -8018,12 +8022,16 @@ class OpportunityScanner:
                 elif _strategy_key == "hourly":
                     _strategy_key = "crypto_hourly"
                 _sizing_balance = balance
-                # SPX bankroll fraction: size off a virtual sub-bankroll so SPX
-                # can never reduce crypto's available capital
+                # Product-specific bankroll fractions: size off a virtual sub-bankroll
+                # so secondary products can never reduce 15M's available capital
                 if _pt == "spx_hourly":
                     _sizing_balance = int(balance * SPX_HOURLY_BANKROLL_FRACTION)
                     if _sizing_balance <= 0:
                         _sizing_balance = 1  # safety: never zero
+                elif _pt == "hourly":
+                    _sizing_balance = int(balance * HOURLY_BANKROLL_FRACTION)
+                    if _sizing_balance <= 0:
+                        _sizing_balance = 1
                 elif self._ml and getattr(self._ml, "capital_allocator", None):
                     try:
                         _sizing_balance = self._ml.capital_allocator.get_budget_cents(
@@ -8036,14 +8044,17 @@ class OpportunityScanner:
 
                 # Product-type-specific sizing: fractional Kelly + conservative per-trade risk cap
                 _scfg = get_market_config(window.get("product_type"))
-                if _scfg.kelly_fraction < 1.0:
+                if _pt == "hourly":
+                    # Hourly: fixed 10-contract sizing — bypass Kelly entirely
+                    sizing["contracts"] = HOURLY_FIXED_CONTRACTS
+                elif _scfg.kelly_fraction < 1.0:
                     _full_kelly_contracts = sizing["contracts"]
                     sizing["contracts"] = max(1, int(sizing["contracts"] * _scfg.kelly_fraction))
                     _type_max = int((_sizing_balance * _scfg.max_risk_per_trade) / best_ask)
                     if sizing["contracts"] > _type_max:
                         sizing["contracts"] = max(1, _type_max)
 
-                # Asset-specific risk caps
+                # Asset-specific risk caps (15M only — hourly has fixed sizing)
                 if asset == "XRP" and _pt in (None, "15m"):
                     _xrp_max = int((_sizing_balance * XRP_MAX_RISK_PER_TRADE) / best_ask)
                     if sizing["contracts"] > _xrp_max >= 1:
@@ -8529,6 +8540,27 @@ class OpportunityScanner:
                                 drawdown_scaler=sizing.get("drawdown_scaler") if sizing else None,
                                 **_oft_db, **_shadow_diag)
                         continue
+
+                # ── HOURLY EDGE CAP ──
+                # Reject hourly signals with edge > 5% — the 10%+ zone has 24.2% WR (edge inversion).
+                # Log rejection and continue. Does NOT affect 15M (gated on _pt == "hourly").
+                if _pt == "hourly" and fee_adjusted_edge > HOURLY_MAX_EDGE:
+                    _hecap_dedup = (ticker, "hourly_edge_cap")
+                    if _hecap_dedup not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_hecap_dedup)
+                        try:
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset, "hourly_edge_cap",
+                                spot_price=spot, threshold=threshold, volatility=blended_rv,
+                                market_price=best_ask, seconds_to_close=seconds_remaining,
+                                calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                                vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                                calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                                breakeven_wr=best_ask / 100.0,
+                                product_type="hourly", **_oft_db, **_shadow_diag)
+                        except Exception:
+                            logging.warning("insert_evaluated_opportunity failed (hourly_edge_cap)", exc_info=True)
+                    continue
 
                 # ── GENERIC OBSERVATION GATE ──
                 # Config-driven: any market type with observation_only=True is blocked here
@@ -9123,9 +9155,10 @@ class OpportunityScanner:
                     "rejection_reason": None,
                     "ts": self._last_opportunity_ts,
                 })
+                _cand_filter_stage = "hourly_live" if _pt == "hourly" else "candidate"
                 try:
                     self._logger.log_opportunity({
-                        "filter_stage": "candidate",
+                        "filter_stage": _cand_filter_stage,
                         "ticker": ticker,
                         "event_ticker": window["event_ticker"],
                         "asset": asset,
@@ -9148,7 +9181,7 @@ class OpportunityScanner:
                         **_shadow_extra,
                     })
                 except Exception:
-                    logging.warning("insert_evaluated_opportunity failed (candidate)", exc_info=True)
+                    logging.warning("insert_evaluated_opportunity failed (%s)", _cand_filter_stage, exc_info=True)
 
                 candidates.append({
                     "ticker": ticker,
@@ -10658,6 +10691,53 @@ class OrderExecutor:
         else:
             self._post_only_rejections[ticker] = (entry[0] + 1, entry[1])
 
+    # ── Hourly taker-only execution ─────────────────────────────────────
+
+    def _execute_hourly_taker(self, candidate: Dict) -> Optional[Dict]:
+        """Hourly-only IOC execution. No per-asset lock, no maker, no escalation.
+
+        Completely isolated from 15M execution path:
+        - Does NOT write to _active_orders (no maker resting)
+        - Does NOT write to _escalating_assets (no escalation)
+        - Calls _submit_taker() directly → IOC resolves in <1s
+        """
+        ticker = candidate["ticker"]
+        asset = candidate["asset"]
+        best_ask = candidate["best_yes_ask"]
+        count = candidate["position_size"]
+
+        # Ticker cooldown (shared with all products — IOC-specific, safe)
+        cooldown_ts = self._recent_taker_tickers.get(ticker)
+        if cooldown_ts is not None:
+            _cd_remaining = IOC_TICKER_COOLDOWN - (time.time() - cooldown_ts)
+            if _cd_remaining > 0:
+                logging.info("HOURLY_TAKER: %s cooldown %.0fs remaining", ticker, _cd_remaining)
+                return None
+
+        # Concurrent taker cap per asset
+        _concurrent = self._active_taker_count.get(asset, 0)
+        if _concurrent >= MAX_CONCURRENT_TAKER_PER_ASSET:
+            logging.info("HOURLY_TAKER: %s concurrent cap (%d/%d)", asset, _concurrent, MAX_CONCURRENT_TAKER_PER_ASSET)
+            return None
+
+        candidate["entry_path"] = "hourly_taker"
+        logging.info("HOURLY_TAKER: %s %dx@%dc edge=%.2f%% prob=%.1f%% stc=%.0fs",
+                     ticker, count, best_ask,
+                     candidate.get("fee_adjusted_edge", 0) * 100,
+                     candidate.get("calibrated_prob", 0) * 100,
+                     candidate.get("seconds_to_close", 0))
+
+        if _TELEGRAM:
+            _TELEGRAM.send(
+                f"HOURLY: {asset} {count}x@{best_ask}c "
+                f"edge={candidate.get('fee_adjusted_edge', 0):.2%} "
+                f"stc={candidate.get('seconds_to_close', 0):.0f}s")
+
+        result = self._submit_taker(candidate)
+        if result is None:
+            self._recent_taker_tickers[ticker] = time.time()
+        return result
+
     # ── Public interface ──────────────────────────────────────────────────
 
     def execute(self, candidate: Dict) -> Optional[Dict]:
@@ -10676,6 +10756,12 @@ class OrderExecutor:
 
         asset = candidate["asset"]
         ticker = candidate["ticker"]
+
+        # ── HOURLY TAKER-ONLY PATH ──
+        # Hourly uses IOC exclusively. No per-asset lock, no maker orders, no escalation.
+        # This guarantees zero contention with 15M execution. Gated on product_type == "hourly".
+        if candidate.get("product_type") == "hourly" and HOURLY_TAKER_ONLY:
+            return self._execute_hourly_taker(candidate)
 
         # Gate 1: Per-asset lock for maker-first assets only.
         # Taker-first (SOL): IOC resolves synchronously (<1s), no concurrent order risk.

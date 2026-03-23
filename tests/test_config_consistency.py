@@ -42,7 +42,7 @@ class TestConfigConstantParity:
         cfg = MARKET_CONFIGS["hourly"]
         assert cfg.observation_only == bot.HOURLY_OBSERVATION_ONLY
         assert cfg.min_entry_price == bot.HOURLY_MIN_ENTRY_PRICE
-        assert cfg.max_entry_price == bot.MAX_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.HOURLY_MAX_ENTRY_PRICE
         assert cfg.min_seconds_before_close == bot.HOURLY_MIN_SECONDS_BEFORE_CLOSE
         assert cfg.max_seconds_before_close == bot.HOURLY_MAX_SECONDS_BEFORE_CLOSE
         assert cfg.max_risk_per_trade == bot.HOURLY_MAX_RISK_PER_TRADE
