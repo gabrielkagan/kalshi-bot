@@ -47,7 +47,7 @@ MIN_ENTRY_PRICE = 80              # cents (global floor — SOL uses this; BTC/E
 MAX_ENTRY_PRICE = 99              # cents
 BTC_MIN_ENTRY_PRICE = 89          # cents (data: 86-88c below taker BE, 89c is 93.3% WR, +$87 PnL)
 ETH_MIN_ENTRY_PRICE = 75          # cents (data: 75-79c 87.1% WR, 70 obs, Wilson LB 77.3% > 76.5% BE)
-ETH_SUB80_POSITION_CAP = 30      # Max contracts for ETH entries at 75-79c (unproven price range)
+ETH_SUB80_POSITION_CAP = 50      # Half-Kelly at 75c/87% WR = 322-645 contracts; cap to 50 (ceil), floor 20
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 BTC_MAX_RISK_PER_TRADE = 0.12    # BTC oversizing causes outsized losses (data: -$282 from 95c+ losses at full Kelly)
@@ -8013,13 +8013,16 @@ class OpportunityScanner:
                                      sizing["contracts"], _btc_max, BTC_MAX_RISK_PER_TRADE * 100)
                         sizing["contracts"] = _btc_max
 
-                # ETH sub-80c position cap: 30 contracts max for unproven price range
-                # Data: 75-79c 87.1% WR but large Kelly sizes at low prices amplify losses
-                if (asset == "ETH" and _pt in (None, "15m")
-                        and best_ask < 80 and sizing["contracts"] > ETH_SUB80_POSITION_CAP):
-                    logging.info("ETH sub-80c cap: %d -> %d contracts (ask=%dc)",
-                                 sizing["contracts"], ETH_SUB80_POSITION_CAP, best_ask)
-                    sizing["contracts"] = ETH_SUB80_POSITION_CAP
+                # ETH sub-80c position cap: clamp to [20, 50] contracts
+                # Half-Kelly at 75c/87% WR = 322-645 contracts — uncapped is reckless.
+                # Cap at 50 (half-Kelly ceiling), floor at 20 (minimum meaningful size).
+                # Will right-size from orderbook depth data after 1 week.
+                if (asset == "ETH" and _pt in (None, "15m") and best_ask < 80):
+                    _eth_sub80_capped = max(20, min(ETH_SUB80_POSITION_CAP, sizing["contracts"]))
+                    if _eth_sub80_capped != sizing["contracts"]:
+                        logging.info("ETH sub-80c clamp: %d -> %d contracts (ask=%dc, cap=%d)",
+                                     sizing["contracts"], _eth_sub80_capped, best_ask, ETH_SUB80_POSITION_CAP)
+                        sizing["contracts"] = _eth_sub80_capped
 
                 # Low-STC sizing cap: halve position when STC < 100s
                 # Data: 0-100s STC is -$84/14d (12W/2L, catastrophic losses wipe gains)
