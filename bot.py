@@ -10612,6 +10612,7 @@ class OrderExecutor:
         self._kalshi_feed = kalshi_feed
         self._active_orders: Dict[str, Dict] = {}  # asset → order dict
         self._recent_taker_tickers: Dict[str, float] = {}  # ticker → timestamp (cooldown after IOC)
+        self._active_taker_count: Dict[str, int] = {}  # asset → concurrent IOC count
         # Session counters for execution engine stats
         self._session_amend_attempts: int = 0
         self._session_amend_successes: int = 0
