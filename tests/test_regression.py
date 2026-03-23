@@ -2114,7 +2114,7 @@ class TestNBBOFallbackGates:
             min_p, max_p, max_stc = gate
             assert isinstance(min_p, int), f"{asset} min_price must be int"
             assert isinstance(max_p, int), f"{asset} max_price must be int"
-            assert min_p >= 80, f"{asset} min_price too low: {min_p}"
+            assert min_p >= 75, f"{asset} min_price too low: {min_p}"
             assert max_p <= 99, f"{asset} max_price too high: {max_p}"
             assert max_stc is None or isinstance(max_stc, (int, float))
 
@@ -2123,12 +2123,13 @@ class TestNBBOFallbackGates:
         min_p, max_p, max_stc = NBBO_FALLBACK_GATES["BTC"]
         assert min_p == 86
         assert max_p == 99
-        assert max_stc is None  # no STC restriction
+        assert max_stc == 600.0
 
-    def test_eth_gate_has_stc_limit(self):
+    def test_eth_gate_values(self):
         from bot import NBBO_FALLBACK_GATES
-        _, _, max_stc = NBBO_FALLBACK_GATES["ETH"]
-        assert max_stc is not None and max_stc <= 120.0
+        min_p, _, max_stc = NBBO_FALLBACK_GATES["ETH"]
+        assert min_p == 75, "ETH NBBO floor must match ETH_MIN_ENTRY_PRICE"
+        assert max_stc == 600.0, "ETH STC<120s was overfit on n=8"
 
     def test_sol_gate_excludes_low_prices(self):
         """SOL 80-85c has 50-73% WR — must be excluded."""
@@ -2136,10 +2137,17 @@ class TestNBBOFallbackGates:
         min_p, _, _ = NBBO_FALLBACK_GATES["SOL"]
         assert min_p >= 86, f"SOL min_price {min_p} too low, 80-85c is a WR trap"
 
-    def test_xrp_gate_has_stc_limit(self):
+    def test_xrp_gate_values(self):
         from bot import NBBO_FALLBACK_GATES
         _, _, max_stc = NBBO_FALLBACK_GATES["XRP"]
-        assert max_stc is not None and max_stc <= 180.0
+        assert max_stc == 600.0, "XRP STC<180s was overfit"
+
+    def test_all_stc_gates_use_live_stc_limit(self):
+        """All NBBO STC gates should use 600s (STC_SHADOW_THRESHOLD = live trading window)."""
+        from bot import NBBO_FALLBACK_GATES, STC_SHADOW_THRESHOLD
+        for asset, (_, _, max_stc) in NBBO_FALLBACK_GATES.items():
+            assert max_stc == STC_SHADOW_THRESHOLD, (
+                f"{asset} NBBO STC gate {max_stc} != live STC limit {STC_SHADOW_THRESHOLD}")
 
     def test_nbbo_fallback_method_exists(self):
         """OrderExecutor must have _nbbo_fallback_price method."""
@@ -2173,11 +2181,11 @@ class TestNBBOFallbackGates:
         assert 83 < min_p, "Test assumes 83c is below SOL gate"
 
     def test_nbbo_fallback_blocks_high_stc(self):
-        """NBBO fallback must reject ETH signals with STC >= 120s."""
+        """NBBO fallback must reject signals with STC >= 600s (global limit)."""
         from bot import NBBO_FALLBACK_GATES
         _, _, max_stc = NBBO_FALLBACK_GATES["ETH"]
         assert max_stc is not None
-        assert 150 >= max_stc, "Test assumes 150s exceeds ETH STC gate"
+        assert max_stc == 600.0, "All NBBO STC gates should use global 600s limit"
 
     def test_real_book_path_unaffected(self):
         """When _get_addon_best_ask succeeds, NBBO fallback is not called."""
