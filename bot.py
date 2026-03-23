@@ -6112,6 +6112,16 @@ class OpportunityScanner:
             _tcfg = get_market_config(w.get("product_type"))
             if _tcfg.min_seconds_before_close <= stc <= _tcfg.max_seconds_before_close:
                 time_ok_windows.append(w)
+        # SPX diagnostic: log when SPX windows are filtered by STC
+        _spx_in = [w for w in active_windows if w.get("product_type") == "spx_hourly"]
+        _spx_ok = [w for w in time_ok_windows if w.get("product_type") == "spx_hourly"]
+        if _spx_in and not _spx_ok:
+            logging.warning("SPX_DIAG_STC: %d SPX windows ALL filtered — stc=[%s]",
+                            len(_spx_in), ", ".join(f"{w['seconds_to_close']:.0f}" for w in _spx_in))
+        elif _spx_ok:
+            logging.info("SPX_DIAG_STC: %d/%d SPX windows passed time filter (stc=[%s])",
+                         len(_spx_ok), len(_spx_in),
+                         ", ".join(f"{w['seconds_to_close']:.0f}" for w in _spx_ok))
         if not time_ok_windows:
             return None
 
@@ -6141,6 +6151,7 @@ class OpportunityScanner:
             if _pt == "spx_hourly" and self._ml and getattr(self._ml, "spx_engine", None):
                 spot = self._ml.spx_engine.get_spot_price(asset)
                 if spot is None or spot <= 0:
+                    logging.warning("SPX_DIAG_SPOT: spot=%s for %s — skipping window", spot, asset)
                     continue
                 seconds_remaining = window["seconds_to_close"]
                 vol_est = self._ml.spx_engine.get_vol_estimate(asset, seconds_remaining)
@@ -6158,6 +6169,10 @@ class OpportunityScanner:
                 vol_est = self._vol.update(asset, seconds_to_close=seconds_remaining)
 
             if vol_est is None or vol_est["blended_rv"] <= 0:
+                if _pt == "spx_hourly":
+                    logging.warning("SPX_DIAG_VOL: vol_est=%s blended_rv=%s — skipping window",
+                                    "None" if vol_est is None else "ok",
+                                    vol_est.get("blended_rv") if vol_est else "N/A")
                 continue
 
             blended_rv = vol_est["blended_rv"]
@@ -6322,6 +6337,15 @@ class OpportunityScanner:
                     scan_stats[asset]["low_prob"] += 1
                     if window.get("product_type") in ("hourly", "spx_hourly", "weather"):
                         # Volume control: count but don't log (many strikes are low_prob)
+                        if _pt == "spx_hourly":
+                            _spx_lp_key = "_spx_diag_lowprob_" + window["event_ticker"]
+                            _spx_lp_cnt = getattr(self, _spx_lp_key, 0) + 1
+                            setattr(self, _spx_lp_key, _spx_lp_cnt)
+                            if _spx_lp_cnt == 1:  # log first hit per window
+                                logging.warning(
+                                    "SPX_DIAG_LOWPROB: %s cal=%.4f < needed=%.4f (price=%s)",
+                                    ticker, cal_prob, min_prob_needed,
+                                    mkt.get("yes_ask_dollars") or mkt.get("yes_ask") or "?")
                         continue
                     try:
                         self._logger.log_opportunity({
@@ -6342,6 +6366,11 @@ class OpportunityScanner:
                     except Exception:
                         pass
                     continue
+
+                # SPX diagnostic: market passed low_prob check
+                if _pt == "spx_hourly":
+                    logging.info("SPX_DIAG_PASS: %s cal=%.4f spot=%.1f thresh=%.1f rv=%.6f stc=%.0f",
+                                 ticker, cal_prob, spot, threshold, blended_rv, seconds_remaining)
 
                 # Fetch orderbook (cached, rate-limited)
                 ob_data, was_fresh = self._get_orderbook_cached(ticker)
