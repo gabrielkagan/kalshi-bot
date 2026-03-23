@@ -32,14 +32,14 @@ def pct(n, total):
     """Format a percentage string."""
     if total == 0:
         return "0%"
-    return f"{n / total * 100:.1f}%"
+    return f"{n / total * 100:.1f}\\%"
 
 
 def rate(wins, n):
     """Format a win rate string."""
     if n == 0:
         return "---"
-    return f"{wins / n * 100:.1f}%"
+    return f"{wins / n * 100:.1f}\\%"
 
 
 def _get_const_value(config, key, default=None):
