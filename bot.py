@@ -6940,12 +6940,20 @@ class OpportunityScanner:
 
                 edge = final_prob - best_ask / 100.0
 
-                # Fee-adjusted edge: subtract taker fee for 1 contract
-                # (conservative — more contracts = lower per-contract fee)
-                # Uses config-driven fee multipliers (fixes SPX paying 2x correct taker fee)
-                est_fee_1c = calculate_fee(1, best_ask, is_taker=True,
-                                           fee_mult_taker=_mcfg.fee_multiplier_taker,
-                                           fee_mult_maker=_mcfg.fee_multiplier_maker)
+                # Fee-adjusted edge: subtract taker fee per contract.
+                # 15M/SPX/weather: conservative 1-contract fee (more contracts = lower per-unit).
+                # Hourly: use actual 10-contract batch fee ÷ 10, because fixed sizing means
+                # the 1-contract ceiling inflation (ceil(1.75)=2c vs 18c/10=1.8c) kills
+                # every sub-60c signal that the observation data showed is profitable.
+                if _pt == "hourly":
+                    _hourly_batch_fee = calculate_fee(HOURLY_FIXED_CONTRACTS, best_ask, is_taker=True,
+                                                      fee_mult_taker=_mcfg.fee_multiplier_taker,
+                                                      fee_mult_maker=_mcfg.fee_multiplier_maker)
+                    est_fee_1c = _hourly_batch_fee / HOURLY_FIXED_CONTRACTS
+                else:
+                    est_fee_1c = calculate_fee(1, best_ask, is_taker=True,
+                                               fee_mult_taker=_mcfg.fee_multiplier_taker,
+                                               fee_mult_maker=_mcfg.fee_multiplier_maker)
                 fee_adjusted_edge = edge - est_fee_1c / 100.0
 
                 # ── Weather NO-side shadow edge ──

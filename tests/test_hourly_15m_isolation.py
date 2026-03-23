@@ -197,6 +197,21 @@ class TestEdgeCapIsolation:
         assert hasattr(bot, "MIN_EDGE_BY_PRICE")
         # No 15M-specific max edge constant
         assert not hasattr(bot, "MAX_EDGE")
+
+    def test_hourly_fee_uses_batch_sizing(self):
+        """Hourly fee computation must use HOURLY_FIXED_CONTRACTS, not 1."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OpportunityScanner.scan)
+        assert "calculate_fee(HOURLY_FIXED_CONTRACTS, best_ask" in source
+
+    def test_15m_fee_uses_single_contract(self):
+        """15M fee computation must still use calculate_fee(1, ...) — not batch."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OpportunityScanner.scan)
+        # The else branch still uses calculate_fee(1, ...)
+        assert "calculate_fee(1, best_ask, is_taker=True" in source
         assert not hasattr(bot, "CRYPTO_MAX_EDGE")
 
 
