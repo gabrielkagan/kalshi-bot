@@ -6329,11 +6329,12 @@ class OpportunityScanner:
                             f"Rejected opportunity: {ticker} — {reason}")
                     continue
 
-                # Skip if calibrated prob too low to ever produce an edge
+                # Skip if calibrated prob too low to ever produce an edge.
+                # Observation-mode products bypass entirely — data collection is the goal.
                 _pcfg = get_market_config(window.get("product_type"))
                 _min_price = _pcfg.min_entry_price
                 min_prob_needed = (_min_price + MIN_EDGE_PCT) / 100.0
-                if cal_prob < min_prob_needed:
+                if cal_prob < min_prob_needed and not _pcfg.observation_only:
                     scan_stats[asset]["low_prob"] += 1
                     if window.get("product_type") in ("hourly", "spx_hourly", "weather"):
                         # Volume control: count but don't log (many strikes are low_prob)
@@ -6341,7 +6342,7 @@ class OpportunityScanner:
                             _spx_lp_key = "_spx_diag_lowprob_" + window["event_ticker"]
                             _spx_lp_cnt = getattr(self, _spx_lp_key, 0) + 1
                             setattr(self, _spx_lp_key, _spx_lp_cnt)
-                            if _spx_lp_cnt == 1:  # log first hit per window
+                            if _spx_lp_cnt == 1:
                                 logging.warning(
                                     "SPX_DIAG_LOWPROB: %s cal=%.4f < needed=%.4f (price=%s)",
                                     ticker, cal_prob, min_prob_needed,
