@@ -7840,12 +7840,17 @@ class OpportunityScanner:
                                             else DECIDED_CONTRACT_T2_Z2_RISK if _dc_tier == "decided_contract_t2_z2"
                                             else DECIDED_CONTRACT_RISK)
                                 _dc_position = max(1, int((_dc_balance * _dc_risk) / best_ask))
-                                # EV with assumed win prob: T1 ~99%, T1B ~97%, T2 ~96%, T2-Z25 ~96%, T2-Z2 ~95%
+                                # EV with assumed win prob — calibrated from 14-day settlement data:
+                                # T1: 92/92 (100%) at 95-98c → 0.99 (unchanged)
+                                # T1B: 47/47 (100%) at 95-98c → 0.98 (was 0.97, unlocks 97c)
+                                # T2: 106/106 (100%) at 95-98c → 0.97 (was 0.96, unlocks 96c)
+                                # T2-Z25: 69/71 (97.2%) has 2 losses → 0.96 (unchanged, conservative)
+                                # T2-Z2: 144/144 (100%) at 95-98c → 0.97 (was 0.95, unlocks 96c)
                                 _dc_assumed_p = (0.99 if _dc_tier == "decided_contract_t1"
-                                                 else 0.97 if _dc_tier == "decided_contract_t1b"
-                                                 else 0.96 if _dc_tier == "decided_contract_t2"
+                                                 else 0.98 if _dc_tier == "decided_contract_t1b"
+                                                 else 0.97 if _dc_tier == "decided_contract_t2"
                                                  else 0.96 if _dc_tier == "decided_contract_t2_z25"
-                                                 else 0.95)
+                                                 else 0.97)
                                 _dc_ev = round((_dc_assumed_p * (100 - best_ask))
                                                - ((1 - _dc_assumed_p) * best_ask) - est_fee_1c, 2)
                                 _dc_kelly_f = round((_dc_assumed_p - best_ask / 100.0), 6)
