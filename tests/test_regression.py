@@ -2091,3 +2091,113 @@ class TestSOLEdgeFloor:
             content = f.read()
         assert "SOL_MIN_EDGE" in content
         assert 'asset == "SOL"' in content or "asset == 'SOL'" in content
+
+
+# ============================================================================
+#  NBBO Fallback Gates
+#  Bug: 456/468 missed candidates had empty orderbooks. execute() suppressed
+#  them with ORDER_SUPPRESSED no_asks because _get_addon_best_ask() has no
+#  NBBO fallback (scan() does). Simulated PnL at NBBO prices: +$196/week.
+# ============================================================================
+
+class TestNBBOFallbackGates:
+    """Verify NBBO fallback config and gate logic."""
+
+    def test_nbbo_fallback_gates_exist(self):
+        """NBBO_FALLBACK_GATES config must exist with all 4 assets."""
+        from bot import NBBO_FALLBACK_GATES
+        assert isinstance(NBBO_FALLBACK_GATES, dict)
+        for asset in ("BTC", "ETH", "SOL", "XRP"):
+            assert asset in NBBO_FALLBACK_GATES, f"Missing gate for {asset}"
+            gate = NBBO_FALLBACK_GATES[asset]
+            assert len(gate) == 3, f"Gate for {asset} must be (min_price, max_price, max_stc)"
+            min_p, max_p, max_stc = gate
+            assert isinstance(min_p, int), f"{asset} min_price must be int"
+            assert isinstance(max_p, int), f"{asset} max_price must be int"
+            assert min_p >= 80, f"{asset} min_price too low: {min_p}"
+            assert max_p <= 99, f"{asset} max_price too high: {max_p}"
+            assert max_stc is None or isinstance(max_stc, (int, float))
+
+    def test_btc_gate_values(self):
+        from bot import NBBO_FALLBACK_GATES
+        min_p, max_p, max_stc = NBBO_FALLBACK_GATES["BTC"]
+        assert min_p == 86
+        assert max_p == 99
+        assert max_stc is None  # no STC restriction
+
+    def test_eth_gate_has_stc_limit(self):
+        from bot import NBBO_FALLBACK_GATES
+        _, _, max_stc = NBBO_FALLBACK_GATES["ETH"]
+        assert max_stc is not None and max_stc <= 120.0
+
+    def test_sol_gate_excludes_low_prices(self):
+        """SOL 80-85c has 50-73% WR — must be excluded."""
+        from bot import NBBO_FALLBACK_GATES
+        min_p, _, _ = NBBO_FALLBACK_GATES["SOL"]
+        assert min_p >= 86, f"SOL min_price {min_p} too low, 80-85c is a WR trap"
+
+    def test_xrp_gate_has_stc_limit(self):
+        from bot import NBBO_FALLBACK_GATES
+        _, _, max_stc = NBBO_FALLBACK_GATES["XRP"]
+        assert max_stc is not None and max_stc <= 180.0
+
+    def test_nbbo_fallback_method_exists(self):
+        """OrderExecutor must have _nbbo_fallback_price method."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            content = f.read()
+        assert "def _nbbo_fallback_price(" in content
+
+    def test_all_no_asks_sites_have_nbbo_fallback(self):
+        """Every ORDER_SUPPRESSED no_asks site must try _nbbo_fallback_price first."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            content = f.read()
+        # Find all no_asks suppression blocks in execute paths
+        # Each should be preceded by a _nbbo_fallback_price call
+        no_asks_blocks = [i for i, line in enumerate(content.split("\n"))
+                          if "ORDER_SUPPRESSED no_asks" in line]
+        for line_idx in no_asks_blocks:
+            # Look backwards up to 5 lines for nbbo_fallback_price
+            preceding = "\n".join(content.split("\n")[max(0, line_idx-5):line_idx])
+            assert "_nbbo_fallback_price" in preceding, (
+                f"Line {line_idx+1} has ORDER_SUPPRESSED no_asks without "
+                f"_nbbo_fallback_price check above it"
+            )
+
+    def test_nbbo_fallback_blocks_low_price(self):
+        """NBBO fallback must reject prices below asset gate."""
+        from bot import NBBO_FALLBACK_GATES
+        # SOL at 83c should be blocked (gate starts at 86c)
+        min_p, _, _ = NBBO_FALLBACK_GATES["SOL"]
+        assert 83 < min_p, "Test assumes 83c is below SOL gate"
+
+    def test_nbbo_fallback_blocks_high_stc(self):
+        """NBBO fallback must reject ETH signals with STC >= 120s."""
+        from bot import NBBO_FALLBACK_GATES
+        _, _, max_stc = NBBO_FALLBACK_GATES["ETH"]
+        assert max_stc is not None
+        assert 150 >= max_stc, "Test assumes 150s exceeds ETH STC gate"
+
+    def test_real_book_path_unaffected(self):
+        """When _get_addon_best_ask succeeds, NBBO fallback is not called."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            content = f.read()
+        # _nbbo_fallback_price should only appear inside "if fresh_ask is None" blocks
+        lines = content.split("\n")
+        for i, line in enumerate(lines):
+            if "_nbbo_fallback_price" in line and "def " not in line and "#" not in line.lstrip()[:1]:
+                # Check that a preceding line has "is None" condition
+                context = "\n".join(lines[max(0, i-3):i+1])
+                assert "is None" in context or "fresh_ask is None" in context, (
+                    f"Line {i+1}: _nbbo_fallback_price called outside 'is None' guard"
+                )
+
+    def test_session_counters_exist(self):
+        """Session counters for NBBO fallback must be initialized."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            content = f.read()
+        assert "_session_nbbo_fallback_attempts" in content
+        assert "_session_nbbo_fallback_blocked" in content

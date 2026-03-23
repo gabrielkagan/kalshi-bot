@@ -1337,6 +1337,8 @@ class DashboardSnapshotBuilder:
             }
             exec_eng["session_ioc_retries"] = getattr(ex, "_session_ioc_retries", 0)
             exec_eng["session_ioc_retry_fills"] = getattr(ex, "_session_ioc_retry_fills", 0)
+            exec_eng["nbbo_fallback_attempts"] = getattr(ex, "_session_nbbo_fallback_attempts", 0)
+            exec_eng["nbbo_fallback_blocked"] = getattr(ex, "_session_nbbo_fallback_blocked", 0)
 
             # Escalation funnel
             po_rej = exec_eng.get("session_post_only_rejections", 0)

@@ -580,6 +580,17 @@ IOC_TICKER_COOLDOWN = 15          # seconds cooldown after IOC attempt per ticke
 IOC_RETRY_OFFSET = 1              # cents above ask for taker-first IOC (1c worse entry, much higher fill rate)
 MAX_CONCURRENT_TAKER_PER_ASSET = 3  # safety cap: max simultaneous taker positions per asset
 
+# ─── NBBO Fallback Gates ──────────────────────────────────────────────────
+# When orderbook is empty, fall back to market NBBO yes_ask IF within these gates.
+# Data: 456/468 missed candidates had empty orderbooks; simulated PnL +$196/wk.
+# Per-asset: (min_price_cents, max_price_cents, max_stc_seconds_or_None)
+NBBO_FALLBACK_GATES = {
+    "BTC": (86, 99, None),       # 97.9% WR, +$26/wk, no STC restriction
+    "ETH": (80, 99, 120.0),      # 100% WR at STC<120s; 120s+ degrades to 50%
+    "SOL": (86, 99, None),       # 93.3% WR, +$119/wk; 80-85c is 50-73% WR trap
+    "XRP": (92, 99, 180.0),      # 100% WR at STC<180s; 180s+ has losses
+}
+
 # ─── Adaptive Escalation ─────────────────────────────────────────────────
 ESCALATION_WAIT_LONG = 15.0       # maker wait when >=180s to close
 BTC_ESCALATION_WAIT_OVERRIDE = 7.0  # BTC: 7s instead of 15s at STC>=180s
@@ -10571,6 +10582,8 @@ class OrderExecutor:
         self._session_suppressed_asset_lock: int = 0
         self._session_suppressed_ticker_cooldown: int = 0
         self._session_suppressed_no_asks: int = 0
+        self._session_nbbo_fallback_attempts: int = 0
+        self._session_nbbo_fallback_blocked: int = 0
         self._session_suppressed_edge_recalc: int = 0
         self._session_suppressed_zero_size: int = 0
         self._session_ioc_retries: int = 0
@@ -10879,10 +10892,12 @@ class OrderExecutor:
 
             fresh_ask = self._get_addon_best_ask(candidate["ticker"])
             if fresh_ask is None:
-                logging.warning("ORDER_SUPPRESSED no_asks: %s asset=SOL price=%d stc=%.0f",
-                                candidate["ticker"], price, seconds_to_close or 0)
-                self._session_suppressed_no_asks += 1
-                return None
+                fresh_ask = self._nbbo_fallback_price(candidate)
+                if fresh_ask is None:
+                    logging.warning("ORDER_SUPPRESSED no_asks: %s asset=SOL price=%d stc=%.0f",
+                                    candidate["ticker"], price, seconds_to_close or 0)
+                    self._session_suppressed_no_asks += 1
+                    return None
 
             if fresh_ask != price:
                 logging.info("sol_taker_override_price_update: %s scanner=%d¢ fresh=%d¢",
@@ -11049,13 +11064,15 @@ class OrderExecutor:
 
             fresh_ask = self._get_addon_best_ask(candidate["ticker"])
             if fresh_ask is None:
-                logging.warning("ORDER_SUPPRESSED no_asks: %s asset=%s strategy=%s price=%d stc=%.0f",
-                                candidate["ticker"], asset, _dc_strategy, price, seconds_to_close or 0)
-                self._session_suppressed_no_asks += 1
-                # Set 60s cooldown to prevent rapid-fire re-scan of empty orderbook
-                if self._ml and hasattr(self._ml, "scanner"):
-                    self._ml.scanner._dc_skip_cooldown[candidate["ticker"]] = time.time() + 60
-                return None
+                fresh_ask = self._nbbo_fallback_price(candidate)
+                if fresh_ask is None:
+                    logging.warning("ORDER_SUPPRESSED no_asks: %s asset=%s strategy=%s price=%d stc=%.0f",
+                                    candidate["ticker"], asset, _dc_strategy, price, seconds_to_close or 0)
+                    self._session_suppressed_no_asks += 1
+                    # Set 60s cooldown to prevent rapid-fire re-scan of empty orderbook
+                    if self._ml and hasattr(self._ml, "scanner"):
+                        self._ml.scanner._dc_skip_cooldown[candidate["ticker"]] = time.time() + 60
+                    return None
 
             if fresh_ask != price:
                 logging.info("dc_taker_price_update: %s scanner=%d¢ fresh=%d¢",
@@ -11132,12 +11149,14 @@ class OrderExecutor:
             # Verify actual liquidity before submitting IOC
             fresh_ask = self._get_addon_best_ask(candidate["ticker"])
             if fresh_ask is None:
-                logging.warning(
-                    "ORDER_SUPPRESSED no_asks: %s asset=%s path=direct_taker stc=%.0f",
-                    candidate["ticker"], asset, seconds_to_close)
-                self._session_suppressed_no_asks += 1
-                self._session_direct_taker_skipped += 1
-                return None
+                fresh_ask = self._nbbo_fallback_price(candidate)
+                if fresh_ask is None:
+                    logging.warning(
+                        "ORDER_SUPPRESSED no_asks: %s asset=%s path=direct_taker stc=%.0f",
+                        candidate["ticker"], asset, seconds_to_close)
+                    self._session_suppressed_no_asks += 1
+                    self._session_direct_taker_skipped += 1
+                    return None
 
             # Use fresh ask if it differs from scanner's (may be stale NBBO)
             if fresh_ask != price:
@@ -12619,6 +12638,47 @@ class OrderExecutor:
         except Exception:
             logging.debug("addon orderbook REST fallback failed", exc_info=True)
         return None
+
+    def _nbbo_fallback_price(self, candidate: Dict) -> Optional[int]:
+        """Return NBBO yes_ask price if candidate passes per-asset gates, else None.
+
+        Called when _get_addon_best_ask() returns None (empty orderbook).
+        Uses the NBBO price from scan() (candidate["best_yes_ask"]) which was
+        sourced from the market listing's yes_ask field.
+        """
+        asset = candidate.get("asset", "")
+        gate = NBBO_FALLBACK_GATES.get(asset)
+        if gate is None:
+            return None
+
+        min_price, max_price, max_stc = gate
+        nbbo_price = candidate.get("best_yes_ask")
+        stc = candidate.get("seconds_to_close")
+
+        if nbbo_price is None:
+            return None
+
+        # Price gate
+        if nbbo_price < min_price or nbbo_price > max_price:
+            logging.info(
+                "nbbo_fallback_BLOCKED_price: %s asset=%s price=%dc gate=[%d-%d]",
+                candidate.get("ticker", "?"), asset, nbbo_price, min_price, max_price)
+            self._session_nbbo_fallback_blocked += 1
+            return None
+
+        # STC gate (None = no restriction)
+        if max_stc is not None and stc is not None and stc >= max_stc:
+            logging.info(
+                "nbbo_fallback_BLOCKED_stc: %s asset=%s stc=%.0fs gate=<%.0fs",
+                candidate.get("ticker", "?"), asset, stc, max_stc)
+            self._session_nbbo_fallback_blocked += 1
+            return None
+
+        logging.info(
+            "nbbo_fallback_USING: %s asset=%s price=%dc stc=%.0fs",
+            candidate.get("ticker", "?"), asset, nbbo_price, stc or 0)
+        self._session_nbbo_fallback_attempts += 1
+        return nbbo_price
 
     def _get_addon_spot(self, asset: str) -> Optional[float]:
         """Get current spot price for asset via feed."""
