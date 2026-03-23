@@ -1881,14 +1881,42 @@ class StateManager:
             return
 
         api_order_ids: Set[str] = set()
-        for order in api_resp["orders"]:
+        resting_orders = api_resp.get("orders") or []
+
+        # Cancel all stale resting orders on Kalshi — clean slate on startup.
+        # These are maker orders from pre-restart that were never filled or canceled.
+        # Leaving them resting consumes capital and can interfere with new orders.
+        _stale_canceled = 0
+        for order in resting_orders:
             oid = order["order_id"]
             api_order_ids.add(oid)
+            ticker = order["ticker"]
+            try:
+                client.cancel_order(oid)
+                _stale_canceled += 1
+                logging.warning("STALE_ORDER_CLEANUP: canceled %s ticker=%s price=%s count=%s (resting since %s)",
+                                oid, ticker,
+                                order.get("yes_price_dollars") or order.get("yes_price", "?"),
+                                order.get("remaining_count", "?"),
+                                order.get("created_time", "?"))
+            except Exception as e:
+                logging.warning("STALE_ORDER_CLEANUP: failed to cancel %s: %s", oid, e)
 
+        if _stale_canceled > 0:
+            logging.info("STALE_ORDER_CLEANUP: canceled %d resting orders on startup", _stale_canceled)
+
+        # Import any orders from API that we don't have locally (for history)
+        for order in resting_orders:
+            oid = order["order_id"]
             existing = self.conn.execute(
                 "SELECT 1 FROM pending_orders WHERE order_id=?", (oid,)
             ).fetchone()
             if existing:
+                # Mark as canceled (we just canceled it above)
+                self.conn.execute("""
+                    UPDATE pending_orders SET status='canceled', updated_at=?
+                    WHERE order_id=?
+                """, (now, oid))
                 continue
 
             ticker = order["ticker"]
@@ -1910,7 +1938,7 @@ class StateManager:
                 INSERT INTO pending_orders (order_id, client_order_id, ticker,
                     event_ticker, asset, side, action, count, price_cents,
                     status, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,'resting',?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,'canceled',?,?)
             """, (oid, order.get("client_order_id", ""), ticker,
                   event_ticker, asset, order["side"], order["action"],
                   remaining, price,
