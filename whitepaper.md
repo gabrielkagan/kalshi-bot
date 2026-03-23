@@ -832,7 +832,7 @@ Append-only journal files provide a complete audit trail:
 
 ## Test Suite
 
-774 tests across 25+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, weekend discount, low-price shadow, and regression tests for past bugs.
+803 tests across 25+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, weekend discount, low-price shadow, NBBO fallback gates, DC routing priority, and regression tests for past bugs.
 
 ## Shadow Mode Features
 
