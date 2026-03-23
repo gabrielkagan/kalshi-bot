@@ -90,6 +90,20 @@ jobs:
           --highlight-style=tango
           --listings
 
+      - name: Generate investor tex (debug)
+        run: >-
+          pandoc whitepaper_investor_rendered.md
+          -o whitepaper_investor.tex
+          --from markdown
+          --template eisvogel
+          --standalone
+
+      - name: Find textbf issues
+        run: |
+          grep -n 'textbf' whitepaper_investor.tex | tail -30
+          echo "---"
+          xelatex -halt-on-error -interaction=nonstopmode whitepaper_investor.tex 2>&1 | grep -A3 "textbf\|Error\|Emergency" | head -30
+
       - name: Generate investor PDF
         run: >-
           pandoc whitepaper_investor_rendered.md
