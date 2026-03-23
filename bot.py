@@ -10863,10 +10863,93 @@ class OrderExecutor:
         except Exception as e:
             logging.error(f"CANDIDATE_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
 
+        seconds_to_close = candidate.get("seconds_to_close")
+
+        # ── Decided contract taker override ─────────────────────────
+        # Must be checked BEFORE SOL taker-first and direct taker paths,
+        # which apply MIN_EDGE_PCT (0.25%). DC uses -0.01 threshold.
+        # Bug fix: SOL DC candidates were hitting SOL taker-first path
+        # first, getting edge-gated at 0.25% when DC allows -1%.
+        _dc_strategy = candidate.get("strategy")
+        if _dc_strategy in ("decided_t1", "decided_t1b", "decided_t2",
+                            "decided_t2_z2", "decided_t2_z25"):
+            count = candidate["position_size"]
+            price = candidate["best_yes_ask"]
+            cal_prob = candidate["calibrated_prob"]
+
+            if count <= 0:
+                logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=%s price=%d",
+                                candidate["ticker"], asset, _dc_strategy, price)
+                self._session_suppressed_zero_size += 1
+                return None
+
+            taker_fee = calculate_taker_fee(count, price)
+            net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+
+            # Decided contracts use assumed probs (99%/96%), not model edge.
+            # Only skip if net_edge is deeply negative (fee exceeds profit).
+            if net_edge < -0.01:
+                logging.warning(
+                    "ORDER_SUPPRESSED edge_taker_fee: %s asset=%s strategy=%s net_edge=%.4f < -0.01 "
+                    "price=%d¢ cal_prob=%.4f taker_fee=%d¢",
+                    candidate["ticker"], asset, _dc_strategy, net_edge, price, cal_prob, taker_fee)
+                self._session_suppressed_edge_recalc += 1
+                return None
+
+            fresh_ask = self._get_addon_best_ask(candidate["ticker"])
+            if fresh_ask is None:
+                fresh_ask = self._nbbo_fallback_price(candidate)
+                if fresh_ask is None:
+                    logging.warning("ORDER_SUPPRESSED no_asks: %s asset=%s strategy=%s price=%d stc=%.0f",
+                                    candidate["ticker"], asset, _dc_strategy, price, seconds_to_close or 0)
+                    self._session_suppressed_no_asks += 1
+                    # Set 60s cooldown to prevent rapid-fire re-scan of empty orderbook
+                    if self._ml and hasattr(self._ml, "scanner"):
+                        self._ml.scanner._dc_skip_cooldown[candidate["ticker"]] = time.time() + 60
+                    return None
+
+            if fresh_ask != price:
+                logging.info("dc_taker_price_update: %s scanner=%d¢ fresh=%d¢",
+                             candidate["ticker"], price, fresh_ask)
+                price = fresh_ask
+                candidate["best_yes_ask"] = fresh_ask
+                taker_fee = calculate_taker_fee(count, price)
+                net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+                if net_edge < -0.01:
+                    logging.info("dc_taker_SKIPPED: %s fresh_ask=%d¢ net_edge=%.4f < -0.01",
+                                 candidate["ticker"], price, net_edge)
+                    return None
+
+            self._session_direct_taker_attempts += 1
+            logging.info(
+                "dc_taker_ENTRY: %s %s %dx @ %d¢ "
+                "seconds_to_close=%.0f net_edge=%.4f cal_prob=%.4f taker_fee=%d¢",
+                _dc_strategy, candidate["ticker"], count, price,
+                seconds_to_close or 0, net_edge, cal_prob, taker_fee)
+
+            candidate["entry_path"] = "dc_taker"
+            candidate["escalation_type"] = "direct_taker"
+            self._recent_taker_tickers[candidate["ticker"]] = time.time()
+            _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            result = self._submit_taker(candidate)
+            if result is not None:
+                self._session_direct_taker_fills += 1
+                logging.info("dc_taker_FILLED: %s %s", _dc_strategy, candidate["ticker"])
+                _taker_oid = result.get("order_id") if isinstance(result, dict) else None
+                self._state.update_evaluated_opportunity_order(
+                    candidate["ticker"], order_id=_taker_oid,
+                    order_submitted_at=_order_submit_ts, order_outcome="filled")
+            else:
+                self._session_direct_taker_unfilled += 1
+                logging.warning("dc_taker_UNFILLED: %s %s", _dc_strategy, candidate["ticker"])
+                self._state.update_evaluated_opportunity_order(
+                    candidate["ticker"], order_submitted_at=_order_submit_ts,
+                    order_outcome="unfilled")
+            return result
+
         # ── SOL taker-first override ──────────────────────────────
         # SOL: bypass maker entirely, go direct IOC at all STC values.
         # Data: 44.7% maker fill rate, $101/wk missed, 95% unfilled WR.
-        seconds_to_close = candidate.get("seconds_to_close")
         if SOL_TAKER_FIRST and candidate.get("asset") == "SOL":
             count = candidate["position_size"]
             price = candidate["best_yes_ask"]
@@ -11030,87 +11113,6 @@ class OrderExecutor:
             except Exception:
                 logging.warning("sol_pathc_shadow logging failed", exc_info=True)
 
-            return result
-
-        # ── Decided contract taker override ─────────────────────────
-        # T1/T2 decided contracts at 93-99c with z ≤ -3 and < 5min to close.
-        # Maker queue at these prices is useless (12.9% T1 / 31.5% T2 fill rate).
-        # Route directly to IOC taker. Fee math: at 95c, taker fee ~1.7c,
-        # profit per win ~5c.  Data: 125 unfilled decided signals = $151/2wk.
-        _dc_strategy = candidate.get("strategy")
-        if _dc_strategy in ("decided_t1", "decided_t1b", "decided_t2"):
-            count = candidate["position_size"]
-            price = candidate["best_yes_ask"]
-            cal_prob = candidate["calibrated_prob"]
-
-            if count <= 0:
-                logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=%s price=%d",
-                                candidate["ticker"], asset, _dc_strategy, price)
-                self._session_suppressed_zero_size += 1
-                return None
-
-            taker_fee = calculate_taker_fee(count, price)
-            net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
-
-            # Decided contracts use assumed probs (99%/96%), not model edge.
-            # Only skip if net_edge is deeply negative (fee exceeds profit).
-            if net_edge < -0.01:
-                logging.warning(
-                    "ORDER_SUPPRESSED edge_taker_fee: %s asset=%s strategy=%s net_edge=%.4f < -0.01 "
-                    "price=%d¢ cal_prob=%.4f taker_fee=%d¢",
-                    candidate["ticker"], asset, _dc_strategy, net_edge, price, cal_prob, taker_fee)
-                self._session_suppressed_edge_recalc += 1
-                return None
-
-            fresh_ask = self._get_addon_best_ask(candidate["ticker"])
-            if fresh_ask is None:
-                fresh_ask = self._nbbo_fallback_price(candidate)
-                if fresh_ask is None:
-                    logging.warning("ORDER_SUPPRESSED no_asks: %s asset=%s strategy=%s price=%d stc=%.0f",
-                                    candidate["ticker"], asset, _dc_strategy, price, seconds_to_close or 0)
-                    self._session_suppressed_no_asks += 1
-                    # Set 60s cooldown to prevent rapid-fire re-scan of empty orderbook
-                    if self._ml and hasattr(self._ml, "scanner"):
-                        self._ml.scanner._dc_skip_cooldown[candidate["ticker"]] = time.time() + 60
-                    return None
-
-            if fresh_ask != price:
-                logging.info("dc_taker_price_update: %s scanner=%d¢ fresh=%d¢",
-                             candidate["ticker"], price, fresh_ask)
-                price = fresh_ask
-                candidate["best_yes_ask"] = fresh_ask
-                taker_fee = calculate_taker_fee(count, price)
-                net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
-                if net_edge < -0.01:
-                    logging.info("dc_taker_SKIPPED: %s fresh_ask=%d¢ net_edge=%.4f < -0.01",
-                                 candidate["ticker"], price, net_edge)
-                    return None
-
-            self._session_direct_taker_attempts += 1
-            logging.info(
-                "dc_taker_ENTRY: %s %s %dx @ %d¢ "
-                "seconds_to_close=%.0f net_edge=%.4f cal_prob=%.4f taker_fee=%d¢",
-                _dc_strategy, candidate["ticker"], count, price,
-                seconds_to_close or 0, net_edge, cal_prob, taker_fee)
-
-            candidate["entry_path"] = "dc_taker"
-            candidate["escalation_type"] = "direct_taker"
-            self._recent_taker_tickers[candidate["ticker"]] = time.time()
-            _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            result = self._submit_taker(candidate)
-            if result is not None:
-                self._session_direct_taker_fills += 1
-                logging.info("dc_taker_FILLED: %s %s", _dc_strategy, candidate["ticker"])
-                _taker_oid = result.get("order_id") if isinstance(result, dict) else None
-                self._state.update_evaluated_opportunity_order(
-                    candidate["ticker"], order_id=_taker_oid,
-                    order_submitted_at=_order_submit_ts, order_outcome="filled")
-            else:
-                self._session_direct_taker_unfilled += 1
-                logging.warning("dc_taker_UNFILLED: %s %s", _dc_strategy, candidate["ticker"])
-                self._state.update_evaluated_opportunity_order(
-                    candidate["ticker"], order_submitted_at=_order_submit_ts,
-                    order_outcome="unfilled")
             return result
 
         # ── Direct taker for <180s candidates ───────────────────────

@@ -2201,3 +2201,94 @@ class TestNBBOFallbackGates:
             content = f.read()
         assert "_session_nbbo_fallback_attempts" in content
         assert "_session_nbbo_fallback_blocked" in content
+
+
+# ============================================================================
+#  DC Routing Priority
+#  Bug: DC candidates (strategy=decided_t1/t1b/t2) hitting SOL taker-first
+#  or direct taker paths, which apply MIN_EDGE_PCT (0.25%) instead of DC's
+#  -0.01 threshold. 46% of DC signals at 95c+ were being suppressed.
+#  Fix: DC check moved above SOL taker-first and direct taker.
+# ============================================================================
+
+class TestDCRoutingPriority:
+    """Verify DC candidates route through DC path before asset-specific paths."""
+
+    def test_dc_check_before_sol_taker_first(self):
+        """DC taker override must appear BEFORE SOL taker-first in execute()."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            content = f.read()
+        dc_pos = content.find('Decided contract taker override')
+        sol_pos = content.find('SOL taker-first override')
+        assert dc_pos > 0, "DC taker override comment not found"
+        assert sol_pos > 0, "SOL taker-first comment not found"
+        assert dc_pos < sol_pos, (
+            f"DC taker override (pos {dc_pos}) must appear BEFORE "
+            f"SOL taker-first (pos {sol_pos})")
+
+    def test_dc_check_before_direct_taker(self):
+        """DC taker override must appear BEFORE direct taker <180s."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            content = f.read()
+        dc_pos = content.find('Decided contract taker override')
+        dt_pos = content.find('Direct taker for <180s')
+        assert dc_pos < dt_pos, "DC taker override must appear BEFORE direct taker"
+
+    def test_dc_strategies_include_z2_z25(self):
+        """DC strategy check must include z2 and z25 variants."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            content = f.read()
+        # Find the DC strategy condition
+        import re
+        match = re.search(r'_dc_strategy\s+in\s+\(([^)]+)\)', content)
+        assert match, "DC strategy condition not found"
+        strategies = match.group(1)
+        assert '"decided_t2_z2"' in strategies, "decided_t2_z2 missing from DC check"
+        assert '"decided_t2_z25"' in strategies, "decided_t2_z25 missing from DC check"
+
+    def test_dc_uses_permissive_edge_threshold(self):
+        """DC path must use -0.01 edge threshold, not MIN_EDGE_PCT."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            lines = f.readlines()
+        # Find the DC block and verify it uses -0.01
+        in_dc_block = False
+        found_threshold = False
+        for i, line in enumerate(lines):
+            if 'Decided contract taker override' in line:
+                in_dc_block = True
+            if in_dc_block and 'SOL taker-first override' in line:
+                break
+            if in_dc_block and 'net_edge < -0.01' in line:
+                found_threshold = True
+        assert found_threshold, "DC block must use 'net_edge < -0.01' threshold"
+
+    def test_sol_dc_does_not_hit_sol_taker_first(self):
+        """A SOL candidate with DC strategy must NOT reach SOL taker-first path.
+
+        The DC check returns result before SOL taker-first is reached."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            lines = f.readlines()
+        # Verify DC block has 'return result' before SOL block
+        in_dc_block = False
+        dc_returns = False
+        for line in lines:
+            if 'Decided contract taker override' in line:
+                in_dc_block = True
+            if in_dc_block and 'return result' in line and 'dc_taker' not in line:
+                dc_returns = True
+            if 'SOL taker-first override' in line:
+                break
+        assert dc_returns, "DC block must return before SOL taker-first block"
+
+    def test_no_duplicate_dc_block(self):
+        """DC taker override should appear exactly once."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            content = f.read()
+        count = content.count('Decided contract taker override')
+        assert count == 1, f"DC taker override appears {count} times, expected 1"
