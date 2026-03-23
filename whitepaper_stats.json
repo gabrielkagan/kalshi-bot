@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 57812,
+  "total_evaluated": 57816,
   "filter_breakdown": {
     "candidate": 992,
     "dc_shadow_t2_90c": 3,
@@ -39,7 +39,7 @@
     "observation_trade": 83,
     "overnight_discount_shadow": 113,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 10782,
+    "price_out_of_range": 10786,
     "price_shadow": 52,
     "price_shadow_no_xrp": 1318,
     "price_shadow_xrp": 550,
@@ -138,5 +138,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-03-23",
-  "generated_at": "2026-03-23T19:58:35Z"
+  "generated_at": "2026-03-23T20:14:19Z"
 }
