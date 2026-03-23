@@ -222,17 +222,17 @@
     },
     "ESCALATION_WAIT_LONG": {
       "value": 15.0,
-      "line": 584,
+      "line": 595,
       "description": "Maker wait for long STC"
     },
     "ESCALATION_WAIT_MEDIUM": {
       "value": 7.0,
-      "line": 587,
+      "line": 598,
       "description": "Maker wait for medium STC"
     },
     "ESCALATION_WAIT_SHORT": {
       "value": 5.0,
-      "line": 588,
+      "line": 599,
       "description": "Maker wait for short STC"
     },
     "HOURLY_EXCLUDED_ASSETS": {
@@ -349,13 +349,13 @@
       "description": "Price-dependent edge schedule"
     }
   },
-  "_bot_lines": 14828,
+  "_bot_lines": 14888,
   "_exchange_feeds": [
     "CoinbaseFeed",
     "CrossExchangeFeed",
     "KalshiFeed"
   ],
-  "_extracted_at": "2026-03-23T01:02:08Z",
+  "_extracted_at": "2026-03-23T01:38:02Z",
   "_bot_path": "/home/runner/work/kalshi-bot/kalshi-bot/bot.py",
   "_weather": {
     "weather_city_count": 19,
