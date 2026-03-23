@@ -11,17 +11,16 @@ titlepage-rule-height: 4
 toc: true
 toc-own-page: true
 colorlinks: true
-linkcolor: "1B4F72"
-urlcolor: "1B4F72"
-toccolor: "1B4F72"
+linkcolor: "investorlink"
+urlcolor: "investorlink"
+toccolor: "investorlink"
 header-left: "\\footnotesize Kalshi Crypto Trading Bot"
 header-right: "\\footnotesize Investor Whitepaper"
 footer-left: "\\footnotesize Gabriel Kagan"
 footer-center: ""
 footer-right: "\\footnotesize \\thepage"
-mainfont: "Source Sans Pro"
-sansfont: "Source Sans Pro"
-monofont: "Source Code Pro"
+mainfont: "DejaVu Sans"
+monofont: "DejaVu Sans Mono"
 fontsize: "11pt"
 geometry: "margin=1in"
 header-includes:
@@ -33,6 +32,7 @@ header-includes:
     \usepackage{textcomp}
     \usepackage{colortbl}
 
+    \definecolor{investorlink}{HTML}{1B4F72}
     \definecolor{accent}{HTML}{E8A838}
     \definecolor{darkblue}{HTML}{0D1B2A}
     \definecolor{medblue}{HTML}{1B4F72}
@@ -88,9 +88,9 @@ This document describes an automated trading platform for **Kalshi**, the first 
 The platform monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
 \begin{metricbox}
-\textbf{Live trading results (as of 2026-03-06T23:11:09Z):}
+\textbf{Live trading results (as of 2026-03-23T00:13:24Z):}
 \begin{itemize}
-\item \textbf{258} settled trades with a \textbf{88.8%} win rate (229W / 29L)
+\item \textbf{544} settled trades with a \textbf{91.2\%} win rate (496W / 48L)
 \item Live trading with real capital since February 22, 2026
 \item Fully automated, always-on operation with complete audit trail
 \item Four additional market verticals in shadow mode, each validated before going live:
@@ -260,7 +260,7 @@ This creates a geometric de-risking curve: the more the account loses, the less 
 Before any trade is placed, the system verifies:
 
 1. The model's probability estimate passes a sanity check against the market price
-2. The estimated edge exceeds the price-dependent minimum (0.25%–2.0%) after all fees (worst-case taker rates)
+2. The estimated edge exceeds the price-dependent minimum (0.25%–1.0%) after all fees (worst-case taker rates)
 3. The contract price falls within acceptable bounds (80–99¢, with per-asset floors)
 4. No extreme statistical indicators suggest unreliable model inputs
 5. The position size respects all hard limits and drawdown adjustments
@@ -286,8 +286,8 @@ Below 180 seconds before settlement, the system switches to **direct taker execu
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 258 |
-| **Win rate** | 88.8% (229W / 29L) |
+| **Settled trades** | 544 |
+| **Win rate** | 91.2\% (496W / 48L) |
 | **Assets** | BTC, ETH, SOL, XRP |
 | **Entry prices** | 80–99¢ (per-asset: BTC 89¢+, ETH 80¢+, SOL 80¢+, XRP 92¢+) |
 
@@ -423,4 +423,4 @@ For readers interested in the mathematical foundations, the full technical white
 
 ---
 
-*Last updated: 2026-03-06T23:11:09Z*
+*Last updated: 2026-03-23T00:13:24Z*

@@ -1,7 +1,75 @@
 ---
-title: "Kalshi Crypto Trading Bot — Technical Whitepaper"
+title: "Kalshi Crypto Trading Bot"
+subtitle: "Technical Whitepaper"
 author: "Gabriel Kagan"
 date: "March 2026"
+titlepage: true
+titlepage-color: "0F1B33"
+titlepage-text-color: "FFFFFF"
+titlepage-rule-color: "D4883E"
+titlepage-rule-height: 4
+toc: true
+toc-own-page: true
+numbersections: true
+colorlinks: true
+linkcolor: "navylink"
+urlcolor: "bluelink"
+toccolor: "navylink"
+header-left: "\\footnotesize Kalshi Trading Bot"
+header-right: "\\footnotesize Technical Whitepaper"
+footer-left: "\\footnotesize Gabriel Kagan"
+footer-center: ""
+footer-right: "\\footnotesize \\thepage"
+mainfont: "DejaVu Sans"
+monofont: "DejaVu Sans Mono"
+fontsize: "11pt"
+geometry: "margin=1in"
+header-includes:
+  - |
+    ```{=latex}
+    \usepackage{tcolorbox}
+    \tcbuselibrary{breakable}
+    \usepackage{xcolor}
+    \usepackage{colortbl}
+
+    \definecolor{navylink}{HTML}{2C4270}
+    \definecolor{bluelink}{HTML}{2C5AA0}
+    \definecolor{navyprimary}{HTML}{1B2A4A}
+    \definecolor{navydark}{HTML}{0F1B33}
+    \definecolor{navylight}{HTML}{2C4270}
+    \definecolor{accentwarm}{HTML}{D4883E}
+    \definecolor{codebg}{HTML}{F5F6FA}
+    \definecolor{codeborder}{HTML}{D1D5E0}
+    \definecolor{calloutbg}{HTML}{FFF8F0}
+    \definecolor{calloutborder}{HTML}{D4883E}
+
+    % Styled code blocks
+    \newenvironment{Shaded}{%
+      \begin{tcolorbox}[
+        breakable,
+        colback=codebg,
+        colframe=codeborder,
+        boxrule=0.5pt,
+        arc=3pt,
+        left=10pt, right=10pt, top=8pt, bottom=8pt,
+        fontupper=\small\ttfamily,
+      ]
+    }{%
+      \end{tcolorbox}
+    }
+
+    % Blockquotes as callout boxes
+    \newtcolorbox{quotecallout}{
+      breakable,
+      colback=calloutbg,
+      colframe=calloutborder,
+      leftrule=3pt, rightrule=0pt, toprule=0pt, bottomrule=0pt,
+      arc=0pt, outer arc=0pt,
+      left=12pt, right=12pt, top=10pt, bottom=10pt,
+      fontupper=\small,
+    }
+    \renewenvironment{quote}{\begin{quotecallout}}{\end{quotecallout}}
+    ```
 ---
 
 # Part 1: Executive Summary
@@ -264,8 +332,8 @@ The minimum edge is price-dependent, reflecting the higher risk of expensive con
 
 | Entry Price | Min Edge |
 |---|---|
-| 97¢+ | 2.0% |
-| 95–96¢ | 1.25% |
+| 97¢+ | 1.0% |
+| 95–96¢ | 0.75% |
 | 93–94¢ | 0.9% |
 | 91–92¢ | 0.35% |
 | 89–90¢ | 0.25% |
@@ -632,7 +700,7 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 
 - **Multi-asset capable**: Can trade multiple assets per 15-minute window
 - **Price range guardrails**: Only trade contracts priced 80–99¢ (global floor), with per-asset overrides: BTC 89¢, ETH 80¢, SOL 80¢, XRP 92¢. Below these floors, win rates are insufficient after fees; above 99¢ offers insufficient reward
-- **Price-dependent edge threshold**: Fee-adjusted edge must exceed a price-dependent minimum (0.25% at 80¢ up to 2.0% at 97¢+) after taker fees (worst-case)
+- **Price-dependent edge threshold**: Fee-adjusted edge must exceed a price-dependent minimum (0.25% at 80¢ up to 1.0% at 97¢+) after taker fees (worst-case)
 - **Scanner uses taker fees**: Every candidate is profitable even if forced to taker execution
 
 ## Model Sanity Controls
@@ -672,8 +740,8 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 258 |
-| **Win rate** | 88.8% (229W / 29L) |
+| **Settled trades** | 544 |
+| **Win rate** | 91.2\% (496W / 48L) |
 | **Assets** | BTC (89¢+), ETH (80¢+), SOL (80¢+, taker-first), XRP (92¢+, 12% risk cap) |
 
 ## Markets
@@ -797,4 +865,4 @@ Promoted features (driving live behavior):
 
 ---
 
-*Last updated: 2026-03-06T23:11:09Z*
+*Last updated: 2026-03-23T00:13:24Z*
