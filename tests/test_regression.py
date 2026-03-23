@@ -848,8 +848,8 @@ class TestCodebaseHygiene:
     def test_critical_constants_unchanged(self):
         """Verify critical trading constants haven't drifted unexpectedly."""
         import bot
-        # These are the "known good" values as of Mar 4, 2026
-        assert bot.MIN_ENTRY_PRICE == 80
+        # These are the "known good" values as of Mar 23, 2026
+        assert bot.MIN_ENTRY_PRICE == 75  # lowered from 80 for ETH 75-79c
         assert bot.MAX_ENTRY_PRICE == 99
         assert bot.MAX_SECONDS_BEFORE_CLOSE == 900
         assert bot.STC_SHADOW_THRESHOLD == 600

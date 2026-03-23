@@ -43,10 +43,11 @@ SERIES_TICKERS = {
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
 }
-MIN_ENTRY_PRICE = 80              # cents (global floor — SOL uses this; BTC/ETH/XRP overridden below)
+MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for ETH 75-79c; SOL uses this, BTC/XRP overridden below)
 MAX_ENTRY_PRICE = 99              # cents
 BTC_MIN_ENTRY_PRICE = 89          # cents (data: 86-88c below taker BE, 89c is 93.3% WR, +$87 PnL)
 ETH_MIN_ENTRY_PRICE = 75          # cents (data: 75-79c 87.1% WR, 70 obs, Wilson LB 77.3% > 76.5% BE)
+SOL_MIN_ENTRY_PRICE = 80          # cents (global floor was 80; now explicit since global lowered to 75 for ETH)
 ETH_SUB80_POSITION_CAP = 50      # Half-Kelly at 75c/87% WR = 322-645 contracts; cap to 50 (ceil), floor 20
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
@@ -6703,13 +6704,15 @@ class OpportunityScanner:
 
                 # ── Per-asset price floor (15M only) ─────────────────────────
                 # BTC 89c+: 86-88c below taker BE. ETH 75c+ (30-contract cap sub-80c).
-                # SOL 80c+ (global floor). XRP 92c+: PnL-negative at every floor below 90c.
-                _asset_floor = MIN_ENTRY_PRICE  # default (SOL)
+                # SOL 80c+. XRP 92c+: PnL-negative at every floor below 90c.
+                _asset_floor = MIN_ENTRY_PRICE  # default
                 if _pt in (None, "15m"):
                     if asset == "BTC":
                         _asset_floor = BTC_MIN_ENTRY_PRICE
                     elif asset == "ETH":
                         _asset_floor = ETH_MIN_ENTRY_PRICE
+                    elif asset == "SOL":
+                        _asset_floor = SOL_MIN_ENTRY_PRICE
                     elif asset == "XRP":
                         _asset_floor = XRP_MIN_ENTRY_PRICE
                 if _pt in (None, "15m") and best_ask < _asset_floor:
