@@ -10730,6 +10730,25 @@ class OrderExecutor:
             return None
 
         candidate["entry_path"] = "hourly_taker"
+
+        # Apply ask+1c offset for fill certainty (same pattern as SOL taker-first).
+        # At sub-60c, 1c worse entry is trivial vs the 20c+ per-trade edge.
+        # Verify edge is still positive after the offset before submitting.
+        _h_mcfg = get_market_config("hourly")
+        ioc_price = min(best_ask + IOC_RETRY_OFFSET, 99)
+        if ioc_price != best_ask:
+            cal_prob = candidate.get("calibrated_prob", 0)
+            _offset_fee = calculate_fee(HOURLY_FIXED_CONTRACTS, ioc_price, is_taker=True,
+                                        fee_mult_taker=_h_mcfg.fee_multiplier_taker,
+                                        fee_mult_maker=_h_mcfg.fee_multiplier_maker)
+            _offset_edge = cal_prob - (ioc_price / 100.0) - (_offset_fee / (HOURLY_FIXED_CONTRACTS * 100.0))
+            if _offset_edge >= HOURLY_MIN_EDGE_PCT / 100.0:
+                candidate["best_yes_ask"] = ioc_price
+                best_ask = ioc_price
+            else:
+                logging.info("HOURLY_TAKER: %s offset %d→%dc kills edge (%.4f < %.4f), using ask",
+                             ticker, best_ask, ioc_price, _offset_edge, HOURLY_MIN_EDGE_PCT / 100.0)
+
         logging.info("HOURLY_TAKER: %s %dx@%dc edge=%.2f%% prob=%.1f%% stc=%.0fs",
                      ticker, count, best_ask,
                      candidate.get("fee_adjusted_edge", 0) * 100,

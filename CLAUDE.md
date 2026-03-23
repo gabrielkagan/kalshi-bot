@@ -175,14 +175,14 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c), T2-Z2 (z≤-2, 93-96c) all enabled as incremental overlay
 - **Overnight discount LIVE:** OVERNIGHT_DISCOUNT_LIVE=True on weekday 04-11 UTC — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
 - **STC window:** scan 0-900s, live 0-600s, shadow 600-900s (STC_SHADOW_THRESHOLD=600)
-- **Hourly:** Observation mode (HOURLY_OBSERVATION_ONLY = True) — calibration disabled (HOURLY_CALIBRATION_ENABLED = False), T=1.45 softening, STC 120-3600s
+- **Hourly:** LIVE TRADING (HOURLY_LIVE_ENABLED env var kill switch) — sub-60c BTC+ETH only, taker-only IOC, fixed 10-contract sizing, 10% bankroll fraction, max 5% edge cap, STC 600-1800s. Calibration disabled (passthrough+T=1.45). Data: 66.3% WR vs 46.5% breakeven on 1,474 unique tickers (14-day observation). SOL/XRP excluded (XRP 42.9% WR = toxic). Shadow configs h/j/k killed (55% WR).
 - **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — was briefly live Mar 17, reverted due to Polygon 403 breaking vol engine. SPX-D CalEngine, 90c+ floor, eighth-Kelly, no market blend
 - **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 19 cities. NO-side execution pipeline wired but WEATHER_NO_SIDE_LIVE = False
 - **Sports:** Observation mode (SPORTS_OBSERVATION_ONLY = True) — hardcoded, never live without explicit promotion. Basketball best group (69.2% WR, n=39), SPRT still CONTINUE_COLLECTING
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
 - **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
-- **Tests:** 803 tests across 15+ test files
+- **Tests:** 831 tests across 15+ test files
 
 ## Key Config Values (bot.py)
 
@@ -222,17 +222,23 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | OVERNIGHT_DISCOUNT_LIVE | True | Promote overnight discount to live trading (kill switch) |
 | OVERNIGHT_DISCOUNT_MIN_PRICE | 89 | Cents — 89c+ floor for live overnight discount trades |
 | OVERNIGHT_DISCOUNT_MAX_STC | 600 | STC gate for live overnight discount trades |
-| HOURLY_OBSERVATION_ONLY | True | Reverted — calibration too overconfident for hourly |
+| HOURLY_LIVE_ENABLED | env var | Kill switch — must be "1" on VPS to trade (default "0" = observation) |
+| HOURLY_OBSERVATION_ONLY | not HOURLY_LIVE_ENABLED | Derived from kill switch |
+| HOURLY_MAX_ENTRY_PRICE | 59 | Sub-60c only — edge lives at low prices, 70-79c death zone |
+| HOURLY_BANKROLL_FRACTION | 0.10 | Hourly sizes off 10% of balance (like SPX's 0.15) |
+| HOURLY_FIXED_CONTRACTS | 10 | Fixed sizing — bypass Kelly entirely |
+| HOURLY_MAX_EDGE | 0.05 | Reject >5% edge (10%+ zone has 24.2% WR — edge inversion) |
+| HOURLY_TAKER_ONLY | True | IOC only — no maker orders, no per-asset lock contention with 15M |
 | HOURLY_MARKET_BLEND_W | 0.40 | Optimal Brier per 134K simulation |
-| HOURLY_MIN_ENTRY_PRICE | 50 | Lowered from 70 for data collection |
+| HOURLY_MIN_ENTRY_PRICE | 50 | Floor for data collection |
 | HOURLY_MAX_RISK_PER_TRADE | 0.15 | 60% of 15M's 0.25 |
 | HOURLY_TEMPERATURE_T | 1.45 | Softens overconfident probs: 95%→88.4% |
-| HOURLY_KELLY_FRACTION | 0.25 | Quarter-Kelly sizing for hourly |
-| HOURLY_CALIBRATION_ENABLED | False | Engine disabled — passthrough + T=1.45 (engine was hurting: Brier 0.12→0.20) |
-| HOURLY_MIN_STC_ENTRY | 120 | Min 2 min STC — expanded for observation data collection |
-| HOURLY_MAX_STC_ENTRY | 3600 | Max 60 min STC — expanded for observation data collection |
-| HOURLY_EXCLUDED_ASSETS | set() | Empty — collecting all asset data in observation mode |
-| HOURLY_MAX_POSITIONS_PER_WINDOW | 2 | ENB ~1.3 — limit correlated exposure |
+| HOURLY_KELLY_FRACTION | 0.25 | Quarter-Kelly (unused — fixed sizing active) |
+| HOURLY_CALIBRATION_ENABLED | False | Engine disabled — passthrough + T=1.45 |
+| HOURLY_MIN_STC_ENTRY | 600 | 10 min minimum (5-10m zone 56.5% WR — too thin) |
+| HOURLY_MAX_STC_ENTRY | 1800 | 30 min maximum (25-30m sweet spot at 69.4% WR) |
+| HOURLY_EXCLUDED_ASSETS | {SOL, XRP} | BTC+ETH only — XRP 42.9% WR (toxic), SOL marginal |
+| HOURLY_MAX_POSITIONS_PER_WINDOW | 2 | Limit correlated exposure |
 | HOURLY_MAX_WINDOW_RISK | 0.15 | Max aggregate risk per hourly window |
 | SPX_HOURLY_OBSERVATION_ONLY | True | Reverted — Polygon 403 broke vol engine (was briefly live Mar 17) |
 | SPX_HOURLY_MIN_ENTRY_PRICE | 90 | Cents (SPX-C: 90.9% WR at 90c+) |

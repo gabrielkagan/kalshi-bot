@@ -17,10 +17,8 @@ _HOURLY_VARIANT_DEFS = [
     ("hourly_config_e", {"included_assets": ["BTC", "ETH"], "min_stc": 1200, "max_stc": 1800}),
     ("hourly_config_f", {"max_edge": 0.012}),
     ("hourly_config_g", {"included_assets": ["BTC"], "min_stc": 900, "max_stc": 1800}),
-    ("hourly_config_h", {"temperature": 2.0, "blend_w": 0.0}),
+    # Killed configs h, j, k — 55% WR, deeply negative PnL
     ("hourly_config_i", {"included_assets": ["BTC", "ETH"], "min_stc": 600, "max_stc": 1800, "temperature": 2.0, "blend_w": 0.0}),
-    ("hourly_config_j", {"temperature": 2.5, "blend_w": 0.0}),
-    ("hourly_config_k", {"temperature": 2.0, "blend_w": 0.20}),
     ("hourly_config_l", {"excluded_assets": ["XRP"], "temperature": 2.0, "blend_w": 0.0}),
     ("hourly_config_m", {"included_assets": ["BTC", "ETH"], "min_stc": 600, "max_stc": 1800, "temperature": 2.5, "blend_w": 0.0}),
 ]
@@ -1561,6 +1559,58 @@ class DashboardSnapshotBuilder:
                 snap["hourly_observation"] = hourly_data
         except Exception:
             logging.debug("Snapshot: hourly_observation build failed", exc_info=True)
+
+        # ── Hourly Live (BTC+ETH, sub-60c, taker-only, fixed 10-contract) ──
+        try:
+            _hl = _conn.execute(
+                "SELECT COUNT(*) as n, "
+                "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as losses, "
+                "SUM(pnl_cents) as total_pnl, "
+                "SUM(fee_cents) as total_fees "
+                "FROM settled_trades WHERE product_type='hourly'"
+            ).fetchone()
+            _hl_n = (_hl["n"] or 0) if _hl else 0
+            _hl_wins = (_hl["wins"] or 0) if _hl else 0
+            _hl_pnl = (_hl["total_pnl"] or 0) if _hl else 0
+            _hl_fees = (_hl["total_fees"] or 0) if _hl else 0
+            # Per-asset breakdown
+            _hl_assets = {}
+            for _hla_row in _conn.execute(
+                "SELECT asset, COUNT(*) as n, "
+                "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
+                "SUM(pnl_cents) as pnl "
+                "FROM settled_trades WHERE product_type='hourly' GROUP BY asset"
+            ).fetchall():
+                _hla = _hla_row["asset"]
+                _hla_n = _hla_row["n"] or 0
+                _hla_w = _hla_row["wins"] or 0
+                _hl_assets[_hla] = {
+                    "trades": _hla_n, "wins": _hla_w,
+                    "wr": round(_hla_w / _hla_n, 4) if _hla_n else 0,
+                    "pnl_cents": _hla_row["pnl"] or 0,
+                }
+            snap["hourly_live"] = {
+                "enabled": os.environ.get("HOURLY_LIVE_ENABLED", "0") == "1",
+                "trades": _hl_n,
+                "wins": _hl_wins,
+                "losses": _hl_n - _hl_wins,
+                "wr": round(_hl_wins / _hl_n, 4) if _hl_n else 0,
+                "pnl_cents": _hl_pnl,
+                "fees_cents": _hl_fees,
+                "per_asset": _hl_assets,
+                "config": {
+                    "max_entry_price": 59,
+                    "excluded_assets": ["SOL", "XRP"],
+                    "fixed_contracts": 10,
+                    "bankroll_fraction": 0.10,
+                    "max_edge": 0.05,
+                    "stc_range": [600, 1800],
+                    "taker_only": True,
+                },
+            }
+        except Exception:
+            logging.debug("Snapshot: hourly_live build failed", exc_info=True)
 
         # ── Hourly Config A (no_XRP + edge ≤ 0.7%) ──────────────────────
         try:

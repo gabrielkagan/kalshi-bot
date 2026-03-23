@@ -215,6 +215,25 @@ class TestEdgeCapIsolation:
         assert not hasattr(bot, "CRYPTO_MAX_EDGE")
 
 
+class TestHourlyIOCOffset:
+    """Verify hourly IOC uses ask+1c offset for fill rate."""
+
+    def test_hourly_taker_applies_offset(self):
+        """_execute_hourly_taker must apply IOC_RETRY_OFFSET."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor._execute_hourly_taker)
+        assert "IOC_RETRY_OFFSET" in source
+
+    def test_sol_taker_offset_unchanged(self):
+        """SOL taker-first offset logic must still reference IOC_RETRY_OFFSET."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor.execute)
+        # SOL path at line ~11128
+        assert "IOC_RETRY_OFFSET" in source
+
+
 class TestObservationGate:
     """Verify the observation gate behavior with kill switch."""
 

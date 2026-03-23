@@ -981,6 +981,50 @@ def check_edge_trend(db: sqlite3.Connection, verbose: bool) -> list[tuple[str, s
     return alerts
 
 
+def check_hourly_live_health(db, verbose):
+    """Hourly live: WR, constraint violations, PnL monitoring."""
+    alerts = []
+    try:
+        # Check for constraint violations in last 24h
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        violations = db.execute(
+            "SELECT ticker, asset, entry_price_cents, count "
+            "FROM settled_trades WHERE product_type='hourly' AND settled_at > ? "
+            "AND (asset NOT IN ('BTC','ETH') OR entry_price_cents > 59 OR count != 10)",
+            (cutoff,),
+        ).fetchall()
+        if violations:
+            alerts.append((
+                "hourly_constraint_violation",
+                "hourly_violation_24h",
+                f"🚨 *AUDITOR ALERT: Hourly Constraint Violation*\n\n"
+                f"{len(violations)} trades violating constraints (wrong asset, price>59c, or size!=10).\n"
+                f"First: {dict(violations[0]) if violations else 'N/A'}",
+            ))
+        # Rolling 20-trade WR
+        recent = db.execute(
+            "SELECT pnl_cents FROM settled_trades "
+            "WHERE product_type='hourly' ORDER BY settled_at DESC LIMIT 20"
+        ).fetchall()
+        if len(recent) >= 10:
+            wins = sum(1 for r in recent if r["pnl_cents"] > 0)
+            wr = wins / len(recent)
+            if verbose:
+                print(f"  Hourly live: {wins}/{len(recent)} = {wr:.1%} WR (last {len(recent)} trades)")
+            if wr < 0.50:
+                alerts.append((
+                    "hourly_low_wr",
+                    f"hourly_wr_{len(recent)}",
+                    f"⚠️ *AUDITOR ALERT: Hourly WR Below 50%*\n\n"
+                    f"Rolling {len(recent)}-trade WR: {wr:.1%} ({wins}W/{len(recent)-wins}L).\n"
+                    f"Sub-60c breakeven is ~46.5%. Consider pausing if trend continues.",
+                ))
+    except Exception as e:
+        if verbose:
+            print(f"  Hourly live check failed: {e}")
+    return alerts
+
+
 # ---------------------------------------------------------------------------
 # Check registry
 # ---------------------------------------------------------------------------
@@ -1009,6 +1053,8 @@ CHECKS = [
     ("calibration", check_model_vs_reality),
     ("calibration", check_price_zone_gaps),
     ("calibration", check_edge_trend),
+    # Category 6: Hourly Live
+    ("hourly", check_hourly_live_health),
     # --- Add new checks here ---
     # ("category", check_function),
     # Future: Plug in Claude API analysis (Layer 2)
