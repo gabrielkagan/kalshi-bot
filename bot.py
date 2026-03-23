@@ -3890,6 +3890,57 @@ class VolatilityEngine:
         self._rk_adaptive_diff_count: Dict[str, int] = {a: 0 for a in ASSETS}
         self._rk_delta_5_accum: Dict[str, deque] = {a: deque(maxlen=720) for a in ASSETS}
         self._rk_delta_15_accum: Dict[str, deque] = {a: deque(maxlen=720) for a in ASSETS}
+        self._rk_last_save: float = 0.0
+        self._load_rk_state()
+
+    # ── RK state persistence (prevents cold-start vol underestimation) ──
+
+    RK_STATE_PATH = "rk_state.json"
+    RK_SAVE_INTERVAL = 60.0  # seconds between saves
+
+    def _load_rk_state(self):
+        """Load RK return buffers from disk. Restores blended vol instantly on restart."""
+        if not os.path.exists(self.RK_STATE_PATH):
+            logging.info("RK state: no file, starting cold")
+            return
+        try:
+            with open(self.RK_STATE_PATH, "r") as f:
+                state = json.load(f)
+            loaded = 0
+            for asset in ASSETS:
+                returns = state.get(asset, {}).get("returns", [])
+                if returns:
+                    self._returns[asset].clear()
+                    for r in returns:
+                        self._returns[asset].append(r)
+                    loaded += 1
+            age = time.time() - state.get("saved_at", 0)
+            logging.info("RK state loaded: %d assets restored, age=%.0fs (BTC=%d ETH=%d SOL=%d XRP=%d returns)",
+                         loaded, age,
+                         len(self._returns["BTC"]), len(self._returns["ETH"]),
+                         len(self._returns["SOL"]), len(self._returns["XRP"]))
+        except Exception as e:
+            logging.warning("RK state load failed: %s (starting cold)", e)
+
+    def save_rk_state(self):
+        """Persist RK return buffers to disk (atomic write)."""
+        state = {"saved_at": time.time()}
+        for asset in ASSETS:
+            state[asset] = {"returns": list(self._returns[asset])}
+        tmp = self.RK_STATE_PATH + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(state, f)
+            os.replace(tmp, self.RK_STATE_PATH)
+        except Exception as e:
+            logging.warning("RK state save failed: %s", e)
+
+    def _maybe_save_rk_state(self):
+        """Throttled periodic save."""
+        now = time.time()
+        if now - self._rk_last_save >= self.RK_SAVE_INTERVAL:
+            self.save_rk_state()
+            self._rk_last_save = now
 
     def update(self, asset: str, seconds_to_close: Optional[float] = None) -> Optional[Dict]:
         """Called every tick. Computes a new log return every 5s, returns vol estimate."""
@@ -3916,6 +3967,7 @@ class VolatilityEngine:
                 log_return = math.log(current_price / past_price)
                 self._returns[asset].append(log_return)
                 self._last_return_time[asset] = now
+                self._maybe_save_rk_state()
 
                 # Feed return to EGARCH
                 if self._egarch is not None:
@@ -14347,8 +14399,20 @@ class MainLoop:
 
     # ── Startup ───────────────────────────────────────────────────────────
 
+    # DEPLOY_SAFE_HOURS: 04-06 UTC (midnight-2AM ET).
+    # Restarts during 12-22 UTC cause ~5 min RK warmup with degraded edge.
+    # Three restarts on Mar 23 during 18-20 UTC cost an estimated 5-18 fills.
+
     def startup(self):
         logging.info("Bot starting up...")
+
+        # Warn if starting during peak trading hours
+        _start_hour = datetime.datetime.now(timezone.utc).hour
+        if 12 <= _start_hour <= 22:
+            logging.warning(
+                "PEAK_HOURS_START: Bot started at %02d:00 UTC — RK warmup will "
+                "degrade edge for ~5 minutes. Deploy during 04-06 UTC to avoid fill loss.",
+                _start_hour)
 
         # Load previously logged fill IDs
         self.logger.load_logged_fill_ids()
@@ -15023,6 +15087,11 @@ class MainLoop:
             self.mz_tracker.save_state()
             logging.info("MZ tracker state saved on shutdown")
         if hasattr(self, 'vol'):
+            self.vol.save_rk_state()
+            logging.info(
+                "RK state saved on shutdown: BTC=%d ETH=%d SOL=%d XRP=%d returns",
+                len(self.vol._returns["BTC"]), len(self.vol._returns["ETH"]),
+                len(self.vol._returns["SOL"]), len(self.vol._returns["XRP"]))
             self.vol._save_adaptive_state()
             logging.info(
                 "Adaptive jump state saved on shutdown: BTC=%d ETH=%d SOL=%d XRP=%d obs",
