@@ -6129,6 +6129,12 @@ class OpportunityScanner:
             t: exp for t, exp in self._dc_skip_cooldown.items()
             if exp > _now_cd and t in active_tickers
         }
+        # Clean expired API error counters (prevent memory growth)
+        if self._ml and hasattr(self._ml, "executor"):
+            self._ml.executor._ticker_api_errors = {
+                t: c for t, c in self._ml.executor._ticker_api_errors.items()
+                if t in active_tickers
+            }
         if self._kalshi_oft is not None:
             try:
                 self._kalshi_oft.cleanup_stale(active_tickers)
@@ -10716,6 +10722,9 @@ class OrderExecutor:
         self._session_post_only_rejections: int = 0
         # Post-only rejection → taker escalation tracking
         self._post_only_rejections: Dict[str, Tuple[int, float]] = {}  # ticker → (count, first_rejection_ts)
+        # Per-ticker API error cap: stop hammering after 3 consecutive api_errors
+        self._ticker_api_errors: Dict[str, int] = {}  # ticker → consecutive error count
+        TICKER_API_ERROR_CAP = 3
         self._session_post_only_degraded_attempts: int = 0
         self._session_post_only_taker_escalations: int = 0
         self._session_post_only_taker_fills: int = 0
@@ -10900,6 +10909,14 @@ class OrderExecutor:
                 self._session_suppressed_ticker_cooldown += 1
                 return None
             del self._recent_taker_tickers[ticker]
+
+        # Gate 3: Per-ticker API error cap — stop hammering after 3 consecutive failures.
+        # Prevents hot retry loops on expired/closed markets (21 api_errors in 30s, Mar 23).
+        _api_err_count = self._ticker_api_errors.get(ticker, 0)
+        if _api_err_count >= self.TICKER_API_ERROR_CAP:
+            logging.warning("ORDER_SUPPRESSED api_error_cap: %s errors=%d (capped at %d)",
+                            ticker, _api_err_count, self.TICKER_API_ERROR_CAP)
+            return None
 
         if OBSERVATION_MODE:
             logging.info(
@@ -12080,16 +12097,21 @@ class OrderExecutor:
         if resp is None:
             self._state.mark_order_status(client_oid, "api_error")
             self._record_post_only_rejection(ticker)
+            # Increment per-ticker api error counter (prevents hot retry loops)
+            self._ticker_api_errors[ticker] = self._ticker_api_errors.get(ticker, 0) + 1
             rej_count = self._get_post_only_rejection_count(ticker)
             tier = "degraded" if degraded else "normal"
             logging.warning(
                 "Maker order rejected (post_only): %s price=%d¢ tier=%s "
-                "rej_count=%d/%d fair=%d¢",
+                "rej_count=%d/%d api_errors=%d fair=%d¢",
                 ticker, price, tier, rej_count,
-                POST_ONLY_MAX_SAME_PRICE + 1, fair_value)
+                POST_ONLY_MAX_SAME_PRICE + 1,
+                self._ticker_api_errors[ticker], fair_value)
             self._session_post_only_rejections += 1
             return
 
+        # Successful submission — reset api error counter for this ticker
+        self._ticker_api_errors.pop(ticker, None)
         order_id = (resp.get("order") or {}).get("order_id", client_oid)
         self._state.confirm_order_submitted(client_oid, order_id)
         if self._ml:
@@ -12163,11 +12185,15 @@ class OrderExecutor:
 
         if resp is None:
             self._state.mark_order_status(client_oid, "api_error")
-            logging.error(f"Taker order submission failed: {ticker}")
+            self._ticker_api_errors[ticker] = self._ticker_api_errors.get(ticker, 0) + 1
+            logging.error("Taker order submission failed: %s (api_errors=%d)",
+                          ticker, self._ticker_api_errors[ticker])
             if candidate.get("entry_path") != "confirmation_addon":
                 self._session_ioc_unfilled += 1
             return None
 
+        # Successful submission — reset api error counter
+        self._ticker_api_errors.pop(ticker, None)
         order_id = (resp.get("order") or {}).get("order_id", client_oid)
         remaining_count = (resp.get("order") or {}).get("remaining_count", count)
         _order_fill_count = fp_str_to_int((resp.get("order") or {}).get("fill_count_fp")) or (
