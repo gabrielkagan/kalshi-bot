@@ -740,8 +740,8 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 549 |
-| **Win rate** | 91.3\% (501W / 48L) |
+| **Settled trades** | 552 |
+| **Win rate** | 91.3\% (504W / 48L) |
 | **Assets** | BTC (89¢+), ETH (80¢+), SOL (80¢+, taker-first), XRP (92¢+, 12% risk cap) |
 
 ## Markets
@@ -832,7 +832,7 @@ Append-only journal files provide a complete audit trail:
 
 ## Test Suite
 
-774 tests across 25+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, weekend discount, low-price shadow, and regression tests for past bugs.
+803 tests across 25+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, weekend discount, low-price shadow, NBBO fallback gates, DC routing priority, and regression tests for past bugs.
 
 ## Shadow Mode Features
 
@@ -865,4 +865,4 @@ Promoted features (driving live behavior):
 
 ---
 
-*Last updated: 2026-03-23T13:38:14Z*
+*Last updated: 2026-03-23T14:07:48Z*
