@@ -1,18 +1,18 @@
 {
-  "total_evaluated": 56326,
+  "total_evaluated": 56365,
   "filter_breakdown": {
-    "candidate": 977,
-    "dc_shadow_t2_90c": 1,
-    "dc_shadow_t2_z2": 40,
-    "dc_shadow_t2_z25": 22,
+    "candidate": 980,
+    "dc_shadow_t2_90c": 2,
+    "dc_shadow_t2_z2": 42,
+    "dc_shadow_t2_z25": 23,
     "decided_contract_t1": 141,
-    "decided_contract_t1b": 46,
+    "decided_contract_t1b": 47,
     "decided_contract_t2": 70,
-    "decided_contract_t2_z2": 21,
-    "decided_contract_t2_z25": 15,
+    "decided_contract_t2_z2": 23,
+    "decided_contract_t2_z25": 16,
     "dip_addon_shadow": 29,
     "eth_low_floor_shadow": 9,
-    "floor_raise_shadow": 736,
+    "floor_raise_shadow": 738,
     "hourly_asset_excluded": 6,
     "hourly_config_a": 949,
     "hourly_config_b": 344,
@@ -31,18 +31,18 @@
     "hourly_observation_v2": 3886,
     "hourly_timing_restricted": 1292,
     "hourly_window_limit": 570,
-    "insufficient_edge": 16117,
-    "low_price_shadow": 141,
-    "no_side_price_shadow_no_xrp": 1224,
-    "no_side_price_shadow_xrp": 312,
+    "insufficient_edge": 16126,
+    "low_price_shadow": 145,
+    "no_side_price_shadow_no_xrp": 1227,
+    "no_side_price_shadow_xrp": 313,
     "no_side_shadow": 56,
     "observation_trade": 83,
     "overnight_discount_shadow": 113,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 10655,
+    "price_out_of_range": 10659,
     "price_shadow": 52,
-    "price_shadow_no_xrp": 1296,
-    "price_shadow_xrp": 542,
+    "price_shadow_no_xrp": 1298,
+    "price_shadow_xrp": 543,
     "relaxed_edge_shadow": 269,
     "single_asset_selection": 5,
     "sports_deficit_too_large": 14,
@@ -72,12 +72,12 @@
     "weekend_discount": 20,
     "weekend_discount_shadow": 85,
     "xrp_shadow": 126,
-    "zero_sizing": 402
+    "zero_sizing": 404
   },
-  "total_settled": 552,
-  "total_wins": 504,
-  "observation_pnl": 28367,
-  "total_trades": 977,
+  "total_settled": 554,
+  "total_wins": 506,
+  "observation_pnl": 29685,
+  "total_trades": 980,
   "win_rate_by_price": {
     "80-84": {
       "n": 23,
@@ -88,12 +88,12 @@
       "wins": 176
     },
     "90-94": {
-      "n": 203,
-      "wins": 181
+      "n": 204,
+      "wins": 182
     },
     "95-99": {
-      "n": 125,
-      "wins": 125
+      "n": 126,
+      "wins": 126
     }
   },
   "assets_tracked": [
@@ -138,5 +138,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-03-23",
-  "generated_at": "2026-03-23T14:07:48Z"
+  "generated_at": "2026-03-23T14:26:52Z"
 }
