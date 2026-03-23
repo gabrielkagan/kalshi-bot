@@ -586,10 +586,10 @@ MAX_CONCURRENT_TAKER_PER_ASSET = 3  # safety cap: max simultaneous taker positio
 # Data: 456/468 missed candidates had empty orderbooks; simulated PnL +$196/wk.
 # Per-asset: (min_price_cents, max_price_cents, max_stc_seconds_or_None)
 NBBO_FALLBACK_GATES = {
-    "BTC": (86, 99, 600.0),     # 97.9% WR, +$26/wk
-    "ETH": (75, 99, 600.0),     # 75c matches ETH_MIN_ENTRY_PRICE; STC<120s was overfit (n=8)
-    "SOL": (86, 99, 600.0),     # 93.3% WR, +$119/wk; 80-85c is 50-73% WR trap
-    "XRP": (92, 99, 600.0),     # STC<180s was overfit; 180-300s has 97% WR on n=33
+    "BTC": (86, 99, 300.0),     # 97.9% WR; 180-300s validated (97% WR, n=33)
+    "ETH": (75, 99, 300.0),     # 75c matches ETH_MIN_ENTRY_PRICE; collecting NBBO data at 120-300s
+    "SOL": (86, 99, 300.0),     # 93.3% WR; 80-85c is 50-73% WR trap
+    "XRP": (92, 99, 300.0),     # 180-300s validated; will evaluate 300-600s after 1 week NBBO data
 }
 
 # ─── Adaptive Escalation ─────────────────────────────────────────────────

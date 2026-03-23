@@ -2123,13 +2123,13 @@ class TestNBBOFallbackGates:
         min_p, max_p, max_stc = NBBO_FALLBACK_GATES["BTC"]
         assert min_p == 86
         assert max_p == 99
-        assert max_stc == 600.0
+        assert max_stc == 300.0
 
     def test_eth_gate_values(self):
         from bot import NBBO_FALLBACK_GATES
         min_p, _, max_stc = NBBO_FALLBACK_GATES["ETH"]
         assert min_p == 75, "ETH NBBO floor must match ETH_MIN_ENTRY_PRICE"
-        assert max_stc == 600.0, "ETH STC<120s was overfit on n=8"
+        assert max_stc == 300.0, "NBBO STC gate should be 300s"
 
     def test_sol_gate_excludes_low_prices(self):
         """SOL 80-85c has 50-73% WR — must be excluded."""
@@ -2140,14 +2140,14 @@ class TestNBBOFallbackGates:
     def test_xrp_gate_values(self):
         from bot import NBBO_FALLBACK_GATES
         _, _, max_stc = NBBO_FALLBACK_GATES["XRP"]
-        assert max_stc == 600.0, "XRP STC<180s was overfit"
+        assert max_stc == 300.0, "NBBO STC gate should be 300s"
 
-    def test_all_stc_gates_use_live_stc_limit(self):
-        """All NBBO STC gates should use 600s (STC_SHADOW_THRESHOLD = live trading window)."""
-        from bot import NBBO_FALLBACK_GATES, STC_SHADOW_THRESHOLD
-        for asset, (_, _, max_stc) in NBBO_FALLBACK_GATES.items():
-            assert max_stc == STC_SHADOW_THRESHOLD, (
-                f"{asset} NBBO STC gate {max_stc} != live STC limit {STC_SHADOW_THRESHOLD}")
+    def test_all_stc_gates_uniform(self):
+        """All NBBO STC gates should use the same value (currently 300s)."""
+        from bot import NBBO_FALLBACK_GATES
+        stc_values = set(max_stc for _, _, max_stc in NBBO_FALLBACK_GATES.values())
+        assert len(stc_values) == 1, f"NBBO STC gates not uniform: {stc_values}"
+        assert stc_values.pop() == 300.0, "NBBO STC gate should be 300s"
 
     def test_nbbo_fallback_method_exists(self):
         """OrderExecutor must have _nbbo_fallback_price method."""
@@ -2181,11 +2181,11 @@ class TestNBBOFallbackGates:
         assert 83 < min_p, "Test assumes 83c is below SOL gate"
 
     def test_nbbo_fallback_blocks_high_stc(self):
-        """NBBO fallback must reject signals with STC >= 600s (global limit)."""
+        """NBBO fallback must reject signals with STC >= 300s."""
         from bot import NBBO_FALLBACK_GATES
         _, _, max_stc = NBBO_FALLBACK_GATES["ETH"]
         assert max_stc is not None
-        assert max_stc == 600.0, "All NBBO STC gates should use global 600s limit"
+        assert max_stc == 300.0
 
     def test_real_book_path_unaffected(self):
         """When _get_addon_best_ask succeeds, NBBO fallback is not called."""
