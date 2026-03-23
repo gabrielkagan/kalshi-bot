@@ -169,7 +169,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 ## Current State (Mar 20, 2026)
 
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
-- **15M live assets:** BTC (89c+), ETH (80c+), SOL (80c+, taker-first), XRP (92c+, 12% risk cap)
+- **15M live assets:** BTC (89c+), ETH (75c+, 30-contract cap sub-80c), SOL (80c+, taker-first), XRP (92c+, 12% risk cap)
 - **XRP_15M_SHADOW = False** — XRP promoted to live at 92c+ (data: 41W/2L, 95.3% WR)
 - **SOL_TAKER_FIRST = True** — SOL bypasses maker entirely, direct IOC at all STC
 - **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c), T2-Z2 (z≤-2, 93-96c) all enabled as incremental overlay
@@ -191,7 +191,8 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | OBSERVATION_MODE | False | LIVE trading |
 | MIN_ENTRY_PRICE | 80 | Cents (global floor — SOL uses this; BTC/ETH/XRP overridden per-asset) |
 | BTC_MIN_ENTRY_PRICE | 89 | Cents (data: 86-88c below taker BE, 89c is 93.3% WR) |
-| ETH_MIN_ENTRY_PRICE | 80 | Cents (data: 80-85c 89.7% WR, 58 signals) |
+| ETH_MIN_ENTRY_PRICE | 75 | Cents (data: 75-79c 87.1% WR, 70 obs, Wilson LB 77.3% > BE) |
+| ETH_SUB80_POSITION_CAP | 30 | Max contracts for ETH entries at 75-79c |
 | XRP_MIN_ENTRY_PRICE | 92 | Cents (data: PnL negative at every floor <90c, PF=1.68 at ≥92c) |
 | MAX_ENTRY_PRICE | 99 | Cents |
 | MIN_EDGE_PCT | 0.25 | Flat fallback for execution paths (was 0.7) |

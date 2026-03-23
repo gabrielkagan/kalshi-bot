@@ -46,7 +46,8 @@ SERIES_TICKERS = {
 MIN_ENTRY_PRICE = 80              # cents (global floor — SOL uses this; BTC/ETH/XRP overridden below)
 MAX_ENTRY_PRICE = 99              # cents
 BTC_MIN_ENTRY_PRICE = 89          # cents (data: 86-88c below taker BE, 89c is 93.3% WR, +$87 PnL)
-ETH_MIN_ENTRY_PRICE = 80          # cents (data: price shadow 80-85c 89.7% WR, 58 signals, +$1.30 sim PnL)
+ETH_MIN_ENTRY_PRICE = 75          # cents (data: 75-79c 87.1% WR, 70 obs, Wilson LB 77.3% > 76.5% BE)
+ETH_SUB80_POSITION_CAP = 30      # Max contracts for ETH entries at 75-79c (unproven price range)
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 BTC_MAX_RISK_PER_TRADE = 0.12    # BTC oversizing causes outsized losses (data: -$282 from 95c+ losses at full Kelly)
@@ -6690,9 +6691,8 @@ class OpportunityScanner:
                     continue
 
                 # ── Per-asset price floor (15M only) ─────────────────────────
-                # BTC 89c+: 86-88c below taker BE. ETH 80c+. SOL 80c+ (global floor).
-                # XRP 92c+: PnL-negative at every floor below 90c.
-                # Shadow: ETH 76-79c via eth_low_floor_shadow for further floor drop eval.
+                # BTC 89c+: 86-88c below taker BE. ETH 75c+ (30-contract cap sub-80c).
+                # SOL 80c+ (global floor). XRP 92c+: PnL-negative at every floor below 90c.
                 _asset_floor = MIN_ENTRY_PRICE  # default (SOL)
                 if _pt in (None, "15m"):
                     if asset == "BTC":
@@ -6710,7 +6710,7 @@ class OpportunityScanner:
                     _frs_fee_edge = _frs_edge - _frs_fee / 100.0
                     # Tag aggressive-floor shadow variants for forward validation
                     _frs_stage = "floor_raise_shadow"
-                    if asset == "ETH" and best_ask >= 76:
+                    if asset == "ETH" and best_ask >= 70:
                         _frs_stage = "eth_low_floor_shadow"
                     _dedup_key = (ticker, _frs_stage)
                     if _dedup_key not in self._eval_opp_seen:
@@ -8012,6 +8012,14 @@ class OpportunityScanner:
                         logging.info("BTC risk cap: %d -> %d contracts (%.0f%% max risk)",
                                      sizing["contracts"], _btc_max, BTC_MAX_RISK_PER_TRADE * 100)
                         sizing["contracts"] = _btc_max
+
+                # ETH sub-80c position cap: 30 contracts max for unproven price range
+                # Data: 75-79c 87.1% WR but large Kelly sizes at low prices amplify losses
+                if (asset == "ETH" and _pt in (None, "15m")
+                        and best_ask < 80 and sizing["contracts"] > ETH_SUB80_POSITION_CAP):
+                    logging.info("ETH sub-80c cap: %d -> %d contracts (ask=%dc)",
+                                 sizing["contracts"], ETH_SUB80_POSITION_CAP, best_ask)
+                    sizing["contracts"] = ETH_SUB80_POSITION_CAP
 
                 # Low-STC sizing cap: halve position when STC < 100s
                 # Data: 0-100s STC is -$84/14d (12W/2L, catastrophic losses wipe gains)
