@@ -542,6 +542,8 @@ DECIDED_CONTRACT_T2_Z25_RISK = 0.15         # 15% fixed sizing (deeper z → hig
 DECIDED_CONTRACT_T2_Z2_RISK = 0.125         # 12.5% fixed sizing (shallower z → more conservative)
 DECIDED_CONTRACT_RISK = 0.125               # Fixed 12.5% bankroll per signal
 DECIDED_CONTRACT_MAX_WINDOW_RISK = 0.25     # 25% bankroll cap per settlement window
+DC_IOC_RETRY_DELAY = 8                      # seconds between DC IOC retry attempts (was 15 via general cooldown)
+DC_IOC_MAX_RETRIES = 5                      # max retry attempts per DC ticker (initial + 5 = 6 total)
 # ── Decided Contract Shadow Expansion ──
 # Six shadow variants to evaluate expansion candidates. None place orders.
 DC_SHADOW_STAGES = frozenset({
@@ -8105,7 +8107,6 @@ class OpportunityScanner:
                                         ask_depth=ask_depth, best_ask_source=best_ask_source,
                                         position_size=HOURLY_DC_CONTRACTS,
                                         product_type="hourly",
-                                        egarch_sigma=_hdc_sigma,
                                         **_oft_db, **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_dc)", exc_info=True)
@@ -8180,7 +8181,6 @@ class OpportunityScanner:
                                         breakeven_wr=best_ask / 100.0,
                                         ask_depth=ask_depth, best_ask_source=best_ask_source,
                                         product_type="spx_hourly",
-                                        egarch_sigma=_spx_dc_sigma,
                                         **_oft_db, **_shadow_diag)
                                     logging.info(
                                         "SPX_DC_SHADOW: %s %dc z=%.1f sig=%s spot=%.1f thresh=%.1f dist=$%.0f (%.2f%%) stc=%.0f day=%d",
@@ -10901,6 +10901,11 @@ class OrderExecutor:
         self._kalshi_oft = None  # populated from scanner if available
         # SOL Path C shadow: pending observations {ticker → dict}
         self._sol_pathc_pending: Dict[str, Dict] = {}
+        # DC IOC retry queue: non-blocking retries between scan cycles
+        # Each entry: {candidate, original_count, total_filled, remaining, attempt, next_retry_ts, strategy}
+        self._dc_retry_queue: List[Dict] = []
+        self._session_dc_retries: int = 0
+        self._session_dc_retry_fills: int = 0
 
     @property
     def _active_order(self) -> Optional[Dict]:
@@ -11263,82 +11268,15 @@ class OrderExecutor:
         # which apply MIN_EDGE_PCT (0.25%). DC uses -0.01 threshold.
         # Bug fix: SOL DC candidates were hitting SOL taker-first path
         # first, getting edge-gated at 0.25% when DC allows -1%.
+        #
+        # Non-blocking retry: Kalshi IOCs partial fill (fill whatever's on
+        # the book, cancel the rest). On unfilled/partial, queue a retry
+        # entry — processed at the TOP of next _tick() cycle (~5s later).
+        # Data: 24% of DC tickers recover within 8-32s.
         _dc_strategy = candidate.get("strategy")
         if _dc_strategy in ("decided_t1", "decided_t1b", "decided_t2",
                             "decided_t2_z2", "decided_t2_z25", "hourly_dc"):
-            count = candidate["position_size"]
-            price = candidate["best_yes_ask"]
-            cal_prob = candidate["calibrated_prob"]
-
-            if count <= 0:
-                logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=%s price=%d",
-                                candidate["ticker"], asset, _dc_strategy, price)
-                self._session_suppressed_zero_size += 1
-                return None
-
-            taker_fee = calculate_taker_fee(count, price)
-            net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
-
-            # Decided contracts use assumed probs (99%/96%), not model edge.
-            # Only skip if net_edge is deeply negative (fee exceeds profit).
-            if net_edge < -0.01:
-                logging.warning(
-                    "ORDER_SUPPRESSED edge_taker_fee: %s asset=%s strategy=%s net_edge=%.4f < -0.01 "
-                    "price=%d¢ cal_prob=%.4f taker_fee=%d¢",
-                    candidate["ticker"], asset, _dc_strategy, net_edge, price, cal_prob, taker_fee)
-                self._session_suppressed_edge_recalc += 1
-                return None
-
-            fresh_ask = self._get_addon_best_ask(candidate["ticker"])
-            if fresh_ask is None:
-                fresh_ask = self._nbbo_fallback_price(candidate)
-                if fresh_ask is None:
-                    logging.warning("ORDER_SUPPRESSED no_asks: %s asset=%s strategy=%s price=%d stc=%.0f",
-                                    candidate["ticker"], asset, _dc_strategy, price, seconds_to_close or 0)
-                    self._session_suppressed_no_asks += 1
-                    # Set 60s cooldown to prevent rapid-fire re-scan of empty orderbook
-                    if self._ml and hasattr(self._ml, "scanner"):
-                        self._ml.scanner._dc_skip_cooldown[candidate["ticker"]] = time.time() + 60
-                    return None
-
-            if fresh_ask != price:
-                logging.info("dc_taker_price_update: %s scanner=%d¢ fresh=%d¢",
-                             candidate["ticker"], price, fresh_ask)
-                price = fresh_ask
-                candidate["best_yes_ask"] = fresh_ask
-                taker_fee = calculate_taker_fee(count, price)
-                net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
-                if net_edge < -0.01:
-                    logging.info("dc_taker_SKIPPED: %s fresh_ask=%d¢ net_edge=%.4f < -0.01",
-                                 candidate["ticker"], price, net_edge)
-                    return None
-
-            self._session_direct_taker_attempts += 1
-            logging.info(
-                "dc_taker_ENTRY: %s %s %dx @ %d¢ "
-                "seconds_to_close=%.0f net_edge=%.4f cal_prob=%.4f taker_fee=%d¢",
-                _dc_strategy, candidate["ticker"], count, price,
-                seconds_to_close or 0, net_edge, cal_prob, taker_fee)
-
-            candidate["entry_path"] = "dc_taker"
-            candidate["escalation_type"] = "direct_taker"
-            self._recent_taker_tickers[candidate["ticker"]] = time.time()
-            _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            result = self._submit_taker(candidate)
-            if result is not None:
-                self._session_direct_taker_fills += 1
-                logging.info("dc_taker_FILLED: %s %s", _dc_strategy, candidate["ticker"])
-                _taker_oid = result.get("order_id") if isinstance(result, dict) else None
-                self._state.update_evaluated_opportunity_order(
-                    candidate["ticker"], order_id=_taker_oid,
-                    order_submitted_at=_order_submit_ts, order_outcome="filled")
-            else:
-                self._session_direct_taker_unfilled += 1
-                logging.warning("dc_taker_UNFILLED: %s %s", _dc_strategy, candidate["ticker"])
-                self._state.update_evaluated_opportunity_order(
-                    candidate["ticker"], order_submitted_at=_order_submit_ts,
-                    order_outcome="unfilled")
-            return result
+            return self._execute_dc_taker(candidate, asset, seconds_to_close)
 
         # ── SOL taker-first override ──────────────────────────────
         # SOL: bypass maker entirely, go direct IOC at all STC values.
@@ -12182,6 +12120,245 @@ class OrderExecutor:
                 ticker, order_outcome="unfilled")
         return result
 
+    # ── DC Taker with Non-Blocking Retry Queue ─────────────────────────
+
+    def _execute_dc_taker(self, candidate: Dict, asset: str, seconds_to_close) -> Optional[Dict]:
+        """Submit DC IOC. On unfilled/partial, queue non-blocking retry."""
+        _dc_strategy = candidate.get("strategy")
+        ticker = candidate["ticker"]
+        count = candidate["position_size"]
+        price = candidate["best_yes_ask"]
+        cal_prob = candidate["calibrated_prob"]
+
+        if count <= 0:
+            logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=%s price=%d",
+                            ticker, asset, _dc_strategy, price)
+            self._session_suppressed_zero_size += 1
+            return None
+
+        taker_fee = calculate_taker_fee(count, price)
+        net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+
+        if net_edge < -0.01:
+            logging.warning(
+                "ORDER_SUPPRESSED edge_taker_fee: %s asset=%s strategy=%s net_edge=%.4f < -0.01 "
+                "price=%d¢ cal_prob=%.4f taker_fee=%d¢",
+                ticker, asset, _dc_strategy, net_edge, price, cal_prob, taker_fee)
+            self._session_suppressed_edge_recalc += 1
+            return None
+
+        # Fresh ask check
+        fresh_ask = self._get_addon_best_ask(ticker)
+        if fresh_ask is None:
+            fresh_ask = self._nbbo_fallback_price(candidate)
+            if fresh_ask is None:
+                logging.warning("ORDER_SUPPRESSED no_asks: %s asset=%s strategy=%s price=%d stc=%.0f",
+                                ticker, asset, _dc_strategy, price, seconds_to_close or 0)
+                self._session_suppressed_no_asks += 1
+                if self._ml and hasattr(self._ml, "scanner"):
+                    self._ml.scanner._dc_skip_cooldown[ticker] = time.time() + 60
+                # Queue retry even on no_asks — book may appear
+                self._dc_retry_queue.append({
+                    "candidate": candidate.copy(),
+                    "original_count": count,
+                    "total_filled": 0,
+                    "remaining": count,
+                    "attempt": 1,
+                    "next_retry_ts": time.time() + DC_IOC_RETRY_DELAY,
+                    "strategy": _dc_strategy,
+                })
+                logging.info("dc_retry_QUEUED: %s %s no_asks attempt=1/%d next_retry=%ds",
+                             _dc_strategy, ticker, 1 + DC_IOC_MAX_RETRIES, DC_IOC_RETRY_DELAY)
+                return None
+
+        if fresh_ask != price:
+            logging.info("dc_taker_price_update: %s scanner=%d¢ fresh=%d¢",
+                         ticker, price, fresh_ask)
+            price = fresh_ask
+            candidate["best_yes_ask"] = fresh_ask
+            taker_fee = calculate_taker_fee(count, price)
+            net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+            if net_edge < -0.01:
+                logging.info("dc_taker_SKIPPED: %s fresh_ask=%d¢ net_edge=%.4f < -0.01",
+                             ticker, price, net_edge)
+                return None
+
+        self._session_direct_taker_attempts += 1
+        candidate["entry_path"] = "dc_taker"
+        candidate["escalation_type"] = "direct_taker"
+        self._recent_taker_tickers[ticker] = time.time()
+
+        logging.info(
+            "dc_taker_ENTRY: %s %s %dx @ %d¢ "
+            "seconds_to_close=%.0f net_edge=%.4f cal_prob=%.4f taker_fee=%d¢ attempt=1/%d",
+            _dc_strategy, ticker, count, price,
+            seconds_to_close or 0, net_edge, cal_prob, taker_fee, 1 + DC_IOC_MAX_RETRIES)
+
+        _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        result = self._submit_taker(candidate)
+
+        if result is not None:
+            fill_count = result.get("filled_count", 0)
+            remaining = count - fill_count
+
+            if remaining <= 0:
+                # Fully filled on first attempt
+                self._session_direct_taker_fills += 1
+                logging.info("dc_taker_FILLED: %s %s %d/%d", _dc_strategy, ticker, fill_count, count)
+                _taker_oid = result.get("order_id") if isinstance(result, dict) else None
+                self._state.update_evaluated_opportunity_order(
+                    ticker, order_id=_taker_oid,
+                    order_submitted_at=_order_submit_ts, order_outcome="filled")
+                return result
+
+            # Partial fill — queue retry for remaining
+            logging.info("dc_taker_PARTIAL: %s %s filled=%d remaining=%d — queuing retry",
+                         _dc_strategy, ticker, fill_count, remaining)
+            self._dc_retry_queue.append({
+                "candidate": candidate.copy(),
+                "original_count": count,
+                "total_filled": fill_count,
+                "remaining": remaining,
+                "attempt": 1,
+                "next_retry_ts": time.time() + DC_IOC_RETRY_DELAY,
+                "strategy": _dc_strategy,
+                "last_order_submit_ts": _order_submit_ts,
+                "last_order_id": result.get("order_id"),
+            })
+            # Return result so the partial fill is tracked
+            self._state.update_evaluated_opportunity_order(
+                ticker, order_id=result.get("order_id"),
+                order_submitted_at=_order_submit_ts, order_outcome="partial_retry")
+            return result
+        else:
+            # Zero fill — queue retry
+            self._session_direct_taker_unfilled += 1
+            logging.warning("dc_taker_UNFILLED: %s %s — queuing retry", _dc_strategy, ticker)
+            self._dc_retry_queue.append({
+                "candidate": candidate.copy(),
+                "original_count": count,
+                "total_filled": 0,
+                "remaining": count,
+                "attempt": 1,
+                "next_retry_ts": time.time() + DC_IOC_RETRY_DELAY,
+                "strategy": _dc_strategy,
+                "last_order_submit_ts": _order_submit_ts,
+            })
+            self._state.update_evaluated_opportunity_order(
+                ticker, order_submitted_at=_order_submit_ts,
+                order_outcome="unfilled_retry")
+            return None
+
+    def process_dc_retries(self):
+        """Process queued DC IOC retries. Called at the top of each _tick().
+
+        Non-blocking: each retry is a single IOC submission (<1s).
+        Retries are spaced by DC_IOC_RETRY_DELAY (8s) via next_retry_ts.
+        """
+        if not self._dc_retry_queue:
+            return
+
+        now = time.time()
+        still_pending = []
+
+        for entry in self._dc_retry_queue:
+            if now < entry["next_retry_ts"]:
+                still_pending.append(entry)
+                continue
+
+            candidate = entry["candidate"]
+            ticker = candidate["ticker"]
+            _dc_strategy = entry["strategy"]
+            attempt = entry["attempt"] + 1
+            remaining = entry["remaining"]
+
+            if attempt > 1 + DC_IOC_MAX_RETRIES:
+                # Max retries exhausted
+                if entry["total_filled"] > 0:
+                    logging.info("dc_retry_DONE: %s %s partial_filled=%d/%d after %d attempts",
+                                 _dc_strategy, ticker, entry["total_filled"],
+                                 entry["original_count"], attempt - 1)
+                    self._state.update_evaluated_opportunity_order(
+                        ticker, order_outcome="partial_filled")
+                else:
+                    logging.warning("dc_retry_DONE: %s %s unfilled after %d attempts",
+                                    _dc_strategy, ticker, attempt - 1)
+                    self._state.update_evaluated_opportunity_order(
+                        ticker, order_outcome="unfilled")
+                continue
+
+            # Fresh ask check
+            fresh_ask = self._get_addon_best_ask(ticker)
+            if fresh_ask is None:
+                fresh_ask = self._nbbo_fallback_price(candidate)
+            if fresh_ask is None:
+                logging.info("dc_retry_no_asks: %s %s attempt=%d/%d",
+                             _dc_strategy, ticker, attempt, 1 + DC_IOC_MAX_RETRIES)
+                entry["attempt"] = attempt
+                entry["next_retry_ts"] = now + DC_IOC_RETRY_DELAY
+                still_pending.append(entry)
+                continue
+
+            price = fresh_ask
+            candidate["best_yes_ask"] = price
+            candidate["position_size"] = remaining
+            cal_prob = candidate["calibrated_prob"]
+
+            taker_fee = calculate_taker_fee(remaining, price)
+            net_edge = cal_prob - (price / 100.0) - (taker_fee / (remaining * 100.0))
+            if net_edge < -0.01:
+                logging.info("dc_retry_SKIPPED: %s %s fresh_ask=%d¢ net_edge=%.4f attempt=%d",
+                             _dc_strategy, ticker, price, net_edge, attempt)
+                continue  # Drop from queue
+
+            self._session_dc_retries += 1
+            self._session_direct_taker_attempts += 1
+            self._recent_taker_tickers[ticker] = now
+
+            logging.info(
+                "dc_retry_ENTRY: %s %s %dx @ %d¢ attempt=%d/%d total_filled=%d/%d",
+                _dc_strategy, ticker, remaining, price, attempt, 1 + DC_IOC_MAX_RETRIES,
+                entry["total_filled"], entry["original_count"])
+
+            _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            result = self._submit_taker(candidate)
+
+            if result is not None:
+                fill_count = result.get("filled_count", 0)
+                entry["total_filled"] += fill_count
+                entry["remaining"] -= fill_count
+                self._session_dc_retry_fills += 1
+
+                logging.info("dc_retry_FILL: %s %s filled=%d total=%d/%d remaining=%d attempt=%d",
+                             _dc_strategy, ticker, fill_count, entry["total_filled"],
+                             entry["original_count"], entry["remaining"], attempt)
+
+                if entry["remaining"] <= 0:
+                    # Fully filled across retries
+                    self._session_direct_taker_fills += 1
+                    _taker_oid = result.get("order_id") if isinstance(result, dict) else None
+                    self._state.update_evaluated_opportunity_order(
+                        ticker, order_id=_taker_oid,
+                        order_submitted_at=_order_submit_ts, order_outcome="filled")
+                    continue  # Done — don't re-queue
+
+                # Still more remaining — queue another retry
+                entry["attempt"] = attempt
+                entry["next_retry_ts"] = now + DC_IOC_RETRY_DELAY
+                entry["last_order_submit_ts"] = _order_submit_ts
+                entry["last_order_id"] = result.get("order_id")
+                still_pending.append(entry)
+            else:
+                # Zero fill on retry — queue again
+                logging.info("dc_retry_UNFILLED: %s %s attempt=%d/%d",
+                             _dc_strategy, ticker, attempt, 1 + DC_IOC_MAX_RETRIES)
+                entry["attempt"] = attempt
+                entry["next_retry_ts"] = now + DC_IOC_RETRY_DELAY
+                entry["last_order_submit_ts"] = _order_submit_ts
+                still_pending.append(entry)
+
+        self._dc_retry_queue = still_pending
+
     # ── Maker ─────────────────────────────────────────────────────────────
 
     # Hourly series prefixes — maker orders must NEVER be placed on these tickers.
@@ -12415,6 +12592,7 @@ class OrderExecutor:
                 logging.warning(
                     f"IOC partial fill: {ticker} wanted {count} got "
                     f"{total_filled} — {unfilled} contracts unfilled")
+            order_info["filled_count"] = total_filled
             return order_info
 
         # ── Ghost fill detection (Layer A): remaining_count from order response ──
@@ -12457,6 +12635,7 @@ class OrderExecutor:
             self._state.mark_order_status(order_id, "filled")
             if candidate.get("entry_path") != "confirmation_addon":
                 self._session_ioc_fills += 1
+            order_info["filled_count"] = count  # Ghost fill = assumed full fill
             return order_info
 
         # remaining_count=0 but fill_count=0: IOC was auto-canceled, not a ghost fill
@@ -12507,6 +12686,7 @@ class OrderExecutor:
                             self._state.mark_order_status(order_id, "filled")
                             if candidate.get("entry_path") != "confirmation_addon":
                                 self._session_ioc_fills += 1
+                            order_info["filled_count"] = _pos_count  # Ghost fill from positions API
                             return order_info
         except Exception as e:
             logging.warning(f"Ghost fill positions API check failed for {ticker}: {e}")
@@ -15151,6 +15331,12 @@ class MainLoop:
             self.executor._check_dip_addon_opportunities()
         except Exception:
             logging.debug("dip addon check failed", exc_info=True)
+
+        # Process DC IOC retry queue (non-blocking — each retry is <1s)
+        try:
+            self.executor.process_dc_retries()
+        except Exception:
+            logging.warning("DC retry processing failed", exc_info=True)
 
         # Run opportunity scanner (always — execute() rejects if asset already active)
         candidates = self.scanner.scan(self._active_windows)

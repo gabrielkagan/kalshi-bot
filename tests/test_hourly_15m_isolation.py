@@ -303,6 +303,68 @@ class TestHourlyDC:
         assert bot.HOURLY_DC_ENABLED is True or bot.HOURLY_DC_ENABLED is False
 
 
+class TestDCRetryQueue:
+    """Verify DC IOC non-blocking retry queue constants and wiring."""
+
+    def test_dc_retry_constants(self):
+        import bot
+        assert bot.DC_IOC_RETRY_DELAY == 8, "DC retry delay must be 8s"
+        assert bot.DC_IOC_MAX_RETRIES == 5, "DC max retries must be 5"
+
+    def test_dc_execute_delegates_to_method(self):
+        """execute() DC path must delegate to _execute_dc_taker."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor.execute)
+        assert "_execute_dc_taker" in source
+
+    def test_dc_execute_method_exists(self):
+        """_execute_dc_taker must exist on OrderExecutor."""
+        import bot
+        assert hasattr(bot.OrderExecutor, "_execute_dc_taker")
+
+    def test_dc_process_retries_method_exists(self):
+        """process_dc_retries must exist on OrderExecutor."""
+        import bot
+        assert hasattr(bot.OrderExecutor, "process_dc_retries")
+
+    def test_dc_retry_queue_no_sleep(self):
+        """Neither _execute_dc_taker nor process_dc_retries must call time.sleep."""
+        import bot
+        import inspect
+        src_execute = inspect.getsource(bot.OrderExecutor._execute_dc_taker)
+        src_process = inspect.getsource(bot.OrderExecutor.process_dc_retries)
+        assert "time.sleep" not in src_execute, "_execute_dc_taker must not block with sleep"
+        assert "time.sleep" not in src_process, "process_dc_retries must not block with sleep"
+
+    def test_dc_retry_queue_in_init(self):
+        """OrderExecutor must initialize _dc_retry_queue."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor.__init__)
+        assert "_dc_retry_queue" in source
+
+    def test_submit_taker_returns_filled_count(self):
+        """_submit_taker must set filled_count on returned order_info."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor._submit_taker)
+        assert 'order_info["filled_count"]' in source
+
+    def test_dc_retry_does_not_affect_general_cooldown(self):
+        """DC_IOC_RETRY_DELAY must be separate from IOC_TICKER_COOLDOWN."""
+        import bot
+        assert bot.DC_IOC_RETRY_DELAY < bot.IOC_TICKER_COOLDOWN, (
+            "DC retry delay must be shorter than general cooldown")
+
+    def test_process_dc_retries_wired_in_tick(self):
+        """process_dc_retries must be called in _tick()."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.MainLoop._tick)
+        assert "process_dc_retries" in source
+
+
 class TestObservationGate:
     """Verify the observation gate behavior with kill switch."""
 
