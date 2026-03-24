@@ -95,6 +95,16 @@ HOURLY_DC_MIN_SIGMA = 0.000250         # Blocks cold-RK false signals
 HOURLY_DC_ASSETS = {"BTC"}             # BTC only (SOL had legitimate loss)
 HOURLY_DC_MAX_PER_WINDOW = 1           # Single best strike per window
 
+# ─── SPX Decided Contracts Shadow (1-week validation before promotion) ────
+# 112/112 Mon-Wed at z≤-3 93-96c. All 6 losses on Thu-Fri. Sigma=0 on 97%
+# of signals (SPX EGARCH broken) but z-score still works via spot-vs-strike.
+# Shadow-only until: (a) 1 week of forward data confirms WR, (b) EGARCH fixed.
+SPX_DC_SHADOW_ENABLED = True
+SPX_DC_Z_THRESHOLD = -3.0
+SPX_DC_MIN_PRICE = 93
+SPX_DC_MAX_PRICE = 96
+SPX_DC_VALID_DAYS = {0, 1, 2}  # Mon=0, Tue=1, Wed=2 (Python weekday())
+
 # ─── Hourly Three-Layer Optimization (Researcher Recommendations) ─────────
 HOURLY_TEMPERATURE_T = 1.45           # Temperature scaling: softens overconfident probs (T>1 = less confident)
 HOURLY_TEMPERATURE_ENABLED = True     # Toggle for temperature scaling
@@ -8135,6 +8145,52 @@ class OpportunityScanner:
                                         "raw_prob": raw_prob,
                                         "fee_adjusted_edge": round(HOURLY_DC_ASSUMED_PROB - best_ask / 100.0 - est_fee_1c / 100.0, 6),
                                     })
+
+                    # ── SPX DECIDED CONTRACTS SHADOW ──────────────────────────
+                    # Shadow-only: log signals, never trade. Mon-Wed, z≤-3, 93-96c.
+                    # 1-week validation before promotion. No sigma gate (SPX EGARCH
+                    # produces sigma=0 on 97% of signals — z-score still valid via
+                    # raw spot-vs-strike distance).
+                    if (_pt == "spx_hourly"
+                            and SPX_DC_SHADOW_ENABLED
+                            and z_score is not None
+                            and z_score <= SPX_DC_Z_THRESHOLD
+                            and best_ask >= SPX_DC_MIN_PRICE
+                            and best_ask <= SPX_DC_MAX_PRICE):
+                        # Day-of-week filter: Mon-Wed only (all 6 losses were Thu-Fri)
+                        import datetime as _dt
+                        _spx_dc_day = _dt.datetime.now(_dt.timezone.utc).weekday()
+                        if _spx_dc_day in SPX_DC_VALID_DAYS:
+                            _spx_dc_dedup = (ticker, "spx_dc_shadow")
+                            if _spx_dc_dedup not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_spx_dc_dedup)
+                                _spx_dc_sigma = vol_est.get("egarch_sigma") if vol_est else None
+                                _spx_dc_spot = spot
+                                _spx_dc_thresh = threshold
+                                _spx_dc_dist = abs(_spx_dc_spot - _spx_dc_thresh) if _spx_dc_spot and _spx_dc_thresh else None
+                                _spx_dc_dist_pct = (_spx_dc_dist / _spx_dc_spot * 100) if _spx_dc_dist and _spx_dc_spot else None
+                                try:
+                                    self._state.insert_evaluated_opportunity(
+                                        ticker, window["event_ticker"], asset, "spx_dc_shadow",
+                                        spot_price=spot, threshold=threshold, volatility=blended_rv,
+                                        market_price=best_ask, seconds_to_close=seconds_remaining,
+                                        calibrated_prob=0.97, edge=0.97 - best_ask / 100.0,
+                                        z_score=z_score, vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                                        fee_adjusted_edge=0.97 - best_ask / 100.0 - est_fee_1c / 100.0,
+                                        breakeven_wr=best_ask / 100.0,
+                                        ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                        product_type="spx_hourly",
+                                        egarch_sigma=_spx_dc_sigma,
+                                        **_oft_db, **_shadow_diag)
+                                    logging.info(
+                                        "SPX_DC_SHADOW: %s %dc z=%.1f sig=%s spot=%.1f thresh=%.1f dist=$%.0f (%.2f%%) stc=%.0f day=%d",
+                                        ticker, best_ask, z_score,
+                                        f"{_spx_dc_sigma:.6f}" if _spx_dc_sigma else "0",
+                                        _spx_dc_spot or 0, _spx_dc_thresh or 0,
+                                        _spx_dc_dist or 0, _spx_dc_dist_pct or 0,
+                                        seconds_remaining, _spx_dc_day)
+                                except Exception:
+                                    logging.warning("insert_evaluated_opportunity failed (spx_dc_shadow)", exc_info=True)
 
                     # ── Relaxed Edge Shadow (Fix #1) ──────────────────────────
                     # Edge thresholds at 88-93c may be too conservative.
