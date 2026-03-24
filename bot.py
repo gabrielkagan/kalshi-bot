@@ -46,7 +46,7 @@ SERIES_TICKERS = {
 MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for ETH 75-79c; SOL uses this, BTC/XRP overridden below)
 MAX_ENTRY_PRICE = 99              # cents
 BTC_MIN_ENTRY_PRICE = 89          # cents (data: 86-88c below taker BE, 89c is 93.3% WR, +$87 PnL)
-ETH_MIN_ENTRY_PRICE = 75          # cents (data: 75-79c 87.1% WR, 70 obs, Wilson LB 77.3% > 76.5% BE)
+ETH_MIN_ENTRY_PRICE = 80          # cents (raised from 75 — 75-84c ran 62% WR on live, below 77% BE)
 SOL_MIN_ENTRY_PRICE = 80          # cents (global floor was 80; now explicit since global lowered to 75 for ETH)
 ETH_SUB80_POSITION_CAP = 50      # Half-Kelly at 75c/87% WR = 322-645 contracts; cap to 50 (ceil), floor 20
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
@@ -591,7 +591,7 @@ MAX_CONCURRENT_TAKER_PER_ASSET = 3  # safety cap: max simultaneous taker positio
 # Per-asset: (min_price_cents, max_price_cents, max_stc_seconds_or_None)
 NBBO_FALLBACK_GATES = {
     "BTC": (86, 99, 300.0),     # 97.9% WR; 180-300s validated (97% WR, n=33)
-    "ETH": (75, 99, 300.0),     # 75c matches ETH_MIN_ENTRY_PRICE; collecting NBBO data at 120-300s
+    "ETH": (80, 99, 300.0),     # 80c matches ETH_MIN_ENTRY_PRICE; raised from 75c
     "SOL": (86, 99, 300.0),     # 93.3% WR; 80-85c is 50-73% WR trap
     "XRP": (92, 99, 300.0),     # 180-300s validated; will evaluate 300-600s after 1 week NBBO data
 }
