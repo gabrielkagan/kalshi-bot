@@ -740,8 +740,8 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 591 |
-| **Win rate** | 90.2\% (533W / 58L) |
+| **Settled trades** | 594 |
+| **Win rate** | 90.2\% (536W / 58L) |
 | **Assets** | BTC (89¢+), ETH (80¢+), SOL (80¢+, taker-first), XRP (92¢+, 12% risk cap) |
 
 ## Markets
@@ -865,4 +865,4 @@ Promoted features (driving live behavior):
 
 ---
 
-*Last updated: 2026-03-24T15:09:34Z*
+*Last updated: 2026-03-24T18:26:43Z*
