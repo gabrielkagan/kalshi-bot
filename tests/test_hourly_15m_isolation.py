@@ -364,6 +364,39 @@ class TestDCRetryQueue:
         source = inspect.getsource(bot.MainLoop._tick)
         assert "process_dc_retries" in source
 
+    def test_dc_retry_checks_price_floor(self):
+        """process_dc_retries must check DECIDED_CONTRACT_MIN_PRICE before submitting."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor.process_dc_retries)
+        assert "DECIDED_CONTRACT_MIN_PRICE" in source
+        assert "ABORT_PRICE_COLLAPSED" in source
+
+    def test_dc_retry_checks_price_drift(self):
+        """process_dc_retries must abort on 3c+ price drift from original."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor.process_dc_retries)
+        assert "original_price" in source
+        assert "ABORT_PRICE_DRIFT" in source
+
+    def test_dc_initial_checks_price_floor(self):
+        """_execute_dc_taker must check DECIDED_CONTRACT_MIN_PRICE on fresh ask."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor._execute_dc_taker)
+        assert "DECIDED_CONTRACT_MIN_PRICE" in source
+        assert "ABORT_PRICE_BELOW_FLOOR" in source
+
+    def test_dc_retry_queue_stores_original_price(self):
+        """All retry queue entries must include original_price."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor._execute_dc_taker)
+        # Count occurrences of original_price in queue appends
+        assert source.count('"original_price"') >= 3, (
+            "All 3 queue-append sites must include original_price")
+
 
 class TestObservationGate:
     """Verify the observation gate behavior with kill switch."""

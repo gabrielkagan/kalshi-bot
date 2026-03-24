@@ -12147,7 +12147,8 @@ class OrderExecutor:
             self._session_suppressed_edge_recalc += 1
             return None
 
-        # Fresh ask check
+        # Fresh ask check — verify price still above DC floor
+        _dc_scan_price = price  # preserve original scan price for drift check
         fresh_ask = self._get_addon_best_ask(ticker)
         if fresh_ask is None:
             fresh_ask = self._nbbo_fallback_price(candidate)
@@ -12166,10 +12167,17 @@ class OrderExecutor:
                     "attempt": 1,
                     "next_retry_ts": time.time() + DC_IOC_RETRY_DELAY,
                     "strategy": _dc_strategy,
+                    "original_price": _dc_scan_price,
                 })
                 logging.info("dc_retry_QUEUED: %s %s no_asks attempt=1/%d next_retry=%ds",
                              _dc_strategy, ticker, 1 + DC_IOC_MAX_RETRIES, DC_IOC_RETRY_DELAY)
                 return None
+
+        # Price floor gate: refuse if fresh ask dropped below DC qualifying floor
+        if fresh_ask < DECIDED_CONTRACT_MIN_PRICE:
+            logging.warning("dc_taker_ABORT_PRICE_BELOW_FLOOR: %s fresh_ask=%d¢ < floor=%d¢ (scan=%d¢)",
+                            ticker, fresh_ask, DECIDED_CONTRACT_MIN_PRICE, _dc_scan_price)
+            return None
 
         if fresh_ask != price:
             logging.info("dc_taker_price_update: %s scanner=%d¢ fresh=%d¢",
@@ -12222,6 +12230,7 @@ class OrderExecutor:
                 "attempt": 1,
                 "next_retry_ts": time.time() + DC_IOC_RETRY_DELAY,
                 "strategy": _dc_strategy,
+                "original_price": _dc_scan_price,
                 "last_order_submit_ts": _order_submit_ts,
                 "last_order_id": result.get("order_id"),
             })
@@ -12242,6 +12251,7 @@ class OrderExecutor:
                 "attempt": 1,
                 "next_retry_ts": time.time() + DC_IOC_RETRY_DELAY,
                 "strategy": _dc_strategy,
+                "original_price": _dc_scan_price,
                 "last_order_submit_ts": _order_submit_ts,
             })
             self._state.update_evaluated_opportunity_order(
@@ -12298,6 +12308,36 @@ class OrderExecutor:
                 entry["next_retry_ts"] = now + DC_IOC_RETRY_DELAY
                 still_pending.append(entry)
                 continue
+
+            # Price floor gate: abort if ask dropped below DC qualifying floor
+            if fresh_ask < DECIDED_CONTRACT_MIN_PRICE:
+                _orig_p = entry.get("original_price", 0)
+                logging.warning(
+                    "dc_retry_ABORT_PRICE_COLLAPSED: %s %s fresh_ask=%d¢ < floor=%d¢ "
+                    "(original=%d¢) — dropping from retry queue",
+                    _dc_strategy, ticker, fresh_ask, DECIDED_CONTRACT_MIN_PRICE, _orig_p)
+                if entry["total_filled"] > 0:
+                    self._state.update_evaluated_opportunity_order(
+                        ticker, order_outcome="partial_filled")
+                else:
+                    self._state.update_evaluated_opportunity_order(
+                        ticker, order_outcome="unfilled_price_collapsed")
+                continue  # Drop from queue
+
+            # Price drift gate: abort if ask dropped 3c+ from original signal price
+            _orig_price = entry.get("original_price", fresh_ask)
+            if fresh_ask < (_orig_price - 3):
+                logging.warning(
+                    "dc_retry_ABORT_PRICE_DRIFT: %s %s fresh_ask=%d¢ original=%d¢ "
+                    "(drift=%d¢) — dropping from retry queue",
+                    _dc_strategy, ticker, fresh_ask, _orig_price, _orig_price - fresh_ask)
+                if entry["total_filled"] > 0:
+                    self._state.update_evaluated_opportunity_order(
+                        ticker, order_outcome="partial_filled")
+                else:
+                    self._state.update_evaluated_opportunity_order(
+                        ticker, order_outcome="unfilled_price_drift")
+                continue  # Drop from queue
 
             price = fresh_ask
             candidate["best_yes_ask"] = price
