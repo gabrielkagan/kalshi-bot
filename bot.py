@@ -10724,7 +10724,7 @@ class OrderExecutor:
         self._post_only_rejections: Dict[str, Tuple[int, float]] = {}  # ticker → (count, first_rejection_ts)
         # Per-ticker API error cap: stop hammering after 3 consecutive api_errors
         self._ticker_api_errors: Dict[str, int] = {}  # ticker → consecutive error count
-        TICKER_API_ERROR_CAP = 3
+        self.TICKER_API_ERROR_CAP = 3
         self._session_post_only_degraded_attempts: int = 0
         self._session_post_only_taker_escalations: int = 0
         self._session_post_only_taker_fills: int = 0
