@@ -81,6 +81,20 @@ HOURLY_FIXED_CONTRACTS = 25            # Fixed sizing — bypass Kelly entirely 
 HOURLY_MAX_EDGE = 0.05                 # Reject >5% edge (10%+ zone has 24.2% WR — edge inversion)
 HOURLY_TAKER_ONLY = True               # IOC only — no maker orders, no per-asset lock contention with 15M
 
+# ─── Hourly Decided Contracts (separate from sub-60c, separate kill switch) ──
+# Same DC thesis as 15M but on hourly BTC tickers. Conservative: z≤-4, 93-96c,
+# BTC only, sigma gate blocks cold-RK false signals, 1 trade per window.
+# Data: 97.9% WR on 94 shadow signals at z≤-3 (7 days). We use z≤-4 for safety.
+HOURLY_DC_ENABLED = os.environ.get("HOURLY_DC_ENABLED", "1") == "1"
+HOURLY_DC_Z_THRESHOLD = -4.0           # Stricter than 15M T2 (z≤-3)
+HOURLY_DC_MIN_PRICE = 93               # Same as 15M DC floor
+HOURLY_DC_MAX_PRICE = 96               # Conservative ceiling (97c+ has 6.5% loss rate)
+HOURLY_DC_ASSUMED_PROB = 0.97          # Same as 15M T2
+HOURLY_DC_CONTRACTS = 25               # Fixed sizing
+HOURLY_DC_MIN_SIGMA = 0.000250         # Blocks cold-RK false signals
+HOURLY_DC_ASSETS = {"BTC"}             # BTC only (SOL had legitimate loss)
+HOURLY_DC_MAX_PER_WINDOW = 1           # Single best strike per window
+
 # ─── Hourly Three-Layer Optimization (Researcher Recommendations) ─────────
 HOURLY_TEMPERATURE_T = 1.45           # Temperature scaling: softens overconfident probs (T>1 = less confident)
 HOURLY_TEMPERATURE_ENABLED = True     # Toggle for temperature scaling
@@ -8051,6 +8065,77 @@ class OpportunityScanner:
                             _dc_shadow_insert("dc_shadow_t2_z2",
                                               f"shadow: z={z_score:.1f} price={best_ask}c (T2 z≤-2 expansion)")
 
+                    # ── HOURLY DECIDED CONTRACTS ──────────────────────────────
+                    # Same DC thesis on hourly BTC tickers. Separate from sub-60c.
+                    # Conservative: z≤-4, 93-96c, BTC only, sigma gate, 1 per window.
+                    if (_pt == "hourly"
+                            and HOURLY_DC_ENABLED
+                            and asset in HOURLY_DC_ASSETS
+                            and z_score is not None
+                            and z_score <= HOURLY_DC_Z_THRESHOLD
+                            and best_ask >= HOURLY_DC_MIN_PRICE
+                            and best_ask <= HOURLY_DC_MAX_PRICE):
+                        # Sigma gate: block cold-RK false signals
+                        _hdc_sigma = vol_est.get("egarch_sigma") if vol_est else None
+                        if _hdc_sigma is not None and _hdc_sigma >= HOURLY_DC_MIN_SIGMA:
+                            _hdc_dedup = (ticker, "hourly_dc")
+                            if _hdc_dedup not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_hdc_dedup)
+                                _hdc_ev = round((HOURLY_DC_ASSUMED_PROB * (100 - best_ask))
+                                                - ((1 - HOURLY_DC_ASSUMED_PROB) * best_ask) - est_fee_1c, 2)
+                                try:
+                                    self._state.insert_evaluated_opportunity(
+                                        ticker, window["event_ticker"], asset, "hourly_dc",
+                                        spot_price=spot, threshold=threshold, volatility=blended_rv,
+                                        market_price=best_ask, seconds_to_close=seconds_remaining,
+                                        calibrated_prob=HOURLY_DC_ASSUMED_PROB, edge=HOURLY_DC_ASSUMED_PROB - best_ask / 100.0,
+                                        z_score=z_score, vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                                        fee_adjusted_edge=HOURLY_DC_ASSUMED_PROB - best_ask / 100.0 - est_fee_1c / 100.0,
+                                        breakeven_wr=best_ask / 100.0, expected_value=_hdc_ev,
+                                        ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                        position_size=HOURLY_DC_CONTRACTS,
+                                        product_type="hourly",
+                                        egarch_sigma=_hdc_sigma,
+                                        **_oft_db, **_shadow_diag)
+                                except Exception:
+                                    logging.warning("insert_evaluated_opportunity failed (hourly_dc)", exc_info=True)
+
+                                # Per-window cap: max 1 DC per hourly window
+                                _hdc_wkey = "hdc_" + window["event_ticker"]
+                                _hdc_existing = self._dc_window_risk.get(_hdc_wkey, 0)
+                                if _hdc_existing > 0:
+                                    logging.info("HOURLY_DC_WINDOW_CAP: %s skipped (already have 1 DC in this window)", ticker)
+                                elif not OBSERVATION_MODE:
+                                    self._dc_window_risk[_hdc_wkey] = HOURLY_DC_CONTRACTS * best_ask
+                                    logging.info("HOURLY_DC_CANDIDATE: %s %dx@%dc z=%.1f sig=%.6f stc=%.0fs",
+                                                 ticker, HOURLY_DC_CONTRACTS, best_ask, z_score, _hdc_sigma, seconds_remaining)
+                                    candidates.append({
+                                        "ticker": ticker,
+                                        "event_ticker": window["event_ticker"],
+                                        "asset": asset,
+                                        "product_type": "hourly",
+                                        "spot": spot, "threshold": threshold,
+                                        "seconds_to_close": round(seconds_remaining, 1),
+                                        "blended_rv": blended_rv,
+                                        "calibrated_prob": HOURLY_DC_ASSUMED_PROB,
+                                        "z_score": z_score,
+                                        "best_yes_ask": best_ask,
+                                        "best_ask_source": best_ask_source,
+                                        "edge": round(HOURLY_DC_ASSUMED_PROB - best_ask / 100.0, 6),
+                                        "position_size": HOURLY_DC_CONTRACTS,
+                                        "kelly_f": 0.0,
+                                        "drawdown_scaler": 1.0,
+                                        "vol_regime": vol_est["regime"],
+                                        "balance_at_scan": self._get_balance_cached() or 0,
+                                        "strategy": "hourly_dc",
+                                        "strategy_scores": {"certainty": 1.0, "reason": "hourly_decided_contract"},
+                                        "ob_snapshot": {"best_ask": best_ask, "ask_depth": ask_depth},
+                                        "calibrated_prob_raw": raw_prob,
+                                        "ofa_adjustment": 0, "ofa_confidence": "none",
+                                        "raw_prob": raw_prob,
+                                        "fee_adjusted_edge": round(HOURLY_DC_ASSUMED_PROB - best_ask / 100.0 - est_fee_1c / 100.0, 6),
+                                    })
+
                     # ── Relaxed Edge Shadow (Fix #1) ──────────────────────────
                     # Edge thresholds at 88-93c may be too conservative.
                     # Data: insufficient_edge rejections at 88c=97.2% WR, 89c=93.3%,
@@ -10882,7 +10967,10 @@ class OrderExecutor:
         # ── HOURLY TAKER-ONLY PATH ──
         # Hourly uses IOC exclusively. No per-asset lock, no maker orders, no escalation.
         # This guarantees zero contention with 15M execution. Gated on product_type == "hourly".
-        if candidate.get("product_type") == "hourly" and HOURLY_TAKER_ONLY:
+        # Exception: hourly DC uses the DC taker path (strategy="hourly_dc"), not the hourly taker.
+        if (candidate.get("product_type") == "hourly"
+                and HOURLY_TAKER_ONLY
+                and candidate.get("strategy") != "hourly_dc"):
             return self._execute_hourly_taker(candidate)
 
         # Gate 1: Per-asset lock for maker-first assets only.
@@ -11121,7 +11209,7 @@ class OrderExecutor:
         # first, getting edge-gated at 0.25% when DC allows -1%.
         _dc_strategy = candidate.get("strategy")
         if _dc_strategy in ("decided_t1", "decided_t1b", "decided_t2",
-                            "decided_t2_z2", "decided_t2_z25"):
+                            "decided_t2_z2", "decided_t2_z25", "hourly_dc"):
             count = candidate["position_size"]
             price = candidate["best_yes_ask"]
             cal_prob = candidate["calibrated_prob"]

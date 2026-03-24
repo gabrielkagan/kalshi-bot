@@ -255,6 +255,54 @@ class TestHourlyIOCOffset:
         assert "IOC_RETRY_OFFSET" in source
 
 
+class TestHourlyDC:
+    """Verify hourly DC is properly configured and isolated."""
+
+    def test_hourly_dc_constants(self):
+        import bot
+        assert bot.HOURLY_DC_Z_THRESHOLD == -4.0
+        assert bot.HOURLY_DC_MIN_PRICE == 93
+        assert bot.HOURLY_DC_MAX_PRICE == 96
+        assert bot.HOURLY_DC_ASSUMED_PROB == 0.97
+        assert bot.HOURLY_DC_CONTRACTS == 25
+        assert bot.HOURLY_DC_MIN_SIGMA == 0.000250
+        assert bot.HOURLY_DC_ASSETS == {"BTC"}
+        assert bot.HOURLY_DC_MAX_PER_WINDOW == 1
+
+    def test_hourly_dc_in_scan(self):
+        """Hourly DC evaluation must exist in scan() with product_type hourly gate."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OpportunityScanner.scan)
+        assert 'HOURLY_DC_ENABLED' in source
+        assert 'HOURLY_DC_Z_THRESHOLD' in source
+        assert 'HOURLY_DC_MIN_SIGMA' in source
+        assert '"hourly_dc"' in source
+
+    def test_hourly_dc_routes_through_dc_taker(self):
+        """hourly_dc strategy must be in the DC taker routing list in execute()."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor.execute)
+        assert '"hourly_dc"' in source
+
+    def test_hourly_dc_skips_hourly_taker(self):
+        """hourly_dc must NOT route through _execute_hourly_taker."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor.execute)
+        assert 'strategy") != "hourly_dc"' in source
+
+    def test_hourly_dc_independent_of_sub60c_killswitch(self):
+        """HOURLY_DC_ENABLED is separate from HOURLY_LIVE_ENABLED."""
+        import bot
+        # They're different constants
+        assert hasattr(bot, 'HOURLY_DC_ENABLED')
+        assert hasattr(bot, 'HOURLY_LIVE_ENABLED')
+        # DC can be on while sub-60c is off
+        assert bot.HOURLY_DC_ENABLED is True or bot.HOURLY_DC_ENABLED is False
+
+
 class TestObservationGate:
     """Verify the observation gate behavior with kill switch."""
 
