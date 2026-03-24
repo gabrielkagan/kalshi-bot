@@ -862,14 +862,15 @@ class DashboardSnapshotBuilder:
 
             # All-products cumulative P&L (for toggle)
             all_pnl_series = conn.execute(
-                "SELECT settled_at, (pnl_cents - fee_cents) AS net, product_type "
+                "SELECT settled_at, (pnl_cents - fee_cents) AS net, product_type, strategy "
                 "FROM settled_trades ORDER BY settled_at"
             ).fetchall()
             all_cumulative = []
             all_running = 0
             for r in all_pnl_series:
                 all_running += r["net"]
-                all_cumulative.append({"ts": r["settled_at"], "cum_pnl": all_running, "pt": r["product_type"]})
+                all_cumulative.append({"ts": r["settled_at"], "cum_pnl": all_running,
+                                       "pt": r["product_type"], "strat": r["strategy"]})
             if len(all_cumulative) > _MAX_CHART_POINTS:
                 _step = len(all_cumulative) / _MAX_CHART_POINTS
                 _thinned = [all_cumulative[int(i * _step)] for i in range(_MAX_CHART_POINTS - 1)]
@@ -1560,27 +1561,37 @@ class DashboardSnapshotBuilder:
         except Exception:
             logging.debug("Snapshot: hourly_observation build failed", exc_info=True)
 
-        # ── Hourly Live (BTC+ETH, sub-60c, taker-only, fixed 10-contract) ──
+        # ── Hourly Live (BTC+ETH, sub-60c, taker-only) ──
+        # Split: new sub-60c strategy (since Mar 23) vs legacy Feb 28 disaster
+        _HOURLY_NEW_SINCE = "2026-03-23T18:00:00"
         try:
+            # New strategy only
             _hl = _conn.execute(
                 "SELECT COUNT(*) as n, "
                 "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
-                "SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as losses, "
                 "SUM(pnl_cents) as total_pnl, "
                 "SUM(fee_cents) as total_fees "
-                "FROM settled_trades WHERE product_type='hourly'"
+                "FROM settled_trades WHERE product_type='hourly' AND settled_at >= ?",
+                (_HOURLY_NEW_SINCE,)
             ).fetchone()
             _hl_n = (_hl["n"] or 0) if _hl else 0
             _hl_wins = (_hl["wins"] or 0) if _hl else 0
             _hl_pnl = (_hl["total_pnl"] or 0) if _hl else 0
             _hl_fees = (_hl["total_fees"] or 0) if _hl else 0
-            # Per-asset breakdown
+            # Legacy
+            _hl_leg = _conn.execute(
+                "SELECT COUNT(*) as n, SUM(pnl_cents) as pnl "
+                "FROM settled_trades WHERE product_type='hourly' AND settled_at < ?",
+                (_HOURLY_NEW_SINCE,)
+            ).fetchone()
+            # Per-asset (new strategy only)
             _hl_assets = {}
             for _hla_row in _conn.execute(
                 "SELECT asset, COUNT(*) as n, "
                 "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
                 "SUM(pnl_cents) as pnl "
-                "FROM settled_trades WHERE product_type='hourly' GROUP BY asset"
+                "FROM settled_trades WHERE product_type='hourly' AND settled_at >= ? GROUP BY asset",
+                (_HOURLY_NEW_SINCE,)
             ).fetchall():
                 _hla = _hla_row["asset"]
                 _hla_n = _hla_row["n"] or 0
@@ -1598,11 +1609,13 @@ class DashboardSnapshotBuilder:
                 "wr": round(_hl_wins / _hl_n, 4) if _hl_n else 0,
                 "pnl_cents": _hl_pnl,
                 "fees_cents": _hl_fees,
+                "legacy_trades": (_hl_leg["n"] or 0) if _hl_leg else 0,
+                "legacy_pnl_cents": (_hl_leg["pnl"] or 0) if _hl_leg else 0,
                 "per_asset": _hl_assets,
                 "config": {
                     "max_entry_price": 59,
                     "excluded_assets": ["SOL", "XRP"],
-                    "fixed_contracts": 10,
+                    "fixed_contracts": 25,
                     "bankroll_fraction": 0.10,
                     "max_edge": 0.05,
                     "stc_range": [600, 1800],
@@ -1611,6 +1624,45 @@ class DashboardSnapshotBuilder:
             }
         except Exception:
             logging.debug("Snapshot: hourly_live build failed", exc_info=True)
+
+        # ── Daily PnL History (last 30 days, all products) ──
+        try:
+            _daily_rows = _conn.execute(
+                "SELECT DATE(settled_at) as day, "
+                "SUM(pnl_cents - fee_cents) as net_pnl, "
+                "COUNT(*) as trades, "
+                "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as losses "
+                "FROM settled_trades GROUP BY day ORDER BY day DESC LIMIT 30"
+            ).fetchall()
+            snap["daily_pnl_history"] = [
+                {"date": r["day"], "pnl_cents": r["net_pnl"] or 0,
+                 "trades": r["trades"], "wins": r["wins"] or 0, "losses": r["losses"] or 0}
+                for r in reversed(_daily_rows)
+            ]
+        except Exception:
+            snap["daily_pnl_history"] = []
+            logging.debug("Snapshot: daily_pnl_history failed", exc_info=True)
+
+        # ── DC By Tier ──
+        try:
+            _dc_tiers = {}
+            for _dc_row in _conn.execute(
+                "SELECT strategy, COUNT(*) as n, "
+                "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
+                "SUM(pnl_cents - fee_cents) as net_pnl "
+                "FROM settled_trades WHERE strategy LIKE 'decided_%' GROUP BY strategy"
+            ).fetchall():
+                _dc_tiers[_dc_row["strategy"]] = {
+                    "fills": _dc_row["n"],
+                    "wins": _dc_row["wins"] or 0,
+                    "wr": round((_dc_row["wins"] or 0) / _dc_row["n"], 4) if _dc_row["n"] else 0,
+                    "pnl_cents": _dc_row["net_pnl"] or 0,
+                }
+            snap["decided_contracts_by_tier"] = _dc_tiers
+        except Exception:
+            snap["decided_contracts_by_tier"] = {}
+            logging.debug("Snapshot: dc_by_tier failed", exc_info=True)
 
         # ── Hourly Config A (no_XRP + edge ≤ 0.7%) ──────────────────────
         try:
