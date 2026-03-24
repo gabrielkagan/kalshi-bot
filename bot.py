@@ -77,7 +77,7 @@ HOURLY_MIN_ENTRY_PRICE = 50            # Floor for data collection
 HOURLY_MAX_ENTRY_PRICE = 59            # Sub-60c only — edge lives at low prices, 70-79c is death zone
 HOURLY_MAX_RISK_PER_TRADE = 0.15       # Conservative start (60% of 15M's 0.25)
 HOURLY_BANKROLL_FRACTION = 0.10        # Hourly sizes off 10% of balance (like SPX's 0.15)
-HOURLY_FIXED_CONTRACTS = 10            # Fixed sizing — bypass Kelly entirely
+HOURLY_FIXED_CONTRACTS = 25            # Fixed sizing — bypass Kelly entirely (raised from 10)
 HOURLY_MAX_EDGE = 0.05                 # Reject >5% edge (10%+ zone has 24.2% WR — edge inversion)
 HOURLY_TAKER_ONLY = True               # IOC only — no maker orders, no per-asset lock contention with 15M
 
@@ -10807,7 +10807,7 @@ class OrderExecutor:
         ticker = candidate["ticker"]
         asset = candidate["asset"]
         best_ask = candidate["best_yes_ask"]
-        count = candidate["position_size"]
+        count = min(candidate["position_size"], HOURLY_FIXED_CONTRACTS)  # Hard cap
 
         # Ticker cooldown (shared with all products — IOC-specific, safe)
         cooldown_ts = self._recent_taker_tickers.get(ticker)
@@ -12626,6 +12626,7 @@ class OrderExecutor:
             "threshold": candidate.get("threshold"),
             "blended_rv": candidate.get("blended_rv"),
             "calibrated_prob": candidate.get("calibrated_prob"),
+            "product_type": candidate.get("product_type"),
             "candidate": candidate,
         }
         self._addon_eligible[ticker] = meta
@@ -12644,6 +12645,13 @@ class OrderExecutor:
         expired = []
 
         for ticker, meta in list(self._addon_eligible.items()):
+            # Skip hourly fills — addons are for 15M maker-first price improvement only.
+            # Hourly uses fixed-size taker IOC; addon would bypass hourly constraints
+            # (price cap, fixed sizing, asset exclusion). (Bug fix: Mar 24 2026)
+            if meta.get("product_type") == "hourly":
+                expired.append(ticker)
+                continue
+
             # Cleanup: remove entries >5min old
             if now - meta["fill_time"] > 300:
                 expired.append(ticker)

@@ -43,7 +43,7 @@ class TestHourlyConstants:
 
     def test_hourly_fixed_contracts(self):
         import bot
-        assert bot.HOURLY_FIXED_CONTRACTS == 10
+        assert bot.HOURLY_FIXED_CONTRACTS == 25
 
     def test_hourly_bankroll_fraction(self):
         import bot
@@ -170,6 +170,27 @@ class TestExecutionIsolation:
             "_execute_hourly_taker must not touch self._active_orders (15M maker lock)")
         assert "self._escalating_assets" not in code, (
             "_execute_hourly_taker must not touch self._escalating_assets (15M escalation)")
+
+    def test_hourly_taker_caps_count(self):
+        """_execute_hourly_taker must enforce count cap via min()."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor._execute_hourly_taker)
+        assert "min(candidate" in source and "HOURLY_FIXED_CONTRACTS" in source
+
+    def test_addon_blocks_hourly(self):
+        """_check_addon_opportunities must skip hourly fills."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor._check_addon_opportunities)
+        assert '"hourly"' in source, "Addon must check for hourly product_type"
+
+    def test_addon_meta_includes_product_type(self):
+        """Addon registration must store product_type in meta."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OrderExecutor._register_addon_eligible)
+        assert '"product_type"' in source
 
     def test_execute_gates_on_product_type(self):
         """The hourly route check must be 'product_type == hourly', not an else clause."""
