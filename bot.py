@@ -10829,7 +10829,7 @@ class OrderExecutor:
         # At sub-60c, 1c worse entry is trivial vs the 20c+ per-trade edge.
         # Verify edge is still positive after the offset before submitting.
         _h_mcfg = get_market_config("hourly")
-        ioc_price = min(best_ask + IOC_RETRY_OFFSET, 99)
+        ioc_price = min(best_ask + IOC_RETRY_OFFSET, HOURLY_MAX_ENTRY_PRICE)
         if ioc_price != best_ask:
             cal_prob = candidate.get("calibrated_prob", 0)
             _offset_fee = calculate_fee(HOURLY_FIXED_CONTRACTS, ioc_price, is_taker=True,
@@ -12040,6 +12040,9 @@ class OrderExecutor:
 
     # ── Maker ─────────────────────────────────────────────────────────────
 
+    # Hourly series prefixes — maker orders must NEVER be placed on these tickers.
+    _HOURLY_SERIES_PREFIXES = ("KXBTCD-", "KXETHD-", "KXSOLD-", "KXXRPD-")
+
     def _submit_maker(self, candidate: Dict, aggressive: bool = False, degraded: bool = False):
         """Submit maker limit order below fair value.
 
@@ -12048,6 +12051,11 @@ class OrderExecutor:
         Degraded: extra offset after post_only rejections (Tier 2).
         """
         ticker = candidate["ticker"]
+        # Block maker orders on hourly tickers — hourly must be taker-only (IOC).
+        # Belt-and-suspenders: catches any code path that reaches maker with an hourly ticker.
+        if any(ticker.startswith(p) for p in self._HOURLY_SERIES_PREFIXES):
+            logging.warning("maker_blocked_hourly_ticker: %s — hourly tickers must use IOC only", ticker)
+            return
         count = candidate["position_size"]
         fair_value = candidate["best_yes_ask"]
         balance = candidate["balance_at_scan"]
