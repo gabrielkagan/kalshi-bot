@@ -359,7 +359,7 @@
     "CrossExchangeFeed",
     "KalshiFeed"
   ],
-  "_extracted_at": "2026-03-24T14:24:13Z",
+  "_extracted_at": "2026-03-24T14:28:23Z",
   "_bot_path": "/home/runner/work/kalshi-bot/kalshi-bot/bot.py",
   "_weather": {
     "weather_city_count": 19,
