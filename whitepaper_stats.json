@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 57904,
+  "total_evaluated": 58064,
   "filter_breakdown": {
     "candidate": 995,
     "dc_shadow_t2_90c": 3,
@@ -12,8 +12,8 @@
     "decided_contract_t2_z25": 18,
     "dip_addon_shadow": 29,
     "eth_low_floor_shadow": 9,
-    "floor_raise_shadow": 763,
-    "hourly_asset_excluded": 7,
+    "floor_raise_shadow": 768,
+    "hourly_asset_excluded": 9,
     "hourly_config_a": 992,
     "hourly_config_b": 369,
     "hourly_config_c": 572,
@@ -27,23 +27,24 @@
     "hourly_config_k": 1054,
     "hourly_config_l": 744,
     "hourly_config_m": 498,
+    "hourly_edge_cap": 1,
     "hourly_observation": 5006,
-    "hourly_observation_v2": 3999,
-    "hourly_timing_restricted": 1325,
+    "hourly_observation_v2": 4013,
+    "hourly_timing_restricted": 1329,
     "hourly_window_limit": 595,
-    "insufficient_edge": 16483,
+    "insufficient_edge": 16533,
     "low_price_shadow": 156,
     "no_side_price_shadow_no_xrp": 1243,
     "no_side_price_shadow_xrp": 317,
-    "no_side_shadow": 62,
+    "no_side_shadow": 70,
     "observation_trade": 83,
     "overnight_discount_shadow": 113,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 10816,
+    "price_out_of_range": 10883,
     "price_shadow": 52,
     "price_shadow_no_xrp": 1318,
     "price_shadow_xrp": 550,
-    "relaxed_edge_shadow": 269,
+    "relaxed_edge_shadow": 270,
     "single_asset_selection": 5,
     "sports_deficit_too_large": 14,
     "sports_excluded_lr": 8,
@@ -62,7 +63,7 @@
     "stc_shadow_xrp": 40,
     "strategy_wait": 328,
     "weather_excluded_city": 52,
-    "weather_excluded_mtype_bracket": 117,
+    "weather_excluded_mtype_bracket": 118,
     "weather_excluded_mtype_upper_tail": 18,
     "weather_observation": 581,
     "weather_shadow_capped30": 15,
@@ -72,11 +73,11 @@
     "weekend_discount": 20,
     "weekend_discount_shadow": 85,
     "xrp_shadow": 126,
-    "zero_sizing": 415
+    "zero_sizing": 422
   },
-  "total_settled": 560,
-  "total_wins": 511,
-  "observation_pnl": 31029,
+  "total_settled": 563,
+  "total_wins": 514,
+  "observation_pnl": 32709,
   "total_trades": 995,
   "win_rate_by_price": {
     "80-84": {
@@ -137,6 +138,6 @@
     "WTA Tennis",
     "XRP"
   ],
-  "observation_period": "2026-02-22 to 2026-03-23",
-  "generated_at": "2026-03-23T22:05:28Z"
+  "observation_period": "2026-02-22 to 2026-03-24",
+  "generated_at": "2026-03-24T01:22:06Z"
 }
