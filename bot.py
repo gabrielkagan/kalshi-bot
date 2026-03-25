@@ -45,7 +45,7 @@ SERIES_TICKERS = {
 }
 MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for ETH 75-79c; SOL uses this, BTC/XRP overridden below)
 MAX_ENTRY_PRICE = 99              # cents
-BTC_MIN_ENTRY_PRICE = 89          # cents (data: 86-88c below taker BE, 89c is 93.3% WR, +$87 PnL)
+BTC_MIN_ENTRY_PRICE = 88          # cents (data: 88c = 96.2% WR on n=53 shadow, 96.3% on n=27 recent)
 ETH_MIN_ENTRY_PRICE = 80          # cents (raised from 75 — 75-84c ran 62% WR on live, below 77% BE)
 SOL_MIN_ENTRY_PRICE = 80          # cents (global floor was 80; now explicit since global lowered to 75 for ETH)
 ETH_SUB80_POSITION_CAP = 50      # Half-Kelly at 75c/87% WR = 322-645 contracts; cap to 50 (ceil), floor 20
