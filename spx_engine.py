@@ -337,6 +337,10 @@ class SPXEGARCHEstimator:
         # Safety bounds on log-variance
         self._log_var = max(-30.0, min(0.0, self._log_var))
 
+        # Periodic save (every 60 updates ≈ 1 min at 1 update/sec)
+        if self._n_updates % 60 == 0:
+            self._save_state()
+
         return math.sqrt(math.exp(self._log_var))
 
     def maybe_refit(self) -> bool:
@@ -411,7 +415,44 @@ class SPXEGARCHEstimator:
             self._log_var = state.get("log_var", self._log_var)
             self._n_updates = state.get("n_updates", 0)
             self._last_refit = state.get("last_refit", 0.0)
-            logging.info("SPXEGARCHEstimator: loaded state (n=%d)", self._n_updates)
+
+            # Detect degenerate MLE params: omega <= -0.5 with beta >= 0.995
+            # pushes log_var to floor permanently. Reset to sensible defaults.
+            if self._omega <= -0.5 and self._beta >= 0.995:
+                logging.warning(
+                    "SPXEGARCHEstimator: degenerate params detected (omega=%.4f beta=%.4f) "
+                    "— resetting to defaults", self._omega, self._beta)
+                self._omega = -0.05
+                self._alpha = 0.10
+                self._gamma = -0.15
+                self._beta = 0.98
+                self._last_refit = 0.0  # Force refit when data arrives
+
+            # Detect log_var at floor — reset to reasonable initial value
+            if self._log_var <= -29.0:
+                # SPX per-second vol ~ 0.00001 → var ~ 1e-10 → log_var ~ -23
+                self._log_var = -23.0
+                logging.warning(
+                    "SPXEGARCHEstimator: log_var at floor (-30) — reset to -23.0")
+
+            # Restore returns buffer for warm-start
+            saved_returns = state.get("returns_buffer", [])
+            if saved_returns:
+                self._returns_buffer.clear()
+                for r in saved_returns:
+                    self._returns_buffer.append(r)
+                # Warm-start: replay last 100 returns through recursive_update
+                pre_sigma = self.get_sigma()
+                replay = list(self._returns_buffer)[-100:]
+                for r in replay:
+                    self.recursive_update(r)
+                post_sigma = self.get_sigma()
+                logging.info(
+                    "SPXEGARCHEstimator: warm-start replayed %d returns (sigma %.6f -> %.6f)",
+                    len(replay), pre_sigma or 0, post_sigma or 0)
+
+            logging.info("SPXEGARCHEstimator: loaded state (n=%d, returns=%d)",
+                         self._n_updates, len(self._returns_buffer))
         except FileNotFoundError:
             pass
         except Exception as e:
@@ -425,6 +466,7 @@ class SPXEGARCHEstimator:
                     "gamma": self._gamma, "beta": self._beta,
                     "log_var": self._log_var, "n_updates": self._n_updates,
                     "last_refit": self._last_refit,
+                    "returns_buffer": list(self._returns_buffer),
                     "updated_at": datetime.datetime.now(timezone.utc).isoformat(),
                 }, f, indent=2)
         except Exception as e:
