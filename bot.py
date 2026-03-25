@@ -4796,6 +4796,7 @@ class VolatilityEngine:
             "adaptive_n_obs_15s": len(self._adaptive_returns_15s.get(asset, [])),
             # EGARCH diagnostics
             "egarch_sigma": egarch_sigma,
+            "egarch_constrained_sigma": self._egarch.get_constrained_sigma(asset) if self._egarch else None,
             "egarch_n_updates": self._egarch._n_updates.get(asset, 0) if self._egarch else 0,
             "egarch_log_var": self._egarch._log_var.get(asset) if self._egarch else None,
             # EGARCH blend diagnostics

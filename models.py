@@ -169,6 +169,10 @@ class EGARCHEstimator:
         self._mle_converged: Dict[str, bool] = {a: False for a in ASSETS}
         self._last_buffer_save: float = 0.0
         self._lock = threading.Lock()  # protects param reads during MLE refit
+        # Shadow: constrained EGARCH (alpha + beta ≤ 0.98) for comparison
+        self._constrained_params: Dict[str, Optional[Dict]] = {a: None for a in ASSETS}
+        self._constrained_log_var: Dict[str, Optional[float]] = {a: None for a in ASSETS}
+        self._constrained_sigma: Dict[str, Optional[float]] = {a: None for a in ASSETS}
         self._load_state()
 
     def record_return(self, asset: str, log_return: float):
@@ -260,7 +264,35 @@ class EGARCHEstimator:
             self._log_var[asset] = new_log_var
             self._sigma[asset] = new_sigma
             self._n_updates[asset] = self._n_updates.get(asset, 0) + 1
+
+        # Shadow: constrained EGARCH update (alpha + beta ≤ 0.98)
+        c_params = self._constrained_params.get(asset)
+        c_log_var = self._constrained_log_var.get(asset)
+        if c_params is not None and c_log_var is not None:
+            try:
+                c_sigma = math.exp(c_log_var * 0.5)
+                if c_sigma > 1e-12:
+                    c_z = log_return / c_sigma
+                    c_df = c_params.get("df")
+                    c_e_abs_z = _student_t_e_abs_z(c_df) if c_df is not None else EGARCH_E_ABS_Z
+                    c_raw_lv = (c_params["omega"]
+                                + c_params["alpha"] * (abs(c_z) - c_e_abs_z)
+                                + c_params["gamma"] * c_z
+                                + c_params["beta"] * c_log_var)
+                    if math.isfinite(c_raw_lv):
+                        c_new_lv = max(EGARCH_LOG_VAR_FLOOR, min(EGARCH_LOG_VAR_CEILING, c_raw_lv))
+                        c_new_sig = math.exp(c_new_lv * 0.5)
+                        if math.isfinite(c_new_sig) and c_new_sig > 0:
+                            self._constrained_log_var[asset] = c_new_lv
+                            self._constrained_sigma[asset] = c_new_sig
+            except Exception:
+                pass  # Shadow — never crash
+
         return new_sigma
+
+    def get_constrained_sigma(self, asset: str) -> Optional[float]:
+        """Return shadow constrained EGARCH sigma."""
+        return self._constrained_sigma.get(asset)
 
     def get_sigma(self, asset: str) -> Optional[float]:
         """Return current conditional σ."""
@@ -291,6 +323,8 @@ class EGARCHEstimator:
             returns_list = list(rets)
             if self._mle_fit_asset(asset, returns_list):
                 any_fit = True
+            # Shadow: constrained fit (alpha + beta ≤ 0.98)
+            self._constrained_fit_asset(asset, returns_list)
         if any_fit:
             self._save_state()
 
@@ -434,6 +468,56 @@ class EGARCHEstimator:
         logging.info("EGARCH %s gamma sign: %s", asset, gamma_sign)
 
         return True
+
+    def _constrained_fit_asset(self, asset: str, returns: list):
+        """Shadow: fit EGARCH with alpha + beta ≤ 0.98 constraint. Never affects live."""
+        try:
+            from scipy.optimize import minimize
+
+            n = len(returns)
+            if n < EGARCH_MIN_RETURNS:
+                return
+            sample_var = sum(r * r for r in returns) / n
+            if sample_var <= 0:
+                sample_var = 1e-10
+
+            x0 = [math.log(sample_var) * (1 - 0.90), 0.08, 0.0, 0.90]
+            gamma_bounds = EGARCH_GAMMA_CONSTRAINTS.get(asset, EGARCH_GAMMA_BOUNDS)
+            # Key constraint: beta upper = 0.98 - alpha_lower = 0.97
+            bounds = [
+                EGARCH_OMEGA_BOUNDS,
+                (0.01, 0.20),       # tighter alpha
+                gamma_bounds,
+                (0.80, 0.97),       # tighter beta — ensures alpha + beta ≤ ~0.98
+            ]
+            result = minimize(
+                EGARCHEstimator._neg_log_likelihood_gaussian,
+                x0, args=(returns, EGARCH_MLE_EWL_LAMBDA),
+                method="L-BFGS-B", bounds=bounds,
+                options={"maxiter": EGARCH_MLE_MAXITER, "ftol": 1e-10},
+            )
+            if not result.success:
+                return
+            omega, alpha, gamma, beta = result.x
+            if abs(beta) >= 1.0 or alpha + beta >= 0.99:
+                return
+            uncond_log_var = omega / (1.0 - beta)
+            if uncond_log_var < EGARCH_LOG_VAR_FLOOR or uncond_log_var > EGARCH_LOG_VAR_CEILING:
+                return
+
+            new_params = {"omega": omega, "alpha": alpha, "gamma": gamma, "beta": beta}
+            self._constrained_params[asset] = new_params
+            self._constrained_log_var[asset] = uncond_log_var
+            self._constrained_sigma[asset] = math.exp(uncond_log_var * 0.5)
+
+            half_life = (math.log(2) / (-math.log(beta))) * 5.0 if beta < 1 else float('inf')
+            logging.info(
+                "EGARCH_CONSTRAINED %s: omega=%.4f alpha=%.4f gamma=%.4f beta=%.4f "
+                "persistence=%.4f half_life=%.1fs sigma=%.6f",
+                asset, omega, alpha, gamma, beta,
+                alpha + beta, half_life, self._constrained_sigma[asset])
+        except Exception as e:
+            logging.debug("EGARCH constrained fit %s failed: %s", asset, e)
 
     @staticmethod
     def _neg_log_likelihood_student_t(params, returns, ewl_lambda=1.0) -> float:
