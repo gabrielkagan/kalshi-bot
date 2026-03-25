@@ -204,8 +204,10 @@ WEATHER_NO_SHADOW_MIN_YES_PROB = 0.55  # Only shadow when model is confident YES
 # YES-side remains fully gated by WEATHER_OBSERVATION_ONLY = True.
 # Data: 397 settled, 73.6% WR, +$181 sim PnL, 40pp+ cushion above breakeven.
 # Gate: STC >= 8h (short STC NO loses), fixed 1-contract sizing, all 19 cities.
-WEATHER_NO_SIDE_LIVE = False             # Kill switch — flip True on March 20 after 14-day gate
-WEATHER_NO_SIDE_MIN_STC = 28800.0        # 8 hours — short STC NO-side loses money
+WEATHER_NO_SIDE_LIVE = True              # LIVE — NO ≤ 40c, STC ≥ 16h, 1-contract
+WEATHER_NO_SIDE_MIN_STC = 57600.0        # 16 hours — tightened from 8h (data: 77.1% WR at 16-24h, 32.5% at 0-8h)
+WEATHER_NO_MAX_PRICE = 40                # Only buy NO contracts priced ≤ 40c (YES ≥ 60c)
+WEATHER_NO_KILL_THRESHOLD = -2000        # Auto-disable if cumulative NO PnL drops below -$20
 HOURLY_MIN_EDGE_PCT = 0.001              # 0.1% — low for max signal collection (observation-only)
 
 # ─── Sports Comeback Observation Mode ────────────────────────────────────
@@ -6115,6 +6117,27 @@ class OpportunityScanner:
         self._dc_window_risk = {}  # Decided contract per-window risk tracker
         self._dc_window_cap_skips = 0  # Session counter for window cap skips
         self._lp_window_counts = {}  # Low-price shadow: per-window signal count
+        # Weather NO-side kill switch: auto-disable if cumulative PnL below threshold
+        # Check once per tick, uses module-level _weather_no_killed flag
+        if WEATHER_NO_SIDE_LIVE:
+            try:
+                _wx_no_pnl = self._state.conn.execute(
+                    "SELECT COALESCE(SUM(pnl_cents), 0) FROM settled_trades "
+                    "WHERE product_type='weather' AND side='no'"
+                ).fetchone()[0]
+                if _wx_no_pnl < WEATHER_NO_KILL_THRESHOLD:
+                    import bot as _self_module
+                    _self_module.WEATHER_NO_SIDE_LIVE = False
+                    logging.error(
+                        "WEATHER_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
+                        _wx_no_pnl, WEATHER_NO_KILL_THRESHOLD)
+                    if _TELEGRAM:
+                        _TELEGRAM.send(
+                            f"\U0001f6a8 *WEATHER NO-SIDE AUTO-KILLED*\n"
+                            f"Cumulative PnL: ${_wx_no_pnl/100:.2f} "
+                            f"(threshold: ${WEATHER_NO_KILL_THRESHOLD/100:.2f})")
+            except Exception:
+                pass  # Non-critical
         self._lp_hour_signals = {}  # Low-price shadow: per-hour signal count
         try:
             for pos in self._state.get_open_positions():
@@ -9014,9 +9037,11 @@ class OpportunityScanner:
                                         logging.warning("insert_evaluated_opportunity failed (weather_no_shadow)", exc_info=True)
                                     # ── Weather NO-side live candidate ──
                                     # Bypasses WEATHER_OBSERVATION_ONLY for NO-side only.
-                                    # Gates: WEATHER_NO_SIDE_LIVE, STC >= 8h, positive fee-adj edge.
+                                    # Gates: WEATHER_NO_SIDE_LIVE, STC >= 16h, NO price ≤ 40c, positive edge.
+                                    # Data: 128 settled at NO≤40c STC≥16h → 79.7% WR, +$67.61 sim PnL.
                                     if (WEATHER_NO_SIDE_LIVE
                                             and seconds_remaining >= WEATHER_NO_SIDE_MIN_STC
+                                            and _no_ask_eq <= WEATHER_NO_MAX_PRICE
                                             and _wn_no_fee_edge > 0):
                                         _wn_cand_dedup = (ticker, "weather_no_candidate")
                                         if _wn_cand_dedup not in self._eval_opp_seen:
