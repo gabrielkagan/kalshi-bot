@@ -6871,6 +6871,50 @@ class OpportunityScanner:
                             "hourly_applied_temp_t": None,
                             "hourly_post_temp_prob": None,
                         })
+
+                    # DC NO-side shadow: z≥5 means spot is FAR above strike (YES worthless, NO is the bet)
+                    # Must run here because price_out_of_range blocks the main DC shadow block downstream.
+                    # These tickers have best_ask=0-1c (YES side) but NO side may have real depth.
+                    if (DECIDED_CONTRACT_SHADOW
+                            and _pt in (None, "15m")
+                            and z_score is not None
+                            and z_score >= 5.0
+                            and best_ask <= 20
+                            and seconds_remaining < DECIDED_CONTRACT_MAX_STC):
+                        _no_ask_dc_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                        _no_ask_dc = None
+                        if _no_ask_dc_raw is not None:
+                            _no_ask_dc = (dollars_str_to_cents(_no_ask_dc_raw)
+                                          if isinstance(_no_ask_dc_raw, str)
+                                          else int(_no_ask_dc_raw))
+                        if _no_ask_dc is not None and _no_ask_dc > 0 and _no_ask_dc <= 93:
+                            _dcs_dedup_no = (ticker, "dc_shadow_no_side")
+                            if _dcs_dedup_no not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_dcs_dedup_no)
+                                _no_fee_dc = calculate_fee(1, _no_ask_dc, is_taker=True,
+                                                           fee_mult_taker=get_market_config("15m").fee_multiplier_taker,
+                                                           fee_mult_maker=get_market_config("15m").fee_multiplier_maker)
+                                try:
+                                    self._state.insert_evaluated_opportunity(
+                                        ticker, window["event_ticker"], asset, "dc_shadow_no_side",
+                                        rejection_reason="shadow: z={:.1f} no_ask={}c yes_price={}c (NO-side decided, POR path)".format(
+                                            z_score, _no_ask_dc, best_ask),
+                                        spot_price=spot, threshold=threshold,
+                                        volatility=blended_rv, market_price=_no_ask_dc,
+                                        seconds_to_close=seconds_remaining,
+                                        calibrated_prob=1.0 - (best_ask / 100.0),
+                                        edge=round((1.0 - best_ask / 100.0) - _no_ask_dc / 100.0, 6),
+                                        ofa_adjustment=ofa_adjustment,
+                                        z_score=z_score, vol_regime=vol_est["regime"],
+                                        raw_prob=raw_prob_pre,
+                                        fee_adjusted_edge=round(
+                                            (1.0 - best_ask / 100.0) - _no_ask_dc / 100.0 - _no_fee_dc / 100.0, 6),
+                                        product_type=window.get("product_type"),
+                                        side="no",
+                                        **_shadow_diag)
+                                except Exception:
+                                    logging.warning("insert_evaluated_opportunity failed (dc_shadow_no_side POR)", exc_info=True)
+
                     continue
 
                 # ── Per-asset price floor (15M only) ─────────────────────────
