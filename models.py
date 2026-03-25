@@ -1108,6 +1108,9 @@ class PositionSizer:
         IMPORTANT: Only call from main thread — records balance + updates HWM.
         For read-only access (e.g. dashboard), use _drawdown_scaler_readonly().
         """
+        # Guard: if balance fetch failed (0 or negative), don't record and don't halt
+        if balance_cents <= 0:
+            return 1.0
         self.record_balance(balance_cents)
         hwm = self.get_rolling_hwm()
         if hwm <= 0:
