@@ -566,7 +566,7 @@ DC_SHADOW_STAGES = frozenset({
 RELAXED_EDGE_SHADOW = os.environ.get("RELAXED_EDGE_SHADOW", "1") == "1"
 RELAXED_EDGE_DISCOUNT = 0.50        # 50% of normal edge threshold (halved)
 RELAXED_EDGE_MIN_PRICE = 88         # Lower bound of relaxed range
-RELAXED_EDGE_MAX_PRICE = 93         # Upper bound (exclusive — 93+ has stricter thresholds for good reason)
+RELAXED_EDGE_MAX_PRICE = 96         # Upper bound (exclusive). Data: 94-96c near-misses 96.8-100% WR (n=106)
 
 # Price-dependent minimum edge: higher prices have worse asymmetry
 # At 95c: 1 loss = 19 wins. At 87c: 1 loss = 6.7 wins.
