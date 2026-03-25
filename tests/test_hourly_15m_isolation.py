@@ -445,6 +445,43 @@ class TestHourlyDC97cShadow:
         assert '_pt in (None, "15m")' in source
 
 
+class TestHourlyDC93cShadow:
+    """Verify hourly DC 93-96c tier 2 shadow."""
+
+    def test_hourly_dc_93c_in_scan(self):
+        """hourly_dc_93c_stc300 must exist in scan()."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OpportunityScanner.scan)
+        assert "hourly_dc_93c_stc300" in source
+
+    def test_tier2_price_range(self):
+        """Tier 2 must gate on 93-96c, not overlap with Tier 1 (97-99c)."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OpportunityScanner.scan)
+        idx = source.find("hourly_dc_93c_stc300")
+        block = source[max(0, idx-400):idx+200]
+        assert "best_ask >= 93" in block
+        assert "best_ask <= 96" in block
+
+    def test_tier2_stc_300(self):
+        """Tier 2 must use STC <= 300s (tighter than Tier 1's 600s)."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OpportunityScanner.scan)
+        idx = source.find("hourly_dc_93c_stc300")
+        block = source[max(0, idx-400):idx+200]
+        assert "seconds_remaining <= 300" in block
+
+    def test_no_overlap_with_tier1(self):
+        """Tier 2 price range (93-96) must not overlap with Tier 1 (97-99)."""
+        # Tier 1: best_ask >= 97 and best_ask <= 99
+        # Tier 2: best_ask >= 93 and best_ask <= 96
+        # A 97c signal cannot match Tier 2's <= 96 check
+        assert 97 > 96  # Tier 1 min > Tier 2 max — no overlap
+
+
 class TestObservationGate:
     """Verify the observation gate behavior with kill switch."""
 

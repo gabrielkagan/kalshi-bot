@@ -8230,6 +8230,49 @@ class OpportunityScanner:
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_dc_97c_stc600)", exc_info=True)
 
+                    # ── HOURLY DC SHADOW TIER 2: 93-96c z≤-3 STC≤300s ────────
+                    # Data: 8/8 (100% WR) at z≤-3, STC≤300s, 93-96c, sig≥250.
+                    # All 10 losses in the broader 93-96c pool are at STC>300s.
+                    # Does NOT overlap with Tier 1 (97c+): only fires on 93-96c.
+                    if (_pt == "hourly"
+                            and HOURLY_DC_ENABLED
+                            and z_score is not None
+                            and z_score <= -3.0
+                            and best_ask >= 93
+                            and best_ask <= 96
+                            and seconds_remaining <= 300):
+                        _hdc3_sigma = vol_est.get("egarch_sigma") if vol_est else None
+                        if _hdc3_sigma is not None and _hdc3_sigma >= HOURLY_DC_MIN_SIGMA:
+                            _hdc3_dedup = (ticker, "hourly_dc_93c_stc300")
+                            if _hdc3_dedup not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_hdc3_dedup)
+                                _hdc3_assumed = 0.97
+                                _hdc3_ev = round((_hdc3_assumed * (100 - best_ask))
+                                                 - ((1 - _hdc3_assumed) * best_ask) - est_fee_1c, 2)
+                                try:
+                                    self._state.insert_evaluated_opportunity(
+                                        ticker, window["event_ticker"], asset,
+                                        "hourly_dc_93c_stc300",
+                                        rejection_reason=f"shadow: z={z_score:.1f} price={best_ask}c stc={seconds_remaining:.0f}s sig={_hdc3_sigma:.6f}",
+                                        spot_price=spot, threshold=threshold,
+                                        volatility=blended_rv, market_price=best_ask,
+                                        seconds_to_close=seconds_remaining,
+                                        calibrated_prob=_hdc3_assumed,
+                                        edge=round(_hdc3_assumed - best_ask / 100.0, 6),
+                                        z_score=z_score, vol_regime=vol_est["regime"],
+                                        raw_prob=raw_prob,
+                                        fee_adjusted_edge=round(_hdc3_assumed - best_ask / 100.0 - est_fee_1c / 100.0, 6),
+                                        breakeven_wr=best_ask / 100.0,
+                                        expected_value=_hdc3_ev,
+                                        ask_depth=ask_depth,
+                                        best_ask_source=best_ask_source,
+                                        position_size=25,
+                                        product_type="hourly",
+                                        egarch_sigma=_hdc3_sigma,
+                                        **_oft_db)
+                                except Exception:
+                                    logging.warning("insert_evaluated_opportunity failed (hourly_dc_93c_stc300)", exc_info=True)
+
                     # ── SPX DECIDED CONTRACTS SHADOW ──────────────────────────
                     # Shadow-only: log signals, never trade. Mon-Wed, z≤-3, 93-96c.
                     # 1-week validation before promotion. No sigma gate (SPX EGARCH
