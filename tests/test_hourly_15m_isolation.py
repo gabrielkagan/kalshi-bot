@@ -398,6 +398,53 @@ class TestDCRetryQueue:
             "All 3 queue-append sites must include original_price")
 
 
+class TestHourlyDC97cShadow:
+    """Verify hourly DC 97c+ shadow variant is isolated from 15M DC."""
+
+    def test_hourly_dc_97c_shadow_in_scan(self):
+        """The hourly_dc_97c_stc600 shadow must exist in scan()."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OpportunityScanner.scan)
+        assert "hourly_dc_97c_stc600" in source
+
+    def test_hourly_dc_97c_uses_own_constants(self):
+        """The 97c shadow must NOT reference HOURLY_DC_MIN_PRICE or HOURLY_DC_MAX_PRICE."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OpportunityScanner.scan)
+        # Find the 97c shadow block
+        idx = source.find("hourly_dc_97c_stc600")
+        assert idx > 0
+        # Get ~500 chars around it
+        block = source[max(0, idx-300):idx+500]
+        # Must NOT use the old hourly DC price constants (uses hardcoded 97/99)
+        assert "HOURLY_DC_MIN_PRICE" not in block, "97c shadow must not use HOURLY_DC_MIN_PRICE"
+        assert "HOURLY_DC_MAX_PRICE" not in block, "97c shadow must not use HOURLY_DC_MAX_PRICE"
+
+    def test_15m_dc_constants_unchanged(self):
+        """15M DC constants must not be affected by hourly DC changes."""
+        import bot
+        assert bot.DECIDED_CONTRACT_MIN_PRICE == 93
+        assert bot.DECIDED_CONTRACT_MAX_STC == 300
+        assert bot.DECIDED_CONTRACT_Z_T2 == -3.0
+
+    def test_hourly_dc_original_constants_unchanged(self):
+        """Original hourly DC constants must be unchanged (shadow runs alongside)."""
+        import bot
+        assert bot.HOURLY_DC_MIN_PRICE == 93
+        assert bot.HOURLY_DC_MAX_PRICE == 96
+        assert bot.HOURLY_DC_Z_THRESHOLD == -4.0
+
+    def test_isolation_15m_not_hourly(self):
+        """15M DC code must gate on _pt in (None, '15m'), not 'hourly'."""
+        import bot
+        import inspect
+        source = inspect.getsource(bot.OpportunityScanner.scan)
+        # The 15M DC block has: _pt in (None, "15m")
+        assert '_pt in (None, "15m")' in source
+
+
 class TestObservationGate:
     """Verify the observation gate behavior with kill switch."""
 
