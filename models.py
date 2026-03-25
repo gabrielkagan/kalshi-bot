@@ -992,6 +992,12 @@ class PositionSizer:
         self.starting_balance_cents = starting_balance_cents
         self._balance_history: deque = deque(maxlen=60480)  # 7 days at 10s intervals
         self._override_hwm_cents: Optional[int] = None
+        # HWM warmup: don't trust the first few balance readings after restart.
+        # Kalshi API sometimes returns inflated values (pending order exposure).
+        # Collect 5 readings, use median to set initial HWM.
+        self._hwm_warmup_readings: list = []
+        self._hwm_initialized: bool = False
+        self._HWM_WARMUP_COUNT = 5
         # Check env var for manual HWM override (dollars)
         override = os.environ.get("OVERRIDE_HWM")
         if override:
@@ -1087,6 +1093,33 @@ class PositionSizer:
 
     def record_balance(self, balance_cents: int):
         """Record current balance for rolling HWM computation. Call each scan cycle."""
+        if balance_cents <= 0:
+            return  # Skip bad readings
+
+        # Warmup: collect first N readings, use median to initialize HWM
+        if not self._hwm_initialized:
+            self._hwm_warmup_readings.append(balance_cents)
+            if len(self._hwm_warmup_readings) >= self._HWM_WARMUP_COUNT:
+                sorted_readings = sorted(self._hwm_warmup_readings)
+                median_balance = sorted_readings[len(sorted_readings) // 2]
+                self._balance_history.append((time.time(), median_balance))
+                self._hwm_initialized = True
+                logging.info(
+                    "HWM warmup complete: median=%dc ($%.2f) from readings %s",
+                    median_balance, median_balance / 100,
+                    [f"${r/100:.2f}" for r in sorted_readings])
+            return  # Don't record individual warmup readings
+
+        # Spike rejection: skip readings >20% above the last recorded value
+        if self._balance_history:
+            _, last_balance = self._balance_history[-1]
+            if last_balance > 0 and balance_cents > last_balance * 1.20:
+                logging.warning(
+                    "DRAWDOWN: balance spike %dc vs last %dc (+%.0f%%) — skipping",
+                    balance_cents, last_balance,
+                    (balance_cents - last_balance) / last_balance * 100)
+                return
+
         self._balance_history.append((time.time(), balance_cents))
 
     def get_rolling_hwm(self) -> int:
@@ -1112,6 +1145,9 @@ class PositionSizer:
         if balance_cents <= 0:
             return 1.0
         self.record_balance(balance_cents)
+        # During warmup, no drawdown scaling — just restarted, no drawdown possible
+        if not self._hwm_initialized:
+            return 1.0
         hwm = self.get_rolling_hwm()
         if hwm <= 0:
             return 1.0
