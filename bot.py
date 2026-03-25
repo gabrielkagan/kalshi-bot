@@ -9398,9 +9398,12 @@ class OpportunityScanner:
                         logging.warning("fifteenm_shadow evaluate failed", exc_info=True)
 
                 # ── STC SHADOW GATE (15M only) ──
-                # Markets at 500-900s STC: log full evaluation for data collection, but don't trade.
-                # 0-500s is LIVE. Non-XRP tagged "stc_shadow_promoted" for variant tracking.
-                if window.get("product_type") in (None, "15m") and seconds_remaining > STC_SHADOW_THRESHOLD:
+                # Price-dependent STC threshold:
+                #   90c+: live up to 700s (data: 600-700s at 90c+ = 93.9% WR, n=132)
+                #   <90c: live up to 600s (600-700s at sub-90c = 82.9%, below breakeven)
+                # Beyond the threshold: log as shadow for data collection.
+                _stc_limit = 700 if best_ask >= 90 else STC_SHADOW_THRESHOLD  # 600 for sub-90c
+                if window.get("product_type") in (None, "15m") and seconds_remaining > _stc_limit:
                     _stc_stage = "stc_shadow_no_xrp" if asset != "XRP" else "stc_shadow_xrp"
                     _dedup_key = (ticker, _stc_stage)
                     if _dedup_key not in self._eval_opp_seen:
