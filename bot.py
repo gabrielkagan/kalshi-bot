@@ -573,8 +573,8 @@ RELAXED_EDGE_MAX_PRICE = 96         # Upper bound (exclusive). Data: 94-96c near
 MIN_EDGE_BY_PRICE = [
     (97, 0.010),   # 97-99c: need 1.0% edge (was 2.0% — data: 4 incremental signals, all wins)
     (95, 0.0075),  # 95-96c: need 0.75% edge (was 1.25% — data: 72 incremental signals, 97.2% WR, time-stable)
-    (93, 0.009),   # 93-94c: need 0.9% edge (was 1.8% — halved: 3 rejected winners at 0.95-1.23%)
-    (91, 0.0035),  # 91-92c: need 0.35% edge (was 0.7% — halved)
+    (93, 0.005),   # 93-94c: need 0.5% edge (was 0.9% — data: near-misses at 93-95c have 95.5% WR, old 0.9% rejected them)
+    (91, 0.0035),  # 91-92c: need 0.35% edge (unchanged)
     (89, 0.0025),  # 89-90c: need 0.25% edge (was 0.5% — halved: 2 rejected winners at 0.31-0.48%)
     (0,  0.0025),  # 80-88c: need 0.25% edge (floor lowered to 80c for ETH/SOL)
 ]
