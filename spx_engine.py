@@ -377,12 +377,22 @@ class SPXEGARCHEstimator:
             result = minimize(neg_log_likelihood, x0, method="L-BFGS-B", bounds=bounds)
 
             if result.success:
-                self._omega, self._alpha, self._gamma, self._beta = result.x
+                new_omega, new_alpha, new_gamma, new_beta = result.x
+                # Block degenerate fits: alpha+beta > 1.05 or omega too negative
+                _ab_sum = abs(new_alpha) + new_beta
+                if _ab_sum > 1.05 or new_omega < -0.5 or new_beta > 0.995:
+                    logging.warning(
+                        "SPXEGARCHEstimator: DEGENERATE refit BLOCKED "
+                        "omega=%.4f alpha=%.4f beta=%.4f sum=%.4f — keeping current params",
+                        new_omega, new_alpha, new_beta, _ab_sum)
+                    self._last_refit = now  # prevent retry storm
+                    return False
+                self._omega, self._alpha, self._gamma, self._beta = new_omega, new_alpha, new_gamma, new_beta
                 self._last_refit = now
                 self._save_state()
                 logging.info(
-                    "SPXEGARCHEstimator: refit omega=%.4f alpha=%.4f gamma=%.4f beta=%.4f",
-                    self._omega, self._alpha, self._gamma, self._beta,
+                    "SPXEGARCHEstimator: refit omega=%.4f alpha=%.4f gamma=%.4f beta=%.4f persistence=%.4f",
+                    self._omega, self._alpha, self._gamma, self._beta, _ab_sum,
                 )
                 return True
         except Exception as e:
