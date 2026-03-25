@@ -309,7 +309,7 @@ class TestDCRetryQueue:
     def test_dc_retry_constants(self):
         import bot
         assert bot.DC_IOC_RETRY_DELAY == 8, "DC retry delay must be 8s"
-        assert bot.DC_IOC_MAX_RETRIES == 5, "DC max retries must be 5"
+        assert bot.DC_IOC_MAX_RETRIES == 10, "DC max retries must be 10"
 
     def test_dc_execute_delegates_to_method(self):
         """execute() DC path must delegate to _execute_dc_taker."""

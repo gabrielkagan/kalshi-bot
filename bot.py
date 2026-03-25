@@ -542,8 +542,10 @@ DECIDED_CONTRACT_T2_Z25_RISK = 0.15         # 15% fixed sizing (deeper z → hig
 DECIDED_CONTRACT_T2_Z2_RISK = 0.125         # 12.5% fixed sizing (shallower z → more conservative)
 DECIDED_CONTRACT_RISK = 0.125               # Fixed 12.5% bankroll per signal
 DECIDED_CONTRACT_MAX_WINDOW_RISK = 0.25     # 25% bankroll cap per settlement window
-DC_IOC_RETRY_DELAY = 8                      # seconds between DC IOC retry attempts (was 15 via general cooldown)
-DC_IOC_MAX_RETRIES = 5                      # max retry attempts per DC ticker (initial + 5 = 6 total)
+DC_IOC_RETRY_DELAY = 8                      # DEFAULT seconds between DC IOC retry attempts (used as fallback)
+DC_IOC_MAX_RETRIES = 10                     # max retry attempts per DC ticker (initial + 10 = 11 total)
+DC_PRICE_TOLERANCE_START_RETRY = 3          # retry number at which price widening begins (0-indexed from retries, not attempts)
+DC_PRICE_TOLERANCE_MAX = 3                  # max cents above original target price
 # ── Decided Contract Shadow Expansion ──
 # Six shadow variants to evaluate expansion candidates. None place orders.
 DC_SHADOW_STAGES = frozenset({
@@ -12122,6 +12124,64 @@ class OrderExecutor:
 
     # ── DC Taker with Non-Blocking Retry Queue ─────────────────────────
 
+    @staticmethod
+    def _dc_retry_delay(seconds_to_close: float) -> float:
+        """Adaptive retry delay based on urgency (STC). Shorter near settlement."""
+        if seconds_to_close > 600:
+            return 20.0
+        elif seconds_to_close > 300:
+            return 12.0
+        elif seconds_to_close > 120:
+            return 6.0
+        elif seconds_to_close > 30:
+            return 3.0
+        else:
+            return 1.0
+
+    def _dc_get_ask_with_depth(self, ticker: str, candidate: Dict):
+        """Get best ask price AND depth for DC execution decisions.
+
+        Returns (price, depth, source) where:
+        - price: best YES ask in cents, or None
+        - depth: contracts at best ask level, 0 if unknown
+        - source: 'orderbook' or 'market_nbbo'
+        """
+        try:
+            scanner = self._ml.scanner if self._ml else None
+            if scanner:
+                ob_data, _ = scanner._get_orderbook_cached(ticker)
+                if ob_data:
+                    price = OpportunityScanner._best_yes_ask_cents(ob_data)
+                    if price is not None:
+                        depth = OpportunityScanner._best_ask_depth(ob_data)
+                        return price, depth, "orderbook"
+        except Exception:
+            pass
+
+        # REST fallback
+        try:
+            ob_resp = self._client.get_orderbook(ticker, depth=5)
+            if ob_resp:
+                ob_fp = ob_resp.get("orderbook_fp")
+                if ob_fp and self._ml and hasattr(self._ml, 'scanner'):
+                    ob_data = self._ml.scanner._convert_orderbook_fp(ob_fp)
+                else:
+                    ob_data = ob_resp.get("orderbook", ob_resp)
+                if ob_data:
+                    price = OpportunityScanner._best_yes_ask_cents(ob_data)
+                    if price is not None:
+                        depth = OpportunityScanner._best_ask_depth(ob_data)
+                        return price, depth, "orderbook"
+        except Exception:
+            pass
+
+        # NBBO fallback
+        nbbo_price = self._nbbo_fallback_price(candidate)
+        if nbbo_price is not None:
+            return nbbo_price, 0, "market_nbbo"
+
+        return None, 0, "none"
+
     def _execute_dc_taker(self, candidate: Dict, asset: str, seconds_to_close) -> Optional[Dict]:
         """Submit DC IOC. On unfilled/partial, queue non-blocking retry."""
         _dc_strategy = candidate.get("strategy")
@@ -12147,31 +12207,50 @@ class OrderExecutor:
             self._session_suppressed_edge_recalc += 1
             return None
 
-        # Fresh ask check — verify price still above DC floor
+        # Fresh ask check with depth — verify price, depth, and source
         _dc_scan_price = price  # preserve original scan price for drift check
-        fresh_ask = self._get_addon_best_ask(ticker)
+        fresh_ask, fresh_depth, fresh_source = self._dc_get_ask_with_depth(ticker, candidate)
+
         if fresh_ask is None:
-            fresh_ask = self._nbbo_fallback_price(candidate)
-            if fresh_ask is None:
-                logging.warning("ORDER_SUPPRESSED no_asks: %s asset=%s strategy=%s price=%d stc=%.0f",
-                                ticker, asset, _dc_strategy, price, seconds_to_close or 0)
-                self._session_suppressed_no_asks += 1
-                if self._ml and hasattr(self._ml, "scanner"):
-                    self._ml.scanner._dc_skip_cooldown[ticker] = time.time() + 60
-                # Queue retry even on no_asks — book may appear
-                self._dc_retry_queue.append({
-                    "candidate": candidate.copy(),
-                    "original_count": count,
-                    "total_filled": 0,
-                    "remaining": count,
-                    "attempt": 1,
-                    "next_retry_ts": time.time() + DC_IOC_RETRY_DELAY,
-                    "strategy": _dc_strategy,
-                    "original_price": _dc_scan_price,
-                })
-                logging.info("dc_retry_QUEUED: %s %s no_asks attempt=1/%d next_retry=%ds",
-                             _dc_strategy, ticker, 1 + DC_IOC_MAX_RETRIES, DC_IOC_RETRY_DELAY)
-                return None
+            logging.warning("ORDER_SUPPRESSED no_asks: %s asset=%s strategy=%s price=%d stc=%.0f",
+                            ticker, asset, _dc_strategy, price, seconds_to_close or 0)
+            self._session_suppressed_no_asks += 1
+            if self._ml and hasattr(self._ml, "scanner"):
+                self._ml.scanner._dc_skip_cooldown[ticker] = time.time() + 60
+            # Queue retry — book may appear later
+            _retry_delay = self._dc_retry_delay(seconds_to_close or 0)
+            self._dc_retry_queue.append({
+                "candidate": candidate.copy(),
+                "original_count": count,
+                "total_filled": 0,
+                "remaining": count,
+                "attempt": 1,
+                "next_retry_ts": time.time() + _retry_delay,
+                "strategy": _dc_strategy,
+                "original_price": _dc_scan_price,
+                "_queue_ts": time.time(),
+            })
+            logging.info("dc_retry_QUEUED: %s %s no_asks attempt=1/%d next_retry=%.0fs",
+                         _dc_strategy, ticker, 1 + DC_IOC_MAX_RETRIES, _retry_delay)
+            return None
+
+        # Layer 1: Phantom depth gate — don't send IOC into empty books
+        if fresh_depth == 0 and fresh_source == "market_nbbo":
+            logging.info("dc_taker_PHANTOM_SKIP: %s %s fresh_ask=%d¢ depth=0 source=nbbo — queuing retry",
+                         _dc_strategy, ticker, fresh_ask)
+            _retry_delay = self._dc_retry_delay(seconds_to_close or 0)
+            self._dc_retry_queue.append({
+                "candidate": candidate.copy(),
+                "original_count": count,
+                "total_filled": 0,
+                "remaining": count,
+                "attempt": 1,
+                "next_retry_ts": time.time() + _retry_delay,
+                "strategy": _dc_strategy,
+                "original_price": _dc_scan_price,
+                "_queue_ts": time.time(),
+            })
+            return None
 
         # Price floor gate: refuse if fresh ask dropped below DC qualifying floor
         if fresh_ask < DECIDED_CONTRACT_MIN_PRICE:
@@ -12180,8 +12259,8 @@ class OrderExecutor:
             return None
 
         if fresh_ask != price:
-            logging.info("dc_taker_price_update: %s scanner=%d¢ fresh=%d¢",
-                         ticker, price, fresh_ask)
+            logging.info("dc_taker_price_update: %s scanner=%d¢ fresh=%d¢ depth=%d src=%s",
+                         ticker, price, fresh_ask, fresh_depth, fresh_source)
             price = fresh_ask
             candidate["best_yes_ask"] = fresh_ask
             taker_fee = calculate_taker_fee(count, price)
@@ -12231,6 +12310,7 @@ class OrderExecutor:
                 "next_retry_ts": time.time() + DC_IOC_RETRY_DELAY,
                 "strategy": _dc_strategy,
                 "original_price": _dc_scan_price,
+                "_queue_ts": time.time(),
                 "last_order_submit_ts": _order_submit_ts,
                 "last_order_id": result.get("order_id"),
             })
@@ -12252,6 +12332,7 @@ class OrderExecutor:
                 "next_retry_ts": time.time() + DC_IOC_RETRY_DELAY,
                 "strategy": _dc_strategy,
                 "original_price": _dc_scan_price,
+                "_queue_ts": time.time(),
                 "last_order_submit_ts": _order_submit_ts,
             })
             self._state.update_evaluated_opportunity_order(
@@ -12297,15 +12378,29 @@ class OrderExecutor:
                         ticker, order_outcome="unfilled")
                 continue
 
-            # Fresh ask check
-            fresh_ask = self._get_addon_best_ask(ticker)
-            if fresh_ask is None:
-                fresh_ask = self._nbbo_fallback_price(candidate)
+            # Fresh ask check with depth
+            fresh_ask, fresh_depth, fresh_source = self._dc_get_ask_with_depth(ticker, candidate)
+            _stc_now = candidate.get("seconds_to_close", 0)
+            # Estimate current STC from original eval time
+            _eval_age = now - entry.get("_queue_ts", now)
+            if _stc_now and _stc_now > 0:
+                _stc_now = max(0, _stc_now - _eval_age)
+            _adaptive_delay = self._dc_retry_delay(_stc_now)
+
             if fresh_ask is None:
                 logging.info("dc_retry_no_asks: %s %s attempt=%d/%d",
                              _dc_strategy, ticker, attempt, 1 + DC_IOC_MAX_RETRIES)
                 entry["attempt"] = attempt
-                entry["next_retry_ts"] = now + DC_IOC_RETRY_DELAY
+                entry["next_retry_ts"] = now + _adaptive_delay
+                still_pending.append(entry)
+                continue
+
+            # Layer 1: Phantom depth gate — skip IOC on phantom NBBO
+            if fresh_depth == 0 and fresh_source == "market_nbbo":
+                logging.info("dc_retry_PHANTOM_SKIP: %s %s attempt=%d/%d depth=0 nbbo — waiting",
+                             _dc_strategy, ticker, attempt, 1 + DC_IOC_MAX_RETRIES)
+                entry["attempt"] = attempt
+                entry["next_retry_ts"] = now + _adaptive_delay
                 still_pending.append(entry)
                 continue
 
@@ -12339,7 +12434,15 @@ class OrderExecutor:
                         ticker, order_outcome="unfilled_price_drift")
                 continue  # Drop from queue
 
-            price = fresh_ask
+            # Layer 5: Price tolerance escalation on later retries
+            # Retries 0-2: exact price. Retry 3+: widen by 1c per retry, max 3c.
+            _retry_num = attempt - 1  # 0-indexed retry count (attempt 2 = retry 1)
+            _price_offset = 0
+            if _retry_num >= DC_PRICE_TOLERANCE_START_RETRY:
+                _price_offset = min(_retry_num - DC_PRICE_TOLERANCE_START_RETRY + 1,
+                                    DC_PRICE_TOLERANCE_MAX)
+
+            price = min(fresh_ask + _price_offset, MAX_ENTRY_PRICE)
             candidate["best_yes_ask"] = price
             candidate["position_size"] = remaining
             cal_prob = candidate["calibrated_prob"]
@@ -12347,18 +12450,21 @@ class OrderExecutor:
             taker_fee = calculate_taker_fee(remaining, price)
             net_edge = cal_prob - (price / 100.0) - (taker_fee / (remaining * 100.0))
             if net_edge < -0.01:
-                logging.info("dc_retry_SKIPPED: %s %s fresh_ask=%d¢ net_edge=%.4f attempt=%d",
-                             _dc_strategy, ticker, price, net_edge, attempt)
+                logging.info("dc_retry_SKIPPED: %s %s price=%d¢ (ask=%d+%d) net_edge=%.4f attempt=%d",
+                             _dc_strategy, ticker, price, fresh_ask, _price_offset, net_edge, attempt)
                 continue  # Drop from queue
 
             self._session_dc_retries += 1
             self._session_direct_taker_attempts += 1
             self._recent_taker_tickers[ticker] = now
 
+            _offset_label = f" (+{_price_offset}c)" if _price_offset > 0 else ""
             logging.info(
-                "dc_retry_ENTRY: %s %s %dx @ %d¢ attempt=%d/%d total_filled=%d/%d",
-                _dc_strategy, ticker, remaining, price, attempt, 1 + DC_IOC_MAX_RETRIES,
-                entry["total_filled"], entry["original_count"])
+                "dc_retry_ENTRY: %s %s %dx @ %d¢%s attempt=%d/%d total_filled=%d/%d depth=%d src=%s",
+                _dc_strategy, ticker, remaining, price, _offset_label,
+                attempt, 1 + DC_IOC_MAX_RETRIES,
+                entry["total_filled"], entry["original_count"],
+                fresh_depth, fresh_source)
 
             _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             result = self._submit_taker(candidate)
@@ -12384,7 +12490,7 @@ class OrderExecutor:
 
                 # Still more remaining — queue another retry
                 entry["attempt"] = attempt
-                entry["next_retry_ts"] = now + DC_IOC_RETRY_DELAY
+                entry["next_retry_ts"] = now + _adaptive_delay
                 entry["last_order_submit_ts"] = _order_submit_ts
                 entry["last_order_id"] = result.get("order_id")
                 still_pending.append(entry)
@@ -12393,7 +12499,7 @@ class OrderExecutor:
                 logging.info("dc_retry_UNFILLED: %s %s attempt=%d/%d",
                              _dc_strategy, ticker, attempt, 1 + DC_IOC_MAX_RETRIES)
                 entry["attempt"] = attempt
-                entry["next_retry_ts"] = now + DC_IOC_RETRY_DELAY
+                entry["next_retry_ts"] = now + _adaptive_delay
                 entry["last_order_submit_ts"] = _order_submit_ts
                 still_pending.append(entry)
 
