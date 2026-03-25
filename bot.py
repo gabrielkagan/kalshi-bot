@@ -12234,23 +12234,13 @@ class OrderExecutor:
                          _dc_strategy, ticker, 1 + DC_IOC_MAX_RETRIES, _retry_delay)
             return None
 
-        # Layer 1: Phantom depth gate — don't send IOC into empty books
-        if fresh_depth == 0 and fresh_source == "market_nbbo":
-            logging.info("dc_taker_PHANTOM_SKIP: %s %s fresh_ask=%d¢ depth=0 source=nbbo — queuing retry",
+        # Layer 1: Phantom depth flag — LOG ONLY, never block
+        # Depth can appear between our check and the IOC hitting the matching engine.
+        # Blocking here would kill real fills. Flag for analysis, submit IOC regardless.
+        _phantom_depth = (fresh_depth == 0 and fresh_source == "market_nbbo")
+        if _phantom_depth:
+            logging.info("dc_taker_PHANTOM_FLAG: %s %s fresh_ask=%d¢ depth=0 source=nbbo — submitting anyway",
                          _dc_strategy, ticker, fresh_ask)
-            _retry_delay = self._dc_retry_delay(seconds_to_close or 0)
-            self._dc_retry_queue.append({
-                "candidate": candidate.copy(),
-                "original_count": count,
-                "total_filled": 0,
-                "remaining": count,
-                "attempt": 1,
-                "next_retry_ts": time.time() + _retry_delay,
-                "strategy": _dc_strategy,
-                "original_price": _dc_scan_price,
-                "_queue_ts": time.time(),
-            })
-            return None
 
         # Price floor gate: refuse if fresh ask dropped below DC qualifying floor
         if fresh_ask < DECIDED_CONTRACT_MIN_PRICE:
@@ -12395,14 +12385,11 @@ class OrderExecutor:
                 still_pending.append(entry)
                 continue
 
-            # Layer 1: Phantom depth gate — skip IOC on phantom NBBO
-            if fresh_depth == 0 and fresh_source == "market_nbbo":
-                logging.info("dc_retry_PHANTOM_SKIP: %s %s attempt=%d/%d depth=0 nbbo — waiting",
+            # Layer 1: Phantom depth flag — LOG ONLY, submit IOC regardless
+            _phantom_depth = (fresh_depth == 0 and fresh_source == "market_nbbo")
+            if _phantom_depth:
+                logging.info("dc_retry_PHANTOM_FLAG: %s %s attempt=%d/%d depth=0 nbbo — submitting anyway",
                              _dc_strategy, ticker, attempt, 1 + DC_IOC_MAX_RETRIES)
-                entry["attempt"] = attempt
-                entry["next_retry_ts"] = now + _adaptive_delay
-                still_pending.append(entry)
-                continue
 
             # Price floor gate: abort if ask dropped below DC qualifying floor
             if fresh_ask < DECIDED_CONTRACT_MIN_PRICE:
