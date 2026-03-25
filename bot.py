@@ -6875,10 +6875,11 @@ class OpportunityScanner:
                     # DC NO-side shadow: z≥5 means spot is FAR above strike (YES worthless, NO is the bet)
                     # Must run here because price_out_of_range blocks the main DC shadow block downstream.
                     # These tickers have best_ask=0-1c (YES side) but NO side may have real depth.
+                    # Uses _por_z (computed at line 6711) — z_score is not defined until later in the loop.
                     if (DECIDED_CONTRACT_SHADOW
                             and _pt in (None, "15m")
-                            and z_score is not None
-                            and z_score >= 5.0
+                            and _por_z is not None
+                            and _por_z >= 5.0
                             and best_ask <= 20
                             and seconds_remaining < DECIDED_CONTRACT_MAX_STC):
                         _no_ask_dc_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
@@ -6898,14 +6899,14 @@ class OpportunityScanner:
                                     self._state.insert_evaluated_opportunity(
                                         ticker, window["event_ticker"], asset, "dc_shadow_no_side",
                                         rejection_reason="shadow: z={:.1f} no_ask={}c yes_price={}c (NO-side decided, POR path)".format(
-                                            z_score, _no_ask_dc, best_ask),
+                                            _por_z, _no_ask_dc, best_ask),
                                         spot_price=spot, threshold=threshold,
                                         volatility=blended_rv, market_price=_no_ask_dc,
                                         seconds_to_close=seconds_remaining,
                                         calibrated_prob=1.0 - (best_ask / 100.0),
                                         edge=round((1.0 - best_ask / 100.0) - _no_ask_dc / 100.0, 6),
                                         ofa_adjustment=ofa_adjustment,
-                                        z_score=z_score, vol_regime=vol_est["regime"],
+                                        z_score=_por_z, vol_regime=vol_est["regime"],
                                         raw_prob=raw_prob_pre,
                                         fee_adjusted_edge=round(
                                             (1.0 - best_ask / 100.0) - _no_ask_dc / 100.0 - _no_fee_dc / 100.0, 6),
