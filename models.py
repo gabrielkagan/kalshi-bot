@@ -1119,7 +1119,14 @@ class PositionSizer:
         self.starting_balance_cents = hwm
         ratio = balance_cents / hwm
         if ratio < DRAWDOWN_HALT_THRESHOLD:
-            return 0.0   # stop trading entirely
+            # Floor: never fully halt. Even during drawdown, place minimum-size trades
+            # so the system can recover. The HWM can get inflated by API jitter,
+            # causing false halts on a healthy balance (e.g., $927 vs $1427 phantom HWM).
+            logging.warning(
+                "DRAWDOWN_SCALER: ratio=%.3f < halt=%.2f (balance=%dc hwm=%dc) — "
+                "using floor=0.10 instead of halt",
+                ratio, DRAWDOWN_HALT_THRESHOLD, balance_cents, hwm)
+            return 0.10   # was 0.0 — floor prevents complete lockout
         if ratio < DRAWDOWN_QUARTER_THRESHOLD:
             return 0.25
         if ratio < DRAWDOWN_HALF_THRESHOLD:
