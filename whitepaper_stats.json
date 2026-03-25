@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 61974,
+  "total_evaluated": 61975,
   "filter_breakdown": {
     "candidate": 1096,
     "dc_shadow_t1b_93c": 1,
@@ -29,7 +29,7 @@
     "hourly_config_l": 787,
     "hourly_config_m": 541,
     "hourly_edge_cap": 3,
-    "hourly_observation": 5123,
+    "hourly_observation": 5124,
     "hourly_observation_v2": 4174,
     "hourly_timing_restricted": 1348,
     "hourly_window_limit": 595,
@@ -142,5 +142,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-03-25",
-  "generated_at": "2026-03-25T11:37:45Z"
+  "generated_at": "2026-03-25T11:43:48Z"
 }
