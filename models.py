@@ -590,6 +590,24 @@ class EGARCHEstimator:
                 logging.info(
                     "EGARCH returns restored: BTC=%d ETH=%d SOL=%d XRP=%d",
                     ret_counts["BTC"], ret_counts["ETH"], ret_counts["SOL"], ret_counts["XRP"])
+            # Warm-start: replay last N returns through recursive_update to rebuild
+            # sigma from actual return history. Without this, sigma drops to ~50% of
+            # steady state after restart because the first new live returns are small.
+            # The persisted log_var is used as the starting point, and replaying the
+            # saved returns re-derives the correct sigma trajectory.
+            WARMSTART_RETURNS = 180  # ~15 min of 5s returns — enough to rebuild sigma
+            for asset in ASSETS:
+                rets = list(self._returns[asset])
+                if not rets or self._params.get(asset) is None or self._log_var.get(asset) is None:
+                    continue
+                replay = rets[-WARMSTART_RETURNS:]
+                pre_sigma = self._sigma.get(asset, 0)
+                for r in replay:
+                    self.recursive_update(asset, r)
+                post_sigma = self._sigma.get(asset, 0)
+                logging.info(
+                    "EGARCH %s: warm-start replayed %d returns (sigma %.6f -> %.6f)",
+                    asset, len(replay), pre_sigma or 0, post_sigma or 0)
         except Exception as e:
             logging.warning("EGARCH state load failed: %s", e)
 
