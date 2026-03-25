@@ -8181,41 +8181,9 @@ class OpportunityScanner:
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_dc)", exc_info=True)
 
-                                # Per-window cap: max 1 DC per hourly window
-                                _hdc_wkey = "hdc_" + window["event_ticker"]
-                                _hdc_existing = self._dc_window_risk.get(_hdc_wkey, 0)
-                                if _hdc_existing > 0:
-                                    logging.info("HOURLY_DC_WINDOW_CAP: %s skipped (already have 1 DC in this window)", ticker)
-                                elif not OBSERVATION_MODE:
-                                    self._dc_window_risk[_hdc_wkey] = HOURLY_DC_CONTRACTS * best_ask
-                                    logging.info("HOURLY_DC_CANDIDATE: %s %dx@%dc z=%.1f sig=%.6f stc=%.0fs",
-                                                 ticker, HOURLY_DC_CONTRACTS, best_ask, z_score, _hdc_sigma, seconds_remaining)
-                                    candidates.append({
-                                        "ticker": ticker,
-                                        "event_ticker": window["event_ticker"],
-                                        "asset": asset,
-                                        "product_type": "hourly",
-                                        "spot": spot, "threshold": threshold,
-                                        "seconds_to_close": round(seconds_remaining, 1),
-                                        "blended_rv": blended_rv,
-                                        "calibrated_prob": HOURLY_DC_ASSUMED_PROB,
-                                        "z_score": z_score,
-                                        "best_yes_ask": best_ask,
-                                        "best_ask_source": best_ask_source,
-                                        "edge": round(HOURLY_DC_ASSUMED_PROB - best_ask / 100.0, 6),
-                                        "position_size": HOURLY_DC_CONTRACTS,
-                                        "kelly_f": 0.0,
-                                        "drawdown_scaler": 1.0,
-                                        "vol_regime": vol_est["regime"],
-                                        "balance_at_scan": self._get_balance_cached() or 0,
-                                        "strategy": "hourly_dc",
-                                        "strategy_scores": {"certainty": 1.0, "reason": "hourly_decided_contract"},
-                                        "ob_snapshot": {"best_ask": best_ask, "ask_depth": ask_depth},
-                                        "calibrated_prob_raw": raw_prob,
-                                        "ofa_adjustment": 0, "ofa_confidence": "none",
-                                        "raw_prob": raw_prob,
-                                        "fee_adjusted_edge": round(HOURLY_DC_ASSUMED_PROB - best_ask / 100.0 - est_fee_1c / 100.0, 6),
-                                    })
+                                # Shadow only — 87% WR at 93-96c is below breakeven.
+                                # Keep logging for comparison data but never execute.
+                                # (Execution path removed Mar 25 — was live but never fired)
 
                     # ── HOURLY DC SHADOW: 97c+ z≤-3 STC≤600s ──────────────────
                     # New variant targeting the profitable zone. Data: 37/37 (100% WR)
