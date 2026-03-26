@@ -2000,13 +2000,18 @@ class TestRollingHWM:
     def test_record_balance(self):
         from models import PositionSizer
         sizer = PositionSizer(starting_balance_cents=10000)
-        sizer.record_balance(11000)
-        assert len(sizer._balance_history) == 1
+        # Must complete warmup (5 readings) before balance_history is populated
+        for _ in range(5):
+            sizer.record_balance(11000)
+        assert len(sizer._balance_history) == 1  # warmup seeds 1 median entry
 
     def test_rolling_hwm_uses_max(self):
         from models import PositionSizer
         sizer = PositionSizer(starting_balance_cents=10000)
-        sizer.record_balance(12000)
+        # Complete warmup at 12000
+        for _ in range(5):
+            sizer.record_balance(12000)
+        # Record lower values (within 50% floor guard of HWM=12000)
         sizer.record_balance(11000)
         sizer.record_balance(10500)
         assert sizer.get_rolling_hwm() == 12000
@@ -2017,17 +2022,22 @@ class TestRollingHWM:
         from models import PositionSizer
         from config import HWM_LOOKBACK_SECONDS
         sizer = PositionSizer(starting_balance_cents=10000)
+        # Complete warmup first
+        for _ in range(5):
+            sizer.record_balance(10000)
         # Insert an old high balance beyond lookback window
         old_ts = _time.time() - HWM_LOOKBACK_SECONDS - 3600
         sizer._balance_history.append((old_ts, 50000))
-        # Insert a recent lower balance
+        # Insert a recent balance
         sizer.record_balance(10000)
         assert sizer.get_rolling_hwm() == 10000
 
     def test_drawdown_scaler_uses_rolling_hwm(self):
         from models import PositionSizer
         sizer = PositionSizer(starting_balance_cents=10000)
-        sizer.record_balance(10000)
+        # Complete warmup
+        for _ in range(5):
+            sizer.record_balance(10000)
         # At current balance = HWM, scaler should be 1.0
         scaler = sizer._drawdown_scaler(10000)
         assert scaler == 1.0
@@ -2047,11 +2057,14 @@ class TestRollingHWM:
         import time as _time
         from models import PositionSizer
         from config import HWM_LOOKBACK_SECONDS
-        sizer = PositionSizer(starting_balance_cents=100000)  # $1000
-        # Old peak at $1000
+        sizer = PositionSizer(starting_balance_cents=55000)
+        # Complete warmup at post-withdrawal balance
+        for _ in range(5):
+            sizer.record_balance(55000)
+        # Insert an old high balance beyond lookback window
         old_ts = _time.time() - HWM_LOOKBACK_SECONDS - 1
         sizer._balance_history.append((old_ts, 100000))
-        # Current balance $550 (after withdrawal)
+        # Record current balance again (recent)
         sizer.record_balance(55000)
         # HWM should be 55000 (old peak aged out), so ratio = 1.0
         assert sizer.get_rolling_hwm() == 55000

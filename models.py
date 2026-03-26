@@ -998,6 +998,8 @@ class PositionSizer:
         self._hwm_warmup_readings: list = []
         self._hwm_initialized: bool = False
         self._HWM_WARMUP_COUNT = 5
+        # Consecutive spike rejection counter (for alerting)
+        self._consecutive_spike_rejections: int = 0
         # Check env var for manual HWM override (dollars)
         override = os.environ.get("OVERRIDE_HWM")
         if override:
@@ -1092,7 +1094,18 @@ class PositionSizer:
         return result
 
     def record_balance(self, balance_cents: int):
-        """Record current balance for rolling HWM computation. Call each scan cycle."""
+        """Record FULL portfolio balance for rolling HWM computation.
+
+        IMPORTANT: Only call with the FULL portfolio balance (available cash +
+        open position exposure). Never call with fractional bankroll amounts
+        (e.g., hourly's 10% or SPX's 15%). Fractional values poison the spike
+        rejection history and permanently break HWM tracking.
+        (Learned: fractional bankroll from hourly/SPX ratcheted 'last' down to
+        ~$118, causing real $1,191 balance to be rejected as +910% spike for 18h.
+        Mar 25-26 2026.)
+
+        Call once per scan cycle from _tick(), NOT from compute()/_drawdown_scaler().
+        """
         if balance_cents <= 0:
             return  # Skip bad readings
 
@@ -1110,16 +1123,31 @@ class PositionSizer:
                     [f"${r/100:.2f}" for r in sorted_readings])
             return  # Don't record individual warmup readings
 
+        # Floor guard: reject readings < 50% of current HWM (likely bad API read
+        # or fractional bankroll leaking through)
+        if self._balance_history:
+            hwm = self.get_rolling_hwm()
+            if hwm > 0 and balance_cents < hwm * 0.50:
+                logging.warning(
+                    "DRAWDOWN: balance floor guard %dc < 50%% of HWM %dc — skipping "
+                    "(possible fractional bankroll or bad API read)",
+                    balance_cents, hwm)
+                return
+
         # Spike rejection: skip readings >20% above the last recorded value
         if self._balance_history:
             _, last_balance = self._balance_history[-1]
             if last_balance > 0 and balance_cents > last_balance * 1.20:
+                self._consecutive_spike_rejections += 1
                 logging.warning(
-                    "DRAWDOWN: balance spike %dc vs last %dc (+%.0f%%) — skipping",
+                    "DRAWDOWN: balance spike %dc vs last %dc (+%.0f%%) — skipping "
+                    "(consecutive=%d)",
                     balance_cents, last_balance,
-                    (balance_cents - last_balance) / last_balance * 100)
+                    (balance_cents - last_balance) / last_balance * 100,
+                    self._consecutive_spike_rejections)
                 return
 
+        self._consecutive_spike_rejections = 0
         self._balance_history.append((time.time(), balance_cents))
 
     def get_rolling_hwm(self) -> int:
@@ -1138,13 +1166,14 @@ class PositionSizer:
     def _drawdown_scaler(self, balance_cents: int) -> float:
         """Scale position based on drawdown from rolling 7-day peak HWM.
 
-        IMPORTANT: Only call from main thread — records balance + updates HWM.
-        For read-only access (e.g. dashboard), use _drawdown_scaler_readonly().
+        READ-ONLY: does NOT call record_balance(). The caller (_tick) must call
+        record_balance() once per cycle with the FULL portfolio balance.
+        (Changed Mar 26 2026: record_balance was inside here, causing fractional
+        bankroll from hourly/SPX to poison the balance history.)
         """
-        # Guard: if balance fetch failed (0 or negative), don't record and don't halt
+        # Guard: if balance fetch failed (0 or negative), don't halt
         if balance_cents <= 0:
             return 1.0
-        self.record_balance(balance_cents)
         # During warmup, no drawdown scaling — just restarted, no drawdown possible
         if not self._hwm_initialized:
             return 1.0
