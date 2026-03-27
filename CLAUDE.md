@@ -197,7 +197,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | XRP_MIN_ENTRY_PRICE | 92 | Cents (data: PnL negative at every floor <90c, PF=1.68 at ≥92c) |
 | MAX_ENTRY_PRICE | 99 | Cents |
 | MIN_EDGE_PCT | 0.25 | Flat fallback for execution paths (was 0.7) |
-| MIN_EDGE_BY_PRICE | 0.25%-1.0% | Price-dependent: 80-88c→0.25%, 89-90c→0.25%, 91-92c→0.35%, 93-94c→0.9%, 95-96c→0.75%, 97-99c→1.0% |
+| MIN_EDGE_BY_PRICE | 0.20%-1.0% | Price-dependent: 80-88c→0.25%, 89-90c→0.25%, 91-92c→0.20%, 93-94c→0.50%, 95-96c→0.75%, 97-99c→1.0% |
 | MARKET_BLEND_W | 0.40 | 60% model, 40% market (data: model underconfident 0.8-2.1pp at 90%+) |
 | MAX_RISK_PER_TRADE | 0.25 | Max 25% bankroll per trade |
 | MAX_SECONDS_BEFORE_CLOSE | 900 | 15 min before close (600-900s shadow, 0-600s live) |

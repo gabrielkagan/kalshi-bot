@@ -4939,6 +4939,29 @@ class ProbabilityEngine:
         else:
             calibrated_prob = ProbabilityEngine._calibrate(raw_prob, cap=dynamic_cap)
             result["calibration_method"] = "fixed_beta"
+        # ── Clamped BLR: prevent extreme inflation in low raw_prob zone ──
+        # BLR extrapolates badly when raw_prob < 0.70 (training data is 85c+).
+        # Clamp cal_prob to max raw_prob + 5pp, with linear transition 70-85%.
+        # Does NOT affect shadow CalEngine, CalEngine retraining, or high-raw signals.
+        _cal_clamp_delta = calibrated_prob - raw_prob
+        if raw_prob < 0.70 and _cal_clamp_delta > 0.05:
+            _original_cal = calibrated_prob
+            calibrated_prob = min(calibrated_prob, raw_prob + 0.05)
+            logging.info(
+                "CAL_CLAMP: raw=%.3f blr=%.3f clamped=%.3f delta=%.3f",
+                raw_prob, _original_cal, calibrated_prob,
+                _original_cal - calibrated_prob)
+        elif raw_prob < 0.85 and _cal_clamp_delta > 0.05:
+            _alpha = (raw_prob - 0.70) / 0.15
+            _clamped = min(calibrated_prob, raw_prob + 0.05)
+            _original_cal = calibrated_prob
+            calibrated_prob = _alpha * calibrated_prob + (1.0 - _alpha) * _clamped
+            if abs(calibrated_prob - _original_cal) > 0.005:
+                logging.info(
+                    "CAL_CLAMP_BLEND: raw=%.3f blr=%.3f clamped=%.3f alpha=%.2f delta=%.3f",
+                    raw_prob, _original_cal, calibrated_prob, _alpha,
+                    _original_cal - calibrated_prob)
+
         result["calibrated_prob"] = round(calibrated_prob, 6)
 
         # ── Sanity: model vs market discrepancy ──────────────────────────
@@ -13115,6 +13138,32 @@ class OrderExecutor:
             f"cost={cost_cents}¢ fee={fee_cents}¢"
             f"{'' if is_complete else ' [PARTIAL ' + str(order['filled_so_far']) + '/' + str(order['count']) + ']'}"
         )
+
+        # ── Sub-floor fill alert ────────────────────────────────────────
+        # Monitor fills below asset's MIN_ENTRY_PRICE. Position is already
+        # recorded above — this is monitoring only, never blocks.
+        _ASSET_FLOOR_MAP = {
+            "BTC": BTC_MIN_ENTRY_PRICE, "ETH": ETH_MIN_ENTRY_PRICE,
+            "SOL": SOL_MIN_ENTRY_PRICE, "XRP": XRP_MIN_ENTRY_PRICE,
+        }
+        _fill_asset = order["asset"]
+        _fill_floor = _ASSET_FLOOR_MAP.get(_fill_asset, MIN_ENTRY_PRICE)
+        if fill_price < _fill_floor:
+            _floor_gap = _fill_floor - fill_price
+            _nbbo_at_eval = order.get("price_cents", fill_price)
+            logging.warning(
+                "SUB_FLOOR_FILL: %s %s %dct @ %dc (floor %dc, gap %dc, NBBO %dc)",
+                ticker, _fill_asset, fill_count, fill_price,
+                _fill_floor, _floor_gap, _nbbo_at_eval)
+            if _TELEGRAM:
+                try:
+                    _TELEGRAM.send(
+                        f"\u26a0\ufe0f SUB-FLOOR FILL: {_fill_asset} {fill_price}c "
+                        f"(floor {_fill_floor}c) NBBO={_nbbo_at_eval}c gap={_floor_gap}c "
+                        f"{fill_count}ct ${cost_cents / 100:.2f} exposure",
+                        dedup_key=f"subfloor_{ticker}")
+                except Exception:
+                    logging.debug("Sub-floor Telegram alert failed", exc_info=True)
 
         # Register for confirmation addon evaluation (only on complete fills)
         if is_complete:
