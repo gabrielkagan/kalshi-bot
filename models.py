@@ -1168,8 +1168,14 @@ class PositionSizer:
 
         READ-ONLY: does NOT call record_balance(). The caller (_tick) must call
         record_balance() once per cycle with the FULL portfolio balance.
-        (Changed Mar 26 2026: record_balance was inside here, causing fractional
-        bankroll from hourly/SPX to poison the balance history.)
+
+        IMPORTANT: The ratio is computed from the RECORDED portfolio balance
+        (from _balance_history), NOT from the balance_cents parameter. The
+        balance_cents param may be a product-level fractional bankroll (hourly
+        10%, SPX 15%, or available cash with positions open). Using it for the
+        ratio would falsely trigger drawdown halt.
+        (Learned: SOL trade sized to 5 instead of 160 because available cash
+        $400 vs HWM $1,117 gave ratio=0.358 → halt floor. Mar 27 2026.)
         """
         # Guard: if balance fetch failed (0 or negative), don't halt
         if balance_cents <= 0:
@@ -1182,7 +1188,15 @@ class PositionSizer:
             return 1.0
         # Keep starting_balance_cents in sync for backward compat (dashboard reads it)
         self.starting_balance_cents = hwm
-        ratio = balance_cents / hwm
+        # Use RECORDED portfolio balance for ratio, not the passed sizing balance.
+        # balance_cents may be fractional (hourly 10%, SPX 15%) or available cash
+        # (excluding open position margin). The ratio must compare portfolio-level
+        # values on both sides.
+        if self._balance_history:
+            _, portfolio_balance = self._balance_history[-1]
+        else:
+            portfolio_balance = balance_cents  # fallback if no history yet
+        ratio = portfolio_balance / hwm
         if ratio < DRAWDOWN_HALT_THRESHOLD:
             # Floor: never fully halt. Even during drawdown, place minimum-size trades
             # so the system can recover. The HWM can get inflated by API jitter,
@@ -1203,7 +1217,11 @@ class PositionSizer:
         hwm = self.get_rolling_hwm()
         if hwm <= 0:
             return 1.0
-        ratio = balance_cents / hwm
+        if self._balance_history:
+            _, portfolio_balance = self._balance_history[-1]
+        else:
+            portfolio_balance = balance_cents
+        ratio = portfolio_balance / hwm
         if ratio < DRAWDOWN_HALT_THRESHOLD:
             return 0.0
         if ratio < DRAWDOWN_QUARTER_THRESHOLD:

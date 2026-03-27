@@ -51,15 +51,22 @@ class TestComputeDoesNotRecordBalance(unittest.TestCase):
         self.assertEqual(len(sizer._balance_history), history_len)
 
     def test_drawdown_scaler_is_readonly(self):
-        """_drawdown_scaler must not call record_balance."""
+        """_drawdown_scaler must not call record_balance, and uses portfolio balance
+        from history for ratio (not the parameter)."""
         sizer = PositionSizer(starting_balance_cents=100000)
         for _ in range(5):
             sizer.record_balance(100000)
         history_len = len(sizer._balance_history)
 
-        scaler = sizer._drawdown_scaler(50000)  # 50% drawdown
+        # Passing 50000 should NOT trigger drawdown — ratio uses history[-1]=100000
+        scaler = sizer._drawdown_scaler(50000)
         self.assertEqual(len(sizer._balance_history), history_len)
-        self.assertLess(scaler, 1.0)  # Should detect drawdown
+        self.assertEqual(scaler, 1.0)  # Portfolio is fine, param is irrelevant
+
+        # Record actual portfolio drawdown, THEN check
+        sizer.record_balance(80000)  # 80% of HWM → below DRAWDOWN_HALF (0.85)
+        scaler = sizer._drawdown_scaler(50000)  # param doesn't matter
+        self.assertEqual(scaler, 0.5)
 
 
 class TestWarmupWithPositions(unittest.TestCase):
@@ -230,25 +237,116 @@ class TestFractionalBankrollScenario(unittest.TestCase):
 class TestDrawdownScalerReadOnly(unittest.TestCase):
     """Verify _drawdown_scaler does not modify state."""
 
-    def test_scaler_returns_correct_values(self):
+    def test_scaler_uses_portfolio_balance_not_parameter(self):
+        """The key fix: scaler ratio uses recorded portfolio balance,
+        not the balance_cents parameter (which may be fractional)."""
         sizer = PositionSizer(starting_balance_cents=100000)
         for _ in range(5):
             sizer.record_balance(100000)
 
-        # No drawdown
-        self.assertEqual(sizer._drawdown_scaler(100000), 1.0)
+        # Pass fractional balance (hourly 10%) — ratio should STILL be 1.0
+        # because it uses _balance_history[-1] = 100000, not the 10000 param
+        self.assertEqual(sizer._drawdown_scaler(10000), 1.0)
 
-        # Small drawdown (90% of HWM) — above DRAWDOWN_HALF (0.85)
-        self.assertEqual(sizer._drawdown_scaler(90000), 1.0)
+        # Pass SPX 15% balance — same: ratio = 100000/100000 = 1.0
+        self.assertEqual(sizer._drawdown_scaler(15000), 1.0)
 
-        # Moderate drawdown (80% of HWM) — below HALF, above QUARTER
+        # Pass available cash with positions open — still 1.0
+        self.assertEqual(sizer._drawdown_scaler(40000), 1.0)
+
+    def test_scaler_detects_real_portfolio_drawdown(self):
+        """When the RECORDED portfolio balance drops, scaler kicks in."""
+        sizer = PositionSizer(starting_balance_cents=100000)
+        for _ in range(5):
+            sizer.record_balance(100000)  # HWM = 100000
+
+        # Portfolio drops to 80000 (20% drawdown)
+        sizer.record_balance(80000)
+        # Now _balance_history[-1] = 80000, HWM = 100000, ratio = 0.80
+        # 0.80 < DRAWDOWN_HALF (0.85) → scaler = 0.5
         self.assertEqual(sizer._drawdown_scaler(80000), 0.5)
+
+        # Even if passed balance is different, ratio uses recorded 80000
+        self.assertEqual(sizer._drawdown_scaler(10000), 0.5)
+        self.assertEqual(sizer._drawdown_scaler(100000), 0.5)
 
     def test_scaler_returns_1_during_warmup(self):
         sizer = PositionSizer(starting_balance_cents=0)
         # Not initialized yet
         self.assertFalse(sizer._hwm_initialized)
         self.assertEqual(sizer._drawdown_scaler(50000), 1.0)
+
+    def test_scaler_empty_history_fallback(self):
+        """If _balance_history is empty after warmup (shouldn't happen but safety),
+        falls back to balance_cents parameter."""
+        sizer = PositionSizer(starting_balance_cents=100000)
+        for _ in range(5):
+            sizer.record_balance(100000)
+        # Force empty history (shouldn't happen in production)
+        sizer._balance_history.clear()
+        # With empty history, get_rolling_hwm returns starting_balance_cents
+        # and ratio uses balance_cents fallback
+        # HWM = starting_balance_cents = 100000 (set by warmup)
+        scaler = sizer._drawdown_scaler(100000)
+        self.assertEqual(scaler, 1.0)
+
+
+class TestDrawdownScalerWithFractionalBankroll(unittest.TestCase):
+    """End-to-end: fractional bankroll through compute() gets correct scaler."""
+
+    def test_hourly_10pct_gets_scaler_1(self):
+        """Hourly passes 10% balance → scaler should be 1.0, contracts based on 10%."""
+        sizer = PositionSizer(starting_balance_cents=100000)
+        for _ in range(5):
+            sizer.record_balance(100000)
+
+        # Hourly sizing: 10% of $1000 = $100 = 10000 cents
+        result = sizer.compute(0.90, 55, 10000)
+        self.assertEqual(result["drawdown_scaler"], 1.0,
+                         "Hourly 10% bankroll should NOT trigger drawdown")
+        self.assertGreater(result["contracts"], 0)
+
+    def test_spx_15pct_gets_scaler_1(self):
+        """SPX passes 15% balance → scaler should be 1.0."""
+        sizer = PositionSizer(starting_balance_cents=100000)
+        for _ in range(5):
+            sizer.record_balance(100000)
+
+        result = sizer.compute(0.92, 90, 15000)
+        self.assertEqual(result["drawdown_scaler"], 1.0,
+                         "SPX 15% bankroll should NOT trigger drawdown")
+
+    def test_available_cash_with_positions_gets_scaler_1(self):
+        """Available cash $400 with $700 in positions → scaler should be 1.0."""
+        sizer = PositionSizer(starting_balance_cents=110000)
+        for _ in range(5):
+            sizer.record_balance(110000)
+
+        # Available cash is only $400 because $700 is in positions
+        result = sizer.compute(0.95, 88, 40000)
+        self.assertEqual(result["drawdown_scaler"], 1.0,
+                         "Available cash with positions open should NOT trigger drawdown")
+
+    def test_real_drawdown_affects_all_products(self):
+        """When portfolio actually drops, ALL products get scaled down."""
+        sizer = PositionSizer(starting_balance_cents=100000)
+        for _ in range(5):
+            sizer.record_balance(100000)
+
+        # Portfolio drops to 80000
+        sizer.record_balance(80000)
+
+        # 15M with full balance
+        r1 = sizer.compute(0.95, 85, 80000)
+        self.assertEqual(r1["drawdown_scaler"], 0.5)
+
+        # Hourly with 10% of new balance
+        r2 = sizer.compute(0.90, 55, 8000)
+        self.assertEqual(r2["drawdown_scaler"], 0.5)
+
+        # SPX with 15%
+        r3 = sizer.compute(0.92, 90, 12000)
+        self.assertEqual(r3["drawdown_scaler"], 0.5)
 
 
 if __name__ == "__main__":
