@@ -1711,6 +1711,8 @@ class StateManager:
             ("side", "TEXT DEFAULT 'yes'"),
             # Shadow taker tracking: best ask at maker order submission time
             ("taker_ask_at_submit", "INTEGER"),
+            # NO-side pricing: actual NO ask from Kalshi NBBO (for DC-NO analysis)
+            ("no_ask_cents", "INTEGER"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2220,7 +2222,8 @@ class StateManager:
                                      order_id: Optional[str] = None,
                                      order_submitted_at: Optional[str] = None,
                                      order_outcome: Optional[str] = None,
-                                     side: str = "yes"):
+                                     side: str = "yes",
+                                     no_ask_cents: Optional[int] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -2258,8 +2261,8 @@ class StateManager:
                      hourly_post_temp_prob,
                      available_balance_cents,
                      order_id, order_submitted_at, order_outcome,
-                     side)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     side, no_ask_cents)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -2320,7 +2323,8 @@ class StateManager:
                     hourly_shadow_blend_30=excluded.hourly_shadow_blend_30,
                     hourly_shadow_blend_60=excluded.hourly_shadow_blend_60,
                     hourly_post_temp_prob=excluded.hourly_post_temp_prob,
-                    available_balance_cents=excluded.available_balance_cents
+                    available_balance_cents=excluded.available_balance_cents,
+                    no_ask_cents=excluded.no_ask_cents
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -2348,7 +2352,7 @@ class StateManager:
                   hourly_post_temp_prob,
                   available_balance_cents,
                   order_id, order_submitted_at, order_outcome,
-                  side))
+                  side, no_ask_cents))
             self.conn.commit()
         except Exception as e:
             try:
@@ -6603,6 +6607,11 @@ class OpportunityScanner:
                             "Using market NBBO yes_ask=%d¢ for %s (orderbook NO bids empty)",
                             best_ask, ticker,
                         )
+                # Read NO ask for pricing analysis (logged to evaluated_opportunities via _shadow_diag)
+                _mkt_no_ask_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                _mkt_no_ask_cents = (dollars_str_to_cents(_mkt_no_ask_raw) if isinstance(_mkt_no_ask_raw, str)
+                                     else int(_mkt_no_ask_raw)) if _mkt_no_ask_raw is not None else None
+                _shadow_diag["no_ask_cents"] = _mkt_no_ask_cents
                 if best_ask is not None:
                     if ticker not in self._ticker_ask_history:
                         self._ticker_ask_history[ticker] = deque(maxlen=300)
