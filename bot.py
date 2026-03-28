@@ -1750,6 +1750,8 @@ class StateManager:
             ("oft_prob_adjustment", "REAL"),
             ("oft_imbalance_ratio", "REAL"),
             ("oft_n_snapshots", "INTEGER"),
+            # NO-side pricing (for DC-NO analysis)
+            ("no_ask_cents", "INTEGER"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE rejected_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2111,7 +2113,8 @@ class StateManager:
                          product_type: Optional[str] = None,
                          oft_prob_adjustment: Optional[float] = None,
                          oft_imbalance_ratio: Optional[float] = None,
-                         oft_n_snapshots: Optional[int] = None):
+                         oft_n_snapshots: Optional[int] = None,
+                         no_ask_cents: Optional[int] = None):
         """Insert a rejected opportunity. INSERT OR IGNORE keeps the first rejection reason."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         self.conn.execute("""
@@ -2122,15 +2125,17 @@ class StateManager:
                  egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
                  shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
                  counterfactual, product_type,
-                 oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
+                 no_ask_cents)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, event_ticker, asset, rejection_reason, now,
               z_score, spot_price, threshold, volatility, market_price,
               seconds_to_close, calibrated_prob, raw_prob, "pending",
               egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
               shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
               counterfactual, product_type,
-              oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots))
+              oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
+              no_ask_cents))
         self.conn.commit()
 
     def get_unsettled_rejections(self) -> List[Dict]:
@@ -5965,7 +5970,7 @@ class OpportunityScanner:
         _SHADOW_DIAG_KEYS = {
             "egarch_sigma", "egarch_blend_sigma", "egarch_blend_weight",
             "mz_r_squared", "shadow_tv_blend_rv", "mz_shadow_sigmoid_w",
-            "mz_baseline_qlike", "mz_qlike",
+            "mz_baseline_qlike", "mz_qlike", "no_ask_cents",
         }
         for _fn_name, _fn in [
             ("insert_rejection", self._state.insert_rejection),

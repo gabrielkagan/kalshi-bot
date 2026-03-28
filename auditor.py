@@ -62,7 +62,7 @@ MAX_TG_MESSAGES = 5
 EXPECTED_COLUMN_COUNTS = {
     "settled_trades": 22,
     "evaluated_opportunities": 80,
-    "rejected_opportunities": 28,
+    "rejected_opportunities": 29,
     "positions": 23,
     "pending_orders": 12,
 }
