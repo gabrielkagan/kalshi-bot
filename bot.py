@@ -542,7 +542,7 @@ DECIDED_T2_ENABLED = os.environ.get("DECIDED_T2_ENABLED", "1") == "1"
 DECIDED_T2_Z25_ENABLED = os.environ.get("DECIDED_T2_Z25_ENABLED", "1") == "1"
 DECIDED_T2_Z2_ENABLED = os.environ.get("DECIDED_T2_Z2_ENABLED", "1") == "1"
 DECIDED_CONTRACT_Z_T2_Z25 = -2.5            # Tier 2-Z25: -3 < z ≤ -2.5, 93-96c (data: 7/7 = 100% WR)
-DECIDED_CONTRACT_Z_T2_Z2 = -2.0             # Tier 2-Z2: -2.5 < z ≤ -2, 93-96c (data: 19/19 = 100% WR)
+DECIDED_CONTRACT_Z_T2_Z2 = -1.75            # Tier 2-Z2: -2.5 < z ≤ -1.75, 93-96c (expanded from -2.0 — data: 114/115 = 99.1% WR in -2.0 to -1.75 zone, Wilson LB 95.2%)
 DECIDED_CONTRACT_T2_Z25_RISK = 0.20         # 20% fixed sizing (was 15% — data: 4/4 WR, +$8.12/trade)
 DECIDED_CONTRACT_T2_Z2_RISK = 0.20          # 20% fixed sizing (was 12.5% — data: 24/25 WR, 96%)
 DECIDED_CONTRACT_RISK = 0.20                # Fixed 20% bankroll per signal (was 12.5% — data: 56/56 WR on T1+T1B+T2)
@@ -8181,11 +8181,11 @@ class OpportunityScanner:
                             _dc_shadow_insert("dc_shadow_t2_z25",
                                               f"shadow: z={z_score:.1f} price={best_ask}c (T2 z≤-2.5 expansion)")
 
-                        # T2 z≤-2 at 93-96c (deeper loosening from z≤-3)
-                        if (-2.5 < z_score <= -2.0
+                        # T2 z≤-1.5 at 93-96c (shadow for next expansion beyond live -1.75)
+                        if (DECIDED_CONTRACT_Z_T2_Z2 < z_score <= -1.5
                                 and 93 <= best_ask <= DECIDED_CONTRACT_T2_MAX_PRICE):
                             _dc_shadow_insert("dc_shadow_t2_z2",
-                                              f"shadow: z={z_score:.1f} price={best_ask}c (T2 z≤-2 expansion)")
+                                              f"shadow: z={z_score:.1f} price={best_ask}c (T2 z≤-1.5 expansion)")
 
                     # ── HOURLY DECIDED CONTRACTS ──────────────────────────────
                     # Same DC thesis on hourly BTC tickers. Separate from sub-60c.
