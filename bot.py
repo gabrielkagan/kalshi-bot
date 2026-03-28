@@ -366,6 +366,7 @@ HOURLY_CALIBRATION_STATE_PATH = "hourly_calibration_state.json"
 CALIBRATION_MIN_SAMPLES_PLATT = 200
 CALIBRATION_MIN_SAMPLES_BETA = 350   # lowered from 500 (we have 370+ obs)
 CALIBRATION_MIN_SAMPLES_BLR = 50
+FIFTEEN_M_CALIBRATION_ENABLED = False  # BLR bypass: raw_prob more accurate (w=0.11 collapsed, Brier 0.0648 vs 0.0634 raw)
 CALIBRATION_RETRAIN_INTERVAL = 3600    # seconds between retrain checks
 CALIBRATION_BRIER_WINDOW = 500         # rolling Brier over last N outcomes
 
@@ -4942,8 +4943,18 @@ class ProbabilityEngine:
             result["shadow_cal_prob"] = round(_pt_shadow, 6)
             result["shadow_cal_temperature"] = _temp_cfg
         elif _cal_cfg2.cal_eligible and _CALIBRATION_ENGINE is not None:
-            calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
-            result["calibration_method"] = _CALIBRATION_ENGINE.active_method
+            if FIFTEEN_M_CALIBRATION_ENABLED and _CALIBRATION_ENGINE.is_learned_method_active():
+                calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
+                result["calibration_method"] = _CALIBRATION_ENGINE.active_method
+            else:
+                calibrated_prob = min(raw_prob, dynamic_cap)
+                result["calibration_method"] = "passthrough"
+                # Diagnostic: log what BLR would have produced (remove after validation)
+                _blr_would = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
+                if abs(_blr_would - calibrated_prob) > 0.02:
+                    logging.info(
+                        "BLR_BYPASS: raw=%.4f passthrough=%.4f blr_would=%.4f delta=%.3f",
+                        raw_prob, calibrated_prob, _blr_would, _blr_would - calibrated_prob)
         elif not _cal_cfg2.cal_eligible:
             calibrated_prob = min(raw_prob, dynamic_cap)
             result["calibration_method"] = "passthrough"
