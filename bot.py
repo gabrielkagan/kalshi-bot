@@ -478,8 +478,10 @@ MIN_EDGE_PCT = 0.25               # flat fallback — matches lowest MIN_EDGE_BY
 #   - No edge inversion (lower tiers not dragging overall)
 WEEKEND_EDGE_DISCOUNT = 0.60      # multiply MIN_EDGE_BY_PRICE by this on Sat/Sun
 WEEKEND_DISCOUNT_LIVE = True      # Promote weekend discount to live trading (kill switch)
-WEEKEND_DISCOUNT_MIN_PRICE = 89   # 89c+ only (sub-89c is PnL-negative in shadow data)
+WEEKEND_DISCOUNT_MIN_PRICE = 90   # 90c+ only (raised from 89 to match ETH floor; data: 163 cands at 90c+ weekends, 95.6% WR)
 WEEKEND_DISCOUNT_MAX_STC = 600    # STC gate — 600-900s is 57% WR, kills PnL
+WEEKEND_EDGE_FLOOR = 0.0          # Allow zero-edge trades on weekends (data: 95.5% WR at 0% threshold, +$9.43/wknd-day)
+WEEKEND_FIXED_RISK = 0.07         # 7% bankroll when Kelly produces 0 (bypasses Kelly for zero-edge weekend trades)
 OVERNIGHT_EDGE_DISCOUNT = 0.60    # multiply MIN_EDGE_BY_PRICE by this during overnight quiet hours (04-11 UTC)
 OVERNIGHT_QUIET_START = 4         # UTC hour — quiet zone starts (inclusive)
 OVERNIGHT_QUIET_END = 11          # UTC hour — quiet zone ends (inclusive)
@@ -7632,6 +7634,7 @@ class OpportunityScanner:
                             and datetime.datetime.now(timezone.utc).weekday() >= 5
                             and best_ask >= MIN_ENTRY_PRICE):
                         _wknd_discounted_min = _min_edge * WEEKEND_EDGE_DISCOUNT
+                        _wknd_discounted_min = min(_wknd_discounted_min, WEEKEND_EDGE_FLOOR)
                         if fee_adjusted_edge >= _wknd_discounted_min:
                             # Compute sizing (shared by live and shadow paths)
                             _wknd_balance = self._get_balance_cached()
@@ -7652,6 +7655,18 @@ class OpportunityScanner:
                                 if _wknd_position > _wknd_type_max:
                                     _wknd_position = max(1, _wknd_type_max)
                                 _wknd_ev = round((final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
+                                # Fixed sizing fallback when Kelly produces 0 (edge near zero)
+                                if _wknd_position == 0:
+                                    _wknd_fixed_raw = max(1, int((_wknd_balance * WEEKEND_FIXED_RISK) / best_ask))
+                                    # Apply drawdown scaler to fixed sizing
+                                    if _wknd_drawdown is not None and _wknd_drawdown < 1.0:
+                                        _wknd_fixed_raw = max(1, int(_wknd_fixed_raw * _wknd_drawdown))
+                                    _wknd_position = _wknd_fixed_raw
+                                    logging.info(
+                                        "WEEKEND_FIXED_SIZE: %s edge=%.4f kelly=0 fixed=%dct risk=%.0f%% balance=%d scaler=%.2f",
+                                        ticker, fee_adjusted_edge, _wknd_position,
+                                        WEEKEND_FIXED_RISK * 100, _wknd_balance,
+                                        _wknd_drawdown if _wknd_drawdown else 1.0)
 
                             # Check live eligibility gates
                             _wknd_dc_overlap = (z_score is not None

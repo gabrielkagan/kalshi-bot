@@ -42,7 +42,7 @@ class TestWeekendDiscountConstants(unittest.TestCase):
         self.assertIn("WEEKEND_DISCOUNT_LIVE = True", self.source)
 
     def test_min_price_exists(self):
-        self.assertIn("WEEKEND_DISCOUNT_MIN_PRICE = 89", self.source)
+        self.assertIn("WEEKEND_DISCOUNT_MIN_PRICE = 90", self.source)
 
     def test_max_stc_exists(self):
         self.assertIn("WEEKEND_DISCOUNT_MAX_STC = 600", self.source)
