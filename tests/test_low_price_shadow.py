@@ -200,10 +200,10 @@ class TestLowPriceShadowNoLiveImpact(unittest.TestCase):
         self.assertNotIn("execute_order", self.handler)
 
     def test_min_entry_price_unchanged(self):
-        """MIN_ENTRY_PRICE still 80, per-asset floors unchanged (ETH lowered to 75)."""
-        self.assertIn("MIN_ENTRY_PRICE = 80", self.source)
-        self.assertIn("BTC_MIN_ENTRY_PRICE = 89", self.source)
-        self.assertIn("ETH_MIN_ENTRY_PRICE = 75", self.source)
+        """MIN_ENTRY_PRICE still 75, per-asset floors at current values."""
+        self.assertIn("MIN_ENTRY_PRICE = 75", self.source)
+        self.assertIn("BTC_MIN_ENTRY_PRICE = 88", self.source)
+        self.assertIn("ETH_MIN_ENTRY_PRICE = 90", self.source)
         self.assertIn("XRP_MIN_ENTRY_PRICE = 92", self.source)
 
 

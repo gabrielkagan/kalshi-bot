@@ -2139,9 +2139,9 @@ class TestNBBOFallbackGates:
         assert max_stc == 300.0
 
     def test_eth_gate_values(self):
-        from bot import NBBO_FALLBACK_GATES
+        from bot import NBBO_FALLBACK_GATES, ETH_MIN_ENTRY_PRICE
         min_p, _, max_stc = NBBO_FALLBACK_GATES["ETH"]
-        assert min_p == 75, "ETH NBBO floor must match ETH_MIN_ENTRY_PRICE"
+        assert min_p == ETH_MIN_ENTRY_PRICE, f"ETH NBBO floor must match ETH_MIN_ENTRY_PRICE ({ETH_MIN_ENTRY_PRICE})"
         assert max_stc == 300.0, "NBBO STC gate should be 300s"
 
     def test_sol_gate_excludes_low_prices(self):

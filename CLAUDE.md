@@ -191,7 +191,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | OBSERVATION_MODE | False | LIVE trading |
 | MIN_ENTRY_PRICE | 75 | Cents (global floor — lowered from 80 for ETH 75-79c) |
 | BTC_MIN_ENTRY_PRICE | 89 | Cents (data: 86-88c below taker BE, 89c is 93.3% WR) |
-| ETH_MIN_ENTRY_PRICE | 75 | Cents (data: 75-79c 87.1% WR, 70 obs, Wilson LB 77.3% > BE) |
+| ETH_MIN_ENTRY_PRICE | 90 | Cents (raised from 85 — data: ETH 85-89c 86.2% WR on 65 trades, -$23.76 PnL; 90c+ is 95.2% WR) |
 | SOL_MIN_ENTRY_PRICE | 80 | Cents (explicit floor — prevents SOL trading at 75-79c) |
 | ETH_SUB80_POSITION_CAP | 50 | Max contracts for ETH 75-79c (half-Kelly clamp [20,50]) |
 | XRP_MIN_ENTRY_PRICE | 92 | Cents (data: PnL negative at every floor <90c, PF=1.68 at ≥92c) |

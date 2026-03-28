@@ -46,7 +46,7 @@ SERIES_TICKERS = {
 MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for ETH 75-79c; SOL uses this, BTC/XRP overridden below)
 MAX_ENTRY_PRICE = 99              # cents
 BTC_MIN_ENTRY_PRICE = 88          # cents (data: 88c = 96.2% WR on n=53 shadow, 96.3% on n=27 recent)
-ETH_MIN_ENTRY_PRICE = 85          # cents (raised from 80 — 75% WR on 32 live trades at sub-85c, below ~81% breakeven)BE)
+ETH_MIN_ENTRY_PRICE = 90          # cents (raised from 85 — data: ETH 85-89c is 86.2% WR on 65 trades, -$23.76 PnL; 90c+ is 95.2% WR)
 SOL_MIN_ENTRY_PRICE = 80          # cents (global floor was 80; now explicit since global lowered to 75 for ETH)
 ETH_SUB80_POSITION_CAP = 50      # Half-Kelly at 75c/87% WR = 322-645 contracts; cap to 50 (ceil), floor 20
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
@@ -622,7 +622,7 @@ MAX_CONCURRENT_TAKER_PER_ASSET = 3  # safety cap: max simultaneous taker positio
 # Per-asset: (min_price_cents, max_price_cents, max_stc_seconds_or_None)
 NBBO_FALLBACK_GATES = {
     "BTC": (86, 99, 300.0),     # 97.9% WR; 180-300s validated (97% WR, n=33)
-    "ETH": (85, 99, 300.0),     # 85c matches ETH_MIN_ENTRY_PRICE; raised from 80c
+    "ETH": (90, 99, 300.0),     # 90c matches ETH_MIN_ENTRY_PRICE; raised from 85c (data: 85-89c 86.2% WR, negative EV)
     "SOL": (86, 99, 300.0),     # 93.3% WR; 80-85c is 50-73% WR trap
     "XRP": (92, 99, 300.0),     # 180-300s validated; will evaluate 300-600s after 1 week NBBO data
 }
@@ -9638,6 +9638,54 @@ class OpportunityScanner:
                     **_shadow_diag,
                     **_shadow_extra,
                 })
+
+                # ── Time-of-day shadow: tag dead-zone and golden-hour candidates ──
+                # Dead zones: 14, 16, 18, 22 UTC (data: 82-89% WR, negative PnL)
+                # Golden hours: 3, 5, 6, 11 UTC (data: 96-100% WR, +$300/trade)
+                # Shadow only — does NOT change live trading. Logs what 1.5x and 2.0x
+                # thresholds would have done, for forward validation.
+                if _pt in (None, "15m"):
+                    _tod_hour = datetime.datetime.now(timezone.utc).hour
+                    _tod_dead = _tod_hour in (14, 16, 18, 22)
+                    _tod_golden = _tod_hour in (3, 5, 6, 11)
+                    if _tod_dead or _tod_golden:
+                        if _tod_golden:
+                            _tod_stage = "golden_hour_shadow"
+                        elif fee_adjusted_edge < _min_edge * 2.0:
+                            if fee_adjusted_edge < _min_edge * 1.5:
+                                _tod_stage = "dead_hour_shadow_1.5x"
+                            else:
+                                _tod_stage = "dead_hour_shadow_2.0x"
+                        else:
+                            _tod_stage = "dead_hour_passed"
+                        _tod_dedup = (ticker, _tod_stage)
+                        if _tod_dedup not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_tod_dedup)
+                            try:
+                                self._state.insert_evaluated_opportunity(
+                                    ticker, window["event_ticker"], asset,
+                                    _tod_stage,
+                                    rejection_reason=f"hour={_tod_hour} edge={fee_adjusted_edge:.4f} thresh={_min_edge:.4f}",
+                                    spot_price=spot, threshold=threshold,
+                                    volatility=blended_rv, market_price=best_ask,
+                                    seconds_to_close=seconds_remaining,
+                                    calibrated_prob=final_prob, edge=edge,
+                                    ofa_adjustment=ofa_adjustment,
+                                    z_score=z_score,
+                                    vol_regime=vol_est["regime"],
+                                    calibrated_prob_raw=calibrated_prob_raw,
+                                    kelly_f=sizing.get("kelly_f"),
+                                    position_size=sizing.get("contracts"),
+                                    breakeven_wr=best_ask / 100.0,
+                                    ask_depth=ask_depth,
+                                    best_ask_source=best_ask_source,
+                                    raw_prob=raw_prob,
+                                    calibration_method=calibration_method,
+                                    fee_adjusted_edge=fee_adjusted_edge,
+                                    product_type=window.get("product_type"),
+                                    **_shadow_diag)
+                            except Exception:
+                                logging.warning("insert_evaluated_opportunity failed (%s)", _tod_stage, exc_info=True)
 
                 # Respect per-tick orderbook fetch cap
                 if ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
