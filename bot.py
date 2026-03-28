@@ -541,10 +541,10 @@ DECIDED_T2_Z25_ENABLED = os.environ.get("DECIDED_T2_Z25_ENABLED", "1") == "1"
 DECIDED_T2_Z2_ENABLED = os.environ.get("DECIDED_T2_Z2_ENABLED", "1") == "1"
 DECIDED_CONTRACT_Z_T2_Z25 = -2.5            # Tier 2-Z25: -3 < z ≤ -2.5, 93-96c (data: 7/7 = 100% WR)
 DECIDED_CONTRACT_Z_T2_Z2 = -2.0             # Tier 2-Z2: -2.5 < z ≤ -2, 93-96c (data: 19/19 = 100% WR)
-DECIDED_CONTRACT_T2_Z25_RISK = 0.15         # 15% fixed sizing (deeper z → higher confidence)
-DECIDED_CONTRACT_T2_Z2_RISK = 0.125         # 12.5% fixed sizing (shallower z → more conservative)
-DECIDED_CONTRACT_RISK = 0.125               # Fixed 12.5% bankroll per signal
-DECIDED_CONTRACT_MAX_WINDOW_RISK = 0.25     # 25% bankroll cap per settlement window
+DECIDED_CONTRACT_T2_Z25_RISK = 0.20         # 20% fixed sizing (was 15% — data: 4/4 WR, +$8.12/trade)
+DECIDED_CONTRACT_T2_Z2_RISK = 0.20          # 20% fixed sizing (was 12.5% — data: 24/25 WR, 96%)
+DECIDED_CONTRACT_RISK = 0.20                # Fixed 20% bankroll per signal (was 12.5% — data: 56/56 WR on T1+T1B+T2)
+DECIDED_CONTRACT_MAX_WINDOW_RISK = 0.35     # 35% bankroll cap per window (was 25% — raised to accommodate 20% per-signal)
 DC_IOC_RETRY_DELAY = 8                      # DEFAULT seconds between DC IOC retry attempts (used as fallback)
 DC_IOC_MAX_RETRIES = 10                     # max retry attempts per DC ticker (initial + 10 = 11 total)
 DC_PRICE_TOLERANCE_START_RETRY = 3          # retry number at which price widening begins (0-indexed from retries, not attempts)
