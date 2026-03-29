@@ -158,11 +158,15 @@ class DashboardSnapshotBuilder:
             snap["peak_balance"] = getattr(self._ml, "_peak_balance", 0.0)
             snap["balance_stale"] = True
 
-        # Starting balance
+        # Starting balance (rolling HWM — used for drawdown display and session PnL)
         try:
             snap["starting_balance"] = round(self._ml.sizer.starting_balance_cents / 100, 2)
         except Exception:
             snap["starting_balance"] = 0.0
+
+        # Initial deposit (fixed constant — used for true return % on dashboard)
+        from bot import INITIAL_DEPOSIT_CENTS
+        snap["initial_deposit"] = round(INITIAL_DEPOSIT_CENTS / 100, 2)
 
         # Drawdown Kelly multiplier
         try:

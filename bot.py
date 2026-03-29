@@ -37,6 +37,7 @@ from models import (  # noqa: F401 — extracted pure-math classes
 
 # ─── Trading Configuration ───────────────────────────────────────────────────
 OBSERVATION_MODE = False           # False = LIVE TRADING with real money
+INITIAL_DEPOSIT_CENTS = 63479     # $634.79 — bot starting capital Feb 24 2026 (derived: balance - cumulative PnL)
 SERIES_TICKERS = {
     "BTC": "KXBTC15M",
     "ETH": "KXETH15M",
