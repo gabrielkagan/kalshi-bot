@@ -1142,7 +1142,7 @@ class TestConstants(unittest.TestCase):
         self.assertTrue(SOL_TAKER_FIRST)
 
     def test_early_escalation_min_move(self):
-        self.assertEqual(EARLY_ESCALATION_MIN_MOVE, 2)
+        self.assertEqual(EARLY_ESCALATION_MIN_MOVE, 5)
 
 
 if __name__ == "__main__":

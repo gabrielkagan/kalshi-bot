@@ -338,13 +338,13 @@ class TestNoSideObservationGate(unittest.TestCase):
 class TestNoSideConstants(unittest.TestCase):
     """Verify NO-side constants exist and have correct values."""
 
-    def test_weather_no_side_live_is_false(self):
-        """WEATHER_NO_SIDE_LIVE must default to False (deploy safety)."""
-        self.assertFalse(bot.WEATHER_NO_SIDE_LIVE)
+    def test_weather_no_side_live_is_true(self):
+        """WEATHER_NO_SIDE_LIVE enabled (promoted with 1-contract fixed sizing)."""
+        self.assertTrue(bot.WEATHER_NO_SIDE_LIVE)
 
-    def test_weather_no_side_min_stc_is_8h(self):
-        """WEATHER_NO_SIDE_MIN_STC must be 28800 (8 hours)."""
-        self.assertEqual(bot.WEATHER_NO_SIDE_MIN_STC, 28800.0)
+    def test_weather_no_side_min_stc_is_16h(self):
+        """WEATHER_NO_SIDE_MIN_STC must be 57600 (16 hours)."""
+        self.assertEqual(bot.WEATHER_NO_SIDE_MIN_STC, 57600.0)
 
     def test_weather_observation_only_still_true(self):
         """WEATHER_OBSERVATION_ONLY must remain True (YES-side gate)."""

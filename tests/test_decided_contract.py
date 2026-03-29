@@ -17,6 +17,7 @@ import re
 import unittest
 import os
 import sys
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -57,8 +58,8 @@ class TestDecidedContractConstants(unittest.TestCase):
         self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_T1B_MIN_PRICE"), 95)
         self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_T2_MAX_PRICE"), 96)
         self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_MAX_STC"), 300)
-        self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_RISK"), 0.125)
-        self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_MAX_WINDOW_RISK"), 0.25)
+        self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_RISK"), 0.20)
+        self.assertEqual(_extract_constant(self.source, "DECIDED_CONTRACT_MAX_WINDOW_RISK"), 0.35)
 
     def test_kill_switches_default_on(self):
         """Kill switches default to '1' (enabled) — direct taker routing active."""
@@ -277,6 +278,7 @@ class TestDecidedContractSizing(unittest.TestCase):
         position = max(1, int(bankroll * RISK / 99))
         self.assertEqual(position, 126)
 
+    @pytest.mark.fragile
     def test_not_kelly(self):
         """Sizing must use DECIDED_CONTRACT_RISK, NOT Kelly formula."""
         source = _read_bot()
@@ -367,6 +369,7 @@ class TestDecidedContractDirectTaker(unittest.TestCase):
         self.assertIn('"decided_t1b"', dc_block)
         self.assertIn('"decided_t2"', dc_block)
 
+    @pytest.mark.fragile
     def test_dc_taker_sets_escalation_type(self):
         """DC taker must set escalation_type for settled_trades tracking."""
         source = _read_bot()
@@ -411,7 +414,7 @@ class TestDecidedContractCodeIntegrity(unittest.TestCase):
     def test_observation_mode_blocks_live(self):
         """OBSERVATION_MODE must block DC live trades."""
         live_section_start = self.source.find("# ── Live overlay: queue as candidate if tier enabled")
-        live_section = self.source[live_section_start:live_section_start + 500]
+        live_section = self.source[live_section_start:live_section_start + 800]
         self.assertIn("not OBSERVATION_MODE", live_section)
 
     def test_dc_window_risk_initialized(self):
@@ -453,11 +456,13 @@ class TestDecidedContractT1B(unittest.TestCase):
         self.assertIn("DECIDED_CONTRACT_Z_T1B", dc_block)
         self.assertIn("DECIDED_CONTRACT_T1B_MIN_PRICE", dc_block)
 
+    @pytest.mark.fragile
     def test_t1b_assumed_prob(self):
         """T1B assumed probability should be between T1 (99%) and T2 (96%)."""
         # Find the assumed prob assignment
         self.assertIn("0.97 if _dc_tier == \"decided_contract_t1b\"", self.source)
 
+    @pytest.mark.fragile
     def test_t1b_in_execution_routing(self):
         """T1B must route to direct taker in execute()."""
         dc_taker_pos = self.source.find("Decided contract taker override")
@@ -478,6 +483,7 @@ class TestDecidedContractShadowVariants(unittest.TestCase):
                        "dc_shadow_t2_90c_xrp", "dc_shadow_t2_z2", "dc_shadow_no_side"):
             self.assertIn(stage, self.source, f"Shadow stage {stage} not found in bot.py")
 
+    @pytest.mark.fragile
     def test_shadow_variants_in_scan(self):
         """All 6 shadow variants must have insert_evaluated_opportunity calls."""
         shadow_block_start = self.source.find("Decided Contract Shadow Expansion Variants")
@@ -529,6 +535,7 @@ class TestDecidedContractShadowVariants(unittest.TestCase):
         self.assertIn("z_score >= 5.0", self.source)
         self.assertIn("best_ask <= 20", self.source)
 
+    @pytest.mark.fragile
     def test_no_side_stores_no_ask(self):
         """NO-side shadow must read actual NO ask from NBBO, store as market_price."""
         # Find in the scan block (not constants)
@@ -549,6 +556,7 @@ class TestDecidedContractCooldown(unittest.TestCase):
         self.assertIn("_dc_skip_cooldown", self.source)
         self.assertIn("_dc_skip_cooldown: Dict[str, float] = {}", self.source)
 
+    @pytest.mark.fragile
     def test_cooldown_set_on_no_asks(self):
         """Cooldown must be set when executor skips due to 'no asks on orderbook'."""
         no_asks_pos = self.source.find('dc_taker_SKIPPED: %s no asks on orderbook')

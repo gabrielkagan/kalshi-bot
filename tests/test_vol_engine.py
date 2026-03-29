@@ -95,6 +95,9 @@ class MockEGARCH:
     def seed_variance(self, asset, var):
         self._log_var[asset] = math.log(var) if var > 0 else None
 
+    def get_constrained_sigma(self, asset):
+        return self.get_sigma(asset)
+
 
 class MockMZ:
     """Minimal mock of MincerZarnowitzTracker."""

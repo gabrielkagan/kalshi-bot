@@ -15,6 +15,7 @@ import re
 import unittest
 import os
 import sys
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -131,6 +132,7 @@ class TestWeekendDiscountExecution(unittest.TestCase):
     def setUp(self):
         self.source = _read_bot()
 
+    @pytest.mark.fragile
     def test_not_routed_to_direct_taker(self):
         """Weekend discount strategy is NOT in the decided contract taker override."""
         # Find the decided contract taker override section

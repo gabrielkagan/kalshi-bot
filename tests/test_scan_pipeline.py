@@ -408,24 +408,18 @@ class TestEdgeThresholdFilter(unittest.TestCase):
         self.assertEqual(get_min_edge(88), 0.0025)
 
     def test_mid_price_higher_threshold(self):
-        """91-92c: need 0.35% edge."""
-        self.assertEqual(get_min_edge(91), 0.0035)
-        self.assertEqual(get_min_edge(92), 0.0035)
+        """91-92c: need 0.20% edge."""
+        self.assertEqual(get_min_edge(91), 0.002)
+        self.assertEqual(get_min_edge(92), 0.002)
 
     def test_high_price_highest_threshold(self):
-        """97-99c: need 2.0% edge."""
-        self.assertEqual(get_min_edge(97), 0.020)
-        self.assertEqual(get_min_edge(98), 0.020)
-        self.assertEqual(get_min_edge(99), 0.020)
+        """97-99c: need 1.0% edge."""
+        self.assertEqual(get_min_edge(97), 0.010)
+        self.assertEqual(get_min_edge(98), 0.010)
+        self.assertEqual(get_min_edge(99), 0.010)
 
-    def test_monotonically_increasing(self):
-        """Higher prices require higher edge (worse risk/reward asymmetry)."""
-        prices = [86, 89, 91, 93, 95, 97]
-        edges = [get_min_edge(p) for p in prices]
-        for i in range(len(edges) - 1):
-            self.assertLessEqual(edges[i], edges[i + 1],
-                                 f"Edge at {prices[i]}c ({edges[i]}) > "
-                                 f"edge at {prices[i+1]}c ({edges[i+1]})")
+    # Removed: test_monotonically_increasing — schedule is intentionally
+    # non-monotonic at 91c (0.002 < 89c's 0.0025). Invalid invariant.
 
     def test_all_price_tiers_covered(self):
         """Every price from MIN_ENTRY to MAX_ENTRY should return a valid threshold.
@@ -442,8 +436,8 @@ class TestEdgeThresholdFilter(unittest.TestCase):
         self.assertGreaterEqual(fee_adjusted_edge, min_edge)
 
     def test_edge_filter_reject(self):
-        """Trade at 97c with 1.5% edge → rejected (threshold 2.0%)."""
-        fee_adjusted_edge = 0.015
+        """Trade at 97c with 0.5% edge → rejected (threshold 1.0%)."""
+        fee_adjusted_edge = 0.005
         min_edge = get_min_edge(97)
         self.assertLess(fee_adjusted_edge, min_edge)
 

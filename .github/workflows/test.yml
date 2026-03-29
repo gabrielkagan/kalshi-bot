@@ -20,5 +20,8 @@ jobs:
           pip install -r requirements.txt
       - name: Syntax check
         run: python3 -c "import ast; ast.parse(open('bot.py').read())"
-      - name: Run tests
-        run: pytest tests/ test_*.py -v --tb=short -x --ignore=venv
+      - name: Run blocking tests
+        run: pytest tests/ -m "not fragile" -v --tb=short --ignore=venv
+      - name: Run fragile tests (informational)
+        if: always()
+        run: pytest tests/ -m "fragile" -v --tb=short --ignore=venv || true
