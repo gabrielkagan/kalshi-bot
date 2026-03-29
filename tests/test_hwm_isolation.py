@@ -1,16 +1,19 @@
-"""Tests for HWM balance isolation fix (Mar 26 2026).
+"""Tests for HWM balance isolation fix (Mar 26 2026, updated Mar 29 2026).
 
-Root cause: fractional bankroll from hourly (10%) and SPX (15%) was passed to
-sizer.compute() which called record_balance() inside _drawdown_scaler(),
-permanently poisoning the balance_history. Additionally, warmup used available
-cash instead of total portfolio value.
+Root cause v1 (Mar 25-26): fractional bankroll from hourly (10%) and SPX (15%)
+was passed to record_balance() inside _drawdown_scaler(), poisoning history.
+
+Root cause v2 (Mar 29): portfolio value (cash + position exposure) inflated HWM
+when DC positions were open. After settlement, cash-only balance was 73% of HWM,
+triggering ds=0.25 for ~7 days. Fix: record_balance() now receives cash only.
 
 These tests verify:
 1. compute() never touches balance_history (read-only _drawdown_scaler)
-2. Warmup with open positions uses portfolio value
+2. Warmup uses cash balance (not portfolio value)
 3. Floor guard rejects readings < 50% of HWM
 4. Spike alert counter works
 5. Fractional bankroll scenario doesn't break HWM
+6. DC position open/close does NOT inflate HWM (regression for Mar 29 bug)
 """
 import os
 import sys
@@ -69,26 +72,26 @@ class TestComputeDoesNotRecordBalance(unittest.TestCase):
         self.assertEqual(scaler, 0.5)
 
 
-class TestWarmupWithPositions(unittest.TestCase):
-    """Warmup should accept portfolio-value readings (cash + positions)."""
+class TestWarmupWithCashBalance(unittest.TestCase):
+    """Warmup should accept cash-only readings (not portfolio value)."""
 
-    def test_warmup_with_portfolio_value(self):
-        """Simulates startup with $400 cash + $500 positions = $900 portfolio."""
+    def test_warmup_with_cash_balance(self):
+        """Simulates startup with $900 cash (positions NOT added to HWM)."""
         sizer = PositionSizer(starting_balance_cents=0)
 
-        # All 5 readings include position exposure (as _tick would compute)
-        portfolio_value = 90000  # $900
+        # All 5 readings are cash-only (as _tick now computes post-fix)
+        cash_balance = 90000  # $900
         for _ in range(5):
-            sizer.record_balance(portfolio_value)
+            sizer.record_balance(cash_balance)
 
         self.assertTrue(sizer._hwm_initialized)
         hwm = sizer.get_rolling_hwm()
         self.assertEqual(hwm, 90000)
 
     def test_warmup_median_with_mixed_readings(self):
-        """If some readings include positions and some don't, median is robust."""
+        """Median is robust against one outlier reading."""
         sizer = PositionSizer(starting_balance_cents=0)
-        # Simulate: first reading has no position info, rest do
+        # Simulate: first reading is a stale cache, rest are accurate
         readings = [40000, 90000, 90000, 90000, 90000]
         for r in readings:
             sizer.record_balance(r)
@@ -347,6 +350,87 @@ class TestDrawdownScalerWithFractionalBankroll(unittest.TestCase):
         # SPX with 15%
         r3 = sizer.compute(0.92, 90, 12000)
         self.assertEqual(r3["drawdown_scaler"], 0.5)
+
+
+class TestDCPositionDoesNotInflateHWM(unittest.TestCase):
+    """Regression test for Mar 29 2026 HWM inflation bug.
+
+    Root cause: record_balance() received cash + position_exposure, inflating HWM
+    when DC positions were open. After settlement, cash-only balance was 73% of HWM,
+    compressing drawdown_scaler to 0.25 on a profitable account.
+
+    Fix: record_balance() now receives cash only. Positions are NOT added.
+    """
+
+    def test_dc_position_open_does_not_inflate_hwm(self):
+        """When DC opens 300ct at 96c, HWM should NOT spike.
+
+        Old behavior: portfolio = $1,400 + $288 exposure = $1,688 → HWM = $1,688
+        New behavior: cash = $1,400 → HWM stays at $1,400
+        """
+        sizer = PositionSizer(starting_balance_cents=140000)
+        for _ in range(5):
+            sizer.record_balance(140000)  # Cash-only: $1,400
+        self.assertEqual(sizer.get_rolling_hwm(), 140000)
+
+        # DC position opens — but we record cash only (no exposure added)
+        # Cash stays at $1,400 (Kalshi doesn't drop available_balance on position open)
+        sizer.record_balance(140000)
+        self.assertEqual(sizer.get_rolling_hwm(), 140000,
+                         "HWM should NOT inflate when DC position is open")
+
+        # Drawdown scaler should be 1.0
+        self.assertEqual(sizer._drawdown_scaler(140000), 1.0)
+
+    def test_dc_settlement_updates_hwm_correctly(self):
+        """After DC settles YES, cash grows by profit. HWM updates to new cash."""
+        sizer = PositionSizer(starting_balance_cents=140000)
+        for _ in range(5):
+            sizer.record_balance(140000)
+
+        # DC settles YES: cash grows by profit (e.g., 300ct × 4c = $12 profit)
+        sizer.record_balance(141200)  # $1,412
+        self.assertEqual(sizer.get_rolling_hwm(), 141200,
+                         "HWM should update to new cash high after profitable settlement")
+
+    def test_dc_loss_compresses_scaler_correctly(self):
+        """After DC settles NO, cash drops. Scaler compresses on real loss."""
+        sizer = PositionSizer(starting_balance_cents=140000)
+        for _ in range(5):
+            sizer.record_balance(140000)
+
+        # DC settles NO: cash drops by entry cost (e.g., 300ct × 96c = $288 loss)
+        sizer.record_balance(111200)  # $1,112 = 79.4% of HWM
+        # 0.794 < 0.85 (DRAWDOWN_HALF) → ds = 0.5
+        self.assertEqual(sizer._drawdown_scaler(111200), 0.5,
+                         "Real loss should compress scaler correctly")
+
+    def test_no_phantom_compression_after_settlement(self):
+        """The core Mar 29 bug: profitable DC trade inflated HWM, then settlement
+        dropped portfolio back to cash, compressing ds even though account grew.
+
+        Old: cash=$1,400 → DC opens (portfolio=$1,688) → HWM=$1,688
+             → DC settles YES (cash=$1,412) → ratio=1412/1688=0.84 → ds=0.5 ← WRONG
+
+        New: cash=$1,400 → DC opens (cash stays $1,400) → HWM=$1,400
+             → DC settles YES (cash=$1,412) → ratio=1412/1412=1.0 → ds=1.0 ← CORRECT
+        """
+        sizer = PositionSizer(starting_balance_cents=140000)
+        for _ in range(5):
+            sizer.record_balance(140000)
+
+        # Simulate: cash stays flat while DC position is open
+        for _ in range(10):  # 10 ticks with position open
+            sizer.record_balance(140000)  # Cash unchanged
+        self.assertEqual(sizer.get_rolling_hwm(), 140000)
+
+        # DC settles YES: cash increases by profit
+        sizer.record_balance(141200)  # $1,412
+        self.assertEqual(sizer.get_rolling_hwm(), 141200)
+
+        # Scaler should be 1.0 — no phantom compression
+        self.assertEqual(sizer._drawdown_scaler(141200), 1.0,
+                         "No phantom compression after profitable DC settlement")
 
 
 if __name__ == "__main__":

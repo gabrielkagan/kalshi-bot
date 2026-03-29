@@ -1025,6 +1025,65 @@ def check_hourly_live_health(db, verbose):
     return alerts
 
 
+# ── Category 7: Sizing Sanity ─────────────────────────────────────────────
+
+def check_drawdown_scaler_health(db: sqlite3.Connection, verbose: bool) -> list[tuple[str, str, str]]:
+    """7a. Check if drawdown scaler is compressed (undersizing trades).
+
+    Queries the most recent drawdown_scaler on candidate evaluations.
+    HWM inflation from position exposure has caused ds=0.25 for days
+    undetected (Mar 22-29 2026). This check catches it within 1 hour.
+    """
+    alerts = []
+    if not table_exists(db, "evaluated_opportunities"):
+        return alerts
+
+    # Get the most recent ds value on an actual candidate (not rejections)
+    row = db.execute(
+        "SELECT drawdown_scaler, available_balance_cents, evaluation_time "
+        "FROM evaluated_opportunities "
+        "WHERE filter_stage IN ('candidate', 'zero_sizing', 'weekend_discount', 'overnight_discount') "
+        "  AND drawdown_scaler IS NOT NULL "
+        "  AND evaluation_time > datetime('now', '-2 hours') "
+        "ORDER BY evaluation_time DESC LIMIT 1"
+    ).fetchone()
+
+    if row is None:
+        if verbose:
+            print("  No recent candidates with drawdown_scaler in last 2h")
+        return alerts
+
+    ds = row["drawdown_scaler"]
+    bal = row["available_balance_cents"]
+    ts = row["evaluation_time"]
+
+    if verbose:
+        print(f"  Most recent candidate ds={ds:.2f} bal=${bal / 100:.2f} at {ts[:19]}")
+
+    if ds < 0.50:
+        alerts.append((
+            "sizing",
+            f"ds_critical_{int(ds * 100)}",
+            f"\U0001f6a8 *AUDITOR ALERT: Drawdown Scaler Critical*\n\n"
+            f"ds={ds:.2f} — main pipeline **quarter-sizing or worse**.\n"
+            f"Balance: ${bal / 100:.2f}.\n"
+            f"Likely cause: HWM inflated by position exposure.\n\n"
+            f"Suggested action: Check HWM vs cash balance. "
+            f"Consider `OVERRIDE_HWM` env var if HWM is stale.",
+        ))
+    elif ds < 0.90:
+        alerts.append((
+            "sizing",
+            f"ds_warning_{int(ds * 100)}",
+            f"\u26a0\ufe0f *AUDITOR ALERT: Drawdown Scaler Compressed*\n\n"
+            f"ds={ds:.2f} — main pipeline undersizing.\n"
+            f"Balance: ${bal / 100:.2f}.\n\n"
+            f"Suggested action: Monitor — may resolve naturally or indicate HWM issue.",
+        ))
+
+    return alerts
+
+
 # ---------------------------------------------------------------------------
 # Check registry
 # ---------------------------------------------------------------------------
@@ -1055,6 +1114,8 @@ CHECKS = [
     ("calibration", check_edge_trend),
     # Category 6: Hourly Live
     ("hourly", check_hourly_live_health),
+    # Category 7: Sizing Sanity
+    ("sizing", check_drawdown_scaler_health),
     # --- Add new checks here ---
     # ("category", check_function),
     # Future: Plug in Claude API analysis (Layer 2)

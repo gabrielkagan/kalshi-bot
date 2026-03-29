@@ -15198,26 +15198,25 @@ class MainLoop:
             sys.exit(1)
         balance_cents = balance_resp.get("balance") or 0
         self.sizer.starting_balance_cents = balance_cents
-        # Seed HWM with portfolio value (available cash + open position exposure).
-        # The 'balance' field from Kalshi is available cash only — excludes margin
-        # held for open positions. We must add position exposure to get the true
-        # portfolio value, otherwise HWM initializes too low and triggers permanent
-        # spike rejection. (Learned: 4/5 warmup readings were $400 available cash
-        # instead of $912 portfolio value, Mar 25 2026)
+        # Seed HWM with CASH balance only (not portfolio value).
+        # Kalshi available_balance does NOT drop when position collateral is locked,
+        # so cash-only tracking is safe. Portfolio tracking (cash + positions) caused
+        # HWM inflation when DC positions opened, compressing drawdown_scaler to 0.25
+        # even on profitable accounts. (Learned: HWM spiked to $2,035 from simultaneous
+        # DC positions, cash was $1,485, ds=0.25 for ~7 days undetected. Mar 29 2026.)
+        # Position exposure is still computed for logging/dashboard visibility.
         try:
             _startup_positions = self.state.get_open_positions()
             _startup_exposure = sum(
                 p.get("count", 0) * p.get("avg_price_cents", 0)
                 for p in _startup_positions
             )
-            _startup_portfolio = balance_cents + _startup_exposure
             logging.info(
-                "HWM seed: available=%dc + position_exposure=%dc = portfolio=%dc ($%.2f)",
-                balance_cents, _startup_exposure, _startup_portfolio, _startup_portfolio / 100)
+                "HWM seed: available=%dc (position_exposure=%dc, NOT added to HWM)",
+                balance_cents, _startup_exposure)
         except Exception:
-            _startup_portfolio = balance_cents
-            logging.warning("HWM seed: could not compute position exposure, using available balance")
-        self.sizer.record_balance(_startup_portfolio)
+            logging.warning("HWM seed: could not compute position exposure for logging")
+        self.sizer.record_balance(balance_cents)
         self._peak_balance = balance_cents / 100
         logging.info(f"Connected to Kalshi. Balance: ${balance_cents / 100:.2f}")
         if _TELEGRAM:
@@ -15760,27 +15759,24 @@ class MainLoop:
         except Exception:
             logging.warning("DC retry processing failed", exc_info=True)
 
-        # Record FULL portfolio balance for HWM tracking (once per tick).
-        # Uses portfolio value = available cash + open position exposure.
-        # Must use full balance, NOT fractional bankroll (hourly 10%, SPX 15%).
+        # Record CASH balance for HWM tracking (once per tick).
+        # Uses available cash only — NOT portfolio value (cash + positions).
+        # Kalshi available_balance does NOT drop when collateral is locked, so
+        # cash-only is safe. Portfolio tracking caused HWM inflation when DC
+        # positions opened, compressing ds even on profitable accounts.
+        # (Learned: portfolio HWM $2,035 vs cash $1,485 → ds=0.25 for 7 days. Mar 29 2026)
+        # Must use full cash balance, NOT fractional bankroll (hourly 10%, SPX 15%).
         # (Learned: fractional bankroll in compute() poisoned HWM for 18h, Mar 25-26 2026)
         try:
             _hwm_balance = self.scanner._get_balance_cached()
             if _hwm_balance and _hwm_balance > 0:
-                # Add open position exposure to get total portfolio value
-                _open_positions = self.state.get_open_positions()
-                _position_exposure = sum(
-                    p.get("count", 0) * p.get("avg_price_cents", 0)
-                    for p in _open_positions
-                )
-                _portfolio_value = _hwm_balance + _position_exposure
-                self.sizer.record_balance(_portfolio_value)
+                self.sizer.record_balance(_hwm_balance)
                 # Alert on 3+ consecutive spike rejections
                 if self.sizer._consecutive_spike_rejections >= 3:
                     if self.sizer._consecutive_spike_rejections == 3:
                         _msg = (
                             "\u26a0\ufe0f HWM spike alert: 3 consecutive rejections. "
-                            f"Balance={_portfolio_value}c, "
+                            f"Balance={_hwm_balance}c, "
                             f"last_accepted={self.sizer._balance_history[-1][1] if self.sizer._balance_history else 'none'}c"
                         )
                         logging.warning(_msg)
