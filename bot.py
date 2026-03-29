@@ -548,6 +548,10 @@ DECIDED_CONTRACT_Z_T2_Z2 = -1.75            # Tier 2-Z2: -2.5 < z ≤ -1.75, 93-
 DECIDED_CONTRACT_T2_Z25_RISK = 0.20         # 20% fixed sizing (was 15% — data: 4/4 WR, +$8.12/trade)
 DECIDED_CONTRACT_T2_Z2_RISK = 0.20          # 20% fixed sizing (was 12.5% — data: 24/25 WR, 96%)
 DECIDED_CONTRACT_RISK = 0.20                # Fixed 20% bankroll per signal (was 12.5% — data: 56/56 WR on T1+T1B+T2)
+# SOL DC price-tiered risk: contain high-price loss asymmetry.
+# SOL is the only asset with DC losses (2 losses, 28 wins). Both losses are SOL-specific.
+# At 96c: win=$4/ct, loss=$96/ct → need 96% WR to break even. 20% risk at 96c = $284 max loss.
+SOL_DC_RISK_TIERS = [(97, 0.05), (95, 0.10)]  # (price_floor, risk). Below 95c: default tier risk.
 DECIDED_CONTRACT_MAX_WINDOW_RISK = 0.35     # 35% bankroll cap per window (was 25% — raised to accommodate 20% per-signal)
 DC_IOC_RETRY_DELAY = 8                      # DEFAULT seconds between DC IOC retry attempts (used as fallback)
 DC_IOC_MAX_RETRIES = 10                     # max retry attempts per DC ticker (initial + 10 = 11 total)
@@ -8007,6 +8011,12 @@ class OpportunityScanner:
                                 _dc_risk = (DECIDED_CONTRACT_T2_Z25_RISK if _dc_tier == "decided_contract_t2_z25"
                                             else DECIDED_CONTRACT_T2_Z2_RISK if _dc_tier == "decided_contract_t2_z2"
                                             else DECIDED_CONTRACT_RISK)
+                                # SOL price-tiered risk: reduce sizing at high prices to contain loss asymmetry
+                                if asset == "SOL":
+                                    for _sol_floor, _sol_risk in SOL_DC_RISK_TIERS:
+                                        if best_ask >= _sol_floor:
+                                            _dc_risk = _sol_risk
+                                            break
                                 _dc_position = max(1, int((_dc_balance * _dc_risk) / best_ask))
                                 # EV with assumed win prob — calibrated from 14-day settlement data:
                                 # T1: 92/92 (100%) at 95-98c → 0.99 (unchanged)

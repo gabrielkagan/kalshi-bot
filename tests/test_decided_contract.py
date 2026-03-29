@@ -612,5 +612,88 @@ class TestDecidedContractDashboardExpansion(unittest.TestCase):
         self.assertIn("dc_expansion_shadow", slow_block)
 
 
+class TestSolDCPriceTieredRisk(unittest.TestCase):
+    """SOL DC uses price-tiered risk to contain high-price loss asymmetry.
+
+    SOL is the only asset with DC losses (2 losses, 28 wins). Both losses
+    are SOL-specific. At 96c: win=$4/ct, loss=$96/ct. Price-tiered risk
+    reduces position size at high prices where loss asymmetry is worst.
+    """
+
+    def setUp(self):
+        self.source = _read_bot()
+
+    def test_sol_dc_risk_tiers_defined(self):
+        """SOL_DC_RISK_TIERS constant exists."""
+        self.assertIn("SOL_DC_RISK_TIERS", self.source)
+
+    def test_sol_dc_tiers_applied_in_sizing(self):
+        """SOL DC sizing block checks asset == 'SOL' and applies tiers."""
+        self.assertIn('if asset == "SOL":', self.source)
+        self.assertIn("SOL_DC_RISK_TIERS", self.source)
+
+    def test_sol_93c_uses_20pct(self):
+        """SOL DC at 93c: below tier floors, uses default 20%."""
+        import bot
+        # Tiers: [(97, 0.05), (95, 0.10)]. 93 < 95 → no tier matches → default
+        risk = bot.DECIDED_CONTRACT_RISK  # default
+        for floor, r in bot.SOL_DC_RISK_TIERS:
+            if 93 >= floor:
+                risk = r
+                break
+        self.assertEqual(risk, 0.20)
+
+    def test_sol_95c_uses_10pct(self):
+        """SOL DC at 95c: matches 95c tier → 10%."""
+        import bot
+        risk = bot.DECIDED_CONTRACT_RISK
+        for floor, r in bot.SOL_DC_RISK_TIERS:
+            if 95 >= floor:
+                risk = r
+                break
+        self.assertEqual(risk, 0.10)
+
+    def test_sol_96c_uses_10pct(self):
+        """SOL DC at 96c: matches 95c tier → 10%."""
+        import bot
+        risk = bot.DECIDED_CONTRACT_RISK
+        for floor, r in bot.SOL_DC_RISK_TIERS:
+            if 96 >= floor:
+                risk = r
+                break
+        self.assertEqual(risk, 0.10)
+
+    def test_sol_97c_uses_5pct(self):
+        """SOL DC at 97c: matches 97c tier → 5%."""
+        import bot
+        risk = bot.DECIDED_CONTRACT_RISK
+        for floor, r in bot.SOL_DC_RISK_TIERS:
+            if 97 >= floor:
+                risk = r
+                break
+        self.assertEqual(risk, 0.05)
+
+    def test_sol_99c_uses_5pct(self):
+        """SOL DC at 99c: matches 97c tier → 5%."""
+        import bot
+        risk = bot.DECIDED_CONTRACT_RISK
+        for floor, r in bot.SOL_DC_RISK_TIERS:
+            if 99 >= floor:
+                risk = r
+                break
+        self.assertEqual(risk, 0.05)
+
+    def test_xrp_96c_uses_20pct(self):
+        """XRP DC at any price: always default 20% (no tiering)."""
+        import bot
+        # Non-SOL assets don't use SOL_DC_RISK_TIERS
+        self.assertEqual(bot.DECIDED_CONTRACT_RISK, 0.20)
+
+    def test_btc_96c_uses_20pct(self):
+        """BTC DC at any price: always default 20% (no tiering)."""
+        import bot
+        self.assertEqual(bot.DECIDED_CONTRACT_RISK, 0.20)
+
+
 if __name__ == "__main__":
     unittest.main()
