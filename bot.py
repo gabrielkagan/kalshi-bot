@@ -53,7 +53,7 @@ ETH_SUB80_POSITION_CAP = 50      # Half-Kelly at 75c/87% WR = 322-645 contracts;
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 BTC_MAX_RISK_PER_TRADE = 0.12    # BTC oversizing causes outsized losses (data: -$282 from 95c+ losses at full Kelly)
-SOL_MIN_EDGE = 0.018             # SOL-specific edge floor (data: 1.0-1.8% is 76% WR, PnL-negative; >=1.8% is 95.3% WR)
+SOL_MIN_EDGE = 0.010             # SOL-specific edge floor (reverted to 1.0% — prior 1.8% based on pre-BLR data, invalid under passthrough cal)
 SOL_HIGH_EDGE_SHADOW = 0.05     # SOL edge ceiling shadow: log evaluations with edge > 5% for analysis (5%+ band is 80% WR, PnL-negative)
 XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/2L 95.3% WR at >=92c)
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
