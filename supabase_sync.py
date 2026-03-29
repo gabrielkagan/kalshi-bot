@@ -193,7 +193,7 @@ class SupabaseSyncer:
             if resp.status_code in (200, 201):
                 self._consecutive_errors = 0
                 return True
-            logging.debug("Supabase INSERT %s: HTTP %d — %s", table, resp.status_code, resp.text[:200])
+            logging.warning("Supabase INSERT %s: HTTP %d — %s", table, resp.status_code, resp.text[:200])
             self._consecutive_errors += 1
             return False
         except Exception:
@@ -679,6 +679,8 @@ class SupabaseSyncer:
             return None
         if isinstance(val, bytes):
             return val.decode("utf-8", errors="replace")
+        if isinstance(val, float) and (val != val or val == float('inf') or val == float('-inf')):
+            return None  # NaN/Inf are not JSON-compliant
         return val
 
     @staticmethod
