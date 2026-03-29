@@ -621,6 +621,8 @@ SOL_TAKER_FIRST = True            # SOL: bypass maker entirely, go direct IOC at
                                   # Data: 44.7% maker fill rate, $101/wk missed, 95% unfilled WR
                                   # Taker fee delta ~$2/wk vs $101 missed — clear win
 TAKER_FIRST_ASSETS = {"SOL"} if SOL_TAKER_FIRST else set()
+SOL_EMPTY_BOOK_MAKER_MIN_PRICE = 87  # SOL maker fallback: only on empty books at 87c+ (data: 400 unfilled at depth=0, 95% WR)
+SOL_EMPTY_BOOK_MIN_STC = 60.0        # SOL maker fallback: skip if STC < 60s (too tight for maker rest)
 IOC_TICKER_COOLDOWN = 15          # seconds cooldown after IOC attempt per ticker (was 60 — too long for 15min windows)
 IOC_RETRY_OFFSET = 1              # cents above ask for taker-first IOC (1c worse entry, much higher fill rate)
 MAX_CONCURRENT_TAKER_PER_ASSET = 3  # safety cap: max simultaneous taker positions per asset
@@ -11175,6 +11177,10 @@ class OrderExecutor:
         self._session_nbbo_fallback_blocked: int = 0
         self._session_suppressed_edge_recalc: int = 0
         self._session_suppressed_zero_size: int = 0
+        # SOL empty-book maker fallback counters
+        self._session_sol_empty_maker_attempt: int = 0
+        self._session_sol_empty_maker_skip_price: int = 0
+        self._session_sol_empty_maker_skip_stc: int = 0
         self._session_ioc_retries: int = 0
         self._session_ioc_retry_fills: int = 0
         self._kalshi_oft = None  # populated from scanner if available
@@ -11558,9 +11564,47 @@ class OrderExecutor:
             return self._execute_dc_taker(candidate, asset, seconds_to_close)
 
         # ── SOL taker-first override ──────────────────────────────
-        # SOL: bypass maker entirely, go direct IOC at all STC values.
+        # SOL: bypass maker entirely, go direct IOC — UNLESS book is empty.
         # Data: 44.7% maker fill rate, $101/wk missed, 95% unfilled WR.
+        # Empty-book fallback: post maker bid to attract counterparties (like BTC/ETH).
+        # Data: 400 unfilled SOL depth=0 candidates at 87c+ have 95% hypothetical WR.
+        _sol_empty_book_fallback = False
         if SOL_TAKER_FIRST and candidate.get("asset") == "SOL":
+            _sol_depth = candidate.get("ob_snapshot", {}).get("ask_depth", 0)
+            _sol_price = candidate.get("best_yes_ask", 0)
+            _sol_stc = seconds_to_close or 0
+
+            # Empty book + price >= 87c: fall through to maker path
+            if _sol_depth == 0 and _sol_price >= SOL_EMPTY_BOOK_MAKER_MIN_PRICE:
+                if _sol_stc < SOL_EMPTY_BOOK_MIN_STC:
+                    logging.info(
+                        "sol_empty_book_SKIP_STC: %s price=%dc depth=0 stc=%.0fs < %.0fs",
+                        ticker, _sol_price, _sol_stc, SOL_EMPTY_BOOK_MIN_STC)
+                    self._session_sol_empty_maker_skip_stc += 1
+                    return None
+                # Fall through to maker path (PATH 5)
+                logging.info(
+                    "sol_empty_book_MAKER_FALLBACK: %s price=%dc depth=0 stc=%.0fs",
+                    ticker, _sol_price, _sol_stc)
+                self._session_sol_empty_maker_attempt += 1
+                _sol_empty_book_fallback = True
+                # Need per-asset lock check (SOL normally skips it as taker-first)
+                if asset in self._active_orders or asset in self._escalating_assets:
+                    logging.warning(
+                        "ORDER_SUPPRESSED asset_lock: %s %s (sol_empty_book_maker) active=%s",
+                        asset, ticker, self._active_orders.get(asset, {}).get("ticker", "none"))
+                    self._session_suppressed_asset_lock += 1
+                    return None
+                # Fall through — will hit PATH 5 (maker) below
+            elif _sol_depth == 0:
+                # Empty book but price < 87c: skip entirely
+                logging.info(
+                    "sol_empty_book_SKIP_PRICE: %s price=%dc depth=0 (< %dc floor)",
+                    ticker, _sol_price, SOL_EMPTY_BOOK_MAKER_MIN_PRICE)
+                self._session_sol_empty_maker_skip_price += 1
+                return None
+
+        if SOL_TAKER_FIRST and candidate.get("asset") == "SOL" and not _sol_empty_book_fallback:
             count = candidate["position_size"]
             price = candidate["best_yes_ask"]
             cal_prob = candidate["calibrated_prob"]
