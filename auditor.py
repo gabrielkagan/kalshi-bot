@@ -1030,27 +1030,30 @@ def check_hourly_live_health(db, verbose):
 def check_drawdown_scaler_health(db: sqlite3.Connection, verbose: bool) -> list[tuple[str, str, str]]:
     """7a. Check if drawdown scaler is compressed (undersizing trades).
 
-    Queries the most recent drawdown_scaler on candidate evaluations.
-    HWM inflation from position exposure has caused ds=0.25 for days
-    undetected (Mar 22-29 2026). This check catches it within 1 hour.
+    Queries the most recent drawdown_scaler from ANY evaluation (not just
+    candidates) to avoid false positives during quiet periods when no
+    candidates are generated. Includes a 15-minute freshness gate to ignore
+    stale pre-restart data. (Learned: false positive on first run after
+    deploy — auditor read pre-restart candidate with ds=0.25. Mar 29 2026.)
     """
     alerts = []
     if not table_exists(db, "evaluated_opportunities"):
         return alerts
 
-    # Get the most recent ds value on an actual candidate (not rejections)
+    # Query ANY evaluation with non-null ds (not just candidates).
+    # Candidates are sparse on quiet weekends; non-candidate evals (shadows,
+    # rejections) also record ds and are much more frequent.
     row = db.execute(
         "SELECT drawdown_scaler, available_balance_cents, evaluation_time "
         "FROM evaluated_opportunities "
-        "WHERE filter_stage IN ('candidate', 'zero_sizing', 'weekend_discount', 'overnight_discount') "
-        "  AND drawdown_scaler IS NOT NULL "
+        "WHERE drawdown_scaler IS NOT NULL "
         "  AND evaluation_time > datetime('now', '-2 hours') "
         "ORDER BY evaluation_time DESC LIMIT 1"
     ).fetchone()
 
     if row is None:
         if verbose:
-            print("  No recent candidates with drawdown_scaler in last 2h")
+            print("  No recent evaluations with drawdown_scaler in last 2h")
         return alerts
 
     ds = row["drawdown_scaler"]
@@ -1058,7 +1061,21 @@ def check_drawdown_scaler_health(db: sqlite3.Connection, verbose: bool) -> list[
     ts = row["evaluation_time"]
 
     if verbose:
-        print(f"  Most recent candidate ds={ds:.2f} bal=${bal / 100:.2f} at {ts[:19]}")
+        print(f"  Most recent ds={ds:.2f} bal=${bal / 100:.2f} at {ts[:19]}")
+
+    # Freshness gate: ignore data older than 15 minutes. After a restart,
+    # the warmup takes ~50s (5 readings × 10s). A 15-min gate ensures we
+    # only alert on post-warmup data from the current session.
+    try:
+        eval_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        age_minutes = (datetime.now(timezone.utc) - eval_dt).total_seconds() / 60
+    except (ValueError, TypeError):
+        age_minutes = 0
+
+    if age_minutes > 15:
+        if verbose:
+            print(f"  ds data is {age_minutes:.0f}m old — skipping (may be pre-restart)")
+        return alerts
 
     if ds < 0.50:
         alerts.append((
