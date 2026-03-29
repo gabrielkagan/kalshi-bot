@@ -314,7 +314,7 @@ class SupabaseSyncer:
                 self._save_watermark("evaluated_opportunities", new_wm, len(rows))
                 logging.debug("Supabase: synced %d evaluations (wm=%d)", len(rows), new_wm)
         except Exception:
-            logging.debug("Supabase: evaluations sync failed", exc_info=True)
+            logging.warning("Supabase: evaluations sync failed", exc_info=True)
 
     def _sync_rejections(self):
         """Incremental sync of rejected_opportunities by rowid."""
@@ -335,7 +335,7 @@ class SupabaseSyncer:
                 self._save_watermark("rejected_opportunities", new_wm, len(rows))
                 logging.debug("Supabase: synced %d rejections (wm=%d)", len(rows), new_wm)
         except Exception:
-            logging.debug("Supabase: rejections sync failed", exc_info=True)
+            logging.warning("Supabase: rejections sync failed", exc_info=True)
 
     def _sync_trades(self):
         """Sync settled_trades — use COUNT as watermark."""
