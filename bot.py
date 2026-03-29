@@ -53,7 +53,8 @@ ETH_SUB80_POSITION_CAP = 50      # Half-Kelly at 75c/87% WR = 322-645 contracts;
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
 BTC_MAX_RISK_PER_TRADE = 0.12    # BTC oversizing causes outsized losses (data: -$282 from 95c+ losses at full Kelly)
-SOL_MIN_EDGE = 0.010             # SOL-specific edge floor (data: >=1.0% = 94.2% WR on 258 trades; <1.0% drops to 82%)
+SOL_MIN_EDGE = 0.018             # SOL-specific edge floor (data: 1.0-1.8% is 76% WR, PnL-negative; >=1.8% is 95.3% WR)
+SOL_HIGH_EDGE_SHADOW = 0.05     # SOL edge ceiling shadow: log evaluations with edge > 5% for analysis (5%+ band is 80% WR, PnL-negative)
 XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/2L 95.3% WR at >=92c)
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 MIN_SECONDS_BEFORE_CLOSE = 0
@@ -7483,6 +7484,9 @@ class OpportunityScanner:
                     _min_edge = get_min_edge(best_ask)
                     if asset == "SOL":
                         _min_edge = max(_min_edge, SOL_MIN_EDGE)
+                # SOL high-edge shadow: log but don't block (5%+ band is 80% WR, PnL-negative)
+                _sol_high_edge_shadow = (asset == "SOL" and fee_adjusted_edge > SOL_HIGH_EDGE_SHADOW
+                                         and _pt in (None, "15m"))
                 if fee_adjusted_edge < _min_edge:
                     scan_stats[asset]["insufficient_edge"] += 1
                     self._recent_opportunities.append({
@@ -9631,6 +9635,24 @@ class OpportunityScanner:
                     })
                 except Exception:
                     logging.warning("insert_evaluated_opportunity failed (%s)", _cand_filter_stage, exc_info=True)
+
+                # SOL high-edge shadow: log additional entry for 5%+ edge analysis
+                if _sol_high_edge_shadow:
+                    try:
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset,
+                            "sol_high_edge_shadow",
+                            rejection_reason=f"SOL edge {fee_adjusted_edge:.4f} > {SOL_HIGH_EDGE_SHADOW} (shadow only, trade NOT blocked)",
+                            spot_price=spot, threshold=threshold,
+                            volatility=blended_rv, market_price=best_ask,
+                            seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge,
+                            z_score=z_score, raw_prob=raw_prob,
+                            fee_adjusted_edge=fee_adjusted_edge,
+                            product_type=window.get("product_type"),
+                            **_shadow_diag)
+                    except Exception:
+                        logging.debug("sol_high_edge_shadow insert failed", exc_info=True)
 
                 candidates.append({
                     "ticker": ticker,
