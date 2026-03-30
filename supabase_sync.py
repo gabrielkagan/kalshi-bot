@@ -58,6 +58,7 @@ class SupabaseSyncer:
         self._wm_evaluations = 0
         self._wm_rejections = 0
         self._wm_trades_count = 0
+        self._wm_harrv = 0
 
         # Timing
         self._last_dashboard = 0
@@ -255,8 +256,10 @@ class SupabaseSyncer:
                         self._wm_rejections = wm
                     elif src == "settled_trades":
                         self._wm_trades_count = wm
-                logging.info("Supabase watermarks loaded: evals=%d rej=%d trades=%d",
-                             self._wm_evaluations, self._wm_rejections, self._wm_trades_count)
+                    elif src == "spx_harrv_shadow_signals":
+                        self._wm_harrv = wm
+                logging.info("Supabase watermarks loaded: evals=%d rej=%d trades=%d harrv=%d",
+                             self._wm_evaluations, self._wm_rejections, self._wm_trades_count, self._wm_harrv)
         except Exception:
             logging.debug("Supabase: could not load watermarks, starting from 0")
 
@@ -297,6 +300,7 @@ class SupabaseSyncer:
         self._sync_rejections()
         self._sync_trades()
         self._sync_vol_params()
+        self._sync_harrv()
 
     def _sync_evaluations(self):
         """Incremental sync of evaluated_opportunities by rowid."""
@@ -410,6 +414,30 @@ class SupabaseSyncer:
                 self._post("volatility_params", mapped)
         except Exception:
             logging.debug("Supabase: vol_params sync failed", exc_info=True)
+
+    def _sync_harrv(self):
+        """Incremental sync of spx_harrv_shadow_signals by id."""
+        try:
+            # Check if table exists
+            tables = [r[0] for r in self._db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='spx_harrv_shadow_signals'"
+            ).fetchall()]
+            if not tables:
+                return
+            rows = self._db.execute(
+                "SELECT * FROM spx_harrv_shadow_signals WHERE id > ? ORDER BY id LIMIT 100",
+                (self._wm_harrv,)
+            ).fetchall()
+            if not rows:
+                return
+            mapped = [{col: self._clean(r[col]) for col in r.keys()} for r in rows]
+            if self._post("spx_harrv_shadow_signals", mapped):
+                new_wm = max(r["id"] for r in rows)
+                self._wm_harrv = new_wm
+                self._save_watermark("spx_harrv_shadow_signals", new_wm, len(rows))
+                logging.debug("Supabase: synced %d harrv signals (wm=%d)", len(rows), new_wm)
+        except Exception:
+            logging.warning("Supabase: harrv sync failed", exc_info=True)
 
     # ── Periodic snapshots ──────────────────────────────────────────────
 

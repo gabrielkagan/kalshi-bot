@@ -881,6 +881,54 @@ def section_pipeline(ctx: ReportContext) -> str:
     return "\n".join(lines)
 
 
+def section_post_blr_regime(ctx: ReportContext) -> str:
+    """Post-BLR passthrough regime monitoring (deployed Mar 29 2026)."""
+    if not table_exists(ctx.db, "settled_trades"):
+        return ""
+
+    # Today's 15M trades by asset
+    trades = ctx.db.execute(
+        "SELECT asset, COUNT(*) as n, "
+        "SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) as w, "
+        "SUM(pnl_cents) as pnl "
+        "FROM settled_trades "
+        "WHERE product_type='15m' AND settled_at >= ? AND settled_at <= ? "
+        "GROUP BY asset ORDER BY n DESC",
+        (ctx.start_iso, ctx.end_iso),
+    ).fetchall()
+
+    if not trades:
+        return ""
+
+    total_n = sum(r["n"] for r in trades)
+    total_w = sum(r["w"] for r in trades)
+    total_pnl = sum(r["pnl"] for r in trades)
+
+    lines = ["\U0001f9ea *Post-BLR Regime*"]
+    asset_parts = []
+    for r in trades:
+        wr = r["w"] / r["n"] * 100 if r["n"] else 0
+        asset_parts.append(f"{r['asset']}:{r['n']}t/{wr:.0f}%/${r['pnl']/100:+.0f}")
+    lines.append(" | ".join(asset_parts))
+    lines.append(f"Total: {total_n}t, {total_w}W/{total_n-total_w}L, ${total_pnl/100:+.2f}")
+
+    # SOL empty-book maker fallback stats (if available)
+    if table_exists(ctx.db, "evaluated_opportunities"):
+        sol_eb = ctx.db.execute(
+            "SELECT filter_stage, COUNT(*) as n FROM evaluated_opportunities "
+            "WHERE asset='SOL' AND product_type='15m' "
+            "AND evaluation_time >= ? AND evaluation_time <= ? "
+            "AND filter_stage LIKE 'sol_empty_book%' "
+            "GROUP BY filter_stage",
+            (ctx.start_iso, ctx.end_iso),
+        ).fetchall()
+        if sol_eb:
+            eb_parts = [f"{r['filter_stage'].replace('sol_empty_book_', '')}={r['n']}" for r in sol_eb]
+            lines.append(f"SOL empty-book: {' '.join(eb_parts)}")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Section lists per report type
 # ---------------------------------------------------------------------------
@@ -919,6 +967,7 @@ EVENING_SECTIONS = [
     section_distribution,
     section_baseline_comparison,
     section_pipeline,
+    section_post_blr_regime,
 ]
 
 REPORT_SECTIONS = {

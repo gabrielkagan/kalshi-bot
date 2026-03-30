@@ -9122,6 +9122,38 @@ class OpportunityScanner:
                     _obs_log_prefix = {"hourly": "HOURLY_OBS", "spx_hourly": "SPX_OBS", "weather": "WEATHER_OBS"}.get(_obs_pt, "OBS")
                     logging.info("%s: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  _obs_log_prefix, ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
+                    # ── SPX NO-side observation ──
+                    # Log NO-side data for offline analysis when YES is in 65-85c range
+                    if _obs_pt == "spx_hourly" and 65 <= best_ask <= 85 and seconds_remaining >= 600:
+                        _no_ask_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
+                        _spx_no_price = None
+                        if _no_ask_raw is not None:
+                            _spx_no_price = (dollars_str_to_cents(_no_ask_raw) if isinstance(_no_ask_raw, str)
+                                             else int(_no_ask_raw))
+                            if _spx_no_price <= 0:
+                                _spx_no_price = None
+                        if _spx_no_price and 0 < _spx_no_price < 100:
+                            _spx_no_prob = 1.0 - final_prob
+                            _spx_no_edge = _spx_no_prob - _spx_no_price / 100.0
+                            _spx_no_dedup = (ticker, "spx_no_side_observation")
+                            if _spx_no_dedup not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_spx_no_dedup)
+                                try:
+                                    self._state.insert_evaluated_opportunity(
+                                        ticker, window["event_ticker"], asset,
+                                        "spx_no_side_observation",
+                                        spot_price=spot, threshold=threshold,
+                                        volatility=blended_rv,
+                                        market_price=_spx_no_price,
+                                        seconds_to_close=seconds_remaining,
+                                        calibrated_prob=round(_spx_no_prob, 6),
+                                        edge=round(_spx_no_edge, 6),
+                                        z_score=z_score, raw_prob=round(1.0 - raw_prob, 6) if raw_prob else None,
+                                        product_type="spx_hourly",
+                                        side="no",
+                                        **_shadow_diag)
+                                except Exception:
+                                    logging.debug("spx_no_side_observation insert failed", exc_info=True)
                     # ── Weather Shadow Variants (capped30, short_stc) ──
                     if _obs_pt == "weather":
                         for _wscfg in WEATHER_SHADOW_CONFIGS:

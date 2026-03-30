@@ -75,7 +75,7 @@ SHADOW_BANKROLL_CENTS = 100000  # $1000 notional
 # ── Multi-Gate Abstention ─────────────────────────────────────────────────────
 
 # Edge gates
-MIN_EDGE = 0.005          # 0.5% minimum fee-adjusted edge
+MIN_EDGE = -1.0           # Disabled for shadow data collection (was 0.005, blocked all output)
 MAX_EDGE = 0.030          # 3% edge inversion protection (high edge = model wrong)
 
 # Confidence gate
@@ -186,6 +186,46 @@ class SPXHARRVModel:
         self._signal_count: int = 0
         self._gate_failures: Dict[str, int] = {}
         self._bankroll: int = SHADOW_BANKROLL_CENTS
+
+        # State persistence — survive restarts for OLS convergence
+        self._state_path = "spx_harrv_state.json"
+        self._load_state()
+
+    def _load_state(self):
+        """Restore _rv_history and _coefficients from disk."""
+        try:
+            with open(self._state_path, "r") as f:
+                state = json.load(f)
+            if "rv_history" in state:
+                self._rv_history = deque(
+                    [tuple(entry) for entry in state["rv_history"]],
+                    maxlen=OLS_WINDOW * 2
+                )
+            if "coefficients" in state:
+                self._coefficients = state["coefficients"]
+            if "n_ols_obs" in state:
+                self._ols_n_obs = state["n_ols_obs"]
+            logging.info("SPX HAR-RV state loaded: %d rv_history, n_ols=%d, method=%s",
+                         len(self._rv_history), self._ols_n_obs,
+                         "ols" if self._ols_n_obs >= OLS_MIN_OBS else "prior")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logging.warning("SPX HAR-RV state load failed: %s", e)
+
+    def _save_state(self):
+        """Persist _rv_history and _coefficients to disk."""
+        try:
+            state = {
+                "rv_history": [list(entry) for entry in self._rv_history],
+                "coefficients": self._coefficients,
+                "n_ols_obs": self._ols_n_obs,
+                "saved_at": datetime.datetime.now(timezone.utc).isoformat(),
+            }
+            with open(self._state_path, "w") as f:
+                json.dump(state, f)
+        except Exception as e:
+            logging.debug("SPX HAR-RV state save failed: %s", e)
 
     def ingest_price(self, price: float, timestamp: float):
         """Ingest a price tick and compute/store the log return."""
@@ -337,6 +377,7 @@ class SPXHARRVModel:
             self._last_ols_fit = now
             logging.info("SPX HAR-RV OLS refit: n=%d β0=%.2e β1=%.4f β2=%.4f β3=%.4f",
                          n, beta[0], beta[1], beta[2], beta[3])
+            self._save_state()
 
         except Exception as e:
             logging.debug("SPX HAR-RV OLS fit failed: %s", e)
@@ -372,6 +413,9 @@ class SPXHARRVModel:
                            realized_next_1h: float):
         """Record an RV observation for future OLS training."""
         self._rv_history.append((time.time(), rv_1h, rv_1d, rv_1w, realized_next_1h))
+        # Save state periodically (every 10 observations)
+        if len(self._rv_history) % 10 == 0:
+            self._save_state()
 
     def compute_probability(self, spot: float, threshold: float,
                             seconds_remaining: float, sigma: float) -> Optional[Dict]:
