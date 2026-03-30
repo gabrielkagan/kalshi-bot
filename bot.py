@@ -14218,6 +14218,16 @@ class SettlementTracker:
                 logging.info(
                     f"Balance after settlements: ${new_balance / 100:.2f}"
                 )
+            # Invalidate scanner balance cache so next tick's record_balance()
+            # gets post-settlement balance. Without this, the 10s cache TTL
+            # causes record_balance to record stale pre-settlement balance,
+            # compressing drawdown_scaler for one tick. (Learned: 33% of
+            # candidates got ds<1.0 from stale cache, Mar 29-30 2026.)
+            try:
+                if self._ml and hasattr(self._ml, 'scanner'):
+                    self._ml.scanner._balance_cache = (None, 0.0)
+            except Exception:
+                pass
 
     # ── Process a single settlement ──────────────────────────────────────
 
