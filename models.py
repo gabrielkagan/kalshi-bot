@@ -1135,17 +1135,29 @@ class PositionSizer:
                 return
 
         # Spike rejection: skip readings >20% above the last recorded value
+        # EXCEPTION: allow recovery near HWM (settlement timing can crash balance
+        # temporarily, then recovery is rejected as "spike" and history gets stuck).
+        # (Learned: $1,377→$1,051→$1,400 recovery rejected, ds=0.50 stuck permanently. Mar 30 2026.)
         if self._balance_history:
             _, last_balance = self._balance_history[-1]
             if last_balance > 0 and balance_cents > last_balance * 1.20:
-                self._consecutive_spike_rejections += 1
-                logging.warning(
-                    "DRAWDOWN: balance spike %dc vs last %dc (+%.0f%%) — skipping "
-                    "(consecutive=%d)",
-                    balance_cents, last_balance,
-                    (balance_cents - last_balance) / last_balance * 100,
-                    self._consecutive_spike_rejections)
-                return
+                # Allow if reading is within 10% of rolling HWM (returning to known-good level)
+                hwm = self.get_rolling_hwm()
+                if hwm > 0 and balance_cents <= hwm * 1.10:
+                    logging.info(
+                        "DRAWDOWN: spike guard BYPASSED — recovery to %dc near HWM %dc "
+                        "(ratio=%.2f, last=%dc +%.0f%%)",
+                        balance_cents, hwm, balance_cents / hwm,
+                        last_balance, (balance_cents - last_balance) / last_balance * 100)
+                else:
+                    self._consecutive_spike_rejections += 1
+                    logging.warning(
+                        "DRAWDOWN: balance spike %dc vs last %dc (+%.0f%%) — skipping "
+                        "(consecutive=%d, hwm=%dc)",
+                        balance_cents, last_balance,
+                        (balance_cents - last_balance) / last_balance * 100,
+                        self._consecutive_spike_rejections, hwm if hwm > 0 else 0)
+                    return
 
         self._consecutive_spike_rejections = 0
         self._balance_history.append((time.time(), balance_cents))

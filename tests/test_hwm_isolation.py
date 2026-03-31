@@ -188,6 +188,84 @@ class TestSpikeAlertCounter(unittest.TestCase):
         self.assertEqual(sizer._consecutive_spike_rejections, 0)
 
 
+class TestSpikeGuardRecovery(unittest.TestCase):
+    """Spike guard must allow recovery near HWM after crash (Mar 30 2026 bug).
+
+    Root cause: settlement timing crashes balance temporarily ($1,377→$1,051).
+    Recovery to $1,400 is +33%, rejected by 20% spike guard. history stuck at
+    crash value, ds=0.50 permanently. Fix: allow readings within 10% of HWM.
+    """
+
+    def test_spike_guard_allows_recovery_near_hwm(self):
+        """After crash, recovery to near HWM should be accepted."""
+        sizer = PositionSizer(starting_balance_cents=137700)
+        for _ in range(5):
+            sizer.record_balance(137700)  # HWM = $1,377
+
+        # Crash to $1,051 (accepted — it's a drop, not a spike)
+        sizer.record_balance(105100)
+        self.assertEqual(sizer._balance_history[-1][1], 105100)
+
+        # Recovery to $1,400 (near HWM of $1,377 — should be ACCEPTED)
+        sizer.record_balance(140000)
+        self.assertEqual(sizer._balance_history[-1][1], 140000,
+                         "Recovery near HWM should bypass spike guard")
+
+    def test_spike_guard_blocks_real_spike(self):
+        """Genuine spike far above HWM should still be rejected."""
+        sizer = PositionSizer(starting_balance_cents=140000)
+        for _ in range(5):
+            sizer.record_balance(140000)  # HWM = $1,400
+
+        # Crash to $1,051
+        sizer.record_balance(105100)
+
+        # Spike to $2,000 — way above HWM * 1.10 ($1,540). Should be REJECTED.
+        sizer.record_balance(200000)
+        self.assertEqual(sizer._balance_history[-1][1], 105100,
+                         "Spike far above HWM should be rejected")
+
+    def test_recovery_after_crash_restores_ds(self):
+        """Full crash-and-recovery cycle: ds should return to 1.0."""
+        sizer = PositionSizer(starting_balance_cents=137700)
+        for _ in range(5):
+            sizer.record_balance(137700)
+
+        # Crash → ds compresses
+        sizer.record_balance(105100)
+        ds_crashed = sizer._drawdown_scaler(105100)
+        self.assertLess(ds_crashed, 1.0, "ds should compress after crash")
+
+        # Recovery near HWM → ds should restore
+        sizer.record_balance(140000)
+        ds_recovered = sizer._drawdown_scaler(140000)
+        self.assertEqual(ds_recovered, 1.0,
+                         "ds should return to 1.0 after recovery near HWM")
+
+    def test_spike_guard_allows_within_10pct_of_hwm(self):
+        """Reading at exactly HWM * 1.10 should be accepted."""
+        sizer = PositionSizer(starting_balance_cents=100000)
+        for _ in range(5):
+            sizer.record_balance(100000)  # HWM = $1,000
+
+        sizer.record_balance(50000)  # crash to $500
+        # Recovery to $1,100 = HWM * 1.10 — boundary, should be accepted
+        sizer.record_balance(110000)
+        self.assertEqual(sizer._balance_history[-1][1], 110000)
+
+    def test_spike_guard_rejects_above_110pct_of_hwm(self):
+        """Reading above HWM * 1.10 after crash should be rejected."""
+        sizer = PositionSizer(starting_balance_cents=100000)
+        for _ in range(5):
+            sizer.record_balance(100000)  # HWM = $1,000
+
+        sizer.record_balance(50000)  # crash to $500
+        # Spike to $1,200 = HWM * 1.20 — above 1.10 threshold, should be rejected
+        sizer.record_balance(120000)
+        self.assertEqual(sizer._balance_history[-1][1], 50000,
+                         "Reading >110% of HWM should still be rejected")
+
+
 class TestFractionalBankrollScenario(unittest.TestCase):
     """End-to-end test: fractional bankroll through compute() + full balance
     through record_balance() should work correctly together."""
