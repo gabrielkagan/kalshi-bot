@@ -543,7 +543,7 @@ DECIDED_T1_ENABLED = os.environ.get("DECIDED_T1_ENABLED", "1") == "1"
 DECIDED_T1B_ENABLED = os.environ.get("DECIDED_T1B_ENABLED", "1") == "1"
 DECIDED_T2_ENABLED = os.environ.get("DECIDED_T2_ENABLED", "1") == "1"
 DECIDED_T2_Z25_ENABLED = os.environ.get("DECIDED_T2_Z25_ENABLED", "1") == "1"
-DECIDED_T2_Z2_ENABLED = os.environ.get("DECIDED_T2_Z2_ENABLED", "1") == "1"
+DECIDED_T2_Z2_ENABLED = os.environ.get("DECIDED_T2_Z2_ENABLED", "0") == "1"  # Shadowed: -$313 net on 47 trades, no edge in z=-2.5 to -1.75
 DECIDED_CONTRACT_Z_T2_Z25 = -2.5            # Tier 2-Z25: -3 < z ≤ -2.5, 93-96c (data: 7/7 = 100% WR)
 DECIDED_CONTRACT_Z_T2_Z2 = -1.75            # Tier 2-Z2: -2.5 < z ≤ -1.75, 93-96c (expanded from -2.0 — data: 114/115 = 99.1% WR in -2.0 to -1.75 zone, Wilson LB 95.2%)
 DECIDED_CONTRACT_T2_Z25_RISK = 0.20         # 20% fixed sizing (was 15% — data: 4/4 WR, +$8.12/trade)
