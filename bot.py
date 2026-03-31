@@ -9794,6 +9794,57 @@ class OpportunityScanner:
                             except Exception:
                                 logging.warning("insert_evaluated_opportunity failed (%s)", _tod_stage, exc_info=True)
 
+                # ── Forward observation tags: collect data under current config ──
+                # Tag 1: SOL sub-88c during US morning (UTC 12-17)
+                # Data: 60% WR pre-BLR, only 5 trades post-BLR — need forward data
+                if (_pt in (None, "15m") and asset == "SOL" and best_ask < 88
+                        and 12 <= _tod_hour <= 17):
+                    _obs_dedup = (ticker, "sol_usmorn_sub88")
+                    if _obs_dedup not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_obs_dedup)
+                        try:
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset,
+                                "sol_usmorn_sub88",
+                                rejection_reason=f"SOL {best_ask}c hour={_tod_hour} (observation only)",
+                                spot_price=spot, threshold=threshold,
+                                volatility=blended_rv, market_price=best_ask,
+                                seconds_to_close=seconds_remaining,
+                                calibrated_prob=final_prob, edge=edge,
+                                z_score=z_score, raw_prob=raw_prob,
+                                fee_adjusted_edge=fee_adjusted_edge,
+                                position_size=sizing.get("contracts"),
+                                product_type=window.get("product_type"),
+                                **_shadow_diag)
+                        except Exception:
+                            logging.debug("sol_usmorn_sub88 insert failed", exc_info=True)
+
+                # Tag 2: Sub-2-min STC during US afternoon (UTC 18-23), non-DC only
+                # Data: 19W/7L, avg win $2.91 vs avg loss $46.87 — need forward data
+                if (_pt in (None, "15m") and seconds_remaining < 120
+                        and 18 <= _tod_hour <= 23
+                        and strategy not in ("decided_t1", "decided_t1b", "decided_t2",
+                                             "decided_t2_z25", "decided_t2_z2")):
+                    _obs_dedup = (ticker, "usaft_short_stc")
+                    if _obs_dedup not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_obs_dedup)
+                        try:
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset,
+                                "usaft_short_stc",
+                                rejection_reason=f"STC={seconds_remaining:.0f}s hour={_tod_hour} (observation only)",
+                                spot_price=spot, threshold=threshold,
+                                volatility=blended_rv, market_price=best_ask,
+                                seconds_to_close=seconds_remaining,
+                                calibrated_prob=final_prob, edge=edge,
+                                z_score=z_score, raw_prob=raw_prob,
+                                fee_adjusted_edge=fee_adjusted_edge,
+                                position_size=sizing.get("contracts"),
+                                product_type=window.get("product_type"),
+                                **_shadow_diag)
+                        except Exception:
+                            logging.debug("usaft_short_stc insert failed", exc_info=True)
+
                 # Respect per-tick orderbook fetch cap
                 if ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
                     break
