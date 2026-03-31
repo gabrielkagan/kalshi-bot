@@ -192,10 +192,18 @@ class SPXHARRVModel:
         self._load_state()
 
     def _load_state(self):
-        """Restore _rv_history and _coefficients from disk."""
+        """Restore _returns, _rv_history, and _coefficients from disk."""
         try:
             with open(self._state_path, "r") as f:
                 state = json.load(f)
+            if "returns" in state:
+                self._returns = deque(
+                    [tuple(entry) for entry in state["returns"]],
+                    maxlen=RETURN_BUFFER_SIZE
+                )
+                # Restore _last_price from last return entry for continuity
+                if self._returns:
+                    self._last_price = None  # will be set on next ingest_price call
             if "rv_history" in state:
                 self._rv_history = deque(
                     [tuple(entry) for entry in state["rv_history"]],
@@ -205,8 +213,8 @@ class SPXHARRVModel:
                 self._coefficients = state["coefficients"]
             if "n_ols_obs" in state:
                 self._ols_n_obs = state["n_ols_obs"]
-            logging.info("SPX HAR-RV state loaded: %d rv_history, n_ols=%d, method=%s",
-                         len(self._rv_history), self._ols_n_obs,
+            logging.info("SPX HAR-RV state loaded: %d returns, %d rv_history, n_ols=%d, method=%s",
+                         len(self._returns), len(self._rv_history), self._ols_n_obs,
                          "ols" if self._ols_n_obs >= OLS_MIN_OBS else "prior")
         except FileNotFoundError:
             pass
@@ -214,9 +222,10 @@ class SPXHARRVModel:
             logging.warning("SPX HAR-RV state load failed: %s", e)
 
     def _save_state(self):
-        """Persist _rv_history and _coefficients to disk."""
+        """Persist _returns, _rv_history, and _coefficients to disk."""
         try:
             state = {
+                "returns": [list(entry) for entry in self._returns],
                 "rv_history": [list(entry) for entry in self._rv_history],
                 "coefficients": self._coefficients,
                 "n_ols_obs": self._ols_n_obs,
@@ -240,6 +249,9 @@ class SPXHARRVModel:
             if 0.5 <= dt <= 8.0 and last_price > 0:
                 log_return = math.log(price / last_price)
                 self._returns.append((timestamp, log_return))
+                # Persist returns every 300 ticks (~5 min at 1/s) to survive restarts
+                if len(self._returns) % 300 == 0:
+                    self._save_state()
 
         self._last_price = (price, timestamp)
 
