@@ -59,8 +59,12 @@ def migrate_table(conn: sqlite3.Connection, table: str):
     cur = conn.cursor()
 
     # ── Idempotency check ─────────────────────────────────────────────
-    if has_column(cur, table, "strategy_group"):
-        print(f"  [{table}] strategy_group column already exists — skipping migration.")
+    # Check if composite PK already exists (not just column existence —
+    # _create_tables may have added the column via ALTER TABLE without
+    # changing the PK)
+    create_sql = get_create_sql(cur, table)
+    if "PRIMARY KEY (ticker, strategy_group)" in create_sql:
+        print(f"  [{table}] composite PK already exists — skipping migration.")
         return
 
     # ── Read current schema ───────────────────────────────────────────
@@ -101,9 +105,12 @@ def migrate_table(conn: sqlite3.Connection, table: str):
             parts.append(f"DEFAULT {dflt}")
         col_defs.append(" ".join(parts))
 
-    # Add new columns
-    col_defs.append("strategy_group TEXT NOT NULL DEFAULT 'main'")
-    col_defs.append("is_stacked INTEGER DEFAULT 0")
+    # Add new columns if they don't already exist (ALTER TABLE may have added them)
+    existing_names = {c[1] for c in col_info}
+    if "strategy_group" not in existing_names:
+        col_defs.append("strategy_group TEXT NOT NULL DEFAULT 'main'")
+    if "is_stacked" not in existing_names:
+        col_defs.append("is_stacked INTEGER DEFAULT 0")
     col_defs.append("PRIMARY KEY (ticker, strategy_group)")
 
     create_sql = f"CREATE TABLE {new_table} (\n    " + ",\n    ".join(col_defs) + "\n)"
@@ -114,15 +121,35 @@ def migrate_table(conn: sqlite3.Connection, table: str):
 
     # ── Migrate data ──────────────────────────────────────────────────
     existing_cols = [c[1] for c in col_info]
-    col_list = ", ".join(existing_cols)
+    # If strategy_group/is_stacked already in existing_cols (from ALTER TABLE),
+    # we need to SELECT them but recompute strategy_group from strategy
+    has_sg = "strategy_group" in existing_cols
+    has_is = "is_stacked" in existing_cols
 
-    if "strategy" in existing_cols:
+    if has_sg:
+        # Columns exist — SELECT all, but override strategy_group with computed value
+        base_cols = [c for c in existing_cols if c not in ("strategy_group", "is_stacked")]
+        col_list_src = ", ".join(base_cols)
+        col_list_dst = ", ".join(base_cols)
+        extra_dst = ", strategy_group, is_stacked"
+        if "strategy" in existing_cols:
+            extra_src = f", {STRATEGY_GROUP_CASE}, 0"
+        else:
+            extra_src = ", 'main', 0"
+        insert_sql = f"""
+            INSERT INTO {new_table} ({col_list_dst}{extra_dst})
+            SELECT {col_list_src}{extra_src}
+            FROM {table}
+        """
+    elif "strategy" in existing_cols:
+        col_list = ", ".join(existing_cols)
         insert_sql = f"""
             INSERT INTO {new_table} ({col_list}, strategy_group, is_stacked)
             SELECT {col_list}, {STRATEGY_GROUP_CASE}, 0
             FROM {table}
         """
     else:
+        col_list = ", ".join(existing_cols)
         insert_sql = f"""
             INSERT INTO {new_table} ({col_list}, strategy_group, is_stacked)
             SELECT {col_list}, 'main', 0
