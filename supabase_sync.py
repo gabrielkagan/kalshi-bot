@@ -174,7 +174,7 @@ class SupabaseSyncer:
             if resp.status_code == 409:
                 self._consecutive_errors = 0
                 return True
-            logging.debug("Supabase %s: HTTP %d — %s", table, resp.status_code, resp.text[:200])
+            logging.warning("Supabase %s: HTTP %d — %s", table, resp.status_code, resp.text[:200])
             self._consecutive_errors += 1
             return False
         except Exception:

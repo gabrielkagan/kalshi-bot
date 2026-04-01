@@ -929,6 +929,55 @@ def section_post_blr_regime(ctx: ReportContext) -> str:
     return "\n".join(lines)
 
 
+def section_spx_pipeline(ctx: ReportContext) -> str:
+    """SPX HAR-RV shadow pipeline health — signals, RV quality, Finnhub status."""
+    if not table_exists(ctx.db, "spx_harrv_shadow_signals"):
+        return ""
+
+    row = ctx.db.execute(
+        "SELECT COUNT(*) as n, "
+        "SUM(CASE WHEN rv_1h IS NOT NULL AND rv_1h > 0 THEN 1 ELSE 0 END) as nonzero_rv, "
+        "MAX(evaluation_time) as latest "
+        "FROM spx_harrv_shadow_signals "
+        "WHERE evaluation_time >= ? AND evaluation_time <= ?",
+        (ctx.start_iso, ctx.end_iso),
+    ).fetchone()
+
+    n = row["n"]
+    if n == 0:
+        return ""
+
+    nonzero = row["nonzero_rv"]
+    latest = row["latest"]
+
+    # Settled stats
+    settled = ctx.db.execute(
+        "SELECT COUNT(*) as n, "
+        "SUM(CASE WHEN market_result='yes' AND shadow_pnl_cents > 0 THEN 1 "
+        "     WHEN market_result='no' AND shadow_pnl_cents > 0 THEN 1 ELSE 0 END) as w, "
+        "SUM(shadow_pnl_cents) as pnl "
+        "FROM spx_harrv_shadow_signals "
+        "WHERE status='settled' AND settled_time >= ? AND settled_time <= ?",
+        (ctx.start_iso, ctx.end_iso),
+    ).fetchone()
+
+    lines = ["\U0001f4ca *SPX HAR-RV Pipeline*"]
+    lines.append(f"Signals: {n} (RV>0: {nonzero}/{n})")
+    lines.append(f"Latest: {latest or 'none'}")
+
+    if settled["n"] and settled["n"] > 0:
+        sn = settled["n"]
+        sw = settled["w"] or 0
+        spnl = settled["pnl"] or 0
+        wr = sw / sn * 100 if sn else 0
+        lines.append(f"Settled: {sn}t, {sw}W/{sn-sw}L ({wr:.0f}%), ${spnl/100:+.2f}")
+
+    if nonzero == 0 and n > 0:
+        lines.append("⚠️ ALL signals have zero RV — Finnhub feed may be stale")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Section lists per report type
 # ---------------------------------------------------------------------------
@@ -968,6 +1017,7 @@ EVENING_SECTIONS = [
     section_baseline_comparison,
     section_pipeline,
     section_post_blr_regime,
+    section_spx_pipeline,
 ]
 
 REPORT_SECTIONS = {

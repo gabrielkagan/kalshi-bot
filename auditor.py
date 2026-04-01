@@ -1101,6 +1101,69 @@ def check_drawdown_scaler_health(db: sqlite3.Connection, verbose: bool) -> list[
     return alerts
 
 
+# ── Category 8: SPX Pipeline Health ──────────────────────────────────────────
+
+def check_spx_pipeline_health(db: sqlite3.Connection, verbose: bool) -> list[tuple[str, str, str]]:
+    """8a. Check SPX HAR-RV shadow is producing signals during market hours."""
+    alerts = []
+
+    # Only alert Mon-Fri during/after US market hours (14:30-21:00 UTC = 9:30-16:00 ET)
+    now_utc = datetime.now(timezone.utc)
+    if now_utc.weekday() >= 5:  # Sat/Sun — no SPX markets
+        if verbose:
+            print("  SPX pipeline: weekend — skipping")
+        return alerts
+
+    # Check HAR-RV shadow signals in the last 4 hours
+    if not table_exists(db, "spx_harrv_shadow_signals"):
+        if verbose:
+            print("  SPX pipeline: spx_harrv_shadow_signals table not found")
+        return alerts
+
+    cutoff = (now_utc - timedelta(hours=4)).isoformat()
+    row = db.execute(
+        "SELECT COUNT(*) as cnt, MAX(evaluation_time) as latest "
+        "FROM spx_harrv_shadow_signals WHERE evaluation_time >= ?",
+        (cutoff,),
+    ).fetchone()
+    cnt = row["cnt"]
+    latest = row["latest"]
+
+    if verbose:
+        print(f"  SPX HAR-RV signals (4h): {cnt}, latest: {latest or 'none'}")
+
+    # Check Finnhub health via price freshness
+    # If no signals in 4h during a weekday, the price feed is likely down
+    if cnt == 0 and 14 <= now_utc.hour <= 21:
+        alerts.append((
+            "spx_pipeline_stale",
+            "spx_harrv_no_signals_4h",
+            "⚠️ *AUDITOR ALERT: SPX HAR-RV Pipeline Stale*\n\n"
+            "0 HAR-RV shadow signals in the last 4 hours during market hours.\n"
+            "Likely cause: Finnhub WebSocket disconnected or SPX engine not running.\n"
+            "Check: `systemctl status kalshi-bot` and Finnhub WS logs.",
+        ))
+
+    # Check for zero-return dominance (the bug we're fixing)
+    if cnt > 0:
+        zero_rv = db.execute(
+            "SELECT COUNT(*) as cnt FROM spx_harrv_shadow_signals "
+            "WHERE evaluation_time >= ? AND (rv_1h IS NULL OR rv_1h = 0)",
+            (cutoff,),
+        ).fetchone()["cnt"]
+        if zero_rv > 0 and zero_rv == cnt:
+            alerts.append((
+                "spx_harrv_zero_rv",
+                "spx_harrv_all_zero_rv_4h",
+                "⚠️ *AUDITOR ALERT: SPX HAR-RV All Zero RV*\n\n"
+                f"All {cnt} signals in the last 4h have rv_1h=0 or NULL.\n"
+                "Likely cause: Finnhub WS delivering identical prices (zero returns).\n"
+                "The zero-return filter should prevent this — check spx_harrv_shadow.py.",
+            ))
+
+    return alerts
+
+
 # ---------------------------------------------------------------------------
 # Check registry
 # ---------------------------------------------------------------------------
@@ -1133,6 +1196,8 @@ CHECKS = [
     ("hourly", check_hourly_live_health),
     # Category 7: Sizing Sanity
     ("sizing", check_drawdown_scaler_health),
+    # Category 8: SPX Pipeline
+    ("spx", check_spx_pipeline_health),
     # --- Add new checks here ---
     # ("category", check_function),
     # Future: Plug in Claude API analysis (Layer 2)

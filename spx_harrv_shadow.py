@@ -270,30 +270,39 @@ class SPXHARRVModel:
         now = time.time()
         returns_list = list(self._returns)
 
-        # RV_1h: last 1 hour of returns
+        # RV_1h: last 1 hour of NON-ZERO returns only.
+        # REST polling produces duplicate prices → log(p/p) = 0. These are noise,
+        # not real zero-volatility readings. Filter them to compute RV from actual
+        # price movements only. (Learned: 98% zeros from REST killed HAR-RV for
+        # weeks — rv_1h=0 → sigma=0 → no signals. Mar 25-Apr 1 2026.)
         cutoff_1h = now - 3600
-        returns_1h = [r for ts, r in returns_list if ts >= cutoff_1h]
+        _all_1h = [(ts, r) for ts, r in returns_list if ts >= cutoff_1h]
+        returns_1h = [r for _, r in _all_1h if abs(r) > 1e-12]
+        _total_1h = len(_all_1h)
         if len(returns_1h) < MIN_RETURNS_1H:
+            if _total_1h > 0:
+                logging.debug("HAR-RV: insufficient non-zero returns 1h: %d/%d (need %d)",
+                              len(returns_1h), _total_1h, MIN_RETURNS_1H)
             return None
         rv_1h = sum(r ** 2 for r in returns_1h)
 
-        # RV_1d: last trading day of returns (~6.5 hours = 23400 seconds)
-        # Use clock time with generous window (last 24h) then normalize
+        # RV_1d: last trading day — filter zeros same as 1h
         cutoff_1d = now - 86400
-        returns_1d = [r for ts, r in returns_list if ts >= cutoff_1d]
+        _all_1d = [(ts, r) for ts, r in returns_list if ts >= cutoff_1d]
+        returns_1d = [r for _, r in _all_1d if abs(r) > 1e-12]
         n_1d = len(returns_1d)
         n_1h = len(returns_1h)
         rv_1d_imputed = False
         if n_1d >= MIN_RETURNS_1D:
-            # Normalize to per-hour equivalent
             rv_1d = sum(r ** 2 for r in returns_1d) / max(1, n_1d / n_1h)
         else:
             rv_1d = rv_1h  # fallback
             rv_1d_imputed = True
 
-        # RV_1w: last 5 trading days of returns
+        # RV_1w: last 5 trading days — filter zeros
         cutoff_1w = now - 5 * 86400
-        returns_1w = [r for ts, r in returns_list if ts >= cutoff_1w]
+        _all_1w = [(ts, r) for ts, r in returns_list if ts >= cutoff_1w]
+        returns_1w = [r for _, r in _all_1w if abs(r) > 1e-12]
         n_1w = len(returns_1w)
         rv_1w_imputed = False
         if n_1w >= MIN_RETURNS_1W:
