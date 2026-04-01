@@ -221,7 +221,7 @@ class TestLowPriceShadowDashboard(unittest.TestCase):
 
     def test_in_slow_cache(self):
         slow_start = self.dash_source.find("_SLOW_SNAP_KEYS")
-        slow_block = self.dash_source[slow_start:slow_start + 500]
+        slow_block = self.dash_source[slow_start:slow_start + 700]
         self.assertIn("low_price_shadow", slow_block)
 
     def test_price_tier_bucketer(self):

@@ -608,7 +608,7 @@ class TestDecidedContractDashboardExpansion(unittest.TestCase):
         self.assertIn("dc_expansion_shadow", source)
         # Should be in slow-changing cache
         slow_cache_pos = source.find("_SLOW_SNAP_KEYS")
-        slow_block = source[slow_cache_pos:slow_cache_pos + 300]
+        slow_block = source[slow_cache_pos:slow_cache_pos + 500]
         self.assertIn("dc_expansion_shadow", slow_block)
 
 

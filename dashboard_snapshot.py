@@ -3576,6 +3576,57 @@ class DashboardSnapshotBuilder:
                 logging.debug("decided_contract_live snapshot failed", exc_info=True)
             snap["decided_contract_live"] = _dc_live
 
+            # ── Terminal Momentum LIVE performance ──
+            _tm_live = {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0,
+                        "by_price": {}, "by_asset": {}, "signals": 0,
+                        "fill_rate": 0, "avg_fill_size": 0}
+            try:
+                _tm_total_contracts = 0
+                for _tm_row in _conn.execute(
+                    "SELECT entry_price_cents, asset, COUNT(*) as n, "
+                    "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
+                    "SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as losses, "
+                    "SUM(pnl_cents) as pnl, SUM(count) as total_cts "
+                    "FROM settled_trades WHERE strategy = 'terminal_momentum' "
+                    "GROUP BY entry_price_cents, asset"
+                ).fetchall():
+                    price, asset_name, n, w, l, pnl, cts = _tm_row
+                    _tm_live["trades"] += n
+                    _tm_live["wins"] += w
+                    _tm_live["losses"] += l
+                    _tm_live["pnl_cents"] += pnl
+                    _tm_total_contracts += (cts or 0)
+                    # by_price
+                    pk = str(price)
+                    _tm_live["by_price"].setdefault(pk, {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0})
+                    _tm_live["by_price"][pk]["trades"] += n
+                    _tm_live["by_price"][pk]["wins"] += w
+                    _tm_live["by_price"][pk]["losses"] += l
+                    _tm_live["by_price"][pk]["pnl_cents"] += pnl
+                    # by_asset
+                    _tm_live["by_asset"].setdefault(asset_name, {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0})
+                    _tm_live["by_asset"][asset_name]["trades"] += n
+                    _tm_live["by_asset"][asset_name]["wins"] += w
+                    _tm_live["by_asset"][asset_name]["losses"] += l
+                    _tm_live["by_asset"][asset_name]["pnl_cents"] += pnl
+                _tm_live["wr"] = round(_tm_live["wins"] / _tm_live["trades"], 4) if _tm_live["trades"] else 0
+                for v in _tm_live["by_price"].values():
+                    v["wr"] = round(v["wins"] / v["trades"], 4) if v["trades"] else 0
+                for v in _tm_live["by_asset"].values():
+                    v["wr"] = round(v["wins"] / v["trades"], 4) if v["trades"] else 0
+                _tm_live["avg_fill_size"] = round(_tm_total_contracts / _tm_live["trades"], 1) if _tm_live["trades"] else 0
+                # Signal count + fill rate
+                _tm_sig = _conn.execute(
+                    "SELECT COUNT(*) FROM evaluated_opportunities "
+                    "WHERE filter_stage = 'terminal_momentum'"
+                ).fetchone()
+                _tm_live["signals"] = _tm_sig[0] if _tm_sig else 0
+                _tm_live["fill_rate"] = round(_tm_live["trades"] / _tm_live["signals"], 4) if _tm_live["signals"] else 0
+                _query_count += 2
+            except Exception:
+                logging.debug("terminal_momentum_live snapshot failed", exc_info=True)
+            snap["terminal_momentum_live"] = _tm_live
+
             # ── Decided Contract Expansion Shadow ──
             _DC_EXPANSION_STAGES = (
                 'dc_shadow_t1b_93c', 'dc_shadow_t2_z25', 'dc_shadow_t2_90c',
@@ -3881,6 +3932,7 @@ class DashboardSnapshotBuilder:
                 "weekend_discount_live", "weekend_discount_shadow",
                 "overnight_discount_shadow",
                 "overnight_lp_shadow", "decided_contract_shadow", "decided_contract_live",
+                "terminal_momentum_live",
                 "dc_expansion_shadow", "relaxed_edge_shadow",
                 "calibration_gap", "capital_utilization", "loss_clusters",
                 "pipeline_completeness", "sol_pathc_shadow", "eth_filter_shadow",
