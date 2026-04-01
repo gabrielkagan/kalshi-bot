@@ -211,6 +211,18 @@ WEATHER_NO_SIDE_MIN_STC = 57600.0        # 16 hours — tightened from 8h (data:
 WEATHER_NO_MAX_PRICE = 40                # Only buy NO contracts priced ≤ 40c (YES ≥ 60c)
 WEATHER_NO_ASSUMED_PROB = 0.70           # Bypass model (structurally wrong on NO). Shadow: 79.7% WR, worst week 74%
 WEATHER_NO_KILL_THRESHOLD = -2000        # Auto-disable if cumulative NO PnL drops below -$20
+# ─── Weather Bracket NO-Side ────────────────────────────────────────────
+# Brackets at YES 88-96c settle NO 91.7% of the time (157 single-strike, Wilson CI 86.3-95.1%).
+# Breakeven is only 4-12%. Mechanism: narrow 5°F brackets overprice YES because 2-3°F forecast
+# misses in either direction push actual temp outside the bracket.
+BRACKET_NO_ENABLED = os.environ.get("BRACKET_NO_ENABLED", "1") == "1"
+BRACKET_NO_YES_MIN = 88                    # Min YES price to trigger
+BRACKET_NO_YES_MAX = 96                    # Max YES price — 97-99c excluded (dead zone: 47.8% NO rate)
+BRACKET_NO_FIXED_CONTRACTS = 5             # Fixed sizing — start small, verify execution, scale to 25 later
+BRACKET_NO_ASSUMED_PROB = 0.92             # NO probability (91.7% actual, conservative)
+BRACKET_NO_MIN_STC = 28800                 # 8 hours minimum STC (data: 84.8% NO at 8-16h, 92.6% at 16h+)
+BRACKET_NO_MAX_CONCURRENT = 6             # Max simultaneous bracket NO positions
+BRACKET_NO_KILL_THRESHOLD = -2000          # -$20 cumulative PnL kill switch
 HOURLY_MIN_EDGE_PCT = 0.001              # 0.1% — low for max signal collection (observation-only)
 
 # ─── Sports Comeback Observation Mode ────────────────────────────────────
@@ -6205,6 +6217,26 @@ class OpportunityScanner:
                             f"(threshold: ${WEATHER_NO_KILL_THRESHOLD/100:.2f})")
             except Exception:
                 pass  # Non-critical
+        # Bracket NO kill switch (separate from general weather NO)
+        if BRACKET_NO_ENABLED:
+            try:
+                _bn_pnl = self._state.conn.execute(
+                    "SELECT COALESCE(SUM(pnl_cents), 0) FROM settled_trades "
+                    "WHERE strategy='bracket_no'"
+                ).fetchone()[0]
+                if _bn_pnl < BRACKET_NO_KILL_THRESHOLD:
+                    import bot as _self_module
+                    _self_module.BRACKET_NO_ENABLED = False
+                    logging.error(
+                        "BRACKET_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
+                        _bn_pnl, BRACKET_NO_KILL_THRESHOLD)
+                    if _TELEGRAM:
+                        _TELEGRAM.send(
+                            f"\U0001f6a8 *BRACKET NO AUTO-KILLED*\n"
+                            f"Cumulative PnL: ${_bn_pnl/100:.2f} "
+                            f"(threshold: ${BRACKET_NO_KILL_THRESHOLD/100:.2f})")
+            except Exception:
+                pass  # Non-critical
         self._lp_hour_signals = {}  # Low-price shadow: per-hour signal count
         try:
             for pos in self._state.get_open_positions():
@@ -9315,6 +9347,104 @@ class OpportunityScanner:
                                     **_oft_db, **_shadow_diag)
                             except Exception:
                                 logging.warning("insert_evaluated_opportunity failed (%s)", _wsname, exc_info=True)
+                        # ── Bracket NO intercept ──────────────────────────
+                        # Buy NO on bracket contracts when YES is 88-96c. Computes NO cost
+                        # from YES price (bypasses corrupted _no_ask_eq). 91.7% NO rate on
+                        # 157 single-strike contracts, breakeven 4-12%.
+                        if (BRACKET_NO_ENABLED
+                                and _wx_mtype == "bracket"
+                                and BRACKET_NO_YES_MIN <= best_ask <= BRACKET_NO_YES_MAX
+                                and seconds_remaining >= BRACKET_NO_MIN_STC):
+                            _bn_no_cost = 100 - best_ask  # 4-12c (bypasses corrupted _no_ask_eq)
+                            _bn_edge = BRACKET_NO_ASSUMED_PROB - _bn_no_cost / 100.0
+                            # Count existing bracket NO positions + candidates this scan
+                            _bn_existing = sum(1 for p in self._state.get_open_positions()
+                                               if p.get("side") == "no" and p.get("ticker", "").startswith("KXHIGH"))
+                            _bn_in_scan = sum(1 for c in candidates if c.get("strategy") == "bracket_no")
+                            if _bn_existing + _bn_in_scan < BRACKET_NO_MAX_CONCURRENT:
+                                # Per-ticker dedup: skip if already holding this specific bracket strike
+                                _bn_has_pos = any(p.get("ticker") == ticker for p in self._state.get_open_positions())
+                                if not _bn_has_pos:
+                                    _bn_dedup = (ticker, "bracket_no")
+                                    _bn_fee = calculate_fee(BRACKET_NO_FIXED_CONTRACTS, _bn_no_cost,
+                                                            is_taker=True,
+                                                            fee_mult_taker=_mcfg.fee_multiplier_taker,
+                                                            fee_mult_maker=_mcfg.fee_multiplier_maker)
+                                    _bn_fee_edge = _bn_edge - _bn_fee / (BRACKET_NO_FIXED_CONTRACTS * 100.0)
+                                    logging.info(
+                                        "BRACKET_NO_CANDIDATE: %s yes=%dc no_cost=%dc edge=%.2f%% "
+                                        "fee_edge=%.2f%% stc=%.0fs mtype=%s",
+                                        ticker, best_ask, _bn_no_cost, _bn_edge * 100,
+                                        _bn_fee_edge * 100, seconds_remaining, _wx_mtype)
+                                    candidates.append({
+                                        "ticker": ticker,
+                                        "event_ticker": window["event_ticker"],
+                                        "asset": asset,
+                                        "product_type": "weather",
+                                        "side": "no",
+                                        "spot": spot,
+                                        "threshold": threshold,
+                                        "seconds_to_close": round(seconds_remaining, 1),
+                                        "blended_rv": blended_rv,
+                                        "calibrated_prob": BRACKET_NO_ASSUMED_PROB,
+                                        "z_score": z_score,
+                                        "best_yes_ask": _bn_no_cost,  # NO cost for execution (mirrors existing pattern)
+                                        "best_ask_source": best_ask_source,
+                                        "edge": round(_bn_edge, 6),
+                                        "fee_adjusted_edge": round(_bn_fee_edge, 6),
+                                        "position_size": BRACKET_NO_FIXED_CONTRACTS,
+                                        "kelly_f": 0.0,
+                                        "drawdown_scaler": 1.0,
+                                        "vol_regime": vol_est["regime"],
+                                        "balance_at_scan": balance,
+                                        "strategy": "bracket_no",
+                                        "strategy_scores": {},
+                                        "ob_snapshot": {},
+                                        "calibrated_prob_raw": round(1.0 - calibrated_prob_raw, 6) if calibrated_prob_raw is not None else None,
+                                        "ofa_adjustment": round(ofa_adjustment, 6),
+                                        "ofa_confidence": "none",
+                                        "raw_prob": 1.0 - raw_prob if raw_prob is not None else None,
+                                        "calibration_method": "assumed_prob",
+                                        "old_system_prob": round(1.0 - _old_system_prob, 6),
+                                        "kalshi_oft_signals": {},
+                                        "counterfactual_json": None,
+                                        "_bracket_yes_price": best_ask,  # Store original YES price for logging
+                                    })
+                                    # DB insert (deduped per ticker)
+                                    if _bn_dedup not in self._eval_opp_seen:
+                                        self._eval_opp_seen.add(_bn_dedup)
+                                        try:
+                                            self._state.insert_evaluated_opportunity(
+                                                ticker, window["event_ticker"], asset,
+                                                "bracket_no",
+                                                spot_price=spot, threshold=threshold,
+                                                volatility=blended_rv, market_price=best_ask,
+                                                seconds_to_close=seconds_remaining,
+                                                calibrated_prob=BRACKET_NO_ASSUMED_PROB,
+                                                edge=round(_bn_edge, 6),
+                                                ofa_adjustment=ofa_adjustment,
+                                                z_score=z_score, vol_regime=vol_est["regime"],
+                                                raw_prob=1.0 - raw_prob if raw_prob is not None else None,
+                                                calibrated_prob_raw=1.0 - calibrated_prob_raw if calibrated_prob_raw is not None else None,
+                                                calibration_method="assumed_prob",
+                                                fee_adjusted_edge=round(_bn_fee_edge, 6),
+                                                breakeven_wr=_bn_no_cost / 100.0,
+                                                ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                                position_size=BRACKET_NO_FIXED_CONTRACTS,
+                                                kelly_f=0.0, drawdown_scaler=1.0,
+                                                strategy="bracket_no", old_system_prob=_old_system_prob,
+                                                product_type="weather", side="no",
+                                                wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
+                                                wx_ensemble_std=_shadow_extra.get("wx_ensemble_std"),
+                                                wx_bias_correction=_shadow_extra.get("wx_bias_correction"),
+                                                wx_n_members=_shadow_extra.get("wx_n_members"),
+                                                wx_market_type=_shadow_extra.get("wx_market_type"),
+                                                wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
+                                                wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
+                                                **_oft_db, **_shadow_diag)
+                                        except Exception:
+                                            logging.warning("insert_evaluated_opportunity failed (bracket_no)", exc_info=True)
+
                         # ── Weather NO-side shadow ──
                         # Model is +25.5pp overconfident on YES → strong NO signal.
                         # Fire when YES prob ≥ 55% and NO edge after fees is positive.
@@ -9985,15 +10115,16 @@ class OpportunityScanner:
             self._last_scan_stats = scan_stats
             return None
 
-        # ── Separate decided contract + terminal momentum candidates (bypass single-asset filter) ──
+        # ── Separate overlay candidates (bypass single-asset filter) ──
         _dc_candidates = [c for c in candidates if c.get("strategy", "").startswith("decided_")]
         _tm_candidates = [c for c in candidates if c.get("strategy") == "terminal_momentum"]
+        _bn_candidates = [c for c in candidates if c.get("strategy") == "bracket_no"]
         _dc_tickers = {c["ticker"] for c in _dc_candidates}
         _tm_tickers = {c["ticker"] for c in _tm_candidates}
         # Remove weekend/overnight discount candidates that overlap with DC (DC takes priority)
         _main_candidates = [c for c in candidates
                             if not c.get("strategy", "").startswith("decided_")
-                            and c.get("strategy") != "terminal_momentum"
+                            and c.get("strategy") not in ("terminal_momentum", "bracket_no")
                             and not (c.get("strategy") in ("weekend_discount", "overnight_discount") and c["ticker"] in (_dc_tickers | _tm_tickers))]
         candidates = _main_candidates  # single-asset filter only applies to main pipeline
 
@@ -10149,6 +10280,9 @@ class OpportunityScanner:
 
         # Terminal momentum overlay: add all TM candidates (bypass single-asset filter)
         selected.extend(_tm_candidates)
+
+        # Bracket NO overlay: add all bracket NO candidates
+        selected.extend(_bn_candidates)
 
         if not selected:
             self._last_scan_stats = scan_stats
@@ -11771,6 +11905,10 @@ class OrderExecutor:
         if _dc_strategy == "terminal_momentum":
             return self._execute_tm_taker(candidate, asset, seconds_to_close)
 
+        # ── Bracket NO taker override ────────────────────────────────
+        if _dc_strategy == "bracket_no":
+            return self._execute_bracket_no_taker(candidate, asset, seconds_to_close)
+
         # ── SOL taker-first override ──────────────────────────────
         # SOL: bypass maker entirely, go direct IOC — UNLESS book is empty.
         # Data: 44.7% maker fill rate, $101/wk missed, 95% unfilled WR.
@@ -12943,6 +13081,90 @@ class OrderExecutor:
                 self._state.update_evaluated_opportunity_order(
                     ticker, order_submitted_at=_order_submit_ts,
                     order_outcome="unfilled")
+                return None
+        return None
+
+    def _execute_bracket_no_taker(self, candidate: Dict, asset: str, seconds_to_close) -> Optional[Dict]:
+        """Execute bracket NO trade — buy NO via IOC taker at computed price."""
+        ticker = candidate["ticker"]
+        count = candidate["position_size"]  # BRACKET_NO_FIXED_CONTRACTS (5)
+        no_cost = candidate["best_yes_ask"]  # NO cost in cents (100 - yes_ask)
+        yes_price = candidate.get("_bracket_yes_price", 100 - no_cost)
+
+        if count <= 0:
+            logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=bracket_no no_cost=%d",
+                            ticker, asset, no_cost)
+            self._session_suppressed_zero_size += 1
+            return None
+
+        # Fresh price check: get current YES ask and re-derive NO cost
+        fresh_ask = self._get_addon_best_ask(ticker)
+        if fresh_ask is None:
+            fresh_ask = self._nbbo_fallback_price(candidate)
+        if fresh_ask is not None:
+            _fresh_no_cost = 100 - fresh_ask
+            if _fresh_no_cost <= 0 or fresh_ask < BRACKET_NO_YES_MIN or fresh_ask > BRACKET_NO_YES_MAX:
+                logging.info("bracket_no_SKIP_PRICE: %s fresh_yes=%dc (outside %d-%dc range)",
+                             ticker, fresh_ask, BRACKET_NO_YES_MIN, BRACKET_NO_YES_MAX)
+                return None
+            if _fresh_no_cost != no_cost:
+                logging.info("bracket_no_price_update: %s no_cost %dc→%dc (yes %dc→%dc)",
+                             ticker, no_cost, _fresh_no_cost, yes_price, fresh_ask)
+                no_cost = _fresh_no_cost
+                candidate["best_yes_ask"] = no_cost  # Update for _submit_taker
+                yes_price = fresh_ask
+
+        # Ceiling check: NO cost must be ≤ 15c (generous margin above 4-12c target)
+        if no_cost > 15:
+            logging.info("bracket_no_SKIP_EXPENSIVE: %s no_cost=%dc > 15c", ticker, no_cost)
+            return None
+
+        # Race condition guard: check position one more time
+        if any(p.get("ticker") == ticker for p in self._state.get_open_positions()):
+            logging.info("bracket_no_SKIP_POSITION: %s already held", ticker)
+            return None
+
+        taker_fee = calculate_taker_fee(count, no_cost)
+        net_edge = BRACKET_NO_ASSUMED_PROB - no_cost / 100.0 - taker_fee / (count * 100.0)
+
+        self._session_direct_taker_attempts += 1
+        candidate["entry_path"] = "bracket_no_taker"
+        candidate["escalation_type"] = "direct_taker"
+        self._recent_taker_tickers[ticker] = time.time()
+
+        logging.info(
+            "bracket_no_ENTRY: %s %dct NO @ %dc (YES=%dc) "
+            "stc=%.0fs edge=%.2f%% assumed_prob=%.0f%% fee=%dc",
+            ticker, count, no_cost, yes_price,
+            seconds_to_close or 0, net_edge * 100,
+            BRACKET_NO_ASSUMED_PROB * 100, taker_fee)
+
+        _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        result = self._submit_taker(candidate)
+
+        if result is not None:
+            fill_count = result.get("filled_count", 0)
+            if fill_count > 0:
+                self._session_direct_taker_fills += 1
+                logging.info("bracket_no_FILLED: %s %d/%d NO @ %dc (YES=%dc)",
+                             ticker, fill_count, count, no_cost, yes_price)
+                _taker_oid = result.get("order_id") if isinstance(result, dict) else None
+                self._state.update_evaluated_opportunity_order(
+                    ticker, order_id=_taker_oid,
+                    order_submitted_at=_order_submit_ts, order_outcome="filled")
+                try:
+                    _TELEGRAM.send(
+                        f"BKT_NO: {ticker} {fill_count}ct NO @ {no_cost}c "
+                        f"(YES@{yes_price}c) stc={seconds_to_close or 0:.0f}s",
+                        dedup_key=f"bn_{ticker}")
+                except Exception:
+                    logging.debug("bracket_no telegram alert failed", exc_info=True)
+                return result
+            else:
+                self._session_direct_taker_unfilled += 1
+                logging.info("bracket_no_UNFILLED: %s NO @ %dc", ticker, no_cost)
+                self._state.update_evaluated_opportunity_order(
+                    ticker, order_submitted_at=_order_submit_ts, order_outcome="unfilled")
                 return None
         return None
 

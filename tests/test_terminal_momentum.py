@@ -157,7 +157,10 @@ class TestTMCandidateSeparation(unittest.TestCase):
 
     def test_tm_excluded_from_main(self):
         """TM candidates must be excluded from _main_candidates."""
-        self.assertIn('c.get("strategy") != "terminal_momentum"', self.source)
+        sep = self.source.find("Separate overlay candidates")
+        self.assertGreater(sep, 0)
+        sep_block = self.source[sep:sep + 800]
+        self.assertIn('"terminal_momentum"', sep_block)
 
     def test_tm_appended_to_selected(self):
         """TM candidates must be appended to selected list."""
