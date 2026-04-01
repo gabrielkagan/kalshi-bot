@@ -355,7 +355,7 @@ class SupabaseSyncer:
                        settled_at, strategy, seconds_to_close, fill_latency_seconds,
                        vol_regime, calibrated_prob, edge, kelly_f,
                        escalation_type, maker_price_cents, maker_wait_seconds,
-                       product_type
+                       product_type, strategy_group, is_stacked
                 FROM settled_trades
             """).fetchall()
             if not rows:
@@ -647,7 +647,7 @@ class SupabaseSyncer:
                        settled_at, strategy, seconds_to_close, fill_latency_seconds,
                        vol_regime, calibrated_prob, edge, kelly_f,
                        escalation_type, maker_price_cents, maker_wait_seconds,
-                       product_type
+                       product_type, strategy_group, is_stacked
                 FROM settled_trades
                 WHERE DATE(settled_at) = ?
             """, (day,)).fetchall()

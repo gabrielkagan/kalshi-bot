@@ -33,6 +33,7 @@ from models import (  # noqa: F401 — extracted pure-math classes
     EGARCHEstimator, MincerZarnowitzTracker, PositionSizer,
     calculate_fee, calculate_taker_fee, calculate_maker_fee,
     compute_tv_rk_weights, _student_t_e_abs_z, _compute_qlike,
+    strategy_to_group,
 )
 
 # ─── Trading Configuration ───────────────────────────────────────────────────
@@ -223,6 +224,12 @@ BRACKET_NO_ASSUMED_PROB = 0.92             # NO probability (91.7% actual, conse
 BRACKET_NO_MIN_STC = 28800                 # 8 hours minimum STC (data: 84.8% NO at 8-16h, 92.6% at 16h+)
 BRACKET_NO_MAX_CONCURRENT = 6             # Max simultaneous bracket NO positions
 BRACKET_NO_KILL_THRESHOLD = -2000          # -$20 cumulative PnL kill switch
+
+# ─── Stacking Infrastructure ────────────────────────────────────────────
+STACKING_ENABLED = os.environ.get("STACKING_ENABLED", "0") == "1"
+MAX_TICKER_RISK = 0.20    # 20% of balance per ticker across all strategies
+MAX_WINDOW_RISK = 0.25    # 25% of balance per settlement window across all strategies
+
 HOURLY_MIN_EDGE_PCT = 0.001              # 0.1% — low for max signal collection (observation-only)
 
 # ─── Sports Comeback Observation Mode ────────────────────────────────────
@@ -687,6 +694,9 @@ ADDON_MAX_ENTRY_PRICE = 98            # 98¢ cap — still profitable after fees
 # ─── Dip Addon ────────────────────────────────────────────────────────
 DIP_ADDON_ENABLED = False                 # Killed: 55.2% WR, no edge (29 settled, 16W/13L)
 DIP_ADDON_SHADOW_MODE = False             # Was PHASE 1 shadow — data conclusive, no edge
+
+# ─── Stacking ─────────────────────────────────────────────────────────
+# STACKING_ENABLED defined above (env var gated) — see Stacking Infrastructure section
 
 # ─── Price Shadow — edge data for 70-85c markets ──────────────────────
 PRICE_SHADOW_ENABLED = True        # Shadow-evaluate POR for edge data collection
@@ -1805,6 +1815,8 @@ class StateManager:
             ("maker_price_cents", "INTEGER"),
             ("maker_wait_seconds", "REAL"),
             ("product_type", "TEXT"),
+            ("strategy_group", "TEXT DEFAULT 'main'"),
+            ("is_stacked", "INTEGER DEFAULT 0"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE settled_trades ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1849,6 +1861,8 @@ class StateManager:
             ("escalation_type", "TEXT"),
             ("maker_price_cents", "INTEGER"),
             ("maker_wait_seconds", "REAL"),
+            ("strategy_group", "TEXT DEFAULT 'main'"),
+            ("is_stacked", "INTEGER DEFAULT 0"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE positions ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1889,6 +1903,16 @@ class StateManager:
         self.conn.commit()
         logging.info("State reconciliation complete")
 
+        stacked = self.conn.execute(
+            "SELECT ticker, COUNT(*) as n FROM positions "
+            "WHERE status='open' GROUP BY ticker HAVING n > 1"
+        ).fetchall()
+        if stacked:
+            if not STACKING_ENABLED:
+                logging.warning(
+                    "STACKING_DISABLED but %d tickers have multiple positions",
+                    len(stacked))
+
     def _reconcile_positions(self, client: KalshiClient, now: str):
         api_resp = client.get_positions()
         if not api_resp or not api_resp.get("market_positions"):
@@ -1902,6 +1926,12 @@ class StateManager:
             position_count = fp_str_to_int(pos.get("position_fp")) or (pos.get("position") or 0)
 
             if position_count == 0:
+                _unsettled = self.conn.execute(
+                    "SELECT COUNT(*) FROM positions WHERE ticker=? AND status='open'",
+                    (ticker,)
+                ).fetchone()[0]
+                if _unsettled > 0:
+                    logging.warning("RECONCILE_DELETE_UNSETTLED: %s has %d unsettled positions", ticker, _unsettled)
                 self.conn.execute(
                     "DELETE FROM positions WHERE ticker = ?", (ticker,))
                 continue
@@ -1912,17 +1942,14 @@ class StateManager:
             cost = dollars_str_to_cents(cost_d) if cost_d else (pos.get("market_exposure") or 0)
             avg_price = cost // count if count else 0
 
-            existing = self.conn.execute(
-                "SELECT 1 FROM positions WHERE ticker = ?", (ticker,)
-            ).fetchone()
+            local_rows = self.conn.execute(
+                "SELECT strategy_group, count, total_cost_cents "
+                "FROM positions WHERE ticker=? AND status='open'",
+                (ticker,)
+            ).fetchall()
 
-            if existing:
-                self.conn.execute("""
-                    UPDATE positions SET side=?, count=?, avg_price_cents=?,
-                        total_cost_cents=?, updated_at=?, status='open'
-                    WHERE ticker=?
-                """, (side, count, avg_price, cost, now, ticker))
-            else:
+            if len(local_rows) == 0:
+                # No local position — INSERT from API
                 asset = self._asset_from_ticker(ticker)
                 event_ticker = self._event_ticker_from_ticker(ticker)
                 self.conn.execute("""
@@ -1932,6 +1959,19 @@ class StateManager:
                     VALUES (?,?,?,?,?,?,?,?,?,'open')
                 """, (ticker, event_ticker, asset, side, count,
                       avg_price, cost, now, now))
+            elif len(local_rows) == 1:
+                sg = dict(local_rows[0])["strategy_group"]
+                self.conn.execute("""
+                    UPDATE positions SET side=?, count=?, avg_price_cents=?,
+                        total_cost_cents=?, updated_at=?, status='open'
+                    WHERE ticker=? AND strategy_group=?
+                """, (side, count, avg_price, cost, now, ticker, sg))
+            else:
+                local_total = sum(dict(r)["count"] for r in local_rows)
+                if local_total != count:
+                    logging.warning(
+                        "RECONCILE_MULTI_MISMATCH: %s local=%d api=%d — NOT auto-fixing",
+                        ticker, local_total, count)
 
         # Remove local positions not on API
         local_rows = self.conn.execute(
@@ -2060,16 +2100,18 @@ class StateManager:
 
     def record_settlement(self, settlement: Dict,
                           pnl_override: Optional[int] = None,
-                          fee_override: Optional[int] = None):
+                          fee_override: Optional[int] = None,
+                          pos: Optional[Dict] = None):
         ticker = settlement["ticker"]
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-        pos_row = self.conn.execute(
-            "SELECT * FROM positions WHERE ticker=?", (ticker,)
-        ).fetchone()
-        if not pos_row:
-            return
-        pos = dict(pos_row)
+        if pos is None:
+            pos_row = self.conn.execute(
+                "SELECT * FROM positions WHERE ticker=?", (ticker,)
+            ).fetchone()
+            if not pos_row:
+                return
+            pos = dict(pos_row)
 
         # Derive product_type from ticker prefix
         product_type = None
@@ -2100,6 +2142,9 @@ class StateManager:
                 f"FEE_MISMATCH {ticker}: record_settlement computed={fee}, "
                 f"tracker passed={fee_override}, delta={fee - fee_override}")
 
+        _sg = pos.get("strategy_group", "main")
+        _is_stacked = pos.get("is_stacked", 0)
+
         self.conn.execute("""
             INSERT OR REPLACE INTO settled_trades
                 (ticker, event_ticker, asset, market_result, side, count,
@@ -2107,8 +2152,8 @@ class StateManager:
                  settled_at, strategy, seconds_to_close, fill_latency_seconds,
                  vol_regime, calibrated_prob, edge, kelly_f,
                  escalation_type, maker_price_cents, maker_wait_seconds,
-                 product_type)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 product_type, strategy_group, is_stacked)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, pos["event_ticker"], pos["asset"], result,
               pos["side"], pos["count"], pos["avg_price_cents"],
               revenue, fee, pnl, now,
@@ -2117,13 +2162,7 @@ class StateManager:
               pos.get("calibrated_prob"), pos.get("edge"), pos.get("kelly_f"),
               pos.get("escalation_type"), pos.get("maker_price_cents"),
               pos.get("maker_wait_seconds"),
-              product_type))
-
-        self.conn.execute("""
-            UPDATE positions SET status='settled', updated_at=?
-            WHERE ticker=?
-        """, (now, ticker))
-        self.conn.commit()
+              product_type, _sg, _is_stacked))
 
     # ── Rejected Opportunities ─────────────────────────────────────────
 
@@ -2597,10 +2636,12 @@ class StateManager:
         """
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         fill_cost = count * price_cents
+        _sg = strategy_to_group(strategy)
 
         existing = self.conn.execute(
             "SELECT count, avg_price_cents, total_cost_cents, opened_at "
-            "FROM positions WHERE ticker=? AND status='open'", (ticker,)
+            "FROM positions WHERE ticker=? AND strategy_group=? AND status='open'",
+            (ticker, _sg)
         ).fetchone()
 
         if existing:
@@ -2614,10 +2655,14 @@ class StateManager:
                 UPDATE positions
                 SET count=?, avg_price_cents=?, total_cost_cents=?,
                     is_taker=MAX(is_taker, ?), updated_at=?
-                WHERE ticker=? AND status='open'
-            """, (new_count, new_avg, new_cost, 1 if is_taker else 0, now, ticker))
+                WHERE ticker=? AND strategy_group=? AND status='open'
+            """, (new_count, new_avg, new_cost, 1 if is_taker else 0, now, ticker, _sg))
         else:
             opened_at = now
+            _other = self.conn.execute(
+                "SELECT 1 FROM positions WHERE ticker=? AND status='open'",
+                (ticker,)).fetchone()
+            _is_stacked = 1 if _other else 0
             self.conn.execute("""
                 INSERT OR REPLACE INTO positions
                     (ticker, event_ticker, asset, side, count,
@@ -2625,14 +2670,16 @@ class StateManager:
                      strategy, seconds_to_close, fill_latency_seconds,
                      vol_regime, calibrated_prob, edge, kelly_f,
                      is_taker, fill_source, execution_method,
-                     escalation_type, maker_price_cents, maker_wait_seconds)
-                VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     escalation_type, maker_price_cents, maker_wait_seconds,
+                     strategy_group, is_stacked)
+                VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, side, count,
                   price_cents, fill_cost, now, now,
                   strategy, seconds_to_close, fill_latency,
                   vol_regime, calibrated_prob, edge, kelly_f,
                   1 if is_taker else 0, fill_source, execution_method,
-                  escalation_type, maker_price_cents, maker_wait_seconds))
+                  escalation_type, maker_price_cents, maker_wait_seconds,
+                  _sg, _is_stacked))
         self.conn.commit()
 
     def update_garch_params(self, asset: str, omega: float, alpha: float,
@@ -7550,7 +7597,18 @@ class OpportunityScanner:
                                              for c in candidates)
                         if not _tm_dc_overlap:
                             # Check position overlap: skip if we already hold this ticker
-                            _tm_has_position = any(p["ticker"] == ticker for p in self._state.get_open_positions())
+                            if STACKING_ENABLED:
+                                from models import strategy_to_group
+                                _tm_has_position = any(
+                                    p["ticker"] == ticker
+                                    and p.get("strategy_group",
+                                        strategy_to_group(p.get("strategy")))
+                                        == "terminal_momentum"
+                                    for p in self._state.get_open_positions())
+                            else:
+                                _tm_has_position = any(
+                                    p["ticker"] == ticker
+                                    for p in self._state.get_open_positions())
                             if not _tm_has_position:
                                 # Check concurrent TM position cap
                                 _tm_count = sum(1 for c in candidates if c.get("strategy") == "terminal_momentum")
@@ -8269,12 +8327,21 @@ class OpportunityScanner:
                                 # Cap by existing exposure on same ticker
                                 if _dc_live_enabled:
                                     _dc_existing_exposure = 0
-                                    for pos in self._state.get_open_positions():
-                                        if pos["ticker"] == ticker:
-                                            _dc_existing_exposure += pos["count"]
-                                            break
-                                    for resting in self._state.get_resting_orders(ticker=ticker):
-                                        _dc_existing_exposure += resting["count"]
+                                    if STACKING_ENABLED:
+                                        from models import strategy_to_group
+                                        for pos in self._state.get_open_positions():
+                                            if pos["ticker"] == ticker and \
+                                               pos.get("strategy_group",
+                                                   strategy_to_group(pos.get("strategy"))) == "decided":
+                                                _dc_existing_exposure += pos["count"]
+                                                break
+                                    else:
+                                        for pos in self._state.get_open_positions():
+                                            if pos["ticker"] == ticker:
+                                                _dc_existing_exposure += pos["count"]
+                                                break
+                                        for resting in self._state.get_resting_orders(ticker=ticker):
+                                            _dc_existing_exposure += resting["count"]
                                     if _dc_existing_exposure > 0:
                                         _dc_position = max(0, _dc_position - _dc_existing_exposure)
 
@@ -11648,6 +11715,72 @@ class OrderExecutor:
         asset = candidate["asset"]
         ticker = candidate["ticker"]
 
+        # ── Unified exposure caps (always active) ─────────────────────
+        _fresh_balance = None
+        try:
+            if self._ml and hasattr(self._ml, 'scanner'):
+                _fresh_balance = self._ml.scanner._get_balance_cached()
+            if not isinstance(_fresh_balance, (int, float)) or _fresh_balance <= 0:
+                _fresh_balance = candidate.get("balance_at_scan")
+        except Exception:
+            _fresh_balance = candidate.get("balance_at_scan")
+
+        if isinstance(_fresh_balance, (int, float)) and _fresh_balance > 0:
+            # Per-ticker cap: 20% of balance
+            _existing_ticker_cost = sum(
+                p["total_cost_cents"]
+                for p in self._state.get_open_positions()
+                if p["ticker"] == ticker
+            )
+            _candidate_price = candidate.get("best_yes_ask",
+                               candidate.get("best_ask", 96))
+            _candidate_cost = candidate["position_size"] * _candidate_price
+            _ticker_cap = _fresh_balance * MAX_TICKER_RISK
+
+            if _existing_ticker_cost + _candidate_cost > _ticker_cap:
+                _remaining = _ticker_cap - _existing_ticker_cost
+                _reduced = max(0, int(_remaining / _candidate_price)) if _candidate_price > 0 else 0
+                if _reduced <= 0:
+                    logging.info(
+                        "TICKER_CAP_SKIPPED: %s %s existing=%dc candidate=%dc cap=%dc",
+                        ticker, candidate.get("strategy"),
+                        _existing_ticker_cost, _candidate_cost, _ticker_cap)
+                    return None
+                else:
+                    logging.info(
+                        "TICKER_CAP_REDUCED: %s %s %d->%dct existing=%dc cap=%dc",
+                        ticker, candidate.get("strategy"),
+                        candidate["position_size"], _reduced,
+                        _existing_ticker_cost, _ticker_cap)
+                    candidate["position_size"] = _reduced
+                    _candidate_cost = _reduced * _candidate_price
+
+            # Per-window cap: 25% of balance
+            _event_ticker = candidate.get("event_ticker")
+            if _event_ticker:
+                _existing_window_cost = sum(
+                    p["total_cost_cents"]
+                    for p in self._state.get_open_positions()
+                    if p.get("event_ticker") == _event_ticker
+                )
+                _window_cap = _fresh_balance * MAX_WINDOW_RISK
+                if _existing_window_cost + _candidate_cost > _window_cap:
+                    _w_remaining = _window_cap - _existing_window_cost
+                    _w_reduced = max(0, int(_w_remaining / _candidate_price)) if _candidate_price > 0 else 0
+                    if _w_reduced <= 0:
+                        logging.info(
+                            "WINDOW_CAP_SKIPPED: %s %s window=%dc candidate=%dc cap=%dc",
+                            _event_ticker, candidate.get("strategy"),
+                            _existing_window_cost, _candidate_cost, _window_cap)
+                        return None
+                    else:
+                        logging.info(
+                            "WINDOW_CAP_REDUCED: %s %s %d->%dct window=%dc cap=%dc",
+                            _event_ticker, candidate.get("strategy"),
+                            candidate["position_size"], _w_reduced,
+                            _existing_window_cost, _window_cap)
+                        candidate["position_size"] = _w_reduced
+
         # ── HOURLY TAKER-ONLY PATH ──
         # Hourly uses IOC exclusively. No per-asset lock, no maker orders, no escalation.
         # This guarantees zero contention with 15M execution. Gated on product_type == "hourly".
@@ -13037,9 +13170,18 @@ class OrderExecutor:
             net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
 
         # Race condition guard: check position one more time
-        if any(p["ticker"] == ticker for p in self._state.get_open_positions()):
-            logging.info("tm_taker_SKIP_POSITION: %s already held", ticker)
-            return None
+        if STACKING_ENABLED:
+            from models import strategy_to_group
+            if any(p.get("ticker") == ticker
+                   and p.get("strategy_group", strategy_to_group(p.get("strategy")))
+                       == "terminal_momentum"
+                   for p in self._state.get_open_positions()):
+                logging.info("tm_taker_SKIP_POSITION: %s already held by TM", ticker)
+                return None
+        else:
+            if any(p.get("ticker") == ticker for p in self._state.get_open_positions()):
+                logging.info("tm_taker_SKIP_POSITION: %s already held", ticker)
+                return None
 
         self._session_direct_taker_attempts += 1
         candidate["entry_path"] = "tm_taker"
@@ -13932,7 +14074,7 @@ class OrderExecutor:
             return
         candidate = order.get("candidate", {})
         # Don't re-register addon fills
-        if candidate.get("entry_path") in ("confirmation_addon", "dip_addon"):
+        if candidate.get("entry_path") in ("confirmation_addon", "dip_addon", "tm_taker", "bracket_no_taker"):
             return
 
         ticker = order["ticker"]
@@ -14332,7 +14474,7 @@ class OrderExecutor:
 
             # Don't dip-addon on addon fills
             if meta.get("candidate", {}).get("entry_path") in (
-                    "confirmation_addon", "dip_addon"):
+                    "confirmation_addon", "dip_addon", "tm_taker", "bracket_no_taker"):
                 continue
 
             # Time checks
@@ -14749,25 +14891,31 @@ class SettlementTracker:
     # ── Process a single settlement ──────────────────────────────────────
 
     def _process_settlement(self, settlement: Dict):
-        """Record outcome, P&L, and log to journal."""
+        """Record outcome, P&L, and log to journal.
+
+        Handles stacked positions: fetches ALL position rows for the ticker,
+        computes per-row PnL from first principles, records each to settled_trades,
+        then marks all settled in one UPDATE.
+        """
         ticker = settlement["ticker"]
         market_result = settlement.get("market_result", "")
         rev_d = settlement.get("revenue_dollars")
         revenue = dollars_str_to_cents(rev_d) if rev_d else (settlement.get("revenue") or 0)
 
-        # Look up position in SQLite
-        pos = self._state.conn.execute(
+        # Look up ALL position rows for this ticker
+        pos_rows = self._state.conn.execute(
             "SELECT * FROM positions WHERE ticker=?", (ticker,)
-        ).fetchone()
-        if not pos:
+        ).fetchall()
+        if not pos_rows:
             logging.warning(
                 f"SettlementTracker: no position found for {ticker}"
             )
             return
-        pos = dict(pos)  # sqlite3.Row doesn't support .get()
+        positions = [dict(r) for r in pos_rows]
+        is_stacked = len(positions) > 1
 
         # Determine WIN/LOSS from market_result only (API is truth)
-        side = pos["side"]
+        side = positions[0]["side"]
         if market_result == "yes":
             outcome = "WIN" if side == "yes" else "LOSS"
         elif market_result == "no":
@@ -14784,77 +14932,114 @@ class SettlementTracker:
             )
             return
 
+        # Aggregate count across all position rows for cross-checks
+        aggregate_count = sum(p["count"] for p in positions)
+        aggregate_cost = sum(p["total_cost_cents"] for p in positions)
+
         # Cross-check: revenue=0 on a WIN is almost certainly a false position
-        # (e.g., false ghost fill where Kalshi has no matching position).
-        # Log critical and skip to prevent recording a phantom loss.
-        recorded_count = pos["count"]
-        total_cost = pos["total_cost_cents"]
-        if outcome == "WIN" and revenue == 0 and recorded_count > 0:
+        if outcome == "WIN" and revenue == 0 and aggregate_count > 0:
             logging.critical(
                 f"SETTLEMENT REVENUE ZERO ON WIN {ticker}: "
-                f"market_result={market_result} side={side} count={recorded_count} "
-                f"cost={total_cost}¢ fill_source={pos.get('fill_source')} — "
+                f"market_result={market_result} side={side} count={aggregate_count} "
+                f"cost={aggregate_cost}¢ fill_source={positions[0].get('fill_source')} — "
                 f"Kalshi likely has no matching position. "
-                f"Skipping settlement to prevent false -{total_cost}¢ loss.")
+                f"Skipping settlement to prevent false -{aggregate_cost}¢ loss.")
             return
 
         # Cross-check: detect count mismatch between internal tracking
         # and Kalshi settlement.  For YES wins, revenue = real_count * 100.
         if revenue > 0 and outcome == "WIN" and side == "yes":
             implied_count = revenue // 100
-            if implied_count != recorded_count:
+            if implied_count != aggregate_count:
                 logging.error(
                     f"SETTLEMENT COUNT MISMATCH {ticker}: "
-                    f"internal={recorded_count} kalshi={implied_count} "
-                    f"revenue={revenue}¢ — correcting position before settlement")
-                recorded_count = implied_count
-                total_cost = recorded_count * pos["avg_price_cents"]
-                self._state.conn.execute(
-                    "UPDATE positions SET count=?, total_cost_cents=? "
-                    "WHERE ticker=?",
-                    (recorded_count, total_cost, ticker))
-                self._state.conn.commit()
+                    f"internal={aggregate_count} kalshi={implied_count} "
+                    f"revenue={revenue}¢ n_rows={len(positions)}")
+                if len(positions) == 1:
+                    # Single row: auto-correct with strategy_group
+                    p = positions[0]
+                    sg = p.get("strategy_group", "main")
+                    corrected_cost = implied_count * p["avg_price_cents"]
+                    self._state.conn.execute(
+                        "UPDATE positions SET count=?, total_cost_cents=? "
+                        "WHERE ticker=? AND strategy_group=?",
+                        (implied_count, corrected_cost, ticker, sg))
+                    p["count"] = implied_count
+                    p["total_cost_cents"] = corrected_cost
+                    aggregate_count = implied_count
+                    aggregate_cost = corrected_cost
+                else:
+                    logging.warning(
+                        "SETTLEMENT_MULTI_MISMATCH: %s — NOT auto-correcting stacked positions",
+                        ticker)
 
-        # P&L: use total_cost_cents from positions (precise) for normal case,
-        # recomputed cost only when count was corrected above.
-        is_taker = bool(pos.get("is_taker"))
-        fee = calculate_fee(recorded_count, pos["avg_price_cents"], is_taker=is_taker)
-        pnl = revenue - total_cost
+        # Process each position row independently
+        combined_pnl = 0
+        combined_fee = 0
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        for pos in positions:
+            row_count = pos["count"]
+            row_cost = pos["total_cost_cents"]
+            # Revenue from first principles: WIN yes-side → count*100, LOSS → 0
+            if outcome == "WIN":
+                if side == "yes":
+                    row_revenue = row_count * 100
+                else:
+                    row_revenue = row_count * 100  # NO-side win: paid (100-p), get 100
+            else:
+                row_revenue = 0
+            row_pnl = row_revenue - row_cost
+            row_is_taker = bool(pos.get("is_taker"))
+            row_fee = calculate_fee(row_count, pos["avg_price_cents"], is_taker=row_is_taker)
 
-        # Record in SQLite via existing StateManager method
-        self._state.record_settlement(settlement, pnl_override=pnl, fee_override=fee)
+            combined_pnl += row_pnl
+            combined_fee += row_fee
 
-        # Mark as processed for dedup
+            # Record each row to settled_trades
+            self._state.record_settlement(
+                settlement, pnl_override=row_pnl, fee_override=row_fee, pos=pos)
+
+        # Mark ALL positions for this ticker as settled (once, outside loop)
+        self._state.conn.execute("""
+            UPDATE positions SET status='settled', updated_at=?
+            WHERE ticker=?
+        """, (now, ticker))
+        self._state.conn.commit()
+
+        # Mark as processed for dedup (once)
         self._processed_tickers.add(ticker)
 
-        # Rich journal entry
+        # Rich journal entry with combined PnL
         self._logger.log_settlement({
             "ticker": ticker,
-            "event_ticker": pos["event_ticker"],
-            "asset": pos["asset"],
+            "event_ticker": positions[0]["event_ticker"],
+            "asset": positions[0]["asset"],
             "outcome": outcome,
             "market_result": market_result,
             "side": side,
-            "count": recorded_count,
-            "entry_price_cents": pos["avg_price_cents"],
-            "total_cost_cents": total_cost,
+            "count": aggregate_count,
+            "entry_price_cents": positions[0]["avg_price_cents"],
+            "total_cost_cents": aggregate_cost,
             "revenue_cents": revenue,
-            "fee_cents": fee,
-            "pnl_cents": pnl,
-            "pnl_net_cents": pnl - fee,
+            "fee_cents": combined_fee,
+            "pnl_cents": combined_pnl,
+            "pnl_net_cents": combined_pnl - combined_fee,
             "settled_time": settlement.get("settled_time", ""),
+            "is_stacked": is_stacked,
+            "n_positions": len(positions),
         })
 
+        stacked_tag = f" [STACKED x{len(positions)}]" if is_stacked else ""
         logging.info(
-            f"Settlement: {ticker} -> {outcome} "
+            f"Settlement: {ticker} -> {outcome}{stacked_tag} "
             f"(market_result={market_result}, "
-            f"revenue={revenue}¢, cost={total_cost}¢, "
-            f"pnl={pnl}¢, fee={fee}¢)"
+            f"revenue={revenue}¢, cost={aggregate_cost}¢, "
+            f"pnl={combined_pnl}¢, fee={combined_fee}¢)"
         )
         if _TELEGRAM:
             emoji = "\u2705" if outcome == "WIN" else "\u274c"
-            sign = "+" if pnl >= 0 else ""
-            pnl_dollars = pnl / 100
+            sign = "+" if combined_pnl >= 0 else ""
+            pnl_dollars = combined_pnl / 100
             bal_str = ""
             try:
                 bal_resp = self._client.get_balance()
@@ -14863,8 +15048,9 @@ class SettlementTracker:
             except Exception:
                 pass
             _TELEGRAM.send(
-                f"{emoji} {outcome} {pos['asset']} {recorded_count}ct "
-                f"@{pos['avg_price_cents']}c {sign}${abs(pnl_dollars):.2f}{bal_str}"
+                f"{emoji} {outcome} {positions[0]['asset']} {aggregate_count}ct "
+                f"@{positions[0]['avg_price_cents']}c {sign}${abs(pnl_dollars):.2f}"
+                f"{stacked_tag}{bal_str}"
             )
 
     # ── Rejection Settlement ─────────────────────────────────────────────

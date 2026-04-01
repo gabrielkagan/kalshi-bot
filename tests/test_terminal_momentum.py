@@ -140,7 +140,7 @@ class TestTMScanIntercept(unittest.TestCase):
 
     def test_concurrent_cap_check(self):
         """TM must check TM_MAX_CONCURRENT."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:2000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:3000]
         self.assertIn("TM_MAX_CONCURRENT", tm_block)
 
 

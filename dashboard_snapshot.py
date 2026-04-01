@@ -3682,6 +3682,24 @@ class DashboardSnapshotBuilder:
                 logging.debug("bracket_no_live snapshot failed", exc_info=True)
             snap["bracket_no_live"] = _bn_live
 
+            # ── Stacking stats ──
+            _stack_stats = {"stacked_trades": 0, "stacked_pnl": 0, "stacked_wr": 0}
+            try:
+                _ss = _conn.execute(
+                    "SELECT COUNT(*) as n, "
+                    "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
+                    "SUM(pnl_cents) as pnl "
+                    "FROM settled_trades WHERE is_stacked = 1"
+                ).fetchone()
+                if _ss and _ss[0]:
+                    _stack_stats["stacked_trades"] = _ss[0]
+                    _stack_stats["stacked_pnl"] = _ss[2] or 0
+                    _stack_stats["stacked_wr"] = round(_ss[1] / _ss[0], 4) if _ss[0] else 0
+                _query_count += 1
+            except Exception:
+                logging.debug("stacking_stats snapshot failed", exc_info=True)
+            snap["stacking_stats"] = _stack_stats
+
             # ── Decided Contract Expansion Shadow ──
             _DC_EXPANSION_STAGES = (
                 'dc_shadow_t1b_93c', 'dc_shadow_t2_z25', 'dc_shadow_t2_90c',
@@ -3987,7 +4005,7 @@ class DashboardSnapshotBuilder:
                 "weekend_discount_live", "weekend_discount_shadow",
                 "overnight_discount_shadow",
                 "overnight_lp_shadow", "decided_contract_shadow", "decided_contract_live",
-                "terminal_momentum_live", "bracket_no_live",
+                "terminal_momentum_live", "bracket_no_live", "stacking_stats",
                 "dc_expansion_shadow", "relaxed_edge_shadow",
                 "calibration_gap", "capital_utilization", "loss_clusters",
                 "pipeline_completeness", "sol_pathc_shadow", "eth_filter_shadow",

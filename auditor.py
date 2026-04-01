@@ -1164,6 +1164,48 @@ def check_spx_pipeline_health(db: sqlite3.Connection, verbose: bool) -> list[tup
     return alerts
 
 
+def check_stacking_health(db: sqlite3.Connection, verbose: bool) -> list[tuple[str, str, str]]:
+    """Check stacking performance and alert thresholds."""
+    alerts = []
+    try:
+        row = db.execute(
+            "SELECT COUNT(*) as n, COALESCE(SUM(pnl_cents), 0) as pnl "
+            "FROM settled_trades WHERE is_stacked = 1"
+        ).fetchone()
+        n = row["n"]
+        pnl = row["pnl"]
+        if verbose:
+            print(f"  Stacking: {n} trades, PnL ${pnl/100:.2f}")
+        if pnl < -2500:  # -$25 alert
+            alerts.append((
+                "stacking_pnl_alert",
+                f"stacking_pnl_{n}",
+                f"\u26a0\ufe0f *AUDITOR ALERT: Stacking PnL Warning*\n\n"
+                f"Cumulative stacking PnL: ${pnl/100:.2f} on {n} trades.\n"
+                f"Alert threshold: -$25.00",
+            ))
+        if pnl < -7500:  # -$75 kill recommendation
+            alerts.append((
+                "stacking_kill_recommendation",
+                f"stacking_kill_{n}",
+                f"\U0001f6a8 *AUDITOR ALERT: Stacking Kill Recommended*\n\n"
+                f"Cumulative stacking PnL: ${pnl/100:.2f} on {n} trades.\n"
+                f"Recommendation: Set STACKING_ENABLED=0 in VPS .env",
+            ))
+        if n == 50:
+            alerts.append((
+                "stacking_review",
+                "stacking_50_review",
+                f"\U0001f4ca *Stacking Milestone: 50 Trades*\n\n"
+                f"50 stacked trades settled. PnL: ${pnl/100:.2f}.\n"
+                f"Manual review recommended before scaling.",
+            ))
+    except Exception as e:
+        if verbose:
+            print(f"  Stacking health check failed: {e}")
+    return alerts
+
+
 # ---------------------------------------------------------------------------
 # Check registry
 # ---------------------------------------------------------------------------
@@ -1198,6 +1240,8 @@ CHECKS = [
     ("sizing", check_drawdown_scaler_health),
     # Category 8: SPX Pipeline
     ("spx", check_spx_pipeline_health),
+    # Category 9: Stacking
+    ("stacking", check_stacking_health),
     # --- Add new checks here ---
     # ("category", check_function),
     # Future: Plug in Claude API analysis (Layer 2)

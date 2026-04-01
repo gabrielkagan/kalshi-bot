@@ -60,6 +60,24 @@ from config import (
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  Strategy Group Mapping
+# ═════════════════════════════════════════════════════════════════════════════
+
+def strategy_to_group(strategy: str) -> str:
+    """Map raw strategy string to strategy group for composite PK.
+    Positions with the same group on the same ticker MERGE.
+    Different groups STACK (when enabled)."""
+    if not strategy:
+        return "main"
+    if strategy in ("MAKER_PATIENT", "TAKER_NOW", "MAKER_AGGRESSIVE", "PANIC_CAPTURE",
+                     "CONFIRMATION_ADDON", "DIP_ADDON"):
+        return "main"
+    if strategy.startswith("decided_"):
+        return "decided"
+    return strategy
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  Fee Helpers
 # ═════════════════════════════════════════════════════════════════════════════
 
