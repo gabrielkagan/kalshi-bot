@@ -3627,6 +3627,61 @@ class DashboardSnapshotBuilder:
                 logging.debug("terminal_momentum_live snapshot failed", exc_info=True)
             snap["terminal_momentum_live"] = _tm_live
 
+            # ── Bracket NO LIVE performance ──
+            _bn_live = {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0,
+                        "by_price": {}, "by_asset": {}, "signals": 0,
+                        "fill_rate": 0, "avg_fill_size": 0, "avg_no_cost": 0}
+            try:
+                _bn_total_contracts = 0
+                _bn_total_cost = 0
+                for _bn_row in _conn.execute(
+                    "SELECT entry_price_cents, asset, COUNT(*) as n, "
+                    "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
+                    "SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as losses, "
+                    "SUM(pnl_cents) as pnl, SUM(count) as total_cts "
+                    "FROM settled_trades WHERE strategy = 'bracket_no' "
+                    "GROUP BY entry_price_cents, asset"
+                ).fetchall():
+                    no_cost, asset_name, n, w, l, pnl, cts = _bn_row
+                    _bn_live["trades"] += n
+                    _bn_live["wins"] += w
+                    _bn_live["losses"] += l
+                    _bn_live["pnl_cents"] += pnl
+                    _bn_total_contracts += (cts or 0)
+                    _bn_total_cost += (no_cost or 0) * n
+                    # by_price: key on YES price (100 - NO cost) for consistency with analysis
+                    yes_price = 100 - no_cost if no_cost else 0
+                    pk = str(yes_price)
+                    _bn_live["by_price"].setdefault(pk, {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0})
+                    _bn_live["by_price"][pk]["trades"] += n
+                    _bn_live["by_price"][pk]["wins"] += w
+                    _bn_live["by_price"][pk]["losses"] += l
+                    _bn_live["by_price"][pk]["pnl_cents"] += pnl
+                    # by_asset (city identifier for weather)
+                    _bn_live["by_asset"].setdefault(asset_name, {"trades": 0, "wins": 0, "losses": 0, "pnl_cents": 0})
+                    _bn_live["by_asset"][asset_name]["trades"] += n
+                    _bn_live["by_asset"][asset_name]["wins"] += w
+                    _bn_live["by_asset"][asset_name]["losses"] += l
+                    _bn_live["by_asset"][asset_name]["pnl_cents"] += pnl
+                _bn_live["wr"] = round(_bn_live["wins"] / _bn_live["trades"], 4) if _bn_live["trades"] else 0
+                for v in _bn_live["by_price"].values():
+                    v["wr"] = round(v["wins"] / v["trades"], 4) if v["trades"] else 0
+                for v in _bn_live["by_asset"].values():
+                    v["wr"] = round(v["wins"] / v["trades"], 4) if v["trades"] else 0
+                _bn_live["avg_fill_size"] = round(_bn_total_contracts / _bn_live["trades"], 1) if _bn_live["trades"] else 0
+                _bn_live["avg_no_cost"] = round(_bn_total_cost / _bn_live["trades"], 1) if _bn_live["trades"] else 0
+                # Signal count + fill rate
+                _bn_sig = _conn.execute(
+                    "SELECT COUNT(*) FROM evaluated_opportunities "
+                    "WHERE filter_stage = 'bracket_no'"
+                ).fetchone()
+                _bn_live["signals"] = _bn_sig[0] if _bn_sig else 0
+                _bn_live["fill_rate"] = round(_bn_live["trades"] / _bn_live["signals"], 4) if _bn_live["signals"] else 0
+                _query_count += 2
+            except Exception:
+                logging.debug("bracket_no_live snapshot failed", exc_info=True)
+            snap["bracket_no_live"] = _bn_live
+
             # ── Decided Contract Expansion Shadow ──
             _DC_EXPANSION_STAGES = (
                 'dc_shadow_t1b_93c', 'dc_shadow_t2_z25', 'dc_shadow_t2_90c',
@@ -3932,7 +3987,7 @@ class DashboardSnapshotBuilder:
                 "weekend_discount_live", "weekend_discount_shadow",
                 "overnight_discount_shadow",
                 "overnight_lp_shadow", "decided_contract_shadow", "decided_contract_live",
-                "terminal_momentum_live",
+                "terminal_momentum_live", "bracket_no_live",
                 "dc_expansion_shadow", "relaxed_edge_shadow",
                 "calibration_gap", "capital_utilization", "loss_clusters",
                 "pipeline_completeness", "sol_pathc_shadow", "eth_filter_shadow",

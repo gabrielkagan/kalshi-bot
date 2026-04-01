@@ -89,6 +89,7 @@ REQUIRED_SNAP_KEYS = {
     "overnight_lp_shadow",
     "decided_contract_shadow",
     "terminal_momentum_live",
+    "bracket_no_live",
     "dc_expansion_shadow",
     "relaxed_edge_shadow",
     "calibration_gap",
