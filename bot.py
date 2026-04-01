@@ -573,6 +573,18 @@ DC_SHADOW_STAGES = frozenset({
 # Edge thresholds at 88-93c may be too conservative. Data shows rejected trades
 # at these prices win well above breakeven: 88c=97.2% WR, 89c=93.3%, 91c=94.4%.
 # Shadow with halved thresholds to validate before promoting.
+# ─── Terminal Momentum Strategy ──────────────────────────────────────────
+# Trades 15M contracts at extreme prices (95-99c) in the final 1-5 minutes.
+# These are contracts the main pipeline rejects as insufficient_edge but that
+# settle YES at 98.99% WR (496 observations). Fixed 50-contract sizing, direct taker.
+TERMINAL_MOMENTUM_ENABLED = os.environ.get("TERMINAL_MOMENTUM_ENABLED", "1") == "1"
+TM_PRICE_SET = {95, 96, 98, 99}          # Valid entry prices — 97 excluded (95.7% WR vs ~97% BE = negative EV)
+TM_MIN_PROB = 0.93                        # Model confirmation threshold
+TM_MIN_STC = 61                           # Minimum seconds to close
+TM_MAX_STC = 300                          # Maximum seconds to close
+TM_FIXED_CONTRACTS = 50                   # Fixed position size (bypasses Kelly entirely)
+TM_MAX_CONCURRENT = 4                     # Max simultaneous TM positions (safety cap)
+
 RELAXED_EDGE_SHADOW = os.environ.get("RELAXED_EDGE_SHADOW", "1") == "1"
 RELAXED_EDGE_DISCOUNT = 0.50        # 50% of normal edge threshold (halved)
 RELAXED_EDGE_MIN_PRICE = 88         # Lower bound of relaxed range
@@ -7490,6 +7502,109 @@ class OpportunityScanner:
                 _sol_high_edge_shadow = (asset == "SOL" and fee_adjusted_edge > SOL_HIGH_EDGE_SHADOW
                                          and _pt in (None, "15m"))
                 if fee_adjusted_edge < _min_edge:
+                    # ── Terminal Momentum intercept ──────────────────────────
+                    # Before rejecting as insufficient_edge, check if this contract
+                    # qualifies for the terminal momentum strategy: extreme price,
+                    # high model confidence, final minutes before expiry.
+                    _tm_intercepted = False
+                    if (TERMINAL_MOMENTUM_ENABLED
+                            and not OBSERVATION_MODE
+                            and _pt in (None, "15m")
+                            and best_ask in TM_PRICE_SET
+                            and final_prob >= TM_MIN_PROB
+                            and TM_MIN_STC <= seconds_remaining <= TM_MAX_STC):
+                        # Check DC overlap: skip if ticker already claimed by DC
+                        _tm_dc_overlap = any(c["ticker"] == ticker and c.get("strategy", "").startswith("decided_")
+                                             for c in candidates)
+                        if not _tm_dc_overlap:
+                            # Check position overlap: skip if we already hold this ticker
+                            _tm_has_position = any(p["ticker"] == ticker for p in self._state.get_open_positions())
+                            if not _tm_has_position:
+                                # Check concurrent TM position cap
+                                _tm_count = sum(1 for c in candidates if c.get("strategy") == "terminal_momentum")
+                                if _tm_count < TM_MAX_CONCURRENT:
+                                    _tm_intercepted = True
+                                    logging.info(
+                                        "TM_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs edge=%.4f",
+                                        asset, ticker, TM_FIXED_CONTRACTS, best_ask,
+                                        final_prob, seconds_remaining, fee_adjusted_edge)
+                                    candidates.append({
+                                        "ticker": ticker,
+                                        "event_ticker": window["event_ticker"],
+                                        "asset": asset,
+                                        "product_type": window.get("product_type"),
+                                        "spot": spot,
+                                        "threshold": threshold,
+                                        "seconds_to_close": round(seconds_remaining, 1),
+                                        "blended_rv": blended_rv,
+                                        "calibrated_prob": round(final_prob, 6),
+                                        "z_score": z_score,
+                                        "best_yes_ask": best_ask,
+                                        "best_ask_source": best_ask_source,
+                                        "edge": round(edge, 6),
+                                        "fee_adjusted_edge": round(fee_adjusted_edge, 6),
+                                        "position_size": TM_FIXED_CONTRACTS,
+                                        "kelly_f": 0.0,
+                                        "drawdown_scaler": 1.0,
+                                        "vol_regime": vol_est["regime"],
+                                        "balance_at_scan": self._get_balance_cached(),
+                                        "strategy": "terminal_momentum",
+                                        "strategy_scores": {"certainty": 1.0, "certainty_detail": "terminal_momentum",
+                                                            "orderbook": 0.5, "orderbook_detail": "n/a",
+                                                            "urgency": 1.0, "urgency_detail": "terminal_momentum",
+                                                            "composite": 1.0, "reason": "terminal_momentum"},
+                                        "ob_snapshot": {
+                                            "best_ask": best_ask,
+                                            "ask_depth": ask_depth,
+                                            "total_depth": total_depth,
+                                            "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                                            "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                                            "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                                      if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
+                                        },
+                                        "calibrated_prob_raw": round(calibrated_prob_raw, 6),
+                                        "ofa_adjustment": round(ofa_adjustment, 6),
+                                        "ofa_confidence": ofa_signals["confidence"] if ofa_signals else "none",
+                                        "raw_prob": raw_prob,
+                                        "calibration_method": calibration_method,
+                                        "old_system_prob": round(_old_system_prob, 6),
+                                        **_shadow_diag,
+                                        **_shadow_extra,
+                                    })
+                                    # Log to evaluated_opportunities
+                                    _tm_dedup = (ticker, "terminal_momentum")
+                                    if _tm_dedup not in self._eval_opp_seen:
+                                        self._eval_opp_seen.add(_tm_dedup)
+                                        try:
+                                            self._state.insert_evaluated_opportunity(
+                                                ticker, window["event_ticker"], asset,
+                                                "terminal_momentum",
+                                                rejection_reason=None,
+                                                spot_price=spot, threshold=threshold,
+                                                volatility=blended_rv, market_price=best_ask,
+                                                seconds_to_close=seconds_remaining,
+                                                calibrated_prob=final_prob, edge=edge,
+                                                ofa_adjustment=ofa_adjustment,
+                                                strategy="terminal_momentum",
+                                                z_score=z_score,
+                                                vol_regime=vol_est["regime"],
+                                                calibrated_prob_raw=calibrated_prob_raw,
+                                                kelly_f=0.0,
+                                                position_size=TM_FIXED_CONTRACTS,
+                                                breakeven_wr=best_ask / 100.0,
+                                                ask_depth=ask_depth,
+                                                best_ask_source=best_ask_source,
+                                                raw_prob=raw_prob,
+                                                calibration_method=calibration_method,
+                                                fee_adjusted_edge=fee_adjusted_edge,
+                                                product_type=window.get("product_type"),
+                                                **_shadow_diag)
+                                        except Exception:
+                                            logging.warning("insert_evaluated_opportunity failed (terminal_momentum)", exc_info=True)
+
+                    if _tm_intercepted:
+                        continue  # Skip insufficient_edge rejection — this is now a TM candidate
+
                     scan_stats[asset]["insufficient_edge"] += 1
                     self._recent_opportunities.append({
                         "ticker": ticker, "asset": asset,
@@ -9870,13 +9985,16 @@ class OpportunityScanner:
             self._last_scan_stats = scan_stats
             return None
 
-        # ── Separate decided contract candidates (additive overlay, bypass single-asset filter) ──
+        # ── Separate decided contract + terminal momentum candidates (bypass single-asset filter) ──
         _dc_candidates = [c for c in candidates if c.get("strategy", "").startswith("decided_")]
+        _tm_candidates = [c for c in candidates if c.get("strategy") == "terminal_momentum"]
         _dc_tickers = {c["ticker"] for c in _dc_candidates}
+        _tm_tickers = {c["ticker"] for c in _tm_candidates}
         # Remove weekend/overnight discount candidates that overlap with DC (DC takes priority)
         _main_candidates = [c for c in candidates
                             if not c.get("strategy", "").startswith("decided_")
-                            and not (c.get("strategy") in ("weekend_discount", "overnight_discount") and c["ticker"] in _dc_tickers)]
+                            and c.get("strategy") != "terminal_momentum"
+                            and not (c.get("strategy") in ("weekend_discount", "overnight_discount") and c["ticker"] in (_dc_tickers | _tm_tickers))]
         candidates = _main_candidates  # single-asset filter only applies to main pipeline
 
         # ── Single-asset-per-timeslot: pick highest edge per 15-min window ──
@@ -10028,6 +10146,9 @@ class OpportunityScanner:
         # Priority by payoff: lower price = higher payoff, so sort ascending by price
         _dc_candidates.sort(key=lambda c: c["best_yes_ask"])
         selected.extend(_dc_candidates)
+
+        # Terminal momentum overlay: add all TM candidates (bypass single-asset filter)
+        selected.extend(_tm_candidates)
 
         if not selected:
             self._last_scan_stats = scan_stats
@@ -11646,6 +11767,10 @@ class OrderExecutor:
                             "decided_t2_z2", "decided_t2_z25", "hourly_dc"):
             return self._execute_dc_taker(candidate, asset, seconds_to_close)
 
+        # ── Terminal momentum taker override ──────────────────────────
+        if _dc_strategy == "terminal_momentum":
+            return self._execute_tm_taker(candidate, asset, seconds_to_close)
+
         # ── SOL taker-first override ──────────────────────────────
         # SOL: bypass maker entirely, go direct IOC — UNLESS book is empty.
         # Data: 44.7% maker fill rate, $101/wk missed, 95% unfilled WR.
@@ -12733,6 +12858,93 @@ class OrderExecutor:
                 ticker, order_submitted_at=_order_submit_ts,
                 order_outcome="unfilled_retry")
             return None
+
+    def _execute_tm_taker(self, candidate: Dict, asset: str, seconds_to_close) -> Optional[Dict]:
+        """Execute terminal momentum trade — direct taker, fixed contracts, no retry."""
+        ticker = candidate["ticker"]
+        count = candidate["position_size"]  # TM_FIXED_CONTRACTS (50)
+        price = candidate["best_yes_ask"]
+        cal_prob = candidate["calibrated_prob"]
+
+        if count <= 0:
+            logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=terminal_momentum price=%d",
+                            ticker, asset, price)
+            self._session_suppressed_zero_size += 1
+            return None
+
+        taker_fee = calculate_taker_fee(count, price)
+        net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+
+        # Fresh ask check — verify price hasn't moved outside TM_PRICE_SET
+        _tm_scan_price = price
+        fresh_ask, fresh_depth, fresh_source = self._dc_get_ask_with_depth(ticker, candidate)
+
+        if fresh_ask is None:
+            logging.warning("ORDER_SUPPRESSED no_asks: %s asset=%s strategy=terminal_momentum price=%d stc=%.0f",
+                            ticker, asset, price, seconds_to_close or 0)
+            self._session_suppressed_no_asks += 1
+            return None
+
+        if fresh_ask not in TM_PRICE_SET:
+            logging.info("tm_taker_SKIP_PRICE: %s fresh_ask=%d¢ not in TM_PRICE_SET (scan=%d¢)",
+                         ticker, fresh_ask, _tm_scan_price)
+            return None
+
+        if fresh_ask != price:
+            logging.info("tm_taker_price_update: %s scanner=%d¢ fresh=%d¢ depth=%d src=%s",
+                         ticker, price, fresh_ask, fresh_depth, fresh_source)
+            price = fresh_ask
+            candidate["best_yes_ask"] = fresh_ask
+            taker_fee = calculate_taker_fee(count, price)
+            net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+
+        # Race condition guard: check position one more time
+        if any(p["ticker"] == ticker for p in self._state.get_open_positions()):
+            logging.info("tm_taker_SKIP_POSITION: %s already held", ticker)
+            return None
+
+        self._session_direct_taker_attempts += 1
+        candidate["entry_path"] = "tm_taker"
+        candidate["escalation_type"] = "direct_taker"
+        self._recent_taker_tickers[ticker] = time.time()
+
+        logging.info(
+            "tm_taker_ENTRY: %s %dx @ %d¢ "
+            "seconds_to_close=%.0f net_edge=%.4f cal_prob=%.4f taker_fee=%d¢",
+            ticker, count, price,
+            seconds_to_close or 0, net_edge, cal_prob, taker_fee)
+
+        _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        result = self._submit_taker(candidate)
+
+        if result is not None:
+            fill_count = result.get("filled_count", 0)
+            if fill_count > 0:
+                self._session_direct_taker_fills += 1
+                logging.info("tm_taker_FILLED: %s %d/%d @ %d¢", ticker, fill_count, count, price)
+                _taker_oid = result.get("order_id") if isinstance(result, dict) else None
+                self._state.update_evaluated_opportunity_order(
+                    ticker, order_id=_taker_oid,
+                    order_submitted_at=_order_submit_ts, order_outcome="filled")
+                # Telegram alert
+                try:
+                    _TELEGRAM.send(
+                        f"TM: {asset} {fill_count}ct @ {price}c "
+                        f"prob={cal_prob:.1%} stc={seconds_to_close or 0:.0f}s "
+                        f"edge={net_edge:.2%}",
+                        dedup_key=f"tm_{ticker}")
+                except Exception:
+                    logging.debug("TM telegram alert failed", exc_info=True)
+                return result
+            else:
+                # Zero fill — no retry for TM (next scan cycle will re-evaluate)
+                self._session_direct_taker_unfilled += 1
+                logging.info("tm_taker_UNFILLED: %s @ %d¢ depth=%d", ticker, price, fresh_depth)
+                self._state.update_evaluated_opportunity_order(
+                    ticker, order_submitted_at=_order_submit_ts,
+                    order_outcome="unfilled")
+                return None
+        return None
 
     def process_dc_retries(self):
         """Process queued DC IOC retries. Called at the top of each _tick().

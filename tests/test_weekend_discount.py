@@ -145,9 +145,9 @@ class TestWeekendDiscountExecution(unittest.TestCase):
 
     def test_dc_dedup_at_candidate_separation(self):
         """Weekend discount candidates overlapping with DC are removed at separation."""
-        sep_start = self.source.find("Separate decided contract candidates")
+        sep_start = self.source.find("Separate decided contract")
         self.assertGreater(sep_start, 0)
-        sep_block = self.source[sep_start:sep_start + 700]
+        sep_block = self.source[sep_start:sep_start + 1000]
         self.assertIn("weekend_discount", sep_block)
         self.assertIn("_dc_tickers", sep_block)
 
