@@ -60,10 +60,10 @@ MAX_TG_MESSAGES = 5
 # Expected table schemas (column counts for drift detection)
 # ---------------------------------------------------------------------------
 EXPECTED_COLUMN_COUNTS = {
-    "settled_trades": 22,
+    "settled_trades": 24,       # +2: strategy_group, is_stacked (stacking migration Apr 1 2026)
     "evaluated_opportunities": 80,
     "rejected_opportunities": 29,
-    "positions": 23,
+    "positions": 25,            # +2: strategy_group, is_stacked (stacking migration Apr 1 2026)
     "pending_orders": 12,
 }
 
