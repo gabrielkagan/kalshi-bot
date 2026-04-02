@@ -87,12 +87,12 @@ class TestStackingConstants(unittest.TestCase):
     def test_max_ticker_risk_exists(self):
         m = re.search(r'^MAX_TICKER_RISK\s*=\s*([^\s#]+)', self.source, re.MULTILINE)
         self.assertIsNotNone(m, "MAX_TICKER_RISK must be defined in bot.py")
-        self.assertAlmostEqual(float(m.group(1)), 0.20)
+        self.assertAlmostEqual(float(m.group(1)), 0.25)
 
     def test_max_window_risk_exists(self):
         m = re.search(r'^MAX_WINDOW_RISK\s*=\s*([^\s#]+)', self.source, re.MULTILINE)
         self.assertIsNotNone(m, "MAX_WINDOW_RISK must be defined in bot.py")
-        self.assertAlmostEqual(float(m.group(1)), 0.25)
+        self.assertAlmostEqual(float(m.group(1)), 0.30)
 
 
 class TestRecordPositionFromFill(unittest.TestCase):

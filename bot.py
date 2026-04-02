@@ -52,8 +52,10 @@ ETH_MIN_ENTRY_PRICE = 90          # cents (raised from 85 — data: ETH 85-89c i
 SOL_MIN_ENTRY_PRICE = 80          # cents (global floor was 80; now explicit since global lowered to 75 for ETH)
 ETH_SUB80_POSITION_CAP = 50      # Half-Kelly at 75c/87% WR = 322-645 contracts; cap to 50 (ceil), floor 20
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
-XRP_MAX_RISK_PER_TRADE = 0.12    # XRP RK vol systematically underestimates → cap exposure (data: 53W/8L, net -$63)
-BTC_MAX_RISK_PER_TRADE = 0.12    # BTC oversizing causes outsized losses (data: -$282 from 95c+ losses at full Kelly)
+BTC_MAX_RISK_PER_TRADE = 0.15    # BTC: 15% per-trade (was 12% — regime cap removal gives full balance to sizing)
+ETH_MAX_RISK_PER_TRADE = 0.20    # ETH: 20% per-trade (new — was uncapped beyond generic 25%)
+SOL_MAX_RISK_PER_TRADE = 0.12    # SOL: 12% per-trade (new — tightest cap, worst loss/win asymmetry)
+XRP_MAX_RISK_PER_TRADE = 0.15    # XRP: 15% per-trade (was 12% — regime cap removal gives full balance)
 SOL_MIN_EDGE = 0.010             # SOL-specific edge floor (reverted to 1.0% — prior 1.8% based on pre-BLR data, invalid under passthrough cal)
 SOL_HIGH_EDGE_SHADOW = 0.05     # SOL edge ceiling shadow: log evaluations with edge > 5% for analysis (5%+ band is 80% WR, PnL-negative)
 XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/2L 95.3% WR at >=92c)
@@ -227,8 +229,8 @@ BRACKET_NO_KILL_THRESHOLD = -2000          # -$20 cumulative PnL kill switch
 
 # ─── Stacking Infrastructure ────────────────────────────────────────────
 STACKING_ENABLED = os.environ.get("STACKING_ENABLED", "0") == "1"
-MAX_TICKER_RISK = 0.20    # 20% of balance per ticker across all strategies
-MAX_WINDOW_RISK = 0.25    # 25% of balance per settlement window across all strategies
+MAX_TICKER_RISK = 0.25    # 25% of balance per ticker across all strategies (was 20%)
+MAX_WINDOW_RISK = 0.30    # 30% of balance per settlement window, CROSS-ASSET (was 25%)
 
 HOURLY_MIN_EDGE_PCT = 0.001              # 0.1% — low for max signal collection (observation-only)
 
@@ -8715,18 +8717,31 @@ class OpportunityScanner:
                         sizing["contracts"] = max(1, _type_max)
 
                 # Asset-specific risk caps (15M only — hourly has fixed sizing)
+                # DC candidates don't flow through this code path (separate sizing at line 8231).
                 if asset == "XRP" and _pt in (None, "15m"):
                     _xrp_max = int((_sizing_balance * XRP_MAX_RISK_PER_TRADE) / best_ask)
                     if sizing["contracts"] > _xrp_max >= 1:
-                        logging.info("XRP risk cap: %d -> %d contracts (%.0f%% max risk)",
-                                     sizing["contracts"], _xrp_max, XRP_MAX_RISK_PER_TRADE * 100)
+                        logging.info("ASSET_CAP: XRP raw=%d capped=%d balance=$%.2f",
+                                     sizing["contracts"], _xrp_max, _sizing_balance / 100)
                         sizing["contracts"] = _xrp_max
                 elif asset == "BTC" and _pt in (None, "15m"):
                     _btc_max = int((_sizing_balance * BTC_MAX_RISK_PER_TRADE) / best_ask)
                     if sizing["contracts"] > _btc_max >= 1:
-                        logging.info("BTC risk cap: %d -> %d contracts (%.0f%% max risk)",
-                                     sizing["contracts"], _btc_max, BTC_MAX_RISK_PER_TRADE * 100)
+                        logging.info("ASSET_CAP: BTC raw=%d capped=%d balance=$%.2f",
+                                     sizing["contracts"], _btc_max, _sizing_balance / 100)
                         sizing["contracts"] = _btc_max
+                elif asset == "SOL" and _pt in (None, "15m"):
+                    _sol_max = int((_sizing_balance * SOL_MAX_RISK_PER_TRADE) / best_ask)
+                    if sizing["contracts"] > _sol_max >= 1:
+                        logging.info("ASSET_CAP: SOL raw=%d capped=%d balance=$%.2f",
+                                     sizing["contracts"], _sol_max, _sizing_balance / 100)
+                        sizing["contracts"] = _sol_max
+                elif asset == "ETH" and _pt in (None, "15m"):
+                    _eth_max = int((_sizing_balance * ETH_MAX_RISK_PER_TRADE) / best_ask)
+                    if sizing["contracts"] > _eth_max >= 1:
+                        logging.info("ASSET_CAP: ETH raw=%d capped=%d balance=$%.2f",
+                                     sizing["contracts"], _eth_max, _sizing_balance / 100)
+                        sizing["contracts"] = _eth_max
 
                 # ETH sub-80c position cap: clamp to [20, 50] contracts
                 # Half-Kelly at 75c/87% WR = 322-645 contracts — uncapped is reckless.
@@ -11504,6 +11519,12 @@ class OpportunityScanner:
         if resp is None:
             return cached_balance  # return stale if API fails
         balance = resp.get("balance") or 0
+        # Absolute sanity cap — catches API glitches without blocking normal settlements
+        _BALANCE_SANITY_CAP = int(os.getenv("BALANCE_SANITY_CAP_CENTS", "250000"))  # $2,500 default
+        if balance > _BALANCE_SANITY_CAP:
+            logging.warning("BALANCE_SANITY_CAP: api_balance=$%.2f capped=$%.2f",
+                            balance / 100, _BALANCE_SANITY_CAP / 100)
+            balance = _BALANCE_SANITY_CAP
         self._balance_cache = (balance, now)
         return balance
 
@@ -11755,14 +11776,21 @@ class OrderExecutor:
                     candidate["position_size"] = _reduced
                     _candidate_cost = _reduced * _candidate_price
 
-            # Per-window cap: 25% of balance
+            # Per-window cap: cross-asset — sum ALL positions in the same 15-min timeslot
             _event_ticker = candidate.get("event_ticker")
             if _event_ticker:
+                # Extract timeslot for cross-asset matching
+                # Event tickers: KXBTC15M-26APR021000, KXETH15M-26APR021000 → timeslot=26APR021000
+                _et_parts = _event_ticker.split("-", 1)
+                _timeslot = _et_parts[1] if len(_et_parts) > 1 else _event_ticker
                 _existing_window_cost = sum(
                     p["total_cost_cents"]
                     for p in self._state.get_open_positions()
-                    if p.get("event_ticker") == _event_ticker
+                    if p.get("event_ticker", "").split("-", 1)[-1] == _timeslot
                 )
+                if _existing_window_cost > 0:
+                    logging.debug("WINDOW_XASSET: timeslot=%s existing=$%.2f",
+                                  _timeslot, _existing_window_cost / 100)
                 _window_cap = _fresh_balance * MAX_WINDOW_RISK
                 if _existing_window_cost + _candidate_cost > _window_cap:
                     _w_remaining = _window_cap - _existing_window_cost

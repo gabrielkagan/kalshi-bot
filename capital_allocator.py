@@ -13,7 +13,7 @@ from typing import Dict, Optional
 STRATEGY_CONFIGS = {
     # max_cents high for crypto_15m: per-trade risk already bounded by MAX_RISK_PER_TRADE.
     # When it's the sole active strategy, it must get full balance — not an artificial cap.
-    "crypto_15m": {"weight": 0.50, "max_cents": 100000, "min_cents": 5000},
+    "crypto_15m": {"weight": 0.50, "max_cents": 1000000, "min_cents": 5000},  # $10K ceiling (was $1K)
     "crypto_hourly": {"weight": 0.15, "max_cents": 8000, "min_cents": 2000},
     "spx_hourly": {"weight": 0.25, "max_cents": 12000, "min_cents": 3000},
     "weather": {"weight": 0.10, "max_cents": 5000, "min_cents": 1000},
@@ -62,10 +62,10 @@ class CapitalAllocator:
 
         locked = locked_by_strategy or {}
 
-        # Apply correlation regime cap to total available
-        regime = self._correlation_mgr.get_regime()
-        regime_cap = REGIME_BUDGET_CAPS_CENTS.get(regime, total_balance_cents)
-        effective_total = min(total_balance_cents, regime_cap)
+        # Regime cap removed — was permanently GREEN/$400, throttling all trades.
+        # CorrelationRiskManager.update_daily() was never called, making the regime
+        # static. Full balance now flows to sizing; per-asset caps in bot.py control risk.
+        effective_total = total_balance_cents
 
         # Redistribute observation-mode budgets to active strategies
         active_weight_sum = sum(
