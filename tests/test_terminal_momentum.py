@@ -1,7 +1,7 @@
 """Tests for Terminal Momentum strategy.
 
 Guards against:
-- Price set: only {95, 96, 98, 99} — 97c MUST be excluded (dead zone, negative EV)
+- Price set: {95, 96, 97, 98, 99} — full 95-99c range
 - Probability gate: calibrated_prob >= 0.93
 - STC window: 61-300 seconds to close
 - Fixed sizing: 50 contracts, no Kelly, no drawdown scaler
@@ -50,18 +50,18 @@ class TestTMConstants(unittest.TestCase):
         self.assertIn("TERMINAL_MOMENTUM_ENABLED", self.source)
 
     def test_price_set_is_set_not_range(self):
-        """TM_PRICE_SET must be a set literal {95, 96, 98, 99}, NOT a range."""
+        """TM_PRICE_SET must be a set literal {95, 96, 97, 98, 99}, NOT a range."""
         m = re.search(r'^TM_PRICE_SET\s*=\s*(\{[^}]+\})', self.source, re.MULTILINE)
         self.assertIsNotNone(m, "TM_PRICE_SET must be a set literal")
         price_set = eval(m.group(1))
-        self.assertEqual(price_set, {95, 96, 98, 99})
+        self.assertEqual(price_set, {95, 96, 97, 98, 99})
 
-    def test_97_excluded_from_price_set(self):
-        """97c is a dead zone (95.7% WR vs ~97% breakeven). Must NEVER be in TM_PRICE_SET."""
+    def test_97_included_in_price_set(self):
+        """97c promoted: 98.2% WR on 55 obs, above 97% breakeven."""
         m = re.search(r'^TM_PRICE_SET\s*=\s*(\{[^}]+\})', self.source, re.MULTILINE)
         self.assertIsNotNone(m)
         price_set = eval(m.group(1))
-        self.assertNotIn(97, price_set, "97 must NOT be in TM_PRICE_SET — dead zone, negative EV")
+        self.assertIn(97, price_set, "97 should be in TM_PRICE_SET — 98.2% WR above 97% BE")
 
     def test_min_prob(self):
         self.assertEqual(_extract_constant(self.source, "TM_MIN_PROB"), 0.93)

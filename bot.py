@@ -597,7 +597,7 @@ DC_SHADOW_STAGES = frozenset({
 # These are contracts the main pipeline rejects as insufficient_edge but that
 # settle YES at 98.99% WR (496 observations). Fixed 50-contract sizing, direct taker.
 TERMINAL_MOMENTUM_ENABLED = os.environ.get("TERMINAL_MOMENTUM_ENABLED", "1") == "1"
-TM_PRICE_SET = {95, 96, 98, 99}          # Valid entry prices — 97 excluded (95.7% WR vs ~97% BE = negative EV)
+TM_PRICE_SET = {95, 96, 97, 98, 99}      # Valid entry prices (97c: 98.2% WR on 55 obs, above 97% BE)
 TM_MIN_PROB = 0.93                        # Model confirmation threshold
 TM_MIN_STC = 61                           # Minimum seconds to close
 TM_MAX_STC = 300                          # Maximum seconds to close
