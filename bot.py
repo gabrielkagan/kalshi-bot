@@ -2612,6 +2612,47 @@ class StateManager:
         """, (order_id, now, client_order_id))
         self.conn.commit()
 
+    def cleanup_expired_resting_orders(self):
+        """Cancel resting orders whose contract has expired.
+
+        15M tickers encode close time: KXSOL15M-26APR021145-45 → Apr 2 11:45 ET.
+        Any resting order past its close time was auto-canceled by Kalshi but the
+        local DB row was never updated. This runs periodically (called from snapshot
+        builder) to prevent stale orders accumulating in dashboard_state sync.
+        """
+        import re
+        _MONTH_MAP = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+                       "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+        now_utc = datetime.datetime.now(timezone.utc)
+        now_str = now_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        rows = self.conn.execute(
+            "SELECT order_id, ticker FROM pending_orders WHERE status='resting'"
+        ).fetchall()
+        cleaned = 0
+        for row in rows:
+            ticker = row["ticker"]
+            m = re.match(r'KX\w+15M-(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})-', ticker)
+            if not m:
+                continue  # Non-15M ticker, skip (hourly/weather have different lifecycle)
+            yy, mon, dd, hh, mm = m.groups()
+            mon_num = _MONTH_MAP.get(mon)
+            if not mon_num:
+                continue
+            try:
+                # Close time is in ET (UTC-4 during EDT)
+                close_et = datetime.datetime(2000 + int(yy), mon_num, int(dd), int(hh), int(mm))
+                close_utc = close_et.replace(tzinfo=None) + datetime.timedelta(hours=4)
+                if now_utc.replace(tzinfo=None) > close_utc:
+                    self.conn.execute(
+                        "UPDATE pending_orders SET status='expired', updated_at=? WHERE order_id=?",
+                        (now_str, row["order_id"]))
+                    cleaned += 1
+            except (ValueError, OverflowError):
+                continue
+        if cleaned:
+            self.conn.commit()
+            logging.info("cleanup_expired_resting: marked %d expired orders", cleaned)
+
     def mark_order_status(self, order_id: str, status: str):
         """Update order status (filled, canceled, api_error)."""
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")

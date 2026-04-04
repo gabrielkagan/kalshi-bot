@@ -213,8 +213,10 @@ class DashboardSnapshotBuilder:
         except Exception:
             snap["active_positions"] = []
 
-        # Resting orders
+        # Resting orders — clean up expired before reading
         try:
+            if self._ml and hasattr(self._ml, 'state'):
+                self._ml.state.cleanup_expired_resting_orders()
             rows = _conn.execute(
                 "SELECT * FROM pending_orders WHERE status='resting'"
             ).fetchall()
