@@ -98,10 +98,10 @@ Systematic alpha research on hourly trading data. Discovers profitable configura
 |-------|----------|
 | 86c   | 0.25%    |
 | 89c   | 0.25%    |
-| 91c   | 0.35%    |
-| 93c   | 0.90%    |
-| 95c   | 1.25%    |
-| 97c   | 2.00%    |
+| 91c   | 0.20%    |
+| 93c   | 0.50%    |
+| 95c   | 0.75%    |
+| 97c   | 1.00%    |
 
 ## Error Handling
 

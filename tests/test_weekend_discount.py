@@ -138,7 +138,7 @@ class TestWeekendDiscountExecution(unittest.TestCase):
         # Find the decided contract taker override section
         dc_taker_start = self.source.find("Decided contract taker override")
         self.assertGreater(dc_taker_start, 0)
-        dc_taker_block = self.source[dc_taker_start:dc_taker_start + 500]
+        dc_taker_block = self.source[dc_taker_start:dc_taker_start + 800]
         # The taker override only matches decided_t1, decided_t1b, decided_t2
         self.assertIn('"decided_t1"', dc_taker_block)
         self.assertNotIn('"weekend_discount"', dc_taker_block)

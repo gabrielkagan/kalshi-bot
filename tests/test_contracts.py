@@ -19,7 +19,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 DASHBOARD_SNAPSHOT_PATH = os.path.join(PROJECT_ROOT, "dashboard_snapshot.py")
-DASHBOARD_PATH = "/private/tmp/gabekagan-dashboard/dashboard/index.html"
+DASHBOARD_PATH = "/private/tmp/gabekagan-dash/dashboard/index.html"
 
 # The contract: every key dashboard_snapshot.py writes as snap["key"]
 REQUIRED_SNAP_KEYS = {

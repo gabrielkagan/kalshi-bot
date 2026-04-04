@@ -80,7 +80,7 @@ def _build_hourly_variant_snap(conn, filter_stage, filters_dict, graduation_dict
             "filters": filters_dict, "graduation": graduation_dict,
         }
     except Exception:
-        logging.debug("%s snapshot failed", filter_stage, exc_info=True)
+        logging.warning("%s snapshot failed", filter_stage, exc_info=True)
         return {
             "total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
             "wilson_lower": 0, "brier": None, "sim_pnl_cents": 0,
@@ -89,8 +89,8 @@ def _build_hourly_variant_snap(conn, filter_stage, filters_dict, graduation_dict
         }
 
 # Current config regime boundary — performance metrics filtered to this era
-# Mar 3 2026: MIN_EDGE_BY_PRICE halved, DIRECT_TAKER_THRESHOLD 60→75
-CONFIG_REGIME_SINCE = "2026-03-03T00:00:00"
+# TODO: auto-detect from git log like audit scripts
+CONFIG_REGIME_SINCE = "2026-04-02T00:00:00"
 
 # Sim fee rate for observation products: maker = $0, taker ~30% @ 0.07 → blended ~0.021
 # But since most shadow trades would enter as maker (fee=$0), use taker-only rate for conservative sim
@@ -183,10 +183,9 @@ class DashboardSnapshotBuilder:
             })
             hist = list(self._ml._balance_history)
             snap["balance_history"] = hist[-360:]  # last hour
-            if len(hist) > 360:
-                snap["balance_history_4h"] = hist[::max(1, len(hist) // 360)]
+            snap["balance_history_4h"] = hist[::max(1, len(hist) // 360)] if len(hist) > 1 else list(hist)
         except Exception:
-            logging.debug("Snapshot: balance_history build failed", exc_info=True)
+            logging.warning("Snapshot: balance_history build failed", exc_info=True)
             snap["balance_history"] = []
 
         _conn = db_conn
@@ -213,10 +212,9 @@ class DashboardSnapshotBuilder:
         except Exception:
             snap["active_positions"] = []
 
-        # Resting orders — clean up expired before reading
+        # Resting orders
+        # cleanup_expired_resting_orders moved to main loop — snapshot is read-only
         try:
-            if self._ml and hasattr(self._ml, 'state'):
-                self._ml.state.cleanup_expired_resting_orders()
             rows = _conn.execute(
                 "SELECT * FROM pending_orders WHERE status='resting'"
             ).fetchall()
@@ -486,10 +484,10 @@ class DashboardSnapshotBuilder:
                 snap["regime_risk_metrics"] = regime_risk
                 snap["config_regime_since"] = CONFIG_REGIME_SINCE
             except Exception:
-                logging.debug("Snapshot: regime_risk_metrics failed", exc_info=True)
+                logging.warning("Snapshot: regime_risk_metrics failed", exc_info=True)
                 snap["regime_risk_metrics"] = None
         except Exception:
-            logging.debug("Snapshot: risk_metrics build failed", exc_info=True)
+            logging.warning("Snapshot: risk_metrics build failed", exc_info=True)
             snap["risk_metrics"] = None
             snap["all_products_risk_metrics"] = None
 
@@ -514,7 +512,7 @@ class DashboardSnapshotBuilder:
             eq["maker_fill_rate"] = round(maker_fills / maker_subs, 3) if maker_subs > 0 else 0.0
             snap["execution_quality"] = eq
         except Exception:
-            logging.debug("Snapshot: execution_quality build failed", exc_info=True)
+            logging.warning("Snapshot: execution_quality build failed", exc_info=True)
             snap["execution_quality"] = None
 
         # Volatility from cache (read-only)
@@ -587,6 +585,7 @@ class DashboardSnapshotBuilder:
             snap["funding_rates"] = {}
 
         # Cross-exchange prices and premia
+        snap["cross_exchange"] = {}
         try:
             if hasattr(self._ml, 'cross_feed') and self._ml.cross_feed:
                 cx_data = {}
@@ -669,7 +668,7 @@ class DashboardSnapshotBuilder:
                 conv[asset] = round(max(velocities), 2) if velocities else 0.0
             snap["convergence_velocity"] = conv
         except Exception:
-            logging.debug("Snapshot: convergence_velocity build failed", exc_info=True)
+            logging.warning("Snapshot: convergence_velocity build failed", exc_info=True)
             snap["convergence_velocity"] = None
 
         # Bot status
@@ -910,10 +909,10 @@ class DashboardSnapshotBuilder:
                     "by_bucket": {r["bucket"]: {"count": r["cnt"], "wins": r["wins"], "net_pnl": r["net_pnl"]} for r in r_bucket},
                 }
             except Exception:
-                logging.debug("Snapshot: regime_trade_analytics failed", exc_info=True)
+                logging.warning("Snapshot: regime_trade_analytics failed", exc_info=True)
                 snap["regime_trade_analytics"] = None
         except Exception:
-            logging.debug("Snapshot: real_trade_analytics build failed", exc_info=True)
+            logging.warning("Snapshot: real_trade_analytics build failed", exc_info=True)
             snap["real_trade_analytics"] = {}
 
 
@@ -991,7 +990,7 @@ class DashboardSnapshotBuilder:
                         _reg[_key] = {"n_observations": 0, "error": True}
                 snap["cal_registry"] = _reg
         except Exception:
-            logging.debug("Snapshot: cal_registry build failed", exc_info=True)
+            logging.warning("Snapshot: cal_registry build failed", exc_info=True)
 
         # ── NIG distribution parameters ────────────────────────────────
         try:
@@ -1032,7 +1031,7 @@ class DashboardSnapshotBuilder:
                     "shadow_sigmoid_w": dict(mz._shadow_sigmoid_w),
                 }
         except Exception:
-            logging.debug("Snapshot: egarch_blend build failed", exc_info=True)
+            logging.warning("Snapshot: egarch_blend build failed", exc_info=True)
 
         # ── counterfactual analysis (15M only, current regime) ──────────
         try:
@@ -1218,7 +1217,7 @@ class DashboardSnapshotBuilder:
                 snap["shadow_variants"] = {}
         except Exception:
             snap["shadow_variants"] = None
-            logging.debug("Snapshot: shadow_variants build failed", exc_info=True)
+            logging.warning("Snapshot: shadow_variants build failed", exc_info=True)
 
         # ── ask price distribution ────────────────────────────────────
         try:
@@ -1282,7 +1281,7 @@ class DashboardSnapshotBuilder:
                     koft_data["signals"] = per_ticker
                 snap["kalshi_order_flow"] = koft_data
         except Exception:
-            logging.debug("Snapshot: kalshi_oft build failed", exc_info=True)
+            logging.warning("Snapshot: kalshi_oft build failed", exc_info=True)
 
         # ── Execution engine capabilities ────────────────────────────────
         try:
@@ -1442,7 +1441,7 @@ class DashboardSnapshotBuilder:
 
             snap["execution_engine"] = exec_eng
         except Exception:
-            logging.debug("Snapshot: execution_engine build failed", exc_info=True)
+            logging.warning("Snapshot: execution_engine build failed", exc_info=True)
             snap["execution_engine"] = {}
 
         # ── Shadow calibration pipeline ─────────────────────────────────
@@ -1460,7 +1459,7 @@ class DashboardSnapshotBuilder:
                     "blend_w_production": getattr(_bot_mod, 'MARKET_BLEND_W', None),
                 }
         except Exception:
-            logging.debug("Snapshot: shadow_cal_pipeline build failed", exc_info=True)
+            logging.warning("Snapshot: shadow_cal_pipeline build failed", exc_info=True)
 
         # ── Hourly observation mode ──────────────────────────────────────
         try:
@@ -1565,7 +1564,7 @@ class DashboardSnapshotBuilder:
                     hourly_data["sim_pnl_cents"] = 0
                 snap["hourly_observation"] = hourly_data
         except Exception:
-            logging.debug("Snapshot: hourly_observation build failed", exc_info=True)
+            logging.warning("Snapshot: hourly_observation build failed", exc_info=True)
 
         # ── Hourly Live (BTC+ETH, sub-60c, taker-only) ──
         # Split: new sub-60c strategy (since Mar 23) vs legacy Feb 28 disaster
@@ -1629,7 +1628,7 @@ class DashboardSnapshotBuilder:
                 },
             }
         except Exception:
-            logging.debug("Snapshot: hourly_live build failed", exc_info=True)
+            logging.warning("Snapshot: hourly_live build failed", exc_info=True)
 
         # ── Daily PnL History (last 30 days, all products) ──
         try:
@@ -1648,7 +1647,7 @@ class DashboardSnapshotBuilder:
             ]
         except Exception:
             snap["daily_pnl_history"] = []
-            logging.debug("Snapshot: daily_pnl_history failed", exc_info=True)
+            logging.warning("Snapshot: daily_pnl_history failed", exc_info=True)
 
         # ── DC By Tier ──
         try:
@@ -1668,7 +1667,7 @@ class DashboardSnapshotBuilder:
             snap["decided_contracts_by_tier"] = _dc_tiers
         except Exception:
             snap["decided_contracts_by_tier"] = {}
-            logging.debug("Snapshot: dc_by_tier failed", exc_info=True)
+            logging.warning("Snapshot: dc_by_tier failed", exc_info=True)
 
         # ── Hourly Config A (no_XRP + edge ≤ 0.7%) ──────────────────────
         try:
@@ -1730,7 +1729,7 @@ class DashboardSnapshotBuilder:
                 },
             }
         except Exception:
-            logging.debug("hourly_config_a snapshot failed", exc_info=True)
+            logging.warning("hourly_config_a snapshot failed", exc_info=True)
             snap["hourly_config_a"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
                                         "wilson_lower": 0, "brier": None, "sim_pnl_cents": 0,
                                         "days": 0, "min_day_wr": None,
@@ -1803,7 +1802,7 @@ class DashboardSnapshotBuilder:
                 },
             }
         except Exception:
-            logging.debug("hourly_config_b snapshot failed", exc_info=True)
+            logging.warning("hourly_config_b snapshot failed", exc_info=True)
             snap["hourly_config_b"] = {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
                                         "wilson_lower": 0, "brier": None, "sim_pnl_cents": 0,
                                         "days": 0, "min_day_wr": None, "breakeven_wr": 0.83,
@@ -2063,7 +2062,7 @@ class DashboardSnapshotBuilder:
                     spx_data["sim_pnl_cents"] = 0
                 snap["spx_observation"] = spx_data
         except Exception:
-            logging.debug("Snapshot: spx_observation build failed", exc_info=True)
+            logging.warning("Snapshot: spx_observation build failed", exc_info=True)
 
         # ── SPX Shadow Calibration Variants ──────────────────────────────
         # Five variants exploring temperature + blend + filter combinations
@@ -2128,7 +2127,7 @@ class DashboardSnapshotBuilder:
                         "pending": (_pend["c"] or 0) if _pend else 0,
                     }
                 except Exception:
-                    logging.debug("SPX variant %s failed", _vid, exc_info=True)
+                    logging.warning("SPX variant %s failed", _vid, exc_info=True)
                     spx_variants[_vid] = {
                         "label": _vlabel, "settled": 0, "wins": 0, "losses": 0,
                         "wr": 0, "wilson_lower": 0, "brier": None,
@@ -2136,7 +2135,7 @@ class DashboardSnapshotBuilder:
                     }
             snap["spx_variants"] = spx_variants
         except Exception:
-            logging.debug("Snapshot: spx_variants build failed", exc_info=True)
+            logging.warning("Snapshot: spx_variants build failed", exc_info=True)
 
         # ── SPX Live Trading Performance ───────────────────────────────
         # Real trades from settled_trades WHERE product_type='spx_hourly'
@@ -2195,7 +2194,7 @@ class DashboardSnapshotBuilder:
 
             snap["spx_live"] = spx_live
         except Exception:
-            logging.debug("Snapshot: spx_live build failed", exc_info=True)
+            logging.warning("Snapshot: spx_live build failed", exc_info=True)
             snap["spx_live"] = {"trades": 0, "wins": 0, "losses": 0, "wr": 0, "pnl_cents": 0, "fee_cents": 0}
 
         # ── Hourly NO-Side Overconfidence Tracker ────────────────────────
@@ -2310,7 +2309,7 @@ class DashboardSnapshotBuilder:
                 }
             snap["hourly_no_side"] = hno
         except Exception:
-            logging.debug("Snapshot: hourly_no_side build failed", exc_info=True)
+            logging.warning("Snapshot: hourly_no_side build failed", exc_info=True)
 
         # ── Weather Observation Panel ─────────────────────────────────────
         try:
@@ -2434,7 +2433,7 @@ class DashboardSnapshotBuilder:
 
                 snap["weather_observation"] = wx_data
         except Exception:
-            logging.debug("Snapshot: weather_observation build failed", exc_info=True)
+            logging.warning("Snapshot: weather_observation build failed", exc_info=True)
 
         # ── Sports Observation Panel ─────────────────────────────────────
         try:
@@ -2510,7 +2509,7 @@ class DashboardSnapshotBuilder:
 
                 snap["sports_observation"] = sp_data
         except Exception:
-            logging.debug("Snapshot: sports_observation build failed", exc_info=True)
+            logging.warning("Snapshot: sports_observation build failed", exc_info=True)
 
         # ── Sports Strong Config Analysis ─────────────────────────────────
         try:
@@ -2605,7 +2604,7 @@ class DashboardSnapshotBuilder:
 
             snap["sports_strong_config"] = sc_data
         except Exception:
-            logging.debug("Snapshot: sports_strong_config build failed", exc_info=True)
+            logging.warning("Snapshot: sports_strong_config build failed", exc_info=True)
 
         # ── Sports NBA Variants (Core + Wide) ────────────────────────────
         try:
@@ -2703,7 +2702,7 @@ class DashboardSnapshotBuilder:
 
             snap["sports_variants"] = sv_data
         except Exception:
-            logging.debug("Snapshot: sports_variants build failed", exc_info=True)
+            logging.warning("Snapshot: sports_variants build failed", exc_info=True)
 
         # ── Data Collection Progress ───────────────────────────────────────
         try:
@@ -2777,7 +2776,7 @@ class DashboardSnapshotBuilder:
                                 "rate_per_day": None, "eta_days": None}
             snap["data_collection"] = dc
         except Exception:
-            logging.debug("Snapshot: data_collection build failed", exc_info=True)
+            logging.warning("Snapshot: data_collection build failed", exc_info=True)
             snap["data_collection"] = {}
 
         # ── Capital Allocation Panel ──────────────────────────────────────
@@ -2791,7 +2790,7 @@ class DashboardSnapshotBuilder:
                     "composite_score": cap_alloc.get_composite_score(),
                 }
         except Exception:
-            logging.debug("Snapshot: capital_allocation build failed", exc_info=True)
+            logging.warning("Snapshot: capital_allocation build failed", exc_info=True)
 
         # ── Orderbook visibility (dashboard only) ─────────────────────────
         try:
@@ -2848,14 +2847,14 @@ class DashboardSnapshotBuilder:
                             "stale": stale,
                         }
                     except Exception:
-                        logging.debug(f"Snapshot: ob summary failed for {ticker}", exc_info=True)
+                        logging.warning(f"Snapshot: ob summary failed for {ticker}", exc_info=True)
 
                 snap["orderbooks"] = ob_summary
                 logging.debug(f"Snapshot: orderbooks built for {sum(len(v) for v in ob_summary.values())} tickers")
             else:
                 snap["orderbooks"] = {}
         except Exception:
-            logging.debug("Snapshot: orderbooks build failed", exc_info=True)
+            logging.warning("Snapshot: orderbooks build failed", exc_info=True)
             snap["orderbooks"] = {}
 
         # ── Position health (read-only enrichment for dashboard) ─────────
@@ -2867,7 +2866,7 @@ class DashboardSnapshotBuilder:
                 snap.get("active_positions", []), raw_obs, windows
             )
         except Exception:
-            logging.debug("Snapshot: position_health build failed", exc_info=True)
+            logging.warning("Snapshot: position_health build failed", exc_info=True)
             snap["position_health"] = {
                 "summary": {"lock": 0, "watch": 0, "danger": 0, "total": 0},
                 "positions": {},
@@ -2891,7 +2890,7 @@ class DashboardSnapshotBuilder:
             else:
                 snap["fifteenm_shadow"] = None
         except Exception:
-            logging.debug("Snapshot: fifteenm_shadow build failed", exc_info=True)
+            logging.warning("Snapshot: fifteenm_shadow build failed", exc_info=True)
             snap["fifteenm_shadow"] = None
 
         # ── Hourly Alt Shadow Strategies Panel ───────────────────────────
@@ -2902,7 +2901,7 @@ class DashboardSnapshotBuilder:
             else:
                 snap["hourly_alt_shadow"] = None
         except Exception:
-            logging.debug("Snapshot: hourly_alt_shadow build failed", exc_info=True)
+            logging.warning("Snapshot: hourly_alt_shadow build failed", exc_info=True)
             snap["hourly_alt_shadow"] = None
 
         # ── SPX HAR-RV Shadow Panel ──────────────────────────────────────
@@ -2913,7 +2912,7 @@ class DashboardSnapshotBuilder:
             else:
                 snap["spx_harrv_shadow"] = None
         except Exception:
-            logging.debug("Snapshot: spx_harrv_shadow build failed", exc_info=True)
+            logging.warning("Snapshot: spx_harrv_shadow build failed", exc_info=True)
             snap["spx_harrv_shadow"] = None
 
         # ── STC Performance (15M live trades by STC bucket) ────────────
@@ -2949,7 +2948,7 @@ class DashboardSnapshotBuilder:
                     stc_perf[b] = {"trades": 0, "wins": 0, "wr": 0, "pnl_cents": 0}
             snap["stc_performance"] = stc_perf
         except Exception:
-            logging.debug("Snapshot: stc_performance build failed", exc_info=True)
+            logging.warning("Snapshot: stc_performance build failed", exc_info=True)
 
         # ── Calibration Health (overconfidence + Brier by bucket) ──────
         try:
@@ -3013,7 +3012,7 @@ class DashboardSnapshotBuilder:
             else:
                 snap["calibration_health"] = {"n": 0}
         except Exception:
-            logging.debug("Snapshot: calibration_health build failed", exc_info=True)
+            logging.warning("Snapshot: calibration_health build failed", exc_info=True)
 
         # ── Edge Integrity (monotonicity check) ───────────────────────
         try:
@@ -3070,7 +3069,7 @@ class DashboardSnapshotBuilder:
             else:
                 snap["edge_integrity"] = {"n": len(rows) if rows else 0}
         except Exception:
-            logging.debug("Snapshot: edge_integrity build failed", exc_info=True)
+            logging.warning("Snapshot: edge_integrity build failed", exc_info=True)
 
         # ── System Health (consolidated health signals) ────────────────
         try:
@@ -3140,10 +3139,10 @@ class DashboardSnapshotBuilder:
                 comparison.append({
                     "product": "Sports Comeback",
                     "status": "SHADOW",
-                    "settled": spo.get("settled_signals", 0),
-                    "wins": spo.get("settled_wins", 0),
-                    "wr": spo.get("settled_wr", 0),
-                    "sim_pnl_cents": spo.get("settled_sim_pnl_cents", 0),
+                    "settled": spo.get("sim_trade_count", 0),
+                    "wins": round(spo.get("sim_win_rate", 0) * spo.get("sim_trade_count", 0)),
+                    "wr": spo.get("sim_win_rate", 0),
+                    "sim_pnl_cents": spo.get("sim_pnl_cents", 0),
                     "avg_edge": spo.get("avg_edge"),
                 })
             snap["shadow_comparison"] = comparison
@@ -3429,7 +3428,7 @@ class DashboardSnapshotBuilder:
                 _wknd_live["signals"] = _wl_sig[0] if _wl_sig else 0
                 _query_count += 2
             except Exception:
-                logging.debug("weekend_discount_live snapshot failed", exc_info=True)
+                logging.warning("weekend_discount_live snapshot failed", exc_info=True)
             snap["weekend_discount_live"] = _wknd_live
 
             # Overnight discount
@@ -3490,7 +3489,7 @@ class DashboardSnapshotBuilder:
                     _lps["correlation"] = {"avg_window_ct": 0, "max_window_ct": 0,
                                             "avg_hour_ct": 0, "max_hour_ct": 0}
             except Exception:
-                logging.debug("low_price_shadow dedicated table query failed", exc_info=True)
+                logging.warning("low_price_shadow dedicated table query failed", exc_info=True)
                 _lps["capped_pnl_cents"] = 0
                 _lps["full_pnl_cents"] = 0
                 _lps["correlation"] = {"avg_window_ct": 0, "max_window_ct": 0,
@@ -3575,7 +3574,7 @@ class DashboardSnapshotBuilder:
                 _dc_live["window_cap_skips"] = _skip_count[0] if _skip_count else 0
                 _query_count += 2
             except Exception:
-                logging.debug("decided_contract_live snapshot failed", exc_info=True)
+                logging.warning("decided_contract_live snapshot failed", exc_info=True)
             snap["decided_contract_live"] = _dc_live
 
             # ── Terminal Momentum LIVE performance ──
@@ -3626,7 +3625,7 @@ class DashboardSnapshotBuilder:
                 _tm_live["fill_rate"] = round(_tm_live["trades"] / _tm_live["signals"], 4) if _tm_live["signals"] else 0
                 _query_count += 2
             except Exception:
-                logging.debug("terminal_momentum_live snapshot failed", exc_info=True)
+                logging.warning("terminal_momentum_live snapshot failed", exc_info=True)
             snap["terminal_momentum_live"] = _tm_live
 
             # ── Bracket NO LIVE performance ──
@@ -3681,7 +3680,7 @@ class DashboardSnapshotBuilder:
                 _bn_live["fill_rate"] = round(_bn_live["trades"] / _bn_live["signals"], 4) if _bn_live["signals"] else 0
                 _query_count += 2
             except Exception:
-                logging.debug("bracket_no_live snapshot failed", exc_info=True)
+                logging.warning("bracket_no_live snapshot failed", exc_info=True)
             snap["bracket_no_live"] = _bn_live
 
             # ── Stacking stats ──
@@ -3699,7 +3698,7 @@ class DashboardSnapshotBuilder:
                     _stack_stats["stacked_wr"] = round(_ss[1] / _ss[0], 4) if _ss[0] else 0
                 _query_count += 1
             except Exception:
-                logging.debug("stacking_stats snapshot failed", exc_info=True)
+                logging.warning("stacking_stats snapshot failed", exc_info=True)
             snap["stacking_stats"] = _stack_stats
 
             # ── Decided Contract Expansion Shadow ──
@@ -3742,7 +3741,7 @@ class DashboardSnapshotBuilder:
                         "wr": 0, "sim_pnl_cents": 0, "last_signal": None,
                     })
             except Exception:
-                logging.debug("dc_expansion_shadow snapshot failed", exc_info=True)
+                logging.warning("dc_expansion_shadow snapshot failed", exc_info=True)
                 _dc_exp = {s: {"signals": 0, "settled": 0, "wins": 0, "losses": 0,
                                "wr": 0, "sim_pnl_cents": 0, "last_signal": None}
                            for s in _DC_EXPANSION_STAGES}
@@ -3753,7 +3752,7 @@ class DashboardSnapshotBuilder:
             snap["relaxed_edge_shadow"] = _re
 
         except Exception:
-            logging.debug("shadow_panels combined snapshot failed", exc_info=True)
+            logging.warning("shadow_panels combined snapshot failed", exc_info=True)
             for _sk, _sd in _shadow_defaults.items():
                 snap.setdefault(_sk, _sd)
 
@@ -3770,7 +3769,7 @@ class DashboardSnapshotBuilder:
                 "WHERE product_type='15m' "
                 "  AND filter_stage IN ('candidate','insufficient_edge') "
                 "  AND market_price BETWEEN 86 AND 99 "
-                "  AND created_at >= datetime('now', '-14 days') "
+                "  AND evaluation_time >= datetime('now', '-14 days') "
                 "GROUP BY market_price ORDER BY market_price"
             ).fetchall():
                 _price = _cg["market_price"]
@@ -3788,7 +3787,7 @@ class DashboardSnapshotBuilder:
                 }
             snap["calibration_gap"] = {"by_price": _cal_gap_by_price}
         except Exception:
-            logging.debug("calibration_gap snapshot failed", exc_info=True)
+            logging.warning("calibration_gap snapshot failed", exc_info=True)
             snap["calibration_gap"] = {"by_price": {}}
 
         # ── Capital Utilization ──────────────────────────────
@@ -3819,7 +3818,7 @@ class DashboardSnapshotBuilder:
                 "avg_idle_hours": _avg_idle_hours,
             }
         except Exception:
-            logging.debug("capital_utilization snapshot failed", exc_info=True)
+            logging.warning("capital_utilization snapshot failed", exc_info=True)
             snap["capital_utilization"] = {"deployed_cents": 0, "available_cents": 0, "utilization_pct": 0,
                                             "avg_trades_per_day": 0, "avg_idle_hours": 24.0}
 
@@ -3939,7 +3938,7 @@ class DashboardSnapshotBuilder:
                 "pnl_delta_cents": ((_pc_settled_rows["best_pnl"] or 0) - (_pc_settled_rows["live_pnl"] or 0)) if _pc_settled_rows else 0,
             }
         except Exception:
-            logging.debug("sol_pathc_shadow snapshot failed", exc_info=True)
+            logging.warning("sol_pathc_shadow snapshot failed", exc_info=True)
             snap["sol_pathc_shadow"] = {"total_signals": 0, "settled": 0, "wins": 0, "losses": 0,
                                          "live_pnl_cents": 0, "pathc_best_pnl_cents": 0, "pnl_delta_cents": 0}
 
@@ -3997,7 +3996,7 @@ class DashboardSnapshotBuilder:
                 "filters": _filters,
             }
         except Exception:
-            logging.debug("eth_filter_shadow snapshot failed", exc_info=True)
+            logging.warning("eth_filter_shadow snapshot failed", exc_info=True)
             snap["eth_filter_shadow"] = {"total_trades": 0, "wins": 0, "losses": 0,
                                           "wr": 0, "total_pnl_cents": 0, "filters": {}}
 
@@ -4009,7 +4008,7 @@ class DashboardSnapshotBuilder:
                 "overnight_lp_shadow", "decided_contract_shadow", "decided_contract_live",
                 "terminal_momentum_live", "bracket_no_live", "stacking_stats",
                 "dc_expansion_shadow", "relaxed_edge_shadow",
-                "calibration_gap", "capital_utilization", "loss_clusters",
+                "calibration_gap", "capital_utilization", "loss_clustering",
                 "pipeline_completeness", "sol_pathc_shadow", "eth_filter_shadow",
                 "low_price_shadow",
             }
@@ -4176,7 +4175,7 @@ class DashboardSnapshotBuilder:
                     "stc_seconds": round(stc_seconds, 1) if stc_seconds is not None else None,
                 }
             except Exception:
-                logging.debug(f"Snapshot: position health failed for {ticker}", exc_info=True)
+                logging.warning(f"Snapshot: position health failed for {ticker}", exc_info=True)
 
         # Cleanup stale tickers
         stale = [t for t in self._mid_history if t not in active_tickers]

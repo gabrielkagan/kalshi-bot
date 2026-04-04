@@ -65,15 +65,15 @@ def taker_fee(price_cents: int) -> int:
 
 
 def breakeven_wr(price_cents: int) -> float:
-    """Breakeven win rate at given price (maker fee)."""
-    fee = maker_fee(price_cents)
+    """Breakeven win rate at given price (taker fee)."""
+    fee = taker_fee(price_cents)
     return (price_cents + fee) / 100.0
 
 
 def compute_pnl(price: int, result: str, n_contracts: int = 1) -> int:
     """Compute PnL in cents. Win: (100 - price - fee) * contracts.
     Loss: -(price + fee) * contracts."""
-    fee = maker_fee(price)
+    fee = taker_fee(price)
     if result == "yes":
         per_contract = 100 - price - fee
     else:
@@ -124,7 +124,7 @@ def section_performance(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     obs_wins = 0
     for r in obs:
         pnl_1 = compute_pnl(r["market_price"], r["market_result"])
-        pos = r["position_size"] or 1
+        pos = min(r["position_size"] or 1, 50)  # Cap at 50: SPX liquidity constraint
         pnl_s = compute_pnl(r["market_price"], r["market_result"], pos)
         obs_pnl_1c += pnl_1
         obs_pnl_sized += pnl_s
@@ -194,8 +194,12 @@ def section_price_buckets(conn: sqlite3.Connection, since: Optional[str]) -> Dic
         return {}
 
     BUCKETS = [
-        ("70-74c", 70, 74),
-        ("75-79c", 75, 79),
+        ("1-9c", 1, 9),
+        ("10-19c", 10, 19),
+        ("20-29c", 20, 29),
+        ("30-49c", 30, 49),
+        ("50-69c", 50, 69),
+        ("70-79c", 70, 79),
         ("80-84c", 80, 84),
         ("85-89c", 85, 89),
         ("90-94c", 90, 94),
@@ -211,10 +215,10 @@ def section_price_buckets(conn: sqlite3.Connection, since: Optional[str]) -> Dic
         wins = sum(1 for r in filtered if r["market_result"] == "yes")
         losses = len(filtered) - wins
         pnl_1c = sum(compute_pnl(r["market_price"], r["market_result"]) for r in filtered)
-        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], r["position_size"] or 1) for r in filtered)
+        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], min(r["position_size"] or 1, 50)) for r in filtered)
         avg_price = sum(r["market_price"] for r in filtered) / len(filtered)
         avg_edge = sum((r["fee_adjusted_edge"] or 0) for r in filtered) / len(filtered)
-        avg_pos = sum((r["position_size"] or 1) for r in filtered) / len(filtered)
+        avg_pos = sum(min(r["position_size"] or 1, 50) for r in filtered) / len(filtered)
         avg_stc = sum((r["seconds_to_close"] or 0) for r in filtered) / len(filtered)
         be_wr = breakeven_wr(int(avg_price))
         actual_wr = wins / len(filtered)
@@ -291,7 +295,7 @@ def section_daily_pnl(conn: sqlite3.Connection, since: Optional[str]) -> List:
         else:
             d["l"] += 1
         d["pnl_1c"] += compute_pnl(r["market_price"], r["market_result"])
-        d["pnl_sz"] += compute_pnl(r["market_price"], r["market_result"], r["position_size"] or 1)
+        d["pnl_sz"] += compute_pnl(r["market_price"], r["market_result"], min(r["position_size"] or 1, 50))  # Cap at 50: SPX liquidity constraint
 
     print(f"\n  {'Date':<12s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'1c PnL':>8s} {'Sized PnL':>10s} {'Cum 1c':>8s} {'Cum Sized':>10s}")
     print(f"  {'-' * 72}")
@@ -359,13 +363,13 @@ def section_loss_analysis(conn: sqlite3.Connection, since: Optional[str]) -> Dic
     avg_price_l = sum(r["market_price"] for r in losses) / n_loss
     avg_stc_l = sum(r["seconds_to_close"] for r in losses) / n_loss
     avg_edge_l = sum((r["fee_adjusted_edge"] or 0) for r in losses) / n_loss
-    avg_pos_l = sum((r["position_size"] or 1) for r in losses) / n_loss
+    avg_pos_l = sum(min(r["position_size"] or 1, 50) for r in losses) / n_loss
     avg_kelly_l = sum((r["kelly_f"] or 0) for r in losses) / n_loss
 
     avg_price_w = sum(r["market_price"] for r in wins) / n_win if n_win else 0
     avg_stc_w = sum(r["seconds_to_close"] for r in wins) / n_win if n_win else 0
     avg_edge_w = sum((r["fee_adjusted_edge"] or 0) for r in wins) / n_win if n_win else 0
-    avg_pos_w = sum((r["position_size"] or 1) for r in wins) / n_win if n_win else 0
+    avg_pos_w = sum(min(r["position_size"] or 1, 50) for r in wins) / n_win if n_win else 0
 
     print(f"\n  Total losses: {n_loss} out of {n_loss + n_win} ({pct(n_loss, n_loss + n_win)} loss rate)")
     print(f"\n  {'Metric':<25s} {'Losses':>12s} {'Wins':>12s} {'Delta':>12s}")
@@ -380,7 +384,7 @@ def section_loss_analysis(conn: sqlite3.Connection, since: Optional[str]) -> Dic
     subheader("Top 10 Worst Losses (by sized PnL)")
     loss_list = []
     for r in losses:
-        pos = r["position_size"] or 1
+        pos = min(r["position_size"] or 1, 50)  # Cap at 50: SPX liquidity constraint
         pnl = compute_pnl(r["market_price"], "no", pos)
         loss_list.append((pnl, r))
     loss_list.sort(key=lambda x: x[0])
@@ -388,7 +392,7 @@ def section_loss_analysis(conn: sqlite3.Connection, since: Optional[str]) -> Dic
     print(f"  {'Sized PnL':>10s} {'Price':>5s} {'Pos':>4s} {'Edge':>7s} {'STC':>6s} {'Kelly':>6s} {'Window':>20s}")
     print(f"  {'-' * 65}")
     for pnl, r in loss_list[:10]:
-        pos = r["position_size"] or 1
+        pos = min(r["position_size"] or 1, 50)  # Cap at 50: SPX liquidity constraint
         print(f"  ${pnl / 100:>+8.2f} {r['market_price']:>4d}c {pos:>4d} {(r['fee_adjusted_edge'] or 0):>6.2%} "
               f"{r['seconds_to_close']:>5.0f}s {(r['kelly_f'] or 0):>5.3f} {r['event_ticker'][-20:]}")
 
@@ -489,10 +493,18 @@ def section_calibration(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
     price_buckets = {}
     for r in rows:
         p = r["market_price"]
-        if p < 75:
-            key = "70-74c"
+        if p < 10:
+            key = "1-9c"
+        elif p < 20:
+            key = "10-19c"
+        elif p < 30:
+            key = "20-29c"
+        elif p < 50:
+            key = "30-49c"
+        elif p < 70:
+            key = "50-69c"
         elif p < 80:
-            key = "75-79c"
+            key = "70-79c"
         elif p < 85:
             key = "80-84c"
         elif p < 90:
@@ -725,7 +737,7 @@ def section_position_limit_sim(conn: sqlite3.Connection, since: Optional[str]) -
         for et, entries in window_groups.items():
             selected = entries if limit == "all" else entries[:limit]
             for r in selected:
-                pos = r["position_size"] or 1
+                pos = min(r["position_size"] or 1, 50)  # Cap at 50: SPX liquidity constraint
                 n += 1
                 pnl = compute_pnl(r["market_price"], r["market_result"])
                 pnl_s = compute_pnl(r["market_price"], r["market_result"], pos)
@@ -763,25 +775,25 @@ def section_min_price_sweep(conn: sqlite3.Connection, since: Optional[str]) -> D
         print("  No data.")
         return {}
 
-    print(f"  What if we raised MIN_ENTRY_PRICE? (currently 70c)")
+    print(f"  What if we raised MIN_ENTRY_PRICE? (currently 90c)")
     print(f"\n  {'Min Price':>10s} {'N':>4s} {'W':>4s} {'L':>3s} {'WR':>6s} {'1c PnL':>8s} {'Sized PnL':>10s} {'Excluded':>9s}")
     print(f"  {'-' * 60}")
 
     result = {}
     total = len(rows)
-    for min_p in [70, 75, 78, 80, 82, 84, 85, 87, 90, 92]:
-        filtered = [r for r in rows if r["market_price"] >= min_p]
+    for mp in [5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90]:
+        filtered = [r for r in rows if r["market_price"] >= mp]
         n = len(filtered)
         w = sum(1 for r in filtered if r["market_result"] == "yes")
         pnl_1c = sum(compute_pnl(r["market_price"], r["market_result"]) for r in filtered)
-        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], r["position_size"] or 1) for r in filtered)
+        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], min(r["position_size"] or 1, 50)) for r in filtered)
         wr = w / n if n > 0 else 0
         excluded = total - n
-        marker = " <<<" if min_p == 70 else ""
+        marker = " <<<" if mp == 90 else ""
         if pnl_sz > 0 and pnl_1c > 0:
             marker = " *** PROFITABLE"
-        print(f"  {min_p:>9d}c {n:>4d} {w:>4d} {n - w:>3d} {wr:>5.1%} {pnl_1c:>+7d}c {pnl_sz / 100:>+9.2f}$ {excluded:>8d}{marker}")
-        result[min_p] = {"n": n, "wins": w, "pnl_1c": pnl_1c, "pnl_sz": pnl_sz}
+        print(f"  {mp:>9d}c {n:>4d} {w:>4d} {n - w:>3d} {wr:>5.1%} {pnl_1c:>+7d}c {pnl_sz / 100:>+9.2f}$ {excluded:>8d}{marker}")
+        result[mp] = {"n": n, "wins": w, "pnl_1c": pnl_1c, "pnl_sz": pnl_sz}
 
     return result
 
@@ -922,7 +934,7 @@ def section_correlation(conn: sqlite3.Connection, since: Optional[str]) -> List:
         w = sum(1 for d in detail if d["market_result"] == "yes")
         l = n - w
         pnl_1c = sum(compute_pnl(d["market_price"], d["market_result"]) for d in detail)
-        pnl_sz = sum(compute_pnl(d["market_price"], d["market_result"], d["position_size"] or 1) for d in detail)
+        pnl_sz = sum(compute_pnl(d["market_price"], d["market_result"], min(d["position_size"] or 1, 50)) for d in detail)
         total_sized += pnl_sz
 
         wr_str = f"{w / n:.0%}" if n > 0 else "n/a"
@@ -986,7 +998,7 @@ def section_timing(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
         avg_p = sum(r["market_price"] for r in entries) / n
         be = breakeven_wr(int(avg_p))
         pnl_1c = sum(compute_pnl(r["market_price"], r["market_result"]) for r in entries)
-        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], r["position_size"] or 1) for r in entries)
+        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], min(r["position_size"] or 1, 50)) for r in entries)
         avg_edge = sum((r["fee_adjusted_edge"] or 0) for r in entries) / n
         print(f"  {bk:<14} {n:>4} {w:>3} {l:>3} {wr:>5.1%} {be:>5.1%} {pnl_1c:>+7d}c {pnl_sz/100:>+8.2f}$ {avg_edge:>7.3%}")
 
@@ -1090,17 +1102,21 @@ def section_cross_tab(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
         print("  No data.")
         return {}
 
-    price_labels = ["<80c", "80-84c", "85-89c", "90c+"]
+    price_labels = ["<30c", "30-49c", "50-69c", "70-84c", "85-89c", "90c+"]
     stc_labels = ["<600s", "600-1200s", "1200s+"]
 
     grid = {}
     for r in rows:
         p = r["market_price"]
         stc = r["seconds_to_close"]
-        if p < 80:
-            pk = "<80c"
+        if p < 30:
+            pk = "<30c"
+        elif p < 50:
+            pk = "30-49c"
+        elif p < 70:
+            pk = "50-69c"
         elif p < 85:
-            pk = "80-84c"
+            pk = "70-84c"
         elif p < 90:
             pk = "85-89c"
         else:
@@ -1115,7 +1131,7 @@ def section_cross_tab(conn: sqlite3.Connection, since: Optional[str]) -> Dict:
         if key not in grid:
             grid[key] = {"w": 0, "l": 0, "pnl": 0}
         is_win = r["market_result"] == "yes"
-        pos = r["position_size"] or 1
+        pos = min(r["position_size"] or 1, 50)  # Cap at 50: SPX liquidity constraint
         grid[key]["w" if is_win else "l"] += 1
         grid[key]["pnl"] += compute_pnl(r["market_price"], r["market_result"], pos)
 
@@ -1467,14 +1483,15 @@ def section_promotion_config(conn: sqlite3.Connection, since: Optional[str]) -> 
     print(f"  Simulating different config combinations on {len(rows)} observations.")
 
     configs = [
-        {"name": "Current (70c, no limit)", "min_p": 70, "max_per_window": 999},
-        {"name": "Min 80c, no limit", "min_p": 80, "max_per_window": 999},
-        {"name": "Min 80c, max 2/window", "min_p": 80, "max_per_window": 2},
-        {"name": "Min 85c, no limit", "min_p": 85, "max_per_window": 999},
-        {"name": "Min 85c, max 2/window", "min_p": 85, "max_per_window": 2},
-        {"name": "Min 90c, no limit", "min_p": 90, "max_per_window": 999},
-        {"name": "Min 90c, max 2/window", "min_p": 90, "max_per_window": 2},
-        {"name": "Min 80c, max 3/window", "min_p": 80, "max_per_window": 3},
+        {"name": "Current (90c, no limit)", "min_p": 90, "max_per_window": 999},
+        {"name": "Min 5c, no limit", "min_p": 5, "max_per_window": 999},
+        {"name": "Min 10c, no limit", "min_p": 10, "max_per_window": 999},
+        {"name": "Min 10c, max 2/window", "min_p": 10, "max_per_window": 2},
+        {"name": "Min 20c, no limit", "min_p": 20, "max_per_window": 999},
+        {"name": "Min 20c, max 2/window", "min_p": 20, "max_per_window": 2},
+        {"name": "Min 30c, no limit", "min_p": 30, "max_per_window": 999},
+        {"name": "Min 30c, max 3/window", "min_p": 30, "max_per_window": 3},
+        {"name": "Min 50c, max 2/window", "min_p": 50, "max_per_window": 2},
     ]
 
     print(f"\n  {'Config':<30s} {'N':>4s} {'W':>3s} {'L':>3s} {'WR':>6s} {'1c PnL':>8s} {'Sz PnL':>10s}")
@@ -1504,7 +1521,7 @@ def section_promotion_config(conn: sqlite3.Connection, since: Optional[str]) -> 
         l = n - w
         wr = w / n if n > 0 else 0
         pnl_1c = sum(compute_pnl(r["market_price"], r["market_result"]) for r in filtered)
-        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], r["position_size"] or 1) for r in filtered)
+        pnl_sz = sum(compute_pnl(r["market_price"], r["market_result"], min(r["position_size"] or 1, 50)) for r in filtered)
 
         marker = ""
         if pnl_1c > 0 and pnl_sz > 0:
@@ -1952,7 +1969,7 @@ def detect_regime_start() -> str:
     repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
         result = subprocess.run(
-            ["git", "log", "--format=%H %aI", "--since=30 days ago",
+            ["git", "log", "--format=%H %aI", "--since=180 days ago",
              "--", "bot.py"],
             capture_output=True, text=True, timeout=10, cwd=repo_dir,
         )

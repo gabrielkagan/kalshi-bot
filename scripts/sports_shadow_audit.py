@@ -140,12 +140,21 @@ def _dedup_game_wr(conn, since=None, league=None, sport_group=None,
                SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
                SUM(CASE WHEN fav_won = 1 THEN 1 ELSE 0 END) AS wins
         FROM (
-            SELECT game_id, MAX(fav_won) AS fav_won
-            FROM sports_shadow_log {where}
+            SELECT game_id,
+                   (SELECT s2.fav_won FROM sports_shadow_log s2
+                    WHERE s2.game_id = s.game_id AND s2.signal_fired=1
+                    ORDER BY s2.evaluation_time ASC LIMIT 1) AS fav_won
+            FROM sports_shadow_log s {where}
             GROUP BY game_id
         )
     """).fetchone()
     return row['games'] or 0, row['settled'] or 0, row['wins'] or 0
+
+
+def _sql_taker_fee(price_col: str = "yes_ask") -> str:
+    """SQL expression for taker fee in cents: ceil(0.07 * P * (100-P) / 10000).
+    Uses CAST(x + 0.9999 AS INTEGER) to simulate ceil for positive values."""
+    return (f"CAST(0.07 * {price_col} * (100 - {price_col}) / 10000.0 + 0.9999 AS INTEGER)")
 
 
 def header(title: str) -> None:
@@ -197,7 +206,7 @@ def section_overview(conn: sqlite3.Connection, since: Optional[str] = None,
                MAX(evaluation_time) AS last_eval,
                SUM(CASE WHEN signal_fired=1 THEN COALESCE(pnl_cents, 0) END) AS sim_pnl,
                SUM(CASE WHEN signal_fired=1 AND fav_won IS NOT NULL THEN
-                   CASE WHEN fav_won=1 THEN (100 - yes_ask) ELSE -yes_ask END
+                   CASE WHEN fav_won=1 THEN (100 - yes_ask) - {_sql_taker_fee()} ELSE -(yes_ask + {_sql_taker_fee()}) END
                END) AS sim_pnl_1c
         FROM sports_shadow_log {w}
     """).fetchone()
@@ -251,10 +260,10 @@ def section_per_league(conn: sqlite3.Connection,
     except Exception:
         pass
 
-    sg_col = ", COALESCE(sport_group, 'unknown') AS sg" if has_sport_group else ", 'unknown' AS sg"
+    sg_col = ", MAX(COALESCE(sport_group, 'unknown')) AS sg" if has_sport_group else ", 'unknown' AS sg"
 
     rows = conn.execute(f"""
-        SELECT league, sport, outcome_type {sg_col},
+        SELECT league, MAX(sport) AS sport, MAX(outcome_type) AS outcome_type {sg_col},
                COUNT(*) AS evals,
                SUM(CASE WHEN signal_fired=1 THEN 1 ELSE 0 END) AS signals,
                SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
@@ -307,10 +316,12 @@ def section_per_game(conn: sqlite3.Connection, since: Optional[str] = None,
                MIN(CASE WHEN signal_fired=1 THEN yes_ask END) AS min_ask,
                MAX(CASE WHEN signal_fired=1 THEN yes_ask END) AS max_ask,
                AVG(CASE WHEN signal_fired=1 THEN spread END) AS avg_spread,
-               MAX(fav_won) AS fav_won,
+               (SELECT s2.fav_won FROM sports_shadow_log s2
+                WHERE s2.game_id = s.game_id
+                ORDER BY s2.evaluation_time ASC LIMIT 1) AS fav_won,
                MIN(evaluation_time) AS first_eval,
                MAX(evaluation_time) AS last_eval
-        FROM sports_shadow_log {w}
+        FROM sports_shadow_log s {w}
         GROUP BY game_id
         ORDER BY first_eval
     """).fetchall()
@@ -520,7 +531,7 @@ def section_price_buckets(conn: sqlite3.Connection, since: Optional[str] = None,
             AVG(fee_adjusted_edge) AS avg_edge,
             SUM(COALESCE(pnl_cents, 0)) AS raw_pnl,
             SUM(CASE WHEN fav_won IS NOT NULL THEN
-                CASE WHEN fav_won=1 THEN (100 - yes_ask) ELSE -yes_ask END
+                CASE WHEN fav_won=1 THEN (100 - yes_ask) - {_sql_taker_fee()} ELSE -(yes_ask + {_sql_taker_fee()}) END
             END) AS raw_pnl_1c
         FROM sports_shadow_log
         WHERE signal_fired=1 AND yes_ask IS NOT NULL AND yes_ask > 0 {extra}
@@ -572,7 +583,7 @@ def section_daily_pnl(conn: sqlite3.Connection, since: Optional[str] = None,
             SUM(CASE WHEN fav_won=1 THEN 1 ELSE 0 END) AS wins,
             SUM(COALESCE(pnl_cents, 0)) AS pnl_cents,
             SUM(CASE WHEN fav_won IS NOT NULL THEN
-                CASE WHEN fav_won=1 THEN (100 - yes_ask) ELSE -yes_ask END
+                CASE WHEN fav_won=1 THEN (100 - yes_ask) - {_sql_taker_fee()} ELSE -(yes_ask + {_sql_taker_fee()}) END
             END) AS pnl_cents_1c,
             AVG(yes_ask) AS avg_ask,
             COUNT(DISTINCT game_id) AS games
@@ -990,8 +1001,12 @@ def section_wald_sprt(conn: sqlite3.Connection, since: Optional[str] = None,
 
     # De-dup: one outcome per game_id (multiple signals per game are NOT independent)
     rows = conn.execute(f"""
-        SELECT MAX(fav_won) AS fav_won, MIN(evaluation_time) AS first_eval
-        FROM sports_shadow_log
+        SELECT
+            (SELECT s2.fav_won FROM sports_shadow_log s2
+             WHERE s2.game_id = s.game_id AND s2.signal_fired=1
+             ORDER BY s2.evaluation_time ASC LIMIT 1) AS fav_won,
+            MIN(evaluation_time) AS first_eval
+        FROM sports_shadow_log s
         WHERE signal_fired=1 AND fav_won IS NOT NULL {extra}
         GROUP BY game_id
         ORDER BY first_eval
@@ -1109,11 +1124,16 @@ def section_readiness(conn: sqlite3.Connection, since: Optional[str] = None,
                SUM(game_pnl_1c) AS pnl_1c
         FROM (
             SELECT game_id,
-                   MAX(COALESCE(pnl_cents, 0)) AS game_pnl,
-                   MAX(CASE WHEN fav_won IS NOT NULL THEN
-                       CASE WHEN fav_won=1 THEN (100 - yes_ask) ELSE -yes_ask END
-                   END) AS game_pnl_1c
-            FROM sports_shadow_log
+                   (SELECT COALESCE(s2.pnl_cents, 0) FROM sports_shadow_log s2
+                    WHERE s2.game_id = s.game_id AND s2.signal_fired=1
+                    ORDER BY s2.evaluation_time ASC LIMIT 1) AS game_pnl,
+                   (SELECT CASE WHEN s2.fav_won IS NOT NULL THEN
+                       CASE WHEN s2.fav_won=1 THEN (100 - s2.yes_ask) - {_sql_taker_fee('s2.yes_ask')}
+                       ELSE -(s2.yes_ask + {_sql_taker_fee('s2.yes_ask')}) END
+                   END FROM sports_shadow_log s2
+                    WHERE s2.game_id = s.game_id AND s2.signal_fired=1
+                    ORDER BY s2.evaluation_time ASC LIMIT 1) AS game_pnl_1c
+            FROM sports_shadow_log s
             WHERE signal_fired=1 {extra}
             GROUP BY game_id
         )
@@ -1200,8 +1220,11 @@ def section_counterfactual(conn: sqlite3.Connection, since: Optional[str] = None
             SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled_50,
             SUM(CASE WHEN fav_won = 1 THEN 1 ELSE 0 END) AS wins_50
         FROM (
-            SELECT game_id, MAX(fav_won) AS fav_won
-            FROM sports_shadow_log {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_50c=1
+            SELECT game_id,
+                   (SELECT s2.fav_won FROM sports_shadow_log s2
+                    WHERE s2.game_id = s.game_id
+                    ORDER BY s2.evaluation_time ASC LIMIT 1) AS fav_won
+            FROM sports_shadow_log s {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_50c=1
             GROUP BY game_id
         )
     """).fetchone()
@@ -1210,8 +1233,11 @@ def section_counterfactual(conn: sqlite3.Connection, since: Optional[str] = None
             SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
             SUM(CASE WHEN fav_won = 1 THEN 1 ELSE 0 END) AS wins
         FROM (
-            SELECT game_id, MAX(fav_won) AS fav_won
-            FROM sports_shadow_log {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_60c=1
+            SELECT game_id,
+                   (SELECT s2.fav_won FROM sports_shadow_log s2
+                    WHERE s2.game_id = s.game_id
+                    ORDER BY s2.evaluation_time ASC LIMIT 1) AS fav_won
+            FROM sports_shadow_log s {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_60c=1
             GROUP BY game_id
         )
     """).fetchone()
@@ -1220,8 +1246,11 @@ def section_counterfactual(conn: sqlite3.Connection, since: Optional[str] = None
             SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
             SUM(CASE WHEN fav_won = 1 THEN 1 ELSE 0 END) AS wins
         FROM (
-            SELECT game_id, MAX(fav_won) AS fav_won
-            FROM sports_shadow_log {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_70c=1
+            SELECT game_id,
+                   (SELECT s2.fav_won FROM sports_shadow_log s2
+                    WHERE s2.game_id = s.game_id
+                    ORDER BY s2.evaluation_time ASC LIMIT 1) AS fav_won
+            FROM sports_shadow_log s {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_70c=1
             GROUP BY game_id
         )
     """).fetchone()
@@ -1230,8 +1259,11 @@ def section_counterfactual(conn: sqlite3.Connection, since: Optional[str] = None
             SUM(CASE WHEN fav_won IS NOT NULL THEN 1 ELSE 0 END) AS settled,
             SUM(CASE WHEN fav_won = 1 THEN 1 ELSE 0 END) AS wins
         FROM (
-            SELECT game_id, MAX(fav_won) AS fav_won
-            FROM sports_shadow_log {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_80c=1
+            SELECT game_id,
+                   (SELECT s2.fav_won FROM sports_shadow_log s2
+                    WHERE s2.game_id = s.game_id
+                    ORDER BY s2.evaluation_time ASC LIMIT 1) AS fav_won
+            FROM sports_shadow_log s {extra_w + (' AND' if extra_w else 'WHERE')} would_signal_80c=1
             GROUP BY game_id
         )
     """).fetchone()
@@ -1515,8 +1547,11 @@ def section_sport_group_calibration(conn: sqlite3.Connection,
         brier_rows = conn.execute(f"""
             SELECT comeback_prob, fav_won
             FROM (
-                SELECT game_id, AVG(comeback_prob) AS comeback_prob, MAX(fav_won) AS fav_won
-                FROM sports_shadow_log
+                SELECT game_id, AVG(comeback_prob) AS comeback_prob,
+                       (SELECT s2.fav_won FROM sports_shadow_log s2
+                        WHERE s2.game_id = s.game_id AND s2.signal_fired=1
+                        ORDER BY s2.evaluation_time ASC LIMIT 1) AS fav_won
+                FROM sports_shadow_log s
                 WHERE signal_fired=1 AND fav_won IS NOT NULL
                   AND sport_group = '{group}' {_where(since, prefix="AND")}
                 GROUP BY game_id
@@ -1528,8 +1563,11 @@ def section_sport_group_calibration(conn: sqlite3.Connection,
             mkt_brier_rows = conn.execute(f"""
                 SELECT yes_ask / 100.0 AS mkt_prob, fav_won
                 FROM (
-                    SELECT game_id, AVG(yes_ask) AS yes_ask, MAX(fav_won) AS fav_won
-                    FROM sports_shadow_log
+                    SELECT game_id, AVG(yes_ask) AS yes_ask,
+                           (SELECT s2.fav_won FROM sports_shadow_log s2
+                            WHERE s2.game_id = s.game_id AND s2.signal_fired=1
+                            ORDER BY s2.evaluation_time ASC LIMIT 1) AS fav_won
+                    FROM sports_shadow_log s
                     WHERE signal_fired=1 AND fav_won IS NOT NULL AND yes_ask > 0
                       AND sport_group = '{group}' {_where(since, prefix="AND")}
                     GROUP BY game_id
@@ -1801,7 +1839,7 @@ def detect_regime_start() -> str:
     repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
         result = subprocess.run(
-            ["git", "log", "--format=%H %aI", "--since=30 days ago",
+            ["git", "log", "--format=%H %aI", "--since=180 days ago",
              "--", "sports_data.py", "sports_engine.py"],
             capture_output=True, text=True, timeout=10, cwd=repo_dir,
         )

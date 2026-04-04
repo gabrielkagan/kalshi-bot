@@ -14,6 +14,7 @@ import json
 import sqlite3
 import logging
 import threading
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
 import requests
@@ -58,6 +59,7 @@ class SupabaseSyncer:
         self._wm_evaluations = 0
         self._wm_rejections = 0
         self._wm_trades_count = 0
+        self._wm_trades_last_settled: Optional[str] = None
         self._wm_harrv = 0
 
         # Timing
@@ -121,7 +123,7 @@ class SupabaseSyncer:
 
                 now = time.time()
 
-                # Dashboard push (every 10s)
+                # Dashboard push (every 30s)
                 if now - self._last_dashboard >= DASHBOARD_INTERVAL:
                     self._sync_dashboard()
                     self._last_dashboard = now
@@ -177,7 +179,8 @@ class SupabaseSyncer:
             logging.warning("Supabase %s: HTTP %d — %s", table, resp.status_code, resp.text[:200])
             self._consecutive_errors += 1
             return False
-        except Exception:
+        except Exception as e:
+            logging.warning("Supabase POST failed: %s %s", table, e, exc_info=True)
             self._consecutive_errors += 1
             return False
 
@@ -290,7 +293,7 @@ class SupabaseSyncer:
             }
             self._post("dashboard_state", [row])
         except Exception:
-            logging.debug("Supabase: dashboard sync failed", exc_info=True)
+            logging.warning("Supabase: dashboard sync failed", exc_info=True)
 
     # ── Incremental sync ────────────────────────────────────────────────
 
@@ -302,11 +305,34 @@ class SupabaseSyncer:
         self._sync_vol_params()
         self._sync_harrv()
 
+    # Columns that map to Supabase `evaluations` table
+    _EVAL_COLUMNS = (
+        "id, ticker, event_ticker, asset, filter_stage, rejection_reason, evaluation_time, "
+        "spot_price, threshold, volatility, market_price, seconds_to_close, calibrated_prob, "
+        "edge, ofa_adjustment, status, market_result, counterfactual_pnl, strategy, "
+        "position_size, kelly_f, z_score, vol_regime, calibrated_prob_raw, settled_time, "
+        "breakeven_wr, expected_value, drawdown_scaler, ask_depth, best_ask_source, "
+        "ofa_confidence, raw_prob, calibration_method, old_system_prob, fee_adjusted_edge, "
+        "egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared, "
+        "shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike, "
+        "counterfactual, shadow_cal_prob, shadow_cal_fee_edge, shadow_cal_temperature, "
+        "product_type"
+    )
+
+    # Columns that map to Supabase `rejections` table
+    _REJ_COLUMNS = (
+        "ticker, event_ticker, asset, rejection_reason, rejection_time, z_score, "
+        "spot_price, threshold, volatility, market_price, seconds_to_close, "
+        "calibrated_prob, status, raw_prob, market_result, egarch_sigma, "
+        "egarch_blend_sigma, egarch_blend_weight, mz_r_squared, shadow_tv_blend_rv, "
+        "mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike, counterfactual, product_type"
+    )
+
     def _sync_evaluations(self):
         """Incremental sync of evaluated_opportunities by rowid."""
         try:
             rows = self._db.execute(
-                "SELECT * FROM evaluated_opportunities WHERE id > ? ORDER BY id LIMIT 500",
+                f"SELECT {self._EVAL_COLUMNS} FROM evaluated_opportunities WHERE id > ? ORDER BY id LIMIT 500",
                 (self._wm_evaluations,)
             ).fetchall()
             if not rows:
@@ -324,7 +350,7 @@ class SupabaseSyncer:
         """Incremental sync of rejected_opportunities by rowid."""
         try:
             rows = self._db.execute(
-                "SELECT rowid, * FROM rejected_opportunities WHERE rowid > ? ORDER BY rowid LIMIT 500",
+                f"SELECT rowid, {self._REJ_COLUMNS} FROM rejected_opportunities WHERE rowid > ? ORDER BY rowid LIMIT 500",
                 (self._wm_rejections,)
             ).fetchall()
             if not rows:
@@ -342,31 +368,51 @@ class SupabaseSyncer:
             logging.warning("Supabase: rejections sync failed", exc_info=True)
 
     def _sync_trades(self):
-        """Sync settled_trades — use COUNT as watermark."""
+        """Sync settled_trades — count-based trigger with settled_at watermark for incremental fetch."""
         try:
             count_row = self._db.execute("SELECT COUNT(*) AS cnt FROM settled_trades").fetchone()
             current_count = count_row["cnt"] if count_row else 0
             if current_count <= self._wm_trades_count:
                 return
 
-            rows = self._db.execute("""
-                SELECT ticker, event_ticker, asset, market_result, side, count,
-                       entry_price_cents, revenue_cents, fee_cents, pnl_cents,
-                       settled_at, strategy, seconds_to_close, fill_latency_seconds,
-                       vol_regime, calibrated_prob, edge, kelly_f,
-                       escalation_type, maker_price_cents, maker_wait_seconds,
-                       product_type, strategy_group, is_stacked
-                FROM settled_trades
-            """).fetchall()
+            if self._wm_trades_last_settled is not None:
+                # Incremental: only fetch trades settled after the last sync
+                rows = self._db.execute("""
+                    SELECT ticker, event_ticker, asset, market_result, side, count,
+                           entry_price_cents, revenue_cents, fee_cents, pnl_cents,
+                           settled_at, strategy, seconds_to_close, fill_latency_seconds,
+                           vol_regime, calibrated_prob, edge, kelly_f,
+                           escalation_type, maker_price_cents, maker_wait_seconds,
+                           product_type, strategy_group, is_stacked
+                    FROM settled_trades
+                    WHERE settled_at > ?
+                    ORDER BY settled_at
+                """, (self._wm_trades_last_settled,)).fetchall()
+            else:
+                # First run: full sync
+                rows = self._db.execute("""
+                    SELECT ticker, event_ticker, asset, market_result, side, count,
+                           entry_price_cents, revenue_cents, fee_cents, pnl_cents,
+                           settled_at, strategy, seconds_to_close, fill_latency_seconds,
+                           vol_regime, calibrated_prob, edge, kelly_f,
+                           escalation_type, maker_price_cents, maker_wait_seconds,
+                           product_type, strategy_group, is_stacked
+                    FROM settled_trades
+                    ORDER BY settled_at
+                """).fetchall()
             if not rows:
                 return
             mapped = [{col: self._clean(r[col]) for col in r.keys()} for r in rows]
             if self._post("trades", mapped):
                 self._wm_trades_count = current_count
+                # Update settled_at watermark to the latest row
+                last_settled = max((r["settled_at"] for r in rows if r["settled_at"]), default=None)
+                if last_settled:
+                    self._wm_trades_last_settled = last_settled
                 self._save_watermark("settled_trades", current_count, len(rows))
                 logging.debug("Supabase: synced %d trades", len(rows))
         except Exception:
-            logging.debug("Supabase: trades sync failed", exc_info=True)
+            logging.warning("Supabase: trades sync failed", exc_info=True)
 
     def _sync_vol_params(self):
         """Sync current GARCH/EGARCH parameters."""
@@ -625,8 +671,9 @@ class SupabaseSyncer:
         """Delete and re-insert trades for a specific day."""
         try:
             # Delete remote trades for this day
+            next_day = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
             resp = self._session.delete(
-                f"{self._url}/rest/v1/trades?settled_at=gte.{day}T00:00:00&settled_at=lt.{day}T23:59:59.999",
+                f"{self._url}/rest/v1/trades?settled_at=gte.{day}T00:00:00&settled_at=lt.{next_day}T00:00:00",
                 headers={"Prefer": "return=minimal"},
                 timeout=10,
             )

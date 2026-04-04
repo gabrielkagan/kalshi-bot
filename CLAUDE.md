@@ -8,6 +8,18 @@ Cryptocurrency prediction market trading bot for the Kalshi platform. Trades abo
 - **Don't re-plan finalized plans** — when continuing from a prior session with an existing plan, start implementing immediately. Do not re-audit, re-plan, or rewrite plans that were already approved.
 - **Don't deploy without explicit confirmation** — always present the change summary and wait for user approval before `git push`. Never auto-deploy.
 
+### Knowledge Base
+The `kb/` directory contains structured articles on bot history, design decisions, failure post-mortems, and strategy documentation.
+
+**On session start, run:** `find kb/ kb-research/ -name '*.md' -type f | head -100` — this ensures you always know what KB articles exist before doing anything.
+
+**On any deep question about why something works the way it does, what went wrong before, or what decisions were made:** Read `kb/_index.md` first, then read relevant articles before responding.
+
+**After any significant session** (bug fix, strategy change, new insight, loss analysis): Update relevant kb/ articles and the index. Follow `kb/_meta/MAINTENANCE.md` for conventions.
+
+### Research Knowledge Base
+The `kb-research/` directory contains compiled findings from past research sessions — ML evaluations, market expansion analysis, sports model derivations, vendor comparisons, etc. Check `kb-research/_index.md` when investigating topics that may have been researched previously. See `kb/_meta/MAINTENANCE.md` for conventions on maintaining both KBs.
+
 ## Common Workflows
 
 These are the standard procedures for recurring tasks. Follow these steps without asking for permission to start.
@@ -125,7 +137,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 
 ## Project Structure
 
-- `bot.py` — Main bot (~14600 lines, all trading logic)
+- `bot.py` — Main bot (~16800 lines, all trading logic)
 - `analyst.py` — AI analyst system (news sentiment, loss analysis, Telegram alerts)
 - `spx_engine.py` — SPX hourly market engine (Polygon.io price feed, EGARCH, RK, VIX integration)
 - `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
@@ -169,7 +181,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 ## Current State (Mar 20, 2026)
 
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
-- **15M live assets:** BTC (89c+), ETH (75c+, 30-contract cap sub-80c), SOL (80c+, taker-first), XRP (92c+, 12% risk cap)
+- **15M live assets:** BTC (88c+), ETH (75c+, 30-contract cap sub-80c), SOL (80c+, taker-first), XRP (92c+, 12% risk cap)
 - **XRP_15M_SHADOW = False** — XRP promoted to live at 92c+ (data: 41W/2L, 95.3% WR)
 - **SOL_TAKER_FIRST = True** — SOL bypasses maker entirely, direct IOC at all STC
 - **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c), T2-Z2 (z≤-2, 93-96c) all enabled as incremental overlay
@@ -177,12 +189,12 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **STC window:** scan 0-900s, live 0-600s, shadow 600-900s (STC_SHADOW_THRESHOLD=600)
 - **Hourly:** LIVE TRADING (HOURLY_LIVE_ENABLED env var kill switch) — sub-60c BTC+ETH only, taker-only IOC, fixed 10-contract sizing, 10% bankroll fraction, max 5% edge cap, STC 600-1800s. Calibration disabled (passthrough+T=1.45). Data: 66.3% WR vs 46.5% breakeven on 1,474 unique tickers (14-day observation). SOL/XRP excluded (XRP 42.9% WR = toxic). Shadow configs h/j/k killed (55% WR).
 - **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — was briefly live Mar 17, reverted due to Polygon 403 breaking vol engine. SPX-D CalEngine, 90c+ floor, eighth-Kelly, no market blend
-- **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 19 cities. NO-side execution pipeline wired but WEATHER_NO_SIDE_LIVE = False
+- **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 19 cities. WEATHER_NO_SIDE_LIVE = True (NO ≤ 40c, STC ≥ 16h, 1-contract)
 - **Sports:** Observation mode (SPORTS_OBSERVATION_ONLY = True) — hardcoded, never live without explicit promotion. Basketball best group (69.2% WR, n=39), SPRT still CONTINUE_COLLECTING
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
 - **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
-- **Tests:** 831 tests across 15+ test files
+- **Tests:** 872 tests across 15+ test files
 
 ## Key Config Values (bot.py)
 
@@ -190,7 +202,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 |--------|-------|-------|
 | OBSERVATION_MODE | False | LIVE trading |
 | MIN_ENTRY_PRICE | 75 | Cents (global floor — lowered from 80 for ETH 75-79c) |
-| BTC_MIN_ENTRY_PRICE | 89 | Cents (data: 86-88c below taker BE, 89c is 93.3% WR) |
+| BTC_MIN_ENTRY_PRICE | 88 | Cents (data: 88c = 96.2% WR on n=53 shadow, 96.3% on n=27 recent) |
 | ETH_MIN_ENTRY_PRICE | 90 | Cents (raised from 85 — data: ETH 85-89c 86.2% WR on 65 trades, -$23.76 PnL; 90c+ is 95.2% WR) |
 | SOL_MIN_ENTRY_PRICE | 80 | Cents (explicit floor — prevents SOL trading at 75-79c) |
 | ETH_SUB80_POSITION_CAP | 50 | Max contracts for ETH 75-79c (half-Kelly clamp [20,50]) |
@@ -202,8 +214,8 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | MAX_RISK_PER_TRADE | 0.25 | Max 25% bankroll per trade |
 | MAX_SECONDS_BEFORE_CLOSE | 900 | 15 min before close (600-900s shadow, 0-600s live) |
 | STC_SHADOW_THRESHOLD | 600 | 15M trades above this STC are shadow-only (data: 500-600s 91.2% WR, +$47 marginal) |
-| XRP_MAX_RISK_PER_TRADE | 0.12 | XRP RK vol underestimates → cap exposure |
-| BTC_MAX_RISK_PER_TRADE | 0.12 | BTC oversizing causes outsized losses → cap exposure |
+| XRP_MAX_RISK_PER_TRADE | 0.15 | XRP: 15% per-trade (was 12% — regime cap removal gives full balance) |
+| BTC_MAX_RISK_PER_TRADE | 0.15 | BTC: 15% per-trade (was 12% — regime cap removal gives full balance) |
 | SOL_MIN_EDGE | 0.010 | SOL-specific edge floor (data: >=1.0% = 94.2% WR on 258 trades; <1.0% drops to 82%) |
 | SOL_TAKER_FIRST | True | SOL bypasses maker entirely, direct IOC at all STC |
 | IOC_TICKER_COOLDOWN | 15 | Seconds cooldown per ticker after IOC attempt (was 60) |
@@ -226,7 +238,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | HOURLY_OBSERVATION_ONLY | not HOURLY_LIVE_ENABLED | Derived from kill switch |
 | HOURLY_MAX_ENTRY_PRICE | 59 | Sub-60c only — edge lives at low prices, 70-79c death zone |
 | HOURLY_BANKROLL_FRACTION | 0.10 | Hourly sizes off 10% of balance (like SPX's 0.15) |
-| HOURLY_FIXED_CONTRACTS | 10 | Fixed sizing — bypass Kelly entirely |
+| HOURLY_FIXED_CONTRACTS | 25 | Fixed sizing — bypass Kelly entirely (raised from 10) |
 | HOURLY_MAX_EDGE | 0.05 | Reject >5% edge (10%+ zone has 24.2% WR — edge inversion) |
 | HOURLY_TAKER_ONLY | True | IOC only — no maker orders, no per-asset lock contention with 15M |
 | HOURLY_MARKET_BLEND_W | 0.40 | Optimal Brier per 134K simulation |
@@ -261,7 +273,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | WEATHER_KELLY_FRACTION | 0.25 | Quarter-Kelly |
 | WEATHER_MIN_SECONDS_BEFORE_CLOSE | 3600 | At least 1 hour before settlement |
 | WEATHER_MAX_SECONDS_BEFORE_CLOSE | 86400 | Weather settles daily — always eligible |
-| WEATHER_NO_SIDE_LIVE | False | NO-side execution wired but kill-switched off |
+| WEATHER_NO_SIDE_LIVE | True | LIVE — NO ≤ 40c, STC ≥ 16h, 1-contract |
 | WEEKEND_DISCOUNT_LIVE | True | Weekend edge discount promoted to live (Sat/Sun only) |
 | WEEKEND_DISCOUNT_MIN_PRICE | 89 | Cents — 89c+ floor for live weekend discount trades |
 | WEEKEND_DISCOUNT_MAX_STC | 600 | STC gate for live weekend discount trades |

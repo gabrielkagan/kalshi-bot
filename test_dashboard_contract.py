@@ -30,7 +30,7 @@ import math
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 
 DASHBOARD_SNAPSHOT_PATH = os.path.join(os.path.dirname(__file__), "dashboard_snapshot.py")
-DASHBOARD_PATH = "/private/tmp/gabekagan-dashboard/dashboard/index.html"
+DASHBOARD_PATH = "/private/tmp/gabekagan-dash/dashboard/index.html"
 
 # Every key that dashboard_snapshot.py writes as snap["key"]
 # AND that dashboard JS reads as s.key or s["key"]
@@ -102,6 +102,15 @@ REQUIRED_SNAP_KEYS = {
     "sports_strong_config",
     "weather_no_live",
     "stacking_stats",
+    # Coverage gap fixes (April 4 2026)
+    "config_regime_since",
+    "funding_rates",
+    "hourly_live",
+    "hourly_no_side",
+    "initial_deposit",
+    "sports_variants",
+    "spx_variants",
+    "weather_no_shadow",
 }
 
 # Dashboard JS field access patterns that MUST match firebase keys.

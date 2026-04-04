@@ -59,9 +59,14 @@ def subsection(title: str) -> None:
     print(f"\n--- {title} ---")
 
 
-def sim_pnl_maker(price: int, size: int, won: bool) -> float:
-    """Simulate PnL in cents for a maker trade."""
-    fee = 0  # Kalshi charges $0 on maker fills
+def taker_fee(price_cents: int, contracts: int = 1) -> int:
+    """Kalshi taker fee: ceil(0.07 * C * P * (1-P)/100)"""
+    return math.ceil(0.07 * contracts * price_cents * (100 - price_cents) / 10000)
+
+
+def sim_pnl_taker(price: int, size: int, won: bool) -> float:
+    """Simulate PnL in cents for a taker trade (hourly is HOURLY_TAKER_ONLY=True)."""
+    fee = taker_fee(price, size)
     if won:
         return size * (100 - price) - fee
     else:
@@ -136,7 +141,7 @@ def detect_regime_start(conn: sqlite3.Connection) -> str:
 
     try:
         result = subprocess.run(
-            ["git", "log", "--format=%H %aI", "--since=30 days ago",
+            ["git", "log", "--format=%H %aI", "--since=180 days ago",
              "--", "bot.py"],
             capture_output=True, text=True, timeout=10, cwd=repo_dir,
         )
@@ -221,21 +226,21 @@ def performance_summary(conn: sqlite3.Connection, since: str) -> dict:
 
         # Simulated PnL
         for r in settled:
-            size = r["position_size"] or 1
+            size = r["position_size"] or 25
             p = r["market_price"]
-            total_pnl += sim_pnl_maker(p, size, r["market_result"] == "yes")
+            total_pnl += sim_pnl_taker(p, size, r["market_result"] == "yes")
 
         avg_p = sum(r["market_price"] for r in settled) / len(settled)
-        # Breakeven WR accounts for maker fees: WR = (price + fee) / (100 + 0)
-        avg_fee = 0  # Kalshi charges $0 on maker fills
-        be_wr = (avg_p + avg_fee) / 100 * 100  # breakeven WR in %
+        # Breakeven WR accounts for taker fees: WR = (price + avg_fee_per_contract) / 100
+        avg_taker_fee = sum(taker_fee(r["market_price"], 1) for r in settled) / len(settled)
+        be_wr = (avg_p + avg_taker_fee) / 100.0 * 100  # breakeven WR in %
         avg_stc = sum(r["seconds_to_close"] or 0 for r in settled) / len(settled)
-        print(f"Simulated PnL (maker): ${total_pnl/100:.2f}")
+        print(f"Simulated PnL (taker): ${total_pnl/100:.2f}")
         print(f"Avg PnL/trade: ${total_pnl/100/len(settled):.2f}")
-        print(f"Avg entry price: {avg_p:.1f}c (breakeven WR w/fees: {be_wr:.0f}%)")
-        print(f"WR vs breakeven: {wr:.1f}% vs {be_wr:.0f}% ({wr - be_wr:+.1f}pp)")
+        print(f"Avg entry price: {avg_p:.1f}c (breakeven WR w/fees: {be_wr:.1f}%)")
+        print(f"WR vs breakeven: {wr:.1f}% vs {be_wr:.1f}% ({wr - be_wr:+.1f}pp)")
         print(f"Avg STC at entry: {avg_stc:.0f}s ({avg_stc/60:.1f}m)")
-        print(f"Fee assumption: maker $0 (Kalshi charges $0 on maker fills)")
+        print(f"Fee assumption: taker (ceil(0.07*C*P*(1-P)/100), HOURLY_TAKER_ONLY=True)")
 
     # Per-asset
     subsection("Per-asset breakdown")
@@ -249,7 +254,7 @@ def performance_summary(conn: sqlite3.Connection, since: str) -> dict:
         asset_rows = by_asset[asset]
         w = sum(1 for r in asset_rows if r["market_result"] == "yes")
         l_count = len(asset_rows) - w
-        pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+        pnl = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                  r["market_result"] == "yes") for r in asset_rows)
         avg_price = sum(r["market_price"] for r in asset_rows) / len(asset_rows)
         avg_edge = sum(r["fee_adjusted_edge"] or 0 for r in asset_rows) / len(asset_rows)
@@ -268,10 +273,13 @@ def performance_summary(conn: sqlite3.Connection, since: str) -> dict:
                   and lo <= r["fee_adjusted_edge"] < hi]
         if subset:
             w = sum(1 for r in subset if r["market_result"] == "yes")
-            pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+            pnl = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                      r["market_result"] == "yes") for r in subset)
             wr_b = w / len(subset) * 100
-            verdict = "PROFITABLE" if pnl > 0 else "UNPROFITABLE"
+            avg_p_b = sum(r["market_price"] for r in subset) / len(subset)
+            avg_fee_b = sum(taker_fee(r["market_price"], 1) for r in subset) / len(subset)
+            be_wr_b = (avg_p_b + avg_fee_b) / 100.0 * 100
+            verdict = "PROFITABLE" if wr_b > be_wr_b else "UNPROFITABLE"
             print(f"{label:>10} {len(subset):>4} {w:>3} {len(subset)-w:>3} "
                   f"{wr_b:>5.0f}% ${pnl/100:>9.2f} {verdict:<14}")
 
@@ -302,8 +310,8 @@ def performance_summary(conn: sqlite3.Connection, since: str) -> dict:
             by_day[day]["w"] += 1
         else:
             by_day[day]["l"] += 1
-        by_day[day]["pnl"] += sim_pnl_maker(
-            r["market_price"], r["position_size"] or 1, won)
+        by_day[day]["pnl"] += sim_pnl_taker(
+            r["market_price"], r["position_size"] or 25, won)
     if by_day:
         print(f"  {'Date':<12} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'Sim PnL':>10}")
         print("  " + "-" * 42)
@@ -616,7 +624,9 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
     for r in stc_rows:
         total_s = (r["wins"] or 0) + (r["losses"] or 0)
         wr = r["wins"] / total_s * 100 if total_s > 0 else 0
-        be = r["avg_price"] or 0
+        avg_px = r["avg_price"] or 0
+        avg_fee_est = taker_fee(int(round(avg_px)), 1)
+        be = (avg_px + avg_fee_est) / 100.0 * 100
         gap = wr - be
         verdict = "PROFITABLE" if gap > 0 else "UNPROFITABLE"
         print(f"  {r['bucket']:<8} {total_s:>4} {wr:>5.1f}% {be:>4.0f}% "
@@ -651,9 +661,9 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
                 w = sum(1 for r in subset if r["market_result"] == "yes")
                 avg_p = sum(r["market_price"] for r in subset) / len(subset)
                 wr_s = w / len(subset) * 100
-                pnl = sum(sim_pnl_maker(r["market_price"], 1,
+                pnl = sum(sim_pnl_taker(r["market_price"], 1,
                                          r["market_result"] == "yes") for r in subset)
-                sized_pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+                sized_pnl = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                                r["market_result"] == "yes") for r in subset)
                 print(f"  {label}: N={len(subset)}, {w}W/{len(subset)-w}L, "
                       f"WR={wr_s:.1f}%, avg_price={avg_p:.1f}c, "
@@ -710,7 +720,7 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
         total_sized_pnl = 0
         for r in sized_rows:
             won = r["market_result"] == "yes"
-            pnl = sim_pnl_maker(r["market_price"], r["position_size"], won)
+            pnl = sim_pnl_taker(r["market_price"], r["position_size"], won)
             total_sized_pnl += pnl
             print(f"  {r['asset']:<5} {r['market_price']:>4}c {r['position_size']:>5} "
                   f"{r['fee_adjusted_edge']:>+7.4f} {r['market_result']:>7} "
@@ -801,10 +811,10 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
             assets = r["assets"].split(",")
             results = r["results"].split(",")
             prices = [int(p) for p in r["prices"].split(",")]
-            sizes = [int(s) if s != "None" else 1 for s in r["sizes"].split(",")]
+            sizes = [int(s) if s != "None" else 25 for s in r["sizes"].split(",")]
             wpnl = 0
             for res, price, size in zip(results, prices, sizes):
-                fee = 0  # Kalshi charges $0 on maker fills
+                fee = taker_fee(price, size)
                 if res == "yes":
                     wpnl += size * (100 - price) - fee
                 else:
@@ -850,16 +860,16 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
                        if lo <= (r["seconds_to_close"] or 0) < hi]
                 if sub:
                     w = sum(1 for r in sub if r["market_result"] == "yes")
-                    pnl = sum(sim_pnl_maker(r["market_price"],
-                              r["position_size"] or 1,
+                    pnl = sum(sim_pnl_taker(r["market_price"],
+                              r["position_size"] or 25,
                               r["market_result"] == "yes") for r in sub)
                     line += f"  | {w}W/{len(sub)-w}L ${pnl/100:>6.1f}"
                 else:
                     line += f"  | {'—':^14}"
             # Total for asset
             w_total = sum(1 for r in asset_rows if r["market_result"] == "yes")
-            pnl_total = sum(sim_pnl_maker(r["market_price"],
-                            r["position_size"] or 1,
+            pnl_total = sum(sim_pnl_taker(r["market_price"],
+                            r["position_size"] or 25,
                             r["market_result"] == "yes") for r in asset_rows)
             line += f"  | {w_total}W/{len(asset_rows)-w_total}L ${pnl_total/100:>6.1f}"
             print(line)
@@ -869,7 +879,7 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
         worst_pnl = 0
         for asset in assets_seen:
             asset_rows = [r for r in all_obs if r["asset"] == asset]
-            pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+            pnl = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                      r["market_result"] == "yes") for r in asset_rows)
             if pnl < worst_pnl:
                 worst_pnl = pnl
@@ -891,7 +901,7 @@ def leak_analysis(conn: sqlite3.Connection, since: str,
                                  for r in wa_losses) / len(wa_losses)
                 avg_edge_l = sum(r["fee_adjusted_edge"] or 0
                                   for r in wa_losses) / len(wa_losses)
-                avg_size_l = sum(r["position_size"] or 1
+                avg_size_l = sum(r["position_size"] or 25
                                   for r in wa_losses) / len(wa_losses)
                 print(f"  Losses ({len(wa_losses)}): avg_stc={avg_stc_l:.0f}s "
                       f"avg_edge={avg_edge_l:.4f} avg_size={avg_size_l:.0f}")
@@ -919,17 +929,19 @@ def _counterfactual_stage(conn: sqlite3.Connection, since: str,
         l_count = len(rows) - w
         avg_p = sum(r["market_price"] for r in rows) / len(rows)
         avg_stc = sum(r["seconds_to_close"] or 0 for r in rows) / len(rows)
-        pnl = sum(sim_pnl_maker(r["market_price"], 1,
+        pnl = sum(sim_pnl_taker(r["market_price"], 1,
                                  r["market_result"] == "yes") for r in rows)
-        sized_pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+        sized_pnl = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                        r["market_result"] == "yes") for r in rows)
         wr = w / len(rows) * 100
         print(f"  {description}")
         print(f"  N={len(rows)}, {w}W/{l_count}L, WR={wr:.1f}%, "
               f"avg_price={avg_p:.1f}c, avg_stc={avg_stc:.0f}s")
-        print(f"  Simulated PnL (1-lot maker): ${pnl/100:.2f}")
-        print(f"  Simulated PnL (sized maker): ${sized_pnl/100:.2f}")
-        print(f"  Breakeven WR: {avg_p:.0f}%, gap={wr - avg_p:+.1f}pp")
+        print(f"  Simulated PnL (1-lot taker): ${pnl/100:.2f}")
+        print(f"  Simulated PnL (sized taker): ${sized_pnl/100:.2f}")
+        avg_cf_fee = sum(taker_fee(r["market_price"], 1) for r in rows) / len(rows)
+        cf_be_wr = (avg_p + avg_cf_fee) / 100.0 * 100
+        print(f"  Breakeven WR: {cf_be_wr:.1f}%, gap={wr - cf_be_wr:+.1f}pp")
         # Per-asset detail if multiple
         by_asset = defaultdict(lambda: {"w": 0, "l": 0})
         for r in rows:
@@ -979,18 +991,18 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
                 else:
                     scaled = pre
                 p = r["market_price"]
-                fee_pct = 0.0  # Kalshi charges $0 on maker fills
+                fee_pct = taker_fee(p, 1) / 100.0  # taker fee as fraction
                 edge = scaled - (p / 100) - fee_pct
                 outcome = 1 if r["market_result"] == "yes" else 0
                 brier_sum += (scaled - outcome) ** 2
                 if edge > 0.0025:  # current MIN_EDGE_PCT
                     n_trades += 1
-                    size = r["position_size"] or 1
+                    size = r["position_size"] or 25
                     won = r["market_result"] == "yes"
                     if won:
                         n_wins += 1
-                    pnl_1c += sim_pnl_maker(p, 1, won)
-                    pnl_sized += sim_pnl_maker(p, size, won)
+                    pnl_1c += sim_pnl_taker(p, 1, won)
+                    pnl_sized += sim_pnl_taker(p, size, won)
             wr = n_wins / n_trades * 100 if n_trades > 0 else 0
             brier = brier_sum / len(temp_rows)
             print(f"  {t:>5.2f} {n_trades:>7} {n_wins:>3} {n_trades - n_wins:>3} "
@@ -1014,9 +1026,9 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
         """, (max_stc, since)).fetchall()
         if rows2:
             w = sum(1 for r in rows2 if r["market_result"] == "yes")
-            pnl_1c = sum(sim_pnl_maker(r["market_price"], 1,
+            pnl_1c = sum(sim_pnl_taker(r["market_price"], 1,
                                         r["market_result"] == "yes") for r in rows2)
-            pnl_sized = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+            pnl_sized = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                            r["market_result"] == "yes") for r in rows2)
             print(f"  {max_stc:>8}s {len(rows2):>4} {w:>3} {len(rows2)-w:>3} "
                   f"{w/len(rows2)*100:>5.0f}% ${pnl_1c/100:>9.2f} ${pnl_sized/100:>10.2f}")
@@ -1063,9 +1075,9 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
         """, (min_p, since)).fetchall()
         if rows3:
             w = sum(1 for r in rows3 if r["market_result"] == "yes")
-            pnl_1c = sum(sim_pnl_maker(r["market_price"], 1,
+            pnl_1c = sum(sim_pnl_taker(r["market_price"], 1,
                                         r["market_result"] == "yes") for r in rows3)
-            pnl_sized = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+            pnl_sized = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                            r["market_result"] == "yes") for r in rows3)
             avg_p = sum(r["market_price"] for r in rows3) / len(rows3)
             print(f"  {min_p:>9}c {len(rows3):>4} {w:>3} {len(rows3)-w:>3} "
@@ -1087,9 +1099,9 @@ def config_sensitivity(conn: sqlite3.Connection, since: str) -> None:
         subset = [r for r in all_edge_rows if r["fee_adjusted_edge"] >= min_edge]
         if subset:
             w = sum(1 for r in subset if r["market_result"] == "yes")
-            pnl_1c = sum(sim_pnl_maker(r["market_price"], 1,
+            pnl_1c = sum(sim_pnl_taker(r["market_price"], 1,
                                         r["market_result"] == "yes") for r in subset)
-            pnl_sized = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+            pnl_sized = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                            r["market_result"] == "yes") for r in subset)
             avg_p = sum(r["market_price"] for r in subset) / len(subset)
             print(f"  {min_edge:>9.3f} {len(subset):>4} {w:>3} {len(subset)-w:>3} "
@@ -1393,7 +1405,7 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str) -> dict:
             (100 - r["market_price"]) if r["market_result"] == "yes"
             else -r["market_price"] for r in sub
         )
-        sized_pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+        sized_pnl = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                        r["market_result"] == "yes") for r in sub)
         daily = pnl / 100 / n_days
         label = "all" if me >= 1.0 else f"{me*100:.2f}%"
@@ -1417,7 +1429,7 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str) -> dict:
             (100 - r["market_price"]) if r["market_result"] == "yes"
             else -r["market_price"] for r in sub
         )
-        sized_pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+        sized_pnl = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                        r["market_result"] == "yes") for r in sub)
         daily = pnl / 100 / n_days
         print(f"  {mp:>8}c {len(sub):>4} {w:>4} {l_:>3} {wr:>5.1f}% "
@@ -1425,7 +1437,7 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str) -> dict:
 
     # ── Combined grid: edge cap x min price ──
     subsection("Combined grid: edge cap x min price")
-    grid_results = []  # (max_edge, min_price, n, w, l, wr, flat_pnl, kelly_pnl)
+    grid_results = []  # (max_edge, min_price, n, w, l, wr, flat_pnl, kelly_pnl, fixed_pnl)
     for me in edge_caps:
         for mp in prices:
             sub = [r for r in rows
@@ -1434,14 +1446,17 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str) -> dict:
                 continue
 
             flat_pnl = 0
+            fixed_pnl = 0  # Fixed 25-contract sizing (actual HOURLY_FIXED_CONTRACTS)
             wins = 0
             bankroll = 10000  # $100.00 in cents
             for r in sub:
                 won = r["market_result"] == "yes"
                 if won:
                     wins += 1
-                flat_pnl += sim_pnl_maker(r["market_price"], 1, won)
-                # Kelly-weighted simulation
+                flat_pnl += sim_pnl_taker(r["market_price"], 1, won)
+                fixed_pnl += sim_pnl_taker(r["market_price"], 25, won)
+                # Hypothetical Kelly-weighted simulation (NOT matching actual
+                # fixed-sizing; included for comparison only)
                 price = r["market_price"] / 100.0
                 edge = r["fee_adjusted_edge"]
                 b = (1 - price) / price  # payout ratio
@@ -1457,22 +1472,22 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str) -> dict:
             wr = wins / n * 100
             kelly_net = bankroll - 10000
             grid_results.append((me, mp, n, wins, n - wins, wr,
-                                 flat_pnl, kelly_net))
+                                 flat_pnl, kelly_net, fixed_pnl))
 
-    # Sort by Kelly PnL (accounts for position sizing)
-    grid_results.sort(key=lambda x: -x[7])
-    print(f"\n  Top 15 configs by Kelly PnL (quarter-Kelly, 15% max risk):")
+    # Sort by fixed-sizing PnL (matches actual HOURLY_FIXED_CONTRACTS=25)
+    grid_results.sort(key=lambda x: -x[8])
+    print(f"\n  Top 15 configs by fixed-sizing PnL (25 contracts, actual sizing):")
     print(f"  {'MaxEdge':>8} {'MinP':>5} {'N':>4} {'W':>4} {'L':>3} "
-          f"{'WR':>6} {'FlatPnL':>9} {'KellyPnL':>10}")
-    print("  " + "-" * 60)
+          f"{'WR':>6} {'Fixed25':>10} {'KellyHyp':>10}")
+    print("  " + "-" * 65)
     for r in grid_results[:15]:
         me_label = "all" if r[0] >= 1.0 else f"{r[0]*100:.2f}%"
         print(f"  {me_label:>8} {r[1]:>4}c {r[2]:>4} {r[3]:>4} {r[4]:>3} "
-              f"{r[5]:>5.1f}% ${r[6]/100:>8.2f} ${r[7]/100:>9.2f}")
+              f"{r[5]:>5.1f}% ${r[8]/100:>9.2f} ${r[7]/100:>9.2f}")
 
     # Sort by flat PnL
     grid_results.sort(key=lambda x: -x[6])
-    print(f"\n  Top 10 configs by flat PnL (equal $1 sizing):")
+    print(f"\n  Top 10 configs by flat PnL (equal 1-contract sizing):")
     print(f"  {'MaxEdge':>8} {'MinP':>5} {'N':>4} {'W':>4} {'L':>3} "
           f"{'WR':>6} {'FlatPnL':>9} {'$/day':>7}")
     print("  " + "-" * 55)
@@ -2529,18 +2544,19 @@ def v2_variant_comparison(conn: sqlite3.Connection, since: str):
         settled = list(rows)
         wins = [r for r in settled if r["market_result"] == "yes"]
         losses = [r for r in settled if r["market_result"] == "no"]
-        total_pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+        total_pnl = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                        r["market_result"] == "yes") for r in settled)
         avg_p = sum(r["market_price"] for r in settled) / len(settled) if settled else 0
         avg_prob = sum(r["calibrated_prob"] or 0 for r in settled) / len(settled) if settled else 0
         wr = len(wins) / len(settled) * 100 if settled else 0
-        be_wr = avg_p  # maker fee = 0
+        avg_tfee = sum(taker_fee(r["market_price"], 1) for r in settled) / len(settled) if settled else 0
+        be_wr = (avg_p + avg_tfee) / 100.0 * 100  # taker fee breakeven WR
         brier = sum((r["calibrated_prob"] - (1 if r["market_result"] == "yes" else 0))**2
                      for r in settled) / len(settled) if settled else 0
 
         print(f"\n  --- {label} ---")
         print(f"  Settled: {len(settled)}, {len(wins)}W/{len(losses)}L, WR={wr:.1f}%")
-        print(f"  Sim PnL (maker): ${total_pnl/100:.2f}")
+        print(f"  Sim PnL (taker): ${total_pnl/100:.2f}")
         print(f"  Avg price: {avg_p:.1f}c, BE WR: {be_wr:.0f}%, Gap: {wr - be_wr:+.1f}pp")
         print(f"  Avg model prob: {avg_prob*100:.1f}%, Overconfidence: {avg_prob*100 - wr:+.1f}pp")
         print(f"  Brier: {brier:.4f}")
@@ -2555,7 +2571,7 @@ def v2_variant_comparison(conn: sqlite3.Connection, since: str):
             for asset in sorted(by_asset):
                 ar = by_asset[asset]
                 w = sum(1 for r in ar if r["market_result"] == "yes")
-                pnl = sum(sim_pnl_maker(r["market_price"], r["position_size"] or 1,
+                pnl = sum(sim_pnl_taker(r["market_price"], r["position_size"] or 25,
                                          r["market_result"] == "yes") for r in ar)
                 ap = sum(r["market_price"] for r in ar) / len(ar)
                 print(f"  {asset:<8} {len(ar):>4} {w:>3} {len(ar)-w:>3} "
@@ -2584,9 +2600,9 @@ def v2_variant_comparison(conn: sqlite3.Connection, since: str):
                        for r in matched) / len(matched)
         v2_brier = sum((r["v2_prob"] - (1 if r["market_result"] == "yes" else 0))**2
                        for r in matched) / len(matched)
-        v1_pnl = sum(sim_pnl_maker(r["market_price"], r["v1_size"] or 1,
+        v1_pnl = sum(sim_pnl_taker(r["market_price"], r["v1_size"] or 1,
                                     r["market_result"] == "yes") for r in matched)
-        v2_pnl = sum(sim_pnl_maker(r["market_price"], r["v2_size"] or 1,
+        v2_pnl = sum(sim_pnl_taker(r["market_price"], r["v2_size"] or 1,
                                     r["market_result"] == "yes") for r in matched)
         v1_oc = sum(r["v1_prob"] for r in matched) / len(matched) * 100 - \
                 sum(1 for r in matched if r["market_result"] == "yes") / len(matched) * 100

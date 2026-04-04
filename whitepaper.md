@@ -334,8 +334,8 @@ The minimum edge is price-dependent, reflecting the higher risk of expensive con
 |---|---|
 | 97¢+ | 1.0% |
 | 95–96¢ | 0.75% |
-| 93–94¢ | 0.9% |
-| 91–92¢ | 0.35% |
+| 93–94¢ | 0.5% |
+| 91–92¢ | 0.20% |
 | 89–90¢ | 0.25% |
 | 80–88¢ | 0.25% |
 
@@ -832,7 +832,7 @@ Append-only journal files provide a complete audit trail:
 
 ## Test Suite
 
-803 tests across 25+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, weekend discount, low-price shadow, NBBO fallback gates, DC routing priority, and regression tests for past bugs.
+872 tests across 25+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, weekend discount, low-price shadow, NBBO fallback gates, DC routing priority, and regression tests for past bugs.
 
 ## Shadow Mode Features
 

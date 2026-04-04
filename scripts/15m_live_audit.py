@@ -95,7 +95,7 @@ def is_15m_eval(row) -> bool:
                                      "spx_hourly")
 
 
-SETTLED_15M_FILTER = "AND event_ticker NOT LIKE '%D-%'"
+SETTLED_15M_FILTER = "AND (product_type IS NULL OR product_type = '15m')"
 EVAL_15M_FILTER = ("AND (product_type IS NULL OR product_type NOT IN "
                     "('hourly', 'weather', 'sports', 'spx_hourly'))")
 
@@ -123,7 +123,7 @@ def detect_regime_start(conn: sqlite3.Connection) -> str:
     try:
         # Get recent bot.py-changing commit hashes
         result = subprocess.run(
-            ["git", "log", "--format=%H %aI", "--since=30 days ago",
+            ["git", "log", "--format=%H %aI", "--since=180 days ago",
              "--", "bot.py"],
             capture_output=True, text=True, timeout=10, cwd=repo_dir,
         )
@@ -700,7 +700,7 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
           fill_latency_seconds, calibrated_prob, edge, vol_regime,
           settled_at
         FROM settled_trades
-        WHERE settled_at >= ? {SETTLED_15M_FILTER}
+        WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause_settled}
           AND market_result = 'no'
         ORDER BY pnl_cents ASC
     """, (since,)).fetchall()
@@ -1118,10 +1118,10 @@ def config_sensitivity(conn: sqlite3.Connection, since: str,
     EDGE_TIERS = [
         ("86-88c", 86, 88, 0.0025),   # 0.25% threshold
         ("89-90c", 89, 90, 0.0025),   # 0.25% threshold
-        ("91-92c", 91, 92, 0.0035),   # 0.35% threshold
-        ("93-94c", 93, 94, 0.009),    # 0.90% threshold
-        ("95-96c", 95, 96, 0.0125),   # 1.25% threshold
-        ("97-99c", 97, 99, 0.020),    # 2.00% threshold
+        ("91-92c", 91, 92, 0.0020),   # 0.20% threshold
+        ("93-94c", 93, 94, 0.005),    # 0.50% threshold
+        ("95-96c", 95, 96, 0.0075),   # 0.75% threshold
+        ("97-99c", 97, 99, 0.010),    # 1.00% threshold
     ]
     subsection("P2: Per-price-tier edge performance (MIN_EDGE_BY_PRICE)")
     all_edge = conn.execute(f"""
@@ -1440,10 +1440,10 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
     GRID_TIERS = [
         ("86-88c", 86, 88, 0.0025),
         ("89-90c", 89, 90, 0.0025),
-        ("91-92c", 91, 92, 0.0035),
-        ("93-94c", 93, 94, 0.009),
-        ("95-96c", 95, 96, 0.0125),
-        ("97-99c", 97, 99, 0.020),
+        ("91-92c", 91, 92, 0.0020),
+        ("93-94c", 93, 94, 0.005),
+        ("95-96c", 95, 96, 0.0075),
+        ("97-99c", 97, 99, 0.010),
     ]
     subsection("Per-tier threshold grid (matches MIN_EDGE_BY_PRICE)")
     tier_best = []
@@ -1515,7 +1515,8 @@ def calibration_grid_search(conn: sqlite3.Connection, since: str,
                      r["market_result"] == "yes")
                      * (r["position_size"] or 1) for r in sub)
         daily_sz = pnl_sz / 100 / n_days
-        marker = " ◄ current" if mp == 86 else ""
+        asset_floors = {88: "BTC", 90: "ETH", 80: "SOL", 92: "XRP"}
+        marker = f" ◄ {asset_floors[mp]}" if mp in asset_floors else ""
         print(f"  {mp:>8}c {len(sub):>4} {w:>4} {l_:>3} {wr:>5.1f}% "
               f"${pnl/100:>7.2f} ${pnl_sz/100:>9.2f} "
               f"${daily_sz:>8.2f}{marker}")

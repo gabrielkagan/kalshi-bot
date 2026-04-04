@@ -487,10 +487,10 @@ $$\text{edge} = p_{final} - \frac{\text{best\_ask}}{100} - \frac{\text{taker\_fe
 
 | Entry Price | Min Edge |
 |---|---|
-| 97¢+ | 2.0% |
-| 95–96¢ | 1.25% |
-| 93–94¢ | 0.9% |
-| 91–92¢ | 0.35% |
+| 97¢+ | 1.0% |
+| 95–96¢ | 0.75% |
+| 93–94¢ | 0.5% |
+| 91–92¢ | 0.20% |
 | 89–90¢ | 0.25% |
 | 80–88¢ | 0.25% |
 
@@ -508,7 +508,7 @@ $$\text{edge} = p_{final} - \frac{\text{best\_ask}}{100} - \frac{\text{taker\_fe
 
 ## Market Selection Controls
 
-- **Price range**: 80–99¢ (per-asset overrides: BTC 89c, ETH 80c, XRP 92c, SOL 80c)
+- **Price range**: 80–99¢ (per-asset overrides: BTC 88c, ETH 90c, XRP 92c, SOL 80c)
 - **Price-dependent edge threshold**: 0.25% at 80c up to 2.0% at 97c+
 - **Scanner uses taker fees** (worst-case)
 
@@ -728,7 +728,7 @@ The full CLAUDE.md contents are included in the system context above. It is 368 
 |--------|-------|--------|
 | OBSERVATION_MODE | False | LIVE TRADING |
 | MIN_ENTRY_PRICE | 80 (global floor) | bot.py:46 |
-| BTC_MIN_ENTRY_PRICE | 89 | bot.py:48 |
+| BTC_MIN_ENTRY_PRICE | 88 | bot.py:50 |
 | ETH_MIN_ENTRY_PRICE | 80 | bot.py:49 |
 | XRP_MIN_ENTRY_PRICE | 92 | bot.py:50 |
 | SOL MIN_ENTRY_PRICE | 80 (uses global) | bot.py:46 |
@@ -747,7 +747,7 @@ The full CLAUDE.md contents are included in the system context above. It is 368 
 
 | Asset | Min Price | Max Risk | Special |
 |-------|-----------|----------|---------|
-| BTC | 89c | 25% | 7s escalation wait (vs 15s default) |
+| BTC | 88c | 25% | 7s escalation wait (vs 15s default) |
 | ETH | 80c | 25% | — |
 | SOL | 80c | 25% | Taker-first (bypass maker entirely) |
 | XRP | 92c | 12% | Promoted from shadow at 92c+ |
@@ -756,10 +756,10 @@ The full CLAUDE.md contents are included in the system context above. It is 368 
 
 | Price Range | Min Edge |
 |-------------|----------|
-| 97-99c | 2.0% |
-| 95-96c | 1.25% |
-| 93-94c | 0.9% |
-| 91-92c | 0.35% |
+| 97-99c | 1.0% |
+| 95-96c | 0.75% |
+| 93-94c | 0.5% |
+| 91-92c | 0.20% |
 | 89-90c | 0.25% |
 | 80-88c | 0.25% |
 

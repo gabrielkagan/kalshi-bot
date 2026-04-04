@@ -334,8 +334,8 @@ The minimum edge is price-dependent, reflecting the higher risk of expensive con
 |---|---|
 | 97¢+ | 1.0% |
 | 95–96¢ | 0.75% |
-| 93–94¢ | 0.9% |
-| 91–92¢ | 0.35% |
+| 93–94¢ | 0.5% |
+| 91–92¢ | 0.20% |
 | 89–90¢ | 0.25% |
 | 80–88¢ | 0.25% |
 

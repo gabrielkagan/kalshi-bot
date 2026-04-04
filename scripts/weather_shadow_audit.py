@@ -66,12 +66,12 @@ def taker_fee(price_cents: int) -> int:
 
 
 def breakeven_wr(price_cents: int) -> float:
-    """Breakeven win rate at a given entry price (maker fees)."""
-    fee = maker_fee(price_cents)
+    """Breakeven win rate at a given entry price (taker fees)."""
+    fee = taker_fee(price_cents)
     return (price_cents + fee) / 100.0
 
 
-def cf_pnl(price_cents: int, result: str, is_maker: bool = True) -> int:
+def cf_pnl(price_cents: int, result: str, is_maker: bool = False) -> int:
     """Counterfactual PnL per contract in cents. YES-side only."""
     fee = maker_fee(price_cents) if is_maker else taker_fee(price_cents)
     if result in ("yes", "all_yes"):
@@ -80,7 +80,7 @@ def cf_pnl(price_cents: int, result: str, is_maker: bool = True) -> int:
         return -(price_cents + fee)
 
 
-def sized_pnl(price_cents: int, result: str, position_size: int, is_maker: bool = True) -> float:
+def sized_pnl(price_cents: int, result: str, position_size: int, is_maker: bool = False) -> float:
     """Sized PnL in dollars."""
     pnl_per = cf_pnl(price_cents, result, is_maker)
     return pnl_per * position_size / 100.0
@@ -626,6 +626,7 @@ def section_blend_sim(conn, since):
         SELECT raw_prob, market_price, market_result, position_size
         FROM evaluated_opportunities
         WHERE product_type='weather' {W}
+          AND filter_stage IN ('weather_observation', 'insufficient_edge')
           AND raw_prob IS NOT NULL AND market_price IS NOT NULL AND market_result IS NOT NULL
     """).fetchall()
 
@@ -659,8 +660,9 @@ def section_blend_sim(conn, since):
             if fee_edge >= 0.001:
                 sigs += 1
                 total_pnl += cf_pnl(mp, r["market_result"])
-                ps = r["position_size"] or 1
-                total_sized += sized_pnl(mp, r["market_result"], ps)
+                ps = r["position_size"]
+                if ps and ps > 0:
+                    total_sized += sized_pnl(mp, r["market_result"], ps)
                 if outcome:
                     wins += 1
 
@@ -705,8 +707,9 @@ def section_stc(conn, since):
         is_win = r["market_result"] in ("yes", "all_yes")
         buckets[b]["w" if is_win else "l"] += 1
         buckets[b]["pnl_1c"] += cf_pnl(price, r["market_result"])
-        ps = r["position_size"] or 1
-        buckets[b]["pnl_sized"] += sized_pnl(price, r["market_result"], ps)
+        ps = r["position_size"]
+        if ps and ps > 0:
+            buckets[b]["pnl_sized"] += sized_pnl(price, r["market_result"], ps)
         buckets[b]["prices"].append(price)
 
     print(f"  {'STC Bucket':10s} {'N':>4} {'W':>3} {'L':>3} {'WR':>6} {'1c PnL':>8} {'Sized$':>9} {'AvgPrice':>9} {'Sig':>20}")
@@ -741,7 +744,8 @@ def section_leaks(conn, since):
         ie_wins = sum(1 for r in ie_rows if r["market_result"] in ("yes", "all_yes"))
         ie_total = len(ie_rows)
         ie_pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in ie_rows)
-        ie_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in ie_rows)
+        ie_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"])
+                       for r in ie_rows if r["position_size"] and r["position_size"] > 0)
         wr = ie_wins / ie_total * 100
         print(f"  N={ie_total}, {ie_wins}W/{ie_total - ie_wins}L ({wr:.1f}%)")
         print(f"  Counterfactual PnL: {ie_pnl:+d}c (1-contract), ${ie_sized:+.2f} (sized)")
@@ -752,7 +756,8 @@ def section_leaks(conn, since):
         if near:
             near_wins = sum(1 for r in near if r["market_result"] in ("yes", "all_yes"))
             near_pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in near)
-            near_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in near)
+            near_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"])
+                             for r in near if r["position_size"] and r["position_size"] > 0)
             print(f"  Near-miss (edge > -2%): {len(near)} entries, {near_wins}W, PnL={near_pnl:+d}c, Sized=${near_sized:+.2f}")
 
     # strategy_wait counterfactual
@@ -768,7 +773,8 @@ def section_leaks(conn, since):
         sw_wins = sum(1 for r in sw_rows if r["market_result"] in ("yes", "all_yes"))
         sw_total = len(sw_rows)
         sw_pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in sw_rows)
-        sw_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in sw_rows)
+        sw_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"])
+                       for r in sw_rows if r["position_size"] and r["position_size"] > 0)
         print(f"  N={sw_total}, {sw_wins}W/{sw_total - sw_wins}L")
         print(f"  Counterfactual PnL: {sw_pnl:+d}c (1-contract), ${sw_sized:+.2f} (sized)")
         print(f"  >>> {'FILTER CORRECT' if sw_pnl <= 0 else 'FILTER MAY BE TOO STRICT'}")
@@ -788,7 +794,8 @@ def section_leaks(conn, since):
         por_wins = sum(1 for r in por_rows if r["market_result"] in ("yes", "all_yes"))
         por_total = len(por_rows)
         por_pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in por_rows)
-        por_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in por_rows)
+        por_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"])
+                        for r in por_rows if r["position_size"] and r["position_size"] > 0)
         print(f"  N={por_total}, {por_wins}W/{por_total - por_wins}L, PnL={por_pnl:+d}c, Sized=${por_sized:+.2f}")
     else:
         print("  No settled POR entries")
@@ -849,7 +856,8 @@ def section_config(conn, since):
               AND market_price >= ?
         """, (threshold,)).fetchall()
         pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in pnl_rows)
-        pnl_s = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in pnl_rows)
+        pnl_s = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"])
+                     for r in pnl_rows if r["position_size"] and r["position_size"] > 0)
         current = " <<<" if threshold == 10 else ""
         print(f"  {threshold:>7}c {n:>5} {w:>4} {l:>4} {wr:>6} {pnl:>+7d}c ${pnl_s:>+8.2f}{current}")
 
@@ -871,7 +879,8 @@ def section_config(conn, since):
             w = sum(1 for r in passed if r["market_result"] in ("yes", "all_yes"))
             l = len(passed) - w
             pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in passed)
-            pnl_s = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in passed)
+            pnl_s = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"])
+                         for r in passed if r["position_size"] and r["position_size"] > 0)
             wr = pct(w, len(passed)) if passed else "—"
             current = " <<<" if edge_thresh == 0.001 else ""
             print(f"  {edge_thresh:>7.3f} {len(passed):>5} {w:>4} {l:>4} {wr:>6} {pnl:>+7d}c ${pnl_s:>+8.2f}{current}")
@@ -946,8 +955,9 @@ def section_cross_tab(conn, since):
         is_win = r["market_result"] in ("yes", "all_yes")
         grid[key]["w" if is_win else "l"] += 1
         grid[key]["pnl_1c"] += cf_pnl(price, r["market_result"])
-        ps = r["position_size"] or 1
-        grid[key]["pnl_sized"] += sized_pnl(price, r["market_result"], ps)
+        ps = r["position_size"]
+        if ps and ps > 0:
+            grid[key]["pnl_sized"] += sized_pnl(price, r["market_result"], ps)
 
     mtypes = sorted(set(k[0] for k in grid.keys()))
     pbuckets = ["1-15c", "16-30c", "31-60c", "61c+"]
@@ -999,7 +1009,8 @@ def section_sufficiency(conn, since, stats, pipeline):
           AND filter_stage='weather_observation' AND market_result IS NOT NULL
     """).fetchall()
     total_pnl = sum(cf_pnl(int(r["market_price"]), r["market_result"]) for r in pnl_rows) if pnl_rows else 0
-    total_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"] or 1) for r in pnl_rows) if pnl_rows else 0.0
+    total_sized = sum(sized_pnl(int(r["market_price"]), r["market_result"], r["position_size"])
+                      for r in pnl_rows if r["position_size"] and r["position_size"] > 0) if pnl_rows else 0.0
 
     checks = [
         ("Total evaluations >= 500", stats["total"] >= 500, f"{stats['total']}/500"),
@@ -1083,7 +1094,7 @@ def detect_regime_start() -> str:
     repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
         result = subprocess.run(
-            ["git", "log", "--format=%H %aI", "--since=30 days ago",
+            ["git", "log", "--format=%H %aI", "--since=180 days ago",
              "--", "bot.py"],
             capture_output=True, text=True, timeout=10, cwd=repo_dir,
         )
@@ -1163,7 +1174,7 @@ def section_no_side(conn, since):
     for r in rows:
         p = r["market_price"] or 0
         c = r["cnt"]
-        fee = maker_fee(p)
+        fee = taker_fee(p)
         if r["market_result"] in ("no", "all_no"):
             sim_pnl += (100 - p) * c - fee * c
         elif r["market_result"] in ("yes", "all_yes"):

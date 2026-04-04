@@ -2165,20 +2165,25 @@ class TestNBBOFallbackGates:
 
     @pytest.mark.fragile
     def test_all_no_asks_sites_have_nbbo_fallback(self):
-        """Every ORDER_SUPPRESSED no_asks site must try _nbbo_fallback_price first."""
+        """Every ORDER_SUPPRESSED no_asks site must have a fresh ask mechanism.
+
+        Main execute paths use _nbbo_fallback_price directly.
+        DC/TM/bracket paths use _dc_get_ask_with_depth (which calls _nbbo_fallback_price internally).
+        """
         fpath = os.path.join(PROJECT_ROOT, "bot.py")
         with open(fpath) as f:
             content = f.read()
-        # Find all no_asks suppression blocks in execute paths
-        # Each should be preceded by a _nbbo_fallback_price call
-        no_asks_blocks = [i for i, line in enumerate(content.split("\n"))
+        lines = content.split("\n")
+        no_asks_blocks = [i for i, line in enumerate(lines)
                           if "ORDER_SUPPRESSED no_asks" in line]
         for line_idx in no_asks_blocks:
-            # Look backwards up to 5 lines for nbbo_fallback_price
-            preceding = "\n".join(content.split("\n")[max(0, line_idx-5):line_idx])
-            assert "_nbbo_fallback_price" in preceding, (
+            # Look backwards up to 10 lines for either fallback mechanism
+            preceding = "\n".join(lines[max(0, line_idx-10):line_idx])
+            has_fallback = ("_nbbo_fallback_price" in preceding
+                           or "_dc_get_ask_with_depth" in preceding)
+            assert has_fallback, (
                 f"Line {line_idx+1} has ORDER_SUPPRESSED no_asks without "
-                f"_nbbo_fallback_price check above it"
+                f"_nbbo_fallback_price or _dc_get_ask_with_depth check above it"
             )
 
     def test_nbbo_fallback_blocks_low_price(self):
@@ -2201,14 +2206,20 @@ class TestNBBOFallbackGates:
         fpath = os.path.join(PROJECT_ROOT, "bot.py")
         with open(fpath) as f:
             content = f.read()
-        # _nbbo_fallback_price should only appear inside "if fresh_ask is None" blocks
+        # _nbbo_fallback_price should only appear inside "is None" guards or
+        # inside _dc_get_ask_with_depth (cascading fallback after orderbook attempt).
         lines = content.split("\n")
         for i, line in enumerate(lines):
             if "_nbbo_fallback_price" in line and "def " not in line and "#" not in line.lstrip()[:1]:
-                # Check that a preceding line has "is None" condition
-                context = "\n".join(lines[max(0, i-3):i+1])
-                assert "is None" in context or "fresh_ask is None" in context, (
-                    f"Line {i+1}: _nbbo_fallback_price called outside 'is None' guard"
+                # Check that a preceding line has "is None" condition or we're inside
+                # a cascading fallback helper (_dc_get_ask_with_depth)
+                context = "\n".join(lines[max(0, i-10):i+1])
+                assert ("is None" in context
+                        or "fresh_ask is None" in context
+                        or "_dc_get_ask_with_depth" in context
+                        or "# NBBO fallback" in context), (
+                    f"Line {i+1}: _nbbo_fallback_price called outside 'is None' guard "
+                    f"or cascading fallback helper"
                 )
 
     def test_session_counters_exist(self):
@@ -2272,37 +2283,37 @@ class TestDCRoutingPriority:
         fpath = os.path.join(PROJECT_ROOT, "bot.py")
         with open(fpath) as f:
             lines = f.readlines()
-        # Find the DC block and verify it uses -0.01
-        in_dc_block = False
+        # The -0.01 threshold is now inside _execute_dc_taker method
+        in_dc_method = False
         found_threshold = False
         for i, line in enumerate(lines):
-            if 'Decided contract taker override' in line:
-                in_dc_block = True
-            if in_dc_block and 'SOL taker-first override' in line:
+            if 'def _execute_dc_taker' in line:
+                in_dc_method = True
+            if in_dc_method and line.strip().startswith('def ') and '_execute_dc_taker' not in line:
                 break
-            if in_dc_block and 'net_edge < -0.01' in line:
+            if in_dc_method and 'net_edge < -0.01' in line:
                 found_threshold = True
-        assert found_threshold, "DC block must use 'net_edge < -0.01' threshold"
+        assert found_threshold, "DC _execute_dc_taker must use 'net_edge < -0.01' threshold"
 
     @pytest.mark.fragile
     def test_sol_dc_does_not_hit_sol_taker_first(self):
         """A SOL candidate with DC strategy must NOT reach SOL taker-first path.
 
-        The DC check returns result before SOL taker-first is reached."""
+        The DC check returns via _execute_dc_taker before SOL taker-first is reached."""
         fpath = os.path.join(PROJECT_ROOT, "bot.py")
         with open(fpath) as f:
             lines = f.readlines()
-        # Verify DC block has 'return result' before SOL block
+        # Verify DC block has 'return self._execute_dc_taker' before SOL block
         in_dc_block = False
         dc_returns = False
         for line in lines:
             if 'Decided contract taker override' in line:
                 in_dc_block = True
-            if in_dc_block and 'return result' in line and 'dc_taker' not in line:
+            if in_dc_block and 'return self._execute_dc_taker' in line:
                 dc_returns = True
             if 'SOL taker-first override' in line:
                 break
-        assert dc_returns, "DC block must return before SOL taker-first block"
+        assert dc_returns, "DC block must return via _execute_dc_taker before SOL taker-first block"
 
     def test_no_duplicate_dc_block(self):
         """DC taker override should appear exactly once."""
