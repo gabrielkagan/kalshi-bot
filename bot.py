@@ -58,6 +58,7 @@ SOL_MAX_RISK_PER_TRADE = 0.12    # SOL: 12% per-trade (new — tightest cap, wor
 XRP_MAX_RISK_PER_TRADE = 0.15    # XRP: 15% per-trade (was 12% — regime cap removal gives full balance)
 SOL_MIN_EDGE = 0.010             # SOL-specific edge floor (reverted to 1.0% — prior 1.8% based on pre-BLR data, invalid under passthrough cal)
 SOL_HIGH_EDGE_SHADOW = 0.05     # SOL edge ceiling shadow: log evaluations with edge > 5% for analysis (5%+ band is 80% WR, PnL-negative)
+SOL_LOW_ENTRY_STC_GATE = True    # Block SOL ≤85c at STC≥300s (data: 78.3% WR -$289, vs <300s 100% WR +$228)
 XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/2L 95.3% WR at >=92c)
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 MIN_SECONDS_BEFORE_CLOSE = 0
@@ -544,6 +545,8 @@ OVERNIGHT_LP_VOL_HISTORY_DAYS = 7  # Days of overnight vol history for median co
 # wipe all gains. Halve position to limit downside on last-second reversals.
 LOW_STC_SIZING_CAP = 0.50           # position multiplier when STC < threshold
 LOW_STC_SIZING_CAP_THRESHOLD = 100  # seconds — apply cap below this STC
+STC_SIZING_SCALER_KNEE = 300        # seconds — start scaling down above this (data: 5m+ WR drops from 94.6% to 87.5%)
+STC_SIZING_SCALER_ENABLED = True    # universal STC size scaler: contracts *= 300/STC for STC>300
 
 # ─── Decided Contract Shadow (Fix #2) ─────────────────────────────────────
 # When z-score is very negative (spot far above strike) with short STC,
@@ -7940,6 +7943,11 @@ class OpportunityScanner:
                                 _wknd_type_max = int((_wknd_balance * _wknd_scfg.max_risk_per_trade) / best_ask)
                                 if _wknd_position > _wknd_type_max:
                                     _wknd_position = max(1, _wknd_type_max)
+                                # STC sizing scaler (consistent with main pipeline)
+                                if (STC_SIZING_SCALER_ENABLED
+                                        and seconds_remaining > STC_SIZING_SCALER_KNEE
+                                        and _wknd_position > 0):
+                                    _wknd_position = max(1, int(_wknd_position * (STC_SIZING_SCALER_KNEE / seconds_remaining)))
                                 _wknd_ev = round((final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
                                 # Fixed sizing fallback when Kelly produces 0 (edge near zero)
                                 if _wknd_position == 0:
@@ -8109,6 +8117,11 @@ class OpportunityScanner:
                                 _ovn_type_max = int((_ovn_balance * _ovn_scfg.max_risk_per_trade) / best_ask)
                                 if _ovn_position > _ovn_type_max:
                                     _ovn_position = max(1, _ovn_type_max)
+                                # STC sizing scaler (consistent with main pipeline)
+                                if (STC_SIZING_SCALER_ENABLED
+                                        and seconds_remaining > STC_SIZING_SCALER_KNEE
+                                        and _ovn_position > 0):
+                                    _ovn_position = max(1, int(_ovn_position * (STC_SIZING_SCALER_KNEE / seconds_remaining)))
                                 _ovn_ev = round((final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
 
                             # Check live eligibility gates
@@ -8806,6 +8819,20 @@ class OpportunityScanner:
                     if sizing["contracts"] < _pre_stc_cap:
                         logging.info("Low-STC cap: %d -> %d contracts (STC=%.0fs, cap=%.1fx)",
                                      _pre_stc_cap, sizing["contracts"], seconds_remaining, LOW_STC_SIZING_CAP)
+
+                # High-STC sizing scaler: reduce position for far-from-expiry trades
+                # Data: 3-5m 94.6% WR (+$667), 5-7m 90.8% (+$35), 7m+ net negative
+                # Scaler: 300/STC — monotonic, one parameter, no trades cut
+                if (STC_SIZING_SCALER_ENABLED
+                        and _pt in (None, "15m")
+                        and seconds_remaining > STC_SIZING_SCALER_KNEE
+                        and sizing["contracts"] > 0):
+                    _stc_scaler = STC_SIZING_SCALER_KNEE / seconds_remaining
+                    _pre_stc_scale = sizing["contracts"]
+                    sizing["contracts"] = max(1, int(sizing["contracts"] * _stc_scaler))
+                    if sizing["contracts"] < _pre_stc_scale:
+                        logging.info("STC_SCALER: %d -> %d contracts (STC=%.0fs, scaler=%.2fx)",
+                                     _pre_stc_scale, sizing["contracts"], seconds_remaining, _stc_scaler)
 
                 # Cap by existing exposure (positions + resting orders) to prevent
                 # accumulation across scan ticks on the same ticker
@@ -9987,6 +10014,42 @@ class OpportunityScanner:
                             product_type=window.get("product_type"),
                             counterfactual=_xrp_88_tag,
                             **_oft_db, **_shadow_diag)
+                    continue
+
+                # ── SOL SUB-86c TIME GATE (15M only) ──
+                # SOL ≤85c far-from-expiry: 78.3% WR, -$289 (STC≥300s).
+                # Near-expiry (<300s): 100% WR, +$228. Block the far, keep the near.
+                if (SOL_LOW_ENTRY_STC_GATE
+                        and asset == "SOL"
+                        and window.get("product_type") in (None, "15m")
+                        and best_ask <= 85
+                        and seconds_remaining >= 300):
+                    _sol_low_dedup = (ticker, "sol_low_entry_high_stc")
+                    if _sol_low_dedup not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_sol_low_dedup)
+                        _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                        try:
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset, "sol_low_entry_high_stc",
+                                rejection_reason=f"SOL sub-86c gate: ask={best_ask}c stc={seconds_remaining:.0f}s",
+                                spot_price=spot, threshold=threshold, volatility=blended_rv,
+                                market_price=best_ask, seconds_to_close=seconds_remaining,
+                                calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                                vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                                calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                                breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                                ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                position_size=sizing["contracts"],
+                                kelly_f=sizing["kelly_f"],
+                                drawdown_scaler=sizing["drawdown_scaler"],
+                                calibrated_prob_raw=calibrated_prob_raw,
+                                ofa_adjustment=ofa_adjustment,
+                                strategy=strategy,
+                                old_system_prob=_old_system_prob,
+                                product_type=window.get("product_type"),
+                                **_oft_db, **_shadow_diag)
+                        except Exception:
+                            logging.warning("insert_evaluated_opportunity failed (sol_low_entry_high_stc)", exc_info=True)
                     continue
 
                 # Track per-window counts for Layer 3b/3c limits (config-driven)
