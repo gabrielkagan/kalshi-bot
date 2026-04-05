@@ -2863,7 +2863,7 @@ class DashboardSnapshotBuilder:
             raw_obs = kf.get_all_orderbooks() if (kf and kf.is_connected) else {}
             windows = getattr(self._ml, "_active_windows", []) or []
             snap["position_health"] = self._compute_position_health(
-                snap.get("active_positions", []), raw_obs, windows
+                snap.get("active_positions", []), raw_obs, windows, db_conn=_conn
             )
         except Exception:
             logging.warning("Snapshot: position_health build failed", exc_info=True)
@@ -4031,6 +4031,7 @@ class DashboardSnapshotBuilder:
         positions: List[Dict],
         orderbooks: Dict,
         active_windows: List[Dict],
+        db_conn=None,
     ) -> Dict[str, Any]:
         """Compute mark-to-market health data for each open position."""
         now_ts = time.time()
@@ -4159,6 +4160,47 @@ class DashboardSnapshotBuilder:
                 health = self._health_state[ticker]
                 counts[health.lower()] += 1
 
+                # Spot buffer data from PPO table
+                buffer_data = None
+                if db_conn is not None:
+                    try:
+                        ppo_rows = db_conn.execute(
+                            "SELECT spot_buffer_pct, spot_price, threshold "
+                            "FROM position_price_observations "
+                            "WHERE ticker = ? ORDER BY id DESC LIMIT 30",
+                            (ticker,)
+                        ).fetchall()
+                        if ppo_rows:
+                            bufs = [r["spot_buffer_pct"] for r in ppo_rows if r["spot_buffer_pct"] is not None]
+                            if bufs:
+                                # All-time min/max for this position
+                                all_bufs = db_conn.execute(
+                                    "SELECT MIN(spot_buffer_pct) AS mn, MAX(spot_buffer_pct) AS mx, "
+                                    "COUNT(*) AS n FROM position_price_observations WHERE ticker = ?",
+                                    (ticker,)
+                                ).fetchone()
+                                # Trend: compare recent 10 avg vs older 10 avg
+                                trend = "stable"
+                                if len(bufs) >= 6:
+                                    recent = sum(bufs[:3]) / 3   # newest 3
+                                    older = sum(bufs[-3:]) / 3   # oldest 3 of last 30
+                                    delta = recent - older
+                                    if delta > 0.5:
+                                        trend = "rising"
+                                    elif delta < -0.5:
+                                        trend = "falling"
+                                buffer_data = {
+                                    "current": round(bufs[0], 2),
+                                    "trend": trend,
+                                    "min": round(all_bufs["mn"], 2) if all_bufs else None,
+                                    "max": round(all_bufs["mx"], 2) if all_bufs else None,
+                                    "spot": round(ppo_rows[0]["spot_price"], 2) if ppo_rows[0]["spot_price"] else None,
+                                    "threshold": round(ppo_rows[0]["threshold"], 2) if ppo_rows[0]["threshold"] else None,
+                                    "n_obs": all_bufs["n"] if all_bufs else len(ppo_rows),
+                                }
+                    except Exception:
+                        logging.debug("Snapshot: PPO buffer query failed for %s", ticker, exc_info=True)
+
                 result[ticker] = {
                     "entry_price": entry_price,
                     "mid_price": round(mid_price, 1),
@@ -4173,6 +4215,7 @@ class DashboardSnapshotBuilder:
                     "ob_age_s": ob_age_s,
                     "mid_history": mid_hist,
                     "stc_seconds": round(stc_seconds, 1) if stc_seconds is not None else None,
+                    "buffer": buffer_data,
                 }
             except Exception:
                 logging.warning(f"Snapshot: position health failed for {ticker}", exc_info=True)
