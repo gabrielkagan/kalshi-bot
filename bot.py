@@ -1891,22 +1891,25 @@ class StateManager:
                 pass  # column already exists
         self.conn.commit()
 
-        # Position price observations (post-entry monitoring)
+        # Position price observations (post-entry monitoring) — v2: spot-price primary
         self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS position_price_observations (
+            DROP TABLE IF EXISTS position_price_observations;
+            CREATE TABLE position_price_observations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticker TEXT NOT NULL,
                 asset TEXT NOT NULL,
                 observation_time TEXT NOT NULL,
                 seconds_to_close REAL,
+                spot_price REAL,
+                threshold REAL,
+                spot_buffer_pct REAL,
                 yes_ask_cents INTEGER,
                 yes_bid_cents INTEGER,
                 entry_price_cents INTEGER NOT NULL,
                 position_count INTEGER NOT NULL,
-                source TEXT NOT NULL DEFAULT 'ws'
+                source TEXT NOT NULL DEFAULT 'spot_only'
             );
-            CREATE INDEX IF NOT EXISTS idx_ppo_ticker
-                ON position_price_observations(ticker);
+            CREATE INDEX idx_ppo_ticker ON position_price_observations(ticker);
         """)
 
     # ── Ticker Parsing ────────────────────────────────────────────────────
@@ -16969,9 +16972,10 @@ class MainLoop:
                 )
                 self.executor.execute(candidate)
 
-        # ── Post-entry position price monitor ─────────────────────────────
-        # Log yes_ask/bid for held 15M positions. WS orderbook cache primary
-        # (zero API cost). Only logs when price changes. Pure observation.
+        # ── Post-entry position price monitor (v2: spot-price primary) ─────
+        # Logs spot price + Kalshi quotes for held 15M positions every tick.
+        # Spot from CoinbaseFeed (always available). Kalshi quotes best-effort.
+        # NEVER skips — logs spot even when Kalshi books are empty.
         if POSITION_PRICE_MONITOR_ENABLED:
             try:
                 _ppo_positions = self.state.get_open_positions()
@@ -16980,28 +16984,71 @@ class MainLoop:
                     if pos.get("status") != "open":
                         continue
                     _ppo_ticker = pos["ticker"]
+                    _ppo_asset = pos.get("asset", "")
 
-                    # Only 15M positions — check by ticker prefix (KXBTC15M, KXETH15M, etc.)
-                    # Don't rely on _active_windows which may not contain the ticker's market
-                    _ppo_is_15m = ("15M" in _ppo_ticker.upper())
-                    if not _ppo_is_15m:
+                    # Only 15M positions
+                    if "15M" not in _ppo_ticker.upper():
                         continue
 
-                    # Read WS orderbook cache (zero API cost)
-                    _ppo_ob = self.kalshi_feed.get_orderbook(_ppo_ticker) if self.kalshi_feed else None
+                    # 1. SPOT PRICE (always available from CoinbaseFeed)
+                    _ppo_spot = None
+                    try:
+                        _ppo_spot = self.feed.get_price(_ppo_asset)
+                    except Exception:
+                        pass
+                    if _ppo_spot is None:
+                        continue  # CoinbaseFeed disconnected — only skip condition
+
+                    # 2. THRESHOLD (cached per position lifecycle)
+                    if not hasattr(self, "_ppo_thresholds"):
+                        self._ppo_thresholds = {}
+                    if _ppo_ticker not in self._ppo_thresholds:
+                        try:
+                            _t_row = self.state.conn.execute(
+                                "SELECT threshold FROM evaluated_opportunities WHERE ticker=? AND threshold IS NOT NULL LIMIT 1",
+                                (_ppo_ticker,)).fetchone()
+                            self._ppo_thresholds[_ppo_ticker] = _t_row[0] if _t_row else None
+                        except Exception:
+                            self._ppo_thresholds[_ppo_ticker] = None
+                    _ppo_threshold = self._ppo_thresholds.get(_ppo_ticker)
+
+                    # 3. STC (parse from event_ticker — deterministic, no _active_windows dependency)
+                    _ppo_stc = None
+                    try:
+                        _ppo_et = pos.get("event_ticker", "")
+                        _ppo_ts_str = _ppo_et.split("-")[1] if "-" in _ppo_et else ""
+                        if len(_ppo_ts_str) >= 11:
+                            _ppo_yr = int("20" + _ppo_ts_str[:2])
+                            _ppo_mon_str = _ppo_ts_str[2:5].upper()
+                            _ppo_months = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+                                           "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+                            _ppo_mon = _ppo_months.get(_ppo_mon_str, 1)
+                            _ppo_day = int(_ppo_ts_str[5:7])
+                            _ppo_hr = int(_ppo_ts_str[7:9])
+                            _ppo_min = int(_ppo_ts_str[9:11])
+                            _ppo_close = datetime.datetime(_ppo_yr, _ppo_mon, _ppo_day,
+                                                           _ppo_hr, _ppo_min, 0, tzinfo=timezone.utc)
+                            _ppo_stc = (_ppo_close - datetime.datetime.now(timezone.utc)).total_seconds()
+                    except Exception:
+                        pass
+
+                    # 4. KALSHI QUOTES (best effort — often None near settlement)
                     _ppo_ask = None
                     _ppo_bid = None
-                    _ppo_source = "ws"
-
-                    if _ppo_ob and (time.time() - _ppo_ob.get("ts", 0)) < POSITION_PRICE_MONITOR_WS_STALE_SEC:
-                        _ppo_ask = OpportunityScanner._best_yes_ask_cents(_ppo_ob)
-                        _ppo_bid = OrderExecutor._best_yes_bid(_ppo_ob)
+                    _ppo_source = "spot_only"
+                    try:
+                        _ppo_ob = self.kalshi_feed.get_orderbook(_ppo_ticker) if self.kalshi_feed else None
+                        if _ppo_ob and (time.time() - _ppo_ob.get("ts", 0)) < POSITION_PRICE_MONITOR_WS_STALE_SEC:
+                            _ppo_ask = OpportunityScanner._best_yes_ask_cents(_ppo_ob)
+                            _ppo_bid = OrderExecutor._best_yes_bid(_ppo_ob)
+                            if _ppo_ask is not None:
+                                _ppo_source = "ws"
+                    except Exception:
+                        pass
                     if _ppo_ask is None:
-                        # WS failed — REST fallback (1 read)
                         try:
                             _ppo_mkt = self.client.get_market(_ppo_ticker)
                             if _ppo_mkt:
-                                # Kalshi returns market data nested under "market" key
                                 _ppo_mkt_data = _ppo_mkt.get("market", _ppo_mkt)
                                 _ppo_ya = _ppo_mkt_data.get("yes_ask")
                                 _ppo_yb = _ppo_mkt_data.get("yes_bid")
@@ -17009,45 +17056,28 @@ class MainLoop:
                                     _ppo_ask = int(float(_ppo_ya) * 100) if isinstance(_ppo_ya, (float, str)) and float(_ppo_ya) < 2 else int(_ppo_ya)
                                 if _ppo_yb is not None:
                                     _ppo_bid = int(float(_ppo_yb) * 100) if isinstance(_ppo_yb, (float, str)) and float(_ppo_yb) < 2 else int(_ppo_yb)
-                                _ppo_source = "rest"
-                            else:
-                                logging.info("PPO_REST_NULL: %s — get_market returned None", _ppo_ticker)
+                                if _ppo_ask is not None:
+                                    _ppo_source = "rest"
                         except Exception:
-                            logging.warning("PPO REST fallback failed for %s", _ppo_ticker, exc_info=True)
+                            pass
 
-                    if _ppo_ask is None:
-                        logging.info("PPO_SKIP: %s — no price from WS or REST (ws_ob=%s)", _ppo_ticker, "yes" if _ppo_ob else "no")
-                        continue
+                    # 5. COMPUTED FIELDS
+                    _ppo_buffer = None
+                    if _ppo_threshold and _ppo_threshold > 0:
+                        _ppo_buffer = round((_ppo_spot - _ppo_threshold) / _ppo_threshold * 100, 4)
 
-                    # Change-only dedup: skip if ask hasn't changed since last obs
-                    if not hasattr(self, "_ppo_last_ask"):
-                        self._ppo_last_ask = {}
-                    _ppo_key = _ppo_ticker
-                    if self._ppo_last_ask.get(_ppo_key) == _ppo_ask:
-                        continue
-                    self._ppo_last_ask[_ppo_key] = _ppo_ask
-
-                    # Compute seconds to close
-                    _ppo_stc = None
-                    for w in self._active_windows:
-                        for m in w.get("markets", []):
-                            if m.get("ticker") == _ppo_ticker:
-                                _ppo_close = w.get("close_time")
-                                if _ppo_close:
-                                    _ppo_stc = (_ppo_close - datetime.datetime.now(timezone.utc)).total_seconds()
-                                break
-                        if _ppo_stc is not None:
-                            break
-
+                    # 6. INSERT — ALWAYS (never skip when we have spot)
                     self.state.conn.execute(
                         """INSERT INTO position_price_observations
                            (ticker, asset, observation_time, seconds_to_close,
-                            yes_ask_cents, yes_bid_cents, entry_price_cents,
-                            position_count, source)
-                           VALUES (?,?,?,?,?,?,?,?,?)""",
-                        (_ppo_ticker, pos.get("asset", ""),
+                            spot_price, threshold, spot_buffer_pct,
+                            yes_ask_cents, yes_bid_cents,
+                            entry_price_cents, position_count, source)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (_ppo_ticker, _ppo_asset,
                          datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                          round(_ppo_stc, 1) if _ppo_stc is not None else None,
+                         round(_ppo_spot, 6), _ppo_threshold, _ppo_buffer,
                          _ppo_ask, _ppo_bid,
                          pos.get("avg_price_cents", 0), pos.get("count", 0),
                          _ppo_source))
