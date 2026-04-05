@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-04-04
+updated: 2026-04-05
 tags: [btc, eth, sol, xrp, risk-caps]
 ---
 # Per-Asset Configuration
@@ -11,12 +11,13 @@ Each asset (BTC, ETH, SOL, XRP) has individualized trading rules based on empiri
 ## BTC
 | Parameter | Value | Justification |
 |-----------|-------|---------------|
-| Min entry price | 88c | Data: 88c = 96.2% WR on n=53 shadow, 96.3% on n=27 recent |
-| Max risk per trade | 0.12 (12%) | BTC oversizing causes outsized losses — cap exposure |
+| Min entry price | 88c (main pipeline) | Data: 88c = 96.2% WR on n=53 shadow, 96.3% on n=27 recent |
+| LPNE | 80-87c, STC<=120s | Intercepts below floor. 97.6% WR on 42 obs, 50ct fixed |
+| Max risk per trade | 0.15 (15%) | Per-trade cap |
 | Escalation wait | 7s (vs 15s default) | Data: ask_confirmed avg 2.7s, escalation_wait avg 19.5s, slip 3.4c |
-| NBBO fallback | 86-99c, STC <= 300s | 97.9% WR |
+| NBBO fallback | 80-99c, STC <= 300s | Lowered from 86c for LPNE. 97.9% WR at 86c+ |
 
-BTC is the most liquid asset. The tighter escalation wait (7s vs 15s) reflects fast price confirmation. Risk cap at 12% prevents single-trade blowups.
+BTC is the most liquid asset. The tighter escalation wait (7s vs 15s) reflects fast price confirmation. LPNE extends BTC trading to 80-87c near-expiry only (STC<=120s) — the floor stays at 88c for the main pipeline.
 
 ## ETH
 | Parameter | Value | Justification |
@@ -32,6 +33,7 @@ ETH floor was raised from 85c to 90c after discovering negative PnL in the 85-89
 | Parameter | Value | Justification |
 |-----------|-------|---------------|
 | Min entry price | 80c | Explicit floor — prevents SOL trading at 75-79c |
+| Sub-86c time gate | Block ≤85c at STC≥300s | Data: 78.3% WR -$289; <300s is 100% WR +$228 |
 | Min edge | 1.0% (`SOL_MIN_EDGE`) | Data: <1.0% = 82% WR, >= 1.0% = 94.2% WR on 258 trades |
 | Max risk per trade | 0.12 (12%) | Tightest cap — contains loss magnitude on high-volume asset |
 | Execution mode | Taker-first | Data: 44.7% maker fill rate, $101/wk missed |

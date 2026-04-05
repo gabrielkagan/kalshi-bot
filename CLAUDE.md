@@ -189,6 +189,8 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **STC window:** scan 0-900s, live 0-600s, shadow 600-900s (STC_SHADOW_THRESHOLD=600)
 - **SOL sub-86c gate:** SOL_LOW_ENTRY_STC_GATE=True — blocks SOL ≤85c at STC≥300s (data: 78.3% WR -$289; near-expiry 100% WR preserved)
 - **STC sizing scaler:** STC_SIZING_SCALER_ENABLED=True — contracts *= 300/STC for 15M at STC>300s. Applied in main pipeline + overnight + weekend discounts. kelly_f stays pure.
+- **LPNE:** LPNE_ENABLED=True — BTC 80-87c near-expiry (STC 10-120s), intercepts at price floor. 50ct fixed. Prob gate: final_prob >= price/100. BTC NBBO gate lowered to 80c. BTC_MIN_ENTRY_PRICE unchanged at 88c.
+- **Position price monitor:** POSITION_PRICE_MONITOR_ENABLED=True — logs yes_ask/bid for held 15M positions via WS (zero API cost). Change-only dedup. New `position_price_observations` table.
 - **Hourly:** LIVE TRADING (HOURLY_LIVE_ENABLED env var kill switch) — sub-60c BTC+ETH only, taker-only IOC, fixed 10-contract sizing, 10% bankroll fraction, max 5% edge cap, STC 600-1800s. Calibration disabled (passthrough+T=1.45). Data: 66.3% WR vs 46.5% breakeven on 1,474 unique tickers (14-day observation). SOL/XRP excluded (XRP 42.9% WR = toxic). Shadow configs h/j/k killed (55% WR).
 - **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — was briefly live Mar 17, reverted due to Polygon 403 breaking vol engine. SPX-D CalEngine, 90c+ floor, eighth-Kelly, no market blend
 - **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 19 cities. WEATHER_NO_SIDE_LIVE = True (NO ≤ 40c, STC ≥ 16h, 1-contract)
@@ -219,6 +221,10 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | SOL_LOW_ENTRY_STC_GATE | True | Block SOL ≤85c at STC≥300s (data: 78.3% WR -$289; <300s is 100% WR +$228) |
 | STC_SIZING_SCALER_KNEE | 300 | Seconds — start scaling contracts by 300/STC above this (data: 5m+ WR drops) |
 | STC_SIZING_SCALER_ENABLED | True | Universal STC scaler: contracts *= 300/STC for 15M at STC>300s |
+| LPNE_ENABLED | True (env var) | BTC 80-87c near-expiry overlay (STC 10-120s, prob >= price/100) |
+| LPNE_FIXED_CONTRACTS | 50 | Fixed sizing for LPNE (LOW_STC_SIZING_CAP halves most to 25) |
+| LPNE_MAX_CONCURRENT | 2 | Max simultaneous LPNE positions |
+| POSITION_PRICE_MONITOR_ENABLED | True | Post-entry price logging via WS (change-only dedup) |
 | XRP_MAX_RISK_PER_TRADE | 0.15 | XRP: 15% per-trade (was 12% — regime cap removal gives full balance) |
 | BTC_MAX_RISK_PER_TRADE | 0.15 | BTC: 15% per-trade (was 12% — regime cap removal gives full balance) |
 | SOL_MIN_EDGE | 0.010 | SOL-specific edge floor (data: >=1.0% = 94.2% WR on 258 trades; <1.0% drops to 82%) |
