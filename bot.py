@@ -1892,9 +1892,9 @@ class StateManager:
         self.conn.commit()
 
         # Position price observations (post-entry monitoring) — v2: spot-price primary
-        self.conn.executescript("""
-            DROP TABLE IF EXISTS position_price_observations;
-            CREATE TABLE position_price_observations (
+        self.conn.execute("DROP TABLE IF EXISTS position_price_observations")
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS position_price_observations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticker TEXT NOT NULL,
                 asset TEXT NOT NULL,
@@ -1908,9 +1908,10 @@ class StateManager:
                 entry_price_cents INTEGER NOT NULL,
                 position_count INTEGER NOT NULL,
                 source TEXT NOT NULL DEFAULT 'spot_only'
-            );
-            CREATE INDEX idx_ppo_ticker ON position_price_observations(ticker);
-        """)
+            )""")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ppo_ticker ON position_price_observations(ticker)")
+        self.conn.commit()
 
     # ── Ticker Parsing ────────────────────────────────────────────────────
 
