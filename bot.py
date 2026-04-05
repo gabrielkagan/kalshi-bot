@@ -17051,7 +17051,7 @@ class MainLoop:
                 if _ppo_wrote:
                     self.state.conn.commit()
             except Exception:
-                logging.debug("position_price_monitor failed", exc_info=True)
+                logging.warning("position_price_monitor failed", exc_info=True)
 
     # ── Run ───────────────────────────────────────────────────────────────
 
