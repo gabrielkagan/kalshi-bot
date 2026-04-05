@@ -569,11 +569,13 @@ A separate overlay identifies near-certain settlements and routes them to direct
 
 | Tier | Z-Score Threshold | Price Range | Sizing |
 |---|---|---|---|
-| T1 | z ≤ -5.0 | 93¢+ | Fixed 12.5% bankroll |
-| T1B | z ≤ -4.0 | 95¢+ | Fixed 12.5% bankroll |
-| T2 | z ≤ -3.0 | 93–96¢ | Fixed 12.5% bankroll |
+| T1 | z ≤ -5.0 | 93¢+ | Fixed 20% bankroll |
+| T1B | z ≤ -4.0 | 95¢+ | Fixed 20% bankroll |
+| T2 | z ≤ -3.0 | 93–96¢ | Fixed 20% bankroll |
+| T2-Z25 | z ≤ -2.5 | 93–96¢ | Fixed 20% bankroll |
+| T2-Z2 | z ≤ -2.0 | 93–96¢ | Fixed 20% bankroll |
 
-T1B was added based on research showing 40/40 = 100% win rate in the -5 < z ≤ -4 zone at 95¢+, extending coverage into a high-confidence region that T1 and T2 did not fully capture. All three tiers are enabled by default (env var toggles) with a per-window cap of 25% bankroll risk. These are incremental — they add on top of the regular trading pipeline, capturing near-certain outcomes that the standard edge filter might not size aggressively enough.
+T1B was added based on research showing 40/40 = 100% win rate in the -5 < z ≤ -4 zone at 95¢+. T2-Z25 and T2-Z2 extend coverage into shallower z-score zones at 93–96¢. All five tiers are enabled by default (env var toggles) with a per-window cap of 35% bankroll risk. These are incremental — they add on top of the regular trading pipeline, capturing near-certain outcomes that the standard edge filter might not size aggressively enough.
 
 Six expansion shadow variants are also collecting data for potential future tiers:
 
@@ -650,14 +652,16 @@ Safety ceiling: max 25% of bankroll at risk per trade.
 | Hourly crypto | 0.25 (quarter-Kelly) | Observation mode — conservative |
 | SPX hourly | 0.125 (eighth-Kelly) | Ultra-conservative for new vertical |
 | Weather | 0.25 (quarter-Kelly) | Observation mode |
-| Decided contracts | Fixed 12.5% risk | Not Kelly-derived — fixed sizing for near-certain outcomes |
+| Decided contracts | Fixed 20% risk | Not Kelly-derived — fixed sizing for near-certain outcomes |
 
 ### Per-Asset Risk Caps
 
 | Asset / Vertical | Max Risk Per Trade |
 |---|---|
-| 15M (BTC, ETH, SOL) | 25% |
-| 15M (XRP) | 12% (RK vol underestimates → capped exposure) |
+| 15M (BTC) | 15% |
+| 15M (ETH) | 20% |
+| 15M (SOL) | 12% (tightest — worst loss/win asymmetry) |
+| 15M (XRP) | 15% |
 | Hourly | 15% |
 | SPX | 10% |
 | Weather | 10% |
@@ -699,7 +703,7 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 ## Market Selection Controls
 
 - **Multi-asset capable**: Can trade multiple assets per 15-minute window
-- **Price range guardrails**: Only trade contracts priced 80–99¢ (global floor), with per-asset overrides: BTC 89¢, ETH 80¢, SOL 80¢, XRP 92¢. Below these floors, win rates are insufficient after fees; above 99¢ offers insufficient reward
+- **Price range guardrails**: Only trade contracts priced 75–99¢ (global floor), with per-asset overrides: BTC 88¢ (LPNE: 80–87¢ near-expiry), ETH 90¢, SOL 80¢ (gate blocks ≤85¢ at STC≥300s), XRP 92¢. Below these floors, win rates are insufficient after fees; above 99¢ offers insufficient reward
 - **Price-dependent edge threshold**: Fee-adjusted edge must exceed a price-dependent minimum (0.25% at 80¢ up to 1.0% at 97¢+) after taker fees (worst-case)
 - **Scanner uses taker fees**: Every candidate is profitable even if forced to taker execution
 
@@ -740,17 +744,17 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 1,296 |
-| **Win rate** | 92.6\% (1,200W / 96L) |
-| **Assets** | BTC (89¢+), ETH (80¢+), SOL (80¢+, taker-first), XRP (92¢+, 12% risk cap) |
+| **Settled trades** | 1,301 |
+| **Win rate** | 92.6\% (1,205W / 96L) |
+| **Assets** | BTC (88¢+, LPNE 80¢+), ETH (90¢+), SOL (80¢+, taker-first, sub-86¢ gate), XRP (92¢+) |
 
 ## Markets
 
 ### Crypto 15-Minute (Live Trading)
 
-Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M. STC window: scan 0–900s, live 0–600s, shadow observation 600–900s. Decided contract overlay (T1/T1B/T2) adds incremental trades on near-certain outcomes, with 6 expansion shadows collecting data for future tiers.
+Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M. STC window: scan 0–900s, live 0–600s, shadow observation 600–900s. Decided contract overlay (T1/T1B/T2/T2-Z25/T2-Z2) adds incremental trades on near-certain outcomes, with 6 expansion shadows collecting data for future tiers. Terminal Momentum (TM) trades 95–99¢ contracts in the final 1–5 minutes (50–100 contracts fixed). Low-Price Near-Expiry (LPNE) intercepts BTC at 80–87¢ in the final 10–120 seconds (50 contracts fixed). STC sizing scaler reduces position size proportionally to time remaining (contracts × 300/STC for STC > 300s). SOL sub-86¢ time gate blocks entries at ≤85¢ with STC ≥ 300s.
 
-### Crypto Hourly (Observation Mode)
+### Crypto Hourly (Live — Kill Switch Gated)
 
 75 strikes per event, settling every hour. Currently collecting calibration data only — no live trading. Was briefly promoted to live trading (Feb 27–28) but reverted after -$97 overnight disaster from calibration overconfidence and correlated multi-strike exposure. Hourly CalEngine disabled (+44pp overconfident); uses T=1.45 temperature scaling instead. BTC is the only viable hourly asset — ETH/SOL structurally unprofitable after fees, XRP fundamentally broken. Series: KXBTCD, KXETHD, KXSOLD, KXXRPD.
 
@@ -865,4 +869,4 @@ Promoted features (driving live behavior):
 
 ---
 
-*Last updated: 2026-04-05T20:24:23Z*
+*Last updated: 2026-04-05T20:50:48Z*

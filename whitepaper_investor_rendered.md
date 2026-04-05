@@ -88,9 +88,9 @@ This document describes an automated trading platform for **Kalshi**, the first 
 The platform monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
 \begin{metricbox}
-\textbf{Live trading results (as of 2026-04-05T20:24:23Z):}
+\textbf{Live trading results (as of 2026-04-05T20:50:48Z):}
 \begin{itemize}
-\item \textbf{1,296} settled trades with a \textbf{92.6\%} win rate (1,200W / 96L)
+\item \textbf{1,301} settled trades with a \textbf{92.6\%} win rate (1,205W / 96L)
 \item Live trading with real capital since February 22, 2026
 \item Fully automated, always-on operation with complete audit trail
 \item Four additional market verticals in shadow mode, each validated before going live:
@@ -207,7 +207,10 @@ The bot uses a fee-minimizing execution strategy with intelligent escalation:
 | **Real-time fill detection** | Kalshi WebSocket provides instant fill notifications at zero API cost, with REST backup |
 | **Smart escalation** | If unfilled: amend order in-place (faster than cancel + re-place), then fall back to IOC taker |
 | **Per-asset optimization** | SOL bypasses maker entirely (direct taker) due to thin orderbooks; BTC uses shorter escalation wait (7s vs 15s) |
-| **Near-certain overlay** | Decided contract system (three live tiers: T1, T1B, T2) identifies near-certain outcomes via extreme z-scores and routes to direct taker with fixed 12.5% sizing. T1B added after research showed 100% win rate (40/40) in its z-score zone |
+| **Near-certain overlay** | Decided contract system (five live tiers: T1, T1B, T2, T2-Z25, T2-Z2) identifies near-certain outcomes via extreme z-scores and routes to direct taker with fixed 20% sizing. 6 expansion shadows collect data for future tiers |
+| **Terminal momentum** | Trades 95–99¢ contracts in the final 1–5 minutes with fixed 50–100 contract sizing. Near-100% standalone WR |
+| **Low-price near-expiry** | BTC 80–87¢ in the final 10–120 seconds with fixed 50 contracts. Intercepts below the price floor |
+| **STC sizing scaler** | Reduces position size proportionally to time remaining (contracts × 300/STC when STC > 300s) — less time exposure = less risk |
 | **Price re-validation** | Before every execution step, re-checks market conditions to confirm trade still makes sense |
 
 ---
@@ -271,7 +274,7 @@ Before any trade is placed, the system verifies:
 
 ### Hard Price Boundaries
 
-The bot only trades contracts priced between **80 and 99 cents**, with per-asset minimums (BTC 89¢, ETH 80¢, SOL 80¢, XRP 92¢). Below these floors, the probability of payout after fees is insufficient. Above 99¢, the potential profit is too small to justify the risk. These guardrails eliminate an entire class of low-quality trades.
+The bot only trades contracts priced between **75 and 99 cents**, with per-asset minimums (BTC 88¢, ETH 90¢, SOL 80¢, XRP 92¢). Below these floors, the probability of payout after fees is insufficient. Above 99¢, the potential profit is too small to justify the risk. Specialized overlays extend into lower prices near expiry: Terminal Momentum (95–99¢, final 1–5 min) and Low-Price Near-Expiry (BTC 80–87¢, final 10–120 sec). A SOL sub-86¢ time gate blocks low-price far-from-expiry entries. These guardrails eliminate an entire class of low-quality trades.
 
 ### Intelligent Late-Window Execution
 
@@ -286,10 +289,10 @@ Below 180 seconds before settlement, the system switches to **direct taker execu
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 1,296 |
-| **Win rate** | 92.6\% (1,200W / 96L) |
+| **Settled trades** | 1,301 |
+| **Win rate** | 92.6\% (1,205W / 96L) |
 | **Assets** | BTC, ETH, SOL, XRP |
-| **Entry prices** | 80–99¢ (per-asset: BTC 89¢+, ETH 80¢+, SOL 80¢+, XRP 92¢+) |
+| **Entry prices** | 75–99¢ (per-asset: BTC 88¢+, ETH 90¢+, SOL 80¢+, XRP 92¢+; overlays extend lower) |
 
 ---
 
@@ -326,7 +329,7 @@ Daily high temperature markets across **19 major US cities** — from New York a
 | **Bias correction** | Per-city learning system tracks and corrects forecast errors over time |
 | **Model-heavy blend** | 80% model / 20% market — ensemble forecasts are the primary signal |
 
-Research to date indicates this vertical does not currently have a tradeable edge. The YES-side win rate is below breakeven, and the model shows significant overconfidence relative to outcomes. A NO-side pricing pipeline has been built but is not yet enabled. Per-city calibration engines are learning to correct the model's biases over time. The vertical remains in observation mode to determine whether improved calibration can uncover a viable strategy.
+Research to date indicates the YES-side does not currently have a tradeable edge — win rate is below breakeven and the model shows significant overconfidence. However, the **NO-side is now live** (WEATHER_NO_SIDE_LIVE=True): buying NO contracts at ≤40¢ with STC ≥ 16 hours, fixed 1-contract sizing. This exploits weather markets where the YES outcome is overpriced. Per-city calibration engines continue learning to correct the model's biases. The YES-side remains in observation mode.
 
 ### Live Sports Outcomes
 
@@ -411,9 +414,9 @@ For readers interested in the mathematical foundations, the full technical white
 
 **Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven: as settlement outcomes accumulate, the CalibrationEngine progresses from fixed logistic scaling → Platt Scaling → Beta Calibration → Bayesian Linear Regression. A dynamic time-dependent probability cap applies during startup (93% at 10min+ → 99.5% at <1min) but is bypassed (99.9% ceiling) once learned calibration is active. Final probability blends 60/40 (60% model, 40% market) to prevent overconfidence.
 
-**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Eight tiers from 25% at 4%+ edge down to 2% at 0.25%+ edge, with automatic de-risking during drawdowns (half at 85%, quarter at 75%, halt at 65%). Max risk per trade: 25% (15M), 12% (XRP), 15% (hourly), 10% (SPX/weather). 15M uses full Kelly; hourly/weather use quarter-Kelly (0.25); SPX uses eighth-Kelly (0.125). Low-STC cap halves position below 100s.
+**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Eight tiers from 25% at 4%+ edge down to 2% at 0.25%+ edge, with automatic de-risking during drawdowns (half at 85%, quarter at 75%, halt at 65%). Per-asset max risk per trade: BTC 15%, ETH 20%, SOL 12%, XRP 15%, hourly 15%, SPX 10%, weather 10%. 15M uses full Kelly; hourly uses fixed 25 contracts; SPX uses eighth-Kelly (0.125); weather uses quarter-Kelly (0.25). Low-STC cap halves position below 100s. STC sizing scaler reduces position proportionally to time remaining (contracts × 300/STC) above 300s.
 
-**Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Direct taker below 180s STC (data: 7.7% maker fill rate at low STC). Maker orders use `post_only=True` for $0 maker fee. SOL bypasses maker entirely (direct taker at all STC). BTC uses 7s escalation wait (vs 15s default). Decided contract overlay (T1/T1B/T2) routes near-certain outcomes to direct taker with fixed 12.5% sizing — T1B (z ≤ -4, 95¢+) added based on 40/40 = 100% WR in that zone; 6 expansion shadows collecting data for future tiers. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. Full order lifecycle tracking (order_id, submission time, outcome).
+**Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Direct taker below 180s STC (data: 7.7% maker fill rate at low STC). Maker orders use `post_only=True` for $0 maker fee. SOL bypasses maker entirely (direct taker at all STC). BTC uses 7s escalation wait (vs 15s default). Decided contract overlay (T1/T1B/T2/T2-Z25/T2-Z2) routes near-certain outcomes to direct taker with fixed 20% sizing — five live tiers from z ≤ -5 to z ≤ -2, with 6 expansion shadows collecting data for future tiers. Terminal Momentum trades 95–99¢ at 50–100 contracts in the final 1–5 min. Low-Price Near-Expiry intercepts BTC 80–87¢ in the final 10–120 sec. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. Full order lifecycle tracking (order_id, submission time, outcome).
 
 **SPX Engine** — Adapts the crypto EGARCH framework for S&P 500 equities: stronger leverage effect bounds (4× crypto), VIX-implied volatility integration when realized and implied diverge >30%, intraday seasonal deseasonalization (13 half-hour buckets), NYSE market hours guard with holiday calendar, half-rate fees (finance category), and per-window correlation controls (max 2 positions, 15% risk).
 
@@ -423,4 +426,4 @@ For readers interested in the mathematical foundations, the full technical white
 
 ---
 
-*Last updated: 2026-04-05T20:24:23Z*
+*Last updated: 2026-04-05T20:50:48Z*
