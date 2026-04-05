@@ -16994,7 +16994,7 @@ class MainLoop:
                     _ppo_source = "ws"
 
                     if _ppo_ob and (time.time() - _ppo_ob.get("ts", 0)) < POSITION_PRICE_MONITOR_WS_STALE_SEC:
-                        _ppo_ask = OrderExecutor._best_yes_ask_cents(_ppo_ob)
+                        _ppo_ask = OpportunityScanner._best_yes_ask_cents(_ppo_ob)
                         _ppo_bid = OrderExecutor._best_yes_bid(_ppo_ob)
                     if _ppo_ask is None:
                         # WS failed — REST fallback (1 read)
