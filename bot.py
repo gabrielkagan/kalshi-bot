@@ -16981,12 +16981,9 @@ class MainLoop:
                         continue
                     _ppo_ticker = pos["ticker"]
 
-                    # Only 15M positions (skip hourly/spx/weather/sports)
-                    _ppo_is_15m = any(
-                        m.get("ticker") == _ppo_ticker
-                        and w.get("product_type") in (None, "15m")
-                        for w in self._active_windows
-                        for m in w.get("markets", []))
+                    # Only 15M positions — check by ticker prefix (KXBTC15M, KXETH15M, etc.)
+                    # Don't rely on _active_windows which may not contain the ticker's market
+                    _ppo_is_15m = ("15M" in _ppo_ticker.upper())
                     if not _ppo_is_15m:
                         continue
 
