@@ -52,6 +52,12 @@ Wave 1 (UX): Active Positions/Orders moved above analytics (first thing after he
 ## [2026-04-05] research | Price drift analysis — drift is NET PROFITABLE, don't fix
 68.8% of trades have fill price != scan price. Initially recommended tightening STC gate to 92c — WRONG. PnL analysis shows DOWN-drift fills are the MOST profitable group ($1.25/trade, 47.5% of total PnL). 135 sub-floor fills are net +$108 (12.4% of PnL). The 6 STC gate violations are -$11 net (negligible). Tightening gates would COST money because at 93.5% WR, every blocked trade is 14:1 winners-to-losers. Recommendation: do nothing — drift is a feature, not a bug. Filed as kb-research/bot/price-drift-analysis.md.
 
+## [2026-04-05] fix | PPO v2 table creation — executescript silently failed
+The `conn.executescript()` with DROP+CREATE+INDEX in one block silently failed on VPS, leaving the table non-existent. Split into separate `conn.execute()` calls with IF NOT EXISTS guards. This is the 5th PPO fix in one day — lesson: test table creation on VPS, not just locally.
+
+## [2026-04-05] feat | PPO v2 confirmed working — 95+ rows on live trades
+First successful PPO data collection: 5 open positions (BTC 11ct@93c, ETH 47ct@91c, SOL 157ct@86c, XRP 88ct@92c, XRP 44ct@95c), all showing healthy buffers (0.13-0.37%). Spot price backbone working, threshold cached from DB, STC parsed from event_ticker. 156 obs on XRP, 78 on SOL. Data accumulating for research questions in ppo-research-questions.md. Next: dashboard position health panel.
+
 ## [2026-04-05] feat | PPO v2 — spot-price primary, complete rewrite
 Complete rewrite of position price monitor. v1 had 3 bugs (wrong class name, _active_windows lookup, logging.debug swallowing errors) and fundamentally relied on Kalshi quotes which are empty near settlement. v2 uses CoinbaseFeed spot price as backbone (always available), Kalshi quotes as supplementary. Logs spot_price, threshold, spot_buffer_pct, STC (parsed from event_ticker, not _active_windows), plus Kalshi ask/bid when available. Every tick, never skips. This answers: post-entry price trajectory, entry timing quality, loss anatomy (exact moment spot crosses threshold).
 
