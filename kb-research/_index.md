@@ -1,6 +1,6 @@
 # Research Knowledge Base Index
 
-Last updated: 2026-04-05 | Articles: 15
+Last updated: 2026-04-05 | Articles: 17
 
 ## Purpose
 Complete research findings, analysis outputs, and external knowledge compiled from past Claude chat sessions. These are reference materials that informed bot decisions. Cross-link to kb/decisions/ for what was actually decided.
@@ -17,6 +17,8 @@ Complete research findings, analysis outputs, and external knowledge compiled fr
 - [[bot/dota-draft-arbitrage.md]] - Draft-phase win prediction design. 12-table Supabase schema. Steam/STRATZ APIs. Implementation plan. Not started — pending backtest validation.
 - [[bot/btc-loss-investigation-apr4.md]] - BTC $75 loss deep dive: 41 passthrough trades, p=0.39, entry price caps counterproductive, escalation pattern (73% rate), 30ct cap recommendation.
 - [[bot/backtesting-harness.md]] - Backtester build: two rounds of broken results (phantom signals, balance re-sizing), validated filter mode, SOL confirmed profitable (+$71).
+- [[bot/same-ticker-reentry-analysis.md]] — Same-ticker re-entry: DEBUNKED. Initial 78/78 was cherry-picked DC subset. Full data: 92.9% WR (100 losses), worse than 94% base rate (p=0.46). Real finding: bot is 97.6% blind to post-entry prices (occupied timeslot at line 6484). Post-entry monitoring is the actionable item.
+- [[bot/goldmine-hunt-apr5.md]] — 12-agent comprehensive alpha hunt. Most opportunities collapsed under verification (relaxed edge=-$103 at Kelly, DC z-1.5=base rate, post-loss=$23 total). Real survivors: fill rate improvement ($967 CF), hourly STC tightening, intraday vol seasonality, weather NO pipeline fix, cross-asset confirmation, market making.
 - [[bot/stc-sizing-research.md]] - STC sizing vulnerability: SOL sub-86c far-from-expiry losses (-$289), universal STC overexposure at 7m+ (-$254). Two fixes: SOL time gate + Kelly STC scaler. Combined +$353 (+73%) PnL improvement. Edge doesn't predict winning (r=-0.04).
 - [[bot/overnight-miscalibration-analysis.md]] - Overnight (04-11 UTC) model underconfidence: 7pp gap at 91-92c, BLR disabled is root cause, verified PnL +$259/19d but p=0.15 not significant. Golden hour framing debunked. Shadowing recommended.
 

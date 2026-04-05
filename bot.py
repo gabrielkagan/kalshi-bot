@@ -622,6 +622,9 @@ LPNE_MAX_STC = 120                        # Data: STC<=120s is the validated zon
 LPNE_FIXED_CONTRACTS = 50                 # Fixed sizing, bypasses Kelly entirely
 LPNE_MAX_CONCURRENT = 2                   # Conservative — new strategy
 
+POSITION_PRICE_MONITOR_ENABLED = True       # Log yes_ask/bid for held positions (WS, zero API cost)
+POSITION_PRICE_MONITOR_WS_STALE_SEC = 10.0  # Skip if WS data older than this
+
 RELAXED_EDGE_SHADOW = os.environ.get("RELAXED_EDGE_SHADOW", "1") == "1"
 RELAXED_EDGE_DISCOUNT = 0.50        # 50% of normal edge threshold (halved)
 RELAXED_EDGE_MIN_PRICE = 88         # Lower bound of relaxed range
@@ -1887,6 +1890,24 @@ class StateManager:
             except sqlite3.OperationalError:
                 pass  # column already exists
         self.conn.commit()
+
+        # Position price observations (post-entry monitoring)
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS position_price_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                observation_time TEXT NOT NULL,
+                seconds_to_close REAL,
+                yes_ask_cents INTEGER,
+                yes_bid_cents INTEGER,
+                entry_price_cents INTEGER NOT NULL,
+                position_count INTEGER NOT NULL,
+                source TEXT NOT NULL DEFAULT 'ws'
+            );
+            CREATE INDEX IF NOT EXISTS idx_ppo_ticker
+                ON position_price_observations(ticker);
+        """)
 
     # ── Ticker Parsing ────────────────────────────────────────────────────
 
@@ -16933,6 +16954,93 @@ class MainLoop:
                     f"prob={candidate['calibrated_prob']:.2%}"
                 )
                 self.executor.execute(candidate)
+
+        # ── Post-entry position price monitor ─────────────────────────────
+        # Log yes_ask/bid for held 15M positions. WS orderbook cache primary
+        # (zero API cost). Only logs when price changes. Pure observation.
+        if POSITION_PRICE_MONITOR_ENABLED:
+            try:
+                _ppo_positions = self.state.get_open_positions()
+                _ppo_wrote = False
+                for pos in _ppo_positions:
+                    if pos.get("status") != "open":
+                        continue
+                    _ppo_ticker = pos["ticker"]
+
+                    # Only 15M positions (skip hourly/spx/weather/sports)
+                    _ppo_is_15m = any(
+                        m.get("ticker") == _ppo_ticker
+                        and w.get("product_type") in (None, "15m")
+                        for w in self._active_windows
+                        for m in w.get("markets", []))
+                    if not _ppo_is_15m:
+                        continue
+
+                    # Read WS orderbook cache (zero API cost)
+                    _ppo_ob = self.kalshi_feed.get_orderbook(_ppo_ticker) if self.kalshi_feed else None
+                    _ppo_ask = None
+                    _ppo_bid = None
+                    _ppo_source = "ws"
+
+                    if _ppo_ob and (time.time() - _ppo_ob.get("ts", 0)) < POSITION_PRICE_MONITOR_WS_STALE_SEC:
+                        _ppo_ask = OrderExecutor._best_yes_ask_cents(_ppo_ob)
+                        _ppo_bid = OrderExecutor._best_yes_bid(_ppo_ob)
+                    else:
+                        # WS stale or missing — REST fallback (1 read)
+                        try:
+                            _ppo_mkt = self.client.get_market(_ppo_ticker)
+                            if _ppo_mkt:
+                                _ppo_ya = _ppo_mkt.get("yes_ask")
+                                _ppo_yb = _ppo_mkt.get("yes_bid")
+                                if _ppo_ya is not None:
+                                    _ppo_ask = int(float(_ppo_ya) * 100) if isinstance(_ppo_ya, (float, str)) and float(_ppo_ya) < 2 else int(_ppo_ya)
+                                if _ppo_yb is not None:
+                                    _ppo_bid = int(float(_ppo_yb) * 100) if isinstance(_ppo_yb, (float, str)) and float(_ppo_yb) < 2 else int(_ppo_yb)
+                                _ppo_source = "rest"
+                        except Exception:
+                            pass
+
+                    if _ppo_ask is None:
+                        continue
+
+                    # Change-only dedup: skip if ask hasn't changed since last obs
+                    if not hasattr(self, "_ppo_last_ask"):
+                        self._ppo_last_ask = {}
+                    _ppo_key = _ppo_ticker
+                    if self._ppo_last_ask.get(_ppo_key) == _ppo_ask:
+                        continue
+                    self._ppo_last_ask[_ppo_key] = _ppo_ask
+
+                    # Compute seconds to close
+                    _ppo_stc = None
+                    for w in self._active_windows:
+                        for m in w.get("markets", []):
+                            if m.get("ticker") == _ppo_ticker:
+                                _ppo_close = w.get("close_time")
+                                if _ppo_close:
+                                    _ppo_stc = (_ppo_close - datetime.datetime.now(timezone.utc)).total_seconds()
+                                break
+                        if _ppo_stc is not None:
+                            break
+
+                    self.state.conn.execute(
+                        """INSERT INTO position_price_observations
+                           (ticker, asset, observation_time, seconds_to_close,
+                            yes_ask_cents, yes_bid_cents, entry_price_cents,
+                            position_count, source)
+                           VALUES (?,?,?,?,?,?,?,?,?)""",
+                        (_ppo_ticker, pos.get("asset", ""),
+                         datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                         round(_ppo_stc, 1) if _ppo_stc is not None else None,
+                         _ppo_ask, _ppo_bid,
+                         pos.get("avg_price_cents", 0), pos.get("count", 0),
+                         _ppo_source))
+                    _ppo_wrote = True
+
+                if _ppo_wrote:
+                    self.state.conn.commit()
+            except Exception:
+                logging.debug("position_price_monitor failed", exc_info=True)
 
     # ── Run ───────────────────────────────────────────────────────────────
 
