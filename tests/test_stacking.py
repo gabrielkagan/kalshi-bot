@@ -173,6 +173,31 @@ class TestSettlementRefactor(unittest.TestCase):
         self.assertIsNotNone(insert_m,
                               "record_settlement INSERT must include is_stacked")
 
+    def test_record_settlement_has_revenue_override(self):
+        """revenue_override prevents stacked positions from each getting full API revenue."""
+        fn_start = self.source.find("def record_settlement")
+        fn_sig = self.source[fn_start:fn_start + 400]
+        self.assertIn("revenue_override", fn_sig,
+                       "record_settlement must accept revenue_override parameter")
+
+    def test_process_settlement_passes_revenue_override(self):
+        """_process_settlement must pass revenue_override to record_settlement."""
+        m = re.search(r'def _process_settlement.*?(?=\n    def |\nclass |\Z)',
+                       self.source, re.DOTALL)
+        self.assertIsNotNone(m)
+        body = m.group(0)
+        self.assertIn("revenue_override=row_revenue", body,
+                       "_process_settlement must pass revenue_override=row_revenue")
+
+    def test_record_settlement_applies_revenue_override(self):
+        """record_settlement must use revenue_override when provided."""
+        m = re.search(r'def record_settlement.*?(?=\n    def |\nclass |\Z)',
+                       self.source, re.DOTALL)
+        self.assertIsNotNone(m)
+        body = m.group(0)
+        self.assertIn("revenue_override is not None", body,
+                       "record_settlement must check and apply revenue_override")
+
     def test_record_settlement_no_update_positions_settled(self):
         m = re.search(r'def record_settlement.*?(?=\n    def |\nclass |\Z)',
                        self.source, re.DOTALL)

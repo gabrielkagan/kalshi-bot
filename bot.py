@@ -2142,6 +2142,7 @@ class StateManager:
         return [dict(r) for r in rows]
 
     def record_settlement(self, settlement: Dict,
+                          revenue_override: Optional[int] = None,
                           pnl_override: Optional[int] = None,
                           fee_override: Optional[int] = None,
                           pos: Optional[Dict] = None):
@@ -2170,6 +2171,9 @@ class StateManager:
         result = settlement.get("market_result", "")
         rev_d = settlement.get("revenue_dollars")
         revenue = dollars_str_to_cents(rev_d) if rev_d else (settlement.get("revenue") or 0)
+        # For stacked positions, use per-row revenue (not full API aggregate)
+        if revenue_override is not None:
+            revenue = revenue_override
         total_cost = pos["total_cost_cents"]
         pnl = revenue - total_cost
         is_taker = bool(pos.get("is_taker"))
@@ -15371,9 +15375,11 @@ class SettlementTracker:
             combined_pnl += row_pnl
             combined_fee += row_fee
 
-            # Record each row to settled_trades
+            # Record each row to settled_trades (revenue_override prevents
+            # stacked positions from each getting the full API aggregate revenue)
             self._state.record_settlement(
-                settlement, pnl_override=row_pnl, fee_override=row_fee, pos=pos)
+                settlement, revenue_override=row_revenue,
+                pnl_override=row_pnl, fee_override=row_fee, pos=pos)
 
         # Mark ALL positions for this ticker as settled (once, outside loop)
         self._state.conn.execute("""
