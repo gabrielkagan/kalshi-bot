@@ -194,7 +194,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
 - **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
-- **Tests:** 872 tests across 15+ test files
+- **Tests:** 999 tests across 15+ test files
 
 ## Key Config Values (bot.py)
 
@@ -290,7 +290,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 
 ## Hourly Three-Layer Optimization
 
-Researcher-recommended filters to fix hourly overconfidence, timing, and correlation issues. All run under `HOURLY_OBSERVATION_ONLY = True` — observation gate is the shadow mechanism. Filters placed LATE in pipeline so all upstream data is still logged for counterfactual analysis.
+Researcher-recommended filters to fix hourly overconfidence, timing, and correlation issues. All run under `HOURLY_OBSERVATION_ONLY = not HOURLY_LIVE_ENABLED` — observation gate is the shadow mechanism. Filters placed LATE in pipeline so all upstream data is still logged for counterfactual analysis.
 
 | Layer | Filter Stage | Purpose |
 |-------|-------------|---------|

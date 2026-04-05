@@ -4,13 +4,14 @@ Guards against:
 - Price set: {95, 96, 97, 98, 99} — full 95-99c range
 - Probability gate: calibrated_prob >= 0.93
 - STC window: 61-300 seconds to close
-- Fixed sizing: 50 contracts, no Kelly, no drawdown scaler
+- Fixed sizing: default 50 contracts, per-price overrides (98c/99c → 100)
 - Feature flag: TERMINAL_MOMENTUM_ENABLED gates all TM activity
 - DC overlap: TM skips tickers already claimed by decided contracts
 - Position overlap: TM skips tickers with existing positions
 - Concurrent cap: max TM_MAX_CONCURRENT simultaneous TM candidates
 - Candidate separation: TM candidates bypass single-asset-per-window filter
 - Execute routing: terminal_momentum strategy routes to _execute_tm_taker
+- Execution-time sizing: _execute_tm_taker re-derives count from fresh_ask
 """
 
 import re
@@ -70,8 +71,23 @@ class TestTMConstants(unittest.TestCase):
         self.assertEqual(_extract_constant(self.source, "TM_MIN_STC"), 61)
         self.assertEqual(_extract_constant(self.source, "TM_MAX_STC"), 300)
 
-    def test_fixed_contracts(self):
+    def test_fixed_contracts_default(self):
         self.assertEqual(_extract_constant(self.source, "TM_FIXED_CONTRACTS"), 50)
+
+    def test_contracts_by_price(self):
+        """98c and 99c scaled to 100 contracts."""
+        m = re.search(r'^TM_CONTRACTS_BY_PRICE\s*=\s*(\{[^}]+\})', self.source, re.MULTILINE)
+        self.assertIsNotNone(m, "TM_CONTRACTS_BY_PRICE must be a dict literal")
+        val = eval(m.group(1))
+        self.assertEqual(val, {98: 100, 99: 100})
+
+    def test_contracts_by_price_only_scaled_tiers(self):
+        """Only 98c and 99c should be in the override dict — other tiers use default."""
+        m = re.search(r'^TM_CONTRACTS_BY_PRICE\s*=\s*(\{[^}]+\})', self.source, re.MULTILINE)
+        self.assertIsNotNone(m)
+        val = eval(m.group(1))
+        self.assertEqual(set(val.keys()), {98, 99},
+                         "Only 98c and 99c should have overrides")
 
     def test_max_concurrent(self):
         self.assertEqual(_extract_constant(self.source, "TM_MAX_CONCURRENT"), 4)
@@ -193,7 +209,8 @@ class TestTMExecuteRouting(unittest.TestCase):
     def test_tm_taker_sets_cooldown(self):
         """_execute_tm_taker must set ticker cooldown."""
         fn_start = self.source.find("def _execute_tm_taker")
-        fn_block = self.source[fn_start:fn_start + 3000]
+        fn_end = self.source.find("\n    def ", fn_start + 1)
+        fn_block = self.source[fn_start:fn_end]
         self.assertIn("_recent_taker_tickers", fn_block)
 
     def test_tm_taker_sends_telegram(self):
@@ -206,15 +223,20 @@ class TestTMExecuteRouting(unittest.TestCase):
 
 
 class TestTMSizing(unittest.TestCase):
-    """Verify TM uses fixed sizing, not Kelly."""
+    """Verify TM uses per-price sizing with safe defaults."""
 
     def setUp(self):
         self.source = _read_bot()
 
-    def test_fixed_contracts_in_candidate(self):
-        """TM candidate must use TM_FIXED_CONTRACTS for position_size."""
+    def test_scan_time_uses_per_price_lookup(self):
+        """TM candidate must derive size from TM_CONTRACTS_BY_PRICE."""
         tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:6000]
-        self.assertIn('"position_size": TM_FIXED_CONTRACTS', tm_block)
+        self.assertIn("TM_CONTRACTS_BY_PRICE.get(best_ask, TM_FIXED_CONTRACTS)", tm_block)
+
+    def test_scan_time_sets_position_size(self):
+        """TM candidate must use _tm_size for position_size."""
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:6000]
+        self.assertIn('"position_size": _tm_size', tm_block)
 
     def test_kelly_zero_in_candidate(self):
         """TM candidate must set kelly_f=0.0."""
@@ -225,6 +247,20 @@ class TestTMSizing(unittest.TestCase):
         """TM candidate must set drawdown_scaler=1.0 (not affected by drawdown)."""
         tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:6000]
         self.assertIn('"drawdown_scaler": 1.0', tm_block)
+
+    def test_execution_time_re_derives_count(self):
+        """_execute_tm_taker must re-derive count from fresh_ask to handle price drift."""
+        fn_start = self.source.find("def _execute_tm_taker")
+        fn_end = self.source.find("\n    def ", fn_start + 1)
+        fn_block = self.source[fn_start:fn_end]
+        self.assertIn("TM_CONTRACTS_BY_PRICE.get(fresh_ask, TM_FIXED_CONTRACTS)", fn_block)
+
+    def test_execution_time_updates_candidate(self):
+        """_execute_tm_taker must update candidate['position_size'] after re-derivation."""
+        fn_start = self.source.find("def _execute_tm_taker")
+        fn_end = self.source.find("\n    def ", fn_start + 1)
+        fn_block = self.source[fn_start:fn_end]
+        self.assertIn('candidate["position_size"] = count', fn_block)
 
 
 class TestTMNoRetryQueue(unittest.TestCase):

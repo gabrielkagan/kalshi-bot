@@ -603,7 +603,8 @@ TM_PRICE_SET = {95, 96, 97, 98, 99}      # Valid entry prices (97c: 98.2% WR on 
 TM_MIN_PROB = 0.93                        # Model confirmation threshold
 TM_MIN_STC = 61                           # Minimum seconds to close
 TM_MAX_STC = 300                          # Maximum seconds to close
-TM_FIXED_CONTRACTS = 50                   # Fixed position size (bypasses Kelly entirely)
+TM_FIXED_CONTRACTS = 50                   # Default position size (bypasses Kelly entirely)
+TM_CONTRACTS_BY_PRICE = {98: 100, 99: 100}  # Per-price overrides (scaled tiers)
 TM_MAX_CONCURRENT = 4                     # Max simultaneous TM positions (safety cap)
 
 RELAXED_EDGE_SHADOW = os.environ.get("RELAXED_EDGE_SHADOW", "1") == "1"
@@ -7657,9 +7658,10 @@ class OpportunityScanner:
                                 _tm_count = sum(1 for c in candidates if c.get("strategy") == "terminal_momentum")
                                 if _tm_count < TM_MAX_CONCURRENT:
                                     _tm_intercepted = True
+                                    _tm_size = TM_CONTRACTS_BY_PRICE.get(best_ask, TM_FIXED_CONTRACTS)
                                     logging.info(
                                         "TM_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs edge=%.4f",
-                                        asset, ticker, TM_FIXED_CONTRACTS, best_ask,
+                                        asset, ticker, _tm_size, best_ask,
                                         final_prob, seconds_remaining, fee_adjusted_edge)
                                     candidates.append({
                                         "ticker": ticker,
@@ -7676,7 +7678,7 @@ class OpportunityScanner:
                                         "best_ask_source": best_ask_source,
                                         "edge": round(edge, 6),
                                         "fee_adjusted_edge": round(fee_adjusted_edge, 6),
-                                        "position_size": TM_FIXED_CONTRACTS,
+                                        "position_size": _tm_size,
                                         "kelly_f": 0.0,
                                         "drawdown_scaler": 1.0,
                                         "vol_regime": vol_est["regime"],
@@ -7723,7 +7725,7 @@ class OpportunityScanner:
                                                 vol_regime=vol_est["regime"],
                                                 calibrated_prob_raw=calibrated_prob_raw,
                                                 kelly_f=0.0,
-                                                position_size=TM_FIXED_CONTRACTS,
+                                                position_size=_tm_size,
                                                 breakeven_wr=best_ask / 100.0,
                                                 ask_depth=ask_depth,
                                                 best_ask_source=best_ask_source,
@@ -13202,7 +13204,7 @@ class OrderExecutor:
     def _execute_tm_taker(self, candidate: Dict, asset: str, seconds_to_close) -> Optional[Dict]:
         """Execute terminal momentum trade — direct taker, fixed contracts, no retry."""
         ticker = candidate["ticker"]
-        count = candidate["position_size"]  # TM_FIXED_CONTRACTS (50)
+        count = candidate["position_size"]  # scan-time: TM_CONTRACTS_BY_PRICE or TM_FIXED_CONTRACTS
         price = candidate["best_yes_ask"]
         cal_prob = candidate["calibrated_prob"]
 
@@ -13235,6 +13237,9 @@ class OrderExecutor:
                          ticker, price, fresh_ask, fresh_depth, fresh_source)
             price = fresh_ask
             candidate["best_yes_ask"] = fresh_ask
+            # Re-derive sizing from execution-time price (scan price may have drifted)
+            count = TM_CONTRACTS_BY_PRICE.get(fresh_ask, TM_FIXED_CONTRACTS)
+            candidate["position_size"] = count
             taker_fee = calculate_taker_fee(count, price)
             net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
 
