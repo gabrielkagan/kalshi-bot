@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-04-03
+updated: 2026-04-05
 tags: [edge, thresholds, price-dependent, probability]
 ---
 # Edge Thresholds
@@ -74,6 +74,27 @@ Per-asset price floors (`BTC_MIN_ENTRY_PRICE=88`, `ETH_MIN_ENTRY_PRICE=90`, etc.
 
 - Price floor: "is this price tier profitable for this asset at all?"
 - Edge threshold: "given this price tier, is this specific signal strong enough?"
+
+## STC Sizing Scaler (Apr 5, 2026)
+
+`STC_SIZING_SCALER_ENABLED = True`, `STC_SIZING_SCALER_KNEE = 300`
+
+Independent of edge thresholds, position sizing scales down with time-to-close:
+
+```
+if STC > 300s: contracts *= 300 / STC
+```
+
+| STC | Scaler | Effect |
+|-----|--------|--------|
+| 300s (5m) | 1.0x | No change |
+| 420s (7m) | 0.71x | |
+| 600s (10m) | 0.50x | |
+| 900s (15m) | 0.33x | |
+
+**Data:** 3-5 min is the sweet spot (94.6% WR, +$667). 7m+ is net negative (-$251). The scaler doesn't cut trades — it sizes them proportionally to time exposure. Applied in main 15M pipeline, overnight discount, and weekend discount. kelly_f stays pure.
+
+**Interaction with LOW_STC_SIZING_CAP:** Mutually exclusive ranges — LOW_STC halves at <100s, STC scaler activates at >300s. The 100-300s range (including the sweet spot) is unscaled.
 
 ## Anti-Pattern: Flat Edge Analysis
 
