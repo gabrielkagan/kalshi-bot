@@ -17001,13 +17001,17 @@ class MainLoop:
                         try:
                             _ppo_mkt = self.client.get_market(_ppo_ticker)
                             if _ppo_mkt:
-                                _ppo_ya = _ppo_mkt.get("yes_ask")
-                                _ppo_yb = _ppo_mkt.get("yes_bid")
+                                # Kalshi returns market data nested under "market" key
+                                _ppo_mkt_data = _ppo_mkt.get("market", _ppo_mkt)
+                                _ppo_ya = _ppo_mkt_data.get("yes_ask")
+                                _ppo_yb = _ppo_mkt_data.get("yes_bid")
                                 if _ppo_ya is not None:
                                     _ppo_ask = int(float(_ppo_ya) * 100) if isinstance(_ppo_ya, (float, str)) and float(_ppo_ya) < 2 else int(_ppo_ya)
                                 if _ppo_yb is not None:
                                     _ppo_bid = int(float(_ppo_yb) * 100) if isinstance(_ppo_yb, (float, str)) and float(_ppo_yb) < 2 else int(_ppo_yb)
                                 _ppo_source = "rest"
+                            else:
+                                logging.info("PPO_REST_NULL: %s — get_market returned None", _ppo_ticker)
                         except Exception:
                             logging.warning("PPO REST fallback failed for %s", _ppo_ticker, exc_info=True)
 
