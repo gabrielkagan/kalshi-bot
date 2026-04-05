@@ -16996,8 +16996,8 @@ class MainLoop:
                     if _ppo_ob and (time.time() - _ppo_ob.get("ts", 0)) < POSITION_PRICE_MONITOR_WS_STALE_SEC:
                         _ppo_ask = OrderExecutor._best_yes_ask_cents(_ppo_ob)
                         _ppo_bid = OrderExecutor._best_yes_bid(_ppo_ob)
-                    else:
-                        # WS stale or missing — REST fallback (1 read)
+                    if _ppo_ask is None:
+                        # WS failed — REST fallback (1 read)
                         try:
                             _ppo_mkt = self.client.get_market(_ppo_ticker)
                             if _ppo_mkt:
@@ -17009,9 +17009,10 @@ class MainLoop:
                                     _ppo_bid = int(float(_ppo_yb) * 100) if isinstance(_ppo_yb, (float, str)) and float(_ppo_yb) < 2 else int(_ppo_yb)
                                 _ppo_source = "rest"
                         except Exception:
-                            pass
+                            logging.warning("PPO REST fallback failed for %s", _ppo_ticker, exc_info=True)
 
                     if _ppo_ask is None:
+                        logging.info("PPO_SKIP: %s — no price from WS or REST (ws_ob=%s)", _ppo_ticker, "yes" if _ppo_ob else "no")
                         continue
 
                     # Change-only dedup: skip if ask hasn't changed since last obs
