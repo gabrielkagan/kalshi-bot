@@ -24,7 +24,7 @@ Three simultaneous losses settled in one 15-minute window:
 No single trade was individually unreasonable -- each passed its own filters and sizing caps. The problem was structural: the bot had no mechanism to limit aggregate risk across concurrent positions in the same settlement window.
 
 **Contributing factors:**
-1. **Cross-asset correlation ignored.** BTC, SOL, and XRP moved against the bot simultaneously. The per-asset risk caps (BTC 12%, XRP 12%, SOL 25%) are independent -- they don't account for correlated crypto moves.
+1. **Cross-asset correlation ignored.** BTC, SOL, and XRP moved against the bot simultaneously. The per-asset risk caps (BTC 15%, XRP 15%, SOL 15%) are independent -- they don't account for correlated crypto moves.
 2. **Time of day.** 04:00 UTC (midnight ET) falls in the overnight discount window. Lower liquidity and wider spreads increase the chance of adverse moves.
 3. **Elevated vol regime.** The window coincided with a period of above-average realized volatility across all three assets.
 4. **Strategy stacking.** Three different strategies (MAKER_PATIENT, decided_t2_z2, overnight_discount) each independently sized their position. No cross-strategy cap existed.

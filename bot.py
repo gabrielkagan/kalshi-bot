@@ -54,7 +54,7 @@ ETH_SUB80_POSITION_CAP = 50      # Half-Kelly at 75c/87% WR = 322-645 contracts;
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 BTC_MAX_RISK_PER_TRADE = 0.15    # BTC: 15% per-trade (was 12% — regime cap removal gives full balance to sizing)
 ETH_MAX_RISK_PER_TRADE = 0.20    # ETH: 20% per-trade (new — was uncapped beyond generic 25%)
-SOL_MAX_RISK_PER_TRADE = 0.12    # SOL: 12% per-trade (new — tightest cap, worst loss/win asymmetry)
+SOL_MAX_RISK_PER_TRADE = 0.15    # SOL: 15% per-trade (raised from 12% — data: 43.9% trades capped at 12%, +$26 PnL)
 XRP_MAX_RISK_PER_TRADE = 0.15    # XRP: 15% per-trade (was 12% — regime cap removal gives full balance)
 SOL_MIN_EDGE = 0.010             # SOL-specific edge floor (reverted to 1.0% — prior 1.8% based on pre-BLR data, invalid under passthrough cal)
 SOL_HIGH_EDGE_SHADOW = 0.05     # SOL edge ceiling shadow: log evaluations with edge > 5% for analysis (5%+ band is 80% WR, PnL-negative)
@@ -8412,6 +8412,20 @@ class OpportunityScanner:
                                             _dc_risk = _sol_risk
                                             break
                                 _dc_position = max(1, int((_dc_balance * _dc_risk) / best_ask))
+                                # Per-asset risk caps (DC uses DECIDED_CONTRACT_RISK=20%
+                                # which can exceed per-asset caps like SOL 15%, BTC 15%)
+                                if asset == "SOL":
+                                    _dc_asset_max = int((_dc_balance * SOL_MAX_RISK_PER_TRADE) / best_ask)
+                                    if _dc_position > _dc_asset_max >= 1:
+                                        _dc_position = _dc_asset_max
+                                elif asset == "BTC":
+                                    _dc_asset_max = int((_dc_balance * BTC_MAX_RISK_PER_TRADE) / best_ask)
+                                    if _dc_position > _dc_asset_max >= 1:
+                                        _dc_position = _dc_asset_max
+                                elif asset == "XRP":
+                                    _dc_asset_max = int((_dc_balance * XRP_MAX_RISK_PER_TRADE) / best_ask)
+                                    if _dc_position > _dc_asset_max >= 1:
+                                        _dc_position = _dc_asset_max
                                 # EV with assumed win prob — calibrated from 14-day settlement data:
                                 # T1: 92/92 (100%) at 95-98c → 0.99 (unchanged)
                                 # T1B: 47/47 (100%) at 95-98c → 0.98 (was 0.97, unlocks 97c)

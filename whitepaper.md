@@ -660,7 +660,7 @@ Safety ceiling: max 25% of bankroll at risk per trade.
 |---|---|
 | 15M (BTC) | 15% |
 | 15M (ETH) | 20% |
-| 15M (SOL) | 12% (tightest — worst loss/win asymmetry) |
+| 15M (SOL) | 15% (raised from 12% — 43.9% of trades were capped) |
 | 15M (XRP) | 15% |
 | Hourly | 15% |
 | SPX | 10% |

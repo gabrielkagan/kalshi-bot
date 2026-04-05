@@ -181,7 +181,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 ## Current State (Mar 20, 2026)
 
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
-- **15M live assets:** BTC (88c+), ETH (75c+, 30-contract cap sub-80c), SOL (80c+, taker-first), XRP (92c+, 12% risk cap)
+- **15M live assets:** BTC (88c+), ETH (75c+, 30-contract cap sub-80c), SOL (80c+, taker-first), XRP (92c+)
 - **XRP_15M_SHADOW = False** — XRP promoted to live at 92c+ (data: 41W/2L, 95.3% WR)
 - **SOL_TAKER_FIRST = True** — SOL bypasses maker entirely, direct IOC at all STC
 - **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c), T2-Z2 (z≤-2, 93-96c) all enabled as incremental overlay

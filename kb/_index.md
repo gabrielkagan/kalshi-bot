@@ -11,7 +11,7 @@ Read this index first before answering any deep question about the bot. Identify
 - [[concepts/dc-strategy.md]] - Decided Contract: T1/T1B/T2 tiers, z-score thresholds, risk caps, fill rates.
 - [[concepts/sol-dynamics.md]] - SOL-specific: edge floor, PnL dominance, tiered DC risk, sizing concerns.
 - [[concepts/execution-layer.md]] - Execution: maker-first escalation, SOL override, per-asset locks, order lifecycle.
-- [[concepts/per-asset-rules.md]] - Per-asset config: BTC 15%, ETH 20%, SOL 12%, XRP 15% risk caps and floors.
+- [[concepts/per-asset-rules.md]] - Per-asset config: BTC 15%, ETH 20%, SOL 15%, XRP 15% risk caps and floors.
 - [[concepts/weather-system.md]] - Weather ensemble model: GFS+ECMWF, 19 cities, bracket/tail markets.
 - [[concepts/stacking-infrastructure.md]] - Multi-strategy stacking: composite PK, strategy_to_group(), caps.
 - [[concepts/position-reconciliation.md]] - Startup reconciliation: API-always-wins sync, multi-strategy aware.

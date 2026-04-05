@@ -35,7 +35,7 @@ ETH floor was raised from 85c to 90c after discovering negative PnL in the 85-89
 | Min entry price | 80c | Explicit floor — prevents SOL trading at 75-79c |
 | Sub-86c time gate | Block ≤85c at STC≥300s | Data: 78.3% WR -$289; <300s is 100% WR +$228 |
 | Min edge | 1.0% (`SOL_MIN_EDGE`) | Data: <1.0% = 82% WR, >= 1.0% = 94.2% WR on 258 trades |
-| Max risk per trade | 0.12 (12%) | Tightest cap — contains loss magnitude on high-volume asset |
+| Max risk per trade | 0.15 (15%) | Raised from 12% — 43.9% of trades were capped, +$26 PnL. DC path now enforces this too. |
 | Execution mode | Taker-first | Data: 44.7% maker fill rate, $101/wk missed |
 | NBBO fallback | 86-99c, STC <= 300s | 93.3% WR; 80-85c is 50-73% WR trap |
 
