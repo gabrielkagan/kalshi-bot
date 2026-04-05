@@ -2128,7 +2128,7 @@ class TestNBBOFallbackGates:
     def test_btc_gate_values(self):
         from bot import NBBO_FALLBACK_GATES
         min_p, max_p, max_stc = NBBO_FALLBACK_GATES["BTC"]
-        assert min_p == 86
+        assert min_p == 80  # Lowered from 86 for LPNE (BTC 80-87c near-expiry)
         assert max_p == 99
         assert max_stc == 300.0
 

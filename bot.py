@@ -609,6 +609,18 @@ TM_MAX_STC = 300                          # Maximum seconds to close
 TM_FIXED_CONTRACTS = 50                   # Default position size (bypasses Kelly entirely)
 TM_CONTRACTS_BY_PRICE = {98: 100, 99: 100}  # Per-price overrides (scaled tiers)
 TM_MAX_CONCURRENT = 4                     # Max simultaneous TM positions (safety cap)
+# ─── Low-Price Near-Expiry (LPNE) Strategy ──────────────────────────────
+# Trades BTC 15M at 80-87c in the final 10-120s before expiry. These are contracts
+# the price floor rejects but that settle YES at 97.6% WR (42 obs, STC<=120s).
+# Fixed 50-contract sizing, direct taker. BTC ONLY — ETH 80% WR, XRP 88.5%, SOL marginal.
+LPNE_ENABLED = os.environ.get("LPNE_ENABLED", "1") == "1"
+LPNE_ASSETS = {"BTC"}                     # BTC only — other assets don't have the WR
+LPNE_MIN_PRICE = 80                       # Lowest eligible price
+LPNE_MAX_PRICE = 87                       # Highest (88c+ is main pipeline BTC floor)
+LPNE_MIN_STC = 10                         # Avoid last-second settlement noise
+LPNE_MAX_STC = 120                        # Data: STC<=120s is the validated zone
+LPNE_FIXED_CONTRACTS = 50                 # Fixed sizing, bypasses Kelly entirely
+LPNE_MAX_CONCURRENT = 2                   # Conservative — new strategy
 
 RELAXED_EDGE_SHADOW = os.environ.get("RELAXED_EDGE_SHADOW", "1") == "1"
 RELAXED_EDGE_DISCOUNT = 0.50        # 50% of normal edge threshold (halved)
@@ -669,7 +681,7 @@ MAX_CONCURRENT_TAKER_PER_ASSET = 3  # safety cap: max simultaneous taker positio
 # Data: 456/468 missed candidates had empty orderbooks; simulated PnL +$196/wk.
 # Per-asset: (min_price_cents, max_price_cents, max_stc_seconds_or_None)
 NBBO_FALLBACK_GATES = {
-    "BTC": (86, 99, 300.0),     # 97.9% WR; 180-300s validated (97% WR, n=33)
+    "BTC": (80, 99, 300.0),     # Lowered from 86 for LPNE (80-87c near-expiry); 97.9% WR at 86c+
     "ETH": (90, 99, 300.0),     # 90c matches ETH_MIN_ENTRY_PRICE; raised from 85c (data: 85-89c 86.2% WR, negative EV)
     "SOL": (86, 99, 300.0),     # 93.3% WR; 80-85c is 50-73% WR trap
     "XRP": (92, 99, 300.0),     # 180-300s validated; will evaluate 300-600s after 1 week NBBO data
@@ -7130,6 +7142,98 @@ class OpportunityScanner:
                     elif asset == "XRP":
                         _asset_floor = XRP_MIN_ENTRY_PRICE
                 if _pt in (None, "15m") and best_ask < _asset_floor:
+                    # ── LPNE intercept: BTC 80-87c near-expiry ──────────────
+                    # Data: BTC 80-87c at STC<=120s = 97.6% WR (42 obs), p=0.031.
+                    # Intercept BEFORE floor rejection. BTC ONLY — see LPNE_ASSETS.
+                    if (LPNE_ENABLED
+                            and not OBSERVATION_MODE
+                            and asset in LPNE_ASSETS
+                            and LPNE_MIN_PRICE <= best_ask <= LPNE_MAX_PRICE
+                            and LPNE_MIN_STC <= seconds_remaining <= LPNE_MAX_STC
+                            and final_prob >= best_ask / 100.0):  # model must believe at least break-even
+                        _lpne_dc_overlap = any(
+                            c["ticker"] == ticker and c.get("strategy", "").startswith("decided_")
+                            for c in candidates)
+                        if not _lpne_dc_overlap:
+                            _lpne_has_position = any(
+                                p["ticker"] == ticker
+                                for p in self._state.get_open_positions())
+                            if not _lpne_has_position:
+                                _lpne_count = sum(1 for c in candidates if c.get("strategy") == "low_price_near_expiry")
+                                if _lpne_count < LPNE_MAX_CONCURRENT:
+                                    logging.info(
+                                        "LPNE_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs",
+                                        asset, ticker, LPNE_FIXED_CONTRACTS, best_ask,
+                                        final_prob, seconds_remaining)
+                                    candidates.append({
+                                        "ticker": ticker,
+                                        "event_ticker": window["event_ticker"],
+                                        "asset": asset,
+                                        "product_type": window.get("product_type"),
+                                        "spot": spot,
+                                        "threshold": threshold,
+                                        "seconds_to_close": round(seconds_remaining, 1),
+                                        "blended_rv": blended_rv,
+                                        "calibrated_prob": round(final_prob, 6),
+                                        "z_score": prob_result.get("z_score"),
+                                        "best_yes_ask": best_ask,
+                                        "best_ask_source": best_ask_source,
+                                        "edge": round(cal_prob - best_ask / 100.0, 6),
+                                        "fee_adjusted_edge": round((cal_prob - best_ask / 100.0) - (calculate_fee(1, best_ask, is_taker=True, fee_mult_taker=_pricecfg.fee_multiplier_taker, fee_mult_maker=_pricecfg.fee_multiplier_maker) / 100.0), 6),
+                                        "position_size": LPNE_FIXED_CONTRACTS,
+                                        "kelly_f": 0.0,
+                                        "drawdown_scaler": 1.0,
+                                        "vol_regime": vol_est["regime"],
+                                        "balance_at_scan": self._get_balance_cached(),
+                                        "strategy": "low_price_near_expiry",
+                                        "strategy_scores": {"certainty": 1.0, "certainty_detail": "lpne",
+                                                            "orderbook": 0.5, "orderbook_detail": "n/a",
+                                                            "urgency": 1.0, "urgency_detail": "lpne",
+                                                            "composite": 1.0, "reason": "low_price_near_expiry"},
+                                        "ob_snapshot": {
+                                            "best_ask": best_ask,
+                                            "ask_depth": ask_depth,
+                                            "total_depth": total_depth,
+                                            "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                                            "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                                            "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                                      if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
+                                        },
+                                        "calibrated_prob_raw": round(cal_prob, 6),
+                                        "ofa_adjustment": 0.0,
+                                        "ofa_confidence": "none",
+                                        "raw_prob": raw_prob_pre,
+                                    })
+                                    _lpne_dedup = (ticker, "low_price_near_expiry")
+                                    if _lpne_dedup not in self._eval_opp_seen:
+                                        self._eval_opp_seen.add(_lpne_dedup)
+                                        try:
+                                            self._state.insert_evaluated_opportunity(
+                                                ticker, window["event_ticker"], asset,
+                                                "low_price_near_expiry",
+                                                spot_price=spot, threshold=threshold,
+                                                volatility=blended_rv, market_price=best_ask,
+                                                seconds_to_close=seconds_remaining,
+                                                calibrated_prob=final_prob,
+                                                edge=cal_prob - best_ask / 100.0,
+                                                z_score=prob_result.get("z_score"),
+                                                vol_regime=vol_est["regime"],
+                                                raw_prob=raw_prob_pre,
+                                                calibration_method=calibration_method_pre,
+                                                fee_adjusted_edge=round((cal_prob - best_ask / 100.0) - (calculate_fee(1, best_ask, is_taker=True, fee_mult_taker=_pricecfg.fee_multiplier_taker, fee_mult_maker=_pricecfg.fee_multiplier_maker) / 100.0), 6),
+                                                breakeven_wr=best_ask / 100.0,
+                                                ask_depth=ask_depth,
+                                                best_ask_source=best_ask_source,
+                                                position_size=LPNE_FIXED_CONTRACTS,
+                                                kelly_f=0.0,
+                                                drawdown_scaler=1.0,
+                                                strategy="low_price_near_expiry",
+                                                product_type=window.get("product_type"),
+                                                **_oft_db, **_shadow_diag)
+                                        except Exception:
+                                            logging.warning("insert_evaluated_opportunity failed (lpne)", exc_info=True)
+                                    continue  # Skip floor rejection — this is now an LPNE candidate
+
                     _frs_edge = cal_prob - best_ask / 100.0
                     _frs_fee = calculate_fee(
                         1, best_ask, is_taker=True,
@@ -10307,12 +10411,13 @@ class OpportunityScanner:
         _dc_candidates = [c for c in candidates if c.get("strategy", "").startswith("decided_")]
         _tm_candidates = [c for c in candidates if c.get("strategy") == "terminal_momentum"]
         _bn_candidates = [c for c in candidates if c.get("strategy") == "bracket_no"]
+        _lpne_candidates = [c for c in candidates if c.get("strategy") == "low_price_near_expiry"]
         _dc_tickers = {c["ticker"] for c in _dc_candidates}
         _tm_tickers = {c["ticker"] for c in _tm_candidates}
         # Remove weekend/overnight discount candidates that overlap with DC (DC takes priority)
         _main_candidates = [c for c in candidates
                             if not c.get("strategy", "").startswith("decided_")
-                            and c.get("strategy") not in ("terminal_momentum", "bracket_no")
+                            and c.get("strategy") not in ("terminal_momentum", "bracket_no", "low_price_near_expiry")
                             and not (c.get("strategy") in ("weekend_discount", "overnight_discount") and c["ticker"] in (_dc_tickers | _tm_tickers))]
         candidates = _main_candidates  # single-asset filter only applies to main pipeline
 
@@ -10471,6 +10576,9 @@ class OpportunityScanner:
 
         # Bracket NO overlay: add all bracket NO candidates
         selected.extend(_bn_candidates)
+
+        # LPNE overlay: add all low-price near-expiry candidates
+        selected.extend(_lpne_candidates)
 
         if not selected:
             self._last_scan_stats = scan_stats
@@ -12172,6 +12280,10 @@ class OrderExecutor:
         if _dc_strategy == "terminal_momentum":
             return self._execute_tm_taker(candidate, asset, seconds_to_close)
 
+        # ── LPNE taker override ──────────────────────────────────────
+        if _dc_strategy == "low_price_near_expiry":
+            return self._execute_lpne_taker(candidate, asset, seconds_to_close)
+
         # ── Bracket NO taker override ────────────────────────────────
         if _dc_strategy == "bracket_no":
             return self._execute_bracket_no_taker(candidate, asset, seconds_to_close)
@@ -13357,6 +13469,94 @@ class OrderExecutor:
                 # Zero fill — no retry for TM (next scan cycle will re-evaluate)
                 self._session_direct_taker_unfilled += 1
                 logging.info("tm_taker_UNFILLED: %s @ %d¢ depth=%d", ticker, price, fresh_depth)
+                self._state.update_evaluated_opportunity_order(
+                    ticker, order_submitted_at=_order_submit_ts,
+                    order_outcome="unfilled")
+                return None
+        return None
+
+    def _execute_lpne_taker(self, candidate: Dict, asset: str, seconds_to_close) -> Optional[Dict]:
+        """Execute low-price near-expiry trade — direct taker, fixed contracts, no retry.
+        BTC 80-87c at STC<=120s. Mirrors _execute_tm_taker with LPNE constants."""
+        ticker = candidate["ticker"]
+        count = candidate["position_size"]  # LPNE_FIXED_CONTRACTS
+        price = candidate["best_yes_ask"]
+        cal_prob = candidate["calibrated_prob"]
+
+        if count <= 0:
+            logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=low_price_near_expiry price=%d",
+                            ticker, asset, price)
+            self._session_suppressed_zero_size += 1
+            return None
+
+        taker_fee = calculate_taker_fee(count, price)
+        net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+
+        # Fresh ask check — verify price hasn't moved outside LPNE range
+        _lpne_scan_price = price
+        fresh_ask, fresh_depth, fresh_source = self._dc_get_ask_with_depth(ticker, candidate)
+
+        if fresh_ask is None:
+            logging.warning("ORDER_SUPPRESSED no_asks: %s asset=%s strategy=low_price_near_expiry price=%d stc=%.0f",
+                            ticker, asset, price, seconds_to_close or 0)
+            self._session_suppressed_no_asks += 1
+            return None
+
+        if not (LPNE_MIN_PRICE <= fresh_ask <= LPNE_MAX_PRICE):
+            logging.info("lpne_taker_SKIP_PRICE: %s fresh_ask=%d¢ outside LPNE range %d-%d (scan=%d¢)",
+                         ticker, fresh_ask, LPNE_MIN_PRICE, LPNE_MAX_PRICE, _lpne_scan_price)
+            return None
+
+        if fresh_ask != price:
+            logging.info("lpne_taker_price_update: %s scanner=%d¢ fresh=%d¢ depth=%d src=%s",
+                         ticker, price, fresh_ask, fresh_depth, fresh_source)
+            price = fresh_ask
+            candidate["best_yes_ask"] = fresh_ask
+            candidate["position_size"] = LPNE_FIXED_CONTRACTS  # no per-price overrides for LPNE
+            count = LPNE_FIXED_CONTRACTS
+            taker_fee = calculate_taker_fee(count, price)
+            net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
+
+        # Race condition guard: check position one more time
+        if any(p.get("ticker") == ticker for p in self._state.get_open_positions()):
+            logging.info("lpne_taker_SKIP_POSITION: %s already held", ticker)
+            return None
+
+        self._session_direct_taker_attempts += 1
+        candidate["entry_path"] = "lpne_taker"
+        candidate["escalation_type"] = "direct_taker"
+        self._recent_taker_tickers[ticker] = time.time()
+
+        logging.info(
+            "lpne_taker_ENTRY: %s %dx @ %d¢ "
+            "seconds_to_close=%.0f net_edge=%.4f cal_prob=%.4f taker_fee=%d¢",
+            ticker, count, price,
+            seconds_to_close or 0, net_edge, cal_prob, taker_fee)
+
+        _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        result = self._submit_taker(candidate)
+
+        if result is not None:
+            fill_count = result.get("filled_count", 0)
+            if fill_count > 0:
+                self._session_direct_taker_fills += 1
+                logging.info("lpne_taker_FILLED: %s %d/%d @ %d¢", ticker, fill_count, count, price)
+                _taker_oid = result.get("order_id") if isinstance(result, dict) else None
+                self._state.update_evaluated_opportunity_order(
+                    ticker, order_id=_taker_oid,
+                    order_submitted_at=_order_submit_ts, order_outcome="filled")
+                try:
+                    _TELEGRAM.send(
+                        f"LPNE: {asset} {fill_count}ct @ {price}c "
+                        f"prob={cal_prob:.1%} stc={seconds_to_close or 0:.0f}s "
+                        f"edge={net_edge:.2%}",
+                        dedup_key=f"lpne_{ticker}")
+                except Exception:
+                    logging.debug("LPNE telegram alert failed", exc_info=True)
+                return result
+            else:
+                self._session_direct_taker_unfilled += 1
+                logging.info("lpne_taker_UNFILLED: %s @ %d¢ depth=%d", ticker, price, fresh_depth)
                 self._state.update_evaluated_opportunity_order(
                     ticker, order_submitted_at=_order_submit_ts,
                     order_outcome="unfilled")
