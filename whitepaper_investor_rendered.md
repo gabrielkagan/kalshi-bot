@@ -88,9 +88,9 @@ This document describes an automated trading platform for **Kalshi**, the first 
 The platform monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
 \begin{metricbox}
-\textbf{Live trading results (as of 2026-04-05T20:50:48Z):}
+\textbf{Live trading results (as of 2026-04-05T21:12:24Z):}
 \begin{itemize}
-\item \textbf{1,301} settled trades with a \textbf{92.6\%} win rate (1,205W / 96L)
+\item \textbf{1,304} settled trades with a \textbf{92.6\%} win rate (1,208W / 96L)
 \item Live trading with real capital since February 22, 2026
 \item Fully automated, always-on operation with complete audit trail
 \item Four additional market verticals in shadow mode, each validated before going live:
@@ -289,8 +289,8 @@ Below 180 seconds before settlement, the system switches to **direct taker execu
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 1,301 |
-| **Win rate** | 92.6\% (1,205W / 96L) |
+| **Settled trades** | 1,304 |
+| **Win rate** | 92.6\% (1,208W / 96L) |
 | **Assets** | BTC, ETH, SOL, XRP |
 | **Entry prices** | 75–99¢ (per-asset: BTC 88¢+, ETH 90¢+, SOL 80¢+, XRP 92¢+; overlays extend lower) |
 
@@ -414,7 +414,7 @@ For readers interested in the mathematical foundations, the full technical white
 
 **Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven: as settlement outcomes accumulate, the CalibrationEngine progresses from fixed logistic scaling → Platt Scaling → Beta Calibration → Bayesian Linear Regression. A dynamic time-dependent probability cap applies during startup (93% at 10min+ → 99.5% at <1min) but is bypassed (99.9% ceiling) once learned calibration is active. Final probability blends 60/40 (60% model, 40% market) to prevent overconfidence.
 
-**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Eight tiers from 25% at 4%+ edge down to 2% at 0.25%+ edge, with automatic de-risking during drawdowns (half at 85%, quarter at 75%, halt at 65%). Per-asset max risk per trade: BTC 15%, ETH 20%, SOL 12%, XRP 15%, hourly 15%, SPX 10%, weather 10%. 15M uses full Kelly; hourly uses fixed 25 contracts; SPX uses eighth-Kelly (0.125); weather uses quarter-Kelly (0.25). Low-STC cap halves position below 100s. STC sizing scaler reduces position proportionally to time remaining (contracts × 300/STC) above 300s.
+**Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Eight tiers from 25% at 4%+ edge down to 2% at 0.25%+ edge, with automatic de-risking during drawdowns (half at 85%, quarter at 75%, halt at 65%). Per-asset max risk per trade: BTC 15%, ETH 20%, SOL 15%, XRP 15%, hourly 15%, SPX 10%, weather 10%. 15M uses full Kelly; hourly uses fixed 25 contracts; SPX uses eighth-Kelly (0.125); weather uses quarter-Kelly (0.25). Low-STC cap halves position below 100s. STC sizing scaler reduces position proportionally to time remaining (contracts × 300/STC) above 300s.
 
 **Execution Model** — Maker-first with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Direct taker below 180s STC (data: 7.7% maker fill rate at low STC). Maker orders use `post_only=True` for $0 maker fee. SOL bypasses maker entirely (direct taker at all STC). BTC uses 7s escalation wait (vs 15s default). Decided contract overlay (T1/T1B/T2/T2-Z25/T2-Z2) routes near-certain outcomes to direct taker with fixed 20% sizing — five live tiers from z ≤ -5 to z ≤ -2, with 6 expansion shadows collecting data for future tiers. Terminal Momentum trades 95–99¢ at 50–100 contracts in the final 1–5 min. Low-Price Near-Expiry intercepts BTC 80–87¢ in the final 10–120 sec. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. Full order lifecycle tracking (order_id, submission time, outcome).
 
@@ -426,4 +426,4 @@ For readers interested in the mathematical foundations, the full technical white
 
 ---
 
-*Last updated: 2026-04-05T20:50:48Z*
+*Last updated: 2026-04-05T21:12:24Z*
