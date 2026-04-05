@@ -353,13 +353,13 @@
       "description": "Price-dependent edge schedule"
     }
   },
-  "_bot_lines": 17205,
+  "_bot_lines": 17209,
   "_exchange_feeds": [
     "CoinbaseFeed",
     "CrossExchangeFeed",
     "KalshiFeed"
   ],
-  "_extracted_at": "2026-04-05T21:59:11Z",
+  "_extracted_at": "2026-04-05T22:11:00Z",
   "_bot_path": "/home/runner/work/kalshi-bot/kalshi-bot/bot.py",
   "_weather": {
     "weather_city_count": 19,
