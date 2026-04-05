@@ -4053,95 +4053,106 @@ class DashboardSnapshotBuilder:
             active_tickers.add(ticker)
 
             ob = orderbooks.get(ticker)
-            if not ob:
-                continue
 
             try:
-                ob_ts = ob.get("ts", 0)
-                ob_age_s = round(now_ts - ob_ts, 1) if ob_ts else 999
+                # Parse orderbook (may be missing — health still computed from buffer)
+                best_bid = best_ask = mid_price = spread = None
+                bid_depth = ask_depth = 0
+                ob_age_s = 999
+                has_ob = False
 
-                no_bids = ob.get("no", [])
-                yes_bids = ob.get("yes", [])
+                if ob:
+                    ob_ts = ob.get("ts", 0)
+                    ob_age_s = round(now_ts - ob_ts, 1) if ob_ts else 999
 
-                parsed_no = _parse_ob_levels(no_bids)
-                yes_ask_levels = sorted(
-                    [(100 - p, q) for p, q in parsed_no], key=lambda x: x[0]
-                )
-                parsed_yes = _parse_ob_levels(yes_bids)
-                yes_bid_levels = sorted(parsed_yes, key=lambda x: -x[0])
+                    no_bids = ob.get("no", [])
+                    yes_bids = ob.get("yes", [])
 
-                best_ask = yes_ask_levels[0][0] if yes_ask_levels else None
-                best_bid = yes_bid_levels[0][0] if yes_bid_levels else None
+                    parsed_no = _parse_ob_levels(no_bids)
+                    yes_ask_levels = sorted(
+                        [(100 - p, q) for p, q in parsed_no], key=lambda x: x[0]
+                    )
+                    parsed_yes = _parse_ob_levels(yes_bids)
+                    yes_bid_levels = sorted(parsed_yes, key=lambda x: -x[0])
 
-                if best_bid is None or best_ask is None:
-                    continue
+                    best_ask = yes_ask_levels[0][0] if yes_ask_levels else None
+                    best_bid = yes_bid_levels[0][0] if yes_bid_levels else None
 
-                spread = best_ask - best_bid
-                mid_price = (best_bid + best_ask) / 2.0
-                bid_depth = sum(q for _, q in yes_bid_levels)
-                ask_depth = sum(q for _, q in yes_ask_levels)
+                    if best_bid is not None and best_ask is not None:
+                        has_ob = True
+                        spread = best_ask - best_bid
+                        mid_price = (best_bid + best_ask) / 2.0
+                        bid_depth = sum(q for _, q in yes_bid_levels)
+                        ask_depth = sum(q for _, q in yes_ask_levels)
 
                 entry_price = pos.get("avg_price_cents", 0)
                 count = pos.get("count", 0)
                 side = (pos.get("side") or "").lower()
 
                 # Unrealized P&L (conservative: bid-based exit for YES, ask-based for NO)
-                if side == "yes":
-                    unrealized_cents = (best_bid - entry_price) * count
-                    unrealized_pct = round(
-                        (best_bid - entry_price) / entry_price * 100, 2
-                    ) if entry_price else 0
-                else:
-                    # NO position: profit if ask drops
-                    unrealized_cents = (entry_price - best_ask) * count
-                    unrealized_pct = round(
-                        (entry_price - best_ask) / entry_price * 100, 2
-                    ) if entry_price else 0
+                unrealized_cents = 0
+                unrealized_pct = 0.0
+                if has_ob:
+                    if side == "yes":
+                        unrealized_cents = (best_bid - entry_price) * count
+                        unrealized_pct = round(
+                            (best_bid - entry_price) / entry_price * 100, 2
+                        ) if entry_price else 0
+                    else:
+                        unrealized_cents = (entry_price - best_ask) * count
+                        unrealized_pct = round(
+                            (entry_price - best_ask) / entry_price * 100, 2
+                        ) if entry_price else 0
 
                 # Seconds to close
                 event_ticker = pos.get("event_ticker")
                 stc_seconds = stc_lookup.get(event_ticker)
 
-                # Mid-price history
-                if ticker not in self._mid_history:
-                    self._mid_history[ticker] = collections.deque(maxlen=30)
-                self._mid_history[ticker].append(mid_price)
-                mid_hist = list(self._mid_history[ticker])[-5:]
+                # Mid-price history (only when orderbook available)
+                mid_hist = []
+                if has_ob:
+                    if ticker not in self._mid_history:
+                        self._mid_history[ticker] = collections.deque(maxlen=30)
+                    self._mid_history[ticker].append(mid_price)
+                    mid_hist = list(self._mid_history[ticker])[-5:]
 
                 # Health classification
-                if side == "yes":
-                    price_warn = entry_price - 3 <= mid_price < entry_price
-                    price_danger = mid_price < entry_price - 3
+                if has_ob:
+                    if side == "yes":
+                        price_warn = entry_price - 3 <= mid_price < entry_price
+                        price_danger = mid_price < entry_price - 3
+                    else:
+                        price_warn = entry_price < mid_price <= entry_price + 3
+                        price_danger = mid_price > entry_price + 3
+
+                    danger_conditions = (
+                        price_danger
+                        or spread > 6
+                        or bid_depth < 3
+                        or ob_age_s > 30
+                    )
+                    stc_danger = (
+                        stc_seconds is not None
+                        and stc_seconds < 30
+                        and mid_price < 95
+                    )
+                    watch_conditions = (
+                        price_warn
+                        or 4 < spread <= 6
+                        or 3 <= bid_depth < 5
+                        or ob_age_s >= 30
+                    )
+
+                    if stc_danger or danger_conditions:
+                        raw_state = "DANGER"
+                    elif watch_conditions:
+                        raw_state = "WATCH"
+                    else:
+                        raw_state = "LOCK"
                 else:
-                    price_warn = entry_price < mid_price <= entry_price + 3
-                    price_danger = mid_price > entry_price + 3
-
-                danger_conditions = (
-                    price_danger
-                    or spread > 6
-                    or bid_depth < 3
-                    or ob_age_s > 30
-                )
-                # STC-based danger: immediate (no debounce)
-                stc_danger = (
-                    stc_seconds is not None
-                    and stc_seconds < 30
-                    and mid_price < 95
-                )
-
-                watch_conditions = (
-                    price_warn
-                    or 4 < spread <= 6
-                    or 3 <= bid_depth < 5
-                    or ob_age_s >= 30
-                )
-
-                if stc_danger or danger_conditions:
-                    raw_state = "DANGER"
-                elif watch_conditions:
+                    # No orderbook — classify from STC only
                     raw_state = "WATCH"
-                else:
-                    raw_state = "LOCK"
+                    stc_danger = False
 
                 # Debounce: require 2 consecutive ticks before changing state
                 # Exception: STC danger is immediate
@@ -4203,7 +4214,7 @@ class DashboardSnapshotBuilder:
 
                 result[ticker] = {
                     "entry_price": entry_price,
-                    "mid_price": round(mid_price, 1),
+                    "mid_price": round(mid_price, 1) if mid_price is not None else None,
                     "best_bid": best_bid,
                     "best_ask": best_ask,
                     "spread": spread,
@@ -4212,10 +4223,11 @@ class DashboardSnapshotBuilder:
                     "unrealized_cents": round(unrealized_cents),
                     "unrealized_pct": round(unrealized_pct, 1),
                     "health": health,
-                    "ob_age_s": ob_age_s,
+                    "ob_age_s": ob_age_s if has_ob else None,
                     "mid_history": mid_hist,
                     "stc_seconds": round(stc_seconds, 1) if stc_seconds is not None else None,
                     "buffer": buffer_data,
+                    "has_ob": has_ob,
                 }
             except Exception:
                 logging.warning(f"Snapshot: position health failed for {ticker}", exc_info=True)
