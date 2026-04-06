@@ -5144,7 +5144,8 @@ class ProbabilityEngine:
         _cal_cfg2 = get_market_config(product_type)
         _reg_engine = _resolve_cal_engine(product_type, asset, require_enabled=True)
         if _reg_engine is not None and _reg_engine.is_learned_method_active():
-            calibrated_prob = _reg_engine.calibrate(raw_prob, cap=dynamic_cap)
+            calibrated_prob = _reg_engine.calibrate(raw_prob, cap=dynamic_cap,
+                                                     seconds_to_close=seconds_remaining)
             result["calibration_method"] = f"{product_type}_{_reg_engine.active_method}"
             # Shadow: what passthrough + temperature would have produced
             _pt_shadow = min(raw_prob, dynamic_cap)
@@ -5157,13 +5158,15 @@ class ProbabilityEngine:
             result["shadow_cal_temperature"] = _temp_cfg
         elif _cal_cfg2.cal_eligible and _CALIBRATION_ENGINE is not None:
             if FIFTEEN_M_CALIBRATION_ENABLED and _CALIBRATION_ENGINE.is_learned_method_active():
-                calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
+                calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap,
+                                                               seconds_to_close=seconds_remaining)
                 result["calibration_method"] = _CALIBRATION_ENGINE.active_method
             else:
                 calibrated_prob = min(raw_prob, dynamic_cap)
                 result["calibration_method"] = "passthrough"
                 # Diagnostic: log what BLR would have produced (remove after validation)
-                _blr_would = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap)
+                _blr_would = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap,
+                                                           seconds_to_close=seconds_remaining)
                 if abs(_blr_would - calibrated_prob) > 0.02:
                     logging.info(
                         "BLR_BYPASS: raw=%.4f passthrough=%.4f blr_would=%.4f delta=%.3f",
@@ -5228,7 +5231,8 @@ class ProbabilityEngine:
         raw = ProbabilityEngine._cdf_complement(z, asset)
         cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
         if _CALIBRATION_ENGINE is not None:
-            return round(_CALIBRATION_ENGINE.calibrate(raw, cap=cap), 6)
+            return round(_CALIBRATION_ENGINE.calibrate(raw, cap=cap,
+                                                       seconds_to_close=seconds_remaining), 6)
         return round(ProbabilityEngine._calibrate(raw, cap=cap), 6)
 
     @staticmethod
@@ -5300,6 +5304,12 @@ class CalibrationEngine:
         self._blr_precision = [[1.0, 0.0], [0.0, 1.0]]  # 2x2 precision matrix (prior)
         self._blr_trained: bool = False
 
+        # STC-aware Platt: sigmoid(A * logit(p) + B + C * log(STC/300))
+        self._stc_platt_A: float = BETA_SLOPE
+        self._stc_platt_B: float = 0.0
+        self._stc_platt_C: float = 0.0  # STC coefficient (negative = reduce prob at high STC)
+        self._stc_platt_trained: bool = False
+
         # Previous Brier score for regression check
         self._prev_brier: Optional[float] = None
 
@@ -5349,6 +5359,12 @@ class CalibrationEngine:
                 self._temperature = state["temperature"].get("value")
                 self._temperature_brier = state["temperature"].get("brier")
 
+            if "stc_platt" in state:
+                self._stc_platt_A = state["stc_platt"].get("A", BETA_SLOPE)
+                self._stc_platt_B = state["stc_platt"].get("B", 0.0)
+                self._stc_platt_C = state["stc_platt"].get("C", 0.0)
+                self._stc_platt_trained = state["stc_platt"].get("trained", False)
+
             # observations are loaded from DB in load_training_data_from_db()
 
             if "prev_brier" in state:
@@ -5389,6 +5405,12 @@ class CalibrationEngine:
                 "value": self._temperature,
                 "brier": self._temperature_brier,
             },
+            "stc_platt": {
+                "A": self._stc_platt_A,
+                "B": self._stc_platt_B,
+                "C": self._stc_platt_C,
+                "trained": self._stc_platt_trained,
+            },
             "prev_brier": self._prev_brier,
             "saved_at": datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             "n_observations": len(self._observations),
@@ -5403,9 +5425,12 @@ class CalibrationEngine:
 
     # ── Inference ──────────────────────────────────────────────────────────
 
-    def calibrate(self, raw_prob: float, cap: float) -> float:
+    def calibrate(self, raw_prob: float, cap: float,
+                  seconds_to_close: Optional[float] = None) -> float:
         """Calibrate raw_prob using the active method. Sub-ms, called per evaluation."""
-        if self.active_method == "platt" and self._platt_trained:
+        if self.active_method == "stc_platt" and self._stc_platt_trained:
+            result = self._stc_platt_predict(raw_prob, seconds_to_close)
+        elif self.active_method == "platt" and self._platt_trained:
             result = self._platt_predict(raw_prob)
         elif self.active_method == "beta_cal" and self._beta_trained:
             result = self._beta_cal_predict(raw_prob)
@@ -5440,7 +5465,9 @@ class CalibrationEngine:
         # Grid search + refinement (fast, <100 evaluations)
         for t_candidate in [x / 100.0 for x in range(50, 200, 5)]:  # 0.50 to 1.95
             brier_sum = 0.0
-            for raw_p, outcome in obs:
+            for _obs_item in obs:
+                raw_p, outcome = _obs_item[0], _obs_item[1]
+
                 p = max(0.001, min(0.999, raw_p))
                 logit_p = math.log(p / (1.0 - p))
                 pred = 1.0 / (1.0 + math.exp(-logit_p / t_candidate))
@@ -5454,7 +5481,9 @@ class CalibrationEngine:
             if t_candidate <= 0.01:
                 continue
             brier_sum = 0.0
-            for raw_p, outcome in obs:
+            for _obs_item in obs:
+                raw_p, outcome = _obs_item[0], _obs_item[1]
+
                 p = max(0.001, min(0.999, raw_p))
                 logit_p = math.log(p / (1.0 - p))
                 pred = 1.0 / (1.0 + math.exp(-logit_p / t_candidate))
@@ -5523,14 +5552,15 @@ class CalibrationEngine:
     # ── Training Data Management ───────────────────────────────────────────
 
     def add_observation(self, raw_prob: float, outcome: int,
-                        filter_stage: Optional[str] = None):
-        """Append a (raw_prob, binary_outcome) pair and update rolling Brier.
+                        filter_stage: Optional[str] = None,
+                        seconds_to_close: Optional[float] = None):
+        """Append a (raw_prob, outcome, stc) triple and update rolling Brier.
         If accepted_stages is configured, silently skip non-accepted stages."""
         if self._accepted_stages and filter_stage and filter_stage not in self._accepted_stages:
             return
-        self._observations.append((raw_prob, outcome))
+        self._observations.append((raw_prob, outcome, seconds_to_close))
         # Update rolling Brier with the *current* calibration prediction
-        pred = self.calibrate(raw_prob, cap=1.0)
+        pred = self.calibrate(raw_prob, cap=1.0, seconds_to_close=seconds_to_close)
         brier = (pred - outcome) ** 2
         self._brier_scores.append(brier)
         # Bucket the calibrated prediction for empirical tracking
@@ -5593,8 +5623,8 @@ class CalibrationEngine:
             temp = self._fit_temperature()
             if temp is not None:
                 self._temperature = temp
-                brier_sum = sum((self._temperature_predict(rp, temp) - out) ** 2
-                                for rp, out in self._observations)
+                brier_sum = sum((self._temperature_predict(item[0], temp) - item[1]) ** 2
+                                for item in self._observations)
                 self._temperature_brier = brier_sum / len(self._observations)
                 trained_methods["temperature"] = self._temperature_brier
                 logging.info(
@@ -5603,6 +5633,21 @@ class CalibrationEngine:
                 )
         except Exception as e:
             logging.warning("%s: Temperature scaling failed: %s", self._label, e)
+
+        # STC-aware Platt (needs observations with valid seconds_to_close)
+        if n >= CALIBRATION_MIN_SAMPLES_PLATT:
+            try:
+                self._train_stc_platt()
+                if self._stc_platt_C != 0.0:  # Only count if C was learned (not stuck at 0)
+                    self._stc_platt_trained = True
+                    trained_methods["stc_platt"] = self._compute_brier_for_method("stc_platt")
+                    logging.info(
+                        "%s: STC-Platt trained — A=%.4f, B=%.4f, C=%.4f, Brier=%.4f, n=%d",
+                        self._label, self._stc_platt_A, self._stc_platt_B,
+                        self._stc_platt_C, trained_methods["stc_platt"], n,
+                    )
+            except Exception as e:
+                logging.warning("%s: STC-Platt training failed: %s", self._label, e)
 
         if not trained_methods:
             return False
@@ -5689,7 +5734,8 @@ class CalibrationEngine:
                 _stage_params = tuple(self._accepted_stages)
 
             rows = state.conn.execute(
-                "SELECT raw_prob, market_result FROM evaluated_opportunities "
+                "SELECT raw_prob, market_result, seconds_to_close "
+                "FROM evaluated_opportunities "
                 "WHERE status='settled' AND raw_prob IS NOT NULL "
                 "AND market_result IS NOT NULL "
                 + _cal_filter + _stage_filter +
@@ -5702,13 +5748,14 @@ class CalibrationEngine:
             for row in rows:
                 raw_p = row["raw_prob"]
                 result = row["market_result"]
+                stc = row["seconds_to_close"]
                 if result in ("yes", "all_yes"):
                     binary = 1
                 elif result in ("no", "all_no"):
                     binary = 0
                 else:
                     continue
-                self._observations.append((raw_p, binary))
+                self._observations.append((raw_p, binary, stc))
                 loaded += 1
 
             logging.info(
@@ -5746,7 +5793,8 @@ class CalibrationEngine:
         # Precompute logits
         logits = []
         targets = []
-        for raw_p, outcome in self._observations:
+        for _obs_item in self._observations:
+            raw_p, outcome = _obs_item[0], _obs_item[1]
             p = max(0.001, min(0.999, raw_p))
             logits.append(math.log(p / (1.0 - p)))
             targets.append(float(outcome))
@@ -5805,6 +5853,83 @@ class CalibrationEngine:
         self._platt_A = A
         self._platt_B = B
 
+    # ── STC-Aware Platt ───────────────────────────────────────────────────
+
+    def _stc_platt_predict(self, raw_prob: float,
+                           seconds_to_close: Optional[float] = None) -> float:
+        """P_cal = sigmoid(A * logit(p) + B + C * log(STC/300))."""
+        p = max(0.001, min(0.999, raw_prob))
+        logit_p = math.log(p / (1.0 - p))
+        z = self._stc_platt_A * logit_p + self._stc_platt_B
+        if seconds_to_close is not None and seconds_to_close > 0:
+            z += self._stc_platt_C * math.log(seconds_to_close / 300.0)
+        z = max(-20.0, min(20.0, z))
+        return 1.0 / (1.0 + math.exp(-z))
+
+    def _train_stc_platt(self):
+        """Newton-Raphson for sigmoid(A * logit(p) + B + C * log(STC/300))."""
+        valid = [(item[0], item[1], item[2]) for item in self._observations
+                 if len(item) > 2 and item[2] is not None and item[2] > 0]
+        if len(valid) < CALIBRATION_MIN_SAMPLES_PLATT:
+            return
+        A = self._stc_platt_A
+        B = self._stc_platt_B
+        C = self._stc_platt_C
+        # Precompute features
+        logits = []
+        log_stcs = []
+        targets = []
+        for raw_p, outcome, stc in valid:
+            p = max(0.001, min(0.999, raw_p))
+            logits.append(math.log(p / (1.0 - p)))
+            log_stcs.append(math.log(stc / 300.0))
+            targets.append(float(outcome))
+        n = len(logits)
+        for _ in range(50):
+            g = [0.0, 0.0, 0.0]
+            H = [[0.0] * 3 for _ in range(3)]
+            for i in range(n):
+                z = A * logits[i] + B + C * log_stcs[i]
+                z = max(-20.0, min(20.0, z))
+                q = 1.0 / (1.0 + math.exp(-z))
+                q = max(1e-10, min(1.0 - 1e-10, q))
+                err = q - targets[i]
+                w = q * (1.0 - q)
+                phi = [logits[i], 1.0, log_stcs[i]]
+                for j in range(3):
+                    g[j] += err * phi[j]
+                    for k in range(3):
+                        H[j][k] += w * phi[j] * phi[k]
+            # Solve 3x3 via Cramer's rule
+            det = (H[0][0] * (H[1][1] * H[2][2] - H[1][2] * H[2][1])
+                   - H[0][1] * (H[1][0] * H[2][2] - H[1][2] * H[2][0])
+                   + H[0][2] * (H[1][0] * H[2][1] - H[1][1] * H[2][0]))
+            if abs(det) < 1e-12:
+                break
+            rhs = [-g[0], -g[1], -g[2]]
+            d0 = (rhs[0] * (H[1][1] * H[2][2] - H[1][2] * H[2][1])
+                  - H[0][1] * (rhs[1] * H[2][2] - H[1][2] * rhs[2])
+                  + H[0][2] * (rhs[1] * H[2][1] - H[1][1] * rhs[2])) / det
+            d1 = (H[0][0] * (rhs[1] * H[2][2] - H[1][2] * rhs[2])
+                  - rhs[0] * (H[1][0] * H[2][2] - H[1][2] * H[2][0])
+                  + H[0][2] * (H[1][0] * rhs[2] - rhs[1] * H[2][0])) / det
+            d2 = (H[0][0] * (H[1][1] * rhs[2] - rhs[1] * H[2][1])
+                  - H[0][1] * (H[1][0] * rhs[2] - rhs[1] * H[2][0])
+                  + rhs[0] * (H[1][0] * H[2][1] - H[1][1] * H[2][0])) / det
+            A += d0
+            B += d1
+            C += d2
+            if max(abs(d0), abs(d1), abs(d2)) < 1e-8:
+                break
+        if abs(A) > 5.0 or abs(B) > 5.0 or abs(C) > 5.0:
+            logging.warning(
+                "%s: STC-Platt params extreme (A=%.4f B=%.4f C=%.4f), rejecting",
+                self._label, A, B, C)
+            return
+        self._stc_platt_A = A
+        self._stc_platt_B = B
+        self._stc_platt_C = C
+
     # ── Beta Calibration ───────────────────────────────────────────────────
 
     def _beta_cal_predict(self, raw_prob: float) -> float:
@@ -5829,7 +5954,8 @@ class CalibrationEngine:
         log_p = []
         log_1mp = []
         targets = []
-        for raw_p, outcome in self._observations:
+        for _obs_item in self._observations:
+            raw_p, outcome = _obs_item[0], _obs_item[1]
             p = max(0.001, min(0.999, raw_p))
             log_p.append(math.log(p))
             log_1mp.append(math.log(1.0 - p))
@@ -5919,7 +6045,8 @@ class CalibrationEngine:
         # Precompute logits
         logits = []
         targets = []
-        for raw_p, outcome in self._observations:
+        for _obs_item in self._observations:
+            raw_p, outcome = _obs_item[0], _obs_item[1]
             p = max(0.001, min(0.999, raw_p))
             logits.append(math.log(p / (1.0 - p)))
             targets.append(float(outcome))
@@ -5981,13 +6108,16 @@ class CalibrationEngine:
         if not self._observations:
             return 1.0
         total = 0.0
-        for raw_p, outcome in self._observations:
+        for _obs_item in self._observations:
+            raw_p, outcome = _obs_item[0], _obs_item[1]
             pred = self.calibrate(raw_p, cap=1.0)
             total += (pred - outcome) ** 2
         return total / len(self._observations)
 
     def is_learned_method_active(self) -> bool:
         """Return True if a data-driven calibration method is active (not fixed_beta fallback)."""
+        if self.active_method == "stc_platt" and self._stc_platt_trained:
+            return True
         if self.active_method == "platt" and self._platt_trained:
             return True
         if self.active_method == "beta_cal" and self._beta_trained:
@@ -6018,8 +6148,12 @@ class CalibrationEngine:
         if not self._observations:
             return 1.0
         total = 0.0
-        for raw_p, outcome in self._observations:
-            if method == "platt":
+        for _obs_item in self._observations:
+            raw_p, outcome = _obs_item[0], _obs_item[1]
+            stc = _obs_item[2] if len(_obs_item) > 2 else None
+            if method == "stc_platt":
+                pred = self._stc_platt_predict(raw_p, stc)
+            elif method == "platt":
                 pred = self._platt_predict(raw_p)
             elif method == "beta_cal":
                 pred = self._beta_cal_predict(raw_p)
@@ -6099,7 +6233,8 @@ class CalibrationEngine:
         cap_truncated = 0
         high_prob_markets = 0  # predictions > 0.93 under new system
 
-        for raw_p, outcome in self._observations:
+        for _obs_item in self._observations:
+            raw_p, outcome = _obs_item[0], _obs_item[1]
             # Old system: fixed beta fallback with 0.93 cap
             old_pred = CalibrationEngine._fallback_calibrate(raw_p, cap=MAX_EFFECTIVE_PROB)
             old_brier_sum += (old_pred - outcome) ** 2
@@ -15789,7 +15924,8 @@ class SettlementTracker:
                             and not filter_stage.endswith("_v2")):
                         cal_binary = 1 if result in ("yes", "all_yes") else 0
                         _cal_observations.append((raw_p, cal_binary, _opp_pt,
-                                                  row.get("asset"), filter_stage))
+                                                  row.get("asset"), filter_stage,
+                                                  row.get("seconds_to_close")))
 
                     # Queue weather temp fetches for after commit
                     if (_opp_pt == "weather" and result in ("yes", "all_yes", "no", "all_no")
@@ -15837,13 +15973,16 @@ class SettlementTracker:
         # These run AFTER the write lock is released.
 
         # Feed CalEngine observations
-        for (raw_p, cal_binary, _opp_pt, _asset, filter_stage) in _cal_observations:
+        for _cal_item in _cal_observations:
+            raw_p, cal_binary, _opp_pt, _asset, filter_stage = _cal_item[0], _cal_item[1], _cal_item[2], _cal_item[3], _cal_item[4]
+            _cal_stc = _cal_item[5] if len(_cal_item) > 5 else None
             _settle_engine = _resolve_cal_engine(_opp_pt, _asset)
             if _settle_engine is not None:
-                _settle_engine.add_observation(raw_p, cal_binary, filter_stage=filter_stage)
+                _settle_engine.add_observation(raw_p, cal_binary, filter_stage=filter_stage,
+                                              seconds_to_close=_cal_stc)
             # Dual-feed: 15M per-asset engines AND global engine (keeps shadow pipeline working)
             if _opp_pt in (None, "15m") and _CALIBRATION_ENGINE is not None:
-                _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
+                _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary, seconds_to_close=_cal_stc)
             elif (_settle_engine is None
                   and filter_stage in ("candidate", "observation_trade",
                                        "hourly_observation", "spx_observation",
