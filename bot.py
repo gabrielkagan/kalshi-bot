@@ -1920,7 +1920,6 @@ class StateManager:
         self.conn.commit()
 
         # Position price observations (post-entry monitoring) — v2: spot-price primary
-        self.conn.execute("DROP TABLE IF EXISTS position_price_observations")
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS position_price_observations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
