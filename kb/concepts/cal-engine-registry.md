@@ -26,11 +26,15 @@ _CAL_REGISTRY: Dict[str, "CalibrationEngine"] = {}          # non-15M engines
 2. If `cal_subtypes` is non-empty, register one engine per subtype (e.g., 5 weather cities, 8 sport groups)
 3. If `cal_engine_state_path` is set but no subtypes, register one engine for the product type (hourly, spx_hourly)
 4. Clear registry on restart for clean state
-5. **Startup assertion**: `assert "15m" not in _CAL_REGISTRY` -- 15M must never be in the registry
+5. **Startup assertion**: `assert "15m" not in _CAL_REGISTRY` -- bare "15m" key must not exist (per-asset keys like "15m_BTC" are fine)
 
 ### Current Registry Contents
 | Key | State File | Enabled | Notes |
 |-----|-----------|---------|-------|
+| `15m_BTC` | `cal_15m_BTC.json` | **False (shadow)** | Per-asset 15M — beta_cal active |
+| `15m_ETH` | `cal_15m_ETH.json` | **False (shadow)** | Per-asset 15M — beta_cal active |
+| `15m_SOL` | `cal_15m_SOL.json` | **False (shadow)** | Per-asset 15M — platt active |
+| `15m_XRP` | `cal_15m_XRP.json` | **False (shadow)** | Per-asset 15M — platt active |
 | `hourly` | `hourly_calibration_state.json` | False | Disabled: passthrough + T=1.45 is better |
 | `spx_hourly` | `spx_hourly_calibration_state.json` | True | SPX-D: learned temperature active |
 | `weather_NYC` | `cal_weather_NYC.json` | True | Per-city weather CalEngine |
@@ -47,15 +51,19 @@ _CAL_REGISTRY: Dict[str, "CalibrationEngine"] = {}          # non-15M engines
 | `sports_mma` | `cal_sports_mma.json` | True | |
 | `sports_esports` | `cal_sports_esports.json` | True | |
 
-## Planned: Per-Asset 15M CalEngines
+## Per-Asset 15M CalEngines (Shadow — Deployed Apr 6, 2026)
 
-The shared 15M engine masks per-asset calibration errors. SOL at 300-600s STC is 2.3pp overconfident but this is hidden in the aggregate. Scoped in [[kb-research/bot/per-asset-calengine.md]]. Would add `cal_subtypes = {"BTC": "cal_15m_BTC.json", ...}` to 15M config and modify `_resolve_cal_engine()` to handle 15M subtypes. Low risk — follows existing weather/sports pattern.
+Each asset (BTC, ETH, SOL, XRP) has its own CalEngine learning asset-specific calibration. Deployed in shadow mode (`cal_engine_enabled=False`): engines train and persist state but don't affect live predictions. Observations dual-fed to both per-asset AND global engine.
+
+**Why:** The shared 15M engine masks per-asset calibration errors. SOL is 3.5pp overconfident, XRP is 0.6pp underconfident — a shared engine can't fix both. Per-asset engines learn independently.
+
+**Promotion criteria:** Enable when per-asset Brier consistently beats raw passthrough and walk-forward PnL validates. See [[kb-research/bot/per-asset-calengine.md]].
 
 ## Lookup: `_resolve_cal_engine()`
 ```python
 def _resolve_cal_engine(product_type, asset=None, require_enabled=False):
 ```
-1. If `product_type` is None or `"15m"`, returns None (15M uses `_CALIBRATION_ENGINE` directly)
+1. If `product_type` is None, returns None (legacy fallback to `_CALIBRATION_ENGINE`)
 2. If the product type has `cal_subtypes` and asset is provided, derives the subtype key and looks up `"{product_type}_{subtype}"`
 3. Falls back to bare `product_type` key (for hourly, spx_hourly)
 4. If `require_enabled=True`, also returns None if `cal_engine_enabled=False` in config (prevents disabled engines from affecting predictions while still collecting observations)

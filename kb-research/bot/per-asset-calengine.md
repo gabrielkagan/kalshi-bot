@@ -1,5 +1,5 @@
 ---
-status: scoped
+status: deployed-shadow
 updated: 2026-04-06
 tags: [calibration, per-asset, sizing, overconfidence]
 ---
@@ -60,17 +60,30 @@ All-time evaluated_opportunities with raw_prob:
 3. **Position cap**: Crude, doesn't scale intelligently with edge.
 4. **STC-dependent temperature for all assets**: XRP is underconfident — temperature would hurt it.
 
-## Implementation Plan
+## Implementation (Deployed Apr 6, 2026)
 
-Estimated effort: 1 session. Low risk — follows existing pattern, has fallback.
+Deployed as shadow (cal_engine_enabled=False). All changes follow existing weather/sports subtype pattern.
 
-1. Add `cal_subtypes` to 15M MarketTypeConfig
-2. Update `_resolve_cal_engine()` to handle 15M subtypes
-3. Add 15M case to `_derive_subtype()`
-4. Verify startup creates 4 engines, loads correct training data
-5. Verify settlement feeds observations to correct per-asset engine
-6. Verify dashboard cal_registry panel shows all 4 engines
-7. Deploy and monitor — engines will train automatically as settlements arrive
+**Changes made:**
+- market_config.py: Added `cal_subtypes` to 15M with 4 per-asset state files
+- bot.py `_derive_subtype()`: Added `if product_type == "15m": return asset`
+- bot.py `_derive_asset_filter()`: Added `if product_type == "15m": return subtype_code`
+- bot.py `_resolve_cal_engine()`: Changed `if product_type in (None, "15m")` to `if product_type is None` — lets "15m" fall through to subtype lookup
+- bot.py startup loop: Removed `if _pt == "15m": continue` skip
+- bot.py settlement: Dual-feed observations to both per-asset AND global engine
+- bot.py migration: Backfills product_type on evaluated_opportunities (1,744 rows)
+- test_config_consistency.py: Updated assertion to expect cal_subtypes
+
+**Initial training results (500 obs each):**
+- 15m_BTC: beta_cal, Brier 0.109 (backtest: 0.201→0.109, +46%)
+- 15m_ETH: beta_cal, Brier 0.110 (backtest: 0.219→0.110, +50%)
+- 15m_SOL: platt, Brier 0.170 (backtest: 0.222→0.170, +23%). Beta Cal had degenerate params, correctly rejected.
+- 15m_XRP: platt, Brier 0.116
+
+**Promotion criteria:** Enable per-asset (cal_engine_enabled=True for 15M) when:
+1. Per-asset Brier consistently beats raw passthrough over 2+ weeks
+2. SOL overconfidence gap narrows (current +3.5pp → target <1pp)
+3. Walk-forward PnL validation shows improvement on 3+ out of 5 folds
 
 ## Related
 - [[concepts/cal-engine-registry.md]]
