@@ -209,11 +209,14 @@ class TestAddObservation(unittest.TestCase):
         cls.CalEngine = CalibrationEngine
 
     def test_observation_added(self):
-        """add_observation appends to deque."""
+        """add_observation appends (raw_prob, outcome, stc) triple to deque."""
         eng = self.CalEngine(state_path="/tmp/_test_cal_obs_.json", label="test")
         eng.add_observation(0.9, 1)
         self.assertEqual(len(eng._observations), 1)
-        self.assertEqual(eng._observations[0], (0.9, 1))
+        self.assertEqual(eng._observations[0], (0.9, 1, None))
+        # With STC
+        eng.add_observation(0.95, 0, seconds_to_close=300.0)
+        self.assertEqual(eng._observations[1], (0.95, 0, 300.0))
 
     def test_brier_updated(self):
         """add_observation updates rolling Brier scores."""
