@@ -437,9 +437,11 @@ _TELEGRAM: Optional["TelegramNotifier"] = None
 
 def _derive_subtype(product_type: str, asset: Optional[str]) -> Optional[str]:
     """Extract CalEngine subtype code from asset string.
-    Weather: 'NYC_TEMP' → 'NYC'.  Sports: 'NBA' → 'basketball' (via sport_group)."""
+    15M: 'BTC' → 'BTC'.  Weather: 'NYC_TEMP' → 'NYC'.  Sports: 'NBA' → 'basketball'."""
     if not asset:
         return None
+    if product_type == "15m":
+        return asset  # Direct: asset name IS the subtype
     if product_type == "weather":
         return asset.replace("_TEMP", "") if "_TEMP" in asset else None
     if product_type == "sports":
@@ -458,6 +460,8 @@ def _derive_subtype(product_type: str, asset: Optional[str]) -> Optional[str]:
 def _derive_asset_filter(product_type: str, subtype_code: str):
     """Map subtype code back to DB asset filter for load_training_data_from_db().
     Returns str for single-asset types, list for multi-league sport groups."""
+    if product_type == "15m":
+        return subtype_code  # "BTC" → "BTC"
     if product_type == "weather":
         return f"{subtype_code}_TEMP"  # "NYC" → "NYC_TEMP"
     if product_type == "sports":
@@ -474,9 +478,10 @@ def _resolve_cal_engine(product_type: Optional[str],
                         asset: Optional[str] = None,
                         require_enabled: bool = False) -> Optional["CalibrationEngine"]:
     """Look up the correct CalibrationEngine for a (product_type, asset) pair.
-    Returns None for 15M (uses _CALIBRATION_ENGINE directly).
+    Returns None for product_type=None (legacy, uses _CALIBRATION_ENGINE directly).
+    For 15M with cal_subtypes: returns per-asset engine from registry.
     require_enabled=True: also returns None if cal_engine_enabled=False."""
-    if product_type in (None, "15m"):
+    if product_type is None:
         return None
     _cfg = get_market_config(product_type)
     if require_enabled and not _cfg.cal_engine_enabled:
@@ -1866,6 +1871,28 @@ class StateManager:
                 "AND ticker LIKE 'KXHIGH%'")
             self.conn.commit()
             logging.info(f"Backfilled product_type for {null_count} settled_trades rows")
+
+        # Same backfill for evaluated_opportunities (needed for per-asset CalEngine training)
+        eo_null = self.conn.execute(
+            "SELECT COUNT(*) FROM evaluated_opportunities WHERE product_type IS NULL"
+        ).fetchone()[0]
+        if eo_null > 0:
+            self.conn.execute(
+                "UPDATE evaluated_opportunities SET product_type='15m' WHERE product_type IS NULL "
+                "AND (ticker LIKE 'KXBTC15M%' OR ticker LIKE 'KXETH15M%' "
+                "OR ticker LIKE 'KXSOL15M%' OR ticker LIKE 'KXXRP15M%')")
+            self.conn.execute(
+                "UPDATE evaluated_opportunities SET product_type='hourly' WHERE product_type IS NULL "
+                "AND (ticker LIKE 'KXBTCD%' OR ticker LIKE 'KXETHD%' "
+                "OR ticker LIKE 'KXSOLD%' OR ticker LIKE 'KXXRPD%')")
+            self.conn.execute(
+                "UPDATE evaluated_opportunities SET product_type='spx_hourly' WHERE product_type IS NULL "
+                "AND ticker LIKE 'KXSPX%'")
+            self.conn.execute(
+                "UPDATE evaluated_opportunities SET product_type='weather' WHERE product_type IS NULL "
+                "AND ticker LIKE 'KXHIGH%'")
+            self.conn.commit()
+            logging.info(f"Backfilled product_type for {eo_null} evaluated_opportunities rows")
 
         # Migration: add enrichment columns to positions
         for col_def in [
@@ -15800,9 +15827,13 @@ class SettlementTracker:
             _settle_engine = _resolve_cal_engine(_opp_pt, _asset)
             if _settle_engine is not None:
                 _settle_engine.add_observation(raw_p, cal_binary)
-            elif (filter_stage in ("candidate", "observation_trade",
-                                   "hourly_observation", "spx_observation",
-                                   "weather_observation")
+            # Dual-feed: 15M per-asset engines AND global engine (keeps shadow pipeline working)
+            if _opp_pt in (None, "15m") and _CALIBRATION_ENGINE is not None:
+                _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
+            elif (_settle_engine is None
+                  and filter_stage in ("candidate", "observation_trade",
+                                       "hourly_observation", "spx_observation",
+                                       "weather_observation")
                   and get_market_config(_opp_pt).cal_eligible):
                 if _CALIBRATION_ENGINE is not None:
                     _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
@@ -16137,9 +16168,6 @@ class MainLoop:
         self._cal_engine_meta = {}  # reg_key → (product_type, subtype_code_or_None)
 
         for _pt, _cfg in MARKET_CONFIGS.items():
-            if _pt == "15m":
-                continue  # 15M uses _CALIBRATION_ENGINE — NEVER in registry
-
             if _cfg.cal_subtypes:
                 # Per-subtype engines (weather cities, sports groups)
                 for _sub_code, _sub_path in _cfg.cal_subtypes.items():

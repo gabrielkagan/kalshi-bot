@@ -88,6 +88,12 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         use_hourly_dynamic_cap=False,
         fee_multiplier_taker=0.07,
         fee_multiplier_maker=0.0,  # Kalshi charges $0 on maker fills
+        cal_subtypes={              # Per-asset CalEngines (shadow — cal_engine_enabled=False)
+            "BTC": "cal_15m_BTC.json",
+            "ETH": "cal_15m_ETH.json",
+            "SOL": "cal_15m_SOL.json",
+            "XRP": "cal_15m_XRP.json",
+        },
     ),
     "hourly": MarketTypeConfig(
         product_type="hourly",
@@ -378,9 +384,6 @@ def validate_market_configs() -> None:
         f"hourly cal_engine_enabled mismatch: {MARKET_CONFIGS['hourly'].cal_engine_enabled} != {bot.HOURLY_CALIBRATION_ENABLED}")
 
     # ── CalEngine subtype invariants ──
-    # 15M must never have subtypes
-    assert not MARKET_CONFIGS["15m"].cal_subtypes, "FATAL: 15m must not have cal_subtypes"
-
     # Subtypes and single-engine state path are mutually exclusive.
     # cal_engine_enabled + cal_subtypes is OK: enables subtype engines for predictions.
     for pt, cfg in MARKET_CONFIGS.items():
@@ -391,8 +394,6 @@ def validate_market_configs() -> None:
     # No engine may share state file with 15M + all state paths unique
     _all_state_paths = []
     for pt, cfg in MARKET_CONFIGS.items():
-        if pt == "15m":
-            continue
         if cfg.cal_engine_state_path:
             assert cfg.cal_engine_state_path != bot.CALIBRATION_STATE_PATH, (
                 f"FATAL: {pt} shares state file with 15M engine!")
