@@ -5273,9 +5273,11 @@ class CalibrationEngine:
     """
 
     def __init__(self, state_path: str = CALIBRATION_STATE_PATH,
-                 label: str = "CalibrationEngine"):
+                 label: str = "CalibrationEngine",
+                 accepted_stages: Optional[tuple] = None):
         self.state_path = state_path
         self._label = label
+        self._accepted_stages = accepted_stages  # None = accept all stages
         self.active_method: str = "fixed_beta"  # current method in use
         self._observations: deque = deque(maxlen=500)  # (raw_prob, binary_outcome)
         self._brier_scores: deque = deque(maxlen=CALIBRATION_BRIER_WINDOW)
@@ -5520,8 +5522,12 @@ class CalibrationEngine:
 
     # ── Training Data Management ───────────────────────────────────────────
 
-    def add_observation(self, raw_prob: float, outcome: int):
-        """Append a (raw_prob, binary_outcome) pair and update rolling Brier."""
+    def add_observation(self, raw_prob: float, outcome: int,
+                        filter_stage: Optional[str] = None):
+        """Append a (raw_prob, binary_outcome) pair and update rolling Brier.
+        If accepted_stages is configured, silently skip non-accepted stages."""
+        if self._accepted_stages and filter_stage and filter_stage not in self._accepted_stages:
+            return
         self._observations.append((raw_prob, outcome))
         # Update rolling Brier with the *current* calibration prediction
         pred = self.calibrate(raw_prob, cap=1.0)
@@ -5674,14 +5680,22 @@ class CalibrationEngine:
                 else:
                     _cal_filter = ""
                     _cal_query_params = (cutoff,)
+            # Stage filter: only accept specified stages (e.g., candidates for 15M)
+            _stage_filter = ""
+            _stage_params = ()
+            if self._accepted_stages:
+                _stage_placeholders = ",".join("?" for _ in self._accepted_stages)
+                _stage_filter = f"AND filter_stage IN ({_stage_placeholders}) "
+                _stage_params = tuple(self._accepted_stages)
+
             rows = state.conn.execute(
                 "SELECT raw_prob, market_result FROM evaluated_opportunities "
                 "WHERE status='settled' AND raw_prob IS NOT NULL "
                 "AND market_result IS NOT NULL "
-                + _cal_filter +
+                + _cal_filter + _stage_filter +
                 "AND evaluation_time > ? "
                 "ORDER BY evaluation_time DESC LIMIT 500",
-                _cal_query_params
+                (*_cal_query_params[:-1], *_stage_params, _cal_query_params[-1])
             ).fetchall()
 
             loaded = 0
@@ -15826,7 +15840,7 @@ class SettlementTracker:
         for (raw_p, cal_binary, _opp_pt, _asset, filter_stage) in _cal_observations:
             _settle_engine = _resolve_cal_engine(_opp_pt, _asset)
             if _settle_engine is not None:
-                _settle_engine.add_observation(raw_p, cal_binary)
+                _settle_engine.add_observation(raw_p, cal_binary, filter_stage=filter_stage)
             # Dual-feed: 15M per-asset engines AND global engine (keeps shadow pipeline working)
             if _opp_pt in (None, "15m") and _CALIBRATION_ENGINE is not None:
                 _CALIBRATION_ENGINE.add_observation(raw_p, cal_binary)
@@ -16169,14 +16183,17 @@ class MainLoop:
 
         for _pt, _cfg in MARKET_CONFIGS.items():
             if _cfg.cal_subtypes:
-                # Per-subtype engines (weather cities, sports groups)
+                # Per-subtype engines (weather cities, sports groups, 15M per-asset)
+                # 15M engines only train on candidates (not shadow/rejected noise)
+                _stages = ("candidate", "observation_trade") if _pt == "15m" else None
                 for _sub_code, _sub_path in _cfg.cal_subtypes.items():
                     _reg_key = f"{_pt}_{_sub_code}"
                     assert _sub_path != CALIBRATION_STATE_PATH, (
                         f"FATAL: {_reg_key} would share state file with 15M engine!")
                     _engine = CalibrationEngine(
                         state_path=_sub_path,
-                        label=f"{_pt.capitalize()}_{_sub_code}Cal")
+                        label=f"{_pt.capitalize()}_{_sub_code}Cal",
+                        accepted_stages=_stages)
                     self._cal_engines[_reg_key] = _engine
                     _CAL_REGISTRY[_reg_key] = _engine
                     self._cal_engine_meta[_reg_key] = (_pt, _sub_code)
