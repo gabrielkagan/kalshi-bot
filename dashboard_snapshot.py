@@ -212,6 +212,16 @@ class DashboardSnapshotBuilder:
         except Exception:
             snap["active_positions"] = []
 
+        # Actual PnL from Kalshi balance (avoids fee overcounting in per-trade data)
+        try:
+            _bal_cents = int(round(snap["current_balance"] * 100))
+            _init_cents = int(round(snap["initial_deposit"] * 100))
+            _open_cost = sum(p.get("total_cost_cents", 0) for p in snap.get("active_positions", []))
+            _open_fee = sum(p.get("accumulated_fee_cents", 0) or 0 for p in snap.get("active_positions", []))
+            snap["actual_pnl_cents"] = _bal_cents - _init_cents + _open_cost + _open_fee
+        except Exception:
+            snap["actual_pnl_cents"] = None
+
         # Resting orders
         # cleanup_expired_resting_orders moved to main loop — snapshot is read-only
         try:

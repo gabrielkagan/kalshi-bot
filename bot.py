@@ -1884,6 +1884,7 @@ class StateManager:
             ("maker_wait_seconds", "REAL"),
             ("strategy_group", "TEXT DEFAULT 'main'"),
             ("is_stacked", "INTEGER DEFAULT 0"),
+            ("accumulated_fee_cents", "INTEGER DEFAULT 0"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE positions ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2177,7 +2178,19 @@ class StateManager:
         total_cost = pos["total_cost_cents"]
         pnl = revenue - total_cost
         is_taker = bool(pos.get("is_taker"))
-        fee = calculate_fee(pos["count"], pos["avg_price_cents"], is_taker=is_taker)
+        recomputed_fee = calculate_fee(pos["count"], pos["avg_price_cents"], is_taker=is_taker)
+
+        # Prefer per-fill accumulated fee (accurate for mixed maker/taker positions)
+        # Fall back to recomputed fee for legacy positions without accumulated data
+        accumulated = pos.get("accumulated_fee_cents")
+        if accumulated and accumulated > 0:
+            fee = accumulated
+            if abs(fee - recomputed_fee) > 2:
+                logging.info(
+                    f"FEE_CORRECTION {ticker}: accumulated={accumulated}¢ "
+                    f"recomputed={recomputed_fee}¢ delta={recomputed_fee - accumulated}¢")
+        else:
+            fee = recomputed_fee
 
         # Cross-check P&L/fee consistency with caller (canary for divergence)
         if pnl_override is not None and abs(pnl - pnl_override) > 2:
@@ -2726,8 +2739,11 @@ class StateManager:
         fill_cost = count * price_cents
         _sg = strategy_to_group(strategy)
 
+        # Compute fee for THIS fill (per-fill is_taker is accurate)
+        _fill_fee = calculate_fee(count, price_cents, is_taker=bool(is_taker))
+
         existing = self.conn.execute(
-            "SELECT count, avg_price_cents, total_cost_cents, opened_at "
+            "SELECT count, avg_price_cents, total_cost_cents, opened_at, accumulated_fee_cents "
             "FROM positions WHERE ticker=? AND strategy_group=? AND status='open'",
             (ticker, _sg)
         ).fetchone()
@@ -2735,6 +2751,7 @@ class StateManager:
         if existing:
             old_count = existing[0]
             old_cost = existing[2]
+            old_fee = existing[4] or 0
             new_count = old_count + count
             new_cost = old_cost + fill_cost
             new_avg = round(new_cost / new_count) if new_count else price_cents
@@ -2742,9 +2759,11 @@ class StateManager:
             self.conn.execute("""
                 UPDATE positions
                 SET count=?, avg_price_cents=?, total_cost_cents=?,
-                    is_taker=MAX(is_taker, ?), updated_at=?
+                    is_taker=MAX(is_taker, ?), accumulated_fee_cents=?,
+                    updated_at=?
                 WHERE ticker=? AND strategy_group=? AND status='open'
-            """, (new_count, new_avg, new_cost, 1 if is_taker else 0, now, ticker, _sg))
+            """, (new_count, new_avg, new_cost, 1 if is_taker else 0,
+                  old_fee + _fill_fee, now, ticker, _sg))
         else:
             opened_at = now
             _other = self.conn.execute(
@@ -2759,15 +2778,15 @@ class StateManager:
                      vol_regime, calibrated_prob, edge, kelly_f,
                      is_taker, fill_source, execution_method,
                      escalation_type, maker_price_cents, maker_wait_seconds,
-                     strategy_group, is_stacked)
-                VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     strategy_group, is_stacked, accumulated_fee_cents)
+                VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, asset, side, count,
                   price_cents, fill_cost, now, now,
                   strategy, seconds_to_close, fill_latency,
                   vol_regime, calibrated_prob, edge, kelly_f,
                   1 if is_taker else 0, fill_source, execution_method,
                   escalation_type, maker_price_cents, maker_wait_seconds,
-                  _sg, _is_stacked))
+                  _sg, _is_stacked, _fill_fee))
         self.conn.commit()
 
     def update_garch_params(self, asset: str, omega: float, alpha: float,
