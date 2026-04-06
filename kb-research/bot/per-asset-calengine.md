@@ -74,11 +74,30 @@ Deployed as shadow (cal_engine_enabled=False). All changes follow existing weath
 - bot.py migration: Backfills product_type on evaluated_opportunities (1,744 rows)
 - test_config_consistency.py: Updated assertion to expect cal_subtypes
 
-**Initial training results (500 obs each):**
+**Initial training results (all stages, noisy — see Training Data Fix below):**
 - 15m_BTC: beta_cal, Brier 0.109 (backtest: 0.201→0.109, +46%)
 - 15m_ETH: beta_cal, Brier 0.110 (backtest: 0.219→0.110, +50%)
 - 15m_SOL: platt, Brier 0.170 (backtest: 0.222→0.170, +23%). Beta Cal had degenerate params, correctly rejected.
 - 15m_XRP: platt, Brier 0.116
+
+## Training Data Fix (Deployed Apr 6, 2026)
+
+**Root cause found:** `load_training_data_from_db()` had no `filter_stage` restriction. Only 10% of training data was actual candidates (95%+ prob). The other 90% was rejected trades: `insufficient_edge` (50% avg prob, 25% of data), `no_side_price_shadow` (17% avg prob), `price_out_of_range`, etc. This caused Platt to learn A=0.15-0.25 (compress everything to 80%) instead of the correct A=0.66-1.03 for candidates.
+
+**Fix:** Added `accepted_stages` parameter to CalibrationEngine:
+- `__init__`: stores accepted_stages tuple
+- `add_observation()`: silently skips non-accepted stages
+- `load_training_data_from_db()`: adds `AND filter_stage IN (...)` to SQL
+- Startup loop: 15M engines get `accepted_stages=('candidate', 'observation_trade')`
+- Weather/sports: None (accept all stages — their data is already clean)
+
+**Post-fix training results (candidates only):**
+- 15m_BTC: platt, A=0.66 B=1.16, Brier 0.047 (n=298)
+- 15m_ETH: blr, mu=[1.22, 0.04], Brier 0.064 (n=255)
+- 15m_SOL: blr, mu=[0.97, -0.71], Brier 0.091 (n=500)
+- 15m_XRP: platt (training)
+
+SOL's BLR now has near-identity slope (0.97) with downward shift (-0.71) — exactly the overconfidence correction needed. Out-of-sample Brier improvement: +7.9% for SOL vs 3.1% WORSE with all-stage training.
 
 **Promotion criteria:** Enable per-asset (cal_engine_enabled=True for 15M) when:
 1. Per-asset Brier consistently beats raw passthrough over 2+ weeks
