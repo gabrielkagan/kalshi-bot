@@ -111,15 +111,15 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 89,278 |
+| Markets evaluated | 90,199 |
 | Observation period | 2026-02-22 to 2026-04-06 |
-| Filter pass rate | 2.7\% (2,437 of 89,278) |
-| Top rejection reason | Insufficient Edge (25,869) |
-| Settled trades | 1,334 |
-| Win rate | 92.7\% |
-| Observation P&L | 83,199 cents |
+| Filter pass rate | 2.8\% (2,499 of 90,199) |
+| Top rejection reason | Insufficient Edge (26,154) |
+| Settled trades | 1,370 |
+| Win rate | 92.6\% |
+| Observation P&L | 61,591 cents |
 
-*Last updated: 2026-04-06T00:25:11Z*
+*Last updated: 2026-04-06T08:38:45Z*
 
 ## Setup
 
