@@ -612,7 +612,7 @@ TM_MIN_PROB = 0.93                        # Model confirmation threshold
 TM_MIN_STC = 61                           # Minimum seconds to close
 TM_MAX_STC = 300                          # Maximum seconds to close
 TM_FIXED_CONTRACTS = 50                   # Default position size (bypasses Kelly entirely)
-TM_CONTRACTS_BY_PRICE = {98: 100, 99: 100}  # Per-price overrides (scaled tiers)
+TM_CONTRACTS_BY_PRICE = {98: 150, 99: 150}  # Per-price overrides (data: 142 trades, 0 losses at 98-99c)
 TM_MAX_CONCURRENT = 4                     # Max simultaneous TM positions (safety cap)
 # ─── Low-Price Near-Expiry (LPNE) Strategy ──────────────────────────────
 # Trades BTC 15M at 80-87c in the final 10-120s before expiry. These are contracts
