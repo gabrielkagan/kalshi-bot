@@ -187,12 +187,14 @@ class TestObservationModeFlags:
 class TestCalEngineInvariants:
     """CalEngine registry safety checks (from validate_market_configs)."""
 
-    def test_15m_never_uses_cal_engine(self):
+    def test_15m_cal_engine_shadow_mode(self):
+        """15M has per-asset CalEngines but cal_engine_enabled=False (shadow)."""
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["15m"]
-        assert not cfg.cal_engine_enabled
-        assert cfg.cal_engine_state_path == ""
-        assert not cfg.cal_subtypes
+        assert not cfg.cal_engine_enabled  # Shadow: engines train but don't affect predictions
+        assert cfg.cal_engine_state_path == ""  # Uses subtypes, not single state path
+        assert cfg.cal_subtypes  # Per-asset engines: BTC, ETH, SOL, XRP
+        assert len(cfg.cal_subtypes) == 4
 
     def test_subtypes_and_single_state_path_mutually_exclusive(self):
         """cal_subtypes + cal_engine_state_path is invalid (pick one).
