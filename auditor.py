@@ -63,7 +63,7 @@ EXPECTED_COLUMN_COUNTS = {
     "settled_trades": 24,       # +2: strategy_group, is_stacked (stacking migration Apr 1 2026)
     "evaluated_opportunities": 80,
     "rejected_opportunities": 29,
-    "positions": 25,            # +2: strategy_group, is_stacked (stacking migration Apr 1 2026)
+    "positions": 26,            # +3: strategy_group, is_stacked, accumulated_fee_cents (Apr 6 2026)
     "pending_orders": 12,
 }
 
