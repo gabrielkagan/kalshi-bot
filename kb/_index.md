@@ -1,6 +1,6 @@
 # Kalshi Bot Knowledge Base
 
-Last updated: 2026-04-05 | Articles: 50 | Status: Trimmed
+Last updated: 2026-04-06 | Articles: 51 | Status: Trimmed
 
 ## Usage
 Read this index first before answering any deep question about the bot. Identify relevant articles, read those, then respond. After significant sessions, update articles and this index.
@@ -51,6 +51,7 @@ Read this index first before answering any deep question about the bot. Identify
 - [[failures/dedup-tuple-crash.md]] - Mixed 2/3-tuple sizes in _eval_opp_seen crashed scan loop (Mar 7).
 - [[failures/shadow-callsite-variable.md]] - NameError swallowed by logging.debug made shadow engine dead code (Mar 7).
 - [[failures/supabase-sync-silent-failure.md]] - SELECT * sent ~30 unknown columns to Supabase → weeks of eval/rejection data lost silently.
+- [[failures/pnl-reporting-bugs.md]] - Fee overcounting ($120), revenue inflation ($20), stacking double-revenue ($13). Fixed Apr 6.
 
 ## Decisions (11)
 - [[decisions/blr-removal.md]] - Disabled BLR calibrator via feature flag (Mar 29, 2026).

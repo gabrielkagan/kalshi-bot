@@ -44,6 +44,10 @@ When `STACKING_ENABLED = False`, legacy behavior: reject any ticker with an exis
 ## Settlement
 Settlement processes each (ticker, strategy_group) position independently. PnL computed per position, not aggregated at ticker level. The settlement refactor ensures each strategy group's position gets its own settlement record in `settled_trades`.
 
+**Revenue override (Apr 5, 2026):** `_process_settlement()` passes `revenue_override=row_count*100` to `record_settlement()`. Without this, the Kalshi API's aggregate revenue (for ALL contracts on the ticker) was attributed to EACH position row, double-counting PnL. See [[failures/pnl-reporting-bugs.md]].
+
+**Lost addon positions:** If reconciliation deletes an addon position before settlement, the surviving position's revenue may still reflect the full ticker revenue from the API. The revenue_override fix handles this for positions that exist at settlement time, but lost addons cannot be recovered.
+
 ## Kill Switch
 `STACKING_ENABLED = os.environ.get("STACKING_ENABLED", "0") == "1"` — defaults OFF. When disabled, logs a warning if any tickers have multiple positions (shouldn't happen, but safety check).
 

@@ -90,7 +90,16 @@ Decided contracts (T1/T1B/T2) route directly to taker because:
 3. Fee at 93-97c is only 1c/contract
 4. Missing a 97c decided contract costs 3c/contract -- 3x the fee
 
+## Fee Tracking: Per-Fill Accumulation (Apr 6, 2026)
+
+`record_settlement()` previously recomputed the fee on the full position at settlement time. For escalated orders (maker→taker), `is_taker=MAX(all_fills)=True` caused the ENTIRE position to be charged taker fee, even when some contracts filled as maker ($0 fee). This overcounted fees by ~$120 across 1329 trades.
+
+**Fix:** Added `accumulated_fee_cents` column to positions table. Each fill in `record_position_from_fill()` computes its own fee using the correct per-fill `is_taker` and accumulates. At settlement, the accumulated fee is used instead of recomputing. Legacy positions without accumulated data fall back to the old computation.
+
+See [[failures/pnl-reporting-bugs.md]] for the full incident.
+
 ## Related
 - [[concepts/execution-layer.md]]
 - [[failures/sol-maker-adverse-selection.md]]
+- [[failures/pnl-reporting-bugs.md]]
 - [[concepts/dc-strategy.md]]
