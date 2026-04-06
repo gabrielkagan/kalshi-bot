@@ -7198,7 +7198,7 @@ class OpportunityScanner:
                             and asset in LPNE_ASSETS
                             and LPNE_MIN_PRICE <= best_ask <= LPNE_MAX_PRICE
                             and LPNE_MIN_STC <= seconds_remaining <= LPNE_MAX_STC
-                            and final_prob >= best_ask / 100.0):  # model must believe at least break-even
+                            and cal_prob >= best_ask / 100.0):  # model must believe at least break-even
                         _lpne_dc_overlap = any(
                             c["ticker"] == ticker and c.get("strategy", "").startswith("decided_")
                             for c in candidates)
@@ -7212,7 +7212,7 @@ class OpportunityScanner:
                                     logging.info(
                                         "LPNE_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs",
                                         asset, ticker, LPNE_FIXED_CONTRACTS, best_ask,
-                                        final_prob, seconds_remaining)
+                                        cal_prob, seconds_remaining)
                                     candidates.append({
                                         "ticker": ticker,
                                         "event_ticker": window["event_ticker"],
@@ -7222,7 +7222,7 @@ class OpportunityScanner:
                                         "threshold": threshold,
                                         "seconds_to_close": round(seconds_remaining, 1),
                                         "blended_rv": blended_rv,
-                                        "calibrated_prob": round(final_prob, 6),
+                                        "calibrated_prob": round(cal_prob, 6),
                                         "z_score": prob_result.get("z_score"),
                                         "best_yes_ask": best_ask,
                                         "best_ask_source": best_ask_source,
