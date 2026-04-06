@@ -1,6 +1,6 @@
 # Research Knowledge Base Index
 
-Last updated: 2026-04-05 | Articles: 17
+Last updated: 2026-04-06 | Articles: 18
 
 ## Purpose
 Complete research findings, analysis outputs, and external knowledge compiled from past Claude chat sessions. These are reference materials that informed bot decisions. Cross-link to kb/decisions/ for what was actually decided.
@@ -23,6 +23,7 @@ Complete research findings, analysis outputs, and external knowledge compiled fr
 - [[bot/goldmine-hunt-apr5.md]] — 12-agent comprehensive alpha hunt. Most opportunities collapsed under verification (relaxed edge=-$103 at Kelly, DC z-1.5=base rate, post-loss=$23 total). Real survivors: fill rate improvement ($967 CF), hourly STC tightening, intraday vol seasonality, weather NO pipeline fix, cross-asset confirmation, market making.
 - [[bot/stc-sizing-research.md]] - STC sizing vulnerability: SOL sub-86c far-from-expiry losses (-$289), universal STC overexposure at 7m+ (-$254). Two fixes: SOL time gate + Kelly STC scaler. Combined +$353 (+73%) PnL improvement. Edge doesn't predict winning (r=-0.04).
 - [[bot/overnight-miscalibration-analysis.md]] - Overnight (04-11 UTC) model underconfidence: 7pp gap at 91-92c, BLR disabled is root cause, verified PnL +$259/19d but p=0.15 not significant. Golden hour framing debunked. Shadowing recommended.
+- [[bot/per-asset-calengine.md]] - Per-asset 15M CalEngine scope. SOL 2.3pp overconfident at >300s STC, BTC 1.9pp. Shared engine masks per-asset errors. Architecture follows existing weather/sports subtype pattern. Scoped, not yet implemented.
 
 ## Infrastructure Research
 - [[infrastructure/firebase-supabase-migration.md]] - Complete 7-agent migration plan with test criteria at every stage. Dual-write safety architecture. Supabase config decisions. Completed Mar 6.

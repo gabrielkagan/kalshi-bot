@@ -47,6 +47,10 @@ _CAL_REGISTRY: Dict[str, "CalibrationEngine"] = {}          # non-15M engines
 | `sports_mma` | `cal_sports_mma.json` | True | |
 | `sports_esports` | `cal_sports_esports.json` | True | |
 
+## Planned: Per-Asset 15M CalEngines
+
+The shared 15M engine masks per-asset calibration errors. SOL at 300-600s STC is 2.3pp overconfident but this is hidden in the aggregate. Scoped in [[kb-research/bot/per-asset-calengine.md]]. Would add `cal_subtypes = {"BTC": "cal_15m_BTC.json", ...}` to 15M config and modify `_resolve_cal_engine()` to handle 15M subtypes. Low risk — follows existing weather/sports pattern.
+
 ## Lookup: `_resolve_cal_engine()`
 ```python
 def _resolve_cal_engine(product_type, asset=None, require_enabled=False):

@@ -52,6 +52,12 @@ Wave 1 (UX): Active Positions/Orders moved above analytics (first thing after he
 ## [2026-04-05] research | Price drift analysis — drift is NET PROFITABLE, don't fix
 68.8% of trades have fill price != scan price. Initially recommended tightening STC gate to 92c — WRONG. PnL analysis shows DOWN-drift fills are the MOST profitable group ($1.25/trade, 47.5% of total PnL). 135 sub-floor fills are net +$108 (12.4% of PnL). The 6 STC gate violations are -$11 net (negligible). Tightening gates would COST money because at 93.5% WR, every blocked trade is 14:1 winners-to-losers. Recommendation: do nothing — drift is a feature, not a bug. Filed as kb-research/bot/price-drift-analysis.md.
 
+## [2026-04-06] fix | 5 P&L reporting bugs — fee overcounting, revenue inflation, chart scope
+Fee overcounting (~$120): record_settlement recomputed full taker fee on mixed maker/taker positions. Fix: accumulated_fee_cents per-fill tracking. Revenue inflation (34 trades, $20.48): lost addon positions caused full API revenue on surviving row. Fix: revenue_cents = count*100, revenue_override for stacked. Chart scope: Lifetime P&L used 15M-only data by default. Fix: always use all_products_cumulative_pnl. Trade count: showed thinned points (100) not actual (1300+). Fix: use win+loss counts. Added actual_pnl_cents from Kalshi balance for correct total display. Also fixed LPNE UnboundLocalError (final_prob used before assignment) and auditor schema drift alert.
+
+## [2026-04-06] research | Per-asset 15M CalEngine scoped
+SOL at 300-600s STC is 2.3pp overconfident, masked by aggregate 15M calibration. Stress-tested: fixed temperature, STC gate, position cap — all rejected (patchy, unstable overconfidence, kills profitable trades). Per-asset CalEngines follow existing weather/sports subtype pattern. Scoped in kb-research/bot/per-asset-calengine.md. Not yet implemented.
+
 ## [2026-04-05] fix | PPO v2 table creation — executescript silently failed
 The `conn.executescript()` with DROP+CREATE+INDEX in one block silently failed on VPS, leaving the table non-existent. Split into separate `conn.execute()` calls with IF NOT EXISTS guards. This is the 5th PPO fix in one day — lesson: test table creation on VPS, not just locally.
 

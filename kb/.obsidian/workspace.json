@@ -185,6 +185,7 @@
   },
   "active": "0f8393ac7ea86c36",
   "lastOpenFiles": [
+    "failures/pnl-reporting-bugs.md",
     "failures/loss-clustering.md",
     "failures/blr-calibrator.md",
     "failures/database-contention.md",
@@ -210,7 +211,6 @@
     "concepts/test-suite.md",
     "concepts/market-config-system.md",
     "decisions/tm-97c-promotion.md",
-    "concepts/guard-aware-protocol.md",
-    "failures/shadow-callsite-variable.md"
+    "concepts/guard-aware-protocol.md"
   ]
 }
