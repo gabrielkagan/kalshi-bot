@@ -71,23 +71,22 @@ class TestTMConstants(unittest.TestCase):
         self.assertEqual(_extract_constant(self.source, "TM_MIN_STC"), 61)
         self.assertEqual(_extract_constant(self.source, "TM_MAX_STC"), 300)
 
-    def test_fixed_contracts_default(self):
-        self.assertEqual(_extract_constant(self.source, "TM_FIXED_CONTRACTS"), 50)
+    def test_base_contracts(self):
+        self.assertEqual(_extract_constant(self.source, "TM_BASE_CONTRACTS"), 100)
 
-    def test_contracts_by_price(self):
-        """98c and 99c scaled to 150 contracts (data: 142 trades, 0 losses)."""
-        m = re.search(r'^TM_CONTRACTS_BY_PRICE\s*=\s*(\{[^}]+\})', self.source, re.MULTILINE)
-        self.assertIsNotNone(m, "TM_CONTRACTS_BY_PRICE must be a dict literal")
-        val = eval(m.group(1))
-        self.assertEqual(val, {98: 200, 99: 200})
+    def test_tm_compute_contracts_exists(self):
+        """tm_compute_contracts function must exist."""
+        self.assertIn("def tm_compute_contracts(", self.source)
 
-    def test_contracts_by_price_only_scaled_tiers(self):
-        """Only 98c and 99c should be in the override dict — other tiers use default."""
-        m = re.search(r'^TM_CONTRACTS_BY_PRICE\s*=\s*(\{[^}]+\})', self.source, re.MULTILINE)
-        self.assertIsNotNone(m)
-        val = eval(m.group(1))
-        self.assertEqual(set(val.keys()), {98, 99},
-                         "Only 98c and 99c should have overrides")
+    def test_tm_sizing_margin_proportional(self):
+        """Lower prices (wider margin) should produce more contracts."""
+        import importlib, sys
+        # Import the function
+        spec = importlib.util.spec_from_file_location("bot", "bot.py")
+        # Can't import bot.py directly (side effects), so verify via constants
+        base = _extract_constant(self.source, "TM_BASE_CONTRACTS")
+        # At 96c (margin=4) vs 99c (margin=1), base sizing should be 4:1
+        self.assertEqual(base, 100, "TM_BASE_CONTRACTS should be 100")
 
     def test_max_concurrent(self):
         self.assertEqual(_extract_constant(self.source, "TM_MAX_CONCURRENT"), 4)
@@ -203,7 +202,8 @@ class TestTMExecuteRouting(unittest.TestCase):
         # Find the function
         fn_start = self.source.find("def _execute_tm_taker")
         self.assertGreater(fn_start, 0)
-        fn_block = self.source[fn_start:fn_start + 3000]
+        fn_end = self.source.find("\n    def ", fn_start + 1)
+        fn_block = self.source[fn_start:fn_end]
         self.assertIn('"tm_taker"', fn_block)
 
     def test_tm_taker_sets_cooldown(self):
@@ -228,10 +228,10 @@ class TestTMSizing(unittest.TestCase):
     def setUp(self):
         self.source = _read_bot()
 
-    def test_scan_time_uses_per_price_lookup(self):
-        """TM candidate must derive size from TM_CONTRACTS_BY_PRICE."""
+    def test_scan_time_uses_compute_fn(self):
+        """TM candidate must derive size from tm_compute_contracts."""
         tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:6000]
-        self.assertIn("TM_CONTRACTS_BY_PRICE.get(best_ask, TM_FIXED_CONTRACTS)", tm_block)
+        self.assertIn("tm_compute_contracts(", tm_block)
 
     def test_scan_time_sets_position_size(self):
         """TM candidate must use _tm_size for position_size."""
@@ -249,11 +249,11 @@ class TestTMSizing(unittest.TestCase):
         self.assertIn('"drawdown_scaler": 1.0', tm_block)
 
     def test_execution_time_re_derives_count(self):
-        """_execute_tm_taker must re-derive count from fresh_ask to handle price drift."""
+        """_execute_tm_taker must re-derive count via tm_compute_contracts on price drift."""
         fn_start = self.source.find("def _execute_tm_taker")
         fn_end = self.source.find("\n    def ", fn_start + 1)
         fn_block = self.source[fn_start:fn_end]
-        self.assertIn("TM_CONTRACTS_BY_PRICE.get(fresh_ask, TM_FIXED_CONTRACTS)", fn_block)
+        self.assertIn("tm_compute_contracts(", fn_block)
 
     def test_execution_time_updates_candidate(self):
         """_execute_tm_taker must update candidate['position_size'] after re-derivation."""

@@ -616,9 +616,52 @@ TM_PRICE_SET = {95, 96, 97, 98, 99}      # Valid entry prices (97c: 98.2% WR on 
 TM_MIN_PROB = 0.93                        # Model confirmation threshold
 TM_MIN_STC = 61                           # Minimum seconds to close
 TM_MAX_STC = 300                          # Maximum seconds to close
-TM_FIXED_CONTRACTS = 50                   # Default position size (bypasses Kelly entirely)
-TM_CONTRACTS_BY_PRICE = {98: 200, 99: 200}  # Per-price overrides (data: 145+ trades, 0 losses at 98-99c)
+TM_BASE_CONTRACTS = 100                   # Base multiplier for margin-proportional sizing
+TM_STC_SAFE_THRESHOLD = 180               # STC below this → boost (100% WR zone)
+TM_STC_DANGER_LO = 180                    # STC danger zone lower bound
+TM_STC_DANGER_HI = 240                    # STC danger zone upper bound (210-240s has ALL losses)
+TM_STC_SAFE_MULT = 1.5                    # Multiplier for STC < safe threshold
+TM_STC_DANGER_MULT = 0.5                  # Multiplier for danger zone
+TM_STC_NORMAL_MULT = 1.0                  # Multiplier for STC >= danger_hi
+TM_MAX_RISK_FRAC = 0.25                   # Max fraction of bankroll at risk per TM trade
+TM_MIN_CONTRACTS = 25                     # Floor (always collect data)
+TM_MAX_CONTRACTS = 500                    # Hard cap
 TM_MAX_CONCURRENT = 4                     # Max simultaneous TM positions (safety cap)
+
+
+def tm_compute_contracts(price_cents: int, seconds_to_close: float,
+                         bankroll_cents: int = 100000) -> int:
+    """Margin × STC-aware sizing for terminal momentum.
+
+    Formula: TM_BASE × (100 - price) × stc_multiplier
+    Capped at TM_MAX_RISK_FRAC of bankroll.
+
+    Data (270 trades, Apr 1-7 2026):
+    - STC < 180s: 77/77 = 100% WR → boost ×1.5
+    - STC 180-240s: 54/57 = 94.7% WR, all 4 losses → reduce ×0.5
+    - STC 240+: 135/136 = 99.3% WR → standard ×1.0
+    - 240-300s has fattest entry buffers (0.25%) and lowest risk ratio (1.23)
+    """
+    margin = 100 - price_cents
+    if margin <= 0:
+        return TM_MIN_CONTRACTS
+
+    # STC multiplier
+    if seconds_to_close < TM_STC_SAFE_THRESHOLD:
+        stc_mult = TM_STC_SAFE_MULT
+    elif seconds_to_close < TM_STC_DANGER_HI:
+        stc_mult = TM_STC_DANGER_MULT
+    else:
+        stc_mult = TM_STC_NORMAL_MULT
+
+    ct = int(TM_BASE_CONTRACTS * margin * stc_mult)
+
+    # Risk cap: never exceed TM_MAX_RISK_FRAC of bankroll
+    if bankroll_cents > 0:
+        max_by_risk = int(bankroll_cents * TM_MAX_RISK_FRAC / price_cents)
+        ct = min(ct, max_by_risk)
+
+    return max(TM_MIN_CONTRACTS, min(TM_MAX_CONTRACTS, ct))
 # ─── Low-Price Near-Expiry (LPNE) Strategy ──────────────────────────────
 # Trades BTC 15M at 80-87c in the final 10-120s before expiry. These are contracts
 # the price floor rejects but that settle YES at 97.6% WR (42 obs, STC<=120s).
@@ -7993,11 +8036,15 @@ class OpportunityScanner:
                                 _tm_count = sum(1 for c in candidates if c.get("strategy") == "terminal_momentum")
                                 if _tm_count < TM_MAX_CONCURRENT:
                                     _tm_intercepted = True
-                                    _tm_size = TM_CONTRACTS_BY_PRICE.get(best_ask, TM_FIXED_CONTRACTS)
+                                    _tm_balance = self._get_balance_cached() or 100000
+                                    _tm_size = tm_compute_contracts(best_ask, seconds_remaining, _tm_balance)
                                     logging.info(
-                                        "TM_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs edge=%.4f",
+                                        "TM_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs edge=%.4f margin=%dc stc_zone=%s",
                                         asset, ticker, _tm_size, best_ask,
-                                        final_prob, seconds_remaining, fee_adjusted_edge)
+                                        final_prob, seconds_remaining, fee_adjusted_edge,
+                                        100 - best_ask,
+                                        "safe" if seconds_remaining < TM_STC_SAFE_THRESHOLD else
+                                        ("danger" if seconds_remaining < TM_STC_DANGER_HI else "normal"))
                                     candidates.append({
                                         "ticker": ticker,
                                         "event_ticker": window["event_ticker"],
@@ -13654,7 +13701,7 @@ class OrderExecutor:
     def _execute_tm_taker(self, candidate: Dict, asset: str, seconds_to_close) -> Optional[Dict]:
         """Execute terminal momentum trade — direct taker, fixed contracts, no retry."""
         ticker = candidate["ticker"]
-        count = candidate["position_size"]  # scan-time: TM_CONTRACTS_BY_PRICE or TM_FIXED_CONTRACTS
+        count = candidate["position_size"]  # scan-time: tm_compute_contracts(price, stc, balance)
         price = candidate["best_yes_ask"]
         cal_prob = candidate["calibrated_prob"]
 
@@ -13688,7 +13735,8 @@ class OrderExecutor:
             price = fresh_ask
             candidate["best_yes_ask"] = fresh_ask
             # Re-derive sizing from execution-time price (scan price may have drifted)
-            count = TM_CONTRACTS_BY_PRICE.get(fresh_ask, TM_FIXED_CONTRACTS)
+            _exec_bal = candidate.get("balance_at_scan") or 100000
+            count = tm_compute_contracts(fresh_ask, seconds_to_close or 200, _exec_bal)
             candidate["position_size"] = count
             taker_fee = calculate_taker_fee(count, price)
             net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))

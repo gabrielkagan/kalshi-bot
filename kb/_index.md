@@ -1,6 +1,6 @@
 # Kalshi Bot Knowledge Base
 
-Last updated: 2026-04-06 | Articles: 51 | Status: Trimmed
+Last updated: 2026-04-07 | Articles: 53 | Status: Trimmed
 
 ## Usage
 Read this index first before answering any deep question about the bot. Identify relevant articles, read those, then respond. After significant sessions, update articles and this index.
@@ -31,7 +31,7 @@ Read this index first before answering any deep question about the bot. Identify
 - [[concepts/shadow-expansion-variants.md]] - Shadow expansion: 6 DC variants, low-price sim, overnight LP, promotion criteria.
 
 ## Strategies (5)
-- [[strategies/terminal-momentum.md]] - TM: 95-99c contracts, 61-300s STC, per-price sizing (98-99c: 100ct, others: 50ct). Execution-time drift guard.
+- [[strategies/terminal-momentum.md]] - TM: 95-99c, 61-300s STC, margin×STC sizing (tm_compute_contracts). 270 trades, 98.5% WR.
 - [[strategies/lpne.md]] - LPNE: BTC 80-87c near-expiry (STC<=120s), intercepts at price floor. 97.6% WR on 42 obs, 50ct fixed.
 - [[strategies/bracket-no.md]] - Weather bracket NO: buy NO when YES 88-96c, 91.7% NO settlement rate.
 - [[strategies/overnight-discount.md]] - Overnight/weekend edge discount: 0.6x multiplier, 89c+ live gates.
@@ -52,6 +52,8 @@ Read this index first before answering any deep question about the bot. Identify
 - [[failures/shadow-callsite-variable.md]] - NameError swallowed by logging.debug made shadow engine dead code (Mar 7).
 - [[failures/supabase-sync-silent-failure.md]] - SELECT * sent ~30 unknown columns to Supabase → weeks of eval/rejection data lost silently.
 - [[failures/pnl-reporting-bugs.md]] - Fee overcounting ($120), revenue inflation ($20), stacking double-revenue ($13). Fixed Apr 6.
+- [[failures/settlement-watermark-race.md]] - Watermark skips failed settlements → stuck positions, inflated PnL, stale orders. Fixed Apr 7.
+- [[failures/ppo-monitor-bugs.md]] - Three PPO bugs: STC timezone, deprecated API fields, WS stale threshold. 0% orderbook data. Fixed Apr 7.
 
 ## Decisions (11)
 - [[decisions/blr-removal.md]] - Disabled BLR calibrator via feature flag (Mar 29, 2026).
@@ -65,3 +67,4 @@ Read this index first before answering any deep question about the bot. Identify
 - [[decisions/tm-97c-promotion.md]] - Added 97c to TM price set: 98.2% WR on 55 obs above breakeven.
 - [[decisions/config-models-extraction.md]] - Extracted config.py and models.py from bot.py (Mar 21).
 - [[decisions/openclaw-deferred.md]] - OpenClaw+Gemma evaluated and deferred: security risk, VPS can't run Gemma, Python Telegram bot preferred.
+- [[decisions/stc-extended-zone.md]] - 300-600s re-enabled with per-asset higher floors (BTC 93c, ETH 90c, SOL 95c, XRP 92c). 98.8% WR on n=83.
