@@ -623,27 +623,41 @@ TM_STC_DANGER_HI = 240                    # STC danger zone upper bound (210-240
 TM_STC_SAFE_MULT = 1.5                    # Multiplier for STC < safe threshold
 TM_STC_DANGER_MULT = 0.5                  # Multiplier for danger zone
 TM_STC_NORMAL_MULT = 1.0                  # Multiplier for STC >= danger_hi
-TM_MAX_RISK_FRAC = 0.25                   # Max fraction of bankroll at risk per TM trade
 TM_MIN_CONTRACTS = 25                     # Floor (always collect data)
 TM_MAX_CONTRACTS = 500                    # Hard cap
 TM_MAX_CONCURRENT = 8                     # Max simultaneous TM positions (raised for stacking — multiple price levels on same ticker)
+TM_NEGATIVE_EV_TIERS = {95}              # Tiers where WR < breakeven → minimum sizing (data: 95c = 88.9% vs 95.3% BE on 27 trades)
+# Per-asset risk caps for TM (same as main pipeline — TM no longer bypasses these)
+TM_ASSET_RISK_CAPS = {
+    "BTC": BTC_MAX_RISK_PER_TRADE,        # 0.15
+    "ETH": ETH_MAX_RISK_PER_TRADE,        # 0.20
+    "SOL": SOL_MAX_RISK_PER_TRADE,        # 0.15
+    "XRP": XRP_MAX_RISK_PER_TRADE,        # 0.15
+}
 
 
 def tm_compute_contracts(price_cents: int, seconds_to_close: float,
-                         bankroll_cents: int = 100000) -> int:
+                         bankroll_cents: int = 100000,
+                         asset: str = "") -> int:
     """Margin × STC-aware sizing for terminal momentum.
 
     Formula: TM_BASE × (100 - price) × stc_multiplier
-    Capped at TM_MAX_RISK_FRAC of bankroll.
+    Capped at per-asset risk limit (structural: TM respects same caps as main pipeline).
+    Negative-EV tiers (95c) get minimum sizing until WR proves above breakeven.
 
-    Data (270 trades, Apr 1-7 2026):
+    Data (278 trades, Apr 1-7 2026):
     - STC < 180s: 77/77 = 100% WR → boost ×1.5
-    - STC 180-240s: 54/57 = 94.7% WR, all 4 losses → reduce ×0.5
+    - STC 180-240s: 54/57 = 94.7% WR, all losses → reduce ×0.5
     - STC 240+: 135/136 = 99.3% WR → standard ×1.0
-    - 240-300s has fattest entry buffers (0.25%) and lowest risk ratio (1.23)
+    - 95c: 88.9% WR vs 95.3% breakeven → negative EV, minimum sizing
+    - Buffer does NOT predict TM outcomes (loss mean 0.187% ≈ win mean 0.199%)
     """
     margin = 100 - price_cents
     if margin <= 0:
+        return TM_MIN_CONTRACTS
+
+    # EV gate: negative-EV tiers get minimum sizing (collect data only)
+    if price_cents in TM_NEGATIVE_EV_TIERS:
         return TM_MIN_CONTRACTS
 
     # STC multiplier
@@ -656,12 +670,47 @@ def tm_compute_contracts(price_cents: int, seconds_to_close: float,
 
     ct = int(TM_BASE_CONTRACTS * margin * stc_mult)
 
-    # Risk cap: never exceed TM_MAX_RISK_FRAC of bankroll
+    # Per-asset risk cap (structural: TM no longer bypasses asset caps)
     if bankroll_cents > 0:
-        max_by_risk = int(bankroll_cents * TM_MAX_RISK_FRAC / price_cents)
+        risk_frac = TM_ASSET_RISK_CAPS.get(asset, 0.15)
+        max_by_risk = int(bankroll_cents * risk_frac / price_cents)
         ct = min(ct, max_by_risk)
 
     return max(TM_MIN_CONTRACTS, min(TM_MAX_CONTRACTS, ct))
+# ─── Buffer-Aware Sizing (Infrastructure — DISABLED until data matures) ────
+# PPO data (Apr 7, 63 tickers) shows entry buffer predicts main-pipeline outcomes:
+# - Losses: 63% of observations have negative buffer, avg -0.023%
+# - Wins: 0.7% negative, avg +0.209%
+# Buffer does NOT predict TM outcomes (price dominates), but DOES for main pipeline.
+# When enabled, multiplies Kelly-derived position_size by a buffer factor.
+# Needs 10+ main-pipeline losses with buffer data to calibrate thresholds.
+BUFFER_SIZING_ENABLED = False              # Feature flag — activate when data matures
+BUFFER_SIZING_FAT = 0.20                   # Buffer >= this → boost ×1.25
+BUFFER_SIZING_NORMAL = 0.10               # Buffer >= this → standard ×1.0
+BUFFER_SIZING_THIN = 0.05                 # Buffer >= this → reduce ×0.5
+BUFFER_SIZING_CRITICAL = 0.05             # Buffer < this → minimum ×0.25
+
+
+def buffer_sizing_multiplier(spot_buffer_pct: float) -> float:
+    """Return a sizing multiplier based on spot buffer at entry.
+
+    Only called when BUFFER_SIZING_ENABLED = True.
+    Thresholds from PPO analysis (Apr 7, n=63, 2 losses — preliminary):
+    - Fat buffer (>= 0.20%): ×1.25 (high confidence, lean in)
+    - Normal (0.10-0.20%): ×1.0 (baseline)
+    - Thin (0.05-0.10%): ×0.5 (reduce exposure)
+    - Critical (< 0.05%): ×0.25 (minimum — spot barely above threshold)
+    """
+    if spot_buffer_pct >= BUFFER_SIZING_FAT:
+        return 1.25
+    elif spot_buffer_pct >= BUFFER_SIZING_NORMAL:
+        return 1.0
+    elif spot_buffer_pct >= BUFFER_SIZING_CRITICAL:
+        return 0.5
+    else:
+        return 0.25
+
+
 # ─── Low-Price Near-Expiry (LPNE) Strategy ──────────────────────────────
 # Trades BTC 15M at 80-87c in the final 10-120s before expiry. These are contracts
 # the price floor rejects but that settle YES at 97.6% WR (42 obs, STC<=120s).
@@ -8040,7 +8089,7 @@ class OpportunityScanner:
                                 if _tm_count < TM_MAX_CONCURRENT:
                                     _tm_intercepted = True
                                     _tm_balance = self._get_balance_cached() or 100000
-                                    _tm_size = tm_compute_contracts(best_ask, seconds_remaining, _tm_balance)
+                                    _tm_size = tm_compute_contracts(best_ask, seconds_remaining, _tm_balance, asset)
                                     logging.info(
                                         "TM_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs edge=%.4f margin=%dc stc_zone=%s",
                                         asset, ticker, _tm_size, best_ask,
@@ -9229,6 +9278,22 @@ class OpportunityScanner:
                     if sizing["contracts"] < _pre_stc_scale:
                         logging.info("STC_SCALER: %d -> %d contracts (STC=%.0fs, scaler=%.2fx)",
                                      _pre_stc_scale, sizing["contracts"], seconds_remaining, _stc_scaler)
+
+                # Buffer-aware sizing: scale contracts by spot buffer at entry
+                # (infrastructure — disabled until PPO data matures, ~10+ losses)
+                _spot_buffer_pct = None
+                if threshold and threshold > 0:
+                    _spot_buffer_pct = (spot - threshold) / threshold * 100
+                if (BUFFER_SIZING_ENABLED
+                        and _pt in (None, "15m")
+                        and _spot_buffer_pct is not None
+                        and sizing["contracts"] > 0):
+                    _buf_mult = buffer_sizing_multiplier(_spot_buffer_pct)
+                    _pre_buf = sizing["contracts"]
+                    sizing["contracts"] = max(1, int(sizing["contracts"] * _buf_mult))
+                    if sizing["contracts"] != _pre_buf:
+                        logging.info("BUFFER_SIZING: %d -> %d contracts (buf=%.3f%%, mult=%.2fx)",
+                                     _pre_buf, sizing["contracts"], _spot_buffer_pct, _buf_mult)
 
                 # Cap by existing exposure (positions + resting orders) to prevent
                 # accumulation across scan ticks on the same ticker
@@ -10569,6 +10634,7 @@ class OpportunityScanner:
                     "drawdown_scaler": sizing["drawdown_scaler"],
                     "vol_regime": vol_est["regime"],
                     "balance_at_scan": balance,
+                    "spot_buffer_pct": round(_spot_buffer_pct, 4) if _spot_buffer_pct is not None else None,
                     "strategy": strategy,
                     "strategy_scores": strategy_scores,
                     "ob_snapshot": {
@@ -13740,7 +13806,7 @@ class OrderExecutor:
             candidate["best_yes_ask"] = fresh_ask
             # Re-derive sizing from execution-time price (scan price may have drifted)
             _exec_bal = candidate.get("balance_at_scan") or 100000
-            count = tm_compute_contracts(fresh_ask, seconds_to_close or 200, _exec_bal)
+            count = tm_compute_contracts(fresh_ask, seconds_to_close or 200, _exec_bal, asset)
             candidate["position_size"] = count
             taker_fee = calculate_taker_fee(count, price)
             net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
