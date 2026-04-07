@@ -79,7 +79,7 @@ class TestTMConstants(unittest.TestCase):
         m = re.search(r'^TM_CONTRACTS_BY_PRICE\s*=\s*(\{[^}]+\})', self.source, re.MULTILINE)
         self.assertIsNotNone(m, "TM_CONTRACTS_BY_PRICE must be a dict literal")
         val = eval(m.group(1))
-        self.assertEqual(val, {98: 150, 99: 150})
+        self.assertEqual(val, {98: 200, 99: 200})
 
     def test_contracts_by_price_only_scaled_tiers(self):
         """Only 98c and 99c should be in the override dict — other tiers use default."""
