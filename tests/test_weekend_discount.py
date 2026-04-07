@@ -147,7 +147,7 @@ class TestWeekendDiscountExecution(unittest.TestCase):
         """Weekend discount candidates overlapping with DC are removed at separation."""
         sep_start = self.source.find("Separate overlay candidates")
         self.assertGreater(sep_start, 0)
-        sep_block = self.source[sep_start:sep_start + 1000]
+        sep_block = self.source[sep_start:sep_start + 1200]
         self.assertIn("weekend_discount", sep_block)
         self.assertIn("_dc_tickers", sep_block)
 

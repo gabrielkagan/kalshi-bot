@@ -3598,7 +3598,7 @@ class DashboardSnapshotBuilder:
                     "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
                     "SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as losses, "
                     "SUM(pnl_cents) as pnl, SUM(count) as total_cts "
-                    "FROM settled_trades WHERE strategy = 'terminal_momentum' "
+                    "FROM settled_trades WHERE strategy LIKE 'terminal_momentum%' "
                     "GROUP BY entry_price_cents, asset"
                 ).fetchall():
                     price, asset_name, n, w, l, pnl, cts = _tm_row
@@ -3629,7 +3629,7 @@ class DashboardSnapshotBuilder:
                 # Signal count + fill rate
                 _tm_sig = _conn.execute(
                     "SELECT COUNT(*) FROM evaluated_opportunities "
-                    "WHERE filter_stage = 'terminal_momentum'"
+                    "WHERE filter_stage LIKE 'terminal_momentum%'"
                 ).fetchone()
                 _tm_live["signals"] = _tm_sig[0] if _tm_sig else 0
                 _tm_live["fill_rate"] = round(_tm_live["trades"] / _tm_live["signals"], 4) if _tm_live["signals"] else 0

@@ -287,8 +287,8 @@ class TestStackingPositionChecks(unittest.TestCase):
         )
 
     def test_tm_stacking_checks_group(self):
-        # When stacking, TM path must verify strategy_group == "terminal_momentum"
-        self.assertIn('"terminal_momentum"', self.source)
+        # When stacking, TM path must verify strategy_group matches price-encoded TM group
+        self.assertIn('"terminal_momentum_{best_ask}"', self.source)
 
 
 class TestAddonExclusion(unittest.TestCase):

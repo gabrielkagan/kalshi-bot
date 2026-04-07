@@ -89,7 +89,7 @@ class TestTMConstants(unittest.TestCase):
         self.assertEqual(base, 100, "TM_BASE_CONTRACTS should be 100")
 
     def test_max_concurrent(self):
-        self.assertEqual(_extract_constant(self.source, "TM_MAX_CONCURRENT"), 4)
+        self.assertEqual(_extract_constant(self.source, "TM_MAX_CONCURRENT"), 8)
 
 
 class TestTMPriceSetGuard(unittest.TestCase):
@@ -167,7 +167,7 @@ class TestTMCandidateSeparation(unittest.TestCase):
 
     def test_tm_candidates_extracted(self):
         """TM candidates must be separated into _tm_candidates list."""
-        self.assertIn('_tm_candidates = [c for c in candidates if c.get("strategy") == "terminal_momentum"]',
+        self.assertIn('_tm_candidates = [c for c in candidates if c.get("strategy", "").startswith("terminal_momentum")]',
                        self.source)
 
     def test_tm_excluded_from_main(self):
@@ -190,7 +190,7 @@ class TestTMExecuteRouting(unittest.TestCase):
 
     def test_strategy_routing(self):
         """terminal_momentum strategy must route to _execute_tm_taker."""
-        self.assertIn('_dc_strategy == "terminal_momentum"', self.source)
+        self.assertIn('_dc_strategy.startswith("terminal_momentum")', self.source)
         self.assertIn("_execute_tm_taker", self.source)
 
     def test_tm_taker_function_exists(self):

@@ -626,7 +626,7 @@ TM_STC_NORMAL_MULT = 1.0                  # Multiplier for STC >= danger_hi
 TM_MAX_RISK_FRAC = 0.25                   # Max fraction of bankroll at risk per TM trade
 TM_MIN_CONTRACTS = 25                     # Floor (always collect data)
 TM_MAX_CONTRACTS = 500                    # Hard cap
-TM_MAX_CONCURRENT = 4                     # Max simultaneous TM positions (safety cap)
+TM_MAX_CONCURRENT = 8                     # Max simultaneous TM positions (raised for stacking — multiple price levels on same ticker)
 
 
 def tm_compute_contracts(price_cents: int, seconds_to_close: float,
@@ -739,7 +739,7 @@ MAX_CONCURRENT_TAKER_PER_ASSET = 3  # safety cap: max simultaneous taker positio
 NBBO_FALLBACK_GATES = {
     "BTC": (80, 99, 300.0),     # Lowered from 86 for LPNE (80-87c near-expiry); 97.9% WR at 86c+
     "ETH": (90, 99, 300.0),     # 90c matches ETH_MIN_ENTRY_PRICE; raised from 85c (data: 85-89c 86.2% WR, negative EV)
-    "SOL": (86, 99, 300.0),     # 93.3% WR; 80-85c is 50-73% WR trap
+    "SOL": (90, 99, 300.0),     # Raised from 86→90: NBBO sub-90c = 85.7% WR -$319; orderbook trades unaffected (+$470)
     "XRP": (92, 99, 300.0),     # 180-300s validated; will evaluate 300-600s after 1 week NBBO data
 }
 
@@ -8018,14 +8018,17 @@ class OpportunityScanner:
                         _tm_dc_overlap = any(c["ticker"] == ticker and c.get("strategy", "").startswith("decided_")
                                              for c in candidates)
                         if not _tm_dc_overlap:
-                            # Check position overlap: skip if we already hold this ticker
+                            # Check position overlap: skip if we already hold TM at THIS price
+                            # Stacking at different prices is allowed — rising prices = confirmation signal.
+                            # Data: 40/40 stackable tickers settled YES, 0/4 losses had stacking opportunities.
+                            _tm_target_group = f"terminal_momentum_{best_ask}"
                             if STACKING_ENABLED:
                                 from models import strategy_to_group
                                 _tm_has_position = any(
                                     p["ticker"] == ticker
                                     and p.get("strategy_group",
-                                        strategy_to_group(p.get("strategy")))
-                                        == "terminal_momentum"
+                                        strategy_to_group(p.get("strategy", "")))
+                                        == _tm_target_group
                                     for p in self._state.get_open_positions())
                             else:
                                 _tm_has_position = any(
@@ -8033,7 +8036,7 @@ class OpportunityScanner:
                                     for p in self._state.get_open_positions())
                             if not _tm_has_position:
                                 # Check concurrent TM position cap
-                                _tm_count = sum(1 for c in candidates if c.get("strategy") == "terminal_momentum")
+                                _tm_count = sum(1 for c in candidates if c.get("strategy", "").startswith("terminal_momentum"))
                                 if _tm_count < TM_MAX_CONCURRENT:
                                     _tm_intercepted = True
                                     _tm_balance = self._get_balance_cached() or 100000
@@ -8065,7 +8068,7 @@ class OpportunityScanner:
                                         "drawdown_scaler": 1.0,
                                         "vol_regime": vol_est["regime"],
                                         "balance_at_scan": self._get_balance_cached(),
-                                        "strategy": "terminal_momentum",
+                                        "strategy": f"terminal_momentum_{best_ask}",
                                         "strategy_scores": {"certainty": 1.0, "certainty_detail": "terminal_momentum",
                                                             "orderbook": 0.5, "orderbook_detail": "n/a",
                                                             "urgency": 1.0, "urgency_detail": "terminal_momentum",
@@ -8089,7 +8092,7 @@ class OpportunityScanner:
                                         **_shadow_extra,
                                     })
                                     # Log to evaluated_opportunities
-                                    _tm_dedup = (ticker, "terminal_momentum")
+                                    _tm_dedup = (ticker, f"terminal_momentum_{best_ask}")
                                     if _tm_dedup not in self._eval_opp_seen:
                                         self._eval_opp_seen.add(_tm_dedup)
                                         try:
@@ -8102,7 +8105,7 @@ class OpportunityScanner:
                                                 seconds_to_close=seconds_remaining,
                                                 calibrated_prob=final_prob, edge=edge,
                                                 ofa_adjustment=ofa_adjustment,
-                                                strategy="terminal_momentum",
+                                                strategy=f"terminal_momentum_{best_ask}",
                                                 z_score=z_score,
                                                 vol_regime=vol_est["regime"],
                                                 calibrated_prob_raw=calibrated_prob_raw,
@@ -10731,7 +10734,7 @@ class OpportunityScanner:
 
         # ── Separate overlay candidates (bypass single-asset filter) ──
         _dc_candidates = [c for c in candidates if c.get("strategy", "").startswith("decided_")]
-        _tm_candidates = [c for c in candidates if c.get("strategy") == "terminal_momentum"]
+        _tm_candidates = [c for c in candidates if c.get("strategy", "").startswith("terminal_momentum")]
         _bn_candidates = [c for c in candidates if c.get("strategy") == "bracket_no"]
         _lpne_candidates = [c for c in candidates if c.get("strategy") == "low_price_near_expiry"]
         _dc_tickers = {c["ticker"] for c in _dc_candidates}
@@ -10739,7 +10742,8 @@ class OpportunityScanner:
         # Remove weekend/overnight discount candidates that overlap with DC (DC takes priority)
         _main_candidates = [c for c in candidates
                             if not c.get("strategy", "").startswith("decided_")
-                            and c.get("strategy") not in ("terminal_momentum", "bracket_no", "low_price_near_expiry")
+                            and not c.get("strategy", "").startswith("terminal_momentum")
+                            and c.get("strategy") not in ("bracket_no", "low_price_near_expiry")
                             and not (c.get("strategy") in ("weekend_discount", "overnight_discount") and c["ticker"] in (_dc_tickers | _tm_tickers))]
         candidates = _main_candidates  # single-asset filter only applies to main pipeline
 
@@ -12599,7 +12603,7 @@ class OrderExecutor:
             return self._execute_dc_taker(candidate, asset, seconds_to_close)
 
         # ── Terminal momentum taker override ──────────────────────────
-        if _dc_strategy == "terminal_momentum":
+        if _dc_strategy and _dc_strategy.startswith("terminal_momentum"):
             return self._execute_tm_taker(candidate, asset, seconds_to_close)
 
         # ── LPNE taker override ──────────────────────────────────────
@@ -13741,14 +13745,15 @@ class OrderExecutor:
             taker_fee = calculate_taker_fee(count, price)
             net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
 
-        # Race condition guard: check position one more time
+        # Race condition guard: check position at this price level
+        _tm_exec_group = f"terminal_momentum_{price}"
         if STACKING_ENABLED:
             from models import strategy_to_group
             if any(p.get("ticker") == ticker
-                   and p.get("strategy_group", strategy_to_group(p.get("strategy")))
-                       == "terminal_momentum"
+                   and p.get("strategy_group", strategy_to_group(p.get("strategy", "")))
+                       == _tm_exec_group
                    for p in self._state.get_open_positions()):
-                logging.info("tm_taker_SKIP_POSITION: %s already held by TM", ticker)
+                logging.info("tm_taker_SKIP_POSITION: %s already held at %dc by TM", ticker, price)
                 return None
         else:
             if any(p.get("ticker") == ticker for p in self._state.get_open_positions()):
