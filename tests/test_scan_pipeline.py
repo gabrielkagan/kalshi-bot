@@ -447,31 +447,32 @@ class TestEdgeThresholdFilter(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestSTCShadowGate(unittest.TestCase):
-    """STC > STC_SHADOW_THRESHOLD (600s) → shadow-only for 15M.
+    """STC > STC_SHADOW_THRESHOLD (300s) → shadow-only for 15M.
 
     Guards against: dead code bug (98c954d) where gate checked
     product_type is None but 15M has product_type='15m'.
+    Data: 300-600s is -$396 all-time, negative for every asset.
     """
 
     def test_threshold_value(self):
-        """STC_SHADOW_THRESHOLD should be 600."""
-        self.assertEqual(STC_SHADOW_THRESHOLD, 600)
+        """STC_SHADOW_THRESHOLD should be 300."""
+        self.assertEqual(STC_SHADOW_THRESHOLD, 300)
 
     def test_live_zone(self):
-        """STC=500 (< 600) → should pass gate (live zone)."""
-        self.assertLess(500, STC_SHADOW_THRESHOLD)
+        """STC=200 (< 300) → should pass gate (live zone)."""
+        self.assertLess(200, STC_SHADOW_THRESHOLD)
 
     def test_shadow_zone(self):
-        """STC=700 (> 600) → should be shadow."""
-        self.assertGreater(700, STC_SHADOW_THRESHOLD)
+        """STC=400 (> 300) → should be shadow."""
+        self.assertGreater(400, STC_SHADOW_THRESHOLD)
 
     def test_boundary_at_threshold(self):
-        """STC=600 exactly → should be live (> not >=).
+        """STC=300 exactly → should be live (> not >=).
         The gate uses `seconds_remaining > STC_SHADOW_THRESHOLD`."""
-        # 600 is NOT > 600, so it should be live
-        self.assertFalse(600 > STC_SHADOW_THRESHOLD)
-        # 601 IS > 600, so it should be shadow
-        self.assertTrue(601 > STC_SHADOW_THRESHOLD)
+        # 300 is NOT > 300, so it should be live
+        self.assertFalse(300 > STC_SHADOW_THRESHOLD)
+        # 301 IS > 300, so it should be shadow
+        self.assertTrue(301 > STC_SHADOW_THRESHOLD)
 
     def test_gate_checks_product_type_15m(self):
         """Gate must check product_type == '15m', NOT product_type is None.

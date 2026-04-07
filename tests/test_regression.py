@@ -154,9 +154,9 @@ class TestEdgeThresholds:
     # non-monotonic at 91c (0.002 < 89c's 0.0025). Invalid invariant.
 
     def test_stc_shadow_threshold_boundary(self):
-        """STC_SHADOW_THRESHOLD=600 means 0-600s is live, 600-900s is shadow."""
+        """STC_SHADOW_THRESHOLD=300 means 0-300s is live, 300-900s is shadow."""
         from bot import STC_SHADOW_THRESHOLD, MAX_SECONDS_BEFORE_CLOSE
-        assert STC_SHADOW_THRESHOLD == 600
+        assert STC_SHADOW_THRESHOLD == 300
         assert MAX_SECONDS_BEFORE_CLOSE == 900
         # Shadow zone is [STC_SHADOW_THRESHOLD, MAX_SECONDS_BEFORE_CLOSE]
         assert STC_SHADOW_THRESHOLD < MAX_SECONDS_BEFORE_CLOSE
@@ -844,7 +844,7 @@ class TestCodebaseHygiene:
         assert bot.MIN_ENTRY_PRICE == 75  # lowered from 80 for ETH 75-79c
         assert bot.MAX_ENTRY_PRICE == 99
         assert bot.MAX_SECONDS_BEFORE_CLOSE == 900
-        assert bot.STC_SHADOW_THRESHOLD == 600
+        assert bot.STC_SHADOW_THRESHOLD == 300
         assert bot.OBSERVATION_MODE is False
 
 
