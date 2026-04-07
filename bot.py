@@ -63,7 +63,7 @@ XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 900    # scan 15 min before close (600-900s is shadow data collection)
-STC_SHADOW_THRESHOLD = 600        # 15M trades above this STC are shadow-only (data: 500-600s 91.2% WR, +$47 marginal PnL)
+STC_SHADOW_THRESHOLD = 300        # 15M trades above this STC are shadow-only (data: 300-600s -$396 all-time, every asset negative)
 ONE_ASSET_PER_WINDOW = False
 
 # ─── Hourly Live Trading (sub-60c, BTC+ETH only) ────────────────────────────
@@ -10297,11 +10297,10 @@ class OpportunityScanner:
                         logging.warning("fifteenm_shadow evaluate failed", exc_info=True)
 
                 # ── STC SHADOW GATE (15M only) ──
-                # Price-dependent STC threshold:
-                #   90c+: live up to 700s (data: 600-700s at 90c+ = 93.9% WR, n=132)
-                #   <90c: live up to 600s (600-700s at sub-90c = 82.9%, below breakeven)
-                # Beyond the threshold: log as shadow for data collection.
-                _stc_limit = 700 if best_ask >= 90 else STC_SHADOW_THRESHOLD  # 600 for sub-90c
+                # STC threshold: live up to 300s, shadow beyond.
+                # Data: 300-600s is -$396 all-time, negative for every asset.
+                # Previously had 90c+ override at 700s — removed (90c+ 300-600s = -$93).
+                _stc_limit = STC_SHADOW_THRESHOLD
                 if window.get("product_type") in (None, "15m") and seconds_remaining > _stc_limit:
                     _stc_stage = "stc_shadow_no_xrp" if asset != "XRP" else "stc_shadow_xrp"
                     _dedup_key = (ticker, _stc_stage)
