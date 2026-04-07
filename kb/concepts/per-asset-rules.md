@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-04-05
+updated: 2026-04-07
 tags: [btc, eth, sol, xrp, risk-caps]
 ---
 # Per-Asset Configuration
@@ -37,9 +37,11 @@ ETH floor was raised from 85c to 90c after discovering negative PnL in the 85-89
 | Min edge | 1.0% (`SOL_MIN_EDGE`) | Data: <1.0% = 82% WR, >= 1.0% = 94.2% WR on 258 trades |
 | Max risk per trade | 0.15 (15%) | Raised from 12% — 43.9% of trades were capped, +$26 PnL. DC path now enforces this too. |
 | Execution mode | Taker-first | Data: 44.7% maker fill rate, $101/wk missed |
-| NBBO fallback | 86-99c, STC <= 300s | 93.3% WR; 80-85c is 50-73% WR trap |
+| NBBO fallback | 90-99c, STC <= 300s | Raised 86→90 Apr 7: NBBO sub-90c = 85.7% WR -$319; orderbook unaffected (+$470) |
 
-SOL drives the majority of bot trade volume and is profitable at current settings (backtester validated: +$71 on 77 trades, 90.9% WR over Mar 30–Apr 2). Taker-first is critical — maker adverse selection was significant (see [[failures/sol-maker-adverse-selection.md]]). The 1.0% edge floor is the single most important SOL-specific rule. SOL cap 30ct reduces drawdown from 17% to 9% at a cost of ~$55 PnL — a risk/reward tradeoff, not a bug fix. See `kb-research/bot/backtesting-harness.md` for full analysis.
+SOL drives the majority of bot trade volume but is only marginally profitable (+$102 on 474 trades, $0.21/trade as of Apr 7). NBBO fallback was the primary PnL drag: -$328 on 226 trades vs +$470 on 116 orderbook trades. Gate raised 86→90c (Apr 7) to block the losing NBBO path. Taker-first is critical — maker adverse selection was significant (see [[failures/sol-maker-adverse-selection.md]]). The 1.0% edge floor is the single most important SOL-specific rule.
+
+**IOC drift is a systematic problem at low prices:** All 20 SOL 85c trades were phantom fills — scanned at 87-92c, filled at 85c via IOC drift. The 85c tier is 70% WR, -$456 net. See [[failures/ioc-subfloor-fill.md]].
 
 **SOL DC tiered risk:** <= 94c: 20% of standard, 95-96c: 10%, >= 97c: 5%.
 

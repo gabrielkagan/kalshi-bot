@@ -37,7 +37,7 @@ Read this index first before answering any deep question about the bot. Identify
 - [[strategies/overnight-discount.md]] - Overnight/weekend edge discount: 0.6x multiplier, 89c+ live gates.
 - [[strategies/hourly-markets.md]] - Hourly sub-60c: BTC+ETH only, fixed 25ct, T=1.45, taker-only.
 
-## Failures (13)
+## Failures (15)
 - [[failures/hwm-bugs.md]] - Five HWM/drawdown scaler variants. Recurring bug family (Mar 25-30).
 - [[failures/blr-calibrator.md]] - Broken BLR outputting ~95% constant. Discovery March 25.
 - [[failures/t2-z2-losses.md]] - Two T2_Z2 losses with known root causes. Led to shadow decision.

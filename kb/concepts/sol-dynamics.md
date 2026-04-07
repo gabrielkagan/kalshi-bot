@@ -1,43 +1,54 @@
 ---
 status: active
-updated: 2026-04-05
-tags: [sol, edge-floor, sizing, taker-first, stc-gate]
+updated: 2026-04-07
+tags: [sol, edge-floor, sizing, taker-first, stc-gate, nbbo]
 ---
 # SOL Trading Dynamics
 
 ## Summary
-SOL drives the majority of bot PnL and trade volume. This concentration creates both opportunity and risk.
+SOL drives the majority of bot trade volume but is only marginally profitable (+$102 on 474 trades, $0.21/trade as of Apr 7). The primary drag is NBBO fallback pricing at low prices — when the orderbook is empty, stale NBBO + IOC drift creates phantom fills at unprofitable prices.
+
+## Key Numbers (Apr 7, 2026)
+- SOL with orderbook pricing: 116 trades, 92.2% WR, **+$470**
+- SOL with NBBO fallback: 226 trades, 90.7% WR, **-$328**
+- SOL 85c (all phantom IOC drift): 20 trades, 70% WR, **-$456**
+
+## NBBO Fallback Gate (Apr 7)
+`NBBO_FALLBACK_GATES["SOL"] = (90, 99, 300)` — raised from 86c to 90c.
+
+**Data:** SOL NBBO sub-90c = 98 trades, 85.7% WR, -$319. Orderbook trades at same prices = +$470 (unaffected). Optimal threshold search: 88c saves $156, **90c saves $319**, 92c saves $210.
+
+**Impact:** +$46/day improvement, 86% boost to total 15M PnL ($369→$688).
+
+## IOC Drift (Phantom Fills)
+All 20 SOL 85c trades were scanned at 86-92c but filled at 85c via IOC drift. The 2-4c drift zone is toxic (77% WR, -$382). The bot's probability model was calibrated at the scanned price, not the fill price.
+
+**Common fingerprint of SOL sub-88c losses:**
+- 71% NBBO fallback (empty orderbook)
+- 71% IOC drift (fill below scanned ask)
+- 64% passthrough calibration (learned calibrator not active)
+- 79% high STC (>200s)
+- 71% thin buffer (<0.2%)
+
+See [[failures/ioc-subfloor-fill.md]].
 
 ## Edge Floor
-SOL minimum edge: 1.0% under passthrough calibration. Verified correct.
+SOL minimum edge: 1.0% (`SOL_MIN_EDGE`). Data: <1.0% = 82% WR, ≥1.0% = 94.2% WR on 258 trades.
 
-## PnL Dominance
-SOL consistently generates the most trades and profit due to favorable microstructure and volatility creating more opportunities.
-
-## Risk Concentration
-A string of SOL losses creates outsized drawdown. Mitigations:
-- DC tiered risk caps (see [[concepts/dc-strategy.md]])
-- SOL sub-86c time gate (see below)
-
-## Sub-86c Time Gate (Apr 5, 2026)
+## Sub-86c Time Gate
 `SOL_LOW_ENTRY_STC_GATE = True` — blocks SOL ≤85c at STC≥300s.
 
-**Data (from stc-sizing-research):**
-- SOL sub-86c near-expiry (<300s): 17 trades, 100% WR, +$228
-- SOL sub-86c far-from-expiry (≥300s): 23 trades, 78.3% WR, **-$289**
-- 85c is the #1 PnL-destroying price tier: 14.7pp model miscalibration gap
-- All 4 catastrophic losses had STC > 350s with near-zero EGARCH sigma → oversized
+**Data:** SOL sub-86c near-expiry (<300s): 100% WR, +$228. Far-from-expiry (≥300s): 78.3% WR, -$289. Note: this gate helps but doesn't prevent phantom 85c fills from IOC drift at higher scanned prices.
 
-**Mechanism:** At ≤85c, the market prices in downside risk. Near expiry, there isn't enough time for the move → free money. With 5+ min, SOL has enough runway to breach the threshold.
-
-**Pipeline position:** After XRP shadow gate, before candidates.append(). Follows same pattern (dedup → insert_evaluated_opportunity → continue). Does NOT block DC, TM, or discount strategies (all have price floors ≥89c).
-
-## Time-of-Day Patterns (Under Investigation)
-Shadow tags deployed March 31:
-- **sol_usmorn_sub88:** SOL morning session, sub-88c entries. Evaluate after 30+ obs.
-- **usaft_short_stc:** US afternoon short STC. Evaluate after 30+ obs.
-- Most TOD patterns were artifacts of pre-DC era, BLR, or t2_z2 losses — not genuine edge patterns.
+## PPO Buffer Analysis (Apr 7)
+From position price observations (limited data, 18h):
+- SOL has the **thinnest entry buffers** (mean 0.157%, median 0.148%) of all assets
+- SOL has **high buffer volatility** (0.040%) — second only to XRP
+- Combined with the lowest per-asset floor (80c), this creates the highest loss exposure
 
 ## Related
-- [[concepts/dc-strategy.md]]
-- [[../kb-research/bot/stc-sizing-research.md]] — Source data for sub-86c gate and STC scaler
+- [[concepts/per-asset-rules.md]] — Full per-asset config table
+- [[concepts/dc-strategy.md]] — DC tiered risk caps for SOL
+- [[failures/ioc-subfloor-fill.md]] — IOC sub-floor fill bug
+- [[failures/sol-maker-adverse-selection.md]] — Why SOL is taker-first
+- [[../kb-research/bot/stc-sizing-research.md]] — Source data for sub-86c gate
