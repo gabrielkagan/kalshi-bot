@@ -19,10 +19,13 @@ At very high prices (95-99c) near expiry, the model's probability is extremely h
 | `TM_MIN_STC` | 61s | Not in final minute (settlement noise) |
 | `TM_MAX_STC` | 300s | 5 minutes maximum |
 | `TM_MAX_CONCURRENT` | 8 | Safety cap — raised for stacking (multiple price levels per ticker) |
+| `TM_NEGATIVE_EV_TIERS` | {95} | Minimum sizing only — 88.9% WR vs 95.3% breakeven on 27 trades |
+| `TM_ASSET_RISK_CAPS` | per-asset | BTC/SOL/XRP 15%, ETH 20% — matches main pipeline (was 25% flat) |
 
-## Sizing: `tm_compute_contracts(price, stc, bankroll)`
+## Sizing: `tm_compute_contracts(price, stc, bankroll, asset)`
 
-**Formula:** `TM_BASE_CONTRACTS × (100 - price) × stc_multiplier`, capped by risk.
+**Formula:** `TM_BASE_CONTRACTS × (100 - price) × stc_multiplier`, capped by per-asset risk.
+Negative-EV tiers (95c) get TM_MIN_CONTRACTS (25ct) until WR proves above breakeven.
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
@@ -30,7 +33,7 @@ At very high prices (95-99c) near expiry, the model's probability is extremely h
 | `TM_STC_SAFE_MULT` | 1.5 | STC < 180s (100% WR on 77 trades) |
 | `TM_STC_DANGER_MULT` | 0.5 | STC 180-240s (94.7% WR, all 4 losses here) |
 | `TM_STC_NORMAL_MULT` | 1.0 | STC 240+s (99.3% WR, fattest buffers) |
-| `TM_MAX_RISK_FRAC` | 0.25 | Max fraction of bankroll per TM trade |
+| `TM_ASSET_RISK_CAPS` | per-asset | BTC/SOL/XRP 15%, ETH 20% (replaced flat 25%) |
 | `TM_MIN_CONTRACTS` | 25 | Floor |
 | `TM_MAX_CONTRACTS` | 500 | Hard cap |
 
