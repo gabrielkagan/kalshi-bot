@@ -15356,6 +15356,8 @@ class SettlementTracker:
         self._ml = main_loop
         self._last_check_ts: int = 0
         self._last_poll_time: float = 0.0
+        self._last_fallback_sweep: float = 0.0
+        self._last_order_cleanup: float = 0.0
         self._processed_tickers: Set[str] = set()
         self._pending_rejection_tickers: Set[str] = set()
         self._settled_rejection_tickers: Set[str] = set()
@@ -15402,6 +15404,17 @@ class SettlementTracker:
         self._poll()
         self._poll_rejections()
         self._poll_evaluated_opportunities()
+        # Fallback: sweep for positions stuck past market close (every 5 min)
+        if now - self._last_fallback_sweep >= 300.0:
+            self._last_fallback_sweep = now
+            self._sweep_stuck_positions()
+        # Cleanup expired resting orders (every 60s)
+        if now - self._last_order_cleanup >= 60.0:
+            self._last_order_cleanup = now
+            try:
+                self._state.cleanup_expired_resting_orders()
+            except Exception:
+                logging.debug("cleanup_expired_resting_orders failed", exc_info=True)
 
     # ── Core poll ────────────────────────────────────────────────────────
 
@@ -15461,6 +15474,68 @@ class SettlementTracker:
             except Exception:
                 pass
 
+    # ── Fallback sweep for stuck positions ───────────────────────────────
+
+    def _sweep_stuck_positions(self):
+        """Detect positions whose market close time has passed and settle via
+        individual market lookup.  This catches positions that were skipped by
+        the watermark-based settlement poll (e.g. unknown market_result at the
+        time, revenue=0 on WIN timing race, etc.).
+        """
+        import re
+        _MONTH_MAP = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+                       "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+        unsettled = self._state.get_unsettled_positions()
+        if not unsettled:
+            return
+        now_utc = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
+        for pos in unsettled:
+            ticker = pos["ticker"]
+            if ticker in self._processed_tickers:
+                continue
+            # Parse close time from 15M ticker format
+            m = re.match(r'KX\w+15M-(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})-', ticker)
+            if not m:
+                continue  # Non-15M — hourly/weather have different settlement paths
+            yy, mon, dd, hh, mm = m.groups()
+            mon_num = _MONTH_MAP.get(mon)
+            if not mon_num:
+                continue
+            try:
+                close_et = datetime.datetime(2000 + int(yy), mon_num, int(dd), int(hh), int(mm))
+                close_utc = close_et + datetime.timedelta(hours=4)  # ET→UTC (EDT)
+            except (ValueError, OverflowError):
+                continue
+            # Only sweep if market closed >5 min ago (allow normal settlement path time)
+            if now_utc < close_utc + datetime.timedelta(minutes=5):
+                continue
+            # Fetch market result directly from API
+            try:
+                mkt = self._client.get_market(ticker)
+                if not mkt or "market" not in mkt:
+                    continue
+                market_data = mkt["market"]
+                result = market_data.get("result", "")
+                if not result:
+                    continue  # Not yet settled on Kalshi
+                logging.warning(
+                    "sweep_stuck_positions: recovering %s (result=%s, "
+                    "close_utc=%s, stuck >5min)", ticker, result, close_utc)
+                # Build a synthetic settlement dict and process it.
+                # _from_sweep=True tells _process_settlement to skip the
+                # revenue=0/WIN guard (we compute PnL from first principles).
+                settlement = {
+                    "ticker": ticker,
+                    "market_result": result,
+                    "revenue_dollars": None,
+                    "revenue": 0,
+                    "settled_time": market_data.get("close_time", ""),
+                    "_from_sweep": True,
+                }
+                self._process_settlement(settlement)
+            except Exception as e:
+                logging.error("sweep_stuck_positions failed for %s: %s", ticker, e, exc_info=True)
+
     # ── Process a single settlement ──────────────────────────────────────
 
     def _process_settlement(self, settlement: Dict):
@@ -15509,8 +15584,11 @@ class SettlementTracker:
         aggregate_count = sum(p["count"] for p in positions)
         aggregate_cost = sum(p["total_cost_cents"] for p in positions)
 
-        # Cross-check: revenue=0 on a WIN is almost certainly a false position
-        if outcome == "WIN" and revenue == 0 and aggregate_count > 0:
+        # Cross-check: revenue=0 on a WIN is almost certainly a false position.
+        # Skip this guard for sweep-recovered settlements — they always have
+        # revenue=0 and compute PnL from first principles.
+        from_sweep = settlement.get("_from_sweep", False)
+        if outcome == "WIN" and revenue == 0 and aggregate_count > 0 and not from_sweep:
             logging.critical(
                 f"SETTLEMENT REVENUE ZERO ON WIN {ticker}: "
                 f"market_result={market_result} side={side} count={aggregate_count} "
