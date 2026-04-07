@@ -447,32 +447,47 @@ class TestEdgeThresholdFilter(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestSTCShadowGate(unittest.TestCase):
-    """STC > STC_SHADOW_THRESHOLD (300s) → shadow-only for 15M.
+    """STC > STC_SHADOW_THRESHOLD (600s) → shadow-only for 15M.
+    STC 300-600s → live with higher per-asset floors (STC extended zone).
 
     Guards against: dead code bug (98c954d) where gate checked
     product_type is None but 15M has product_type='15m'.
-    Data: 300-600s is -$396 all-time, negative for every asset.
     """
 
     def test_threshold_value(self):
-        """STC_SHADOW_THRESHOLD should be 300."""
-        self.assertEqual(STC_SHADOW_THRESHOLD, 300)
+        """STC_SHADOW_THRESHOLD should be 600."""
+        self.assertEqual(STC_SHADOW_THRESHOLD, 600)
 
     def test_live_zone(self):
-        """STC=200 (< 300) → should pass gate (live zone)."""
-        self.assertLess(200, STC_SHADOW_THRESHOLD)
+        """STC=200 (< 300) → should pass both gates (core live zone)."""
+        from bot import STC_EXTENDED_LIVE_FLOOR
+        self.assertLess(200, STC_EXTENDED_LIVE_FLOOR)
+
+    def test_extended_zone(self):
+        """STC=400 (300-600) → extended zone, subject to higher per-asset floors."""
+        from bot import STC_EXTENDED_LIVE_FLOOR
+        self.assertGreater(400, STC_EXTENDED_LIVE_FLOOR)
+        self.assertLess(400, STC_SHADOW_THRESHOLD)
 
     def test_shadow_zone(self):
-        """STC=400 (> 300) → should be shadow."""
-        self.assertGreater(400, STC_SHADOW_THRESHOLD)
+        """STC=700 (> 600) → should be shadow."""
+        self.assertGreater(700, STC_SHADOW_THRESHOLD)
 
     def test_boundary_at_threshold(self):
-        """STC=300 exactly → should be live (> not >=).
+        """STC=600 exactly → should be live (> not >=).
         The gate uses `seconds_remaining > STC_SHADOW_THRESHOLD`."""
-        # 300 is NOT > 300, so it should be live
-        self.assertFalse(300 > STC_SHADOW_THRESHOLD)
-        # 301 IS > 300, so it should be shadow
-        self.assertTrue(301 > STC_SHADOW_THRESHOLD)
+        # 600 is NOT > 600, so it should be live
+        self.assertFalse(600 > STC_SHADOW_THRESHOLD)
+        # 601 IS > 600, so it should be shadow
+        self.assertTrue(601 > STC_SHADOW_THRESHOLD)
+
+    def test_extended_floor_values(self):
+        """Per-asset STC extended floors must be >= normal asset floors."""
+        import bot
+        self.assertGreaterEqual(bot.STC_EXTENDED_BTC_MIN_PRICE, bot.BTC_MIN_ENTRY_PRICE)
+        self.assertGreaterEqual(bot.STC_EXTENDED_ETH_MIN_PRICE, bot.ETH_MIN_ENTRY_PRICE)
+        self.assertGreaterEqual(bot.STC_EXTENDED_SOL_MIN_PRICE, bot.SOL_MIN_ENTRY_PRICE)
+        self.assertGreaterEqual(bot.STC_EXTENDED_XRP_MIN_PRICE, bot.XRP_MIN_ENTRY_PRICE)
 
     def test_gate_checks_product_type_15m(self):
         """Gate must check product_type == '15m', NOT product_type is None.

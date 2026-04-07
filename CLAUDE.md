@@ -137,7 +137,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 
 ## Project Structure
 
-- `bot.py` — Main bot (~16900 lines, all trading logic)
+- `bot.py` — Main bot (~17600 lines, all trading logic)
 - `analyst.py` — AI analyst system (news sentiment, loss analysis, Telegram alerts)
 - `spx_engine.py` — SPX hourly market engine (Polygon.io price feed, EGARCH, RK, VIX integration)
 - `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
@@ -186,7 +186,8 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **SOL_TAKER_FIRST = True** — SOL bypasses maker entirely, direct IOC at all STC
 - **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c), T2-Z2 (z≤-2, 93-96c) all enabled as incremental overlay
 - **Overnight discount LIVE:** OVERNIGHT_DISCOUNT_LIVE=True on weekday 04-11 UTC — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
-- **STC window:** scan 0-900s, live 0-600s, shadow 600-900s (STC_SHADOW_THRESHOLD=600)
+- **STC window:** scan 0-900s, core live 0-300s, extended live 300-600s (per-asset higher floors), shadow 600-900s
+- **STC extended zone:** 300-600s live with higher floors — BTC 93c+, ETH 90c+, SOL 95c+, XRP 92c+ (data: 98.8% WR, n=83)
 - **SOL sub-86c gate:** SOL_LOW_ENTRY_STC_GATE=True — blocks SOL ≤85c at STC≥300s (data: 78.3% WR -$289; near-expiry 100% WR preserved)
 - **STC sizing scaler:** STC_SIZING_SCALER_ENABLED=True — contracts *= 300/STC for 15M at STC>300s. Applied in main pipeline + overnight + weekend discounts. kelly_f stays pure.
 - **LPNE:** LPNE_ENABLED=True — BTC 80-87c near-expiry (STC 10-120s), intercepts at price floor. 50ct fixed. Prob gate: final_prob >= price/100. BTC NBBO gate lowered to 80c. BTC_MIN_ENTRY_PRICE unchanged at 88c.
@@ -217,7 +218,12 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | MARKET_BLEND_W | 0.40 | 60% model, 40% market (data: model underconfident 0.8-2.1pp at 90%+) |
 | MAX_RISK_PER_TRADE | 0.25 | Max 25% bankroll per trade |
 | MAX_SECONDS_BEFORE_CLOSE | 900 | 15 min before close (600-900s shadow, 0-600s live) |
-| STC_SHADOW_THRESHOLD | 600 | 15M trades above this STC are shadow-only (data: 500-600s 91.2% WR, +$47 marginal) |
+| STC_SHADOW_THRESHOLD | 600 | 15M trades above this STC are shadow-only |
+| STC_EXTENDED_LIVE_FLOOR | 300 | 300-600s zone: per-asset higher floors apply |
+| STC_EXTENDED_BTC_MIN_PRICE | 93 | BTC floor for 300-600s (data: 93c+ = 98.1% WR, n=52) |
+| STC_EXTENDED_ETH_MIN_PRICE | 90 | ETH floor for 300-600s (same as main floor) |
+| STC_EXTENDED_SOL_MIN_PRICE | 95 | SOL floor for 300-600s (data: 95c+ = 100% WR, n=14) |
+| STC_EXTENDED_XRP_MIN_PRICE | 92 | XRP floor for 300-600s (same as main floor) |
 | SOL_LOW_ENTRY_STC_GATE | True | Block SOL ≤85c at STC≥300s (data: 78.3% WR -$289; <300s is 100% WR +$228) |
 | STC_SIZING_SCALER_KNEE | 300 | Seconds — start scaling contracts by 300/STC above this (data: 5m+ WR drops) |
 | STC_SIZING_SCALER_ENABLED | True | Universal STC scaler: contracts *= 300/STC for 15M at STC>300s |

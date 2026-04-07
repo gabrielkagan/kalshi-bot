@@ -63,7 +63,12 @@ XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 900    # scan 15 min before close (600-900s is shadow data collection)
-STC_SHADOW_THRESHOLD = 300        # 15M trades above this STC are shadow-only (data: 300-600s -$396 all-time, every asset negative)
+STC_SHADOW_THRESHOLD = 600        # 15M trades above this STC are shadow-only
+STC_EXTENDED_LIVE_FLOOR = 300     # 300-600s zone: per-asset higher floors apply (model 9pp overconfident at low prices)
+STC_EXTENDED_BTC_MIN_PRICE = 93   # BTC floor for 300-600s (data: 93c+ = 98.1% WR, n=52)
+STC_EXTENDED_ETH_MIN_PRICE = 90   # ETH floor for 300-600s (data: 90c+ = 100% WR, n=31; same as main floor)
+STC_EXTENDED_SOL_MIN_PRICE = 95   # SOL floor for 300-600s (data: 95c+ = 100% WR, n=14)
+STC_EXTENDED_XRP_MIN_PRICE = 92   # XRP floor for 300-600s (data: 92c+ = 100% WR, n=15; same as main floor)
 ONE_ASSET_PER_WINDOW = False
 
 # ─── Hourly Live Trading (sub-60c, BTC+ETH only) ────────────────────────────
@@ -10296,10 +10301,8 @@ class OpportunityScanner:
                     except Exception:
                         logging.warning("fifteenm_shadow evaluate failed", exc_info=True)
 
-                # ── STC SHADOW GATE (15M only) ──
-                # STC threshold: live up to 300s, shadow beyond.
-                # Data: 300-600s is -$396 all-time, negative for every asset.
-                # Previously had 90c+ override at 700s — removed (90c+ 300-600s = -$93).
+                # ── STC SHADOW GATE (15M only, >600s) ──
+                # Outer boundary: everything above 600s is shadow-only.
                 _stc_limit = STC_SHADOW_THRESHOLD
                 if window.get("product_type") in (None, "15m") and seconds_remaining > _stc_limit:
                     _stc_stage = "stc_shadow_no_xrp" if asset != "XRP" else "stc_shadow_xrp"
@@ -10326,6 +10329,42 @@ class OpportunityScanner:
                             product_type=window.get("product_type"),
                             **_oft_db, **_shadow_diag)
                     continue
+
+                # ── STC EXTENDED ZONE FLOOR (300-600s, 15M only) ──
+                # Model is 9pp overconfident at 300-600s at low prices, but
+                # high-price trades are profitable. Per-asset higher floors
+                # extract the safe segment: ETH 90c+, BTC 93c+, XRP 92c+, SOL 95c+.
+                # STC sizing scaler (300/STC) already reduces position sizes here.
+                if (window.get("product_type") in (None, "15m")
+                        and seconds_remaining > STC_EXTENDED_LIVE_FLOOR):
+                    _stc_ext_floor = {"BTC": STC_EXTENDED_BTC_MIN_PRICE, "ETH": STC_EXTENDED_ETH_MIN_PRICE,
+                                      "SOL": STC_EXTENDED_SOL_MIN_PRICE, "XRP": STC_EXTENDED_XRP_MIN_PRICE}.get(asset, MAX_ENTRY_PRICE)
+                    if best_ask < _stc_ext_floor:
+                        _stc_ext_stage = "stc_extended_floor_shadow"
+                        _dedup_key = (ticker, _stc_ext_stage)
+                        if _dedup_key not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dedup_key)
+                            _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            self._state.insert_evaluated_opportunity(
+                                ticker, window["event_ticker"], asset, _stc_ext_stage,
+                                rejection_reason=f"STC extended floor: ask={best_ask}c < {asset} floor {_stc_ext_floor}c (STC={seconds_remaining:.0f}s)",
+                                spot_price=spot, threshold=threshold, volatility=blended_rv,
+                                market_price=best_ask, seconds_to_close=seconds_remaining,
+                                calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                                vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                                calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                                breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                                ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                position_size=sizing["contracts"],
+                                kelly_f=sizing["kelly_f"],
+                                drawdown_scaler=sizing["drawdown_scaler"],
+                                calibrated_prob_raw=calibrated_prob_raw,
+                                ofa_adjustment=ofa_adjustment,
+                                strategy=strategy,
+                                old_system_prob=_old_system_prob,
+                                product_type=window.get("product_type"),
+                                **_oft_db, **_shadow_diag)
+                        continue
 
                 # ── XRP SHADOW GATE (15M only) ──
                 # XRP 15M: -$32.97 all-time. Log for counterfactual, don't trade.
