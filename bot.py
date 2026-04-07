@@ -628,7 +628,7 @@ LPNE_FIXED_CONTRACTS = 50                 # Fixed sizing, bypasses Kelly entirel
 LPNE_MAX_CONCURRENT = 2                   # Conservative — new strategy
 
 POSITION_PRICE_MONITOR_ENABLED = True       # Log yes_ask/bid for held positions (WS, zero API cost)
-POSITION_PRICE_MONITOR_WS_STALE_SEC = 10.0  # Skip if WS data older than this
+POSITION_PRICE_MONITOR_WS_STALE_SEC = 120.0  # Accept WS data up to 2min old (thin books don't update often)
 
 RELAXED_EDGE_SHADOW = os.environ.get("RELAXED_EDGE_SHADOW", "1") == "1"
 RELAXED_EDGE_DISCOUNT = 0.50        # 50% of normal edge threshold (halved)
@@ -16840,7 +16840,16 @@ class MainLoop:
                         active_tickers.add(ticker)
 
             # Unsubscribe expired tickers from previous cycle
-            expired = self._discovery_ob_tickers - active_tickers
+            # Protect held-position tickers from cleanup (PPO needs them)
+            _held_tickers = set()
+            if POSITION_PRICE_MONITOR_ENABLED:
+                try:
+                    for _hp in self.state.get_open_positions():
+                        if _hp.get("status") == "open" and "15M" in _hp.get("ticker", "").upper():
+                            _held_tickers.add(_hp["ticker"])
+                except Exception:
+                    pass
+            expired = self._discovery_ob_tickers - active_tickers - _held_tickers
             for ticker in expired:
                 try:
                     self.kalshi_feed.unsubscribe_ticker(ticker)
@@ -17276,6 +17285,13 @@ class MainLoop:
                     if "15M" not in _ppo_ticker.upper():
                         continue
 
+                    # Ensure held-position ticker is WS-subscribed for orderbook data
+                    if self.kalshi_feed and self.kalshi_feed.is_connected:
+                        try:
+                            self.kalshi_feed.subscribe_ticker(_ppo_ticker)
+                        except Exception:
+                            pass
+
                     # 1. SPOT PRICE (always available from CoinbaseFeed)
                     _ppo_spot = None
                     try:
@@ -17312,9 +17328,11 @@ class MainLoop:
                             _ppo_day = int(_ppo_ts_str[5:7])
                             _ppo_hr = int(_ppo_ts_str[7:9])
                             _ppo_min = int(_ppo_ts_str[9:11])
-                            _ppo_close = datetime.datetime(_ppo_yr, _ppo_mon, _ppo_day,
-                                                           _ppo_hr, _ppo_min, 0, tzinfo=timezone.utc)
-                            _ppo_stc = (_ppo_close - datetime.datetime.now(timezone.utc)).total_seconds()
+                            # Ticker time is ET (UTC-4 during EDT). Convert to UTC.
+                            _ppo_close_et = datetime.datetime(_ppo_yr, _ppo_mon, _ppo_day,
+                                                              _ppo_hr, _ppo_min, 0)
+                            _ppo_close_utc = _ppo_close_et.replace(tzinfo=timezone.utc) + datetime.timedelta(hours=4)
+                            _ppo_stc = (_ppo_close_utc - datetime.datetime.now(timezone.utc)).total_seconds()
                     except Exception:
                         pass
 
@@ -17336,12 +17354,18 @@ class MainLoop:
                             _ppo_mkt = self.client.get_market(_ppo_ticker)
                             if _ppo_mkt:
                                 _ppo_mkt_data = _ppo_mkt.get("market", _ppo_mkt)
-                                _ppo_ya = _ppo_mkt_data.get("yes_ask")
-                                _ppo_yb = _ppo_mkt_data.get("yes_bid")
+                                # Use *_dollars fields (FP transition Feb 26 2026)
+                                _ppo_ya = _ppo_mkt_data.get("yes_ask_dollars") or _ppo_mkt_data.get("yes_ask")
+                                _ppo_yb = _ppo_mkt_data.get("yes_bid_dollars") or _ppo_mkt_data.get("yes_bid")
                                 if _ppo_ya is not None:
-                                    _ppo_ask = int(float(_ppo_ya) * 100) if isinstance(_ppo_ya, (float, str)) and float(_ppo_ya) < 2 else int(_ppo_ya)
+                                    _ppo_ask = dollars_str_to_cents(_ppo_ya) if isinstance(_ppo_ya, str) else int(_ppo_ya)
                                 if _ppo_yb is not None:
-                                    _ppo_bid = int(float(_ppo_yb) * 100) if isinstance(_ppo_yb, (float, str)) and float(_ppo_yb) < 2 else int(_ppo_yb)
+                                    _ppo_bid = dollars_str_to_cents(_ppo_yb) if isinstance(_ppo_yb, str) else int(_ppo_yb)
+                                # Filter out zero prices (market not yet active)
+                                if _ppo_ask == 0:
+                                    _ppo_ask = None
+                                if _ppo_bid == 0:
+                                    _ppo_bid = None
                                 if _ppo_ask is not None:
                                     _ppo_source = "rest"
                         except Exception:
