@@ -88,9 +88,9 @@ This document describes an automated trading platform for **Kalshi**, the first 
 The platform monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
 \begin{metricbox}
-\textbf{Live trading results (as of 2026-04-07T00:24:46Z):}
+\textbf{Live trading results (as of 2026-04-07T08:56:41Z):}
 \begin{itemize}
-\item \textbf{1,434} settled trades with a \textbf{92.7\%} win rate (1,330W / 104L)
+\item \textbf{1,461} settled trades with a \textbf{92.8\%} win rate (1,356W / 105L)
 \item Live trading with real capital since February 22, 2026
 \item Fully automated, always-on operation with complete audit trail
 \item Four additional market verticals in shadow mode, each validated before going live:
@@ -289,8 +289,8 @@ Below 180 seconds before settlement, the system switches to **direct taker execu
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 1,434 |
-| **Win rate** | 92.7\% (1,330W / 104L) |
+| **Settled trades** | 1,461 |
+| **Win rate** | 92.8\% (1,356W / 105L) |
 | **Assets** | BTC, ETH, SOL, XRP |
 | **Entry prices** | 75–99¢ (per-asset: BTC 88¢+, ETH 90¢+, SOL 80¢+, XRP 92¢+; overlays extend lower) |
 
@@ -426,4 +426,4 @@ For readers interested in the mathematical foundations, the full technical white
 
 ---
 
-*Last updated: 2026-04-07T00:24:46Z*
+*Last updated: 2026-04-07T08:56:41Z*
