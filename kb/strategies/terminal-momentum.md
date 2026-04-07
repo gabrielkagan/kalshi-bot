@@ -18,7 +18,7 @@ At very high prices (95-99c) near expiry, the model's probability is extremely h
 | `TM_MIN_PROB` | 0.93 | Model confirmation threshold |
 | `TM_MIN_STC` | 61s | Not in final minute (settlement noise) |
 | `TM_MAX_STC` | 300s | 5 minutes maximum |
-| `TM_MAX_CONCURRENT` | 4 | Safety cap on simultaneous TM positions |
+| `TM_MAX_CONCURRENT` | 8 | Safety cap — raised for stacking (multiple price levels per ticker) |
 
 ## Sizing: `tm_compute_contracts(price, stc, bankroll)`
 
@@ -65,13 +65,14 @@ TM sits inside the `insufficient_edge` rejection path in `scan()`:
 4. If eligible and no DC overlap on same ticker, add as TM candidate
 5. Set `_tm_intercepted = True` to skip the rejection
 
-## Overlap Prevention
+## Overlap Prevention & Stacking
 - **DC overlap:** Skips if ticker already claimed by a decided contract strategy
-- **Position overlap:** Checks if ticker already has a TM position (stacking-aware)
-- **Concurrent cap:** Max 4 simultaneous TM positions
+- **Price-level stacking:** Multiple TM positions allowed on same ticker at DIFFERENT prices (e.g., 95c + 98c). Strategy encoded as `terminal_momentum_{price}`, each gets its own composite PK slot. Only blocks duplicate at same price.
+- **Concurrent cap:** Max 8 simultaneous TM positions (raised from 4 for stacking headroom)
+- **Data:** 40/40 stackable tickers settled YES, 0/4 TM losses had stacking opportunities. Rising price across TM levels = strong confirmation signal.
 
 ## Execution
-TM candidates route through `_execute_tm_taker` (direct taker IOC). Sizing via `tm_compute_contracts()` — no Kelly, no drawdown scaler, kelly_f logged as 0.0. Execution-time re-derivation if price drifts between scan and execution.
+TM candidates route through `_execute_tm_taker` (direct taker IOC). Sizing via `tm_compute_contracts()` — no Kelly, no drawdown scaler, kelly_f logged as 0.0. Execution-time re-derivation if price drifts between scan and execution. Strategy routing uses `.startswith("terminal_momentum")` to match all price-encoded variants.
 
 ## Data (Apr 7, 2026 — 270 trades)
 - Overall: 266W/4L (98.5% WR), +$31.29 net (under old fixed sizing)

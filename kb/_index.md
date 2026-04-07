@@ -31,7 +31,7 @@ Read this index first before answering any deep question about the bot. Identify
 - [[concepts/shadow-expansion-variants.md]] - Shadow expansion: 6 DC variants, low-price sim, overnight LP, promotion criteria.
 
 ## Strategies (5)
-- [[strategies/terminal-momentum.md]] - TM: 95-99c, 61-300s STC, margin×STC sizing (tm_compute_contracts). 270 trades, 98.5% WR.
+- [[strategies/terminal-momentum.md]] - TM: 95-99c, 61-300s STC, margin×STC sizing, price-level stacking. 276 trades, 98.6% WR.
 - [[strategies/lpne.md]] - LPNE: BTC 80-87c near-expiry (STC<=120s), intercepts at price floor. 97.6% WR on 42 obs, 50ct fixed.
 - [[strategies/bracket-no.md]] - Weather bracket NO: buy NO when YES 88-96c, 91.7% NO settlement rate.
 - [[strategies/overnight-discount.md]] - Overnight/weekend edge discount: 0.6x multiplier, 89c+ live gates.
