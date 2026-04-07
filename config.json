@@ -26,7 +26,7 @@
       "description": "Entry window (seconds before close)"
     },
     "STC_SHADOW_THRESHOLD": {
-      "value": 600,
+      "value": 300,
       "line": 66,
       "description": "STC shadow threshold (seconds)"
     },
@@ -353,13 +353,13 @@
       "description": "Price-dependent edge schedule"
     }
   },
-  "_bot_lines": 17448,
+  "_bot_lines": 17447,
   "_exchange_feeds": [
     "CoinbaseFeed",
     "CrossExchangeFeed",
     "KalshiFeed"
   ],
-  "_extracted_at": "2026-04-06T17:29:24Z",
+  "_extracted_at": "2026-04-07T00:24:49Z",
   "_bot_path": "/home/runner/work/kalshi-bot/kalshi-bot/bot.py",
   "_weather": {
     "weather_city_count": 19,
