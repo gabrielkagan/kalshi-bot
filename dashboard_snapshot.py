@@ -3553,7 +3553,7 @@ class DashboardSnapshotBuilder:
                     "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
                     "SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as losses, "
                     "SUM(pnl_cents) as pnl "
-                    "FROM settled_trades WHERE strategy IN ('decided_t1','decided_t1b','decided_t2') "
+                    "FROM settled_trades WHERE strategy IN ('decided_t1','decided_t1b','decided_t2','decided_t2_z25','decided_t2_z2') "
                     "GROUP BY strategy, asset"
                 ).fetchall():
                     strat, asset_name, n, w, l, pnl = _row
