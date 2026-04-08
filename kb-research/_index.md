@@ -1,6 +1,6 @@
 # Research Knowledge Base Index
 
-Last updated: 2026-04-06 | Articles: 18
+Last updated: 2026-04-07 | Articles: 19
 
 ## Purpose
 Complete research findings, analysis outputs, and external knowledge compiled from past Claude chat sessions. These are reference materials that informed bot decisions. Cross-link to kb/decisions/ for what was actually decided.
@@ -17,7 +17,8 @@ Complete research findings, analysis outputs, and external knowledge compiled fr
 - [[bot/dota-draft-arbitrage.md]] - Draft-phase win prediction design. 12-table Supabase schema. Steam/STRATZ APIs. Implementation plan. Not started — pending backtest validation.
 - [[bot/btc-loss-investigation-apr4.md]] - BTC $75 loss deep dive: 41 passthrough trades, p=0.39, entry price caps counterproductive, escalation pattern (73% rate), 30ct cap recommendation.
 - [[bot/backtesting-harness.md]] - Backtester build: two rounds of broken results (phantom signals, balance re-sizing), validated filter mode, SOL confirmed profitable (+$71).
-- [[bot/ppo-research-questions.md]] — 15 research questions for PPO data (collecting since Apr 5). Entry timing, buffer dynamics, asset patterns, loss prediction, actionable signals. Analyze after 1 week.
+- [[bot/ppo-research-questions.md]] — 15 PPO research questions: Q1-Q10 answered (spot data), Q11-Q13 answered (orderbook data). Buffer predicts outcomes, bids available 99%+, early exit feasible. n=2 losses too small for activation.
+- [[bot/buffer-rescue-analysis.md]] — Buffer-gated trade rescue: 33 rejected trades at 100% WR with fat buffers. BUT all NBBO-sourced, Wilson CI overlaps breakeven. Verdict: wait 2 weeks for statistical power. See also stc-extended-zone decision.
 - [[bot/price-drift-analysis.md]] — Price drift is NET PROFITABLE ($1.25/trade on down-drift). Don't fix. Sub-floor fills = +$108.
 - [[bot/same-ticker-reentry-analysis.md]] — Same-ticker re-entry: DEBUNKED. Initial 78/78 was cherry-picked DC subset. Full data: 92.9% WR (100 losses), worse than 94% base rate (p=0.46). Real finding: bot is 97.6% blind to post-entry prices (occupied timeslot at line 6484). Post-entry monitoring is the actionable item.
 - [[bot/goldmine-hunt-apr5.md]] — 12-agent comprehensive alpha hunt. Most opportunities collapsed under verification (relaxed edge=-$103 at Kelly, DC z-1.5=base rate, post-loss=$23 total). Real survivors: fill rate improvement ($967 CF), hourly STC tightening, intraday vol seasonality, weather NO pipeline fix, cross-asset confirmation, market making.

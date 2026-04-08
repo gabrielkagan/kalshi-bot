@@ -107,8 +107,24 @@ Early entries have 80% fatter buffers and zero losses in this sample. Makes sens
 
 350-600s positions have 5x the price swing of 0-100s positions. The current scaler (300/STC) seems roughly appropriate but could be more aggressive at high STC.
 
-### Q11-Q13: Kalshi Quote Availability
-**Blocked** — zero orderbook data due to API field name bug. Fixed Apr 7; re-evaluate after Apr 10-12 with clean data.
+### Q11: When do orderbooks dry up?
+**ANSWERED (13K obs, 55 tickers, 12 hours clean data):**
+
+| STC | Ask available | Avg ask | Bid available | Avg bid |
+|-----|-------------|---------|--------------|---------|
+| 5min+ | 82% | 97c | 100% | 96c |
+| 3-5min | 57% | 95c | 100% | 95c |
+| 2-3min | 35% | 94c | 100% | 95c |
+| 1-2min | 20% | 88c | 100% | 93c |
+| 0-1min | 6% | 57c | 99% | 80c |
+
+Asks thin dramatically in the final 2 minutes. **Bids remain available 99-100% at all STC levels** — early exit is mechanically feasible.
+
+### Q12: Do Kalshi prices track spot?
+**Partially.** Ask tracks buffer direction 39-70% of time. Better for SOL/XRP (60-70%) than BTC (39%). Noisy but directional.
+
+### Q13: Could we exit at a good price?
+**Yes for early detection.** The BTC @95c loss (-$260) had a max bid of 97c early in the hold — a profitable exit was available before the crash. The SOL @85c loss had max bid = entry price (no exit opportunity — doomed from entry). Bid liquidity at 99-100% availability means the mechanism works; the signal timing is the challenge.
 
 ### Q14: Can we predict losses from first 30 observations?
 **Magnitude of initial slope matters, direction alone doesn't:**
