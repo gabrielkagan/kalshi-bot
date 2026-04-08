@@ -627,6 +627,7 @@ TM_MIN_CONTRACTS = 25                     # Floor (always collect data)
 TM_MAX_CONTRACTS = 500                    # Hard cap
 TM_MAX_CONCURRENT = 8                     # Max simultaneous TM positions (raised for stacking — multiple price levels on same ticker)
 TM_NEGATIVE_EV_TIERS = {95}              # Tiers where WR < breakeven → minimum sizing (data: 95c = 88.9% vs 95.3% BE on 27 trades)
+TM_NBBO_MIN_BUFFER_PCT = 0.10            # NBBO-sourced TM requires >= 0.10% buffer (data: all 6 TM losses at 96-99c were NBBO; orderbook TM is 58/58 100% WR)
 # Per-asset risk caps for TM (same as main pipeline — TM no longer bypasses these)
 TM_ASSET_RISK_CAPS = {
     "BTC": BTC_MAX_RISK_PER_TRADE,        # 0.15
@@ -8123,89 +8124,124 @@ class OpportunityScanner:
                                 # Check concurrent TM position cap
                                 _tm_count = sum(1 for c in candidates if c.get("strategy", "").startswith("terminal_momentum"))
                                 if _tm_count < TM_MAX_CONCURRENT:
-                                    _tm_intercepted = True
-                                    _tm_balance = self._get_balance_cached() or 100000
-                                    _tm_size = tm_compute_contracts(best_ask, seconds_remaining, _tm_balance, asset)
-                                    logging.info(
-                                        "TM_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs edge=%.4f margin=%dc stc_zone=%s",
-                                        asset, ticker, _tm_size, best_ask,
-                                        final_prob, seconds_remaining, fee_adjusted_edge,
-                                        100 - best_ask,
-                                        "safe" if seconds_remaining < TM_STC_SAFE_THRESHOLD else
-                                        ("danger" if seconds_remaining < TM_STC_DANGER_HI else "normal"))
-                                    candidates.append({
-                                        "ticker": ticker,
-                                        "event_ticker": window["event_ticker"],
-                                        "asset": asset,
-                                        "product_type": window.get("product_type"),
-                                        "spot": spot,
-                                        "threshold": threshold,
-                                        "seconds_to_close": round(seconds_remaining, 1),
-                                        "blended_rv": blended_rv,
-                                        "calibrated_prob": round(final_prob, 6),
-                                        "z_score": z_score,
-                                        "best_yes_ask": best_ask,
-                                        "best_ask_source": best_ask_source,
-                                        "edge": round(edge, 6),
-                                        "fee_adjusted_edge": round(fee_adjusted_edge, 6),
-                                        "position_size": _tm_size,
-                                        "kelly_f": 0.0,
-                                        "drawdown_scaler": 1.0,
-                                        "vol_regime": vol_est["regime"],
-                                        "balance_at_scan": self._get_balance_cached(),
-                                        "strategy": f"terminal_momentum_{best_ask}",
-                                        "strategy_scores": {"certainty": 1.0, "certainty_detail": "terminal_momentum",
-                                                            "orderbook": 0.5, "orderbook_detail": "n/a",
-                                                            "urgency": 1.0, "urgency_detail": "terminal_momentum",
-                                                            "composite": 1.0, "reason": "terminal_momentum"},
-                                        "ob_snapshot": {
-                                            "best_ask": best_ask,
-                                            "ask_depth": ask_depth,
-                                            "total_depth": total_depth,
-                                            "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
-                                            "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
-                                            "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
-                                                      if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
-                                        },
-                                        "calibrated_prob_raw": round(calibrated_prob_raw, 6),
-                                        "ofa_adjustment": round(ofa_adjustment, 6),
-                                        "ofa_confidence": ofa_signals["confidence"] if ofa_signals else "none",
-                                        "raw_prob": raw_prob,
-                                        "calibration_method": calibration_method,
-                                        "old_system_prob": round(_old_system_prob, 6),
-                                        **_shadow_diag,
-                                        **_shadow_extra,
-                                    })
-                                    # Log to evaluated_opportunities
-                                    _tm_dedup = (ticker, f"terminal_momentum_{best_ask}")
-                                    if _tm_dedup not in self._eval_opp_seen:
-                                        self._eval_opp_seen.add(_tm_dedup)
-                                        try:
-                                            self._state.insert_evaluated_opportunity(
-                                                ticker, window["event_ticker"], asset,
-                                                "terminal_momentum",
-                                                rejection_reason=None,
-                                                spot_price=spot, threshold=threshold,
-                                                volatility=blended_rv, market_price=best_ask,
-                                                seconds_to_close=seconds_remaining,
-                                                calibrated_prob=final_prob, edge=edge,
-                                                ofa_adjustment=ofa_adjustment,
-                                                strategy=f"terminal_momentum_{best_ask}",
-                                                z_score=z_score,
-                                                vol_regime=vol_est["regime"],
-                                                calibrated_prob_raw=calibrated_prob_raw,
-                                                kelly_f=0.0,
-                                                position_size=_tm_size,
-                                                breakeven_wr=best_ask / 100.0,
-                                                ask_depth=ask_depth,
-                                                best_ask_source=best_ask_source,
-                                                raw_prob=raw_prob,
-                                                calibration_method=calibration_method,
-                                                fee_adjusted_edge=fee_adjusted_edge,
-                                                product_type=window.get("product_type"),
-                                                **_shadow_diag)
-                                        except Exception:
-                                            logging.warning("insert_evaluated_opportunity failed (terminal_momentum)", exc_info=True)
+                                    # NBBO buffer gate: if pricing from stale NBBO (no orderbook),
+                                    # require minimum buffer as safety margin. Orderbook-sourced TM
+                                    # trades pass freely (58/58 = 100% WR).
+                                    # Data: all 6 TM losses at 96-99c were NBBO-sourced.
+                                    _tm_buf_pct = (spot - threshold) / threshold * 100 if threshold and threshold > 0 else 0
+                                    if (best_ask_source == "market_nbbo"
+                                            and _tm_buf_pct < TM_NBBO_MIN_BUFFER_PCT):
+                                        logging.info(
+                                            "TM_NBBO_BUFFER_GATE: %s %s @%dc buf=%.3f%% < %.2f%% (NBBO, skipping)",
+                                            asset, ticker, best_ask, _tm_buf_pct, TM_NBBO_MIN_BUFFER_PCT)
+                                        # Log as shadow for counterfactual tracking
+                                        _tm_dedup_shadow = (ticker, "tm_nbbo_buffer_shadow")
+                                        if _tm_dedup_shadow not in self._eval_opp_seen:
+                                            self._eval_opp_seen.add(_tm_dedup_shadow)
+                                            try:
+                                                self._state.insert_evaluated_opportunity(
+                                                    ticker, window["event_ticker"], asset,
+                                                    "tm_nbbo_buffer_shadow",
+                                                    rejection_reason=f"TM NBBO buf={_tm_buf_pct:.3f}% < {TM_NBBO_MIN_BUFFER_PCT}% (ask={best_ask}c stc={seconds_remaining:.0f}s)",
+                                                    spot_price=spot, threshold=threshold,
+                                                    volatility=blended_rv, market_price=best_ask,
+                                                    seconds_to_close=seconds_remaining,
+                                                    calibrated_prob=final_prob, edge=edge,
+                                                    ofa_adjustment=ofa_adjustment,
+                                                    strategy=f"terminal_momentum_{best_ask}",
+                                                    z_score=z_score, raw_prob=raw_prob,
+                                                    fee_adjusted_edge=fee_adjusted_edge,
+                                                    best_ask_source=best_ask_source,
+                                                    product_type="15m", **_shadow_diag)
+                                            except Exception:
+                                                logging.warning("insert_evaluated_opportunity failed (tm_nbbo_buffer)", exc_info=True)
+                                    else:
+                                        _tm_intercepted = True
+                                    if _tm_intercepted:
+                                        _tm_balance = self._get_balance_cached() or 100000
+                                        _tm_size = tm_compute_contracts(best_ask, seconds_remaining, _tm_balance, asset)
+                                        logging.info(
+                                            "TM_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs edge=%.4f margin=%dc stc_zone=%s buf=%.3f%% src=%s",
+                                            asset, ticker, _tm_size, best_ask,
+                                            final_prob, seconds_remaining, fee_adjusted_edge,
+                                            100 - best_ask,
+                                            "safe" if seconds_remaining < TM_STC_SAFE_THRESHOLD else
+                                            ("danger" if seconds_remaining < TM_STC_DANGER_HI else "normal"),
+                                            _tm_buf_pct, best_ask_source)
+                                        candidates.append({
+                                            "ticker": ticker,
+                                            "event_ticker": window["event_ticker"],
+                                            "asset": asset,
+                                            "product_type": window.get("product_type"),
+                                            "spot": spot,
+                                            "threshold": threshold,
+                                            "seconds_to_close": round(seconds_remaining, 1),
+                                            "blended_rv": blended_rv,
+                                            "calibrated_prob": round(final_prob, 6),
+                                            "z_score": z_score,
+                                            "best_yes_ask": best_ask,
+                                            "best_ask_source": best_ask_source,
+                                            "edge": round(edge, 6),
+                                            "fee_adjusted_edge": round(fee_adjusted_edge, 6),
+                                            "position_size": _tm_size,
+                                            "kelly_f": 0.0,
+                                            "drawdown_scaler": 1.0,
+                                            "vol_regime": vol_est["regime"],
+                                            "balance_at_scan": self._get_balance_cached(),
+                                            "spot_buffer_pct": round(_tm_buf_pct, 4),
+                                            "strategy": f"terminal_momentum_{best_ask}",
+                                            "strategy_scores": {"certainty": 1.0, "certainty_detail": "terminal_momentum",
+                                                                "orderbook": 0.5, "orderbook_detail": "n/a",
+                                                                "urgency": 1.0, "urgency_detail": "terminal_momentum",
+                                                                "composite": 1.0, "reason": "terminal_momentum"},
+                                            "ob_snapshot": {
+                                                "best_ask": best_ask,
+                                                "ask_depth": ask_depth,
+                                                "total_depth": total_depth,
+                                                "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                                                "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                                                "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                                          if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
+                                            },
+                                            "calibrated_prob_raw": round(calibrated_prob_raw, 6),
+                                            "ofa_adjustment": round(ofa_adjustment, 6),
+                                            "ofa_confidence": ofa_signals["confidence"] if ofa_signals else "none",
+                                            "raw_prob": raw_prob,
+                                            "calibration_method": calibration_method,
+                                            "old_system_prob": round(_old_system_prob, 6),
+                                            **_shadow_diag,
+                                            **_shadow_extra,
+                                        })
+                                        # Log to evaluated_opportunities
+                                        _tm_dedup = (ticker, f"terminal_momentum_{best_ask}")
+                                        if _tm_dedup not in self._eval_opp_seen:
+                                            self._eval_opp_seen.add(_tm_dedup)
+                                            try:
+                                                self._state.insert_evaluated_opportunity(
+                                                    ticker, window["event_ticker"], asset,
+                                                    "terminal_momentum",
+                                                    rejection_reason=None,
+                                                    spot_price=spot, threshold=threshold,
+                                                    volatility=blended_rv, market_price=best_ask,
+                                                    seconds_to_close=seconds_remaining,
+                                                    calibrated_prob=final_prob, edge=edge,
+                                                    ofa_adjustment=ofa_adjustment,
+                                                    strategy=f"terminal_momentum_{best_ask}",
+                                                    z_score=z_score,
+                                                    vol_regime=vol_est["regime"],
+                                                    calibrated_prob_raw=calibrated_prob_raw,
+                                                    kelly_f=0.0,
+                                                    position_size=_tm_size,
+                                                    breakeven_wr=best_ask / 100.0,
+                                                    ask_depth=ask_depth,
+                                                    best_ask_source=best_ask_source,
+                                                    raw_prob=raw_prob,
+                                                    calibration_method=calibration_method,
+                                                    fee_adjusted_edge=fee_adjusted_edge,
+                                                    product_type=window.get("product_type"),
+                                                    **_shadow_diag)
+                                            except Exception:
+                                                logging.warning("insert_evaluated_opportunity failed (terminal_momentum)", exc_info=True)
 
                     if _tm_intercepted:
                         continue  # Skip insufficient_edge rejection — this is now a TM candidate
