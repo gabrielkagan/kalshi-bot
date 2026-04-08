@@ -628,7 +628,8 @@ TM_MIN_CONTRACTS = 25                     # Floor (always collect data)
 TM_MAX_CONTRACTS = 500                    # Hard cap
 TM_MAX_CONCURRENT = 8                     # Max simultaneous TM positions (raised for stacking — multiple price levels on same ticker)
 TM_NEGATIVE_EV_TIERS = {95}              # Tiers where WR < breakeven → minimum sizing (data: 95c = 88.9% vs 95.3% BE on 27 trades)
-TM_NBBO_MIN_BUFFER_PCT = 0.10            # NBBO-sourced TM requires >= 0.10% buffer (data: all 6 TM losses at 96-99c were NBBO; orderbook TM is 58/58 100% WR)
+TM_NBBO_MIN_BUFFER_PCT = 0.10            # NBBO-sourced TM at 98-99c requires >= 0.10% buffer
+TM_NBBO_BLOCKED_PRICES = {96, 97}       # Block TM at these prices when NBBO (data: 181 trades 96.7% WR -$326; orderbook 21/21 100% +$60)
 # Per-asset risk caps for TM (same as main pipeline — TM no longer bypasses these)
 TM_ASSET_RISK_CAPS = {
     "BTC": BTC_MAX_RISK_PER_TRADE,        # 0.15
@@ -8127,16 +8128,24 @@ class OpportunityScanner:
                                 # Check concurrent TM position cap
                                 _tm_count = sum(1 for c in candidates if c.get("strategy", "").startswith("terminal_momentum"))
                                 if _tm_count < TM_MAX_CONCURRENT:
-                                    # NBBO buffer gate: if pricing from stale NBBO (no orderbook),
-                                    # require minimum buffer as safety margin. Orderbook-sourced TM
-                                    # trades pass freely (58/58 = 100% WR).
-                                    # Data: all 6 TM losses at 96-99c were NBBO-sourced.
+                                    # NBBO gate: two layers.
+                                    # 1) Block 96-97c on NBBO entirely (data: 181 trades -$326; orderbook 21/21 +$60)
+                                    # 2) At 98-99c, require minimum buffer on NBBO (thin buf = stale pricing)
+                                    # Orderbook-sourced TM trades pass freely at all prices.
                                     _tm_buf_pct = (spot - threshold) / threshold * 100 if threshold and threshold > 0 else 0
-                                    if (best_ask_source == "market_nbbo"
-                                            and _tm_buf_pct < TM_NBBO_MIN_BUFFER_PCT):
+                                    _tm_nbbo_blocked = False
+                                    if best_ask_source == "market_nbbo":
+                                        if best_ask in TM_NBBO_BLOCKED_PRICES:
+                                            _tm_nbbo_blocked = True
+                                        elif _tm_buf_pct < TM_NBBO_MIN_BUFFER_PCT:
+                                            _tm_nbbo_blocked = True
+                                    if _tm_nbbo_blocked:
+                                        _tm_nbbo_reason = (f"price {best_ask}c in BLOCKED_PRICES"
+                                                           if best_ask in TM_NBBO_BLOCKED_PRICES
+                                                           else f"buf={_tm_buf_pct:.3f}% < {TM_NBBO_MIN_BUFFER_PCT}%")
                                         logging.info(
-                                            "TM_NBBO_BUFFER_GATE: %s %s @%dc buf=%.3f%% < %.2f%% (NBBO, skipping)",
-                                            asset, ticker, best_ask, _tm_buf_pct, TM_NBBO_MIN_BUFFER_PCT)
+                                            "TM_NBBO_GATE: %s %s @%dc buf=%.3f%% (%s, skipping)",
+                                            asset, ticker, best_ask, _tm_buf_pct, _tm_nbbo_reason)
                                         # Log as shadow for counterfactual tracking
                                         _tm_dedup_shadow = (ticker, "tm_nbbo_buffer_shadow")
                                         if _tm_dedup_shadow not in self._eval_opp_seen:
@@ -8145,7 +8154,7 @@ class OpportunityScanner:
                                                 self._state.insert_evaluated_opportunity(
                                                     ticker, window["event_ticker"], asset,
                                                     "tm_nbbo_buffer_shadow",
-                                                    rejection_reason=f"TM NBBO buf={_tm_buf_pct:.3f}% < {TM_NBBO_MIN_BUFFER_PCT}% (ask={best_ask}c stc={seconds_remaining:.0f}s)",
+                                                    rejection_reason=f"TM NBBO {_tm_nbbo_reason} (ask={best_ask}c stc={seconds_remaining:.0f}s)",
                                                     spot_price=spot, threshold=threshold,
                                                     volatility=blended_rv, market_price=best_ask,
                                                     seconds_to_close=seconds_remaining,
