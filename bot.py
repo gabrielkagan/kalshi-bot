@@ -2987,6 +2987,26 @@ class CoinbaseFeed:
         with self._lock:
             return list(self._buffers.get(asset, []))
 
+    def get_price_trailing_avg(self, asset: str, seconds: int = 60) -> Optional[float]:
+        """Return the average spot price over the last N seconds.
+
+        Uses the 1-second snapshot buffer (PRICE_BUFFER_SIZE=300, 5 min of data).
+        Returns None if fewer than 5 samples available (feed just started or
+        reconnected). This approximates the CFB RTI 60-second settlement
+        averaging mechanism.
+        """
+        now = time.time()
+        with self._lock:
+            buf = self._buffers.get(asset)
+            if not buf:
+                return None
+        # Filter to entries within the time window
+        cutoff = now - seconds
+        prices = [price for ts, price in buf if ts >= cutoff]
+        if len(prices) < 5:
+            return None
+        return sum(prices) / len(prices)
+
     @property
     def is_connected(self) -> bool:
         return self._connected
@@ -6855,6 +6875,19 @@ class OpportunityScanner:
                 if _fb_sigma and _fb_bw and _fb_bw > 0 and _fb_rk and _fb_rk > 0 and _fb_sf:
                     _fb_erv = _fb_sigma * _fb_sf
                     _ebs_var = _fb_bw * (_fb_erv ** 2) + (1 - _fb_bw) * (_fb_rk ** 2)
+            # Settlement divergence measurement: 60s trailing avg + multi-exchange
+            # These are logged for analysis — do NOT affect probability or sizing.
+            _spot_60s_avg = None
+            _spot_multi_exchange = None
+            if _pt not in ("spx_hourly", "weather"):
+                _spot_60s_avg = self._feed.get_price_trailing_avg(asset, 60)
+                try:
+                    _kraken_price = self._ml.cross_feed.get_prices(asset).get("kraken") \
+                        if hasattr(self._ml, "cross_feed") and self._ml.cross_feed else None
+                    if _kraken_price is not None and spot is not None:
+                        _spot_multi_exchange = round((spot + _kraken_price) / 2, 6)
+                except Exception:
+                    pass
             _shadow_diag = {
                 "egarch_sigma": vol_est.get("egarch_sigma"),
                 "egarch_blend_sigma": math.sqrt(_ebs_var) if _ebs_var and _ebs_var > 0 else None,
@@ -6873,6 +6906,9 @@ class OpportunityScanner:
                 "mz_sigmoid_blend_rv": vol_est.get("mz_sigmoid_blend_rv"),
                 "egarch_n_updates": vol_est.get("egarch_n_updates"),
                 "egarch_ratio_clamped": vol_est.get("egarch_ratio_clamped"),
+                # Settlement divergence: logged for analysis, not used for trading
+                "spot_60s_avg": round(_spot_60s_avg, 6) if _spot_60s_avg is not None else None,
+                "spot_coinbase_kraken_avg": _spot_multi_exchange,
             }
 
             for mkt in window["markets"]:
@@ -15676,9 +15712,12 @@ class SettlementTracker:
                 result = market_data.get("result", "")
                 if not result:
                     continue  # Not yet settled on Kalshi
+                # Capture expiration_value (CFB RTI settlement price) for divergence analysis
+                _exp_val = market_data.get("expiration_value")
                 logging.warning(
                     "sweep_stuck_positions: recovering %s (result=%s, "
-                    "close_utc=%s, stuck >5min)", ticker, result, close_utc)
+                    "close_utc=%s, stuck >5min, expiration_value=%s)",
+                    ticker, result, close_utc, _exp_val)
                 # Build a synthetic settlement dict and process it.
                 # _from_sweep=True tells _process_settlement to skip the
                 # revenue=0/WIN guard (we compute PnL from first principles).
@@ -15689,6 +15728,7 @@ class SettlementTracker:
                     "revenue": 0,
                     "settled_time": market_data.get("close_time", ""),
                     "_from_sweep": True,
+                    "_expiration_value": _exp_val,
                 }
                 self._process_settlement(settlement)
             except Exception as e:
@@ -15820,6 +15860,21 @@ class SettlementTracker:
         # Mark as processed for dedup (once)
         self._processed_tickers.add(ticker)
 
+        # Fetch expiration_value (CFB RTI settlement price) for divergence analysis.
+        # For sweep settlements, it's already in the settlement dict.
+        # For normal settlements, one extra API call (non-blocking, after PnL recorded).
+        _exp_val = settlement.get("_expiration_value")
+        if _exp_val is None:
+            try:
+                _exp_mkt = self._client.get_market(ticker)
+                if _exp_mkt:
+                    _exp_val = _exp_mkt.get("market", _exp_mkt).get("expiration_value")
+            except Exception:
+                pass
+        if _exp_val is not None:
+            logging.info("EXPIRATION_VALUE: %s expiration_value=%s asset=%s",
+                         ticker, _exp_val, positions[0]["asset"])
+
         # Rich journal entry with combined PnL
         self._logger.log_settlement({
             "ticker": ticker,
@@ -15838,6 +15893,7 @@ class SettlementTracker:
             "settled_time": settlement.get("settled_time", ""),
             "is_stacked": is_stacked,
             "n_positions": len(positions),
+            "expiration_value": _exp_val,
         })
 
         stacked_tag = f" [STACKED x{len(positions)}]" if is_stacked else ""
