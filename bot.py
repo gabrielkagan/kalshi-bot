@@ -65,6 +65,7 @@ MIN_SECONDS_BEFORE_CLOSE = 0
 MAX_SECONDS_BEFORE_CLOSE = 900    # scan 15 min before close (600-900s is shadow data collection)
 STC_SHADOW_THRESHOLD = 600        # 15M trades above this STC are shadow-only
 STC_EXTENDED_LIVE_FLOOR = 300     # 300-600s zone: per-asset higher floors apply (model 9pp overconfident at low prices)
+STC_EXTENDED_BUFFER_RESCUE = 0.25  # Buffer >= this bypasses extended floor (data: 21/21 100% WR, Wilson LB 88.6% > 87% BE)
 STC_EXTENDED_BTC_MIN_PRICE = 93   # BTC floor for 300-600s (data: 93c+ = 98.1% WR, n=52)
 STC_EXTENDED_ETH_MIN_PRICE = 90   # ETH floor for 300-600s (data: 90c+ = 100% WR, n=31; same as main floor)
 STC_EXTENDED_SOL_MIN_PRICE = 95   # SOL floor for 300-600s (data: 95c+ = 100% WR, n=14)
@@ -10527,31 +10528,44 @@ class OpportunityScanner:
                     _stc_ext_floor = {"BTC": STC_EXTENDED_BTC_MIN_PRICE, "ETH": STC_EXTENDED_ETH_MIN_PRICE,
                                       "SOL": STC_EXTENDED_SOL_MIN_PRICE, "XRP": STC_EXTENDED_XRP_MIN_PRICE}.get(asset, MAX_ENTRY_PRICE)
                     if best_ask < _stc_ext_floor:
-                        _stc_ext_stage = "stc_extended_floor_shadow"
-                        _dedup_key = (ticker, _stc_ext_stage)
-                        if _dedup_key not in self._eval_opp_seen:
-                            self._eval_opp_seen.add(_dedup_key)
-                            _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
-                            self._state.insert_evaluated_opportunity(
-                                ticker, window["event_ticker"], asset, _stc_ext_stage,
-                                rejection_reason=f"STC extended floor: ask={best_ask}c < {asset} floor {_stc_ext_floor}c (STC={seconds_remaining:.0f}s)",
-                                spot_price=spot, threshold=threshold, volatility=blended_rv,
-                                market_price=best_ask, seconds_to_close=seconds_remaining,
-                                calibrated_prob=final_prob, edge=edge, z_score=z_score,
-                                vol_regime=vol_est["regime"], raw_prob=raw_prob,
-                                calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
-                                breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
-                                ask_depth=ask_depth, best_ask_source=best_ask_source,
-                                position_size=sizing["contracts"],
-                                kelly_f=sizing["kelly_f"],
-                                drawdown_scaler=sizing["drawdown_scaler"],
-                                calibrated_prob_raw=calibrated_prob_raw,
-                                ofa_adjustment=ofa_adjustment,
-                                strategy=strategy,
-                                old_system_prob=_old_system_prob,
-                                product_type=window.get("product_type"),
-                                **_oft_db, **_shadow_diag)
-                        continue
+                        # Buffer rescue: fat buffer overrides the floor check.
+                        # Data (Apr 1-8): buf>=0.25% at 300-600s = 21/21 100% WR,
+                        # Wilson LB 88.6% > 87% breakeven. Uses scanner's computed
+                        # size (Kelly × STC scaler × asset cap already applied).
+                        _ext_buf = (spot - threshold) / threshold * 100 if threshold and threshold > 0 else 0
+                        if _ext_buf >= STC_EXTENDED_BUFFER_RESCUE:
+                            logging.info(
+                                "STC_EXTENDED_BUFFER_RESCUE: %s %s @%dc buf=%.3f%% >= %.2f%% "
+                                "(floor=%dc, STC=%.0fs) — allowing trade",
+                                asset, ticker, best_ask, _ext_buf,
+                                STC_EXTENDED_BUFFER_RESCUE, _stc_ext_floor, seconds_remaining)
+                            pass  # fall through to normal candidate path
+                        else:
+                            _stc_ext_stage = "stc_extended_floor_shadow"
+                            _dedup_key = (ticker, _stc_ext_stage)
+                            if _dedup_key not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_dedup_key)
+                                _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                                self._state.insert_evaluated_opportunity(
+                                    ticker, window["event_ticker"], asset, _stc_ext_stage,
+                                    rejection_reason=f"STC extended floor: ask={best_ask}c < {asset} floor {_stc_ext_floor}c (STC={seconds_remaining:.0f}s buf={_ext_buf:.3f}%)",
+                                    spot_price=spot, threshold=threshold, volatility=blended_rv,
+                                    market_price=best_ask, seconds_to_close=seconds_remaining,
+                                    calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                                    vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                                    calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                                    breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                                    ask_depth=ask_depth, best_ask_source=best_ask_source,
+                                    position_size=sizing["contracts"],
+                                    kelly_f=sizing["kelly_f"],
+                                    drawdown_scaler=sizing["drawdown_scaler"],
+                                    calibrated_prob_raw=calibrated_prob_raw,
+                                    ofa_adjustment=ofa_adjustment,
+                                    strategy=strategy,
+                                    old_system_prob=_old_system_prob,
+                                    product_type=window.get("product_type"),
+                                    **_oft_db, **_shadow_diag)
+                            continue
 
                 # ── XRP SHADOW GATE (15M only) ──
                 # XRP 15M: -$32.97 all-time. Log for counterfactual, don't trade.
