@@ -3002,9 +3002,11 @@ class CoinbaseFeed:
             buf = self._buffers.get(asset)
             if not buf:
                 return None
+            # Copy under lock to prevent "deque mutated during iteration"
+            snapshot = list(buf)
         # Filter to entries within the time window
         cutoff = now - seconds
-        prices = [price for ts, price in buf if ts >= cutoff]
+        prices = [price for ts, price in snapshot if ts >= cutoff]
         if len(prices) < 5:
             return None
         return sum(prices) / len(prices)
