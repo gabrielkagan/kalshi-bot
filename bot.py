@@ -49,7 +49,7 @@ MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for 
 MAX_ENTRY_PRICE = 99              # cents
 BTC_MIN_ENTRY_PRICE = 88          # cents (data: 88c = 96.2% WR on n=53 shadow, 96.3% on n=27 recent)
 ETH_MIN_ENTRY_PRICE = 90          # cents (raised from 85 — data: ETH 85-89c is 86.2% WR on 65 trades, -$23.76 PnL; 90c+ is 95.2% WR)
-SOL_MIN_ENTRY_PRICE = 80          # cents (global floor was 80; now explicit since global lowered to 75 for ETH)
+SOL_MIN_ENTRY_PRICE = 86          # cents (raised from 80: SOL@85c 68.2% WR -$496 on 22 trades vs 86c 94.4% WR +$375 on 36 trades)
 ETH_SUB80_POSITION_CAP = 50      # Half-Kelly at 75c/87% WR = 322-645 contracts; cap to 50 (ceil), floor 20
 XRP_MIN_ENTRY_PRICE = 92          # cents (data: XRP PnL negative at every floor <90c, PF=1.68 at >=92c)
 BTC_MAX_RISK_PER_TRADE = 0.15    # BTC: 15% per-trade (was 12% — regime cap removal gives full balance to sizing)
