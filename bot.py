@@ -613,7 +613,7 @@ DC_SHADOW_STAGES = frozenset({
 # These are contracts the main pipeline rejects as insufficient_edge but that
 # settle YES at 98.99% WR (496 observations). Fixed 50-contract sizing, direct taker.
 TERMINAL_MOMENTUM_ENABLED = os.environ.get("TERMINAL_MOMENTUM_ENABLED", "1") == "1"
-TM_PRICE_SET = {95, 96, 97, 98, 99}      # Valid entry prices (97c: 98.2% WR on 55 obs, above 97% BE)
+TM_PRICE_SET = {96, 98, 99}               # Valid entry prices (95c/97c removed: 94.5% WR vs 95-97% BE = negative EV, -$980/2wk on 347 trades)
 TM_MIN_PROB = 0.93                        # Model confirmation threshold
 TM_MIN_STC = 61                           # Minimum seconds to close
 TM_MAX_STC = 300                          # Maximum seconds to close
@@ -627,9 +627,9 @@ TM_STC_NORMAL_MULT = 1.0                  # Multiplier for STC >= danger_hi
 TM_MIN_CONTRACTS = 25                     # Floor (always collect data)
 TM_MAX_CONTRACTS = 500                    # Hard cap
 TM_MAX_CONCURRENT = 8                     # Max simultaneous TM positions (raised for stacking — multiple price levels on same ticker)
-TM_NEGATIVE_EV_TIERS = {95}              # Tiers where WR < breakeven → minimum sizing (data: 95c = 88.9% vs 95.3% BE on 27 trades)
+TM_NEGATIVE_EV_TIERS = set()              # Cleared — 95c removed from TM_PRICE_SET entirely (was min-sizing, now fully blocked)
 TM_NBBO_MIN_BUFFER_PCT = 0.10            # NBBO-sourced TM at 98-99c requires >= 0.10% buffer
-TM_NBBO_BLOCKED_PRICES = {96, 97}       # Block TM at these prices when NBBO (data: 181 trades 96.7% WR -$326; orderbook 21/21 100% +$60)
+TM_NBBO_BLOCKED_PRICES = {96}            # Block TM at 96c when NBBO (data: 96c NBBO -$326, orderbook 21/21 +$60). 97c removed from TM_PRICE_SET entirely.
 # Per-asset risk caps for TM (same as main pipeline — TM no longer bypasses these)
 TM_ASSET_RISK_CAPS = {
     "BTC": BTC_MAX_RISK_PER_TRADE,        # 0.15
@@ -2038,6 +2038,24 @@ class StateManager:
             )""")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ppo_ticker ON position_price_observations(ticker)")
+        # Shadow exit signal table — tracks what early-exit would recommend
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS exit_signal_shadow (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                signal_time TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                buffer_at_signal REAL,
+                pct_negative_30 REAL,
+                entry_price_cents INTEGER,
+                yes_bid_at_signal INTEGER,
+                position_count INTEGER,
+                seconds_to_close REAL,
+                counterfactual_exit_pnl_cents INTEGER
+            )""")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ess_ticker ON exit_signal_shadow(ticker)")
         self.conn.commit()
 
     # ── Ticker Parsing ────────────────────────────────────────────────────
@@ -13621,10 +13639,28 @@ class OrderExecutor:
             "execution_method": "cancel_replace_ioc",
         })
 
+        # ── Edge recheck at escalated price ──────────────────────────
+        # The candidate was evaluated with edge at the maker price. If the
+        # taker price is higher, the edge may have evaporated or gone negative.
+        # Data: 10 MAKER_PATIENT losses with drift>0 cost $704/2wk.
+        _esc_prob = order["candidate"].get("calibrated_prob", 0)
+        _esc_fee_1c = calculate_taker_fee(1, best_ask)
+        _esc_edge = _esc_prob - best_ask / 100.0 - _esc_fee_1c / 100.0
+        _esc_maker_price = order["price_cents"]
+        if _esc_edge < 0 and best_ask > _esc_maker_price:
+            logging.warning(
+                "ESCALATION_EDGE_ABORT: %s prob=%.4f price=%d→%dc edge=%.4f "
+                "(negative at escalated price, canceling)",
+                ticker, _esc_prob, _esc_maker_price, best_ask, _esc_edge)
+            self._cancel_order(order["asset"], "escalation_edge_abort")
+            self._state.update_evaluated_opportunity_order(
+                ticker, order_outcome="escalation_edge_abort")
+            return None
+
         # Cancel maker + submit taker IOC
         logging.info(
             f"escalation_cancel_replace: {ticker} "
-            f"(maker={order['price_cents']}¢ → taker={best_ask}¢)")
+            f"(maker={order['price_cents']}¢ → taker={best_ask}¢ edge={_esc_edge:.4f})")
         cancel_ok = self._cancel_order(order["asset"], reason)
         if not cancel_ok:
             logging.error(f"Cancel failed for {ticker} — NOT submitting taker to prevent double position")
@@ -17652,6 +17688,7 @@ class MainLoop:
                         _ppo_buffer = round((_ppo_spot - _ppo_threshold) / _ppo_threshold * 100, 4)
 
                     # 6. INSERT — ALWAYS (never skip when we have spot)
+                    _ppo_now_str = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
                     self.state.conn.execute(
                         """INSERT INTO position_price_observations
                            (ticker, asset, observation_time, seconds_to_close,
@@ -17659,14 +17696,71 @@ class MainLoop:
                             yes_ask_cents, yes_bid_cents,
                             entry_price_cents, position_count, source)
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (_ppo_ticker, _ppo_asset,
-                         datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                        (_ppo_ticker, _ppo_asset, _ppo_now_str,
                          round(_ppo_stc, 1) if _ppo_stc is not None else None,
                          round(_ppo_spot, 6), _ppo_threshold, _ppo_buffer,
                          _ppo_ask, _ppo_bid,
                          pos.get("avg_price_cents", 0), pos.get("count", 0),
                          _ppo_source))
                     _ppo_wrote = True
+
+                    # 7. SHADOW EXIT SIGNAL — would early exit trigger here?
+                    # Track rolling buffer observations per ticker for 30-obs window.
+                    # Signal fires once per ticker per hold (deduped via _exit_signal_fired).
+                    if _ppo_buffer is not None:
+                        if not hasattr(self, "_ppo_buffer_history"):
+                            self._ppo_buffer_history = {}
+                        if not hasattr(self, "_exit_signal_fired"):
+                            self._exit_signal_fired = set()
+                        hist = self._ppo_buffer_history.setdefault(_ppo_ticker, [])
+                        hist.append(_ppo_buffer)
+                        # Keep only last 60 observations (memory bound)
+                        if len(hist) > 60:
+                            hist[:] = hist[-60:]
+
+                        if _ppo_ticker not in self._exit_signal_fired:
+                            _exit_signal = None
+                            # Signal 1: buffer below -0.10%
+                            if _ppo_buffer < -0.10:
+                                _exit_signal = "buffer_below_-0.10"
+                            # Signal 2: >50% of last 30 obs negative
+                            elif len(hist) >= 30:
+                                _neg_frac = sum(1 for b in hist[-30:] if b < 0) / 30.0
+                                if _neg_frac > 0.50:
+                                    _exit_signal = "pct_negative_50"
+
+                            if _exit_signal:
+                                self._exit_signal_fired.add(_ppo_ticker)
+                                _entry_cents = pos.get("avg_price_cents", 0)
+                                _pos_count = pos.get("count", 0)
+                                # Counterfactual: what would exiting at current bid save?
+                                _cf_exit_pnl = None
+                                if _ppo_bid and _entry_cents and _pos_count:
+                                    _sell_revenue = _ppo_bid * _pos_count
+                                    _buy_cost = _entry_cents * _pos_count
+                                    _sell_fee = calculate_taker_fee(_pos_count, _ppo_bid)
+                                    _cf_exit_pnl = _sell_revenue - _buy_cost - _sell_fee
+                                _neg30 = sum(1 for b in hist[-30:] if b < 0) / min(len(hist), 30) if hist else None
+                                try:
+                                    self.state.conn.execute(
+                                        """INSERT INTO exit_signal_shadow
+                                           (ticker, asset, signal_time, signal_type,
+                                            buffer_at_signal, pct_negative_30,
+                                            entry_price_cents, yes_bid_at_signal,
+                                            position_count, seconds_to_close,
+                                            counterfactual_exit_pnl_cents)
+                                           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                        (_ppo_ticker, _ppo_asset, _ppo_now_str, _exit_signal,
+                                         _ppo_buffer, _neg30,
+                                         _entry_cents, _ppo_bid,
+                                         _pos_count, round(_ppo_stc, 1) if _ppo_stc else None,
+                                         _cf_exit_pnl))
+                                except Exception:
+                                    logging.warning("exit_signal_shadow insert failed", exc_info=True)
+                                logging.info(
+                                    "EXIT_SIGNAL_SHADOW: %s %s @%dc signal=%s buf=%.4f%% bid=%s cf_pnl=%s",
+                                    _ppo_asset, _ppo_ticker, _entry_cents, _exit_signal,
+                                    _ppo_buffer, _ppo_bid, _cf_exit_pnl)
 
                 if _ppo_wrote:
                     self.state.conn.commit()

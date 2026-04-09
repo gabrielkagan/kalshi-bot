@@ -55,14 +55,15 @@ class TestTMConstants(unittest.TestCase):
         m = re.search(r'^TM_PRICE_SET\s*=\s*(\{[^}]+\})', self.source, re.MULTILINE)
         self.assertIsNotNone(m, "TM_PRICE_SET must be a set literal")
         price_set = eval(m.group(1))
-        self.assertEqual(price_set, {95, 96, 97, 98, 99})
+        self.assertEqual(price_set, {96, 98, 99})
 
-    def test_97_included_in_price_set(self):
-        """97c promoted: 98.2% WR on 55 obs, above 97% breakeven."""
+    def test_negative_ev_prices_excluded(self):
+        """95c/97c removed: 94.5% WR vs 95-97% breakeven = negative EV."""
         m = re.search(r'^TM_PRICE_SET\s*=\s*(\{[^}]+\})', self.source, re.MULTILINE)
         self.assertIsNotNone(m)
         price_set = eval(m.group(1))
-        self.assertIn(97, price_set, "97 should be in TM_PRICE_SET — 98.2% WR above 97% BE")
+        self.assertNotIn(95, price_set, "95c is negative EV — must not be in TM_PRICE_SET")
+        self.assertNotIn(97, price_set, "97c is negative EV — must not be in TM_PRICE_SET")
 
     def test_min_prob(self):
         self.assertEqual(_extract_constant(self.source, "TM_MIN_PROB"), 0.93)
