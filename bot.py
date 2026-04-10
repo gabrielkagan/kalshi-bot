@@ -1454,6 +1454,10 @@ class StateManager:
         self.conn.execute("PRAGMA busy_timeout=30000")
         self.conn.row_factory = sqlite3.Row
         self._last_balance_cents: Optional[int] = None
+        # Per-ticker yes_bid cache populated by scanner each tick.
+        # Used by insert_evaluated_opportunity when caller doesn't pass yes_bid_cents explicitly.
+        # Bounded by number of unique tickers seen — bot only sees ~10K tickers/day, ~1MB max.
+        self._scan_bid_cache: Dict[str, int] = {}
         self._create_tables()
         # Seed balance cache from most recent DB value to avoid NULL gap after restart
         try:
@@ -1882,6 +1886,8 @@ class StateManager:
             ("taker_ask_at_submit", "INTEGER"),
             # NO-side pricing: actual NO ask from Kalshi NBBO (for DC-NO analysis)
             ("no_ask_cents", "INTEGER"),
+            # YES bid at scan time — for buy-low-sell-higher and exit price analysis
+            ("yes_bid_cents", "INTEGER"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2504,13 +2510,19 @@ class StateManager:
                                      order_submitted_at: Optional[str] = None,
                                      order_outcome: Optional[str] = None,
                                      side: str = "yes",
-                                     no_ask_cents: Optional[int] = None):
+                                     no_ask_cents: Optional[int] = None,
+                                     yes_bid_cents: Optional[int] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
             self._last_balance_cents = available_balance_cents
         elif self._last_balance_cents is not None:
             available_balance_cents = self._last_balance_cents
+        # Auto-fill yes_bid from scanner cache if not explicitly provided
+        # This lets ALL insert call sites benefit from bid logging without needing
+        # to thread ob_data through 50+ call sites.
+        if yes_bid_cents is None:
+            yes_bid_cents = self._scan_bid_cache.get(ticker)
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
             self.conn.execute("""
@@ -2542,8 +2554,8 @@ class StateManager:
                      hourly_post_temp_prob,
                      available_balance_cents,
                      order_id, order_submitted_at, order_outcome,
-                     side, no_ask_cents)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     side, no_ask_cents, yes_bid_cents)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -2605,7 +2617,8 @@ class StateManager:
                     hourly_shadow_blend_60=excluded.hourly_shadow_blend_60,
                     hourly_post_temp_prob=excluded.hourly_post_temp_prob,
                     available_balance_cents=excluded.available_balance_cents,
-                    no_ask_cents=excluded.no_ask_cents
+                    no_ask_cents=excluded.no_ask_cents,
+                    yes_bid_cents=excluded.yes_bid_cents
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -2633,7 +2646,7 @@ class StateManager:
                   hourly_post_temp_prob,
                   available_balance_cents,
                   order_id, order_submitted_at, order_outcome,
-                  side, no_ask_cents))
+                  side, no_ask_cents, yes_bid_cents))
             self.conn.commit()
         except Exception as e:
             try:
@@ -7208,6 +7221,13 @@ class OpportunityScanner:
                 # Compute orderbook depth early (used in logging + strategy)
                 ask_depth = OrderExecutor._best_ask_depth(ob_data)
                 total_depth = OrderExecutor._total_ob_depth(ob_data)
+                # Extract YES bid for buy-low-sell-higher and exit-price analysis.
+                # Stored in StateManager._scan_bid_cache so all insert_evaluated_opportunity
+                # calls within this scan tick automatically pick it up — no need to thread
+                # the value through 50+ call sites.
+                yes_bid_cents = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
+                if yes_bid_cents is not None:
+                    self._state._scan_bid_cache[ticker] = yes_bid_cents
 
                 # ── MM fill simulation: check if shadow buy orders would fill ──
                 # For hourly tickers with active MM shadow orders, check if the
