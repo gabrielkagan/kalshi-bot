@@ -186,6 +186,8 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **SOL_TAKER_FIRST = True** — SOL bypasses maker entirely, direct IOC at all STC
 - **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c), T2-Z2 (z≤-2, 93-96c) all enabled as incremental overlay
 - **Overnight discount LIVE:** OVERNIGHT_DISCOUNT_LIVE=True on weekday 04-11 UTC — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
+- **Loss burst cooldown LIVE (Apr 11):** LOSS_COOLDOWN_ENABLED=True, per-asset 2h lockout after any 15M loss. Data: 53/82 losses (30d) in 15 bursts, counterfactual +$441/30d. First-ship is per-asset (conservative); escalate to global if cross-asset correlation persists.
+- **Weather NO-side unblocked (Apr 11):** Live NO candidate block was nested inside broken model-edge gate → 0 trades Apr 4-11. Unnested; should fire on NO≤40c, STC≥16h, assumed-prob 0.70. See kb/failures/weather-no-candidate-never-fires.md
 - **STC window:** scan 0-900s, core live 0-300s, extended live 300-600s (per-asset higher floors), shadow 600-900s
 - **STC extended zone:** 300-600s live with higher floors — BTC 93c+, ETH 90c+, SOL 95c+, XRP 92c+ (data: 98.8% WR, n=83)
 - **SOL sub-86c gate:** SOL_LOW_ENTRY_STC_GATE=True — blocks SOL ≤85c at STC≥300s (data: 78.3% WR -$289; near-expiry 100% WR preserved)
@@ -227,6 +229,8 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | SOL_LOW_ENTRY_STC_GATE | True | Block SOL ≤85c at STC≥300s (data: 78.3% WR -$289; <300s is 100% WR +$228) |
 | STC_SIZING_SCALER_KNEE | 300 | Seconds — start scaling contracts by 300/STC above this (data: 5m+ WR drops) |
 | STC_SIZING_SCALER_ENABLED | True | Universal STC scaler: contracts *= 300/STC for 15M at STC>300s |
+| LOSS_COOLDOWN_ENABLED | True | Per-asset 2h 15M lockout after any loss (data: 53/82 losses in bursts, +$441/30d counterfactual) |
+| LOSS_COOLDOWN_SECONDS | 7200 | 2-hour cooldown window — first-ship conservative; may escalate to global later |
 | LPNE_ENABLED | True (env var) | BTC 80-87c near-expiry overlay (STC 10-120s, prob >= price/100) |
 | LPNE_FIXED_CONTRACTS | 50 | Fixed sizing for LPNE (LOW_STC_SIZING_CAP halves most to 25) |
 | LPNE_MAX_CONCURRENT | 2 | Max simultaneous LPNE positions |
