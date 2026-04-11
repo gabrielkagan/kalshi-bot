@@ -46,6 +46,27 @@ class TestLossCooldownConstants(unittest.TestCase):
         self.assertIn("product_type='15m'", src)
         self.assertIn("pnl_cents < 0", src)
 
+    def test_cooldown_uses_julianday_comparison(self):
+        """The cooldown query MUST use julianday(), not string datetime comparison.
+
+        Regression guard: settled_at is ISO-T format ('2026-04-11T...Z') and
+        `datetime('now',...)` returns space-format ('2026-04-11 09:28'). Lex-
+        comparing them treats ASCII 'T' (84) > space (32), so a naive
+        `settled_at > datetime('now','-2 hours')` returns TRUE for any same-
+        UTC-date loss — silently blocking the asset until UTC midnight.
+        """
+        with open(BOT_PATH) as f:
+            src = f.read()
+        self.assertIn("julianday(settled_at)", src,
+                      "Cooldown query must use julianday(settled_at) for correct comparison")
+        # Ensure the buggy pattern is NOT present in the cooldown query region
+        # (find the query and check its body specifically)
+        cooldown_marker = "SELECT DISTINCT asset FROM settled_trades"
+        idx = src.index(cooldown_marker)
+        query_region = src[idx:idx + 500]
+        self.assertNotIn("datetime('now', '-' || ? || ' seconds')", query_region,
+                         "Cooldown query must not use string datetime comparison (lex-bug)")
+
     def test_cooldown_gate_is_in_scan_loop(self):
         """The cooldown gate must exist in scan() and short-circuit with continue."""
         with open(BOT_PATH) as f:
@@ -55,69 +76,89 @@ class TestLossCooldownConstants(unittest.TestCase):
         self.assertIn('_pt in (None, "15m")', src)
 
 
-class TestWeatherNoCandidateUnnested(unittest.TestCase):
-    """Regression test for the weather NO candidate bug.
+class TestWeatherNoCandidateInCorrectPath(unittest.TestCase):
+    """Regression test for the weather NO candidate path.
 
-    The original bug: the live NO candidate block was nested inside the shadow
-    model-edge gate `if _wn_no_fee_edge > 0:`. The model is structurally wrong
-    on NO (predicts 3-16%, actual 79.7% WR), so the shadow gate never fired,
-    which meant the live candidate never fired either — 0 weather trades
-    between Apr 4-11 2026.
+    Bug history:
+    1. Original: live NO candidate block was nested inside the shadow model-edge
+       gate `if _wn_no_fee_edge > 0:`, which never fires because the model is
+       structurally wrong on NO.
+    2. First fix (wrong location): moved the candidate out of the shadow gate
+       but kept it in the YES-side observation branch — also dead because
+       weather YES evals fail insufficient_edge before reaching that branch.
+    3. Final fix: moved to `_process_no_side_shadow()` where the 1050+ NO-side
+       evals actually flow.
 
-    The fix: move the live candidate OUT of the shadow gate so it runs based
-    on the ASSUMED 0.70 probability, not the broken model prob.
+    Either regression should fail these tests.
     """
 
-    def test_weather_no_candidate_uses_assumed_edge(self):
-        """The live candidate must gate on assumed edge, not model edge."""
+    def test_weather_no_candidate_lives_in_no_side_processor(self):
+        """The live candidate gate must exist inside _process_no_side_shadow()."""
         with open(BOT_PATH) as f:
             src = f.read()
-        self.assertIn(
-            "_wn_assumed_edge = WEATHER_NO_ASSUMED_PROB - _no_ask_eq / 100.0 - _wn_no_fee / 100.0",
-            src,
-        )
+        # Find the function definition
+        fn_marker = "def _process_no_side_shadow(self"
+        self.assertIn(fn_marker, src)
+        fn_idx = src.index(fn_marker)
+        # Next method def marks end of this function
+        next_def = src.find("\n    def ", fn_idx + 1)
+        if next_def == -1:
+            next_def = len(src)
+        fn_body = src[fn_idx:next_def]
 
-    def test_weather_no_candidate_not_nested_in_shadow_edge_gate(self):
-        """The live candidate must NOT be inside `if _wn_no_fee_edge > 0:`.
+        # The weather NO live gate must exist in this function body
+        self.assertIn("WEATHER_NO_SIDE_LIVE", fn_body,
+                      "Weather NO live gate not found in _process_no_side_shadow")
+        self.assertIn("WEATHER_NO_SIDE_MIN_STC", fn_body)
+        self.assertIn("WEATHER_NO_MAX_PRICE", fn_body)
+        self.assertIn("WEATHER_NO_ASSUMED_PROB", fn_body)
+        self.assertIn('"weather_no_live"', fn_body,
+                      "Strategy string 'weather_no_live' not found — candidate may not be appended")
+        self.assertIn("candidates.append", fn_body,
+                      "candidates.append not found in _process_no_side_shadow — "
+                      "the live candidate is not being produced in the correct code path")
 
-        Parses bot.py with AST, finds the `if _wn_no_fee_edge > 0:` statement,
-        and asserts it contains NO `candidates.append` calls transitively.
-        If this ever fails, the nesting bug has regressed.
+    def test_weather_no_candidate_not_in_yes_side_observation_gate(self):
+        """The live candidate must NOT live inside the YES-side weather observation branch.
+
+        That location is structurally dead for weather because YES evals fail
+        insufficient_edge before reaching the observation branch (see bug #2).
         """
         with open(BOT_PATH) as f:
             tree = ast.parse(f.read())
 
-        def walk_if_nodes(node):
-            for child in ast.walk(node):
-                if isinstance(child, ast.If):
-                    yield child
+        # Find any `if final_prob >= WEATHER_NO_SHADOW_MIN_YES_PROB ...` block
+        # and assert it contains no weather_no_live candidate logic
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If):
+                test_src = ast.unparse(node.test)
+                if "WEATHER_NO_SHADOW_MIN_YES_PROB" in test_src:
+                    body_src = "\n".join(ast.unparse(s) for s in node.body)
+                    self.assertNotIn(
+                        "weather_no_live", body_src,
+                        "REGRESSION: weather_no_live candidate is back in the YES-side "
+                        "observation branch — this is structurally dead code. Move to "
+                        "_process_no_side_shadow(). See kb/failures/weather-no-candidate-never-fires.md",
+                    )
 
-        found_shadow_gate = False
-        for ifnode in walk_if_nodes(tree):
-            # Match `if _wn_no_fee_edge > 0:` (with or without extra conditions)
-            node_src = ast.unparse(ifnode.test)
-            if "_wn_no_fee_edge > 0" in node_src and "_wn_dedup" not in node_src:
-                # This is the pure shadow-edge gate — check body contains no candidates.append
-                found_shadow_gate = True
-                body_src = "\n".join(ast.unparse(s) for s in ifnode.body)
-                self.assertNotIn(
-                    "candidates.append", body_src,
-                    "REGRESSION: weather NO candidate is nested inside `if _wn_no_fee_edge > 0:`. "
-                    "This re-introduces the bug that kept weather at 0 trades Apr 4-11 2026. "
-                    "See kb/failures/weather-no-candidate-never-fires.md",
-                )
-            elif "_wn_no_fee_edge > 0" in node_src and "_wn_dedup" in node_src:
-                # New combined gate `_wn_dedup not in seen and _wn_no_fee_edge > 0` — body is shadow only
-                found_shadow_gate = True
-                body_src = "\n".join(ast.unparse(s) for s in ifnode.body)
-                self.assertNotIn(
-                    "candidates.append", body_src,
-                    "REGRESSION: weather NO candidate is nested inside the shadow-dedup gate. "
-                    "See kb/failures/weather-no-candidate-never-fires.md",
-                )
-        self.assertTrue(
-            found_shadow_gate,
-            "Could not find the `_wn_no_fee_edge > 0` gate in bot.py — was it removed?",
+    def test_process_no_side_shadow_accepts_candidates_list(self):
+        """The function signature must accept candidates list param for live append path."""
+        import inspect
+        sig = inspect.signature(bot.OpportunityScanner._process_no_side_shadow)
+        self.assertIn("candidates", sig.parameters,
+                      "_process_no_side_shadow must accept a 'candidates' parameter to support "
+                      "the weather NO live path")
+
+    def test_weather_no_assumed_prob_produces_positive_edge_at_40c(self):
+        """WEATHER_NO_ASSUMED_PROB must be high enough that edge > 0 at 40c cap."""
+        prob = bot.WEATHER_NO_ASSUMED_PROB
+        max_price = bot.WEATHER_NO_MAX_PRICE
+        fee_estimate = 0.02
+        edge = prob - max_price / 100.0 - fee_estimate
+        self.assertGreater(
+            edge, 0,
+            f"Assumed-prob edge must be positive at NO={max_price}c floor: "
+            f"prob={prob} - price={max_price/100} - fee={fee_estimate} = {edge}",
         )
 
     def test_weather_no_assumed_prob_produces_positive_edge_at_40c(self):
