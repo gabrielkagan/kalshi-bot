@@ -9,5 +9,12 @@ logs/
 *.db-shm
 *.db-wal
 calibration_state.json
+weather_ensemble_cache.json
 backfill_data/
 DOC_DRIFT_REPORT.txt
+
+
+
+
+# Ignore Smart Environment folder
+.smart-env

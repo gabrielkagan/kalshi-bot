@@ -1,6 +1,8 @@
 """Weather market engine — NWP ensemble fetcher, probability model, Kalshi integration."""
 
+import json
 import math
+import os
 import time
 import logging
 import datetime
@@ -10,6 +12,12 @@ from datetime import timezone
 from typing import Dict, List, Optional, Tuple
 
 import requests
+
+# Ensemble cache file — persists _last_ensemble across bot restarts so a cold
+# start doesn't leave us fully dark while Open-Meteo 429-throttles the first
+# fetch cycle. Weather changes slowly (poll interval is 15 min), so stale-by-
+# a-few-hours data is still usable. See kb/failures/weather-engine-cold-start.md
+WEATHER_ENSEMBLE_CACHE_FILE = "weather_ensemble_cache.json"
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -782,11 +790,78 @@ class WeatherEngine:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._last_ensemble: Dict[str, Dict] = {}  # city_code -> latest ensemble data
+        self._last_ensemble_saved_at: float = 0.0  # unix time of last cache save
         self._started = False
+        self._cache_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            WEATHER_ENSEMBLE_CACHE_FILE,
+        )
+        # Warm-start from on-disk cache (weather changes slowly, stale OK)
+        self._load_ensemble_cache()
+
+    # ── Ensemble cache persistence ────────────────────────────────────────
+    def _load_ensemble_cache(self) -> None:
+        """Load previous ensemble data from disk on startup.
+
+        Weather ensembles are useful for hours after fetch (forecasts target
+        end-of-day high temperature, not instantaneous). If Open-Meteo is
+        429-throttling new fetches, stale-but-warm is infinitely better than
+        fully dark.
+        """
+        try:
+            if not os.path.exists(self._cache_path):
+                logging.info("WeatherEngine: no ensemble cache found (first run)")
+                return
+            with open(self._cache_path) as f:
+                data = json.load(f)
+            saved_at = float(data.get("saved_at", 0))
+            ensembles = data.get("ensembles", {}) or {}
+            if not ensembles:
+                logging.info("WeatherEngine: ensemble cache is empty")
+                return
+            age_min = (time.time() - saved_at) / 60.0 if saved_at else -1
+            self._last_ensemble = ensembles
+            self._last_ensemble_saved_at = saved_at
+            logging.info(
+                "WeatherEngine: warm-started from cache — %d cities, %.1f min old",
+                len(ensembles), age_min)
+            if age_min > 360:  # 6h
+                logging.warning(
+                    "WeatherEngine: cache is %.1fh old — using until fresh fetches succeed",
+                    age_min / 60.0)
+        except Exception as e:
+            logging.warning("WeatherEngine: failed to load ensemble cache: %s", e)
+
+    def _save_ensemble_cache(self) -> None:
+        """Persist current ensemble data to disk atomically."""
+        try:
+            if not self._last_ensemble:
+                return  # nothing to save
+            data = {
+                "saved_at": time.time(),
+                "ensembles": self._last_ensemble,
+            }
+            tmp_path = self._cache_path + ".tmp"
+            with open(tmp_path, "w") as f:
+                json.dump(data, f, default=str)
+            os.replace(tmp_path, self._cache_path)
+            self._last_ensemble_saved_at = data["saved_at"]
+        except Exception as e:
+            logging.warning("WeatherEngine: failed to save ensemble cache: %s", e)
 
     def start(self):
-        """Start background fetcher thread (with API self-test)."""
-        self._self_test_apis()
+        """Start background fetcher thread.
+
+        Skips API self-test when the cache is warm — self-test burns 3 extra
+        API calls that contribute to the cold-start 429 cascade. A populated
+        cache is sufficient proof that the model names worked recently.
+        """
+        if self._last_ensemble:
+            logging.info(
+                "WeatherEngine: skipping API self-test (warm cache: %d cities)",
+                len(self._last_ensemble))
+        else:
+            self._self_test_apis()
         self._thread = threading.Thread(target=self._fetch_loop, daemon=True)
         self._thread.start()
         self._started = True
@@ -902,17 +977,45 @@ class WeatherEngine:
 
     def _fetch_loop(self):
         """Background loop: refresh ensemble data for all cities every 15 minutes."""
+        _watchdog_cycles_empty = 0
         while not self._stop.is_set():
+            _any_new_fetch = False
             for city_code in WEATHER_CITIES:
                 try:
                     ensemble = self._fetcher.fetch_ensemble(city_code)
                     if ensemble and ensemble.get("combined_members"):
                         self._last_ensemble[city_code] = ensemble
+                        _any_new_fetch = True
                 except Exception as e:
                     logging.warning("WeatherEngine: fetch for %s failed: %s", city_code, e)
                 # Rate-limit: 19 cities × 3 API calls each = 57 calls per cycle.
                 # Open-Meteo free tier throttles at ~30 req/min.
-                # 1s between cities ≈ 3 calls/s = plenty of headroom.
-                time.sleep(1.0)
+                # 3s between cities ≈ 1 call/s = well below burst limit.
+                # (Was 1.0s — tightened to 3.0s after Apr 11 2026 429 cascade.)
+                time.sleep(3.0)
+
+            # Persist the cache after each full cycle if anything was refreshed
+            if _any_new_fetch:
+                self._save_ensemble_cache()
+                _watchdog_cycles_empty = 0
+            else:
+                _watchdog_cycles_empty += 1
+
+            # Watchdog: if all cities are empty OR we've had no new fetches for
+            # multiple full cycles, the weather signal is dark. Log so it shows
+            # in status dashboards and post-mortem audits.
+            if not self._last_ensemble:
+                logging.warning(
+                    "WeatherEngine WATCHDOG: 0 cities have ensemble data after fetch cycle "
+                    "— weather signal is fully dark")
+            elif _watchdog_cycles_empty >= 2:
+                _age_min = (time.time() - self._last_ensemble_saved_at) / 60.0 \
+                    if self._last_ensemble_saved_at else -1
+                logging.warning(
+                    "WeatherEngine WATCHDOG: no new fetches for %d cycles "
+                    "(~%d min). Using stale cache (%.1f min old).",
+                    _watchdog_cycles_empty,
+                    _watchdog_cycles_empty * WEATHER_POLL_INTERVAL // 60,
+                    _age_min)
 
             self._stop.wait(WEATHER_POLL_INTERVAL)
