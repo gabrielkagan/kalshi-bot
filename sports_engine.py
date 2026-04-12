@@ -982,8 +982,12 @@ _ESPN_TO_KALSHI: Dict[str, str] = {
     "GS": "GSW",   # Golden State Warriors (NBA)
     "NY": "NYK",   # New York Knicks (NBA) — NYR/NYI handled by series_ticker filter
     "NO": "NOP",   # New Orleans Pelicans (NBA)
-    "LA": "LAK",   # Los Angeles Kings (NHL)
     "SA": "SAS",   # San Antonio Spurs (NBA)
+    "CHW": "CWS",  # Chicago White Sox (MLB) — ESPN CHW, Kalshi CWS
+    "ARI": "AZ",   # Arizona Diamondbacks (MLB) — ESPN ARI, Kalshi AZ
+    "OAK": "ATH",  # Athletics (MLB) — ESPN OAK, Kalshi ATH (Sacramento rebrand)
+    # Note: "LA" NOT mapped — Kalshi uses "LA" for Kings (NHL). LAK expansion
+    # would break event ticker substring matching against "LAVAN" etc.
 }
 
 
@@ -1114,6 +1118,11 @@ class SportsEngine:
         games = self._espn.poll_all_leagues()
         if not games:
             return
+        _live_games = sum(1 for g in games.values() if g.game_status == "live")
+        _pre_games = sum(1 for g in games.values() if g.game_status == "pre")
+        if _live_games > 0:
+            logging.info("SportsEngine: ESPN returned %d games (%d live, %d pre)",
+                         len(games), _live_games, _pre_games)
 
         # 2b. One-time load of already-settled game IDs from DB
         if not self._startup_loaded:
@@ -1312,8 +1321,8 @@ class SportsEngine:
                 )
 
         if live_count > 0:
-            logging.debug("SportsEngine: %d live games, %d signals",
-                          live_count, signal_count)
+            logging.info("SportsEngine tick: %d live games, %d signals",
+                         live_count, signal_count)
 
     def _try_capture_pregame(self, game: GameState) -> None:
         """Capture pregame Kalshi prices before game starts.
