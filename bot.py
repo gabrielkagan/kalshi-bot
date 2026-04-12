@@ -12542,6 +12542,46 @@ class OrderExecutor:
             self._recent_taker_tickers[ticker] = time.time()
         return result
 
+    def _execute_weather_no_taker(self, candidate: Dict) -> Optional[Dict]:
+        """Weather NO-side IOC execution. Direct taker, no maker, no escalation.
+
+        Weather NO books are structurally empty — resting NO asks at 30-40c don't
+        exist. Maker-first always cancels. 1 contract at ~35c makes taker fee
+        negligible vs the 30%+ assumed-prob edge.
+        """
+        ticker = candidate["ticker"]
+        asset = candidate["asset"]
+        best_ask = candidate["best_yes_ask"]  # NO price for NO-side
+        count = candidate["position_size"]     # Always 1
+
+        # Ticker cooldown (shared with all products)
+        cooldown_ts = self._recent_taker_tickers.get(ticker)
+        if cooldown_ts is not None:
+            _cd_remaining = IOC_TICKER_COOLDOWN - (time.time() - cooldown_ts)
+            if _cd_remaining > 0:
+                logging.info("WEATHER_NO_TAKER: %s cooldown %.0fs remaining", ticker, _cd_remaining)
+                return None
+
+        candidate["entry_path"] = "weather_no_taker"
+
+        logging.info(
+            "WEATHER_NO_TAKER: %s %dx@%dc edge=%.2f%% prob=%.0f%% stc=%.0fs",
+            ticker, count, best_ask,
+            candidate.get("fee_adjusted_edge", 0) * 100,
+            candidate.get("calibrated_prob", 0) * 100,
+            candidate.get("seconds_to_close", 0))
+
+        if _TELEGRAM:
+            _TELEGRAM.send(
+                f"\u2601\ufe0f WX NO: {asset} {count}x@{best_ask}c "
+                f"edge={candidate.get('fee_adjusted_edge', 0):.2%} "
+                f"stc={candidate.get('seconds_to_close', 0) / 3600:.0f}h")
+
+        result = self._submit_taker(candidate)
+        if result is None:
+            self._recent_taker_tickers[ticker] = time.time()
+        return result
+
     # ── Public interface ──────────────────────────────────────────────────
 
     def execute(self, candidate: Dict) -> Optional[Dict]:
@@ -12642,6 +12682,15 @@ class OrderExecutor:
                 and HOURLY_TAKER_ONLY
                 and candidate.get("strategy") != "hourly_dc"):
             return self._execute_hourly_taker(candidate)
+
+        # ── WEATHER NO TAKER-ONLY PATH ──
+        # Weather NO orderbooks are structurally empty — nobody posts resting NO
+        # asks at 30-40c. Maker-first always cancels unfilled after escalation
+        # timeout (3/3 canceled, 0% fill rate, Apr 12 2026). Direct IOC at ask.
+        # 1 contract × 35c = $0.35 cost; ~30% assumed edge makes taker fee trivial.
+        if (candidate.get("product_type") == "weather"
+                and candidate.get("side") == "no"):
+            return self._execute_weather_no_taker(candidate)
 
         # Gate 1: Per-asset lock for maker-first assets only.
         # Taker-first (SOL): IOC resolves synchronously (<1s), no concurrent order risk.
@@ -17870,6 +17919,101 @@ class MainLoop:
                     self.state.conn.commit()
             except Exception:
                 logging.warning("position_price_monitor failed", exc_info=True)
+
+        # ── Weather position price monitor (REST, 15-min cadence) ─────────
+        # Separate from 15M PPO: weather holds 18-24h, WS books are empty,
+        # must use REST. Runs every 15 min to match ensemble refresh cadence.
+        # Zero impact on 15M PPO (different cadence, different code path).
+        if POSITION_PRICE_MONITOR_ENABLED:
+            _wx_ppo_now = time.time()
+            if _wx_ppo_now - getattr(self, '_wx_ppo_last_poll', 0) >= 900:
+                try:
+                    _wx_positions = [
+                        p for p in self.state.get_open_positions()
+                        if p.get("status") == "open"
+                        and p.get("ticker", "").startswith("KXHIGH")
+                    ]
+                    if _wx_positions:
+                        _wx_ppo_wrote = False
+                        for pos in _wx_positions:
+                            _wx_ticker = pos["ticker"]
+                            _wx_asset = pos.get("asset", "")
+                            try:
+                                _wx_mkt = self.client.get_market(_wx_ticker)
+                                if not _wx_mkt:
+                                    continue
+                                _wx_yes_ask = _wx_mkt.get("yes_ask")
+                                _wx_yes_bid = _wx_mkt.get("yes_bid")
+                                _wx_no_ask = _wx_mkt.get("no_ask")
+                                _wx_no_bid = _wx_mkt.get("no_bid")
+                                # For NO-side positions, the relevant prices are NO ask/bid.
+                                # Store in yes_ask/yes_bid columns (reuse schema) but tag source.
+                                _wx_display_ask = _wx_no_ask if pos.get("side") == "no" else _wx_yes_ask
+                                _wx_display_bid = _wx_no_bid if pos.get("side") == "no" else _wx_yes_bid
+                                # Get ensemble data for weather-specific context
+                                _wx_city = _wx_asset.replace("_TEMP", "")
+                                _wx_ens = None
+                                if self.weather_engine:
+                                    _wx_ens = self.weather_engine._last_ensemble.get(_wx_city)
+                                _wx_ens_mean = None
+                                _wx_threshold = None
+                                _wx_buffer = None
+                                if _wx_ens and _wx_ens.get("combined_members"):
+                                    _wx_members = _wx_ens["combined_members"]
+                                    _wx_ens_mean = sum(_wx_members) / len(_wx_members)
+                                # Parse threshold from ticker
+                                try:
+                                    _wx_threshold = float(
+                                        self.state.conn.execute(
+                                            "SELECT threshold FROM evaluated_opportunities "
+                                            "WHERE ticker=? AND filter_stage='candidate' LIMIT 1",
+                                            (_wx_ticker,)).fetchone()[0])
+                                except Exception:
+                                    pass
+                                if _wx_ens_mean is not None and _wx_threshold and _wx_threshold > 0:
+                                    _wx_buffer = round(
+                                        (_wx_ens_mean - _wx_threshold) / _wx_threshold * 100, 4)
+                                _wx_stc = None
+                                try:
+                                    _wx_close = _wx_mkt.get("close_time") or _wx_mkt.get("expiration_time")
+                                    if _wx_close:
+                                        _close_dt = datetime.datetime.fromisoformat(
+                                            _wx_close.replace("Z", "+00:00"))
+                                        _wx_stc = (_close_dt - datetime.datetime.now(timezone.utc)).total_seconds()
+                                except Exception:
+                                    pass
+                                _wx_now_str = datetime.datetime.now(timezone.utc).strftime(
+                                    "%Y-%m-%dT%H:%M:%S.%fZ")
+                                self.state.conn.execute(
+                                    """INSERT INTO position_price_observations
+                                       (ticker, asset, observation_time, seconds_to_close,
+                                        spot_price, threshold, spot_buffer_pct,
+                                        yes_ask_cents, yes_bid_cents,
+                                        entry_price_cents, position_count, source)
+                                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                    (_wx_ticker, _wx_asset, _wx_now_str,
+                                     round(_wx_stc, 1) if _wx_stc else None,
+                                     _wx_ens_mean, _wx_threshold, _wx_buffer,
+                                     _wx_display_ask, _wx_display_bid,
+                                     pos.get("avg_price_cents"),
+                                     pos.get("count", 1),
+                                     "rest_weather"))
+                                _wx_ppo_wrote = True
+                                logging.info(
+                                    "WEATHER_PPO: %s %s ask=%s bid=%s ens=%.1fF thresh=%s buf=%s stc=%s",
+                                    _wx_asset, _wx_ticker,
+                                    _wx_display_ask, _wx_display_bid,
+                                    _wx_ens_mean if _wx_ens_mean else 0,
+                                    _wx_threshold,
+                                    f"{_wx_buffer:.3f}%" if _wx_buffer is not None else "N/A",
+                                    f"{_wx_stc/3600:.1f}h" if _wx_stc else "N/A")
+                            except Exception:
+                                logging.warning("WEATHER_PPO: failed for %s", _wx_ticker, exc_info=True)
+                        if _wx_ppo_wrote:
+                            self.state.conn.commit()
+                except Exception:
+                    logging.warning("weather_position_monitor failed", exc_info=True)
+                self._wx_ppo_last_poll = _wx_ppo_now
 
     # ── Run ───────────────────────────────────────────────────────────────
 
