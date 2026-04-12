@@ -17706,9 +17706,9 @@ class MainLoop:
         # deadlocks with supabase_sync reader + settlement writer. PASSIVE
         # checkpoints whatever pages it can without blocking. (Mar 16 2026)
         if now - self._last_wal_checkpoint >= 60.0:
+            self._last_wal_checkpoint = now  # Update BEFORE attempt — prevents hot retry loop
             try:
                 self.state.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                self._last_wal_checkpoint = now
             except Exception:
                 self._db_locked_count += 1
                 logging.debug("WAL checkpoint failed (busy)", exc_info=True)
