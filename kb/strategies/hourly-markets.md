@@ -47,6 +47,21 @@ Hourly data is excluded from 15M CalEngine training (`load_training_data_from_db
 ## Bankroll Isolation
 `HOURLY_BANKROLL_FRACTION = 0.10` — hourly sizes off 10% of total balance. This prevents hourly trading from affecting 15M sizing and limits total hourly exposure.
 
+## NO-Side Verification (Apr 12, 2026)
+Deep analysis of 12,481 settled hourly observations revealed the YES-side 50-59c strategy has essentially no edge (49.9% WR at 50-59c). The model's calibration inverts at hourly timescales — overconfident at high prices, underconfident at low prices.
+
+**Key finding:** The model's NO-side evaluations at 40-54c show statistically significant edge:
+- BTC NO 40-54c: 53.9% WR (n=1,113, z=2.61, p=0.005)
+- Time-split stable: both halves 54.8% WR
+- Model adds value: rejected NO contracts have 47.0% WR (lose money)
+- Multi-asset positive: ETH 55.2%, SOL 56.3%, XRP 73.9% (small n)
+
+**Structural thesis:** Crypto markets have a persistent YES/long bias — retail overprices YES, underpricing NO. The model's vol estimate correctly identifies which near-ATM NO contracts are underpriced.
+
+**Implementation:** `HOURLY_NO_SIDE_LIVE` env var kill switch. Flat 1-contract taker IOC. -$20 cumulative auto-kill. Uses model's actual probability (not assumed — model discrimination is the source of edge).
+
+**IMPORTANT CAVEAT:** Initial analysis incorrectly computed sub-15c YES as 91%+ WR. This was wrong — those were NO-side evaluations where `market_result='yes'` = LOSS. Always check the `side` column when analyzing hourly data.
+
 ## Shadow Configs Killed
 Hourly shadow configs h/j/k killed — all showed ~55% WR, no edge.
 

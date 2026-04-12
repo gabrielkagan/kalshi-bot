@@ -958,7 +958,7 @@ class TestInstrumentationIntegrity:
             stripped = line.strip()
             if "hourly_applied_temp_t=" not in stripped:
                 continue
-            if "=None" in stripped or "candidate.get(" in stripped or "c.get(" in stripped:
+            if "=None" in stripped or "candidate.get(" in stripped or "c.get(" in stripped or "item.get(" in stripped:
                 continue  # hardcoded None or dict reads are fine
             if "excluded." in stripped:
                 continue  # SQL ON CONFLICT excluded pseudo-table references

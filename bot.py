@@ -93,6 +93,18 @@ HOURLY_FIXED_CONTRACTS = 25            # Fixed sizing — bypass Kelly entirely 
 HOURLY_MAX_EDGE = 0.05                 # Reject >5% edge (10%+ zone has 24.2% WR — edge inversion)
 HOURLY_TAKER_ONLY = True               # IOC only — no maker orders, no per-asset lock contention with 15M
 
+# ─── Hourly NO-Side Verification ──────────────────────────────────────────
+# Data: model-flagged BTC NO at 40-54c has 53.9% WR (n=1,113, z=2.61, p=0.005).
+# Model adds value: rejected NO at same prices has 47.0% WR (loses money).
+# Time-split stable: both halves 54.8% WR. Multi-asset: BTC/ETH/SOL/XRP all positive.
+# Structural thesis: crypto long bias overprices YES, underprices NO.
+# Flat 1-contract verification to measure fill rates and live edge persistence.
+HOURLY_NO_SIDE_LIVE = os.environ.get("HOURLY_NO_SIDE_LIVE", "0") == "1"
+HOURLY_NO_MIN_PRICE = 40               # Minimum NO entry price (cents)
+HOURLY_NO_MAX_PRICE = 54               # Maximum NO entry price (cents)
+HOURLY_NO_FIXED_CONTRACTS = 1          # Flat 1-contract — verification mode
+HOURLY_NO_KILL_THRESHOLD = -2000       # Auto-disable if cumulative NO PnL < -$20
+
 # ─── Hourly Decided Contracts (separate from sub-60c, separate kill switch) ──
 # Same DC thesis as 15M but on hourly BTC tickers. Conservative: z≤-4, 93-96c,
 # BTC only, sigma gate blocks cold-RK false signals, 1 trade per window.
@@ -6709,6 +6721,26 @@ class OpportunityScanner:
                             f"(threshold: ${WEATHER_NO_KILL_THRESHOLD/100:.2f})")
             except Exception:
                 pass  # Non-critical
+        # Hourly NO kill switch
+        if HOURLY_NO_SIDE_LIVE:
+            try:
+                _hno_pnl = self._state.conn.execute(
+                    "SELECT COALESCE(SUM(pnl_cents), 0) FROM settled_trades "
+                    "WHERE product_type='hourly' AND side='no'"
+                ).fetchone()[0]
+                if _hno_pnl < HOURLY_NO_KILL_THRESHOLD:
+                    import bot as _self_module
+                    _self_module.HOURLY_NO_SIDE_LIVE = False
+                    logging.error(
+                        "HOURLY_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
+                        _hno_pnl, HOURLY_NO_KILL_THRESHOLD)
+                    if _TELEGRAM:
+                        _TELEGRAM.send(
+                            f"\U0001f6a8 *HOURLY NO-SIDE AUTO-KILLED*\n"
+                            f"Cumulative PnL: ${_hno_pnl/100:.2f} "
+                            f"(threshold: ${HOURLY_NO_KILL_THRESHOLD/100:.2f})")
+            except Exception:
+                pass  # Non-critical
         # Bracket NO kill switch (separate from general weather NO)
         if BRACKET_NO_ENABLED:
             try:
@@ -11948,6 +11980,96 @@ class OpportunityScanner:
                                     ticker, no_price, _wnl_assumed_edge * 100,
                                     stc, no_prob * 100, WEATHER_NO_ASSUMED_PROB * 100)
 
+                # ── Hourly NO-side LIVE candidate ──
+                # Uses the MODEL's no_prob (not assumed — model adds 6.9pp: 53.9% flagged vs 47.0% rejected).
+                # Gate: HOURLY_NO_SIDE_LIVE, NO price 40-54c, model edge positive, not already holding.
+                # Data: z=2.61, time-split stable (54.8% both halves), all assets positive.
+                if (_pt == "hourly"
+                        and HOURLY_NO_SIDE_LIVE
+                        and candidates is not None
+                        and no_price >= HOURLY_NO_MIN_PRICE
+                        and no_price <= HOURLY_NO_MAX_PRICE
+                        and no_fee_adj_edge >= HOURLY_MIN_EDGE_PCT / 100.0):
+                    _hno_cand_dedup = (ticker, "hourly_no_candidate")
+                    if _hno_cand_dedup not in self._eval_opp_seen:
+                        _hno_has_pos = any(
+                            p.get("ticker") == ticker
+                            for p in self._state.get_open_positions())
+                        if not _hno_has_pos:
+                            self._eval_opp_seen.add(_hno_cand_dedup)
+                            _hno_ev = round(
+                                (no_prob * (100 - no_price))
+                                - ((1 - no_prob) * no_price)
+                                - no_fee_1c, 2)
+                            try:
+                                self._state.insert_evaluated_opportunity(
+                                    ticker, item["event_ticker"], asset,
+                                    "candidate",
+                                    spot_price=spot, threshold=threshold,
+                                    volatility=blended_rv, market_price=no_price,
+                                    seconds_to_close=stc,
+                                    calibrated_prob=no_prob,
+                                    edge=no_edge,
+                                    calibration_method=calibration_method,
+                                    fee_adjusted_edge=no_fee_adj_edge,
+                                    breakeven_wr=no_price / 100.0,
+                                    expected_value=_hno_ev,
+                                    vol_regime=item.get("vol_regime", "normal"),
+                                    ask_depth=item.get("ask_depth"),
+                                    best_ask_source=item.get("best_ask_source"),
+                                    position_size=HOURLY_NO_FIXED_CONTRACTS,
+                                    kelly_f=0.0, drawdown_scaler=1.0,
+                                    strategy="hourly_no_live",
+                                    product_type="hourly", side="no",
+                                    raw_prob=1.0 - raw_prob if raw_prob is not None else None,
+                                    hourly_pre_temp_prob=item.get("hourly_pre_temp_prob"),
+                                    hourly_applied_temp_t=item.get("hourly_applied_temp_t"),
+                                    hourly_post_temp_prob=item.get("hourly_post_temp_prob"),
+                                    **item.get("_oft_db", {}),
+                                    **item.get("_shadow_diag", {}))
+                            except Exception:
+                                logging.warning(
+                                    "insert_evaluated_opportunity failed (hourly_no_live)",
+                                    exc_info=True)
+                            candidates.append({
+                                "ticker": ticker,
+                                "event_ticker": item["event_ticker"],
+                                "asset": asset,
+                                "product_type": "hourly",
+                                "side": "no",
+                                "spot": spot,
+                                "threshold": threshold,
+                                "seconds_to_close": round(stc, 1),
+                                "blended_rv": blended_rv,
+                                "calibrated_prob": no_prob,
+                                "z_score": 0.0,
+                                "best_yes_ask": no_price,
+                                "best_ask_source": item.get("best_ask_source"),
+                                "edge": no_edge,
+                                "fee_adjusted_edge": no_fee_adj_edge,
+                                "position_size": HOURLY_NO_FIXED_CONTRACTS,
+                                "kelly_f": 0.0,
+                                "drawdown_scaler": 1.0,
+                                "vol_regime": item.get("vol_regime", "normal"),
+                                "balance_at_scan": item.get("balance"),
+                                "strategy": "hourly_no_live",
+                                "strategy_scores": {},
+                                "ob_snapshot": {},
+                                "calibrated_prob_raw": None,
+                                "ofa_adjustment": 0.0,
+                                "ofa_confidence": "none",
+                                "raw_prob": raw_prob,
+                                "calibration_method": calibration_method,
+                                "old_system_prob": None,
+                                "kalshi_oft_signals": {},
+                                "counterfactual_json": None,
+                            })
+                            logging.info(
+                                "HOURLY_NO_CANDIDATE: %s %s no_price=%dc edge=%.2f%% "
+                                "no_prob=%.1f%% stc=%.0fs",
+                                ticker, asset, no_price, no_fee_adj_edge * 100,
+                                no_prob * 100, stc)
+
                 # Edge filter (same price-dependent schedule, applied to NO price)
                 if _pt == "weather":
                     _no_min_edge = WEATHER_MIN_EDGE_PCT
@@ -12582,6 +12704,51 @@ class OrderExecutor:
             self._recent_taker_tickers[ticker] = time.time()
         return result
 
+    def _execute_hourly_no_taker(self, candidate: Dict) -> Optional[Dict]:
+        """Hourly NO-side IOC execution. 1-contract verification mode.
+
+        Mirrors weather NO taker — direct IOC, no maker, no escalation.
+        Completely isolated from 15M and hourly YES execution paths.
+        """
+        ticker = candidate["ticker"]
+        asset = candidate["asset"]
+        best_ask = candidate["best_yes_ask"]  # NO price for NO-side
+        count = min(candidate["position_size"], HOURLY_NO_FIXED_CONTRACTS)
+
+        # Ticker cooldown
+        cooldown_ts = self._recent_taker_tickers.get(ticker)
+        if cooldown_ts is not None:
+            _cd_remaining = IOC_TICKER_COOLDOWN - (time.time() - cooldown_ts)
+            if _cd_remaining > 0:
+                logging.info("HOURLY_NO_TAKER: %s cooldown %.0fs remaining", ticker, _cd_remaining)
+                return None
+
+        # Concurrent taker cap per asset
+        _concurrent = self._active_taker_count.get(asset, 0)
+        if _concurrent >= MAX_CONCURRENT_TAKER_PER_ASSET:
+            logging.info("HOURLY_NO_TAKER: %s concurrent cap (%d/%d)", asset, _concurrent, MAX_CONCURRENT_TAKER_PER_ASSET)
+            return None
+
+        candidate["entry_path"] = "hourly_no_taker"
+
+        logging.info(
+            "HOURLY_NO_TAKER: %s %s %dx@%dc edge=%.2f%% no_prob=%.1f%% stc=%.0fs",
+            ticker, asset, count, best_ask,
+            candidate.get("fee_adjusted_edge", 0) * 100,
+            candidate.get("calibrated_prob", 0) * 100,
+            candidate.get("seconds_to_close", 0))
+
+        if _TELEGRAM:
+            _TELEGRAM.send(
+                f"HOURLY NO: {asset} {count}x@{best_ask}c "
+                f"edge={candidate.get('fee_adjusted_edge', 0):.2%} "
+                f"stc={candidate.get('seconds_to_close', 0):.0f}s")
+
+        result = self._submit_taker(candidate)
+        if result is None:
+            self._recent_taker_tickers[ticker] = time.time()
+        return result
+
     # ── Public interface ──────────────────────────────────────────────────
 
     def execute(self, candidate: Dict) -> Optional[Dict]:
@@ -12680,8 +12847,16 @@ class OrderExecutor:
         # Exception: hourly DC uses the DC taker path (strategy="hourly_dc"), not the hourly taker.
         if (candidate.get("product_type") == "hourly"
                 and HOURLY_TAKER_ONLY
-                and candidate.get("strategy") != "hourly_dc"):
+                and candidate.get("strategy") != "hourly_dc"
+                and candidate.get("side") != "no"):
             return self._execute_hourly_taker(candidate)
+
+        # ── HOURLY NO TAKER-ONLY PATH ──
+        # Hourly NO-side verification: 1-contract IOC at NO ask price.
+        # Same isolation as hourly YES taker — no per-asset lock, no maker, no escalation.
+        if (candidate.get("product_type") == "hourly"
+                and candidate.get("side") == "no"):
+            return self._execute_hourly_no_taker(candidate)
 
         # ── WEATHER NO TAKER-ONLY PATH ──
         # Weather NO orderbooks are structurally empty — nobody posts resting NO

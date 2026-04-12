@@ -137,7 +137,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 
 ## Project Structure
 
-- `bot.py` — Main bot (~17600 lines, all trading logic)
+- `bot.py` — Main bot (~18300 lines, all trading logic)
 - `analyst.py` — AI analyst system (news sentiment, loss analysis, Telegram alerts)
 - `spx_engine.py` — SPX hourly market engine (Polygon.io price feed, EGARCH, RK, VIX integration)
 - `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
@@ -188,6 +188,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **Overnight discount LIVE:** OVERNIGHT_DISCOUNT_LIVE=True on weekday 04-11 UTC — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
 - **Loss burst cooldown LIVE (Apr 11):** LOSS_COOLDOWN_ENABLED=True, per-asset 2h lockout after any 15M loss. Data: 53/82 losses (30d) in 15 bursts, counterfactual +$441/30d. First-ship is per-asset (conservative); escalate to global if cross-asset correlation persists.
 - **Weather NO-side unblocked (Apr 11):** Live NO candidate block was nested inside broken model-edge gate → 0 trades Apr 4-11. Unnested; should fire on NO≤40c, STC≥16h, assumed-prob 0.70. See kb/failures/weather-no-candidate-never-fires.md
+- **Hourly NO-side verification (Apr 12):** HOURLY_NO_SIDE_LIVE env var kill switch. Data: BTC NO 40-54c has 53.9% WR (n=1,113, z=2.61, p=0.005), time-split stable (54.8% both halves). Model adds value: rejected NO = 47.0% WR. Structural thesis: crypto long bias overprices YES. Flat 1-contract taker-only verification. -$20 cumulative auto-kill.
 - **STC window:** scan 0-900s, core live 0-300s, extended live 300-600s (per-asset higher floors), shadow 600-900s
 - **STC extended zone:** 300-600s live with higher floors — BTC 93c+, ETH 90c+, SOL 95c+, XRP 92c+ (data: 98.8% WR, n=83)
 - **SOL sub-86c gate:** SOL_LOW_ENTRY_STC_GATE=True — blocks SOL ≤85c at STC≥300s (data: 78.3% WR -$289; near-expiry 100% WR preserved)
@@ -201,7 +202,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
 - **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
-- **Tests:** 999 tests across 15+ test files
+- **Tests:** 1037 tests across 15+ test files
 
 ## Key Config Values (bot.py)
 
@@ -261,6 +262,11 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | HOURLY_BANKROLL_FRACTION | 0.10 | Hourly sizes off 10% of balance (like SPX's 0.15) |
 | HOURLY_FIXED_CONTRACTS | 25 | Fixed sizing — bypass Kelly entirely (raised from 10) |
 | HOURLY_MAX_EDGE | 0.05 | Reject >5% edge (10%+ zone has 24.2% WR — edge inversion) |
+| HOURLY_NO_SIDE_LIVE | env var | Kill switch — must be "1" on VPS to trade NO-side (default "0") |
+| HOURLY_NO_MIN_PRICE | 40 | Minimum NO entry price (cents) |
+| HOURLY_NO_MAX_PRICE | 54 | Maximum NO entry price (cents) |
+| HOURLY_NO_FIXED_CONTRACTS | 1 | Flat 1-contract — verification mode |
+| HOURLY_NO_KILL_THRESHOLD | -2000 | Auto-disable if cumulative hourly NO PnL < -$20 |
 | HOURLY_TAKER_ONLY | True | IOC only — no maker orders, no per-asset lock contention with 15M |
 | HOURLY_MARKET_BLEND_W | 0.40 | Optimal Brier per 134K simulation |
 | HOURLY_MIN_ENTRY_PRICE | 50 | Floor for data collection |
@@ -343,6 +349,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | XRP live (was shadow) | **Promoted** — XRP live at 92c+ floor |
 | Weekend edge discount | **Promoted** — live on Sat/Sun (89c+, STC<=600s, no DC overlap); sub-89c/STC>600s shadow |
 | Overnight edge discount | **Promoted** — live on weekday 04-11 UTC (89c+, STC<=600s, no DC overlap); sub-89c/STC>600s shadow |
+| Hourly NO-side (40-54c) | Shadow/Verification — 1-contract flat, model-filtered NO at 40-54c, env var kill switch |
 | Low-price shadow (70-79c) | Shadow — dual-sizing sim (full Kelly vs capped LP_KELLY=0.25, LP_MAX_RISK=0.10) with correlation tracking |
 
 ## Order Execution

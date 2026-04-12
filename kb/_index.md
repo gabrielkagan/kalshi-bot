@@ -1,6 +1,6 @@
 # Kalshi Bot Knowledge Base
 
-Last updated: 2026-04-07 | Articles: 53 | Status: Trimmed
+Last updated: 2026-04-12 | Articles: 54 | Status: Trimmed
 
 ## Usage
 Read this index first before answering any deep question about the bot. Identify relevant articles, read those, then respond. After significant sessions, update articles and this index.
@@ -35,9 +35,10 @@ Read this index first before answering any deep question about the bot. Identify
 - [[strategies/lpne.md]] - LPNE: BTC 80-87c near-expiry (STC<=120s), intercepts at price floor. 97.6% WR on 42 obs, 50ct fixed.
 - [[strategies/bracket-no.md]] - Weather bracket NO: buy NO when YES 88-96c, 91.7% NO settlement rate.
 - [[strategies/overnight-discount.md]] - Overnight/weekend edge discount: 0.6x multiplier, 89c+ live gates.
-- [[strategies/hourly-markets.md]] - Hourly sub-60c: BTC+ETH only, fixed 25ct, T=1.45, taker-only.
+- [[strategies/hourly-markets.md]] - Hourly sub-60c: BTC+ETH only, fixed 25ct, T=1.45, taker-only. NEW: NO-side 40-54c verification (Apr 12).
 
-## Failures (15)
+## Failures (16)
+- [[failures/weather-no-candidate-never-fires.md]] - Weather NO live candidate nested inside broken model-edge gate → 0 trades Apr 4-11. Fixed Apr 11.
 - [[failures/hwm-bugs.md]] - Five HWM/drawdown scaler variants. Recurring bug family (Mar 25-30).
 - [[failures/blr-calibrator.md]] - Broken BLR outputting ~95% constant. Discovery March 25.
 - [[failures/t2-z2-losses.md]] - Two T2_Z2 losses with known root causes. Led to shadow decision.
@@ -45,7 +46,7 @@ Read this index first before answering any deep question about the bot. Identify
 - [[failures/evaluations-sync.md]] - 28-day Supabase sync failure: 32 missing columns, FK, NaN values.
 - [[failures/sol-maker-adverse-selection.md]] - SOL MAKER_PATIENT: 88.1% WR below breakeven, adverse selection.
 - [[failures/regime-cap-discovery.md]] - Capital allocator permanently GREEN, $400 cap throttling all trades.
-- [[failures/loss-clustering.md]] - Mar 31 triple-loss window ($352): BTC+XRP+SOL in same window, worst ever.
+- [[failures/loss-clustering.md]] - Mar 31 triple-loss + Apr 11 30d burst analysis (53/82 losses in bursts) → 2h per-asset cooldown shipped.
 - [[failures/database-contention.md]] - Five SQLite contention incidents (Mar 2-16): busy_timeout, batch commits.
 - [[failures/ioc-subfloor-fill.md]] - IOC fills below asset MIN_ENTRY_PRICE via stale NBBO. Known unfixed.
 - [[failures/dedup-tuple-crash.md]] - Mixed 2/3-tuple sizes in _eval_opp_seen crashed scan loop (Mar 7).
