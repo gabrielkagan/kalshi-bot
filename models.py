@@ -1153,9 +1153,14 @@ class PositionSizer:
                 return
 
         # Spike rejection: skip readings >20% above the last recorded value
-        # EXCEPTION: allow recovery near HWM (settlement timing can crash balance
+        # EXCEPTION 1: allow recovery near HWM (settlement timing can crash balance
         # temporarily, then recovery is rejected as "spike" and history gets stuck).
         # (Learned: $1,377→$1,051→$1,400 recovery rejected, ds=0.50 stuck permanently. Mar 30 2026.)
+        # EXCEPTION 2: after 60 consecutive rejections (~1 min), accept the reading.
+        # A sustained "spike" is reality, not noise. Without this, balance history
+        # gets permanently stuck and drawdown_scaler locks at 0.10 indefinitely.
+        # (Learned: 204+ consecutive rejections, $381→$837 stuck for hours, Apr 13 2026.)
+        _SPIKE_MAX_CONSECUTIVE = 60
         if self._balance_history:
             _, last_balance = self._balance_history[-1]
             if last_balance > 0 and balance_cents > last_balance * 1.20:
@@ -1167,6 +1172,14 @@ class PositionSizer:
                         "(ratio=%.2f, last=%dc +%.0f%%)",
                         balance_cents, hwm, balance_cents / hwm,
                         last_balance, (balance_cents - last_balance) / last_balance * 100)
+                elif self._consecutive_spike_rejections >= _SPIKE_MAX_CONSECUTIVE:
+                    logging.warning(
+                        "DRAWDOWN: spike guard FORCE-ACCEPT after %d consecutive rejections — "
+                        "%dc vs last %dc (+%.0f%%), hwm=%dc. Accepting as new reality.",
+                        self._consecutive_spike_rejections,
+                        balance_cents, last_balance,
+                        (balance_cents - last_balance) / last_balance * 100,
+                        hwm if hwm > 0 else 0)
                 else:
                     self._consecutive_spike_rejections += 1
                     logging.warning(
