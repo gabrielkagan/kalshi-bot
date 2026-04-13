@@ -15155,6 +15155,27 @@ class OrderExecutor:
             f"{'' if is_complete else ' [PARTIAL ' + str(order['filled_so_far']) + '/' + str(order['count']) + ']'}"
         )
 
+        # ── Telegram trade alert ────────────────────────────────────────
+        if _TELEGRAM and is_complete:
+            try:
+                _strategy = candidate.get("strategy") or order.get("entry_path", "core")
+                _product = candidate.get("product_type", "15m")
+                _edge = candidate.get("edge")
+                _edge_str = f" edge={_edge:.2%}" if _edge is not None else ""
+                _prob = candidate.get("calibrated_prob")
+                _prob_str = f" prob={_prob:.1%}" if _prob is not None else ""
+                _stc = order.get("seconds_to_close_at_submit")
+                _stc_str = f" stc={_stc:.0f}s" if _stc is not None else ""
+                _side = order.get("side", "yes").upper()
+                _TELEGRAM.send(
+                    f"TRADE: {order['asset']} {_side} {fill_count}ct @ {fill_price}c "
+                    f"({'taker' if is_taker else 'maker'}) "
+                    f"[{_product}/{_strategy}]{_prob_str}{_edge_str}{_stc_str} "
+                    f"${cost_cents / 100:.2f}",
+                    dedup_key=f"fill_{ticker}")
+            except Exception:
+                logging.debug("Trade telegram alert failed", exc_info=True)
+
         # ── Sub-floor fill alert ────────────────────────────────────────
         # Monitor fills below asset's MIN_ENTRY_PRICE. Position is already
         # recorded above — this is monitoring only, never blocks.
