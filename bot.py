@@ -135,7 +135,17 @@ HOURLY_TEMPERATURE_ENABLED = True     # Toggle for temperature scaling
 HOURLY_CALIBRATION_ENABLED = False    # Disabled: hourly beta_cal is +44pp overconfident (93.2% predicted vs 49.2% actual, n=455). Passthrough+T=1.45 is nearly perfect (-2pp OC).
 HOURLY_MIN_STC_ENTRY = 600             # 10 min minimum (5-10m zone is 56.5% WR — too thin)
 HOURLY_MAX_STC_ENTRY = 1800            # 30 min maximum (25-30m is the sweet spot at 69.4% WR)
-HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP"}  # BTC+ETH only — XRP is 42.9% WR (toxic), SOL marginal
+HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP"}  # YES-side: BTC+ETH only — XRP 42.9% WR (toxic), SOL marginal
+# NO-side asymmetry (Apr 15 data, model-flagged hourly candidates in 40-54c range):
+#   BTC NO: 51.5% WR @ 47.1c avg (+3.9pp vs BE, model adds +7.3pp, n=1041)
+#   ETH NO: 54.7% WR @ 48.4c avg (+5.6pp vs BE, model adds +11.5pp, n=137)
+#   SOL NO: 62.2% WR @ 49.2c avg (+13.0pp vs BE, model adds +17.8pp, n=37)
+#   XRP NO: 53.1% WR @ 50.7c avg (+2.4pp vs BE, model adds +1.7pp, n=32)
+# All four assets show positive model-filtered edge on NO-side — the YES-side toxicity
+# (XRP 42.2% YES WR) is precisely the asymmetry that creates NO-side edge. Structural
+# thesis: crypto long bias overprices YES → NO underpriced. -$20 kill switch bounds
+# downside. Revisit per-asset if fills produce divergent live PnL.
+HOURLY_NO_EXCLUDED_ASSETS = set()     # Empty — all 4 assets eligible on NO-side per data above.
 HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time window (ENB ~1.3)
 
 # ─── Hourly Config A (shadow promotion candidate) ────────────────────────────
@@ -12018,10 +12028,13 @@ class OpportunityScanner:
 
                 # ── Hourly NO-side LIVE candidate ──
                 # Uses the MODEL's no_prob (not assumed — model adds 6.9pp: 53.9% flagged vs 47.0% rejected).
-                # Gate: HOURLY_NO_SIDE_LIVE, NO price 40-54c, model edge positive, not already holding.
+                # Gate: HOURLY_NO_SIDE_LIVE, asset not in HOURLY_NO_EXCLUDED_ASSETS (empty by default
+                # because all 4 assets show positive NO-side model edge — see constant comment),
+                # NO price 40-54c, model edge positive, not already holding.
                 # Data: z=2.61, time-split stable (54.8% both halves), all assets positive.
                 if (_pt == "hourly"
                         and HOURLY_NO_SIDE_LIVE
+                        and asset not in HOURLY_NO_EXCLUDED_ASSETS
                         and candidates is not None
                         and no_price >= HOURLY_NO_MIN_PRICE
                         and no_price <= HOURLY_NO_MAX_PRICE

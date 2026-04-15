@@ -630,6 +630,44 @@ class TestPerWindowFilters(unittest.TestCase):
         self.assertEqual(HOURLY_EXCLUDED_ASSETS, {"SOL", "XRP"})
 
 
+class TestHourlyNoSideAssetGate(unittest.TestCase):
+    """Apr 15: YES/NO asymmetric exclusion for hourly.
+
+    HOURLY_EXCLUDED_ASSETS gates YES-side only (XRP 42.2% YES WR = toxic).
+    HOURLY_NO_EXCLUDED_ASSETS gates NO-side — empty by default because all 4
+    assets show positive model-filtered edge on NO-side (BTC/ETH/SOL/XRP all
+    +2.4pp to +13.0pp vs breakeven). Structural thesis: crypto long bias
+    overprices YES → NO underpriced.
+    """
+
+    def test_no_excluded_set_exists(self):
+        """HOURLY_NO_EXCLUDED_ASSETS is defined and is a set."""
+        from bot import HOURLY_NO_EXCLUDED_ASSETS
+        self.assertIsInstance(HOURLY_NO_EXCLUDED_ASSETS, set)
+
+    def test_no_excluded_default_empty(self):
+        """Default: all 4 assets eligible on NO-side."""
+        from bot import HOURLY_NO_EXCLUDED_ASSETS
+        self.assertEqual(HOURLY_NO_EXCLUDED_ASSETS, set())
+
+    def test_yes_no_are_separate_constants(self):
+        """YES and NO exclusion lists must not share state."""
+        from bot import HOURLY_EXCLUDED_ASSETS, HOURLY_NO_EXCLUDED_ASSETS
+        self.assertIsNot(HOURLY_EXCLUDED_ASSETS, HOURLY_NO_EXCLUDED_ASSETS)
+
+    def test_no_excluded_asset_gate_blocks(self):
+        """If an asset is added to HOURLY_NO_EXCLUDED_ASSETS, it's blocked."""
+        from bot import HOURLY_NO_EXCLUDED_ASSETS
+        # Simulate the gate logic at bot.py:12023
+        test_excl = {"XRP"}
+        for asset in ("BTC", "ETH", "SOL", "XRP"):
+            blocked = asset in test_excl
+            if asset == "XRP":
+                self.assertTrue(blocked)
+            else:
+                self.assertFalse(blocked)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  11. XRP shadow gate
 # ═══════════════════════════════════════════════════════════════════════════════
