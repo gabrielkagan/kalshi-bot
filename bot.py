@@ -14838,6 +14838,39 @@ class OrderExecutor:
         price = candidate["best_yes_ask"]
         balance = candidate["balance_at_scan"]
 
+        # ── Option X: surgical sub-floor defense (Apr 15) ─────────────────
+        # Kalshi IOC matches at BEST available price regardless of limit.
+        # When quoted best_ask has phantom depth (0 contracts visible) and
+        # real liquidity sits lower, the IOC sweeps — BTC Apr 13 submitted
+        # at limit=90c, filled at VWAP 54c via 40/50/62c resting sellers.
+        # Kalshi IOC auto-cancels unfilled remainder ($0 charge), so size
+        # clamping is safe. Applied only when we have orderbook-source data;
+        # NBBO fallback (~92% of IOCs) has no depth info → log for forensics.
+        # See kb/failures/ioc-subfloor-fill.md.
+        _ask_src = candidate.get("best_ask_source")
+        _ob_snap = candidate.get("ob_snapshot") or {}
+        _ask_depth = _ob_snap.get("ask_depth")
+        if _ask_src == "orderbook" and isinstance(_ask_depth, int):
+            if _ask_depth == 0:
+                logging.warning(
+                    "IOC_ABORT_PHANTOM: %s %dc count=%d ask_depth=0 (orderbook-confirmed) "
+                    "— refusing IOC to prevent ladder sweep",
+                    ticker, price, count)
+                self._session_ioc_unfilled += 1
+                return None
+            if _ask_depth < count:
+                logging.warning(
+                    "IOC_SIZE_CLAMP: %s %dc count %d -> %d (best_ask_depth=%d, asset=%s)",
+                    ticker, price, count, _ask_depth, _ask_depth,
+                    candidate.get("asset", "?"))
+                count = _ask_depth
+                candidate["position_size"] = count  # downstream logging consistency
+        elif _ask_src == "market_nbbo":
+            logging.info(
+                "IOC_BLIND_SUBMIT: %s %dc count=%d asset=%s (NBBO fallback — no depth)",
+                ticker, price, count, candidate.get("asset", "?"))
+        # ── end Option X ──────────────────────────────────────────────────
+
         client_oid = str(uuid.uuid4())
 
         # Persist before submission

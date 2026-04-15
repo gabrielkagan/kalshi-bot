@@ -500,6 +500,130 @@ class TestIOCBehavior(unittest.TestCase):
         ex._state.mark_order_status.assert_called()
 
 
+class TestIOCSubFloorDefense(unittest.TestCase):
+    """Option X (Apr 15): defensive size clamp at _submit_taker against
+    phantom top-of-book ladder sweeps.
+
+    Guards against: BTC Apr 13 case — IOC submitted at 90c with 0 depth
+    at quoted ask swept through lower resting sellers (40/50/62c), VWAP 54c,
+    well below BTC_MIN_ENTRY_PRICE=88. See kb/failures/ioc-subfloor-fill.md.
+
+    Kalshi IOC partial-fills and auto-cancels unfilled remainder ($0 charge),
+    so clamping count to visible depth is safe.
+    """
+
+    def _make_ex(self):
+        ex = _make_executor()
+        ex._session_ioc_unfilled = 0
+        return ex
+
+    def test_orderbook_phantom_depth_aborts(self):
+        """best_ask_source='orderbook' + ask_depth=0 → ABORT, no API call."""
+        ex = self._make_ex()
+        cand = _make_candidate(
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 0},
+        )
+
+        result = ex._submit_taker(cand)
+
+        self.assertIsNone(result)
+        ex._client.place_order.assert_not_called()
+        self.assertEqual(ex._session_ioc_unfilled, 1)
+
+    def test_orderbook_sufficient_depth_no_clamp(self):
+        """best_ask_source='orderbook' + ask_depth >= count → no clamp, submit as-is."""
+        ex = self._make_ex()
+        ex._client.place_order.return_value = {
+            "order": {"order_id": "ord-a", "remaining_count": 0, "fill_count": 5}
+        }
+        ex._client.get_fills.return_value = {"fills": [
+            {"order_id": "ord-a", "trade_id": "t1", "count": 5, "price": 92}
+        ]}
+        cand = _make_candidate(
+            position_size=5,
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 50},
+        )
+
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=5):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+
+        # Verify submitted count was unchanged
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 5)
+
+    def test_orderbook_partial_depth_clamps(self):
+        """best_ask_source='orderbook' + ask_depth=3 < count=10 → clamp to 3."""
+        ex = self._make_ex()
+        ex._client.place_order.return_value = {
+            "order": {"order_id": "ord-c", "remaining_count": 0, "fill_count": 3}
+        }
+        ex._client.get_fills.return_value = {"fills": [
+            {"order_id": "ord-c", "trade_id": "t2", "count": 3, "price": 92}
+        ]}
+        cand = _make_candidate(
+            position_size=10,
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 3},
+        )
+
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=3):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 3)
+        # candidate position_size is also updated for consistent downstream logging
+        self.assertEqual(cand["position_size"], 3)
+
+    def test_nbbo_source_proceeds_without_clamp(self):
+        """best_ask_source='market_nbbo' → no clamp, no abort, just forensic log."""
+        ex = self._make_ex()
+        ex._client.place_order.return_value = {
+            "order": {"order_id": "ord-n", "remaining_count": 0, "fill_count": 6}
+        }
+        ex._client.get_fills.return_value = {"fills": [
+            {"order_id": "ord-n", "trade_id": "t3", "count": 6, "price": 90}
+        ]}
+        cand = _make_candidate(
+            position_size=6,
+            best_ask_source="market_nbbo",
+            ob_snapshot={"ask_depth": 0},  # NBBO source doesn't have real depth
+        )
+
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=6):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 6)
+        self.assertEqual(ex._session_ioc_unfilled, 0)
+
+    def test_missing_source_proceeds_unchanged(self):
+        """No best_ask_source field (back-compat) → behaves as pre-Option-X."""
+        ex = self._make_ex()
+        ex._client.place_order.return_value = {
+            "order": {"order_id": "ord-m", "remaining_count": 0, "fill_count": 5}
+        }
+        ex._client.get_fills.return_value = {"fills": [
+            {"order_id": "ord-m", "trade_id": "t4", "count": 5, "price": 92}
+        ]}
+        cand = _make_candidate(position_size=5)  # no best_ask_source
+
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=5):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 5)
+
+
 class TestGhostFillProtection(unittest.TestCase):
     """Ghost fill detection layers A and B."""
 
