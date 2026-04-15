@@ -12754,13 +12754,19 @@ class OrderExecutor:
     def execute(self, candidate: Dict) -> Optional[Dict]:
         """Always submit maker order. Escalation to taker happens in tick()."""
         # Observation safety belt — should never reach here for obs-only types
-        # Exception: weather NO-side bypasses observation_only when WEATHER_NO_SIDE_LIVE=True
+        # Exceptions:
+        #   - weather NO-side bypasses observation_only when WEATHER_NO_SIDE_LIVE=True
+        #   - hourly NO-side bypasses observation_only when HOURLY_NO_SIDE_LIVE=True
+        #     (NO-side verification runs independently of the YES-side kill switch)
         _exec_cfg = get_market_config(candidate.get("product_type"))
         if _exec_cfg.observation_only:
             _is_weather_no_live = (candidate.get("product_type") == "weather"
                                   and candidate.get("side") == "no"
                                   and WEATHER_NO_SIDE_LIVE)
-            if not _is_weather_no_live:
+            _is_hourly_no_live = (candidate.get("product_type") == "hourly"
+                                 and candidate.get("side") == "no"
+                                 and HOURLY_NO_SIDE_LIVE)
+            if not (_is_weather_no_live or _is_hourly_no_live):
                 logging.error("SAFETY: %s candidate reached execute() — should never happen. Ticker=%s",
                               _exec_cfg.product_type, candidate.get("ticker"))
                 return None
