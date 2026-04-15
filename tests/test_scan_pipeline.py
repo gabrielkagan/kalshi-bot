@@ -112,6 +112,55 @@ class TestParseThreshold(unittest.TestCase):
         self.assertEqual(OpportunityScanner._parse_threshold(market), 42000.0)
 
 
+class TestThresholdSanityGate(unittest.TestCase):
+    """Defensive gate against upstream threshold corruption.
+
+    Guards against: Apr 13 2026 Kalshi API bug that returned floor_strike
+    scaled by 10^-1 (XRP) or 10^-4 (BTC/ETH) for 6 crypto 15M markets.
+    Model saturated to prob=0.97 on those garbage thresholds, resulting
+    in 2 live losses (XRP -$49.98, BTC -$3.26).
+
+    Gate formula: reject if abs(threshold - spot) / spot > 0.05.
+    Max |thr/spot - 1| on 1,795 historical wins was 1.59% — 3x safety margin.
+    See kb/failures/apr13-threshold-corruption.md.
+    """
+
+    def _ratio(self, threshold, spot):
+        return abs(threshold - spot) / spot
+
+    def test_apr13_xrp_bug_triggers_gate(self):
+        """XRP case: threshold=0.13469, spot=1.3401 (÷10 scaling) → ratio=0.899."""
+        self.assertGreater(self._ratio(0.13469, 1.3401), 0.05)
+
+    def test_apr13_btc_bug_triggers_gate(self):
+        """BTC case: threshold=7.243729, spot=72022.32 (÷10000 scaling) → ratio~=0.9999."""
+        self.assertGreater(self._ratio(7.243729, 72022.32), 0.05)
+
+    def test_apr13_eth_bug_triggers_gate(self):
+        """ETH case: threshold=0.221499, spot=2207.54 (÷10000 scaling) → ratio~=0.9999."""
+        self.assertGreater(self._ratio(0.221499, 2207.54), 0.05)
+
+    def test_normal_btc_passes(self):
+        """Normal BTC: threshold 72437, spot 72022 → ratio 0.58%."""
+        self.assertLess(self._ratio(72437.29, 72022.32), 0.05)
+
+    def test_normal_xrp_passes(self):
+        """Normal XRP: threshold 1.3469, spot 1.3401 → ratio 0.51%."""
+        self.assertLess(self._ratio(1.3469, 1.3401), 0.05)
+
+    def test_historical_max_win_ratio_passes(self):
+        """Max |thr/spot - 1| observed in 1,795 wins was 1.588% — must pass gate."""
+        self.assertLess(self._ratio(1.0 + 0.01588, 1.0), 0.05)
+
+    def test_boundary_just_over(self):
+        """Ratio just above 5% should trigger gate."""
+        self.assertGreater(self._ratio(1.0501, 1.0), 0.05)
+
+    def test_boundary_just_under(self):
+        """Ratio just below 5% should pass."""
+        self.assertLess(self._ratio(1.0499, 1.0), 0.05)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  2. Static helper — _parse_weather_market_info
 # ═══════════════════════════════════════════════════════════════════════════════

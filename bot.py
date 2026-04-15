@@ -7034,6 +7034,38 @@ class OpportunityScanner:
                 if threshold is None:
                     continue
 
+                # Threshold sanity gate — defensive against upstream data corruption.
+                # On 2026-04-13 15:00-15:35 UTC, Kalshi API returned floor_strike values
+                # scaled by 10^-1 (XRP) or 10^-4 (BTC/ETH) for 6 crypto 15M markets,
+                # causing 2 live trades (XRP -$49.98, BTC -$3.26) to fill on garbage
+                # probabilities (model saturated to 0.97). Max |thr/spot - 1| observed
+                # in 1,795 historical wins is 1.59% — 0.05 is 3x safety margin.
+                # See kb/failures/apr13-threshold-corruption.md.
+                # Only price-strike products; weather thresholds are °F, not price.
+                if _pt in ("15m", "hourly", "spx_hourly") and spot > 0 and threshold > 0:
+                    _thr_ratio = abs(threshold - spot) / spot
+                    if _thr_ratio > 0.05:
+                        logging.warning(
+                            "THRESHOLD_IMPLAUSIBLE: %s threshold=%.6f spot=%.4f ratio=%.2f%% "
+                            "raw_floor_strike=%r yes_sub_title=%r",
+                            ticker, threshold, spot, _thr_ratio * 100,
+                            mkt.get("floor_strike"), mkt.get("yes_sub_title"))
+                        _dedup_key_ti = (ticker, "threshold_implausible")
+                        if _dedup_key_ti not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dedup_key_ti)
+                            try:
+                                self._state.insert_evaluated_opportunity(
+                                    ticker=ticker,
+                                    event_ticker=window.get("event_ticker", ""),
+                                    asset=asset, product_type=_pt,
+                                    filter_stage="threshold_implausible",
+                                    rejection_reason=f"|thr-spot|/spot={_thr_ratio:.4f} > 0.05",
+                                    spot_price=spot, threshold=threshold,
+                                )
+                            except Exception:
+                                logging.debug("threshold_implausible log failed", exc_info=True)
+                        continue
+
                 # Early NBBO price filter for multi-strike events (SPX: 60-400 markets).
                 # Skip probability computation for strikes clearly outside entry range.
                 if _pt in ("spx_hourly", "hourly", "weather"):
