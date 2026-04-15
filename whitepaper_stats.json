@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 123006,
+  "total_evaluated": 123016,
   "filter_breakdown": {
     "candidate": 3983,
     "dc_shadow_t1b_93c": 23,
@@ -17,7 +17,7 @@
     "decided_contract_t2_z25": 113,
     "dip_addon_shadow": 29,
     "eth_low_floor_shadow": 1032,
-    "floor_raise_shadow": 3834,
+    "floor_raise_shadow": 3835,
     "golden_hour_shadow": 193,
     "hourly_asset_excluded": 134,
     "hourly_config_a": 1484,
@@ -38,19 +38,19 @@
     "hourly_observation_v2": 6048,
     "hourly_timing_restricted": 1550,
     "hourly_window_limit": 595,
-    "insufficient_edge": 39496,
-    "low_price_shadow": 1696,
-    "no_side_price_shadow_no_xrp": 3006,
+    "insufficient_edge": 39497,
+    "low_price_shadow": 1697,
+    "no_side_price_shadow_no_xrp": 3007,
     "no_side_price_shadow_xrp": 637,
     "no_side_shadow": 92,
     "observation_trade": 83,
     "overnight_discount": 77,
     "overnight_discount_shadow": 257,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 20589,
+    "price_out_of_range": 20590,
     "price_shadow": 52,
-    "price_shadow_no_xrp": 3092,
-    "price_shadow_xrp": 1215,
+    "price_shadow_no_xrp": 3095,
+    "price_shadow_xrp": 1216,
     "relaxed_edge_shadow": 863,
     "single_asset_selection": 5,
     "sol_high_edge_shadow": 177,
@@ -85,7 +85,7 @@
     "weather_shadow_capped30": 35,
     "weather_shadow_capped30_short_stc": 2,
     "weather_shadow_short_stc": 8,
-    "weather_timing_restricted": 827,
+    "weather_timing_restricted": 828,
     "weekend_discount": 198,
     "weekend_discount_shadow": 241,
     "xrp_shadow": 126,
@@ -155,5 +155,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-15",
-  "generated_at": "2026-04-15T15:02:32Z"
+  "generated_at": "2026-04-15T15:10:43Z"
 }
