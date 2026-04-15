@@ -14840,6 +14840,7 @@ class OrderExecutor:
             "ticker": ticker,
             "event_ticker": candidate["event_ticker"],
             "asset": candidate["asset"],
+            "side": _side,
             "price_cents": price,
             "count": count,
             "is_taker": True,
@@ -14920,7 +14921,7 @@ class OrderExecutor:
                 ticker=ticker,
                 event_ticker=candidate["event_ticker"],
                 asset=candidate["asset"],
-                side="yes",
+                side=_side,
                 count=count,
                 price_cents=price,
                 strategy=candidate.get("strategy"),
@@ -14958,12 +14959,14 @@ class OrderExecutor:
                 for _pos in _pos_resp["market_positions"]:
                     if _pos.get("ticker") == ticker:
                         _pos_count = fp_str_to_int(_pos.get("position_fp")) or (_pos.get("position") or 0)
-                        if _pos_count > 0:
+                        if _pos_count != 0:
+                            _ghost_side = "yes" if _pos_count > 0 else "no"
+                            _pos_abs = abs(_pos_count)
                             _pos_cost_d = _pos.get("market_exposure_dollars")
                             _pos_cost = dollars_str_to_cents(_pos_cost_d) if _pos_cost_d else (_pos.get("market_exposure") or 0)
-                            _pos_avg = _pos_cost // _pos_count if _pos_count else price
+                            _pos_avg = _pos_cost // _pos_abs if _pos_abs else price
                             logging.error(
-                                f"GHOST_FILL_DETECTED_VIA_POSITIONS: {ticker} "
+                                f"GHOST_FILL_DETECTED_VIA_POSITIONS: {ticker} side={_ghost_side} "
                                 f"fill polling found nothing, remaining_count={remaining_count}, "
                                 f"but positions API shows {_pos_count} contracts "
                                 f"(cost={_pos_cost}¢, avg={_pos_avg}¢)")
@@ -14971,8 +14974,8 @@ class OrderExecutor:
                                 ticker=ticker,
                                 event_ticker=candidate["event_ticker"],
                                 asset=candidate["asset"],
-                                side="yes",
-                                count=_pos_count,
+                                side=_ghost_side,
+                                count=_pos_abs,
                                 price_cents=_pos_avg,
                                 strategy=candidate.get("strategy"),
                                 seconds_to_close=order_info.get("seconds_to_close_at_submit"),
@@ -14991,7 +14994,7 @@ class OrderExecutor:
                             self._state.mark_order_status(order_id, "filled")
                             if candidate.get("entry_path") != "confirmation_addon":
                                 self._session_ioc_fills += 1
-                            order_info["filled_count"] = _pos_count  # Ghost fill from positions API
+                            order_info["filled_count"] = _pos_abs  # Ghost fill from positions API
                             return order_info
         except Exception as e:
             logging.warning(f"Ghost fill positions API check failed for {ticker}: {e}")
@@ -15056,8 +15059,14 @@ class OrderExecutor:
             fill_count = remaining
         else:
             fill_count = raw_fill_count
-        fill_price_d = fill.get("yes_price_dollars")
-        fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("yes_price") or order["price_cents"])
+        # For NO-side orders, Kalshi returns yes_price as 100-no_price (YES-equivalent),
+        # which is NOT the cost paid. Read no_price_dollars/no_price for NO fills.
+        if order.get("side") == "no":
+            fill_price_d = fill.get("no_price_dollars")
+            fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("no_price") or order["price_cents"])
+        else:
+            fill_price_d = fill.get("yes_price_dollars")
+            fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("yes_price") or order["price_cents"])
 
         # Track cumulative fills for partial fill detection
         order["filled_so_far"] = min(
