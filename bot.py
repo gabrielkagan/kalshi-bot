@@ -7041,8 +7041,12 @@ class OpportunityScanner:
                 # probabilities (model saturated to 0.97). Max |thr/spot - 1| observed
                 # in 1,795 historical wins is 1.59% — 0.05 is 3x safety margin.
                 # See kb/failures/apr13-threshold-corruption.md.
-                # Only price-strike products; weather thresholds are °F, not price.
-                if _pt in ("15m", "hourly", "spx_hourly") and spot > 0 and threshold > 0:
+                #
+                # 15M ONLY — hourly/spx_hourly are multi-strike ladders where strikes
+                # legitimately span ±5% around spot. Early NBBO price filter (above)
+                # already rejects out-of-range hourly strikes. Applying this gate to
+                # hourly blocked 319 legit candidates in 2h after Apr 15 deploy.
+                if _pt == "15m" and spot > 0 and threshold > 0:
                     _thr_ratio = abs(threshold - spot) / spot
                     if _thr_ratio > 0.05:
                         logging.warning(
