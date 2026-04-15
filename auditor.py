@@ -982,15 +982,37 @@ def check_edge_trend(db: sqlite3.Connection, verbose: bool) -> list[tuple[str, s
 
 
 def check_hourly_live_health(db, verbose):
-    """Hourly live: WR, constraint violations, PnL monitoring."""
+    """Hourly live: WR, constraint violations, PnL monitoring.
+
+    Constraints split by side (YES/NO asymmetry, commit ca89d7b 2026-04-15):
+    - YES-side: BTC+ETH only, entry 50-59c, count=25 (HOURLY_FIXED_CONTRACTS).
+      Excluded: SOL (marginal), XRP (42.2% YES WR = toxic).
+    - NO-side: all 4 assets eligible (HOURLY_NO_EXCLUDED_ASSETS=set()),
+      entry 40-54c, count=1 (HOURLY_NO_FIXED_CONTRACTS verification).
+      All assets show positive model edge on NO-side per Apr 15 audit.
+    """
     alerts = []
     try:
         # Check for constraint violations in last 24h
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         violations = db.execute(
-            "SELECT ticker, asset, entry_price_cents, count "
+            "SELECT ticker, asset, side, entry_price_cents, count "
             "FROM settled_trades WHERE product_type='hourly' AND settled_at > ? "
-            "AND (asset NOT IN ('BTC','ETH') OR entry_price_cents > 59 OR count != 10)",
+            "AND ("
+            # YES-side constraints
+            "  (side='yes' AND ("
+            "    asset NOT IN ('BTC','ETH') OR "
+            "    entry_price_cents < 50 OR entry_price_cents > 59 OR "
+            "    count != 25"
+            "  ))"
+            "  OR "
+            # NO-side constraints (all 4 assets, 40-54c, count=1)
+            "  (side='no' AND ("
+            "    asset NOT IN ('BTC','ETH','SOL','XRP') OR "
+            "    entry_price_cents < 40 OR entry_price_cents > 54 OR "
+            "    count != 1"
+            "  ))"
+            ")",
             (cutoff,),
         ).fetchall()
         if violations:
@@ -998,7 +1020,8 @@ def check_hourly_live_health(db, verbose):
                 "hourly_constraint_violation",
                 "hourly_violation_24h",
                 f"🚨 *AUDITOR ALERT: Hourly Constraint Violation*\n\n"
-                f"{len(violations)} trades violating constraints (wrong asset, price>59c, or size!=10).\n"
+                f"{len(violations)} trades violating constraints "
+                f"(YES: BTC/ETH 50-59c ct=25; NO: any asset 40-54c ct=1).\n"
                 f"First: {dict(violations[0]) if violations else 'N/A'}",
             ))
         # Rolling 20-trade WR
