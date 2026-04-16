@@ -18166,14 +18166,17 @@ class MainLoop:
 
                         if _ppo_ticker not in self._exit_signal_fired:
                             _exit_signal = None
-                            # Signal 1: buffer below -0.10%
+                            # Signal 1: buffer below -0.10% (high precision, 68%)
                             if _ppo_buffer < -0.10:
                                 _exit_signal = "buffer_below_-0.10"
-                            # Signal 2: >50% of last 30 obs negative
-                            elif len(hist) >= 30:
-                                _neg_frac = sum(1 for b in hist[-30:] if b < 0) / 30.0
-                                if _neg_frac > 0.50:
-                                    _exit_signal = "pct_negative_50"
+                            # Signal 2: buffer below -0.05% with STC > 150s gate
+                            # Best net benefit (+$383/10d), catches 77% of losses,
+                            # kills only 1.2% of wins. SOL uses -0.10% (wider
+                            # threshold due to higher volatility / false exit rate).
+                            elif _ppo_stc is not None and _ppo_stc > 150:
+                                _exit_thresh = -0.10 if _ppo_asset == "SOL" else -0.05
+                                if _ppo_buffer < _exit_thresh:
+                                    _exit_signal = f"buffer_below_{_exit_thresh:.2f}_stc_gt_150"
 
                             if _exit_signal:
                                 self._exit_signal_fired.add(_ppo_ticker)
