@@ -62,7 +62,7 @@ Phase A progress:
 - ✅ **A9 — `?view=public` toggle** (`gabekagan/dashboard/index.html` commit pending push). CSS-hides `.shadow-panel`, `.research-panel`, `#orderCell`, `#calRegistryCell`, `[id^="exec"]`, `[id$="ShadowBody"]`. **Not actually private** — raw JSONB still flows to client. True privacy comes in Phase B4 via separate sanitized row.
 - ⏳ **A1 — spx_harrv bankroll_cents** — migration SQL ready at `scripts/supabase_migration_008_harrv_bankroll.sql`. Blocked: Supabase DDL requires UI paste or DB password (service key alone is insufficient for PostgREST DDL).
 - ⏳ **A5 — additional dead-key deletes** — deferred pending per-key verification via the protocol in [[concepts/agent-audit-verification.md]].
-- ⏳ **A6 — duplicate collapse** (`all_products_*` / `regime_*`) — design work.
+- ✅ **A6 — single-scan risk/win/loss** — collapsed 11 redundant SELECTs into 1 (~91% reduction) while preserving the `all_products_*` / `regime_*` wire format. Same output, ~90% less DB work per 30s cycle. No frontend change. See [[concepts/dashboard-snapshot-single-scan.md]].
 - ⏳ **A7 — modularize** — final step once shape is stable.
 
 ## Chosen path (decided 2026-04-18)

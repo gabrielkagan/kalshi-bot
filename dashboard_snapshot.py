@@ -298,34 +298,47 @@ class DashboardSnapshotBuilder:
             snap["recent_trades"] = []
             snap["_snapshot_errors"].append("recent_trades")
 
-        # Section 2: Win/loss counts (15M + all products)
-        try:
-            def _count_wins_losses(rows):
-                w, l = 0, 0
-                for r in rows:
-                    side, result = r["side"], r["market_result"]
-                    if result in ("yes", "all_yes"):
-                        if side == "yes": w += 1
-                        else: l += 1
-                    elif result in ("no", "all_no"):
-                        if side == "no": w += 1
-                        else: l += 1
-                return w, l
+        # Section 2: Win/loss counts + risk metrics — shared single-scan.
+        # Previously: 5 separate SELECTs over settled_trades (15m wins, all wins,
+        # 15m pnl, all pnl, 15m-regime pnl) + 3 daily-aggregate subqueries = ~8 scans
+        # per 30s snapshot. Collapsed to ONE scan; all three scopes bucketed in memory.
+        # Wire format unchanged — frontend reads identical keys.
+        def _count_wins_losses(rows):
+            w, l = 0, 0
+            for r in rows:
+                side, result = r["side"], r["market_result"]
+                if result in ("yes", "all_yes"):
+                    if side == "yes": w += 1
+                    else: l += 1
+                elif result in ("no", "all_no"):
+                    if side == "no": w += 1
+                    else: l += 1
+            return w, l
 
-            # 15M only (primary display)
-            settled_15m = conn.execute(
-                "SELECT side, market_result FROM settled_trades WHERE product_type='15m'"
-            ).fetchall()
+        try:
+            all_settled_rows = conn.execute("""
+                SELECT side, market_result, product_type, settled_at,
+                       DATE(settled_at) AS day,
+                       (pnl_cents - fee_cents) AS net
+                FROM settled_trades
+                ORDER BY settled_at
+            """).fetchall()
+        except Exception:
+            logging.warning("Snapshot: settled_trades single-scan failed", exc_info=True)
+            all_settled_rows = []
+
+        # Bucket once — three scopes read from the same in-memory list
+        settled_15m = [r for r in all_settled_rows if r["product_type"] == "15m"]
+        settled_15m_regime = [r for r in settled_15m
+                              if r["settled_at"] and r["settled_at"] >= CONFIG_REGIME_SINCE]
+
+        try:
             win, loss = _count_wins_losses(settled_15m)
             snap["win_count"] = win
             snap["loss_count"] = loss
             snap["win_rate"] = round(win / (win + loss), 4) if (win + loss) > 0 else 0.0
 
-            # All products (for toggle)
-            all_settled = conn.execute(
-                "SELECT side, market_result FROM settled_trades"
-            ).fetchall()
-            all_win, all_loss = _count_wins_losses(all_settled)
+            all_win, all_loss = _count_wins_losses(all_settled_rows)
             snap["all_products_win_count"] = all_win
             snap["all_products_loss_count"] = all_loss
             snap["all_products_win_rate"] = round(all_win / (all_win + all_loss), 4) if (all_win + all_loss) > 0 else 0.0
@@ -338,15 +351,13 @@ class DashboardSnapshotBuilder:
             snap["all_products_win_rate"] = 0.0
             snap["_snapshot_errors"].append("win_loss_counts")
 
-        # Section 3: Daily P&L (15M only)
+        # Section 3: Daily P&L (15M only) — sum from in-memory bucket
         try:
             today_midnight = now_utc.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-            row = conn.execute(
-                "SELECT COALESCE(SUM(pnl_cents - fee_cents), 0) AS daily FROM settled_trades "
-                "WHERE settled_at >= ? AND product_type='15m'",
-                (today_midnight,),
-            ).fetchone()
-            snap["daily_pnl_cents"] = row["daily"] if row else 0
+            daily_total = sum(r["net"] for r in settled_15m
+                              if r["settled_at"] and r["settled_at"] >= today_midnight
+                              and r["net"] is not None)
+            snap["daily_pnl_cents"] = daily_total
             start_cents = self._ml.sizer.starting_balance_cents
             if start_cents > 0:
                 snap["daily_pnl_pct"] = round(snap["daily_pnl_cents"] / start_cents * 100, 2)
@@ -357,12 +368,10 @@ class DashboardSnapshotBuilder:
             snap["daily_pnl_pct"] = 0.0
             snap["_snapshot_errors"].append("daily_pnl")
 
-        # Section 4: Current streak (15M only) — wins or losses
+        # Section 4: Current streak (15M only) — wins or losses, from in-memory bucket
         try:
-            recent_settled = conn.execute(
-                "SELECT side, market_result FROM settled_trades "
-                "WHERE product_type='15m' ORDER BY settled_at DESC LIMIT 50"
-            ).fetchall()
+            # Last 50 settled trades, reversed (most recent first)
+            recent_settled = settled_15m[-50:][::-1]
             loss_streak = 0
             win_streak = 0
             for r in recent_settled:
@@ -411,18 +420,23 @@ class DashboardSnapshotBuilder:
                         max_dd_cents = dd
                 return round(max_dd_cents / peak_bal * 100, 2) if peak_bal > 0 else 0.0, max_dd_cents
 
-            def _compute_risk_stats(pnl_rows, span_query_filter):
-                nets = [r["net"] for r in pnl_rows]
+            def _compute_risk_stats(rows):
+                """Compute risk stats from a pre-filtered row list. Row must expose
+                'net' (cents) and 'day' (YYYY-MM-DD). Previously issued a second SQL
+                query per call for daily aggregation; now fully in-memory."""
+                nets = [r["net"] for r in rows if r["net"] is not None]
                 n = len(nets)
                 stats = {}
                 if n > 0:
                     total = sum(nets)
-                    # Daily-aggregated Sharpe: group by date, compute daily mean/std, annualize sqrt(365) (crypto trades 24/7)
-                    daily_rows = conn.execute(
-                        "SELECT DATE(settled_at) AS d, SUM(pnl_cents - fee_cents) AS daily_net "
-                        f"FROM settled_trades{span_query_filter} GROUP BY DATE(settled_at) ORDER BY d"
-                    ).fetchall()
-                    daily_nets = [r["daily_net"] for r in daily_rows if r["daily_net"] is not None]
+                    # Daily-aggregated Sharpe — group by day in memory, annualize √365 (crypto trades 24/7)
+                    daily_map = {}
+                    for r in rows:
+                        net = r["net"]
+                        if net is None:
+                            continue
+                        daily_map[r["day"]] = daily_map.get(r["day"], 0) + net
+                    daily_nets = list(daily_map.values())
                     n_days = len(daily_nets)
                     if n_days > 1:
                         d_mean = sum(daily_nets) / n_days
@@ -442,52 +456,35 @@ class DashboardSnapshotBuilder:
                                   "profit_factor": 0, "total_trades": 0})
                 return stats
 
-            # 15M only
-            pnl_15m = conn.execute(
-                "SELECT (pnl_cents - fee_cents) AS net FROM settled_trades WHERE product_type='15m' ORDER BY settled_at"
-            ).fetchall()
-            risk.update(_compute_risk_stats(pnl_15m, " WHERE product_type='15m'"))
-            # True max drawdown from equity curve (peak-to-trough, not just peak-to-now)
+            # 15M only — reuse the in-memory bucket from the single-scan above
+            risk.update(_compute_risk_stats(settled_15m))
             try:
                 start_cents = self._ml.sizer.starting_balance_cents
-                risk["true_max_drawdown_pct"], risk["true_max_drawdown_cents"] = _true_max_drawdown(pnl_15m, start_cents)
+                risk["true_max_drawdown_pct"], risk["true_max_drawdown_cents"] = _true_max_drawdown(
+                    settled_15m, start_cents
+                )
             except Exception:
                 pass
             snap["risk_metrics"] = risk
 
-            # All products (for toggle)
-            all_pnl = conn.execute(
-                "SELECT (pnl_cents - fee_cents) AS net FROM settled_trades"
-            ).fetchall()
+            # All products — bucket already includes everything
             all_risk = {}
             all_risk["max_drawdown_pct"] = risk["max_drawdown_pct"]
             all_risk["max_drawdown_dollars"] = risk["max_drawdown_dollars"]
-            all_risk.update(_compute_risk_stats(all_pnl, ""))
+            all_risk.update(_compute_risk_stats(all_settled_rows))
             snap["all_products_risk_metrics"] = all_risk
 
-            # Regime-filtered metrics (current config only)
+            # Regime-filtered (current config only) — 15m bucket filtered by CONFIG_REGIME_SINCE
             try:
-                settled_15m_regime = conn.execute(
-                    "SELECT side, market_result FROM settled_trades WHERE product_type='15m' AND settled_at >= ?",
-                    (CONFIG_REGIME_SINCE,)
-                ).fetchall()
                 r_win, r_loss = _count_wins_losses(settled_15m_regime)
-                pnl_15m_regime = conn.execute(
-                    "SELECT (pnl_cents - fee_cents) AS net FROM settled_trades "
-                    "WHERE product_type='15m' AND settled_at >= ? ORDER BY settled_at",
-                    (CONFIG_REGIME_SINCE,)
-                ).fetchall()
                 regime_risk = {}
-                regime_risk.update(_compute_risk_stats(
-                    pnl_15m_regime,
-                    f" WHERE product_type='15m' AND settled_at >= '{CONFIG_REGIME_SINCE}'"
-                ))
+                regime_risk.update(_compute_risk_stats(settled_15m_regime))
                 regime_risk["win_count"] = r_win
                 regime_risk["loss_count"] = r_loss
                 regime_risk["win_rate"] = round(r_win / (r_win + r_loss), 4) if (r_win + r_loss) > 0 else 0.0
                 try:
                     regime_risk["true_max_drawdown_pct"], regime_risk["true_max_drawdown_cents"] = _true_max_drawdown(
-                        pnl_15m_regime, self._ml.sizer.starting_balance_cents
+                        settled_15m_regime, self._ml.sizer.starting_balance_cents
                     )
                 except Exception:
                     pass
