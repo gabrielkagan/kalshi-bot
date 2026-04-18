@@ -288,7 +288,7 @@ CREATE TABLE IF NOT EXISTS model_features (
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS dashboard_state (
-    id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),  -- single row
+    id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id IN (1, 2)),  -- id=1 operator, id=2 public
     data JSONB NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -296,8 +296,8 @@ CREATE TABLE IF NOT EXISTS dashboard_state (
 -- Realtime requires FULL replica identity so TOASTed JSONB columns are included
 ALTER TABLE dashboard_state REPLICA IDENTITY FULL;
 
--- Seed the single row
-INSERT INTO dashboard_state (id, data) VALUES (1, '{}')
+-- Seed both rows (operator id=1, public id=2)
+INSERT INTO dashboard_state (id, data) VALUES (1, '{}'), (2, '{}')
 ON CONFLICT (id) DO NOTHING;
 
 -- Enable Realtime on dashboard_state for Phase 4
