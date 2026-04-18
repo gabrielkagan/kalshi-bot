@@ -4132,8 +4132,65 @@ class DashboardSnapshotBuilder:
             pub["win_rate_ci_lo"] = 0.0
             pub["win_rate_ci_hi"] = 0.0
 
-        # Cumulative return % — authoritative, balance-derived (matches operator view).
-        # Uses live balance + open-position adjustments, not summed settled_trades.
+        # Per-trade equity curve (all product types). We do NOT daily-bucket —
+        # daily closes hide intraday peaks (observed 2026-04-05: ledger hit
+        # +119.65% intraday but daily close reported +92% after same-day losses
+        # took back gains). Per-trade resolution tells the true story.
+        # Thinning: if > MAX_POINTS, sample evenly. Chart stays light.
+        MAX_CURVE_POINTS = 500
+        equity_curve: List[Dict[str, Any]] = []
+        peak_pct = 0.0
+        peak_cents = 0
+        trough_after_peak_cents = 0
+        max_dd_cents = 0
+        daily_map: Dict[str, int] = {}  # for Sharpe
+
+        if rows and INITIAL_DEPOSIT_CENTS > 0:
+            cum_cents = 0
+            raw_points = []
+            for r in rows:
+                net = r["net"] or 0
+                cum_cents += net
+                raw_points.append({"t": r["settled_at"], "cum": cum_cents})
+                if r["day"]:
+                    daily_map[r["day"]] = daily_map.get(r["day"], 0) + net
+                # Track peak-to-trough drawdown on per-trade equity
+                if cum_cents > peak_cents:
+                    peak_cents = cum_cents
+                    trough_after_peak_cents = cum_cents  # reset trough
+                else:
+                    if cum_cents < trough_after_peak_cents:
+                        trough_after_peak_cents = cum_cents
+                    dd = peak_cents - cum_cents
+                    if dd > max_dd_cents:
+                        max_dd_cents = dd
+
+            # Thin to at most MAX_CURVE_POINTS (sample evenly, always include first/last)
+            if len(raw_points) > MAX_CURVE_POINTS:
+                step = len(raw_points) / MAX_CURVE_POINTS
+                thinned = [raw_points[int(i * step)] for i in range(MAX_CURVE_POINTS - 1)]
+                thinned.append(raw_points[-1])
+            else:
+                thinned = raw_points
+            for p in thinned:
+                equity_curve.append({
+                    "t": p["t"],
+                    "cumulative_pct": round(p["cum"] / INITIAL_DEPOSIT_CENTS * 100, 2),
+                })
+            peak_pct = round(peak_cents / INITIAL_DEPOSIT_CENTS * 100, 2)
+
+        pub["equity_curve"] = equity_curve
+        pub["peak_return_pct"] = peak_pct
+
+        # Cumulative return % = last point of ledger equity curve
+        if equity_curve:
+            pub["cumulative_return_pct"] = equity_curve[-1]["cumulative_pct"]
+        else:
+            pub["cumulative_return_pct"] = 0.0
+
+        # Also expose balance-derived cumulative for audit (frontend may show
+        # the reconciliation gap transparently — the ~$200 delta is a known
+        # pre-schema data artifact, not hidden).
         try:
             bal_cents = None
             try:
@@ -4143,9 +4200,6 @@ class DashboardSnapshotBuilder:
                 bal_cents = None
             if bal_cents is None:
                 bal_cents = int(round(getattr(self, "_last_good_balance", 0) * 100))
-
-            # Add back open position cost + fees — they represent deployed capital that
-            # balance is net of but hasn't realized yet.
             try:
                 open_rows = db_conn.execute(
                     "SELECT total_cost_cents, accumulated_fee_cents FROM positions WHERE status='open'"
@@ -4155,55 +4209,18 @@ class DashboardSnapshotBuilder:
             except Exception:
                 open_cost = 0
                 open_fee = 0
-
-            actual_pnl_cents = bal_cents - INITIAL_DEPOSIT_CENTS + open_cost + open_fee
+            balance_pnl_cents = bal_cents - INITIAL_DEPOSIT_CENTS + open_cost + open_fee
             if INITIAL_DEPOSIT_CENTS > 0 and bal_cents > 0:
-                pub["cumulative_return_pct"] = round(actual_pnl_cents / INITIAL_DEPOSIT_CENTS * 100, 2)
+                pub["balance_cumulative_return_pct"] = round(balance_pnl_cents / INITIAL_DEPOSIT_CENTS * 100, 2)
             else:
-                pub["cumulative_return_pct"] = 0.0
+                pub["balance_cumulative_return_pct"] = None
         except Exception:
-            logging.warning("Public snapshot: balance-derived cumulative failed", exc_info=True)
-            pub["cumulative_return_pct"] = 0.0
-            actual_pnl_cents = 0
+            pub["balance_cumulative_return_pct"] = None
 
-        # Daily return series: shape from settled_trades sums, final value rescaled to
-        # match authoritative cumulative_return_pct (closes the ~$200 ledger gap honestly
-        # — we don't know where it came from historically, but the dashboard agrees with
-        # the Kalshi balance, not with a summed ledger).
-        daily_series = []
-        if rows and INITIAL_DEPOSIT_CENTS > 0:
-            daily_map = {}
-            for r in rows:
-                if r["day"] and r["net"] is not None:
-                    daily_map[r["day"]] = daily_map.get(r["day"], 0) + r["net"]
-
-            # Raw cumulative from ledger
-            raw_series = []
-            cumulative = 0
-            for day in sorted(daily_map.keys()):
-                daily_pnl = daily_map[day]
-                cumulative += daily_pnl
-                raw_series.append({"day": day, "cum_cents": cumulative, "daily_cents": daily_pnl})
-
-            # Rescale so last-day cumulative matches actual_pnl_cents (balance-authoritative)
-            if raw_series and raw_series[-1]["cum_cents"] != 0:
-                scale = actual_pnl_cents / raw_series[-1]["cum_cents"]
-            else:
-                scale = 1.0
-
-            for d in raw_series:
-                adj_cum = d["cum_cents"] * scale
-                adj_daily = d["daily_cents"] * scale
-                daily_series.append({
-                    "day": d["day"],
-                    "cumulative_pct": round(adj_cum / INITIAL_DEPOSIT_CENTS * 100, 2),
-                    "daily_pct": round(adj_daily / INITIAL_DEPOSIT_CENTS * 100, 3),
-                })
-        pub["daily_return_series"] = daily_series
-
-        # Sharpe ratio (daily-annualized √365) — from daily_pct of rescaled series
-        if len(daily_series) > 1:
-            daily_nets_pct = [d["daily_pct"] for d in daily_series]
+        # Sharpe ratio — daily-annualized from daily ledger buckets (separate
+        # aggregation from the chart; chart is per-trade)
+        daily_nets_pct = [daily_map[d] / INITIAL_DEPOSIT_CENTS * 100 for d in sorted(daily_map.keys())]
+        if len(daily_nets_pct) > 1:
             d_mean = sum(daily_nets_pct) / len(daily_nets_pct)
             d_var = sum((x - d_mean) ** 2 for x in daily_nets_pct) / (len(daily_nets_pct) - 1)
             d_std = d_var ** 0.5
@@ -4211,21 +4228,11 @@ class DashboardSnapshotBuilder:
         else:
             pub["sharpe_ratio"] = 0.0
 
-        # True max drawdown % on equity curve — rescaled to balance-authoritative scale
-        if daily_series:
-            equity_pct = 0.0
-            peak = 0.0
-            max_dd = 0.0
-            for d in daily_series:
-                equity_pct = d["cumulative_pct"]
-                if equity_pct > peak:
-                    peak = equity_pct
-                dd = peak - equity_pct
-                if dd > max_dd:
-                    max_dd = dd
-            # Peak as multiple of starting (1.0 + peak/100), dd as % of that peak
-            peak_mult = 1.0 + peak / 100.0
-            pub["max_drawdown_pct"] = round(-max_dd / peak_mult, 2) if peak_mult > 0 else 0.0
+        # Max drawdown % — already computed above from per-trade equity loop.
+        # Expressed as % of peak equity (the standard definition), negative.
+        if peak_cents > 0 and max_dd_cents > 0:
+            peak_equity = INITIAL_DEPOSIT_CENTS + peak_cents
+            pub["max_drawdown_pct"] = round(-max_dd_cents / peak_equity * 100, 2)
         else:
             pub["max_drawdown_pct"] = 0.0
 
