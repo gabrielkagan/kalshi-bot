@@ -90,6 +90,14 @@ class SupabaseSyncer:
         except Exception:
             logging.warning("Supabase: schema parity check failed", exc_info=True)
 
+        # Register all asset codes the bot can trade into the FK'd assets table.
+        # Missing rows here silently drop every trade that references an unknown
+        # asset (the whole batch 409s). Lost 486 trades Apr 12-18 2026 to this.
+        try:
+            self._register_assets()
+        except Exception:
+            logging.warning("Supabase: asset registry sync failed", exc_info=True)
+
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         logging.info("Supabase syncer started")
@@ -167,7 +175,16 @@ class SupabaseSyncer:
         return s
 
     def _post(self, table: str, rows: list, on_conflict: str = "") -> bool:
-        """UPSERT rows into a Supabase table. Returns True on success."""
+        """UPSERT rows into a Supabase table. Returns True on success.
+
+        Returns False on ANY non-2xx so the caller does not advance its watermark.
+        A 409 Conflict with `resolution=merge-duplicates` means the header was NOT
+        honored (PK ambiguity) or the error is actually a constraint violation
+        (FK 23503, check 23514, etc.) returned as 409 — both are real failures,
+        not upsert success. Previously treating 409 as success silently dropped
+        486 trades Apr 12-18 2026 when weather assets were missing from the
+        FK'd `assets` table.
+        """
         if not rows:
             return True
         try:
@@ -176,13 +193,10 @@ class SupabaseSyncer:
             headers = {"Prefer": "resolution=merge-duplicates,return=minimal"}
             resp = self._session.post(url, json=rows, headers=headers, timeout=10)
             self._request_count += 1
-            if resp.status_code in (200, 201):
+            if resp.status_code in (200, 201, 204):
                 self._consecutive_errors = 0
                 return True
-            if resp.status_code == 409:
-                self._consecutive_errors = 0
-                return True
-            logging.warning("Supabase %s: HTTP %d — %s", table, resp.status_code, resp.text[:200])
+            logging.warning("Supabase %s: HTTP %d — %s", table, resp.status_code, resp.text[:400])
             self._consecutive_errors += 1
             return False
         except Exception as e:
@@ -271,6 +285,51 @@ class SupabaseSyncer:
                              self._wm_evaluations, self._wm_rejections, self._wm_trades_rowid, self._wm_harrv)
         except Exception:
             logging.debug("Supabase: could not load watermarks, starting from 0")
+
+    # ── Asset registry ──────────────────────────────────────────────────
+
+    _WEATHER_ASSETS = [
+        ("ATL_TEMP", "Atlanta", "KXHIGHTATL"),
+        ("AUS_TEMP", "Austin", "KXHIGHAUS"),
+        ("BOS_TEMP", "Boston", "KXHIGHTBOS"),
+        ("CHI_TEMP", "Chicago", "KXHIGHCHI"),
+        ("DAL_TEMP", "Dallas", "KXHIGHTDAL"),
+        ("DCA_TEMP", "Washington DC", "KXHIGHTDC"),
+        ("DEN_TEMP", "Denver", "KXHIGHDEN"),
+        ("HOU_TEMP", "Houston", "KXHIGHTHOU"),
+        ("LAS_TEMP", "Las Vegas", "KXHIGHTLV"),
+        ("LAX_TEMP", "Los Angeles", "KXHIGHLAX"),
+        ("MIA_TEMP", "Miami", "KXHIGHMIA"),
+        ("MIN_TEMP", "Minneapolis", "KXHIGHTMIN"),
+        ("MSY_TEMP", "New Orleans", "KXHIGHTNOLA"),
+        ("NYC_TEMP", "New York", "KXHIGHNY"),
+        ("OKC_TEMP", "Oklahoma City", "KXHIGHTOKC"),
+        ("PHIL_TEMP", "Philadelphia", "KXHIGHPHIL"),
+        ("PHX_TEMP", "Phoenix", "KXHIGHTPHX"),
+        ("SEA_TEMP", "Seattle", "KXHIGHTSEA"),
+        ("SFO_TEMP", "San Francisco", "KXHIGHTSFO"),
+    ]
+
+    def _register_assets(self):
+        """Upsert every asset code the bot might emit into the FK'd assets table.
+
+        `trades.asset` has a FK to `assets.symbol`. Any row referencing an
+        unknown symbol fails the whole batch with HTTP 409 (code 23503). This
+        registers crypto + weather cities up front so new assets do not silently
+        break sync. Safe to call repeatedly — uses UPSERT.
+        """
+        rows = [{"symbol": s, "name": n, "series_ticker": t}
+                for s, n, t in self._WEATHER_ASSETS]
+        # Crypto are already in the table from initial schema but upsert is cheap
+        for sym, name, ticker in (("BTC", "Bitcoin", "KXBTC15M"),
+                                   ("ETH", "Ethereum", "KXETH15M"),
+                                   ("SOL", "Solana", "KXSOL15M"),
+                                   ("XRP", "Ripple", "KXXRP15M")):
+            rows.append({"symbol": sym, "name": name, "series_ticker": ticker})
+        if self._post("assets", rows):
+            logging.info("Supabase assets: registered %d symbols", len(rows))
+        else:
+            logging.warning("Supabase assets: registration failed — trades with unknown assets will 409")
 
     # ── Schema parity ───────────────────────────────────────────────────
 
