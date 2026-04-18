@@ -4040,22 +4040,32 @@ class DashboardSnapshotBuilder:
         a new operator metric, it does not leak here by accident. To expose
         something publicly, add it to this method deliberately.
 
+        Data scope: ALL product_types (15m + hourly + weather). The bot trades
+        multiple products; showing only 15m would be a misleading subset.
+
+        Truth source for cumulative return: live Kalshi balance, not summed
+        settled_trades (which can diverge from reality by ~$200 due to pre-DB
+        history / ghost settlements). Matches the operator dashboard's
+        actual_pnl_cents computation at line ~221. Frontend shows one number
+        that reconciles with the real bankroll.
+
         Schema (v1):
           - schema_version: int — bump on breaking changes; frontend warns on mismatch
           - updated_at: ISO timestamp
           - since: inception date (first settled trade)
           - days_active: int
-          - total_trades / wins / losses: ints
+          - total_trades / wins / losses: ints (all product types)
           - win_rate / win_rate_ci_lo / win_rate_ci_hi: Wilson 95% CI
-          - cumulative_return_pct: % return on initial deposit since inception
+          - cumulative_return_pct: % return on initial deposit, balance-derived
           - sharpe_ratio: daily-annualized Sharpe (√365, crypto trades 24/7)
           - max_drawdown_pct: true peak-to-trough DD on the equity curve, %
           - profit_factor: gross wins / gross losses
           - daily_return_series: [{day, cumulative_pct, daily_pct}] for chart
-          - calibration_reliability: [{bucket_lo, bucket_hi, n, predicted, actual}]
+          - calibration_reliability: [{bucket_lo, bucket_hi, n, predicted, actual}] — 15m only
 
-        NOT EXPOSED (stripped): balance, positions, shadow signals, per-trade
-        entry/exit, model probs, edge, kelly_f, error messages, feed state.
+        NOT EXPOSED (stripped): balance in $, positions, shadow signals,
+        per-trade entry/exit, model probs, edge, kelly_f, error messages,
+        feed state. Bankroll stays private; only % return escapes.
 
         See kb/decisions/dashboard-overhaul-plan.md (Phase P) and
         kb/concepts/public-dashboard-schema.md for rationale.
@@ -4068,15 +4078,14 @@ class DashboardSnapshotBuilder:
             "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
 
-        # One scan — everything computable from settled_trades lives here
+        # One scan — ALL product types (not just 15m)
         try:
             rows = db_conn.execute("""
-                SELECT side, market_result,
+                SELECT side, market_result, product_type,
                        DATE(settled_at) AS day, settled_at,
                        (pnl_cents - fee_cents) AS net,
                        calibrated_prob
                 FROM settled_trades
-                WHERE product_type='15m'
                 ORDER BY settled_at
             """).fetchall()
         except Exception:
@@ -4108,7 +4117,7 @@ class DashboardSnapshotBuilder:
             pub["since"] = None
             pub["days_active"] = 0
 
-        # Win rate + Wilson 95% CI (signals statistical literacy for peers/investors)
+        # Win rate + Wilson 95% CI
         if total > 0:
             p = wins / total
             z = 1.96
@@ -4123,32 +4132,76 @@ class DashboardSnapshotBuilder:
             pub["win_rate_ci_lo"] = 0.0
             pub["win_rate_ci_hi"] = 0.0
 
-        # Cumulative return % since inception (uses initial deposit, hides bankroll)
-        total_pnl_cents = sum((r["net"] or 0) for r in rows)
-        if INITIAL_DEPOSIT_CENTS > 0:
-            pub["cumulative_return_pct"] = round(total_pnl_cents / INITIAL_DEPOSIT_CENTS * 100, 2)
-        else:
-            pub["cumulative_return_pct"] = 0.0
+        # Cumulative return % — authoritative, balance-derived (matches operator view).
+        # Uses live balance + open-position adjustments, not summed settled_trades.
+        try:
+            bal_cents = None
+            try:
+                bal = self._ml.client.get_balance()
+                bal_cents = int(round(bal["balance"])) if bal else None
+            except Exception:
+                bal_cents = None
+            if bal_cents is None:
+                bal_cents = int(round(getattr(self, "_last_good_balance", 0) * 100))
 
-        # Daily return series: cumulative % + daily % — drives the chart
+            # Add back open position cost + fees — they represent deployed capital that
+            # balance is net of but hasn't realized yet.
+            try:
+                open_rows = db_conn.execute(
+                    "SELECT total_cost_cents, accumulated_fee_cents FROM positions WHERE status='open'"
+                ).fetchall()
+                open_cost = sum((r["total_cost_cents"] or 0) for r in open_rows)
+                open_fee = sum((r["accumulated_fee_cents"] or 0) for r in open_rows)
+            except Exception:
+                open_cost = 0
+                open_fee = 0
+
+            actual_pnl_cents = bal_cents - INITIAL_DEPOSIT_CENTS + open_cost + open_fee
+            if INITIAL_DEPOSIT_CENTS > 0 and bal_cents > 0:
+                pub["cumulative_return_pct"] = round(actual_pnl_cents / INITIAL_DEPOSIT_CENTS * 100, 2)
+            else:
+                pub["cumulative_return_pct"] = 0.0
+        except Exception:
+            logging.warning("Public snapshot: balance-derived cumulative failed", exc_info=True)
+            pub["cumulative_return_pct"] = 0.0
+            actual_pnl_cents = 0
+
+        # Daily return series: shape from settled_trades sums, final value rescaled to
+        # match authoritative cumulative_return_pct (closes the ~$200 ledger gap honestly
+        # — we don't know where it came from historically, but the dashboard agrees with
+        # the Kalshi balance, not with a summed ledger).
         daily_series = []
         if rows and INITIAL_DEPOSIT_CENTS > 0:
             daily_map = {}
             for r in rows:
                 if r["day"] and r["net"] is not None:
                     daily_map[r["day"]] = daily_map.get(r["day"], 0) + r["net"]
+
+            # Raw cumulative from ledger
+            raw_series = []
             cumulative = 0
             for day in sorted(daily_map.keys()):
                 daily_pnl = daily_map[day]
                 cumulative += daily_pnl
+                raw_series.append({"day": day, "cum_cents": cumulative, "daily_cents": daily_pnl})
+
+            # Rescale so last-day cumulative matches actual_pnl_cents (balance-authoritative)
+            if raw_series and raw_series[-1]["cum_cents"] != 0:
+                scale = actual_pnl_cents / raw_series[-1]["cum_cents"]
+            else:
+                scale = 1.0
+
+            for d in raw_series:
+                adj_cum = d["cum_cents"] * scale
+                adj_daily = d["daily_cents"] * scale
                 daily_series.append({
-                    "day": day,
-                    "cumulative_pct": round(cumulative / INITIAL_DEPOSIT_CENTS * 100, 2),
-                    "daily_pct": round(daily_pnl / INITIAL_DEPOSIT_CENTS * 100, 3),
+                    "day": d["day"],
+                    "cumulative_pct": round(adj_cum / INITIAL_DEPOSIT_CENTS * 100, 2),
+                    "daily_pct": round(adj_daily / INITIAL_DEPOSIT_CENTS * 100, 3),
                 })
         pub["daily_return_series"] = daily_series
 
-        # Sharpe ratio (daily-annualized √365)
+        # Sharpe ratio (daily-annualized √365) — from daily_pct of rescaled series
         if len(daily_series) > 1:
             daily_nets_pct = [d["daily_pct"] for d in daily_series]
             d_mean = sum(daily_nets_pct) / len(daily_nets_pct)
@@ -4158,42 +4211,44 @@ class DashboardSnapshotBuilder:
         else:
             pub["sharpe_ratio"] = 0.0
 
-        # True max drawdown % on equity curve (peak-to-trough, not peak-to-now)
-        if rows and INITIAL_DEPOSIT_CENTS > 0:
-            equity = INITIAL_DEPOSIT_CENTS
-            peak = equity
-            max_dd_cents = 0
-            for r in rows:
-                equity += (r["net"] or 0)
-                if equity > peak:
-                    peak = equity
-                dd = peak - equity
-                if dd > max_dd_cents:
-                    max_dd_cents = dd
-            pub["max_drawdown_pct"] = round(-max_dd_cents / peak * 100, 2) if peak > 0 else 0.0
+        # True max drawdown % on equity curve — rescaled to balance-authoritative scale
+        if daily_series:
+            equity_pct = 0.0
+            peak = 0.0
+            max_dd = 0.0
+            for d in daily_series:
+                equity_pct = d["cumulative_pct"]
+                if equity_pct > peak:
+                    peak = equity_pct
+                dd = peak - equity_pct
+                if dd > max_dd:
+                    max_dd = dd
+            # Peak as multiple of starting (1.0 + peak/100), dd as % of that peak
+            peak_mult = 1.0 + peak / 100.0
+            pub["max_drawdown_pct"] = round(-max_dd / peak_mult, 2) if peak_mult > 0 else 0.0
         else:
             pub["max_drawdown_pct"] = 0.0
 
-        # Profit factor = gross wins / gross losses
+        # Profit factor = gross wins / gross losses (from raw ledger, not rescaled —
+        # this measures trade quality, not balance reconciliation)
         gross_wins = sum(r["net"] for r in rows if r["net"] and r["net"] > 0)
         gross_losses = abs(sum(r["net"] for r in rows if r["net"] and r["net"] < 0))
         if gross_losses > 0:
             pub["profit_factor"] = round(gross_wins / gross_losses, 2)
         else:
-            pub["profit_factor"] = 999.0  # sentinel: no losses yet
+            pub["profit_factor"] = 999.0
 
-        # Calibration reliability — predicted vs realized by probability bucket.
-        # Flexes statistical rigor for peers; investors can ignore the chart if they want.
-        # Buckets: [0.5,0.7), [0.7,0.8), [0.8,0.85), [0.85,0.9), [0.9,0.95), [0.95,1.0]
+        # Calibration reliability — 15m only (primary strategy; hourly/weather too few trades)
         buckets = [(0.50, 0.70), (0.70, 0.80), (0.80, 0.85),
                    (0.85, 0.90), (0.90, 0.95), (0.95, 1.01)]
         reliability = []
+        rows_15m = [r for r in rows if r["product_type"] == "15m"]
         for lo, hi in buckets:
-            bucket_rows = [r for r in rows
+            bucket_rows = [r for r in rows_15m
                            if r["calibrated_prob"] is not None
                            and lo <= r["calibrated_prob"] < hi]
             n = len(bucket_rows)
-            if n >= 10:  # minimum bucket size for honest display
+            if n >= 10:
                 pred = sum(r["calibrated_prob"] for r in bucket_rows) / n
                 actual = sum(1 for r in bucket_rows if _is_win(r)) / n
                 reliability.append({

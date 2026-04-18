@@ -6,7 +6,7 @@ tags: [dashboard, public, supabase, schema, privacy]
 # Public Dashboard Schema (v1)
 
 ## Why a second snapshot
-The operator dashboard (`gabekagan.io/dashboard/`) is a trading terminal — dense, real-time, 155+ keys, designed for one viewer (Gabriel). A public page at `gabekagan.io/performance/` serves a fundamentally different purpose: narrative-led, polished, shareable with investors/peers/friends. It's not "operator with CSS hiding"; it's a different artifact with different data.
+The operator dashboard (`gabekagan.io/dashboard/`) is a trading terminal — dense, real-time, 155+ keys, designed for one viewer (Gabriel). A public page at `gabekagan.io/portfolio/kalshi-bot/` serves a fundamentally different purpose: narrative-led, polished, shareable with investors/peers/friends. It's not "operator with CSS hiding"; it's a different artifact with different data.
 
 Two snapshots, not one. Operator data literally never reaches the public page — even with DevTools, a visitor sees only the sanitized payload because we write a separate Supabase row.
 
@@ -17,7 +17,7 @@ dashboard_snapshot.py
   └── _build_public_snapshot() → public JSONB  (~15 keys)  → Supabase dashboard_state row id=2
 
 gabekagan.io/dashboard/      ← subscribes to id=1 via Supabase Realtime (live)
-gabekagan.io/performance/    ← polls id=2 every 5 min (smoother, more credible)
+gabekagan.io/portfolio/kalshi-bot/    ← polls id=2 every 5 min (smoother, more credible)
 ```
 
 Same Supabase table, two rows. Primary key is `id`. Both rows writable with the same service key (bot-side); both readable with the anon key (public-side). Future: if privacy becomes a concern, RLS restricts id=1 to authed users — the architecture is already in the right shape.
