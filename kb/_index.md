@@ -1,17 +1,18 @@
 # Kalshi Bot Knowledge Base
 
-Last updated: 2026-04-18 | Articles: 62 | Status: Evolved
+Last updated: 2026-04-18 | Articles: 63 | Status: Evolved
 
 ## Usage
 Read this index first before answering any deep question about the bot. Identify relevant articles, read those, then respond. After significant sessions, update articles and this index.
 
 ---
 
-## Concepts (25)
+## Concepts (26)
 - [[concepts/dashboard-architecture.md]] - Dashboard architecture: Supabase Realtime, 216 snap keys, 91 renderers, 10 analytics RPCs, 10K-line HTML.
 - [[concepts/supabase-schema-parity.md]] - Startup validator: OpenAPI-based column diff, logs ALTER suggestions, kills silent-400 drift class.
 - [[concepts/agent-audit-verification.md]] - Protocol for verifying agent-swarm findings before acting — 5/5 Chesterton deletes were wrong after verification.
 - [[concepts/dashboard-snapshot-single-scan.md]] - Win/loss + risk compute: 11 SELECTs → 1 single-scan + in-memory bucketing (2026-04-18).
+- [[concepts/public-dashboard-schema.md]] - Public /performance/ page: strict 15-field whitelist, separate Supabase row, sanitized by construction (2026-04-18).
 - [[concepts/dc-strategy.md]] - Decided Contract: T1/T1B/T2 tiers, z-score thresholds, risk caps, fill rates.
 - [[concepts/sol-dynamics.md]] - SOL-specific: edge floor, PnL dominance, tiered DC risk, sizing concerns.
 - [[concepts/execution-layer.md]] - Execution: maker-first escalation, SOL override, per-asset locks, order lifecycle.

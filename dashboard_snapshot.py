@@ -4033,6 +4033,180 @@ class DashboardSnapshotBuilder:
 
         return snap
 
+    def _build_public_snapshot(self, db_conn) -> Dict[str, Any]:
+        """Build a sanitized public-facing snapshot for /performance/ page.
+
+        Strictly whitelisted — ONLY these fields are ever written. If you add
+        a new operator metric, it does not leak here by accident. To expose
+        something publicly, add it to this method deliberately.
+
+        Schema (v1):
+          - schema_version: int — bump on breaking changes; frontend warns on mismatch
+          - updated_at: ISO timestamp
+          - since: inception date (first settled trade)
+          - days_active: int
+          - total_trades / wins / losses: ints
+          - win_rate / win_rate_ci_lo / win_rate_ci_hi: Wilson 95% CI
+          - cumulative_return_pct: % return on initial deposit since inception
+          - sharpe_ratio: daily-annualized Sharpe (√365, crypto trades 24/7)
+          - max_drawdown_pct: true peak-to-trough DD on the equity curve, %
+          - profit_factor: gross wins / gross losses
+          - daily_return_series: [{day, cumulative_pct, daily_pct}] for chart
+          - calibration_reliability: [{bucket_lo, bucket_hi, n, predicted, actual}]
+
+        NOT EXPOSED (stripped): balance, positions, shadow signals, per-trade
+        entry/exit, model probs, edge, kelly_f, error messages, feed state.
+
+        See kb/decisions/dashboard-overhaul-plan.md (Phase P) and
+        kb/concepts/public-dashboard-schema.md for rationale.
+        """
+        from bot import INITIAL_DEPOSIT_CENTS
+        import math as _math
+
+        pub: Dict[str, Any] = {
+            "schema_version": 1,
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+
+        # One scan — everything computable from settled_trades lives here
+        try:
+            rows = db_conn.execute("""
+                SELECT side, market_result,
+                       DATE(settled_at) AS day, settled_at,
+                       (pnl_cents - fee_cents) AS net,
+                       calibrated_prob
+                FROM settled_trades
+                WHERE product_type='15m'
+                ORDER BY settled_at
+            """).fetchall()
+        except Exception:
+            logging.warning("Public snapshot: settled_trades scan failed", exc_info=True)
+            rows = []
+
+        def _is_win(r):
+            side, result = r["side"], r["market_result"]
+            return ((result in ("yes", "all_yes") and side == "yes") or
+                    (result in ("no", "all_no") and side == "no"))
+
+        total = len(rows)
+        wins = sum(1 for r in rows if _is_win(r))
+        losses = total - wins
+        pub["total_trades"] = total
+        pub["total_wins"] = wins
+        pub["total_losses"] = losses
+
+        # Inception + days active
+        if rows:
+            first_ts = rows[0]["settled_at"]
+            pub["since"] = first_ts[:10] if first_ts else None
+            try:
+                first_day = datetime.datetime.fromisoformat(first_ts.replace("Z", "+00:00")).date()
+                pub["days_active"] = (datetime.datetime.now(datetime.timezone.utc).date() - first_day).days
+            except Exception:
+                pub["days_active"] = 0
+        else:
+            pub["since"] = None
+            pub["days_active"] = 0
+
+        # Win rate + Wilson 95% CI (signals statistical literacy for peers/investors)
+        if total > 0:
+            p = wins / total
+            z = 1.96
+            denom = 1 + z * z / total
+            center = (p + z * z / (2 * total)) / denom
+            halfwidth = z * _math.sqrt((p * (1 - p) + z * z / (4 * total)) / total) / denom
+            pub["win_rate"] = round(p, 4)
+            pub["win_rate_ci_lo"] = round(max(0.0, center - halfwidth), 4)
+            pub["win_rate_ci_hi"] = round(min(1.0, center + halfwidth), 4)
+        else:
+            pub["win_rate"] = 0.0
+            pub["win_rate_ci_lo"] = 0.0
+            pub["win_rate_ci_hi"] = 0.0
+
+        # Cumulative return % since inception (uses initial deposit, hides bankroll)
+        total_pnl_cents = sum((r["net"] or 0) for r in rows)
+        if INITIAL_DEPOSIT_CENTS > 0:
+            pub["cumulative_return_pct"] = round(total_pnl_cents / INITIAL_DEPOSIT_CENTS * 100, 2)
+        else:
+            pub["cumulative_return_pct"] = 0.0
+
+        # Daily return series: cumulative % + daily % — drives the chart
+        daily_series = []
+        if rows and INITIAL_DEPOSIT_CENTS > 0:
+            daily_map = {}
+            for r in rows:
+                if r["day"] and r["net"] is not None:
+                    daily_map[r["day"]] = daily_map.get(r["day"], 0) + r["net"]
+            cumulative = 0
+            for day in sorted(daily_map.keys()):
+                daily_pnl = daily_map[day]
+                cumulative += daily_pnl
+                daily_series.append({
+                    "day": day,
+                    "cumulative_pct": round(cumulative / INITIAL_DEPOSIT_CENTS * 100, 2),
+                    "daily_pct": round(daily_pnl / INITIAL_DEPOSIT_CENTS * 100, 3),
+                })
+        pub["daily_return_series"] = daily_series
+
+        # Sharpe ratio (daily-annualized √365)
+        if len(daily_series) > 1:
+            daily_nets_pct = [d["daily_pct"] for d in daily_series]
+            d_mean = sum(daily_nets_pct) / len(daily_nets_pct)
+            d_var = sum((x - d_mean) ** 2 for x in daily_nets_pct) / (len(daily_nets_pct) - 1)
+            d_std = d_var ** 0.5
+            pub["sharpe_ratio"] = round(d_mean / d_std * (365 ** 0.5), 2) if d_std > 0 else 0.0
+        else:
+            pub["sharpe_ratio"] = 0.0
+
+        # True max drawdown % on equity curve (peak-to-trough, not peak-to-now)
+        if rows and INITIAL_DEPOSIT_CENTS > 0:
+            equity = INITIAL_DEPOSIT_CENTS
+            peak = equity
+            max_dd_cents = 0
+            for r in rows:
+                equity += (r["net"] or 0)
+                if equity > peak:
+                    peak = equity
+                dd = peak - equity
+                if dd > max_dd_cents:
+                    max_dd_cents = dd
+            pub["max_drawdown_pct"] = round(-max_dd_cents / peak * 100, 2) if peak > 0 else 0.0
+        else:
+            pub["max_drawdown_pct"] = 0.0
+
+        # Profit factor = gross wins / gross losses
+        gross_wins = sum(r["net"] for r in rows if r["net"] and r["net"] > 0)
+        gross_losses = abs(sum(r["net"] for r in rows if r["net"] and r["net"] < 0))
+        if gross_losses > 0:
+            pub["profit_factor"] = round(gross_wins / gross_losses, 2)
+        else:
+            pub["profit_factor"] = 999.0  # sentinel: no losses yet
+
+        # Calibration reliability — predicted vs realized by probability bucket.
+        # Flexes statistical rigor for peers; investors can ignore the chart if they want.
+        # Buckets: [0.5,0.7), [0.7,0.8), [0.8,0.85), [0.85,0.9), [0.9,0.95), [0.95,1.0]
+        buckets = [(0.50, 0.70), (0.70, 0.80), (0.80, 0.85),
+                   (0.85, 0.90), (0.90, 0.95), (0.95, 1.01)]
+        reliability = []
+        for lo, hi in buckets:
+            bucket_rows = [r for r in rows
+                           if r["calibrated_prob"] is not None
+                           and lo <= r["calibrated_prob"] < hi]
+            n = len(bucket_rows)
+            if n >= 10:  # minimum bucket size for honest display
+                pred = sum(r["calibrated_prob"] for r in bucket_rows) / n
+                actual = sum(1 for r in bucket_rows if _is_win(r)) / n
+                reliability.append({
+                    "bucket_lo": lo,
+                    "bucket_hi": min(hi, 1.0),
+                    "n": n,
+                    "predicted": round(pred, 4),
+                    "actual": round(actual, 4),
+                })
+        pub["calibration_reliability"] = reliability
+
+        return pub
+
     def _compute_position_health(
         self,
         positions: List[Dict],

@@ -361,7 +361,15 @@ class SupabaseSyncer:
     # ── Dashboard sync ──────────────────────────────────────────────────
 
     def _sync_dashboard(self):
-        """Push dashboard_state — single-row UPSERT, reuses dashboard_snapshot logic."""
+        """Push dashboard_state — operator row (id=1) + public row (id=2).
+
+        Two rows, same table. Operator row has the full snapshot (155+ keys);
+        public row has a strictly-whitelisted subset built by _build_public_snapshot().
+        Frontend /dashboard/ reads id=1; /performance/ reads id=2. Public page can
+        poll id=2 at its own cadence without touching operator data at all.
+
+        See kb/concepts/public-dashboard-schema.md for the public-row contract.
+        """
         try:
             sb = getattr(self._ml, "snapshot_builder", None)
             if sb and hasattr(sb, "_build_snapshot"):
@@ -369,12 +377,27 @@ class SupabaseSyncer:
             else:
                 snapshot = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
-            row = {
+            now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            rows = [{
                 "id": 1,
                 "data": self._sanitize_for_json(snapshot),
-                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
-            self._post("dashboard_state", [row])
+                "updated_at": now_ts,
+            }]
+
+            # Public snapshot — whitelisted subset. Failure here must NOT block the
+            # operator sync (operator is the critical path; public is observational).
+            if sb and hasattr(sb, "_build_public_snapshot"):
+                try:
+                    public = sb._build_public_snapshot(db_conn=self._db)
+                    rows.append({
+                        "id": 2,
+                        "data": self._sanitize_for_json(public),
+                        "updated_at": now_ts,
+                    })
+                except Exception:
+                    logging.warning("Supabase: public snapshot build failed", exc_info=True)
+
+            self._post("dashboard_state", rows)
         except Exception:
             logging.warning("Supabase: dashboard sync failed", exc_info=True)
 
