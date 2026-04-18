@@ -92,6 +92,13 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | `/weekend-discount` | Weekend/overnight edge discount — live performance and shadow tails |
 | `/research-package` | Compile self-contained data package for external researcher |
 
+### Knowledge Base
+| Skill | Use when... |
+|---|---|
+| `/kb-lint` | Health check — stale articles, dead code refs, broken links, drift, missing coverage |
+| `/kb-ingest` | Post-session capture — turn conversation findings into KB articles |
+| `/kb-evolve` | Structural maintenance — merge overlaps, archive dead weight, fix contradictions, rebalance |
+
 ### Decision Rules for Ambiguous Pairs
 
 - **Status vs Audit:** Quick 30-second answer → `/status`. Statistically rigorous numbers with CIs → `/audit`.
@@ -121,6 +128,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **After ANY bug fix**: do root cause analysis, explain why it happened, and add a regression test to prevent recurrence. Never just fix and move on.
 - **All sim PnL and counterfactual analysis MUST use actual Kelly sizing** — never use 1-contract flat sizing. Position size comes from the Kelly formula with the bot's actual risk parameters. Flat sizing produces misleading PnL numbers.
 - **Never present analysis without checking actual data first** — no assumptions about column values, schema, enum strings, or data shape. Always run `PRAGMA table_info()` and `SELECT DISTINCT` before building queries. (Learned: wrong column values, wrong regime detection, wrong filter_stage assumptions all caused bad analysis.)
+- **Dashboard changes require KB + docs consistency** — `dashboard_snapshot.py` and `dashboard/index.html` (in gabekagan/gh-pages) are governed by the Option A→B plan in `kb/decisions/dashboard-overhaul-plan.md`. Before adding a new snapshot key, check: is there already a v2 section it belongs in? Is the frontend renderer wired? Does it need a Supabase column + RLS check? Every dashboard change that adds or removes a key must update both sides in the same commit and the KB article if it's structural.
 - **Never use `PRAGMA wal_checkpoint(TRUNCATE)` — use PASSIVE** — TRUNCATE requires an exclusive lock that blocks all readers/writers. With supabase_sync running 192 SELECTs every 30s, TRUNCATE creates a deadlock triangle: checkpoint waits for reader to finish → reader holds shared lock → settlement writer waits for checkpoint's exclusive lock. PASSIVE checkpoints whatever pages it can without blocking. (Learned: 11,258 "database is locked" errors in 12h, Mar 16 2026. Root cause: TRUNCATE + supabase_sync reader + 228-row settlement batch.)
 - **Keep DB write batches small (≤50 rows per commit)** — large batches hold the write lock long enough to conflict with concurrent readers and checkpoints. Settlement Phase 2 now chunks into batches of 50. (Learned: 228-row batch from weather expansion held lock long enough to deadlock, Mar 16 2026.)
 - **Update docs with code changes** — if you change a config value, threshold, or shadow strategy status, update the corresponding claim in README.md, whitepaper.md, whitepaper_investor.md, and/or CLAUDE.md in THE SAME COMMIT. Run `python3 scripts/doc_drift_check.py` before committing to verify. (Learned: 3+ full manual doc rewrites caused by accumulated drift, Mar 2026.)
@@ -181,7 +189,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 ## Current State (Mar 20, 2026)
 
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
-- **15M live assets:** BTC (88c+), ETH (75c+, 30-contract cap sub-80c), SOL (80c+, taker-first), XRP (92c+)
+- **15M live assets:** BTC (88c+), ETH (75c+, 50-contract cap sub-80c), SOL (86c+, taker-first), XRP (92c+)
 - **XRP_15M_SHADOW = False** — XRP promoted to live at 92c+ (data: 41W/2L, 95.3% WR)
 - **SOL_TAKER_FIRST = True** — SOL bypasses maker entirely, direct IOC at all STC
 - **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c), T2-Z2 (z≤-2, 93-96c) all enabled as incremental overlay
@@ -198,11 +206,11 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **Hourly:** LIVE TRADING (HOURLY_LIVE_ENABLED env var kill switch) — sub-60c BTC+ETH only, taker-only IOC, fixed 10-contract sizing, 10% bankroll fraction, max 5% edge cap, STC 600-1800s. Calibration disabled (passthrough+T=1.45). Data: 66.3% WR vs 46.5% breakeven on 1,474 unique tickers (14-day observation). SOL/XRP excluded (XRP 42.9% WR = toxic). Shadow configs h/j/k killed (55% WR).
 - **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — was briefly live Mar 17, reverted due to Polygon 403 breaking vol engine. SPX-D CalEngine, 90c+ floor, eighth-Kelly, no market blend
 - **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 19 cities. WEATHER_NO_SIDE_LIVE = True (NO ≤ 40c, STC ≥ 16h, 1-contract)
-- **Sports:** Observation mode (SPORTS_OBSERVATION_ONLY = True) — hardcoded, never live without explicit promotion. Basketball best group (69.2% WR, n=39), SPRT still CONTINUE_COLLECTING
+- **Sports:** Observation mode (SPORTS_OBSERVATION_ONLY = True) — hardcoded, never live without explicit promotion. Basketball best group (69.2% WR, n=39), SPRT still CONTINUE_COLLECTING. FIXED Apr 12: 31-day data outage from MLB code mismatch (CHW→CWS, ARI→AZ, OAK→ATH) + LA→LAK broke NHL + hockey un-excluded for playoff data collection
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
-- **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
-- **Tests:** 1037 tests across 15+ test files
+- **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 90c+, STC<=600s, no DC overlap; sub-90c and STC>600s remain shadow
+- **Tests:** 1102 tests across 15+ test files
 
 ## Key Config Values (bot.py)
 
@@ -212,7 +220,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | MIN_ENTRY_PRICE | 75 | Cents (global floor — lowered from 80 for ETH 75-79c) |
 | BTC_MIN_ENTRY_PRICE | 88 | Cents (data: 88c = 96.2% WR on n=53 shadow, 96.3% on n=27 recent) |
 | ETH_MIN_ENTRY_PRICE | 90 | Cents (raised from 85 — data: ETH 85-89c 86.2% WR on 65 trades, -$23.76 PnL; 90c+ is 95.2% WR) |
-| SOL_MIN_ENTRY_PRICE | 80 | Cents (explicit floor — prevents SOL trading at 75-79c) |
+| SOL_MIN_ENTRY_PRICE | 86 | Cents (raised from 80: SOL@85c 68.2% WR -$496 on 22 trades vs 86c 94.4% WR +$375 on 36 trades) |
 | ETH_SUB80_POSITION_CAP | 50 | Max contracts for ETH 75-79c (half-Kelly clamp [20,50]) |
 | XRP_MIN_ENTRY_PRICE | 92 | Cents (data: PnL negative at every floor <90c, PF=1.68 at ≥92c) |
 | MAX_ENTRY_PRICE | 99 | Cents |
@@ -302,7 +310,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | WEATHER_MAX_SECONDS_BEFORE_CLOSE | 86400 | Weather settles daily — always eligible |
 | WEATHER_NO_SIDE_LIVE | True | LIVE — NO ≤ 40c, STC ≥ 16h, 1-contract |
 | WEEKEND_DISCOUNT_LIVE | True | Weekend edge discount promoted to live (Sat/Sun only) |
-| WEEKEND_DISCOUNT_MIN_PRICE | 89 | Cents — 89c+ floor for live weekend discount trades |
+| WEEKEND_DISCOUNT_MIN_PRICE | 90 | Cents — 90c+ floor for live weekend discount trades (raised from 89 to match ETH floor) |
 | WEEKEND_DISCOUNT_MAX_STC | 600 | STC gate for live weekend discount trades |
 | WEEKEND_EDGE_DISCOUNT | 0.60 | 40% edge reduction applied on weekends (unchanged) |
 
@@ -347,7 +355,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | DC shadow: dc_shadow_no_side | Shadow — NO-side decided contract variant |
 | SOL taker-first | **Promoted** — SOL bypasses maker, direct IOC |
 | XRP live (was shadow) | **Promoted** — XRP live at 92c+ floor |
-| Weekend edge discount | **Promoted** — live on Sat/Sun (89c+, STC<=600s, no DC overlap); sub-89c/STC>600s shadow |
+| Weekend edge discount | **Promoted** — live on Sat/Sun (90c+, STC<=600s, no DC overlap); sub-90c/STC>600s shadow |
 | Overnight edge discount | **Promoted** — live on weekday 04-11 UTC (89c+, STC<=600s, no DC overlap); sub-89c/STC>600s shadow |
 | Hourly NO-side (40-54c) | Shadow/Verification — 1-contract flat, model-filtered NO at 40-54c, env var kill switch |
 | Low-price shadow (70-79c) | Shadow — dual-sizing sim (full Kelly vs capped LP_KELLY=0.25, LP_MAX_RISK=0.10) with correlation tracking |

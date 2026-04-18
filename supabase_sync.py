@@ -55,11 +55,10 @@ class SupabaseSyncer:
         self._storage_ok = True        # False when >400MB
         self._storage_stopped = False   # True when >450MB
 
-        # Watermarks for incremental sync
+        # Watermarks for incremental sync (all rowid-based — monotonic, drift-immune)
         self._wm_evaluations = 0
         self._wm_rejections = 0
-        self._wm_trades_count = 0
-        self._wm_trades_last_settled: Optional[str] = None
+        self._wm_trades_rowid = 0  # was _wm_trades_count — renamed for clarity; value stored in sync_watermarks.last_synced_id
         self._wm_harrv = 0
 
         # Timing
@@ -83,6 +82,13 @@ class SupabaseSyncer:
 
         # Load watermarks from Supabase (best-effort)
         self._load_watermarks()
+
+        # Validate schema parity — catches spx_harrv-style silent 400 drift at startup.
+        # See kb/failures/dashboard-drift.md and kb/failures/supabase-sync-silent-failure.md.
+        try:
+            self._validate_schema_parity()
+        except Exception:
+            logging.warning("Supabase: schema parity check failed", exc_info=True)
 
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -258,13 +264,90 @@ class SupabaseSyncer:
                     elif src == "rejected_opportunities":
                         self._wm_rejections = wm
                     elif src == "settled_trades":
-                        self._wm_trades_count = wm
+                        self._wm_trades_rowid = wm
                     elif src == "spx_harrv_shadow_signals":
                         self._wm_harrv = wm
                 logging.info("Supabase watermarks loaded: evals=%d rej=%d trades=%d harrv=%d",
-                             self._wm_evaluations, self._wm_rejections, self._wm_trades_count, self._wm_harrv)
+                             self._wm_evaluations, self._wm_rejections, self._wm_trades_rowid, self._wm_harrv)
         except Exception:
             logging.debug("Supabase: could not load watermarks, starting from 0")
+
+    # ── Schema parity ───────────────────────────────────────────────────
+
+    def _validate_schema_parity(self):
+        """Compare local SQLite columns to remote Supabase columns for each synced table.
+
+        Logs WARNING with an ALTER TABLE suggestion for every column present locally
+        (in the sync column list, or all cols for SELECT *-synced tables) but missing
+        remotely. Prevents silent HTTP 400s on every insert attempt — the failure mode
+        that lost weeks of evaluations/rejections data (2026-04-04) and kept
+        spx_harrv_shadow_signals empty (2026-04-18).
+
+        Non-fatal. Logs only, never blocks sync startup.
+        """
+        # Fetch PostgREST OpenAPI spec — single GET, returns all table schemas.
+        try:
+            resp = self._session.get(f"{self._url}/rest/v1/", timeout=10)
+            if resp.status_code != 200:
+                logging.warning("Supabase schema parity: OpenAPI fetch returned HTTP %d", resp.status_code)
+                return
+            spec = resp.json()
+        except Exception:
+            logging.warning("Supabase schema parity: OpenAPI fetch failed", exc_info=True)
+            return
+        remote_defs = spec.get("definitions", {}) or {}
+
+        def _remote_cols(table: str) -> set:
+            props = (remote_defs.get(table) or {}).get("properties") or {}
+            return set(props.keys())
+
+        def _local_cols(table: str) -> set:
+            try:
+                rows = self._db.execute(f"PRAGMA table_info({table})").fetchall()
+                return {r["name"] for r in rows}
+            except Exception:
+                return set()
+
+        # (local_table, remote_table, explicit_cols) — explicit_cols=None means "all local"
+        checks = [
+            ("evaluated_opportunities", "evaluations", set(c.strip() for c in self._EVAL_COLUMNS.split(","))),
+            ("rejected_opportunities", "rejections", set(c.strip() for c in self._REJ_COLUMNS.split(","))),
+            ("settled_trades", "trades", None),
+            ("spx_harrv_shadow_signals", "spx_harrv_shadow_signals", None),
+        ]
+
+        total_drift = 0
+        for local_tbl, remote_tbl, synced_cols in checks:
+            local = _local_cols(local_tbl)
+            if not local:
+                continue  # local table doesn't exist; skip
+            remote = _remote_cols(remote_tbl)
+            if not remote:
+                logging.warning(
+                    "Supabase schema parity: remote table '%s' not found in OpenAPI (404 likely on every sync)",
+                    remote_tbl,
+                )
+                total_drift += 1
+                continue
+            # What do we attempt to send?
+            effective = synced_cols if synced_cols is not None else local
+            missing = sorted(effective - remote)
+            if missing:
+                total_drift += len(missing)
+                logging.warning(
+                    "Supabase schema parity: %s -> %s missing %d column(s): %s",
+                    local_tbl, remote_tbl, len(missing), missing,
+                )
+                for col in missing:
+                    logging.warning(
+                        "  SUGGEST: ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s <TYPE>;  -- then NOTIFY pgrst, 'reload schema';",
+                        remote_tbl, col,
+                    )
+        if total_drift == 0:
+            logging.info("Supabase schema parity: OK (all synced columns present remotely)")
+        else:
+            logging.warning("Supabase schema parity: %d total column(s) missing remotely — inserts will silently 400",
+                            total_drift)
 
     def _save_watermark(self, source: str, last_id: int, count: int):
         """Update watermark in Supabase."""
@@ -368,49 +451,36 @@ class SupabaseSyncer:
             logging.warning("Supabase: rejections sync failed", exc_info=True)
 
     def _sync_trades(self):
-        """Sync settled_trades — count-based trigger with settled_at watermark for incremental fetch."""
-        try:
-            count_row = self._db.execute("SELECT COUNT(*) AS cnt FROM settled_trades").fetchone()
-            current_count = count_row["cnt"] if count_row else 0
-            if current_count <= self._wm_trades_count:
-                return
+        """Sync settled_trades incrementally by rowid (monotonic, drift-immune).
 
-            if self._wm_trades_last_settled is not None:
-                # Incremental: only fetch trades settled after the last sync
-                rows = self._db.execute("""
-                    SELECT ticker, event_ticker, asset, market_result, side, count,
-                           entry_price_cents, revenue_cents, fee_cents, pnl_cents,
-                           settled_at, strategy, seconds_to_close, fill_latency_seconds,
-                           vol_regime, calibrated_prob, edge, kelly_f,
-                           escalation_type, maker_price_cents, maker_wait_seconds,
-                           product_type, strategy_group, is_stacked
-                    FROM settled_trades
-                    WHERE settled_at > ?
-                    ORDER BY settled_at
-                """, (self._wm_trades_last_settled,)).fetchall()
-            else:
-                # First run: full sync
-                rows = self._db.execute("""
-                    SELECT ticker, event_ticker, asset, market_result, side, count,
-                           entry_price_cents, revenue_cents, fee_cents, pnl_cents,
-                           settled_at, strategy, seconds_to_close, fill_latency_seconds,
-                           vol_regime, calibrated_prob, edge, kelly_f,
-                           escalation_type, maker_price_cents, maker_wait_seconds,
-                           product_type, strategy_group, is_stacked
-                    FROM settled_trades
-                    ORDER BY settled_at
-                """).fetchall()
+        Previously keyed on settled_at string timestamps — VPS clock drift (13.6s observed)
+        caused later-inserted rows to appear with earlier settled_at than the watermark,
+        silently skipping them. Reconciliation (_reconcile_daily_pnl) caught gaps after
+        the fact, but by then multiple days of trade-level drill-down data was missing
+        from the dashboard. Rowid is stable insertion order, immune to clock issues.
+        See kb/failures/dashboard-drift.md.
+        """
+        try:
+            rows = self._db.execute("""
+                SELECT rowid, ticker, event_ticker, asset, market_result, side, count,
+                       entry_price_cents, revenue_cents, fee_cents, pnl_cents,
+                       settled_at, strategy, seconds_to_close, fill_latency_seconds,
+                       vol_regime, calibrated_prob, edge, kelly_f,
+                       escalation_type, maker_price_cents, maker_wait_seconds,
+                       product_type, strategy_group, is_stacked
+                FROM settled_trades
+                WHERE rowid > ?
+                ORDER BY rowid
+                LIMIT 500
+            """, (self._wm_trades_rowid,)).fetchall()
             if not rows:
                 return
-            mapped = [{col: self._clean(r[col]) for col in r.keys()} for r in rows]
+            mapped = [{col: self._clean(r[col]) for col in r.keys() if col != "rowid"} for r in rows]
             if self._post("trades", mapped):
-                self._wm_trades_count = current_count
-                # Update settled_at watermark to the latest row
-                last_settled = max((r["settled_at"] for r in rows if r["settled_at"]), default=None)
-                if last_settled:
-                    self._wm_trades_last_settled = last_settled
-                self._save_watermark("settled_trades", current_count, len(rows))
-                logging.debug("Supabase: synced %d trades", len(rows))
+                new_wm = max(r["rowid"] for r in rows)
+                self._wm_trades_rowid = new_wm
+                self._save_watermark("settled_trades", new_wm, len(rows))
+                logging.debug("Supabase: synced %d trades (rowid wm=%d)", len(rows), new_wm)
         except Exception:
             logging.warning("Supabase: trades sync failed", exc_info=True)
 
