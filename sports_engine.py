@@ -490,7 +490,19 @@ class KalshiSportsDiscovery:
                     with_nested_markets=True,
                 )
                 if not resp or "events" not in resp:
+                    if league_cfg.sport_group in ("basketball", "hockey", "baseball"):
+                        logging.info(
+                            "KalshiDiscovery %s: empty/null response keys=%s",
+                            league_cfg.series_ticker,
+                            list(resp.keys()) if resp else None)
                     continue
+
+                # Diagnostic: confirm tracked-sport events are fresh
+                if league_cfg.sport_group in ("basketball", "hockey", "baseball"):
+                    _sample = [e.get("event_ticker", "") for e in resp["events"][:3]]
+                    logging.info(
+                        "KalshiDiscovery %s: %d events, sample=%s",
+                        league_cfg.series_ticker, len(resp["events"]), _sample)
 
                 for event in resp["events"]:
                     event_ticker = event.get("event_ticker", "")
@@ -519,8 +531,8 @@ class KalshiSportsDiscovery:
                             existing.market_tickers.update(game_markets.market_tickers)
 
             except Exception:
-                logging.debug("Kalshi discovery failed for %s",
-                              league_cfg.series_ticker, exc_info=True)
+                logging.warning("KalshiDiscovery failed for %s",
+                                league_cfg.series_ticker, exc_info=True)
 
     def _classify_market_side(self, ticker: str, subtitle: str,
                               cfg: LeagueConfig) -> Optional[str]:
