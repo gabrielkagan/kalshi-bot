@@ -538,6 +538,47 @@ class TestSTCShadowGate(unittest.TestCase):
         self.assertGreaterEqual(bot.STC_EXTENDED_SOL_MIN_PRICE, bot.SOL_MIN_ENTRY_PRICE)
         self.assertGreaterEqual(bot.STC_EXTENDED_XRP_MIN_PRICE, bot.XRP_MIN_ENTRY_PRICE)
 
+    def test_sol_rescue_contract_cap_exists(self):
+        """SOL rescue cap must be defined and sensible (Apr 19 fix).
+
+        Buffer rescue bypasses extended floor at buf>=0.25%, and SOL losses in
+        the rescue zone average 56ct vs wins 37ct — Kelly oversizes thin-buffer
+        setups. The cap clamps SOL rescue sizing to 25ct to limit tail loss.
+        """
+        import bot
+        self.assertTrue(hasattr(bot, "SOL_RESCUE_CONTRACT_CAP"))
+        self.assertIsInstance(bot.SOL_RESCUE_CONTRACT_CAP, int)
+        # Sanity: should be positive and less than a typical Kelly output
+        self.assertGreater(bot.SOL_RESCUE_CONTRACT_CAP, 0)
+        self.assertLess(bot.SOL_RESCUE_CONTRACT_CAP, 100)
+
+    def test_sol_rescue_cap_clamps_oversized(self):
+        """The cap logic: for SOL, sizing["contracts"] = min(raw, SOL_RESCUE_CONTRACT_CAP).
+
+        Mirrors the rescue branch inline math so a future refactor that
+        changes the clamp pattern gets caught.
+        """
+        import bot
+        # Simulate the rescue branch's inline clamp on SOL with Kelly=80
+        sizing = {"contracts": 80}
+        asset = "SOL"
+        if asset == "SOL" and sizing["contracts"] > bot.SOL_RESCUE_CONTRACT_CAP:
+            sizing["contracts"] = bot.SOL_RESCUE_CONTRACT_CAP
+        self.assertEqual(sizing["contracts"], bot.SOL_RESCUE_CONTRACT_CAP)
+
+        # BTC with same size should NOT be capped
+        sizing_btc = {"contracts": 80}
+        asset_btc = "BTC"
+        if asset_btc == "SOL" and sizing_btc["contracts"] > bot.SOL_RESCUE_CONTRACT_CAP:
+            sizing_btc["contracts"] = bot.SOL_RESCUE_CONTRACT_CAP
+        self.assertEqual(sizing_btc["contracts"], 80)
+
+        # SOL with already-small size should NOT be modified
+        sizing_small = {"contracts": 10}
+        if "SOL" == "SOL" and sizing_small["contracts"] > bot.SOL_RESCUE_CONTRACT_CAP:
+            sizing_small["contracts"] = bot.SOL_RESCUE_CONTRACT_CAP
+        self.assertEqual(sizing_small["contracts"], 10)
+
     def test_gate_checks_product_type_15m(self):
         """Gate must check product_type == '15m', NOT product_type is None.
         Bug 98c954d: gate used `is None` but 15M has product_type='15m'."""

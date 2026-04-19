@@ -66,6 +66,7 @@ MAX_SECONDS_BEFORE_CLOSE = 900    # scan 15 min before close (600-900s is shadow
 STC_SHADOW_THRESHOLD = 600        # 15M trades above this STC are shadow-only
 STC_EXTENDED_LIVE_FLOOR = 300     # 300-600s zone: per-asset higher floors apply (model 9pp overconfident at low prices)
 STC_EXTENDED_BUFFER_RESCUE = 0.25  # Buffer >= this bypasses extended floor (data: 21/21 100% WR, Wilson LB 88.6% > 87% BE)
+SOL_RESCUE_CONTRACT_CAP = 25       # SOL rescue sizing tail cap (Apr 19: 5 losses avg 56ct × 89c = −$50/loss; capped: −$22/loss)
 STC_EXTENDED_BTC_MIN_PRICE = 93   # BTC floor for 300-600s (data: 93c+ = 98.1% WR, n=52)
 STC_EXTENDED_ETH_MIN_PRICE = 90   # ETH floor for 300-600s (data: 90c+ = 100% WR, n=31; same as main floor)
 STC_EXTENDED_SOL_MIN_PRICE = 95   # SOL floor for 300-600s (data: 95c+ = 100% WR, n=14)
@@ -10639,6 +10640,16 @@ class OpportunityScanner:
                         # size (Kelly × STC scaler × asset cap already applied).
                         _ext_buf = (spot - threshold) / threshold * 100 if threshold and threshold > 0 else 0
                         if _ext_buf >= STC_EXTENDED_BUFFER_RESCUE:
+                            # SOL-only sizing cap: data (Apr 8-19, n=46) shows SOL rescue losses
+                            # average 56ct vs wins 37ct — Kelly sizes UP on thin-buffer high-prob
+                            # setups that fail. Cap to 25ct limits tail loss to ~$22 vs $45-72.
+                            # BTC rescue (13/13 clean) unaffected.
+                            if asset == "SOL" and sizing["contracts"] > SOL_RESCUE_CONTRACT_CAP:
+                                _pre_cap = sizing["contracts"]
+                                sizing["contracts"] = SOL_RESCUE_CONTRACT_CAP
+                                logging.info(
+                                    "SOL_RESCUE_CAP: %s capped %d→%d contracts (rescue buf=%.3f%%)",
+                                    ticker, _pre_cap, SOL_RESCUE_CONTRACT_CAP, _ext_buf)
                             logging.info(
                                 "STC_EXTENDED_BUFFER_RESCUE: %s %s @%dc buf=%.3f%% >= %.2f%% "
                                 "(floor=%dc, STC=%.0fs) — allowing trade",

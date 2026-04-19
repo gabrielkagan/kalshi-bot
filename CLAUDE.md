@@ -196,21 +196,21 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **Overnight discount LIVE:** OVERNIGHT_DISCOUNT_LIVE=True on weekday 04-11 UTC — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
 - **Loss burst cooldown LIVE (Apr 11):** LOSS_COOLDOWN_ENABLED=True, per-asset 2h lockout after any 15M loss. Data: 53/82 losses (30d) in 15 bursts, counterfactual +$441/30d. First-ship is per-asset (conservative); escalate to global if cross-asset correlation persists.
 - **Weather NO-side unblocked (Apr 11):** Live NO candidate block was nested inside broken model-edge gate → 0 trades Apr 4-11. Unnested; should fire on NO≤40c, STC≥16h, assumed-prob 0.70. See kb/failures/weather-no-candidate-never-fires.md
-- **Hourly NO-side verification (Apr 12):** HOURLY_NO_SIDE_LIVE env var kill switch. Data: BTC NO 40-54c has 53.9% WR (n=1,113, z=2.61, p=0.005), time-split stable (54.8% both halves). Model adds value: rejected NO = 47.0% WR. Structural thesis: crypto long bias overprices YES. Flat 1-contract taker-only verification. -$20 cumulative auto-kill.
+- **Hourly FULLY DISABLED (Apr 18):** Both `HOURLY_LIVE_ENABLED=0` and `HOURLY_NO_SIDE_LIVE=0` on VPS. YES-side was turned off earlier; NO-side verification killed Apr 18 by user. Pre-kill NO-side data: BTC NO 40-54c had 53.9% WR (n=1,113, z=2.61, p=0.005), time-split stable. Kill switches remain in place — re-enable by flipping env vars and restarting service.
 - **STC window:** scan 0-900s, core live 0-300s, extended live 300-600s (per-asset higher floors), shadow 600-900s
 - **STC extended zone:** 300-600s live with higher floors — BTC 93c+, ETH 90c+, SOL 95c+, XRP 92c+ (data: 98.8% WR, n=83)
 - **SOL sub-86c gate:** SOL_LOW_ENTRY_STC_GATE=True — blocks SOL ≤85c at STC≥300s (data: 78.3% WR -$289; near-expiry 100% WR preserved)
 - **STC sizing scaler:** STC_SIZING_SCALER_ENABLED=True — contracts *= 300/STC for 15M at STC>300s. Applied in main pipeline + overnight + weekend discounts. kelly_f stays pure.
 - **LPNE:** LPNE_ENABLED=True — BTC 80-87c near-expiry (STC 10-120s), intercepts at price floor. 50ct fixed. Prob gate: final_prob >= price/100. BTC NBBO gate lowered to 80c. BTC_MIN_ENTRY_PRICE unchanged at 88c.
 - **Position price monitor:** POSITION_PRICE_MONITOR_ENABLED=True — logs yes_ask/bid for held 15M positions via WS (zero API cost). Change-only dedup. New `position_price_observations` table.
-- **Hourly:** LIVE TRADING (HOURLY_LIVE_ENABLED env var kill switch) — sub-60c BTC+ETH only, taker-only IOC, fixed 10-contract sizing, 10% bankroll fraction, max 5% edge cap, STC 600-1800s. Calibration disabled (passthrough+T=1.45). Data: 66.3% WR vs 46.5% breakeven on 1,474 unique tickers (14-day observation). SOL/XRP excluded (XRP 42.9% WR = toxic). Shadow configs h/j/k killed (55% WR).
+- **Hourly:** DISABLED as of Apr 18 (both kill switches 0). Config still defined — sub-60c BTC+ETH only, taker-only IOC, fixed 25-contract sizing, 10% bankroll fraction, max 5% edge cap, STC 600-1800s. Calibration disabled (passthrough+T=1.45). SOL/XRP excluded (XRP 42.9% WR = toxic). To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (NO) in VPS .env + restart.
 - **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — was briefly live Mar 17, reverted due to Polygon 403 breaking vol engine. SPX-D CalEngine, 90c+ floor, eighth-Kelly, no market blend
 - **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 19 cities. WEATHER_NO_SIDE_LIVE = True (NO ≤ 40c, STC ≥ 16h, 1-contract)
 - **Sports:** Observation mode (SPORTS_OBSERVATION_ONLY = True) — hardcoded, never live without explicit promotion. Basketball best group (69.2% WR, n=39), SPRT still CONTINUE_COLLECTING. FIXED Apr 12: 31-day data outage from MLB code mismatch (CHW→CWS, ARI→AZ, OAK→ATH) + LA→LAK broke NHL + hockey un-excluded for playoff data collection
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
 - **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 90c+, STC<=600s, no DC overlap; sub-90c and STC>600s remain shadow
-- **Tests:** 1102 tests across 15+ test files
+- **Tests:** 1174 tests across 15+ test files
 
 ## Key Config Values (bot.py)
 
@@ -248,6 +248,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | BTC_MAX_RISK_PER_TRADE | 0.15 | BTC: 15% per-trade (was 12% — regime cap removal gives full balance) |
 | SOL_MIN_EDGE | 0.010 | SOL-specific edge floor (data: >=1.0% = 94.2% WR on 258 trades; <1.0% drops to 82%) |
 | SOL_TAKER_FIRST | True | SOL bypasses maker entirely, direct IOC at all STC |
+| SOL_RESCUE_CONTRACT_CAP | 25 | SOL rescue sizing clamp (Apr 19: 5 losses avg 56ct × 89c → capped to ~$22/loss from $45-72) |
 | IOC_TICKER_COOLDOWN | 15 | Seconds cooldown per ticker after IOC attempt (was 60) |
 | IOC_RETRY_OFFSET | 1 | Cents above ask for taker-first IOC + retry offset |
 | MAX_CONCURRENT_TAKER_PER_ASSET | 3 | Safety cap on simultaneous taker positions per asset |
@@ -264,13 +265,13 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | OVERNIGHT_DISCOUNT_LIVE | True | Promote overnight discount to live trading (kill switch) |
 | OVERNIGHT_DISCOUNT_MIN_PRICE | 89 | Cents — 89c+ floor for live overnight discount trades |
 | OVERNIGHT_DISCOUNT_MAX_STC | 600 | STC gate for live overnight discount trades |
-| HOURLY_LIVE_ENABLED | env var | Kill switch — must be "1" on VPS to trade (default "0" = observation) |
+| HOURLY_LIVE_ENABLED | env var (0 on VPS as of Apr 18) | Kill switch — must be "1" on VPS to trade (default "0" = observation) |
 | HOURLY_OBSERVATION_ONLY | not HOURLY_LIVE_ENABLED | Derived from kill switch |
 | HOURLY_MAX_ENTRY_PRICE | 59 | Sub-60c only — edge lives at low prices, 70-79c death zone |
 | HOURLY_BANKROLL_FRACTION | 0.10 | Hourly sizes off 10% of balance (like SPX's 0.15) |
 | HOURLY_FIXED_CONTRACTS | 25 | Fixed sizing — bypass Kelly entirely (raised from 10) |
 | HOURLY_MAX_EDGE | 0.05 | Reject >5% edge (10%+ zone has 24.2% WR — edge inversion) |
-| HOURLY_NO_SIDE_LIVE | env var | Kill switch — must be "1" on VPS to trade NO-side (default "0") |
+| HOURLY_NO_SIDE_LIVE | env var (0 on VPS as of Apr 18) | Kill switch — must be "1" on VPS to trade NO-side (default "0") |
 | HOURLY_NO_MIN_PRICE | 40 | Minimum NO entry price (cents) |
 | HOURLY_NO_MAX_PRICE | 54 | Maximum NO entry price (cents) |
 | HOURLY_NO_FIXED_CONTRACTS | 1 | Flat 1-contract — verification mode |
