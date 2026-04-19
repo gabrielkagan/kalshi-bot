@@ -483,20 +483,29 @@ class KalshiSportsDiscovery:
             if not league_cfg.enabled:
                 continue
             try:
-                # NOTE: No status filter — Kalshi removes sports events from
-                # status="open" once games go live. Including all statuses
-                # lets in-progress games into the cache. Old settled games
-                # won't false-match because _event_matches_game requires
-                # BOTH team codes present, and ESPN only reports live games.
-                # limit=500 covers active leagues (MLB ~15-20 games/day × multi-week
-                # window + playoffs); default 100 missed today's games in high-volume
-                # leagues like MLB (100 events = ~5 days of future games).
+                # Two-call strategy: Kalshi puts sports events into separate
+                # statuses — "open" for scheduled/future, "active" (or similar)
+                # for in-progress. A single status filter excludes half. limit=500
+                # returns empty response (Kalshi caps lower than that), so we stay
+                # at default 100 per call and merge two status buckets.
                 resp = self._throttled_api_call(
                     self._client.get_events,
                     series_ticker=league_cfg.series_ticker,
+                    status="open",
                     with_nested_markets=True,
-                    limit=500,
                 )
+                resp_active = self._throttled_api_call(
+                    self._client.get_events,
+                    series_ticker=league_cfg.series_ticker,
+                    status="active",
+                    with_nested_markets=True,
+                )
+                # Merge active into resp so downstream loop handles both
+                if resp_active and "events" in resp_active:
+                    if not resp or "events" not in resp:
+                        resp = resp_active
+                    else:
+                        resp["events"] = resp["events"] + resp_active["events"]
                 if not resp or "events" not in resp:
                     if league_cfg.sport_group in ("basketball", "hockey", "baseball"):
                         logging.info(
