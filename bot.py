@@ -19,7 +19,7 @@ import random
 import logging
 import inspect
 from collections import deque
-from typing import Optional, Dict, List, Set, Tuple
+from typing import Optional, Dict, List, Set, Tuple, Any
 
 import requests
 import websockets
@@ -300,7 +300,7 @@ COINBASE_PRODUCTS = {
     "SOL": "SOL-USD",
     "XRP": "XRP-USD",
 }
-PRICE_BUFFER_SIZE = 300           # 5 minutes of 1-second snapshots
+PRICE_BUFFER_SIZE = 1800          # 30 minutes of 1-second snapshots (extended Apr 19 for Phase 2 features)
 
 # ─── Volatility Engine ───────────────────────────────────────────────────────
 # VOL_RETURN_INTERVAL → config.py
@@ -1632,6 +1632,12 @@ class StateManager:
         # Used by insert_evaluated_opportunity when caller doesn't pass yes_bid_cents explicitly.
         # Bounded by number of unique tickers seen — bot only sees ~10K tickers/day, ~1MB max.
         self._scan_bid_cache: Dict[str, int] = {}
+        # Extended feature provider callback (Phase 2). Scanner attaches this
+        # on construction to enrich insert_evaluated_opportunity rows with
+        # Tier 1/2/3/6 features without threading kwargs through 96 call sites.
+        # Signature: (ticker, asset, spot_price, threshold, product_type) -> Dict[str, Any]
+        # Returns empty dict for non-15M or if no state. Must be fast (called on every insert).
+        self._extended_feature_provider: Optional[Any] = None
         self._create_tables()
         # Seed balance cache from most recent DB value to avoid NULL gap after restart
         try:
@@ -2790,6 +2796,50 @@ class StateManager:
             if prob_breakeven_gap is None: prob_breakeven_gap = _t5["prob_breakeven_gap"]
             if kelly_vs_cap_ratio is None: kelly_vs_cap_ratio = _t5["kelly_vs_cap_ratio"]
             if calibration_confidence is None: calibration_confidence = _t5["calibration_confidence"]
+
+        # ── Auto-compute Tier 1 (window), 2 (momentum), 3 (cross-asset), 6 (bot state) ──
+        # Delegates to scanner-provided callback if set. Only fires for 15M rows;
+        # the provider returns empty dict otherwise. Safe to call with unset provider.
+        if self._extended_feature_provider is not None:
+            try:
+                _ext = self._extended_feature_provider(
+                    ticker, asset, spot_price, threshold, product_type)
+            except Exception as _exc:
+                logging.debug("extended_feature_provider failed for %s: %s", ticker, _exc)
+                _ext = {}
+            if _ext:
+                if minutes_above_strike is None:
+                    minutes_above_strike = _ext.get("minutes_above_strike")
+                if window_max_buf_pct is None:
+                    window_max_buf_pct = _ext.get("window_max_buf_pct")
+                if window_min_buf_pct is None:
+                    window_min_buf_pct = _ext.get("window_min_buf_pct")
+                if recent_crossings_5m is None:
+                    recent_crossings_5m = _ext.get("recent_crossings_5m")
+                if spot_at_window_open is None:
+                    spot_at_window_open = _ext.get("spot_at_window_open")
+                if spot_momentum_60s_bps is None:
+                    spot_momentum_60s_bps = _ext.get("spot_momentum_60s_bps")
+                if spot_momentum_5m_bps is None:
+                    spot_momentum_5m_bps = _ext.get("spot_momentum_5m_bps")
+                if spot_realized_range_15m_bps is None:
+                    spot_realized_range_15m_bps = _ext.get("spot_realized_range_15m_bps")
+                if btc_spot_change_30m_bps is None:
+                    btc_spot_change_30m_bps = _ext.get("btc_spot_change_30m_bps")
+                if btc_spot_change_5m_bps is None:
+                    btc_spot_change_5m_bps = _ext.get("btc_spot_change_5m_bps")
+                if btc_realized_vol_15m is None:
+                    btc_realized_vol_15m = _ext.get("btc_realized_vol_15m")
+                if sol_btc_relative_return_30m_bps is None:
+                    sol_btc_relative_return_30m_bps = _ext.get("sol_btc_relative_return_30m_bps")
+                if active_positions_same_asset is None:
+                    active_positions_same_asset = _ext.get("active_positions_same_asset")
+                if recent_bot_pnl_30m_cents is None:
+                    recent_bot_pnl_30m_cents = _ext.get("recent_bot_pnl_30m_cents")
+                if current_drawdown_pct is None:
+                    current_drawdown_pct = _ext.get("current_drawdown_pct")
+                if recent_ioc_fill_success_rate_1h is None:
+                    recent_ioc_fill_success_rate_1h = _ext.get("recent_ioc_fill_success_rate_1h")
         try:
             self.conn.execute("""
                 INSERT INTO evaluated_opportunities
@@ -6803,6 +6853,19 @@ class OpportunityScanner:
         self._lp_window_counts: Dict[str, int] = {}
         self._lp_hour_signals: Dict[str, int] = {}  # key = "HH" UTC hour string
 
+        # ── Phase 2 extended feature state ──
+        # Per-ticker window state: {ticker: {first_above_since, max_buf, min_buf,
+        #   crossings_deque, spot_at_open, last_above_strike}}.
+        # Bounded: cleaned up when ticker is beyond scan window (hook in scan()).
+        # Max memory: ~100 tickers × ~200 bytes = 20KB.
+        self._window_states: Dict[str, Dict[str, Any]] = {}
+        # Bot state cache: 1-min TTL to avoid SQL contention on every insert.
+        # Keyed by asset for active_positions / bot_pnl / drawdown / ioc_fill_rate.
+        self._bot_state_cache: Dict[str, Any] = {"ts": 0.0, "features_by_asset": {}}
+        # Attach the extended feature provider callback to StateManager so
+        # insert_evaluated_opportunity auto-populates Tier 1/2/3/6 for 15M rows.
+        self._state._extended_feature_provider = self._get_extended_features_for_ticker
+
         # ── Startup assertion: _shadow_diag keys must be accepted by DB insert fns ──
         # Prevents the bug class where a new key in _shadow_diag causes a crash
         # at every **_shadow_diag splat into insert_rejection/insert_evaluated_opportunity.
@@ -6976,6 +7039,300 @@ class OpportunityScanner:
                 **_shadow_diag)
         except Exception:
             logging.warning("insert_evaluated_opportunity failed (hourly_observation_v2)", exc_info=True)
+
+    # ── Phase 2: Extended Feature Computation ─────────────────────────────
+    # These methods populate Tier 1/2/3/6 features on the insert callback.
+    # Called from self._get_extended_features_for_ticker() which is hooked
+    # into StateManager.insert_evaluated_opportunity via _extended_feature_provider.
+
+    def _update_window_state(self, ticker: str, spot: Optional[float],
+                              threshold: Optional[float]) -> None:
+        """Update per-window spot-path state. Call once per scan tick per ticker.
+
+        Tracks: first_above_strike timestamp, max/min buffer seen, crossings
+        in last 5 min, spot at window open, last above/below state.
+        """
+        if spot is None or threshold is None or threshold <= 0:
+            return
+        now = time.time()
+        state = self._window_states.get(ticker)
+        if state is None:
+            # Bound dict size — evict oldest if we hit cap
+            if len(self._window_states) >= 100:
+                oldest = min(self._window_states,
+                             key=lambda k: self._window_states[k].get("last_ts", 0))
+                self._window_states.pop(oldest, None)
+            state = {
+                "spot_at_open": spot,
+                "first_above_since": None,
+                "max_buf": None,
+                "min_buf": None,
+                "crossings": deque(maxlen=50),  # (timestamp,) per crossing event
+                "was_above": None,  # last observed state
+                "last_ts": now,
+            }
+            self._window_states[ticker] = state
+
+        buf_pct = (spot - threshold) / threshold * 100
+        is_above = spot >= threshold
+
+        # Update max/min
+        if state["max_buf"] is None or buf_pct > state["max_buf"]:
+            state["max_buf"] = buf_pct
+        if state["min_buf"] is None or buf_pct < state["min_buf"]:
+            state["min_buf"] = buf_pct
+
+        # Detect crossings (transition between above/below)
+        if state["was_above"] is not None and is_above != state["was_above"]:
+            state["crossings"].append(now)
+        state["was_above"] = is_above
+
+        # Track contiguous time above strike
+        if is_above:
+            if state["first_above_since"] is None:
+                state["first_above_since"] = now
+        else:
+            state["first_above_since"] = None
+
+        state["last_ts"] = now
+
+    def _compute_window_features(self, ticker: str) -> Dict[str, Any]:
+        """Tier 1 features from _window_states."""
+        state = self._window_states.get(ticker)
+        if state is None:
+            return {}
+        now = time.time()
+        minutes_above = None
+        if state.get("first_above_since") is not None:
+            minutes_above = (now - state["first_above_since"]) / 60.0
+        cutoff = now - 300  # 5 min
+        recent_crossings = sum(1 for t in state["crossings"] if t >= cutoff)
+        return {
+            "minutes_above_strike": minutes_above,
+            "window_max_buf_pct": state.get("max_buf"),
+            "window_min_buf_pct": state.get("min_buf"),
+            "recent_crossings_5m": recent_crossings,
+            "spot_at_window_open": state.get("spot_at_open"),
+        }
+
+    def _compute_momentum_features(self, asset: str) -> Dict[str, Any]:
+        """Tier 2: spot momentum from CoinbaseFeed buffer."""
+        try:
+            buf = self._feed.get_buffer(asset)
+        except Exception:
+            return {}
+        if not buf or len(buf) < 2:
+            return {}
+        now = time.time()
+        current_price = buf[-1][1]
+
+        def _price_at(seconds_ago: float) -> Optional[float]:
+            """Find closest buffer entry to (now - seconds_ago)."""
+            target = now - seconds_ago
+            best = None
+            best_dt = float("inf")
+            for ts, price in buf:
+                if ts > now:
+                    continue
+                dt = abs(ts - target)
+                if dt < best_dt:
+                    best_dt = dt
+                    best = price
+                if ts >= target:  # passed target, early exit
+                    break
+            # Tolerate up to 30s mismatch on lookup
+            if best_dt > 30:
+                return None
+            return best
+
+        def _pct_bps(current: Optional[float], past: Optional[float]) -> Optional[float]:
+            if current is None or past is None or past == 0:
+                return None
+            return (current - past) / past * 10000.0
+
+        mom_60s = _pct_bps(current_price, _price_at(60))
+        mom_5m = _pct_bps(current_price, _price_at(300))
+
+        # 15-min range: iterate buffer once
+        cutoff_15m = now - 900
+        prices_15m = [p for t, p in buf if t >= cutoff_15m]
+        range_15m_bps = None
+        if len(prices_15m) >= 2:
+            hi = max(prices_15m)
+            lo = min(prices_15m)
+            mid = (hi + lo) / 2
+            if mid > 0:
+                range_15m_bps = (hi - lo) / mid * 10000.0
+
+        return {
+            "spot_momentum_60s_bps": mom_60s,
+            "spot_momentum_5m_bps": mom_5m,
+            "spot_realized_range_15m_bps": range_15m_bps,
+        }
+
+    def _compute_cross_asset_features(self, asset: str) -> Dict[str, Any]:
+        """Tier 3: BTC momentum + relative return vs BTC.
+
+        For BTC itself, returns BTC self-momentum (still useful). For non-BTC,
+        also computes relative return vs BTC over 30m.
+        """
+        result: Dict[str, Any] = {}
+        try:
+            btc_buf = self._feed.get_buffer("BTC")
+        except Exception:
+            return result
+        if not btc_buf or len(btc_buf) < 2:
+            return result
+        now = time.time()
+        btc_now = btc_buf[-1][1]
+
+        def _price_at(buf_list, seconds_ago: float) -> Optional[float]:
+            target = now - seconds_ago
+            best = None
+            best_dt = float("inf")
+            for ts, price in buf_list:
+                if ts > now:
+                    continue
+                dt = abs(ts - target)
+                if dt < best_dt:
+                    best_dt = dt
+                    best = price
+            if best_dt > 60:
+                return None
+            return best
+
+        def _pct_bps(cur, past):
+            if cur is None or past is None or past == 0:
+                return None
+            return (cur - past) / past * 10000.0
+
+        btc_30m_ago = _price_at(btc_buf, 1800)
+        btc_5m_ago = _price_at(btc_buf, 300)
+        btc_15m_ago = _price_at(btc_buf, 900)
+        result["btc_spot_change_30m_bps"] = _pct_bps(btc_now, btc_30m_ago)
+        result["btc_spot_change_5m_bps"] = _pct_bps(btc_now, btc_5m_ago)
+
+        # BTC realized vol (15m): std of 60s log returns within the window
+        try:
+            cutoff = now - 900
+            recent = [(t, p) for t, p in btc_buf if t >= cutoff]
+            if len(recent) >= 10:
+                # Sample at ~60s intervals by taking every Nth
+                step = max(1, len(recent) // 15)
+                sampled = recent[::step]
+                import math as _math
+                returns = []
+                for i in range(1, len(sampled)):
+                    p0 = sampled[i - 1][1]
+                    p1 = sampled[i][1]
+                    if p0 > 0 and p1 > 0:
+                        returns.append(_math.log(p1 / p0))
+                if len(returns) >= 3:
+                    mean = sum(returns) / len(returns)
+                    var = sum((r - mean) ** 2 for r in returns) / len(returns)
+                    result["btc_realized_vol_15m"] = _math.sqrt(var)
+        except Exception:
+            pass
+
+        # Relative return: non-BTC assets only
+        if asset != "BTC":
+            try:
+                asset_buf = self._feed.get_buffer(asset)
+                if asset_buf and len(asset_buf) >= 2:
+                    asset_now = asset_buf[-1][1]
+                    asset_30m_ago = _price_at(asset_buf, 1800)
+                    asset_ret = _pct_bps(asset_now, asset_30m_ago)
+                    btc_ret = result.get("btc_spot_change_30m_bps")
+                    if asset_ret is not None and btc_ret is not None:
+                        result["sol_btc_relative_return_30m_bps"] = asset_ret - btc_ret
+            except Exception:
+                pass
+
+        return result
+
+    def _compute_bot_state_features(self, asset: str) -> Dict[str, Any]:
+        """Tier 6: active positions, recent PnL, drawdown, IOC fill rate.
+
+        Cached at 1-min resolution to avoid SQL contention on every insert.
+        """
+        now = time.time()
+        cache = self._bot_state_cache
+        if now - cache.get("ts", 0) < 60:
+            return cache.get("features_by_asset", {}).get(asset, {})
+        try:
+            features_by_asset = {}
+            conn = self._state.conn
+            # Active positions per asset
+            pos_rows = conn.execute(
+                "SELECT asset, COUNT(*) FROM positions "
+                "WHERE status IN ('open', 'pending') GROUP BY asset"
+            ).fetchall()
+            pos_counts = {r[0]: r[1] for r in pos_rows}
+
+            # Recent PnL last 30m
+            pnl_row = conn.execute(
+                "SELECT SUM(pnl_cents) FROM settled_trades "
+                "WHERE settled_at > datetime('now', '-30 minutes')"
+            ).fetchone()
+            recent_pnl = pnl_row[0] if pnl_row and pnl_row[0] is not None else 0
+
+            # Drawdown: current_balance vs _session_hwm_balance if tracked, else 0
+            # Use main loop balance tracking if available
+            drawdown_pct = 0.0
+            if self._ml is not None:
+                cur = getattr(self._ml, "_last_known_balance", None)
+                hwm = getattr(self._ml, "_session_hwm_balance", None)
+                if cur is not None and hwm is not None and hwm > 0:
+                    drawdown_pct = max(0.0, (1 - cur / hwm) * 100)
+
+            # IOC fill success rate last 1h: evaluated_opportunities with order_outcome
+            ioc_row = conn.execute(
+                "SELECT SUM(CASE WHEN order_outcome='filled' THEN 1 ELSE 0 END), COUNT(*) "
+                "FROM evaluated_opportunities "
+                "WHERE order_submitted_at > datetime('now', '-1 hour') "
+                "AND order_outcome IS NOT NULL"
+            ).fetchone()
+            ioc_rate = None
+            if ioc_row and ioc_row[1] and ioc_row[1] > 0:
+                ioc_rate = ioc_row[0] / ioc_row[1]
+
+            for a in ASSETS:
+                features_by_asset[a] = {
+                    "active_positions_same_asset": pos_counts.get(a, 0),
+                    "recent_bot_pnl_30m_cents": int(recent_pnl),
+                    "current_drawdown_pct": drawdown_pct,
+                    "recent_ioc_fill_success_rate_1h": ioc_rate,
+                }
+            cache["features_by_asset"] = features_by_asset
+            cache["ts"] = now
+            return features_by_asset.get(asset, {})
+        except Exception as e:
+            logging.debug("bot_state_features compute failed: %s", e)
+            return {}
+
+    def _get_extended_features_for_ticker(
+        self, ticker: str, asset: Optional[str],
+        spot_price: Optional[float], threshold: Optional[float],
+        product_type: Optional[str],
+    ) -> Dict[str, Any]:
+        """Provider callback for StateManager.insert_evaluated_opportunity.
+
+        Returns Tier 1/2/3/6 feature dict for 15M rows only. Fast (no SQL
+        except for bot state which is cached at 1-min). Must not raise.
+        """
+        if product_type not in (None, "15m"):
+            return {}
+        if asset is None:
+            return {}
+        out: Dict[str, Any] = {}
+        try:
+            out.update(self._compute_window_features(ticker))
+            out.update(self._compute_momentum_features(asset))
+            out.update(self._compute_cross_asset_features(asset))
+            out.update(self._compute_bot_state_features(asset))
+        except Exception as e:
+            logging.debug("extended_features compute failed for %s: %s", ticker, e)
+        return out
 
     # ── Public entry point ────────────────────────────────────────────────
 
@@ -7361,6 +7718,10 @@ class OpportunityScanner:
                             except Exception:
                                 logging.debug("threshold_implausible log failed", exc_info=True)
                         continue
+
+                # Phase 2: update per-window spot-path state for 15M (feeds Tier 1 features)
+                if _pt in (None, "15m"):
+                    self._update_window_state(ticker, spot, threshold)
 
                 # Early NBBO price filter for multi-strike events (SPX: 60-400 markets).
                 # Skip probability computation for strikes clearly outside entry range.
