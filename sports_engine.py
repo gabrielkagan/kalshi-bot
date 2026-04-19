@@ -1056,6 +1056,44 @@ def _team_code_in_ticker(code: str, ticker_upper: str) -> bool:
     return False
 
 
+def _parse_orderbook(ob: Optional[Dict]) -> Tuple[List[List], List[List]]:
+    """Normalize Kalshi orderbook response to [[price_cents_int, qty_float], ...].
+
+    Handles both the legacy shape (ob["orderbook"]["yes"|"no"] with integer
+    cent prices) and the fractional-price shape Kalshi migrated to
+    (ob["orderbook_fp"]["yes_dollars"|"no_dollars"] with dollar-decimal
+    string prices). Returns (yes_bids, no_bids).
+    """
+    if not ob:
+        return [], []
+    legacy = ob.get("orderbook")
+    if isinstance(legacy, dict) and ("yes" in legacy or "no" in legacy):
+        return legacy.get("yes") or [], legacy.get("no") or []
+    fp = ob.get("orderbook_fp")
+    if isinstance(fp, dict):
+        def _conv(rows):
+            out = []
+            for r in rows or []:
+                if not r:
+                    continue
+                price = r[0]
+                qty = r[1] if len(r) > 1 else 0
+                if isinstance(price, str):
+                    try:
+                        price = int(round(float(price) * 100))
+                    except ValueError:
+                        continue
+                if isinstance(qty, str):
+                    try:
+                        qty = float(qty)
+                    except ValueError:
+                        qty = 0.0
+                out.append([price, qty])
+            return out
+        return _conv(fp.get("yes_dollars")), _conv(fp.get("no_dollars"))
+    return [], []
+
+
 def _event_matches_game(home_code: str, away_code: str, event_ticker: str,
                          series_ticker: str = "") -> bool:
     """Check if a Kalshi event ticker matches an ESPN game.
@@ -1393,10 +1431,7 @@ class SportsEngine:
                     continue  # Draw market or unrecognized
 
                 ob = self._discovery.get_orderbook_snapshot(ticker)
-                if not ob or "orderbook" not in ob:
-                    continue
-                book = ob["orderbook"]
-                no_bids = book.get("no", [])
+                _, no_bids = _parse_orderbook(ob)
                 if not no_bids:
                     continue
                 best_no_bid = max((b[0] for b in no_bids if b), default=None)
@@ -1469,10 +1504,7 @@ class SportsEngine:
                     continue
 
                 ob = self._discovery.get_orderbook_snapshot(ticker)
-                if not ob or "orderbook" not in ob:
-                    continue
-                book = ob["orderbook"]
-                no_bids = book.get("no", [])
+                _, no_bids = _parse_orderbook(ob)
                 if not no_bids:
                     continue
                 best_no_bid = max((b[0] for b in no_bids if b), default=None)
@@ -1516,26 +1548,22 @@ class SportsEngine:
             for ticker, side in mkts.market_tickers.items():
                 if side == fav_side:
                     ob = self._discovery.get_orderbook_snapshot(ticker)
-                    if ob and "orderbook" in ob:
-                        book = ob["orderbook"]
-                        no_bids = book.get("no", [])
-                        if no_bids:
-                            best_no_bid = max((b[0] for b in no_bids if b), default=None)
-                            if best_no_bid is not None:
-                                return 100 - best_no_bid
+                    _, no_bids = _parse_orderbook(ob)
+                    if no_bids:
+                        best_no_bid = max((b[0] for b in no_bids if b), default=None)
+                        if best_no_bid is not None:
+                            return 100 - best_no_bid
             # Fallback: match team code directly in ticker
             for ticker in mkts.market_tickers:
                 if _team_code_in_ticker(fav_upper, ticker.upper()):
                     ob = self._discovery.get_orderbook_snapshot(ticker)
-                    if ob and "orderbook" in ob:
-                        book = ob["orderbook"]
-                        no_bids = book.get("no", [])
-                        if no_bids:
-                            best_no_bid = max((b[0] for b in no_bids if b), default=None)
-                            if best_no_bid is not None:
-                                # Fix side label for future lookups
-                                mkts.market_tickers[ticker] = fav_side
-                                return 100 - best_no_bid
+                    _, no_bids = _parse_orderbook(ob)
+                    if no_bids:
+                        best_no_bid = max((b[0] for b in no_bids if b), default=None)
+                        if best_no_bid is not None:
+                            # Fix side label for future lookups
+                            mkts.market_tickers[ticker] = fav_side
+                            return 100 - best_no_bid
             logging.debug(
                 "SportsEngine: event %s matched game %s but no fav ticker "
                 "for %s (sides: %s)", event_ticker, game.game_id, fav_code,
@@ -1587,11 +1615,8 @@ class SportsEngine:
                 break
 
             ob = self._discovery.get_orderbook_snapshot(matched_ticker)
-            if ob and "orderbook" in ob:
-                book = ob["orderbook"]
-                yes_bids = book.get("yes", [])
-                no_bids = book.get("no", [])
-
+            yes_bids, no_bids = _parse_orderbook(ob)
+            if yes_bids or no_bids:
                 yes_bid = max((b[0] for b in yes_bids if b), default=None)
                 yes_ask = None
                 if no_bids:

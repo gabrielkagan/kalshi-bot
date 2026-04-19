@@ -2335,6 +2335,63 @@ class TestDCRoutingPriority:
 #     over-reporting the loss by $98.80.
 # ============================================================================
 
+
+class TestSportsOrderbookFpShape:
+    """Kalshi migrated orderbook responses from ob["orderbook"]["yes"|"no"]
+    (integer cent prices) to ob["orderbook_fp"]["yes_dollars"|"no_dollars"]
+    (dollar-decimal strings). All 5 orderbook-parsing sites in sports_engine
+    silently broke — books looked empty, _infer_favorite returned None for
+    every live game, sports_shadow_log had 0 rows for 37+ days.
+
+    The fix routes all parsing through _parse_orderbook(), which accepts
+    both shapes and normalizes to [[cents_int, qty_float], ...]. (Apr 19 2026)
+    """
+
+    def test_parses_fp_shape_to_integer_cents(self):
+        from sports_engine import _parse_orderbook
+        ob = {"orderbook_fp": {
+            "no_dollars": [["0.5500", "1.00"], ["0.7100", "750.00"]],
+            "yes_dollars": [["0.2800", "9703.00"]],
+        }}
+        yes_bids, no_bids = _parse_orderbook(ob)
+        assert [71, 750.0] in no_bids
+        assert [55, 1.0] in no_bids
+        assert [28, 9703.0] in yes_bids
+        best_no = max(b[0] for b in no_bids)
+        assert 100 - best_no == 29
+
+    def test_parses_legacy_shape_unchanged(self):
+        from sports_engine import _parse_orderbook
+        ob = {"orderbook": {"yes": [[28, 9703]], "no": [[71, 750]]}}
+        yes_bids, no_bids = _parse_orderbook(ob)
+        assert no_bids == [[71, 750]]
+        assert yes_bids == [[28, 9703]]
+
+    def test_handles_empty_and_malformed(self):
+        from sports_engine import _parse_orderbook
+        assert _parse_orderbook(None) == ([], [])
+        assert _parse_orderbook({}) == ([], [])
+        assert _parse_orderbook({"orderbook_fp": {}}) == ([], [])
+        bad = {"orderbook_fp": {"no_dollars": [["not-a-number", "1"]],
+                                 "yes_dollars": []}}
+        assert _parse_orderbook(bad) == ([], [])
+
+    def test_no_callers_parse_orderbook_directly(self):
+        """All orderbook parsing in sports_engine must go through
+        _parse_orderbook — a direct ob["orderbook"] access would silently
+        break again if Kalshi renames the key."""
+        fpath = os.path.join(PROJECT_ROOT, "sports_engine.py")
+        with open(fpath) as f:
+            src = f.read()
+        helper_start = src.find("def _parse_orderbook(")
+        helper_end = src.find("\ndef ", helper_start + 1)
+        outside = src[:helper_start] + src[helper_end:]
+        assert '"orderbook"' not in outside, (
+            "Direct ob[\"orderbook\"] reference found outside _parse_orderbook.")
+        assert 'book.get("no", [])' not in outside, (
+            "Direct book.get('no') found — use _parse_orderbook().")
+
+
 class TestSettlementLossCountCheck:
     """The loss-side cross-check must fetch Kalshi fills and auto-correct
     count mismatches the same way the WIN-side path does."""
