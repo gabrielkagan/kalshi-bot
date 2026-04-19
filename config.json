@@ -127,7 +127,7 @@
       "description": "Weather market blend weight"
     },
     "PRICE_BUFFER_SIZE": {
-      "value": 300,
+      "value": 1800,
       "line": 303,
       "description": "CoinbaseFeed price buffer size (seconds of 1s snapshots)"
     },
@@ -353,13 +353,13 @@
       "description": "Price-dependent edge schedule"
     }
   },
-  "_bot_lines": 18797,
+  "_bot_lines": 19158,
   "_exchange_feeds": [
     "CoinbaseFeed",
     "CrossExchangeFeed",
     "KalshiFeed"
   ],
-  "_extracted_at": "2026-04-19T22:26:08Z",
+  "_extracted_at": "2026-04-19T22:34:11Z",
   "_bot_path": "/home/runner/work/kalshi-bot/kalshi-bot/bot.py",
   "_weather": {
     "weather_city_count": 19,
