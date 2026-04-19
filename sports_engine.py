@@ -514,20 +514,23 @@ class KalshiSportsDiscovery:
                             list(resp.keys()) if resp else None)
                     continue
 
-                # Diagnostic: confirm tracked-sport events include today's games.
-                # Bucket event tickers by date prefix to see if today is covered.
+                # Diagnostic: confirm tracked-sport events include today's games
+                # + sample a few today-date tickers to verify team-code format.
                 if league_cfg.sport_group in ("basketball", "hockey", "baseball"):
                     _date_counts: Dict[str, int] = {}
+                    _today_samples = []
+                    _today_prefix = datetime.datetime.utcnow().strftime("%y%b%d").upper()
                     for e in resp["events"]:
                         et = e.get("event_ticker", "")
-                        # Format: KXNBAGAME-<YY><MMM><DD>... → extract "26APR19"
                         parts = et.split("-")
                         if len(parts) >= 2 and len(parts[1]) >= 7:
                             _date_counts[parts[1][:7]] = _date_counts.get(parts[1][:7], 0) + 1
+                            if parts[1].startswith(_today_prefix) and len(_today_samples) < 5:
+                                _today_samples.append(et)
                     logging.info(
-                        "KalshiDiscovery %s: %d events, dates=%s",
+                        "KalshiDiscovery %s: %d events, dates=%s, today_samples=%s",
                         league_cfg.series_ticker, len(resp["events"]),
-                        dict(sorted(_date_counts.items())))
+                        dict(sorted(_date_counts.items())), _today_samples)
 
                 for event in resp["events"]:
                     event_ticker = event.get("event_ticker", "")
