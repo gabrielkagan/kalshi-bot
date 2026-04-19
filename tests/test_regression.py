@@ -2325,3 +2325,52 @@ class TestDCRoutingPriority:
             content = f.read()
         count = content.count('Decided contract taker override')
         assert count == 1, f"DC taker override appears {count} times, expected 1"
+
+
+# ============================================================================
+#  Settlement Loss-Side Count Cross-Check
+#     Bug: _process_settlement only cross-checked count vs Kalshi on WINS
+#     (revenue // 100). LOSSES have revenue=0 so inflated counts went silent.
+#     XRP 26APR190615-15 on Apr 19 2026 reported 208ct vs real 104ct,
+#     over-reporting the loss by $98.80.
+# ============================================================================
+
+class TestSettlementLossCountCheck:
+    """The loss-side cross-check must fetch Kalshi fills and auto-correct
+    count mismatches the same way the WIN-side path does."""
+
+    def test_loss_side_cross_check_present(self):
+        """Ensure _process_settlement has the LOSS + get_fills cross-check."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            src = f.read()
+        assert "SETTLEMENT_LOSS_COUNT_MISMATCH" in src, (
+            "Loss-side count cross-check missing from _process_settlement. "
+            "See XRP 26APR190615-15 Apr 19 2026.")
+        assert 'outcome == "LOSS"' in src and "get_fills(ticker=ticker" in src, (
+            "Loss-side check must call get_fills(ticker=...) on outcome == 'LOSS'")
+
+    def test_loss_side_check_runs_before_pnl_loop(self):
+        """Cross-check must correct aggregate_count BEFORE the per-position
+        PnL loop; otherwise the correction never reaches settled_trades."""
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            lines = f.readlines()
+        loss_check_line = None
+        pnl_loop_line = None
+        in_process_settlement = False
+        for i, line in enumerate(lines):
+            if "def _process_settlement" in line:
+                in_process_settlement = True
+            if not in_process_settlement:
+                continue
+            if "SETTLEMENT_LOSS_COUNT_MISMATCH" in line and loss_check_line is None:
+                loss_check_line = i
+            if "Process each position row independently" in line and pnl_loop_line is None:
+                pnl_loop_line = i
+                break
+        assert loss_check_line is not None, "loss-side check marker not found"
+        assert pnl_loop_line is not None, "PnL loop marker not found"
+        assert loss_check_line < pnl_loop_line, (
+            f"Loss-side cross-check (line {loss_check_line}) must run BEFORE "
+            f"PnL loop (line {pnl_loop_line})")

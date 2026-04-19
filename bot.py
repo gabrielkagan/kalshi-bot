@@ -16365,6 +16365,49 @@ class SettlementTracker:
                         "SETTLEMENT_MULTI_MISMATCH: %s — NOT auto-correcting stacked positions",
                         ticker)
 
+        # Cross-check on LOSSES: revenue=0 gives no count info, so fetch the
+        # authoritative fill count from Kalshi's fills API. Catches IOC-path
+        # double-count bugs that the WIN-side check can't see.
+        # (Learned: XRP 06:15 Apr 19 2026 recorded 208ct local vs 104ct Kalshi
+        # -> $99 over-reported loss; 1 of 2 divergent in 30d/48 IOC losses.)
+        if outcome == "LOSS" and len(positions) == 1 and positions[0].get("is_taker"):
+            try:
+                _fresp = self._client.get_fills(ticker=ticker, limit=200)
+                if _fresp and _fresp.get("fills"):
+                    _local_order_ids = set()
+                    for _r in self._state.conn.execute(
+                        "SELECT order_id FROM pending_orders WHERE ticker=?",
+                        (ticker,)
+                    ).fetchall():
+                        _oid = _r["order_id"] if isinstance(_r, sqlite3.Row) else _r[0]
+                        if _oid:
+                            _local_order_ids.add(_oid)
+                    _kalshi_count = 0
+                    for _f in _fresp["fills"]:
+                        if _f.get("order_id") in _local_order_ids:
+                            _c = fp_str_to_int(_f.get("count_fp")) or int(_f.get("count") or 0)
+                            _kalshi_count += _c
+                    if _kalshi_count > 0 and _kalshi_count != aggregate_count:
+                        logging.error(
+                            f"SETTLEMENT_LOSS_COUNT_MISMATCH {ticker}: "
+                            f"internal={aggregate_count} kalshi={_kalshi_count} "
+                            f"(loss-side cross-check) — auto-correcting")
+                        p = positions[0]
+                        sg = p.get("strategy_group", "main")
+                        corrected_cost = _kalshi_count * p["avg_price_cents"]
+                        self._state.conn.execute(
+                            "UPDATE positions SET count=?, total_cost_cents=? "
+                            "WHERE ticker=? AND strategy_group=?",
+                            (_kalshi_count, corrected_cost, ticker, sg))
+                        p["count"] = _kalshi_count
+                        p["total_cost_cents"] = corrected_cost
+                        aggregate_count = _kalshi_count
+                        aggregate_cost = corrected_cost
+            except Exception:
+                logging.warning(
+                    "Loss-side count cross-check failed for %s", ticker,
+                    exc_info=True)
+
         # Process each position row independently
         combined_pnl = 0
         combined_fee = 0
