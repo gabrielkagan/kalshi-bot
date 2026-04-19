@@ -488,10 +488,14 @@ class KalshiSportsDiscovery:
                 # lets in-progress games into the cache. Old settled games
                 # won't false-match because _event_matches_game requires
                 # BOTH team codes present, and ESPN only reports live games.
+                # limit=500 covers active leagues (MLB ~15-20 games/day × multi-week
+                # window + playoffs); default 100 missed today's games in high-volume
+                # leagues like MLB (100 events = ~5 days of future games).
                 resp = self._throttled_api_call(
                     self._client.get_events,
                     series_ticker=league_cfg.series_ticker,
                     with_nested_markets=True,
+                    limit=500,
                 )
                 if not resp or "events" not in resp:
                     if league_cfg.sport_group in ("basketball", "hockey", "baseball"):
@@ -501,12 +505,20 @@ class KalshiSportsDiscovery:
                             list(resp.keys()) if resp else None)
                     continue
 
-                # Diagnostic: confirm tracked-sport events are fresh
+                # Diagnostic: confirm tracked-sport events include today's games.
+                # Bucket event tickers by date prefix to see if today is covered.
                 if league_cfg.sport_group in ("basketball", "hockey", "baseball"):
-                    _sample = [e.get("event_ticker", "") for e in resp["events"][:3]]
+                    _date_counts: Dict[str, int] = {}
+                    for e in resp["events"]:
+                        et = e.get("event_ticker", "")
+                        # Format: KXNBAGAME-<YY><MMM><DD>... → extract "26APR19"
+                        parts = et.split("-")
+                        if len(parts) >= 2 and len(parts[1]) >= 7:
+                            _date_counts[parts[1][:7]] = _date_counts.get(parts[1][:7], 0) + 1
                     logging.info(
-                        "KalshiDiscovery %s: %d events, sample=%s",
-                        league_cfg.series_ticker, len(resp["events"]), _sample)
+                        "KalshiDiscovery %s: %d events, dates=%s",
+                        league_cfg.series_ticker, len(resp["events"]),
+                        dict(sorted(_date_counts.items())))
 
                 for event in resp["events"]:
                     event_ticker = event.get("event_ticker", "")
