@@ -786,6 +786,147 @@ def get_min_edge(entry_price_cents: int) -> float:
             return min_edge
     return 0.005
 
+
+# ─── Extended Feature Instrumentation (Tier 4 + Tier 5) ───────────────────
+# Feature helpers for per-scan logging to evaluated_opportunities.
+# See kb-research/bot/buffer-rescue-analysis.md for motivation and schema.
+
+# FOMC rate decision announcement days (day 2 of each meeting). Fed publishes
+# schedule annually — update this set each year. Source: federalreserve.gov.
+FOMC_ANNOUNCEMENT_DATES = frozenset([
+    # 2025
+    "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18",
+    "2025-07-30", "2025-09-17", "2025-10-29", "2025-12-10",
+    # 2026
+    "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
+    "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
+])
+
+# CPI monthly release dates (BLS, usually 08:30 ET mid-month). Source: bls.gov.
+CPI_RELEASE_DATES = frozenset([
+    # 2025
+    "2025-01-15", "2025-02-12", "2025-03-12", "2025-04-10",
+    "2025-05-13", "2025-06-11", "2025-07-15", "2025-08-12",
+    "2025-09-11", "2025-10-15", "2025-11-13", "2025-12-10",
+    # 2026
+    "2026-01-14", "2026-02-11", "2026-03-11", "2026-04-14",
+    "2026-05-13", "2026-06-10", "2026-07-15", "2026-08-12",
+    "2026-09-10", "2026-10-15", "2026-11-12", "2026-12-10",
+])
+
+
+def compute_time_regime_features(eval_time_iso: Optional[str] = None) -> Dict[str, Optional[int]]:
+    """Compute Tier 4 (time/regime) features for a timestamp.
+
+    Returns dict with: hour_of_day_utc, day_of_week (Sun=0), is_weekend (0/1),
+    minutes_since_us_open (negative if pre-open), is_fomc_day (0/1),
+    is_cpi_day (0/1). Safe for None/malformed inputs.
+    """
+    null_result = {
+        "hour_of_day_utc": None, "day_of_week": None, "is_weekend": None,
+        "minutes_since_us_open": None, "is_fomc_day": None, "is_cpi_day": None,
+    }
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        return null_result
+
+    if eval_time_iso is None:
+        now_utc = datetime.datetime.now(timezone.utc)
+    else:
+        # Handle 'Z' suffix (Python ISO parsing needs +00:00)
+        s = eval_time_iso.replace("Z", "+00:00")
+        try:
+            now_utc = datetime.datetime.fromisoformat(s)
+        except (ValueError, TypeError):
+            return null_result
+        if now_utc.tzinfo is None:
+            now_utc = now_utc.replace(tzinfo=timezone.utc)
+
+    try:
+        hour_of_day_utc = now_utc.hour
+        # weekday(): Mon=0..Sun=6. Convert to Sun=0, Mon=1, ..., Sat=6.
+        day_of_week = (now_utc.weekday() + 1) % 7
+        is_weekend = 1 if day_of_week in (0, 6) else 0
+
+        # Minutes since US market open (9:30 AM ET). Handles DST automatically.
+        et = now_utc.astimezone(ZoneInfo("America/New_York"))
+        us_open = et.replace(hour=9, minute=30, second=0, microsecond=0)
+        minutes_since_us_open = int((et - us_open).total_seconds() / 60)
+
+        date_str = now_utc.strftime("%Y-%m-%d")
+        is_fomc_day = 1 if date_str in FOMC_ANNOUNCEMENT_DATES else 0
+        is_cpi_day = 1 if date_str in CPI_RELEASE_DATES else 0
+
+        return {
+            "hour_of_day_utc": hour_of_day_utc,
+            "day_of_week": day_of_week,
+            "is_weekend": is_weekend,
+            "minutes_since_us_open": minutes_since_us_open,
+            "is_fomc_day": is_fomc_day,
+            "is_cpi_day": is_cpi_day,
+        }
+    except Exception:
+        return null_result
+
+
+def compute_derived_features(
+    spot_price: Optional[float] = None,
+    threshold: Optional[float] = None,
+    volatility: Optional[float] = None,
+    seconds_to_close: Optional[float] = None,
+    calibrated_prob: Optional[float] = None,
+    market_price_cents: Optional[int] = None,
+    kelly_contracts: Optional[int] = None,
+    sol_rescue_cap: int = 25,
+    n_recent_cal_trades: Optional[int] = None,
+) -> Dict[str, Optional[float]]:
+    """Compute Tier 5 (derived) features from existing columns.
+
+    - spot_distance_to_strike_sigma: buf_pct / (sqrt(vol × STC) × 100).
+      How many σ of remaining-time vol the buffer covers. Principled
+      dynamic-buffer measure.
+    - prob_breakeven_gap: calibrated_prob − market_price/100. Model's
+      conviction above breakeven.
+    - kelly_vs_cap_ratio: kelly_contracts / SOL_RESCUE_CONTRACT_CAP.
+      Proxy for "how aggressive Kelly wanted to be" on SOL in rescue zone.
+    - calibration_confidence: n_recent_cal_trades / 100 (capped at 1.0).
+      How trained the active CalEngine is.
+
+    All features return None on missing/invalid inputs.
+    """
+    sigma = None
+    if (spot_price is not None and threshold is not None and threshold > 0
+            and volatility is not None and volatility > 0
+            and seconds_to_close is not None and seconds_to_close > 0):
+        buf_pct = (spot_price - threshold) / threshold * 100
+        try:
+            sigma_denom = math.sqrt(volatility * seconds_to_close) * 100
+            if sigma_denom > 0:
+                sigma = buf_pct / sigma_denom
+        except (ValueError, ZeroDivisionError):
+            pass
+
+    gap = None
+    if calibrated_prob is not None and market_price_cents is not None:
+        gap = calibrated_prob - (market_price_cents / 100.0)
+
+    ratio = None
+    if kelly_contracts is not None and sol_rescue_cap > 0:
+        ratio = kelly_contracts / sol_rescue_cap
+
+    conf = None
+    if n_recent_cal_trades is not None and n_recent_cal_trades >= 0:
+        conf = min(n_recent_cal_trades / 100.0, 1.0)
+
+    return {
+        "spot_distance_to_strike_sigma": sigma,
+        "prob_breakeven_gap": gap,
+        "kelly_vs_cap_ratio": ratio,
+        "calibration_confidence": conf,
+    }
+
+
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
 BALANCE_CACHE_TTL = 10.0          # seconds to cache balance
@@ -1921,6 +2062,39 @@ class StateManager:
             ("no_ask_cents", "INTEGER"),
             # YES bid at scan time — for buy-low-sell-higher and exit price analysis
             ("yes_bid_cents", "INTEGER"),
+            # ── Extended feature instrumentation (Apr 19, Phase 1+2) ──
+            # Tier 1: window/spot-path state (populated in Phase 2)
+            ("minutes_above_strike", "REAL"),
+            ("window_max_buf_pct", "REAL"),
+            ("window_min_buf_pct", "REAL"),
+            ("recent_crossings_5m", "INTEGER"),
+            ("spot_at_window_open", "REAL"),
+            # Tier 2: spot momentum (populated in Phase 2)
+            ("spot_momentum_60s_bps", "REAL"),
+            ("spot_momentum_5m_bps", "REAL"),
+            ("spot_realized_range_15m_bps", "REAL"),
+            # Tier 3: cross-asset (populated in Phase 2)
+            ("btc_spot_change_30m_bps", "REAL"),
+            ("btc_spot_change_5m_bps", "REAL"),
+            ("btc_realized_vol_15m", "REAL"),
+            ("sol_btc_relative_return_30m_bps", "REAL"),
+            # Tier 4: time/regime (populated in Phase 1, fully backfillable)
+            ("hour_of_day_utc", "INTEGER"),
+            ("day_of_week", "INTEGER"),
+            ("is_weekend", "INTEGER"),
+            ("minutes_since_us_open", "INTEGER"),
+            ("is_fomc_day", "INTEGER"),
+            ("is_cpi_day", "INTEGER"),
+            # Tier 5: derived (populated in Phase 1, backfillable from existing cols)
+            ("spot_distance_to_strike_sigma", "REAL"),
+            ("prob_breakeven_gap", "REAL"),
+            ("kelly_vs_cap_ratio", "REAL"),
+            ("calibration_confidence", "REAL"),
+            # Tier 6: bot state (populated in Phase 2)
+            ("active_positions_same_asset", "INTEGER"),
+            ("recent_bot_pnl_30m_cents", "INTEGER"),
+            ("current_drawdown_pct", "REAL"),
+            ("recent_ioc_fill_success_rate_1h", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2544,7 +2718,40 @@ class StateManager:
                                      order_outcome: Optional[str] = None,
                                      side: str = "yes",
                                      no_ask_cents: Optional[int] = None,
-                                     yes_bid_cents: Optional[int] = None):
+                                     yes_bid_cents: Optional[int] = None,
+                                     # ── Extended feature instrumentation (Apr 19) ──
+                                     # Tier 1: window/spot-path (populated in Phase 2)
+                                     minutes_above_strike: Optional[float] = None,
+                                     window_max_buf_pct: Optional[float] = None,
+                                     window_min_buf_pct: Optional[float] = None,
+                                     recent_crossings_5m: Optional[int] = None,
+                                     spot_at_window_open: Optional[float] = None,
+                                     # Tier 2: spot momentum (populated in Phase 2)
+                                     spot_momentum_60s_bps: Optional[float] = None,
+                                     spot_momentum_5m_bps: Optional[float] = None,
+                                     spot_realized_range_15m_bps: Optional[float] = None,
+                                     # Tier 3: cross-asset (populated in Phase 2)
+                                     btc_spot_change_30m_bps: Optional[float] = None,
+                                     btc_spot_change_5m_bps: Optional[float] = None,
+                                     btc_realized_vol_15m: Optional[float] = None,
+                                     sol_btc_relative_return_30m_bps: Optional[float] = None,
+                                     # Tier 4: time/regime (Phase 1)
+                                     hour_of_day_utc: Optional[int] = None,
+                                     day_of_week: Optional[int] = None,
+                                     is_weekend: Optional[int] = None,
+                                     minutes_since_us_open: Optional[int] = None,
+                                     is_fomc_day: Optional[int] = None,
+                                     is_cpi_day: Optional[int] = None,
+                                     # Tier 5: derived (Phase 1)
+                                     spot_distance_to_strike_sigma: Optional[float] = None,
+                                     prob_breakeven_gap: Optional[float] = None,
+                                     kelly_vs_cap_ratio: Optional[float] = None,
+                                     calibration_confidence: Optional[float] = None,
+                                     # Tier 6: bot state (populated in Phase 2)
+                                     active_positions_same_asset: Optional[int] = None,
+                                     recent_bot_pnl_30m_cents: Optional[int] = None,
+                                     current_drawdown_pct: Optional[float] = None,
+                                     recent_ioc_fill_success_rate_1h: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -2557,6 +2764,32 @@ class StateManager:
         if yes_bid_cents is None:
             yes_bid_cents = self._scan_bid_cache.get(ticker)
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        # ── Auto-compute Tier 4 (time/regime) + Tier 5 (derived) features ──
+        # Computed once per row at insert time from the caller's kwargs + 'now'.
+        # Avoids threading through 56 call sites. Caller can still override by
+        # passing any feature explicitly (non-None value wins).
+        if any(v is None for v in (hour_of_day_utc, day_of_week, is_weekend,
+                                    minutes_since_us_open, is_fomc_day, is_cpi_day)):
+            _t4 = compute_time_regime_features(now)
+            if hour_of_day_utc is None: hour_of_day_utc = _t4["hour_of_day_utc"]
+            if day_of_week is None: day_of_week = _t4["day_of_week"]
+            if is_weekend is None: is_weekend = _t4["is_weekend"]
+            if minutes_since_us_open is None: minutes_since_us_open = _t4["minutes_since_us_open"]
+            if is_fomc_day is None: is_fomc_day = _t4["is_fomc_day"]
+            if is_cpi_day is None: is_cpi_day = _t4["is_cpi_day"]
+        if any(v is None for v in (spot_distance_to_strike_sigma, prob_breakeven_gap,
+                                    kelly_vs_cap_ratio, calibration_confidence)):
+            _t5 = compute_derived_features(
+                spot_price=spot_price, threshold=threshold, volatility=volatility,
+                seconds_to_close=seconds_to_close, calibrated_prob=calibrated_prob,
+                market_price_cents=market_price, kelly_contracts=position_size,
+                sol_rescue_cap=SOL_RESCUE_CONTRACT_CAP, n_recent_cal_trades=None,
+            )
+            if spot_distance_to_strike_sigma is None: spot_distance_to_strike_sigma = _t5["spot_distance_to_strike_sigma"]
+            if prob_breakeven_gap is None: prob_breakeven_gap = _t5["prob_breakeven_gap"]
+            if kelly_vs_cap_ratio is None: kelly_vs_cap_ratio = _t5["kelly_vs_cap_ratio"]
+            if calibration_confidence is None: calibration_confidence = _t5["calibration_confidence"]
         try:
             self.conn.execute("""
                 INSERT INTO evaluated_opportunities
@@ -2587,8 +2820,19 @@ class StateManager:
                      hourly_post_temp_prob,
                      available_balance_cents,
                      order_id, order_submitted_at, order_outcome,
-                     side, no_ask_cents, yes_bid_cents)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     side, no_ask_cents, yes_bid_cents,
+                     minutes_above_strike, window_max_buf_pct, window_min_buf_pct,
+                     recent_crossings_5m, spot_at_window_open,
+                     spot_momentum_60s_bps, spot_momentum_5m_bps, spot_realized_range_15m_bps,
+                     btc_spot_change_30m_bps, btc_spot_change_5m_bps, btc_realized_vol_15m,
+                     sol_btc_relative_return_30m_bps,
+                     hour_of_day_utc, day_of_week, is_weekend, minutes_since_us_open,
+                     is_fomc_day, is_cpi_day,
+                     spot_distance_to_strike_sigma, prob_breakeven_gap,
+                     kelly_vs_cap_ratio, calibration_confidence,
+                     active_positions_same_asset, recent_bot_pnl_30m_cents,
+                     current_drawdown_pct, recent_ioc_fill_success_rate_1h)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -2651,7 +2895,33 @@ class StateManager:
                     hourly_post_temp_prob=excluded.hourly_post_temp_prob,
                     available_balance_cents=excluded.available_balance_cents,
                     no_ask_cents=excluded.no_ask_cents,
-                    yes_bid_cents=excluded.yes_bid_cents
+                    yes_bid_cents=excluded.yes_bid_cents,
+                    minutes_above_strike=excluded.minutes_above_strike,
+                    window_max_buf_pct=excluded.window_max_buf_pct,
+                    window_min_buf_pct=excluded.window_min_buf_pct,
+                    recent_crossings_5m=excluded.recent_crossings_5m,
+                    spot_at_window_open=excluded.spot_at_window_open,
+                    spot_momentum_60s_bps=excluded.spot_momentum_60s_bps,
+                    spot_momentum_5m_bps=excluded.spot_momentum_5m_bps,
+                    spot_realized_range_15m_bps=excluded.spot_realized_range_15m_bps,
+                    btc_spot_change_30m_bps=excluded.btc_spot_change_30m_bps,
+                    btc_spot_change_5m_bps=excluded.btc_spot_change_5m_bps,
+                    btc_realized_vol_15m=excluded.btc_realized_vol_15m,
+                    sol_btc_relative_return_30m_bps=excluded.sol_btc_relative_return_30m_bps,
+                    hour_of_day_utc=excluded.hour_of_day_utc,
+                    day_of_week=excluded.day_of_week,
+                    is_weekend=excluded.is_weekend,
+                    minutes_since_us_open=excluded.minutes_since_us_open,
+                    is_fomc_day=excluded.is_fomc_day,
+                    is_cpi_day=excluded.is_cpi_day,
+                    spot_distance_to_strike_sigma=excluded.spot_distance_to_strike_sigma,
+                    prob_breakeven_gap=excluded.prob_breakeven_gap,
+                    kelly_vs_cap_ratio=excluded.kelly_vs_cap_ratio,
+                    calibration_confidence=excluded.calibration_confidence,
+                    active_positions_same_asset=excluded.active_positions_same_asset,
+                    recent_bot_pnl_30m_cents=excluded.recent_bot_pnl_30m_cents,
+                    current_drawdown_pct=excluded.current_drawdown_pct,
+                    recent_ioc_fill_success_rate_1h=excluded.recent_ioc_fill_success_rate_1h
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -2679,7 +2949,18 @@ class StateManager:
                   hourly_post_temp_prob,
                   available_balance_cents,
                   order_id, order_submitted_at, order_outcome,
-                  side, no_ask_cents, yes_bid_cents))
+                  side, no_ask_cents, yes_bid_cents,
+                  minutes_above_strike, window_max_buf_pct, window_min_buf_pct,
+                  recent_crossings_5m, spot_at_window_open,
+                  spot_momentum_60s_bps, spot_momentum_5m_bps, spot_realized_range_15m_bps,
+                  btc_spot_change_30m_bps, btc_spot_change_5m_bps, btc_realized_vol_15m,
+                  sol_btc_relative_return_30m_bps,
+                  hour_of_day_utc, day_of_week, is_weekend, minutes_since_us_open,
+                  is_fomc_day, is_cpi_day,
+                  spot_distance_to_strike_sigma, prob_breakeven_gap,
+                  kelly_vs_cap_ratio, calibration_confidence,
+                  active_positions_same_asset, recent_bot_pnl_30m_cents,
+                  current_drawdown_pct, recent_ioc_fill_success_rate_1h))
             self.conn.commit()
         except Exception as e:
             try:
