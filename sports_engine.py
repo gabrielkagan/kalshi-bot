@@ -483,10 +483,14 @@ class KalshiSportsDiscovery:
             if not league_cfg.enabled:
                 continue
             try:
+                # NOTE: No status filter — Kalshi removes sports events from
+                # status="open" once games go live. Including all statuses
+                # lets in-progress games into the cache. Old settled games
+                # won't false-match because _event_matches_game requires
+                # BOTH team codes present, and ESPN only reports live games.
                 resp = self._throttled_api_call(
                     self._client.get_events,
                     series_ticker=league_cfg.series_ticker,
-                    status="open",
                     with_nested_markets=True,
                 )
                 if not resp or "events" not in resp:
