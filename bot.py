@@ -241,6 +241,7 @@ WEATHER_NO_SHADOW_MIN_YES_PROB = 0.55  # Only shadow when model is confident YES
 # Gate: STC >= 8h (short STC NO loses), fixed 1-contract sizing, all 19 cities.
 WEATHER_NO_SIDE_LIVE = True              # LIVE — NO ≤ 40c, STC ≥ 16h, 1-contract
 WEATHER_NO_SIDE_MIN_STC = 57600.0        # 16 hours — tightened from 8h (data: 77.1% WR at 16-24h, 32.5% at 0-8h)
+WEATHER_NO_MIN_PRICE = 36                # Data Apr 20: sub-36c cohort 4/33 = 12.1% WR, Wilson UB 27.7% < 40% breakeven
 WEATHER_NO_MAX_PRICE = 40                # Only buy NO contracts priced ≤ 40c (YES ≥ 60c)
 WEATHER_NO_ASSUMED_PROB = 0.70           # Bypass model (structurally wrong on NO). Shadow: 79.7% WR, worst week 74%
 WEATHER_NO_KILL_THRESHOLD = -2000        # Auto-disable if cumulative NO PnL drops below -$20
@@ -12590,6 +12591,7 @@ class OpportunityScanner:
                         and WEATHER_NO_SIDE_LIVE
                         and candidates is not None
                         and stc >= WEATHER_NO_SIDE_MIN_STC
+                        and no_price >= WEATHER_NO_MIN_PRICE
                         and no_price <= WEATHER_NO_MAX_PRICE):
                     _wnl_assumed_edge = WEATHER_NO_ASSUMED_PROB - no_price / 100.0 - no_fee_1c / 100.0
                     if _wnl_assumed_edge > 0:

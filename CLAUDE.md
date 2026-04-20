@@ -205,7 +205,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **Position price monitor:** POSITION_PRICE_MONITOR_ENABLED=True — logs yes_ask/bid for held 15M positions via WS (zero API cost). Change-only dedup. New `position_price_observations` table.
 - **Hourly:** DISABLED as of Apr 18 (both kill switches 0). Config still defined — sub-60c BTC+ETH only, taker-only IOC, fixed 25-contract sizing, 10% bankroll fraction, max 5% edge cap, STC 600-1800s. Calibration disabled (passthrough+T=1.45). SOL/XRP excluded (XRP 42.9% WR = toxic). To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (NO) in VPS .env + restart.
 - **SPX Hourly:** Observation mode (SPX_HOURLY_OBSERVATION_ONLY = True) — was briefly live Mar 17, reverted due to Polygon 403 breaking vol engine. SPX-D CalEngine, 90c+ floor, eighth-Kelly, no market blend
-- **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 19 cities. WEATHER_NO_SIDE_LIVE = True (NO ≤ 40c, STC ≥ 16h, 1-contract)
+- **Weather:** Observation mode (WEATHER_OBSERVATION_ONLY = True) — NWP ensemble model (GFS+ECMWF, 82 members), 19 cities. WEATHER_NO_SIDE_LIVE = True (NO 36-40c, STC ≥ 16h, 1-contract). 36c floor added Apr 20 (data: sub-36c cohort 4/33 = 12.1% WR, Wilson UB 27.7% < 40% breakeven)
 - **Sports:** Observation mode (SPORTS_OBSERVATION_ONLY = True) — hardcoded, never live without explicit promotion. Basketball best group (69.2% WR, n=39), SPRT still CONTINUE_COLLECTING. FIXED Apr 12: 31-day data outage from MLB code mismatch (CHW→CWS, ARI→AZ, OAK→ATH) + LA→LAK broke NHL + hockey un-excluded for playoff data collection
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
@@ -309,7 +309,8 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | WEATHER_KELLY_FRACTION | 0.25 | Quarter-Kelly |
 | WEATHER_MIN_SECONDS_BEFORE_CLOSE | 3600 | At least 1 hour before settlement |
 | WEATHER_MAX_SECONDS_BEFORE_CLOSE | 86400 | Weather settles daily — always eligible |
-| WEATHER_NO_SIDE_LIVE | True | LIVE — NO ≤ 40c, STC ≥ 16h, 1-contract |
+| WEATHER_NO_SIDE_LIVE | True | LIVE — NO 36-40c, STC ≥ 16h, 1-contract |
+| WEATHER_NO_MIN_PRICE | 36 | Floor added Apr 20 — sub-36c cohort 4/33 = 12.1% WR backtest |
 | WEEKEND_DISCOUNT_LIVE | True | Weekend edge discount promoted to live (Sat/Sun only) |
 | WEEKEND_DISCOUNT_MIN_PRICE | 90 | Cents — 90c+ floor for live weekend discount trades (raised from 89 to match ETH floor) |
 | WEEKEND_DISCOUNT_MAX_STC | 600 | STC gate for live weekend discount trades |
