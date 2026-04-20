@@ -304,7 +304,7 @@ class SupabaseSyncer:
         ("MSY_TEMP", "New Orleans", "KXHIGHTNOLA"),
         ("NYC_TEMP", "New York", "KXHIGHNY"),
         ("OKC_TEMP", "Oklahoma City", "KXHIGHTOKC"),
-        ("PHIL_TEMP", "Philadelphia", "KXHIGHPHIL"),
+        ("PHI_TEMP", "Philadelphia", "KXHIGHPHIL"),
         ("PHX_TEMP", "Phoenix", "KXHIGHTPHX"),
         ("SEA_TEMP", "Seattle", "KXHIGHTSEA"),
         ("SFO_TEMP", "San Francisco", "KXHIGHTSFO"),
