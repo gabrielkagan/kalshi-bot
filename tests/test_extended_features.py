@@ -130,14 +130,19 @@ class TestDerivedFeatures(unittest.TestCase):
 
     def test_sigma_normalized_buffer_basic(self):
         # Known values: spot 85.28, threshold 85.0665, vol 8.83e-5, STC 598.6
+        # vol is per-5s stdev of log returns (blended_rv convention).
         # buf_pct = (85.28 - 85.0665) / 85.0665 × 100 = 0.2510%
-        # sigma_denom = sqrt(8.83e-5 × 598.6) × 100 = 22.99
-        # result ≈ 0.2510 / 22.99 ≈ 0.01092
+        # sigma_denom = 8.83e-5 × sqrt(598.6/5) × 100 = 0.0966
+        # result ≈ 0.2510 / 0.0966 ≈ 2.598
+        # Cross-check: sigma_move from certainty_score formula (spot × vol ×
+        # sqrt(STC/5)) gives (85.28-85.07)/(85.28 × 8.83e-5 × sqrt(119.72))
+        # ≈ 2.55 — close, small gap because that version normalizes by spot
+        # while this one normalizes by threshold.
         r = compute_derived_features(
             spot_price=85.28, threshold=85.0665,
             volatility=8.83e-5, seconds_to_close=598.6,
         )
-        self.assertAlmostEqual(r["spot_distance_to_strike_sigma"], 0.01092, places=3)
+        self.assertAlmostEqual(r["spot_distance_to_strike_sigma"], 2.598, places=2)
 
     def test_sigma_normalized_buffer_handles_zero_threshold(self):
         r = compute_derived_features(

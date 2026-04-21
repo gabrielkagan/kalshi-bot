@@ -884,9 +884,11 @@ def compute_derived_features(
 ) -> Dict[str, Optional[float]]:
     """Compute Tier 5 (derived) features from existing columns.
 
-    - spot_distance_to_strike_sigma: buf_pct / (sqrt(vol × STC) × 100).
-      How many σ of remaining-time vol the buffer covers. Principled
-      dynamic-buffer measure.
+    - spot_distance_to_strike_sigma: buf_pct / (vol × sqrt(STC/5) × 100).
+      How many σ of remaining-time vol the buffer covers. `volatility` is
+      `blended_rv` — per-5-second stdev of log returns — so STC scales by
+      sqrt(STC/5) not sqrt(STC), matching the sigma_move convention at
+      certainty_score (spot × blended_rv × sqrt(remaining/5)).
     - prob_breakeven_gap: calibrated_prob − market_price/100. Model's
       conviction above breakeven.
     - kelly_vs_cap_ratio: kelly_contracts / SOL_RESCUE_CONTRACT_CAP.
@@ -902,7 +904,7 @@ def compute_derived_features(
             and seconds_to_close is not None and seconds_to_close > 0):
         buf_pct = (spot_price - threshold) / threshold * 100
         try:
-            sigma_denom = math.sqrt(volatility * seconds_to_close) * 100
+            sigma_denom = volatility * math.sqrt(seconds_to_close / 5.0) * 100
             if sigma_denom > 0:
                 sigma = buf_pct / sigma_denom
         except (ValueError, ZeroDivisionError):

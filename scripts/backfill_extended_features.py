@@ -10,7 +10,7 @@ Tier 4 fields populated from `evaluation_time` column (pure timestamp derivation
     is_fomc_day, is_cpi_day
 
 Tier 5 fields populated from existing columns:
-    spot_distance_to_strike_sigma  = buf_pct / (sqrt(vol × STC) × 100)
+    spot_distance_to_strike_sigma  = buf_pct / (vol × sqrt(STC/5) × 100)
     prob_breakeven_gap             = calibrated_prob − market_price/100
     kelly_vs_cap_ratio             = position_size / SOL_RESCUE_CONTRACT_CAP
     (calibration_confidence left NULL — requires CalEngine state history)
@@ -18,6 +18,10 @@ Tier 5 fields populated from existing columns:
 Tier 1/2/3/6 are NOT backfilled (require forward instrumentation).
 
 UPDATE batches of ≤50 rows per commit (DB contention rule).
+
+--force-sigma-recompute recomputes spot_distance_to_strike_sigma for rows
+that already have a value (used to fix the Apr 21 formula scale bug that
+stored values ~240× too small).
 """
 
 import argparse
@@ -47,18 +51,32 @@ def open_conn(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def fetch_candidates(conn: sqlite3.Connection, limit: int = None) -> list:
+def fetch_candidates(conn: sqlite3.Connection, limit: int = None,
+                     force_sigma_recompute: bool = False) -> list:
     """Fetch rows where ANY of the Tier 4/5 columns is NULL.
 
-    Most existing rows will need backfill since these cols were added today.
+    With --force-sigma-recompute, also re-fetch rows where
+    spot_distance_to_strike_sigma is already populated (to recompute
+    under the corrected formula).
     """
-    sql = """
+    if force_sigma_recompute:
+        where_clause = """
+             WHERE hour_of_day_utc IS NULL
+                OR spot_distance_to_strike_sigma IS NULL
+                OR prob_breakeven_gap IS NULL
+                OR spot_distance_to_strike_sigma IS NOT NULL
+        """
+    else:
+        where_clause = """
+             WHERE hour_of_day_utc IS NULL
+                OR spot_distance_to_strike_sigma IS NULL
+                OR prob_breakeven_gap IS NULL
+        """
+    sql = f"""
         SELECT id, evaluation_time, spot_price, threshold, volatility,
                seconds_to_close, calibrated_prob, market_price, position_size
           FROM evaluated_opportunities
-         WHERE hour_of_day_utc IS NULL
-            OR spot_distance_to_strike_sigma IS NULL
-            OR prob_breakeven_gap IS NULL
+        {where_clause}
     """
     if limit:
         sql += f" LIMIT {int(limit)}"
@@ -103,11 +121,14 @@ def apply_batch(conn: sqlite3.Connection, features: list, dry_run: bool = False)
     return len(features)
 
 
-def run(db_path: str, dry_run: bool, limit: int = None) -> None:
+def run(db_path: str, dry_run: bool, limit: int = None,
+        force_sigma_recompute: bool = False) -> None:
     conn = open_conn(db_path)
-    print(f"Opened {db_path} (dry_run={dry_run}, limit={limit})")
+    print(f"Opened {db_path} (dry_run={dry_run}, limit={limit}, "
+          f"force_sigma_recompute={force_sigma_recompute})")
 
-    rows = fetch_candidates(conn, limit=limit)
+    rows = fetch_candidates(conn, limit=limit,
+                            force_sigma_recompute=force_sigma_recompute)
     print(f"Found {len(rows)} rows needing backfill")
     if not rows:
         print("Nothing to do")
@@ -139,11 +160,15 @@ def main() -> int:
                     help="Compute but don't UPDATE")
     ap.add_argument("--limit", type=int, default=None,
                     help="Limit rows processed (for testing)")
+    ap.add_argument("--force-sigma-recompute", action="store_true",
+                    help="Recompute spot_distance_to_strike_sigma on rows "
+                         "that already have a value (fixes Apr 21 scale bug)")
     args = ap.parse_args()
     if not os.path.exists(args.db):
         print(f"ERROR: db not found: {args.db}", file=sys.stderr)
         return 1
-    run(args.db, dry_run=args.dry_run, limit=args.limit)
+    run(args.db, dry_run=args.dry_run, limit=args.limit,
+        force_sigma_recompute=args.force_sigma_recompute)
     return 0
 
 
