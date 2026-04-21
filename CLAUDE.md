@@ -192,7 +192,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **15M live assets:** BTC (88c+), ETH (75c+, 50-contract cap sub-80c), SOL (86c+, taker-first), XRP (92c+)
 - **XRP_15M_SHADOW = False** — XRP promoted to live at 92c+ (data: 41W/2L, 95.3% WR)
 - **SOL_TAKER_FIRST = True** — SOL bypasses maker entirely, direct IOC at all STC
-- **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c), T2-Z2 (z≤-2, 93-96c) all enabled as incremental overlay
+- **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c) — **T2-Z2 SHADOWED** (commit 97a365f Apr 1, -$313 on 47 trades, no structural edge in z∈[-2.5,-1.75]). All live tiers use 20% fixed sizing. See `kb/concepts/dc-strategy.md` for canonical reference.
 - **Overnight discount LIVE:** OVERNIGHT_DISCOUNT_LIVE=True on weekday 04-11 UTC — 89c+, STC<=600s, no DC overlap; sub-89c and STC>600s remain shadow
 - **Loss burst cooldown LIVE (Apr 11):** LOSS_COOLDOWN_ENABLED=True, per-asset 2h lockout after any 15M loss. Data: 53/82 losses (30d) in 15 bursts, counterfactual +$441/30d. First-ship is per-asset (conservative); escalate to global if cross-asset correlation persists.
 - **Weather NO-side unblocked (Apr 11):** Live NO candidate block was nested inside broken model-edge gate → 0 trades Apr 4-11. Unnested; should fire on NO≤40c, STC≥16h, assumed-prob 0.70. See kb/failures/weather-no-candidate-never-fires.md
@@ -210,7 +210,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
 - **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 90c+, STC<=600s, no DC overlap; sub-90c and STC>600s remain shadow
-- **Tests:** 1229 tests across 15+ test files
+- **Tests:** 1336 tests across 15+ test files
 
 ## Key Config Values (bot.py)
 
@@ -259,9 +259,13 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 | DECIDED_T1B_ENABLED | True | Decided contract overlay: z≤-4, 95c+ (env var) |
 | DECIDED_T2_ENABLED | True | Decided contract overlay: z≤-3, 93-96c (env var) |
 | DECIDED_T2_Z25_ENABLED | True | Decided contract overlay: z≤-2.5, 93-96c (env var, data: 7/7 WR) |
-| DECIDED_T2_Z2_ENABLED | True | Decided contract overlay: z≤-2, 93-96c (env var, data: 19/19 WR) |
-| DECIDED_CONTRACT_T2_Z25_RISK | 0.15 | T2-Z25 fixed sizing (15% — deeper z, higher confidence) |
-| DECIDED_CONTRACT_T2_Z2_RISK | 0.125 | T2-Z2 fixed sizing (12.5% — shallower z, more conservative) |
+| DECIDED_T2_Z2_ENABLED | False (default "0") | **SHADOWED** Apr 1 — z∈[-2.5,-1.75], -$313 on 47 trades, last fire Mar 31 |
+| DECIDED_CONTRACT_Z_T2_Z2 | -1.75 | T2-Z2 expanded from -2.0 pre-shadow (data: 114/115 = 99.1% WR in -2.0 to -1.75) |
+| DECIDED_CONTRACT_RISK | 0.20 | Fixed 20% bankroll per signal for T1/T1B/T2 (was 12.5% pre-3d03e20) |
+| DECIDED_CONTRACT_T2_Z25_RISK | 0.10 | T2-Z25 fixed sizing (cut from 0.20 Apr 21 — 14d bleed -$95, Apr 21 XRP -$132) |
+| DECIDED_CONTRACT_T2_Z2_RISK | 0.20 | T2-Z2 fixed sizing (moot — shadowed) |
+| DECIDED_CONTRACT_MAX_WINDOW_RISK | 0.35 | Hard cap across all DC signals in one window (was 0.25 pre-3d03e20) |
+| SOL_DC_RISK_TIERS | [(97, 0.05), (95, 0.10)] | SOL-specific price-tiered DC risk: ≥97c→5%, 95-96c→10%, <95c→20% |
 | OVERNIGHT_DISCOUNT_LIVE | True | Promote overnight discount to live trading (kill switch) |
 | OVERNIGHT_DISCOUNT_MIN_PRICE | 89 | Cents — 89c+ floor for live overnight discount trades |
 | OVERNIGHT_DISCOUNT_MAX_STC | 600 | STC gate for live overnight discount trades |
@@ -350,7 +354,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | JUMP_ADAPTIVE, RK_ADAPTIVE | **Promoted** — driving live |
 | EGARCH core + blend | **Promoted** — driving live |
 | TV RK weights | **Promoted** — driving live |
-| Decided contracts (T1+T1B+T2+T2-Z25+T2-Z2) | **Promoted** — live overlay: T1 z≤-5 (any price), T1B z≤-4 (95c+), T2 z≤-3 (93-96c), T2-Z25 z≤-2.5 (93-96c), T2-Z2 z≤-2 (93-96c) |
+| Decided contracts (T1+T1B+T2+T2-Z25) | **Promoted live** — T1 z≤-5 (any price ≥93c), T1B z≤-4 (95c+), T2 z≤-3 (93-96c), T2-Z25 z≤-2.5 (93-96c). All @ 20% fixed risk. T2-Z2 shadowed. See kb/concepts/dc-strategy.md |
 | DC shadow: dc_shadow_t1b_93c | Shadow — T1B at 93c+ floor variant |
 | DC shadow: dc_shadow_t2_90c | Shadow — T2 at 90c+ floor variant |
 | DC shadow: dc_shadow_t2_90c_xrp | Shadow — T2 at 90c+ XRP-only variant |
