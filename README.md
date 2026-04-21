@@ -111,15 +111,15 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 137,567 |
-| Observation period | 2026-02-22 to 2026-04-20 |
-| Filter pass rate | 3.6\% (4,945 of 137,567) |
-| Top rejection reason | Insufficient Edge (43,488) |
-| Settled trades | 2,527 |
-| Win rate | 93.4\% |
-| Observation P&L | 72,633 cents |
+| Markets evaluated | 139,860 |
+| Observation period | 2026-02-22 to 2026-04-21 |
+| Filter pass rate | 3.6\% (5,059 of 139,860) |
+| Top rejection reason | Insufficient Edge (44,296) |
+| Settled trades | 2,571 |
+| Win rate | 93.5\% |
+| Observation P&L | 69,836 cents |
 
-*Last updated: 2026-04-20T16:47:55Z*
+*Last updated: 2026-04-21T10:39:54Z*
 
 ## Setup
 
@@ -181,7 +181,7 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot.py                         -- core bot logic (~19,160 lines, never rename)
+bot.py                         -- core bot logic (~14,700 lines, never rename)
 analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)
 market_config.py               -- centralized MarketTypeConfig (validates against bot.py at startup)
 fifteenm_shadow.py             -- 15M shadow engine (recalibrated EGARCH + LightGBM research)
