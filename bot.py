@@ -14646,6 +14646,8 @@ class OrderExecutor:
             _esc_floor = BTC_MIN_ENTRY_PRICE
         elif _esc_asset == "ETH":
             _esc_floor = ETH_MIN_ENTRY_PRICE
+        elif _esc_asset == "SOL":
+            _esc_floor = SOL_MIN_ENTRY_PRICE
         elif _esc_asset == "XRP":
             _esc_floor = XRP_MIN_ENTRY_PRICE
         if best_ask < _esc_floor or best_ask > ESCALATION_MAX_ENTRY:
@@ -15416,6 +15418,8 @@ class OrderExecutor:
                 _floor = BTC_MIN_ENTRY_PRICE
             elif _asset == "ETH":
                 _floor = ETH_MIN_ENTRY_PRICE
+            elif _asset == "SOL":
+                _floor = SOL_MIN_ENTRY_PRICE
             elif _asset == "XRP":
                 _floor = XRP_MIN_ENTRY_PRICE
         if price < _floor:

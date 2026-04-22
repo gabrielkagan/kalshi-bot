@@ -141,8 +141,8 @@ class TestMakerFirstExecution(unittest.TestCase):
         ex._client.place_order.return_value = {
             "order": {"order_id": "ord-123"}
         }
-        # Use SOL (default floor=80, no per-asset override) so 88-2=86 clears the floor.
-        # BTC has BTC_MIN_ENTRY_PRICE=89 which would block 86.
+        # Use SOL with ask=88 so 88-2=86 equals SOL_MIN_ENTRY_PRICE and clears the floor.
+        # (SOL_TAKER_FIRST patched False to reach _submit_maker; SOL floor enforced in L15414-20.)
         candidate = _make_candidate(
             best_yes_ask=88, seconds_to_close=400,
             asset="SOL", ticker="KXSOL15M-26MAR091200-S100",
@@ -151,7 +151,7 @@ class TestMakerFirstExecution(unittest.TestCase):
         with patch("bot.OBSERVATION_MODE", False), \
              patch("bot.get_market_config") as mock_cfg, \
              patch("bot.SOL_TAKER_FIRST", False):
-            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=80)
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=75)
             ex.execute(candidate)
 
         call_args = ex._client.place_order.call_args
@@ -172,6 +172,34 @@ class TestMakerFirstExecution(unittest.TestCase):
             ex.execute(candidate)
 
         # place_order should NOT be called (maker price 79 < min 80)
+        ex._client.place_order.assert_not_called()
+
+    def test_maker_sol_sub_floor_rejected(self):
+        """Regression: SOL maker at 85c (below SOL_MIN_ENTRY_PRICE=86) must be rejected.
+
+        Commit 92092a5 (Mar 15) added per-asset floor enforcement to _submit_maker for
+        BTC/ETH/XRP but omitted SOL (at the time SOL_MIN_ENTRY_PRICE=80 matched the
+        global floor). When SOL was raised to 86 (Mar 23) and global dropped to 75
+        (for ETH 75-79c), SOL silently lost executor-side floor enforcement.
+
+        Reproduces KXSOL15M-26APR221500-00 (Apr 22 -$93): ask=87, fair_value=87,
+        offset=2 → maker price=85, which without the fix would be submitted and filled.
+        """
+        ex = _make_executor()
+        # ask=87, offset=2 → maker price=85 < SOL_MIN_ENTRY_PRICE=86 → must reject
+        candidate = _make_candidate(
+            best_yes_ask=87, seconds_to_close=300,
+            asset="SOL", ticker="KXSOL15M-26APR221500-00",
+        )
+
+        with patch("bot.OBSERVATION_MODE", False), \
+             patch("bot.get_market_config") as mock_cfg, \
+             patch("bot.SOL_TAKER_FIRST", False):
+            # Global floor 75 mirrors production; the ONLY thing saving us here is the
+            # per-asset SOL branch in _submit_maker.
+            mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=75)
+            ex.execute(candidate)
+
         ex._client.place_order.assert_not_called()
 
     def test_maker_persists_to_db_before_api(self):
