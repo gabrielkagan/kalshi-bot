@@ -3612,6 +3612,18 @@ KALSHI_WS_URL = ("wss://api.elections.kalshi.com/trade-api/ws/v2"
                  else "wss://demo-api.kalshi.co/trade-api/ws/v2")
 
 
+class OrderbookSchemaError(Exception):
+    """Raised when a Kalshi WS orderbook message violates the expected wire contract.
+
+    Purpose: fail LOUD at the ingest boundary when Kalshi silently renames wire
+    fields (precedent: Mar 2026 REST orderbook_fp migration — 37-day sports
+    outage; Apr 2026 WS orderbook_snapshot/delta migration — 5+ weeks of silent
+    95%-NULL bid-side feature data). Contract tests in
+    tests/test_kalshi_ws_contracts.py pin the expected schema.
+    """
+    pass
+
+
 class KalshiFeed:
     """Kalshi WebSocket feed for real-time fill notifications and orderbook data.
 
@@ -3621,6 +3633,12 @@ class KalshiFeed:
     Channels:
       - fill: instant fill notifications (subscribed once at connect)
       - orderbook_delta: real-time OB snapshots + deltas (per-ticker)
+
+    Wire contract (Kalshi 2026 schema, verified against docs.kalshi.com):
+      orderbook_snapshot.msg: {market_ticker, yes_dollars_fp, no_dollars_fp, ...}
+        where *_dollars_fp is an array of [dollar_str, fp_qty_str] pairs.
+      orderbook_delta.msg:    {market_ticker, price_dollars, delta_fp, side, ...}
+        — single additive update, NOT grouped by side.
     """
 
     def __init__(self, api_key: str, private_key):
@@ -3638,6 +3656,11 @@ class KalshiFeed:
         self._pending_subscribes: List[str] = []
         self._pending_unsubscribes: List[str] = []
         self._ws = None
+        # One-shot schema probes — log the first snapshot/delta msg keys per run so
+        # post-deploy verifier can confirm the live wire matches the contract.
+        # Remove in follow-up commit after verification.
+        self._snapshot_schema_probed = False
+        self._delta_schema_probed = False
 
     # ── Public API (called from main thread) ──────────────────────────────
 
@@ -3872,56 +3895,189 @@ class KalshiFeed:
         except Exception:
             logging.warning("Failed to parse WS fill message", exc_info=True)
 
+    @staticmethod
+    def _normalize_fp_levels(fp_arr) -> List[List[int]]:
+        """Convert Kalshi [dollar_str, fp_qty_str] FP format → [int_cents, int_qty].
+
+        Input:  [["0.9600", "54.00"], ["0.9500", "100"]]  (from *_dollars_fp)
+        Output: [[96, 54], [95, 100]]                     (internal cents format)
+
+        Tolerates None/[] and skips malformed entries without raising — parsing
+        errors at level granularity shouldn't blow away an otherwise-valid
+        snapshot.
+        """
+        if not fp_arr:
+            return []
+        out: List[List[int]] = []
+        for entry in fp_arr:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2):
+                continue
+            try:
+                price_cents = int(round(float(entry[0]) * 100))
+                qty = int(round(float(entry[1])))
+            except (ValueError, TypeError):
+                continue
+            out.append([price_cents, qty])
+        return out
+
     def _handle_ob_snapshot(self, data: Dict):
-        """Replace cached orderbook with full snapshot."""
+        """Replace cached orderbook with full snapshot.
+
+        Contract: Kalshi 2026 sends {market_ticker, yes_dollars_fp, no_dollars_fp}.
+        Legacy path (yes/no cents arrays) kept for resilience — fires a loud
+        warning so the drift is noticed.
+        """
         try:
             msg = data.get("msg", {})
             ticker = msg.get("market_ticker")
             if not ticker:
                 return
+
+            # One-shot schema probe (remove after first post-deploy verification).
+            if not self._snapshot_schema_probed:
+                logging.info(
+                    "WS_SCHEMA_PROBE_SNAPSHOT ticker=%s keys=%s",
+                    ticker, sorted(msg.keys()))
+                self._snapshot_schema_probed = True
+
+            # Preferred: Kalshi 2026 schema (yes_dollars_fp / no_dollars_fp).
+            if "yes_dollars_fp" in msg or "no_dollars_fp" in msg:
+                yes_levels = self._normalize_fp_levels(msg.get("yes_dollars_fp"))
+                no_levels = self._normalize_fp_levels(msg.get("no_dollars_fp"))
+            # Legacy: pre-2026 yes/no cents arrays. Fire a loud warning.
+            elif "yes" in msg or "no" in msg:
+                logging.warning(
+                    "WS_SCHEMA_LEGACY_SNAPSHOT ticker=%s: legacy yes/no keys "
+                    "(expected yes_dollars_fp/no_dollars_fp)", ticker)
+                yes_levels = list(msg.get("yes") or [])
+                no_levels = list(msg.get("no") or [])
+            else:
+                raise OrderbookSchemaError(
+                    f"snapshot {ticker}: no yes_dollars_fp/no_dollars_fp or "
+                    f"yes/no keys (got {sorted(msg.keys())})")
+
             with self._lock:
                 self._orderbooks[ticker] = {
-                    "yes": msg.get("yes", []),
-                    "no": msg.get("no", []),
+                    "yes": yes_levels,
+                    "no": no_levels,
                     "ts": time.time(),
                 }
+        except OrderbookSchemaError as e:
+            logging.error("WS_SCHEMA_ERROR snapshot: %s", e)
         except Exception:
             logging.warning("Failed to parse WS OB snapshot", exc_info=True)
 
     def _handle_ob_delta(self, data: Dict):
-        """Apply incremental delta to cached orderbook."""
+        """Apply incremental delta to cached orderbook.
+
+        Contract: Kalshi 2026 sends a SINGLE update per delta message:
+        {market_ticker, price_dollars, delta_fp, side} where delta_fp is additive
+        (positive = qty added, negative = qty removed). Legacy schema grouped
+        deltas by side (yes/no arrays) — kept as fallback with warning.
+        """
         try:
             msg = data.get("msg", {})
             ticker = msg.get("market_ticker")
             if not ticker:
                 return
-            with self._lock:
-                ob = self._orderbooks.get(ticker)
-                if ob is None:
-                    # No snapshot yet — store delta as partial
-                    self._orderbooks[ticker] = {
-                        "yes": msg.get("yes", []),
-                        "no": msg.get("no", []),
-                        "ts": time.time(),
-                    }
-                    return
-                # Apply delta: merge price levels
-                for side in ("yes", "no"):
-                    delta_levels = msg.get(side, [])
-                    if not delta_levels:
-                        continue
-                    existing = {self._level_price(l): l for l in ob.get(side, [])}
-                    for level in delta_levels:
-                        price = self._level_price(level)
-                        qty = self._level_qty(level)
-                        if qty == 0:
-                            existing.pop(price, None)
-                        else:
-                            existing[price] = level
-                    ob[side] = list(existing.values())
-                ob["ts"] = time.time()
+
+            if not self._delta_schema_probed:
+                logging.info(
+                    "WS_SCHEMA_PROBE_DELTA ticker=%s keys=%s",
+                    ticker, sorted(msg.keys()))
+                self._delta_schema_probed = True
+
+            # Preferred: Kalshi 2026 single-update schema.
+            if ("price_dollars" in msg and "delta_fp" in msg
+                    and "side" in msg):
+                self._apply_fp_delta(ticker, msg)
+            # Legacy: pre-2026 side-grouped arrays.
+            elif "yes" in msg or "no" in msg:
+                logging.warning(
+                    "WS_SCHEMA_LEGACY_DELTA ticker=%s: legacy yes/no keys "
+                    "(expected price_dollars/delta_fp/side)", ticker)
+                self._apply_legacy_delta(ticker, msg)
+            else:
+                raise OrderbookSchemaError(
+                    f"delta {ticker}: no price_dollars/delta_fp/side or "
+                    f"yes/no keys (got {sorted(msg.keys())})")
+        except OrderbookSchemaError as e:
+            logging.error("WS_SCHEMA_ERROR delta: %s", e)
         except Exception:
             logging.warning("Failed to apply WS OB delta", exc_info=True)
+
+    def _apply_fp_delta(self, ticker: str, msg: Dict):
+        """Apply Kalshi 2026 single-update delta. Caller holds no lock."""
+        side = msg["side"]
+        if side not in ("yes", "no"):
+            raise OrderbookSchemaError(f"delta {ticker}: unknown side {side!r}")
+        try:
+            price_cents = int(round(float(msg["price_dollars"]) * 100))
+            delta = int(round(float(msg["delta_fp"])))
+        except (ValueError, TypeError) as e:
+            raise OrderbookSchemaError(
+                f"delta {ticker}: unparseable price/delta: {e}")
+
+        with self._lock:
+            ob = self._orderbooks.get(ticker)
+            if ob is None:
+                # Delta arrived before snapshot — initialize empty, apply.
+                ob = {"yes": [], "no": [], "ts": time.time()}
+                self._orderbooks[ticker] = ob
+
+            levels = list(ob.get(side) or [])
+            existing_idx = -1
+            existing_qty = 0
+            for i, lvl in enumerate(levels):
+                if self._level_price(lvl) == price_cents:
+                    existing_idx = i
+                    existing_qty = self._level_qty(lvl)
+                    break
+
+            new_qty = existing_qty + delta
+            if new_qty < 0:
+                logging.warning(
+                    "WS delta underflow %s %s @%d¢: existing=%d delta=%d "
+                    "(clamping to 0)",
+                    ticker, side, price_cents, existing_qty, delta)
+                new_qty = 0
+
+            if new_qty == 0:
+                if existing_idx >= 0:
+                    levels.pop(existing_idx)
+            elif existing_idx >= 0:
+                levels[existing_idx] = [price_cents, new_qty]
+            else:
+                levels.append([price_cents, new_qty])
+
+            ob[side] = levels
+            ob["ts"] = time.time()
+
+    def _apply_legacy_delta(self, ticker: str, msg: Dict):
+        """Apply pre-2026 side-grouped delta schema. Fallback only."""
+        with self._lock:
+            ob = self._orderbooks.get(ticker)
+            if ob is None:
+                self._orderbooks[ticker] = {
+                    "yes": list(msg.get("yes") or []),
+                    "no": list(msg.get("no") or []),
+                    "ts": time.time(),
+                }
+                return
+            for side in ("yes", "no"):
+                delta_levels = msg.get(side) or []
+                if not delta_levels:
+                    continue
+                existing = {self._level_price(l): l for l in ob.get(side, [])}
+                for level in delta_levels:
+                    price = self._level_price(level)
+                    qty = self._level_qty(level)
+                    if qty == 0:
+                        existing.pop(price, None)
+                    else:
+                        existing[price] = level
+                ob[side] = list(existing.values())
+            ob["ts"] = time.time()
 
     @staticmethod
     def _level_price(level) -> int:
