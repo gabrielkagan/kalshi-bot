@@ -157,6 +157,84 @@ class TestCalEnginePipelineTripleShip:
             "weather_engine.py does not reference raw_prob — CalEngine pipeline may be broken")
 
 
+class TestEvaluatedOpportunitiesTierContract:
+    """Every raw `INSERT INTO evaluated_opportunities` must populate Tier 4.
+
+    Regression: sports_engine.py's raw INSERT omitted hour_of_day_utc and
+    siblings, silently writing NULLs because it bypassed
+    StateManager.insert_evaluated_opportunity's auto-compute block.
+    116/116 sports rows had spot_distance_to_strike_sigma NULL in 7d
+    (2026-04-22 audit).
+
+    Enforcement model:
+      - StateManager.insert_evaluated_opportunity is the ONE canonical path.
+        It auto-computes Tier 4/5 from kwargs + now. Callers needn't care.
+      - Files listed in ALLOWED_RAW_INSERTERS bypass that path (their own
+        sqlite conn in a separate thread) and MUST hand-populate Tier 4
+        columns in their raw INSERT statement.
+      - Any other file containing `INSERT INTO evaluated_opportunities`
+        (or `INSERT OR REPLACE INTO evaluated_opportunities`) fails the
+        test, forcing the author to either route through StateManager or
+        add themselves to the allowlist AND populate Tier 4.
+    """
+
+    # Files permitted to issue their own INSERT statements against
+    # evaluated_opportunities. bot.py is the StateManager home, so its raw
+    # INSERT is the canonical auto-populating one.
+    ALLOWED_RAW_INSERTERS = {"bot.py", "sports_engine.py"}
+
+    # Proxy for "all Tier 4 columns" — if this one appears in the INSERT
+    # column list, the author at least noticed the contract exists. The
+    # integration test in test_extended_features.py verifies actual values.
+    REQUIRED_TIER_4_COLUMN = "hour_of_day_utc"
+
+    INSERT_PATTERN = re.compile(
+        r"INSERT\s+(?:OR\s+\w+\s+)?INTO\s+evaluated_opportunities",
+        re.IGNORECASE,
+    )
+
+    def _scan_py_files(self):
+        for fname in os.listdir(PROJECT_ROOT):
+            if not fname.endswith(".py"):
+                continue
+            fpath = os.path.join(PROJECT_ROOT, fname)
+            if not os.path.isfile(fpath):
+                continue
+            with open(fpath) as f:
+                yield fname, f.read()
+
+    def test_no_raw_inserts_outside_allowlist(self):
+        offenders = []
+        for fname, source in self._scan_py_files():
+            if fname in self.ALLOWED_RAW_INSERTERS:
+                continue
+            if self.INSERT_PATTERN.search(source):
+                offenders.append(fname)
+        assert not offenders, (
+            f"Unapproved raw INSERT INTO evaluated_opportunities in: {offenders}. "
+            f"Either route through StateManager.insert_evaluated_opportunity "
+            f"(which auto-populates Tier 4/5) or add the file to "
+            f"ALLOWED_RAW_INSERTERS and hand-populate {self.REQUIRED_TIER_4_COLUMN} "
+            f"plus siblings in the INSERT statement."
+        )
+
+    def test_allowed_inserters_include_tier_4_column(self):
+        for fname in self.ALLOWED_RAW_INSERTERS:
+            fpath = os.path.join(PROJECT_ROOT, fname)
+            if not os.path.exists(fpath):
+                pytest.skip(f"{fname} not found")
+                continue
+            with open(fpath) as f:
+                source = f.read()
+            if not self.INSERT_PATTERN.search(source):
+                continue  # e.g., bot.py could change, not required
+            assert self.REQUIRED_TIER_4_COLUMN in source, (
+                f"{fname} has a raw INSERT INTO evaluated_opportunities but "
+                f"does not reference {self.REQUIRED_TIER_4_COLUMN} — Tier 4 "
+                f"auto-compute bypass will silently write NULLs."
+            )
+
+
 class TestCrossModuleFunctionArity:
     """Key functions are called with correct argument names across all files."""
 

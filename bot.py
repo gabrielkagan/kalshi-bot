@@ -2789,11 +2789,22 @@ class StateManager:
             if is_cpi_day is None: is_cpi_day = _t4["is_cpi_day"]
         if any(v is None for v in (spot_distance_to_strike_sigma, prob_breakeven_gap,
                                     kelly_vs_cap_ratio, calibration_confidence)):
+            _n_cal_obs: Optional[int] = None
+            try:
+                if product_type == "15m" or product_type is None:
+                    if _CALIBRATION_ENGINE is not None:
+                        _n_cal_obs = len(_CALIBRATION_ENGINE._observations)
+                else:
+                    _eng = _get_cal_engine(product_type, asset, require_enabled=False)
+                    if _eng is not None:
+                        _n_cal_obs = len(_eng._observations)
+            except Exception:
+                _n_cal_obs = None
             _t5 = compute_derived_features(
                 spot_price=spot_price, threshold=threshold, volatility=volatility,
                 seconds_to_close=seconds_to_close, calibrated_prob=calibrated_prob,
                 market_price_cents=market_price, kelly_contracts=position_size,
-                sol_rescue_cap=SOL_RESCUE_CONTRACT_CAP, n_recent_cal_trades=None,
+                sol_rescue_cap=SOL_RESCUE_CONTRACT_CAP, n_recent_cal_trades=_n_cal_obs,
             )
             if spot_distance_to_strike_sigma is None: spot_distance_to_strike_sigma = _t5["spot_distance_to_strike_sigma"]
             if prob_breakeven_gap is None: prob_breakeven_gap = _t5["prob_breakeven_gap"]

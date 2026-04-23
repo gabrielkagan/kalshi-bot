@@ -2094,7 +2094,35 @@ class SportsEngine:
 
         Uses own DB connection to avoid cross-thread writes to StateManager.
         Inserts YES-side row, then a NO-side shadow row for data collection.
+
+        Tier 1/4/5 instrumentation is computed here because the raw INSERT
+        bypasses StateManager.insert_evaluated_opportunity's auto-compute
+        block. Any engine with its own DB conn must mirror this — tested by
+        test_sports_insert_populates_tier_4_and_5.
         """
+        # Lazy import to avoid circular (bot.py imports sports_engine.run())
+        from bot import (
+            compute_time_regime_features,
+            compute_derived_features,
+            _resolve_cal_engine,
+            SOL_RESCUE_CONTRACT_CAP,
+        )
+        # Hoisted out of YES-side try so NO-side block can reuse them even if
+        # the YES-side INSERT raised.
+        now = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ")
+        _dur = _SPORT_DURATION_SEC.get(league_cfg.sport_group, 3600)
+        _stc = (int(game.time_remaining_pct * _dur)
+                if game.time_remaining_pct is not None else None)
+        _db_price = (int(raw_kalshi_price)
+                     if raw_kalshi_price is not None else None)
+        _t4 = compute_time_regime_features(now)
+        try:
+            _eng = _resolve_cal_engine("sports", league_cfg.display_name,
+                                       require_enabled=False)
+            _n_cal_obs = len(_eng._observations) if _eng is not None else None
+        except Exception:
+            _n_cal_obs = None
         try:
             conn = self._get_db_conn()
             # Use real Kalshi ticker if available, else synthetic for dedup
@@ -2102,14 +2130,17 @@ class SportsEngine:
             real_event = ob_data.get("event_ticker") if ob_data else ""
             ticker = real_ticker or f"SPORTS-{game.game_id}"
             event_ticker = real_event or game.league
-            now = datetime.datetime.now(datetime.timezone.utc).strftime(
-                "%Y-%m-%dT%H:%M:%S.%fZ")
-            _dur = _SPORT_DURATION_SEC.get(league_cfg.sport_group, 3600)
-            _stc = (int(game.time_remaining_pct * _dur)
-                    if game.time_remaining_pct is not None else None)
-            # Use raw_kalshi_price for DB (None when no Kalshi market)
-            _db_price = (int(raw_kalshi_price)
-                         if raw_kalshi_price is not None else None)
+            # Tier 5 (derived) — sports has no spot/threshold/volatility for
+            # sigma, but prob_breakeven_gap and calibration_confidence compute
+            # from what sports does have.
+            _t5 = compute_derived_features(
+                spot_price=None, threshold=None, volatility=None,
+                seconds_to_close=_stc, calibrated_prob=signal.comeback_prob,
+                market_price_cents=_db_price,
+                kelly_contracts=signal.simulated_contracts,
+                sol_rescue_cap=SOL_RESCUE_CONTRACT_CAP,
+                n_recent_cal_trades=_n_cal_obs,
+            )
             conn.execute("""
                 INSERT OR REPLACE INTO evaluated_opportunities
                     (ticker, event_ticker, asset, filter_stage, rejection_reason,
@@ -2117,8 +2148,13 @@ class SportsEngine:
                      fee_adjusted_edge, product_type, status,
                      seconds_to_close, spot_price, position_size, kelly_f,
                      z_score, vol_regime, calibration_method, counterfactual,
-                     ask_depth, side)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     ask_depth, side,
+                     hour_of_day_utc, day_of_week, is_weekend,
+                     minutes_since_us_open, is_fomc_day, is_cpi_day,
+                     spot_distance_to_strike_sigma, prob_breakeven_gap,
+                     kelly_vs_cap_ratio, calibration_confidence)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                        ?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, league_cfg.display_name,
                   signal.filter_stage, signal.rejection_reason, now,
                   _db_price,
@@ -2133,7 +2169,11 @@ class SportsEngine:
                   "bayesian_comeback",
                   1 if signal.signal_fired else 0,
                   ob_data.get("ask_depth") if ob_data else None,
-                  "yes"))
+                  "yes",
+                  _t4["hour_of_day_utc"], _t4["day_of_week"], _t4["is_weekend"],
+                  _t4["minutes_since_us_open"], _t4["is_fomc_day"], _t4["is_cpi_day"],
+                  _t5["spot_distance_to_strike_sigma"], _t5["prob_breakeven_gap"],
+                  _t5["kelly_vs_cap_ratio"], _t5["calibration_confidence"]))
             conn.commit()
         except Exception:
             try:
@@ -2154,6 +2194,14 @@ class SportsEngine:
                     _no_fee = math.ceil(0.07 * 1 * _no_price * (100 - _no_price) / 100) / 100.0
                     _no_fee_edge = _no_edge - _no_fee
                     _no_stage = "no_side_shadow"
+                    _t5_no = compute_derived_features(
+                        spot_price=None, threshold=None, volatility=None,
+                        seconds_to_close=_stc, calibrated_prob=_no_prob,
+                        market_price_cents=_no_price,
+                        kelly_contracts=None,
+                        sol_rescue_cap=SOL_RESCUE_CONTRACT_CAP,
+                        n_recent_cal_trades=_n_cal_obs,
+                    )
                     conn = self._get_db_conn()
                     conn.execute("""
                         INSERT OR REPLACE INTO evaluated_opportunities
@@ -2162,8 +2210,13 @@ class SportsEngine:
                              fee_adjusted_edge, product_type, status,
                              seconds_to_close, spot_price, position_size, kelly_f,
                              z_score, vol_regime, calibration_method, counterfactual,
-                             ask_depth, side)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                             ask_depth, side,
+                             hour_of_day_utc, day_of_week, is_weekend,
+                             minutes_since_us_open, is_fomc_day, is_cpi_day,
+                             spot_distance_to_strike_sigma, prob_breakeven_gap,
+                             kelly_vs_cap_ratio, calibration_confidence)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                                ?,?,?,?,?,?,?,?,?,?)
                     """, (ticker, event_ticker, league_cfg.display_name,
                           _no_stage, None, now,
                           _no_price,
@@ -2177,7 +2230,11 @@ class SportsEngine:
                           "bayesian_comeback_no",
                           0,  # not a signal
                           ob_data.get("bid_depth") if ob_data else None,
-                          "no"))
+                          "no",
+                          _t4["hour_of_day_utc"], _t4["day_of_week"], _t4["is_weekend"],
+                          _t4["minutes_since_us_open"], _t4["is_fomc_day"], _t4["is_cpi_day"],
+                          _t5_no["spot_distance_to_strike_sigma"], _t5_no["prob_breakeven_gap"],
+                          _t5_no["kelly_vs_cap_ratio"], _t5_no["calibration_confidence"]))
                     conn.commit()
         except Exception:
             try:

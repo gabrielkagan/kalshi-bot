@@ -243,5 +243,217 @@ class TestInsertAutoPopulates(unittest.TestCase):
             self.assertIn(name, sig.parameters, f"Missing kwarg: {name}")
 
 
+class TestCalibrationConfidenceIntegration(unittest.TestCase):
+    """calibration_confidence is populated from the active CalEngine's observation count.
+
+    Regression: bot.py:2796 previously hardcoded n_recent_cal_trades=None, so the
+    column was 100% NULL across 20K+ rows in 7d (2026-04-22 audit).
+    """
+
+    def _fresh_state_manager(self):
+        import tempfile, bot
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        self.addCleanup(os.unlink, tmp.name)
+        return bot.StateManager(db_path=tmp.name)
+
+    def test_populates_from_15m_cal_engine(self):
+        import bot
+        saved = bot._CALIBRATION_ENGINE
+        try:
+            mock = MagicMock()
+            mock._observations = list(range(50))  # 50 observations
+            bot._CALIBRATION_ENGINE = mock
+            sm = self._fresh_state_manager()
+            sm.insert_evaluated_opportunity(
+                ticker="KXTEST-1", event_ticker="KXTEST",
+                asset="BTC", filter_stage="candidate",
+                product_type="15m",
+            )
+            row = sm.conn.execute(
+                "SELECT calibration_confidence FROM evaluated_opportunities "
+                "WHERE ticker=?", ("KXTEST-1",)
+            ).fetchone()
+            self.assertIsNotNone(row["calibration_confidence"])
+            self.assertAlmostEqual(row["calibration_confidence"], 0.5, places=6)
+        finally:
+            bot._CALIBRATION_ENGINE = saved
+
+    def test_caps_at_1_when_engine_has_many_observations(self):
+        import bot
+        saved = bot._CALIBRATION_ENGINE
+        try:
+            mock = MagicMock()
+            mock._observations = list(range(500))
+            bot._CALIBRATION_ENGINE = mock
+            sm = self._fresh_state_manager()
+            sm.insert_evaluated_opportunity(
+                ticker="KXTEST-CAP", event_ticker="KXTEST",
+                asset="BTC", filter_stage="candidate", product_type="15m",
+            )
+            row = sm.conn.execute(
+                "SELECT calibration_confidence FROM evaluated_opportunities "
+                "WHERE ticker=?", ("KXTEST-CAP",)
+            ).fetchone()
+            self.assertEqual(row["calibration_confidence"], 1.0)
+        finally:
+            bot._CALIBRATION_ENGINE = saved
+
+    def test_none_when_no_15m_engine_registered(self):
+        import bot
+        saved = bot._CALIBRATION_ENGINE
+        try:
+            bot._CALIBRATION_ENGINE = None
+            sm = self._fresh_state_manager()
+            sm.insert_evaluated_opportunity(
+                ticker="KXTEST-NOENG", event_ticker="KXTEST",
+                asset="BTC", filter_stage="candidate", product_type="15m",
+            )
+            row = sm.conn.execute(
+                "SELECT calibration_confidence FROM evaluated_opportunities "
+                "WHERE ticker=?", ("KXTEST-NOENG",)
+            ).fetchone()
+            self.assertIsNone(row["calibration_confidence"])
+        finally:
+            bot._CALIBRATION_ENGINE = saved
+
+
+class TestSportsInsertTierCoverage(unittest.TestCase):
+    """sports_engine._insert_evaluated_opportunity populates Tier 4 + Tier 5.
+
+    Regression: raw INSERT bypassed StateManager auto-compute. 116/116 sports rows
+    in 7d had spot_distance_to_strike_sigma NULL and 63/116 had hour_of_day_utc
+    NULL (2026-04-22 audit).
+    """
+
+    def _fresh_sports_engine(self):
+        import tempfile, bot, sports_engine
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        self.addCleanup(os.unlink, tmp.name)
+        # Create schema by instantiating StateManager once
+        bot.StateManager(db_path=tmp.name)
+        return sports_engine.SportsEngine(db_path=tmp.name), tmp.name
+
+    def _make_game_signal(self):
+        from sports_engine import GameState, ComebackSignal
+        from sports_data import LeagueConfig
+        game = GameState(
+            game_id="test-g-1", league="KXNBAGAME",
+            home_team="Lakers", away_team="Celtics",
+            home_code="LAL", away_code="BOS",
+            home_score=90, away_score=100,
+            period=4, clock="5:00",
+            time_remaining_pct=0.1, game_status="live",
+            scheduled_start="2026-04-22T19:00:00Z",
+        )
+        league_cfg = LeagueConfig(
+            series_ticker="KXNBAGAME", espn_sport="basketball",
+            espn_league="nba", outcome_type="binary",
+            display_name="NBA", sport_group="basketball",
+        )
+        signal = ComebackSignal(
+            comeback_prob=0.72, prior=0.25, likelihood_ratio=3.5,
+            edge=0.12, fee_adjusted_edge=0.10,
+            deficit_bucket="moderate", time_bucket="late",
+            strength_bucket="strong", signal_fired=True,
+            filter_stage="sports_signal", rejection_reason=None,
+            simulated_contracts=5, simulated_risk=0.02,
+        )
+        return game, league_cfg, signal
+
+    def test_tier_4_populated(self):
+        sports, db = self._fresh_sports_engine()
+        game, cfg, signal = self._make_game_signal()
+        sports._insert_evaluated_opportunity(
+            game, cfg, signal, current_price=60.0,
+            ob_data={"ticker": "KXNBAGAME-TEST", "event_ticker": "KXNBAGAME-EV"},
+            raw_kalshi_price=60.0,
+        )
+        import sqlite3
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT hour_of_day_utc, day_of_week, is_weekend "
+            "FROM evaluated_opportunities WHERE ticker=?",
+            ("KXNBAGAME-TEST",)
+        ).fetchone()
+        self.assertIsNotNone(row, "YES-side row not inserted")
+        self.assertIsNotNone(row["hour_of_day_utc"],
+                             "Tier 4 hour_of_day_utc NULL — regression")
+        self.assertIsNotNone(row["day_of_week"])
+        self.assertIsNotNone(row["is_weekend"])
+
+    def test_tier_5_prob_breakeven_gap_populated_yes_side(self):
+        # raw_kalshi_price=97 keeps NO-side _no_price=3 below the >=5 gate, so
+        # the NO-side row is skipped and the YES row survives OR REPLACE.
+        sports, db = self._fresh_sports_engine()
+        game, cfg, signal = self._make_game_signal()
+        sports._insert_evaluated_opportunity(
+            game, cfg, signal, current_price=97.0,
+            ob_data={"ticker": "KXNBAGAME-TEST2", "event_ticker": "KXNBAGAME-EV"},
+            raw_kalshi_price=97.0,
+        )
+        import sqlite3
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT prob_breakeven_gap, side FROM evaluated_opportunities "
+            "WHERE ticker=?", ("KXNBAGAME-TEST2",)
+        ).fetchone()
+        self.assertEqual(row["side"], "yes")
+        self.assertIsNotNone(row["prob_breakeven_gap"],
+                             "Tier 5 prob_breakeven_gap NULL — regression")
+        # calibrated_prob=0.72, market_price=97 → gap = -0.25
+        self.assertAlmostEqual(row["prob_breakeven_gap"], -0.25, places=6)
+
+    def test_tier_5_prob_breakeven_gap_populated_no_side(self):
+        # raw_kalshi_price=60 triggers the NO-side row (price 40, prob 0.28).
+        # INSERT OR REPLACE means it overwrites the YES row under the same
+        # ticker — production accepts that behavior.
+        sports, db = self._fresh_sports_engine()
+        game, cfg, signal = self._make_game_signal()
+        sports._insert_evaluated_opportunity(
+            game, cfg, signal, current_price=60.0,
+            ob_data={"ticker": "KXNBAGAME-TEST2B", "event_ticker": "KXNBAGAME-EV"},
+            raw_kalshi_price=60.0,
+        )
+        import sqlite3
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT prob_breakeven_gap, side FROM evaluated_opportunities "
+            "WHERE ticker=?", ("KXNBAGAME-TEST2B",)
+        ).fetchone()
+        self.assertEqual(row["side"], "no")
+        self.assertIsNotNone(row["prob_breakeven_gap"],
+                             "NO-side Tier 5 prob_breakeven_gap NULL — regression")
+        # NO-side: prob=0.28, market=40 → gap = -0.12
+        self.assertAlmostEqual(row["prob_breakeven_gap"], -0.12, places=6)
+
+    def test_no_side_shadow_row_also_populated(self):
+        sports, db = self._fresh_sports_engine()
+        game, cfg, signal = self._make_game_signal()
+        sports._insert_evaluated_opportunity(
+            game, cfg, signal, current_price=60.0,
+            ob_data={"ticker": "KXNBAGAME-TEST3", "event_ticker": "KXNBAGAME-EV",
+                     "bid_depth": 10},
+            raw_kalshi_price=60.0,
+        )
+        import sqlite3
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT side, hour_of_day_utc, prob_breakeven_gap "
+            "FROM evaluated_opportunities WHERE ticker=? ORDER BY side",
+            ("KXNBAGAME-TEST3",)
+        ).fetchall()
+        # OR REPLACE means only the latest (NO-side) row survives.
+        self.assertGreaterEqual(len(rows), 1)
+        for r in rows:
+            self.assertIsNotNone(r["hour_of_day_utc"],
+                                 f"side={r['side']} Tier 4 NULL")
+
+
 if __name__ == "__main__":
     unittest.main()
