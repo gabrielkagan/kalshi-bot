@@ -18101,8 +18101,8 @@ class MainLoop:
             wal_path = db_path + "-wal"
             if os.path.exists(wal_path):
                 wal_mb = os.path.getsize(wal_path) / (1024 * 1024)
-                if wal_mb > 50:
-                    alerts.append(f"📁 WAL file {wal_mb:.1f} MB (>50 MB)")
+                if wal_mb > 100:
+                    alerts.append(f"📁 WAL file {wal_mb:.1f} MB (>100 MB)")
         except Exception:
             pass
 
