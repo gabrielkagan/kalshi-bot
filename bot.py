@@ -636,7 +636,9 @@ DC_SHADOW_STAGES = frozenset({
     "dc_shadow_t2_90c_xrp", # T2 price floor 90c XRP only (10/11)
     "dc_shadow_t2_z2",      # T2 relaxed to z≤-2 (105/111)
     "dc_shadow_no_side",    # NO-side decided (z≥5, 166/166)
+    "dc_t2_z2_phase1_shadow", # T2-Z2 Phase 1 sim: BTC+ETH only, 10% sizing (re-promotion candidate — see kb/decisions/t2-z2-shadowed.md Apr 22 section)
 })
+DC_T2_Z2_PHASE1_RISK = 0.10  # Proposed Phase 1 sizing for T2-Z2 re-promotion shadow. NOT the live risk — live remains DECIDED_CONTRACT_T2_Z2_RISK=0.20 (shadowed via env var).
 
 # ─── Relaxed Edge Shadow (Fix #1) ──────────────────────────────────────
 # Edge thresholds at 88-93c may be too conservative. Data shows rejected trades
@@ -9683,6 +9685,45 @@ class OpportunityScanner:
                                         **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (%s)", _dc_tier, exc_info=True)
+
+                            # ── Phase 1 re-promotion shadow (T2-Z2 BTC+ETH @ 10%) ──
+                            # Logs the exact cohort of the rejected Apr 22 promotion
+                            # proposal so clean Kelly-actual cf_pnl can be computed at
+                            # the PROPOSED 10% sizing (not the current 20%).
+                            # See kb/decisions/t2-z2-shadowed.md Apr 22 section.
+                            if (_dc_tier == "decided_contract_t2_z2"
+                                    and asset in ("BTC", "ETH")
+                                    and _dc_balance and _dc_balance > 0):
+                                _p1_dedup = (ticker, "dc_t2_z2_phase1_shadow")
+                                if _p1_dedup not in self._eval_opp_seen:
+                                    self._eval_opp_seen.add(_p1_dedup)
+                                    _p1_position = max(1, int((_dc_balance * DC_T2_Z2_PHASE1_RISK) / best_ask))
+                                    try:
+                                        self._state.insert_evaluated_opportunity(
+                                            ticker, window["event_ticker"], asset,
+                                            "dc_t2_z2_phase1_shadow",
+                                            rejection_reason=f"phase1 sim: BTC+ETH {int(DC_T2_Z2_PHASE1_RISK*100)}% sizing pos={_p1_position} @ {best_ask}c",
+                                            spot_price=spot, threshold=threshold,
+                                            volatility=blended_rv, market_price=best_ask,
+                                            seconds_to_close=seconds_remaining,
+                                            calibrated_prob=final_prob, edge=edge,
+                                            ofa_adjustment=ofa_adjustment,
+                                            z_score=z_score,
+                                            vol_regime=vol_est["regime"],
+                                            calibrated_prob_raw=calibrated_prob_raw,
+                                            kelly_f=_dc_kelly_f,
+                                            position_size=_p1_position,
+                                            breakeven_wr=best_ask / 100.0,
+                                            expected_value=_dc_ev,
+                                            ask_depth=ask_depth,
+                                            best_ask_source=best_ask_source,
+                                            raw_prob=raw_prob,
+                                            calibration_method=calibration_method,
+                                            fee_adjusted_edge=fee_adjusted_edge,
+                                            product_type=window.get("product_type"),
+                                            **_shadow_diag)
+                                    except Exception:
+                                        logging.warning("insert_evaluated_opportunity failed (dc_t2_z2_phase1_shadow)", exc_info=True)
 
                             # ── Live overlay: queue as candidate if tier enabled ──
                             _dc_live_enabled = (

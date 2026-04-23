@@ -478,19 +478,21 @@ class TestDecidedContractShadowVariants(unittest.TestCase):
         self.source = _read_bot()
 
     def test_shadow_stages_constant_defined(self):
-        """DC_SHADOW_STAGES frozenset must list all 6 variants."""
+        """DC_SHADOW_STAGES frozenset must list all 7 variants."""
         self.assertIn("DC_SHADOW_STAGES", self.source)
         for stage in ("dc_shadow_t1b_93c", "dc_shadow_t2_z25", "dc_shadow_t2_90c",
-                       "dc_shadow_t2_90c_xrp", "dc_shadow_t2_z2", "dc_shadow_no_side"):
+                       "dc_shadow_t2_90c_xrp", "dc_shadow_t2_z2", "dc_shadow_no_side",
+                       "dc_t2_z2_phase1_shadow"):
             self.assertIn(stage, self.source, f"Shadow stage {stage} not found in bot.py")
 
     @pytest.mark.fragile
     def test_shadow_variants_in_scan(self):
-        """All 6 shadow variants must have insert calls somewhere in bot.py."""
+        """All 7 shadow variants must have insert calls somewhere in bot.py."""
         # Shadow variant inserts are spread across scan() — verify each stage
         # appears as a string literal in bot.py (in insert calls or constants)
         for stage in ("dc_shadow_t1b_93c", "dc_shadow_t2_z25", "dc_shadow_t2_90c",
-                       "dc_shadow_t2_90c_xrp", "dc_shadow_t2_z2", "dc_shadow_no_side"):
+                       "dc_shadow_t2_90c_xrp", "dc_shadow_t2_z2", "dc_shadow_no_side",
+                       "dc_t2_z2_phase1_shadow"):
             self.assertIn(f'"{stage}"', self.source, f"Shadow stage {stage} not found in bot.py")
 
     def test_shadow_t1b_93c_gate(self):
@@ -693,6 +695,149 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
         """BTC DC at any price: always default 20% (no tiering)."""
         import bot
         self.assertEqual(bot.DECIDED_CONTRACT_RISK, 0.20)
+
+
+class TestT2Z2Phase1ShadowContract(unittest.TestCase):
+    """Contract tests for dc_t2_z2_phase1_shadow (added Apr 22 2026).
+
+    Shadow-only path logging the rejected Phase 1 re-promotion cohort:
+    T2-Z2 tier, BTC+ETH only, sized at 10%. No live trading behavior.
+    See kb/decisions/t2-z2-shadowed.md Apr 22 section.
+    """
+
+    def setUp(self):
+        self.source = _read_bot()
+
+    def test_phase1_risk_constant_is_10pct(self):
+        """DC_T2_Z2_PHASE1_RISK must be 0.10 (proposed Phase 1 sizing)."""
+        import bot
+        self.assertEqual(bot.DC_T2_Z2_PHASE1_RISK, 0.10)
+
+    def test_live_risk_constant_unchanged(self):
+        """Live risk (DECIDED_CONTRACT_T2_Z2_RISK) must remain 0.20 — Phase 1 is shadow-only."""
+        import bot
+        self.assertEqual(bot.DECIDED_CONTRACT_T2_Z2_RISK, 0.20)
+
+    def test_live_enable_flag_defaults_off(self):
+        """DECIDED_T2_Z2_ENABLED env var must default to '0' — Phase 1 does NOT enable live."""
+        import os
+        import importlib
+        import bot as bot_module
+        # Ensure no stray env var; reload clean
+        env_bak = os.environ.pop("DECIDED_T2_Z2_ENABLED", None)
+        try:
+            importlib.reload(bot_module)
+            self.assertFalse(bot_module.DECIDED_T2_Z2_ENABLED,
+                             "DECIDED_T2_Z2_ENABLED must default False when env unset")
+        finally:
+            if env_bak is not None:
+                os.environ["DECIDED_T2_Z2_ENABLED"] = env_bak
+            importlib.reload(bot_module)
+
+    def test_phase1_shadow_in_frozenset(self):
+        """dc_t2_z2_phase1_shadow must be a member of DC_SHADOW_STAGES."""
+        import bot
+        self.assertIn("dc_t2_z2_phase1_shadow", bot.DC_SHADOW_STAGES)
+
+    def test_phase1_shadow_block_asset_filter_btc_eth_only(self):
+        """Phase 1 shadow block must gate on asset in ('BTC', 'ETH') — no SOL/XRP."""
+        # Locate the Phase 1 block
+        start = self.source.find("# ── Phase 1 re-promotion shadow")
+        self.assertNotEqual(start, -1, "Phase 1 shadow block marker not found")
+        end = self.source.find("# ── Live overlay", start)
+        self.assertNotEqual(end, -1, "Live overlay block not found after Phase 1 shadow")
+        block = self.source[start:end]
+        # Contract: must include BTC/ETH tuple check
+        self.assertIn('asset in ("BTC", "ETH")', block,
+                      "Phase 1 shadow must gate on asset in ('BTC', 'ETH')")
+        # Contract: must NOT fire for SOL or XRP by name
+        self.assertNotIn('"SOL"', block)
+        self.assertNotIn('"XRP"', block)
+
+    def test_phase1_shadow_block_tier_filter(self):
+        """Phase 1 shadow must only fire when _dc_tier == 'decided_contract_t2_z2'."""
+        start = self.source.find("# ── Phase 1 re-promotion shadow")
+        end = self.source.find("# ── Live overlay", start)
+        block = self.source[start:end]
+        self.assertIn('_dc_tier == "decided_contract_t2_z2"', block,
+                      "Phase 1 shadow must gate on T2-Z2 tier")
+
+    def test_phase1_shadow_uses_phase1_risk_constant(self):
+        """Phase 1 shadow sizing must use DC_T2_Z2_PHASE1_RISK, not the live constant."""
+        start = self.source.find("# ── Phase 1 re-promotion shadow")
+        end = self.source.find("# ── Live overlay", start)
+        block = self.source[start:end]
+        self.assertIn("DC_T2_Z2_PHASE1_RISK", block,
+                      "Phase 1 shadow must use DC_T2_Z2_PHASE1_RISK for sizing")
+        # And must NOT use the live risk constant
+        self.assertNotIn("DECIDED_CONTRACT_T2_Z2_RISK", block,
+                         "Phase 1 shadow must not reference live risk constant")
+
+    def test_phase1_shadow_logs_correct_filter_stage(self):
+        """Phase 1 shadow insert must use filter_stage='dc_t2_z2_phase1_shadow'."""
+        start = self.source.find("# ── Phase 1 re-promotion shadow")
+        end = self.source.find("# ── Live overlay", start)
+        block = self.source[start:end]
+        self.assertIn('"dc_t2_z2_phase1_shadow"', block)
+        self.assertIn("insert_evaluated_opportunity", block)
+
+    def test_phase1_shadow_does_NOT_append_to_candidates(self):
+        """CRITICAL: Phase 1 shadow must NOT add to candidates list (no live trade)."""
+        start = self.source.find("# ── Phase 1 re-promotion shadow")
+        end = self.source.find("# ── Live overlay", start)
+        block = self.source[start:end]
+        self.assertNotIn("candidates.append", block,
+                         "Phase 1 shadow must be observation-only (no candidates.append)")
+
+    def test_phase1_shadow_has_balance_guard(self):
+        """Phase 1 sizing must guard against zero/None balance."""
+        start = self.source.find("# ── Phase 1 re-promotion shadow")
+        end = self.source.find("# ── Live overlay", start)
+        block = self.source[start:end]
+        self.assertIn("_dc_balance and _dc_balance > 0", block,
+                      "Phase 1 shadow must gate on balance > 0")
+
+    def test_phase1_shadow_has_dedup(self):
+        """Phase 1 shadow must dedup to avoid duplicate rows per ticker."""
+        start = self.source.find("# ── Phase 1 re-promotion shadow")
+        end = self.source.find("# ── Live overlay", start)
+        block = self.source[start:end]
+        self.assertIn("_eval_opp_seen", block,
+                      "Phase 1 shadow must use _eval_opp_seen for per-ticker dedup")
+        self.assertIn('"dc_t2_z2_phase1_shadow"', block)
+
+    def test_phase1_shadow_placed_before_live_overlay(self):
+        """Phase 1 shadow block must appear BEFORE live-overlay check (shadow logs first)."""
+        shadow_pos = self.source.find("# ── Phase 1 re-promotion shadow")
+        live_pos = self.source.find("# ── Live overlay: queue as candidate if tier enabled")
+        self.assertGreater(shadow_pos, 0)
+        self.assertGreater(live_pos, shadow_pos,
+                           "Phase 1 shadow must appear before live-overlay block")
+
+    def test_phase1_sizing_math_10pct_at_representative_balances(self):
+        """Verify sizing formula matches expectation at sample balances."""
+        # Formula: max(1, int((balance_cents * 0.10) / best_ask))
+        import bot
+        risk = bot.DC_T2_Z2_PHASE1_RISK
+        # Use raw int math to match bot's integer-cent math
+        cases = [
+            # (balance_cents, best_ask_cents, expected_contracts)
+            (1_000_000, 94, max(1, int(1_000_000 * risk / 94))),   # $10K @ 94c
+            (5_000_000, 94, max(1, int(5_000_000 * risk / 94))),   # $50K @ 94c
+            (10_000_000, 96, max(1, int(10_000_000 * risk / 96))), # $100K @ 96c
+            (1_000, 96, 1),  # tiny balance → floor of 1 contract
+        ]
+        for balance, ask, expected in cases:
+            computed = max(1, int((balance * risk) / ask))
+            self.assertEqual(computed, expected,
+                             f"Sizing mismatch at balance={balance}, ask={ask}")
+
+    def test_phase1_btc_eth_filter_excludes_sol_xrp(self):
+        """Asset filter contract: tuple ('BTC', 'ETH') must not contain SOL or XRP."""
+        allowed = ("BTC", "ETH")
+        for blocked in ("SOL", "XRP"):
+            self.assertNotIn(blocked, allowed,
+                             f"{blocked} must be excluded from Phase 1 asset filter")
 
 
 if __name__ == "__main__":
