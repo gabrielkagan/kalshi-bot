@@ -1,10 +1,10 @@
 {
-  "total_evaluated": 146539,
+  "total_evaluated": 146558,
   "filter_breakdown": {
-    "candidate": 5419,
+    "candidate": 5420,
     "dc_shadow_t1b_93c": 45,
     "dc_shadow_t2_90c": 60,
-    "dc_shadow_t2_90c_xrp": 16,
+    "dc_shadow_t2_90c_xrp": 17,
     "dc_shadow_t2_z2": 808,
     "dc_shadow_t2_z25": 181,
     "dc_t2_z2_phase1_shadow": 6,
@@ -18,7 +18,7 @@
     "decided_contract_t2_z25": 174,
     "dip_addon_shadow": 29,
     "eth_low_floor_shadow": 1455,
-    "floor_raise_shadow": 5043,
+    "floor_raise_shadow": 5045,
     "golden_hour_shadow": 272,
     "hourly_asset_excluded": 156,
     "hourly_config_a": 1712,
@@ -39,7 +39,7 @@
     "hourly_observation_v2": 6699,
     "hourly_timing_restricted": 1644,
     "hourly_window_limit": 595,
-    "insufficient_edge": 45992,
+    "insufficient_edge": 45997,
     "low_price_shadow": 2407,
     "no_side_price_shadow_no_xrp": 3637,
     "no_side_price_shadow_xrp": 744,
@@ -48,10 +48,10 @@
     "overnight_discount": 105,
     "overnight_discount_shadow": 306,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 23793,
+    "price_out_of_range": 23799,
     "price_shadow": 52,
-    "price_shadow_no_xrp": 3911,
-    "price_shadow_xrp": 1521,
+    "price_shadow_no_xrp": 3912,
+    "price_shadow_xrp": 1522,
     "relaxed_edge_shadow": 1169,
     "single_asset_selection": 5,
     "sol_high_edge_shadow": 189,
@@ -80,9 +80,9 @@
     "tm_nbbo_buffer_shadow": 529,
     "usaft_short_stc": 120,
     "weather_excluded_city": 125,
-    "weather_excluded_mtype_bracket": 397,
+    "weather_excluded_mtype_bracket": 398,
     "weather_excluded_mtype_upper_tail": 44,
-    "weather_observation": 2785,
+    "weather_observation": 2786,
     "weather_shadow_capped30": 38,
     "weather_shadow_capped30_short_stc": 2,
     "weather_shadow_short_stc": 8,
@@ -92,10 +92,10 @@
     "xrp_shadow": 126,
     "zero_sizing": 782
   },
-  "total_settled": 2743,
-  "total_wins": 2559,
-  "observation_pnl": 77587,
-  "total_trades": 5419,
+  "total_settled": 2745,
+  "total_wins": 2561,
+  "observation_pnl": 77872,
+  "total_trades": 5420,
   "win_rate_by_price": {
     "80-84": {
       "n": 56,
@@ -106,8 +106,8 @@
       "wins": 392
     },
     "90-94": {
-      "n": 669,
-      "wins": 626
+      "n": 670,
+      "wins": 627
     },
     "95-99": {
       "n": 1473,
@@ -157,5 +157,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-23",
-  "generated_at": "2026-04-23T16:54:35Z"
+  "generated_at": "2026-04-23T17:16:40Z"
 }
