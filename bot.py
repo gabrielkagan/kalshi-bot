@@ -1651,6 +1651,13 @@ class StateManager:
         # Used by insert_evaluated_opportunity when caller doesn't pass yes_bid_cents explicitly.
         # Bounded by number of unique tickers seen — bot only sees ~10K tickers/day, ~1MB max.
         self._scan_bid_cache: Dict[str, int] = {}
+        # Phase 1 feature caches (Apr 23): populated by scanner each tick, read by
+        # insert_evaluated_opportunity. Same pattern as _scan_bid_cache.
+        # _scan_ms_cache: per-ticker microstructure + Kalshi flow dict.
+        # _scan_cx_gap_cache: per-asset Coinbase-vs-Kraken gap in bps (computed once per tick).
+        # See kb/concepts/feature-engineering-phase1.md.
+        self._scan_ms_cache: Dict[str, Dict[str, Any]] = {}
+        self._scan_cx_gap_cache: Dict[str, float] = {}
         # Extended feature provider callback (Phase 2). Scanner attaches this
         # on construction to enrich insert_evaluated_opportunity rows with
         # Tier 1/2/3/6 features without threading kwargs through 96 call sites.
@@ -2120,6 +2127,16 @@ class StateManager:
             ("recent_bot_pnl_30m_cents", "INTEGER"),
             ("current_drawdown_pct", "REAL"),
             ("recent_ioc_fill_success_rate_1h", "REAL"),
+            # Feature-engineering Phase 1 (Apr 23): microstructure + cross-exchange + Kalshi flow.
+            # Schema-lift of values already computed elsewhere — scanner populates caches
+            # during tick, insert_evaluated_opportunity auto-fills from cache.
+            # See kb/concepts/feature-engineering-phase1.md.
+            ("yes_spread_cents", "INTEGER"),
+            ("bid_depth", "INTEGER"),
+            ("spot_coinbase_kraken_gap_bps", "REAL"),
+            ("kalshi_flow_imbalance_level", "TEXT"),
+            ("kalshi_flow_depth_velocity", "REAL"),
+            ("kalshi_flow_depth_drain", "INTEGER"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2776,7 +2793,17 @@ class StateManager:
                                      active_positions_same_asset: Optional[int] = None,
                                      recent_bot_pnl_30m_cents: Optional[int] = None,
                                      current_drawdown_pct: Optional[float] = None,
-                                     recent_ioc_fill_success_rate_1h: Optional[float] = None):
+                                     recent_ioc_fill_success_rate_1h: Optional[float] = None,
+                                     # Feature-engineering Phase 1 (Apr 23): orthogonal axes.
+                                     # Auto-filled from scanner caches (self._scan_ms_cache,
+                                     # self._scan_cx_gap_cache) when None — no need to thread
+                                     # through 57 call sites.
+                                     yes_spread_cents: Optional[int] = None,
+                                     bid_depth: Optional[int] = None,
+                                     spot_coinbase_kraken_gap_bps: Optional[float] = None,
+                                     kalshi_flow_imbalance_level: Optional[str] = None,
+                                     kalshi_flow_depth_velocity: Optional[float] = None,
+                                     kalshi_flow_depth_drain: Optional[int] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -2788,6 +2815,22 @@ class StateManager:
         # to thread ob_data through 50+ call sites.
         if yes_bid_cents is None:
             yes_bid_cents = self._scan_bid_cache.get(ticker)
+        # Phase 1 feature auto-fill: microstructure + Kalshi flow (per-ticker).
+        _ms = self._scan_ms_cache.get(ticker)
+        if _ms:
+            if yes_spread_cents is None:
+                yes_spread_cents = _ms.get("yes_spread_cents")
+            if bid_depth is None:
+                bid_depth = _ms.get("bid_depth")
+            if kalshi_flow_imbalance_level is None:
+                kalshi_flow_imbalance_level = _ms.get("kalshi_flow_imbalance_level")
+            if kalshi_flow_depth_velocity is None:
+                kalshi_flow_depth_velocity = _ms.get("kalshi_flow_depth_velocity")
+            if kalshi_flow_depth_drain is None:
+                kalshi_flow_depth_drain = _ms.get("kalshi_flow_depth_drain")
+        # Phase 1 cross-exchange gap (per-asset).
+        if spot_coinbase_kraken_gap_bps is None and asset is not None:
+            spot_coinbase_kraken_gap_bps = self._scan_cx_gap_cache.get(asset)
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
         # ── Auto-compute Tier 4 (time/regime) + Tier 5 (derived) features ──
@@ -2911,8 +2954,11 @@ class StateManager:
                      spot_distance_to_strike_sigma, prob_breakeven_gap,
                      kelly_vs_cap_ratio, calibration_confidence,
                      active_positions_same_asset, recent_bot_pnl_30m_cents,
-                     current_drawdown_pct, recent_ioc_fill_success_rate_1h)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     current_drawdown_pct, recent_ioc_fill_success_rate_1h,
+                     yes_spread_cents, bid_depth, spot_coinbase_kraken_gap_bps,
+                     kalshi_flow_imbalance_level, kalshi_flow_depth_velocity,
+                     kalshi_flow_depth_drain)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -3001,7 +3047,13 @@ class StateManager:
                     active_positions_same_asset=excluded.active_positions_same_asset,
                     recent_bot_pnl_30m_cents=excluded.recent_bot_pnl_30m_cents,
                     current_drawdown_pct=excluded.current_drawdown_pct,
-                    recent_ioc_fill_success_rate_1h=excluded.recent_ioc_fill_success_rate_1h
+                    recent_ioc_fill_success_rate_1h=excluded.recent_ioc_fill_success_rate_1h,
+                    yes_spread_cents=excluded.yes_spread_cents,
+                    bid_depth=excluded.bid_depth,
+                    spot_coinbase_kraken_gap_bps=excluded.spot_coinbase_kraken_gap_bps,
+                    kalshi_flow_imbalance_level=excluded.kalshi_flow_imbalance_level,
+                    kalshi_flow_depth_velocity=excluded.kalshi_flow_depth_velocity,
+                    kalshi_flow_depth_drain=excluded.kalshi_flow_depth_drain
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -3040,7 +3092,10 @@ class StateManager:
                   spot_distance_to_strike_sigma, prob_breakeven_gap,
                   kelly_vs_cap_ratio, calibration_confidence,
                   active_positions_same_asset, recent_bot_pnl_30m_cents,
-                  current_drawdown_pct, recent_ioc_fill_success_rate_1h))
+                  current_drawdown_pct, recent_ioc_fill_success_rate_1h,
+                  yes_spread_cents, bid_depth, spot_coinbase_kraken_gap_bps,
+                  kalshi_flow_imbalance_level, kalshi_flow_depth_velocity,
+                  kalshi_flow_depth_drain))
             self.conn.commit()
         except Exception as e:
             try:
@@ -7682,6 +7737,12 @@ class OpportunityScanner:
                         if hasattr(self._ml, "cross_feed") and self._ml.cross_feed else None
                     if _kraken_price is not None and spot is not None:
                         _spot_multi_exchange = round((spot + _kraken_price) / 2, 6)
+                        # Phase 1: cache per-asset gap in bps (Kraken − Coinbase).
+                        # Read by insert_evaluated_opportunity via _scan_cx_gap_cache.
+                        # See kb/concepts/feature-engineering-phase1.md.
+                        if spot > 0:
+                            self._state._scan_cx_gap_cache[asset] = round(
+                                (_kraken_price - spot) / spot * 10000, 4)
                 except Exception:
                     pass
             _shadow_diag = {
@@ -8047,6 +8108,32 @@ class OpportunityScanner:
                         self._kalshi_oft.record_snapshot(ticker, ob_data, best_ask)
                 except Exception:
                     pass
+
+                # Phase 1 feature capture: microstructure + Kalshi flow signals.
+                # Populates self._state._scan_ms_cache[ticker] so all
+                # insert_evaluated_opportunity calls within this tick auto-fill.
+                # See kb/concepts/feature-engineering-phase1.md.
+                try:
+                    _bid_depth = (OrderExecutor._best_yes_bid_depth(ob_data)
+                                  if ob_data else None)
+                    _spread = ((best_ask - yes_bid_cents)
+                               if (best_ask is not None and yes_bid_cents is not None)
+                               else None)
+                    _ms: Dict[str, Any] = {
+                        "yes_spread_cents": _spread,
+                        "bid_depth": _bid_depth,
+                    }
+                    if self._kalshi_oft is not None:
+                        _flow = self._kalshi_oft.get_signals(ticker)
+                        if _flow:
+                            _ms["kalshi_flow_imbalance_level"] = _flow.get("imbalance_level")
+                            _ms["kalshi_flow_depth_velocity"] = _flow.get("depth_velocity")
+                            _drain = _flow.get("depth_drain")
+                            _ms["kalshi_flow_depth_drain"] = (
+                                1 if _drain else 0 if _drain is False else None)
+                    self._state._scan_ms_cache[ticker] = _ms
+                except Exception:
+                    pass  # Feature capture is advisory — never break scan
 
                 # Log price snapshot for all markets with orderbook data
                 try:
