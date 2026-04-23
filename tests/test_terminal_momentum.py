@@ -279,5 +279,104 @@ class TestTMNoRetryQueue(unittest.TestCase):
         self.assertNotIn("retry_queue", fn_block)
 
 
+class TestTMThinBufferCap(unittest.TestCase):
+    """Thin-buffer contract cap — guards against the Apr 23 2026 ETH -$178 loss.
+
+    Regression target: ETH 98c TM entry with buf_pct=0.155% was sized 182 contracts,
+    settled NO when ETH reversed $5.57 in the final 155s (-$178.36). 10 of 14 TM
+    losses in April were at buf_pct<0.20% avg 114ct — cap bounds each to ~$50.
+    """
+
+    def setUp(self):
+        self.source = _read_bot()
+        self._compile_fn()
+
+    def _compile_fn(self):
+        """Extract TM constants + tm_compute_contracts into an isolated namespace."""
+        ns = {}
+        # Hoist the needed constants + TM_ASSET_RISK_CAPS
+        const_names = [
+            "TM_BASE_CONTRACTS", "TM_STC_SAFE_THRESHOLD", "TM_STC_DANGER_HI",
+            "TM_STC_SAFE_MULT", "TM_STC_DANGER_MULT", "TM_STC_NORMAL_MULT",
+            "TM_MIN_CONTRACTS", "TM_MAX_CONTRACTS", "TM_NEGATIVE_EV_TIERS",
+            "TM_THIN_BUFFER_PCT", "TM_THIN_BUFFER_CONTRACT_CAP",
+            "BTC_MAX_RISK_PER_TRADE", "ETH_MAX_RISK_PER_TRADE",
+            "SOL_MAX_RISK_PER_TRADE", "XRP_MAX_RISK_PER_TRADE",
+        ]
+        for name in const_names:
+            m = re.search(rf'^{name}\s*=\s*([^\n#]+?)(?:\s*#.*)?$',
+                          self.source, re.MULTILINE)
+            if m:
+                ns[name] = eval(m.group(1).strip(), ns)
+        ns["TM_ASSET_RISK_CAPS"] = {
+            "BTC": ns["BTC_MAX_RISK_PER_TRADE"],
+            "ETH": ns["ETH_MAX_RISK_PER_TRADE"],
+            "SOL": ns["SOL_MAX_RISK_PER_TRADE"],
+            "XRP": ns["XRP_MAX_RISK_PER_TRADE"],
+        }
+        fn_start = self.source.find("def tm_compute_contracts")
+        fn_end = self.source.find("\ndef ", fn_start + 1)
+        exec(self.source[fn_start:fn_end], ns)
+        self.tm_compute_contracts = ns["tm_compute_contracts"]
+        self.cap = ns["TM_THIN_BUFFER_CONTRACT_CAP"]
+        self.pct = ns["TM_THIN_BUFFER_PCT"]
+
+    def test_constants_defined(self):
+        """TM_THIN_BUFFER_PCT and TM_THIN_BUFFER_CONTRACT_CAP must exist."""
+        self.assertIsNotNone(_extract_constant(self.source, "TM_THIN_BUFFER_PCT"))
+        self.assertIsNotNone(_extract_constant(self.source, "TM_THIN_BUFFER_CONTRACT_CAP"))
+        self.assertEqual(_extract_constant(self.source, "TM_THIN_BUFFER_PCT"), 0.20)
+        self.assertEqual(_extract_constant(self.source, "TM_THIN_BUFFER_CONTRACT_CAP"), 50)
+
+    def test_apr23_eth_loss_would_have_been_capped(self):
+        """The exact Apr 23 ETH loss scenario: 98c, 155s STC, buf 0.155% → ≤50 contracts."""
+        # Reproduce scan-time conditions (large balance, ETH asset, buf<0.20%)
+        ct = self.tm_compute_contracts(98, 155, 100000_00, "ETH", buf_pct=0.155)
+        self.assertLessEqual(ct, self.cap,
+            f"Apr 23 ETH @ 98c buf=0.155% was sized {ct}; must be <= {self.cap}")
+
+    def test_cap_applied_below_threshold(self):
+        """Any buf_pct < TM_THIN_BUFFER_PCT (0.20%) triggers the cap."""
+        for buf in [0.0, 0.05, 0.10, 0.15, 0.19, 0.199]:
+            ct = self.tm_compute_contracts(98, 100, 100000_00, "ETH", buf_pct=buf)
+            self.assertLessEqual(ct, self.cap,
+                f"buf_pct={buf}% should trigger cap (got ct={ct})")
+
+    def test_cap_not_applied_at_or_above_threshold(self):
+        """At buf_pct >= 0.20%, sizing is NOT capped by thin-buffer logic."""
+        # Use a config where unbounded sizing would exceed the cap: 98c, STC=100 (safe mult 1.5),
+        # large balance → margin*TM_BASE*1.5 = 2 * 100 * 1.5 = 300 contracts base
+        ct_thick = self.tm_compute_contracts(98, 100, 100000_00, "ETH", buf_pct=0.20)
+        self.assertGreater(ct_thick, self.cap,
+            "At buf=0.20% (threshold), sizing must allow > cap")
+
+    def test_buf_pct_none_preserves_legacy_behavior(self):
+        """When buf_pct=None (unknown), cap does not apply — backward compat."""
+        ct_none = self.tm_compute_contracts(98, 100, 100000_00, "ETH", buf_pct=None)
+        ct_thick = self.tm_compute_contracts(98, 100, 100000_00, "ETH", buf_pct=1.0)
+        self.assertEqual(ct_none, ct_thick,
+            "buf_pct=None should behave as if buffer is fat (legacy)")
+
+    def test_cap_does_not_push_below_min(self):
+        """Floor (TM_MIN_CONTRACTS) still applies even with cap active."""
+        _min = _extract_constant(self.source, "TM_MIN_CONTRACTS")
+        ct = self.tm_compute_contracts(99, 200, 100000_00, "BTC", buf_pct=0.05)
+        self.assertGreaterEqual(ct, _min, f"Cap must not drop ct below {_min}")
+
+    def test_scan_passes_buf_pct(self):
+        """The scan-time call to tm_compute_contracts must pass buf_pct=_tm_buf_pct."""
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:10000]
+        self.assertIn("tm_compute_contracts(best_ask, seconds_remaining, _tm_balance, asset, buf_pct=_tm_buf_pct)",
+                      tm_block)
+
+    def test_execution_passes_buf_pct(self):
+        """_execute_tm_taker must pass buf_pct when re-deriving on price drift."""
+        fn_start = self.source.find("def _execute_tm_taker")
+        fn_end = self.source.find("\n    def ", fn_start + 1)
+        fn_block = self.source[fn_start:fn_end]
+        self.assertIn("buf_pct=_exec_buf_pct", fn_block)
+        self.assertIn('candidate.get("spot_buffer_pct")', fn_block)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -666,6 +666,10 @@ TM_MAX_CONCURRENT = 8                     # Max simultaneous TM positions (raise
 TM_NEGATIVE_EV_TIERS = set()              # Cleared — 95c removed from TM_PRICE_SET entirely (was min-sizing, now fully blocked)
 TM_NBBO_MIN_BUFFER_PCT = 0.10            # NBBO-sourced TM at 98-99c requires >= 0.10% buffer
 TM_NBBO_BLOCKED_PRICES = {96}            # Block TM at 96c when NBBO (data: 96c NBBO -$326, orderbook 21/21 +$60). 97c removed from TM_PRICE_SET entirely.
+TM_THIN_BUFFER_PCT = 0.20                # Below this buffer %, apply TM_THIN_BUFFER_CONTRACT_CAP (all sources)
+TM_THIN_BUFFER_CONTRACT_CAP = 50         # Contract cap when buf_pct < TM_THIN_BUFFER_PCT. Apr 1-23: 10/14 TM losses
+                                         # (-$578) had buf_pct<0.20% avg 114ct; capping bounds each to ~-$50.
+                                         # Kelly-sized backtest: Strategy B (cap) +$638 vs baseline, beats hard gate (+$577).
 # Per-asset risk caps for TM (same as main pipeline — TM no longer bypasses these)
 TM_ASSET_RISK_CAPS = {
     "BTC": BTC_MAX_RISK_PER_TRADE,        # 0.15
@@ -677,19 +681,25 @@ TM_ASSET_RISK_CAPS = {
 
 def tm_compute_contracts(price_cents: int, seconds_to_close: float,
                          bankroll_cents: int = 100000,
-                         asset: str = "") -> int:
+                         asset: str = "",
+                         buf_pct: float = None) -> int:
     """Margin × STC-aware sizing for terminal momentum.
 
     Formula: TM_BASE × (100 - price) × stc_multiplier
     Capped at per-asset risk limit (structural: TM respects same caps as main pipeline).
     Negative-EV tiers (95c) get minimum sizing until WR proves above breakeven.
+    Thin-buffer cap: when buf_pct < TM_THIN_BUFFER_PCT, cap contracts to
+    TM_THIN_BUFFER_CONTRACT_CAP to bound tail risk (Apr 1-23: all 8 catastrophic
+    TM losses ≥100ct were at sub-0.20% buffer; one ETH loss @ 0.155% buffer = -$178).
 
-    Data (278 trades, Apr 1-7 2026):
-    - STC < 180s: 77/77 = 100% WR → boost ×1.5
-    - STC 180-240s: 54/57 = 94.7% WR, all losses → reduce ×0.5
-    - STC 240+: 135/136 = 99.3% WR → standard ×1.0
-    - 95c: 88.9% WR vs 95.3% breakeven → negative EV, minimum sizing
-    - Buffer does NOT predict TM outcomes (loss mean 0.187% ≈ win mean 0.199%)
+    Data (1,056 trades, Apr 1-23 2026, refines earlier n=278):
+    - STC < 180s: safe-zone boost ×1.5
+    - STC 180-240s: danger zone ×0.5
+    - STC 240+: standard ×1.0
+    - Per-asset risk cap via TM_ASSET_RISK_CAPS
+    - buf_pct < 0.20%: cap to TM_THIN_BUFFER_CONTRACT_CAP (=50)
+      (losses avg buf_pct 0.189% vs wins 0.240% — the earlier "buffer doesn't
+       predict" finding held on Apr 1-7 n=278; fails on full April sample.)
     """
     margin = 100 - price_cents
     if margin <= 0:
@@ -714,6 +724,10 @@ def tm_compute_contracts(price_cents: int, seconds_to_close: float,
         risk_frac = TM_ASSET_RISK_CAPS.get(asset, 0.15)
         max_by_risk = int(bankroll_cents * risk_frac / price_cents)
         ct = min(ct, max_by_risk)
+
+    # Thin-buffer cap: bounds the fat tail when spot is close to threshold
+    if buf_pct is not None and buf_pct < TM_THIN_BUFFER_PCT:
+        ct = min(ct, TM_THIN_BUFFER_CONTRACT_CAP)
 
     return max(TM_MIN_CONTRACTS, min(TM_MAX_CONTRACTS, ct))
 # ─── Buffer-Aware Sizing (Infrastructure — DISABLED until data matures) ────
@@ -8995,7 +9009,7 @@ class OpportunityScanner:
                                         _tm_intercepted = True
                                     if _tm_intercepted:
                                         _tm_balance = self._get_balance_cached() or 100000
-                                        _tm_size = tm_compute_contracts(best_ask, seconds_remaining, _tm_balance, asset)
+                                        _tm_size = tm_compute_contracts(best_ask, seconds_remaining, _tm_balance, asset, buf_pct=_tm_buf_pct)
                                         logging.info(
                                             "TM_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs edge=%.4f margin=%dc stc_zone=%s buf=%.3f%% src=%s",
                                             asset, ticker, _tm_size, best_ask,
@@ -15033,7 +15047,8 @@ class OrderExecutor:
             candidate["best_yes_ask"] = fresh_ask
             # Re-derive sizing from execution-time price (scan price may have drifted)
             _exec_bal = candidate.get("balance_at_scan") or 100000
-            count = tm_compute_contracts(fresh_ask, seconds_to_close or 200, _exec_bal, asset)
+            _exec_buf_pct = candidate.get("spot_buffer_pct")
+            count = tm_compute_contracts(fresh_ask, seconds_to_close or 200, _exec_bal, asset, buf_pct=_exec_buf_pct)
             candidate["position_size"] = count
             taker_fee = calculate_taker_fee(count, price)
             net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
