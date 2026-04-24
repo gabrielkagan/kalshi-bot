@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 149395,
+  "total_evaluated": 149396,
   "filter_breakdown": {
     "candidate": 5531,
     "dc_shadow_t1b_93c": 47,
@@ -80,7 +80,7 @@
     "tm_nbbo_buffer_shadow": 547,
     "usaft_short_stc": 121,
     "weather_excluded_city": 130,
-    "weather_excluded_mtype_bracket": 412,
+    "weather_excluded_mtype_bracket": 413,
     "weather_excluded_mtype_upper_tail": 46,
     "weather_observation": 2855,
     "weather_shadow_capped30": 38,
@@ -157,5 +157,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-24",
-  "generated_at": "2026-04-24T18:19:22Z"
+  "generated_at": "2026-04-24T18:28:41Z"
 }
