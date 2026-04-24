@@ -977,6 +977,60 @@ IOC_TICKER_COOLDOWN = 15          # seconds cooldown after IOC attempt per ticke
 IOC_RETRY_OFFSET = 1              # cents above ask for taker-first IOC (1c worse entry, much higher fill rate)
 MAX_CONCURRENT_TAKER_PER_ASSET = 3  # safety cap: max simultaneous taker positions per asset
 
+# ─── IOC Size-Clamp Policy (per-strategy) ──────────────────────────────
+# Option X originally clamped every orderbook-source IOC to top-of-book depth
+# to prevent Variant B ladder sweeps on sub-floor phantom asks. Post-WS-fix
+# (0ddcaf8), top-of-book is frequently 1-2ct on TM_99/TM_98 markets, which
+# killed strategies whose profit came from Kalshi's multi-level IOC matching
+# sizing larger than the thin top level (pre-fix, NBBO fallback → blind IOC
+# for 100ct was matched by the exchange against its real book, typically ~70ct).
+#
+# Per-strategy policy:
+#   "top_of_book" — cap count at depth of quoted best ask (current Option X).
+#                   Correct for strategies with sub-floor risk: prevents
+#                   Kalshi from sweeping to rejected prices below floor.
+#   "no_clamp"    — submit full Kelly count. Kalshi IOC auto-cancels
+#                   unfilled remainder ($0 charge), so over-sizing is free.
+#                   PHANTOM_ABORT (ask_depth=0) still fires as the tail guard.
+#                   Correct for strategies where any sub-limit fill is
+#                   strictly better (ceiling-triggered) or where empirical
+#                   data shows sweeping essentially never happens.
+#
+# Decision criteria (see kb/decisions/no-floor-relaxation-on-ws-fix.md):
+#   Ceiling-triggered (TM_99/98/96): limit IS the top of the strategy's
+#     valid range. Any sub-limit fill strictly improves the trade.
+#     30d empirical: TM_99 had 1/452 sweeps >3c, net +$196.
+#   Floor-triggered discounts (overnight/weekend): have a floor but only
+#     fire when the market is already at a discount — deeper asks below
+#     don't exist in practice. 30d empirical: 1/52 and 1/77 sweeps >3c,
+#     zero sub-floor losses.
+#   Generic candidate paths (TAKER_NOW, MAKER_*, TM_95, TM_97): either
+#     have active sub-floor risk (TAKER_NOW: 20/315 sweeps >3c, 11 losses
+#     ≥$50) or are historical losers regardless of sizing.
+STRATEGY_CLAMP_POLICY = {
+    # Ceiling-triggered TM variants — sub-limit sweeps are strictly better
+    "terminal_momentum": "no_clamp",       # legacy generic TM path
+    "terminal_momentum_96": "no_clamp",
+    "terminal_momentum_98": "no_clamp",
+    "terminal_momentum_99": "no_clamp",
+    # Floor-triggered discounts that empirically never cross their floor
+    "overnight_discount": "no_clamp",
+    "weekend_discount": "no_clamp",
+    # Historical losers — unclamping would let them lose faster
+    "terminal_momentum_95": "top_of_book",
+    "terminal_momentum_97": "top_of_book",
+    # Sub-floor-risk-exposed paths — Variant B protection earns its keep
+    "TAKER_NOW": "top_of_book",
+    "MAKER_PATIENT": "top_of_book",
+    "MAKER_AGGRESSIVE": "top_of_book",
+    "PANIC_CAPTURE": "top_of_book",
+    "CONFIRMATION_ADDON": "top_of_book",
+    "DIP_ADDON": "top_of_book",
+    "low_price_near_expiry": "top_of_book",
+    "bracket_no": "top_of_book",
+}
+STRATEGY_CLAMP_DEFAULT = "top_of_book"  # conservative fallback for unrecognized strategies
+
 # ─── NBBO Fallback Gates ──────────────────────────────────────────────────
 # When orderbook is empty, fall back to market NBBO yes_ask IF within these gates.
 # Data: 456/468 missed candidates had empty orderbooks; simulated PnL +$196/wk.
@@ -3666,6 +3720,14 @@ class KalshiFeed:
         # kb/failures/kalshi-ws-schema-drift.md § "test-as-spec addendum".
         self._delta_probe_count = 0
         self._delta_probe_max = 5
+        # WS sequence-gap detector (H3 hypothesis for delta underflows).
+        # Kalshi WS envelope carries (sid, seq) per subscription. Seq should be
+        # monotonically increasing per sid. Gaps = dropped/reordered messages.
+        # Diagnostic only — remove after hypothesis confirmed/rejected.
+        # See kb/failures/kalshi-ws-schema-drift.md § "WS delta underflow".
+        self._ws_last_seq: Dict[int, int] = {}
+        self._ws_seq_gap_logs = 0
+        self._ws_seq_gap_max_logs = 500
 
     # ── Public API (called from main thread) ──────────────────────────────
 
@@ -3805,6 +3867,11 @@ class KalshiFeed:
                     self._connected = False
                     self._orderbooks.clear()
                 self._ws = None
+                # Reset seq tracking on reconnect — new WS session starts
+                # fresh sids, old state is meaningless and would produce
+                # spurious gap warnings.
+                self._ws_last_seq.clear()
+                self._ws_seq_gap_logs = 0
                 jitter = backoff * random.uniform(0, 0.25)
                 wait = backoff + jitter
                 logging.warning(
@@ -3869,6 +3936,25 @@ class KalshiFeed:
             data = json.loads(raw)
         except json.JSONDecodeError:
             return
+
+        # WS sequence-gap detector. Kalshi WS messages carry (sid, seq) per
+        # subscription; seq should be +1 per message within a sid. Any other
+        # delta means dropped/reordered/duplicate messages. Diagnostic only —
+        # remove after H3 hypothesis (WS message loss) is confirmed/rejected.
+        sid = data.get("sid")
+        seq = data.get("seq")
+        if sid is not None and seq is not None:
+            prev = self._ws_last_seq.get(sid)
+            if prev is not None and seq != prev + 1:
+                if self._ws_seq_gap_logs < self._ws_seq_gap_max_logs:
+                    ticker = (data.get("msg") or {}).get("market_ticker", "?")
+                    logging.warning(
+                        "WS_SEQ_GAP sid=%s ticker=%s type=%s expected_seq=%d "
+                        "actual_seq=%d gap=%d",
+                        sid, ticker, data.get("type", "?"), prev + 1, seq,
+                        seq - prev - 1)
+                    self._ws_seq_gap_logs += 1
+            self._ws_last_seq[sid] = seq
 
         msg_type = data.get("type")
 
@@ -15844,38 +15930,67 @@ class OrderExecutor:
         price = candidate["best_yes_ask"]
         balance = candidate["balance_at_scan"]
 
-        # ── Option X: surgical sub-floor defense (Apr 15) ─────────────────
-        # Kalshi IOC matches at BEST available price regardless of limit.
-        # When quoted best_ask has phantom depth (0 contracts visible) and
-        # real liquidity sits lower, the IOC sweeps — BTC Apr 13 submitted
-        # at limit=90c, filled at VWAP 54c via 40/50/62c resting sellers.
-        # Kalshi IOC auto-cancels unfilled remainder ($0 charge), so size
-        # clamping is safe. Applied only when we have orderbook-source data;
-        # NBBO fallback (~92% of IOCs) has no depth info → log for forensics.
-        # See kb/failures/ioc-subfloor-fill.md.
+        # ── Option X v2: per-strategy IOC clamp (Apr 24) ──────────────────
+        # Kalshi IOC matches at BEST available price up to our limit,
+        # sweeping through the ladder. Variant B (sub-floor phantom-ask
+        # sweep) can hand us sub-floor fills when top-of-book is thin and
+        # real asks sit way below. Original Option X (Apr 15) clamped ALL
+        # orderbook-source IOCs to top-of-book depth to prevent this.
+        #
+        # Post-WS-fix (0ddcaf8, Apr 23), top-of-book on TM_99 markets is
+        # routinely 1-2ct. Pre-fix the clamp was silently bypassed because
+        # ob_data came up empty (schema drift) → best_ask_source='market_nbbo'
+        # → blind IOC path. Now that orderbook is real, the clamp fires
+        # correctly but at a thin level, killing strategies that previously
+        # benefited from blind-firing into Kalshi's real book.
+        #
+        # v2 picks the clamp policy per-strategy (STRATEGY_CLAMP_POLICY):
+        #   top_of_book — cap count at quoted best ask depth. Preserves
+        #     Variant B protection for sub-floor-risk paths.
+        #   no_clamp    — submit full Kelly count. Kalshi IOC auto-cancels
+        #     the unfilled remainder ($0 charge), so oversizing is free.
+        #     PHANTOM_ABORT (ask_depth=0) still fires as the catastrophic
+        #     tail guard. Correct for ceiling-triggered strategies (TM) and
+        #     floor-triggered discounts with empirically-zero sweep tail.
+        # See kb/decisions/no-floor-relaxation-on-ws-fix.md.
         _ask_src = candidate.get("best_ask_source")
         _ob_snap = candidate.get("ob_snapshot") or {}
         _ask_depth = _ob_snap.get("ask_depth")
+        _strategy = candidate.get("strategy") or ""
+        _policy = STRATEGY_CLAMP_POLICY.get(_strategy, STRATEGY_CLAMP_DEFAULT)
         if _ask_src == "orderbook" and isinstance(_ask_depth, int):
+            # Catastrophic tail guard — fires regardless of policy.
             if _ask_depth == 0:
                 logging.warning(
                     "IOC_ABORT_PHANTOM: %s %dc count=%d ask_depth=0 (orderbook-confirmed) "
-                    "— refusing IOC to prevent ladder sweep",
-                    ticker, price, count)
+                    "strategy=%s policy=%s — refusing IOC to prevent ladder sweep",
+                    ticker, price, count, _strategy, _policy)
                 self._session_ioc_unfilled += 1
                 return None
-            if _ask_depth < count:
-                logging.warning(
-                    "IOC_SIZE_CLAMP: %s %dc count %d -> %d (best_ask_depth=%d, asset=%s)",
-                    ticker, price, count, _ask_depth, _ask_depth,
-                    candidate.get("asset", "?"))
-                count = _ask_depth
-                candidate["position_size"] = count  # downstream logging consistency
+            if _policy == "no_clamp":
+                # Skip size clamp. Kalshi auto-cancels unfilled remainder;
+                # we accept the sweep risk for strategies where 30d data
+                # shows it essentially never materializes.
+                logging.info(
+                    "IOC_NO_CLAMP: %s %dc count=%d (top_depth=%d, asset=%s, strategy=%s)",
+                    ticker, price, count, _ask_depth,
+                    candidate.get("asset", "?"), _strategy)
+            else:
+                # top_of_book (default, conservative). Clamp to top-of-book
+                # depth to prevent ladder sweeps into sub-floor prices.
+                if _ask_depth < count:
+                    logging.warning(
+                        "IOC_SIZE_CLAMP: %s %dc count %d -> %d "
+                        "(policy=top_of_book, top_depth=%d, asset=%s, strategy=%s)",
+                        ticker, price, count, _ask_depth, _ask_depth,
+                        candidate.get("asset", "?"), _strategy)
+                    count = _ask_depth
+                    candidate["position_size"] = count
         elif _ask_src == "market_nbbo":
             logging.info(
-                "IOC_BLIND_SUBMIT: %s %dc count=%d asset=%s (NBBO fallback — no depth)",
-                ticker, price, count, candidate.get("asset", "?"))
-        # ── end Option X ──────────────────────────────────────────────────
+                "IOC_BLIND_SUBMIT: %s %dc count=%d asset=%s strategy=%s (NBBO fallback — no depth)",
+                ticker, price, count, candidate.get("asset", "?"), _strategy)
+        # ── end Option X v2 ───────────────────────────────────────────────
 
         client_oid = str(uuid.uuid4())
 

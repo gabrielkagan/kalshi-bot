@@ -39,6 +39,7 @@ Out of scope (TODO — expand in follow-up):
   - REST /markets NBBO (yes_ask_dollars fallback field)
 """
 
+import json
 import os
 import sys
 import unittest
@@ -427,6 +428,92 @@ class TestDeltaDriftDetection(unittest.TestCase):
         self.assertEqual(feed._orderbooks["T"]["yes"], [])
 
 
+class TestWsSeqGapDetector(unittest.TestCase):
+    """H3 diagnostic: WS (sid, seq) gap detection.
+
+    Kalshi WS envelope carries `sid` (subscription id) and `seq` (message
+    number within subscription). Seq should be monotonically +1 per sid.
+    Any gap = dropped/reordered/duplicate messages and is the leading
+    hypothesis for the residual deep-level delta underflow warnings that
+    persist even after the 2026-04-24 empty-snapshot fix.
+
+    Diagnostic test — remove once H3 is confirmed/rejected and the
+    instrumentation is cleaned up.
+    """
+
+    def _msg(self, sid, seq, ticker="T"):
+        """Minimal WS envelope for gap detector — goes through dispatch
+        but has no side effects because msg_type is unknown."""
+        return json.dumps({
+            "type": "heartbeat",   # unhandled — dispatch is a no-op
+            "sid": sid, "seq": seq,
+            "msg": {"market_ticker": ticker},
+        })
+
+    def test_consecutive_seq_no_gap(self):
+        feed = _make_feed()
+        feed._handle_message(self._msg(1, 1))
+        feed._handle_message(self._msg(1, 2))
+        feed._handle_message(self._msg(1, 3))
+        self.assertEqual(feed._ws_seq_gap_logs, 0)
+        self.assertEqual(feed._ws_last_seq[1], 3)
+
+    def test_first_seq_per_sid_not_a_gap(self):
+        """First message on a new sid — prev is None, skip gap check."""
+        feed = _make_feed()
+        feed._handle_message(self._msg(42, 1000))
+        self.assertEqual(feed._ws_seq_gap_logs, 0)
+        self.assertEqual(feed._ws_last_seq[42], 1000)
+
+    def test_gap_forward_logs(self):
+        """Seq jumps 1 → 5 = 3 messages lost, gap=3."""
+        feed = _make_feed()
+        feed._handle_message(self._msg(1, 1))
+        feed._handle_message(self._msg(1, 5))
+        self.assertEqual(feed._ws_seq_gap_logs, 1)
+        # Tracker updates to latest — next gap check is against the new seq.
+        self.assertEqual(feed._ws_last_seq[1], 5)
+
+    def test_reorder_backward_logs(self):
+        """Seq goes 3 → 2 (out-of-order or duplicate) also trips detector."""
+        feed = _make_feed()
+        feed._handle_message(self._msg(1, 3))
+        feed._handle_message(self._msg(1, 2))
+        self.assertEqual(feed._ws_seq_gap_logs, 1)
+
+    def test_parallel_sids_tracked_independently(self):
+        """Multiple subscriptions interleave. Each sid's seq monotonic
+        independently — no cross-contamination."""
+        feed = _make_feed()
+        feed._handle_message(self._msg(1, 1))
+        feed._handle_message(self._msg(2, 100))
+        feed._handle_message(self._msg(1, 2))
+        feed._handle_message(self._msg(2, 101))
+        feed._handle_message(self._msg(1, 3))
+        self.assertEqual(feed._ws_seq_gap_logs, 0)
+        self.assertEqual(feed._ws_last_seq[1], 3)
+        self.assertEqual(feed._ws_last_seq[2], 101)
+
+    def test_missing_sid_or_seq_no_crash(self):
+        """If Kalshi omits sid/seq (old protocol or malformed), skip silently."""
+        feed = _make_feed()
+        feed._handle_message(json.dumps({"type": "heartbeat"}))
+        feed._handle_message(json.dumps({"type": "heartbeat", "sid": 1}))
+        feed._handle_message(json.dumps({"type": "heartbeat", "seq": 1}))
+        self.assertEqual(feed._ws_seq_gap_logs, 0)
+        self.assertEqual(feed._ws_last_seq, {})
+
+    def test_log_cap_prevents_flood(self):
+        """Gap logs are capped at _ws_seq_gap_max_logs to avoid log flood.
+        Past the cap, tracker still updates but no more warnings fire."""
+        feed = _make_feed()
+        feed._ws_seq_gap_max_logs = 3
+        for i in range(10):
+            # Force a gap on every message
+            feed._handle_message(self._msg(1, i * 10))
+        self.assertEqual(feed._ws_seq_gap_logs, 3)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Downstream helpers: must operate on the internal [cents, qty] format
 # ─────────────────────────────────────────────────────────────────────────────
@@ -469,6 +556,33 @@ class TestDownstreamHelpersOnInternalFormat(unittest.TestCase):
         """best_ask_depth reads the highest-price NO bid level's qty."""
         ob = {"yes": [], "no": [[54, 20], [56, 150]]}
         self.assertEqual(OrderExecutor._best_ask_depth(ob), 150)
+
+    def test_best_ask_depth_thin_top_on_terminal_market(self):
+        """Contract pin for post-WS-fix TM_99 scenario: on near-settlement
+        15M markets the NO bid at 1c (= YES ask at 99c) is often qty=1,
+        reflecting thin resting ask supply near the ceiling. Asserts the
+        decoder → helper pipeline yields the expected thin top-of-book
+        value for a realistic wire shape. See
+        kb/failures/kalshi-ws-schema-drift.md and
+        kb/decisions/no-floor-relaxation-on-ws-fix.md.
+        """
+        # Simulate a near-terminal YES market: single NO bid level at 1c × 1
+        # (= YES ask 99c × 1), deep YES bids on the other side.
+        feed = _make_feed()
+        msg = {
+            "type": "orderbook_snapshot", "sid": 1, "seq": 1,
+            "msg": {
+                "market_ticker": "KXBTC15M-26APR231930-30",
+                "market_id": "x",
+                "yes_dollars_fp": [["0.9800", "620.00"]],
+                "no_dollars_fp":  [["0.0100", "1.00"]],
+            },
+        }
+        feed._handle_ob_snapshot(msg)
+        ob = feed._orderbooks["KXBTC15M-26APR231930-30"]
+        self.assertEqual(OrderExecutor._best_ask_depth(ob), 1)
+        # And YES-side bid depth is healthy (matches the asymmetry we see live)
+        self.assertEqual(OrderExecutor._best_yes_bid_depth(ob), 620)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

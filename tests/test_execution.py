@@ -652,6 +652,220 @@ class TestIOCSubFloorDefense(unittest.TestCase):
         self.assertEqual(call_kwargs["count"], 5)
 
 
+class TestStrategyClampPolicy(unittest.TestCase):
+    """Option X v2 (Apr 24): per-strategy IOC clamp policy in _submit_taker.
+
+    Replaces the blanket top-of-book clamp that was killing TM_99 and
+    discount strategies post-WS-fix (0ddcaf8).
+
+    Strategies split into two policies:
+      no_clamp   — ceiling-triggered (TM) + empirically-safe discounts.
+                   Submit full Kelly count; Kalshi IOC auto-cancels
+                   unfilled remainder. PHANTOM_ABORT still fires on
+                   ask_depth=0 as the catastrophic tail guard.
+      top_of_book — Variant B-exposed generic paths + historical losers.
+                   Clamp count to top-of-book depth (pre-existing Option X).
+
+    See kb/decisions/no-floor-relaxation-on-ws-fix.md.
+    """
+
+    def _make_ex(self):
+        ex = _make_executor()
+        ex._session_ioc_unfilled = 0
+        return ex
+
+    def _stub_fill(self, ex, order_id, count, price=99):
+        ex._client.place_order.return_value = {
+            "order": {"order_id": order_id, "remaining_count": 0, "fill_count": count}
+        }
+        ex._client.get_fills.return_value = {"fills": [
+            {"order_id": order_id, "trade_id": "t-" + order_id, "count": count, "price": price}
+        ]}
+
+    def test_no_clamp_strategy_submits_full_count_despite_thin_top(self):
+        """TM_99 post-fix regression: book shows ask_depth=1 at 99c. Pre-patch
+        clamp would have capped count to 1 (killing the strategy). no_clamp
+        sends the full Kelly count; Kalshi matches whatever the real submit-
+        time book holds and auto-cancels unfilled — mirrors pre-WS-fix behavior."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-tm99", 100, price=99)
+        cand = _make_candidate(
+            best_yes_ask=99,
+            position_size=100,
+            strategy="terminal_momentum_99",
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 1, "best_ask": 99},
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=100):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        # Full 100ct submitted despite ask_depth=1. Key regression guard.
+        self.assertEqual(call_kwargs["count"], 100)
+        self.assertEqual(cand["position_size"], 100)
+
+    def test_top_of_book_strategy_stays_clamped_to_thin_top(self):
+        """TAKER_NOW keeps Variant B protection: clamp to ask_depth even when
+        count exceeds depth. Sub-floor-risk paths cannot benefit from the
+        sweep behavior because fills below per-asset floor would be rejected."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-taker", 1, price=90)
+        cand = _make_candidate(
+            best_yes_ask=90,
+            position_size=100,
+            strategy="TAKER_NOW",
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 1, "best_ask": 90},
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 1)
+        self.assertEqual(cand["position_size"], 1)
+
+    def test_known_loser_tm_95_stays_clamped_to_top(self):
+        """TM_95 is a historical net loser (-$237/30d). Policy pins it to
+        top_of_book so unclamping doesn't accidentally give a losing strategy
+        more size. The clamp question is orthogonal to the strategy's merit."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-tm95", 1, price=95)
+        cand = _make_candidate(
+            best_yes_ask=95,
+            position_size=50,
+            strategy="terminal_momentum_95",
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 1, "best_ask": 95},
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 1)
+
+    def test_unknown_strategy_defaults_to_top_of_book(self):
+        """Safety: any strategy not in STRATEGY_CLAMP_POLICY uses top_of_book
+        (the conservative default). New strategies must be explicitly opted in
+        to no_clamp via policy edit."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-unk", 2, price=92)
+        cand = _make_candidate(
+            best_yes_ask=92,
+            position_size=50,
+            strategy="some_future_strategy_not_yet_in_policy",
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 2, "best_ask": 92},
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=2):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 2)
+
+    def test_phantom_abort_fires_regardless_of_policy(self):
+        """ask_depth=0 aborts the IOC even for no_clamp strategies. This is
+        the catastrophic tail guard — zero quoted depth at best ask is a
+        strong phantom-top-of-book signal, where Kalshi could sweep deep
+        stale asks. Abort preserves pre-fix tail protection universally."""
+        ex = self._make_ex()
+        cand = _make_candidate(
+            best_yes_ask=99,
+            position_size=100,
+            strategy="terminal_momentum_99",  # no_clamp
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 0, "best_ask": 99},
+        )
+        result = ex._submit_taker(cand)
+        self.assertIsNone(result)
+        ex._client.place_order.assert_not_called()
+        self.assertEqual(ex._session_ioc_unfilled, 1)
+
+    def test_overnight_discount_submits_full_count(self):
+        """overnight_discount is floor-triggered (89c+) but 30d data shows
+        1/52 sweep >3c, zero sub-floor losses. Policy gives it no_clamp to
+        restore pre-fix fill rate (pre-fix: 91% fill; post-fix pre-patch: 26%)."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-ovn", 50, price=92)
+        cand = _make_candidate(
+            best_yes_ask=92,
+            position_size=50,
+            strategy="overnight_discount",
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 5, "best_ask": 92},
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 50)
+
+    def test_weekend_discount_submits_full_count(self):
+        """weekend_discount: same no_clamp logic. 30d: 1/77 sweep >3c, zero
+        losses, max gap 9c on SOL. Empirically safe."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-wknd", 40, price=91)
+        cand = _make_candidate(
+            best_yes_ask=91,
+            position_size=40,
+            strategy="weekend_discount",
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 2, "best_ask": 91},
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=40):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 40)
+
+    def test_nbbo_source_skips_clamp_regardless_of_policy(self):
+        """When orderbook isn't the source (NBBO fallback), no clamp fires
+        regardless of strategy policy — there's no depth data to trust.
+        Identical pre-patch behavior. Pre-fix, this was the dominant path."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-nbbo", 100, price=99)
+        cand = _make_candidate(
+            best_yes_ask=99,
+            position_size=100,
+            strategy="terminal_momentum_99",
+            best_ask_source="market_nbbo",
+            ob_snapshot={"ask_depth": 0},
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=100):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 100)
+        self.assertEqual(ex._session_ioc_unfilled, 0)
+
+    def test_no_clamp_still_works_with_deep_top_of_book(self):
+        """no_clamp should be inert when book is deep enough — no behavior
+        change vs. pre-patch clamped path for books that wouldn't hit the
+        clamp anyway. Verifies no_clamp doesn't accidentally break the
+        common case."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-deep", 50, price=98)
+        cand = _make_candidate(
+            best_yes_ask=98,
+            position_size=50,
+            strategy="terminal_momentum_98",
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 500, "best_ask": 98},  # deep top
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 50)
+
+
 class TestGhostFillProtection(unittest.TestCase):
     """Ghost fill detection layers A and B."""
 
