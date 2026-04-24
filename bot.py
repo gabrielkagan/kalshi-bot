@@ -13601,12 +13601,31 @@ class OpportunityScanner:
         except Exception as e:
             logging.warning("WS_DRIFT_PROBE %s fetch_failed: %s", ticker, e)
             return
-        if not rest_resp:
+        if not rest_resp or not isinstance(rest_resp, dict):
             return
-        ob_fp = rest_resp.get("orderbook") if isinstance(rest_resp, dict) else None
-        if not ob_fp:
+
+        # Kalshi REST returns one of two shapes (same pattern as
+        # _get_orderbook_cached at bot.py:13538-13546):
+        #   - New FP format: {"orderbook_fp": {"yes_dollars": [[dollar_str,
+        #     fp_qty_str], ...], "no_dollars": [...]}}
+        #   - Legacy:        {"orderbook": {"yes": [[cents_int, qty_int],
+        #     ...], "no": [...]}}
+        rest_ob: Optional[Dict[str, List]] = None
+        ob_fp = rest_resp.get("orderbook_fp")
+        if ob_fp:
+            rest_ob = OpportunityScanner._convert_orderbook_fp(ob_fp)
+        else:
+            legacy = rest_resp.get("orderbook")
+            if isinstance(legacy, dict):
+                rest_ob = {
+                    "yes": list(legacy.get("yes") or []),
+                    "no": list(legacy.get("no") or []),
+                }
+        if rest_ob is None:
+            logging.warning(
+                "WS_DRIFT_PROBE %s unknown_rest_shape: keys=%s",
+                ticker, sorted(rest_resp.keys()))
             return
-        rest_ob = OpportunityScanner._convert_orderbook_fp(ob_fp)
 
         for side in ("yes", "no"):
             ws_levels = {int(lvl[0]): int(lvl[1])

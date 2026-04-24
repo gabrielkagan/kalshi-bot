@@ -78,6 +78,10 @@ def _make_candidate(**overrides):
 def _make_executor(**overrides):
     """Build an OrderExecutor with mocked dependencies."""
     client = MagicMock()
+    # Default: REST /orderbook returns None so the IOC drift check in
+    # _submit_taker falls through silently. Tests that exercise the drift
+    # path explicitly override this return value.
+    client.get_orderbook.return_value = None
     state = MagicMock()
     logger = MagicMock()
     main_loop = MagicMock()
@@ -672,6 +676,10 @@ class TestStrategyClampPolicy(unittest.TestCase):
     def _make_ex(self):
         ex = _make_executor()
         ex._session_ioc_unfilled = 0
+        # Default: WS drift check returns None (no REST data) so existing
+        # tests that assume only cache-driven clamp behavior stay stable.
+        # Tests that specifically exercise drift-check paths override this.
+        ex._client.get_orderbook.return_value = None
         return ex
 
     def _stub_fill(self, ex, order_id, count, price=99):
@@ -681,6 +689,19 @@ class TestStrategyClampPolicy(unittest.TestCase):
         ex._client.get_fills.return_value = {"fills": [
             {"order_id": order_id, "trade_id": "t-" + order_id, "count": count, "price": price}
         ]}
+
+    def _stub_rest_orderbook(self, ex, depth_at_best):
+        """Configure the mock KalshiClient to return a REST /orderbook response
+        where the top YES ask has `depth_at_best` contracts."""
+        # Structure matches the 2026 `orderbook_fp` schema → the decoder
+        # normalizes to [[cents, qty], ...]. For simplicity here we bypass
+        # the FP decoder by returning a pre-normalized 'orderbook' dict.
+        ex._client.get_orderbook.return_value = {
+            "orderbook": {
+                "yes": [],
+                "no": [[1, depth_at_best]],  # NO bid at 1c = YES ask at 99c
+            }
+        }
 
     def test_no_clamp_strategy_submits_full_count_despite_thin_top(self):
         """TM_99 post-fix regression: book shows ask_depth=1 at 99c. Pre-patch
@@ -862,6 +883,130 @@ class TestStrategyClampPolicy(unittest.TestCase):
             mt.time.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 50)
+
+    # ── WS cache-drift defense tests ──────────────────────────────────────
+    # Pre-IOC REST verification: if cached depth is deep but REST disagrees
+    # significantly, clamp to REST. Motivated by Apr 24 evidence that WS
+    # cache claimed 765ct at 96c while Kalshi's real book had ~1ct
+    # (KXSOL15M-26APR241245-45, pending_orders + settled_trades trace).
+
+    def test_drift_check_clamps_when_rest_shows_thin(self):
+        """no_clamp strategy with cached depth=765 but REST shows depth=1 →
+        clamp to REST depth. This is the core regression the drift check
+        was designed to prevent."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-drift", 1, price=96)
+        self._stub_rest_orderbook(ex, depth_at_best=1)  # REST ground truth: thin
+        cand = _make_candidate(
+            best_yes_ask=96,
+            position_size=50,
+            strategy="terminal_momentum_96",  # no_clamp policy
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 765, "best_ask": 96},  # cache claims deep
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        # Drift detected → clamp to REST depth=1, not 50. Saves the
+        # bogus oversized IOC.
+        self.assertEqual(call_kwargs["count"], 1)
+        self.assertEqual(cand["position_size"], 1)
+
+    def test_drift_check_skips_when_cache_already_thin(self):
+        """When cached ask_depth < IOC_DRIFT_CHECK_MIN_CACHED_DEPTH (20),
+        skip the REST call entirely. Thin cache is already conservative;
+        no point paying 30ms latency to double-check."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-thin", 1, price=99)
+        # Deliberately NOT stubbing REST — if drift check fires it'd fail
+        # (get_orderbook default returns None which the drift path handles,
+        # but we want to assert drift check doesn't fire at all).
+        cand = _make_candidate(
+            best_yes_ask=99,
+            position_size=50,
+            strategy="terminal_momentum_99",  # no_clamp
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 1, "best_ask": 99},  # cache thin — skip REST
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        # REST shouldn't have been called (cache was already thin).
+        ex._client.get_orderbook.assert_not_called()
+        # no_clamp + cached depth=1 + count=50: count sent as 50 (no clamp
+        # fires for no_clamp). Kalshi would match 1. Our code ships 50.
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 50)
+
+    def test_drift_check_no_op_when_rest_agrees_with_cache(self):
+        """When REST confirms the cached depth (within divergence ratio),
+        proceed normally. no_clamp strategy ships full count; top_of_book
+        clamps only if count > depth."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-ok", 50, price=98)
+        self._stub_rest_orderbook(ex, depth_at_best=500)  # REST agrees
+        cand = _make_candidate(
+            best_yes_ask=98,
+            position_size=50,
+            strategy="terminal_momentum_98",  # no_clamp
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 500, "best_ask": 98},  # cache deep, matches REST
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        self.assertEqual(call_kwargs["count"], 50)
+
+    def test_drift_check_also_helps_top_of_book_policy(self):
+        """Drift correction applies regardless of policy. If top_of_book
+        strategy fires with cached depth=100 but REST says 5, the clamp
+        operates on 5 (correct) not 100 (stale cached)."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-tob-drift", 5, price=90)
+        self._stub_rest_orderbook(ex, depth_at_best=5)  # REST ground truth
+        cand = _make_candidate(
+            best_yes_ask=90,
+            position_size=50,
+            strategy="TAKER_NOW",  # top_of_book
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 100, "best_ask": 90},  # cache wrong
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=5):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        # Would have clamped to 100 under stale cache; drift correction
+        # → clamps to 5 (real depth). Prevents submitting 100 against a
+        # possibly-stale book where the real sub-floor sweep is hidden.
+        self.assertEqual(call_kwargs["count"], 5)
+
+    def test_drift_check_rest_failure_falls_back_to_cache(self):
+        """If REST fetch errors out, drift check returns None and we proceed
+        with cached depth (pre-patch behavior). Patch must be no-worse than
+        original code on any error path."""
+        ex = self._make_ex()
+        self._stub_fill(ex, "ord-rest-fail", 50, price=96)
+        ex._client.get_orderbook.side_effect = Exception("API error")
+        cand = _make_candidate(
+            best_yes_ask=96,
+            position_size=50,
+            strategy="terminal_momentum_96",  # no_clamp
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 500, "best_ask": 96},
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        # REST failed → fall back to cached path → no_clamp submits 50.
         call_kwargs = ex._client.place_order.call_args.kwargs
         self.assertEqual(call_kwargs["count"], 50)
 
