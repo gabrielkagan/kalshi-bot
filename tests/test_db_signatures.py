@@ -91,6 +91,46 @@ class TestShadowDiagKeyCoverage:
         assert not missing, (
             f"_shadow_diag keys missing from insert_evaluated_opportunity(): {missing}")
 
+    def test_shadow_diag_keys_in_db_schema(self):
+        """Tri-contract third leg: every _shadow_diag key must be a real
+        column in evaluated_opportunities AND rejected_opportunities.
+
+        Without this check, a key can live through both sibling signatures
+        and still fail silently at INSERT time with `no such column` —
+        the row never lands. Wires the CLAUDE.md "shadow diag" critical
+        rule end-to-end against the live sqlite schema.
+        """
+        import bot
+        sm = bot.StateManager(":memory:")
+        eval_cols = {
+            r["name"] for r in
+            sm.conn.execute("PRAGMA table_info(evaluated_opportunities)").fetchall()
+        }
+        rej_cols = {
+            r["name"] for r in
+            sm.conn.execute("PRAGMA table_info(rejected_opportunities)").fetchall()
+        }
+        diag_keys = self._get_shadow_diag_keys()
+
+        missing_eval = diag_keys - eval_cols
+        missing_rej = diag_keys - rej_cols
+        errors = []
+        if missing_eval:
+            errors.append(
+                f"_shadow_diag keys missing from evaluated_opportunities "
+                f"schema: {sorted(missing_eval)} — add via "
+                f"ALTER TABLE ADD COLUMN in StateManager._create_tables "
+                f"migration loop."
+            )
+        if missing_rej:
+            errors.append(
+                f"_shadow_diag keys missing from rejected_opportunities "
+                f"schema: {sorted(missing_rej)} — add via "
+                f"ALTER TABLE ADD COLUMN in StateManager._create_tables "
+                f"migration loop."
+            )
+        assert not errors, "\n".join(errors)
+
 
 class TestBusyTimeout:
     """Every sqlite3.connect() must set PRAGMA busy_timeout."""
