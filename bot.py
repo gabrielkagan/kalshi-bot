@@ -8144,6 +8144,21 @@ class OpportunityScanner:
                             scan_stats[asset].get("loss_cooldown", 0) + 1)
                 except Exception:
                     pass
+                # Trace row so this silent-bail isn't a diagnostic black
+                # hole. ws-cache-drift-silent-scan-2026-04-24 PM Prevention #3.
+                try:
+                    self._state.insert_evaluated_opportunity(
+                        ticker=window["event_ticker"],
+                        event_ticker=window["event_ticker"],
+                        asset=asset,
+                        filter_stage="silent_loss_cooldown",
+                        rejection_reason="asset in cooldown_assets",
+                        seconds_to_close=window.get("seconds_to_close"),
+                        product_type=_pt or "15m")
+                except Exception:
+                    logging.debug(
+                        "silent_loss_cooldown trace insert failed",
+                        exc_info=True)
                 continue
 
             # Route price/vol to appropriate engine based on product type
@@ -8163,6 +8178,22 @@ class OpportunityScanner:
             else:
                 spot = self._feed.get_price(asset)
                 if spot is None or spot <= 0:
+                    # Trace row — Coinbase price feed gap or restart warmup.
+                    # ws-cache-drift-silent-scan-2026-04-24 PM Prevention #3.
+                    try:
+                        self._state.insert_evaluated_opportunity(
+                            ticker=window["event_ticker"],
+                            event_ticker=window["event_ticker"],
+                            asset=asset,
+                            filter_stage="silent_spot_none",
+                            rejection_reason=f"spot={spot} from feed",
+                            spot_price=spot if spot is not None else None,
+                            seconds_to_close=window.get("seconds_to_close"),
+                            product_type=_pt or "15m")
+                    except Exception:
+                        logging.debug(
+                            "silent_spot_none trace insert failed",
+                            exc_info=True)
                     continue
                 seconds_remaining = window["seconds_to_close"]
                 vol_est = self._vol.update(asset, seconds_to_close=seconds_remaining)
@@ -8172,6 +8203,25 @@ class OpportunityScanner:
                     logging.warning("SPX_DIAG_VOL: vol_est=%s blended_rv=%s — skipping window",
                                     "None" if vol_est is None else "ok",
                                     vol_est.get("blended_rv") if vol_est else "N/A")
+                # Trace row for 15M/hourly — vol engine warmup or divergence.
+                # ws-cache-drift-silent-scan-2026-04-24 PM Prevention #3.
+                if _pt in (None, "15m", "hourly"):
+                    try:
+                        _br = vol_est.get("blended_rv") if vol_est else None
+                        self._state.insert_evaluated_opportunity(
+                            ticker=window["event_ticker"],
+                            event_ticker=window["event_ticker"],
+                            asset=asset,
+                            filter_stage="silent_vol_none",
+                            rejection_reason=("vol_est=None" if vol_est is None
+                                              else f"blended_rv={_br}"),
+                            spot_price=spot,
+                            seconds_to_close=seconds_remaining,
+                            product_type=_pt or "15m")
+                    except Exception:
+                        logging.debug(
+                            "silent_vol_none trace insert failed",
+                            exc_info=True)
                 continue
 
             blended_rv = vol_est["blended_rv"]
