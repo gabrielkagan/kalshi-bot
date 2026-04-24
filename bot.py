@@ -7319,6 +7319,11 @@ class OpportunityScanner:
         self._ml = main_loop
         # Orderbook cache: ticker -> (data, fetch_time)
         self._ob_cache: Dict[str, Tuple[Optional[Dict], float]] = {}
+        # WS-bypass cooldown: ticker -> expiry_unix_ts. During cooldown,
+        # _get_orderbook_cached skips WS and goes straight to REST. Set by
+        # flag_ticker_drifted when scan silent-bails. Fix #1a from
+        # kb/failures/ws-cache-drift-silent-scan-2026-04-24.md.
+        self._ws_drift_cooldown: Dict[str, float] = {}
         # Balance cache: (balance_cents, fetch_time)
         self._balance_cache: Tuple[Optional[int], float] = (None, 0.0)
         # Scan stats from last scan() call
@@ -8435,6 +8440,10 @@ class OpportunityScanner:
                         )
                     else:
                         scan_stats[asset]["no_orderbook"] += 1
+                        # Flag ticker for WS-bypass so next tick uses REST
+                        # directly — gives corrupt WS cache a chance to
+                        # re-snapshot. Fix #1a from PM.
+                        self.flag_ticker_drifted(ticker)
                         # DB rejection row so silent-bail paths leave a trace
                         # (ws-cache-drift-silent-scan-2026-04-24 PM)
                         try:
@@ -8501,6 +8510,10 @@ class OpportunityScanner:
                     self._ticker_ask_history[ticker].append((time.time(), best_ask))
                 if best_ask is None:
                     scan_stats[asset]["no_best_ask"] += 1
+                    # Flag ticker for WS-bypass so next tick uses REST
+                    # directly — gives corrupt WS cache a chance to
+                    # re-snapshot. Fix #1a from PM.
+                    self.flag_ticker_drifted(ticker)
                     # DB rejection row so silent-bail paths leave a trace
                     # (ws-cache-drift-silent-scan-2026-04-24 PM)
                     try:
@@ -13673,11 +13686,44 @@ class OpportunityScanner:
 
         return 100 - best_no_bid
 
+    def flag_ticker_drifted(self, ticker: str, cooldown_s: float = 60.0) -> None:
+        """Flag a ticker to bypass the WS orderbook cache for `cooldown_s`
+        seconds. Called from scan() silent-bail paths when WS-derived data
+        is unusable (no best ask, no orderbook). During the cooldown,
+        `_get_orderbook_cached` routes directly to REST, giving the WS
+        cache a chance to re-snapshot cleanly.
+
+        Also evicts `_ob_cache[ticker]` so the shared TTL cache doesn't
+        silently serve the WS-corrupt orderbook during the bypass — see
+        what-could-go-wrong C3 in
+        kb/failures/ws-cache-drift-silent-scan-2026-04-24.md.
+
+        No-op for hourly tickers (they skip WS in the first place).
+        """
+        _hourly_prefixes = tuple(HOURLY_SERIES_TICKERS.values())
+        if ticker.startswith(_hourly_prefixes):
+            return
+        # Sweep expired entries if the dict has grown — prevents unbounded
+        # accumulation from settled markets. Cheap; runs at most per flag.
+        if len(self._ws_drift_cooldown) > 32:
+            now_sweep = time.time()
+            expired = [t for t, exp in self._ws_drift_cooldown.items()
+                       if exp <= now_sweep]
+            for t in expired:
+                del self._ws_drift_cooldown[t]
+        self._ws_drift_cooldown[ticker] = time.time() + cooldown_s
+        # Evict shared cache so the bypass actually takes effect.
+        self._ob_cache.pop(ticker, None)
+
     def _get_orderbook_cached(self, ticker: str) -> Tuple[Optional[Dict], bool]:
         """Return (orderbook_data, was_fresh_fetch). Uses TTL cache.
 
         Prefers real-time WS orderbook when available (zero API cost),
         falls back to REST fetch if WS data is missing or stale.
+
+        Respects `_ws_drift_cooldown`: flagged tickers skip WS and use
+        REST directly. If REST also fails while flagged, falls back to
+        whatever WS data exists — stale WS beats no data at all.
         """
         now = time.time()
 
@@ -13686,8 +13732,19 @@ class OpportunityScanner:
         _hourly_prefixes = tuple(HOURLY_SERIES_TICKERS.values())
         is_hourly = ticker.startswith(_hourly_prefixes)
 
+        # WS-bypass for drift-flagged tickers. On expiry, clear the flag
+        # and fall back to the normal WS path on the next call.
+        skip_ws = False
+        _flag_expiry = self._ws_drift_cooldown.get(ticker)
+        if _flag_expiry is not None:
+            if now < _flag_expiry:
+                skip_ws = True
+            else:
+                del self._ws_drift_cooldown[ticker]
+
         # Try WS orderbook first (free, real-time) — 15M only
-        if self._kalshi_feed and self._kalshi_feed.is_connected and not is_hourly:
+        if (not skip_ws and self._kalshi_feed
+                and self._kalshi_feed.is_connected and not is_hourly):
             ws_ob = self._kalshi_feed.get_orderbook(ticker)
             if ws_ob and now - ws_ob.get("ts", 0) < ORDERBOOK_CACHE_TTL * 2:
                 # Subscribe if not already (ensures future deltas flow)
@@ -13697,14 +13754,28 @@ class OpportunityScanner:
             # No WS data yet — subscribe so it arrives for next scan
             self._kalshi_feed.subscribe_ticker(ticker)
 
-        cached = self._ob_cache.get(ticker)
-        if cached:
-            data, fetch_time = cached
-            if now - fetch_time < ORDERBOOK_CACHE_TTL:
-                return (data, False)
+        if not skip_ws:
+            cached = self._ob_cache.get(ticker)
+            if cached:
+                data, fetch_time = cached
+                if now - fetch_time < ORDERBOOK_CACHE_TTL:
+                    return (data, False)
 
         # REST fallback
-        ob_data = self._client.get_orderbook(ticker, depth=5)
+        try:
+            ob_data = self._client.get_orderbook(ticker, depth=5)
+        except Exception as e:
+            # M1: if REST fails while WS is flagged, prefer stale WS over
+            # returning None. Losing WS-bypass is less harmful than losing
+            # orderbook data entirely.
+            if skip_ws and self._kalshi_feed and not is_hourly:
+                ws_fallback = self._kalshi_feed.get_orderbook(ticker)
+                if ws_fallback:
+                    logging.warning(
+                        "WS_DRIFT_BYPASS %s: REST failed (%s), using stale "
+                        "WS data as fallback", ticker, e)
+                    return (ws_fallback, False)
+            raise
         # Prefer orderbook_fp (new FP format), fall back to orderbook (legacy)
         orderbook_fp = ob_data.get("orderbook_fp") if ob_data else None
         if orderbook_fp:
