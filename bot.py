@@ -7873,6 +7873,22 @@ class OpportunityScanner:
         except Exception:
             logging.debug("15M silence alert check failed", exc_info=True)
 
+        # Scan-productive watchdog (fix #3 — 2026-04-24 22:12 UTC defense).
+        # Checks whether the PREVIOUS tick wrote any 15m DB rows. Fires
+        # Telegram after 5 consecutive silent-bail ticks (~2.5 min),
+        # 4× faster than the silence watchdog above. See
+        # kb/failures/ws-cache-drift-silent-scan-2026-04-24.md.
+        _prev_tick_ts = getattr(self, "_last_tick_start_iso", None)
+        _now_iso = datetime.datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ")
+        self._last_tick_start_iso = _now_iso
+        if _prev_tick_ts is not None:
+            try:
+                self._check_scan_productive_15m(active_windows, _prev_tick_ts)
+            except Exception:
+                logging.debug(
+                    "scan-productive watchdog check failed", exc_info=True)
+
         # Reset hourly per-window tracking each tick, seeded from existing positions
         self._hourly_window_counts = {}
         self._hourly_window_risk = {}
@@ -13935,6 +13951,86 @@ class OpportunityScanner:
                 _TELEGRAM.send(msg, dedup_key="silent_15m_alert")
             except Exception:
                 logging.debug("silent_15m telegram send failed", exc_info=True)
+
+    def _check_scan_productive_15m(
+        self, active_windows: List[Dict], tick_start_ts: str) -> None:
+        """Fire a Telegram alert when 15M scan runs but produces zero DB
+        rows for N consecutive ticks. Complementary to
+        `_check_15m_silence_alert` (which catches >10-min silences after
+        the fact). This one detects the 2026-04-24 22:12 UTC failure
+        shape in ~2.5 min instead of 10.
+
+        Logic:
+        - If no `product_type='15m'` in active_windows: reset counter and
+          skip. Catalog gaps (upstream Kalshi sparseness) aren't a
+          productivity issue.
+        - If bot uptime < SCAN_UNPRODUCTIVE_MIN_UPTIME_SECONDS: skip
+          entirely (and don't increment). RK warmup can legitimately
+          produce nothing for ~5 min post-restart.
+        - Query eval + rejected tables for 15m rows written
+          since `tick_start_ts`. If any: reset counter. If zero:
+          increment and alert when >= SCAN_UNPRODUCTIVE_THRESHOLD.
+
+        See kb/failures/ws-cache-drift-silent-scan-2026-04-24.md fix #3.
+        """
+        SCAN_UNPRODUCTIVE_THRESHOLD = 5         # consecutive ticks
+        SCAN_UNPRODUCTIVE_MIN_UPTIME_SECONDS = 300  # 5 min — covers RK warmup
+
+        n_15m = sum(1 for w in active_windows
+                    if w.get("product_type") == "15m")
+        if n_15m == 0:
+            # No 15M windows available — reset counter so we don't carry
+            # stale state into the next live window.
+            self._scan_15m_unproductive_count = 0
+            return
+
+        if not hasattr(self, "_scan_15m_process_start_ts"):
+            self._scan_15m_process_start_ts = time.time()
+        uptime = time.time() - self._scan_15m_process_start_ts
+        if uptime < SCAN_UNPRODUCTIVE_MIN_UPTIME_SECONDS:
+            return
+
+        try:
+            row = self._state.conn.execute(
+                "SELECT "
+                "(SELECT COUNT(*) FROM evaluated_opportunities "
+                " WHERE product_type='15m' AND evaluation_time > ?) + "
+                "(SELECT COUNT(*) FROM rejected_opportunities "
+                " WHERE product_type='15m' AND rejection_time > ?)",
+                (tick_start_ts, tick_start_ts)
+            ).fetchone()
+        except Exception:
+            return
+        rows_written = row[0] if row else 0
+        if rows_written > 0:
+            self._scan_15m_unproductive_count = 0
+            return
+
+        self._scan_15m_unproductive_count = getattr(
+            self, "_scan_15m_unproductive_count", 0) + 1
+        if self._scan_15m_unproductive_count < SCAN_UNPRODUCTIVE_THRESHOLD:
+            return
+
+        logging.error(
+            "SCAN_UNPRODUCTIVE_15M: %d consecutive ticks with %d active "
+            "15M window(s) but zero DB rows written since %s",
+            self._scan_15m_unproductive_count, n_15m, tick_start_ts)
+        if _TELEGRAM:
+            msg = (
+                f"\U0001f6a8 *15M SCAN UNPRODUCTIVE*\n"
+                f"{self._scan_15m_unproductive_count} consecutive ticks "
+                f"with {n_15m} 15M window(s) produced zero DB rows.\n"
+                f"Bot uptime: {uptime/60:.1f} min\n"
+                f"Scan may be silent-bailing — see "
+                f"ws-cache-drift-silent-scan-2026-04-24.md"
+            )
+            try:
+                _TELEGRAM.send(
+                    msg, dedup_key="scan_unproductive_15m_alert")
+            except Exception:
+                logging.debug(
+                    "scan_unproductive_15m telegram send failed",
+                    exc_info=True)
 
     def _drift_probe_tick(self) -> None:
         """Once per minute, diff REST orderbook vs WS cache for a random
