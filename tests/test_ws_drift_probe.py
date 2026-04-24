@@ -39,10 +39,16 @@ from bot import OpportunityScanner
 
 def _make_scanner_for_drift_probe(
     *, feed_connected=True, ws_obs=None, rest_resp=None,
-    last_run=0.0, current_time=1000.0
+    last_run=0.0, current_time=1000.0, rest_responses=None,
 ) -> OpportunityScanner:
     """Construct an OpportunityScanner with only the attributes the drift
-    probe touches — bypasses __init__ to avoid real deps."""
+    probe touches — bypasses __init__ to avoid real deps.
+
+    `rest_resp` — single response returned on every call (backward-compat).
+    `rest_responses` — list of responses returned in sequence (for the
+      REST-vs-REST stability probe which fetches twice). If provided,
+      overrides rest_resp.
+    """
     s = OpportunityScanner.__new__(OpportunityScanner)
 
     s._drift_probe_last_run = last_run
@@ -57,11 +63,34 @@ def _make_scanner_for_drift_probe(
     client = MagicMock()
     if isinstance(rest_resp, Exception):
         client.get_orderbook = MagicMock(side_effect=rest_resp)
+    elif rest_responses is not None:
+        client.get_orderbook = MagicMock(side_effect=list(rest_responses))
     else:
+        # Default: same response each call (both the initial probe and
+        # the follow-up stability probe see the same data — makes
+        # single-side tests stable).
         client.get_orderbook = MagicMock(return_value=rest_resp)
     s._client = client
 
     return s
+
+
+_SLEEP_PATCHER = None
+
+
+def setUpModule():
+    """Patch bot.time.sleep to no-op for all tests in this module.
+    The drift probe's REST-stability step uses `time.sleep(2.0)` between
+    two REST fetches. Without this patch, the test suite would hang 2s
+    on every test that triggers the probe (~25× slowdown)."""
+    global _SLEEP_PATCHER
+    _SLEEP_PATCHER = patch("bot.time.sleep", return_value=None)
+    _SLEEP_PATCHER.start()
+
+
+def tearDownModule():
+    if _SLEEP_PATCHER is not None:
+        _SLEEP_PATCHER.stop()
 
 
 class TestDriftProbeThrottle(unittest.TestCase):
@@ -385,17 +414,22 @@ class TestDriftProbeDiffLogging(unittest.TestCase):
         self.assertIn("missing_qty=+0", yes_log)
         self.assertIn("missing_qty=+450", no_log)
 
-    def test_produces_exactly_two_log_lines_per_run(self):
-        """One WARNING log per side (yes, no) = 2 lines per probe run."""
+    def test_produces_exactly_two_primary_log_lines_per_run(self):
+        """One WS_DRIFT_PROBE log per side (yes, no) = 2 primary lines
+        per probe run. (The stability probe adds 2 more, tested separately
+        in TestDriftProbeRestStability.)"""
         ws_ob = {"yes": [[95, 10]], "no": [[5, 5]]}
         rest_fp = {
             "yes_dollars": [["0.95", "10"]],
             "no_dollars": [["0.05", "5"]],
         }
         logs = self._run_probe(ws_ob, rest_fp)
-        self.assertEqual(len(logs), 2)
-        self.assertTrue(any(" yes:" in m for m in logs))
-        self.assertTrue(any(" no:" in m for m in logs))
+        primary = [m for m in logs
+                   if "WS_DRIFT_PROBE " in m
+                   and "WS_DRIFT_PROBE_REST_STABILITY" not in m]
+        self.assertEqual(len(primary), 2)
+        self.assertTrue(any(" yes:" in m for m in primary))
+        self.assertTrue(any(" no:" in m for m in primary))
 
 
 class TestDriftProbeNoMutation(unittest.TestCase):
@@ -421,6 +455,113 @@ class TestDriftProbeNoMutation(unittest.TestCase):
         # copies per contract).
         self.assertEqual(ws_ob["yes"], ws_ob_snapshot_copy["yes"])
         self.assertEqual(ws_ob["no"], ws_ob_snapshot_copy["no"])
+
+
+class TestDriftProbeRestStability(unittest.TestCase):
+    """REST-vs-REST stability probe fires a second REST fetch ~2s after
+    the first and logs the delta. Purpose: distinguish "WS drifts from
+    REST" (actionable — REST is ground truth) from "REST itself is
+    unstable" (cannot use REST as source of truth).
+
+    Paired with TestDriftProbeDiffLogging (which exercises WS-vs-REST_1).
+    """
+
+    def _rest_shape(self, yes_levels=None, no_levels=None):
+        """Build an orderbook_fp REST response with the given levels."""
+        return {"orderbook_fp": {
+            "yes_dollars": [[f"0.{int(p):02d}", str(q)]
+                            for p, q in (yes_levels or [])],
+            "no_dollars": [[f"0.{int(p):02d}", str(q)]
+                           for p, q in (no_levels or [])],
+        }}
+
+    def test_rest_stable_logs_zero_delta(self):
+        """REST1 == REST2 → stability delta=0 (REST is ground truth)."""
+        rest = self._rest_shape(
+            yes_levels=[(95, 100), (94, 50)], no_levels=[(5, 30)])
+        s = _make_scanner_for_drift_probe(
+            ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 100]], "no": []}},
+            rest_responses=[rest, rest],  # same response both calls
+        )
+        with self.assertLogs(level="WARNING") as cm:
+            s._drift_probe_tick()
+        stability_logs = [r.getMessage() for r in cm.records
+                          if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage()]
+        self.assertEqual(len(stability_logs), 2,
+                         "expect one stability log per side")
+        yes_log = next(m for m in stability_logs if " yes:" in m)
+        self.assertIn("delta_qty=+0", yes_log)
+
+    def test_rest_unstable_logs_large_delta(self):
+        """REST1 != REST2 → stability delta reflects change. This is
+        the diagnostic that would show "REST is NOT ground truth"."""
+        rest1 = self._rest_shape(yes_levels=[(95, 100)])
+        rest2 = self._rest_shape(yes_levels=[(95, 500)])   # 400 more
+        s = _make_scanner_for_drift_probe(
+            ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 100]], "no": []}},
+            rest_responses=[rest1, rest2],
+        )
+        with self.assertLogs(level="WARNING") as cm:
+            s._drift_probe_tick()
+        yes_log = next(
+            r.getMessage() for r in cm.records
+            if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage() and " yes:" in r.getMessage())
+        self.assertIn("delta_qty=+400", yes_log)
+
+    def test_under_cap_flags_no(self):
+        """Normal case (<100 levels) flags at_depth_cap=no."""
+        rest = self._rest_shape(yes_levels=[(95, 10)], no_levels=[(5, 5)])
+        s = _make_scanner_for_drift_probe(
+            ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 10]], "no": []}},
+            rest_responses=[rest, rest],
+        )
+        with self.assertLogs(level="WARNING") as cm:
+            s._drift_probe_tick()
+        yes_log = next(
+            r.getMessage() for r in cm.records
+            if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage() and " yes:" in r.getMessage())
+        self.assertIn("at_depth_cap=no", yes_log)
+
+    def test_second_rest_fetch_failure_doesnt_crash(self):
+        """Second REST fetch raises → log debug, return without stability
+        log. Never affects trading path."""
+        rest1 = self._rest_shape(yes_levels=[(95, 10)])
+        s = _make_scanner_for_drift_probe(
+            ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 10]], "no": []}},
+            rest_responses=[rest1, ConnectionError("rest2 down")],
+        )
+        # Should not raise; no stability log
+        with self.assertLogs(level="WARNING") as cm:
+            s._drift_probe_tick()
+        stability_logs = [r.getMessage() for r in cm.records
+                          if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage()]
+        self.assertEqual(len(stability_logs), 0)
+
+    def test_second_rest_returns_none_no_stability_log(self):
+        rest1 = self._rest_shape(yes_levels=[(95, 10)])
+        s = _make_scanner_for_drift_probe(
+            ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 10]], "no": []}},
+            rest_responses=[rest1, None],
+        )
+        with self.assertLogs(level="WARNING") as cm:
+            s._drift_probe_tick()
+        stability_logs = [r.getMessage() for r in cm.records
+                          if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage()]
+        self.assertEqual(len(stability_logs), 0)
+
+    def test_legacy_rest_shape_also_works_for_stability(self):
+        """Stability probe uses same shape handling as the main probe,
+        including the legacy `orderbook` key."""
+        rest = {"orderbook": {"yes": [[95, 10]], "no": []}}
+        s = _make_scanner_for_drift_probe(
+            ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 10]], "no": []}},
+            rest_responses=[rest, rest],
+        )
+        with self.assertLogs(level="WARNING") as cm:
+            s._drift_probe_tick()
+        stability_logs = [r.getMessage() for r in cm.records
+                          if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage()]
+        self.assertEqual(len(stability_logs), 2)
 
 
 class TestDriftProbeMalformedLevels(unittest.TestCase):
