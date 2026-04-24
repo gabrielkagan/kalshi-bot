@@ -52,6 +52,10 @@ def _make_scanner_for_drift_probe(
     s = OpportunityScanner.__new__(OpportunityScanner)
 
     s._drift_probe_last_run = last_run
+    # Fix #1a/1b added these — drift probe may auto-flag severe drift,
+    # which reads/writes both dicts.
+    s._ws_drift_cooldown = {}
+    s._ob_cache = {}
 
     # KalshiFeed stub
     feed = MagicMock()

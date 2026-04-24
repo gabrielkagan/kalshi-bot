@@ -13686,6 +13686,37 @@ class OpportunityScanner:
 
         return 100 - best_no_bid
 
+    @staticmethod
+    def _is_severe_drift(ws_qty: int, rest_qty: int,
+                         min_abs_diff: int = 1000,
+                         min_ratio: float = 2.0) -> bool:
+        """True if WS total qty differs from REST total qty enough to
+        indicate cache corruption rather than normal book churn.
+
+        Calibrated against actual 2026-04-24 incident values — see
+        kb/failures/ws-cache-drift-silent-scan-2026-04-24.md. Both
+        conditions must hold to avoid false-positive flagging during
+        heavy but legitimate trading:
+
+        - abs(ws - rest) >= min_abs_diff (meaningful absolute miss)
+        - Either: ratio >= min_ratio (2× default), OR one side is
+          zero and the other has >= min_abs_diff qty (total disagreement).
+
+        Symmetric in (ws, rest) — we care about magnitude of mismatch,
+        not direction. ETH case during the incident had WS < REST;
+        others had WS > REST. Both are the same corruption class.
+        """
+        abs_diff = abs(ws_qty - rest_qty)
+        if abs_diff < min_abs_diff:
+            return False
+        if rest_qty == 0:
+            return ws_qty >= min_abs_diff
+        if ws_qty == 0:
+            return rest_qty >= min_abs_diff
+        hi = max(ws_qty, rest_qty)
+        lo = min(ws_qty, rest_qty)
+        return (hi / lo) >= min_ratio or abs_diff >= min_abs_diff * 5
+
     def flag_ticker_drifted(self, ticker: str, cooldown_s: float = 60.0) -> None:
         """Flag a ticker to bypass the WS orderbook cache for `cooldown_s`
         seconds. Called from scan() silent-bail paths when WS-derived data
@@ -13973,6 +14004,13 @@ class OpportunityScanner:
                 ticker, sorted(rest_resp.keys()))
             return
 
+        # Fix #1b: if drift exceeds threshold on either side, auto-flag
+        # the ticker for WS bypass. Only done once per probe call —
+        # flag_ticker_drifted itself is idempotent via dict.pop.
+        severe_drift_side: Optional[str] = None
+        severe_ws_qty = 0
+        severe_rest_qty = 0
+
         for side in ("yes", "no"):
             ws_levels = {int(lvl[0]): int(lvl[1])
                          for lvl in (ws_ob.get(side) or [])
@@ -14007,6 +14045,22 @@ class OpportunityScanner:
                 only_ws, only_rest, qty_mismatch,
                 total_ws, total_rest, total_rest - total_ws,
                 max_missing_level, max_missing_qty)
+
+            # Check severity — first severe side wins; second side still
+            # logs its WS_DRIFT_PROBE but doesn't overwrite the trigger.
+            if (severe_drift_side is None
+                    and self._is_severe_drift(total_ws, total_rest)):
+                severe_drift_side = side
+                severe_ws_qty = total_ws
+                severe_rest_qty = total_rest
+
+        if severe_drift_side is not None:
+            self.flag_ticker_drifted(ticker)
+            logging.warning(
+                "WS_DRIFT_AUTO_FLAG %s: %s side ws_qty=%d rest_qty=%d "
+                "(|diff|=%d) — bypassing WS cache for 60s (fix #1b)",
+                ticker, severe_drift_side, severe_ws_qty, severe_rest_qty,
+                abs(severe_ws_qty - severe_rest_qty))
 
         # REST-vs-REST stability probe. Fetch REST again ~2s later and
         # compute delta against the REST we just used. Motivation:
