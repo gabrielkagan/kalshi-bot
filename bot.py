@@ -1016,7 +1016,15 @@ STRATEGY_CLAMP_POLICY = {
     # Floor-triggered discounts that empirically never cross their floor
     "overnight_discount": "no_clamp",
     "weekend_discount": "no_clamp",
-    # Historical losers — unclamping would let them lose faster
+    # Dead paths — TM_PRICE_SET = {96, 98, 99} so these never fire under
+    # current config (removed from TM_PRICE_SET around Apr 9 after 30d data
+    # showed TM_95 -$237/12 and TM_97 -$244/15 were net losers). Entries
+    # kept as forward-compat defense: if 95/97 are ever re-added to
+    # TM_PRICE_SET without reviewing clamp policy, this gives them a
+    # conservative top_of_book fallback instead of slipping through to
+    # STRATEGY_CLAMP_DEFAULT (also top_of_book, but explicit > implicit).
+    # Any re-enable should ship with a fresh sweep/tail analysis at those
+    # prices — the prior loss history is the real reason to leave them off.
     "terminal_momentum_95": "top_of_book",
     "terminal_momentum_97": "top_of_book",
     # Sub-floor-risk-exposed paths — Variant B protection earns its keep
@@ -7207,6 +7215,12 @@ class OpportunityScanner:
         # Bot state cache: 1-min TTL to avoid SQL contention on every insert.
         # Keyed by asset for active_positions / bot_pnl / drawdown / ioc_fill_rate.
         self._bot_state_cache: Dict[str, Any] = {"ts": 0.0, "features_by_asset": {}}
+        # WS vs REST drift probe (H-NEW diagnostic). Once per minute, pick a
+        # random subscribed 15M ticker, fetch REST /orderbook depth=100, diff
+        # against WS cache. Measures the cache-vs-truth gap that produces
+        # WS delta underflow warnings. Observation-only; no state mutation.
+        # See kb/failures/kalshi-ws-schema-drift.md § "WS delta underflow".
+        self._drift_probe_last_run: float = 0.0
         # Attach the extended feature provider callback to StateManager so
         # insert_evaluated_opportunity auto-populates Tier 1/2/3/6 for 15M rows.
         self._state._extended_feature_provider = self._get_extended_features_for_ticker
@@ -7686,6 +7700,13 @@ class OpportunityScanner:
         now = time.time()
         ob_fetches_this_tick = 0
         candidates: List[Dict] = []
+
+        # WS vs REST drift probe (self-throttles to 60s cadence). See
+        # _drift_probe_tick docstring and kb/failures/kalshi-ws-schema-drift.md.
+        try:
+            self._drift_probe_tick()
+        except Exception:
+            logging.debug("drift probe failed", exc_info=True)
 
         # Reset hourly per-window tracking each tick, seeded from existing positions
         self._hourly_window_counts = {}
@@ -13537,6 +13558,90 @@ class OpportunityScanner:
                     converted.append([price_cents, count])
             result[side] = converted
         return result
+
+    def _drift_probe_tick(self) -> None:
+        """Once per minute, diff REST orderbook vs WS cache for a random
+        subscribed 15M ticker. Logs WS_DRIFT_PROBE summary per side.
+
+        Purpose: empirically measure the cache-vs-truth gap that produces
+        WS delta underflow warnings. Pre-existing hypothesis (H-NEW): WS
+        snapshot at subscribe time is truncated, so our cache is missing
+        deep/stale levels. REST with depth=100 returns the full book at
+        request time (no truncation), so REST-WS diff quantifies the miss.
+
+        Observation-only. Does NOT mutate WS cache state. Cadence: 60s.
+        Remove after hypothesis confirmed/rejected.
+        """
+        now = time.time()
+        if now - self._drift_probe_last_run < 60:
+            return
+        self._drift_probe_last_run = now
+
+        if not (self._kalshi_feed and self._kalshi_feed.is_connected):
+            return
+
+        # Pick a random subscribed 15M ticker with a non-empty WS cache.
+        try:
+            all_obs = self._kalshi_feed.get_all_orderbooks()
+        except Exception:
+            return
+        candidates = [
+            t for t, ob in all_obs.items()
+            if "15M" in t.upper()
+            and (ob.get("yes") or ob.get("no"))  # skip empty books
+        ]
+        if not candidates:
+            return
+
+        ticker = random.choice(candidates)
+        ws_ob = all_obs[ticker]
+
+        try:
+            rest_resp = self._client.get_orderbook(ticker, depth=100)
+        except Exception as e:
+            logging.warning("WS_DRIFT_PROBE %s fetch_failed: %s", ticker, e)
+            return
+        if not rest_resp:
+            return
+        ob_fp = rest_resp.get("orderbook") if isinstance(rest_resp, dict) else None
+        if not ob_fp:
+            return
+        rest_ob = OpportunityScanner._convert_orderbook_fp(ob_fp)
+
+        for side in ("yes", "no"):
+            ws_levels = {int(lvl[0]): int(lvl[1])
+                         for lvl in (ws_ob.get(side) or [])
+                         if isinstance(lvl, (list, tuple)) and len(lvl) >= 2}
+            rest_levels = {int(lvl[0]): int(lvl[1])
+                           for lvl in (rest_ob.get(side) or [])
+                           if isinstance(lvl, (list, tuple)) and len(lvl) >= 2}
+
+            all_prices = set(ws_levels) | set(rest_levels)
+            only_ws = sum(1 for p in all_prices
+                          if p in ws_levels and p not in rest_levels)
+            only_rest = sum(1 for p in all_prices
+                            if p in rest_levels and p not in ws_levels)
+            qty_mismatch = sum(1 for p in all_prices
+                               if ws_levels.get(p, 0) != rest_levels.get(p, 0))
+            total_ws = sum(ws_levels.values())
+            total_rest = sum(rest_levels.values())
+            max_missing_level = 0
+            max_missing_qty = 0
+            for p in all_prices:
+                diff = rest_levels.get(p, 0) - ws_levels.get(p, 0)
+                if diff > max_missing_qty:
+                    max_missing_qty = diff
+                    max_missing_level = p
+
+            logging.warning(
+                "WS_DRIFT_PROBE %s %s: ws_levels=%d rest_levels=%d "
+                "only_ws=%d only_rest=%d qty_mismatch=%d "
+                "ws_qty_total=%d rest_qty_total=%d missing_qty=%+d "
+                "worst_level=%d¢ worst_missing=%d",
+                ticker, side, len(ws_levels), len(rest_levels),
+                only_ws, only_rest, qty_mismatch,
+                total_ws, total_rest, total_rest - total_ws,
+                max_missing_level, max_missing_qty)
 
     # ── Timeslot helpers ──────────────────────────────────────────────────
 
