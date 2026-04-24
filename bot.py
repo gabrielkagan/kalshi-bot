@@ -1069,6 +1069,32 @@ IOC_DRIFT_CHECK_DIVERGENCE_RATIO = 0.5  # clamp if rest < ratio * cached
 # See kb/decisions/ioc-thin-clamp-abort.md.
 IOC_MIN_COUNT_AFTER_CLAMP = 5
 
+# ─── Raw Kalshi API payload journal (diagnostic) ──────────────────────────
+# Appends full API responses to raw_api_journal.jsonl for root-cause work on
+# (1) sub-dollar revenue N→1 destruction (4 confirmed cases, $32/90d) and
+# (2) IOC double-count (2/48 in 30d, root cause still unpinpointed after
+# 6 audit waves). Both are blocked on raw payload evidence — see
+# kb/failures/execution-pipeline-audit-2026-04-24.md.
+#
+# Volume: ~70 settlements/day × ~1 KB ≈ 2 MB/month; IOC fills comparable.
+# Default OFF. Flip env var on VPS + restart to begin collection.
+LOG_RAW_SETTLEMENTS = os.environ.get("LOG_RAW_SETTLEMENTS", "0") == "1"
+LOG_RAW_IOC_FILLS = os.environ.get("LOG_RAW_IOC_FILLS", "0") == "1"
+RAW_API_JOURNAL_PATH = "raw_api_journal.jsonl"
+
+
+def _append_raw_api_journal(entry: Dict) -> None:
+    """Append one JSON line to the raw-API journal. Never raises."""
+    try:
+        entry["ts"] = datetime.datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+        with open(RAW_API_JOURNAL_PATH, "a") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+    except Exception as e:
+        logging.warning("raw_api_journal write failed: %s", e)
+
+
 # ─── NBBO Fallback Gates ──────────────────────────────────────────────────
 # When orderbook is empty, fall back to market NBBO yes_ask IF within these gates.
 # Data: 456/468 missed candidates had empty orderbooks; simulated PnL +$196/wk.
@@ -16674,6 +16700,15 @@ class OrderExecutor:
         resp = self._client.get_fills(
             ticker=order["ticker"], min_ts=min_ts
         )
+        if LOG_RAW_IOC_FILLS and resp:
+            _append_raw_api_journal({
+                "kind": "ioc_fills",
+                "ticker": order["ticker"],
+                "order_id": order.get("order_id"),
+                "submit_count": order.get("count"),
+                "min_ts": min_ts,
+                "resp": resp,
+            })
         if not resp or not resp.get("fills"):
             return None
 
@@ -17724,6 +17759,12 @@ class SettlementTracker:
             return
 
         resp = self._client.get_settlements(min_ts=self._last_check_ts)
+        if LOG_RAW_SETTLEMENTS and resp:
+            _append_raw_api_journal({
+                "kind": "settlements",
+                "min_ts": self._last_check_ts,
+                "resp": resp,
+            })
         if not resp or "settlements" not in resp:
             return
 
@@ -17960,6 +18001,13 @@ class SettlementTracker:
         if outcome == "LOSS" and len(positions) == 1 and positions[0].get("is_taker"):
             try:
                 _fresp = self._client.get_fills(ticker=ticker, limit=200)
+                if LOG_RAW_IOC_FILLS and _fresp:
+                    _append_raw_api_journal({
+                        "kind": "loss_check_fills",
+                        "ticker": ticker,
+                        "aggregate_count": aggregate_count,
+                        "resp": _fresp,
+                    })
                 if _fresp and _fresp.get("fills"):
                     _local_order_ids = set()
                     for _r in self._state.conn.execute(
