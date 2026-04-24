@@ -2431,3 +2431,161 @@ class TestSettlementLossCountCheck:
         assert loss_check_line < pnl_loop_line, (
             f"Loss-side cross-check (line {loss_check_line}) must run BEFORE "
             f"PnL loop (line {pnl_loop_line})")
+
+
+class TestWinCrossCheckSubDollarGuard:
+    """The WIN count-mismatch cross-check must REFUSE to auto-zero a
+    confirmed-filled position when Kalshi reports sub-dollar revenue
+    (implied_count=0, aggregate_count>0). Without this guard, revenue
+    values in [1, 99]¢ silently zeroed count+total_cost_cents and
+    recorded a phony $0 settled_trade.
+
+    See KXXRP15M-26APR241200-00 (141ct WIN @ 98c, terminal_momentum_98)
+    and KXSOL15M-26APR230200-00 (32ct WIN @ 89c, overnight_discount).
+    Apr 23-24 2026.
+
+    Tests are AST-based (not string/indentation matching) so a refactor
+    that preserves the guard semantics keeps them passing, but a refactor
+    that removes the guard or moves the UPDATE into the guard branch
+    fails loudly.
+    """
+
+    @staticmethod
+    def _find_process_settlement():
+        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        with open(fpath) as f:
+            src = f.read()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.FunctionDef)
+                    and node.name == "_process_settlement"):
+                return node
+        return None
+
+    @staticmethod
+    def _find_sub_dollar_if(func_node):
+        """Locate the If whose test is `implied_count == 0 and aggregate_count > 0`."""
+        for node in ast.walk(func_node):
+            if not isinstance(node, ast.If):
+                continue
+            # Expect: BoolOp(And, [Compare(implied_count, Eq, 0),
+            #                      Compare(aggregate_count, Gt, 0)])
+            t = node.test
+            if not (isinstance(t, ast.BoolOp) and isinstance(t.op, ast.And)):
+                continue
+            if len(t.values) != 2:
+                continue
+            names = set()
+            for cmp in t.values:
+                if isinstance(cmp, ast.Compare) and isinstance(cmp.left, ast.Name):
+                    names.add(cmp.left.id)
+            if names == {"implied_count", "aggregate_count"}:
+                return node
+        return None
+
+    def test_process_settlement_exists(self):
+        """Sanity: _process_settlement must be findable via AST."""
+        assert self._find_process_settlement() is not None, (
+            "_process_settlement method not found in bot.py")
+
+    def test_sub_dollar_guard_present(self):
+        """Guard If-node must exist inside _process_settlement."""
+        func = self._find_process_settlement()
+        assert func is not None
+        guard = self._find_sub_dollar_if(func)
+        assert guard is not None, (
+            "Sub-dollar revenue guard (implied_count == 0 AND aggregate_count > 0) "
+            "missing from _process_settlement. Without it, Kalshi revenue in "
+            "[1,99]¢ will silently zero confirmed-filled WIN positions.")
+
+    def test_sub_dollar_branch_body_does_not_update_positions(self):
+        """The guard's body must NOT UPDATE positions or mutate count/cost.
+
+        Its sole purpose is to refuse the auto-zero; any write to positions
+        inside the branch defeats the purpose and reintroduces the bug.
+        """
+        func = self._find_process_settlement()
+        guard = self._find_sub_dollar_if(func)
+        assert guard is not None
+        # Walk the body collecting any Call whose args include the UPDATE SQL,
+        # and any Assign whose target includes "p[" or "aggregate_count" / cost.
+        for node in ast.walk(ast.Module(body=guard.body, type_ignores=[])):
+            if isinstance(node, ast.Call):
+                for arg in node.args:
+                    if isinstance(arg, (ast.Str, ast.Constant)):
+                        s = arg.s if isinstance(arg, ast.Str) else (
+                            arg.value if isinstance(arg.value, str) else None)
+                        if s and "UPDATE positions" in s:
+                            raise AssertionError(
+                                "Sub-dollar branch contains `UPDATE positions` — "
+                                "this defeats the guard's purpose.")
+            if isinstance(node, ast.Assign):
+                for tgt in node.targets:
+                    # Reject: p["count"]=..., p["total_cost_cents"]=...,
+                    # aggregate_count=..., aggregate_cost=...
+                    if isinstance(tgt, ast.Subscript):
+                        raise AssertionError(
+                            "Sub-dollar branch mutates a subscripted position "
+                            "field — must leave positions untouched.")
+                    if isinstance(tgt, ast.Name) and tgt.id in {
+                            "aggregate_count", "aggregate_cost"}:
+                        raise AssertionError(
+                            f"Sub-dollar branch reassigns {tgt.id} — must "
+                            f"leave aggregates untouched so local count "
+                            f"reaches the PnL loop.")
+
+    def test_sub_dollar_branch_logs_critical(self):
+        """Branch must log at CRITICAL with the SETTLEMENT_REVENUE_SUB_DOLLAR
+        marker so the auditor + future forensics can find it."""
+        func = self._find_process_settlement()
+        guard = self._find_sub_dollar_if(func)
+        assert guard is not None
+        saw_critical = False
+        for node in ast.walk(ast.Module(body=guard.body, type_ignores=[])):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "critical"):
+                saw_critical = True
+                # Check marker string is in one of the positional args (f-string)
+                for arg in node.args:
+                    src = ast.unparse(arg) if hasattr(ast, "unparse") else ""
+                    if "SETTLEMENT_REVENUE_SUB_DOLLAR" in src:
+                        return
+        assert saw_critical, (
+            "Sub-dollar branch must call logging.critical(...) with marker "
+            "'SETTLEMENT_REVENUE_SUB_DOLLAR' — this is how the auditor/alerts "
+            "discover sub-dollar-revenue events.")
+
+    def test_sub_dollar_branch_precedes_autocorrect(self):
+        """Guard must be checked BEFORE the `len(positions) == 1` single-row
+        auto-correct. Otherwise the auto-zero path still fires first."""
+        func = self._find_process_settlement()
+        guard = self._find_sub_dollar_if(func)
+        assert guard is not None
+        # The auto-correct is an elif/else chain rooted at the same If
+        # tree as the guard; find the sibling If-node whose test compares
+        # len(positions) to 1.
+        def find_len_positions_if(if_node):
+            # Guard If's orelse may be a list containing another If (elif)
+            for child in if_node.orelse:
+                if isinstance(child, ast.If):
+                    t = child.test
+                    if isinstance(t, ast.Compare) and isinstance(t.left, ast.Call):
+                        call = t.left
+                        if (isinstance(call.func, ast.Name)
+                                and call.func.id == "len"
+                                and len(call.args) == 1
+                                and isinstance(call.args[0], ast.Name)
+                                and call.args[0].id == "positions"):
+                            return child
+                    # Recurse for deeper elif chains
+                    inner = find_len_positions_if(child)
+                    if inner is not None:
+                        return inner
+            return None
+        sibling = find_len_positions_if(guard)
+        assert sibling is not None, (
+            "Guard must be the FIRST branch of a chain whose elif tests "
+            "`len(positions) == 1`. If the auto-correct branch doesn't appear "
+            "in the guard's orelse chain, the ordering is wrong and the "
+            "sub-dollar case will fall through to auto-zero.")

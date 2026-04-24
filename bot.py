@@ -17680,6 +17680,15 @@ class SettlementTracker:
                         f"kalshi_revenue={revenue}¢ implied_count=0 vs "
                         f"internal={aggregate_count} — REFUSING to auto-zero. "
                         f"Trusting local count; investigate Kalshi payload.")
+                    if _TELEGRAM:
+                        try:
+                            _TELEGRAM.send(
+                                f"🚨 SETTLEMENT_REVENUE_SUB_DOLLAR {ticker}: "
+                                f"Kalshi revenue={revenue}¢ on "
+                                f"{aggregate_count}ct WIN — refused auto-zero. "
+                                f"Check journal for payload.")
+                        except Exception:
+                            pass
                 elif len(positions) == 1:
                     # Single row: auto-correct with strategy_group
                     p = positions[0]
