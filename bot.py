@@ -2854,7 +2854,7 @@ class StateManager:
                     if _CALIBRATION_ENGINE is not None:
                         _n_cal_obs = len(_CALIBRATION_ENGINE._observations)
                 else:
-                    _eng = _get_cal_engine(product_type, asset, require_enabled=False)
+                    _eng = _resolve_cal_engine(product_type, asset, require_enabled=False)
                     if _eng is not None:
                         _n_cal_obs = len(_eng._observations)
             except Exception:
@@ -3661,6 +3661,11 @@ class KalshiFeed:
         # Remove in follow-up commit after verification.
         self._snapshot_schema_probed = False
         self._delta_schema_probed = False
+        # Empirical delta-semantic probe: log first N deltas' before/after qty
+        # to verify additive vs absolute interpretation. See
+        # kb/failures/kalshi-ws-schema-drift.md § "test-as-spec addendum".
+        self._delta_probe_count = 0
+        self._delta_probe_max = 5
 
     # ── Public API (called from main thread) ──────────────────────────────
 
@@ -4035,6 +4040,13 @@ class KalshiFeed:
                     break
 
             new_qty = existing_qty + delta
+            if self._delta_probe_count < self._delta_probe_max:
+                logging.info(
+                    "WS_DELTA_PROBE #%d %s side=%s price=%d¢ delta_fp=%+d "
+                    "existing_qty=%d new_qty=%d n_levels_side=%d",
+                    self._delta_probe_count + 1, ticker, side, price_cents,
+                    delta, existing_qty, new_qty, len(levels))
+                self._delta_probe_count += 1
             if new_qty < 0:
                 logging.warning(
                     "WS delta underflow %s %s @%d¢: existing=%d delta=%d "
