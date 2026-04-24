@@ -13695,7 +13695,21 @@ class OpportunityScanner:
         Any filter_stage counts (rejections included) — we care that the
         scanner is producing SOMETHING for 15M, not whether those rows
         produce trades.
+
+        Startup false-positive guard: the "last eval" timestamp persists
+        across bot restarts, so right after restart it will look ancient.
+        We do NOT fire unless THIS bot process has been running long
+        enough (SILENCE_ALERT_MIN_UPTIME_SECONDS = 900 = 15 min) that it
+        could plausibly have produced an eval. Otherwise a restart during
+        a quiet window would spam the Telegram with a stale-looking age.
         """
+        SILENCE_AGE_THRESHOLD_SECONDS = 600     # 10 min
+        SILENCE_ALERT_MIN_UPTIME_SECONDS = 900  # bot must be up >15 min to alert
+        if not hasattr(self, "_silence_alert_process_start_ts"):
+            self._silence_alert_process_start_ts = time.time()
+        uptime = time.time() - self._silence_alert_process_start_ts
+        if uptime < SILENCE_ALERT_MIN_UPTIME_SECONDS:
+            return
         try:
             row = self._state.conn.execute(
                 "SELECT MAX(evaluation_time) FROM evaluated_opportunities "
@@ -13712,20 +13726,21 @@ class OpportunityScanner:
         except (ValueError, AttributeError):
             return
         age_sec = (datetime.datetime.now(timezone.utc) - last_ts).total_seconds()
-        if age_sec < 600:     # under 10 min — healthy
+        if age_sec < SILENCE_AGE_THRESHOLD_SECONDS:
             return
-        # Over threshold: alert. Telegram notifier dedups on dedup_key so
-        # re-firing every scan tick only sends one alert per alert period.
+        # Over threshold AND bot has been up long enough — alert.
+        # Telegram dedup_key prevents re-firing every scan tick.
         msg = (
             f"\U0001f6a8 *15M SCAN SILENT*\n"
             f"No 15M evaluation in {age_sec/60:.1f} min.\n"
             f"Last eval: {last_ts.isoformat(timespec='seconds')}Z\n"
+            f"Bot uptime: {uptime/60:.1f} min\n"
             f"WS connected: {self._kalshi_feed.is_connected if self._kalshi_feed else False}\n"
             f"Check logs for WS_SILENCE_WATCHDOG or check Kalshi status."
         )
         logging.error(
-            "SILENT_15M: %.1f min since last 15M eval (last=%s)",
-            age_sec / 60, row[0])
+            "SILENT_15M: %.1f min since last 15M eval (last=%s uptime=%.1fmin)",
+            age_sec / 60, row[0], uptime / 60)
         if _TELEGRAM:
             try:
                 _TELEGRAM.send(msg, dedup_key="silent_15m_alert")

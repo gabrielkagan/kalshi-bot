@@ -25,9 +25,14 @@ import bot
 from bot import OpportunityScanner
 
 
-def _make_scanner_with_eval_age(age_minutes: float) -> OpportunityScanner:
+def _make_scanner_with_eval_age(
+    age_minutes: float, uptime_minutes: float = 30.0,
+) -> OpportunityScanner:
     """Stub scanner with an evaluated_opportunities table containing one
-    KX*15M row whose evaluation_time is `age_minutes` old."""
+    KX*15M row whose evaluation_time is `age_minutes` old. Bot uptime is
+    simulated as `uptime_minutes` (default 30, well past the 15-min
+    SILENCE_ALERT_MIN_UPTIME threshold)."""
+    import time as _t
     s = OpportunityScanner.__new__(OpportunityScanner)
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
@@ -47,6 +52,9 @@ def _make_scanner_with_eval_age(age_minutes: float) -> OpportunityScanner:
     s._state.conn = conn
     s._kalshi_feed = MagicMock()
     s._kalshi_feed.is_connected = True
+    # Seed the process-start timestamp so the uptime gate behaves
+    # deterministically. 30 min uptime is past the 15-min floor.
+    s._silence_alert_process_start_ts = _t.time() - (uptime_minutes * 60)
     return s
 
 
@@ -120,6 +128,65 @@ class TestSilent15MAlert(unittest.TestCase):
         s._state.conn.close()   # force future queries to error
         # Should not raise
         s._check_15m_silence_alert()
+
+
+class TestSilent15MAlertStartupGuard(unittest.TestCase):
+    """Regression guard: the alert must NOT fire right after a bot
+    restart even if the last eval timestamp is ancient. This was observed
+    live on 2026-04-24 18:14:51 UTC when the 938690b deploy restart
+    produced a false-positive Telegram alert 27 seconds into uptime.
+
+    The fix requires the bot process to have been running at least
+    SILENCE_ALERT_MIN_UPTIME_SECONDS (15 min) before the alert can fire
+    — enough time for a normal scan to produce at least one eval.
+    """
+
+    def test_no_alert_if_bot_just_restarted(self):
+        """Last eval 30 min ago, bot uptime 5 min — don't alert (bot
+        hasn't had a chance to run yet)."""
+        s = _make_scanner_with_eval_age(age_minutes=30, uptime_minutes=5)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert()
+            mock_tele.send.assert_not_called()
+
+    def test_no_alert_at_14_min_uptime(self):
+        """Just under the 15-min uptime floor — still no alert even
+        with old eval."""
+        s = _make_scanner_with_eval_age(age_minutes=30, uptime_minutes=14)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert()
+            mock_tele.send.assert_not_called()
+
+    def test_alert_fires_at_16_min_uptime(self):
+        """Just past the 15-min uptime floor with stale eval → alert."""
+        s = _make_scanner_with_eval_age(age_minutes=30, uptime_minutes=16)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert()
+            mock_tele.send.assert_called_once()
+
+    def test_alert_message_includes_uptime(self):
+        """Alert surfaces bot uptime so operators can distinguish a
+        real outage from a just-restarted edge case (even though the
+        guard should prevent the latter)."""
+        s = _make_scanner_with_eval_age(age_minutes=30, uptime_minutes=20)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert()
+            msg = mock_tele.send.call_args.args[0]
+            self.assertIn("Bot uptime:", msg)
+
+    def test_process_start_ts_set_on_first_call_if_missing(self):
+        """If an older bot version instance doesn't have the attr, the
+        method sets it to now — which naturally means the guard blocks
+        alerting for the next 15 min. Protects against stale-instance
+        false positives across the first deploy of this code."""
+        s = OpportunityScanner.__new__(OpportunityScanner)
+        s._state = MagicMock()
+        s._state.conn.execute.side_effect = lambda *a, **kw: MagicMock(
+            fetchone=lambda: None)
+        s._kalshi_feed = MagicMock()
+        self.assertFalse(hasattr(s, "_silence_alert_process_start_ts"))
+        s._check_15m_silence_alert()
+        self.assertTrue(hasattr(s, "_silence_alert_process_start_ts"))
 
 
 if __name__ == "__main__":
