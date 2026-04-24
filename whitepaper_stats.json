@@ -1,7 +1,7 @@
 {
-  "total_evaluated": 149838,
+  "total_evaluated": 149844,
   "filter_breakdown": {
-    "candidate": 5547,
+    "candidate": 5548,
     "dc_shadow_t1b_93c": 47,
     "dc_shadow_t2_90c": 70,
     "dc_shadow_t2_90c_xrp": 17,
@@ -14,7 +14,7 @@
     "decided_contract_t1": 482,
     "decided_contract_t1b": 432,
     "decided_contract_t2": 170,
-    "decided_contract_t2_z2": 646,
+    "decided_contract_t2_z2": 647,
     "decided_contract_t2_z25": 182,
     "dip_addon_shadow": 29,
     "eth_low_floor_shadow": 1503,
@@ -39,11 +39,11 @@
     "hourly_observation_v2": 6800,
     "hourly_timing_restricted": 1655,
     "hourly_window_limit": 595,
-    "insufficient_edge": 47001,
+    "insufficient_edge": 47002,
     "low_price_shadow": 2485,
     "no_side_price_shadow_no_xrp": 3760,
     "no_side_price_shadow_xrp": 769,
-    "no_side_shadow": 149,
+    "no_side_shadow": 150,
     "observation_trade": 83,
     "overnight_discount": 110,
     "overnight_discount_shadow": 317,
@@ -60,7 +60,7 @@
     "sports_deficit_too_large": 15,
     "sports_excluded_lr": 12,
     "sports_excluded_price": 30,
-    "sports_excluded_sport": 62,
+    "sports_excluded_sport": 63,
     "sports_insufficient_edge": 117,
     "sports_late_game": 96,
     "sports_model_overconfident": 6,
@@ -75,7 +75,7 @@
     "stc_shadow_no_xrp": 591,
     "stc_shadow_xrp": 47,
     "strategy_wait": 328,
-    "terminal_momentum": 1979,
+    "terminal_momentum": 1980,
     "threshold_implausible": 581,
     "tm_nbbo_buffer_shadow": 548,
     "usaft_short_stc": 124,
@@ -95,7 +95,7 @@
   "total_settled": 2817,
   "total_wins": 2628,
   "observation_pnl": 87528,
-  "total_trades": 5547,
+  "total_trades": 5548,
   "win_rate_by_price": {
     "80-84": {
       "n": 56,
@@ -157,5 +157,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-24",
-  "generated_at": "2026-04-24T23:47:33Z"
+  "generated_at": "2026-04-24T23:56:16Z"
 }
