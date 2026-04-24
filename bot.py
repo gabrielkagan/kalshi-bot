@@ -3882,13 +3882,41 @@ class KalshiFeed:
                     for ticker in resub_tickers:
                         await self._send_ob_subscribe(ws, ticker)
 
-                    # Message loop with periodic subscribe/unsubscribe processing
-                    async for raw in ws:
-                        if self._stop_event.is_set():
-                            break
-                        self._handle_message(raw)
-                        # Process pending subscriptions
-                        await self._process_pending_subs(ws)
+                    # P0 FIX (2026-04-24 18:00 UTC): drain pending subs on a
+                    # timer, independent of incoming messages. Previously subs
+                    # only flushed inside the `async for raw in ws:` loop body,
+                    # which blocks indefinitely when Kalshi stops delivering
+                    # messages (symptom: subscribe_ticker calls accumulate in
+                    # _pending_subscribes and never reach ws.send, so Kalshi
+                    # never knows to send us snapshots — full chicken-and-egg
+                    # deadlock). See kb/failures/ws-subscription-deadlock.md.
+                    async def _drain_loop():
+                        while not self._stop_event.is_set():
+                            try:
+                                await asyncio.sleep(2.0)
+                                await self._process_pending_subs(ws)
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception:
+                                logging.debug(
+                                    "pending-sub drain iteration failed",
+                                    exc_info=True)
+                    _drain_task = asyncio.create_task(_drain_loop())
+
+                    try:
+                        # Message loop with periodic subscribe/unsubscribe processing
+                        async for raw in ws:
+                            if self._stop_event.is_set():
+                                break
+                            self._handle_message(raw)
+                            # Process pending subscriptions
+                            await self._process_pending_subs(ws)
+                    finally:
+                        _drain_task.cancel()
+                        try:
+                            await _drain_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
             except asyncio.CancelledError:
                 break
