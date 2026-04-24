@@ -893,12 +893,36 @@ class TestStrategyClampPolicy(unittest.TestCase):
     # (KXSOL15M-26APR241245-45, pending_orders + settled_trades trace).
 
     def test_drift_check_clamps_when_rest_shows_thin(self):
-        """no_clamp strategy with cached depth=765 but REST shows depth=1 →
-        clamp to REST depth. This is the core regression the drift check
-        was designed to prevent."""
+        """no_clamp strategy with cached depth=765 but REST shows depth=10 →
+        clamp to REST depth (above IOC_MIN_COUNT_AFTER_CLAMP=5 so abort does
+        not fire). This exercises the clamp mechanism; the abort path is
+        covered by test_drift_check_aborts_when_below_min_count."""
         ex = self._make_ex()
-        self._stub_fill(ex, "ord-drift", 1, price=96)
-        self._stub_rest_orderbook(ex, depth_at_best=1)  # REST ground truth: thin
+        self._stub_fill(ex, "ord-drift", 10, price=96)
+        self._stub_rest_orderbook(ex, depth_at_best=10)  # REST ground truth: thin but above MIN
+        cand = _make_candidate(
+            best_yes_ask=96,
+            position_size=50,
+            strategy="terminal_momentum_96",  # no_clamp policy
+            best_ask_source="orderbook",
+            ob_snapshot={"ask_depth": 765, "best_ask": 96},  # cache claims deep
+        )
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=10):
+            mt.time.return_value = 1000.0
+            mt.sleep = MagicMock()
+            ex._submit_taker(cand)
+        call_kwargs = ex._client.place_order.call_args.kwargs
+        # Drift detected → clamp to REST depth=10, not 50. Saves the
+        # bogus oversized IOC.
+        self.assertEqual(call_kwargs["count"], 10)
+        self.assertEqual(cand["position_size"], 10)
+
+    def test_drift_check_aborts_when_below_min_count(self):
+        """no_clamp + drift correction + REST depth < IOC_MIN_COUNT_AFTER_CLAMP (=5) →
+        abort the IOC rather than fill a near-zero-EV micro-position.
+        See kb/decisions/ioc-thin-clamp-abort.md."""
+        ex = self._make_ex()
+        self._stub_rest_orderbook(ex, depth_at_best=1)  # below MIN
         cand = _make_candidate(
             best_yes_ask=96,
             position_size=50,
@@ -909,12 +933,10 @@ class TestStrategyClampPolicy(unittest.TestCase):
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
             mt.time.return_value = 1000.0
             mt.sleep = MagicMock()
-            ex._submit_taker(cand)
-        call_kwargs = ex._client.place_order.call_args.kwargs
-        # Drift detected → clamp to REST depth=1, not 50. Saves the
-        # bogus oversized IOC.
-        self.assertEqual(call_kwargs["count"], 1)
-        self.assertEqual(cand["position_size"], 1)
+            result = ex._submit_taker(cand)
+        # Abort: place_order NOT called, _submit_taker returns None.
+        self.assertIsNone(result)
+        ex._client.place_order.assert_not_called()
 
     def test_drift_check_skips_when_cache_already_thin(self):
         """When cached ask_depth < IOC_DRIFT_CHECK_MIN_CACHED_DEPTH (20),
