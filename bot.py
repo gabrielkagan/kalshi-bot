@@ -1060,6 +1060,14 @@ STRATEGY_CLAMP_DEFAULT = "top_of_book"  # conservative fallback for unrecognized
 IOC_DRIFT_CHECK_ENABLED = os.environ.get("IOC_DRIFT_CHECK_ENABLED", "1") == "1"
 IOC_DRIFT_CHECK_MIN_CACHED_DEPTH = 20   # skip REST if cached depth already thin
 IOC_DRIFT_CHECK_DIVERGENCE_RATIO = 0.5  # clamp if rest < ratio * cached
+# If REST-drift-corrected depth would clamp count below this floor, abort the
+# IOC rather than filling a near-zero-EV micro-position. TM at 99c with 1ct
+# fill: revenue=100 - cost=99 - fee=1 = 0¢ win vs -$1.00 loss = −$0.01 EV.
+# Retry happens naturally via IOC_TICKER_COOLDOWN (15s); book often refills.
+# Scoped to no_clamp + _drift_corrected cases only so genuine thin-book
+# top_of_book clamps (explicit policy choice) are unaffected.
+# See kb/decisions/ioc-thin-clamp-abort.md.
+IOC_MIN_COUNT_AFTER_CLAMP = 5
 
 # ─── NBBO Fallback Gates ──────────────────────────────────────────────────
 # When orderbook is empty, fall back to market NBBO yes_ask IF within these gates.
@@ -16403,6 +16411,15 @@ class OrderExecutor:
                 # Exception: if drift check corrected depth downward, clamp to
                 # the REST-verified depth — that's a data-correctness override.
                 if _drift_corrected and _ask_depth < count:
+                    if _ask_depth < IOC_MIN_COUNT_AFTER_CLAMP:
+                        logging.warning(
+                            "IOC_ABORT_THIN_CLAMP: %s %dc rest_depth=%d < min=%d "
+                            "(policy=no_clamp + drift, original_count=%d, asset=%s, strategy=%s) "
+                            "— book genuinely thin, skipping; next scan retries after cooldown",
+                            ticker, price, _ask_depth, IOC_MIN_COUNT_AFTER_CLAMP,
+                            count, candidate.get("asset", "?"), _strategy)
+                        self._session_ioc_unfilled += 1
+                        return None
                     logging.warning(
                         "IOC_DRIFT_CLAMP: %s %dc count %d -> %d "
                         "(policy=no_clamp + REST drift correction, asset=%s, strategy=%s)",
