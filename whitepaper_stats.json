@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 149369,
+  "total_evaluated": 149374,
   "filter_breakdown": {
     "candidate": 5531,
     "dc_shadow_t1b_93c": 47,
@@ -35,11 +35,11 @@
     "hourly_config_l": 1688,
     "hourly_config_m": 1442,
     "hourly_edge_cap": 116,
-    "hourly_observation": 7951,
-    "hourly_observation_v2": 6786,
+    "hourly_observation": 7952,
+    "hourly_observation_v2": 6787,
     "hourly_timing_restricted": 1653,
     "hourly_window_limit": 595,
-    "insufficient_edge": 46855,
+    "insufficient_edge": 46857,
     "low_price_shadow": 2470,
     "no_side_price_shadow_no_xrp": 3738,
     "no_side_price_shadow_xrp": 765,
@@ -48,7 +48,7 @@
     "overnight_discount": 110,
     "overnight_discount_shadow": 317,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 24208,
+    "price_out_of_range": 24209,
     "price_shadow": 52,
     "price_shadow_no_xrp": 3982,
     "price_shadow_xrp": 1560,
@@ -157,5 +157,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-24",
-  "generated_at": "2026-04-24T17:36:49Z"
+  "generated_at": "2026-04-24T17:46:18Z"
 }
