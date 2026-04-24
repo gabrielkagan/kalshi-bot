@@ -8435,6 +8435,21 @@ class OpportunityScanner:
                         )
                     else:
                         scan_stats[asset]["no_orderbook"] += 1
+                        # DB rejection row so silent-bail paths leave a trace
+                        # (ws-cache-drift-silent-scan-2026-04-24 PM)
+                        try:
+                            self._state.insert_rejection(
+                                ticker, window["event_ticker"], asset,
+                                "no_orderbook",
+                                prob_result.get("z_score"), spot, threshold,
+                                blended_rv, None, seconds_remaining, cal_prob,
+                                raw_prob=raw_prob_pre,
+                                product_type=window.get("product_type"),
+                                **_oft_db, **_shadow_diag)
+                        except Exception:
+                            logging.debug(
+                                "insert_rejection no_orderbook failed",
+                                exc_info=True)
                         try:
                             self._logger.log_opportunity({
                                 "filter_stage": "no_orderbook",
@@ -8486,6 +8501,21 @@ class OpportunityScanner:
                     self._ticker_ask_history[ticker].append((time.time(), best_ask))
                 if best_ask is None:
                     scan_stats[asset]["no_best_ask"] += 1
+                    # DB rejection row so silent-bail paths leave a trace
+                    # (ws-cache-drift-silent-scan-2026-04-24 PM)
+                    try:
+                        self._state.insert_rejection(
+                            ticker, window["event_ticker"], asset,
+                            "no_best_ask",
+                            prob_result.get("z_score"), spot, threshold,
+                            blended_rv, None, seconds_remaining, cal_prob,
+                            raw_prob=raw_prob_pre,
+                            product_type=window.get("product_type"),
+                            **_oft_db, **_shadow_diag)
+                    except Exception:
+                        logging.debug(
+                            "insert_rejection no_best_ask failed",
+                            exc_info=True)
                     try:
                         self._logger.log_opportunity({
                             "filter_stage": "no_best_ask",
