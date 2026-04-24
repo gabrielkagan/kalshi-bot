@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 149388,
+  "total_evaluated": 149395,
   "filter_breakdown": {
     "candidate": 5531,
     "dc_shadow_t1b_93c": 47,
@@ -39,7 +39,7 @@
     "hourly_observation_v2": 6788,
     "hourly_timing_restricted": 1654,
     "hourly_window_limit": 595,
-    "insufficient_edge": 46862,
+    "insufficient_edge": 46864,
     "low_price_shadow": 2470,
     "no_side_price_shadow_no_xrp": 3738,
     "no_side_price_shadow_xrp": 765,
@@ -48,7 +48,7 @@
     "overnight_discount": 110,
     "overnight_discount_shadow": 317,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 24212,
+    "price_out_of_range": 24214,
     "price_shadow": 52,
     "price_shadow_no_xrp": 3982,
     "price_shadow_xrp": 1560,
@@ -79,8 +79,8 @@
     "threshold_implausible": 581,
     "tm_nbbo_buffer_shadow": 547,
     "usaft_short_stc": 121,
-    "weather_excluded_city": 129,
-    "weather_excluded_mtype_bracket": 410,
+    "weather_excluded_city": 130,
+    "weather_excluded_mtype_bracket": 412,
     "weather_excluded_mtype_upper_tail": 46,
     "weather_observation": 2855,
     "weather_shadow_capped30": 38,
@@ -157,5 +157,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-24",
-  "generated_at": "2026-04-24T17:59:55Z"
+  "generated_at": "2026-04-24T18:04:32Z"
 }
