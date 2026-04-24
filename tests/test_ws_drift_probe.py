@@ -81,7 +81,7 @@ class TestDriftProbeThrottle(unittest.TestCase):
     def test_runs_when_last_run_over_60s_ago(self):
         s = _make_scanner_for_drift_probe(
             ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 10]], "no": []}},
-            rest_resp={"orderbook": {"yes_dollars": [["0.95", "10"]],
+            rest_resp={"orderbook_fp": {"yes_dollars": [["0.95", "10"]],
                                      "no_dollars": []}},
         )
         s._drift_probe_last_run = time.time() - 61  # 61s ago
@@ -92,7 +92,7 @@ class TestDriftProbeThrottle(unittest.TestCase):
         """last_run = 0 means never run before — should fire immediately."""
         s = _make_scanner_for_drift_probe(
             ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 10]], "no": []}},
-            rest_resp={"orderbook": {"yes_dollars": [["0.95", "10"]],
+            rest_resp={"orderbook_fp": {"yes_dollars": [["0.95", "10"]],
                                      "no_dollars": []}},
             last_run=0.0,
         )
@@ -102,7 +102,7 @@ class TestDriftProbeThrottle(unittest.TestCase):
     def test_updates_last_run_after_throttle_expires(self):
         s = _make_scanner_for_drift_probe(
             ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 10]], "no": []}},
-            rest_resp={"orderbook": {"yes_dollars": [["0.95", "10"]],
+            rest_resp={"orderbook_fp": {"yes_dollars": [["0.95", "10"]],
                                      "no_dollars": []}},
         )
         before = s._drift_probe_last_run
@@ -159,7 +159,7 @@ class TestDriftProbeTickerSelection(unittest.TestCase):
                 "KXETH15M-26APR241100-00": {"yes": [[90, 5]], "no": []},  # populated
                 "KXBTCD-26APR241100": {"yes": [[95, 100]], "no": []},   # non-15m
             },
-            rest_resp={"orderbook": {"yes_dollars": [["0.90", "5"]],
+            rest_resp={"orderbook_fp": {"yes_dollars": [["0.90", "5"]],
                                      "no_dollars": []}},
         )
         s._drift_probe_tick()
@@ -172,7 +172,7 @@ class TestDriftProbeTickerSelection(unittest.TestCase):
         variations defensively."""
         s = _make_scanner_for_drift_probe(
             ws_obs={"kxbtc15m-26apr241100-00": {"yes": [[95, 10]], "no": []}},
-            rest_resp={"orderbook": {"yes_dollars": [["0.95", "10"]],
+            rest_resp={"orderbook_fp": {"yes_dollars": [["0.95", "10"]],
                                      "no_dollars": []}},
         )
         s._drift_probe_tick()
@@ -206,11 +206,80 @@ class TestDriftProbeRestErrors(unittest.TestCase):
         s._drift_probe_tick()
 
     def test_rest_missing_orderbook_key_no_crash(self):
+        """When response has neither orderbook_fp nor orderbook, we log
+        WS_DRIFT_PROBE unknown_rest_shape and return without crashing."""
         s = _make_scanner_for_drift_probe(
             ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 10]], "no": []}},
             rest_resp={"something_else": "x"},
         )
-        s._drift_probe_tick()
+        with self.assertLogs(level="WARNING") as cm:
+            s._drift_probe_tick()
+        self.assertTrue(any("unknown_rest_shape" in r.getMessage()
+                            for r in cm.records))
+
+
+class TestDriftProbeRestShapes(unittest.TestCase):
+    """Kalshi REST /orderbook returns one of two shapes. Probe supports both.
+
+    See bot.py:13538-13546 for the same dual-shape handling pattern in
+    _get_orderbook_cached.
+    """
+
+    def test_new_orderbook_fp_shape_processed(self):
+        """New FP format: {"orderbook_fp": {"yes_dollars": [[dollar_str,
+        fp_qty_str], ...], "no_dollars": [...]}}."""
+        s = _make_scanner_for_drift_probe(
+            ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 50]], "no": []}},
+            rest_resp={"orderbook_fp": {
+                "yes_dollars": [["0.95", "200"]],
+                "no_dollars": [],
+            }},
+        )
+        with self.assertLogs(level="WARNING") as cm:
+            s._drift_probe_tick()
+        yes_log = next(r.getMessage() for r in cm.records
+                       if "WS_DRIFT_PROBE" in r.getMessage() and " yes:" in r.getMessage())
+        # WS has 50, REST has 200 → missing_qty=+150
+        self.assertIn("missing_qty=+150", yes_log)
+
+    def test_legacy_orderbook_shape_processed(self):
+        """Legacy format: {"orderbook": {"yes": [[cents_int, qty_int], ...],
+        "no": [...]}}."""
+        s = _make_scanner_for_drift_probe(
+            ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 50]], "no": []}},
+            rest_resp={"orderbook": {
+                "yes": [[95, 200]],
+                "no": [],
+            }},
+        )
+        with self.assertLogs(level="WARNING") as cm:
+            s._drift_probe_tick()
+        yes_log = next(r.getMessage() for r in cm.records
+                       if "WS_DRIFT_PROBE" in r.getMessage() and " yes:" in r.getMessage())
+        self.assertIn("missing_qty=+150", yes_log)
+
+    def test_fp_preferred_over_legacy_when_both_present(self):
+        """If response somehow has BOTH keys, prefer orderbook_fp (newer,
+        higher fidelity). Documents current precedence."""
+        s = _make_scanner_for_drift_probe(
+            ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 50]], "no": []}},
+            rest_resp={
+                "orderbook_fp": {
+                    "yes_dollars": [["0.95", "300"]],
+                    "no_dollars": [],
+                },
+                "orderbook": {   # deliberately different, should be ignored
+                    "yes": [[95, 999999]],
+                    "no": [],
+                },
+            },
+        )
+        with self.assertLogs(level="WARNING") as cm:
+            s._drift_probe_tick()
+        yes_log = next(r.getMessage() for r in cm.records
+                       if "WS_DRIFT_PROBE" in r.getMessage() and " yes:" in r.getMessage())
+        # Should use orderbook_fp value (300), not orderbook value (999999)
+        self.assertIn("missing_qty=+250", yes_log)
 
 
 class TestDriftProbeDiffLogging(unittest.TestCase):
@@ -221,7 +290,7 @@ class TestDriftProbeDiffLogging(unittest.TestCase):
     def _run_probe(self, ws_ob, rest_ob_fp):
         s = _make_scanner_for_drift_probe(
             ws_obs={"KXBTC15M-26APR241100-00": ws_ob},
-            rest_resp={"orderbook": rest_ob_fp},
+            rest_resp={"orderbook_fp": rest_ob_fp},
         )
         with self.assertLogs(level="WARNING") as cm:
             s._drift_probe_tick()
@@ -341,7 +410,7 @@ class TestDriftProbeNoMutation(unittest.TestCase):
         }
         s = _make_scanner_for_drift_probe(
             ws_obs={"KXBTC15M-26APR241100-00": ws_ob},
-            rest_resp={"orderbook": {
+            rest_resp={"orderbook_fp": {
                 "yes_dollars": [["0.95", "999"]],  # radically different
                 "no_dollars": [["0.05", "999"]],
             }},
@@ -364,7 +433,7 @@ class TestDriftProbeMalformedLevels(unittest.TestCase):
                 "yes": [[95, 100], "garbage", [50]],  # 2nd/3rd are malformed
                 "no": [],
             }},
-            rest_resp={"orderbook": {
+            rest_resp={"orderbook_fp": {
                 "yes_dollars": [["0.95", "100"]],
                 "no_dollars": [],
             }},
@@ -375,7 +444,7 @@ class TestDriftProbeMalformedLevels(unittest.TestCase):
     def test_skips_malformed_rest_level(self):
         s = _make_scanner_for_drift_probe(
             ws_obs={"KXBTC15M-26APR241100-00": {"yes": [[95, 100]], "no": []}},
-            rest_resp={"orderbook": {
+            rest_resp={"orderbook_fp": {
                 "yes_dollars": [["0.95", "100"], "garbage", [50]],
                 "no_dollars": [],
             }},

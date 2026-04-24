@@ -1039,6 +1039,28 @@ STRATEGY_CLAMP_POLICY = {
 }
 STRATEGY_CLAMP_DEFAULT = "top_of_book"  # conservative fallback for unrecognized strategies
 
+# ─── WS Cache-Drift Defense (pre-IOC REST verification) ──────────────────
+# Evidence (Apr 24 2026): post-WS-fix TM_96 fill on KXSOL15M-26APR241245-45 —
+# WS cache reported ask_depth=765 at 96c, IOC for 50ct submitted, Kalshi
+# matched only 1ct. Confirms WS cache can diverge from real Kalshi book at
+# top-of-book, not just deep levels (per the still-open H3 hypothesis in
+# kb/failures/kalshi-ws-schema-drift.md § "WS delta underflow"). The delta
+# underflow warnings (5-10k/day) are the same phenomenon.
+#
+# Mitigation: for any IOC where WS-cached ask_depth looks deep (≥20ct),
+# fetch a fresh REST /orderbook right before submit and use the smaller of
+# (cached_depth, rest_depth) as the effective clamp cap. Applies regardless
+# of STRATEGY_CLAMP_POLICY — defense against a data-layer bug, not a policy
+# change.
+#
+# Cost: one REST /orderbook per qualifying IOC (~30-50ms latency, negligible
+# rate-limit impact at current volumes). Rejected from generic Option Y (in
+# ioc-subfloor-fill.md) because that applied to ALL IOCs including the thin
+# NBBO path; this version only fires when cache claims depth is present.
+IOC_DRIFT_CHECK_ENABLED = os.environ.get("IOC_DRIFT_CHECK_ENABLED", "1") == "1"
+IOC_DRIFT_CHECK_MIN_CACHED_DEPTH = 20   # skip REST if cached depth already thin
+IOC_DRIFT_CHECK_DIVERGENCE_RATIO = 0.5  # clamp if rest < ratio * cached
+
 # ─── NBBO Fallback Gates ──────────────────────────────────────────────────
 # When orderbook is empty, fall back to market NBBO yes_ask IF within these gates.
 # Data: 456/468 missed candidates had empty orderbooks; simulated PnL +$196/wk.
@@ -15288,6 +15310,33 @@ class OrderExecutor:
         else:
             return 1.0
 
+    def _rest_best_ask_depth(self, ticker: str) -> Optional[int]:
+        """Force-fetch best YES ask depth via REST /orderbook.
+
+        Used as a pre-IOC drift check: the WS cache can diverge from
+        Kalshi's real book (see kb/failures/kalshi-ws-schema-drift.md
+        § "WS delta underflow"). REST is the ground truth. Returns None
+        on any error so caller falls back to cached depth.
+
+        Adds ~30-50ms latency per call. Should only be invoked from IOC
+        submit paths where cache claims non-trivial depth — see
+        IOC_DRIFT_CHECK_MIN_CACHED_DEPTH.
+        """
+        try:
+            ob_resp = self._client.get_orderbook(ticker, depth=5)
+            if not ob_resp:
+                return None
+            ob_fp = ob_resp.get("orderbook_fp")
+            if ob_fp and self._ml and hasattr(self._ml, 'scanner'):
+                fresh_ob = self._ml.scanner._convert_orderbook_fp(ob_fp)
+            else:
+                fresh_ob = ob_resp.get("orderbook")
+            if not fresh_ob:
+                return None
+            return OrderExecutor._best_ask_depth(fresh_ob)
+        except Exception:
+            return None
+
     def _dc_get_ask_with_depth(self, ticker: str, candidate: Dict):
         """Get best ask price AND depth for DC execution decisions.
 
@@ -16082,8 +16131,38 @@ class OrderExecutor:
         _ask_depth = _ob_snap.get("ask_depth")
         _strategy = candidate.get("strategy") or ""
         _policy = STRATEGY_CLAMP_POLICY.get(_strategy, STRATEGY_CLAMP_DEFAULT)
+
+        # WS cache drift defense: when cache claims non-trivial depth, verify
+        # against a fresh REST /orderbook fetch. If REST materially disagrees,
+        # prefer REST as authoritative. This is a data-layer correction (not
+        # a policy change); a confirmed drift means the book really IS thin
+        # regardless of strategy policy, so we clamp even on no_clamp paths.
+        # If cache was already thin (< threshold) OR REST agrees, no change.
+        # See kb/failures/kalshi-ws-schema-drift.md § "WS delta underflow".
+        _drift_corrected = False
+        if (IOC_DRIFT_CHECK_ENABLED
+                and _ask_src == "orderbook"
+                and isinstance(_ask_depth, int)
+                and _ask_depth >= IOC_DRIFT_CHECK_MIN_CACHED_DEPTH):
+            _rest_depth = self._rest_best_ask_depth(ticker)
+            if _rest_depth is not None:
+                if _rest_depth < _ask_depth * IOC_DRIFT_CHECK_DIVERGENCE_RATIO:
+                    logging.warning(
+                        "IOC_CACHE_DRIFT: %s %dc ws_cache=%d rest=%d (ratio=%.2f) "
+                        "strategy=%s policy=%s — using REST depth as authoritative",
+                        ticker, price, _ask_depth, _rest_depth,
+                        _rest_depth / max(_ask_depth, 1), _strategy, _policy)
+                    _ask_depth = _rest_depth  # authoritative for clamp logic below
+                    _drift_corrected = True
+                else:
+                    logging.info(
+                        "IOC_CACHE_OK: %s %dc ws_cache=%d rest=%d (strategy=%s)",
+                        ticker, price, _ask_depth, _rest_depth, _strategy)
+
         if _ask_src == "orderbook" and isinstance(_ask_depth, int):
-            # Catastrophic tail guard — fires regardless of policy.
+            # Catastrophic tail guard — fires regardless of policy. Uses the
+            # drift-corrected _ask_depth, so a REST-verified phantom top-of-
+            # book aborts even if the cache claimed depth.
             if _ask_depth == 0:
                 logging.warning(
                     "IOC_ABORT_PHANTOM: %s %dc count=%d ask_depth=0 (orderbook-confirmed) "
@@ -16092,22 +16171,32 @@ class OrderExecutor:
                 self._session_ioc_unfilled += 1
                 return None
             if _policy == "no_clamp":
-                # Skip size clamp. Kalshi auto-cancels unfilled remainder;
-                # we accept the sweep risk for strategies where 30d data
-                # shows it essentially never materializes.
-                logging.info(
-                    "IOC_NO_CLAMP: %s %dc count=%d (top_depth=%d, asset=%s, strategy=%s)",
-                    ticker, price, count, _ask_depth,
-                    candidate.get("asset", "?"), _strategy)
+                # Default no_clamp: submit full Kelly, trust Kalshi auto-cancel.
+                # Exception: if drift check corrected depth downward, clamp to
+                # the REST-verified depth — that's a data-correctness override.
+                if _drift_corrected and _ask_depth < count:
+                    logging.warning(
+                        "IOC_DRIFT_CLAMP: %s %dc count %d -> %d "
+                        "(policy=no_clamp + REST drift correction, asset=%s, strategy=%s)",
+                        ticker, price, count, _ask_depth,
+                        candidate.get("asset", "?"), _strategy)
+                    count = _ask_depth
+                    candidate["position_size"] = count
+                else:
+                    logging.info(
+                        "IOC_NO_CLAMP: %s %dc count=%d (cached_depth=%d, asset=%s, strategy=%s)",
+                        ticker, price, count, _ask_depth,
+                        candidate.get("asset", "?"), _strategy)
             else:
-                # top_of_book (default, conservative). Clamp to top-of-book
-                # depth to prevent ladder sweeps into sub-floor prices.
+                # top_of_book (default, conservative). Clamp to verified depth
+                # (drift-corrected if REST fired, else cached) to prevent
+                # ladder sweeps into sub-floor prices.
                 if _ask_depth < count:
                     logging.warning(
                         "IOC_SIZE_CLAMP: %s %dc count %d -> %d "
-                        "(policy=top_of_book, top_depth=%d, asset=%s, strategy=%s)",
+                        "(policy=top_of_book, verified_depth=%d, drift=%s, asset=%s, strategy=%s)",
                         ticker, price, count, _ask_depth, _ask_depth,
-                        candidate.get("asset", "?"), _strategy)
+                        _drift_corrected, candidate.get("asset", "?"), _strategy)
                     count = _ask_depth
                     candidate["position_size"] = count
         elif _ask_src == "market_nbbo":
@@ -17575,7 +17664,23 @@ class SettlementTracker:
                     f"SETTLEMENT COUNT MISMATCH {ticker}: "
                     f"internal={aggregate_count} kalshi={implied_count} "
                     f"revenue={revenue}¢ n_rows={len(positions)}")
-                if len(positions) == 1:
+                if implied_count == 0 and aggregate_count > 0:
+                    # Sub-dollar revenue (1-99¢) floors to 0 contracts under
+                    # `revenue // 100`. Auto-zeroing a confirmed-filled
+                    # position on the basis of a sub-dollar revenue value is
+                    # almost always wrong: it fabricates a $0 settled_trade
+                    # and silently diverges local cost tracking from reality.
+                    # Trust the local fill record; alert and fall through to
+                    # per-row PnL computed from first principles.
+                    # (Learned: KXXRP15M-26APR241200-00 141ct WIN and
+                    # KXSOL15M-26APR230200-00 32ct WIN both silently zeroed
+                    # Apr 23-24 2026.)
+                    logging.critical(
+                        f"SETTLEMENT_REVENUE_SUB_DOLLAR {ticker}: "
+                        f"kalshi_revenue={revenue}¢ implied_count=0 vs "
+                        f"internal={aggregate_count} — REFUSING to auto-zero. "
+                        f"Trusting local count; investigate Kalshi payload.")
+                elif len(positions) == 1:
                     # Single row: auto-correct with strategy_group
                     p = positions[0]
                     sg = p.get("strategy_group", "main")
