@@ -25,7 +25,7 @@ jobs:
             echo "=== Post-Deploy Verification ==="
 
             # 1. Service is active
-            echo "[1/4] Checking service status..."
+            echo "[1/5] Checking service status..."
             if ! systemctl is-active --quiet kalshi-bot; then
               echo "FAIL: kalshi-bot service is not active"
               exit 1
@@ -33,7 +33,7 @@ jobs:
             echo "  OK: Service is active"
 
             # 2. Commit hash matches
-            echo "[2/4] Checking commit hash..."
+            echo "[2/5] Checking commit hash..."
             cd ~/kalshi-bot-repo
             LOCAL_HASH=$(git rev-parse HEAD)
             REMOTE_HASH=$(git ls-remote origin main | cut -f1)
@@ -44,7 +44,7 @@ jobs:
             echo "  OK: Commit $LOCAL_HASH matches remote"
 
             # 3. No errors in last 2 minutes of logs
-            echo "[3/4] Checking recent logs for errors..."
+            echo "[3/5] Checking recent logs for errors..."
             ERROR_COUNT=$(journalctl -u kalshi-bot --since "2 minutes ago" --no-pager 2>/dev/null | grep -ci "error\|traceback\|exception" || true)
             if [ "$ERROR_COUNT" -gt 2 ]; then
               echo "WARN: $ERROR_COUNT error lines in last 2 min"
@@ -54,10 +54,21 @@ jobs:
             echo "  OK: $ERROR_COUNT error lines (threshold: 2)"
 
             # 4. Run audit_cron to verify metrics computation
-            echo "[4/4] Running audit_cron.py..."
+            echo "[4/5] Running audit_cron.py..."
             cd ~/kalshi-bot-repo
             venv/bin/python3 scripts/audit_cron.py --db state.db 2>&1 | tail -10
             echo "  OK: audit_cron completed"
+
+            # 5. DB-row verification per enabled feature flag. Catches the
+            # nested-gate / silent-kill-switch bug class that checks 1-3
+            # cannot see (e.g., weather-NO-never-fires Apr 4-11, STC-shadow
+            # dead gate 98c954d). 15M scan liveness is strict (fails
+            # deploy); other kill-switch checks are warnings for the first
+            # soak period — escalate to --strict-all after known-green.
+            echo "[5/5] Running postdeploy_verify.py..."
+            cd ~/kalshi-bot-repo
+            venv/bin/python3 scripts/postdeploy_verify.py --db state.db --env .env --bot-py bot.py
+            echo "  OK: postdeploy_verify completed"
 
             echo ""
             echo "=== All post-deploy checks passed ==="
