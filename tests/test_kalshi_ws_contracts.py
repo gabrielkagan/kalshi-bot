@@ -428,6 +428,58 @@ class TestDeltaDriftDetection(unittest.TestCase):
         self.assertEqual(feed._orderbooks["T"]["yes"], [])
 
 
+class TestWsSilenceWatchdogFields(unittest.TestCase):
+    """State fields + _handle_message watchdog wiring for the silence
+    detector. The actual reconnect behavior is in _ws_loop which runs in
+    an asyncio task; we test the observable state that drives it.
+
+    Regression guard for the 2026-04-24 17:30 UTC 15M outage: Kalshi's WS
+    stayed "connected" (ping/pong healthy) while delivering zero protocol
+    messages for 32 min. Without this watchdog, pending subs never flush,
+    snapshots never arrive, 15M trading dies silently.
+    """
+
+    def test_init_zeroes_watchdog_timestamps(self):
+        feed = _make_feed()
+        self.assertEqual(feed._ws_last_msg_ts, 0.0)
+        self.assertEqual(feed._ws_connect_ts, 0.0)
+
+    def test_handle_message_updates_last_msg_ts(self):
+        """Every incoming frame bumps the watchdog, even unknown types."""
+        import time as _t
+        feed = _make_feed()
+        before = _t.time()
+        feed._handle_message(json.dumps({"type": "something_unknown"}))
+        self.assertGreaterEqual(feed._ws_last_msg_ts, before)
+
+    def test_handle_message_on_empty_json_still_bumps_watchdog(self):
+        """Even an empty message body = Kalshi is talking to us. The
+        intent of the watchdog is 'server alive at all' not 'server
+        delivering useful data' — dispatching happens below."""
+        import time as _t
+        feed = _make_feed()
+        before = _t.time()
+        feed._handle_message(json.dumps({}))
+        self.assertGreaterEqual(feed._ws_last_msg_ts, before)
+
+    def test_handle_message_invalid_json_doesnt_crash(self):
+        """Garbage frame — don't crash. Timestamp updated BEFORE json
+        parse per design (server connectivity proven by frame arrival)."""
+        feed = _make_feed()
+        feed._handle_message("not valid json")
+
+    def test_watchdog_timestamp_advances_across_messages(self):
+        """Multiple messages → timestamp monotonically advances."""
+        import time as _t
+        feed = _make_feed()
+        feed._handle_message(json.dumps({"type": "a"}))
+        t1 = feed._ws_last_msg_ts
+        _t.sleep(0.01)
+        feed._handle_message(json.dumps({"type": "b"}))
+        t2 = feed._ws_last_msg_ts
+        self.assertGreater(t2, t1)
+
+
 class TestWsSeqGapDetector(unittest.TestCase):
     """H3 diagnostic: WS (sid, seq) gap detection.
 

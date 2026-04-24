@@ -3695,6 +3695,16 @@ KALSHI_WS_URL = ("wss://api.elections.kalshi.com/trade-api/ws/v2"
                  if os.environ.get("KALSHI_ENV") == "production"
                  else "wss://demo-api.kalshi.co/trade-api/ws/v2")
 
+# WS silence watchdog: if no protocol message (fill/snapshot/delta/ack/etc.)
+# arrives from Kalshi for this many seconds while we have active
+# subscriptions, force-reconnect. The `websockets` library handles
+# ping/pong internally, so a silent-but-alive connection is invisible
+# from the iterator's perspective — hence the explicit watchdog.
+# See kb/failures/ws-15m-silence-2026-04-24.md.
+WS_SILENCE_TIMEOUT_SECONDS = 180    # 3 min — err on side of faster reconnect
+WS_SILENCE_GRACE_SECONDS = 60       # don't trip watchdog in first minute after connect
+WS_WATCHDOG_CHECK_INTERVAL = 30     # check every 30s
+
 
 class OrderbookSchemaError(Exception):
     """Raised when a Kalshi WS orderbook message violates the expected wire contract.
@@ -3758,6 +3768,15 @@ class KalshiFeed:
         self._ws_last_seq: Dict[int, int] = {}
         self._ws_seq_gap_logs = 0
         self._ws_seq_gap_max_logs = 500
+        # WS silence watchdog (2026-04-24 17:30 UTC 15M outage defense).
+        # Kalshi's WS can stay "connected" while delivering zero protocol
+        # messages — pings/pongs are handled internally by the websockets
+        # library and don't surface in the message iterator. When this
+        # happens, subscribes never flush, no snapshots arrive, 15M dies
+        # silently. Track last message arrival and force reconnect if idle
+        # too long. See kb/failures/ws-15m-silence-2026-04-24.md.
+        self._ws_last_msg_ts: float = 0.0
+        self._ws_connect_ts: float = 0.0
 
     # ── Public API (called from main thread) ──────────────────────────────
 
@@ -3866,6 +3885,10 @@ class KalshiFeed:
                     with self._lock:
                         self._connected = True
                     backoff = 1.0
+                    # Prime the watchdog timestamps so the grace window starts now.
+                    _now = time.time()
+                    self._ws_connect_ts = _now
+                    self._ws_last_msg_ts = _now
                     logging.info(f"kalshi_ws_connected: url={KALSHI_WS_URL}")
 
                     # Subscribe to fills channel (all markets)
@@ -3903,6 +3926,43 @@ class KalshiFeed:
                                     exc_info=True)
                     _drain_task = asyncio.create_task(_drain_loop())
 
+                    # Silence watchdog (2026-04-24 17:30 UTC 15M outage
+                    # defense). Kalshi WS can stay "connected" (ping/pong
+                    # healthy internally) while delivering zero protocol
+                    # messages for minutes. When no fill/snapshot/delta/ack
+                    # arrives for WS_SILENCE_TIMEOUT_SECONDS after the
+                    # initial grace window, close the ws so the outer
+                    # reconnect kicks in. See
+                    # kb/failures/ws-15m-silence-2026-04-24.md.
+                    async def _silence_watchdog():
+                        while not self._stop_event.is_set():
+                            try:
+                                await asyncio.sleep(WS_WATCHDOG_CHECK_INTERVAL)
+                                now = time.time()
+                                if now - self._ws_connect_ts < WS_SILENCE_GRACE_SECONDS:
+                                    continue
+                                silent = now - self._ws_last_msg_ts
+                                if silent > WS_SILENCE_TIMEOUT_SECONDS:
+                                    with self._lock:
+                                        _sub_count = len(self._subscribed_tickers)
+                                    logging.error(
+                                        "WS_SILENCE_WATCHDOG: no msg in %.0fs "
+                                        "(timeout=%ds subs=%d) — forcing reconnect",
+                                        silent, WS_SILENCE_TIMEOUT_SECONDS,
+                                        _sub_count)
+                                    try:
+                                        await ws.close()
+                                    except Exception:
+                                        pass
+                                    return
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception:
+                                logging.debug(
+                                    "silence watchdog iteration failed",
+                                    exc_info=True)
+                    _watchdog_task = asyncio.create_task(_silence_watchdog())
+
                     try:
                         # Message loop with periodic subscribe/unsubscribe processing
                         async for raw in ws:
@@ -3912,11 +3972,12 @@ class KalshiFeed:
                             # Process pending subscriptions
                             await self._process_pending_subs(ws)
                     finally:
-                        _drain_task.cancel()
-                        try:
-                            await _drain_task
-                        except (asyncio.CancelledError, Exception):
-                            pass
+                        for _bg_task in (_drain_task, _watchdog_task):
+                            _bg_task.cancel()
+                            try:
+                                await _bg_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
 
             except asyncio.CancelledError:
                 break
@@ -3990,6 +4051,12 @@ class KalshiFeed:
                 logging.debug(f"Failed to unsubscribe from {ticker}", exc_info=True)
 
     def _handle_message(self, raw: str):
+        # Watchdog: any message from the server (subscribe ack, heartbeat,
+        # fill, orderbook event, even an error we ignore) proves the WS
+        # session is healthy. Updated at every incoming frame regardless
+        # of dispatch outcome. Paired with _ws_silence_watchdog in
+        # _ws_loop which force-reconnects if this stays stale.
+        self._ws_last_msg_ts = time.time()
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
@@ -7758,6 +7825,15 @@ class OpportunityScanner:
         except Exception:
             logging.debug("drift probe failed", exc_info=True)
 
+        # 15M silence watchdog (2026-04-24 17:30 UTC outage defense).
+        # If no 15M evaluation has been inserted in 10+ min, alert on
+        # Telegram. Self-throttled to one alert per 10 min via dedup_key.
+        # See kb/failures/ws-15m-silence-2026-04-24.md.
+        try:
+            self._check_15m_silence_alert()
+        except Exception:
+            logging.debug("15M silence alert check failed", exc_info=True)
+
         # Reset hourly per-window tracking each tick, seeded from existing positions
         self._hourly_window_counts = {}
         self._hourly_window_risk = {}
@@ -7924,26 +8000,11 @@ class OpportunityScanner:
 
         # Pre-subscribe all active tickers to WS and feed OFT from WS orderbooks
         if self._kalshi_feed and self._kalshi_feed.is_connected:
-            _15m_sub_count = 0
             for t in active_tickers:
                 if t in _hourly_tickers:
                     continue  # skip WS subscription for hourly (too many strikes per event)
                 try:
                     self._kalshi_feed.subscribe_ticker(t)
-                    if "15M" in t.upper():
-                        _15m_sub_count += 1
-                except Exception:
-                    pass
-            # 15M DIAG: confirm WS subscription path runs for 15M tickers.
-            # Remove after 2026-04-24 17:30 UTC outage root-cause is found.
-            if _15m_sub_count > 0:
-                try:
-                    _sub_total = self._kalshi_feed.get_subscribed_count()
-                    _ob_total = self._kalshi_feed.get_cached_ob_count()
-                    logging.info(
-                        "SCAN_DIAG_15M_SUB: 15m_tickers_submitted=%d "
-                        "feed_subscribed_total=%d feed_cached_obs=%d",
-                        _15m_sub_count, _sub_total, _ob_total)
                 except Exception:
                     pass
             # Feed OFT with any available WS orderbook data (zero API cost)
@@ -8008,27 +8069,6 @@ class OpportunityScanner:
                 continue  # this asset already has a position/order in this timeslot
             eligible_windows.append(w)
 
-        # 15M DIAG: 15M scan pipeline stopped producing evals at 17:30 UTC on
-        # 2026-04-24 across three bot restarts while weather/hourly kept running.
-        # Log 15M window survival through each filter stage so we can see where
-        # they fall off. DEBUG→INFO elevation for one diagnostic cycle. Remove
-        # after root cause identified.
-        try:
-            _n_15m_active = sum(1 for w in active_windows
-                                if w.get("product_type") in (None, "15m"))
-            _n_15m_time_ok = sum(1 for w in time_ok_windows
-                                 if w.get("product_type") in (None, "15m"))
-            _n_15m_eligible = sum(1 for w in eligible_windows
-                                  if w.get("product_type") in (None, "15m"))
-            if _n_15m_active > 0 or _n_15m_eligible > 0:
-                logging.info(
-                    "SCAN_DIAG_15M: active=%d time_ok=%d eligible=%d "
-                    "(occupied_ts=%d cooldown_assets=%d)",
-                    _n_15m_active, _n_15m_time_ok, _n_15m_eligible,
-                    len(occupied), len(self._cooldown_assets))
-        except Exception:
-            pass
-
         if not eligible_windows:
             return None
 
@@ -8036,19 +8076,6 @@ class OpportunityScanner:
         for window in eligible_windows:
             asset = window["asset"]
             _pt = window.get("product_type")
-
-            # 15M DIAG: confirm each eligible 15M window actually reaches
-            # the inner evaluation loop. Paired with SCAN_DIAG_15M above.
-            # Remove after the 2026-04-24 17:30 UTC outage root cause is found.
-            if _pt in (None, "15m"):
-                try:
-                    _n_mkts = len(window.get("markets", []))
-                    logging.info(
-                        "SCAN_DIAG_15M_ENTER: %s %s stc=%.0fs markets=%d",
-                        asset, window.get("event_ticker"),
-                        window.get("seconds_to_close", -1.0), _n_mkts)
-                except Exception:
-                    pass
 
             # Loss burst cooldown: skip 15M entries for assets with a recent loss.
             # Bursts are driven by correlated macro moves; pausing 2h after any
@@ -8062,8 +8089,6 @@ class OpportunityScanner:
                             scan_stats[asset].get("loss_cooldown", 0) + 1)
                 except Exception:
                     pass
-                # 15M DIAG
-                logging.info("SCAN_DIAG_15M_COOLDOWN_SKIP: %s in cooldown", asset)
                 continue
 
             # Route price/vol to appropriate engine based on product type
@@ -8082,12 +8107,6 @@ class OpportunityScanner:
                 vol_est = self._ml.weather_engine.get_vol_estimate(asset, seconds_remaining)
             else:
                 spot = self._feed.get_price(asset)
-                # 15M DIAG: track silent continues (spot None, vol None, etc.)
-                # Same investigation as SCAN_DIAG_15M above. Remove after root-cause.
-                if _pt in (None, "15m") and (spot is None or spot <= 0):
-                    logging.info(
-                        "SCAN_DIAG_15M_SKIP: %s %s spot=%s (feed_price returned None/<=0)",
-                        asset, window.get("event_ticker"), spot)
                 if spot is None or spot <= 0:
                     continue
                 seconds_remaining = window["seconds_to_close"]
@@ -8098,14 +8117,6 @@ class OpportunityScanner:
                     logging.warning("SPX_DIAG_VOL: vol_est=%s blended_rv=%s — skipping window",
                                     "None" if vol_est is None else "ok",
                                     vol_est.get("blended_rv") if vol_est else "N/A")
-                # 15M DIAG: same investigation — vol engine failure silently
-                # continues for 15M. Promote to INFO once during diagnostic cycle.
-                if _pt in (None, "15m"):
-                    logging.info(
-                        "SCAN_DIAG_15M_VOL_SKIP: %s %s vol_est=%s blended_rv=%s",
-                        asset, window.get("event_ticker"),
-                        "None" if vol_est is None else "ok",
-                        vol_est.get("blended_rv") if vol_est else "N/A")
                 continue
 
             blended_rv = vol_est["blended_rv"]
@@ -13673,6 +13684,53 @@ class OpportunityScanner:
                     converted.append([price_cents, count])
             result[side] = converted
         return result
+
+    def _check_15m_silence_alert(self) -> None:
+        """Alert via Telegram if no 15M evaluation has been produced in
+        the last 10 minutes. Observation-only — doesn't touch trading
+        state. Self-throttled (dedup_key) so it can fire every scan tick
+        without spamming. See kb/failures/ws-15m-silence-2026-04-24.md.
+
+        Scope: `evaluated_opportunities` rows with ticker LIKE 'KX%15M%'.
+        Any filter_stage counts (rejections included) — we care that the
+        scanner is producing SOMETHING for 15M, not whether those rows
+        produce trades.
+        """
+        try:
+            row = self._state.conn.execute(
+                "SELECT MAX(evaluation_time) FROM evaluated_opportunities "
+                "WHERE ticker LIKE 'KX%15M%'"
+            ).fetchone()
+        except Exception:
+            return
+        if not row or not row[0]:
+            return
+        # Parse UTC timestamp (SQLite stores ISO strings)
+        try:
+            last_ts = datetime.datetime.fromisoformat(
+                row[0].replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return
+        age_sec = (datetime.datetime.now(timezone.utc) - last_ts).total_seconds()
+        if age_sec < 600:     # under 10 min — healthy
+            return
+        # Over threshold: alert. Telegram notifier dedups on dedup_key so
+        # re-firing every scan tick only sends one alert per alert period.
+        msg = (
+            f"\U0001f6a8 *15M SCAN SILENT*\n"
+            f"No 15M evaluation in {age_sec/60:.1f} min.\n"
+            f"Last eval: {last_ts.isoformat(timespec='seconds')}Z\n"
+            f"WS connected: {self._kalshi_feed.is_connected if self._kalshi_feed else False}\n"
+            f"Check logs for WS_SILENCE_WATCHDOG or check Kalshi status."
+        )
+        logging.error(
+            "SILENT_15M: %.1f min since last 15M eval (last=%s)",
+            age_sec / 60, row[0])
+        if _TELEGRAM:
+            try:
+                _TELEGRAM.send(msg, dedup_key="silent_15m_alert")
+            except Exception:
+                logging.debug("silent_15m telegram send failed", exc_info=True)
 
     def _drift_probe_tick(self) -> None:
         """Once per minute, diff REST orderbook vs WS cache for a random
