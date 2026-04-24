@@ -14024,7 +14024,11 @@ class OpportunityScanner:
         See kb/failures/ws-cache-drift-silent-scan-2026-04-24.md fix #3.
         """
         SCAN_UNPRODUCTIVE_THRESHOLD = 5         # consecutive ticks
-        SCAN_UNPRODUCTIVE_MIN_UPTIME_SECONDS = 300  # 5 min — covers RK warmup
+        SCAN_UNPRODUCTIVE_MIN_UPTIME_SECONDS = 420  # 7 min — RK warmup + buffer
+        # Was 300 (5 min); 5 min boundary fired false positives at uptime
+        # 5.1 min on slow restarts where RK warmup ran 3m 28s+ and the
+        # first productive tick landed seconds after grace expired.
+        # 7 min gives ~3.5 min buffer over observed warmup ceiling.
 
         n_15m = sum(1 for w in active_windows
                     if w.get("product_type") == "15m")

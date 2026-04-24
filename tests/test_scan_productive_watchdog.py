@@ -199,9 +199,10 @@ class TestAlertFiring(unittest.TestCase):
 
 
 class TestStartupGrace(unittest.TestCase):
-    """Post-restart the bot goes through RK warmup (~5 min) during
-    which 15M scans will legitimately not produce rows. Don't alert
-    during that window."""
+    """Post-restart the bot goes through RK warmup (up to ~3.5 min
+    observed) during which 15M scans will legitimately not produce
+    rows. Grace period is 7 min — gives ~3.5 min buffer over the
+    observed warmup ceiling. Don't alert during that window."""
 
     def test_uptime_below_grace_does_not_alert(self):
         s = _make_scanner(uptime_minutes=2.0, wrote_rows_this_tick=0)
@@ -219,6 +220,18 @@ class TestStartupGrace(unittest.TestCase):
         for _ in range(10):
             s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
         self.assertEqual(s._scan_15m_unproductive_count, 0)
+
+    def test_uptime_at_5min_does_not_alert_anymore(self):
+        """Regression — Apr 24 23:53 UTC false positive at 5.1 min
+        uptime. Old grace was 300s and watchdog fired the instant it
+        expired before RK finished warming. New grace is 420s; uptime
+        of 5 min must not trigger an alert."""
+        s = _make_scanner(uptime_minutes=5.0, wrote_rows_this_tick=0)
+        fake_telegram = MagicMock()
+        with patch.object(bot, "_TELEGRAM", fake_telegram):
+            for _ in range(10):
+                s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
+        fake_telegram.send.assert_not_called()
 
     def test_uptime_above_grace_alerts_normally(self):
         s = _make_scanner(uptime_minutes=10.0, wrote_rows_this_tick=0)
