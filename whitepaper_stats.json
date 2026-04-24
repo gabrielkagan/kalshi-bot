@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 149324,
+  "total_evaluated": 149369,
   "filter_breakdown": {
     "candidate": 5531,
     "dc_shadow_t1b_93c": 47,
@@ -35,11 +35,11 @@
     "hourly_config_l": 1688,
     "hourly_config_m": 1442,
     "hourly_edge_cap": 116,
-    "hourly_observation": 7950,
-    "hourly_observation_v2": 6785,
+    "hourly_observation": 7951,
+    "hourly_observation_v2": 6786,
     "hourly_timing_restricted": 1653,
     "hourly_window_limit": 595,
-    "insufficient_edge": 46823,
+    "insufficient_edge": 46855,
     "low_price_shadow": 2470,
     "no_side_price_shadow_no_xrp": 3738,
     "no_side_price_shadow_xrp": 765,
@@ -48,9 +48,9 @@
     "overnight_discount": 110,
     "overnight_discount_shadow": 317,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 24203,
+    "price_out_of_range": 24208,
     "price_shadow": 52,
-    "price_shadow_no_xrp": 3981,
+    "price_shadow_no_xrp": 3982,
     "price_shadow_xrp": 1560,
     "relaxed_edge_shadow": 1213,
     "single_asset_selection": 5,
@@ -69,7 +69,7 @@
     "sports_weak_favorite": 21,
     "spx_dc_shadow": 18,
     "spx_hourly_window_limit": 216,
-    "spx_observation": 1381,
+    "spx_observation": 1385,
     "stc_extended_floor_shadow": 442,
     "stc_shadow": 87,
     "stc_shadow_no_xrp": 588,
@@ -86,7 +86,7 @@
     "weather_shadow_capped30": 38,
     "weather_shadow_capped30_short_stc": 2,
     "weather_shadow_short_stc": 8,
-    "weather_timing_restricted": 1022,
+    "weather_timing_restricted": 1023,
     "weekend_discount": 292,
     "weekend_discount_shadow": 289,
     "xrp_shadow": 126,
@@ -157,5 +157,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-24",
-  "generated_at": "2026-04-24T17:27:14Z"
+  "generated_at": "2026-04-24T17:36:49Z"
 }
