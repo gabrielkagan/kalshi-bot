@@ -7896,11 +7896,26 @@ class OpportunityScanner:
 
         # Pre-subscribe all active tickers to WS and feed OFT from WS orderbooks
         if self._kalshi_feed and self._kalshi_feed.is_connected:
+            _15m_sub_count = 0
             for t in active_tickers:
                 if t in _hourly_tickers:
                     continue  # skip WS subscription for hourly (too many strikes per event)
                 try:
                     self._kalshi_feed.subscribe_ticker(t)
+                    if "15M" in t.upper():
+                        _15m_sub_count += 1
+                except Exception:
+                    pass
+            # 15M DIAG: confirm WS subscription path runs for 15M tickers.
+            # Remove after 2026-04-24 17:30 UTC outage root-cause is found.
+            if _15m_sub_count > 0:
+                try:
+                    _sub_total = self._kalshi_feed.get_subscribed_count()
+                    _ob_total = self._kalshi_feed.get_cached_ob_count()
+                    logging.info(
+                        "SCAN_DIAG_15M_SUB: 15m_tickers_submitted=%d "
+                        "feed_subscribed_total=%d feed_cached_obs=%d",
+                        _15m_sub_count, _sub_total, _ob_total)
                 except Exception:
                     pass
             # Feed OFT with any available WS orderbook data (zero API cost)
@@ -7965,6 +7980,27 @@ class OpportunityScanner:
                 continue  # this asset already has a position/order in this timeslot
             eligible_windows.append(w)
 
+        # 15M DIAG: 15M scan pipeline stopped producing evals at 17:30 UTC on
+        # 2026-04-24 across three bot restarts while weather/hourly kept running.
+        # Log 15M window survival through each filter stage so we can see where
+        # they fall off. DEBUG→INFO elevation for one diagnostic cycle. Remove
+        # after root cause identified.
+        try:
+            _n_15m_active = sum(1 for w in active_windows
+                                if w.get("product_type") in (None, "15m"))
+            _n_15m_time_ok = sum(1 for w in time_ok_windows
+                                 if w.get("product_type") in (None, "15m"))
+            _n_15m_eligible = sum(1 for w in eligible_windows
+                                  if w.get("product_type") in (None, "15m"))
+            if _n_15m_active > 0 or _n_15m_eligible > 0:
+                logging.info(
+                    "SCAN_DIAG_15M: active=%d time_ok=%d eligible=%d "
+                    "(occupied_ts=%d cooldown_assets=%d)",
+                    _n_15m_active, _n_15m_time_ok, _n_15m_eligible,
+                    len(occupied), len(self._cooldown_assets))
+        except Exception:
+            pass
+
         if not eligible_windows:
             return None
 
@@ -7972,6 +8008,19 @@ class OpportunityScanner:
         for window in eligible_windows:
             asset = window["asset"]
             _pt = window.get("product_type")
+
+            # 15M DIAG: confirm each eligible 15M window actually reaches
+            # the inner evaluation loop. Paired with SCAN_DIAG_15M above.
+            # Remove after the 2026-04-24 17:30 UTC outage root cause is found.
+            if _pt in (None, "15m"):
+                try:
+                    _n_mkts = len(window.get("markets", []))
+                    logging.info(
+                        "SCAN_DIAG_15M_ENTER: %s %s stc=%.0fs markets=%d",
+                        asset, window.get("event_ticker"),
+                        window.get("seconds_to_close", -1.0), _n_mkts)
+                except Exception:
+                    pass
 
             # Loss burst cooldown: skip 15M entries for assets with a recent loss.
             # Bursts are driven by correlated macro moves; pausing 2h after any
@@ -7985,6 +8034,8 @@ class OpportunityScanner:
                             scan_stats[asset].get("loss_cooldown", 0) + 1)
                 except Exception:
                     pass
+                # 15M DIAG
+                logging.info("SCAN_DIAG_15M_COOLDOWN_SKIP: %s in cooldown", asset)
                 continue
 
             # Route price/vol to appropriate engine based on product type
@@ -8003,6 +8054,12 @@ class OpportunityScanner:
                 vol_est = self._ml.weather_engine.get_vol_estimate(asset, seconds_remaining)
             else:
                 spot = self._feed.get_price(asset)
+                # 15M DIAG: track silent continues (spot None, vol None, etc.)
+                # Same investigation as SCAN_DIAG_15M above. Remove after root-cause.
+                if _pt in (None, "15m") and (spot is None or spot <= 0):
+                    logging.info(
+                        "SCAN_DIAG_15M_SKIP: %s %s spot=%s (feed_price returned None/<=0)",
+                        asset, window.get("event_ticker"), spot)
                 if spot is None or spot <= 0:
                     continue
                 seconds_remaining = window["seconds_to_close"]
@@ -8013,6 +8070,14 @@ class OpportunityScanner:
                     logging.warning("SPX_DIAG_VOL: vol_est=%s blended_rv=%s — skipping window",
                                     "None" if vol_est is None else "ok",
                                     vol_est.get("blended_rv") if vol_est else "N/A")
+                # 15M DIAG: same investigation — vol engine failure silently
+                # continues for 15M. Promote to INFO once during diagnostic cycle.
+                if _pt in (None, "15m"):
+                    logging.info(
+                        "SCAN_DIAG_15M_VOL_SKIP: %s %s vol_est=%s blended_rv=%s",
+                        asset, window.get("event_ticker"),
+                        "None" if vol_est is None else "ok",
+                        vol_est.get("blended_rv") if vol_est else "N/A")
                 continue
 
             blended_rv = vol_est["blended_rv"]
