@@ -7864,7 +7864,7 @@ class OpportunityScanner:
         # Telegram. Self-throttled to one alert per 10 min via dedup_key.
         # See kb/failures/ws-15m-silence-2026-04-24.md.
         try:
-            self._check_15m_silence_alert()
+            self._check_15m_silence_alert(active_windows)
         except Exception:
             logging.debug("15M silence alert check failed", exc_info=True)
 
@@ -13719,7 +13719,7 @@ class OpportunityScanner:
             result[side] = converted
         return result
 
-    def _check_15m_silence_alert(self) -> None:
+    def _check_15m_silence_alert(self, active_windows: List[Dict]) -> None:
         """Alert via Telegram if no 15M evaluation has been produced in
         the last 10 minutes. Observation-only — doesn't touch trading
         state. Self-throttled (dedup_key) so it can fire every scan tick
@@ -13736,6 +13736,16 @@ class OpportunityScanner:
         enough (SILENCE_ALERT_MIN_UPTIME_SECONDS = 900 = 15 min) that it
         could plausibly have produced an eval. Otherwise a restart during
         a quiet window would spam the Telegram with a stale-looking age.
+
+        Kalshi catalog-gap guard: Kalshi's /events?status=open returns
+        only the currently-trading 15M window per asset, and there is
+        often a 10–30 min gap between when one window closes and the next
+        becomes "open". `discover_active_windows()` correctly drops the
+        expired window (seconds_to_close < 0), leaving the scanner with
+        zero 15M windows. This is upstream sparseness, not a bot fault.
+        We log it at INFO level (KALSHI_15M_CATALOG_GAP) but don't fire
+        the loud Telegram alert. Apr 24 2026: 11 such gaps in 24h, all
+        false positives. (kb/failures/kalshi-15m-catalog-gap-2026-04-24.md)
         """
         SILENCE_AGE_THRESHOLD_SECONDS = 600     # 10 min
         SILENCE_ALERT_MIN_UPTIME_SECONDS = 900  # bot must be up >15 min to alert
@@ -13762,7 +13772,20 @@ class OpportunityScanner:
         age_sec = (datetime.datetime.now(timezone.utc) - last_ts).total_seconds()
         if age_sec < SILENCE_AGE_THRESHOLD_SECONDS:
             return
-        # Over threshold AND bot has been up long enough — alert.
+        # If Kalshi has published zero 15M windows right now, this is an
+        # upstream catalog gap, not a bot failure — log quietly, no Telegram.
+        n_15m_windows = sum(
+            1 for w in active_windows if w.get("product_type") == "15m"
+        )
+        if n_15m_windows == 0:
+            logging.info(
+                "KALSHI_15M_CATALOG_GAP: %.1f min since last 15M eval; "
+                "0 active 15M windows from Kalshi (upstream catalog gap, "
+                "not bot fault). last=%s",
+                age_sec / 60, row[0])
+            return
+        # Over threshold AND bot has been up long enough AND Kalshi is
+        # publishing 15M windows — real silence, alert.
         # Telegram dedup_key prevents re-firing every scan tick.
         msg = (
             f"\U0001f6a8 *15M SCAN SILENT*\n"
