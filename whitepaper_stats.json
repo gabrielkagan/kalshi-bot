@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 149811,
+  "total_evaluated": 149817,
   "filter_breakdown": {
     "candidate": 5547,
     "dc_shadow_t1b_93c": 47,
@@ -39,11 +39,11 @@
     "hourly_observation_v2": 6800,
     "hourly_timing_restricted": 1655,
     "hourly_window_limit": 595,
-    "insufficient_edge": 46995,
+    "insufficient_edge": 46996,
     "low_price_shadow": 2485,
     "no_side_price_shadow_no_xrp": 3758,
     "no_side_price_shadow_xrp": 769,
-    "no_side_shadow": 146,
+    "no_side_shadow": 148,
     "observation_trade": 83,
     "overnight_discount": 110,
     "overnight_discount_shadow": 317,
@@ -60,12 +60,12 @@
     "sports_deficit_too_large": 15,
     "sports_excluded_lr": 12,
     "sports_excluded_price": 30,
-    "sports_excluded_sport": 59,
+    "sports_excluded_sport": 61,
     "sports_insufficient_edge": 117,
     "sports_late_game": 96,
     "sports_model_overconfident": 6,
     "sports_price_too_high": 24,
-    "sports_signal": 246,
+    "sports_signal": 247,
     "sports_weak_favorite": 21,
     "spx_dc_shadow": 18,
     "spx_hourly_window_limit": 216,
@@ -92,9 +92,9 @@
     "xrp_shadow": 126,
     "zero_sizing": 800
   },
-  "total_settled": 2816,
-  "total_wins": 2627,
-  "observation_pnl": 87428,
+  "total_settled": 2817,
+  "total_wins": 2628,
+  "observation_pnl": 87528,
   "total_trades": 5547,
   "win_rate_by_price": {
     "80-84": {
@@ -110,8 +110,8 @@
       "wins": 634
     },
     "95-99": {
-      "n": 1530,
-      "wins": 1503
+      "n": 1531,
+      "wins": 1504
     }
   },
   "assets_tracked": [
@@ -157,5 +157,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-24",
-  "generated_at": "2026-04-24T23:14:09Z"
+  "generated_at": "2026-04-24T23:20:58Z"
 }
