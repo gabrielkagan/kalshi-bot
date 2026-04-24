@@ -3956,6 +3956,12 @@ class KalshiFeed:
                     "(expected yes_dollars_fp/no_dollars_fp)", ticker)
                 yes_levels = list(msg.get("yes") or [])
                 no_levels = list(msg.get("no") or [])
+            elif set(msg.keys()).issubset({"market_id", "market_ticker"}):
+                # Empty-book snapshot: Kalshi omits yes_dollars_fp/no_dollars_fp
+                # when both sides have zero resting orders. Observed on every
+                # new 15M window open (~384 ERRORs/day pre-fix). Initialize
+                # empty so subsequent deltas apply against a known zero state.
+                yes_levels, no_levels = [], []
             else:
                 raise OrderbookSchemaError(
                     f"snapshot {ticker}: no yes_dollars_fp/no_dollars_fp or "

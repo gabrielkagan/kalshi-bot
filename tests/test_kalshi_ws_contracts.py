@@ -258,6 +258,50 @@ class TestSnapshotDriftDetection(unittest.TestCase):
         self.assertTrue(feed._snapshot_schema_probed)
 
 
+class TestSnapshotEmptyBookIdentity(unittest.TestCase):
+    """Kalshi omits yes_dollars_fp/no_dollars_fp when both sides have no
+    resting orders, sending only {market_id, market_ticker}. Before the
+    2026-04-24 fix, this raised OrderbookSchemaError and left the cache
+    uninitialized — ~384 ERROR logs/day (4 per 15M window open × 4 assets
+    × 4 windows/hour × 24h). See kb/failures/kalshi-ws-schema-drift.md
+    § "WS delta underflow — ROOT CAUSE PARTIALLY RESOLVED".
+    """
+
+    def test_snapshot_identity_only_treated_as_empty(self):
+        """{market_id, market_ticker} alone → initializes empty book."""
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_id": "abc-123",
+            "market_ticker": "KXBTC15M-26APR241030-30",
+        }})
+        self.assertIn("KXBTC15M-26APR241030-30", feed._orderbooks)
+        ob = feed._orderbooks["KXBTC15M-26APR241030-30"]
+        self.assertEqual(ob["yes"], [])
+        self.assertEqual(ob["no"], [])
+
+    def test_snapshot_ticker_only_treated_as_empty(self):
+        """market_ticker alone (no market_id) → also initializes empty."""
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "KXETH15M-26APR241030-30",
+        }})
+        self.assertIn("KXETH15M-26APR241030-30", feed._orderbooks)
+        ob = feed._orderbooks["KXETH15M-26APR241030-30"]
+        self.assertEqual(ob["yes"], [])
+        self.assertEqual(ob["no"], [])
+
+    def test_snapshot_truly_unknown_keys_still_raises(self):
+        """Drift detection still fires for genuinely unknown schemas.
+        {market_ticker, yes_fp_v2: ...} is not identity-only → not empty."""
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "DRIFT-V3",
+            "yes_fp_v2": [["0.95", "100"]],  # hypothetical future schema
+        }})
+        # The OrderbookSchemaError is caught in the outer try; cache stays empty.
+        self.assertNotIn("DRIFT-V3", feed._orderbooks)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # orderbook_delta contract
 # ─────────────────────────────────────────────────────────────────────────────
