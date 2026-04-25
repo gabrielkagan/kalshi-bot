@@ -8156,6 +8156,14 @@ class OpportunityScanner:
         # localize within scan() body.
         _scan_loop_start = time.perf_counter()
         for window in eligible_windows:
+            # Per-window timer (Phase 1 of scan-loop optimization).
+            # SCAN_WINDOW_SLOW fires when one window's iteration body
+            # exceeds 500ms. Localizes which window is the cost: if
+            # several windows hit ~300-500ms each, orderbook REST is
+            # the bottleneck (Phase 2: parallel prefetch). If one
+            # window hits multi-second, a specific op in it is slow
+            # (different fix needed). See Apr 25 01:17 incident.
+            _window_start = time.perf_counter()
             asset = window["asset"]
             _pt = window.get("product_type")
 
@@ -12377,6 +12385,15 @@ class OpportunityScanner:
                 # Respect per-tick orderbook fetch cap
                 if ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
                     break
+            # Per-window timing — captures iterations that reach the
+            # natural end (slow iterations doing orderbook fetch +
+            # filter checks + maybe candidate stage). Fast `continue`
+            # exits are skipped, but those are sub-ms anyway.
+            _window_dt = time.perf_counter() - _window_start
+            if _window_dt > 0.5:
+                logging.warning(
+                    "SCAN_WINDOW_SLOW: asset=%s ticker=%s took %.2fs",
+                    asset, window.get("event_ticker", "?"), _window_dt)
             if ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
                 break
 
