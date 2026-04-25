@@ -1036,7 +1036,10 @@ class TestStrategyClampPolicy(unittest.TestCase):
         ex._client.get_orderbook.assert_not_called()
         # no_clamp + cached depth=1 + count=50: count sent as 50 (no clamp
         # fires for no_clamp). Kalshi would match 1. Our code ships 50.
-        call_kwargs = ex._client.place_order.call_args.kwargs
+        # Use call_args_list[0] (FIRST call) — MAKER_TAIL_AFTER_IOC_PARTIAL
+        # makes a SECOND place_order call with count=remaining (49) for
+        # the unfilled tail. We assert the IOC submit specifically here.
+        call_kwargs = ex._client.place_order.call_args_list[0].kwargs
         self.assertEqual(call_kwargs["count"], 50)
 
     def test_drift_check_no_op_when_rest_agrees_with_cache(self):
