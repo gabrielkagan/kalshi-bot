@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 149844,
+  "total_evaluated": 149863,
   "filter_breakdown": {
     "candidate": 5548,
     "dc_shadow_t1b_93c": 47,
@@ -18,7 +18,7 @@
     "decided_contract_t2_z25": 182,
     "dip_addon_shadow": 29,
     "eth_low_floor_shadow": 1503,
-    "floor_raise_shadow": 5193,
+    "floor_raise_shadow": 5196,
     "golden_hour_shadow": 275,
     "hourly_asset_excluded": 162,
     "hourly_config_a": 1738,
@@ -39,19 +39,19 @@
     "hourly_observation_v2": 6800,
     "hourly_timing_restricted": 1655,
     "hourly_window_limit": 595,
-    "insufficient_edge": 47002,
+    "insufficient_edge": 47004,
     "low_price_shadow": 2485,
-    "no_side_price_shadow_no_xrp": 3760,
+    "no_side_price_shadow_no_xrp": 3761,
     "no_side_price_shadow_xrp": 769,
-    "no_side_shadow": 150,
+    "no_side_shadow": 154,
     "observation_trade": 83,
     "overnight_discount": 110,
     "overnight_discount_shadow": 317,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 24299,
+    "price_out_of_range": 24302,
     "price_shadow": 52,
     "price_shadow_no_xrp": 3995,
-    "price_shadow_xrp": 1571,
+    "price_shadow_xrp": 1573,
     "relaxed_edge_shadow": 1219,
     "single_asset_selection": 5,
     "sol_high_edge_shadow": 189,
@@ -60,7 +60,7 @@
     "sports_deficit_too_large": 15,
     "sports_excluded_lr": 12,
     "sports_excluded_price": 30,
-    "sports_excluded_sport": 63,
+    "sports_excluded_sport": 67,
     "sports_insufficient_edge": 117,
     "sports_late_game": 96,
     "sports_model_overconfident": 6,
@@ -92,9 +92,9 @@
     "xrp_shadow": 126,
     "zero_sizing": 800
   },
-  "total_settled": 2817,
-  "total_wins": 2628,
-  "observation_pnl": 87528,
+  "total_settled": 2818,
+  "total_wins": 2629,
+  "observation_pnl": 87678,
   "total_trades": 5548,
   "win_rate_by_price": {
     "80-84": {
@@ -110,8 +110,8 @@
       "wins": 634
     },
     "95-99": {
-      "n": 1531,
-      "wins": 1504
+      "n": 1532,
+      "wins": 1505
     }
   },
   "assets_tracked": [
@@ -156,6 +156,6 @@
     "WTA Tennis",
     "XRP"
   ],
-  "observation_period": "2026-02-22 to 2026-04-24",
-  "generated_at": "2026-04-24T23:56:16Z"
+  "observation_period": "2026-02-22 to 2026-04-25",
+  "generated_at": "2026-04-25T00:18:07Z"
 }
