@@ -418,6 +418,42 @@ MARKET_REFRESH_SECONDS = 30.0
 ACTIVE_WINDOWS_STALENESS_BUDGET_S = MARKET_REFRESH_SECONDS * 4
 SETTLEMENT_CHECK_SECONDS = 30.0
 
+# ─── WS Cache Reconciliation (Phase 2 of silent-scan fix, Apr 25 2026) ──
+# WS orderbook cache accumulates phantom state over time (5-10x REST
+# divergence observed; flips direction within 1 min). H3 (seq-tracked
+# message loss) DISPROVEN — drift happens with seq=monotonic. H3' (msg
+# loss without seq increment on server) OPEN — cannot be detected by
+# client. Industry standard (Binance, Bybit, Kraken, Polymarket): when
+# in doubt, re-snapshot. The only thing that DEFINITIVELY clears
+# accumulated state is a fresh server snapshot.
+#
+# Force-resubscribe: queue an unsubscribe + a re-subscribe. Server
+# responds to subscribe with a fresh orderbook_snapshot, which
+# `_handle_ob_snapshot` replaces the cache with atomically.
+# (TODO: optimize to `update_subscription` with `action: get_snapshot`
+# per Kalshi docs — preserves subscription, no gap. Requires sid
+# tracking; ship unsub+resub first as safe fallback.)
+WS_FORCE_RESUB_COOLDOWN_S = 30.0      # rate-limit per ticker; prevents loops
+WS_PERIODIC_RESNAPSHOT_INTERVAL_S = 300.0  # 5 min — full sweep of 15M tickers
+# Hybrid snapshot strategy: try `update_subscription` with
+# `action: get_snapshot` (per Kalshi docs — preserves subscription,
+# no gap). If no snapshot arrives within this timeout, fall back to
+# unsubscribe + resubscribe (definitively works; uses existing code
+# paths). 5s is enough for normal RTT + processing; if Kalshi accepts
+# the get_snapshot command at all, the response is much faster.
+WS_SNAPSHOT_REQUEST_TIMEOUT_S = 5.0
+# R1 / A1 [P0]: if Kalshi doesn't honor update_subscription/get_snapshot
+# the primary path silently fails 100%. Track consecutive timeouts;
+# after this threshold, auto-disable the primary path (skip directly
+# to unsub+resub). One LOUD warning is emitted on disable so the
+# behavior change is visible in logs.
+WS_GET_SNAPSHOT_DISABLE_AFTER = 3
+# R1 / A5 [P1]: post-resub recovery watchdog. If a ticker stays out
+# of `_orderbooks` longer than this after force_resubscribe, log a
+# WARNING — the resubscribe didn't take effect (Kalshi never sent a
+# new snapshot). The watchdog runs inline in _check_snapshot_timeouts.
+WS_FORCE_RESUB_RECOVERY_TIMEOUT_S = 30.0
+
 # ─── Coinbase WebSocket ──────────────────────────────────────────────────────
 COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com"
 COINBASE_PRODUCTS = {
@@ -4067,6 +4103,43 @@ class KalshiFeed:
         self._subscribed_tickers: Set[str] = set()
         self._pending_subscribes: List[str] = []
         self._pending_unsubscribes: List[str] = []
+        # Phase 2: WS cache reconciliation. Tickers in this list get
+        # an `update_subscription` with `action: get_snapshot` sent
+        # next time _process_pending_subs runs. Snapshot arrival is
+        # tracked in `_snapshot_request_pending`; if no snapshot
+        # arrives within WS_SNAPSHOT_REQUEST_TIMEOUT_S, falls back to
+        # queuing the ticker into _pending_unsubscribes + _pending_subscribes.
+        self._pending_snapshot_requests: List[str] = []
+        # ticker -> monotonic timestamp when get_snapshot was sent
+        # (cleared by _handle_ob_snapshot on receipt; checked by
+        # _check_snapshot_timeouts to trigger fallback).
+        self._snapshot_request_pending: Dict[str, float] = {}
+        # ticker -> monotonic timestamp of last force_resubscribe call
+        # (rate-limit per WS_FORCE_RESUB_COOLDOWN_S; prevents loops).
+        self._force_resub_cooldown: Dict[str, float] = {}
+        # R1 / A1 [P0] + R2 / P0-2 [CRITICAL]: track get_snapshot
+        # health. Original "consecutive timeouts counter +=
+        # len(timed_out)" was wrong — with 4 tickers in a periodic
+        # sweep, ONE bad sweep with 3+ ticker timeouts would trip
+        # disable, even though the issue could be a transient blip.
+        # New semantics: count consecutive fully-failed sweeps.
+        # A "failed sweep" = a `_check_snapshot_timeouts` call that
+        # produced ≥1 timeout AND no snapshot has arrived since
+        # last reset. ANY successful snapshot resets the counter
+        # to 0. After WS_GET_SNAPSHOT_DISABLE_AFTER consecutive
+        # failed sweeps, primary path auto-disables.
+        # Reset on every WS reconnect (R2 / P1-5) so a fresh
+        # session gets to re-prove the contract.
+        self._get_snapshot_consecutive_failed_sweeps: int = 0
+        self._get_snapshot_disabled: bool = False
+        self._get_snapshot_disabled_logged: bool = False
+        # R1 / A5 [P1]: ticker -> monotonic deadline by which the
+        # cache is expected to be repopulated (after a force_resub).
+        # Watchdog walks this in _check_snapshot_timeouts and warns
+        # if the ticker is still missing from _orderbooks past the
+        # deadline. Cleared on snapshot receipt.
+        self._force_resub_recovery_deadline: Dict[str, float] = {}
+        self._force_resub_recovery_warned: Dict[str, bool] = {}
         self._ws = None
         # One-shot schema probes — log the first snapshot/delta msg keys per run so
         # post-deploy verifier can confirm the live wire matches the contract.
@@ -4112,12 +4185,243 @@ class KalshiFeed:
                 self._pending_subscribes.append(ticker)
                 self._subscribed_tickers.add(ticker)
 
+    def get_subscribed_tickers(self) -> List[str]:
+        """R1 / A3 [P1]: thread-safe snapshot of currently-subscribed
+        tickers. The WS thread mutates `_subscribed_tickers` via
+        add()/discard(); MainLoop must hold the lock to read it
+        atomically. Returns a list (copy) so the caller can iterate
+        without race."""
+        with self._lock:
+            return list(self._subscribed_tickers)
+
+    def force_resubscribe(
+        self,
+        ticker: str,
+        *,
+        purge_cache: bool = True,
+        bypass_cooldown: bool = False,
+        track_recovery: bool = True,
+    ) -> None:
+        """Phase 2 / Apr 25 2026: force a fresh server snapshot for
+        a ticker whose WS cache may be drifted. Tries
+        `update_subscription` with `action: get_snapshot` first
+        (per Kalshi docs — preserves subscription, no gap). If no
+        snapshot arrives within WS_SNAPSHOT_REQUEST_TIMEOUT_S, falls
+        back to unsubscribe + resubscribe (definitively works).
+
+        Rate-limited per ticker via WS_FORCE_RESUB_COOLDOWN_S to
+        prevent re-sub loops on flapping connections / repeat
+        detector firings. Periodic insurance bypasses the cooldown
+        so a long-running drift detector firing doesn't starve the
+        scheduled resnap.
+
+        Args:
+            ticker: market ticker to reset.
+            purge_cache: if True (default), drop the cached orderbook
+                immediately so scan paths see no_orderbook (and dedup
+                via _eval_opp_seen) rather than reading drifted data.
+                R1 / A2 [P0]: periodic insurance passes False so the
+                5-min sweep doesn't simultaneously evict caches for
+                every 15M ticker, creating a system-wide gap. Detected-
+                drift callers (flag_ticker_drifted) keep True since
+                we KNOW that cache is bad.
+            bypass_cooldown: if True, skip the per-ticker rate limit.
+                R1 / A7 [P1]: periodic 5-min sweep should always run,
+                regardless of whether flag_ticker_drifted recently
+                fired for the same ticker.
+            track_recovery: if True (default), set/refresh
+                `_force_resub_recovery_deadline[ticker]` and clear
+                any prior `_force_resub_recovery_warned` flag — the
+                watchdog will surface the ticker if cache stays empty
+                past the deadline. R3 / P0-B + P1-D + P1-F:
+                drift-detector path needs this even with
+                purge_cache=False (drift was DETECTED — silent
+                failure must be observable). Periodic insurance
+                passes False — periodic doesn't constitute a
+                detected-drift event, so its watchdog timer would
+                only generate noise.
+
+        No-op if ticker isn't currently subscribed (nothing to reset).
+
+        Standard practice (Binance, Bybit, Kraken, Polymarket):
+        snapshot reset is the only reliable cure for cumulative WS
+        cache drift. The Apr 24 60s REST-bypass cooldown was a
+        symptom-bandaid; this is the actual reset action.
+        """
+        with self._lock:
+            if ticker not in self._subscribed_tickers:
+                return  # not subscribed; nothing to reset
+            now = time.monotonic()
+            if not bypass_cooldown:
+                last = self._force_resub_cooldown.get(ticker)
+                if (last is not None
+                        and (now - last) < WS_FORCE_RESUB_COOLDOWN_S):
+                    # Within cooldown — skip to prevent loops.
+                    return
+            self._force_resub_cooldown[ticker] = now
+
+            # R1 / A1 [P0]: if the primary path has been auto-
+            # disabled (3 consecutive timeouts), skip get_snapshot
+            # and queue the unsub+resub directly.
+            if self._get_snapshot_disabled:
+                if purge_cache:
+                    self._orderbooks.pop(ticker, None)
+                if ticker not in self._pending_unsubscribes:
+                    self._pending_unsubscribes.append(ticker)
+                if ticker not in self._pending_subscribes:
+                    self._pending_subscribes.append(ticker)
+                if track_recovery:
+                    # R3 / P0-B + P1-F: refresh deadline + clear
+                    # warned flag on each tracked call so a
+                    # repeated drift firing produces a fresh
+                    # warning instead of silent ongoing
+                    # degradation.
+                    self._force_resub_recovery_deadline[ticker] = (
+                        now + WS_FORCE_RESUB_RECOVERY_TIMEOUT_S)
+                    self._force_resub_recovery_warned.pop(
+                        ticker, None)
+                return
+
+            # Optional cache purge. R1 / A2: periodic skips this so
+            # all-tickers-purged-at-once doesn't happen.
+            if purge_cache:
+                # Phase 1's rejection wiring makes the brief gap
+                # observable (no_orderbook).
+                self._orderbooks.pop(ticker, None)
+            # Primary path: queue update_subscription/get_snapshot.
+            # If a snapshot arrives, _handle_ob_snapshot clears the
+            # pending entry. If timeout fires, we fall back to
+            # unsub+resub via _check_snapshot_timeouts.
+            if ticker not in self._pending_snapshot_requests:
+                self._pending_snapshot_requests.append(ticker)
+            self._snapshot_request_pending[ticker] = now
+            if track_recovery:
+                # R3 / P0-B + P1-D + P1-F: refresh deadline + clear
+                # warned flag. Decoupled from purge_cache so
+                # drift-detector's purge=False path still gets a
+                # watchdog (drift was DETECTED — silent failure must
+                # surface). Periodic passes track_recovery=False so
+                # its purge=False sweep doesn't generate watchdog
+                # noise.
+                self._force_resub_recovery_deadline[ticker] = (
+                    now + WS_FORCE_RESUB_RECOVERY_TIMEOUT_S)
+                self._force_resub_recovery_warned.pop(ticker, None)
+
+    def _check_snapshot_timeouts(self) -> List[str]:
+        """Call from the WS event loop. For any ticker whose
+        get_snapshot request hasn't been fulfilled within
+        WS_SNAPSHOT_REQUEST_TIMEOUT_S, queue an unsubscribe +
+        resubscribe as the definitive fallback.
+
+        Also runs the R1/A5 post-resub recovery watchdog: any ticker
+        still missing from `_orderbooks` past its recovery deadline
+        gets a one-shot WARNING.
+
+        Also drives R1/A1: counts consecutive timeouts; after
+        WS_GET_SNAPSHOT_DISABLE_AFTER, sets `_get_snapshot_disabled`
+        so subsequent force_resubscribe calls skip the primary path.
+
+        Returns the list of tickers that fell back (for logging)."""
+        now = time.monotonic()
+        timed_out: List[str] = []
+        recovery_warns: List[str] = []
+        disabled_now = False
+        with self._lock:
+            for t, req_ts in list(self._snapshot_request_pending.items()):
+                if now - req_ts > WS_SNAPSHOT_REQUEST_TIMEOUT_S:
+                    timed_out.append(t)
+                    del self._snapshot_request_pending[t]
+            for t in timed_out:
+                if t in self._subscribed_tickers:
+                    if t not in self._pending_unsubscribes:
+                        self._pending_unsubscribes.append(t)
+                    if t not in self._pending_subscribes:
+                        self._pending_subscribes.append(t)
+
+            # R1 / A1 + R2 / P0-2: count consecutive FAILED SWEEPS,
+            # not per-ticker timeouts. A sweep with ≥1 timeout =
+            # one failed sweep. _handle_ob_snapshot resets the
+            # counter on any successful snapshot. With 4 tickers,
+            # this means a single bad sweep can't permanently
+            # disable the primary path; it takes
+            # WS_GET_SNAPSHOT_DISABLE_AFTER consecutive sweeps
+            # producing ZERO snapshot fulfillments to disable.
+            if timed_out and not self._get_snapshot_disabled:
+                self._get_snapshot_consecutive_failed_sweeps += 1
+                if (self._get_snapshot_consecutive_failed_sweeps
+                        >= WS_GET_SNAPSHOT_DISABLE_AFTER):
+                    self._get_snapshot_disabled = True
+                    disabled_now = (
+                        not self._get_snapshot_disabled_logged)
+                    self._get_snapshot_disabled_logged = True
+
+            # R1 / A5 + R4 / F2: walk recovery deadlines, surface
+            # stuck tickers. The signal "snapshot didn't arrive"
+            # is "deadline still in dict past expiry" — because
+            # `_handle_ob_snapshot` pops the deadline on receipt.
+            # Pre-R4 this checked `t not in self._orderbooks`,
+            # which was wrong for the drift-detector path
+            # (purge_cache=False keeps the cache populated, so
+            # `t in _orderbooks` was always True → silent skip,
+            # even when no fresh snapshot ever arrived → exact
+            # "drift-triggered failures are silent" bug R3 was
+            # supposed to fix).
+            for t, deadline in list(
+                    self._force_resub_recovery_deadline.items()):
+                if now > deadline:
+                    if not self._force_resub_recovery_warned.get(t):
+                        recovery_warns.append(t)
+                        self._force_resub_recovery_warned[t] = True
+                    # Don't pop the deadline — let the next call
+                    # to force_resubscribe(track_recovery=True)
+                    # refresh it (clearing the warned flag) so a
+                    # repeated drift firing produces a fresh
+                    # warning. _handle_ob_snapshot pops both
+                    # deadline and warned flag on a successful
+                    # snapshot, which is the proper "recovered"
+                    # signal.
+        # Logging outside the lock.
+        if disabled_now:
+            logging.error(
+                "WS_GET_SNAPSHOT_DISABLED — %d consecutive timeouts "
+                "on update_subscription/get_snapshot path. Falling "
+                "back to unsub+resub for all future force_resubscribe "
+                "calls. Investigate Kalshi WS contract.",
+                WS_GET_SNAPSHOT_DISABLE_AFTER)
+        for t in recovery_warns:
+            logging.warning(
+                "WS_RESUB_STUCK %s — no fresh snapshot %ds after "
+                "force_resubscribe. Drift-detected ticker may still "
+                "be serving stale cache; REST fallback path will "
+                "fill the gap.",
+                t, int(WS_FORCE_RESUB_RECOVERY_TIMEOUT_S))
+        return timed_out
+
     def unsubscribe_ticker(self, ticker: str):
         with self._lock:
             if ticker in self._subscribed_tickers:
                 self._pending_unsubscribes.append(ticker)
                 self._subscribed_tickers.discard(ticker)
                 self._orderbooks.pop(ticker, None)
+            # R2 / P0-1: clean up ALL Phase 2 state for the ticker.
+            # Without this, settled-window churn:
+            #   (a) emits false WS_RESUB_STUCK warnings 30s later
+            #       (deadline still set, _orderbooks empty for an
+            #       UNRELATED reason — the ticker rolled),
+            #   (b) leaves stale snapshot-request entries that
+            #       eventually time out, incrementing the disable
+            #       counter from ordinary lifecycle (not real
+            #       Kalshi-contract failures),
+            #   (c) leaks _force_resub_cooldown entries forever
+            #       (unbounded dict growth across days of trading).
+            self._snapshot_request_pending.pop(ticker, None)
+            self._force_resub_cooldown.pop(ticker, None)
+            self._force_resub_recovery_deadline.pop(ticker, None)
+            self._force_resub_recovery_warned.pop(ticker, None)
+            try:
+                self._pending_snapshot_requests.remove(ticker)
+            except ValueError:
+                pass
 
     def get_orderbook(self, ticker: str) -> Optional[Dict]:
         with self._lock:
@@ -4128,6 +4432,22 @@ class KalshiFeed:
             fills = list(self._recent_fills)
             self._recent_fills.clear()
             return fills
+
+    def _cleanup_session_state(self) -> None:
+        """R4 / F1: clear all WS-session-bound state. Called from
+        BOTH the exception path (BEFORE the backoff sleep — so
+        is_connected reads False during reconnect wait) AND the
+        graceful-close path (so the prior session's _orderbooks
+        don't survive into the next iteration).
+        """
+        with self._lock:
+            self._connected = False
+            self._orderbooks.clear()
+        self._ws = None
+        # Reset seq tracking — new WS session starts fresh sids;
+        # old state would produce spurious gap warnings.
+        self._ws_last_seq.clear()
+        self._ws_seq_gap_logs = 0
 
     @property
     def is_connected(self) -> bool:
@@ -4202,6 +4522,43 @@ class KalshiFeed:
                     self._ws = ws
                     with self._lock:
                         self._connected = True
+                        # R2 / P1-5: reset Phase 2 disable state on
+                        # every reconnect. Sticky-within-session is
+                        # a safety choice (a transient mid-session
+                        # blip shouldn't toggle behavior repeatedly).
+                        # Sticky-across-reconnect is a bug — fresh
+                        # session = fresh sids = let primary path
+                        # re-prove the contract. Without this, an
+                        # outage that trips disable would degrade
+                        # the bot forever.
+                        if self._get_snapshot_disabled:
+                            logging.info(
+                                "WS_GET_SNAPSHOT_RE_ENABLE — fresh "
+                                "WS session, re-arming primary "
+                                "snapshot path.")
+                        self._get_snapshot_disabled = False
+                        self._get_snapshot_disabled_logged = False
+                        self._get_snapshot_consecutive_failed_sweeps = 0
+                        # R3 / P1-A + P1-B: stale Phase 2 dicts/lists
+                        # from the prior session must NOT survive a
+                        # reconnect. Otherwise:
+                        #   - old `_snapshot_request_pending` entries
+                        #     time out 5s into new session, falsely
+                        #     incrementing the failed-sweep counter
+                        #     (until it disables for non-Kalshi-
+                        #     contract reasons),
+                        #   - old `_pending_snapshot_requests` list
+                        #     entries get sent as redundant
+                        #     get_snapshots after the natural
+                        #     reconnect re-subscribe already produced
+                        #     a snapshot,
+                        #   - old recovery deadlines fire spurious
+                        #     WS_RESUB_STUCK warnings 30s into new
+                        #     session.
+                        self._snapshot_request_pending.clear()
+                        self._pending_snapshot_requests.clear()
+                        self._force_resub_recovery_deadline.clear()
+                        self._force_resub_recovery_warned.clear()
                     backoff = 1.0
                     # Prime the watchdog timestamps so the grace window starts now.
                     _now = time.time()
@@ -4298,17 +4655,19 @@ class KalshiFeed:
                                 pass
 
             except asyncio.CancelledError:
+                self._cleanup_session_state()
                 break
             except Exception as e:
-                with self._lock:
-                    self._connected = False
-                    self._orderbooks.clear()
-                self._ws = None
-                # Reset seq tracking on reconnect — new WS session starts
-                # fresh sids, old state is meaningless and would produce
-                # spurious gap warnings.
-                self._ws_last_seq.clear()
-                self._ws_seq_gap_logs = 0
+                # R4 / F1: cleanup MUST run before the backoff
+                # sleep. Otherwise during the up-to-60s wait,
+                # is_connected returns True and stale
+                # `_orderbooks` from the prior session is served
+                # to scan as live data. Pre-R3 this happened
+                # inline here; R3 moved it to `finally:` (which
+                # fires AFTER except, i.e., AFTER the sleep) and
+                # silently regressed the exact bug R3/P0-A
+                # claimed to fix.
+                self._cleanup_session_state()
                 jitter = backoff * random.uniform(0, 0.25)
                 wait = backoff + jitter
                 logging.warning(
@@ -4322,6 +4681,17 @@ class KalshiFeed:
                 except asyncio.TimeoutError:
                     pass
                 backoff = min(backoff * 2, max_backoff)
+            else:
+                # R3 / P0-A + R4 / F1: graceful close path
+                # (silence watchdog ws.close(), server-initiated
+                # close, async-with normal exit). Without this,
+                # stale `_orderbooks` from the prior session
+                # would survive into the next iteration and be
+                # served as live data for ~ORDERBOOK_CACHE_TTL
+                # seconds before fresh snapshots replaced it —
+                # the exact drift class Phase 2 was built to
+                # prevent.
+                self._cleanup_session_state()
 
         with self._lock:
             self._connected = False
@@ -4349,12 +4719,57 @@ class KalshiFeed:
             },
         }))
 
+    async def _send_ob_get_snapshot(self, ws, ticker: str):
+        """Phase 2: request a fresh snapshot WITHOUT bouncing the
+        subscription. Per Kalshi docs (orderbook-updates.md),
+        update_subscription with action=get_snapshot returns an
+        orderbook_snapshot for the given market_tickers without
+        modifying the subscription. If Kalshi rejects/ignores this
+        command, _check_snapshot_timeouts falls back to unsub+resub
+        after WS_SNAPSHOT_REQUEST_TIMEOUT_S."""
+        await ws.send(json.dumps({
+            "id": 4,
+            "cmd": "update_subscription",
+            "params": {
+                "action": "get_snapshot",
+                "market_tickers": [ticker],
+            },
+        }))
+        logging.info(
+            "kalshi_ws_get_snapshot: ticker=%s (Phase 2 cache reset)",
+            ticker)
+
     async def _process_pending_subs(self, ws):
+        # Phase 2: check for snapshot-request timeouts FIRST. Any
+        # ticker whose get_snapshot didn't yield an orderbook_snapshot
+        # within WS_SNAPSHOT_REQUEST_TIMEOUT_S falls back to unsub+resub
+        # (which gets queued into _pending_unsubscribes/_pending_subscribes
+        # by _check_snapshot_timeouts itself).
+        timed_out = self._check_snapshot_timeouts()
+        if timed_out:
+            logging.warning(
+                "WS_SNAPSHOT_TIMEOUT — falling back to unsub+resub "
+                "for: %s", ", ".join(timed_out))
+
         with self._lock:
             subs = list(self._pending_subscribes)
             self._pending_subscribes.clear()
             unsubs = list(self._pending_unsubscribes)
             self._pending_unsubscribes.clear()
+            snap_reqs = list(self._pending_snapshot_requests)
+            self._pending_snapshot_requests.clear()
+
+        # R1 / A4 [P0] ordering: UNSUBSCRIBES FIRST, THEN subscribes,
+        # THEN snapshot requests. The fallback path (timeout → unsub
+        # + resub) queues a ticker into BOTH _pending_unsubscribes AND
+        # _pending_subscribes; if subs ran first we'd send subscribe
+        # before unsubscribe, leaving the ticker permanently
+        # unsubscribed. (Pre-fix: subs went first → resub bug.)
+        for ticker in unsubs:
+            try:
+                await self._send_ob_unsubscribe(ws, ticker)
+            except Exception:
+                logging.debug(f"Failed to unsubscribe from {ticker}", exc_info=True)
 
         for ticker in subs:
             try:
@@ -4362,11 +4777,21 @@ class KalshiFeed:
             except Exception:
                 logging.debug(f"Failed to subscribe to {ticker}", exc_info=True)
 
-        for ticker in unsubs:
+        for ticker in snap_reqs:
             try:
-                await self._send_ob_unsubscribe(ws, ticker)
+                await self._send_ob_get_snapshot(ws, ticker)
             except Exception:
-                logging.debug(f"Failed to unsubscribe from {ticker}", exc_info=True)
+                logging.warning(
+                    "Failed to send get_snapshot for %s", ticker,
+                    exc_info=True)
+                # R3 / P1-C: send-failure must NOT leave the
+                # pending tracker set — otherwise the timeout
+                # path will count this transport-layer failure
+                # as a Kalshi-contract failure, inflating the
+                # consecutive-failed-sweeps counter and tripping
+                # the disable for non-Kalshi reasons.
+                with self._lock:
+                    self._snapshot_request_pending.pop(ticker, None)
 
     def _handle_message(self, raw: str):
         # Watchdog: any message from the server (subscribe ack, heartbeat,
@@ -4497,11 +4922,45 @@ class KalshiFeed:
                     f"yes/no keys (got {sorted(msg.keys())})")
 
             with self._lock:
+                # R2 / P1-3: drop snapshots for tickers we've
+                # already unsubscribed from. Race window: T1
+                # subscribed and unsubscribed in the same drain
+                # cycle (window settles immediately after add).
+                # Kalshi may still send a snapshot in flight from
+                # the brief subscribe; without this guard, the
+                # snapshot would zombie-write into `_orderbooks`
+                # for a ticker the bot considers gone, leaking
+                # forever (no path will pop it).
+                if ticker not in self._subscribed_tickers:
+                    return
                 self._orderbooks[ticker] = {
                     "yes": yes_levels,
                     "no": no_levels,
                     "ts": time.time(),
                 }
+                # Phase 2: clear pending get_snapshot request for
+                # this ticker (if any). Snapshot fulfilled — no need
+                # for unsub+resub fallback.
+                snapshot_fulfilled = False
+                if ticker in self._snapshot_request_pending:
+                    del self._snapshot_request_pending[ticker]
+                    snapshot_fulfilled = True
+                # R1 / A1 + R2 / P0-2: any successful snapshot
+                # resets the failed-sweep counter (proves the
+                # primary path is healthy). We don't auto-RE-enable
+                # `_get_snapshot_disabled` mid-session — that
+                # requires a WS reconnect (R2 / P1-5) so a
+                # transient mid-session blip doesn't toggle
+                # behavior repeatedly.
+                if snapshot_fulfilled:
+                    self._get_snapshot_consecutive_failed_sweeps = 0
+                # R1 / A5: cache repopulated → clear recovery state.
+                self._force_resub_recovery_deadline.pop(ticker, None)
+                self._force_resub_recovery_warned.pop(ticker, None)
+            if snapshot_fulfilled:
+                logging.info(
+                    "WS_SNAPSHOT_OK %s — fresh snapshot received "
+                    "(get_snapshot fulfilled)", ticker)
         except OrderbookSchemaError as e:
             logging.error("WS_SCHEMA_ERROR snapshot: %s", e)
         except Exception:
@@ -4559,6 +5018,17 @@ class KalshiFeed:
                 f"delta {ticker}: unparseable price/delta: {e}")
 
         with self._lock:
+            # R3 / P1-E: zombie-cache guard — drop deltas for
+            # tickers we've already unsubscribed from. Without
+            # this, an in-flight delta from the prior subscription
+            # would create a NEW _orderbooks entry for an
+            # unsubscribed ticker (line below: "Delta arrived
+            # before snapshot — initialize empty, apply"), leaking
+            # zombie state forever. P1-3 closed this for
+            # snapshots; deltas have an even larger race window
+            # because they arrive constantly.
+            if ticker not in self._subscribed_tickers:
+                return
             ob = self._orderbooks.get(ticker)
             if ob is None:
                 # Delta arrived before snapshot — initialize empty, apply.
@@ -4603,6 +5073,9 @@ class KalshiFeed:
     def _apply_legacy_delta(self, ticker: str, msg: Dict):
         """Apply pre-2026 side-grouped delta schema. Fallback only."""
         with self._lock:
+            # R3 / P1-E: zombie-cache guard, same as _apply_fp_delta.
+            if ticker not in self._subscribed_tickers:
+                return
             ob = self._orderbooks.get(ticker)
             if ob is None:
                 self._orderbooks[ticker] = {
@@ -14358,6 +14831,32 @@ class OpportunityScanner:
         self._ws_drift_cooldown[ticker] = time.time() + cooldown_s
         # Evict shared cache so the bypass actually takes effect.
         self._ob_cache.pop(ticker, None)
+        # Phase 2 (Apr 25 2026): replace the 60s symptom-bandaid
+        # with a real cache reset. force_resubscribe sends a
+        # get_snapshot to Kalshi (or falls back to unsub+resub),
+        # which atomically replaces the corrupt WS cache. The
+        # 60s REST-bypass cooldown above stays as belt-and-suspenders
+        # for the brief window between detection and snapshot
+        # arrival. Defensive: getattr handles bypassed-init
+        # test fixtures.
+        #
+        # R2 / P1-6: pass purge_cache=False. Atomic replace via
+        # _handle_ob_snapshot is strictly better than wipe-then-
+        # wait. The drift-detector path was creating ~7-8s of
+        # `no_orderbook` rejections during the snapshot+fallback
+        # window — exactly when the price is moving. Stale data is
+        # better than no data; the next snapshot atomically
+        # replaces it. The REST bypass above already handles the
+        # "use REST not stale-WS" hot path during the cooldown.
+        _ml = getattr(self, "_ml", None)
+        _kf = getattr(_ml, "kalshi_feed", None) if _ml else None
+        if _kf is not None and getattr(_kf, "is_connected", False):
+            try:
+                _kf.force_resubscribe(ticker, purge_cache=False)
+            except Exception:
+                logging.warning(
+                    "force_resubscribe from flag_ticker_drifted "
+                    "failed for %s", ticker, exc_info=True)
 
     def _get_orderbook_cached(self, ticker: str) -> Tuple[Optional[Dict], bool]:
         """Return (orderbook_data, was_fresh_fetch). Uses TTL cache.
@@ -20406,6 +20905,11 @@ class MainLoop:
         # 4 assets is the heaviest periodic task in _tick().
         self._egarch_refit_running: bool = False
         self._last_wal_checkpoint: float = 0.0
+        # Phase 2: timestamp of last periodic WS re-snapshot sweep.
+        # Triggers force_resubscribe on every active 15M ticker
+        # every WS_PERIODIC_RESNAPSHOT_INTERVAL_S — insurance against
+        # H3' (server-side msg loss without seq increment).
+        self._last_ws_periodic_resnap: float = 0.0
         self._last_error: Optional[str] = None
         self._last_error_time: float = 0.0
         self._start_time: float = time.time()
@@ -21151,6 +21655,61 @@ class MainLoop:
                 logging.debug(
                     "market_refresh worker spawn failed",
                     exc_info=True)
+
+        # Phase 2: periodic WS re-snapshot of currently-subscribed
+        # 15M tickers. Insurance against H3' (msg loss without seq
+        # increment) per ws-cache-drift-investigation.md. Industry
+        # standard practice: snapshot reset is the only reliable
+        # cure for cumulative WS cache drift.
+        #
+        # We read subscribed tickers from the WS feed via
+        # `get_subscribed_tickers()` (R1/A3 [P1] — locked snapshot
+        # so the WS thread can mutate the set concurrently). This
+        # loop:
+        #   (a) doesn't depend on active_windows freshness — runs
+        #       even if the staleness gate trips
+        #   (b) targets the actual set of tickers whose WS cache
+        #       could be drifted
+        #   (c) doesn't trigger the Step #5 AST tripwire that
+        #       prevents iterating stale window data before vol.update
+        #
+        # R1 / A2 [P0]: pass purge_cache=False so the periodic sweep
+        # does NOT simultaneously evict caches for every 15M ticker
+        # (that would create a system-wide ~5s gap every 5 min).
+        # Detected-drift callers (flag_ticker_drifted) keep the
+        # default purge=True since we KNOW that cache is corrupt.
+        #
+        # R1 / A7 [P1]: pass bypass_cooldown=True so periodic
+        # insurance always runs, even if flag_ticker_drifted fired
+        # for the same ticker within WS_FORCE_RESUB_COOLDOWN_S.
+        if (now - self._last_ws_periodic_resnap
+                >= WS_PERIODIC_RESNAPSHOT_INTERVAL_S):
+            self._last_ws_periodic_resnap = now
+            if (self.kalshi_feed is not None
+                    and self.kalshi_feed.is_connected):
+                try:
+                    _subscribed = (
+                        self.kalshi_feed.get_subscribed_tickers())
+                    _resnap_tickers = [
+                        t for t in _subscribed if "15M" in t.upper()]
+                    for t in _resnap_tickers:
+                        self.kalshi_feed.force_resubscribe(
+                            t,
+                            purge_cache=False,
+                            bypass_cooldown=True,
+                            track_recovery=False,
+                        )
+                    if _resnap_tickers:
+                        logging.info(
+                            "WS_PERIODIC_RESNAP: requested fresh "
+                            "snapshots for %d 15M tickers "
+                            "(interval=%ds, purge=False)",
+                            len(_resnap_tickers),
+                            int(WS_PERIODIC_RESNAPSHOT_INTERVAL_S))
+                except Exception:
+                    logging.warning(
+                        "WS_PERIODIC_RESNAP loop failed",
+                        exc_info=True)
 
         # Check settlements periodically (self-throttled)
         _t = time.perf_counter()

@@ -106,8 +106,26 @@ DELTA_LEGACY = {
 
 
 def _make_feed() -> KalshiFeed:
-    """Build a KalshiFeed without network — handler methods don't use auth."""
-    return KalshiFeed(api_key="test", private_key=MagicMock())
+    """Build a KalshiFeed without network — handler methods don't use auth.
+
+    R2 / P1-3: _handle_ob_snapshot now drops snapshots for tickers
+    not in `_subscribed_tickers` (cache-leak guard). These contract
+    tests pre-populate `_subscribed_tickers` with all tickers used
+    in test fixtures so the parser-under-test sees a realistic
+    production state (every snapshot we receive should be for a
+    subscribed ticker)."""
+    feed = KalshiFeed(api_key="test", private_key=MagicMock())
+    # Pre-subscribe every ticker referenced in test fixtures.
+    # The parser tests treat `_subscribed_tickers` as a no-op
+    # precondition; production callers always subscribe first.
+    feed._subscribed_tickers.update({
+        "KXBTC15M-26APR231930-30",
+        "KXBTC15M-26APR241030-30",
+        "KXETH15M-26APR241030-30",
+        "KXBTC15M-LEGACY",
+        "T",
+    })
+    return feed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
