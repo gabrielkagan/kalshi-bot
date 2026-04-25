@@ -10,6 +10,7 @@ import uuid
 import signal
 import sqlite3
 import math
+import heapq
 import base64
 import functools
 import datetime
@@ -1329,6 +1330,17 @@ IOC_DRIFT_CHECK_MIN_CACHED_DEPTH = 20   # skip REST if cached depth already thin
 # rolling-window peak from `_rest_best_ask_depth_smoothed`, not a
 # single REST sample (see IOC_DRIFT_CHECK_REST_WINDOW_S below).
 IOC_DRIFT_CHECK_DIVERGENCE_RATIO = 0.5
+# Cold-start catastrophic-drift escape hatch. When the rolling buffer
+# has <_REST_DEPTH_MIN_SAMPLES_FOR_CLAMP samples (every freshly-discovered
+# ticker), the smoothed-peak gate normally falls through to the cached
+# WS depth. If the WS cache is wildly inflated (Apr 25 2026: cache=86,
+# fresh=1 on KXETH15M and dozens of others), this lets bot submit
+# Kelly-size IOCs into ~1ct top-of-book and accumulate micro-fills.
+# This ratio fires the clamp even on cold-start when fresh-REST shows
+# >=10x divergence from cache — strict enough to avoid single-sample
+# flicker false-positives, lax enough to catch the dominant phantom
+# pattern. See kb/failures/ws-cache-drift-microfills-2026-04-25.md (TBD).
+IOC_DRIFT_CHECK_COLD_START_RATIO = 0.1
 # Rolling-window smoothing (Apr 25 2026): a single REST sample is
 # itself volatile — WS_DRIFT_PROBE_REST_STABILITY observed two REST
 # calls 1s apart on the same ticker disagreeing by 900 contracts.
@@ -2611,6 +2623,10 @@ class StateManager:
             ("kalshi_flow_imbalance_level", "TEXT"),
             ("kalshi_flow_depth_velocity", "REAL"),
             ("kalshi_flow_depth_drain", "INTEGER"),
+            # Per-level orderbook snapshot at evaluation time. Compact JSON
+            # of top-N YES ladder via OrderExecutor._extract_book_levels.
+            # See kb/concepts/orderbook-depth-logging.md.
+            ("orderbook_levels_json", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2767,6 +2783,42 @@ class StateManager:
             )""")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ppo_ticker ON position_price_observations(ticker)")
+        # Migration: per-level orderbook snapshot column on position observations
+        for col_def in [
+            ("orderbook_levels_json", "TEXT"),
+        ]:
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE position_price_observations "
+                    f"ADD COLUMN {col_def[0]} {col_def[1]}")
+            except sqlite3.OperationalError:
+                pass
+        self.conn.commit()
+
+        # Order lifecycle orderbook snapshots — captures book state at
+        # IOC submit, fill (incl. partial), and cancel. Shares the parent
+        # StateManager connection (WAL + busy_timeout=30000 already set
+        # in __init__). DO NOT open a separate sqlite3.connect for this
+        # table — adds contention without setting required PRAGMAs.
+        # See kb/concepts/orderbook-depth-logging.md.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS order_lifecycle_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id TEXT,
+                ticker TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                observation_time TEXT NOT NULL,
+                orderbook_levels_json TEXT,
+                source TEXT
+            )""")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ols_order_id "
+            "ON order_lifecycle_snapshots(order_id)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ols_ticker_time "
+            "ON order_lifecycle_snapshots(ticker, observation_time)")
+        self.conn.commit()
+
         # Shadow exit signal table — tracks what early-exit would recommend
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS exit_signal_shadow (
@@ -9690,13 +9742,32 @@ class OpportunityScanner:
                 if _pt in (None, "15m", "hourly"):
                     try:
                         _br = vol_est.get("blended_rv") if vol_est else None
+                        # Apr 25 2026: enrich rejection_reason so we can
+                        # tell warmup (uptime<30s) from feed-blip
+                        # (buf_len short post-Coinbase-reconnect) from
+                        # real bug (uptime>>warmup AND buf_len adequate).
+                        # Pre-enrichment we just saw "vol_est=None" 132×/day
+                        # with no way to triage. See ws-cache-drift-silent-
+                        # scan-2026-04-24.md PM Prevention #3.
+                        try:
+                            _buf_len = (
+                                len(self._feed.get_buffer(asset))
+                                if self._feed else 0)
+                        except Exception:
+                            _buf_len = -1
+                        _uptime_s = (
+                            (time.time() - _proc_start)
+                            if _proc_start is not None else -1)
                         self._state.insert_evaluated_opportunity(
                             ticker=window["event_ticker"],
                             event_ticker=window["event_ticker"],
                             asset=asset,
                             filter_stage="silent_vol_none",
-                            rejection_reason=("vol_est=None" if vol_est is None
-                                              else f"blended_rv={_br}"),
+                            rejection_reason=(
+                                f"vol_est=None buf_len={_buf_len} "
+                                f"uptime={_uptime_s:.0f}s"
+                                if vol_est is None
+                                else f"blended_rv={_br} buf_len={_buf_len}"),
                             spot_price=spot,
                             seconds_to_close=seconds_remaining,
                             product_type=_pt or "15m")
@@ -17669,42 +17740,67 @@ class OrderExecutor:
         Returns: '{"yes_bids":[[p,q],...],"yes_asks":[[p,q],...]}' or None.
         yes_bids sorted desc by price (best bid first).
         yes_asks derived from raw NO bids via 100-p, sorted asc (best ask first).
+
+        Input contract:
+        - ob_data must be a coalesced book (dict), not a delta frame.
+          Non-dict input (None, list, str) returns None.
+        - Float price <= 1.0 treated as probability (× 100 → cents).
+          Float price > 1.0 treated as already-cents.
+
+        Dropped (silently): NaN/Inf/negative/missing/bool qty,
+        price < 0 or > 100, bool price, malformed entry shapes,
+        duplicate price levels are merged (sum qty).
         """
-        if ob_data is None:
+        if not isinstance(ob_data, dict):
             return None
 
-        def _parse(entries):
-            out = []
+        def _parse_and_merge(entries):
+            """Parse entries to {price_cents: total_qty} dict, merging duplicates."""
+            out: Dict[int, int] = {}
             for entry in entries or []:
                 if isinstance(entry, (list, tuple)):
                     if len(entry) < 2:
                         continue
                     price, qty = entry[0], entry[1]
                 elif isinstance(entry, dict):
-                    price = entry.get("price", 0)
-                    qty = entry.get("quantity", 0)
+                    if "quantity" not in entry:
+                        continue
+                    price = entry.get("price")
+                    qty = entry.get("quantity")
                 else:
                     continue
+                # Reject bools (subclass of int — silently poisons output)
+                if isinstance(price, bool) or isinstance(qty, bool):
+                    continue
                 try:
-                    if isinstance(price, float) and price < 1.0:
-                        price_cents = round(price * 100)
+                    if isinstance(qty, float) and not math.isfinite(qty):
+                        continue
+                    qty_int = int(qty)
+                    if qty_int <= 0:
+                        continue
+                    if isinstance(price, float):
+                        if not math.isfinite(price):
+                            continue
+                        if price <= 1.0:
+                            price_cents = round(price * 100)
+                        else:
+                            price_cents = int(price)
                     else:
                         price_cents = int(price)
-                    qty_int = int(qty)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
-                if price_cents < 0:
+                if price_cents < 0 or price_cents > 100:
                     continue
-                out.append((price_cents, qty_int))
+                out[price_cents] = out.get(price_cents, 0) + qty_int
             return out
 
-        yes_bids_raw = _parse(ob_data.get("yes"))
-        no_bids_raw = _parse(ob_data.get("no"))
+        yes_bids_merged = _parse_and_merge(ob_data.get("yes"))
+        no_bids_merged = _parse_and_merge(ob_data.get("no"))
 
-        yes_bids = sorted(yes_bids_raw, key=lambda x: -x[0])[:n]
+        yes_bids = heapq.nlargest(n, yes_bids_merged.items(), key=lambda kv: kv[0])
         # NO bid >= 100c → derived YES ask <= 0, drop as nonsensical
-        yes_asks = sorted(((100 - p, q) for p, q in no_bids_raw if p < 100),
-                          key=lambda x: x[0])[:n]
+        yes_asks_iter = ((100 - p, q) for p, q in no_bids_merged.items() if p < 100)
+        yes_asks = heapq.nsmallest(n, yes_asks_iter, key=lambda pq: pq[0])
 
         return json.dumps(
             {"yes_bids": [[p, q] for p, q in yes_bids],
@@ -19023,18 +19119,46 @@ class OrderExecutor:
                         ("?" if _rest_fresh is None else str(_rest_fresh)),
                         _sample_count, _strategy)
             elif _rest_peak is not None and _cold_start:
-                # Cold-start: skip clamp; existing policy applies.
-                # Log once for diagnostics — this branch hits constantly
-                # for newly-discovered 15M tickers, so use INFO not
-                # WARNING to avoid log spam.
-                logging.info(
-                    "IOC_CACHE_COLD_START: %s %dc ws_cache=%d "
-                    "rest_fresh=%s (samples=%d < %d) — falling "
-                    "through to cached-depth policy",
-                    ticker, price, _ask_depth,
-                    ("?" if _rest_fresh is None else str(_rest_fresh)),
-                    _sample_count,
-                    OrderExecutor._REST_DEPTH_MIN_SAMPLES_FOR_CLAMP)
+                # Cold-start: smoothed-peak gate isn't authoritative yet
+                # (samples < _REST_DEPTH_MIN_SAMPLES_FOR_CLAMP). Default
+                # behavior is to fall through to cached-depth policy.
+                # ESCAPE HATCH (Apr 25 2026): if the single fresh REST
+                # sample shows CATASTROPHIC divergence from cache
+                # (≥10× drift, IOC_DRIFT_CHECK_COLD_START_RATIO), apply
+                # the clamp anyway. Single-sample flicker risk is real
+                # but bounded by the strict ratio; the alternative is
+                # what we just measured — Kelly-size IOCs into 1ct books
+                # producing 50+ micro-fills/day across freshly-discovered
+                # tickers (~16/hr, all hit cold-start path).
+                if (_rest_peak
+                        < _ask_depth * IOC_DRIFT_CHECK_COLD_START_RATIO):
+                    logging.warning(
+                        "IOC_CACHE_DRIFT_COLD: %s %dc ws_cache=%d "
+                        "rest_fresh=%d ratio=%.3f (samples=%d, "
+                        "threshold=%.2f) strategy=%s policy=%s — "
+                        "catastrophic drift on cold-start; using REST "
+                        "as authoritative",
+                        ticker, price, _ask_depth, _rest_peak,
+                        _rest_peak / max(_ask_depth, 1), _sample_count,
+                        IOC_DRIFT_CHECK_COLD_START_RATIO,
+                        _strategy, _policy)
+                    _ask_depth = _rest_peak
+                    _drift_corrected = True
+                else:
+                    # Cold-start with non-catastrophic divergence: fall
+                    # through to cached policy. Log once for diagnostics
+                    # — this branch hits constantly for newly-discovered
+                    # 15M tickers, so use INFO not WARNING to avoid log
+                    # spam.
+                    logging.info(
+                        "IOC_CACHE_COLD_START: %s %dc ws_cache=%d "
+                        "rest_fresh=%s (samples=%d < %d, ratio=%.3f) "
+                        "— falling through to cached-depth policy",
+                        ticker, price, _ask_depth,
+                        ("?" if _rest_fresh is None else str(_rest_fresh)),
+                        _sample_count,
+                        OrderExecutor._REST_DEPTH_MIN_SAMPLES_FOR_CLAMP,
+                        _rest_peak / max(_ask_depth, 1))
 
         if _ask_src == "orderbook" and isinstance(_ask_depth, int):
             # Catastrophic tail guard — fires regardless of policy. Uses

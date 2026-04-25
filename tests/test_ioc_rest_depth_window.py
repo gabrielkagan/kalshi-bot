@@ -716,5 +716,157 @@ class TestPhantomAbortStillFires(unittest.TestCase):
             "windowed peak is high. R1 P0 #2 regression guard.")
 
 
+class TestColdStartCatastrophicDrift(unittest.TestCase):
+    """Apr 25 2026 regression: cold-start path (samples<2) was a silent
+    bypass of all drift detection, so freshly-discovered tickers (~16/hr
+    on 15M) submitted Kelly-size IOCs into stale-WS-cache phantom depth,
+    accumulating 50+ micro-fills/day at 1-5 contracts each.
+
+    The fix adds a CATASTROPHIC-DRIFT escape hatch: even on cold-start
+    (no smoothing), if the single fresh REST sample shows ≥10x
+    divergence from cache (IOC_DRIFT_CHECK_COLD_START_RATIO=0.1), apply
+    the clamp anyway. Strict enough to avoid single-sample flicker
+    false-positives; lax enough to catch the dominant phantom pattern
+    (e.g. cache=86, fresh=1, ratio=0.012)."""
+
+    def test_constant_defined_and_strict(self):
+        import bot
+        self.assertTrue(
+            hasattr(bot, "IOC_DRIFT_CHECK_COLD_START_RATIO"),
+            "IOC_DRIFT_CHECK_COLD_START_RATIO must be defined as a "
+            "module-level constant for tunability.")
+        self.assertLess(
+            bot.IOC_DRIFT_CHECK_COLD_START_RATIO,
+            bot.IOC_DRIFT_CHECK_DIVERGENCE_RATIO,
+            "Cold-start ratio must be STRICTER (lower) than the "
+            "smoothed-window ratio, or it would be no different from "
+            "fully-trusting a single REST sample.")
+        self.assertGreater(
+            bot.IOC_DRIFT_CHECK_COLD_START_RATIO, 0.0,
+            "Cold-start ratio must be >0 (otherwise the branch never "
+            "fires, defeating the fix).")
+
+    def test_cold_start_branch_uses_constant(self):
+        """AST regression: the cold-start branch in `_submit_taker`
+        must reference IOC_DRIFT_CHECK_COLD_START_RATIO. A future
+        refactor that removed the catastrophic-drift escape hatch
+        would re-introduce the Apr 25 micro-fill bug."""
+        with open(BOT_PY) as f:
+            tree = ast.parse(f.read())
+        target_fn = None
+        for cls in ast.walk(tree):
+            if (not isinstance(cls, ast.ClassDef)
+                    or cls.name != "OrderExecutor"):
+                continue
+            for fn in cls.body:
+                if not isinstance(fn, ast.FunctionDef):
+                    continue
+                for sub in ast.walk(fn):
+                    if (isinstance(sub, ast.Constant)
+                            and isinstance(sub.value, str)
+                            and sub.value.startswith(
+                                "IOC_CACHE_COLD_START")):
+                        target_fn = fn
+                        break
+                if target_fn:
+                    break
+            if target_fn:
+                break
+        self.assertIsNotNone(
+            target_fn, "Couldn't locate IOC_CACHE_COLD_START emitter.")
+        fn_src = ast.unparse(target_fn)
+        self.assertIn(
+            "IOC_DRIFT_CHECK_COLD_START_RATIO", fn_src,
+            "Cold-start branch must consult "
+            "IOC_DRIFT_CHECK_COLD_START_RATIO so catastrophic drift "
+            "still triggers the clamp even with samples<2. Apr 25 "
+            "2026 micro-fill regression guard.")
+        self.assertIn(
+            "IOC_CACHE_DRIFT_COLD", fn_src,
+            "Cold-start branch must emit IOC_CACHE_DRIFT_COLD warning "
+            "when catastrophic drift triggers — operators need a "
+            "distinct signal vs the normal IOC_CACHE_DRIFT (smoothed).")
+
+    def test_catastrophic_drift_triggers_clamp_end_to_end(self):
+        """End-to-end: cold-start ticker (empty buffer), cache claims
+        deep depth, fresh REST returns near-zero. Without the escape
+        hatch, this is the exact path that produced 1ct micro-fills."""
+        import bot
+        from unittest.mock import patch
+        client = MagicMock()
+        state = MagicMock()
+        logger = MagicMock()
+        ml = MagicMock()
+        feed = MagicMock()
+        feed.is_connected = True
+        feed.pop_fills.return_value = []
+        ex = bot.OrderExecutor(
+            client=client, state=state, logger=logger,
+            main_loop=ml, kalshi_feed=feed)
+        # Cold-start: NO pre-warmed samples. The drift-check fetches
+        # fresh=1 → buffer has 1 sample → samples<2 → cold-start branch.
+        # Cache claims 86 (matches Apr 25 KXETH15M log).
+        # _best_ask_depth reads the NO-bid side (= YES ask counterparty).
+        # 1 NO contract bidding 1c → best YES ask at 99c with depth 1.
+        ob_resp_thin = {
+            "orderbook": {
+                "yes": [],
+                "no": [[1, 1]],
+            },
+        }
+        client.get_orderbook.return_value = ob_resp_thin
+        # IOC for 50ct. Cache says depth=86 (drift), real REST=1.
+        # Strategy = terminal_momentum_99 → policy=no_clamp normally,
+        # but catastrophic drift should override.
+        candidate = {
+            "ticker": "KXETH15M-COLDSTART",
+            "event_ticker": "KXETH15M-26APR25-EVT",
+            "asset": "ETH",
+            "best_yes_ask": 99,
+            "balance_at_scan": 100_000,
+            "position_size": 50,
+            "strategy": "terminal_momentum_99",
+            "best_ask_source": "orderbook",
+            "ob_snapshot": {"ask_depth": 86, "best_ask": 99},
+            "seconds_to_close": 30.0,
+            "side": "yes",
+            "calibrated_prob": 0.95,
+        }
+        # place_order returns "filled successfully" — but we expect the
+        # IOC_ABORT_THIN_CLAMP path to fire first (depth=1 < min=5).
+        client.place_order.return_value = {
+            "order": {"order_id": "ABC", "remaining_count": 50,
+                      "fill_count": 0}}
+        client.get_positions.return_value = {"market_positions": []}
+        with patch("bot.time") as mt, patch(
+                "bot.fp_str_to_int", return_value=0):
+            mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
+            mt.sleep = MagicMock()
+            mt.perf_counter.return_value = 0.0
+            with self.assertLogs(level="WARNING") as cm:
+                ex._submit_taker(candidate)
+        cold_drift_lines = [
+            r for r in cm.records
+            if "IOC_CACHE_DRIFT_COLD" in r.getMessage()]
+        self.assertGreaterEqual(
+            len(cold_drift_lines), 1,
+            "Catastrophic divergence on cold-start (cache=86, fresh=1) "
+            "must emit IOC_CACHE_DRIFT_COLD; got none. Without this, "
+            "the bot trusts cache=86 and submits 50ct into a 1ct book.")
+        # Either ABORT_THIN_CLAMP (1<5) or DRIFT_CLAMP fires next —
+        # both are correct; the bug is "no clamp at all and submit 50".
+        clamp_evidence = [
+            r for r in cm.records
+            if ("IOC_ABORT_THIN_CLAMP" in r.getMessage()
+                or "IOC_DRIFT_CLAMP" in r.getMessage()
+                or "IOC_SIZE_CLAMP" in r.getMessage())]
+        self.assertGreaterEqual(
+            len(clamp_evidence), 1,
+            "After cold-start drift detection, the order must either "
+            "abort or be clamped, not submit at the original Kelly "
+            "size. Apr 25 2026 micro-fill regression guard.")
+
+
 if __name__ == "__main__":
     unittest.main()
