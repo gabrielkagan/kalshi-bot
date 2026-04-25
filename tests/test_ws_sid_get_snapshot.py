@@ -83,6 +83,9 @@ def _make_feed():
     f._ws_orphan_sid_seen = set()
     f._force_reconnect_requested = False
     f._pending_late_unsubscribes = set()
+    f._raw_log_count = 0
+    f._raw_log_capped_logged = False
+    f._ws_connect_ts = 0.0
     f._lock = threading.Lock()
     return f
 

@@ -72,6 +72,10 @@ def _make_feed():
     # Phase 2.6 R4: force-reconnect flag + late-unsub set.
     f._force_reconnect_requested = False
     f._pending_late_unsubscribes = set()
+    # Phase 2.9: raw-log counter + connect ts.
+    f._raw_log_count = 0
+    f._raw_log_capped_logged = False
+    f._ws_connect_ts = 0.0
     f._lock = threading.Lock()
     return f
 

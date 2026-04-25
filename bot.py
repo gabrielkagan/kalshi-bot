@@ -470,6 +470,26 @@ WS_FORCE_RESUB_RECOVERY_TIMEOUT_S = 30.0
 # rather than risk a dual-subscription leak from re-queueing.
 WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S = 180.0
 
+# Phase 2.9 — raw WS frame logging for diagnostic trace.
+# Phase 2.8 deploy showed WS_FORCE_RECONNECT firing every ~3 min
+# even after stale-cleanup fix — live tickers' subscribes don't
+# get type=subscribed acks, watchdog fires, reconnect, repeat.
+# We can't diagnose ack-reliability without seeing the actual wire
+# frames. WS_RAW_OUT/IN logs everything for the first 120s of each
+# session (captures the initial subscribe burst + any acks/errors)
+# plus all command-response types regardless of time (subscribed,
+# unsubscribed, ok, error — all low volume).
+WS_RAW_LOG_DURATION_S = 120.0
+WS_RAW_LOG_TRUNCATE = 800
+# Phase 2.9 R-review A3: hard cap on raw log lines per session
+# (reset on reconnect). With ~100 tickers and chatty deltas + a
+# reconnect-every-3min regime, an uncapped 120s window could emit
+# tens of thousands of log lines per reconnect → multi-GB/day,
+# blowing past journalctl's RuntimeMaxUse default. Cap protects
+# against runaway log growth while still providing diagnostic
+# coverage of the initial subscribe burst.
+WS_RAW_LOG_MAX_PER_SESSION = 3000
+
 # ─── Coinbase WebSocket ──────────────────────────────────────────────────────
 COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com"
 COINBASE_PRODUCTS = {
@@ -4218,6 +4238,10 @@ class KalshiFeed:
         # dropping the sid → leaving a leaked Kalshi subscription
         # we cannot reach).
         self._pending_late_unsubscribes: Set[str] = set()
+        # Phase 2.9 R-review A3: per-session raw log line counter.
+        # Reset on every reconnect via _cleanup_session_state.
+        self._raw_log_count: int = 0
+        self._raw_log_capped_logged: bool = False
         self._ws = None
         # One-shot schema probes — log the first snapshot/delta msg keys per run so
         # post-deploy verifier can confirm the live wire matches the contract.
@@ -4640,6 +4664,10 @@ class KalshiFeed:
             # naturally cleaned up — Kalshi drops the old session's
             # subs on disconnect).
             self._pending_late_unsubscribes.clear()
+            # Phase 2.9 R-review A3: reset raw-log counter so
+            # the new session gets fresh diagnostic budget.
+            self._raw_log_count = 0
+            self._raw_log_capped_logged = False
         self._ws = None
         # Reset seq tracking — new WS session starts fresh sids;
         # old state would produce spurious gap warnings.
@@ -4925,15 +4953,19 @@ class KalshiFeed:
             self._outstanding_subscribes[cmd_id] = ticker
             self._outstanding_subscribe_ts[cmd_id] = (
                 time.monotonic())
+        _payload = {
+            "id": cmd_id,
+            "cmd": "subscribe",
+            "params": {
+                "channels": ["orderbook_delta"],
+                "market_tickers": [ticker],
+            },
+        }
+        # Phase 2.9: raw-out trace BEFORE send so we see what was
+        # attempted even if ws.send raises.
+        self._log_raw_out(_payload)
         try:
-            await ws.send(json.dumps({
-                "id": cmd_id,
-                "cmd": "subscribe",
-                "params": {
-                    "channels": ["orderbook_delta"],
-                    "market_tickers": [ticker],
-                },
-            }))
+            await ws.send(json.dumps(_payload))
         except Exception:
             # Phase 2.6 R-review A3: send failure leaves the cmd_id
             # registered in _outstanding_subscribes forever — orphan.
@@ -4975,14 +5007,17 @@ class KalshiFeed:
         with self._lock:
             cmd_id = self._next_msg_id
             self._next_msg_id += 1
+        _payload = {
+            "id": cmd_id,
+            "cmd": "unsubscribe",
+            "params": {
+                "sids": [sid],
+            },
+        }
+        # Phase 2.9: raw-out trace.
+        self._log_raw_out(_payload)
         try:
-            await ws.send(json.dumps({
-                "id": cmd_id,
-                "cmd": "unsubscribe",
-                "params": {
-                    "sids": [sid],
-                },
-            }))
+            await ws.send(json.dumps(_payload))
         except Exception:
             # Send failed — leave sid map intact, caller may retry.
             logging.warning(
@@ -5051,7 +5086,7 @@ class KalshiFeed:
         with self._lock:
             cmd_id = self._next_msg_id
             self._next_msg_id += 1
-        await ws.send(json.dumps({
+        _payload = {
             "id": cmd_id,
             "cmd": "update_subscription",
             "params": {
@@ -5059,7 +5094,10 @@ class KalshiFeed:
                 "action": "get_snapshot",
                 "market_tickers": [ticker],
             },
-        }))
+        }
+        # Phase 2.9: raw-out trace.
+        self._log_raw_out(_payload)
+        await ws.send(json.dumps(_payload))
         logging.info(
             "kalshi_ws_get_snapshot: ticker=%s sid=%d id=%d "
             "(Phase 2.7 cache reset)",
@@ -5119,6 +5157,85 @@ class KalshiFeed:
                 with self._lock:
                     self._snapshot_request_pending.pop(ticker, None)
 
+    # Phase 2.9 — raw WS frame logging helpers.
+    _RAW_LOG_NON_DATA_TYPES = frozenset(
+        {"subscribed", "unsubscribed", "ok", "error"})
+
+    def _should_log_raw_in(self, msg_type: Optional[str]) -> bool:
+        """True if we should log this incoming frame raw.
+        Always log command-response types (low volume, high
+        diagnostic value). Otherwise log only within the first
+        WS_RAW_LOG_DURATION_S after WS connect (initial burst)."""
+        if msg_type in self._RAW_LOG_NON_DATA_TYPES:
+            return True
+        ts = self._ws_connect_ts
+        if ts <= 0.0:
+            return False
+        return (time.time() - ts) < WS_RAW_LOG_DURATION_S
+
+    def _raw_log_budget_ok(self) -> bool:
+        """R-review A3: hard cap on HIGH-VOLUME raw log lines
+        (orderbook_delta/snapshot bulk frames) per session.
+        Non-data command-response types and outgoing frames are
+        EXEMPT — they are bounded in volume and constitute the
+        actual diagnostic signal we cannot afford to suppress.
+
+        R2-review A1: pre-fix the cap was applied uniformly,
+        meaning chatty deltas could exhaust the budget in ~6s
+        and silently suppress the very `type=subscribed` ack
+        the diagnostic depends on.
+        """
+        with self._lock:
+            if self._raw_log_count >= WS_RAW_LOG_MAX_PER_SESSION:
+                if not self._raw_log_capped_logged:
+                    self._raw_log_capped_logged = True
+                    _emit = True
+                else:
+                    _emit = False
+            else:
+                self._raw_log_count += 1
+                _emit = None
+        if _emit is True:
+            logging.info(
+                "WS_RAW_CAPPED — reached %d raw log lines this "
+                "session, suppressing further high-volume frames "
+                "until next reconnect. Command-response types "
+                "(subscribed/unsubscribed/ok/error) and outgoing "
+                "frames remain logged (separate exempt budget).",
+                WS_RAW_LOG_MAX_PER_SESSION)
+        return _emit is None
+
+    def _log_raw_out(self, payload: Dict) -> None:
+        """Log outgoing WS frame. Always called and ALWAYS logs —
+        outgoing volume is naturally bounded (~100/session,
+        primarily subscribe/unsubscribe at startup or reconnect).
+        EXEMPT from the high-volume cap so the OUT side of the
+        diagnostic is never silenced."""
+        try:
+            raw = json.dumps(payload)
+        except Exception:
+            raw = repr(payload)
+        if len(raw) > WS_RAW_LOG_TRUNCATE:
+            raw = raw[:WS_RAW_LOG_TRUNCATE] + "...[truncated]"
+        logging.info("WS_RAW_OUT %s", raw)
+
+    def _log_raw_in(
+        self, raw: str, msg_type: Optional[str] = None,
+    ) -> None:
+        """Log incoming WS frame. Command-response types
+        (subscribed, unsubscribed, ok, error) are EXEMPT from the
+        cap — they're low-volume and constitute the diagnostic
+        signal. Bulk data types (orderbook_delta/snapshot) ARE
+        cap-gated to prevent runaway growth."""
+        is_command_response = (
+            msg_type in self._RAW_LOG_NON_DATA_TYPES)
+        if not is_command_response:
+            if not self._raw_log_budget_ok():
+                return
+        if len(raw) > WS_RAW_LOG_TRUNCATE:
+            raw = raw[:WS_RAW_LOG_TRUNCATE] + "...[truncated]"
+        logging.info("WS_RAW_IN %s", raw)
+
     def _handle_message(self, raw: str):
         # Watchdog: any message from the server (subscribe ack, heartbeat,
         # fill, orderbook event, even an error we ignore) proves the WS
@@ -5130,6 +5247,13 @@ class KalshiFeed:
             data = json.loads(raw)
         except json.JSONDecodeError:
             return
+
+        # Phase 2.9: raw incoming frame log (gated by type +
+        # time window). Goes BEFORE the dispatch so we see what
+        # was actually received even if downstream parsing throws.
+        _msg_type = data.get("type")
+        if self._should_log_raw_in(_msg_type):
+            self._log_raw_in(raw, msg_type=_msg_type)
 
         # WS sequence-gap detector. Kalshi WS messages carry (sid, seq) per
         # subscription; seq should be +1 per message within a sid. Any other
