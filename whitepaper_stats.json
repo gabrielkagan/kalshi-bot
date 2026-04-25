@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 149959,
+  "total_evaluated": 149969,
   "filter_breakdown": {
     "candidate": 5554,
     "dc_shadow_t1b_93c": 47,
@@ -18,7 +18,7 @@
     "decided_contract_t2_z25": 182,
     "dip_addon_shadow": 29,
     "eth_low_floor_shadow": 1504,
-    "floor_raise_shadow": 5201,
+    "floor_raise_shadow": 5203,
     "golden_hour_shadow": 275,
     "hourly_asset_excluded": 162,
     "hourly_config_a": 1738,
@@ -39,7 +39,7 @@
     "hourly_observation_v2": 6801,
     "hourly_timing_restricted": 1655,
     "hourly_window_limit": 595,
-    "insufficient_edge": 47025,
+    "insufficient_edge": 47026,
     "low_price_shadow": 2488,
     "no_side_price_shadow_no_xrp": 3764,
     "no_side_price_shadow_xrp": 772,
@@ -48,12 +48,12 @@
     "overnight_discount": 110,
     "overnight_discount_shadow": 317,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 24314,
+    "price_out_of_range": 24315,
     "price_shadow": 52,
     "price_shadow_no_xrp": 3998,
-    "price_shadow_xrp": 1573,
+    "price_shadow_xrp": 1574,
     "relaxed_edge_shadow": 1220,
-    "silent_vol_none": 10,
+    "silent_vol_none": 14,
     "single_asset_selection": 5,
     "sol_high_edge_shadow": 189,
     "sol_low_entry_high_stc": 41,
@@ -62,7 +62,7 @@
     "sports_excluded_lr": 13,
     "sports_excluded_price": 30,
     "sports_excluded_sport": 72,
-    "sports_insufficient_edge": 121,
+    "sports_insufficient_edge": 122,
     "sports_late_game": 96,
     "sports_model_overconfident": 6,
     "sports_price_too_high": 24,
@@ -158,5 +158,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-25",
-  "generated_at": "2026-04-25T01:01:17Z"
+  "generated_at": "2026-04-25T01:05:59Z"
 }
