@@ -15753,6 +15753,15 @@ class OpportunityScanner:
         # writes for a window's entire 15-min lifetime once each
         # (ticker, stage) is seen, producing watchdog false positives
         # even when scan is healthy. (Apr 24 23:53 UTC false positive.)
+        #
+        # Phase 3 R-review A2 caveat: this OR-logic depends on Phase 1
+        # (commit 27196b4 + AST audit task #46) ensuring every
+        # silent-bail scan path writes a rejection row. If a future code
+        # change introduces a NEW silent-continue without a rejection
+        # write, heartbeat-recent could fire while rows_written=0 — the
+        # exact pathology Phase 3 targets, but the productivity check
+        # would falsely reset the counter. The AST audit test_scan_no_silent_continue.py
+        # is the regression guard against that gap reappearing.
         try:
             tick_start_dt = datetime.datetime.strptime(
                 tick_start_ts.replace("Z", "+00:00"),
@@ -15775,9 +15784,36 @@ class OpportunityScanner:
             ).fetchone()
         except Exception:
             return
+        # Phase 3 R-review A1: detect WS disconnect→reconnect
+        # transition. If WS just came back from a disconnected
+        # state, the counter accumulated during the dead window
+        # and would immediately trip R2 (reconnect-bomb). Reset
+        # counter on transition; counter + alerts continue
+        # accumulating during a sustained disconnect (operator
+        # still wants to know via Telegram) but R1/R2 recovery
+        # actions are gated below on WS being live.
+        kf_check = getattr(self, "_kalshi_feed", None) or getattr(
+            self, "kalshi_feed", None)
+        ws_connected = (
+            kf_check is not None
+            and getattr(kf_check, "is_connected", False))
+        prev_ws_connected = getattr(
+            self, "_scan_15m_prev_ws_connected", True)
+        self._scan_15m_prev_ws_connected = ws_connected
+        if not prev_ws_connected and ws_connected:
+            # Just reconnected — start fresh.
+            self._scan_15m_unproductive_count = 0
+            self._scan_15m_last_recovery_ts = 0.0
+            self._scan_15m_reconnect_triggered = False
+
         rows_written = row[0] if row else 0
         if heartbeat_recent or rows_written > 0:
+            # Productive tick — reset detection counter AND Phase 3
+            # auto-recovery state (throttle + one-shot reconnect flag)
+            # so the next stuck period gets fresh recovery cadence.
             self._scan_15m_unproductive_count = 0
+            self._scan_15m_last_recovery_ts = 0.0
+            self._scan_15m_reconnect_triggered = False
             return
 
         self._scan_15m_unproductive_count = getattr(
@@ -15805,6 +15841,66 @@ class OpportunityScanner:
                 logging.debug(
                     "scan_unproductive_15m telegram send failed",
                     exc_info=True)
+
+        # Phase 3 R1 — auto-recovery: force_resubscribe every active
+        # 15M ticker. purge_cache=True is the real reset (drops
+        # phantom WS state); track_recovery=True so B2 watchdog can
+        # surface stuck tickers. Throttled to once per
+        # SCAN_UNPRODUCTIVE_RECOVERY_THROTTLE_S (60s) so we don't
+        # hammer the WS during a multi-tick burn.
+        SCAN_UNPRODUCTIVE_RECOVERY_THROTTLE_S = 60.0
+        SCAN_UNPRODUCTIVE_RECONNECT_THRESHOLD = 10  # ~5 min
+        now = time.time()
+        # Use kf_check (already resolved above for transition detection).
+        kf = kf_check
+        if not ws_connected:
+            return  # no WS to recover; counter+alert already fired
+        last_rec = getattr(self, "_scan_15m_last_recovery_ts", 0.0)
+        if now - last_rec >= SCAN_UNPRODUCTIVE_RECOVERY_THROTTLE_S:
+            self._scan_15m_last_recovery_ts = now
+            _15m_tickers = []
+            for w in active_windows:
+                if w.get("product_type") != "15m":
+                    continue
+                for mkt in w.get("markets") or []:
+                    t = mkt.get("ticker", "")
+                    if t:
+                        _15m_tickers.append(t)
+            for t in _15m_tickers:
+                try:
+                    kf.force_resubscribe(
+                        t, purge_cache=True, track_recovery=True)
+                except Exception:
+                    logging.debug(
+                        "force_resubscribe in scan-recovery failed: %s",
+                        t, exc_info=True)
+            logging.warning(
+                "SCAN_UNPRODUCTIVE_15M_RECOVERY_R1: force_resubscribed "
+                "%d 15M tickers (purge=True, track=True) at %d "
+                "consecutive unproductive ticks",
+                len(_15m_tickers),
+                self._scan_15m_unproductive_count)
+
+        # Phase 3 R2 — escalation: if STILL unproductive at 10
+        # consecutive ticks (~5 min), set _force_reconnect_requested
+        # so silence watchdog forces a fresh WS session. One-shot
+        # per stuck-period (cleared on next productive tick).
+        if (self._scan_15m_unproductive_count
+                >= SCAN_UNPRODUCTIVE_RECONNECT_THRESHOLD
+                and not getattr(
+                    self, "_scan_15m_reconnect_triggered", False)):
+            self._scan_15m_reconnect_triggered = True
+            try:
+                kf._force_reconnect_requested = True
+            except Exception:
+                logging.warning(
+                    "Failed to set _force_reconnect_requested",
+                    exc_info=True)
+            logging.error(
+                "SCAN_UNPRODUCTIVE_15M_RECOVERY_R2: requesting WS "
+                "reconnect at %d consecutive unproductive ticks "
+                "(R1 force_resubscribe didn't recover)",
+                self._scan_15m_unproductive_count)
 
     def _drift_probe_tick(self) -> None:
         """Once per minute, diff REST orderbook vs WS cache for a random
@@ -17565,6 +17661,56 @@ class OrderExecutor:
                 best_price = price_cents
                 best_qty = qty
         return best_qty
+
+    @staticmethod
+    def _extract_book_levels(ob_data: Optional[Dict], n: int = 10) -> Optional[str]:
+        """Top-N YES-side ladder as compact JSON for forensic logging.
+
+        Returns: '{"yes_bids":[[p,q],...],"yes_asks":[[p,q],...]}' or None.
+        yes_bids sorted desc by price (best bid first).
+        yes_asks derived from raw NO bids via 100-p, sorted asc (best ask first).
+        """
+        if ob_data is None:
+            return None
+
+        def _parse(entries):
+            out = []
+            for entry in entries or []:
+                if isinstance(entry, (list, tuple)):
+                    if len(entry) < 2:
+                        continue
+                    price, qty = entry[0], entry[1]
+                elif isinstance(entry, dict):
+                    price = entry.get("price", 0)
+                    qty = entry.get("quantity", 0)
+                else:
+                    continue
+                try:
+                    if isinstance(price, float) and price < 1.0:
+                        price_cents = round(price * 100)
+                    else:
+                        price_cents = int(price)
+                    qty_int = int(qty)
+                except (TypeError, ValueError):
+                    continue
+                if price_cents < 0:
+                    continue
+                out.append((price_cents, qty_int))
+            return out
+
+        yes_bids_raw = _parse(ob_data.get("yes"))
+        no_bids_raw = _parse(ob_data.get("no"))
+
+        yes_bids = sorted(yes_bids_raw, key=lambda x: -x[0])[:n]
+        # NO bid >= 100c → derived YES ask <= 0, drop as nonsensical
+        yes_asks = sorted(((100 - p, q) for p, q in no_bids_raw if p < 100),
+                          key=lambda x: x[0])[:n]
+
+        return json.dumps(
+            {"yes_bids": [[p, q] for p, q in yes_bids],
+             "yes_asks": [[p, q] for p, q in yes_asks]},
+            separators=(",", ":"),
+        )
 
     # ── Repricing ─────────────────────────────────────────────────────────
 
