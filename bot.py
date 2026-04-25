@@ -8218,6 +8218,7 @@ class OpportunityScanner:
                 seconds_remaining = window["seconds_to_close"]
                 vol_est = self._ml.weather_engine.get_vol_estimate(asset, seconds_remaining)
             else:
+                _vol_start = time.perf_counter()
                 spot = self._feed.get_price(asset)
                 if spot is None or spot <= 0:
                     # Trace row — Coinbase price feed gap or restart warmup.
@@ -8239,6 +8240,14 @@ class OpportunityScanner:
                     continue
                 seconds_remaining = window["seconds_to_close"]
                 vol_est = self._vol.update(asset, seconds_to_close=seconds_remaining)
+                # Per-section timing — SCAN_VOL_SLOW fires when the
+                # spot fetch + vol.update call exceeds 300ms. Apr 25
+                # 01:35: 10.43s BTC window stall with no slow OB
+                # fetch — vol compute is a top suspect.
+                _vol_dt = time.perf_counter() - _vol_start
+                if _vol_dt > 0.3:
+                    logging.warning(
+                        "SCAN_VOL_SLOW: asset=%s took %.2fs", asset, _vol_dt)
 
             if vol_est is None or vol_est["blended_rv"] <= 0:
                 if _pt == "spx_hourly":
@@ -10871,7 +10880,13 @@ class OpportunityScanner:
                             _sizing_balance = balance  # fallback: never zero out live trading
                     except Exception:
                         _sizing_balance = balance
+                _sizing_start = time.perf_counter()
                 sizing = self._sizer.compute(final_prob, best_ask, _sizing_balance)
+                _sizing_dt = time.perf_counter() - _sizing_start
+                if _sizing_dt > 0.2:
+                    logging.warning(
+                        "SCAN_SIZING_SLOW: asset=%s ticker=%s took %.2fs",
+                        asset, ticker, _sizing_dt)
 
                 # Product-type-specific sizing: fractional Kelly + conservative per-trade risk cap
                 _scfg = get_market_config(window.get("product_type"))
@@ -11011,6 +11026,7 @@ class OpportunityScanner:
                         if _dedup_key not in self._eval_opp_seen:
                             self._eval_opp_seen.add(_dedup_key)
                             _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                            _dbw_start = time.perf_counter()
                             self._state.insert_evaluated_opportunity(
                                 ticker, window["event_ticker"], asset,
                                 "zero_sizing",
@@ -11061,6 +11077,12 @@ class OpportunityScanner:
                                 hourly_shadow_blend_60=_hourly_shadow_blend_60,
                                 hourly_post_temp_prob=_hourly_post_temp_prob,
                                 **_oft_db, **_shadow_diag)
+                            _dbw_dt = time.perf_counter() - _dbw_start
+                            if _dbw_dt > 0.2:
+                                logging.warning(
+                                    "SCAN_DBWRITE_SLOW: zero_sizing "
+                                    "insert ticker=%s took %.2fs",
+                                    ticker, _dbw_dt)
                     except Exception:
                         logging.warning("insert_evaluated_opportunity failed (spx/weather observation)", exc_info=True)
                     continue
