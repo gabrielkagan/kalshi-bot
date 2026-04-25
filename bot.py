@@ -392,6 +392,17 @@ API_PATH_PREFIX = "/trade-api/v2"
 READ_RATE_LIMIT = 30              # per second (Advanced tier)
 WRITE_RATE_LIMIT = 30             # per second (Advanced tier)
 
+# ─── Orderbook depth logging cache ───────────────────────────────────────────
+# How fresh a cached ladder must be to auto-fill into evaluated_opportunities.
+# Scanner ticks ~every 1-2s per ticker; 10s gives us 5-10 ticks of grace
+# before forensic data is suspect. Beyond this we write NULL (honest) instead
+# of a stale ladder labeled as "now" (forensic poisoning).
+OB_CACHE_FRESHNESS_SECONDS = 10
+# Entries older than this are dropped on opportunistic eviction. Bounds
+# memory growth from quiet/closed-market tickers — failure_15m_silence_apr24_second
+# was a similar "WS cache phantom state" leak.
+OB_CACHE_EVICT_AGE_SECONDS = 30
+
 # ─── File Paths ──────────────────────────────────────────────────────────────
 DB_PATH = "state.db"
 SCAN_JOURNAL = "scan_journal.jsonl"
@@ -1156,6 +1167,34 @@ MAKER_POLL_INTERVAL = 2.0         # poll for maker fills every 2 seconds
 ESCALATION_MAX_ENTRY = 99         # taker price cap during escalation (cents)
 CONVERGENCE_WINDOW_SECONDS = 30.0 # seconds to measure price velocity
 MAKER_TIMEOUT_SECONDS = 30.0     # hard timeout for maker orders
+
+# ─── Maker tail after IOC partial fill ──────────────────────────────────
+# After an IOC partially fills (e.g. wanted 50ct, got 9 because top of
+# book was thin), instead of cancelling the unfilled remainder, post it
+# as a post_only=True GTC limit at the IOC price for a short TTL. The
+# remainder fills if benign rotation/inventory flow arrives at our
+# bid; we eat adverse selection if the price moves against us. Live
+# IOC strategies only — disabled/observation paths are excluded.
+# Decision: kb/decisions/maker-tail-after-ioc-partial.md (TBD).
+# Shipped straight to prod (no shadow) on Apr 25 2026 with TDD +
+# adversarial review; risk capped via min STC + min remainder + per-
+# asset and global concurrency caps.
+MAKER_TAIL_AFTER_IOC_PARTIAL = (
+    os.environ.get("MAKER_TAIL_AFTER_IOC_PARTIAL", "1") == "1")
+MAKER_TAIL_TTL_SECONDS = 60        # cancel any tail older than this on tick()
+MAKER_TAIL_MIN_REMAINDER = 5       # below this, API + state overhead > expected EV
+MAKER_TAIL_MIN_STC_SECONDS = 60    # near-expiry zombie risk; skip
+MAKER_TAIL_MAX_PER_ASSET = 2       # bound capital escrow per asset
+MAKER_TAIL_MAX_GLOBAL = 5          # bound total escrow across the bot
+# 8 currently-live IOC-firing strategies. Excluded by design: lpne
+# (STC<120s already gated), weather_no_live (1ct fixed), hourly* (env
+# kill switches). Expand only with data.
+MAKER_TAIL_ELIGIBLE_STRATEGIES = frozenset({
+    "decided_t1", "decided_t1b",
+    "decided_t2", "decided_t2_z25",
+    "terminal_momentum_98", "terminal_momentum_99",
+    "weekend_discount", "overnight_discount",
+})
 
 # ─── Direct Taker Threshold ──────────────────────────────────────────────
 DIRECT_TAKER_THRESHOLD = 180.0    # seconds_to_close below this → skip maker, go IOC directly
@@ -2144,6 +2183,18 @@ class StateManager:
         # See kb/concepts/feature-engineering-phase1.md.
         self._scan_ms_cache: Dict[str, Dict[str, Any]] = {}
         self._scan_cx_gap_cache: Dict[str, float] = {}
+        # Per-ticker top-N orderbook ladder JSON populated by scanner each
+        # tick from current ob_data. Stored as (monotonic_ts, json) tuples
+        # so reads can enforce a freshness gate — auto-filling a 15-minute
+        # old ladder labeled as "now" is forensic poisoning, worse than NULL.
+        # Same pattern as caches above but with TTL for both safety
+        # (no stale data) and bounded memory (eviction on stale-write).
+        # See kb/concepts/orderbook-depth-logging.md.
+        self._scan_ob_cache: Dict[str, Tuple[float, str]] = {}
+        # Lifecycle-snapshot failure counter (Phase 4). Exposed so auditor /
+        # monitoring can detect "snapshots dropping silently" — the exact
+        # failure mode the verify-new-features rule warns against.
+        self._lifecycle_snapshot_failures: int = 0
         # Extended feature provider callback (Phase 2). Scanner attaches this
         # on construction to enrich insert_evaluated_opportunity rows with
         # Tier 1/2/3/6 features without threading kwargs through 96 call sites.
@@ -2800,13 +2851,18 @@ class StateManager:
         # StateManager connection (WAL + busy_timeout=30000 already set
         # in __init__). DO NOT open a separate sqlite3.connect for this
         # table — adds contention without setting required PRAGMAs.
+        # event_type is enum-constrained to catch typo writes (FILL/filled/etc).
+        # POPULATED IN PHASE 4 — column NULL until OrderExecutor wiring lands.
+        # TODO: retention policy — add daily prune of rows older than N days
+        # once volume confirms (~50-200 rows/day expected from Phase 4).
         # See kb/concepts/orderbook-depth-logging.md.
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS order_lifecycle_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id TEXT,
+                order_id TEXT NOT NULL,
                 ticker TEXT NOT NULL,
-                event_type TEXT NOT NULL,
+                event_type TEXT NOT NULL
+                    CHECK (event_type IN ('submit','fill','partial_fill','cancel')),
                 observation_time TEXT NOT NULL,
                 orderbook_levels_json TEXT,
                 source TEXT
@@ -3149,6 +3205,83 @@ class StateManager:
               pos.get("maker_wait_seconds"),
               product_type, _sg, _is_stacked))
 
+    def _get_fresh_ob_ladder(self, ticker: str) -> Optional[str]:
+        """Return cached orderbook ladder JSON for ticker if fresh, else None.
+
+        Single source of truth for the freshness gate used by all three
+        auto-fill call sites (insert_evaluated_opportunity,
+        insert_order_lifecycle_snapshot, position_price_observations).
+
+        Stale entry → returns None → caller writes NULL — honest.
+        Returning the stale entry would be forensic poisoning.
+        """
+        entry = self._scan_ob_cache.get(ticker)
+        if entry is None:
+            return None
+        ts, json_str = entry
+        if time.monotonic() - ts < OB_CACHE_FRESHNESS_SECONDS:
+            return json_str
+        return None
+
+    def insert_order_lifecycle_snapshot(self, order_id: str, ticker: str,
+                                         event_type: str,
+                                         orderbook_levels_json: Optional[str] = None,
+                                         source: Optional[str] = None) -> None:
+        """Record a lifecycle event (submit / fill / partial_fill / cancel)
+        for an order, with the prevailing book state.
+
+        Auto-fills observation_time (now, UTC ISO8601) and
+        orderbook_levels_json (from _scan_ob_cache, freshness-gated to
+        OB_CACHE_FRESHNESS_SECONDS — stale → NULL, never lie).
+
+        SOURCE VOCABULARY: caller must pass `source` as the strategy name
+        (e.g. "terminal_momentum_96", "decided_t2") on EVERY event_type.
+        Mixing strategy with execution-tier ('taker'/'maker') in the same
+        column makes GROUP BY source meaningless. Tier is recoverable via
+        order_id join with pending_orders / positions when needed.
+
+        CHECK on event_type and NOT NULL on order_id are enforced by the
+        Phase 2 schema; failures increment _lifecycle_snapshot_failures
+        and re-raise so callers can decide (OrderExecutor wraps in try/
+        except so a snapshot failure never breaks order flow).
+
+        COMMIT PATTERN: per-call commit, consistent with other StateManager
+        helpers. Volume estimate ~150 commits/day (50 trades × ~2 fills +
+        50 submits) — well below PM-001 threshold of 91 commits in tight
+        loop. If contention metrics later show this is hot, refactor to
+        deferred-flush. Shares self.conn (WAL + busy_timeout=30000).
+        """
+        if orderbook_levels_json is None:
+            orderbook_levels_json = self._get_fresh_ob_ladder(ticker)
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        try:
+            self.conn.execute(
+                "INSERT INTO order_lifecycle_snapshots "
+                "(order_id, ticker, event_type, observation_time, "
+                "orderbook_levels_json, source) VALUES (?, ?, ?, ?, ?, ?)",
+                (order_id, ticker, event_type, now, orderbook_levels_json, source))
+            self.conn.commit()
+        except Exception:
+            self._lifecycle_snapshot_failures += 1
+            raise
+
+    def _evict_stale_ob_cache(self) -> None:
+        """Drop _scan_ob_cache entries older than OB_CACHE_EVICT_AGE_SECONDS.
+
+        Called opportunistically by the scanner each tick. Bounds memory
+        from quiet/closed-market tickers — failure_15m_silence_apr24_second
+        was a similar 'WS cache phantom state' growth pattern.
+
+        O(n) over current cache; n is bounded by active-ticker count
+        (~30-50 in practice), so cost is trivial.
+        """
+        _now = time.monotonic()
+        # Materialize the expired keys before mutating the dict
+        _stale = [k for k, (ts, _) in self._scan_ob_cache.items()
+                  if _now - ts >= OB_CACHE_EVICT_AGE_SECONDS]
+        for k in _stale:
+            self._scan_ob_cache.pop(k, None)
+
     # ── Rejected Opportunities ─────────────────────────────────────────
 
     def insert_rejection(self, ticker: str, event_ticker: str, asset: str,
@@ -3330,6 +3463,10 @@ class StateManager:
                                      kalshi_flow_imbalance_level: Optional[str] = None,
                                      kalshi_flow_depth_velocity: Optional[float] = None,
                                      kalshi_flow_depth_drain: Optional[int] = None,
+                                     # Per-level orderbook snapshot at evaluation time
+                                     # (compact JSON via OrderExecutor._extract_book_levels).
+                                     # Populated at trade-creation call sites only — not on
+                                     # high-volume rejection rows (volume control).
                                      orderbook_levels_json: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
@@ -3358,6 +3495,10 @@ class StateManager:
         # Phase 1 cross-exchange gap (per-asset).
         if spot_coinbase_kraken_gap_bps is None and asset is not None:
             spot_coinbase_kraken_gap_bps = self._scan_cx_gap_cache.get(asset)
+        # Per-level orderbook ladder (Apr 25): auto-fill from cache via
+        # _get_fresh_ob_ladder (returns None on stale entries — honest).
+        if orderbook_levels_json is None:
+            orderbook_levels_json = self._get_fresh_ob_ladder(ticker)
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
         # ── Auto-compute Tier 4 (time/regime) + Tier 5 (derived) features ──
@@ -10333,6 +10474,20 @@ class OpportunityScanner:
                 yes_bid_cents = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
                 if yes_bid_cents is not None:
                     self._state._scan_bid_cache[ticker] = yes_bid_cents
+                # Per-level orderbook ladder snapshot (top 10 each side).
+                # Cached as (monotonic_ts, json) so insert_evaluated_opportunity
+                # can enforce a freshness gate when auto-filling — stale
+                # entries write NULL instead of a misleading old ladder.
+                # None if ob_data missing this tick.
+                _ob_levels = OrderExecutor._extract_book_levels(ob_data)
+                if _ob_levels is not None:
+                    self._state._scan_ob_cache[ticker] = (
+                        time.monotonic(), _ob_levels)
+                # Eviction runs UNCONDITIONALLY (outside the ob_data guard) —
+                # otherwise a quiet-market scenario where every ticker stops
+                # returning ob_data leaves the cache permanently stale.
+                # Same failure class as failure_15m_silence_apr24_second.
+                self._state._evict_stale_ob_cache()
 
                 # ── MM fill simulation: check if shadow buy orders would fill ──
                 # For hourly tickers with active MM shadow orders, check if the
@@ -16265,6 +16420,15 @@ class OrderExecutor:
         self._ml = main_loop
         self._kalshi_feed = kalshi_feed
         self._active_orders: Dict[str, Dict] = {}  # asset → order dict
+        # Maker-tail tracking: order_id → record. Each record:
+        #   {asset, ticker, strategy, count, price_cents,
+        #    posted_monotonic, expires_monotonic}
+        # Populated by _maybe_post_maker_tail, swept by
+        # _sweep_maker_tails (called from tick()).
+        self._maker_tails: Dict[str, Dict] = {}
+        self._session_maker_tails_posted: int = 0
+        self._session_maker_tails_skipped_cap: int = 0
+        self._session_maker_tails_cancelled_ttl: int = 0
         self._recent_taker_tickers: Dict[str, float] = {}  # ticker → timestamp (cooldown after IOC)
         self._active_taker_count: Dict[str, int] = {}  # asset → concurrent IOC count
         # Session counters for execution engine stats
@@ -17296,7 +17460,19 @@ class OrderExecutor:
     def tick(self) -> Optional[Dict]:
         """Called each main-loop tick.  Iterates all active orders,
         polls for fills, and handles escalation independently per order.
+        Also sweeps maker-tail orders for TTL expiry — must run even
+        when _active_orders is empty, since tails outlive the IOC.
         """
+        # Maker-tail TTL sweep runs unconditionally (before the
+        # active_orders early-out below). A tail can outlive its
+        # parent IOC's _active_orders entry, so gating the sweep on
+        # active_orders being non-empty would let tails leak past TTL.
+        if MAKER_TAIL_AFTER_IOC_PARTIAL and self._maker_tails:
+            try:
+                self._sweep_maker_tails()
+            except Exception:
+                logging.warning(
+                    "_sweep_maker_tails raised", exc_info=True)
         if not self._active_orders:
             return None
 
@@ -19310,6 +19486,18 @@ class OrderExecutor:
             (f" (bumped from {price}¢)"
              if _ioc_limit_price != price else ""))
 
+        # Lifecycle snapshot at IOC submit — captures the book the order
+        # was sent into. Pairs with fill snapshots in _on_fill so we can
+        # later answer "was the 1ct stub the entire book at submit time
+        # or did it shrink between scan and submit?"
+        try:
+            self._state.insert_order_lifecycle_snapshot(
+                order_id=order_id, ticker=ticker, event_type="submit",
+                source=candidate.get("strategy"))
+        except Exception:
+            logging.warning("insert_order_lifecycle_snapshot (submit) failed",
+                            exc_info=True)
+
         # IOC resolves instantly; brief wait + collect ALL fill events.
         # An IOC can match against multiple resting orders, generating
         # multiple fill events.  _check_for_fill() returns one unseen
@@ -19345,6 +19533,24 @@ class OrderExecutor:
                 logging.warning(
                     f"IOC partial fill: {ticker} wanted {count} got "
                     f"{total_filled} — {unfilled} contracts unfilled")
+                # Maker-tail: post the unfilled remainder as a
+                # post_only GTC limit so benign rotation flow can
+                # still fill us. Eligibility, gates, caps all live in
+                # _maybe_post_maker_tail. Failures here MUST NOT break
+                # the IOC return path — this is a strict additive
+                # behavior on top of the IOC outcome.
+                if MAKER_TAIL_AFTER_IOC_PARTIAL:
+                    try:
+                        self._maybe_post_maker_tail(
+                            candidate=candidate,
+                            ioc_price=_ioc_limit_price,
+                            remaining=unfilled,
+                            ioc_filled=total_filled)
+                    except Exception:
+                        logging.warning(
+                            "_maybe_post_maker_tail raised; IOC "
+                            "result still returned to caller",
+                            exc_info=True)
             order_info["filled_count"] = total_filled
             return order_info
 
@@ -19458,6 +19664,152 @@ class OrderExecutor:
         })
         logging.warning(f"Taker IOC not filled: {ticker} (remaining={remaining_count})")
         return None
+
+    # ── Maker-tail-after-IOC-partial ──────────────────────────────────────
+    # Apr 25 2026: when IOC fills 9 of 50 because top of book is thin,
+    # the unfilled 41 used to die on cancel ($0 EV). For high-conviction
+    # strategies (DC tiers + TM-99/-98 + weekend/overnight discounts),
+    # leaving a post_only=True GTC limit at the IOC price for a short TTL
+    # gives benign rotation flow a chance to fill the remainder, with
+    # adverse selection as the offsetting risk. Maker fee = $0, so the
+    # only cost is escrowed capital + adverse-selection PnL.
+    # Caps + min STC + min remainder bound the worst case.
+    # See kb/decisions/maker-tail-after-ioc-partial.md (TBD).
+
+    def _maybe_post_maker_tail(self, candidate: Dict, ioc_price: int,
+                               remaining: int,
+                               ioc_filled: int = 1) -> bool:
+        """Post the unfilled IOC remainder as a post_only GTC limit
+        if all gates pass. Returns True iff a maker order was placed.
+
+        Gates (any failure → silent skip, no exception):
+          1. ioc_filled > 0 (zero fill = phantom book, don't rest)
+          2. remaining >= MAKER_TAIL_MIN_REMAINDER
+          3. STC >= MAKER_TAIL_MIN_STC_SECONDS
+          4. strategy in MAKER_TAIL_ELIGIBLE_STRATEGIES
+          5. per-asset cap not breached
+          6. global cap not breached
+        """
+        # Gate 1: zero fill = phantom-book IOC; don't rest into nothing.
+        if ioc_filled <= 0:
+            return False
+        # Gate 2: min remainder.
+        if remaining < MAKER_TAIL_MIN_REMAINDER:
+            return False
+        # Gate 3: min STC.
+        stc = candidate.get("seconds_to_close")
+        if stc is None or stc < MAKER_TAIL_MIN_STC_SECONDS:
+            return False
+        # Gate 4: eligible strategy.
+        strategy = candidate.get("strategy") or ""
+        if strategy not in MAKER_TAIL_ELIGIBLE_STRATEGIES:
+            return False
+        asset = candidate.get("asset") or "?"
+        # Gate 5+6: concurrency caps. Active = entries in
+        # self._maker_tails. Per-asset and global checked together so
+        # a single pass over the dict suffices.
+        per_asset_active = sum(
+            1 for r in self._maker_tails.values()
+            if r.get("asset") == asset)
+        global_active = len(self._maker_tails)
+        if per_asset_active >= MAKER_TAIL_MAX_PER_ASSET:
+            self._session_maker_tails_skipped_cap += 1
+            logging.info(
+                "MAKER_TAIL_SKIP_CAP_ASSET: %s asset=%s strategy=%s "
+                "per_asset_active=%d cap=%d",
+                candidate.get("ticker", "?"), asset, strategy,
+                per_asset_active, MAKER_TAIL_MAX_PER_ASSET)
+            return False
+        if global_active >= MAKER_TAIL_MAX_GLOBAL:
+            self._session_maker_tails_skipped_cap += 1
+            logging.info(
+                "MAKER_TAIL_SKIP_CAP_GLOBAL: %s asset=%s strategy=%s "
+                "global_active=%d cap=%d",
+                candidate.get("ticker", "?"), asset, strategy,
+                global_active, MAKER_TAIL_MAX_GLOBAL)
+            return False
+        # Submit. post_only=True is critical — never let this become
+        # an unintended taker (would cross our own scan-time best ask
+        # if the book moved).
+        ticker = candidate.get("ticker") or ""
+        side = candidate.get("side", "yes")
+        client_oid = str(uuid.uuid4())
+        _price_kwarg = (
+            {"no_price": ioc_price} if side == "no"
+            else {"yes_price": ioc_price})
+        try:
+            resp = self._client.place_order(
+                ticker=ticker, side=side, action="buy",
+                count=remaining, client_order_id=client_oid,
+                time_in_force="good_till_canceled",
+                post_only=True, **_price_kwarg)
+        except Exception:
+            logging.warning(
+                "MAKER_TAIL_PLACE_FAILED: %s asset=%s strategy=%s "
+                "count=%d price=%d", ticker, asset, strategy,
+                remaining, ioc_price, exc_info=True)
+            return False
+        if resp is None:
+            logging.warning(
+                "MAKER_TAIL_PLACE_NONE: %s asset=%s strategy=%s "
+                "count=%d price=%d (place_order returned None)",
+                ticker, asset, strategy, remaining, ioc_price)
+            return False
+        order_id = (resp.get("order") or {}).get(
+            "order_id", client_oid)
+        now_mono = time.monotonic()
+        self._maker_tails[order_id] = {
+            "asset": asset,
+            "ticker": ticker,
+            "strategy": strategy,
+            "count": remaining,
+            "price_cents": ioc_price,
+            "client_order_id": client_oid,
+            "posted_monotonic": now_mono,
+            "expires_monotonic": now_mono + MAKER_TAIL_TTL_SECONDS,
+        }
+        self._session_maker_tails_posted += 1
+        logging.info(
+            "MAKER_TAIL_POSTED: %s asset=%s strategy=%s count=%d "
+            "price=%d¢ ttl=%ds order_id=%s (per_asset_active=%d "
+            "global_active=%d)",
+            ticker, asset, strategy, remaining, ioc_price,
+            MAKER_TAIL_TTL_SECONDS, order_id,
+            per_asset_active + 1, global_active + 1)
+        return True
+
+    def _sweep_maker_tails(self) -> None:
+        """Cancel any maker tail past its TTL. Called from tick().
+
+        Records are dropped from _maker_tails AFTER the cancel call
+        completes (success or failure) — this prevents a leaked record
+        if cancel raises, and prevents a permanent lock on the per-
+        asset cap if Kalshi 404s the order.
+        """
+        if not self._maker_tails:
+            return
+        now = time.monotonic()
+        expired_oids = [
+            oid for oid, rec in self._maker_tails.items()
+            if rec.get("expires_monotonic", 0) <= now]
+        for oid in expired_oids:
+            rec = self._maker_tails.pop(oid, None)
+            if rec is None:
+                continue
+            try:
+                self._client.cancel_order(oid)
+            except Exception:
+                logging.warning(
+                    "MAKER_TAIL_CANCEL_FAILED: order_id=%s ticker=%s "
+                    "(record dropped from tracker regardless)",
+                    oid, rec.get("ticker", "?"), exc_info=True)
+            self._session_maker_tails_cancelled_ttl += 1
+            logging.info(
+                "MAKER_TAIL_CANCELLED_TTL: order_id=%s ticker=%s "
+                "asset=%s strategy=%s age=%.1fs",
+                oid, rec.get("ticker", "?"), rec.get("asset", "?"),
+                rec.get("strategy", "?"),
+                now - rec.get("posted_monotonic", now))
 
     # ── Fill detection ────────────────────────────────────────────────────
 
@@ -19619,6 +19971,20 @@ class OrderExecutor:
             f"cost={cost_cents}¢ fee={fee_cents}¢"
             f"{'' if is_complete else ' [PARTIAL ' + str(order['filled_so_far']) + '/' + str(order['count']) + ']'}"
         )
+
+        # Lifecycle snapshot at fill — captures the book left behind after
+        # our fill. Pairs with the submit snapshot to expose the book delta
+        # and explain N→1 destruction patterns (XRP TM-96 case).
+        # source = strategy (uniform vocab with submit event); execution tier
+        # (taker/maker) is recoverable via order_id join with positions if needed.
+        try:
+            self._state.insert_order_lifecycle_snapshot(
+                order_id=order_id, ticker=ticker,
+                event_type=("fill" if is_complete else "partial_fill"),
+                source=candidate.get("strategy"))
+        except Exception:
+            logging.warning("insert_order_lifecycle_snapshot (fill) failed",
+                            exc_info=True)
 
         # ── Telegram trade alert ────────────────────────────────────────
         if _TELEGRAM and is_complete:
@@ -23100,19 +23466,23 @@ class MainLoop:
 
                     # 6. INSERT — ALWAYS (never skip when we have spot)
                     _ppo_now_str = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                    # Per-level orderbook ladder via shared cache + freshness gate.
+                    # Stale entry → NULL (honest); 5-10 ticks of grace at 1-2s/tick.
+                    _ppo_ob_ladder = self.state._get_fresh_ob_ladder(_ppo_ticker)
                     self.state.conn.execute(
                         """INSERT INTO position_price_observations
                            (ticker, asset, observation_time, seconds_to_close,
                             spot_price, threshold, spot_buffer_pct,
                             yes_ask_cents, yes_bid_cents,
-                            entry_price_cents, position_count, source)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            entry_price_cents, position_count, source,
+                            orderbook_levels_json)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (_ppo_ticker, _ppo_asset, _ppo_now_str,
                          round(_ppo_stc, 1) if _ppo_stc is not None else None,
                          round(_ppo_spot, 6), _ppo_threshold, _ppo_buffer,
                          _ppo_ask, _ppo_bid,
                          pos.get("avg_price_cents", 0), pos.get("count", 0),
-                         _ppo_source))
+                         _ppo_source, _ppo_ob_ladder))
                     _ppo_wrote = True
 
                     # 7. SHADOW EXIT SIGNAL — would early exit trigger here?
@@ -23245,20 +23615,34 @@ class MainLoop:
                                     pass
                                 _wx_now_str = datetime.datetime.now(timezone.utc).strftime(
                                     "%Y-%m-%dT%H:%M:%S.%fZ")
+                                # Per-level orderbook ladder: weather monitor runs every
+                                # 900s, well outside _scan_ob_cache's 10s freshness window
+                                # (15M scanner doesn't tick weather tickers). Cache would
+                                # be ~always None — fetch fresh via REST instead. Cost: 1
+                                # extra get_orderbook per weather position per 15min cycle
+                                # (typically ≤5 positions → trivial).
+                                _wx_ob_ladder = None
+                                try:
+                                    _wx_ob_data = self.client.get_orderbook(_wx_ticker)
+                                    _wx_ob_ladder = OrderExecutor._extract_book_levels(_wx_ob_data)
+                                except Exception:
+                                    logging.debug("WEATHER_PPO ladder fetch failed for %s",
+                                                  _wx_ticker, exc_info=True)
                                 self.state.conn.execute(
                                     """INSERT INTO position_price_observations
                                        (ticker, asset, observation_time, seconds_to_close,
                                         spot_price, threshold, spot_buffer_pct,
                                         yes_ask_cents, yes_bid_cents,
-                                        entry_price_cents, position_count, source)
-                                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                        entry_price_cents, position_count, source,
+                                        orderbook_levels_json)
+                                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                     (_wx_ticker, _wx_asset, _wx_now_str,
                                      round(_wx_stc, 1) if _wx_stc else None,
                                      _wx_ens_mean, _wx_threshold, _wx_buffer,
                                      _wx_display_ask, _wx_display_bid,
                                      pos.get("avg_price_cents"),
                                      pos.get("count", 1),
-                                     "rest_weather"))
+                                     "rest_weather", _wx_ob_ladder))
                                 _wx_ppo_wrote = True
                                 logging.info(
                                     "WEATHER_PPO: %s %s ask=%s bid=%s ens=%.1fF thresh=%s buf=%s stc=%s",

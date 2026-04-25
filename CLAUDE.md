@@ -145,7 +145,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 
 ## Project Structure
 
-- `bot.py` — Main bot (~21482 lines, all trading logic)
+- `bot.py` — Main bot (~23598 lines, all trading logic)
 - `analyst.py` — AI analyst system (news sentiment, loss analysis, Telegram alerts)
 - `spx_engine.py` — SPX hourly market engine (Polygon.io price feed, EGARCH, RK, VIX integration)
 - `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
@@ -210,7 +210,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
 - **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 90c+, STC<=600s, no DC overlap; sub-90c and STC>600s remain shadow
-- **Tests:** 3094 tests across 15+ test files
+- **Tests:** 3317 tests across 16+ test files (Apr 25: +5 files for orderbook depth logging)
 
 ## Key Config Values (bot.py)
 
@@ -445,6 +445,7 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 | market_result | TEXT | Settlement result (backfilled) |
 | counterfactual_pnl | REAL | Simulated PnL |
 | product_type | TEXT | 15m, hourly, spx_hourly, weather, sports |
+| orderbook_levels_json | TEXT | Top-10 YES ladder JSON `{"yes_bids":[[p,q],...],"yes_asks":[[p,q],...]}` from `_extract_book_levels`. Auto-filled from `_scan_ob_cache` (10s freshness gate; stale → NULL). |
 
 ### rejected_opportunities
 | Column | Type | Notes |
@@ -472,3 +473,5 @@ Researcher-recommended filters to fix hourly overconfidence, timing, and correla
 - **sports_shadow_log** — Sports comeback shadow signals (game_id, sport, league, teams, comeback_prob, edge, market_result, pnl_cents)
 - **fifteenm_shadow_signals** — 15M shadow A1/A2/A3 signals (in fifteenm_shadow.py)
 - **hourly_alt_shadow_signals** — Hourly alternative shadow signals (in hourly_alt_shadow.py)
+- **position_price_observations** — Held-position WS tick logs (ticker, observation_time, spot_price, yes_ask_cents, yes_bid_cents, **orderbook_levels_json**). 15M monitor reads ladder from `_scan_ob_cache` (freshness-gated); weather monitor REST-fetches via `client.get_orderbook` (cycle outruns cache window).
+- **order_lifecycle_snapshots** — Per-event snapshots of book state at order lifecycle transitions. Columns: `id INTEGER PK, order_id TEXT NOT NULL, ticker TEXT NOT NULL, event_type TEXT NOT NULL CHECK IN ('submit','fill','partial_fill','cancel'), observation_time TEXT NOT NULL, orderbook_levels_json TEXT, source TEXT`. Source is the strategy name (uniform vocab across submit and fill); execution tier is recoverable via order_id join. Indexed on (order_id) and (ticker, observation_time). Failure counter on StateManager: `_lifecycle_snapshot_failures`.
