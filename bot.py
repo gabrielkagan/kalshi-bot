@@ -8147,7 +8147,14 @@ class OpportunityScanner:
         if not eligible_windows:
             return None
 
-        # 4. Evaluate each market in each surviving window
+        # 4. Evaluate each market in each surviving window.
+        # Per-section timing — `SCAN_LOOP_SLOW` fires when the for-loop
+        # body alone exceeds 1.5s. Distinguishes "main loop is slow"
+        # from "post-loop processing is slow" (price_shadow, candidate
+        # selection, etc.) under the SCAN_BODY_SLOW umbrella.
+        # Apr 25 01:09 incident: SCAN_BODY_SLOW 5.64s — need to
+        # localize within scan() body.
+        _scan_loop_start = time.perf_counter()
         for window in eligible_windows:
             asset = window["asset"]
             _pt = window.get("product_type")
@@ -12373,6 +12380,26 @@ class OpportunityScanner:
             if ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
                 break
 
+        _scan_loop_dt = time.perf_counter() - _scan_loop_start
+        if _scan_loop_dt > 1.5:
+            logging.warning(
+                "SCAN_LOOP_SLOW: per-window for-loop took %.2fs "
+                "(eligible_windows=%d)",
+                _scan_loop_dt, len(eligible_windows))
+
+        # Post-loop section timing — `SCAN_POSTLOOP_SLOW` fires when
+        # the work AFTER the per-window loop (shadow processors +
+        # candidate selection) exceeds 1.5s. Logged via nested helper
+        # so each of the 3 post-loop returns can call it.
+        _scan_postloop_start = time.perf_counter()
+
+        def _log_postloop_dt():
+            _dt = time.perf_counter() - _scan_postloop_start
+            if _dt > 1.5:
+                logging.warning(
+                    "SCAN_POSTLOOP_SLOW: post-loop processing took "
+                    "%.2fs", _dt)
+
         if PRICE_SHADOW_ENABLED and _price_shadow_queue:
             self._process_price_shadow(_price_shadow_queue)
 
@@ -12390,6 +12417,7 @@ class OpportunityScanner:
 
         if not candidates:
             self._last_scan_stats = scan_stats
+            _log_postloop_dt()
             return None
 
         # ── Separate overlay candidates (bypass single-asset filter) ──
@@ -12568,6 +12596,7 @@ class OpportunityScanner:
 
         if not selected:
             self._last_scan_stats = scan_stats
+            _log_postloop_dt()
             return None
 
         # Log top pick for scan journal
@@ -12581,6 +12610,7 @@ class OpportunityScanner:
             **{k: v for k, v in best.items() if k not in ("strategy_scores", "ob_snapshot")},
         })
         self._last_scan_stats = scan_stats
+        _log_postloop_dt()
         return selected
 
     # ── Price shadow processor ───────────────────────────────────────────

@@ -1,0 +1,64 @@
+"""Diagnostic instrumentation — Apr 25 01:09 UTC SCAN_BODY_SLOW 5.64s.
+
+After threading all 4 periodic-task blockers (drift probe 7dac681,
+tracker.tick 8114ddc, market refresh f216a8d, EGARCH refit
+84dc223), SCAN_BODY_SLOW continues to fire occasionally inside
+scan() body itself (5.64s, ~once per 2-3 min). This is no longer
+post-restart cold start (we're past warmup).
+
+To pinpoint which section of scan() is slow, this commit adds two
+per-section timers:
+  - SCAN_LOOP_SLOW: the main `for window in eligible_windows:` loop
+    (the bulk of scan body, ~4200 lines)
+  - SCAN_POSTLOOP_SLOW: the post-loop processing — price_shadow,
+    no_side, overnight, low_price processors + candidate selection
+
+The next deploy's logs will tell us which section dominates.
+
+Same TDD rhythm as eb5960e (per-task timing → identified
+tracker_tick) and b554a9b (SCAN_BODY_SLOW → confirmed scan-body).
+"""
+
+import ast
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+BOT_PY = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
+
+
+class TestScanSectionTiming(unittest.TestCase):
+
+    def test_scan_loop_slow_log_exists(self):
+        """scan() must emit `SCAN_LOOP_SLOW` when the per-window
+        for-loop body exceeds 1.5s. Without per-section data we
+        can't tell whether scan body slowness is in the loop or in
+        post-loop processing."""
+        with open(BOT_PY) as f:
+            src = f.read()
+        self.assertIn(
+            "SCAN_LOOP_SLOW", src,
+            "scan() must emit SCAN_LOOP_SLOW warning when the "
+            "main for-loop over eligible_windows exceeds 1.5s. "
+            "See Apr 25 01:09 SCAN_BODY_SLOW 5.64s investigation.")
+
+    def test_scan_postloop_slow_log_exists(self):
+        """scan() must emit `SCAN_POSTLOOP_SLOW` when post-loop
+        processing (shadow processors + candidate selection) exceeds
+        1.5s. This catches the alternative blocker location."""
+        with open(BOT_PY) as f:
+            src = f.read()
+        self.assertIn(
+            "SCAN_POSTLOOP_SLOW", src,
+            "scan() must emit SCAN_POSTLOOP_SLOW warning when "
+            "post-loop processing (price_shadow, no_side, overnight, "
+            "low_price processors + candidate selection) exceeds "
+            "1.5s. Without this we can't distinguish loop slowness "
+            "from post-loop slowness.")
+
+
+if __name__ == "__main__":
+    unittest.main()
