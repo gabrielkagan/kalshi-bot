@@ -1,7 +1,7 @@
 {
-  "total_evaluated": 150001,
+  "total_evaluated": 150016,
   "filter_breakdown": {
-    "candidate": 5557,
+    "candidate": 5558,
     "dc_shadow_t1b_93c": 47,
     "dc_shadow_t2_90c": 70,
     "dc_shadow_t2_90c_xrp": 17,
@@ -18,7 +18,7 @@
     "decided_contract_t2_z25": 182,
     "dip_addon_shadow": 29,
     "eth_low_floor_shadow": 1504,
-    "floor_raise_shadow": 5204,
+    "floor_raise_shadow": 5207,
     "golden_hour_shadow": 275,
     "hourly_asset_excluded": 162,
     "hourly_config_a": 1738,
@@ -39,7 +39,7 @@
     "hourly_observation_v2": 6801,
     "hourly_timing_restricted": 1655,
     "hourly_window_limit": 595,
-    "insufficient_edge": 47032,
+    "insufficient_edge": 47036,
     "low_price_shadow": 2489,
     "no_side_price_shadow_no_xrp": 3766,
     "no_side_price_shadow_xrp": 774,
@@ -48,12 +48,12 @@
     "overnight_discount": 110,
     "overnight_discount_shadow": 317,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 24319,
+    "price_out_of_range": 24321,
     "price_shadow": 52,
     "price_shadow_no_xrp": 3999,
     "price_shadow_xrp": 1575,
     "relaxed_edge_shadow": 1221,
-    "silent_vol_none": 14,
+    "silent_vol_none": 18,
     "single_asset_selection": 5,
     "sol_high_edge_shadow": 189,
     "sol_low_entry_high_stc": 41,
@@ -89,14 +89,14 @@
     "weather_shadow_short_stc": 8,
     "weather_timing_restricted": 1025,
     "weekend_discount": 296,
-    "weekend_discount_shadow": 290,
+    "weekend_discount_shadow": 291,
     "xrp_shadow": 126,
     "zero_sizing": 801
   },
-  "total_settled": 2822,
-  "total_wins": 2633,
-  "observation_pnl": 88542,
-  "total_trades": 5557,
+  "total_settled": 2823,
+  "total_wins": 2634,
+  "observation_pnl": 88572,
+  "total_trades": 5558,
   "win_rate_by_price": {
     "80-84": {
       "n": 56,
@@ -107,8 +107,8 @@
       "wins": 395
     },
     "90-94": {
-      "n": 679,
-      "wins": 636
+      "n": 680,
+      "wins": 637
     },
     "95-99": {
       "n": 1534,
@@ -158,5 +158,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-25",
-  "generated_at": "2026-04-25T01:25:23Z"
+  "generated_at": "2026-04-25T01:34:21Z"
 }
