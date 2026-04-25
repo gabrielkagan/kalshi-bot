@@ -8230,6 +8230,23 @@ class OpportunityScanner:
                     logging.warning("SPX_DIAG_VOL: vol_est=%s blended_rv=%s — skipping window",
                                     "None" if vol_est is None else "ok",
                                     vol_est.get("blended_rv") if vol_est else "N/A")
+                # Post-warmup escalation — first ~30s post-restart is
+                # benign vol-engine warmup (RK + EGARCH need a few price
+                # ticks). After 60s, vol_est=None is a real bug and must
+                # log loudly so the next outage class self-announces.
+                # See Apr 25 00:43 silent_vol_none investigation — all
+                # 6 silent_vol_none events fired at 18.3s post-restart
+                # in a single tick, then never again.
+                _proc_start = getattr(self, "_scan_15m_process_start_ts", None)
+                if (_proc_start is not None
+                        and (time.time() - _proc_start) > 60.0
+                        and _pt in (None, "15m", "hourly")):
+                    logging.warning(
+                        "VOL_NONE_POST_WARMUP: %s vol_est=None at "
+                        "uptime=%.0fs (past warmup) — vol engine may "
+                        "be stalled, see kb/failures/"
+                        "ws-cache-drift-silent-scan-2026-04-24.md",
+                        asset, time.time() - _proc_start)
                 # Trace row for 15M/hourly — vol engine warmup or divergence.
                 # ws-cache-drift-silent-scan-2026-04-24 PM Prevention #3.
                 if _pt in (None, "15m", "hourly"):
