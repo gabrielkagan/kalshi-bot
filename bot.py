@@ -8636,6 +8636,28 @@ class OpportunityScanner:
                 ticker = mkt.get("ticker", "")
                 threshold = self._parse_threshold(mkt)
                 if threshold is None:
+                    # R1 [P0-1] / R2 [A1]: previously silent. Schema
+                    # drift on floor_strike/yes_sub_title could fire
+                    # on EVERY market simultaneously → 15M scan
+                    # silent with no trace. Dedup per (ticker, reason)
+                    # to avoid the PM-001 commit-in-loop / lock
+                    # contention pattern. INSERT OR IGNORE alone
+                    # bounds row count but still acquires DB lock
+                    # every tick.
+                    _dk_thr = (ticker, "threshold_unparsable")
+                    if _dk_thr not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dk_thr)
+                        try:
+                            self._state.insert_rejection(
+                                ticker, window.get("event_ticker", ""),
+                                asset, "threshold_unparsable",
+                                None, spot, None, blended_rv, None,
+                                seconds_remaining, None,
+                                product_type=window.get("product_type"))
+                        except Exception:
+                            logging.warning(
+                                "threshold_unparsable insert_rejection failed",
+                                exc_info=True)
                     continue
 
                 # Threshold sanity gate — defensive against upstream data corruption.
@@ -8686,6 +8708,27 @@ class OpportunityScanner:
                         _nbbo = dollars_str_to_cents(_nbbo_raw) if isinstance(_nbbo_raw, str) else int(_nbbo_raw)
                         _pcfg_early = get_market_config(_pt)
                         if _nbbo > 0 and not (_pcfg_early.min_entry_price <= _nbbo <= _pcfg_early.max_entry_price):
+                            # R1 [P0-1] / R2 [A1]: previously silent.
+                            # SPX has 60-400 strikes per event — most
+                            # fall outside entry range and silently
+                            # bail. Dedup per (ticker, reason) — see
+                            # threshold_unparsable site for rationale.
+                            _dk_oor = (ticker, "price_out_of_range_early")
+                            if _dk_oor not in self._eval_opp_seen:
+                                self._eval_opp_seen.add(_dk_oor)
+                                try:
+                                    self._state.insert_rejection(
+                                        ticker,
+                                        window.get("event_ticker", ""),
+                                        asset, "price_out_of_range_early",
+                                        None, spot, threshold,
+                                        blended_rv, _nbbo,
+                                        seconds_remaining, None,
+                                        product_type=_pt)
+                                except Exception:
+                                    logging.warning(
+                                        "price_out_of_range_early insert_rejection failed",
+                                        exc_info=True)
                             continue
 
                 # Per-market copy of shadow extras (OFT fields added per-ticker below)
@@ -8708,6 +8751,24 @@ class OpportunityScanner:
                         _wx_city, threshold,
                         market_type=_wx_mtype, bracket_bounds=_wx_bounds)
                     if _wx_prob is None:
+                        # R1 [P0-1] / R2 [A1]: previously silent.
+                        # Dedup per (ticker, reason).
+                        _dk_wxp = (ticker, "weather_prob_none")
+                        if _dk_wxp not in self._eval_opp_seen:
+                            self._eval_opp_seen.add(_dk_wxp)
+                            try:
+                                self._state.insert_rejection(
+                                    ticker,
+                                    window.get("event_ticker", ""),
+                                    asset, "weather_prob_none",
+                                    None, spot, threshold,
+                                    blended_rv, None,
+                                    seconds_remaining, None,
+                                    product_type=_pt)
+                            except Exception:
+                                logging.warning(
+                                    "weather_prob_none insert_rejection failed",
+                                    exc_info=True)
                         continue
                     # R3: Ensemble quality gate — skip if no ensemble data available
                     if not _wx_prob.get("n_members"):
@@ -8759,11 +8820,53 @@ class OpportunityScanner:
                 raw_prob_pre = prob_result.get("raw_prob")
                 calibration_method_pre = prob_result.get("calibration_method")
                 if not prob_result.get("tradeable"):
-                    reason = prob_result.get("reason", "")
+                    reason = prob_result.get("reason", "tradeable_false")
+                    # Apr 25 2026 (Phase 1 / Prevention #3): write a DB
+                    # row for EVERY tradeable=False reason, not just
+                    # z_score/refusing. Pre-fix, reasons like 'invalid
+                    # inputs' and 'sigma_move is zero' silently continued
+                    # — the proximate cause of recurring 15M scan-silence
+                    # outages. With every continue writing a row, the
+                    # scan-productive watchdog becomes 100% reliable
+                    # AND the rejection_reason field tells us exactly
+                    # what's going wrong upstream.
+                    # R1 [P1-3]: use cheap NBBO from `mkt` rather than
+                    # an orderbook fetch on the fail-fast path. The
+                    # downstream z_score/refusing branch keeps a richer
+                    # log_rejection JSONL with the OB-derived ask.
+                    _nbbo_for_row = (
+                        mkt.get("yes_ask_dollars") or mkt.get("yes_ask"))
+                    try:
+                        if isinstance(_nbbo_for_row, str):
+                            rej_ask = dollars_str_to_cents(_nbbo_for_row)
+                        elif _nbbo_for_row is not None:
+                            rej_ask = int(_nbbo_for_row)
+                        else:
+                            rej_ask = None
+                    except Exception:
+                        rej_ask = None
+                    # R2 [A1]: dedup per (ticker, reason_class) to
+                    # avoid commit-in-loop. Use a stable reason CLASS
+                    # (the prefix before any dynamic detail) so
+                    # different float values for the same root cause
+                    # share a single dedup slot.
+                    _reason_class = reason.split(" — ")[0].split(" (")[0][:64]
+                    _dk_tf1 = (ticker, "tf1:" + _reason_class)
+                    if _dk_tf1 not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dk_tf1)
+                        try:
+                            self._state.insert_rejection(
+                                ticker, window["event_ticker"], asset, reason,
+                                prob_result.get("z_score"), spot, threshold,
+                                blended_rv, rej_ask, seconds_remaining, cal_prob,
+                                raw_prob=raw_prob_pre,
+                                product_type=window.get("product_type"),
+                                **_oft_db, **_shadow_diag)
+                        except Exception:
+                            logging.warning(
+                                "tradeable_false insert_rejection failed",
+                                exc_info=True)
                     if "z_score" in reason or "refusing" in reason:
-                        # Fetch orderbook to record market price for counterfactual P&L
-                        rej_ob, _ = self._get_orderbook_cached(ticker)
-                        rej_ask = self._best_yes_ask_cents(rej_ob) if rej_ob else None
                         rej_data = {
                             "ticker": ticker,
                             "event_ticker": window["event_ticker"],
@@ -8780,13 +8883,6 @@ class OpportunityScanner:
                             **_shadow_diag,
                             **_shadow_extra,
                         }
-                        self._state.insert_rejection(
-                            ticker, window["event_ticker"], asset, reason,
-                            prob_result.get("z_score"), spot, threshold,
-                            blended_rv, rej_ask, seconds_remaining, cal_prob,
-                            raw_prob=raw_prob_pre,
-                            product_type=window.get("product_type"),
-                            **_oft_db, **_shadow_diag)
                         self._logger.log_rejection(rej_data)
                         logging.info(
                             f"Rejected opportunity: {ticker} — {reason}")
@@ -8811,13 +8907,43 @@ class OpportunityScanner:
                                     ticker, cal_prob, min_prob_needed,
                                     mkt.get("yes_ask_dollars") or mkt.get("yes_ask") or "?")
                         continue
+                    # Apr 25 2026 (Phase 1 / Prevention #3): write a DB
+                    # row for the 15M low_probability path. Pre-fix
+                    # this only logged JSONL via log_opportunity, so
+                    # the scan-productive watchdog (which counts DB
+                    # rows) was blind to a 15M scan stuck in
+                    # low_probability — a candidate root cause for the
+                    # Apr 25 outage if cal_prob collapsed across all 4
+                    # 15M assets simultaneously.
+                    _lowprob_reason = (
+                        f"cal_prob {cal_prob:.4f} < "
+                        f"min_needed {min_prob_needed:.4f}")
+                    # R2 [A1]: dedup per ticker — cal_prob value
+                    # changes tick-to-tick but the ROOT CAUSE
+                    # ("low_probability_15m") is constant.
+                    _dk_lp = (ticker, "low_probability_15m")
+                    if _dk_lp not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dk_lp)
+                        try:
+                            self._state.insert_rejection(
+                                ticker, window["event_ticker"], asset,
+                                "low_probability_15m",
+                                None, spot, threshold,
+                                blended_rv, best_ask, seconds_remaining,
+                                cal_prob, raw_prob=raw_prob_pre,
+                                product_type=window.get("product_type"),
+                                **_oft_db, **_shadow_diag)
+                        except Exception:
+                            logging.warning(
+                                "low_probability_15m insert_rejection failed",
+                                exc_info=True)
                     try:
                         self._logger.log_opportunity({
                             "filter_stage": "low_probability",
                             "ticker": ticker,
                             "event_ticker": window["event_ticker"],
                             "asset": asset,
-                            "rejection_reason": f"cal_prob {cal_prob:.4f} < min_needed {min_prob_needed:.4f}",
+                            "rejection_reason": _lowprob_reason,
                             "spot_price": spot,
                             "threshold": threshold,
                             "volatility": blended_rv,
@@ -9480,7 +9606,28 @@ class OpportunityScanner:
                         asset=asset, product_type=window.get("product_type")
                     )
                 if not prob_with_market.get("tradeable"):
-                    reason = prob_with_market.get("reason", "")
+                    reason = prob_with_market.get(
+                        "reason", "tradeable_false")
+                    # Apr 25 2026 (Phase 1 / Prevention #3): always write
+                    # a DB row regardless of reason. R2 [A1]: dedup per
+                    # (ticker, reason_class) to avoid commit-in-loop.
+                    _reason_class2 = reason.split(" — ")[0].split(" (")[0][:64]
+                    _dk_tf2 = (ticker, "tf2:" + _reason_class2)
+                    if _dk_tf2 not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dk_tf2)
+                        try:
+                            self._state.insert_rejection(
+                                ticker, window["event_ticker"], asset, reason,
+                                prob_with_market.get("z_score"), spot, threshold,
+                                blended_rv, best_ask, seconds_remaining,
+                                prob_with_market.get("calibrated_prob"),
+                                raw_prob=prob_with_market.get("raw_prob"),
+                                product_type=window.get("product_type"),
+                                **_oft_db, **_shadow_diag)
+                        except Exception:
+                            logging.warning(
+                                "tradeable_false (with_market) insert_rejection failed",
+                                exc_info=True)
                     if "z_score" in reason or "refusing" in reason:
                         rej_data = {
                             "ticker": ticker,
@@ -9498,14 +9645,6 @@ class OpportunityScanner:
                             **_shadow_diag,
                             **_shadow_extra,
                         }
-                        self._state.insert_rejection(
-                            ticker, window["event_ticker"], asset, reason,
-                            prob_with_market.get("z_score"), spot, threshold,
-                            blended_rv, best_ask, seconds_remaining,
-                            prob_with_market.get("calibrated_prob"),
-                            raw_prob=prob_with_market.get("raw_prob"),
-                            product_type=window.get("product_type"),
-                            **_oft_db, **_shadow_diag)
                         self._logger.log_rejection(rej_data)
                         logging.info(
                             f"Rejected opportunity: {ticker} — {reason}")
