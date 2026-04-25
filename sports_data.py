@@ -120,86 +120,93 @@ LEAGUES: Dict[str, LeagueConfig] = {
     ),
 
     # ── Three-way (3 markets/game: Home, Away, Draw) ──
-    # NOTE: Apr 25 09:34 UTC — all soccer series confirmed returning
-    # HTTP 400 from Kalshi /events. Each request was costing ~1s on
-    # the sports discovery thread (open + active = 2 calls/series),
-    # cascading into scan-throughput collapse. Disabled until Kalshi
-    # re-enables. Re-enable individually as observed live. See
-    # kb/failures/scan-tick-stall-cluster-2026-04-25.md.
+    #
+    # Dead-series detection lives in circuit breakers, not config.
+    # Each series gets its own breaker; failures auto-disable for
+    # 5 min, autonomous recovery via probe. See
+    # kb/failures/scan-tick-stall-cluster-2026-04-25.md for the
+    # incident this replaces.
+    #
+    # KNOWN LIMITATION (round-2 Q6): if Kalshi RENAMES a series
+    # (e.g., KXEPLGAME → KXEPLLEAGUEGAME), the breaker traps the
+    # old name forever and we never query the new name. Has
+    # happened before per memory `feedback_kalshi_schema_drift`.
+    # Mitigation TODO: periodic GET /series reconcile against
+    # LEAGUES keys, alert on diff. Not in scope for this commit.
     "KXEPLGAME": LeagueConfig(
         series_ticker="KXEPLGAME", espn_sport="soccer",
         espn_league="eng.1", outcome_type="three_way", display_name="EPL",
-        sport_group="soccer", enabled=False,
+        sport_group="soccer",
     ),
     "KXBUNDESLIGAGAME": LeagueConfig(
         series_ticker="KXBUNDESLIGAGAME", espn_sport="soccer",
         espn_league="ger.1", outcome_type="three_way", display_name="Bundesliga",
-        sport_group="soccer", enabled=False,
+        sport_group="soccer",
     ),
     "KXLALIGAGAME": LeagueConfig(
         series_ticker="KXLALIGAGAME", espn_sport="soccer",
         espn_league="esp.1", outcome_type="three_way", display_name="La Liga",
-        sport_group="soccer", enabled=False,
+        sport_group="soccer",
     ),
     "KXSERIEAGAME": LeagueConfig(
         series_ticker="KXSERIEAGAME", espn_sport="soccer",
         espn_league="ita.1", outcome_type="three_way", display_name="Serie A",
-        sport_group="soccer", enabled=False,
+        sport_group="soccer",
     ),
     "KXUCLGAME": LeagueConfig(
         series_ticker="KXUCLGAME", espn_sport="soccer",
         espn_league="uefa.champions", outcome_type="three_way", display_name="UCL",
-        sport_group="soccer", enabled=False,
+        sport_group="soccer",
     ),
     "KXLIGUE1GAME": LeagueConfig(
         series_ticker="KXLIGUE1GAME", espn_sport="soccer",
         espn_league="fra.1", outcome_type="three_way", display_name="Ligue 1",
-        sport_group="soccer", enabled=False,
+        sport_group="soccer",
     ),
     "KXSUPERLIGGAME": LeagueConfig(
         series_ticker="KXSUPERLIGGAME", espn_sport="soccer",
         espn_league="tur.1", outcome_type="three_way", display_name="Turkish Super Lig",
-        sport_group="soccer", enabled=False,
+        sport_group="soccer",
     ),
     "KXMLSGAME": LeagueConfig(
         series_ticker="KXMLSGAME", espn_sport="soccer",
         espn_league="usa.1", outcome_type="three_way", display_name="MLS",
-        sport_group="soccer", enabled=False,
+        sport_group="soccer",
     ),
     "KXUELGAME": LeagueConfig(
         series_ticker="KXUELGAME", espn_sport="soccer",
         espn_league="uefa.europa", outcome_type="three_way",
-        display_name="Europa League", sport_group="soccer", enabled=False,
+        display_name="Europa League", sport_group="soccer",
     ),
     "KXUECLGAME": LeagueConfig(
         series_ticker="KXUECLGAME", espn_sport="soccer",
         espn_league="uefa.europa.conf", outcome_type="three_way",
-        display_name="Conference League", sport_group="soccer", enabled=False,
+        display_name="Conference League", sport_group="soccer",
     ),
     "KXLIGAMXGAME": LeagueConfig(
         series_ticker="KXLIGAMXGAME", espn_sport="soccer",
         espn_league="mex.1", outcome_type="three_way", display_name="Liga MX",
-        sport_group="soccer", enabled=False,
+        sport_group="soccer",
     ),
     "KXWCGAME": LeagueConfig(
         series_ticker="KXWCGAME", espn_sport="soccer",
         espn_league="fifa.worldcup", outcome_type="three_way",
-        display_name="World Cup", sport_group="soccer", enabled=False,
+        display_name="World Cup", sport_group="soccer",
     ),
     "KXFIFAGAME": LeagueConfig(
         series_ticker="KXFIFAGAME", espn_sport="soccer",
         espn_league="fifa.friendly", outcome_type="three_way",
-        display_name="FIFA Intl", sport_group="soccer", enabled=False,
+        display_name="FIFA Intl", sport_group="soccer",
     ),
     "KXAFCONGAME": LeagueConfig(
         series_ticker="KXAFCONGAME", espn_sport=None,
         espn_league=None, outcome_type="three_way", display_name="AFC/Intl",
-        sport_group="soccer", enabled=False,
+        sport_group="soccer",
     ),
     "KXEREDIVISIEGAME": LeagueConfig(
         series_ticker="KXEREDIVISIEGAME", espn_sport="soccer",
         espn_league="ned.1", outcome_type="three_way", display_name="Eredivisie",
-        sport_group="soccer", enabled=False,
+        sport_group="soccer",
     ),
 }
 
