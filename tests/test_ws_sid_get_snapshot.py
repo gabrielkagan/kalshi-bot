@@ -76,6 +76,13 @@ def _make_feed():
     # Phase 2.5: ticker -> sid mapping (learned from envelope).
     f._ticker_to_sid = {}
     f._ws_error_frame_seen = set()
+    # Phase 2.6: authoritative sid tracking via type=subscribed.
+    f._next_msg_id = 100
+    f._outstanding_subscribes = {}
+    f._outstanding_subscribe_ts = {}
+    f._ws_orphan_sid_seen = set()
+    f._force_reconnect_requested = False
+    f._pending_late_unsubscribes = set()
     f._lock = threading.Lock()
     return f
 
@@ -84,12 +91,18 @@ def _make_feed():
 # 1. _ticker_to_sid mapping populated from incoming envelopes
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSidMapPopulatedFromSnapshot(unittest.TestCase):
-    def test_snapshot_with_sid_records_mapping(self):
+class TestEnvelopeSidNoLongerLearned(unittest.TestCase):
+    """Phase 2.6: envelope-sid learning was REMOVED. The envelope
+    sid in orderbook_snapshot/orderbook_delta is NOT the sid Kalshi
+    expects in commands (R5 finding: code=7 'Unknown subscription
+    ID' when we used envelope sid). Sids are now learned from
+    `type=subscribed` responses instead (test below)."""
+
+    def test_snapshot_envelope_sid_does_not_populate_map(self):
         f = _make_feed()
         f._subscribed_tickers.add("KXBTC15M-FOO")
         f._handle_ob_snapshot({
-            "sid": 456,
+            "sid": 456,  # envelope sid — IGNORED in 2.6
             "type": "orderbook_snapshot",
             "msg": {
                 "market_ticker": "KXBTC15M-FOO",
@@ -97,64 +110,17 @@ class TestSidMapPopulatedFromSnapshot(unittest.TestCase):
                 "no_dollars_fp": [],
             },
         })
-        self.assertEqual(
-            f._ticker_to_sid.get("KXBTC15M-FOO"), 456,
-            "_handle_ob_snapshot must capture the envelope-level "
-            "`sid` into _ticker_to_sid for this ticker.")
+        self.assertNotIn(
+            "KXBTC15M-FOO", f._ticker_to_sid,
+            "Phase 2.6: envelope sid must NOT populate the map. "
+            "The authoritative sid comes from the type=subscribed "
+            "response, captured via _handle_message.")
 
-    def test_snapshot_without_sid_skips_mapping(self):
-        """Defensive: pre-2026 fixture data may lack envelope sid;
-        absence must not crash, just skip the mapping."""
+    def test_delta_envelope_sid_does_not_populate_map(self):
         f = _make_feed()
         f._subscribed_tickers.add("KXBTC15M-FOO")
-        f._handle_ob_snapshot({
-            "type": "orderbook_snapshot",
-            "msg": {
-                "market_ticker": "KXBTC15M-FOO",
-                "yes_dollars_fp": [],
-                "no_dollars_fp": [],
-            },
-        })
-        self.assertNotIn("KXBTC15M-FOO", f._ticker_to_sid)
-
-    def test_resubscribe_updates_sid_mapping(self):
-        """When unsub+resub fires, Kalshi assigns a NEW sid. The
-        next snapshot for the same ticker must overwrite the old
-        sid in the map."""
-        f = _make_feed()
-        f._subscribed_tickers.add("KXBTC15M-FOO")
-        f._ticker_to_sid["KXBTC15M-FOO"] = 100  # stale sid
-        f._handle_ob_snapshot({
-            "sid": 200,  # new sid from resubscribe
-            "msg": {
-                "market_ticker": "KXBTC15M-FOO",
-                "yes_dollars_fp": [],
-                "no_dollars_fp": [],
-            },
-        })
-        self.assertEqual(
-            f._ticker_to_sid["KXBTC15M-FOO"], 200,
-            "New snapshot for resubscribed ticker must overwrite "
-            "the stale sid.")
-
-
-class TestSidMapPopulatedFromDelta(unittest.TestCase):
-    def test_delta_with_sid_records_mapping(self):
-        f = _make_feed()
-        f._subscribed_tickers.add("KXBTC15M-FOO")
-        # Seed with a snapshot first (so delta has something to apply).
         f._orderbooks["KXBTC15M-FOO"] = {
             "yes": [], "no": [], "ts": time.time()}
-        f._apply_fp_delta(
-            "KXBTC15M-FOO",
-            {
-                "side": "yes",
-                "price_dollars": "0.95",
-                "delta_fp": "10",
-            },
-            envelope_sid=789,  # NEW kwarg if implemented; or attr passing
-        ) if False else None  # placeholder — see _handle_ob_delta path below
-        # Actual exercise: send full delta envelope through _handle_ob_delta
         f._handle_ob_delta({
             "sid": 789,
             "type": "orderbook_delta",
@@ -165,11 +131,10 @@ class TestSidMapPopulatedFromDelta(unittest.TestCase):
                 "delta_fp": "10",
             },
         })
-        self.assertEqual(
-            f._ticker_to_sid.get("KXBTC15M-FOO"), 789,
-            "Delta envelope's sid must populate _ticker_to_sid so "
-            "tickers can be queried for sid even before their first "
-            "snapshot has arrived (snapshot may be lost or late).")
+        self.assertNotIn(
+            "KXBTC15M-FOO", f._ticker_to_sid,
+            "Phase 2.6: envelope sid in deltas must NOT populate "
+            "the map either.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -211,17 +176,23 @@ class TestForceResubFallbackWhenSidUnknown(unittest.TestCase):
         self.f._subscribed_tickers.add("KXBTC15M-NEW")
         # No entry in _ticker_to_sid yet — subscribe is in flight.
 
-    def test_no_sid_skips_primary_queues_unsub_resub(self):
+    def test_no_sid_is_true_no_op(self):
+        """Phase 2.6 R-review A1: with no known sid we cannot
+        unsubscribe (no sid to send) and cannot resub-without-unsub
+        (creates duplicate Kalshi subscription). True no-op until
+        sid lands via type=subscribed response."""
         self.f.force_resubscribe("KXBTC15M-NEW")
         self.assertNotIn(
-            "KXBTC15M-NEW", self.f._pending_snapshot_requests,
-            "Without a known sid, primary path is impossible — "
-            "force_resubscribe must skip _pending_snapshot_requests "
-            "and go straight to the unsub+resub fallback.")
-        self.assertIn(
-            "KXBTC15M-NEW", self.f._pending_unsubscribes)
-        self.assertIn(
-            "KXBTC15M-NEW", self.f._pending_subscribes)
+            "KXBTC15M-NEW", self.f._pending_snapshot_requests)
+        self.assertNotIn(
+            "KXBTC15M-NEW", self.f._pending_unsubscribes,
+            "No-sid case must NOT queue unsub (would skip → "
+            "leaving sub to create duplicate subscription).")
+        self.assertNotIn(
+            "KXBTC15M-NEW", self.f._pending_subscribes,
+            "No-sid case must NOT queue resub (would create a "
+            "duplicate subscription on Kalshi side, leaking the "
+            "in-flight one forever).")
 
     def test_with_sid_uses_primary_path(self):
         self.f._ticker_to_sid["KXBTC15M-NEW"] = 456
@@ -236,15 +207,24 @@ class TestForceResubFallbackWhenSidUnknown(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestSidMapCleanup(unittest.TestCase):
-    def test_unsubscribe_pops_sid(self):
+    def test_unsubscribe_keeps_sid_until_drain_sends(self):
+        """Phase 2.6 R5 / P1: unsubscribe_ticker does NOT pop sid.
+        The drain's `_send_ob_unsubscribe` needs the sid to actually
+        send the unsubscribe to Kalshi; it pops on successful send.
+        Pre-fix, popping in unsubscribe_ticker would silently drop
+        the sid → drain SKIPs → Kalshi-side subscription leaks."""
         f = _make_feed()
         f._subscribed_tickers.add("KXBTC15M-FOO")
         f._ticker_to_sid["KXBTC15M-FOO"] = 456
         f.unsubscribe_ticker("KXBTC15M-FOO")
-        self.assertNotIn(
-            "KXBTC15M-FOO", f._ticker_to_sid,
-            "unsubscribe_ticker must clear _ticker_to_sid — sids "
-            "are subscription-scoped and meaningless after unsub.")
+        self.assertEqual(
+            f._ticker_to_sid.get("KXBTC15M-FOO"), 456,
+            "unsubscribe_ticker MUST keep sid in map so drain can "
+            "send the unsubscribe with it. _send_ob_unsubscribe "
+            "pops on successful send.")
+        self.assertIn(
+            "KXBTC15M-FOO", f._pending_unsubscribes,
+            "Sanity: unsubscribe IS queued for drain.")
 
     def test_session_cleanup_clears_sid_map(self):
         """sids are session-scoped — Kalshi assigns new ones on
@@ -316,114 +296,21 @@ class TestAstMainHandlerLogsErrors(unittest.TestCase):
             "prefix so it's greppable.")
 
 
-class TestMonotonicSidGuard(unittest.TestCase):
-    """R2-review Phase 2.5: a stale in-flight message from a prior
-    subscription (smaller sid) MUST NOT overwrite a newer cached
-    sid. Otherwise force_resubscribe would send a dead sid in
-    update_subscription, silently failing until fallback kicks in."""
-
-    def test_smaller_envelope_sid_does_not_overwrite_snapshot(self):
-        f = _make_feed()
-        f._subscribed_tickers.add("KXBTC15M-MONO")
-        # Cached newer sid first.
-        f._ticker_to_sid["KXBTC15M-MONO"] = 200
-        # Stale snapshot arrives with smaller sid (in-flight from
-        # prior subscription).
-        f._handle_ob_snapshot({
-            "sid": 100,  # stale!
-            "msg": {
-                "market_ticker": "KXBTC15M-MONO",
-                "yes_dollars_fp": [],
-                "no_dollars_fp": [],
-            },
-        })
-        self.assertEqual(
-            f._ticker_to_sid["KXBTC15M-MONO"], 200,
-            "Stale (smaller) sid must NOT overwrite the cached "
-            "newer sid. Otherwise the next update_subscription "
-            "would send a dead sid → silent failure.")
-
-    def test_smaller_envelope_sid_does_not_overwrite_delta(self):
-        f = _make_feed()
-        f._subscribed_tickers.add("KXBTC15M-MONO")
-        f._orderbooks["KXBTC15M-MONO"] = {
-            "yes": [], "no": [], "ts": time.time()}
-        f._ticker_to_sid["KXBTC15M-MONO"] = 200
-        f._handle_ob_delta({
-            "sid": 100,  # stale!
-            "msg": {
-                "market_ticker": "KXBTC15M-MONO",
-                "side": "yes",
-                "price_dollars": "0.95",
-                "delta_fp": "10",
-            },
-        })
-        self.assertEqual(
-            f._ticker_to_sid["KXBTC15M-MONO"], 200,
-            "Stale delta sid must NOT overwrite cached newer sid.")
-
-    def test_equal_or_greater_sid_does_overwrite(self):
-        """Same sid (no-op) and greater sid (legit resubscribe)
-        both update the map."""
-        f = _make_feed()
-        f._subscribed_tickers.add("KXBTC15M-MONO")
-        f._ticker_to_sid["KXBTC15M-MONO"] = 200
-        # Equal — fine, no-op overwrite.
-        f._handle_ob_snapshot({
-            "sid": 200,
-            "msg": {
-                "market_ticker": "KXBTC15M-MONO",
-                "yes_dollars_fp": [],
-                "no_dollars_fp": [],
-            },
-        })
-        self.assertEqual(f._ticker_to_sid["KXBTC15M-MONO"], 200)
-        # Greater — legitimate resubscribe.
-        f._handle_ob_snapshot({
-            "sid": 300,
-            "msg": {
-                "market_ticker": "KXBTC15M-MONO",
-                "yes_dollars_fp": [],
-                "no_dollars_fp": [],
-            },
-        })
-        self.assertEqual(f._ticker_to_sid["KXBTC15M-MONO"], 300)
+# Phase 2.6: envelope-sid monotonic guard and malformed-delta sid
+# protection were both REMOVED — sids are now learned exclusively
+# from `type=subscribed` responses, where these concerns don't
+# apply (each response has explicit sid + matched ticker via
+# command id, no race or malformed-stream concerns).
 
 
-class TestSidNotCapturedOnMalformedDelta(unittest.TestCase):
-    """Adversarial-review P1: when a delta arrives with a valid
-    envelope sid but malformed msg body (no price_dollars AND no
-    yes/no), we MUST NOT cache the sid. Otherwise force_resubscribe
-    would take the primary path on a broken stream when the safer
-    unsub+resub fallback is what we actually want."""
+class TestTimeoutFallbackKeepsSidForDrain(unittest.TestCase):
+    """Phase 2.6 R6: timeout fallback MUST KEEP _ticker_to_sid so
+    the drain's _send_ob_unsubscribe can use it. Pre-fix it
+    pre-popped sid (defensive against monotonic-guard collisions
+    that don't apply in 2.6) → drain SKIPs → Kalshi-side
+    subscription leaks. Symmetric to the unsubscribe_ticker R5 fix."""
 
-    def test_malformed_delta_does_not_set_sid(self):
-        f = _make_feed()
-        f._subscribed_tickers.add("KXBTC15M-BAD")
-        # Envelope is valid but msg has none of the expected schema
-        # fields → OrderbookSchemaError raised.
-        f._handle_ob_delta({
-            "sid": 999,
-            "msg": {
-                "market_ticker": "KXBTC15M-BAD",
-                "garbage_field": True,
-            },
-        })
-        self.assertNotIn(
-            "KXBTC15M-BAD", f._ticker_to_sid,
-            "Malformed delta must NOT cache sid — caching it would "
-            "let force_resubscribe use the primary path on a stream "
-            "we can't actually parse.")
-
-
-class TestTimeoutFallbackClearsSid(unittest.TestCase):
-    """R3-review Phase 2.5: when the snapshot-timeout fallback
-    queues unsub+resub, it MUST also pop _ticker_to_sid for the
-    affected ticker. Without this, a Kalshi sid-recycling scenario
-    (new sid < old) would be rejected by the monotonic guard,
-    leaving the bot in a stuck-stale-sid loop."""
-
-    def test_timeout_fallback_pops_ticker_to_sid(self):
+    def test_timeout_fallback_keeps_sid_for_drain(self):
         import bot
         f = _make_feed()
         f._subscribed_tickers.add("KXBTC15M-LOOP")
@@ -432,13 +319,12 @@ class TestTimeoutFallbackClearsSid(unittest.TestCase):
         f._snapshot_request_pending["KXBTC15M-LOOP"] = (
             time.monotonic() - bot.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
         f._check_snapshot_timeouts()
-        self.assertNotIn(
-            "KXBTC15M-LOOP", f._ticker_to_sid,
-            "Timeout fallback must clear _ticker_to_sid — the sid "
-            "is about to be invalidated by the queued unsubscribe, "
-            "and stale sid blocks fresh snapshot acceptance under "
-            "the monotonic-sid guard.")
-        # Sanity: fallback unsub+resub IS queued.
+        self.assertEqual(
+            f._ticker_to_sid.get("KXBTC15M-LOOP"), 500,
+            "Phase 2.6 R6: sid MUST stay in map. Drain's "
+            "_send_ob_unsubscribe pops on successful send; "
+            "pre-popping here = silent leak.")
+        # Fallback unsub+resub IS queued.
         self.assertIn("KXBTC15M-LOOP", f._pending_unsubscribes)
         self.assertIn("KXBTC15M-LOOP", f._pending_subscribes)
 

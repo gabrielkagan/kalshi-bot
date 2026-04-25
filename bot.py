@@ -453,6 +453,17 @@ WS_GET_SNAPSHOT_DISABLE_AFTER = 3
 # WARNING — the resubscribe didn't take effect (Kalshi never sent a
 # new snapshot). The watchdog runs inline in _check_snapshot_timeouts.
 WS_FORCE_RESUB_RECOVERY_TIMEOUT_S = 30.0
+# Phase 2.6 R2 / B2 (R3-revised to 60s): watchdog for outstanding
+# subscribe responses. If type=subscribed never arrives within this
+# timeout, pop the entry + log WARNING.
+#
+# Set to 60s to give Kalshi plenty of headroom (vs. 30s which can
+# fire spuriously under load). A late-arriving subscribed after pop
+# is unrecoverable (the response has no market_ticker — we cannot
+# bind ticker→sid) so we accept "data flows but no drift-recovery"
+# until next WS reconnect rather than risk a dual-subscription leak
+# from re-queueing.
+WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S = 60.0
 
 # ─── Coinbase WebSocket ──────────────────────────────────────────────────────
 COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com"
@@ -4160,6 +4171,48 @@ class KalshiFeed:
         # produce one WARNING line, not thousands. Cleared on
         # WS reconnect (different session = errors may be transient).
         self._ws_error_frame_seen: Set[Tuple] = set()
+        # Phase 2.6: AUTHORITATIVE sid tracking. Phase 2.5 tried to
+        # learn ticker→sid from envelope-level `sid` on incoming
+        # orderbook_snapshot/orderbook_delta messages. Kalshi
+        # rejected the resulting `update_subscription` commands
+        # with code=7 "Unknown subscription ID" — proving the
+        # envelope sid is NOT the same id Kalshi expects in
+        # commands. Per Kalshi docs the subscription id is
+        # returned in the `type=subscribed` response to subscribe
+        # commands. To match the response back to the ticker we
+        # subscribed, we use unique monotonic command IDs and
+        # this outstanding map. (Pre-2.6 we used static id=2 for
+        # all subscribes — making response matching impossible.)
+        self._next_msg_id: int = 100  # avoid collision with id=1 (fill)
+        self._outstanding_subscribes: Dict[int, str] = {}
+        # Phase 2.6 R2 / B2: per-cmd-id timestamp for outstanding
+        # subscribe watchdog. If type=subscribed never arrives
+        # within WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S, log WARNING
+        # and pop the entry — otherwise the ticker is permanently
+        # stuck in "subscribe in flight" with force_resubscribe
+        # SKIPing forever.
+        self._outstanding_subscribe_ts: Dict[int, float] = {}
+        # Phase 2.6 R2 / B1: dedup set for WS_ORPHAN_SID warnings.
+        # Keyed by (ticker, envelope_sid, expected_sid) so each
+        # leak event logs once per session. Cleared on reconnect.
+        self._ws_orphan_sid_seen: Set[Tuple] = set()
+        # Phase 2.6 R4 / A1+A2+A3: when B2 watchdog detects a
+        # stuck subscribe AND the ticker is still in
+        # _subscribed_tickers, set this flag. Silence watchdog
+        # observes it and force-closes the WS so the bot
+        # reconnects fresh — only path that recovers a stuck
+        # ticker, since periodic resnap and drift detector both
+        # SKIP a sid-less ticker. Without this, one stuck
+        # subscribe = one ticker on permanent stale cache until
+        # natural disconnect (could be hours).
+        self._force_reconnect_requested: bool = False
+        # Phase 2.6 R4 / A8: tickers whose subscribe is in flight
+        # at the moment of unsubscribe_ticker. The type=subscribed
+        # response handler will use the freshly-learned sid to
+        # immediately queue an unsubscribe (rather than silently
+        # dropping the sid → leaving a leaked Kalshi subscription
+        # we cannot reach).
+        self._pending_late_unsubscribes: Set[str] = set()
         self._ws = None
         # One-shot schema probes — log the first snapshot/delta msg keys per run so
         # post-deploy verifier can confirm the live wire matches the contract.
@@ -4280,18 +4333,33 @@ class KalshiFeed:
                     return
             self._force_resub_cooldown[ticker] = now
 
-            # R1 / A1 [P0] + Phase 2.5: skip the primary
-            # (update_subscription/get_snapshot) path if EITHER:
-            #   (a) it was auto-disabled after 3 consecutive
-            #       failed sweeps, OR
-            #   (b) we don't yet have a sid for this ticker — the
-            #       primary path REQUIRES sid in params, so without
-            #       one, get_snapshot would always fail. The sid is
-            #       learned from incoming snapshot/delta envelopes,
-            #       so a brand-new subscribe (or one that hasn't
-            #       received any messages yet) has no sid mapped.
             sid_known = ticker in self._ticker_to_sid
-            if self._get_snapshot_disabled or not sid_known:
+
+            # Phase 2.6 R-review A1 [P0]: if the subscribe is
+            # in flight (no sid yet), we CANNOT take any action:
+            #   - primary get_snapshot requires sid → can't send
+            #   - fallback unsub also requires sid → would SKIP
+            #   - resub-only would create a DUPLICATE
+            #     subscription on Kalshi's side (sid_v2), leaking
+            #     sid_v1 forever. We could never unsubscribe
+            #     sid_v1 because we'd never know its value.
+            # The CORRECT behavior is true no-op: when sid lands
+            # via type=subscribed, future force_resubscribe calls
+            # will work normally. Caller (drift detector,
+            # periodic) accepts brief degraded recovery for the
+            # subscribe-startup window (~100ms-2s).
+            if not sid_known:
+                logging.info(
+                    "force_resubscribe SKIPPED: ticker=%s has no "
+                    "sid yet (subscribe in flight). Skipping to "
+                    "avoid duplicate-subscription leak; future "
+                    "calls will run after sid is learned.", ticker)
+                return
+
+            # R1 / A1 [P0]: if the primary path was auto-disabled
+            # after 3 consecutive failed sweeps, skip get_snapshot
+            # and queue the proper sid-based unsub+resub fallback.
+            if self._get_snapshot_disabled:
                 if purge_cache:
                     self._orderbooks.pop(ticker, None)
                 if ticker not in self._pending_unsubscribes:
@@ -4299,11 +4367,6 @@ class KalshiFeed:
                 if ticker not in self._pending_subscribes:
                     self._pending_subscribes.append(ticker)
                 if track_recovery:
-                    # R3 / P0-B + P1-F: refresh deadline + clear
-                    # warned flag on each tracked call so a
-                    # repeated drift firing produces a fresh
-                    # warning instead of silent ongoing
-                    # degradation.
                     self._force_resub_recovery_deadline[ticker] = (
                         now + WS_FORCE_RESUB_RECOVERY_TIMEOUT_S)
                     self._force_resub_recovery_warned.pop(
@@ -4365,16 +4428,16 @@ class KalshiFeed:
                         self._pending_unsubscribes.append(t)
                     if t not in self._pending_subscribes:
                         self._pending_subscribes.append(t)
-                    # R3-review Phase 2.5: queueing unsub means
-                    # the current sid is about to be invalidated
-                    # by Kalshi. Pop it now so the new
-                    # subscription's snapshot writes a fresh sid
-                    # without the monotonic-guard at
-                    # _handle_ob_snapshot rejecting it (in the
-                    # unlikely case Kalshi assigns a lower sid
-                    # post-resub). Removes the dependency on the
-                    # "sids are monotonic counters" assumption.
-                    self._ticker_to_sid.pop(t, None)
+                    # Phase 2.6 R6 / A1: do NOT pre-pop _ticker_to_sid.
+                    # The drain's `_send_ob_unsubscribe` needs the
+                    # sid to actually send the unsubscribe to Kalshi;
+                    # it pops on successful send. Pre-pop = drain
+                    # SKIP = Kalshi-side subscription leak. Same bug
+                    # as R5 (removed from unsubscribe_ticker), this
+                    # is the symmetric path. The original Phase 2.5
+                    # monotonic-guard concern is no longer relevant
+                    # in 2.6 since envelope sids aren't learned at
+                    # all (sids come from type=subscribed only).
 
             # R1 / A1 + R2 / P0-2: count consecutive FAILED SWEEPS,
             # not per-ticker timeouts. A sweep with ≥1 timeout =
@@ -4392,6 +4455,36 @@ class KalshiFeed:
                     disabled_now = (
                         not self._get_snapshot_disabled_logged)
                     self._get_snapshot_disabled_logged = True
+
+            # Phase 2.6 R2 / B2: outstanding-subscribe watchdog.
+            # If type=subscribed never arrives within
+            # WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S, the ticker is
+            # permanently stuck in "no sid" state and
+            # force_resubscribe SKIPs forever. Pop the entry +
+            # log so the ticker can be re-subscribed via a fresh
+            # _send_ob_subscribe path (or just gets resub'd on
+            # next reconnect / market_refresh cycle).
+            stuck_subscribes: List[Tuple[int, str]] = []
+            for cid, ts in list(
+                    self._outstanding_subscribe_ts.items()):
+                if (now - ts
+                        > WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S):
+                    stuck_ticker = (
+                        self._outstanding_subscribes.pop(cid, None))
+                    del self._outstanding_subscribe_ts[cid]
+                    if stuck_ticker is not None:
+                        stuck_subscribes.append((cid, stuck_ticker))
+                        # Phase 2.6 R4 / A1+A2+A3: if the stuck
+                        # ticker is still in _subscribed_tickers,
+                        # request a WS reconnect — only path that
+                        # gets it a fresh sid (periodic resnap
+                        # and drift detector both SKIP). Without
+                        # forced reconnect, the silence watchdog
+                        # never fires (other tickers keep
+                        # _ws_last_msg_ts fresh) and the ticker
+                        # is silently stuck on stale cache.
+                        if stuck_ticker in self._subscribed_tickers:
+                            self._force_reconnect_requested = True
 
             # R1 / A5 + R4 / F2: walk recovery deadlines, surface
             # stuck tickers. The signal "snapshot didn't arrive"
@@ -4433,6 +4526,16 @@ class KalshiFeed:
                 "be serving stale cache; REST fallback path will "
                 "fill the gap.",
                 t, int(WS_FORCE_RESUB_RECOVERY_TIMEOUT_S))
+        for cid, stuck_ticker in stuck_subscribes:
+            logging.warning(
+                "WS_SUBSCRIBE_STUCK ticker=%s id=%s — "
+                "type=subscribed never arrived within %ds. Popped "
+                "orphan. Drift recovery DISABLED for this ticker "
+                "(force_resubscribe will SKIP — no sid). Recovery "
+                "happens on next WS reconnect (silence watchdog "
+                "or session error).",
+                stuck_ticker, cid,
+                int(WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S))
         return timed_out
 
     def unsubscribe_ticker(self, ticker: str):
@@ -4456,13 +4559,32 @@ class KalshiFeed:
             self._force_resub_cooldown.pop(ticker, None)
             self._force_resub_recovery_deadline.pop(ticker, None)
             self._force_resub_recovery_warned.pop(ticker, None)
-            # Phase 2.5: sid is subscription-scoped — meaningless
-            # after unsubscribe. Resubscribe will get a new sid.
-            self._ticker_to_sid.pop(ticker, None)
+            # Phase 2.6 R5 / P1: do NOT pre-pop _ticker_to_sid here.
+            # The drain's `_send_ob_unsubscribe` needs the sid to
+            # actually send the unsubscribe; it pops on successful
+            # send. Pre-popping here would silently drop the
+            # freshly-learned sid (in the benign race where
+            # type=subscribed lands seconds before unsubscribe_ticker)
+            # → drain SKIPs → Kalshi-side subscription leaks. The
+            # late-unsub fence below covers the OTHER race
+            # (subscribe still in flight); together they close
+            # both windows.
             try:
                 self._pending_snapshot_requests.remove(ticker)
             except ValueError:
                 pass
+            # Phase 2.6 R4 / A8: if subscribe is in flight (cmd_id
+            # registered in _outstanding_subscribes for this
+            # ticker), the type=subscribed response will arrive
+            # AFTER this unsubscribe call. Without intervention,
+            # we'd silently drop the response (ticker not in
+            # _subscribed_tickers) and Kalshi would retain a live
+            # subscription we can never unsubscribe — leaked.
+            # Mark the ticker so the subscribed handler knows to
+            # send an unsubscribe with the freshly-learned sid.
+            if any(t == ticker
+                   for t in self._outstanding_subscribes.values()):
+                self._pending_late_unsubscribes.add(ticker)
 
     def get_orderbook(self, ticker: str) -> Optional[Dict]:
         with self._lock:
@@ -4493,6 +4615,26 @@ class KalshiFeed:
             # A new session may legitimately retry the same
             # command and we want fresh observability.
             self._ws_error_frame_seen.clear()
+            # Phase 2.6: outstanding subscribe responses bound to
+            # the prior session's command IDs — orphan after
+            # reconnect. Clear so the new session's responses are
+            # matched correctly. _next_msg_id is NOT reset (the
+            # counter staying monotonic helps avoid id collisions
+            # across reconnects in case of late-arriving frames).
+            self._outstanding_subscribes.clear()
+            self._outstanding_subscribe_ts.clear()
+            # Phase 2.6 R2 / B1: orphan-sid dedup is also
+            # session-scoped — fresh session = clean state.
+            self._ws_orphan_sid_seen.clear()
+            # Phase 2.6 R4 / A1+A2+A3: reset force-reconnect flag.
+            # If we're closing the session, the request has been
+            # honored.
+            self._force_reconnect_requested = False
+            # Phase 2.6 R4 / A8: clear pending late-unsubscribes
+            # (subscriptions in flight at reconnect-time will be
+            # naturally cleaned up — Kalshi drops the old session's
+            # subs on disconnect).
+            self._pending_late_unsubscribes.clear()
         self._ws = None
         # Reset seq tracking — new WS session starts fresh sids;
         # old state would produce spurious gap warnings.
@@ -4663,6 +4805,24 @@ class KalshiFeed:
                         while not self._stop_event.is_set():
                             try:
                                 await asyncio.sleep(WS_WATCHDOG_CHECK_INTERVAL)
+                                # Phase 2.6 R4 / A1+A2+A3: explicit
+                                # reconnect request from B2 watchdog
+                                # (stuck subscribe). Recovery path
+                                # for sid-less stuck tickers — they
+                                # cannot be drift-recovered without
+                                # a fresh WS session.
+                                if self._force_reconnect_requested:
+                                    logging.error(
+                                        "WS_FORCE_RECONNECT — "
+                                        "reconnect requested by B2 "
+                                        "stuck-subscribe watchdog. "
+                                        "Closing WS for clean "
+                                        "re-subscribe of all tickers.")
+                                    try:
+                                        await ws.close()
+                                    except Exception:
+                                        pass
+                                    return
                                 now = time.time()
                                 if now - self._ws_connect_ts < WS_SILENCE_GRACE_SECONDS:
                                     continue
@@ -4749,25 +4909,94 @@ class KalshiFeed:
         logging.info("Kalshi feed stopped")
 
     async def _send_ob_subscribe(self, ws, ticker: str):
-        await ws.send(json.dumps({
-            "id": 2,
-            "cmd": "subscribe",
-            "params": {
-                "channels": ["orderbook_delta"],
-                "market_tickers": [ticker],
-            },
-        }))
-        logging.debug(f"kalshi_ws_subscribe: ticker={ticker} channel=orderbook_delta")
+        # Phase 2.6: unique command id per subscribe so the
+        # type=subscribed response can be matched back to this
+        # ticker (see _handle_message subscribed branch). Pre-2.6
+        # we used static id=2 for all subscribes, making
+        # response-matching impossible.
+        with self._lock:
+            cmd_id = self._next_msg_id
+            self._next_msg_id += 1
+            self._outstanding_subscribes[cmd_id] = ticker
+            self._outstanding_subscribe_ts[cmd_id] = (
+                time.monotonic())
+        try:
+            await ws.send(json.dumps({
+                "id": cmd_id,
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["orderbook_delta"],
+                    "market_tickers": [ticker],
+                },
+            }))
+        except Exception:
+            # Phase 2.6 R-review A3: send failure leaves the cmd_id
+            # registered in _outstanding_subscribes forever — orphan.
+            # Pop it so a future retry doesn't get stuck waiting on
+            # a response that will never come.
+            with self._lock:
+                self._outstanding_subscribes.pop(cmd_id, None)
+                self._outstanding_subscribe_ts.pop(cmd_id, None)
+            logging.warning(
+                "kalshi_ws_subscribe send FAILED: ticker=%s id=%s",
+                ticker, cmd_id, exc_info=True)
+            raise
+        logging.debug(
+            f"kalshi_ws_subscribe: ticker={ticker} "
+            f"id={cmd_id} channel=orderbook_delta")
 
     async def _send_ob_unsubscribe(self, ws, ticker: str):
-        await ws.send(json.dumps({
-            "id": 3,
-            "cmd": "unsubscribe",
-            "params": {
-                "channels": ["orderbook_delta"],
-                "market_tickers": [ticker],
-            },
-        }))
+        """Phase 2.6: unsubscribe via sids array per Kalshi docs.
+
+        Pre-2.6 we sent `params.market_tickers` (and `channels`)
+        which Kalshi rejected with code=4 "Subscription IDs
+        required". The fallback unsub+resub appeared to work only
+        because the resub side created a fresh subscription on top
+        of the old one (which Kalshi tolerates).
+
+        If sid is unknown (subscribe in flight, or just learned
+        from a prior session that's been wiped), we cannot send a
+        valid unsubscribe — skip and let the caller's resub side
+        recover.
+        """
+        with self._lock:
+            sid = self._ticker_to_sid.get(ticker)
+        if sid is None:
+            logging.warning(
+                "kalshi_ws_unsubscribe SKIPPED: ticker=%s has no "
+                "known sid (subscribe in flight?) — skipping",
+                ticker)
+            return
+        with self._lock:
+            cmd_id = self._next_msg_id
+            self._next_msg_id += 1
+        try:
+            await ws.send(json.dumps({
+                "id": cmd_id,
+                "cmd": "unsubscribe",
+                "params": {
+                    "sids": [sid],
+                },
+            }))
+        except Exception:
+            # Send failed — leave sid map intact, caller may retry.
+            logging.warning(
+                "kalshi_ws_unsubscribe send FAILED: ticker=%s "
+                "sid=%s", ticker, sid, exc_info=True)
+            raise
+        # Phase 2.6 R-review A2: pop the sid mapping AT SEND TIME,
+        # not at type=unsubscribed response time. Pre-fix, the
+        # response handler iterated _ticker_to_sid by VALUE to find
+        # which ticker held this sid — fragile if sids are reused.
+        # By popping at send time we have the (ticker, sid)
+        # association directly without searching.
+        with self._lock:
+            cur = self._ticker_to_sid.get(ticker)
+            if cur == sid:
+                self._ticker_to_sid.pop(ticker, None)
+        logging.debug(
+            f"kalshi_ws_unsubscribe: ticker={ticker} sid={sid} "
+            f"id={cmd_id}")
 
     async def _send_ob_get_snapshot(self, ws, ticker: str):
         """Phase 2 / Phase 2.5: request a fresh snapshot WITHOUT
@@ -4909,6 +5138,62 @@ class KalshiFeed:
             self._handle_ob_snapshot(data)
         elif msg_type == "orderbook_delta":
             self._handle_ob_delta(data)
+        elif msg_type == "subscribed":
+            # Phase 2.6: AUTHORITATIVE sid capture. Kalshi sends
+            # `{"id": <our_cmd_id>, "type": "subscribed",
+            #   "msg": {"channel": "orderbook_delta", "sid": <int>}}`
+            # in response to a `subscribe` command. The `id` echoes
+            # the unique id we generated in _send_ob_subscribe; we
+            # look it up in _outstanding_subscribes to find the
+            # ticker, then bind ticker → sid.
+            response_id = data.get("id")
+            sub_msg = data.get("msg") or {}
+            sid_value = (
+                sub_msg.get("sid") if isinstance(sub_msg, dict)
+                else None)
+            with self._lock:
+                ticker = self._outstanding_subscribes.pop(
+                    response_id, None) if response_id is not None else None
+                if response_id is not None:
+                    self._outstanding_subscribe_ts.pop(
+                        response_id, None)
+                if (ticker is not None and sid_value is not None
+                        and ticker in self._subscribed_tickers):
+                    self._ticker_to_sid[ticker] = sid_value
+                    logging.info(
+                        "WS_SUBSCRIBED ticker=%s sid=%s id=%s",
+                        ticker, sid_value, response_id)
+                elif (ticker is not None and sid_value is not None
+                        and ticker in self._pending_late_unsubscribes):
+                    # Phase 2.6 R4 / A8: subscribe completed AFTER
+                    # an unsubscribe_ticker call. Queue an
+                    # immediate unsubscribe with the now-known
+                    # sid. We bind ticker→sid temporarily so
+                    # `_send_ob_unsubscribe(ws, ticker)` (drained
+                    # via _pending_unsubscribes) can look it up.
+                    self._ticker_to_sid[ticker] = sid_value
+                    self._pending_late_unsubscribes.discard(ticker)
+                    if ticker not in self._pending_unsubscribes:
+                        self._pending_unsubscribes.append(ticker)
+                    logging.warning(
+                        "WS_LATE_UNSUBSCRIBE ticker=%s sid=%s "
+                        "id=%s — subscribe completed after "
+                        "unsubscribe_ticker; queued late unsub.",
+                        ticker, sid_value, response_id)
+                else:
+                    # Unknown id (stale/orphan) — log debug and skip.
+                    logging.debug(
+                        "kalshi_ws_subscribed: unmatched id=%s "
+                        "sid=%s ticker=%s", response_id,
+                        sid_value, ticker)
+        elif msg_type == "unsubscribed":
+            # Phase 2.6 R-review A2: confirmation-only. Sid was
+            # already popped from _ticker_to_sid at send time in
+            # `_send_ob_unsubscribe`. We don't search-by-value
+            # here (fragile) — just log for traceability.
+            logging.debug(
+                "kalshi_ws_unsubscribed: sid=%s id=%s",
+                data.get("sid"), data.get("id"))
         elif msg_type == "error":
             # Phase 2.5: Kalshi error frame. Pre-fix this branch
             # didn't exist; errors were silently dropped. R5 found
@@ -4929,7 +5214,23 @@ class KalshiFeed:
             err_text = (
                 err_msg.get("msg") if isinstance(err_msg, dict)
                 else err_msg)
-            err_key = (data.get("id"), err_code)
+            err_id = data.get("id")
+            err_key = (err_id, err_code)
+            # Phase 2.6 R-review A4: if this error is a response
+            # to one of our subscribes, pop the outstanding
+            # entry so we don't leak a cmd_id → ticker mapping
+            # forever waiting for a response that will never
+            # come. The id field IS the cmd_id we sent.
+            if err_id is not None:
+                with self._lock:
+                    orphan_ticker = (
+                        self._outstanding_subscribes.pop(err_id, None))
+                    self._outstanding_subscribe_ts.pop(err_id, None)
+                if orphan_ticker is not None:
+                    logging.warning(
+                        "WS_SUBSCRIBE_ERROR ticker=%s id=%s — "
+                        "popped orphan outstanding entry",
+                        orphan_ticker, err_id)
             if err_key not in self._ws_error_frame_seen:
                 self._ws_error_frame_seen.add(err_key)
                 raw_str = repr(data)
@@ -5034,11 +5335,13 @@ class KalshiFeed:
                     f"snapshot {ticker}: no yes_dollars_fp/no_dollars_fp or "
                     f"yes/no keys (got {sorted(msg.keys())})")
 
-            # Phase 2.5: learn ticker → sid binding from envelope.
-            # Every Kalshi WS message carries the sid for its
-            # subscription. We use this map to send proper
-            # `update_subscription` commands (which require sid,
-            # not market_tickers).
+            # Phase 2.6: do NOT learn ticker→sid from envelope sid.
+            # The Phase 2.5 design read envelope sid as the
+            # subscription id, but Kalshi rejected the resulting
+            # update_subscription/unsubscribe with code=7 "Unknown
+            # subscription ID". Sids are now learned from the
+            # `type=subscribed` response in _handle_message
+            # (authoritative source per Kalshi docs).
             envelope_sid = data.get("sid")
             with self._lock:
                 # R2 / P1-3: drop snapshots for tickers we've
@@ -5052,20 +5355,30 @@ class KalshiFeed:
                 # forever (no path will pop it).
                 if ticker not in self._subscribed_tickers:
                     return
-                if envelope_sid is not None:
-                    # R2-review Phase 2.5: monotonic-sid guard.
-                    # Kalshi assigns sids sequentially per session,
-                    # so a smaller sid means an in-flight stale
-                    # message from a prior subscription overlapping
-                    # an unsub+resub. Don't overwrite a newer sid
-                    # with a stale one — that would cause the next
-                    # update_subscription to use a dead sid and
-                    # silently fail until the fallback path kicked
-                    # in. (Defense-in-depth — TCP ordering should
-                    # prevent this from arising in practice.)
-                    cached = self._ticker_to_sid.get(ticker)
-                    if cached is None or envelope_sid >= cached:
-                        self._ticker_to_sid[ticker] = envelope_sid
+                # Phase 2.6 R2 / B1: detect orphan-sid leak. If
+                # we have a known sid for this ticker AND the
+                # envelope sid differs, it means we previously
+                # sent unsubscribe (which popped the local sid),
+                # got a NEW subscribe (which captured sid_v2 via
+                # type=subscribed), but Kalshi still streams
+                # under sid_v1 — a permanent leak we cannot
+                # unsubscribe (we don't know sid_v1's value
+                # anymore, only sid_v2). Surface this so the
+                # Phase 2.7 mitigation can be designed.
+                expected_sid = self._ticker_to_sid.get(ticker)
+                if (envelope_sid is not None
+                        and expected_sid is not None
+                        and envelope_sid != expected_sid):
+                    leak_key = (ticker, envelope_sid, expected_sid)
+                    if leak_key not in self._ws_orphan_sid_seen:
+                        self._ws_orphan_sid_seen.add(leak_key)
+                        logging.warning(
+                            "WS_ORPHAN_SID ticker=%s "
+                            "envelope_sid=%s expected_sid=%s — "
+                            "Kalshi may be streaming on a leaked "
+                            "subscription we cannot unsubscribe. "
+                            "Will self-heal on next WS reconnect.",
+                            ticker, envelope_sid, expected_sid)
                 self._orderbooks[ticker] = {
                     "yes": yes_levels,
                     "no": no_levels,
@@ -5134,24 +5447,10 @@ class KalshiFeed:
                     f"delta {ticker}: no price_dollars/delta_fp/side or "
                     f"yes/no keys (got {sorted(msg.keys())})")
 
-            # Phase 2.5: learn ticker → sid binding from envelope.
-            # Snapshots may be lost or late; deltas arrive
-            # constantly. We learn the sid from EITHER stream.
-            # R-review (Phase 2.5): capture AFTER schema validation
-            # — if the msg body is malformed and we raise above,
-            # we don't want a sid bound to a broken stream
-            # (force_resubscribe would then take the primary path
-            # via sid_known=True when the safer fallback is what
-            # we actually want).
-            envelope_sid = data.get("sid")
-            if envelope_sid is not None:
-                with self._lock:
-                    if ticker in self._subscribed_tickers:
-                        # R2-review Phase 2.5: monotonic guard, see
-                        # _handle_ob_snapshot for rationale.
-                        cached = self._ticker_to_sid.get(ticker)
-                        if cached is None or envelope_sid >= cached:
-                            self._ticker_to_sid[ticker] = envelope_sid
+            # Phase 2.6: do NOT learn ticker→sid from envelope sid.
+            # See _handle_ob_snapshot for rationale. Sids are now
+            # learned from `type=subscribed` responses
+            # (authoritative source).
         except OrderbookSchemaError as e:
             logging.error("WS_SCHEMA_ERROR delta: %s", e)
         except Exception:

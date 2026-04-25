@@ -67,6 +67,13 @@ def _make_feed():
     # specifically test the no-sid-known fallback leave it empty.
     f._ticker_to_sid = {}
     f._ws_error_frame_seen = set()
+    # Phase 2.6: authoritative sid tracking.
+    f._next_msg_id = 100
+    f._outstanding_subscribes = {}
+    f._outstanding_subscribe_ts = {}
+    f._ws_orphan_sid_seen = set()
+    f._force_reconnect_requested = False
+    f._pending_late_unsubscribes = set()
     f._snapshot_schema_probed = True
     f._delta_probe_count = 0
     f._delta_probe_max = 0
@@ -434,6 +441,9 @@ class TestR1A1AutoDisablePrimary(unittest.TestCase):
     def setUp(self):
         self.f = _make_feed()
         self.f._subscribed_tickers.add("KXBTC15M-DEAD")
+        # Phase 2.6: sid required for force_resubscribe to take any
+        # action other than no-op.
+        self.f._ticker_to_sid["KXBTC15M-DEAD"] = 500
 
     def test_single_bad_sweep_does_not_disable(self):
         """R2 / P0-2: a single sweep with multiple ticker timeouts
@@ -559,6 +569,7 @@ class TestR1A5RecoveryWatchdog(unittest.TestCase):
     def setUp(self):
         self.f = _make_feed()
         self.f._subscribed_tickers.add("KXBTC15M-STUCK")
+        self.f._ticker_to_sid["KXBTC15M-STUCK"] = 600
 
     def test_recovery_deadline_set_on_force_resub(self):
         self.f.force_resubscribe("KXBTC15M-STUCK")
@@ -651,6 +662,7 @@ class TestR3TrackRecoveryParam(unittest.TestCase):
     def setUp(self):
         self.f = _make_feed()
         self.f._subscribed_tickers.add("KXBTC15M-DRIFT")
+        self.f._ticker_to_sid["KXBTC15M-DRIFT"] = 700
 
     def test_track_recovery_false_skips_deadline(self):
         """Periodic (track_recovery=False) must NOT set a
