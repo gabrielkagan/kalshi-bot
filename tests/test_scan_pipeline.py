@@ -369,6 +369,21 @@ class TestWindowTimeslot(unittest.TestCase):
         result = OpportunityScanner._window_timeslot("KXBTCD-26FEB2114-B95000")
         self.assertEqual(result, "26FEB2114")
 
+    def test_none_returns_empty(self):
+        """None event_ticker → empty string (no AttributeError).
+
+        Regression: Apr 25 2026 — transient race surfaced None to
+        _window_timeslot from _get_occupied_timeslots, crashing the tick
+        loop. Caller checks `if ts:` so empty string skips the row safely.
+        """
+        result = OpportunityScanner._window_timeslot(None)
+        self.assertEqual(result, "")
+
+    def test_empty_string_returns_empty(self):
+        """Empty event_ticker → empty string (no crash, callers skip)."""
+        result = OpportunityScanner._window_timeslot("")
+        self.assertEqual(result, "")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  6. Edge computation — the money stage

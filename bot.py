@@ -16337,12 +16337,18 @@ class OpportunityScanner:
     # ── Timeslot helpers ──────────────────────────────────────────────────
 
     @staticmethod
-    def _window_timeslot(event_ticker: str) -> str:
+    def _window_timeslot(event_ticker: Optional[str]) -> str:
         """Extract timeslot from event ticker.
 
         'KXBTC15M-26FEB211545' -> '26FEB211545'
         (same across assets: KXETH15M-26FEB211545 also gives '26FEB211545')
         """
+        if not event_ticker:
+            # Transient race: position/order/window dict surfaced None event_ticker
+            # (see kb/failures/window-timeslot-none.md). Caller checks `if ts:` so
+            # empty string skips this row safely.
+            logging.warning("WINDOW_TIMESLOT_NULL: event_ticker is None/empty")
+            return ""
         parts = event_ticker.split("-")
         if len(parts) >= 2:
             return parts[1]
