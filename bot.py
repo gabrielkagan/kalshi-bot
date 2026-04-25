@@ -18081,6 +18081,12 @@ class SettlementTracker:
         self._processed_tickers: Set[str] = set()
         self._pending_rejection_tickers: Set[str] = set()
         self._settled_rejection_tickers: Set[str] = set()
+        # Re-entry guard for tick() worker thread. Prevents thread
+        # pile-up if a settlement cycle takes longer than
+        # SETTLEMENT_CHECK_SECONDS. Apr 25 00:39 incident: synchronous
+        # tick was 4.84-5.54s per cycle; threading the body restores
+        # main-loop cadence.
+        self._worker_running: bool = False
 
     # ── Startup ──────────────────────────────────────────────────────────
 
@@ -18116,25 +18122,59 @@ class SettlementTracker:
     # ── Tick (called every main-loop iteration) ──────────────────────────
 
     def tick(self):
-        """Self-throttled: only polls every SETTLEMENT_CHECK_SECONDS."""
+        """Self-throttled: only polls every SETTLEMENT_CHECK_SECONDS.
+
+        The tick body runs in a daemon worker thread to keep the main
+        scan loop unblocked. With 400+ pending evaluated_opportunities
+        rows, the synchronous version was 4.84-5.54s per cycle (Apr 25
+        00:39 SLOW_SCAN_TICK incident). The `_worker_running` flag
+        prevents thread pile-up if a cycle exceeds the throttle.
+        """
         now = time.time()
         if now - self._last_poll_time < SETTLEMENT_CHECK_SECONDS:
             return
+        if self._worker_running:
+            # Previous worker still running; skip this cycle. The
+            # next call after _last_poll_time advances will spawn fresh.
+            return
         self._last_poll_time = now
-        self._poll()
-        self._poll_rejections()
-        self._poll_evaluated_opportunities()
-        # Fallback: sweep for positions stuck past market close (every 5 min)
-        if now - self._last_fallback_sweep >= 300.0:
-            self._last_fallback_sweep = now
-            self._sweep_stuck_positions()
-        # Cleanup expired resting orders (every 60s)
-        if now - self._last_order_cleanup >= 60.0:
-            self._last_order_cleanup = now
+        self._worker_running = True
+
+        def _worker():
             try:
-                self._state.cleanup_expired_resting_orders()
+                self._poll()
+                self._poll_rejections()
+                self._poll_evaluated_opportunities()
+                # Fallback: sweep for positions stuck past market close (every 5 min)
+                _wn = time.time()
+                if _wn - self._last_fallback_sweep >= 300.0:
+                    self._last_fallback_sweep = _wn
+                    self._sweep_stuck_positions()
+                # Cleanup expired resting orders (every 60s)
+                if _wn - self._last_order_cleanup >= 60.0:
+                    self._last_order_cleanup = _wn
+                    try:
+                        self._state.cleanup_expired_resting_orders()
+                    except Exception:
+                        logging.debug("cleanup_expired_resting_orders failed",
+                                      exc_info=True)
             except Exception:
-                logging.debug("cleanup_expired_resting_orders failed", exc_info=True)
+                logging.error("SettlementTracker worker thread failed",
+                              exc_info=True)
+            finally:
+                self._worker_running = False
+
+        try:
+            threading.Thread(
+                target=_worker,
+                daemon=True,
+                name="settlement_tracker",
+            ).start()
+        except Exception:
+            self._worker_running = False
+            logging.debug(
+                "SettlementTracker worker thread spawn failed",
+                exc_info=True)
 
     # ── Core poll ────────────────────────────────────────────────────────
 
