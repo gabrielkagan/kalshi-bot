@@ -4983,18 +4983,31 @@ class KalshiFeed:
             f"id={cmd_id} channel=orderbook_delta")
 
     async def _send_ob_unsubscribe(self, ws, ticker: str):
-        """Phase 2.6: unsubscribe via sids array per Kalshi docs.
+        """Phase 2.10: surgical single-ticker removal via
+        `update_subscription` with `action: delete_markets`.
 
-        Pre-2.6 we sent `params.market_tickers` (and `channels`)
-        which Kalshi rejected with code=4 "Subscription IDs
-        required". The fallback unsub+resub appeared to work only
-        because the resub side created a fresh subscription on top
-        of the old one (which Kalshi tolerates).
+        Pre-2.10 we sent `cmd: unsubscribe` with `sids: [sid]`,
+        which Kalshi interprets as "cancel the entire
+        subscription" — i.e., remove ALL tickers on that channel
+        sid (~100 tickers). This was a latent disaster, masked
+        only because Phase 2.6's per-ticker sid model didn't
+        populate sids for most tickers (we only learned them
+        from `type=subscribed`, which fires for the first 2
+        subscribes only). After Phase 2.10 binds sids correctly
+        from `type=ok`, the OLD unsubscribe schema would nuke
+        the channel on every drift firing. Switch to:
 
-        If sid is unknown (subscribe in flight, or just learned
-        from a prior session that's been wiped), we cannot send a
-        valid unsubscribe — skip and let the caller's resub side
-        recover.
+            {"cmd": "update_subscription",
+             "params": {"sid": <channel_sid>,
+                        "action": "delete_markets",
+                        "market_tickers": [ticker]}}
+
+        Surgical removal — leaves the rest of the channel intact.
+
+        If sid is unknown (subscribe in flight), we cannot send
+        delete_markets without it. Skip; the late-unsub path in
+        the ack handler will queue the proper delete_markets
+        once the sid lands.
         """
         with self._lock:
             sid = self._ticker_to_sid.get(ticker)
@@ -5009,9 +5022,11 @@ class KalshiFeed:
             self._next_msg_id += 1
         _payload = {
             "id": cmd_id,
-            "cmd": "unsubscribe",
+            "cmd": "update_subscription",
             "params": {
-                "sids": [sid],
+                "sid": sid,
+                "action": "delete_markets",
+                "market_tickers": [ticker],
             },
         }
         # Phase 2.9: raw-out trace.
@@ -5024,19 +5039,18 @@ class KalshiFeed:
                 "kalshi_ws_unsubscribe send FAILED: ticker=%s "
                 "sid=%s", ticker, sid, exc_info=True)
             raise
-        # Phase 2.6 R-review A2: pop the sid mapping AT SEND TIME,
-        # not at type=unsubscribed response time. Pre-fix, the
-        # response handler iterated _ticker_to_sid by VALUE to find
-        # which ticker held this sid — fragile if sids are reused.
-        # By popping at send time we have the (ticker, sid)
-        # association directly without searching.
+        # Phase 2.6 R-review A2 / Phase 2.10: pop the sid mapping
+        # AT SEND TIME. Note: with channel-shared sids (Phase 2.10),
+        # the sid value itself is still valid (other tickers use
+        # it), so popping just clears OUR map — Kalshi keeps the
+        # channel subscription alive for the remaining tickers.
         with self._lock:
             cur = self._ticker_to_sid.get(ticker)
             if cur == sid:
                 self._ticker_to_sid.pop(ticker, None)
         logging.debug(
             f"kalshi_ws_unsubscribe: ticker={ticker} sid={sid} "
-            f"id={cmd_id}")
+            f"id={cmd_id} (via update_subscription/delete_markets)")
 
     async def _send_ob_get_snapshot(self, ws, ticker: str):
         """Phase 2.7: request a fresh snapshot WITHOUT bouncing the
@@ -5156,6 +5170,70 @@ class KalshiFeed:
                 # the disable for non-Kalshi reasons.
                 with self._lock:
                     self._snapshot_request_pending.pop(ticker, None)
+
+    def _handle_subscribe_ack(
+        self,
+        response_id: Optional[int],
+        sid_value: Optional[int],
+        ack_kind: str,
+    ) -> None:
+        """Phase 2.10: shared handler for both `type=subscribed`
+        (channel-establishment) and `type=ok` (subsequent sub
+        acks). Kalshi sends type=subscribed only for the first
+        subscribe per channel; everything after is type=ok. Both
+        carry the channel sid in the envelope and echo our
+        cmd_id, so they're handled identically.
+
+        Args:
+            response_id: cmd_id echoed back from Kalshi.
+            sid_value: the channel sid (shared across all tickers
+                on that channel).
+            ack_kind: "WS_SUBSCRIBED" or "WS_OK" — log prefix.
+        """
+        with self._lock:
+            ticker = (
+                self._outstanding_subscribes.pop(response_id, None)
+                if response_id is not None else None)
+            if response_id is not None:
+                self._outstanding_subscribe_ts.pop(
+                    response_id, None)
+            if (ticker is not None and sid_value is not None
+                    and ticker in self._subscribed_tickers):
+                self._ticker_to_sid[ticker] = sid_value
+                _log_ok = (
+                    "%s ticker=%s sid=%s id=%s",
+                    ack_kind, ticker, sid_value, response_id)
+                _log_late = None
+            elif (ticker is not None and sid_value is not None
+                    and ticker in self._pending_late_unsubscribes):
+                # Phase 2.6 R4 / A8: subscribe completed AFTER an
+                # unsubscribe_ticker call. Queue an immediate
+                # unsubscribe with the now-known sid (drain uses
+                # delete_markets per Phase 2.10 to surgically
+                # remove just this ticker).
+                self._ticker_to_sid[ticker] = sid_value
+                self._pending_late_unsubscribes.discard(ticker)
+                if ticker not in self._pending_unsubscribes:
+                    self._pending_unsubscribes.append(ticker)
+                _log_ok = None
+                _log_late = (
+                    "WS_LATE_UNSUBSCRIBE ticker=%s sid=%s id=%s "
+                    "(via %s) — subscribe completed after "
+                    "unsubscribe_ticker; queued late unsub.",
+                    ticker, sid_value, response_id, ack_kind)
+            else:
+                _log_ok = None
+                _log_late = None
+                _log_unmatched = (
+                    "kalshi_ws_ack(%s): unmatched id=%s sid=%s "
+                    "ticker=%s",
+                    ack_kind, response_id, sid_value, ticker)
+        if _log_ok is not None:
+            logging.info(*_log_ok)
+        elif _log_late is not None:
+            logging.warning(*_log_late)
+        else:
+            logging.debug(*_log_unmatched)
 
     # Phase 2.9 — raw WS frame logging helpers.
     _RAW_LOG_NON_DATA_TYPES = frozenset(
@@ -5283,53 +5361,37 @@ class KalshiFeed:
         elif msg_type == "orderbook_delta":
             self._handle_ob_delta(data)
         elif msg_type == "subscribed":
-            # Phase 2.6: AUTHORITATIVE sid capture. Kalshi sends
-            # `{"id": <our_cmd_id>, "type": "subscribed",
-            #   "msg": {"channel": "orderbook_delta", "sid": <int>}}`
-            # in response to a `subscribe` command. The `id` echoes
-            # the unique id we generated in _send_ob_subscribe; we
-            # look it up in _outstanding_subscribes to find the
-            # ticker, then bind ticker → sid.
-            response_id = data.get("id")
+            # Phase 2.6: sid capture from `type=subscribed`. Per
+            # Kalshi docs:
+            #   {"id": <cmd_id>, "type": "subscribed",
+            #    "msg": {"channel": "orderbook_delta", "sid": N}}
+            # Empirically (Phase 2.9 raw logs): Kalshi sends
+            # type=subscribed only for the FIRST subscribe to a
+            # channel per session (channel-establishment). All
+            # subsequent subscribes get type=ok instead. The `sid`
+            # in both is the channel sid — shared across all
+            # tickers on that channel.
             sub_msg = data.get("msg") or {}
             sid_value = (
                 sub_msg.get("sid") if isinstance(sub_msg, dict)
                 else None)
-            with self._lock:
-                ticker = self._outstanding_subscribes.pop(
-                    response_id, None) if response_id is not None else None
-                if response_id is not None:
-                    self._outstanding_subscribe_ts.pop(
-                        response_id, None)
-                if (ticker is not None and sid_value is not None
-                        and ticker in self._subscribed_tickers):
-                    self._ticker_to_sid[ticker] = sid_value
-                    logging.info(
-                        "WS_SUBSCRIBED ticker=%s sid=%s id=%s",
-                        ticker, sid_value, response_id)
-                elif (ticker is not None and sid_value is not None
-                        and ticker in self._pending_late_unsubscribes):
-                    # Phase 2.6 R4 / A8: subscribe completed AFTER
-                    # an unsubscribe_ticker call. Queue an
-                    # immediate unsubscribe with the now-known
-                    # sid. We bind ticker→sid temporarily so
-                    # `_send_ob_unsubscribe(ws, ticker)` (drained
-                    # via _pending_unsubscribes) can look it up.
-                    self._ticker_to_sid[ticker] = sid_value
-                    self._pending_late_unsubscribes.discard(ticker)
-                    if ticker not in self._pending_unsubscribes:
-                        self._pending_unsubscribes.append(ticker)
-                    logging.warning(
-                        "WS_LATE_UNSUBSCRIBE ticker=%s sid=%s "
-                        "id=%s — subscribe completed after "
-                        "unsubscribe_ticker; queued late unsub.",
-                        ticker, sid_value, response_id)
-                else:
-                    # Unknown id (stale/orphan) — log debug and skip.
-                    logging.debug(
-                        "kalshi_ws_subscribed: unmatched id=%s "
-                        "sid=%s ticker=%s", response_id,
-                        sid_value, ticker)
+            self._handle_subscribe_ack(
+                response_id=data.get("id"),
+                sid_value=sid_value,
+                ack_kind="WS_SUBSCRIBED")
+        elif msg_type == "ok":
+            # Phase 2.10: Kalshi's actual ack for ~99% of subscribes.
+            # Empirically (Phase 2.9 raw logs):
+            #   {"id": <cmd_id>, "type": "ok", "sid": N, "seq": M,
+            #    "msg": {"market_tickers": [<cumulative list>]}}
+            # The envelope `sid` is the channel sid; same handling
+            # as type=subscribed for cmd_id matching + late-unsub.
+            # Pre-2.10 we ignored type=ok → 230 stuck subscribes
+            # in 12 min → reconnect loop.
+            self._handle_subscribe_ack(
+                response_id=data.get("id"),
+                sid_value=data.get("sid"),
+                ack_kind="WS_OK")
         elif msg_type == "unsubscribed":
             # Phase 2.6 R-review A2: confirmation-only. Sid was
             # already popped from _ticker_to_sid at send time in

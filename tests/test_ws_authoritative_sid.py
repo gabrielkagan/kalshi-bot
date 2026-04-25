@@ -153,26 +153,31 @@ class TestSubscribedResponseCapturesSid(unittest.TestCase):
 # 3. Unsubscribe uses sids array, not channels/market_tickers
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestUnsubscribeUsesSidsArray(unittest.IsolatedAsyncioTestCase):
-    async def test_unsub_sends_sids_when_known(self):
+class TestUnsubscribeUsesDeleteMarkets(unittest.IsolatedAsyncioTestCase):
+    """Phase 2.10 supersedes Phase 2.6's sids-array schema. Phase
+    2.9 raw logs revealed `sid` is CHANNEL-level (one sid for all
+    100+ tickers on orderbook_delta). Sending `cmd: unsubscribe`
+    with `sids: [channel_sid]` would cancel the entire channel —
+    nuking ~100 tickers when we only wanted to remove one. Use
+    `update_subscription` with `action: delete_markets` instead."""
+
+    async def test_unsub_sends_delete_markets(self):
         f = _make_feed()
         f._subscribed_tickers.add("BTC1")
-        f._ticker_to_sid["BTC1"] = 7
+        f._ticker_to_sid["BTC1"] = 7  # channel sid
         ws = AsyncMock()
         await f._send_ob_unsubscribe(ws, "BTC1")
         sent = json.loads(ws.send.await_args.args[0])
-        self.assertEqual(sent["cmd"], "unsubscribe")
+        self.assertEqual(sent["cmd"], "update_subscription")
         self.assertEqual(
-            sent["params"].get("sids"), [7],
-            "unsubscribe must send params.sids array per Kalshi "
-            "docs. Pre-2.6 we sent params.market_tickers which "
-            "Kalshi rejected with code=4 'Subscription IDs required'.")
+            sent["params"]["action"], "delete_markets")
+        self.assertEqual(sent["params"]["sid"], 7)
+        self.assertEqual(
+            sent["params"]["market_tickers"], ["BTC1"])
         self.assertNotIn(
-            "market_tickers", sent["params"],
-            "market_tickers is not a valid unsubscribe param.")
-        self.assertNotIn(
-            "channels", sent["params"],
-            "channels is not a valid unsubscribe param.")
+            "sids", sent["params"],
+            "sids array would cancel the WHOLE channel — must "
+            "use delete_markets for surgical single-ticker removal.")
 
     async def test_unsub_skips_when_sid_unknown(self):
         """Subscribe in flight (no sid yet) — unsubscribe can't be
@@ -218,7 +223,9 @@ class TestUnsubscribedResponseCleanup(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestAstSchemaCorrectness(unittest.TestCase):
-    def test_send_ob_unsubscribe_uses_sids(self):
+    def test_send_ob_unsubscribe_uses_delete_markets(self):
+        """Phase 2.10 schema: surgical delete_markets (NOT
+        sids-array which would nuke the whole channel)."""
         with open(BOT_PY) as fh:
             src = fh.read()
         tree = ast.parse(src)
@@ -231,13 +238,11 @@ class TestAstSchemaCorrectness(unittest.TestCase):
                         and fn.name == "_send_ob_unsubscribe"):
                     body_src = ast.unparse(fn)
                     self.assertIn(
-                        "'sids'", body_src,
-                        "_send_ob_unsubscribe must use 'sids' "
-                        "param per Kalshi docs.")
-                    self.assertNotIn(
-                        "'market_tickers'", body_src,
-                        "Pre-2.6 'market_tickers' is rejected by "
-                        "Kalshi (code=4).")
+                        "'delete_markets'", body_src,
+                        "_send_ob_unsubscribe MUST use "
+                        "delete_markets for surgical removal.")
+                    self.assertIn(
+                        "'update_subscription'", body_src)
                     return
         self.fail("_send_ob_unsubscribe not found")
 
@@ -475,8 +480,9 @@ class TestR5BenignRaceUnsubAfterSubscribed(unittest.IsolatedAsyncioTestCase):
     does NOT pop sid; drain consumes it via _send_ob_unsubscribe."""
 
     async def test_drain_can_send_unsub_after_subscribed_then_unsub(self):
+        """Phase 2.10: drain sends update_subscription/delete_markets
+        (NOT the channel-killing sids-array)."""
         f = _make_feed()
-        # 1. Subscribe in flight, response arrives.
         f._subscribed_tickers.add("RACE1")
         f._outstanding_subscribes[100] = "RACE1"
         f._handle_message(json.dumps({
@@ -484,29 +490,24 @@ class TestR5BenignRaceUnsubAfterSubscribed(unittest.IsolatedAsyncioTestCase):
             "type": "subscribed",
             "msg": {"channel": "orderbook_delta", "sid": 50},
         }))
-        # Sanity: sid bound.
         self.assertEqual(f._ticker_to_sid.get("RACE1"), 50)
-        # 2. unsubscribe_ticker called.
         f.unsubscribe_ticker("RACE1")
-        # 3. Sid MUST still be present (drain needs it).
         self.assertEqual(
             f._ticker_to_sid.get("RACE1"), 50,
-            "Phase 2.6 R5: sid must survive unsubscribe_ticker so "
-            "the drain can send unsubscribe with it. Pre-fix, "
-            "this was popped → silent leak.")
-        # 4. Drain calls _send_ob_unsubscribe — should send valid sids array.
+            "Sid must survive unsubscribe_ticker so drain can "
+            "use it for delete_markets.")
         ws = AsyncMock()
         await f._send_ob_unsubscribe(ws, "RACE1")
         ws.send.assert_awaited_once()
         sent = json.loads(ws.send.await_args.args[0])
         self.assertEqual(
-            sent["params"]["sids"], [50],
-            "Drain must use the bound sid to actually unsubscribe "
-            "the live Kalshi-side subscription.")
-        # 5. After successful send, sid pop happens.
-        self.assertNotIn(
-            "RACE1", f._ticker_to_sid,
-            "_send_ob_unsubscribe pops sid AFTER successful send.")
+            sent["params"]["action"], "delete_markets",
+            "Phase 2.10: drain must use delete_markets, NOT the "
+            "channel-killing sids-array.")
+        self.assertEqual(sent["params"]["sid"], 50)
+        self.assertEqual(sent["params"]["market_tickers"], ["RACE1"])
+        # Sid popped AFTER successful send.
+        self.assertNotIn("RACE1", f._ticker_to_sid)
 
 
 class TestR4LateUnsubscribe(unittest.TestCase):

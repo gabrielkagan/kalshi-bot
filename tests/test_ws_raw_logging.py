@@ -108,6 +108,8 @@ class TestOutgoingSubscribeLogged(unittest.IsolatedAsyncioTestCase):
 
 class TestOutgoingUnsubscribeLogged(unittest.IsolatedAsyncioTestCase):
     async def test_outgoing_unsubscribe_logged(self):
+        """Phase 2.10: unsubscribe is now sent as
+        update_subscription/delete_markets, not cmd:unsubscribe."""
         f = _make_feed()
         f._subscribed_tickers.add("BTC1")
         f._ticker_to_sid["BTC1"] = 7
@@ -116,7 +118,7 @@ class TestOutgoingUnsubscribeLogged(unittest.IsolatedAsyncioTestCase):
             await f._send_ob_unsubscribe(ws, "BTC1")
         joined = "\n".join(cm.output)
         self.assertIn("WS_RAW_OUT", joined)
-        self.assertIn("unsubscribe", joined)
+        self.assertIn("delete_markets", joined)
 
 
 class TestOutgoingGetSnapshotLogged(unittest.IsolatedAsyncioTestCase):
