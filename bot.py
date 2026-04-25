@@ -119,13 +119,29 @@ def _kalshi_breaker(method):
             recovery_seconds=getattr(method, "_breaker_recovery_seconds", 300))
         gen = breaker.acquire()
         if gen is None:
+            # DIAGNOSTIC (temporary — Step #3 verification): root-logger
+            # warning to confirm short-circuit path engages. Will be
+            # removed once breakers verified working in production.
+            logging.warning(
+                "CB_SHORT_CIRCUIT: %s state=%s failures=%d",
+                key, breaker.state, breaker.failure_count)
             return None
         try:
             resp = method(self, *args, **kwargs)
         except Exception:
             breaker.record_result(gen, success=False)
+            logging.warning(
+                "CB_FAIL_EXC: %s failures=%d/%d state=%s",
+                key, breaker.failure_count,
+                breaker._failures_to_open, breaker.state)
             raise
-        breaker.record_result(gen, success=_kalshi_breaker_success(resp))
+        ok = _kalshi_breaker_success(resp)
+        breaker.record_result(gen, success=ok)
+        if not ok:
+            logging.warning(
+                "CB_FAIL: %s failures=%d/%d state=%s",
+                key, breaker.failure_count,
+                breaker._failures_to_open, breaker.state)
         return resp
     return wrapper
 
