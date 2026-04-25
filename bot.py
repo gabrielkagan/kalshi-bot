@@ -14263,60 +14263,74 @@ class OpportunityScanner:
         # book churn. If REST_1 vs REST_2 shows big deltas, REST is not
         # stable ground truth and we can't trust it to overwrite WS.
         # See kb/failures/ws-cache-drift-investigation.md.
+        #
+        # The 2s wait + REST + comparison runs in a daemon thread so it
+        # doesn't block the main scan() loop. Apr 25 00:21 incident:
+        # synchronous time.sleep(2.0) here cascaded with other periodic
+        # tasks into 6-10s main-thread stalls (SLOW_SCAN_TICK). Threaded
+        # is safe — Kalshi client is thread-safe and this only logs.
+        # See ws-cache-drift-silent-scan-2026-04-24 PM Fix 5.
+        def _stability_reprobe_worker(_ticker, _rest_ob1, _client):
+            try:
+                time.sleep(2.0)
+                rest_resp2 = _client.get_orderbook(_ticker, depth=100)
+            except Exception as e:
+                logging.debug(
+                    "WS_DRIFT_PROBE %s rest2_fetch_failed: %s", _ticker, e)
+                return
+            if not rest_resp2 or not isinstance(rest_resp2, dict):
+                return
+            rest_ob2: Optional[Dict[str, List]] = None
+            ob_fp2 = rest_resp2.get("orderbook_fp")
+            if ob_fp2:
+                rest_ob2 = OpportunityScanner._convert_orderbook_fp(ob_fp2)
+            else:
+                legacy2 = rest_resp2.get("orderbook")
+                if isinstance(legacy2, dict):
+                    rest_ob2 = {
+                        "yes": list(legacy2.get("yes") or []),
+                        "no": list(legacy2.get("no") or []),
+                    }
+            if rest_ob2 is None:
+                return
+            for side in ("yes", "no"):
+                r1_levels = {int(lvl[0]): int(lvl[1])
+                             for lvl in (_rest_ob1.get(side) or [])
+                             if isinstance(lvl, (list, tuple)) and len(lvl) >= 2}
+                r2_levels = {int(lvl[0]): int(lvl[1])
+                             for lvl in (rest_ob2.get(side) or [])
+                             if isinstance(lvl, (list, tuple)) and len(lvl) >= 2}
+                all_prices = set(r1_levels) | set(r2_levels)
+                only_r1 = sum(1 for p in all_prices
+                              if p in r1_levels and p not in r2_levels)
+                only_r2 = sum(1 for p in all_prices
+                              if p in r2_levels and p not in r1_levels)
+                qty_mismatch = sum(1 for p in all_prices
+                                   if r1_levels.get(p, 0) != r2_levels.get(p, 0))
+                total_r1 = sum(r1_levels.values())
+                total_r2 = sum(r2_levels.values())
+                _at_cap = max(len(r1_levels), len(r2_levels)) >= 100
+                logging.warning(
+                    "WS_DRIFT_PROBE_REST_STABILITY %s %s: "
+                    "r1_levels=%d r2_levels=%d only_r1=%d only_r2=%d "
+                    "qty_mismatch=%d r1_qty_total=%d r2_qty_total=%d "
+                    "delta_qty=%+d at_depth_cap=%s",
+                    _ticker, side, len(r1_levels), len(r2_levels),
+                    only_r1, only_r2, qty_mismatch,
+                    total_r1, total_r2, total_r2 - total_r1,
+                    "yes" if _at_cap else "no")
+
         try:
-            time.sleep(2.0)   # inside scan tick; 2s acceptable cost 1×/min
-            rest_resp2 = self._client.get_orderbook(ticker, depth=100)
-        except Exception as e:
+            threading.Thread(
+                target=_stability_reprobe_worker,
+                args=(ticker, rest_ob, self._client),
+                daemon=True,
+                name=f"ws_drift_stability_{ticker[:20]}",
+            ).start()
+        except Exception:
             logging.debug(
-                "WS_DRIFT_PROBE %s rest2_fetch_failed: %s", ticker, e)
-            return
-        if not rest_resp2 or not isinstance(rest_resp2, dict):
-            return
-        rest_ob2: Optional[Dict[str, List]] = None
-        ob_fp2 = rest_resp2.get("orderbook_fp")
-        if ob_fp2:
-            rest_ob2 = OpportunityScanner._convert_orderbook_fp(ob_fp2)
-        else:
-            legacy2 = rest_resp2.get("orderbook")
-            if isinstance(legacy2, dict):
-                rest_ob2 = {
-                    "yes": list(legacy2.get("yes") or []),
-                    "no": list(legacy2.get("no") or []),
-                }
-        if rest_ob2 is None:
-            return
-
-        for side in ("yes", "no"):
-            r1_levels = {int(lvl[0]): int(lvl[1])
-                         for lvl in (rest_ob.get(side) or [])
-                         if isinstance(lvl, (list, tuple)) and len(lvl) >= 2}
-            r2_levels = {int(lvl[0]): int(lvl[1])
-                         for lvl in (rest_ob2.get(side) or [])
-                         if isinstance(lvl, (list, tuple)) and len(lvl) >= 2}
-            all_prices = set(r1_levels) | set(r2_levels)
-            only_r1 = sum(1 for p in all_prices
-                          if p in r1_levels and p not in r2_levels)
-            only_r2 = sum(1 for p in all_prices
-                          if p in r2_levels and p not in r1_levels)
-            qty_mismatch = sum(1 for p in all_prices
-                               if r1_levels.get(p, 0) != r2_levels.get(p, 0))
-            total_r1 = sum(r1_levels.values())
-            total_r2 = sum(r2_levels.values())
-
-            # Flag REST cap (if either snapshot hits 100 levels, depth=100
-            # may be truncating the tail and we can't trust "only_ws=N"
-            # signals that REST is missing levels WS has).
-            _at_cap = max(len(r1_levels), len(r2_levels)) >= 100
-
-            logging.warning(
-                "WS_DRIFT_PROBE_REST_STABILITY %s %s: "
-                "r1_levels=%d r2_levels=%d only_r1=%d only_r2=%d "
-                "qty_mismatch=%d r1_qty_total=%d r2_qty_total=%d "
-                "delta_qty=%+d at_depth_cap=%s",
-                ticker, side, len(r1_levels), len(r2_levels),
-                only_r1, only_r2, qty_mismatch,
-                total_r1, total_r2, total_r2 - total_r1,
-                "yes" if _at_cap else "no")
+                "WS_DRIFT_PROBE stability_thread_spawn_failed",
+                exc_info=True)
 
     # ── Timeslot helpers ──────────────────────────────────────────────────
 
