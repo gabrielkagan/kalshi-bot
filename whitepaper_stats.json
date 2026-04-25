@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 151399,
+  "total_evaluated": 151424,
   "filter_breakdown": {
     "candidate": 5626,
     "dc_shadow_t1b_93c": 53,
@@ -18,7 +18,7 @@
     "decided_contract_t2_z25": 182,
     "dip_addon_shadow": 29,
     "eth_low_floor_shadow": 1516,
-    "floor_raise_shadow": 5270,
+    "floor_raise_shadow": 5272,
     "golden_hour_shadow": 285,
     "hourly_asset_excluded": 162,
     "hourly_config_a": 1739,
@@ -39,22 +39,22 @@
     "hourly_observation_v2": 6828,
     "hourly_timing_restricted": 1656,
     "hourly_window_limit": 595,
-    "insufficient_edge": 47404,
+    "insufficient_edge": 47411,
     "low_price_shadow": 2513,
-    "no_side_price_shadow_no_xrp": 3836,
+    "no_side_price_shadow_no_xrp": 3837,
     "no_side_price_shadow_xrp": 802,
-    "no_side_shadow": 166,
+    "no_side_shadow": 167,
     "observation_trade": 83,
     "overnight_discount": 110,
     "overnight_discount_shadow": 317,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 24548,
+    "price_out_of_range": 24552,
     "price_shadow": 52,
     "price_shadow_no_xrp": 4019,
     "price_shadow_xrp": 1599,
     "relaxed_edge_shadow": 1234,
     "silent_loss_cooldown": 25,
-    "silent_vol_none": 113,
+    "silent_vol_none": 116,
     "single_asset_selection": 5,
     "sol_high_edge_shadow": 189,
     "sol_low_entry_high_stc": 41,
@@ -62,7 +62,7 @@
     "sports_deficit_too_large": 16,
     "sports_excluded_lr": 14,
     "sports_excluded_price": 32,
-    "sports_excluded_sport": 78,
+    "sports_excluded_sport": 79,
     "sports_insufficient_edge": 129,
     "sports_late_game": 98,
     "sports_model_overconfident": 6,
@@ -82,21 +82,21 @@
     "tm_nbbo_buffer_shadow": 553,
     "usaft_short_stc": 126,
     "weather_excluded_city": 132,
-    "weather_excluded_mtype_bracket": 429,
+    "weather_excluded_mtype_bracket": 433,
     "weather_excluded_mtype_upper_tail": 46,
-    "weather_observation": 2931,
+    "weather_observation": 2932,
     "weather_shadow_capped30": 38,
     "weather_shadow_capped30_short_stc": 2,
     "weather_shadow_short_stc": 8,
     "weather_timing_restricted": 1047,
     "weekend_discount": 328,
-    "weekend_discount_shadow": 308,
+    "weekend_discount_shadow": 309,
     "xrp_shadow": 126,
     "zero_sizing": 803
   },
-  "total_settled": 2857,
-  "total_wins": 2662,
-  "observation_pnl": 87208,
+  "total_settled": 2858,
+  "total_wins": 2663,
+  "observation_pnl": 87299,
   "total_trades": 5626,
   "win_rate_by_price": {
     "80-84": {
@@ -108,8 +108,8 @@
       "wins": 395
     },
     "90-94": {
-      "n": 694,
-      "wins": 649
+      "n": 695,
+      "wins": 650
     },
     "95-99": {
       "n": 1551,
@@ -159,5 +159,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-25",
-  "generated_at": "2026-04-25T18:55:28Z"
+  "generated_at": "2026-04-25T19:25:39Z"
 }
