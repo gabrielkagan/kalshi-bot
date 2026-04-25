@@ -20198,7 +20198,22 @@ class MainLoop:
             logging.debug("HWM balance recording failed", exc_info=True)
 
         # Run opportunity scanner (always — execute() rejects if asset already active)
-        candidates = self.scanner.scan(self._active_windows)
+        # Body-duration timing — SCAN_BODY_SLOW fires when scan()'s own
+        # execution exceeds 1.5s. Distinguishes "scan body is slow"
+        # from "work between scan calls is slow". The latter would
+        # show in the SLOW_SCAN_TICK gap measurement without showing
+        # here. Apr 25 00:55 incident: SLOW_SCAN_TICK 6.13s with zero
+        # PERIODIC_TASK_SLOW means the blocker is in scan() body
+        # itself OR in tick body outside the periodic-task cluster.
+        _scan_body_start_perf = time.perf_counter()
+        try:
+            candidates = self.scanner.scan(self._active_windows)
+        finally:
+            _scan_body_dt = time.perf_counter() - _scan_body_start_perf
+            if _scan_body_dt > 1.5:
+                logging.warning(
+                    "SCAN_BODY_SLOW: scanner.scan body took %.2fs",
+                    _scan_body_dt)
         if self.scanner._last_scan_stats:
             try:
                 self.logger.log_scan({
