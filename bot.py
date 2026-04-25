@@ -19433,6 +19433,11 @@ class MainLoop:
         self._active_windows: List[Dict] = []
         self._discovery_ob_tickers: set = set()
         self._last_market_refresh: float = 0.0
+        # Re-entry guard for market-refresh worker thread. Apr 25 00:45
+        # incident: refresh_active_windows + subscribe took 1.5-2s on
+        # the main thread (9+ REST calls), accounting for the residual
+        # SLOW_SCAN_TICK gap after the SettlementTracker fix.
+        self._market_refresh_running: bool = False
         self._last_wal_checkpoint: float = 0.0
         self._last_error: Optional[str] = None
         self._last_error_time: float = 0.0
@@ -19937,22 +19942,51 @@ class MainLoop:
         # is to blame in the next round of logs.
         _PERIODIC_SLOW_THRESHOLD_S = 1.5
 
-        # Refresh market list periodically
-        if now - self._last_market_refresh >= MARKET_REFRESH_SECONDS:
-            _t = time.perf_counter()
-            self._refresh_active_windows()
-            _dt = time.perf_counter() - _t
-            if _dt > _PERIODIC_SLOW_THRESHOLD_S:
-                logging.warning(
-                    "PERIODIC_TASK_SLOW: refresh_active_windows took %.2fs",
-                    _dt)
-            _t = time.perf_counter()
-            self._subscribe_discovery_orderbooks()   # dashboard visibility
-            _dt = time.perf_counter() - _t
-            if _dt > _PERIODIC_SLOW_THRESHOLD_S:
-                logging.warning(
-                    "PERIODIC_TASK_SLOW: subscribe_discovery_orderbooks "
-                    "took %.2fs", _dt)
+        # Refresh market list periodically — runs in a daemon worker
+        # thread so 9+ Kalshi REST calls don't block the main scan
+        # loop. _active_windows reassignment is atomic (Python ref
+        # write); readers see either the prior list or the new one.
+        # `_market_refresh_running` prevents thread pile-up if a
+        # cycle exceeds MARKET_REFRESH_SECONDS. (Apr 25 00:45 fix.)
+        if (now - self._last_market_refresh >= MARKET_REFRESH_SECONDS
+                and not self._market_refresh_running):
+            self._last_market_refresh = now
+            self._market_refresh_running = True
+
+            def _market_refresh_worker():
+                try:
+                    _t = time.perf_counter()
+                    self._refresh_active_windows()
+                    _dt = time.perf_counter() - _t
+                    if _dt > _PERIODIC_SLOW_THRESHOLD_S:
+                        logging.warning(
+                            "PERIODIC_TASK_SLOW: refresh_active_windows "
+                            "took %.2fs (worker thread)", _dt)
+                    _t = time.perf_counter()
+                    self._subscribe_discovery_orderbooks()
+                    _dt = time.perf_counter() - _t
+                    if _dt > _PERIODIC_SLOW_THRESHOLD_S:
+                        logging.warning(
+                            "PERIODIC_TASK_SLOW: "
+                            "subscribe_discovery_orderbooks took %.2fs "
+                            "(worker thread)", _dt)
+                except Exception:
+                    logging.error(
+                        "market_refresh_worker failed", exc_info=True)
+                finally:
+                    self._market_refresh_running = False
+
+            try:
+                threading.Thread(
+                    target=_market_refresh_worker,
+                    daemon=True,
+                    name="market_refresh",
+                ).start()
+            except Exception:
+                self._market_refresh_running = False
+                logging.debug(
+                    "market_refresh worker spawn failed",
+                    exc_info=True)
 
         # Check settlements periodically (self-throttled)
         _t = time.perf_counter()
