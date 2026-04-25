@@ -71,11 +71,15 @@ See:
 from __future__ import annotations
 
 import enum
+import logging
 import math
 import threading
 import time
 from contextlib import contextmanager
 from typing import Dict, Iterator, Optional
+
+
+_log = logging.getLogger(__name__)
 
 
 class State(enum.Enum):
@@ -103,7 +107,8 @@ class CircuitBreaker:
 
     def __init__(self, failures_to_open: int = 3,
                  recovery_seconds: float = 300.0,
-                 probe_timeout_seconds: float = 30.0) -> None:
+                 probe_timeout_seconds: float = 30.0,
+                 name: str = "<unnamed>") -> None:
         # Type-check first — Python's `bool` is a subclass of `int`,
         # so `failures_to_open=True` would silently become 1. Reject.
         if not isinstance(failures_to_open, int) or isinstance(
@@ -127,6 +132,7 @@ class CircuitBreaker:
         self._failures_to_open = failures_to_open
         self._recovery_seconds = recovery_seconds
         self._probe_timeout_seconds = probe_timeout_seconds
+        self.name: str = name
         self._state: State = State.CLOSED
         self._failures: int = 0
         self._opened_at: Optional[float] = None
@@ -222,6 +228,9 @@ class CircuitBreaker:
                     self._failures = 0
                     self._opened_at = None
                     self._generation += 1
+                    _log.info(
+                        "CIRCUIT_BREAKER_RECOVERED: %s "
+                        "(probe success → CLOSED)", self.name)
                 else:
                     # Probe failed — back to OPEN. Reset failure
                     # counter so the next CLOSED epoch starts fresh
@@ -231,6 +240,9 @@ class CircuitBreaker:
                     self._opened_at = time.monotonic()
                     self._failures = 0
                     self._generation += 1
+                    _log.warning(
+                        "CIRCUIT_BREAKER_REOPENED: %s "
+                        "(probe failed → OPEN)", self.name)
                 return
 
             if self._state is State.CLOSED:
@@ -250,6 +262,11 @@ class CircuitBreaker:
                         # in a separate counter (future work).
                         self._failures = 0
                         self._generation += 1
+                        _log.warning(
+                            "CIRCUIT_BREAKER_TRIPPED: %s "
+                            "(threshold=%d, recovery=%.0fs)",
+                            self.name, self._failures_to_open,
+                            self._recovery_seconds)
                 return
 
             # State.OPEN: shouldn't be reachable with a matching
@@ -377,6 +394,9 @@ class CircuitBreakerRegistry:
             existing = self._breakers.get(key)
             if existing is not None:
                 return existing
+            # Auto-name from registry key so logs identify which
+            # endpoint tripped (round-1 A3 of step #2 review).
+            kwargs.setdefault("name", key)
             breaker = CircuitBreaker(**kwargs)
             self._breakers[key] = breaker
             return breaker
