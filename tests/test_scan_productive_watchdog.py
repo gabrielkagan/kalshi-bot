@@ -65,6 +65,7 @@ def _make_scanner(
     # Set start-of-process timestamp so uptime calculation is deterministic.
     s._scan_15m_process_start_ts = time.time() - (uptime_minutes * 60)
     s._scan_15m_unproductive_count = 0
+    s._scan_15m_iter_heartbeat_ts = 0.0
     # Provide a minimal StateManager stub exposing conn.
     state = MagicMock()
     state.conn = conn
@@ -240,6 +241,104 @@ class TestStartupGrace(unittest.TestCase):
             for _ in range(5):
                 s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
         fake_telegram.send.assert_called()
+
+
+class TestHeartbeatProductivity(unittest.TestCase):
+    """Regression — Apr 24 00:08 UTC false positive. The dedup at
+    insert_evaluated_opportunity sites can suppress DB rows for a
+    window's entire 15-min lifetime once each (ticker, stage) tuple
+    has been seen. Watchdog measuring DB row count alone fires
+    incorrectly even though scan() is iterating windows healthily.
+
+    Fix: scan() updates `_scan_15m_iter_heartbeat_ts = time.time()` at
+    the top of each 15M window iteration body. Watchdog treats a
+    heartbeat newer than `tick_start_ts` as productive."""
+
+    def test_heartbeat_resets_counter_even_with_zero_db_rows(self):
+        s = _make_scanner(uptime_minutes=30.0, wrote_rows_this_tick=0)
+        # Simulate scan() having iterated a 15M window AFTER the prev
+        # tick start — heartbeat should mark this tick productive.
+        s._scan_15m_iter_heartbeat_ts = time.time()
+        s._scan_15m_unproductive_count = 4  # one tick away from alert
+        s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
+        self.assertEqual(s._scan_15m_unproductive_count, 0,
+                         "heartbeat should reset counter even though "
+                         "no DB rows were written this tick")
+
+    def test_no_heartbeat_still_alerts(self):
+        """Inverse — when scan() never reaches the 15M iteration body
+        (real silent bail upstream), heartbeat is stale and the
+        watchdog must still fire after threshold."""
+        s = _make_scanner(uptime_minutes=30.0, wrote_rows_this_tick=0)
+        # Heartbeat is OLDER than tick_start_ts (stale).
+        s._scan_15m_iter_heartbeat_ts = time.time() - 100
+        fake_telegram = MagicMock()
+        with patch.object(bot, "_TELEGRAM", fake_telegram):
+            for _ in range(6):
+                s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
+        fake_telegram.send.assert_called()
+
+    def test_db_row_alone_is_still_sufficient(self):
+        """Backward-compat — if scan DOES write a DB row, that's still
+        productive even without a heartbeat (e.g., on first tick of a
+        fresh window before heartbeat is set)."""
+        s = _make_scanner(uptime_minutes=30.0, wrote_rows_this_tick=1)
+        s._scan_15m_iter_heartbeat_ts = 0.0  # never set
+        s._scan_15m_unproductive_count = 4
+        s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
+        self.assertEqual(s._scan_15m_unproductive_count, 0)
+
+
+class TestScanHeartbeatWiring(unittest.TestCase):
+    """scan() body must update `_scan_15m_iter_heartbeat_ts =
+    time.time()` for 15M windows. AST regression to prevent future
+    refactors from removing the heartbeat assignment."""
+
+    def test_scan_updates_heartbeat_for_15m_windows(self):
+        import ast
+        with open(bot.__file__) as f:
+            tree = ast.parse(f.read())
+        scan_fn = None
+        for cls in ast.walk(tree):
+            if (isinstance(cls, ast.ClassDef)
+                    and cls.name == "OpportunityScanner"):
+                for node in cls.body:
+                    if (isinstance(node, ast.FunctionDef)
+                            and node.name == "scan"):
+                        scan_fn = node
+                        break
+        self.assertIsNotNone(scan_fn,
+                             "OpportunityScanner.scan not found")
+        found = False
+        for sub in ast.walk(scan_fn):
+            if not isinstance(sub, ast.Assign):
+                continue
+            for tgt in sub.targets:
+                if (isinstance(tgt, ast.Attribute)
+                        and tgt.attr == "_scan_15m_iter_heartbeat_ts"
+                        and isinstance(tgt.value, ast.Name)
+                        and tgt.value.id == "self"):
+                    found = True
+                    break
+        self.assertTrue(found,
+                        "scan() must update self._scan_15m_iter_heartbeat_ts "
+                        "to keep watchdog accurate when dedup suppresses "
+                        "DB writes. See ws-cache-drift-silent-scan-2026-04-24 "
+                        "Apr 24 00:08 UTC false positive.")
+
+
+class TestSlowTickInstrumentation(unittest.TestCase):
+    """Regression — scan() must log a SLOW_SCAN_TICK warning when the
+    gap between consecutive ticks exceeds 2s. Diagnoses the
+    clock_drift / event-loop stall pattern documented in PM Fix 5."""
+
+    def test_scan_contains_slow_tick_log(self):
+        with open(bot.__file__) as f:
+            src = f.read()
+        self.assertIn("SLOW_SCAN_TICK", src,
+                      "scan() must emit a SLOW_SCAN_TICK warning when "
+                      "tick-to-tick gap > 2s — see PM Fix 5 (event-loop "
+                      "stall diagnostic).")
 
 
 class TestScanWiring(unittest.TestCase):

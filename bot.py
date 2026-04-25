@@ -7344,6 +7344,13 @@ class OpportunityScanner:
         self._recent_opportunities: deque = deque(maxlen=20)
         self._ticker_ask_history: Dict[str, deque] = {}
         self._eval_opp_seen: set = set()  # 2-tuples (ticker, stage) or 3-tuples (ticker, stage, side)
+        # Scan-productivity heartbeat — updated each tick when scan() actually
+        # iterates a 15M window body. Watchdog reads this instead of DB row
+        # count: dedup at insert sites can suppress writes for a window's
+        # entire 15-min lifetime once each (ticker, stage) tuple is seen,
+        # producing watchdog false positives even though scan is healthy.
+        # See ws-cache-drift-silent-scan-2026-04-24 PM Apr 24 incident #3.
+        self._scan_15m_iter_heartbeat_ts: float = 0.0
         self._dc_skip_cooldown: Dict[str, float] = {}  # ticker → expiry timestamp (60s after "no asks" skip)
         self._shadow_cal_last_log: Dict[str, float] = {}
         # Hourly per-window tracking (reset each scan tick)
@@ -7854,6 +7861,7 @@ class OpportunityScanner:
     def scan(self, active_windows: List[Dict]) -> Optional[List[Dict]]:
         """Evaluate all windows/markets, return best candidate or None."""
         now = time.time()
+        _scan_tick_start_perf = time.perf_counter()
         ob_fetches_this_tick = 0
         candidates: List[Dict] = []
 
@@ -7873,10 +7881,22 @@ class OpportunityScanner:
         except Exception:
             logging.debug("15M silence alert check failed", exc_info=True)
 
+        # Slow-tick instrumentation — log when gap between consecutive
+        # scan() entries exceeds 2s. Diagnoses event-loop / main-thread
+        # stalls (PM Fix 5 deferred — clock_drift_detected pattern).
+        _prev_tick_start_perf = getattr(self, "_last_tick_start_perf", None)
+        if _prev_tick_start_perf is not None:
+            _gap = _scan_tick_start_perf - _prev_tick_start_perf
+            if _gap > 2.0:
+                logging.warning(
+                    "SLOW_SCAN_TICK: %.2fs since previous tick start "
+                    "(suggests main-thread stall — see PM Fix 5)", _gap)
+        self._last_tick_start_perf = _scan_tick_start_perf
+
         # Scan-productive watchdog (fix #3 — 2026-04-24 22:12 UTC defense).
-        # Checks whether the PREVIOUS tick wrote any 15m DB rows. Fires
-        # Telegram after 5 consecutive silent-bail ticks (~2.5 min),
-        # 4× faster than the silence watchdog above. See
+        # Checks whether the PREVIOUS tick wrote any 15m DB rows OR
+        # iterated a 15M window body (heartbeat). Fires Telegram after
+        # 5 consecutive silent-bail ticks (~2.5 min). See
         # kb/failures/ws-cache-drift-silent-scan-2026-04-24.md.
         _prev_tick_ts = getattr(self, "_last_tick_start_iso", None)
         _now_iso = datetime.datetime.now(timezone.utc).strftime(
@@ -8131,6 +8151,13 @@ class OpportunityScanner:
         for window in eligible_windows:
             asset = window["asset"]
             _pt = window.get("product_type")
+
+            # Productivity heartbeat — set as soon as scan() reaches a 15M
+            # window iteration body. Decoupled from DB writes because dedup
+            # at insert sites can silence rows for an entire window's
+            # lifetime even though scan is iterating normally.
+            if _pt in (None, "15m"):
+                self._scan_15m_iter_heartbeat_ts = time.time()
 
             # Loss burst cooldown: skip 15M entries for assets with a recent loss.
             # Bursts are driven by correlated macro moves; pausing 2h after any
@@ -14044,6 +14071,23 @@ class OpportunityScanner:
         if uptime < SCAN_UNPRODUCTIVE_MIN_UPTIME_SECONDS:
             return
 
+        # Heartbeat-based productivity check — true when scan() actually
+        # iterated a 15M window body since `tick_start_ts`. Decoupled from
+        # DB row counts because the dedup at insert sites can suppress
+        # writes for a window's entire 15-min lifetime once each
+        # (ticker, stage) is seen, producing watchdog false positives
+        # even when scan is healthy. (Apr 24 23:53 UTC false positive.)
+        try:
+            tick_start_dt = datetime.datetime.strptime(
+                tick_start_ts.replace("Z", "+00:00"),
+                "%Y-%m-%dT%H:%M:%S.%f%z")
+            tick_start_epoch = tick_start_dt.timestamp()
+        except Exception:
+            tick_start_epoch = 0.0
+        heartbeat_recent = (
+            self._scan_15m_iter_heartbeat_ts > tick_start_epoch)
+        # Fallback: also check DB rows for backward-compat with the
+        # original intent. Either signal indicates productive scan.
         try:
             row = self._state.conn.execute(
                 "SELECT "
@@ -14056,7 +14100,7 @@ class OpportunityScanner:
         except Exception:
             return
         rows_written = row[0] if row else 0
-        if rows_written > 0:
+        if heartbeat_recent or rows_written > 0:
             self._scan_15m_unproductive_count = 0
             return
 
