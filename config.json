@@ -128,112 +128,112 @@
     },
     "PRICE_BUFFER_SIZE": {
       "value": 1800,
-      "line": 419,
+      "line": 429,
       "description": "CoinbaseFeed price buffer size (seconds of 1s snapshots)"
     },
     "RK_TV_SHADOW_MODE": {
       "value": false,
-      "line": 427,
+      "line": 437,
       "description": "TV RK weights shadow mode"
     },
     "CROSS_EXCHANGE_ENABLED": {
       "value": true,
-      "line": 479,
+      "line": 489,
       "description": "Cross-exchange feed enabled"
     },
     "CROSS_EXCHANGE_BUFFER_SIZE": {
       "value": 15,
-      "line": 489,
+      "line": 499,
       "description": "Cross-exchange price buffer size"
     },
     "CROSS_EXCHANGE_LEAD_THRESHOLD": {
       "value": 0.002,
-      "line": 490,
+      "line": 500,
       "description": "Single-exchange lead threshold"
     },
     "CROSS_EXCHANGE_CONSENSUS_THRESHOLD": {
       "value": 0.003,
-      "line": 491,
+      "line": 501,
       "description": "Consensus threshold"
     },
     "CROSS_EXCHANGE_CONSENSUS_MIN": {
       "value": 3,
-      "line": 492,
+      "line": 502,
       "description": "Minimum exchanges for consensus"
     },
     "CROSS_EXCHANGE_STALE_SECONDS": {
       "value": 30.0,
-      "line": 493,
+      "line": 503,
       "description": "Cross-exchange stale data timeout"
     },
     "KALSHI_OFT_SHADOW_MODE": {
       "value": true,
-      "line": 514,
+      "line": 524,
       "description": "Kalshi OFT shadow mode"
     },
     "CALIBRATION_MIN_SAMPLES_PLATT": {
       "value": 200,
-      "line": 535,
+      "line": 545,
       "description": "Min samples for Platt calibration"
     },
     "CALIBRATION_MIN_SAMPLES_BETA": {
       "value": 350,
-      "line": 536,
+      "line": 546,
       "description": "Min samples for Beta calibration"
     },
     "CALIBRATION_MIN_SAMPLES_BLR": {
       "value": 50,
-      "line": 537,
+      "line": 547,
       "description": "Min samples for BLR calibration"
     },
     "MARKET_BLEND_W": {
       "value": 0.4,
-      "line": 564,
+      "line": 574,
       "description": "Market blend weight (0=pure model, 1=pure market)"
     },
     "SHADOW_CAL_PIPELINE": {
       "value": true,
-      "line": 568,
+      "line": 578,
       "description": "Cal pipeline shadow mode"
     },
     "Z_SCORE_MAX": {
       "value": 25.0,
-      "line": 572,
+      "line": 582,
       "description": "Z-score rejection threshold"
     },
     "MIN_EDGE_PCT": {
       "value": 0.25,
-      "line": 644,
+      "line": 654,
       "description": "Flat minimum edge fallback"
     },
     "BALANCE_CACHE_TTL": {
       "value": 10.0,
-      "line": 1066,
+      "line": 1076,
       "description": "Balance cache TTL (seconds)"
     },
     "DIRECT_TAKER_THRESHOLD": {
       "value": 180.0,
-      "line": 1078,
+      "line": 1088,
       "description": "Skip maker and go IOC below this many seconds"
     },
     "MAKER_ONLY_THRESHOLD": {
       "value": 0.0,
-      "line": 1080,
+      "line": 1090,
       "description": "No taker execution below this many seconds"
     },
     "ESCALATION_WAIT_LONG": {
       "value": 15.0,
-      "line": 1225,
+      "line": 1235,
       "description": "Maker wait for long STC"
     },
     "ESCALATION_WAIT_MEDIUM": {
       "value": 7.0,
-      "line": 1228,
+      "line": 1238,
       "description": "Maker wait for medium STC"
     },
     "ESCALATION_WAIT_SHORT": {
       "value": 5.0,
-      "line": 1229,
+      "line": 1239,
       "description": "Maker wait for short STC"
     },
     "HOURLY_EXCLUDED_ASSETS": {
@@ -267,7 +267,7 @@
           "bybit": "XRPUSDT"
         }
       },
-      "line": 480,
+      "line": 490,
       "description": "Cross-exchange symbol mapping"
     },
     "DYNAMIC_CAP_SCHEDULE": {
@@ -293,7 +293,7 @@
           0.995
         ]
       ],
-      "line": 544,
+      "line": 554,
       "description": "Dynamic probability cap schedule (STC, cap)"
     },
     "HOURLY_DYNAMIC_CAP_SCHEDULE": {
@@ -319,7 +319,7 @@
           0.999
         ]
       ],
-      "line": 556,
+      "line": 566,
       "description": "Hourly dynamic probability cap schedule"
     },
     "MIN_EDGE_BY_PRICE": {
@@ -349,17 +349,17 @@
           0.0025
         ]
       ],
-      "line": 905,
+      "line": 915,
       "description": "Price-dependent edge schedule"
     }
   },
-  "_bot_lines": 20979,
+  "_bot_lines": 21245,
   "_exchange_feeds": [
     "CoinbaseFeed",
     "CrossExchangeFeed",
     "KalshiFeed"
   ],
-  "_extracted_at": "2026-04-25T11:41:33Z",
+  "_extracted_at": "2026-04-25T12:30:59Z",
   "_bot_path": "/home/runner/work/kalshi-bot/kalshi-bot/bot.py",
   "_weather": {
     "weather_city_count": 19,
