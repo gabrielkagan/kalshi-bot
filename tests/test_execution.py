@@ -731,12 +731,19 @@ class TestStrategyClampPolicy(unittest.TestCase):
         self.assertEqual(call_kwargs["count"], 100)
         self.assertEqual(cand["position_size"], 100)
 
-    def test_top_of_book_strategy_stays_clamped_to_thin_top(self):
-        """TAKER_NOW keeps Variant B protection: clamp to ask_depth even when
-        count exceeds depth. Sub-floor-risk paths cannot benefit from the
-        sweep behavior because fills below per-asset floor would be rejected."""
+    def test_taker_now_ships_full_count_no_clamp_policy(self):
+        """Apr 25 2026: TAKER_NOW switched from top_of_book to no_clamp.
+        Single-level clamp was capping 15M direct/escalation paths at
+        ~3ct on thin-top books, driving avg fill from 64ct to 33ct (a
+        50% size drop). The catastrophic-case safety nets (PHANTOM_ABORT
+        on fresh=0 + IOC_DRIFT_CHECK rolling-window REST) handle real
+        phantom regardless of strategy policy. Variant B sub-floor sweep
+        risk is documented as net +$178/22d historically.
+
+        With no_clamp: order ships at full Kelly count; Kalshi auto-
+        cancels surplus at $0 charge; sweeps sub-best asks if any."""
         ex = self._make_ex()
-        self._stub_fill(ex, "ord-taker", 1, price=90)
+        self._stub_fill(ex, "ord-taker", 100, price=90)
         cand = _make_candidate(
             best_yes_ask=90,
             position_size=100,
@@ -744,14 +751,38 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 1, "best_ask": 90},
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
+        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=100):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
-        self.assertEqual(call_kwargs["count"], 1)
-        self.assertEqual(cand["position_size"], 1)
+        self.assertEqual(
+            call_kwargs["count"], 100,
+            "TAKER_NOW must now ship full count (no_clamp policy). "
+            "If this fails, the policy was reverted — verify "
+            "STRATEGY_CLAMP_POLICY['TAKER_NOW'] == 'no_clamp'.")
+        self.assertEqual(cand["position_size"], 100)
+
+    def test_strategy_clamp_policy_pins_15m_paths_to_no_clamp(self):
+        """Pin the post-Apr-25 policy: dominant 15M IOC paths
+        (MAKER_AGGRESSIVE escalation, PANIC_CAPTURE, TAKER_NOW
+        direct, CONFIRMATION_ADDON, DIP_ADDON) are no_clamp. A
+        future revert to top_of_book on these would re-trigger
+        the 50% size drop, so this test catches that regression."""
+        import bot
+        no_clamp_required = {
+            "TAKER_NOW", "MAKER_PATIENT", "MAKER_AGGRESSIVE",
+            "PANIC_CAPTURE", "CONFIRMATION_ADDON", "DIP_ADDON",
+        }
+        for strat in no_clamp_required:
+            self.assertEqual(
+                bot.STRATEGY_CLAMP_POLICY.get(strat), "no_clamp",
+                f"Strategy {strat!r} must be 'no_clamp' per the "
+                f"Apr 25 size-restoration fix. Reverting to "
+                f"'top_of_book' clamps 15M IOCs to single-level "
+                f"top-of-book qty (~3ct on thin-top books) and "
+                f"halves average fill size.")
 
     def test_known_loser_tm_95_stays_clamped_to_top(self):
         """TM_95 is a historical net loser (-$237/30d). Policy pins it to

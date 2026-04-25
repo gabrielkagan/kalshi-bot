@@ -1152,13 +1152,32 @@ STRATEGY_CLAMP_POLICY = {
     # prices — the prior loss history is the real reason to leave them off.
     "terminal_momentum_95": "top_of_book",
     "terminal_momentum_97": "top_of_book",
-    # Sub-floor-risk-exposed paths — Variant B protection earns its keep
-    "TAKER_NOW": "top_of_book",
-    "MAKER_PATIENT": "top_of_book",
-    "MAKER_AGGRESSIVE": "top_of_book",
-    "PANIC_CAPTURE": "top_of_book",
-    "CONFIRMATION_ADDON": "top_of_book",
-    "DIP_ADDON": "top_of_book",
+    # Apr 25 2026: switched 15M direct/escalation paths from
+    # top_of_book to no_clamp. Single-level clamp was capping orders
+    # at top-of-book qty (avg ~3-15ct on 96c+ markets), driving
+    # 15M avg fill from 64ct pre-clamp to 33ct post-clamp — a 50%
+    # size drop on the dominant 15M IOC paths (MAKER_AGGRESSIVE
+    # post_only escalation, PANIC_CAPTURE, TAKER_NOW direct entry).
+    # Variant B (sub-floor IOC sweep) risk is documented in
+    # memory/bug_ioc_subfloor_fill.md as cohort net +$178/22d
+    # (positive EV historically), so re-enabling that path is a
+    # feature not a bug. Catastrophic-case safety nets remain:
+    #   - PHANTOM_ABORT on _rest_fresh==0 (real-time empty book)
+    #   - IOC_DRIFT_CHECK rolling-window REST smoothed-peak clamp
+    #     (catches sustained WS-vs-REST phantom — the Apr 24
+    #     incident pattern WS=765/REST=1)
+    #   - Circuit breakers on REST GETs
+    # Those upstream defenses fire regardless of strategy policy.
+    # `low_price_near_expiry`: price-floor sensitive (LPNE enters
+    # at the floor; sub-floor sweep would breach the floor gate).
+    # `bracket_no`: observation-only with fixed 1ct sizing where
+    # the clamp is never binding.
+    "TAKER_NOW": "no_clamp",
+    "MAKER_PATIENT": "no_clamp",
+    "MAKER_AGGRESSIVE": "no_clamp",
+    "PANIC_CAPTURE": "no_clamp",
+    "CONFIRMATION_ADDON": "no_clamp",
+    "DIP_ADDON": "no_clamp",
     "low_price_near_expiry": "top_of_book",
     "bracket_no": "top_of_book",
 }

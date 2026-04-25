@@ -145,7 +145,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 
 ## Project Structure
 
-- `bot.py` — Main bot (~21245 lines, all trading logic)
+- `bot.py` — Main bot (~21482 lines, all trading logic)
 - `analyst.py` — AI analyst system (news sentiment, loss analysis, Telegram alerts)
 - `spx_engine.py` — SPX hourly market engine (Polygon.io price feed, EGARCH, RK, VIX integration)
 - `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
