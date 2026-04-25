@@ -1184,7 +1184,20 @@ STRATEGY_CLAMP_DEFAULT = "top_of_book"  # conservative fallback for unrecognized
 # NBBO path; this version only fires when cache claims depth is present.
 IOC_DRIFT_CHECK_ENABLED = os.environ.get("IOC_DRIFT_CHECK_ENABLED", "1") == "1"
 IOC_DRIFT_CHECK_MIN_CACHED_DEPTH = 20   # skip REST if cached depth already thin
-IOC_DRIFT_CHECK_DIVERGENCE_RATIO = 0.5  # clamp if rest < ratio * cached
+# Clamp if REST windowed-peak < ratio * cached. "rest" here is the
+# rolling-window peak from `_rest_best_ask_depth_smoothed`, not a
+# single REST sample (see IOC_DRIFT_CHECK_REST_WINDOW_S below).
+IOC_DRIFT_CHECK_DIVERGENCE_RATIO = 0.5
+# Rolling-window smoothing (Apr 25 2026): a single REST sample is
+# itself volatile — WS_DRIFT_PROBE_REST_STABILITY observed two REST
+# calls 1s apart on the same ticker disagreeing by 900 contracts.
+# Use the PEAK depth across recent REST observations as the clamp
+# authority. Phantom WS still triggers (REST stays consistently low →
+# peak stays low). Transient REST blips do NOT trigger (peak preserves
+# an earlier higher reading). 5s = ~5 IOC-paths worth of observations
+# — wide enough to ride out single-call noise, narrow enough that a
+# real depth collapse propagates within a few seconds.
+IOC_DRIFT_CHECK_REST_WINDOW_S = 5.0
 # If REST-drift-corrected depth would clamp count below this floor, abort the
 # IOC rather than filling a near-zero-EV micro-position. TM at 99c with 1ct
 # fill: revenue=100 - cost=99 - fee=1 = 0¢ win vs -$1.00 loss = −$0.01 EV.
@@ -14732,6 +14745,13 @@ class OrderExecutor:
         # Per-ticker API error cap: stop hammering after 3 consecutive api_errors
         self._ticker_api_errors: Dict[str, int] = {}  # ticker → consecutive error count
         self.TICKER_API_ERROR_CAP = 3
+        # Rolling buffer of recent REST best-ask depth observations
+        # per ticker, used to smooth the IOC drift-check clamp. Each
+        # entry is (ts, depth); samples older than
+        # IOC_DRIFT_CHECK_REST_WINDOW_S are pruned at observation time.
+        # The clamp authority is `max(depths in window)` rather than
+        # a single REST sample — see _rest_best_ask_depth_smoothed.
+        self._rest_depth_observations: Dict[str, deque] = {}
         self._session_post_only_degraded_attempts: int = 0
         self._session_post_only_taker_escalations: int = 0
         self._session_post_only_taker_fills: int = 0
@@ -16268,6 +16288,12 @@ class OrderExecutor:
         Adds ~30-50ms latency per call. Should only be invoked from IOC
         submit paths where cache claims non-trivial depth — see
         IOC_DRIFT_CHECK_MIN_CACHED_DEPTH.
+
+        Note: callers should prefer `_rest_best_ask_depth_smoothed`
+        which records this single sample into the rolling-window
+        buffer and returns the peak across recent observations.
+        Single REST samples are themselves volatile — see
+        WS_DRIFT_PROBE_REST_STABILITY.
         """
         try:
             ob_resp = self._client.get_orderbook(ticker, depth=5)
@@ -16283,6 +16309,143 @@ class OrderExecutor:
             return OrderExecutor._best_ask_depth(fresh_ob)
         except Exception:
             return None
+
+    # Sanity bound for a recorded depth value. Kalshi best-ask
+    # depths are typically <50k contracts; rejecting anything past
+    # 100k catches realistic schema-drift bugs (e.g., REST returning
+    # sum-of-levels rather than top-of-book = ~10–50× inflation).
+    # Round 1 P1 + Round 2 [A5] tightening — 1M was too loose to
+    # catch any plausible bug class.
+    _REST_DEPTH_SAMPLE_MAX = 100_000
+
+    # Minimum samples in the rolling window before the smoothed peak
+    # is trusted as the clamp authority. With only 1 sample, the
+    # smoothed helper degenerates to single-sample clamping — the
+    # exact pre-fix bug. Round 2 [A1] cold-start gate: if the buffer
+    # has <2 samples within the window, the drift-check skips the
+    # clamp altogether and falls through to the existing policy
+    # (cached `_ask_depth` + STRATEGY_CLAMP_POLICY), which is the
+    # behavior that worked for months pre-a56ecc7. PHANTOM_ABORT
+    # still fires on fresh=0 regardless of cold-start state.
+    _REST_DEPTH_MIN_SAMPLES_FOR_CLAMP = 2
+
+    # Threading: `_rest_depth_observations` is read/written ONLY from
+    # the main thread (executor's `_submit_taker` and helpers). No
+    # WS thread, refresh worker, or engine thread touches it today.
+    # If a future engine ever calls into `_submit_taker` from a
+    # different thread, wrap the deque ops in a lock — `popleft` is
+    # atomic individually but the prune-then-append pattern in
+    # `_record_rest_depth_observation` is not. (Round 2 [A3].)
+
+    def _record_rest_depth_observation(self, ticker: str,
+                                       depth: int) -> None:
+        """Append (monotonic_now, depth) to the per-ticker rolling
+        buffer and prune any samples older than
+        IOC_DRIFT_CHECK_REST_WINDOW_S. Drops the dict entry entirely
+        when the deque becomes empty after prune — bounds memory
+        growth across the lifetime of the process (15M markets
+        cycle every 15 min × 4 assets = ~16/hr new tickers; without
+        cleanup the dict would leak indefinitely).
+
+        Round 1 hardening:
+          - `time.monotonic()` (not `time.time()`) — wall-clock NTP
+            jumps backwards corrupt window math; the VPS has been
+            logging 5–14s clock_drift_detected warnings every 30s.
+          - Bounds-check on `depth`: out-of-bound values (negative
+            or > _REST_DEPTH_SAMPLE_MAX) are dropped AND a
+            once-per-ticker WARNING fires for diagnostics. Round 2
+            [A7]: silent drop with no observability would mask a
+            schema-drift bug that produced consistently-bad samples."""
+        if depth is None or depth < 0 or depth > self._REST_DEPTH_SAMPLE_MAX:
+            # Round 2 [A7]: log once per ticker so operators see a
+            # signal if schema drift is poisoning the buffer.
+            if not hasattr(self, "_rest_depth_drop_logged"):
+                self._rest_depth_drop_logged = set()
+            if ticker not in self._rest_depth_drop_logged:
+                self._rest_depth_drop_logged.add(ticker)
+                logging.warning(
+                    "REST_DEPTH_SAMPLE_DROPPED: %s depth=%r — out of "
+                    "bounds [0, %d]; smoothing buffer not updated. "
+                    "Possible schema drift in REST /orderbook.",
+                    ticker, depth, self._REST_DEPTH_SAMPLE_MAX)
+            return
+        now = time.monotonic()
+        cutoff = now - IOC_DRIFT_CHECK_REST_WINDOW_S
+        buf = self._rest_depth_observations.get(ticker)
+        if buf is None:
+            buf = deque()
+            self._rest_depth_observations[ticker] = buf
+        # Prune expired samples from the left.
+        while buf and buf[0][0] < cutoff:
+            buf.popleft()
+        buf.append((now, int(depth)))
+
+    def _rest_depth_window_count(self, ticker: str) -> int:
+        """Return the number of unexpired samples in the per-ticker
+        buffer. Used as the cold-start gate — when count < 2 the
+        smoothed peak is just a rename of the single fresh sample
+        and provides no actual smoothing. Round 2 [A1].
+        Side-effect-free."""
+        now = time.monotonic()
+        cutoff = now - IOC_DRIFT_CHECK_REST_WINDOW_S
+        buf = self._rest_depth_observations.get(ticker)
+        if not buf:
+            return 0
+        return sum(1 for ts, _ in buf if ts >= cutoff)
+
+    def _rest_depth_window_max(self, ticker: str) -> Optional[int]:
+        """Return the peak depth observed for `ticker` within the
+        last IOC_DRIFT_CHECK_REST_WINDOW_S seconds, or None if no
+        samples are in the window. Pure read — does not record.
+
+        Round 1 hardening: prunes expired samples in-place and
+        DELETES the dict entry when its deque becomes empty. This
+        bounds memory growth (settled tickers stop sending samples,
+        their deque ages out, then this read drops the entry).
+
+        Peak (not mean/median) is the right statistic for this
+        clamp because:
+          - real phantom WS → REST stays consistently low → peak stays low
+          - transient REST noise → some samples high, some low →
+            peak preserves the high reading and avoids false-clamp"""
+        now = time.monotonic()
+        cutoff = now - IOC_DRIFT_CHECK_REST_WINDOW_S
+        buf = self._rest_depth_observations.get(ticker)
+        if not buf:
+            return None
+        # Prune expired samples in-place so memory is reclaimed.
+        while buf and buf[0][0] < cutoff:
+            buf.popleft()
+        if not buf:
+            # All samples expired — drop the dict entry entirely.
+            del self._rest_depth_observations[ticker]
+            return None
+        return max(d for _, d in buf)
+
+    def _rest_best_ask_depth_smoothed(
+            self, ticker: str) -> Tuple[Optional[int], Optional[int]]:
+        """REST best-ask depth, smoothed over a rolling window.
+
+        Returns a 2-tuple `(peak, fresh)`:
+          - `peak`: max depth observed within
+            IOC_DRIFT_CHECK_REST_WINDOW_S, after recording the
+            fresh sample. Used as the clamp authority for IOC
+            sizing — peak protects against single-sample REST
+            volatility (delta_qty=-900 in 1s).
+          - `fresh`: the just-fetched REST sample (or None on
+            REST error). Required for PHANTOM_ABORT decisions —
+            when fresh==0, the book IS empty right now regardless
+            of historical peak, so the abort path must check fresh
+            independently. Round 1 [P0 #2] regression guard.
+
+        If REST errors, fresh=None and peak falls back to the
+        historical buffer (or None if both are absent). The caller
+        falls back to cached depth in that case — existing behavior."""
+        fresh = self._rest_best_ask_depth(ticker)
+        if fresh is not None:
+            self._record_rest_depth_observation(ticker, fresh)
+        peak = self._rest_depth_window_max(ticker)
+        return peak, fresh
 
     def _dc_get_ask_with_depth(self, ticker: str, candidate: Dict):
         """Get best ask price AND depth for DC execution decisions.
@@ -17086,35 +17249,84 @@ class OrderExecutor:
         # regardless of strategy policy, so we clamp even on no_clamp paths.
         # If cache was already thin (< threshold) OR REST agrees, no change.
         # See kb/failures/kalshi-ws-schema-drift.md § "WS delta underflow".
+        # Apr 25 2026: clamp uses windowed peak (not single REST sample) for
+        # the size decision; PHANTOM_ABORT uses fresh sample so a real-time
+        # empty book is still caught regardless of historical peak.
         _drift_corrected = False
+        _rest_fresh = None  # for PHANTOM_ABORT (Round 1 P0 #2)
         if (IOC_DRIFT_CHECK_ENABLED
                 and _ask_src == "orderbook"
                 and isinstance(_ask_depth, int)
                 and _ask_depth >= IOC_DRIFT_CHECK_MIN_CACHED_DEPTH):
-            _rest_depth = self._rest_best_ask_depth(ticker)
-            if _rest_depth is not None:
-                if _rest_depth < _ask_depth * IOC_DRIFT_CHECK_DIVERGENCE_RATIO:
+            # Smoothed helper returns (peak, fresh):
+            #   peak — windowed-max for the size clamp (anti-flicker)
+            #   fresh — most-recent REST sample for PHANTOM_ABORT
+            # See IOC_DRIFT_CHECK_REST_WINDOW_S. A single REST call is
+            # volatile — WS_DRIFT_PROBE_REST_STABILITY shows two
+            # back-to-back calls disagreeing by hundreds of contracts.
+            # Apr 25 2026: single-sample clamp caused a 65% drop in
+            # position size across all assets.
+            _rest_peak, _rest_fresh = self._rest_best_ask_depth_smoothed(ticker)
+            # Round 2 [A1] cold-start gate: if the buffer has <2
+            # samples in the window, peak ≈ fresh and the "smoothing"
+            # degenerates to single-sample clamping — the exact
+            # pre-fix bug. Skip the divergence/clamp branch on cold
+            # start and let the existing policy
+            # (cached _ask_depth + STRATEGY_CLAMP_POLICY) handle it.
+            # _rest_fresh stays exposed for PHANTOM_ABORT below.
+            _sample_count = self._rest_depth_window_count(ticker)
+            _cold_start = (
+                _sample_count
+                < OrderExecutor._REST_DEPTH_MIN_SAMPLES_FOR_CLAMP)
+            if _rest_peak is not None and not _cold_start:
+                if _rest_peak < _ask_depth * IOC_DRIFT_CHECK_DIVERGENCE_RATIO:
                     logging.warning(
-                        "IOC_CACHE_DRIFT: %s %dc ws_cache=%d rest=%d (ratio=%.2f) "
-                        "strategy=%s policy=%s — using REST depth as authoritative",
-                        ticker, price, _ask_depth, _rest_depth,
-                        _rest_depth / max(_ask_depth, 1), _strategy, _policy)
-                    _ask_depth = _rest_depth  # authoritative for clamp logic below
+                        "IOC_CACHE_DRIFT: %s %dc ws_cache=%d rest_peak=%d "
+                        "rest_fresh=%s (ratio=%.2f, samples=%d) "
+                        "strategy=%s policy=%s "
+                        "— using REST peak as authoritative",
+                        ticker, price, _ask_depth, _rest_peak,
+                        ("?" if _rest_fresh is None else str(_rest_fresh)),
+                        _rest_peak / max(_ask_depth, 1), _sample_count,
+                        _strategy, _policy)
+                    _ask_depth = _rest_peak  # authoritative for clamp logic below
                     _drift_corrected = True
                 else:
                     logging.info(
-                        "IOC_CACHE_OK: %s %dc ws_cache=%d rest=%d (strategy=%s)",
-                        ticker, price, _ask_depth, _rest_depth, _strategy)
+                        "IOC_CACHE_OK: %s %dc ws_cache=%d rest_peak=%d "
+                        "rest_fresh=%s (samples=%d, strategy=%s)",
+                        ticker, price, _ask_depth, _rest_peak,
+                        ("?" if _rest_fresh is None else str(_rest_fresh)),
+                        _sample_count, _strategy)
+            elif _rest_peak is not None and _cold_start:
+                # Cold-start: skip clamp; existing policy applies.
+                # Log once for diagnostics — this branch hits constantly
+                # for newly-discovered 15M tickers, so use INFO not
+                # WARNING to avoid log spam.
+                logging.info(
+                    "IOC_CACHE_COLD_START: %s %dc ws_cache=%d "
+                    "rest_fresh=%s (samples=%d < %d) — falling "
+                    "through to cached-depth policy",
+                    ticker, price, _ask_depth,
+                    ("?" if _rest_fresh is None else str(_rest_fresh)),
+                    _sample_count,
+                    OrderExecutor._REST_DEPTH_MIN_SAMPLES_FOR_CLAMP)
 
         if _ask_src == "orderbook" and isinstance(_ask_depth, int):
-            # Catastrophic tail guard — fires regardless of policy. Uses the
-            # drift-corrected _ask_depth, so a REST-verified phantom top-of-
-            # book aborts even if the cache claimed depth.
-            if _ask_depth == 0:
+            # Catastrophic tail guard — fires regardless of policy. Uses
+            # BOTH the drift-corrected _ask_depth (cached/peak) AND the
+            # fresh REST sample. Fresh==0 means the book is empty RIGHT
+            # NOW, regardless of any historical peak — the smoothing
+            # window must not mask this signal. Round 1 P0 #2.
+            if _ask_depth == 0 or _rest_fresh == 0:
+                _abort_reason = (
+                    "rest_fresh=0" if _rest_fresh == 0 else
+                    "ask_depth=0 (orderbook-confirmed)")
                 logging.warning(
-                    "IOC_ABORT_PHANTOM: %s %dc count=%d ask_depth=0 (orderbook-confirmed) "
-                    "strategy=%s policy=%s — refusing IOC to prevent ladder sweep",
-                    ticker, price, count, _strategy, _policy)
+                    "IOC_ABORT_PHANTOM: %s %dc count=%d %s "
+                    "strategy=%s policy=%s — refusing IOC to prevent "
+                    "ladder sweep",
+                    ticker, price, count, _abort_reason, _strategy, _policy)
                 self._session_ioc_unfilled += 1
                 return None
             if _policy == "no_clamp":
@@ -17156,6 +17368,12 @@ class OrderExecutor:
                     count = _ask_depth
                     candidate["position_size"] = count
         elif _ask_src == "market_nbbo":
+            # NBBO blind path: no orderbook data → no depth signal,
+            # no PHANTOM_ABORT possible. Round 2 [A2] / Round 3 [A4]
+            # known scope limit — the smoothed-clamp + fresh-zero
+            # phantom guard only protects orderbook-source IOCs.
+            # If NBBO blind becomes the dominant path again (it was
+            # pre-WS-fix), a separate defense is needed here.
             logging.info(
                 "IOC_BLIND_SUBMIT: %s %dc count=%d asset=%s strategy=%s (NBBO fallback — no depth)",
                 ticker, price, count, candidate.get("asset", "?"), _strategy)

@@ -580,6 +580,7 @@ class TestIOCSubFloorDefense(unittest.TestCase):
 
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=5):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
 
@@ -604,6 +605,7 @@ class TestIOCSubFloorDefense(unittest.TestCase):
 
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=3):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
 
@@ -629,6 +631,7 @@ class TestIOCSubFloorDefense(unittest.TestCase):
 
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=6):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
 
@@ -649,6 +652,7 @@ class TestIOCSubFloorDefense(unittest.TestCase):
 
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=5):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
 
@@ -719,6 +723,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=100):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
@@ -741,6 +746,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
@@ -762,6 +768,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
@@ -782,6 +789,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=2):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
@@ -820,6 +828,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
@@ -839,6 +848,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=40):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
@@ -859,6 +869,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=100):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
@@ -881,6 +892,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
@@ -895,11 +907,30 @@ class TestStrategyClampPolicy(unittest.TestCase):
     def test_drift_check_clamps_when_rest_shows_thin(self):
         """no_clamp strategy with cached depth=765 but REST shows depth=10 →
         clamp to REST depth (above IOC_MIN_COUNT_AFTER_CLAMP=5 so abort does
-        not fire). This exercises the clamp mechanism; the abort path is
-        covered by test_drift_check_aborts_when_below_min_count."""
+        not fire). Real phantom = sustained low REST, so we pre-warm the
+        rolling buffer with a prior low sample so the cold-start gate
+        (R2 [A1]) does not block the drift-clamp branch."""
         ex = self._make_ex()
         self._stub_fill(ex, "ord-drift", 10, price=96)
         self._stub_rest_orderbook(ex, depth_at_best=10)  # REST ground truth: thin but above MIN
+        # Pre-warm: real phantom is sustained, so historical sample
+        # also low. Without this the cold-start gate would skip the
+        # smoothed-clamp branch (correct behavior on a single-sample
+        # blip — see test_ioc_rest_depth_window for cold-start
+        # coverage).
+        # Pre-warm the rolling buffer so the cold-start gate (R2
+        # [A1]) does not skip the smoothed-clamp branch. Inject
+        # directly using the mocked-time domain (1000.0) — the
+        # smoothed helper uses monotonic time and tests mock that
+        # below.
+        # Direct injection bypasses the bounds-check in
+        # `_record_rest_depth_observation`. Production code MUST go
+        # through the recorder; this hack is acceptable in tests
+        # because it's pinning the post-cold-start clamp logic.
+        from collections import deque
+        ticker = "KXBTC15M-26MAR091200-B68500"  # _make_candidate default
+        ex._rest_depth_observations[ticker] = deque(
+            [(999.5, 10)])
         cand = _make_candidate(
             best_yes_ask=96,
             position_size=50,
@@ -909,6 +940,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=10):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
@@ -920,9 +952,18 @@ class TestStrategyClampPolicy(unittest.TestCase):
     def test_drift_check_aborts_when_below_min_count(self):
         """no_clamp + drift correction + REST depth < IOC_MIN_COUNT_AFTER_CLAMP (=5) →
         abort the IOC rather than fill a near-zero-EV micro-position.
-        See kb/decisions/ioc-thin-clamp-abort.md."""
+        Real phantom = sustained low REST, so we pre-warm the
+        rolling buffer with a prior low sample (R2 [A1] cold-start
+        gate). See kb/decisions/ioc-thin-clamp-abort.md."""
         ex = self._make_ex()
         self._stub_rest_orderbook(ex, depth_at_best=1)  # below MIN
+        # Direct injection bypasses the bounds-check in
+        # `_record_rest_depth_observation`. Production code MUST go
+        # through the recorder; this hack is acceptable in tests
+        # because it's pinning the post-cold-start clamp logic.
+        from collections import deque
+        ex._rest_depth_observations[
+            "KXBTC15M-26MAR091200-B68500"] = deque([(999.5, 1)])
         cand = _make_candidate(
             best_yes_ask=96,
             position_size=50,
@@ -932,6 +973,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             result = ex._submit_taker(cand)
         # Abort: place_order NOT called, _submit_taker returns None.
@@ -956,6 +998,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         # REST shouldn't have been called (cache was already thin).
@@ -981,6 +1024,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
@@ -989,10 +1033,18 @@ class TestStrategyClampPolicy(unittest.TestCase):
     def test_drift_check_also_helps_top_of_book_policy(self):
         """Drift correction applies regardless of policy. If top_of_book
         strategy fires with cached depth=100 but REST says 5, the clamp
-        operates on 5 (correct) not 100 (stale cached)."""
+        operates on 5 (correct) not 100 (stale cached). Pre-warm the
+        rolling buffer (R2 [A1] cold-start gate)."""
         ex = self._make_ex()
         self._stub_fill(ex, "ord-tob-drift", 5, price=90)
         self._stub_rest_orderbook(ex, depth_at_best=5)  # REST ground truth
+        # Direct injection bypasses the bounds-check in
+        # `_record_rest_depth_observation`. Production code MUST go
+        # through the recorder; this hack is acceptable in tests
+        # because it's pinning the post-cold-start clamp logic.
+        from collections import deque
+        ex._rest_depth_observations[
+            "KXBTC15M-26MAR091200-B68500"] = deque([(999.5, 5)])
         cand = _make_candidate(
             best_yes_ask=90,
             position_size=50,
@@ -1002,6 +1054,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=5):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         call_kwargs = ex._client.place_order.call_args.kwargs
@@ -1026,6 +1079,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
         )
         with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
             mt.time.return_value = 1000.0
+            mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
             ex._submit_taker(cand)
         # REST failed → fall back to cached path → no_clamp submits 50.
