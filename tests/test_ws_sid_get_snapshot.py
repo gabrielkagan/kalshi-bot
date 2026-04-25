@@ -141,29 +141,34 @@ class TestEnvelopeSidNoLongerLearned(unittest.TestCase):
 # 2. _send_ob_get_snapshot uses sid, not market_tickers
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSendUsesSid(unittest.IsolatedAsyncioTestCase):
-    async def test_send_ob_get_snapshot_uses_sid_param(self):
+class TestSendUsesSidAndMarketTickers(unittest.IsolatedAsyncioTestCase):
+    """Phase 2.7: Kalshi's update_subscription requires BOTH:
+      - sid (or sids)
+      - At least one market identifier (market_tickers / market_ticker
+        / market_id / market_ids)
+
+    Phase 2.5 sent only market_tickers → code=7 'Unknown subscription
+    ID'. Phase 2.6 sent only sid → code=14 'Market Ticker required'.
+    Phase 2.7 sends BOTH."""
+
+    async def test_send_ob_get_snapshot_includes_sid_and_market_tickers(self):
         f = _make_feed()
         f._subscribed_tickers.add("KXBTC15M-FOO")
         f._ticker_to_sid["KXBTC15M-FOO"] = 456
         ws = AsyncMock()
         await f._send_ob_get_snapshot(ws, "KXBTC15M-FOO")
-        # Reconstruct what was sent.
         ws.send.assert_awaited_once()
-        sent_raw = ws.send.await_args.args[0]
-        sent = json.loads(sent_raw)
+        sent = json.loads(ws.send.await_args.args[0])
         self.assertEqual(sent["cmd"], "update_subscription")
         self.assertEqual(sent["params"]["action"], "get_snapshot")
         self.assertEqual(
             sent["params"]["sid"], 456,
-            "Per Kalshi docs, params.sid is required for "
-            "update_subscription. Pre-fix we sent params.market_tickers "
-            "which Kalshi rejected with an error frame we silently "
-            "dropped.")
-        self.assertNotIn(
-            "market_tickers", sent["params"],
-            "Pre-fix bug: we sent params.market_tickers (invalid for "
-            "update_subscription). Kalshi only accepts sid/sids.")
+            "Phase 2.7: sid required (else code=7).")
+        self.assertEqual(
+            sent["params"]["market_tickers"], ["KXBTC15M-FOO"],
+            "Phase 2.7: market_tickers ALSO required (else code=14 "
+            "'Market Ticker required'). Phase 2.6 sent only sid; "
+            "Kalshi rejected on every restart.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

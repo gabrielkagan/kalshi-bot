@@ -453,17 +453,22 @@ WS_GET_SNAPSHOT_DISABLE_AFTER = 3
 # WARNING — the resubscribe didn't take effect (Kalshi never sent a
 # new snapshot). The watchdog runs inline in _check_snapshot_timeouts.
 WS_FORCE_RESUB_RECOVERY_TIMEOUT_S = 30.0
-# Phase 2.6 R2 / B2 (R3-revised to 60s): watchdog for outstanding
-# subscribe responses. If type=subscribed never arrives within this
-# timeout, pop the entry + log WARNING.
+# Phase 2.6 R2 / B2 (R3 → 60s, Phase 2.7 → 180s): watchdog for
+# outstanding subscribe responses. If type=subscribed never arrives
+# within this timeout, pop the entry + log WARNING.
 #
-# Set to 60s to give Kalshi plenty of headroom (vs. 30s which can
-# fire spuriously under load). A late-arriving subscribed after pop
-# is unrecoverable (the response has no market_ticker — we cannot
-# bind ticker→sid) so we accept "data flows but no drift-recovery"
-# until next WS reconnect rather than risk a dual-subscription leak
-# from re-queueing.
-WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S = 60.0
+# Phase 2.6 deploy verification observed 692 WS_SUBSCRIBE_STUCK
+# events in 7 minutes at 60s — Kalshi simply takes longer than 60s
+# under our subscribe flood (~100 tickers across 15M+weather+sports+
+# spx). False-positive watchdog firings were triggering 3
+# WS_FORCE_RECONNECT events / 7min — reconnect storms. Bumping to
+# 180s gives Kalshi headroom and reduces churn dramatically.
+#
+# A late-arriving subscribed after pop is unrecoverable (the
+# response has no market_ticker — we cannot bind ticker→sid) so we
+# accept "data flows but no drift-recovery" until next WS reconnect
+# rather than risk a dual-subscription leak from re-queueing.
+WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S = 180.0
 
 # ─── Coinbase WebSocket ──────────────────────────────────────────────────────
 COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com"
@@ -4999,16 +5004,22 @@ class KalshiFeed:
             f"id={cmd_id}")
 
     async def _send_ob_get_snapshot(self, ws, ticker: str):
-        """Phase 2 / Phase 2.5: request a fresh snapshot WITHOUT
-        bouncing the subscription. Per Kalshi docs:
+        """Phase 2.7: request a fresh snapshot WITHOUT bouncing the
+        subscription. Per Kalshi WS error code list, get_snapshot
+        requires BOTH a subscription ID (sid) AND at least one
+        market identifier (market_tickers).
 
             {"cmd": "update_subscription",
-             "params": {"sid": <int>, "action": "get_snapshot"}}
+             "params": {"sid": <int>,
+                        "action": "get_snapshot",
+                        "market_tickers": [<ticker>]}}
 
-        The required param is `sid` — NOT `market_tickers`. Pre-2.5
-        we sent `market_tickers` which Kalshi rejected with an
-        error frame we silently dropped, causing the auto-disable
-        to trip on every restart (R5 finding).
+        History:
+          - Phase 2.5 sent only `market_tickers` → code=7
+            "Unknown subscription ID"
+          - Phase 2.6 sent only `sid` → code=14
+            "Market Ticker required"
+          - Phase 2.7 sends BOTH (the actual schema)
 
         Caller (force_resubscribe) is responsible for ensuring a
         sid is known before queueing this. If the sid disappeared
@@ -5032,18 +5043,27 @@ class KalshiFeed:
                 "kalshi_ws_get_snapshot: ticker=%s has no sid in "
                 "_ticker_to_sid at send time — skipping", ticker)
             return
+        # Phase 2.7 R-review A1: use unique cmd_id per call.
+        # Pre-fix all get_snapshot used static id=4, which collapsed
+        # all per-ticker errors into a single (id=4, code) tuple in
+        # the error-frame dedup at _ws_error_frame_seen — losing
+        # per-call visibility.
+        with self._lock:
+            cmd_id = self._next_msg_id
+            self._next_msg_id += 1
         await ws.send(json.dumps({
-            "id": 4,
+            "id": cmd_id,
             "cmd": "update_subscription",
             "params": {
                 "sid": sid,
                 "action": "get_snapshot",
+                "market_tickers": [ticker],
             },
         }))
         logging.info(
-            "kalshi_ws_get_snapshot: ticker=%s sid=%d "
-            "(Phase 2.5 cache reset)",
-            ticker, sid)
+            "kalshi_ws_get_snapshot: ticker=%s sid=%d id=%d "
+            "(Phase 2.7 cache reset)",
+            ticker, sid, cmd_id)
 
     async def _process_pending_subs(self, ws):
         # Phase 2: check for snapshot-request timeouts FIRST. Any
