@@ -1,11 +1,11 @@
 {
-  "total_evaluated": 149910,
+  "total_evaluated": 149937,
   "filter_breakdown": {
-    "candidate": 5550,
+    "candidate": 5552,
     "dc_shadow_t1b_93c": 47,
     "dc_shadow_t2_90c": 70,
     "dc_shadow_t2_90c_xrp": 17,
-    "dc_shadow_t2_z2": 828,
+    "dc_shadow_t2_z2": 829,
     "dc_shadow_t2_z25": 189,
     "dc_t2_z2_phase1_shadow": 8,
     "dead_hour_passed": 316,
@@ -18,7 +18,7 @@
     "decided_contract_t2_z25": 182,
     "dip_addon_shadow": 29,
     "eth_low_floor_shadow": 1503,
-    "floor_raise_shadow": 5199,
+    "floor_raise_shadow": 5200,
     "golden_hour_shadow": 275,
     "hourly_asset_excluded": 162,
     "hourly_config_a": 1738,
@@ -39,29 +39,30 @@
     "hourly_observation_v2": 6801,
     "hourly_timing_restricted": 1655,
     "hourly_window_limit": 595,
-    "insufficient_edge": 47017,
-    "low_price_shadow": 2487,
+    "insufficient_edge": 47019,
+    "low_price_shadow": 2488,
     "no_side_price_shadow_no_xrp": 3763,
     "no_side_price_shadow_xrp": 771,
-    "no_side_shadow": 158,
+    "no_side_shadow": 159,
     "observation_trade": 83,
     "overnight_discount": 110,
     "overnight_discount_shadow": 317,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 24308,
+    "price_out_of_range": 24310,
     "price_shadow": 52,
-    "price_shadow_no_xrp": 3997,
+    "price_shadow_no_xrp": 3998,
     "price_shadow_xrp": 1573,
     "relaxed_edge_shadow": 1219,
+    "silent_vol_none": 10,
     "single_asset_selection": 5,
     "sol_high_edge_shadow": 189,
     "sol_low_entry_high_stc": 41,
     "sol_usmorn_sub88": 89,
     "sports_deficit_too_large": 15,
-    "sports_excluded_lr": 12,
+    "sports_excluded_lr": 13,
     "sports_excluded_price": 30,
-    "sports_excluded_sport": 71,
-    "sports_insufficient_edge": 118,
+    "sports_excluded_sport": 72,
+    "sports_insufficient_edge": 120,
     "sports_late_game": 96,
     "sports_model_overconfident": 6,
     "sports_price_too_high": 24,
@@ -75,7 +76,7 @@
     "stc_shadow_no_xrp": 591,
     "stc_shadow_xrp": 47,
     "strategy_wait": 328,
-    "terminal_momentum": 1980,
+    "terminal_momentum": 1982,
     "threshold_implausible": 581,
     "tm_nbbo_buffer_shadow": 548,
     "usaft_short_stc": 124,
@@ -92,10 +93,10 @@
     "xrp_shadow": 126,
     "zero_sizing": 801
   },
-  "total_settled": 2818,
-  "total_wins": 2629,
-  "observation_pnl": 87678,
-  "total_trades": 5550,
+  "total_settled": 2820,
+  "total_wins": 2631,
+  "observation_pnl": 88286,
+  "total_trades": 5552,
   "win_rate_by_price": {
     "80-84": {
       "n": 56,
@@ -106,12 +107,12 @@
       "wins": 395
     },
     "90-94": {
-      "n": 677,
-      "wins": 634
+      "n": 678,
+      "wins": 635
     },
     "95-99": {
-      "n": 1532,
-      "wins": 1505
+      "n": 1533,
+      "wins": 1506
     }
   },
   "assets_tracked": [
@@ -157,5 +158,5 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-04-25",
-  "generated_at": "2026-04-25T00:42:34Z"
+  "generated_at": "2026-04-25T00:53:51Z"
 }
