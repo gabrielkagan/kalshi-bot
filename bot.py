@@ -1183,6 +1183,56 @@ STRATEGY_CLAMP_POLICY = {
 }
 STRATEGY_CLAMP_DEFAULT = "top_of_book"  # conservative fallback for unrecognized strategies
 
+# ─── Smart IOC Limit Picker ──────────────────────────────────────────
+# Operational ceiling: the most cents above best_yes_ask the picker
+# is allowed to walk, regardless of edge headroom. 3c is a balance:
+# enough to unlock typical level-2/3 deep liquidity (production sample
+# Apr 25: 151ct sat 3c above best), small enough that even a stray
+# bump on a thin-edge candidate is bounded. Note: this is SEPARATE
+# from IOC_RETRY_OFFSET (which controls cancel-replace retry pricing,
+# not depth walking — conflating them couples unrelated behaviors).
+IOC_LIMIT_MAX_BUMP_CENTS = 3
+
+# ─── Smart IOC Limit Picker — per-strategy edge reserve ──────────────
+# `edge_ceiling_price = floor(prob*100) - fee_1c - reserve_cents`
+# At the limit, worst-case fill has exactly `reserve_cents` of edge.
+#
+# Default = 0 (B): break-even after fee on worst fill. Most fills come
+# at cheaper offer prices (Kalshi price-time priority), so AVERAGE
+# edge is much better than the worst-case.
+#
+# Per-strategy override < 0 ("aggressive"): tolerate marginal negative
+# edge on worst-filled contracts. ONLY justified for high-conviction
+# strategies whose WR is high enough that the rare loss is bounded:
+# decided contracts (z-score-confirmed near-certainty) and addons
+# (extending bets we already trusted). reserve = -1 means worst-fill
+# edge = -1c ≈ -fee_1c — paying fee-cost on margin.
+#
+# Hard floor: never go below -1. Worst-fill edge < -fee is structurally
+# unprofitable regardless of WR (loss case = full contract value lost).
+STRATEGY_LIMIT_BUMP_DEFAULT_RESERVE = 0
+STRATEGY_LIMIT_BUMP_RESERVE_CENTS = {
+    # Decided contracts — z-score-confirmed near-certain settlement
+    # (T1 z≤-5, T1B z≤-4, T2 z≤-3, T2_Z25 z≤-2.5). Documented WR 95-100%.
+    # Strategy strings match the candidate's `strategy` field (short
+    # form), set in scan() via the _dc_strat = {long: short} mapping
+    # at the DC entry path. Round 3 [A1] regression: long-form keys
+    # (`decided_contract_t1`) silently miss the lookup.
+    "decided_t1":      -1,
+    "decided_t1b":     -1,
+    "decided_t2":      -1,
+    "decided_t2_z25":  -1,
+    # NOTE: `decided_t2_z2` is INTENTIONALLY OMITTED. T2-Z2 was
+    # shadowed Apr 1 2026 (DECIDED_T2_Z2_ENABLED=False) after
+    # -$313 on 47 trades — no structural edge in z∈[-2.5,-1.75].
+    # If re-enabled by env var without re-validation, it should
+    # NOT inherit the aggressive reserve from the other tiers.
+    # See memory/project_t2_z2_apr22_rejection.md.
+    # Addons — extend positions we already committed to entering
+    "CONFIRMATION_ADDON":       -1,
+    "DIP_ADDON":                -1,
+}
+
 # ─── WS Cache-Drift Defense (pre-IOC REST verification) ──────────────────
 # Evidence (Apr 24 2026): post-WS-fix TM_96 fill on KXSOL15M-26APR241245-45 —
 # WS cache reported ask_depth=765 at 96c, IOC for 50ct submitted, Kalshi
@@ -16066,6 +16116,113 @@ class OrderExecutor:
         return best_qty
 
     @staticmethod
+    def _pick_ioc_limit_for_depth(
+            ob_data: Dict,
+            best_yes_ask: int,
+            target_qty: int,
+            max_bump_cents: int,
+            edge_ceiling_price: int,
+            max_price: int = 99) -> int:
+        """Walk the orderbook from `best_yes_ask` upward, return the
+        smallest YES limit price where cumulative fillable depth
+        meets `target_qty`. Hard-capped at:
+          - `best_yes_ask + max_bump_cents` (operational ceiling)
+          - `edge_ceiling_price` (EV ceiling — caller computes
+            from `floor(calibrated_prob*100) - fee - reserve_cents`,
+            where reserve_cents is per-strategy
+            (STRATEGY_LIMIT_BUMP_RESERVE_CENTS, default 0). At
+            limit = ceiling, worst-case fill has edge = reserve.
+            Default reserve=0 means break-even after fee on worst
+            fill; aggressive overrides (-1) tolerate ~1c negative
+            edge on worst fill. NOTE: this no longer respects
+            MIN_EDGE_PCT — that floor was a SCAN-time gate, not a
+            submit-time gate. The submit gate uses per-strategy
+            reserve directly.)
+          - `max_price` (defaults to MAX_ENTRY_PRICE = 99)
+
+        If no level inside the cap delivers `target_qty`, returns
+        the highest level inside the cap (still better than
+        best_yes_ask alone — Kalshi auto-cancels surplus at $0).
+
+        If the orderbook has no fillable depth at any level inside
+        the cap, returns `best_yes_ask` unchanged (caller will
+        discover empty book via PHANTOM_ABORT).
+
+        WHY (Apr 25 2026):
+        Pre-Apr 23 the WS schema bug masked the orderbook → bot
+        fell back to NBBO yes_ask (typically wider than orderbook
+        best_ask) → IOC swept multiple price levels → 64-82ct
+        avg fills. Post-Apr 23 fix made the bot use orderbook
+        best_ask exactly → matches only top-of-book → 33ct avg.
+        Liquidity didn't disappear — just sat 1-3c above our
+        IOC limit. Production sample: 1ct at 66c, 151ct at 69c.
+        This helper restores access to the deep level when the
+        candidate's edge can absorb the bump.
+
+        Mechanics: Kalshi orderbooks store YES asks via the NO
+        bid stack — NO bid at price P = YES ask at (100 - P).
+        We walk YES ask prices ascending from best_yes_ask, sum
+        qty, return first price where cumul ≥ target.
+
+        Sub-floor levels (YES asks below best_yes_ask) are NOT
+        included in the walk because the picker only chooses
+        the LIMIT, not the fill source — Kalshi's matching engine
+        will sweep sub-floor asks at any limit ≥ them, but that's
+        Variant B behavior intentional under the no_clamp policy."""
+        # Caller's edge_ceiling_price might be below best_yes_ask
+        # (defensive — candidate shouldn't have been generated, but
+        # never return a price below best_yes_ask).
+        if max_bump_cents <= 0 or target_qty <= 0:
+            return best_yes_ask
+        cap = min(
+            best_yes_ask + max_bump_cents,
+            max(edge_ceiling_price, best_yes_ask),
+            max_price,
+        )
+        if cap < best_yes_ask:
+            return best_yes_ask
+        # Build the YES-ask ladder from the NO bid stack, filter to
+        # prices in [best_yes_ask, cap], sort ascending.
+        no_bids = ob_data.get("no") or []
+        levels: list = []
+        for entry in no_bids:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                price, qty = entry[0], entry[1]
+            elif isinstance(entry, dict):
+                price = entry.get("price", 0)
+                qty = entry.get("quantity", 0)
+            else:
+                continue
+            try:
+                qty_int = int(qty)
+            except (TypeError, ValueError):
+                continue
+            if qty_int <= 0:
+                continue
+            # Normalize price to cents.
+            if isinstance(price, float) and price < 1.0:
+                price_cents = round(price * 100)
+            else:
+                try:
+                    price_cents = int(price)
+                except (TypeError, ValueError):
+                    continue
+            yes_ask = 100 - price_cents
+            if best_yes_ask <= yes_ask <= cap:
+                levels.append((yes_ask, qty_int))
+        if not levels:
+            return best_yes_ask
+        levels.sort()  # ascending YES price
+        cumul = 0
+        for yes_ask, qty in levels:
+            cumul += qty
+            if cumul >= target_qty:
+                return yes_ask
+        # Walked everything inside cap without hitting target.
+        # Return highest level we reached — better than best_ask.
+        return levels[-1][0]
+
+    @staticmethod
     def _total_ob_depth(ob_data: Dict) -> int:
         """Total depth (contracts) across all orderbook levels."""
         total = 0
@@ -17232,6 +17389,113 @@ class OrderExecutor:
         price = candidate["best_yes_ask"]
         balance = candidate["balance_at_scan"]
 
+        # ── Smart IOC limit picker (Apr 25 2026) ──────────────────────────
+        # Kalshi's matching engine fills against ALL ask levels at-or-below
+        # our IOC limit. Pre-Apr 23 the bot used NBBO yes_ask (typically
+        # wider than orderbook best_ask) — IOCs swept multiple levels and
+        # filled 64-82ct on average. The 0ddcaf8 schema fix (Apr 23) made
+        # the bot use orderbook best_ask exactly, dropping fills to 33ct
+        # because liquidity sat 1-3c above our limit.
+        #
+        # The picker walks the visible orderbook from best_yes_ask upward,
+        # finds the smallest limit price where cumulative fillable depth
+        # ≥ position_size. Hard caps:
+        #   - max_bump = IOC_LIMIT_MAX_BUMP_CENTS (3c default)
+        #   - edge_ceiling = floor(prob*100) - fee_1c - reserve_cents
+        #     (per-strategy reserve; default 0 = break-even after fee)
+        #   - max_price = MAX_ENTRY_PRICE (99)
+        # If picker can't fetch the live orderbook (no scanner ref / WS
+        # cache empty), or the ticker is currently WS-drift-flagged
+        # (cache untrusted), falls through to original `price` — no
+        # regression on broken-cache paths.
+        # The bumped limit is computed into `_ioc_limit_price` and used
+        # ONLY for the place_order call below. We do NOT mutate
+        # candidate["best_yes_ask"] — that stays at the scan-time value
+        # for downstream telemetry/audit/post-fill analysis.
+        _ioc_limit_price = price  # default to original
+        # Round 2 [P0-A]: picker is YES-side only. For NO-side
+        # candidates (bracket_no, hourly_no_live, weather_no_live,
+        # dc_shadow_no_side), `candidate["best_yes_ask"]` is set
+        # to no_price — feeding it to the YES-side ladder walker
+        # produces meaningless results and the bumped price gets
+        # submitted as no_price, potentially overpaying. Bypass.
+        _is_no_side = candidate.get("side") == "no"
+        try:
+            _scanner = self._ml.scanner if self._ml else None
+            _live_ob = None
+            # Bypass picker on drift-flagged tickers — the WS cache
+            # the picker reads is the same one that's been wrong
+            # (WS_DRIFT_AUTO_FLAG). Don't bump based on phantom data.
+            _is_drift_flagged = (
+                _scanner is not None
+                and ticker in getattr(_scanner, "_ws_drift_cooldown", {}))
+            if (_scanner is not None
+                    and not _is_drift_flagged
+                    and not _is_no_side):
+                try:
+                    _live_ob, _src = _scanner._get_orderbook_cached(ticker)
+                except Exception:
+                    _live_ob = None
+            if _live_ob and isinstance(price, int) and price > 0:
+                _cal_prob = candidate.get("calibrated_prob")
+                if _cal_prob is not None and 0 < _cal_prob < 1:
+                    _fee_1c = calculate_taker_fee(1, price)
+                    # Per-strategy edge reserve — see
+                    # STRATEGY_LIMIT_BUMP_RESERVE_CENTS in bot.py
+                    # constants. Default (B) is 0 (break-even after
+                    # fee). High-conviction strategies (DC tiers,
+                    # addons) override to -1 (tolerate fee-cost on
+                    # worst-fill margin).
+                    _bump_strategy = candidate.get("strategy") or ""
+                    _reserve_cents = STRATEGY_LIMIT_BUMP_RESERVE_CENTS.get(
+                        _bump_strategy,
+                        STRATEGY_LIMIT_BUMP_DEFAULT_RESERVE)
+                    _edge_ceiling = (
+                        int(_cal_prob * 100) - _fee_1c - _reserve_cents)
+                    _smart_limit = OrderExecutor._pick_ioc_limit_for_depth(
+                        _live_ob,
+                        best_yes_ask=int(price),
+                        target_qty=int(count),
+                        max_bump_cents=IOC_LIMIT_MAX_BUMP_CENTS,
+                        edge_ceiling_price=_edge_ceiling,
+                        max_price=MAX_ENTRY_PRICE,
+                    )
+                    if _smart_limit > price:
+                        logging.info(
+                            "IOC_LIMIT_BUMPED: %s %d→%d¢ "
+                            "(target_qty=%d, prob=%.4f, "
+                            "edge_ceiling=%d, max_bump=%d, "
+                            "reserve=%+d strategy=%s) — sweeping "
+                            "deeper levels",
+                            ticker, price, _smart_limit,
+                            count, _cal_prob, _edge_ceiling,
+                            IOC_LIMIT_MAX_BUMP_CENTS, _reserve_cents,
+                            _bump_strategy)
+                        _ioc_limit_price = _smart_limit
+                    elif _smart_limit == price:
+                        logging.debug(
+                            "IOC_LIMIT_AT_BEST: %s %d¢ (no bump needed "
+                            "or no benefit within caps)",
+                            ticker, price)
+            elif _is_drift_flagged:
+                logging.debug(
+                    "IOC_LIMIT_PICKER_BYPASS: %s — ws_drift_cooldown "
+                    "active; using scan-time best_ask=%d¢ unchanged",
+                    ticker, price)
+            elif _is_no_side:
+                logging.debug(
+                    "IOC_LIMIT_PICKER_BYPASS: %s — NO-side IOC "
+                    "(picker is YES-side only); using "
+                    "scan-time price=%d¢ unchanged",
+                    ticker, price)
+        except Exception:
+            logging.warning(
+                "smart_ioc_limit_picker failed", exc_info=True)
+        # `_ioc_limit_price` is the actual price submitted to Kalshi.
+        # `price` and `candidate["best_yes_ask"]` remain at scan-time
+        # values for the downstream drift-check + PHANTOM_ABORT logic
+        # and for telemetry/audit.
+
         # ── Option X v2: per-strategy IOC clamp (Apr 24) ──────────────────
         # Kalshi IOC matches at BEST available price up to our limit,
         # sweeping through the ladder. Variant B (sub-floor phantom-ask
@@ -17400,15 +17664,23 @@ class OrderExecutor:
 
         client_oid = str(uuid.uuid4())
 
-        # Persist before submission
+        # Persist before submission. price_cents records the LIMIT
+        # actually submitted to Kalshi (= _ioc_limit_price), not the
+        # scan-time best_ask. Round 2 [P1-B]: audit trail must
+        # reflect what was actually sent.
         _side = candidate.get("side", "yes")
         self._state.insert_bot_order(
             client_oid, ticker, candidate["event_ticker"],
-            candidate["asset"], _side, count, price, True
+            candidate["asset"], _side, count, _ioc_limit_price, True
         )
 
-        # Submit as IOC — exchange auto-cancels any unfilled remainder
-        _price_kwarg = {"no_price": price} if _side == "no" else {"yes_price": price}
+        # Submit as IOC — exchange auto-cancels any unfilled remainder.
+        # Uses _ioc_limit_price (smart picker output) for the actual
+        # exchange submission, while `price` and candidate["best_yes_ask"]
+        # remain at scan-time values for telemetry/audit/drift-check.
+        _price_kwarg = (
+            {"no_price": _ioc_limit_price} if _side == "no"
+            else {"yes_price": _ioc_limit_price})
         resp = self._client.place_order(
             ticker=ticker, side=_side, action="buy",
             count=count, client_order_id=client_oid,
@@ -17439,7 +17711,10 @@ class OrderExecutor:
             "event_ticker": candidate["event_ticker"],
             "asset": candidate["asset"],
             "side": _side,
-            "price_cents": price,
+            # `price_cents` = limit actually submitted to Kalshi
+            # (post smart-picker bump, if any). Round 2 [P1-B].
+            "price_cents": _ioc_limit_price,
+            "scan_time_best_ask": price,  # original for forensics
             "count": count,
             "is_taker": True,
             "submit_time": time.time(),
@@ -17455,11 +17730,16 @@ class OrderExecutor:
             "ticker": ticker,
             "order_id": order_id,
             "client_order_id": client_oid,
-            "price_cents": price,
+            "price_cents": _ioc_limit_price,
+            "scan_time_best_ask": price,
             "count": count,
             "time_in_force": "ioc",
         })
-        logging.info(f"Taker IOC order: {ticker} {count}x @ {price}¢")
+        logging.info(
+            "Taker IOC order: %s %dx @ %d¢%s",
+            ticker, count, _ioc_limit_price,
+            (f" (bumped from {price}¢)"
+             if _ioc_limit_price != price else ""))
 
         # IOC resolves instantly; brief wait + collect ALL fill events.
         # An IOC can match against multiple resting orders, generating
