@@ -406,6 +406,16 @@ FILL_MODEL_JOURNAL = "fill_model_journal.jsonl"
 # ─── Loop Timing ─────────────────────────────────────────────────────────────
 SCAN_INTERVAL_SECONDS = 1.0
 MARKET_REFRESH_SECONDS = 30.0
+# Staleness budget for the active_windows cache (Step #5 watchdog).
+# Tied to MARKET_REFRESH_SECONDS so the relationship is explicit:
+# allow up to 3 consecutive missed refreshes before failing closed.
+# 4× refresh interval = 120s tolerates ~90s of Kalshi /events
+# unavailability (refresh worker call blocks, then completes, timestamp
+# updates) without nuking scan, while still detecting a silently-dead
+# worker in ~2 minutes — well under "indefinite stale". A tighter
+# budget (e.g., 60s = 2×) caused false-trips when a single REST call
+# hit Kalshi's 30-50s timeout.
+ACTIVE_WINDOWS_STALENESS_BUDGET_S = MARKET_REFRESH_SECONDS * 4
 SETTLEMENT_CHECK_SECONDS = 30.0
 
 # ─── Coinbase WebSocket ──────────────────────────────────────────────────────
@@ -19705,6 +19715,30 @@ class MainLoop:
         self._active_windows: List[Dict] = []
         self._discovery_ob_tickers: set = set()
         self._last_market_refresh: float = 0.0
+        # Step #5 cache staleness watchdog: timestamp of last
+        # successful `_refresh_active_windows`. Initialized to 0.0
+        # so the staleness check reports STALE before the first
+        # refresh — we don't trade until the cache is populated.
+        self._active_windows_updated_at: float = 0.0
+        # Dedup state for CACHE_STALE warnings: log once when the
+        # episode has outlived the flicker threshold, then a
+        # heartbeat every 60s while still stale, then a recovery
+        # line when fresh again. Without dedup, a multi-hour stall
+        # floods 3,600+ identical lines/hr.
+        # `_episode_started_at` is set on the first stale tick;
+        # `_episode_logged` flips True after the start line fires
+        # (deferred until the episode outlives the flicker
+        # threshold). Recovery only logs if start logged — Round
+        # 3 [A4] symmetric flicker dedup.
+        self._cache_stale_episode_started_at: float = 0.0
+        self._cache_stale_last_heartbeat_at: float = 0.0
+        self._cache_stale_episode_logged: bool = False
+        # Round 4 [A3]: edge-trigger for the "0 active windows"
+        # log so it doesn't fire every 30s during a sustained
+        # Kalshi /events outage. CACHE_STALE handles the operator
+        # alert after the budget elapses; this is just the
+        # transition log.
+        self._empty_refresh_in_progress: bool = False
         # Re-entry guard for market-refresh worker thread. Apr 25 00:45
         # incident: refresh_active_windows + subscribe took 1.5-2s on
         # the main thread (9+ REST calls), accounting for the residual
@@ -19955,13 +19989,26 @@ class MainLoop:
     # ── Periodic Tasks ────────────────────────────────────────────────────
 
     def _refresh_active_windows(self):
-        self._active_windows = discover_active_windows(self.client)
+        # Build the merged list LOCALLY, then publish atomically.
+        # Round 2 [A2] fix: previously we did
+        #   self._active_windows = discover_active_windows(...)
+        #   self._active_windows_updated_at = time.time()
+        #   self._active_windows.extend(spx_windows)   # main thread
+        #   self._active_windows.extend(wx_windows)    # could race
+        # The reader (main thread) could observe the freshly-swapped
+        # list AFTER the timestamp update but BEFORE SPX/weather
+        # were merged in — silently scanning without SPX/weather
+        # candidates while the watchdog reported "fresh". And
+        # `list.extend()` is GIL-atomic but NOT safe against a
+        # `for ... in list` iterator running on another thread.
+        # Build-then-swap eliminates both races.
+        new_windows = discover_active_windows(self.client)
 
         # Merge SPX windows (if engine available and market open)
         if self.spx_engine and self.spx_engine.is_market_open():
             try:
                 spx_windows = self.spx_engine.get_active_windows(self.client)
-                self._active_windows.extend(spx_windows)
+                new_windows.extend(spx_windows)
             except Exception as e:
                 logging.warning(f"SPX window discovery failed: {e}")
 
@@ -19969,16 +20016,57 @@ class MainLoop:
         if self.weather_engine:
             try:
                 wx_windows = self.weather_engine.get_active_windows(self.client)
-                self._active_windows.extend(wx_windows)
+                new_windows.extend(wx_windows)
             except Exception as e:
                 logging.warning(f"Weather window discovery failed: {e}")
 
-        self._last_market_refresh = time.time()
-        n = len(self._active_windows)
+        # Atomic ref-swap: main-thread readers see either the
+        # previous list or this fully-merged list, never a partial
+        # state. Python attribute writes on a list reference are
+        # GIL-atomic.
+        self._active_windows = new_windows
+        n = len(new_windows)
+        # Round 3 [A3] empty-list guard: do NOT bump the staleness
+        # timestamp if the refresh produced 0 windows. Crypto 15M
+        # markets are 24/7 and hourly are continuous, so an empty
+        # list is a silent failure — most commonly Kalshi /events
+        # returning empty for all 8 series. Leaving the timestamp
+        # un-updated lets the staleness watchdog fire CACHE_STALE
+        # after the budget elapses, surfacing the failure to
+        # operators. We DO publish the empty list (replacing the
+        # prior list with []) so scan() doesn't silently trade on
+        # ancient windows — the staleness gate then prevents scan
+        # from running on the empty list.
+        # Round 4 [A3]: edge-triggered logging. Log once on the
+        # transition into empty, once on recovery. CACHE_STALE
+        # provides the sustained-state operator alert; this just
+        # marks the boundaries.
         if n == 0:
-            logging.warning("Market refresh returned 0 active windows — scanner idle")
+            if not self._empty_refresh_in_progress:
+                self._empty_refresh_in_progress = True
+                logging.warning(
+                    "Market refresh returned 0 active windows — "
+                    "scanner idle, staleness timestamp NOT updated. "
+                    "Watchdog will fire CACHE_STALE after "
+                    "budget=%.0fs. (Subsequent empty refreshes "
+                    "will not re-log until recovery.)",
+                    ACTIVE_WINDOWS_STALENESS_BUDGET_S)
         else:
+            if self._empty_refresh_in_progress:
+                self._empty_refresh_in_progress = False
+                logging.warning(
+                    "Market refresh recovered: %d active windows "
+                    "after empty-refresh episode.", n)
+            # Step #5 freshness signal: timestamp set AFTER the
+            # publish. If a reader sees `_active_windows_updated_at`
+            # as fresh, it is GUARANTEED to have observed the
+            # merged list (because the timestamp write
+            # happens-after the ref-swap in program order under
+            # the GIL).
+            self._active_windows_updated_at = time.time()
             logging.debug(f"Refreshed: {n} active windows")
+
+        self._last_market_refresh = time.time()
 
     def _subscribe_discovery_orderbooks(self):
         """Subscribe to WS orderbook_delta for all discovered tickers.
@@ -19998,6 +20086,25 @@ class MainLoop:
                     ticker = mkt.get("ticker", "")
                     if ticker:
                         active_tickers.add(ticker)
+
+            # Round 4 [A2] guard: if `active_tickers` is empty AND
+            # we previously had a non-empty set, short-circuit
+            # without modifying subscription state. Empty most
+            # commonly means Kalshi /events transiently failed
+            # (the empty-list path in _refresh_active_windows
+            # publishes []); a single such cycle would otherwise
+            # cause us to unsubscribe EVERY active ticker, then
+            # re-subscribe on the next refresh — gratuitous WS
+            # churn during exactly the failure mode the watchdog
+            # is meant to handle. The CACHE_STALE watchdog will
+            # surface the underlying issue via its own log path.
+            if not active_tickers and self._discovery_ob_tickers:
+                logging.debug(
+                    "discovery_ob_subscribe: skipping cycle — "
+                    "active_tickers empty (Kalshi /events likely "
+                    "transient-empty), keeping %d prior subs",
+                    len(self._discovery_ob_tickers))
+                return
 
             # Unsubscribe expired tickers from previous cycle
             # Protect held-position tickers from cleanup (PPO needs them)
@@ -20202,6 +20309,130 @@ class MainLoop:
 
     # ── Main Tick ─────────────────────────────────────────────────────────
 
+    def _active_windows_is_stale(self) -> bool:
+        """Step #5 cache staleness watchdog. True if the Kalshi
+        15M/hourly window cache (`_active_windows`) is older than
+        ACTIVE_WINDOWS_STALENESS_BUDGET_S — meaning the refresh
+        worker thread either hasn't run yet (initial state) or has
+        silently died. The scan call site uses this to fail closed
+        rather than trade on stale window data.
+
+        Scope and known limits:
+          • This is a FRESHNESS watchdog — covers "did the refresh
+            worker run recently". It does NOT cover data-quality
+            failures: `discover_active_windows` is not atomic
+            across its 8 series-level GET /events calls, so a
+            mid-loop circuit-breaker trip can publish a partial
+            list while keeping the timestamp fresh. Round 3 [A2].
+          • Empty-list publication IS protected by the
+            non-empty check in `_refresh_active_windows` (Round
+            3 [A3]) — an empty refresh result does not bump the
+            timestamp, so the watchdog fires CACHE_STALE.
+          • Other readers of `self._active_windows` exist outside
+            the gate: `_subscribe_discovery_orderbooks` reads it
+            from the worker thread (right after the publish, no
+            race), and dashboard exporters may read it as a
+            snapshot. The gate covers `_tick`'s scan-relevant
+            iteration + `scanner.scan()` only. Round 3 [A1].
+          • SPX/weather merges share this single timestamp — they
+            have no independent freshness signal at this layer.
+            Round 2 [A3]."""
+        last = self._active_windows_updated_at
+        if last <= 0.0:
+            return True  # uninitialized
+        return (time.time() - last) > ACTIVE_WINDOWS_STALENESS_BUDGET_S
+
+    # Minimum sustained stale duration before the episode-start
+    # warning fires. Round 3 [A4]: making start AND recovery use
+    # the same threshold makes flicker dedup symmetric. A brief
+    # outage (worker recovers in <10s) emits NO log lines on
+    # either side; sustained outages emit a coherent
+    # start→heartbeat→recovery sequence.
+    _CACHE_STALE_MIN_EPISODE_S = 10.0
+
+    def _maybe_log_cache_stale(self) -> None:
+        """Emit a CACHE_STALE warning at most once per sustained
+        stale episode, with a 60s heartbeat thereafter. Called
+        every tick while the cache is stale; without dedup, a
+        multi-hour stall logs 3,600+ identical lines/hr and drowns
+        out other signals.
+
+        Round 3 [A4]: deferred-start. The episode-start line is
+        held back until the episode has lasted
+        `_CACHE_STALE_MIN_EPISODE_S` seconds. This makes start
+        and recovery symmetric: brief flickers below the
+        threshold emit NEITHER a start nor a recovery line. The
+        operator only ever sees a coherent pair (or neither).
+        `_cache_stale_episode_started_at` records WHEN the stale
+        episode began (set on first stale tick); `_cache_stale_episode_logged`
+        flips True once the start line fires."""
+        now = time.time()
+        last = self._active_windows_updated_at
+        budget = ACTIVE_WINDOWS_STALENESS_BUDGET_S
+        # First stale tick of an episode: record the start time
+        # but do NOT log yet — wait for the episode to outlive the
+        # flicker threshold.
+        if self._cache_stale_episode_started_at <= 0.0:
+            self._cache_stale_episode_started_at = now
+            self._cache_stale_last_heartbeat_at = now
+            self._cache_stale_episode_logged = False
+            return
+        episode_age = now - self._cache_stale_episode_started_at
+        # Emit the deferred episode-start line once the episode
+        # outlives the flicker threshold.
+        if (not self._cache_stale_episode_logged
+                and episode_age >= self._CACHE_STALE_MIN_EPISODE_S):
+            self._cache_stale_episode_logged = True
+            self._cache_stale_last_heartbeat_at = now
+            if last <= 0.0:
+                logging.warning(
+                    "CACHE_STALE: active_windows never refreshed "
+                    "(uninitialized, budget=%.0fs, sustained=%.0fs) "
+                    "— skipping scan; settlement and PPO continue. "
+                    "Refresh worker may have failed on first run.",
+                    budget, episode_age)
+            else:
+                age = now - last
+                logging.warning(
+                    "CACHE_STALE: active_windows age=%.1fs > "
+                    "budget=%.0fs (sustained=%.0fs) — skipping scan; "
+                    "settlement and PPO continue. Worker thread may "
+                    "be stuck or dead.",
+                    age, budget, episode_age)
+            return
+        # Heartbeat — only after the start line has fired.
+        if (self._cache_stale_episode_logged
+                and (now - self._cache_stale_last_heartbeat_at) >= 60.0):
+            self._cache_stale_last_heartbeat_at = now
+            age_str = (
+                "%.1fs" % (now - last) if last > 0.0 else "uninitialized")
+            logging.warning(
+                "CACHE_STALE_HEARTBEAT: still stale after %.0fs "
+                "(active_windows age=%s, budget=%.0fs)",
+                episode_age, age_str, budget)
+
+    def _maybe_log_cache_fresh_recovery(self) -> None:
+        """Emit one CACHE_FRESH recovery line when the cache returns
+        to fresh after a stale episode, then reset dedup state.
+
+        Round 3 [A4]: symmetric with `_maybe_log_cache_stale`'s
+        deferred-start. The recovery line ONLY fires if the
+        episode-start line fired (i.e., the episode outlived
+        `_CACHE_STALE_MIN_EPISODE_S`). Brief flickers leave no
+        trace on either side. Sustained stalls produce a
+        coherent start→heartbeat→recovery triple."""
+        if self._cache_stale_episode_started_at > 0.0:
+            if self._cache_stale_episode_logged:
+                episode_age = (
+                    time.time() - self._cache_stale_episode_started_at)
+                logging.warning(
+                    "CACHE_FRESH: active_windows recovered after "
+                    "%.0fs stale episode — scan re-enabled.",
+                    episode_age)
+            self._cache_stale_episode_started_at = 0.0
+            self._cache_stale_last_heartbeat_at = 0.0
+            self._cache_stale_episode_logged = False
+
     def _tick(self):
         now = time.time()
 
@@ -20374,83 +20605,11 @@ class MainLoop:
             except Exception:
                 pass
 
-        for window in self._active_windows:
-            seconds_to_close = (window["close_time"] - utc_now).total_seconds()
-            window["seconds_to_close"] = seconds_to_close
-
-            if window.get("product_type") == "hourly":
-                continue  # volume control: skip scan journal writes for hourly
-
-            in_range = (
-                MIN_SECONDS_BEFORE_CLOSE
-                <= seconds_to_close
-                <= MAX_SECONDS_BEFORE_CLOSE
-            )
-
-            asset = window["asset"]
-            vol_estimate = self.vol.update(asset, seconds_to_close=seconds_to_close)
-
-            scan_entry = {
-                "asset": asset,
-                "event_ticker": window["event_ticker"],
-                "seconds_to_close": round(seconds_to_close, 1),
-                "in_trading_range": in_range,
-                "num_markets": len(window["markets"]),
-                "spot_price": prices.get(asset),
-                "buffer_len": len(self.feed.get_buffer(asset)),
-            }
-            if vol_estimate:
-                scan_entry.update({
-                    "rv_1min": round(vol_estimate["rv_1min"], 8),
-                    "rv_5min": round(vol_estimate["rv_5min"], 8),
-                    "rv_15min": round(vol_estimate["rv_15min"], 8),
-                    "blended_rv": round(vol_estimate["blended_rv"], 8),
-                    "vol_regime": vol_estimate["regime"],
-                    "vol_returns": vol_estimate["num_returns"],
-                    "bv_1min": round(vol_estimate.get("bv_1min", 0), 8),
-                    "jump_component": round(vol_estimate.get("jump_component", 0), 8),
-                    "dvol_5s": round(vol_estimate["dvol_5s"], 8) if vol_estimate.get("dvol_5s") is not None else None,
-                    "iv_rv_blend_method": vol_estimate.get("iv_rv_blend_method"),
-                    "fixed_blend_rv": round(vol_estimate.get("fixed_blend_rv", 0), 8),
-                    "jump_multiplier": vol_estimate.get("jump_multiplier", 1.0),
-                    "jump_event_count": vol_estimate.get("jump_event_count", 0),
-                    "egarch_sigma": round(vol_estimate["egarch_sigma"], 8) if vol_estimate.get("egarch_sigma") is not None else None,
-                    "egarch_n_updates": vol_estimate.get("egarch_n_updates", 0),
-                    "egarch_log_var": round(vol_estimate.get("egarch_log_var", 0), 4) if vol_estimate.get("egarch_log_var") is not None else None,
-                    "egarch_vs_rv_ratio": round(vol_estimate["egarch_sigma"] / vol_estimate["blended_rv"], 4) if vol_estimate.get("egarch_sigma") and vol_estimate.get("blended_rv") and vol_estimate["blended_rv"] > 0 else None,
-                    # Adaptive RK bandwidth
-                    "omega_sq": vol_estimate.get("omega_sq"),
-                    "rk_H_adaptive_5": vol_estimate.get("rk_H_adaptive_5"),
-                    "rk_H_adaptive_15": vol_estimate.get("rk_H_adaptive_15"),
-                    "rk_H_fixed_5": vol_estimate.get("rk_H_fixed_5"),
-                    "rk_H_fixed_15": vol_estimate.get("rk_H_fixed_15"),
-                    "ark_5min": round(vol_estimate.get("ark_5min", 0), 8) if vol_estimate.get("ark_5min") is not None else None,
-                    "ark_15min": round(vol_estimate.get("ark_15min", 0), 8) if vol_estimate.get("ark_15min") is not None else None,
-                    "rk_adaptive_delta_5": vol_estimate.get("rk_adaptive_delta_5", 0),
-                    "rk_adaptive_delta_15": vol_estimate.get("rk_adaptive_delta_15", 0),
-                    # DVOL diagnostics
-                    "dvol_sq_hourly": round(vol_estimate["dvol_sq_hourly"], 10) if vol_estimate.get("dvol_sq_hourly") is not None else None,
-                    "vrp": round(vol_estimate["vrp"], 10) if vol_estimate.get("vrp") is not None else None,
-                    # Shadow TV RK weights
-                    "shadow_tv_blend_rv": round(vol_estimate["shadow_tv_blend_rv"], 8) if vol_estimate.get("shadow_tv_blend_rv") is not None else None,
-                    "shadow_tv_weights": vol_estimate.get("shadow_tv_weights"),
-                })
-            # Order flow snapshot
-            if self.order_flow is not None:
-                try:
-                    ofa = self.order_flow.get_signals(asset)
-                    scan_entry["ofa_adjustment"] = round(ofa["prob_adjustment"], 6)
-                    scan_entry["ofa_confidence"] = ofa["confidence"]
-                    cx = ofa["signals"].get("cross_exchange", {})
-                    scan_entry["cross_ex_consensus"] = cx.get("consensus_direction")
-                    scan_entry["cross_ex_above"] = cx.get("exchanges_above", 0)
-                    fn = ofa["signals"].get("funding", {})
-                    scan_entry["funding_rate"] = fn.get("rate")
-                    scan_entry["funding_level"] = fn.get("level")
-                except Exception:
-                    pass
-            self.logger.log_scan(scan_entry)
-
+        # Per-window iteration (vol.update + scan_journal) is now
+        # gated below alongside scanner.scan() so a stale window
+        # list can't feed VolatilityEngine negative STCs or pollute
+        # the scan journal with stale `seconds_to_close` values.
+        # See `_active_windows_is_stale` block below.
         # Poll active executor orders (maker fill check — one per asset)
         self.executor.tick()
 
@@ -20504,42 +20663,149 @@ class MainLoop:
         except Exception:
             logging.debug("HWM balance recording failed", exc_info=True)
 
-        # Run opportunity scanner (always — execute() rejects if asset already active)
-        # Body-duration timing — SCAN_BODY_SLOW fires when scan()'s own
-        # execution exceeds 1.5s. Distinguishes "scan body is slow"
-        # from "work between scan calls is slow". The latter would
-        # show in the SLOW_SCAN_TICK gap measurement without showing
-        # here. Apr 25 00:55 incident: SLOW_SCAN_TICK 6.13s with zero
-        # PERIODIC_TASK_SLOW means the blocker is in scan() body
-        # itself OR in tick body outside the periodic-task cluster.
-        _scan_body_start_perf = time.perf_counter()
-        try:
-            candidates = self.scanner.scan(self._active_windows)
-        finally:
-            _scan_body_dt = time.perf_counter() - _scan_body_start_perf
-            if _scan_body_dt > 1.5:
-                logging.warning(
-                    "SCAN_BODY_SLOW: scanner.scan body took %.2fs",
-                    _scan_body_dt)
-        if self.scanner._last_scan_stats:
-            try:
-                self.logger.log_scan({
-                    "type": "scan_summary",
-                    "per_asset": self.scanner._last_scan_stats,
-                    "had_candidate": candidates is not None,
-                })
-            except Exception:
-                pass
-        if candidates:
-            for candidate in candidates:
-                logging.info(
-                    f"Opportunity: {candidate['ticker']} "
-                    f"ask={candidate['best_yes_ask']}¢ "
-                    f"edge={candidate['edge']:.2%} "
-                    f"size={candidate['position_size']} "
-                    f"prob={candidate['calibrated_prob']:.2%}"
+        # Step #5 cache staleness watchdog: gates ALL code that
+        # reads `self._active_windows` for trading decisions. The
+        # gated block contains BOTH the per-window iteration (which
+        # calls `vol.update(seconds_to_close=...)` — feeding stale
+        # negative STC values would corrupt the vol engine) AND the
+        # scanner.scan() call. Settlement, executor.tick(), PPO, and
+        # weather PPO are NOT gated — they read different state and
+        # are time-sensitive in their own right (settlement is
+        # idempotent at the DB layer; PPO is observation-only).
+        # Scope: covers Kalshi 15M/hourly windows (the cache that
+        # `_active_windows_updated_at` actually tracks). SPX and
+        # weather merges share the same timestamp but have no
+        # independent freshness signal — see Round 2 [A3] follow-up.
+        candidates = None
+        if self._active_windows_is_stale():
+            self._maybe_log_cache_stale()
+        else:
+            self._maybe_log_cache_fresh_recovery()
+            # Take a stable local snapshot of the window list for
+            # this tick. The refresh worker does an atomic ref-swap
+            # (`_refresh_active_windows` builds locally then
+            # publishes — no in-place extend), so the snapshot
+            # pins the iterator+scanner to whichever list version
+            # was current at load time. A subsequent ref-swap mid-
+            # tick produces no surprise: for-loop iterates the OLD
+            # list, scan() gets the OLD list, both consistent. The
+            # NEXT tick's snapshot picks up the new ref. CPython's
+            # GIL makes the ref-load atomic, so `_local_windows` is
+            # never partially observed.
+            _local_windows = self._active_windows
+            for window in _local_windows:
+                seconds_to_close = (window["close_time"] - utc_now).total_seconds()
+                window["seconds_to_close"] = seconds_to_close
+
+                if window.get("product_type") == "hourly":
+                    continue  # volume control: skip scan journal writes for hourly
+
+                in_range = (
+                    MIN_SECONDS_BEFORE_CLOSE
+                    <= seconds_to_close
+                    <= MAX_SECONDS_BEFORE_CLOSE
                 )
-                self.executor.execute(candidate)
+
+                asset = window["asset"]
+                vol_estimate = self.vol.update(asset, seconds_to_close=seconds_to_close)
+
+                scan_entry = {
+                    "asset": asset,
+                    "event_ticker": window["event_ticker"],
+                    "seconds_to_close": round(seconds_to_close, 1),
+                    "in_trading_range": in_range,
+                    "num_markets": len(window["markets"]),
+                    "spot_price": prices.get(asset),
+                    "buffer_len": len(self.feed.get_buffer(asset)),
+                }
+                if vol_estimate:
+                    scan_entry.update({
+                        "rv_1min": round(vol_estimate["rv_1min"], 8),
+                        "rv_5min": round(vol_estimate["rv_5min"], 8),
+                        "rv_15min": round(vol_estimate["rv_15min"], 8),
+                        "blended_rv": round(vol_estimate["blended_rv"], 8),
+                        "vol_regime": vol_estimate["regime"],
+                        "vol_returns": vol_estimate["num_returns"],
+                        "bv_1min": round(vol_estimate.get("bv_1min", 0), 8),
+                        "jump_component": round(vol_estimate.get("jump_component", 0), 8),
+                        "dvol_5s": round(vol_estimate["dvol_5s"], 8) if vol_estimate.get("dvol_5s") is not None else None,
+                        "iv_rv_blend_method": vol_estimate.get("iv_rv_blend_method"),
+                        "fixed_blend_rv": round(vol_estimate.get("fixed_blend_rv", 0), 8),
+                        "jump_multiplier": vol_estimate.get("jump_multiplier", 1.0),
+                        "jump_event_count": vol_estimate.get("jump_event_count", 0),
+                        "egarch_sigma": round(vol_estimate["egarch_sigma"], 8) if vol_estimate.get("egarch_sigma") is not None else None,
+                        "egarch_n_updates": vol_estimate.get("egarch_n_updates", 0),
+                        "egarch_log_var": round(vol_estimate.get("egarch_log_var", 0), 4) if vol_estimate.get("egarch_log_var") is not None else None,
+                        "egarch_vs_rv_ratio": round(vol_estimate["egarch_sigma"] / vol_estimate["blended_rv"], 4) if vol_estimate.get("egarch_sigma") and vol_estimate.get("blended_rv") and vol_estimate["blended_rv"] > 0 else None,
+                        # Adaptive RK bandwidth
+                        "omega_sq": vol_estimate.get("omega_sq"),
+                        "rk_H_adaptive_5": vol_estimate.get("rk_H_adaptive_5"),
+                        "rk_H_adaptive_15": vol_estimate.get("rk_H_adaptive_15"),
+                        "rk_H_fixed_5": vol_estimate.get("rk_H_fixed_5"),
+                        "rk_H_fixed_15": vol_estimate.get("rk_H_fixed_15"),
+                        "ark_5min": round(vol_estimate.get("ark_5min", 0), 8) if vol_estimate.get("ark_5min") is not None else None,
+                        "ark_15min": round(vol_estimate.get("ark_15min", 0), 8) if vol_estimate.get("ark_15min") is not None else None,
+                        "rk_adaptive_delta_5": vol_estimate.get("rk_adaptive_delta_5", 0),
+                        "rk_adaptive_delta_15": vol_estimate.get("rk_adaptive_delta_15", 0),
+                        # DVOL diagnostics
+                        "dvol_sq_hourly": round(vol_estimate["dvol_sq_hourly"], 10) if vol_estimate.get("dvol_sq_hourly") is not None else None,
+                        "vrp": round(vol_estimate["vrp"], 10) if vol_estimate.get("vrp") is not None else None,
+                        # Shadow TV RK weights
+                        "shadow_tv_blend_rv": round(vol_estimate["shadow_tv_blend_rv"], 8) if vol_estimate.get("shadow_tv_blend_rv") is not None else None,
+                        "shadow_tv_weights": vol_estimate.get("shadow_tv_weights"),
+                    })
+                # Order flow snapshot
+                if self.order_flow is not None:
+                    try:
+                        ofa = self.order_flow.get_signals(asset)
+                        scan_entry["ofa_adjustment"] = round(ofa["prob_adjustment"], 6)
+                        scan_entry["ofa_confidence"] = ofa["confidence"]
+                        cx = ofa["signals"].get("cross_exchange", {})
+                        scan_entry["cross_ex_consensus"] = cx.get("consensus_direction")
+                        scan_entry["cross_ex_above"] = cx.get("exchanges_above", 0)
+                        fn = ofa["signals"].get("funding", {})
+                        scan_entry["funding_rate"] = fn.get("rate")
+                        scan_entry["funding_level"] = fn.get("level")
+                    except Exception:
+                        pass
+                self.logger.log_scan(scan_entry)
+
+            # Run opportunity scanner (always — execute() rejects if asset already active)
+            # Body-duration timing — SCAN_BODY_SLOW fires when scan()'s own
+            # execution exceeds 1.5s. Distinguishes "scan body is slow"
+            # from "work between scan calls is slow". The latter would
+            # show in the SLOW_SCAN_TICK gap measurement without showing
+            # here. Apr 25 00:55 incident: SLOW_SCAN_TICK 6.13s with zero
+            # PERIODIC_TASK_SLOW means the blocker is in scan() body
+            # itself OR in tick body outside the periodic-task cluster.
+            _scan_body_start_perf = time.perf_counter()
+            try:
+                candidates = self.scanner.scan(_local_windows)
+            finally:
+                _scan_body_dt = time.perf_counter() - _scan_body_start_perf
+                if _scan_body_dt > 1.5:
+                    logging.warning(
+                        "SCAN_BODY_SLOW: scanner.scan body took %.2fs",
+                        _scan_body_dt)
+            if self.scanner._last_scan_stats:
+                try:
+                    self.logger.log_scan({
+                        "type": "scan_summary",
+                        "per_asset": self.scanner._last_scan_stats,
+                        "had_candidate": candidates is not None,
+                    })
+                except Exception:
+                    pass
+            if candidates:
+                for candidate in candidates:
+                    logging.info(
+                        f"Opportunity: {candidate['ticker']} "
+                        f"ask={candidate['best_yes_ask']}¢ "
+                        f"edge={candidate['edge']:.2%} "
+                        f"size={candidate['position_size']} "
+                        f"prob={candidate['calibrated_prob']:.2%}"
+                    )
+                    self.executor.execute(candidate)
 
         # ── Post-entry position price monitor (v2: spot-price primary) ─────
         # Logs spot price + Kalshi quotes for held 15M positions every tick.
