@@ -62,6 +62,11 @@ def _make_feed():
     # R1 / A5 [P1]: post-resub recovery watchdog state.
     f._force_resub_recovery_deadline = {}
     f._force_resub_recovery_warned = {}
+    # Phase 2.5: ticker→sid map. Tests that exercise the primary
+    # get_snapshot path must pre-populate this in setUp; tests that
+    # specifically test the no-sid-known fallback leave it empty.
+    f._ticker_to_sid = {}
+    f._ws_error_frame_seen = set()
     f._snapshot_schema_probed = True
     f._delta_probe_count = 0
     f._delta_probe_max = 0
@@ -80,6 +85,9 @@ class TestForceResubscribeHelper(unittest.TestCase):
     def setUp(self):
         self.f = _make_feed()
         self.f._subscribed_tickers.add("KXBTC15M-FOO")
+        # Phase 2.5: pre-populate sid so primary path is eligible.
+        # Without a sid, force_resubscribe routes to fallback.
+        self.f._ticker_to_sid["KXBTC15M-FOO"] = 100
 
     def test_force_resub_queues_snapshot_request_first(self):
         """Primary path: queue a get_snapshot request. unsub+resub
@@ -369,6 +377,7 @@ class TestR1A2PurgeCacheParam(unittest.TestCase):
         self.f = _make_feed()
         self.f._subscribed_tickers.add("KXBTC15M-PERIODIC")
         self.f._orderbooks["KXBTC15M-PERIODIC"] = {"yes": [[91, 50]], "no": []}
+        self.f._ticker_to_sid["KXBTC15M-PERIODIC"] = 200
 
     def test_purge_cache_false_keeps_cache(self):
         self.f.force_resubscribe(
@@ -396,6 +405,7 @@ class TestR1A7BypassCooldown(unittest.TestCase):
     def setUp(self):
         self.f = _make_feed()
         self.f._subscribed_tickers.add("KXBTC15M-RATE")
+        self.f._ticker_to_sid["KXBTC15M-RATE"] = 300
 
     def test_bypass_cooldown_overrides_rate_limit(self):
         # First call sets cooldown.
@@ -580,6 +590,7 @@ class TestR2P01UnsubscribeCleansPhase2State(unittest.TestCase):
     def setUp(self):
         self.f = _make_feed()
         self.f._subscribed_tickers.add("KXBTC15M-LIFE")
+        self.f._ticker_to_sid["KXBTC15M-LIFE"] = 400
 
     def test_unsubscribe_clears_snapshot_request_pending(self):
         self.f.force_resubscribe("KXBTC15M-LIFE")
