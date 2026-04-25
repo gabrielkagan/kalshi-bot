@@ -3329,7 +3329,8 @@ class StateManager:
                                      spot_coinbase_kraken_gap_bps: Optional[float] = None,
                                      kalshi_flow_imbalance_level: Optional[str] = None,
                                      kalshi_flow_depth_velocity: Optional[float] = None,
-                                     kalshi_flow_depth_drain: Optional[int] = None):
+                                     kalshi_flow_depth_drain: Optional[int] = None,
+                                     orderbook_levels_json: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -3483,8 +3484,9 @@ class StateManager:
                      current_drawdown_pct, recent_ioc_fill_success_rate_1h,
                      yes_spread_cents, bid_depth, spot_coinbase_kraken_gap_bps,
                      kalshi_flow_imbalance_level, kalshi_flow_depth_velocity,
-                     kalshi_flow_depth_drain)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     kalshi_flow_depth_drain,
+                     orderbook_levels_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -3579,7 +3581,8 @@ class StateManager:
                     spot_coinbase_kraken_gap_bps=excluded.spot_coinbase_kraken_gap_bps,
                     kalshi_flow_imbalance_level=excluded.kalshi_flow_imbalance_level,
                     kalshi_flow_depth_velocity=excluded.kalshi_flow_depth_velocity,
-                    kalshi_flow_depth_drain=excluded.kalshi_flow_depth_drain
+                    kalshi_flow_depth_drain=excluded.kalshi_flow_depth_drain,
+                    orderbook_levels_json=excluded.orderbook_levels_json
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -3621,7 +3624,8 @@ class StateManager:
                   current_drawdown_pct, recent_ioc_fill_success_rate_1h,
                   yes_spread_cents, bid_depth, spot_coinbase_kraken_gap_bps,
                   kalshi_flow_imbalance_level, kalshi_flow_depth_velocity,
-                  kalshi_flow_depth_drain))
+                  kalshi_flow_depth_drain,
+                  orderbook_levels_json))
             self.conn.commit()
         except Exception as e:
             try:
