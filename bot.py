@@ -8543,8 +8543,19 @@ class OpportunityScanner:
                     logging.info("SPX_DIAG_PASS: %s cal=%.4f spot=%.1f thresh=%.1f rv=%.6f stc=%.0f",
                                  ticker, cal_prob, spot, threshold, blended_rv, seconds_remaining)
 
-                # Fetch orderbook (cached, rate-limited)
+                # Fetch orderbook (cached, rate-limited).
+                # Per-fetch timing — SCAN_OB_FETCH_SLOW fires when one
+                # cache-or-REST orderbook fetch exceeds 500ms. Apr 25
+                # 01:28: single XRP window took 5.73s; suspect this
+                # call is the dominant cost on certain tickers (REST
+                # retry, Kalshi rate limit, network).
+                _ob_fetch_start = time.perf_counter()
                 ob_data, was_fresh = self._get_orderbook_cached(ticker)
+                _ob_fetch_dt = time.perf_counter() - _ob_fetch_start
+                if _ob_fetch_dt > 0.5:
+                    logging.warning(
+                        "SCAN_OB_FETCH_SLOW: ticker=%s fresh=%s took %.2fs",
+                        ticker, was_fresh, _ob_fetch_dt)
                 if was_fresh:
                     ob_fetches_this_tick += 1
                 if ob_data is None:
