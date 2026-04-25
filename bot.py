@@ -21718,36 +21718,61 @@ class MainLoop:
                     if ticker:
                         active_tickers.add(ticker)
 
-            # Round 4 [A2] guard: if `active_tickers` is empty AND
-            # we previously had a non-empty set, short-circuit
-            # without modifying subscription state. Empty most
-            # commonly means Kalshi /events transiently failed
-            # (the empty-list path in _refresh_active_windows
-            # publishes []); a single such cycle would otherwise
-            # cause us to unsubscribe EVERY active ticker, then
-            # re-subscribe on the next refresh — gratuitous WS
-            # churn during exactly the failure mode the watchdog
-            # is meant to handle. The CACHE_STALE watchdog will
-            # surface the underlying issue via its own log path.
-            if not active_tickers and self._discovery_ob_tickers:
+            # Phase 2.8 [P0]: diff against the AUTHORITATIVE
+            # kalshi_feed.get_subscribed_tickers() — NOT the
+            # private previous-cycle `_discovery_ob_tickers` view.
+            # 5 paths add to _subscribed_tickers (this method,
+            # scan(), lazy _get_orderbook ×2, PPO); only 2 paths
+            # remove. Pre-fix, tickers added by the other 4 paths
+            # (especially after their markets closed) accumulated
+            # forever — causing post-close get_snapshot to hit
+            # Kalshi code=7 "Unknown subscription ID", driving
+            # WS_SUBSCRIBE_STUCK + WS_FORCE_RECONNECT loops.
+            # Empirical: KXXRP15M-26APR251500-00 still being
+            # snapshotted at 19:00 UTC (4h post-close).
+            all_subscribed = set(
+                self.kalshi_feed.get_subscribed_tickers())
+
+            # Phase 2.8 R-review A1: empty-active short-circuit
+            # MUST use `all_subscribed` (the authoritative set) —
+            # NOT `_discovery_ob_tickers` (the now-deprecated
+            # previous-cycle view). On the first cycle after a
+            # restart where Kalshi /events transiently fails,
+            # `_discovery_ob_tickers` is empty too → guard
+            # doesn't trigger → mass-unsubscribe of every ticker
+            # added by lazy _get_orderbook / scan() / PPO during
+            # startup. Empty most commonly = Kalshi /events
+            # transient failure; never trigger mass cleanup
+            # under that condition.
+            if not active_tickers and all_subscribed:
                 logging.debug(
                     "discovery_ob_subscribe: skipping cycle — "
                     "active_tickers empty (Kalshi /events likely "
                     "transient-empty), keeping %d prior subs",
-                    len(self._discovery_ob_tickers))
+                    len(all_subscribed))
                 return
 
-            # Unsubscribe expired tickers from previous cycle
-            # Protect held-position tickers from cleanup (PPO needs them)
+            # Unsubscribe expired tickers from previous cycle.
+            # Phase 2.8 R-review A2: protect ALL held-position
+            # tickers (any product type), not just 15M.
+            #
+            # Phase 2.8 R2 / P1: protection is NOT gated on
+            # POSITION_PRICE_MONITOR_ENABLED. PPO is one reason to
+            # keep the WS feed for held tickers, but settlement
+            # detection, fill reconciliation, and other
+            # position-monitoring paths also depend on having
+            # orderbook data while a position is open. Don't yank
+            # the feed because a single optional flag is off.
             _held_tickers = set()
-            if POSITION_PRICE_MONITOR_ENABLED:
-                try:
-                    for _hp in self.state.get_open_positions():
-                        if _hp.get("status") == "open" and "15M" in _hp.get("ticker", "").upper():
-                            _held_tickers.add(_hp["ticker"])
-                except Exception:
-                    pass
-            expired = self._discovery_ob_tickers - active_tickers - _held_tickers
+            try:
+                for _hp in self.state.get_open_positions():
+                    if _hp.get("status") == "open":
+                        _t = _hp.get("ticker", "")
+                        if _t:
+                            _held_tickers.add(_t)
+            except Exception:
+                pass
+            expired = all_subscribed - active_tickers - _held_tickers
             for ticker in expired:
                 try:
                     self.kalshi_feed.unsubscribe_ticker(ticker)
@@ -21762,9 +21787,20 @@ class MainLoop:
                     pass
 
             if expired:
+                # Phase 2.8 R-review A5: log actual ticker names
+                # (sorted, capped) on first ship — the whole point
+                # is "we don't know which paths leaked." Forensic
+                # signal for confirming which sources are leaking.
+                _expired_sorted = sorted(expired)
+                _sample = _expired_sorted[:10]
+                _truncated = "" if len(expired) <= 10 else f" (+{len(expired)-10} more)"
                 logging.info(
-                    f"discovery_ob_cleanup: unsubscribed {len(expired)} expired tickers"
-                )
+                    "discovery_ob_cleanup: unsubscribed %d expired "
+                    "tickers: %s%s",
+                    len(expired), _sample, _truncated)
+            # Keep _discovery_ob_tickers tracking for backward-compat
+            # diagnostic logs. The actual cleanup diff is now
+            # against _subscribed_tickers (authoritative).
             self._discovery_ob_tickers = active_tickers
         except Exception as e:
             logging.warning(f"discovery_ob_subscribe failed: {e}")

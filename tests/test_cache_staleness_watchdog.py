@@ -604,19 +604,25 @@ class TestEmptyRefreshDoesNotBumpTimestamp(unittest.TestCase):
 
 
 class TestSubscribeShortCircuitOnEmpty(unittest.TestCase):
-    """Round 4 [A2] regression: `_subscribe_discovery_orderbooks`
-    must short-circuit when active_tickers is empty AND prior
-    set was non-empty. Otherwise an empty refresh (transient
-    Kalshi /events failure) causes mass-unsubscribe of every
-    active WS subscription, then re-subscribe on next refresh —
-    gratuitous churn during the failure mode the watchdog is
-    designed to handle."""
+    """Round 4 [A2] regression (Phase 2.8 R-review A1 update):
+    `_subscribe_discovery_orderbooks` must short-circuit when
+    active_tickers is empty AND prior subscription set was
+    non-empty.
+
+    Pre-Phase 2.8: guard checked `_discovery_ob_tickers` (the
+    private previous-cycle view).
+    Phase 2.8: guard checks `all_subscribed` (the authoritative
+    accessor) — `_discovery_ob_tickers` is empty on first cycle
+    after restart even if other paths have populated
+    `_subscribed_tickers`, so it can't be the empty-active
+    sentinel anymore. Both designs preserve the same invariant:
+    transient Kalshi /events failures don't cause mass-unsub."""
 
     def test_subscribe_short_circuits_on_empty_active_with_prior(self):
         """AST: walk `_subscribe_discovery_orderbooks`. The body
         must contain an early-return branch guarded by a
-        condition mentioning `active_tickers` and the prior
-        set (`_discovery_ob_tickers`)."""
+        condition mentioning `active_tickers` and the
+        authoritative-subscribed-set sentinel."""
         with open(BOT_PY) as f:
             tree = ast.parse(f.read())
         for cls in ast.walk(tree):
@@ -627,16 +633,20 @@ class TestSubscribeShortCircuitOnEmpty(unittest.TestCase):
                 if (not isinstance(fn, ast.FunctionDef)
                         or fn.name != "_subscribe_discovery_orderbooks"):
                     continue
-                # Look for an If node whose test mentions BOTH
-                # "active_tickers" and "_discovery_ob_tickers",
-                # whose body contains a Return.
+                # Look for an If node whose test mentions
+                # `active_tickers` AND either the authoritative
+                # `all_subscribed` (Phase 2.8) or the legacy
+                # `_discovery_ob_tickers` (pre-2.8). Body must
+                # contain a Return.
                 found_guard = False
                 for sub in ast.walk(fn):
                     if not isinstance(sub, ast.If):
                         continue
                     test_src = ast.unparse(sub.test)
-                    if ("active_tickers" not in test_src
-                            or "_discovery_ob_tickers" not in test_src):
+                    if "active_tickers" not in test_src:
+                        continue
+                    if not ("all_subscribed" in test_src
+                            or "_discovery_ob_tickers" in test_src):
                         continue
                     for body_node in ast.walk(sub):
                         if isinstance(body_node, ast.Return):
@@ -646,12 +656,12 @@ class TestSubscribeShortCircuitOnEmpty(unittest.TestCase):
                         break
                 self.assertTrue(
                     found_guard,
-                    "R4 [A2] regression: expected an early-return "
-                    "guard in _subscribe_discovery_orderbooks "
-                    "with a condition mentioning both "
-                    "`active_tickers` and `_discovery_ob_tickers`. "
-                    "Without this, an empty refresh causes "
-                    "mass-unsubscribe.")
+                    "Expected an early-return guard in "
+                    "_subscribe_discovery_orderbooks with a "
+                    "condition mentioning `active_tickers` and "
+                    "either `all_subscribed` (Phase 2.8) or the "
+                    "legacy `_discovery_ob_tickers`. Without this, "
+                    "an empty refresh causes mass-unsubscribe.")
                 return
         self.fail(
             "MainLoop._subscribe_discovery_orderbooks not found")
