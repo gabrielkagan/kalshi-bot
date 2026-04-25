@@ -106,42 +106,79 @@ class TestKalshiClientGetEventsBreakerPerSeries(unittest.TestCase):
             if k.startswith("kalshi_events_"):
                 REGISTRY._breakers.pop(k)
 
-    def test_per_series_breaker_isolation(self):
+    def test_per_series_status_breaker_isolation(self):
+        """Apr 25 11:13 UTC: discovered that consecutive-failures
+        semantics + 2-call-per-series pattern (status=open succeeds,
+        status=active fails) means failures never accumulate. Fix:
+        include status in the breaker key so each (series, status)
+        pair tracks independently."""
         from circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
-        # Fail KXFIFAGAME 3 times → its breaker trips.
         c._request.return_value = None
+        # Fail KXFIFAGAME with status=active 3 times → trips that
+        # specific breaker.
         for _ in range(3):
-            c.get_events(series_ticker="KXFIFAGAME")
-        fifa_breaker = REGISTRY.get("kalshi_events_KXFIFAGAME")
-        self.assertTrue(fifa_breaker.is_open(),
-            "FIFA breaker should be open after 3 failures.")
-        # KXNBAGAME has its own breaker, unaffected.
-        nba_breaker = REGISTRY.get("kalshi_events_KXNBAGAME")
-        self.assertFalse(nba_breaker.is_open(),
-            "NBA breaker must remain closed despite FIFA failures. "
-            "Per-series isolation is the whole point.")
+            c.get_events(series_ticker="KXFIFAGAME", status="active")
+        fifa_active = REGISTRY.get(
+            "kalshi_events_KXFIFAGAME_active")
+        self.assertTrue(fifa_active.is_open(),
+            "FIFA-active breaker should be open after 3 failures.")
+        # FIFA-open is a separate breaker, unaffected.
+        fifa_open = REGISTRY.get("kalshi_events_KXFIFAGAME_open")
+        self.assertFalse(fifa_open.is_open(),
+            "FIFA-open breaker is independent — must remain closed.")
+        # NBA-active has its own breaker, also unaffected.
+        nba_active = REGISTRY.get("kalshi_events_KXNBAGAME_active")
+        self.assertFalse(nba_active.is_open(),
+            "Cross-series isolation: NBA must not be affected by FIFA.")
+
+    def test_status_open_success_does_not_reset_active_failure_count(self):
+        """The actual production bug: status=open returning success
+        should NOT reset the failure counter for status=active. They
+        are independent endpoints conceptually."""
+        from circuit_breaker import REGISTRY
+        c = _make_client_with_mocked_request()
+        # Pattern: status=open succeeds, status=active fails — the
+        # exact pattern sports_engine produces in production.
+        c._request.side_effect = [
+            {"events": []},  # cycle 1, status=open: success
+            None,            # cycle 1, status=active: fail
+            {"events": []},  # cycle 2, open: success
+            None,            # cycle 2, active: fail
+            {"events": []},  # cycle 3, open: success
+            None,            # cycle 3, active: fail
+        ]
+        for _ in range(3):
+            c.get_events(series_ticker="KXNBAGAME", status="open")
+            c.get_events(series_ticker="KXNBAGAME", status="active")
+        nba_active = REGISTRY.get("kalshi_events_KXNBAGAME_active")
+        self.assertTrue(
+            nba_active.is_open(),
+            "After 3 consecutive failures of status=active "
+            "(interleaved with status=open successes), the active "
+            "breaker MUST trip. Pre-fix: open's success kept "
+            "resetting active's counter to 0.")
 
     def test_get_events_open_breaker_short_circuits(self):
         from circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
-            c.get_events(series_ticker="KXFIFAGAME")
+            c.get_events(series_ticker="KXFIFAGAME", status="active")
         c._request.reset_mock()
-        result = c.get_events(series_ticker="KXFIFAGAME")
+        result = c.get_events(series_ticker="KXFIFAGAME", status="active")
         self.assertIsNone(result)
         c._request.assert_not_called()
 
-    def test_get_events_no_series_ticker_uses_all_key(self):
-        """When series_ticker=None, the breaker key falls back to
-        'kalshi_events_all' so this case is still protected."""
+    def test_get_events_no_series_no_status_uses_default_key(self):
+        """When both series_ticker and status are None, the breaker
+        key uses 'all' / 'any' fallbacks."""
         from circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
-            c.get_events(series_ticker=None)
-        b = REGISTRY.get("kalshi_events_all")
+            c.get_events()
+        b = REGISTRY.get("kalshi_events_all_any")
         self.assertTrue(b.is_open())
 
 

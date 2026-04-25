@@ -1678,8 +1678,18 @@ class KalshiClient:
 
     @_kalshi_breaker
     @_breaker_config(
-        key_fn=lambda self, series_ticker=None, **_:
-            f"kalshi_events_{series_ticker or 'all'}",
+        # Per-(series, status) breaker keys. Apr 25 11:13 UTC
+        # discovery: consecutive-failure semantics + sports
+        # discovery's 2-call pattern (status=open succeeds,
+        # status=active fails per series) caused failures to
+        # never accumulate — open's success kept resetting
+        # active's counter. Independent keys per (series, status)
+        # let active's breaker trip after 3 consecutive failures.
+        # Sliding-window CB semantics (planned step 11) would be a
+        # more general fix.
+        key_fn=lambda self, series_ticker=None, status=None, **_:
+            f"kalshi_events_{series_ticker or 'all'}_"
+            f"{status or 'any'}",
         recovery_seconds=300)
     def get_events(self, series_ticker: Optional[str] = None,
                    status: Optional[str] = None,
