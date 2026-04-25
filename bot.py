@@ -19438,6 +19438,11 @@ class MainLoop:
         # the main thread (9+ REST calls), accounting for the residual
         # SLOW_SCAN_TICK gap after the SettlementTracker fix.
         self._market_refresh_running: bool = False
+        # Re-entry guard for EGARCH MLE refit worker thread. Apr 25
+        # 01:02 incident: PERIODIC_TASK_SLOW: egarch_refit took 53.30s
+        # → SLOW_SCAN_TICK 54.37s. scipy L-BFGS-B optimization across
+        # 4 assets is the heaviest periodic task in _tick().
+        self._egarch_refit_running: bool = False
         self._last_wal_checkpoint: float = 0.0
         self._last_error: Optional[str] = None
         self._last_error_time: float = 0.0
@@ -20035,14 +20040,44 @@ class MainLoop:
             logging.warning(
                 "PERIODIC_TASK_SLOW: calibration_retrain took %.2fs", _dt)
 
-        # Periodic EGARCH MLE refit
-        _t = time.perf_counter()
-        if self.egarch_estimator:
-            self.egarch_estimator.maybe_refit()
-        _dt = time.perf_counter() - _t
-        if _dt > _PERIODIC_SLOW_THRESHOLD_S:
-            logging.warning(
-                "PERIODIC_TASK_SLOW: egarch_refit took %.2fs", _dt)
+        # Periodic EGARCH MLE refit — runs in a daemon worker thread.
+        # Apr 25 01:02: scipy L-BFGS-B fit across 4 assets blocked the
+        # main thread for 53.30s. Same threading pattern as
+        # SettlementTracker (8114ddc) and market refresh (f216a8d).
+        # `_egarch_refit_running` prevents pile-up if a refit cycle
+        # exceeds the next _tick() interval. Thread safety: maybe_refit
+        # writes `self._params[asset] = new_params` (atomic dict-item
+        # assignment under GIL); EGARCH readers in update() see either
+        # old or new params, never partial.
+        if self.egarch_estimator and not self._egarch_refit_running:
+            self._egarch_refit_running = True
+
+            def _egarch_refit_worker():
+                _wt = time.perf_counter()
+                try:
+                    self.egarch_estimator.maybe_refit()
+                    _wdt = time.perf_counter() - _wt
+                    if _wdt > _PERIODIC_SLOW_THRESHOLD_S:
+                        logging.warning(
+                            "PERIODIC_TASK_SLOW: egarch_refit took "
+                            "%.2fs (worker thread)", _wdt)
+                except Exception:
+                    logging.error(
+                        "egarch_refit worker thread failed",
+                        exc_info=True)
+                finally:
+                    self._egarch_refit_running = False
+
+            try:
+                threading.Thread(
+                    target=_egarch_refit_worker,
+                    daemon=True,
+                    name="egarch_refit",
+                ).start()
+            except Exception:
+                self._egarch_refit_running = False
+                logging.debug(
+                    "egarch_refit worker spawn failed", exc_info=True)
 
         # Recompute seconds_to_close and log each window (skip hourly vol diagnostics)
         utc_now = datetime.datetime.now(timezone.utc)
