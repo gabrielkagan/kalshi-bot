@@ -19873,13 +19873,38 @@ class MainLoop:
             if bal_dollars > self._peak_balance:
                 self._peak_balance = bal_dollars
 
+        # Per-task timing — emits PERIODIC_TASK_SLOW when any single task
+        # exceeds 1.5s. Apr 25 00:30 UTC SLOW_SCAN_TICK still firing after
+        # the WS drift probe was threaded — there's another dominant
+        # blocker in this cluster. This instrumentation names which task
+        # is to blame in the next round of logs.
+        _PERIODIC_SLOW_THRESHOLD_S = 1.5
+
         # Refresh market list periodically
         if now - self._last_market_refresh >= MARKET_REFRESH_SECONDS:
+            _t = time.perf_counter()
             self._refresh_active_windows()
+            _dt = time.perf_counter() - _t
+            if _dt > _PERIODIC_SLOW_THRESHOLD_S:
+                logging.warning(
+                    "PERIODIC_TASK_SLOW: refresh_active_windows took %.2fs",
+                    _dt)
+            _t = time.perf_counter()
             self._subscribe_discovery_orderbooks()   # dashboard visibility
+            _dt = time.perf_counter() - _t
+            if _dt > _PERIODIC_SLOW_THRESHOLD_S:
+                logging.warning(
+                    "PERIODIC_TASK_SLOW: subscribe_discovery_orderbooks "
+                    "took %.2fs", _dt)
 
         # Check settlements periodically (self-throttled)
+        _t = time.perf_counter()
         self.tracker.tick()
+        _dt = time.perf_counter() - _t
+        if _dt > _PERIODIC_SLOW_THRESHOLD_S:
+            logging.warning(
+                "PERIODIC_TASK_SLOW: tracker_tick took %.2fs", _dt)
+
         self._log_daily_summary()
 
         # Periodic WAL checkpoint (every 60s) — prevents WAL bloat that causes
@@ -19889,11 +19914,16 @@ class MainLoop:
         # checkpoints whatever pages it can without blocking. (Mar 16 2026)
         if now - self._last_wal_checkpoint >= 60.0:
             self._last_wal_checkpoint = now  # Update BEFORE attempt — prevents hot retry loop
+            _t = time.perf_counter()
             try:
                 self.state.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except Exception:
                 self._db_locked_count += 1
                 logging.debug("WAL checkpoint failed (busy)", exc_info=True)
+            _dt = time.perf_counter() - _t
+            if _dt > _PERIODIC_SLOW_THRESHOLD_S:
+                logging.warning(
+                    "PERIODIC_TASK_SLOW: wal_checkpoint took %.2fs", _dt)
 
         # DB health watchdog (every 5 minutes)
         if now - self._last_db_health_check >= 300.0:
@@ -19904,14 +19934,24 @@ class MainLoop:
             self._last_db_health_check = now
 
         # Periodic calibration retrain check
+        _t = time.perf_counter()
         if self.calibration:
             self.calibration.maybe_retrain()
         for _rk, _eng in self._cal_engines.items():
             _eng.maybe_retrain()
+        _dt = time.perf_counter() - _t
+        if _dt > _PERIODIC_SLOW_THRESHOLD_S:
+            logging.warning(
+                "PERIODIC_TASK_SLOW: calibration_retrain took %.2fs", _dt)
 
         # Periodic EGARCH MLE refit
+        _t = time.perf_counter()
         if self.egarch_estimator:
             self.egarch_estimator.maybe_refit()
+        _dt = time.perf_counter() - _t
+        if _dt > _PERIODIC_SLOW_THRESHOLD_S:
+            logging.warning(
+                "PERIODIC_TASK_SLOW: egarch_refit took %.2fs", _dt)
 
         # Recompute seconds_to_close and log each window (skip hourly vol diagnostics)
         utc_now = datetime.datetime.now(timezone.utc)
