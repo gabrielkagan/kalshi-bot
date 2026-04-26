@@ -210,7 +210,7 @@ When the user's request is ambiguous, use these rules to pick the right skill.
 - **15M Shadow:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (LateWindow 55-74c) — all shadow-only in fifteenm_shadow.py
 - **CalibrationEngine:** Hourly data excluded from 15M training; hourly CalEngine disabled. Per-city weather CalEngines and per-sport-group CalEngines learning in shadow
 - **Weekend discount LIVE:** WEEKEND_DISCOUNT_LIVE=True on Sat/Sun — 90c+, STC<=600s, no DC overlap; sub-90c and STC>600s remain shadow
-- **Tests:** 3317 tests across 16+ test files (Apr 25: +5 files for orderbook depth logging)
+- **Tests:** 3368 tests across 16+ test files (Apr 26: +28 tests for 15M silence watchdog hardening across 8 adversarial-review rounds)
 
 ## Key Config Values (bot.py)
 

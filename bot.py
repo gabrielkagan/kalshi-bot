@@ -15850,16 +15850,181 @@ class OpportunityScanner:
             result[side] = converted
         return result
 
-    def _check_15m_silence_alert(self, active_windows: List[Dict]) -> None:
-        """Alert via Telegram if no 15M evaluation has been produced in
-        the last 10 minutes. Observation-only — doesn't touch trading
-        state. Self-throttled (dedup_key) so it can fire every scan tick
-        without spamming. See kb/failures/ws-15m-silence-2026-04-24.md.
+    # Rejection reasons that indicate scan-broken / silent-bail paths.
+    # Written by `insert_rejection()` in the bail-shaped branches of
+    # scan() (no orderbook, no best ask, unparsable strike) per fix #2
+    # of the 2026-04-24 WS-cache-drift PM (commit 9dd396b) so silent
+    # scans leave a DB trace. The silence watchdog MUST NOT count
+    # these as "scan alive" — counting them would hide the exact
+    # failure class the watchdog exists to detect. Any new bail-shaped
+    # rejection reason added in scan() MUST be appended here in the
+    # same commit. See `tests/test_15m_silence_alert.py`
+    # (TestSilent15MAlertSilentBailDetection) for the regression
+    # contract.
+    _BAIL_REJECTION_REASONS = (
+        "no_orderbook", "no_best_ask", "threshold_unparsable",
+    )
+    # Empty constant would yield SQL `NOT IN ()` syntax error → silent
+    # watchdog disable. Catch at module load.
+    assert _BAIL_REJECTION_REASONS, (
+        "_BAIL_REJECTION_REASONS must not be empty — empty produces "
+        "invalid SQL `NOT IN ()` and silently disables the watchdog.")
+    # Bail signal triggers when primary is stale/None AND bail rows
+    # ≥ `_BAIL_MIN_ROWS_WHEN_STALE` exist in the recent window.
+    # Threshold of 3 is the smallest value that:
+    #   (a) Catches dedup-bounded `threshold_unparsable` floods
+    #       (Kalshi rename hits 4 active tickers → 4 rows). Cap is
+    #       4, threshold 3 has 1-row margin.
+    #   (b) Rejects single-blip false positives (one ticker fails
+    #       one tick during a quiet market right at the 10-min
+    #       staleness boundary — would mis-classify as cache-drift
+    #       and send the operator to the wrong KB article).
+    # `no_orderbook` / `no_best_ask` floods are not deduped, so they
+    # easily reach hundreds — threshold has no impact there.
+    _BAIL_MIN_ROWS_WHEN_STALE = 3
+    # Bail-flood query is non-indexed (LIKE on PK + filters on
+    # rejection_time/reason). Throttle to avoid full table scan every
+    # scan tick (~2s cadence). 30s resolution is plenty for a 600s
+    # staleness check.
+    _BAIL_QUERY_THROTTLE_SECONDS = 30.0
+    # Hoisted from local scope to a class constant so the bail-window
+    # query and the staleness check share ONE source of truth — they
+    # MUST stay equal or bail-flood detection becomes inconsistent
+    # with the staleness condition that gates it. Same for uptime
+    # guard. R6 [A6] DRY drift fix.
+    _SILENCE_AGE_THRESHOLD_SECONDS = 600     # 10 min
+    _SILENCE_ALERT_MIN_UPTIME_SECONDS = 900  # bot must be up >15 min
 
-        Scope: `evaluated_opportunities` rows with ticker LIKE 'KX%15M%'.
-        Any filter_stage counts (rejections included) — we care that the
-        scanner is producing SOMETHING for 15M, not whether those rows
-        produce trades.
+    @classmethod
+    def _bail_placeholders(cls):
+        """Return the SQL placeholder tuple `(?,?,?)` matching
+        `_BAIL_REJECTION_REASONS`. DRY helper used by both queries
+        (R6 [A8])."""
+        return ",".join("?" * len(cls._BAIL_REJECTION_REASONS))
+
+    def _query_last_15m_alive_ts(self):
+        # type: () -> Tuple[bool, Optional[str]]
+        """Return `(ok, ts)` tuple. `ok=True` and `ts=str|None` on
+        success. `ok=False` and `ts=None` on query failure. Tuple
+        contract avoids the `False`-sentinel footgun where a future
+        `if not ts:` check would conflate failure and no-data
+        (R6 [A2]).
+
+        On success, ts is the most recent ISO timestamp of a
+        'scan alive' 15M signal: any KX*15M row in
+        evaluated_opportunities OR any KX*15M row in
+        rejected_opportunities whose reason is NOT in
+        `_BAIL_REJECTION_REASONS`.
+
+        Tracks `_silence_watchdog_warned_primary` for
+        once-per-failure-burst rate-limited logging.
+        """
+        bail_reasons = self._BAIL_REJECTION_REASONS
+        placeholders = self._bail_placeholders()
+        try:
+            row = self._state.conn.execute(
+                "SELECT MAX(ts) FROM ("
+                "  SELECT MAX(evaluation_time) AS ts "
+                "  FROM evaluated_opportunities "
+                "  WHERE ticker LIKE 'KX%15M%' "
+                "  UNION ALL "
+                "  SELECT MAX(rejection_time) AS ts "
+                "  FROM rejected_opportunities "
+                "  WHERE ticker LIKE 'KX%15M%' "
+                f"    AND rejection_reason NOT IN ({placeholders})"
+                ")",
+                bail_reasons,
+            ).fetchone()
+        except Exception:
+            if not getattr(
+                    self, "_silence_watchdog_warned_primary", False):
+                logging.warning(
+                    "silent_15m primary query failed", exc_info=True)
+                self._silence_watchdog_warned_primary = True
+            return (False, None)
+        if getattr(self, "_silence_watchdog_warned_primary", False):
+            self._silence_watchdog_warned_primary = False
+        return (True, row[0] if row else None)
+
+    def _query_recent_bail_count(self):
+        """Return the count of KX*15M bail-rejection rows in the last
+        `_SILENCE_AGE_THRESHOLD_SECONDS`. Throttled to once per
+        `_BAIL_QUERY_THROTTLE_SECONDS` because it's a non-indexed
+        scan.
+
+        On query failure: returns 0 AND advances the throttle clock.
+        Returning 0 prevents spurious bail alerts based on a stale
+        cached count after the underlying schema breaks (R6 [A1]).
+        Advancing the throttle prevents a query storm during permanent
+        failure (R6 [A4]). The warning log surfaces the broken state
+        for the operator independently.
+        """
+        now = time.time()
+        last = getattr(self, "_silence_bail_query_last_ts", 0.0)
+        cached = getattr(self, "_silence_bail_query_last_count", 0)
+        if now - last < self._BAIL_QUERY_THROTTLE_SECONDS:
+            return cached
+        cutoff_dt = (datetime.datetime.now(timezone.utc)
+                     - datetime.timedelta(
+                         seconds=self._SILENCE_AGE_THRESHOLD_SECONDS))
+        cutoff_iso = (
+            cutoff_dt.isoformat(timespec="microseconds")
+            .replace("+00:00", "Z"))
+        bail_reasons = self._BAIL_REJECTION_REASONS
+        placeholders = self._bail_placeholders()
+        try:
+            bail_row = self._state.conn.execute(
+                "SELECT COUNT(*) FROM rejected_opportunities "
+                "WHERE ticker LIKE 'KX%15M%' "
+                "  AND rejection_time >= ? "
+                f"  AND rejection_reason IN ({placeholders})",
+                (cutoff_iso, *bail_reasons),
+            ).fetchone()
+        except Exception:
+            if not getattr(
+                    self,
+                    "_silence_watchdog_warned_bail_flood",
+                    False):
+                logging.warning(
+                    "silent_15m bail-flood query failed", exc_info=True)
+                self._silence_watchdog_warned_bail_flood = True
+            # Both reset cached AND advance throttle: prevents spurious
+            # alerts (cached stale → 0) AND query storm (re-query in 30s).
+            self._silence_bail_query_last_count = 0
+            self._silence_bail_query_last_ts = now
+            return 0
+        if getattr(
+                self, "_silence_watchdog_warned_bail_flood", False):
+            self._silence_watchdog_warned_bail_flood = False
+        count = bail_row[0] if bail_row else 0
+        self._silence_bail_query_last_count = count
+        self._silence_bail_query_last_ts = now
+        return count
+
+    def _check_15m_silence_alert(self, active_windows: List[Dict]) -> None:
+        """Alert via Telegram if no productive 15M evaluation has been
+        produced in the last 10 minutes. Observation-only — doesn't
+        touch trading state. Self-throttled (dedup_key) so it can fire
+        every scan tick without spamming. See
+        kb/failures/ws-15m-silence-2026-04-24.md and
+        kb/failures/ws-cache-drift-silent-scan-2026-04-24.md.
+
+        Scope: rows in `evaluated_opportunities` (any filter_stage)
+        OR `rejected_opportunities` (any reason EXCEPT
+        `_BAIL_REJECTION_REASONS`), filtered by ticker LIKE 'KX%15M%'.
+        Healthy rejections (low_probability_15m, edge_too_low,
+        tradeable_false, price_out_of_range_early, etc.) count as
+        "scan alive". Bail reasons (no_orderbook, no_best_ask,
+        threshold_unparsable) do NOT — they are emitted in the exact
+        silent-bail paths whose recurrence this watchdog is the
+        last line of defense for.
+
+        Known gap (NOT addressed here): a calibration-engine collapse
+        that returns cal_prob≈0 for every market would cause
+        low_probability_15m rejections to fire for every ticker, and
+        this watchdog would stay silent. That failure mode requires a
+        separate model-output sanity check — out of scope for a
+        liveness watchdog.
 
         Startup false-positive guard: the "last eval" timestamp persists
         across bot restarts, so right after restart it will look ancient.
@@ -15878,62 +16043,129 @@ class OpportunityScanner:
         the loud Telegram alert. Apr 24 2026: 11 such gaps in 24h, all
         false positives. (kb/failures/kalshi-15m-catalog-gap-2026-04-24.md)
         """
-        SILENCE_AGE_THRESHOLD_SECONDS = 600     # 10 min
-        SILENCE_ALERT_MIN_UPTIME_SECONDS = 900  # bot must be up >15 min to alert
         if not hasattr(self, "_silence_alert_process_start_ts"):
             self._silence_alert_process_start_ts = time.time()
         uptime = time.time() - self._silence_alert_process_start_ts
-        if uptime < SILENCE_ALERT_MIN_UPTIME_SECONDS:
+        if uptime < self._SILENCE_ALERT_MIN_UPTIME_SECONDS:
             return
-        try:
-            row = self._state.conn.execute(
-                "SELECT MAX(evaluation_time) FROM evaluated_opportunities "
-                "WHERE ticker LIKE 'KX%15M%'"
-            ).fetchone()
-        except Exception:
-            return
-        if not row or not row[0]:
-            return
-        # Parse UTC timestamp (SQLite stores ISO strings)
-        try:
-            last_ts = datetime.datetime.fromisoformat(
-                row[0].replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            return
-        age_sec = (datetime.datetime.now(timezone.utc) - last_ts).total_seconds()
-        if age_sec < SILENCE_AGE_THRESHOLD_SECONDS:
-            return
-        # If Kalshi has published zero 15M windows right now, this is an
-        # upstream catalog gap, not a bot failure — log quietly, no Telegram.
         n_15m_windows = sum(
-            1 for w in active_windows if w.get("product_type") == "15m"
+            1 for w in (active_windows or [])
+            if w.get("product_type") == "15m"
         )
-        if n_15m_windows == 0:
-            logging.info(
-                "KALSHI_15M_CATALOG_GAP: %.1f min since last 15M eval; "
-                "0 active 15M windows from Kalshi (upstream catalog gap, "
-                "not bot fault). last=%s",
-                age_sec / 60, row[0])
+        ws_connected = (
+            self._kalshi_feed.is_connected
+            if self._kalshi_feed else False)
+
+        # Step 1: primary "scan alive" check. Tuple (ok, ts).
+        primary_ok, last_ts_str = self._query_last_15m_alive_ts()
+        if not primary_ok:
+            # Query failed; warning logged once. Bail this tick.
             return
-        # Over threshold AND bot has been up long enough AND Kalshi is
-        # publishing 15M windows — real silence, alert.
-        # Telegram dedup_key prevents re-firing every scan tick.
+
+        # Step 2: compute primary staleness. Single-expression form
+        # eliminates the multi-branch hazard (R7 [A1] crashed on
+        # unparseable ts because age_sec/last_ts could be undefined
+        # when reaching the alert message). Now: parse failure is
+        # treated equivalently to None — last_ts stays None,
+        # age_sec stays None, both truth-tested explicitly downstream.
+        last_ts = None
+        age_sec = None
+        if last_ts_str is not None:
+            try:
+                last_ts = datetime.datetime.fromisoformat(
+                    last_ts_str.replace("Z", "+00:00"))
+                age_sec = (datetime.datetime.now(timezone.utc)
+                           - last_ts).total_seconds()
+            except (ValueError, AttributeError):
+                last_ts = None
+                age_sec = None
+        is_primary_stale = (
+            age_sec is None
+            or age_sec >= self._SILENCE_AGE_THRESHOLD_SECONDS)
+
+        if not is_primary_stale:
+            # Healthy 15M activity within threshold — silent.
+            return
+
+        # Primary is stale or absent. Decide: bail signal or generic
+        # silence?
+        bail_count = self._query_recent_bail_count()
+
+        if n_15m_windows == 0:
+            # Catalog gap — log INFO, no Telegram. Note the bail rows
+            # (if any) are stale leftovers from before the gap, not
+            # caused by the gap itself; the gap merely masks them
+            # diagnostically. R6 [A5] log message clarification.
+            ts_repr = (last_ts_str
+                       if last_ts_str is not None else "<none>")
+            logging.info(
+                "KALSHI_15M_CATALOG_GAP: 0 active 15M windows from "
+                "Kalshi (upstream catalog gap, not bot fault). "
+                "last=%s, recent_bail_rows=%d",
+                ts_repr, bail_count)
+            return
+
+        if bail_count >= self._BAIL_MIN_ROWS_WHEN_STALE:
+            # Bail signal alongside primary staleness — preferred
+            # diagnostic. Single transient blips that happen to
+            # coincide with a quiet-market staleness boundary stay
+            # under threshold and fall through to generic SILENT
+            # (correct: not a cache-drift signature). The 04-24
+            # WS-cache-drift shape produces hundreds of rows, far
+            # above threshold; the dedup-bounded threshold_unparsable
+            # case produces ≤4 rows, also above threshold of 3.
+            logging.error(
+                "SILENT_15M_BAIL_FLOOD: primary stale + %d "
+                "silent-bail rejection rows in last %d min; "
+                "uptime=%.1fmin",
+                bail_count, self._SILENCE_AGE_THRESHOLD_SECONDS // 60,
+                uptime / 60)
+            msg = (
+                f"\U0001f6a8 *15M SCAN SILENT (BAIL FLOOD)*\n"
+                f"Primary stale + {bail_count} silent-bail "
+                f"rejection rows in last "
+                f"{self._SILENCE_AGE_THRESHOLD_SECONDS // 60} min.\n"
+                f"Bot uptime: {uptime/60:.1f} min\n"
+                f"WS connected: {ws_connected}\n"
+                f"Likely: WS-cache-drift recurrence — see "
+                f"kb/failures/ws-cache-drift-silent-scan-2026-04-24.md")
+            if _TELEGRAM:
+                try:
+                    _TELEGRAM.send(
+                        msg, dedup_key="silent_15m_bail_flood_alert")
+                except Exception:
+                    logging.debug(
+                        "silent_15m_bail_flood telegram send failed",
+                        exc_info=True)
+            return
+
+        # Generic silence path: primary stale, bail count below
+        # threshold. Guard against `last_ts is None` (no data) AND
+        # against `last_ts_str is not None but unparseable` (data
+        # quality blip) — in either case we lack the timestamp/age
+        # to render the diagnostic message, so silently bail.
+        # (Fresh bot / unparseable ts shouldn't fire a SILENT alert
+        # with bogus content.)
+        if last_ts is None or age_sec is None:
+            return
         msg = (
             f"\U0001f6a8 *15M SCAN SILENT*\n"
             f"No 15M evaluation in {age_sec/60:.1f} min.\n"
             f"Last eval: {last_ts.isoformat(timespec='seconds')}Z\n"
             f"Bot uptime: {uptime/60:.1f} min\n"
-            f"WS connected: {self._kalshi_feed.is_connected if self._kalshi_feed else False}\n"
+            f"WS connected: {ws_connected}\n"
             f"Check logs for WS_SILENCE_WATCHDOG or check Kalshi status."
         )
         logging.error(
-            "SILENT_15M: %.1f min since last 15M eval (last=%s uptime=%.1fmin)",
-            age_sec / 60, row[0], uptime / 60)
+            "SILENT_15M: %.1f min since last 15M eval "
+            "(last=%s uptime=%.1fmin)",
+            age_sec / 60, last_ts_str, uptime / 60)
         if _TELEGRAM:
             try:
                 _TELEGRAM.send(msg, dedup_key="silent_15m_alert")
             except Exception:
-                logging.debug("silent_15m telegram send failed", exc_info=True)
+                logging.debug(
+                    "silent_15m telegram send failed", exc_info=True)
 
     def _check_scan_productive_15m(
         self, active_windows: List[Dict], tick_start_ts: str) -> None:
