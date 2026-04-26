@@ -18480,6 +18480,104 @@ class OrderExecutor:
         return best_qty
 
     @staticmethod
+    def _compute_ladder_diag(live_ob) -> Dict:
+        """F/U TM_99 zero-fill diagnostic. Extract yes_asks_top and
+        no_bid_top (price + qty) from cached orderbook, compute the
+        cross-side derivation `100 - no_bid_top` and whether the two
+        ladders diverge.
+
+        Distinguishes which hypothesis is right when ETH TM_99 IOCs
+        fail to fill at 99c:
+          - HYP A: Kalshi's matching engine fills only against the
+            explicit yes_asks ladder, not synthetic cross-side. If
+            yes_asks_top > our bid AND ladders diverge, our IOC
+            can't cross.
+          - HYP B: Kalshi matches both ladders, but no_bid is too
+            thin and gets sniped before our IOC arrives.
+        Logged at IOC submit. Pure observability — no behavior change.
+
+        Returns: {yes_ask_top_price, yes_ask_top_qty, no_bid_top_price,
+                  no_bid_top_qty, cross_side_ask, diverges}
+        See kb/failures (when written).
+        """
+        out = {
+            "yes_ask_top_price": None, "yes_ask_top_qty": 0,
+            "no_bid_top_price": None, "no_bid_top_qty": 0,
+            "cross_side_ask": None, "diverges": False,
+            "one_side_empty": False,
+        }
+        if not live_ob:
+            return out
+
+        def _to_cents(p):
+            # Handle: int (already cents), float < 1.0 (dollar format,
+            # e.g. 0.99 = 99c), float in [1.0, 100.0] (could be dollar
+            # 1.00 = 100c OR cents 1.0 = 1c — Kalshi never sends
+            # "1.00 dollars" for binary 0-100c contracts, so treat as
+            # cents), string (cast through float first — schema drift
+            # defense, see MEMORY: feedback_kalshi_schema_drift).
+            try:
+                if isinstance(p, str):
+                    p = float(p)
+                if isinstance(p, float) and 0 < p < 1.0:
+                    return round(p * 100)
+                return int(p)
+            except (TypeError, ValueError):
+                return None
+
+        # yes_asks: pick LOWEST price (best ask for buyer).
+        for entry in (live_ob.get("yes") or []):
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2):
+                continue
+            p = _to_cents(entry[0])
+            if p is None:
+                continue
+            try:
+                q = int(entry[1])
+            except (TypeError, ValueError):
+                q = 0
+            if (out["yes_ask_top_price"] is None
+                    or p < out["yes_ask_top_price"]):
+                out["yes_ask_top_price"] = p
+                out["yes_ask_top_qty"] = q
+
+        # no_bids: pick HIGHEST price (best NO bid → best cross-side).
+        for entry in (live_ob.get("no") or []):
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2):
+                continue
+            p = _to_cents(entry[0])
+            if p is None:
+                continue
+            try:
+                q = int(entry[1])
+            except (TypeError, ValueError):
+                q = 0
+            if (out["no_bid_top_price"] is None
+                    or p > out["no_bid_top_price"]):
+                out["no_bid_top_price"] = p
+                out["no_bid_top_qty"] = q
+
+        if out["no_bid_top_price"] is not None:
+            out["cross_side_ask"] = 100 - out["no_bid_top_price"]
+
+        if (out["yes_ask_top_price"] is not None
+                and out["cross_side_ask"] is not None):
+            out["diverges"] = (
+                out["yes_ask_top_price"] != out["cross_side_ask"])
+
+        # one_side_empty: tri-state signal for grep — captures the
+        # case where one ladder is missing entirely. R-review [A4]:
+        # `diverges=False + one_side_empty=False` means real
+        # alignment; `diverges=False + one_side_empty=True` means
+        # uninformative. Don't conflate.
+        out["one_side_empty"] = (
+            (out["yes_ask_top_price"] is None)
+            != (out["no_bid_top_price"] is None)
+        )
+
+        return out
+
+    @staticmethod
     def _pick_ioc_limit_for_depth(
             ob_data: Dict,
             best_yes_ask: int,
@@ -20274,6 +20372,19 @@ class OrderExecutor:
             candidate["asset"], _side, count, _ioc_limit_price, True
         )
 
+        # F/U TM_99 zero-fill diagnostic (Apr 26): pre-IOC ladder
+        # snapshot. Pairs with post-IOC snapshot below (after place_order
+        # returns) to discriminate HYP A (Kalshi only matches yes_asks
+        # ladder — no_bid stays unchanged on fail) from HYP B (Kalshi
+        # matches both, no_bid sniped before our IOC arrives — no_bid
+        # qty drops between pre and post). R-review [A1] fix.
+        # See tests/test_ioc_submit_ladder_diag.py.
+        _diag_pre = None
+        try:
+            _diag_pre = OrderExecutor._compute_ladder_diag(_live_ob)
+        except Exception:
+            logging.debug("IOC_SUBMIT_LADDER_DIAG pre failed", exc_info=True)
+
         # Submit as IOC — exchange auto-cancels any unfilled remainder.
         # Uses _ioc_limit_price (smart picker output) for the actual
         # exchange submission, while `price` and candidate["best_yes_ask"]
@@ -20286,6 +20397,50 @@ class OrderExecutor:
             count=count, client_order_id=client_oid,
             time_in_force="immediate_or_cancel", **_price_kwarg,
         )
+
+        # F/U TM_99 zero-fill diagnostic — post-IOC snapshot + outcome.
+        # Includes fill_count so the divergence pattern can be
+        # correlated with fill outcome via single-line grep
+        # (R-review [A5]). Re-fetches the cached orderbook so we
+        # observe post-fill state (WS push from Kalshi typically
+        # arrives within ms of fill). If no_bid_qty dropped between
+        # pre and post, the IOC matched against the no_bid → HYP B.
+        # If no_bid_qty unchanged AND fill_count==0, our 99c bid
+        # never reached the no_bid → HYP A.
+        try:
+            _diag_post = None
+            if _scanner is not None:
+                try:
+                    _live_ob_post, _ = _scanner._get_orderbook_cached(ticker)
+                    _diag_post = OrderExecutor._compute_ladder_diag(_live_ob_post)
+                except Exception:
+                    pass
+            _fill_ct = 0
+            if resp is not None:
+                _fill_ct = (
+                    fp_str_to_int(
+                        (resp.get("order") or {}).get("fill_count_fp"))
+                    or ((resp.get("order") or {}).get("fill_count") or 0)
+                )
+            _pre = _diag_pre or {}
+            _post = _diag_post or {}
+            logging.info(
+                "IOC_SUBMIT_LADDER_DIAG: %s asset=%s strategy=%s "
+                "bid=%d req=%d fill=%d "
+                "PRE: yes=%s/%d no_bid=%s/%d cross=%s "
+                "diverges=%s one_side_empty=%s "
+                "POST: yes=%s/%d no_bid=%s/%d",
+                ticker, candidate.get("asset", "?"),
+                candidate.get("strategy", "?"),
+                _ioc_limit_price, count, _fill_ct,
+                _pre.get("yes_ask_top_price"), _pre.get("yes_ask_top_qty", 0),
+                _pre.get("no_bid_top_price"), _pre.get("no_bid_top_qty", 0),
+                _pre.get("cross_side_ask"),
+                _pre.get("diverges"), _pre.get("one_side_empty"),
+                _post.get("yes_ask_top_price"), _post.get("yes_ask_top_qty", 0),
+                _post.get("no_bid_top_price"), _post.get("no_bid_top_qty", 0))
+        except Exception:
+            logging.debug("IOC_SUBMIT_LADDER_DIAG post failed", exc_info=True)
 
         if resp is None:
             self._state.mark_order_status(client_oid, "api_error")
