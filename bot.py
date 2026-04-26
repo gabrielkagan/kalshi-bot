@@ -16262,13 +16262,48 @@ class OpportunityScanner:
                         exc_info=True)
             return
 
+        # Apr 26 incident #2: heartbeat-based aliveness check. The
+        # primary query is DB-row-based, but the `_eval_opp_seen`
+        # dedup at insert sites (e.g., per-(ticker, filter_stage)
+        # for `low_probability_15m`) suppresses subsequent writes
+        # once a tuple has been seen. After 10+ min of unchanged
+        # scan outcomes (e.g., dedup-quiet market post-window-
+        # rotation), the DB shows stale primary timestamps while
+        # scan body is still iterating windows on every tick.
+        #
+        # Wall-clock dependency: heartbeat is set via `time.time()`
+        # at the per-window iteration site. NTP step corrections
+        # (Apr 26 incident logged 13.8s drift) shift heartbeat_age
+        # by the same magnitude — small relative to the 600s
+        # threshold but worth knowing when debugging.
+        #
+        # `_scan_15m_iter_heartbeat_ts` (set at bot.py:9909 every
+        # 15M window iteration; init=0.0 at bot.py:9087) decouples
+        # "scan is alive" from "DB rows are appearing" — same fix
+        # `c1c2096` applied to the productive (2.5-min) watchdog
+        # per kb/failures/scan-tick-stall-cluster-2026-04-25.md.
+        #
+        # Bail-flood detection runs BEFORE this gate, so a real
+        # silent-bail recurrence (which writes bail-rejection rows
+        # bypassing the healthy-rejection dedup) still fires its
+        # diagnostic alert regardless of heartbeat freshness.
+        heartbeat_ts = getattr(self, "_scan_15m_iter_heartbeat_ts", 0.0)
+        if heartbeat_ts > 0.0:
+            heartbeat_age = time.time() - heartbeat_ts
+            if heartbeat_age < self._SILENCE_AGE_THRESHOLD_SECONDS:
+                # Scan body iterated a 15M window within the
+                # staleness window — alive. Dedup may be hiding
+                # repetitive outcomes, but that's exactly what dedup
+                # is for. Silent-skip the SILENT alert.
+                return
         # Generic silence path: primary stale, bail count below
-        # threshold. Guard against `last_ts is None` (no data) AND
-        # against `last_ts_str is not None but unparseable` (data
-        # quality blip) — in either case we lack the timestamp/age
-        # to render the diagnostic message, so silently bail.
-        # (Fresh bot / unparseable ts shouldn't fire a SILENT alert
-        # with bogus content.)
+        # threshold, AND heartbeat stale (or never set). Guard
+        # against `last_ts is None` (no data) AND against
+        # `last_ts_str is not None but unparseable` (data quality
+        # blip) — in either case we lack the timestamp/age to render
+        # the diagnostic message, so silently bail. (Fresh bot /
+        # unparseable ts shouldn't fire a SILENT alert with bogus
+        # content.)
         if last_ts is None or age_sec is None:
             return
         msg = (

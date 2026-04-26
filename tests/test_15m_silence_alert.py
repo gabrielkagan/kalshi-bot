@@ -17,6 +17,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -91,6 +92,13 @@ def _make_scanner_with_eval_age(
     # Seed the process-start timestamp so the uptime gate behaves
     # deterministically. 30 min uptime is past the 15-min floor.
     s._silence_alert_process_start_ts = _t.time() - (uptime_minutes * 60)
+    # Heartbeat: simulates `_scan_15m_iter_heartbeat_ts` set by scan()
+    # in the per-window loop body (~bot.py:9909). Initialized to 0.0
+    # in `OpportunityScanner.__init__` (~bot.py:9087). Default 0.0
+    # here matches "scan body has not iterated a 15M window since
+    # process start." Tests that need a fresh heartbeat set it
+    # explicitly.
+    s._scan_15m_iter_heartbeat_ts = 0.0
     return s
 
 
@@ -1041,6 +1049,174 @@ class TestBailReasonsConstantNonEmpty(unittest.TestCase):
     def test_constant_is_non_empty(self):
         self.assertTrue(
             len(bot.OpportunityScanner._BAIL_REJECTION_REASONS) > 0)
+
+
+class TestSilent15MAlertHeartbeatGate(unittest.TestCase):
+    """Apr 26 2026 incident #2 (kb/failures/scan-loop-stall-window-rotation-2026-04-26.md):
+    after the rapid-resub loop fix shipped, the SILENT_15M alert
+    STILL fired at 09:40 UTC despite scan being healthy. Root cause:
+    once each (ticker, low_probability_15m) was written at 09:30:45,
+    the `_eval_opp_seen` dedup at bot.py:10274 suppressed all
+    subsequent writes. Scan body kept iterating new 0545 windows but
+    produced ZERO DB rows for 9.5 min. The DB-only silence watchdog
+    saw stale primary timestamps and fired SILENT — exactly the
+    dedup-induced false-positive pattern that was fixed for the
+    productive (2.5-min) watchdog via `_scan_15m_iter_heartbeat_ts`
+    (commit c1c2096 per scan-tick-stall-cluster-2026-04-25.md).
+
+    The silence (10-min) watchdog needs the same heartbeat-based
+    aliveness signal. If `_scan_15m_iter_heartbeat_ts` is fresh
+    within the staleness threshold, scan IS alive — silent-skip the
+    SILENT alert regardless of DB row freshness. Bail-flood detection
+    runs first and keeps firing on actual silent-bail recurrences
+    (those bypass dedup at bail-rejection insert sites).
+    """
+
+    def test_dedup_quiet_market_does_not_fire_silent(self):
+        """Primary 30-min stale (dedup blocked subsequent writes)
+        BUT heartbeat fresh (scan iterating 15M windows) → silent.
+        This is the exact 09:30:45→09:41:09 dedup-quiet window."""
+        s = _make_scanner_with_eval_age(age_minutes=30)
+        # Heartbeat is fresh — scan body is iterating windows
+        # every tick.
+        s._scan_15m_iter_heartbeat_ts = time.time() - 1.0  # 1s ago
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            mock_tele.send.assert_not_called()
+
+    def test_heartbeat_stale_AND_primary_stale_fires_silent(self):
+        """Truly stuck scan: primary stale AND heartbeat stale →
+        scan body has not iterated a 15M window in 10+ min →
+        legitimate silence → fire SILENT."""
+        s = _make_scanner_with_eval_age(age_minutes=30)
+        # Heartbeat also stale (>10 min).
+        s._scan_15m_iter_heartbeat_ts = time.time() - 700.0
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            mock_tele.send.assert_called_once()
+            call = mock_tele.send.call_args
+            self.assertEqual(
+                call.kwargs.get("dedup_key"), "silent_15m_alert")
+
+    def test_heartbeat_fresh_does_NOT_suppress_bail_flood(self):
+        """Critical: heartbeat-based suppression must NOT mask a
+        real bail flood. If 5 bail rows exist in last 10 min AND
+        primary stale, BAIL FLOOD fires regardless of heartbeat
+        freshness — the bail-rejection writes are not deduped at
+        the same level as healthy rejections."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="no_orderbook",
+            n_rejection_rows=5)
+        s._scan_15m_iter_heartbeat_ts = time.time() - 1.0  # fresh
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            mock_tele.send.assert_called_once()
+            # Must be the BAIL FLOOD diagnostic, not silent.
+            call = mock_tele.send.call_args
+            self.assertEqual(
+                call.kwargs.get("dedup_key"),
+                "silent_15m_bail_flood_alert")
+
+    def test_heartbeat_at_threshold_boundary(self):
+        """Heartbeat exactly at threshold (10 min ago) — edge case.
+        Code uses `<` so anything >= 600s is stale. Use 601.0 (1s
+        past boundary) so the check is deterministic regardless of
+        microsecond drift between `time.time()` calls."""
+        s = _make_scanner_with_eval_age(age_minutes=30)
+        s._scan_15m_iter_heartbeat_ts = time.time() - 601.0
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            mock_tele.send.assert_called_once()
+
+    def test_heartbeat_just_under_threshold_no_alert(self):
+        """Heartbeat 599s ago (just under 600s threshold) → fresh →
+        no alert despite primary 30 min stale."""
+        s = _make_scanner_with_eval_age(age_minutes=30)
+        s._scan_15m_iter_heartbeat_ts = time.time() - 599.0
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            mock_tele.send.assert_not_called()
+
+    def test_heartbeat_zero_treated_as_stale(self):
+        """`_scan_15m_iter_heartbeat_ts = 0.0` is the init value
+        (scan body never iterated). Must be treated as stale —
+        otherwise a fresh-bot watchdog firing post-uptime-guard
+        could be wrongly suppressed by an unset heartbeat."""
+        s = _make_scanner_with_eval_age(age_minutes=30)
+        s._scan_15m_iter_heartbeat_ts = 0.0  # never set
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            mock_tele.send.assert_called_once()
+
+    def test_bail_below_threshold_with_fresh_heartbeat_no_alert(self):
+        """R2 [A5] edge case: bail_count = 2 (just below threshold of
+        3) AND heartbeat fresh AND primary stale → fall through bail
+        path → heartbeat suppresses SILENT → no alert. Single transient
+        orderbook blip during a dedup-quiet market correctly stays
+        silent."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="no_orderbook",
+            n_rejection_rows=2)  # below threshold
+        s._scan_15m_iter_heartbeat_ts = time.time() - 1.0
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            mock_tele.send.assert_not_called()
+
+
+class TestHeartbeatSetterContract(unittest.TestCase):
+    """R2 [A4]: AST guard that `_scan_15m_iter_heartbeat_ts` is set
+    from inside scan body. If a future refactor moves or removes the
+    setter, the heartbeat gate becomes dead code (always sees init
+    value 0.0 → SILENT fires every dedup-quiet window). Without this
+    test, the regression is silent (no test fails until a real
+    incident reproduces).
+    """
+
+    def test_heartbeat_setter_exists_in_scan_method(self):
+        bot_path = os.path.join(
+            os.path.dirname(__file__), "..", "bot.py")
+        with open(bot_path) as f:
+            tree = ast.parse(f.read())
+        # Qualify by parent class — `def scan` may exist in multiple
+        # classes in the future; we want OpportunityScanner.scan
+        # specifically.
+        scan_func = None
+        for cls in ast.walk(tree):
+            if not (isinstance(cls, ast.ClassDef)
+                    and cls.name == "OpportunityScanner"):
+                continue
+            for item in cls.body:
+                if (isinstance(item, ast.FunctionDef)
+                        and item.name == "scan"):
+                    scan_func = item
+                    break
+            if scan_func:
+                break
+        self.assertIsNotNone(
+            scan_func,
+            "Could not locate OpportunityScanner.scan in bot.py")
+        # Walk scan body for assignments to
+        # _scan_15m_iter_heartbeat_ts.
+        found = False
+        for sub in ast.walk(scan_func):
+            if not isinstance(sub, ast.Assign):
+                continue
+            for target in sub.targets:
+                if (isinstance(target, ast.Attribute)
+                        and target.attr == "_scan_15m_iter_heartbeat_ts"):
+                    found = True
+                    break
+            if found:
+                break
+        self.assertTrue(
+            found,
+            "scan() must contain an assignment to "
+            "self._scan_15m_iter_heartbeat_ts (the silence "
+            "watchdog's heartbeat). If it doesn't, the watchdog's "
+            "heartbeat gate is dead code and dedup-quiet markets "
+            "will fire false-positive SILENT alerts.")
 
 
 if __name__ == "__main__":
