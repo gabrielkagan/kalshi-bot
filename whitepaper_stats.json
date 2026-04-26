@@ -1,7 +1,7 @@
 {
-  "total_evaluated": 153487,
+  "total_evaluated": 153510,
   "filter_breakdown": {
-    "candidate": 5767,
+    "candidate": 5768,
     "dc_shadow_t1b_93c": 60,
     "dc_shadow_t2_90c": 85,
     "dc_shadow_t2_90c_xrp": 19,
@@ -17,8 +17,8 @@
     "decided_contract_t2_z2": 668,
     "decided_contract_t2_z25": 184,
     "dip_addon_shadow": 29,
-    "eth_low_floor_shadow": 1550,
-    "floor_raise_shadow": 5385,
+    "eth_low_floor_shadow": 1552,
+    "floor_raise_shadow": 5387,
     "golden_hour_shadow": 296,
     "hourly_asset_excluded": 162,
     "hourly_config_a": 1740,
@@ -39,7 +39,7 @@
     "hourly_observation_v2": 6863,
     "hourly_timing_restricted": 1658,
     "hourly_window_limit": 595,
-    "insufficient_edge": 47936,
+    "insufficient_edge": 47939,
     "low_price_shadow": 2569,
     "no_side_price_shadow_no_xrp": 3943,
     "no_side_price_shadow_xrp": 826,
@@ -48,13 +48,13 @@
     "overnight_discount": 110,
     "overnight_discount_shadow": 317,
     "overnight_lp_shadow": 7,
-    "price_out_of_range": 24832,
+    "price_out_of_range": 24834,
     "price_shadow": 52,
-    "price_shadow_no_xrp": 4073,
+    "price_shadow_no_xrp": 4074,
     "price_shadow_xrp": 1620,
-    "relaxed_edge_shadow": 1282,
+    "relaxed_edge_shadow": 1283,
     "silent_loss_cooldown": 33,
-    "silent_vol_none": 226,
+    "silent_vol_none": 234,
     "single_asset_selection": 5,
     "sol_high_edge_shadow": 189,
     "sol_low_entry_high_stc": 41,
@@ -72,7 +72,7 @@
     "spx_dc_shadow": 18,
     "spx_hourly_window_limit": 216,
     "spx_observation": 1390,
-    "stc_extended_floor_shadow": 468,
+    "stc_extended_floor_shadow": 469,
     "stc_shadow": 87,
     "stc_shadow_no_xrp": 600,
     "stc_shadow_xrp": 47,
@@ -89,14 +89,14 @@
     "weather_shadow_capped30_short_stc": 2,
     "weather_shadow_short_stc": 9,
     "weather_timing_restricted": 1073,
-    "weekend_discount": 390,
-    "weekend_discount_shadow": 347,
+    "weekend_discount": 391,
+    "weekend_discount_shadow": 348,
     "xrp_shadow": 126,
     "zero_sizing": 810
   },
   "total_settled": 2916,
   "total_wins": 2717,
-  "total_trades": 5767,
+  "total_trades": 5768,
   "win_rate_by_price": {
     "80-84": {
       "n": 56,
@@ -169,7 +169,7 @@
   "observation_pnl": 98837,
   "filter_breakdown_by_product": {
     "15m": {
-      "candidate": 5255,
+      "candidate": 5256,
       "dc_shadow_t1b_93c": 60,
       "dc_shadow_t2_90c": 85,
       "dc_shadow_t2_90c_xrp": 19,
@@ -184,10 +184,10 @@
       "decided_contract_t2": 170,
       "decided_contract_t2_z2": 668,
       "decided_contract_t2_z25": 184,
-      "eth_low_floor_shadow": 1550,
-      "floor_raise_shadow": 5385,
+      "eth_low_floor_shadow": 1552,
+      "floor_raise_shadow": 5387,
       "golden_hour_shadow": 296,
-      "insufficient_edge": 19947,
+      "insufficient_edge": 19950,
       "low_price_shadow": 2569,
       "no_side_price_shadow_no_xrp": 3943,
       "no_side_price_shadow_xrp": 826,
@@ -195,26 +195,26 @@
       "overnight_discount": 110,
       "overnight_discount_shadow": 317,
       "overnight_lp_shadow": 7,
-      "price_out_of_range": 14724,
+      "price_out_of_range": 14726,
       "price_shadow": 52,
-      "price_shadow_no_xrp": 4005,
+      "price_shadow_no_xrp": 4006,
       "price_shadow_xrp": 1620,
-      "relaxed_edge_shadow": 1282,
+      "relaxed_edge_shadow": 1283,
       "silent_loss_cooldown": 33,
-      "silent_vol_none": 150,
+      "silent_vol_none": 154,
       "single_asset_selection": 5,
       "sol_high_edge_shadow": 189,
       "sol_low_entry_high_stc": 41,
       "sol_usmorn_sub88": 92,
-      "stc_extended_floor_shadow": 468,
+      "stc_extended_floor_shadow": 469,
       "stc_shadow": 87,
       "stc_shadow_no_xrp": 600,
       "stc_shadow_xrp": 47,
       "terminal_momentum": 2065,
       "tm_nbbo_buffer_shadow": 557,
       "usaft_short_stc": 137,
-      "weekend_discount": 390,
-      "weekend_discount_shadow": 347,
+      "weekend_discount": 391,
+      "weekend_discount_shadow": 348,
       "xrp_shadow": 126,
       "zero_sizing": 745
     },
@@ -245,7 +245,7 @@
       "insufficient_edge": 13244,
       "no_side_shadow": 36,
       "price_out_of_range": 8051,
-      "silent_vol_none": 76,
+      "silent_vol_none": 80,
       "strategy_wait": 292,
       "threshold_implausible": 319,
       "zero_sizing": 57
@@ -289,7 +289,7 @@
       "zero_sizing": 8
     }
   },
-  "total_live_candidates": 9662,
+  "total_live_candidates": 9664,
   "settled_by_strategy_group": {
     "decided": {
       "n": 216,
@@ -427,14 +427,14 @@
       "mean_pnl_cents": -87.03
     },
     "eth_low_floor_shadow": {
-      "n": 1550,
-      "pnl_cents": 2250,
-      "mean_pnl_cents": 1.45
+      "n": 1551,
+      "pnl_cents": 2262,
+      "mean_pnl_cents": 1.46
     },
     "floor_raise_shadow": {
-      "n": 5385,
-      "pnl_cents": 1324,
-      "mean_pnl_cents": 0.25
+      "n": 5386,
+      "pnl_cents": 1243,
+      "mean_pnl_cents": 0.23
     },
     "golden_hour_shadow": {
       "n": 296,
@@ -537,8 +537,8 @@
       "mean_pnl_cents": -55.59
     },
     "insufficient_edge": {
-      "n": 47823,
-      "pnl_cents": -607757,
+      "n": 47824,
+      "pnl_cents": -607852,
       "mean_pnl_cents": -12.71
     },
     "low_price_shadow": {
@@ -577,8 +577,8 @@
       "mean_pnl_cents": 159.43
     },
     "price_out_of_range": {
-      "n": 24800,
-      "pnl_cents": 85310,
+      "n": 24801,
+      "pnl_cents": 85344,
       "mean_pnl_cents": 3.44
     },
     "price_shadow": {
@@ -817,6 +817,6 @@
     "unknown_strategy_groups": [],
     "brier_overall": 0.025828265329072238
   },
-  "generated_at": "2026-04-26T17:37:18Z",
+  "generated_at": "2026-04-26T17:56:01Z",
   "_classifier_version": "v3-2026-04-26"
 }
