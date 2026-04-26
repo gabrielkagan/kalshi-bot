@@ -63,14 +63,20 @@ jobs:
             echo "  OK: Commit $LOCAL_HASH matches deploy trigger"
 
             # 3. No errors in last 2 minutes of logs.
-            # Filter known-benign noise: 400s on event discovery from sports
-            # leagues with no active games (KXFIFAGAME, KXAFCONGAME,
-            # KXEREDIVISIEGAME, etc.) — Kalshi returns 400 for those, the bot
-            # logs and moves on. Each failed probe emits two lines (body +
-            # requests.exceptions); both match `API error.*events.*400`.
+            # Filter known-benign noise:
+            # - `API error.*events.*400`: 400s on event discovery from sports
+            #   leagues with no active games (KXFIFAGAME, KXAFCONGAME, etc.) —
+            #   Kalshi returns 400 for those, bot logs and moves on. Each
+            #   failed probe emits 2 lines (body + requests.exceptions).
+            # - `Unknown subscription ID`: Kalshi WS response when we
+            #   unsubscribe a sid that's already been pruned server-side
+            #   (race during window-rotation). Defended by _unsubscribe_blacklist
+            #   (commit ea51c41 / kb/failures/scan-loop-stall-window-rotation-
+            #   2026-04-26.md). Each event emits 2 lines (WS_RAW_IN raw frame +
+            #   WS_ERROR_FRAME warning); both match `Unknown subscription ID`.
             echo "[3/5] Checking recent logs for errors..."
             ERROR_PATTERN="error|traceback|exception"
-            BENIGN_PATTERN="API error.*events.*400"
+            BENIGN_PATTERN="API error.*events.*400|Unknown subscription ID"
             ERROR_COUNT=$(journalctl -u kalshi-bot --since "2 minutes ago" --no-pager 2>/dev/null \
               | grep -iE "$ERROR_PATTERN" \
               | grep -ivE "$BENIGN_PATTERN" \
