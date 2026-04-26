@@ -9874,6 +9874,26 @@ class OpportunityScanner:
             logging.info("SPX_DIAG_STC: %d/%d SPX windows passed time filter (stc=[%s])",
                          len(_spx_ok), len(_spx_in),
                          ", ".join(f"{w['seconds_to_close']:.0f}" for w in _spx_ok))
+        # F/U 6 diagnostic: log when ALL 15M windows are filtered out
+        # at the time-range gate but other product types survive. This
+        # is the silent path that leaves the 15M heartbeat blind while
+        # scan() body still iterates hourly/weather. Throttled to once
+        # per 30s per code-path — see kb/failures (when written).
+        _15m_in = [w for w in active_windows if w.get("product_type") == "15m"]
+        _15m_time_ok = [w for w in time_ok_windows if w.get("product_type") == "15m"]
+        if _15m_in and not _15m_time_ok:
+            _now = time.time()
+            _last = getattr(self, "_last_15m_time_filter_log_ts", 0.0)
+            if _now - _last >= 30.0:
+                self._last_15m_time_filter_log_ts = _now
+                logging.warning(
+                    "F_U6_15M_TIME_FILTER_DROPPED_ALL: %d 15M windows ALL "
+                    "filtered by time range — details=[%s] (scan iterates "
+                    "non-15M; heartbeat blind for this tick)",
+                    len(_15m_in),
+                    ", ".join(
+                        f"{w.get('asset', '?')}={w.get('seconds_to_close', '?'):.1f}s"
+                        for w in _15m_in))
         if not time_ok_windows:
             return None
 
@@ -9890,6 +9910,26 @@ class OpportunityScanner:
             if ts in occupied and w["asset"] in occupied[ts]:
                 continue  # this asset already has a position/order in this timeslot
             eligible_windows.append(w)
+
+        # F/U 6 diagnostic: log when ALL 15M survived the time filter
+        # but were dropped by the timeslot-occupancy filter. Throttled
+        # to once per 30s.
+        _15m_eligible = [w for w in eligible_windows if w.get("product_type") == "15m"]
+        if _15m_time_ok and not _15m_eligible:
+            _now = time.time()
+            _last = getattr(self, "_last_15m_eligible_filter_log_ts", 0.0)
+            if _now - _last >= 30.0:
+                self._last_15m_eligible_filter_log_ts = _now
+                logging.warning(
+                    "F_U6_15M_ELIGIBLE_FILTER_DROPPED_ALL: %d 15M windows "
+                    "passed time but ALL filtered by timeslot occupancy — "
+                    "details=[%s] occupied=%s (scan iterates non-15M; "
+                    "heartbeat blind)",
+                    len(_15m_time_ok),
+                    ", ".join(
+                        f"{w.get('asset', '?')}={w.get('seconds_to_close', '?'):.1f}s"
+                        for w in _15m_time_ok),
+                    {k: sorted(list(v)) for k, v in occupied.items()})
 
         if not eligible_windows:
             return None
