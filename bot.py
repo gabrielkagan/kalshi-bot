@@ -905,6 +905,82 @@ TM_ASSET_RISK_CAPS = {
     "XRP": XRP_MAX_RISK_PER_TRADE,        # 0.15
 }
 
+# ── TM Sweep Shadow ────────────────────────────────────────────────────────
+# Captures pre/post-fill orderbook depths at TM-relevant tiers (96/97/98/99)
+# every TM execution. On settlement, computes counterfactual sweep PnL
+# assuming sequential IOCs into 98 then 99 (skipping 97 entirely — 97 is
+# the known negative-EV tier; sweeping past it is allowed, taking it is not).
+# Shadow-only — answers "would a sweep into 98/99 after a TM-96 partial
+# fill have been profitable?" Decision pending data accumulation.
+#
+# Analysis hygiene (adversary C1, C3): segment by entry_price_cents when
+# aggregating cf_pnl — entry=98 rows sweep only 1 tier (99c) and aren't
+# directly comparable to entry=96 rows that sweep 2 tiers. On stacked-TM
+# tickers (multiple status='open' rows), don't sum cf_pnl — the snapshots
+# overlap; only one sweep could have actually fired.
+TM_SWEEP_SHADOW_ENABLED = os.environ.get("TM_SWEEP_SHADOW_ENABLED", "1") == "1"
+TM_SWEEP_CAPTURE_TIERS = (96, 97, 98, 99)        # snapshot all four for analysis
+TM_SWEEP_COUNTERFACTUAL_TIERS = (98, 99)         # 97 excluded by design (TM_NEGATIVE_EV)
+
+
+def tm_sweep_extract_depths(yes_asks, tiers=TM_SWEEP_CAPTURE_TIERS):
+    """Given a list of [price_cents, qty] yes-ask pairs (post _extract_book_levels),
+    return {tier: total_qty} for each requested tier. Missing tiers → 0.
+    Duplicate tiers in input are summed (defensive)."""
+    out = {t: 0 for t in tiers}
+    if not yes_asks:
+        return out
+    tier_set = set(tiers)
+    for entry in yes_asks:
+        try:
+            price, qty = int(entry[0]), int(entry[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if price in tier_set and qty > 0:
+            out[price] += qty
+    return out
+
+
+def tm_sweep_counterfactual_pnl(unfilled, entry_tier, depths, market_result,
+                                sweep_tiers=TM_SWEEP_COUNTERFACTUAL_TIERS):
+    """Counterfactual sweep PnL: what would unfilled remainder have earned if
+    we'd sequentially IOC'd into each sweep_tier strictly above entry_tier?
+
+    Returns (total_pnl_cents, breakdown_legs).
+    breakdown_legs = [{"tier": int, "ct": int, "payoff": int}, ...].
+
+    Win:  payoff = ct * (100 - tier) - taker_fee(ct, tier)
+    Loss: payoff = -(ct * tier + taker_fee(ct, tier))
+    Unrecognized market_result → (0, [])."""
+    if market_result in ("yes", "all_yes"):
+        is_win = True
+    elif market_result in ("no", "all_no"):
+        is_win = False
+    else:
+        return 0, []
+
+    legs = []
+    total = 0
+    remaining = max(0, int(unfilled))
+    for tier in sweep_tiers:
+        if remaining <= 0:
+            break
+        if tier <= entry_tier:
+            continue
+        avail = int(depths.get(tier, 0) or 0)
+        take = min(remaining, avail)
+        if take <= 0:
+            continue
+        fee = calculate_taker_fee(take, tier)
+        if is_win:
+            payoff = take * (100 - tier) - fee
+        else:
+            payoff = -(take * tier + fee)
+        legs.append({"tier": tier, "ct": take, "payoff": payoff})
+        total += payoff
+        remaining -= take
+    return total, legs
+
 
 def tm_compute_contracts(price_cents: int, seconds_to_close: float,
                          bankroll_cents: int = 100000,
@@ -2518,6 +2594,35 @@ class StateManager:
             CREATE INDEX IF NOT EXISTS idx_lps_status ON low_price_shadow_signals(status);
             CREATE INDEX IF NOT EXISTS idx_lps_asset ON low_price_shadow_signals(asset);
         """)
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tm_sweep_shadow (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                event_ticker TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                entry_time TEXT NOT NULL,
+                entry_price_cents INTEGER NOT NULL,
+                requested_count INTEGER NOT NULL,
+                filled_count INTEGER NOT NULL,
+                unfilled_count INTEGER NOT NULL,
+                depth_at_entry_pre_fill INTEGER,
+                depth_96c_pre INTEGER, depth_97c_pre INTEGER,
+                depth_98c_pre INTEGER, depth_99c_pre INTEGER,
+                depth_96c_post INTEGER, depth_97c_post INTEGER,
+                depth_98c_post INTEGER, depth_99c_post INTEGER,
+                seconds_to_close REAL,
+                calibrated_prob REAL,
+                buf_pct REAL,
+                best_ask_source TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                market_result TEXT,
+                settled_at TEXT,
+                cf_pnl_cents INTEGER,
+                cf_breakdown_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tmss_ticker ON tm_sweep_shadow(ticker);
+            CREATE INDEX IF NOT EXISTS idx_tmss_status ON tm_sweep_shadow(status);
+        """)
         self.conn.commit()
 
         # Unified shadow view: combines 15M shadow engines + hourly alt shadows
@@ -3866,6 +3971,91 @@ class StateManager:
             self.conn.commit()
         except Exception as e:
             logging.warning(f"update_evaluated_opportunity_order failed: {e}", exc_info=True)
+
+    def insert_tm_sweep_shadow_row(self, *, ticker: str, event_ticker: str,
+                                    asset: str, entry_time: str,
+                                    entry_price_cents: int,
+                                    requested_count: int, filled_count: int,
+                                    unfilled_count: int,
+                                    depth_at_entry_pre_fill: Optional[int] = None,
+                                    depth_96c_pre: Optional[int] = None,
+                                    depth_97c_pre: Optional[int] = None,
+                                    depth_98c_pre: Optional[int] = None,
+                                    depth_99c_pre: Optional[int] = None,
+                                    depth_96c_post: Optional[int] = None,
+                                    depth_97c_post: Optional[int] = None,
+                                    depth_98c_post: Optional[int] = None,
+                                    depth_99c_post: Optional[int] = None,
+                                    seconds_to_close: Optional[float] = None,
+                                    calibrated_prob: Optional[float] = None,
+                                    buf_pct: Optional[float] = None,
+                                    best_ask_source: Optional[str] = None) -> None:
+        """Insert one tm_sweep_shadow row capturing a TM execution snapshot.
+        Caller is responsible for ensuring this is only called from TM paths
+        (DC/LPNE/maker do NOT capture). Idempotent at the row level only by
+        (ticker, entry_time) — duplicates would create separate rows."""
+        try:
+            self.conn.execute(
+                "INSERT INTO tm_sweep_shadow ("
+                "ticker, event_ticker, asset, entry_time, entry_price_cents, "
+                "requested_count, filled_count, unfilled_count, "
+                "depth_at_entry_pre_fill, "
+                "depth_96c_pre, depth_97c_pre, depth_98c_pre, depth_99c_pre, "
+                "depth_96c_post, depth_97c_post, depth_98c_post, depth_99c_post, "
+                "seconds_to_close, calibrated_prob, buf_pct, best_ask_source"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ticker, event_ticker, asset, entry_time, entry_price_cents,
+                 requested_count, filled_count, unfilled_count,
+                 depth_at_entry_pre_fill,
+                 depth_96c_pre, depth_97c_pre, depth_98c_pre, depth_99c_pre,
+                 depth_96c_post, depth_97c_post, depth_98c_post, depth_99c_post,
+                 seconds_to_close, calibrated_prob, buf_pct, best_ask_source))
+            self.conn.commit()
+        except Exception:
+            logging.warning("tm_sweep_shadow insert failed for %s", ticker, exc_info=True)
+
+    def update_tm_sweep_shadow_on_settlement(self, ticker: str, market_result: str) -> None:
+        """For all open tm_sweep_shadow rows on `ticker`, compute counterfactual
+        sweep PnL via tm_sweep_counterfactual_pnl() and mark as settled.
+
+        Idempotent: only acts on rows with status='open'. Subsequent calls on
+        the same ticker are no-ops. Unrecognized market_result strings (e.g.
+        'void') leave rows in 'open' state."""
+        if market_result not in ("yes", "all_yes", "no", "all_no"):
+            return
+        try:
+            rows = self.conn.execute(
+                "SELECT id, entry_price_cents, unfilled_count, "
+                "depth_96c_post, depth_97c_post, depth_98c_post, depth_99c_post "
+                "FROM tm_sweep_shadow WHERE ticker=? AND status='open'",
+                (ticker,)).fetchall()
+            if not rows:
+                return
+            now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            for r in rows:
+                depths = {
+                    96: r["depth_96c_post"] or 0,
+                    97: r["depth_97c_post"] or 0,
+                    98: r["depth_98c_post"] or 0,
+                    99: r["depth_99c_post"] or 0,
+                }
+                cf_pnl, legs = tm_sweep_counterfactual_pnl(
+                    unfilled=r["unfilled_count"],
+                    entry_tier=r["entry_price_cents"],
+                    depths=depths,
+                    market_result=market_result)
+                # Adversary A4: belt-and-suspenders int cast guards against
+                # any future change to calculate_taker_fee that might return
+                # float; cf_pnl_cents column is INTEGER.
+                self.conn.execute(
+                    "UPDATE tm_sweep_shadow SET status='settled', "
+                    "market_result=?, cf_pnl_cents=?, cf_breakdown_json=?, "
+                    "settled_at=? WHERE id=?",
+                    (market_result, int(cf_pnl), json.dumps(legs, separators=(",", ":")),
+                     now, r["id"]))
+            self.conn.commit()
+        except Exception:
+            logging.warning("tm_sweep_shadow settle failed for %s", ticker, exc_info=True)
 
     def get_unsettled_evaluated_opportunities(self) -> List[Dict]:
         """Return evaluated opportunities with status='pending' and a market_price.
@@ -19134,8 +19324,55 @@ class OrderExecutor:
             ticker, count, price,
             seconds_to_close or 0, net_edge, cal_prob, taker_fee)
 
+        # tm_sweep_shadow: snapshot pre-fill depths at all four TM-relevant
+        # tiers BEFORE the IOC. Wrapped to never break the trade path.
+        _tmss_pre = self._tm_sweep_snapshot_depths(ticker) if TM_SWEEP_SHADOW_ENABLED else None
+
         _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         result = self._submit_taker(candidate)
+
+        # tm_sweep_shadow: snapshot post-fill depths immediately (option A —
+        # models what a real sweep would see firing right after the IOC ack).
+        # Insert one row regardless of fill outcome (full/partial/zero).
+        #
+        # Post-fill depth at the entry tier is RACY: we don't know whether the
+        # WS delta from our own fill has landed in the local cache yet (adversary
+        # A1). Storing raw is safer than guessing — over- or under-correcting at
+        # random is worse than a documented bias. cf_pnl is unaffected because
+        # it only consults sweep tiers (98/99), and a single-price IOC at the
+        # entry tier cannot consume from higher tiers.
+        if TM_SWEEP_SHADOW_ENABLED:
+            try:
+                _tmss_post = self._tm_sweep_snapshot_depths(ticker)
+                # Adversary A2: clamp filled_count to non-negative int so
+                # neither None (error sentinel) nor a future negative sentinel
+                # corrupts unfilled_count.
+                _tmss_raw = result.get("filled_count") if isinstance(result, dict) else 0
+                _tmss_filled = max(0, int(_tmss_raw or 0))
+                self._state.insert_tm_sweep_shadow_row(
+                    ticker=ticker,
+                    event_ticker=candidate.get("event_ticker", ""),
+                    asset=asset,
+                    entry_time=_order_submit_ts,
+                    entry_price_cents=int(price),
+                    requested_count=int(count),
+                    filled_count=_tmss_filled,
+                    unfilled_count=int(count) - _tmss_filled,
+                    depth_at_entry_pre_fill=fresh_depth,
+                    depth_96c_pre=(_tmss_pre or {}).get(96),
+                    depth_97c_pre=(_tmss_pre or {}).get(97),
+                    depth_98c_pre=(_tmss_pre or {}).get(98),
+                    depth_99c_pre=(_tmss_pre or {}).get(99),
+                    depth_96c_post=(_tmss_post or {}).get(96),
+                    depth_97c_post=(_tmss_post or {}).get(97),
+                    depth_98c_post=(_tmss_post or {}).get(98),
+                    depth_99c_post=(_tmss_post or {}).get(99),
+                    seconds_to_close=seconds_to_close,
+                    calibrated_prob=cal_prob,
+                    buf_pct=candidate.get("spot_buffer_pct"),
+                    best_ask_source=fresh_source)
+            except Exception:
+                logging.debug("tm_sweep_shadow capture failed", exc_info=True)
 
         if result is not None:
             fill_count = result.get("filled_count", 0)
@@ -19165,6 +19402,25 @@ class OrderExecutor:
                     order_outcome="unfilled")
                 return None
         return None
+
+    def _tm_sweep_snapshot_depths(self, ticker: str) -> Optional[Dict[int, int]]:
+        """Snapshot YES-ask depths at TM_SWEEP_CAPTURE_TIERS from the scanner's
+        cached orderbook. Returns None on any error (caller treats as unknown).
+        Never raises — instrumentation must not break the trade path."""
+        try:
+            scanner = self._ml.scanner if self._ml else None
+            if not scanner:
+                return None
+            ob_data, _ = scanner._get_orderbook_cached(ticker)
+            if not ob_data:
+                return None
+            ladder_json = OrderExecutor._extract_book_levels(ob_data, n=10)
+            if not ladder_json:
+                return None
+            yes_asks = json.loads(ladder_json).get("yes_asks", [])
+            return tm_sweep_extract_depths(yes_asks, TM_SWEEP_CAPTURE_TIERS)
+        except Exception:
+            return None
 
     def _execute_lpne_taker(self, candidate: Dict, asset: str, seconds_to_close) -> Optional[Dict]:
         """Execute low-price near-expiry trade — direct taker, fixed contracts, no retry.
@@ -22649,6 +22905,18 @@ class SettlementTracker:
                     self._state.conn.commit()
             except Exception:
                 logging.warning("low_price_shadow settle failed for %s", ticker, exc_info=True)
+
+        # Settle tm_sweep_shadow rows. Reuses the same ticker_results aggregation
+        # as low_price_shadow above. Idempotent — only acts on rows with
+        # status='open', so safe if this method is invoked repeatedly.
+        if TM_SWEEP_SHADOW_ENABLED:
+            for ticker, result in ticker_results.items():
+                if result not in ("yes", "all_yes", "no", "all_no"):
+                    continue
+                try:
+                    self._state.update_tm_sweep_shadow_on_settlement(ticker, result)
+                except Exception:
+                    logging.warning("tm_sweep_shadow settle failed for %s", ticker, exc_info=True)
 
         # Weather: fetch actual temps (API calls — after lock released)
         _wx_dirty = False
