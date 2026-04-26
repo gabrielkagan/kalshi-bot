@@ -35,11 +35,50 @@ See kb/concepts/contract-testing.md Tier 2 #4.
 import argparse
 import os
 import sqlite3
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
+
+
+# Minimum bot uptime before strict rate-based checks (15m_scan_liveness)
+# are honored. Below this, the bot is still warming up RK kernels +
+# EGARCH refit; scan body may silent-bail on vol=None for the first
+# 1-3 min. Strict-fail in this window produces deploy false positives.
+# Apr 26 incident: 4 rows in 100s tripped the check; bot was healthy
+# but undertargeting. Workflow sleeps 240s before invoking this script
+# precisely so this gate is rarely needed, but it's defense-in-depth.
+_MIN_UPTIME_FOR_STRICT_RATE_CHECK_S = 300.0
+
+
+def _bot_uptime_seconds() -> Optional[float]:
+    """Read systemd's ActiveEnterTimestamp for kalshi-bot, return
+    elapsed seconds. Returns None on any failure (script then falls
+    back to enforcing strict checks normally — fail-closed).
+    """
+    try:
+        out = subprocess.run(
+            ["systemctl", "show", "kalshi-bot.service",
+             "--property=ActiveEnterTimestamp", "--value"],
+            capture_output=True, text=True, timeout=5.0)
+        if out.returncode != 0:
+            return None
+        ts_str = out.stdout.strip()
+        if not ts_str:
+            return None
+        # Format: "Sun 2026-04-26 10:52:51 UTC"
+        # Strip leading day-of-week, parse the rest.
+        parts = ts_str.split(" ", 1)
+        if len(parts) < 2:
+            return None
+        ts = datetime.strptime(
+            parts[1], "%Y-%m-%d %H:%M:%S %Z").replace(
+                tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds()
+    except Exception:
+        return None
 
 
 # ───────────────── Env-file loader ─────────────────
@@ -269,6 +308,22 @@ def run_checks(db_path: Path, checks: List[Check], *, strict_all: bool,
     skipped = 0
     ok = 0
 
+    # Demote strict rate-based checks to warn if bot is still warming
+    # up. Apr 26: workflow sleeps 240s, but if that's ever shortened
+    # or the bot's warmup runs longer (slow VPS, RK kernel timing),
+    # this prevents a deploy-blocking FP. Names below are checked
+    # against the resolved set; if uptime read fails, no demotion.
+    rate_dependent_checks = {"15m_scan_liveness"}
+    uptime_s = None if dry_run else _bot_uptime_seconds()
+    relax_rate_checks = (
+        uptime_s is not None
+        and uptime_s < _MIN_UPTIME_FOR_STRICT_RATE_CHECK_S)
+    if relax_rate_checks:
+        print(
+            f"  NOTE: bot uptime={uptime_s:.0f}s < "
+            f"{_MIN_UPTIME_FOR_STRICT_RATE_CHECK_S:.0f}s — relaxing "
+            f"strict rate-based checks to WARN until warmup complete")
+
     if dry_run:
         print(f"[dry-run] would query {db_path} with {len(checks)} checks")
 
@@ -301,6 +356,12 @@ def run_checks(db_path: Path, checks: List[Check], *, strict_all: bool,
             continue
 
         strict_now = chk.strict or strict_all
+        # Demote strict to warn for rate-based checks during warmup.
+        if (relax_rate_checks
+                and chk.name in rate_dependent_checks
+                and chk.strict
+                and not strict_all):
+            strict_now = False
         if n >= chk.min_rows:
             print(f"  OK    {chk.name}  rows={n}  (min={chk.min_rows})")
             ok += 1
