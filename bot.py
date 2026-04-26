@@ -19246,12 +19246,63 @@ class OrderExecutor:
 
             # Fresh ask check with depth
             fresh_ask, fresh_depth, fresh_source = self._dc_get_ask_with_depth(ticker, candidate)
-            _stc_now = candidate.get("seconds_to_close", 0)
+            # Coerce None / non-numeric → 0. dict.get only fills default
+            # for MISSING key; an explicit None value still passes
+            # through, and a JSON-parse string would crash later
+            # comparisons. Pre-fix crash: `_dc_retry_delay(None)` raised
+            # TypeError on `None > 600`.
+            try:
+                _stc_now = float(candidate.get("seconds_to_close") or 0)
+            except (TypeError, ValueError):
+                _stc_now = 0.0
             # Estimate current STC from original eval time
-            _eval_age = now - entry.get("_queue_ts", now)
+            # _queue_ts is set at every production append site (lines
+            # 18833, 18905, 18927). Fallback `now - DC_IOC_RETRY_DELAY`
+            # biases toward decay when missing (vs the previous `now`
+            # default which kept _eval_age=0 → STC stuck at original
+            # → entry could retry forever on a malformed entry). R1 [A5].
+            _eval_age = now - entry.get(
+                "_queue_ts", now - DC_IOC_RETRY_DELAY)
             if _stc_now and _stc_now > 0:
                 _stc_now = max(0, _stc_now - _eval_age)
             _adaptive_delay = self._dc_retry_delay(_stc_now)
+
+            # Apr 26 11:15 incident
+            # (kb/failures/dc-retry-post-settlement-burn-2026-04-26.md):
+            # candidate fired with STC=5s, hit IOC_ABORT_PHANTOM, queued
+            # retry. Retries continued AFTER the 11:15 window close at
+            # 1s adaptive delay (=1.0 when STC<30), each hitting
+            # phantom + ABORT, burning scan-tick budget across all 11
+            # attempts. Once the window has settled, no IOC will fill —
+            # drop the entry and stop wasting scan-tick time.
+            #
+            # Guard: only drop if STC was ORIGINALLY positive AND has
+            # decayed to ≤ 0. If `seconds_to_close` was missing or 0
+            # at queue time, we cannot bound elapsed → we must NOT
+            # drop on STC alone, because the queue's stated purpose
+            # (line 18822: "book may appear later") is incompatible
+            # with STC-based dropping when STC was never positive to
+            # begin with. R1 [A1].
+            try:
+                _orig_stc = float(
+                    candidate.get("seconds_to_close") or 0)
+            except (TypeError, ValueError):
+                _orig_stc = 0.0
+            if _orig_stc > 0 and _stc_now <= 0:
+                logging.info(
+                    "dc_retry_DROP_WINDOW_CLOSED: %s %s "
+                    "orig_stc=%.1fs eval_age=%.1fs (window settled); "
+                    "dropping after %d attempts, total_filled=%d/%d",
+                    _dc_strategy, ticker, _orig_stc, _eval_age,
+                    attempt - 1,
+                    entry["total_filled"], entry["original_count"])
+                if entry["total_filled"] > 0:
+                    self._state.update_evaluated_opportunity_order(
+                        ticker, order_outcome="partial_filled")
+                else:
+                    self._state.update_evaluated_opportunity_order(
+                        ticker, order_outcome="unfilled_window_closed")
+                continue  # drop from queue
 
             if fresh_ask is None:
                 logging.info("dc_retry_no_asks: %s %s attempt=%d/%d",
