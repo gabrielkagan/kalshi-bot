@@ -1,97 +1,114 @@
 # Kalshi Crypto Trading Bot
 
-Automated trading platform for Kalshi prediction markets. Core engine trades 15-minute cryptocurrency contracts (BTC, ETH, SOL, XRP) using microstructure-aware volatility models. Expanding into S&P 500 intraday, daily weather temperature (19 US cities), and live sports outcomes (28 leagues) --- all in shadow mode collecting calibration data.
+Automated trading platform for Kalshi prediction markets. The core engine trades 15-minute cryptocurrency contracts (BTC, ETH, SOL, XRP) live, with several adjacent strategies layered on top: decided contracts, late-window momentum, weekend/overnight discounts, and a near-expiry low-price entry. Adjacent products (S&P 500 intraday, daily weather temperature across 19 US cities, and live sports outcomes across 28 leagues) run in observation or 1-contract verification mode while their CalEngines train.
 
 ## How It Works
 
 ```
 Coinbase (1s prices) ──┐
-Kraken ────────────────┤                                          ┌─ Maker order (post_only)
-Bybit ─────────────────┼──→ Volatility ──→ Probability ──→ Edge ──┤
-Deribit DVOL ──────────┤     Engine          Engine      Filter   └─ Taker escalation (amend/IOC)
+Kraken ────────────────┤                                          ┌─ Maker post_only ($0 fee)
+Bybit ─────────────────┼──→ Volatility ──→ Probability ──→ Edge ──┤  ↓ if unfilled or near-close
+Binance (geo-blocked)──┤     Engine          Engine      Filter   └─ Cancel-replace IOC taker
+Deribit DVOL ──────────┤
 CoinGlass funding ─────┘
 ```
 
-Every second, the bot scans all active 15-minute windows across all four assets and executes when the fee-adjusted edge exceeds a price-dependent minimum (0.25% at 86c up to 1.0% at 97c+).
+Every second the bot scans all active 15-minute windows across the four crypto assets. Edge thresholds are price-dependent and per-asset. The global edge floor is V-shaped: it relaxes from 0.25% (80--90c) to a low of 0.20% at 91--92c, then climbs back up to 0.5% (93--94c), 0.75% (95--96c), and 1.0% at 97c+. The 91--92c trough reflects empirical tightness in that price band; very-high prices need the larger edge to absorb fee drag and time risk. On top of that, each asset has its own minimum entry price (BTC 88c+, SOL 86c+, XRP 92c+) and ETH operates with a main tier at 90c+ plus a sub-80c live tier capped at 50 contracts (the 80--89c band is blocked due to negative historical PnL).
 
 ## Architecture
 
 ### Volatility Engine
 
-The bot doesn't use a single volatility number --- it blends three Realized Kernel estimators (Barndorff-Nielsen 2008, Parzen flat-top kernel) with data-adaptive bandwidth selection:
+The engine blends three Realized Kernel estimators (Barndorff-Nielsen 2008, Parzen flat-top kernel) with data-adaptive bandwidth selection. Baseline weights are 50% / 30% / 20% on 1-min / 5-min / 15-min, but in production the weights are **time-varying** as a function of seconds-to-close --- shorter horizons get more weight as the window approaches expiry.
 
-| Estimator | Base Weight | Purpose |
-|-----------|-------------|---------|
+| Estimator | Baseline weight | Purpose |
+|-----------|----------------|---------|
 | 1-min realized kernel | 50% | Current microstructure |
 | 5-min bipower variation | 30% | Jump-robust medium-term vol |
 | 15-min realized kernel | 20% | Window-level baseline |
 
-On top of this:
+On top of that:
 
 - **Adaptive RK bandwidth (H\*)** --- bandwidth auto-tunes from the noise-to-signal ratio, producing tighter estimates in calm periods and wider smoothing during noisy periods
-- **Mincer-Zarnowitz R2-weighted EGARCH blending** --- an EGARCH(1,1) model with Student-t innovations runs live, blending with RK vol weighted by MZ regression R2 (typically 0.42--0.61)
-- **Deribit DVOL integration** --- when IV diverges from RV by >50%, the engine shifts toward implied vol using inverse-variance weighting. For SOL/XRP (no direct DVOL), it scales BTC DVOL by a rolling cross-asset beta (60-return lookback, clamped 0.5--3.0)
-- **Adaptive jump detection** --- percentile-based per-asset thresholds (replaced fixed 3-sigma); EWMA variance tracking with tiered response scaling by severity
+- **Mincer-Zarnowitz R²-weighted EGARCH blending** --- an EGARCH(1,1) model with Student-t innovations runs live, blending with RK vol weighted by the MZ regression R². EGARCH/RV ratios outside `[1/3, 3]` are rejected
+- **Deribit DVOL integration** --- when IV diverges from RV materially, the engine shifts toward implied vol via inverse-variance weighting. SOL and XRP have no direct DVOL feed, so BTC DVOL is scaled by a rolling cross-asset beta
+- **Adaptive jump detection** --- per-asset percentile thresholds (replaced the fixed 3-sigma rule) with EWMA variance tracking and tiered response scaling
 
 ### Probability Model
 
 Converts the volatility estimate into a settlement probability:
 
 1. Compute z-score: distance from current price to strike, normalized by estimated vol
-2. Map through per-asset Normal Inverse Gaussian (NIG) CDF --- captures both heavy tails and asymmetry unique to each crypto; falls back to Student-t(df=4) if NIG unavailable
-3. Data-driven calibration via CalibrationEngine --- progresses from fixed logistic -> Platt Scaling -> Beta Calibration -> BLR as data accumulates
-4. Dynamic probability cap: bypassed when learned calibration is active (uses 0.999 safety ceiling); cap schedule only applies during startup before training
-5. Market-price blending: 60% model / 40% market-implied probability
+2. Map through a per-asset Normal Inverse Gaussian (NIG) CDF --- captures heavy tails and asymmetry; falls back to Student-t(df=4) if NIG isn't available
+3. Data-driven calibration via per-product CalEngines. The 15M engine currently runs in **passthrough mode** (raw probability has lower Brier than the BLR fit, so the BLR layer is bypassed); per-city weather, per-sport-group, and SPX-D engines run their full Platt → Beta → BLR pipeline
+4. Dynamic probability cap: bypassed when learned calibration is active (uses 0.999 safety ceiling); cap schedule applies during startup before training
+5. Market-price blending: 60% model / 40% market-implied probability for 15M; weather/SPX use product-specific weights
 
-Safety rails refuse to trade if: the model says >90% but the market is below 75c, or |z-score| > 25.
+Hard safety rails: refuse to trade if `|z-score| > 25` or if the EGARCH/RV ratio falls outside `[1/3, 3]`.
 
 ### Cross-Exchange Intelligence
 
 Three WebSocket feeds (Kraken, Bybit, Binance) run concurrently via `CrossExchangeFeed` to detect directional signals before they show up on Kalshi. Binance is geo-blocked (HTTP 451) on the production VPS but the feed reconnects silently; Kraken and Bybit provide the primary cross-exchange signal.
 
-- **Lead/lag consensus** --- if 3+ exchanges move >0.3% in the same direction, the probability gets a +2pp boost
-- **Single-exchange lead** --- a >0.2% move on one exchange adds +1pp
-- **Funding rate signal** --- extreme funding (>0.05%/8h via CoinGlass) reduces probability by up to 1.5pp as a contrarian dampener
+- **Lead/lag consensus** --- if 3+ exchanges move >0.3% in the same direction, probability gets a +2pp adjustment (or -2pp if they oppose)
+- **Single-exchange lead** --- a >0.2% move on one exchange adds ±1pp
+- **Funding rate signal** --- extreme funding (≥0.05%/8h via CoinGlass) reduces probability by up to 1.5pp as a contrarian dampener; elevated funding (≥0.03%/8h) is -0.5pp
 
-Total cross-exchange adjustment is capped at +/-3pp.
+Total cross-exchange adjustment is capped at ±3pp.
 
 ### Execution Strategy
 
-The bot always enters as a maker and escalates to taker based on time pressure. A diagnostic strategy engine classifies each opportunity (WAIT, MAKER_PATIENT, MAKER_AGGRESSIVE, TAKER_NOW) for logging, but the actual execution path is:
+Maker-first by default, but with several asset- and product-specific overrides. Taker fills are allowed at any seconds-to-close (`MAKER_ONLY_THRESHOLD = 0`). The decision tree:
 
-1. Place maker order with `post_only=True` (guarantees 75% cheaper maker fees)
-2. Monitor for fills via Kalshi WebSocket (zero API cost, REST fallback)
-3. Poll queue position every ~5s for escalation timing
-4. If unfilled after wait period (15s/10s/5s depending on time remaining):
-   - Attempt `amend_order()` to convert to taker price in-place
-   - Fallback: cancel + IOC (`time_in_force="immediate_or_cancel"`) taker order
-5. Three-tier post_only rejection handler: normal -> degraded -> taker IOC after 3+ rejections
-6. Direct taker: when seconds-to-close < 180s, skip maker and submit IOC taker directly
+1. **Default 15M (BTC, ETH, XRP)** --- place maker `post_only=True` (maker fee is $0), poll for fills via Kalshi WebSocket. If unfilled after the per-tier wait (15s for ≥180s STC, 7s for 120--180s, 5s for 60--120s), `amend_order()` to taker price; fall back to cancel + IOC taker if amend rejects
+2. **SOL** --- `SOL_TAKER_FIRST = True`. Skip maker entirely, go direct IOC at all STC (data: SOL maker fills suffered adverse selection; taker-first net positive)
+3. **Direct taker zone** --- when STC < 180s, all assets skip maker and submit IOC directly
+4. **Decided contracts (T1, T1B, T2, T2-Z25)** --- route direct taker regardless of STC; structural high-conviction signals
+5. **Three-tier post_only rejection handler** --- normal → degraded → taker IOC after 3+ rejections
+
+Fee schedule: maker = **$0** (free). Taker = `ceil(0.07 * C * P * (1-P))` --- ceil on total, not per contract.
 
 ### Position Sizing
 
-Edge-tiered sizing with drawdown scaling:
+Edge-tiered Kelly sizing as the baseline, with several overrides:
 
-| Fee-Adjusted Edge | Risk Fraction |
+| Fee-adjusted edge | Risk fraction |
 |-------------------|---------------|
-| >= 4% | 25% of bankroll |
-| >= 2.5% | 20% of bankroll |
-| >= 1.8% | 15% of bankroll |
-| >= 1.2% | 10% of bankroll |
-| >= 0.9% | 7% of bankroll |
-| >= 0.7% | 5% of bankroll |
-| >= 0.5% | 3% of bankroll |
-| >= 0.25% | 2% of bankroll |
+| ≥ 4% | 25% of bankroll |
+| ≥ 2.5% | 20% of bankroll |
+| ≥ 1.8% | 15% of bankroll |
+| ≥ 1.2% | 10% of bankroll |
+| ≥ 0.9% | 7% of bankroll |
+| ≥ 0.7% | 5% of bankroll |
+| ≥ 0.5% | 3% of bankroll |
+| ≥ 0.25% | 2% of bankroll |
 
-- Safety ceiling: max 25% of bankroll at risk per trade
-- At 85% of rolling 7-day peak balance: halve position sizes
-- At 75% of rolling 7-day peak balance: quarter position sizes
-- At 65% of rolling 7-day peak balance: halt trading entirely
-- Can trade multiple assets per 15-minute window
+Per-asset hard caps (lower than the global 25% ceiling):
+
+- BTC: 15%, ETH: 20%, SOL: 15%, XRP: 15%
+
+Per-strategy fixed sizing (overrides Kelly):
+
+- **Decided contracts T1 / T1B / T2** --- 20% of bankroll, fixed; 35% per-window cap
+- **Decided contract T2-Z25** --- 10% (cut from 20% Apr 21 after a 14d -$95 / 17-trade run)
+- **SOL decided-contract overrides** --- SOL DC at ≥97c sized at 5%, 95--96c at 10% (below the default 20%)
+- **Weather NO-side** --- 1 contract per signal
+- **Low-price near-expiry (LPNE, BTC 80--87c)** --- 50 contracts fixed, only with model conviction at the entry strike
+- **Overnight LP variant** --- 10% max per trade (vs 25% live ceiling)
+- **Universal STC sizing scaler** --- contracts ×= 300/STC for any strategy when STC > 300s
+- **Low-STC sizing cap** --- 50% of computed size when STC < 100s
+
+Drawdown scaling (driven by a rolling 7-day high-water mark, cash balance only):
+
+- At 85% of HWM: halve position sizes
+- At 75% of HWM: quarter sizes
+- At 65% of HWM: halt trading entirely
+
+Loss-burst cooldown: per-asset 2-hour lockout after any 15M loss (sim PnL at deploy time: +$441/30d counterfactual).
 
 ### State & Persistence
 
-SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parameters, and rejected/evaluated opportunities. On startup the bot reconciles local state against the Kalshi API --- API always wins.
+SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parameters, evaluated and rejected opportunities, plus per-product calibration observations. On startup the bot reconciles local state against the Kalshi API --- API always wins.
 
 ## Data Sources
 
@@ -100,10 +117,10 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 | Coinbase | WebSocket | BTC, ETH, SOL, XRP spot prices | 1s snapshots (300-sample buffer) |
 | Kraken | WebSocket | Spot prices for lead/lag detection | Real-time |
 | Bybit | WebSocket | Spot prices for lead/lag detection | Real-time |
-| Binance | WebSocket | Spot prices (geo-blocked on VPS) | Real-time (when reachable) |
+| Binance | WebSocket | Spot prices (geo-blocked on VPS) | Real-time when reachable |
 | Deribit | REST | DVOL implied volatility index | Every 60s (120s cache) |
 | CoinGlass | REST | Funding rates | Every 10min (100 calls/day budget) |
-| Kalshi | REST + WebSocket | Markets, orderbooks, positions, settlements, fills | 1s scan loop + real-time WS fills/orderbook |
+| Kalshi | REST + WebSocket | Markets, orderbooks, positions, settlements, fills | 1s scan loop + real-time WS |
 
 ## Live Stats
 
@@ -111,15 +128,30 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 153,388 |
+| Markets evaluated | 153,423 |
 | Observation period | 2026-02-22 to 2026-04-26 |
-| Filter pass rate | 3.8\% (5,761 of 153,388) |
-| Top rejection reason | Insufficient Edge (47,913) |
+| Filter pass rate | 3.8\% (5,761 of 153,423) |
+| Top rejection reason | Insufficient Edge (47,920) |
 | Settled trades | 2,914 (2,715 W / 197 L / 2 BE) |
 | Win rate | 93.2\% |
 | Live P&L | $988.22 |
 
-*Last updated: 2026-04-26T16:35:12Z*
+*Last updated: 2026-04-26T17:04:55Z*
+
+## Live vs Observation
+
+The bot runs multiple product engines in parallel, with different live/observation states:
+
+- **15M crypto (BTC, ETH, SOL, XRP)** --- LIVE (XRP gated to 92c+, ETH to 90c+ main path with a separate 75--79c capped sub-tier)
+- **Decided contracts (T1, T1B, T2, T2-Z25)** --- LIVE on top of 15M
+- **Late-window momentum (terminal_momentum at 96/98/99c)** --- LIVE
+- **Weekend / overnight discount entries** --- LIVE in restricted price/STC zones
+- **Low-price near-expiry (LPNE, BTC 80--87c)** --- LIVE
+- **Weather NO-side (19 cities)** --- LIVE at 1 contract per signal
+- **Hourly crypto** --- DISABLED (kill-switched April 18)
+- **SPX intraday** --- observation only (CalEngine training)
+- **Sports outcomes (28 leagues)** --- observation only
+- **15M shadow variants (recalibrated EGARCH, LightGBM, late-window, etc.)** --- shadow only; see whitepaper for detail
 
 ## Setup
 
@@ -151,6 +183,7 @@ Required:
 Optional:
 - `KALSHI_ENV=production` --- trade on live exchange (defaults to demo)
 - `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` --- enable real-time dashboard (pushes state every 10s via Supabase)
+- `HOURLY_LIVE_ENABLED=1` / `HOURLY_NO_SIDE_LIVE=1` --- hourly is disabled by default; both env vars must be set on the VPS to re-enable
 
 ### Run
 
@@ -159,7 +192,7 @@ source .env
 python3 bot.py
 ```
 
-The bot runs the full pipeline (price feeds, volatility, probability, edge detection) and places live orders. Set `OBSERVATION_MODE = True` in `bot.py` to run in observation-only mode (logs everything but places no orders).
+Set `OBSERVATION_MODE = True` in `bot.py` to log everything but place no orders.
 
 ## Deployment
 
@@ -167,29 +200,32 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 
 1. SSH into VPS as `botuser`
 2. `git pull origin main`
-3. Syntax-check `bot.py` (`python3 -c "import ast; ast.parse(..."`)
+3. Syntax-check `bot.py` (`python3 -c "import ast; ast.parse(...)"`)
 4. `sudo systemctl restart kalshi-bot`
 
 ## Kalshi API Notes
 
 - **Auth**: RSA-PSS signature --- the signing path must include the `/trade-api/v2` prefix
-- **Orderbook**: Returns separate YES and NO orderbooks. Market NBBO provides `yes_ask`, `yes_bid`, `no_ask`, `no_bid`. YES + NO prices do NOT always sum to 100.
-- **Order type**: All orders are limit orders (no market orders as of Feb 2026)
-- **Settlements**: Bot uses the settlements API for outcome detection, never z-score heuristics or balance deltas
-- **Fee formula**: taker = `ceil(0.07 * C * P * (1-P))`, maker = `ceil(0.0175 * C * P * (1-P))` --- ceil on total, not per contract
+- **Orderbook**: returns separate YES and NO orderbooks. Market NBBO provides `yes_ask`, `yes_bid`, `no_ask`, `no_bid`. YES + NO prices do **not** always sum to 100
+- **Order type**: all orders are limit orders (no market orders as of Feb 2026)
+- **Settlements**: bot uses the settlements API for outcome detection, never z-score heuristics or balance deltas
+- **Fee formula**: maker = **$0**; taker = `ceil(0.07 * C * P * (1-P))` --- ceil on the total, not per contract
 
 ## Project Structure
 
 ```
-bot.py                         -- core bot logic (~14,700 lines, never rename)
+bot.py                         -- core bot logic (~24,916 lines, never rename)
+config.py                      -- centralized SIZING_TIERS / DRAWDOWN_* / MIN_EDGE_BY_PRICE
+models.py                      -- EGARCH / Mincer-Zarnowitz / PositionSizer / fee math
 analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)
 market_config.py               -- centralized MarketTypeConfig (validates against bot.py at startup)
 fifteenm_shadow.py             -- 15M shadow engine (recalibrated EGARCH + LightGBM research)
-spx_engine.py                  -- S&P 500 intraday engine (EGARCH + VIX, shadow mode)
-weather_engine.py              -- weather temperature engine (NWP ensemble, shadow mode)
-sports_engine.py               -- sports comeback engine (Bayesian LR, shadow mode)
+spx_engine.py                  -- S&P 500 intraday engine (EGARCH + VIX, observation mode)
+weather_engine.py              -- weather temperature engine (NWP ensemble, NO-side live + observation)
+sports_engine.py               -- sports comeback engine (Bayesian LR, observation mode)
 sports_data.py                 -- sports LR tables and league configuration
 capital_allocator.py           -- capital allocation across product types
+circuit_breaker.py             -- per-asset trading halt logic
 dashboard_snapshot.py          -- builds dashboard state snapshots for Supabase
 supabase_sync.py               -- pushes snapshots to Supabase Realtime every 10s
 watchdog.py                    -- process health monitoring
@@ -197,6 +233,7 @@ start.sh                       -- systemd entrypoint (venv + .env + bot.py)
 requirements.txt               -- Python dependencies
 .env.example                   -- credential template
 .github/workflows/deploy.yml   -- auto-deploy on push to main
+.github/workflows/whitepaper.yml -- auto-generate README stats + whitepaper PDFs
 ```
 
 ### Journals (gitignored)
