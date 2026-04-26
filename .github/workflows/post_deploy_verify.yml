@@ -54,15 +54,25 @@ jobs:
             fi
             echo "  OK: Commit $LOCAL_HASH matches deploy trigger"
 
-            # 3. No errors in last 2 minutes of logs
+            # 3. No errors in last 2 minutes of logs.
+            # Filter known-benign noise: 400s on event discovery from sports
+            # leagues with no active games (KXFIFAGAME, KXAFCONGAME,
+            # KXEREDIVISIEGAME, etc.) — Kalshi returns 400 for those, the bot
+            # logs and moves on. Each failed probe emits two lines (body +
+            # requests.exceptions); both match `API error.*events.*400`.
             echo "[3/5] Checking recent logs for errors..."
-            ERROR_COUNT=$(journalctl -u kalshi-bot --since "2 minutes ago" --no-pager 2>/dev/null | grep -ci "error\|traceback\|exception" || true)
+            ERROR_PATTERN="error|traceback|exception"
+            BENIGN_PATTERN="API error.*events.*400"
+            ERROR_COUNT=$(journalctl -u kalshi-bot --since "2 minutes ago" --no-pager 2>/dev/null \
+              | grep -iE "$ERROR_PATTERN" \
+              | grep -ivE "$BENIGN_PATTERN" \
+              | wc -l)
             if [ "$ERROR_COUNT" -gt 2 ]; then
-              echo "WARN: $ERROR_COUNT error lines in last 2 min"
-              journalctl -u kalshi-bot --since "2 minutes ago" --no-pager | grep -i "error\|traceback\|exception" | tail -5
+              echo "WARN: $ERROR_COUNT non-benign error lines in last 2 min"
+              journalctl -u kalshi-bot --since "2 minutes ago" --no-pager | grep -iE "$ERROR_PATTERN" | grep -ivE "$BENIGN_PATTERN" | tail -5
               exit 1
             fi
-            echo "  OK: $ERROR_COUNT error lines (threshold: 2)"
+            echo "  OK: $ERROR_COUNT non-benign error lines (threshold: 2)"
 
             # 4. Run audit_cron to verify metrics computation
             echo "[4/5] Running audit_cron.py..."
