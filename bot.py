@@ -1196,6 +1196,33 @@ MAKER_TAIL_ELIGIBLE_STRATEGIES = frozenset({
     "weekend_discount", "overnight_discount",
 })
 
+# ─── Ladder escalation after IOC partial fill ──────────────────────────
+# When an IOC partial-fills (e.g., wanted 50ct, got 2 because the real
+# top of book was thin), retry ONCE at +1¢ for the remainder. Captures
+# the dominant pattern of "thin top, deeper next level" which the
+# passive maker-tail at the original price misses. Runs BEFORE the
+# maker-tail so coexistence is layered: active reach first, then
+# passive rest at original. Hard caps:
+#   - LADDER_ESCALATION_MAX_STEPS = 1 (single retry only)
+#   - LADDER_ESCALATION_OFFSET = 1 (one tick up per step)
+#   - escalated price ≤ strategy MAX_ENTRY_PRICE (e.g., decided_t2
+#     stops at 96¢) and ≤ MAX_ENTRY_PRICE (99¢ global).
+#   - candidate must have ioc_filled > 0 (no escalation into phantom
+#     books — same logic as MAKER_TAIL_AFTER_IOC_PARTIAL Gate 1).
+#   - candidate carries _is_ladder_retry=True after the first step;
+#     the helper refuses to escalate again on retries (recursion guard).
+# See kb/decisions/ladder-escalation-after-ioc-partial.md.
+LADDER_ESCALATION_ENABLED = (
+    os.environ.get("LADDER_ESCALATION_ENABLED", "0") == "1")
+LADDER_ESCALATION_MAX_STEPS = 1     # single retry only — N=2 needs data
+LADDER_ESCALATION_OFFSET = 1        # cents per step
+LADDER_ESCALATION_MIN_REMAINDER = 5 # mirror MAKER_TAIL_MIN_REMAINDER
+# Eligible set mirrors MAKER_TAIL — these 8 strategies are vetted as
+# "we want more size on partial fills". Excludes lpne (STC too tight),
+# weather/hourly (different mechanics or disabled), TM_95/96/97
+# (off / loss-making per Apr 26 30d analysis).
+LADDER_ESCALATION_ELIGIBLE_STRATEGIES = MAKER_TAIL_ELIGIBLE_STRATEGIES
+
 # ─── Direct Taker Threshold ──────────────────────────────────────────────
 DIRECT_TAKER_THRESHOLD = 180.0    # seconds_to_close below this → skip maker, go IOC directly
                                   # Raised 75→180: 0% maker fill rate (26/26 escalated to taker), 9 missed candidates/day
@@ -16667,6 +16694,10 @@ class OrderExecutor:
         self._session_maker_tails_posted: int = 0
         self._session_maker_tails_skipped_cap: int = 0
         self._session_maker_tails_cancelled_ttl: int = 0
+        # Ladder-escalation session counter. Mirrors maker-tail.
+        # Increments on attempt (not on fill) — pair with success-rate
+        # by comparing to settlement-level ladder fill counts.
+        self._session_ladder_escalations: int = 0
         self._recent_taker_tickers: Dict[str, float] = {}  # ticker → timestamp (cooldown after IOC)
         self._active_taker_count: Dict[str, int] = {}  # asset → concurrent IOC count
         # Session counters for execution engine stats
@@ -19343,6 +19374,12 @@ class OrderExecutor:
         count = candidate["position_size"]
         price = candidate["best_yes_ask"]
         balance = candidate["balance_at_scan"]
+        # Ladder retries: avoid double-counting session-level IOC
+        # metrics. The retry IS a new IOC submission to Kalshi, but
+        # for SIGNAL-level metrics it's the same trading signal as
+        # the parent. Mirrors the existing 'confirmation_addon'
+        # exclusion pattern.
+        _is_ladder_retry = bool(candidate.get("_is_ladder_retry"))
 
         # ── Smart IOC limit picker (Apr 25 2026) ──────────────────────────
         # Kalshi's matching engine fills against ALL ask levels at-or-below
@@ -19593,7 +19630,8 @@ class OrderExecutor:
                     "strategy=%s policy=%s — refusing IOC to prevent "
                     "ladder sweep",
                     ticker, price, count, _abort_reason, _strategy, _policy)
-                self._session_ioc_unfilled += 1
+                if not _is_ladder_retry:
+                    self._session_ioc_unfilled += 1
                 return None
             if _policy == "no_clamp":
                 # Default no_clamp: submit full Kelly, trust Kalshi auto-cancel.
@@ -19607,7 +19645,8 @@ class OrderExecutor:
                             "— book genuinely thin, skipping; next scan retries after cooldown",
                             ticker, price, _ask_depth, IOC_MIN_COUNT_AFTER_CLAMP,
                             count, candidate.get("asset", "?"), _strategy)
-                        self._session_ioc_unfilled += 1
+                        if not _is_ladder_retry:
+                            self._session_ioc_unfilled += 1
                         return None
                     logging.warning(
                         "IOC_DRIFT_CLAMP: %s %dc count %d -> %d "
@@ -19675,7 +19714,8 @@ class OrderExecutor:
             self._ticker_api_errors[ticker] = self._ticker_api_errors.get(ticker, 0) + 1
             logging.error("Taker order submission failed: %s (api_errors=%d)",
                           ticker, self._ticker_api_errors[ticker])
-            if candidate.get("entry_path") != "confirmation_addon":
+            if (candidate.get("entry_path") != "confirmation_addon"
+                    and not _is_ladder_retry):
                 self._session_ioc_unfilled += 1
             return None
 
@@ -19760,7 +19800,8 @@ class OrderExecutor:
                 total_filled += fill_count
 
         if total_filled > 0:
-            if candidate.get("entry_path") != "confirmation_addon":
+            if (candidate.get("entry_path") != "confirmation_addon"
+                    and not _is_ladder_retry):
                 self._session_ioc_fills += 1
             unfilled = count - total_filled
             logging.info(
@@ -19771,6 +19812,30 @@ class OrderExecutor:
                 logging.warning(
                     f"IOC partial fill: {ticker} wanted {count} got "
                     f"{total_filled} — {unfilled} contracts unfilled")
+                # Ladder escalation: actively retry once at +1¢ for the
+                # remainder. Runs BEFORE the maker tail so coexistence
+                # is layered: active reach first, passive rest second.
+                # If escalation fully fills, the maker tail's MIN_
+                # REMAINDER gate naturally suppresses the tail. If
+                # escalation also partials, fall through to maker tail
+                # at ORIGINAL price (where someone may return to).
+                # Failures here MUST NOT break the IOC return path.
+                _ladder_filled = 0
+                if LADDER_ESCALATION_ENABLED:
+                    try:
+                        _ladder_result = self._maybe_ladder_escalate(
+                            candidate=candidate,
+                            original_limit=_ioc_limit_price,
+                            remaining=unfilled,
+                            ioc_filled=total_filled)
+                        _ladder_filled = (
+                            _ladder_result.get("escalated_filled", 0))
+                        unfilled -= _ladder_filled
+                    except Exception:
+                        logging.warning(
+                            "_maybe_ladder_escalate raised; IOC "
+                            "result still returned to caller",
+                            exc_info=True)
                 # Maker-tail: post the unfilled remainder as a
                 # post_only GTC limit so benign rotation flow can
                 # still fill us. Eligibility, gates, caps all live in
@@ -19830,7 +19895,8 @@ class OrderExecutor:
                 maker_wait_seconds=candidate.get("maker_wait_seconds"),
             )
             self._state.mark_order_status(order_id, "filled")
-            if candidate.get("entry_path") != "confirmation_addon":
+            if (candidate.get("entry_path") != "confirmation_addon"
+                    and not _is_ladder_retry):
                 self._session_ioc_fills += 1
             order_info["filled_count"] = count  # Ghost fill = assumed full fill
             return order_info
@@ -19883,7 +19949,8 @@ class OrderExecutor:
                                 maker_wait_seconds=candidate.get("maker_wait_seconds"),
                             )
                             self._state.mark_order_status(order_id, "filled")
-                            if candidate.get("entry_path") != "confirmation_addon":
+                            if (candidate.get("entry_path") != "confirmation_addon"
+                                    and not _is_ladder_retry):
                                 self._session_ioc_fills += 1
                             order_info["filled_count"] = _pos_abs  # Ghost fill from positions API
                             return order_info
@@ -19892,7 +19959,8 @@ class OrderExecutor:
 
         # IOC auto-cancels unfilled portion — no manual cancel needed
         self._state.mark_order_status(order_id, "canceled")
-        if candidate.get("entry_path") != "confirmation_addon":
+        if (candidate.get("entry_path") != "confirmation_addon"
+                and not _is_ladder_retry):
             self._session_ioc_unfilled += 1
         self._logger.log_order({
             "action": "taker_ioc_unfilled",
@@ -19914,6 +19982,200 @@ class OrderExecutor:
     # Caps + min STC + min remainder bound the worst case.
     # See kb/decisions/maker-tail-after-ioc-partial.md (TBD).
 
+    def _strategy_max_entry_price(self, strategy: str) -> int:
+        """Per-strategy MAX_ENTRY_PRICE for ladder escalation cap.
+
+        decided_t2 / decided_t2_z25 cap at DECIDED_CONTRACT_T2_MAX_PRICE
+        (96¢) — escalating past it would put us in territory the
+        strategy never endorsed (T2 only applies 93-96¢).
+        All other eligible strategies cap at the global MAX_ENTRY_PRICE.
+        """
+        if strategy in ("decided_t2", "decided_t2_z25"):
+            return DECIDED_CONTRACT_T2_MAX_PRICE
+        return MAX_ENTRY_PRICE
+
+    def _maybe_ladder_escalate(self, candidate: Dict, original_limit: int,
+                               remaining: int, ioc_filled: int) -> Dict:
+        """After an IOC partial fill, retry ONCE at +1¢ for the
+        unfilled remainder.
+
+        Returns dict with at least {"escalated": bool}; on success also
+        carries {"escalated_filled": int, "escalated_limit": int}.
+
+        Gates (any failure → silent skip, no exception):
+          1. LADDER_ESCALATION_ENABLED kill switch
+          2. ioc_filled > 0 (zero fill = phantom; don't push into another)
+          3. remaining >= LADDER_ESCALATION_MIN_REMAINDER
+          4. strategy in LADDER_ESCALATION_ELIGIBLE_STRATEGIES
+          5. NOT already a ladder retry (recursion guard)
+          6. escalated price ≤ strategy MAX_ENTRY_PRICE AND ≤ global cap
+        """
+        result = {"escalated": False}
+        # Gate 1: kill switch.
+        if not LADDER_ESCALATION_ENABLED:
+            return result
+        # Gate 2: zero fill = phantom-book signal; don't escalate.
+        if ioc_filled <= 0:
+            return result
+        # Gate 3: min remainder.
+        if remaining < LADDER_ESCALATION_MIN_REMAINDER:
+            return result
+        # Gate 4: eligible strategy.
+        strategy = candidate.get("strategy") or ""
+        if strategy not in LADDER_ESCALATION_ELIGIBLE_STRATEGIES:
+            return result
+        # Gate 5: recursion guard.
+        if candidate.get("_is_ladder_retry"):
+            return result
+        # Gate 6: per-strategy + global price ceiling.
+        strategy_max = self._strategy_max_entry_price(strategy)
+        escalated_limit = original_limit + LADDER_ESCALATION_OFFSET
+        if escalated_limit > strategy_max or escalated_limit > MAX_ENTRY_PRICE:
+            logging.info(
+                "LADDER_ESCALATION_AT_CAP: %s strategy=%s original=%dc "
+                "would_escalate_to=%dc cap=%dc — skipping",
+                candidate.get("ticker", "?"), strategy, original_limit,
+                escalated_limit, min(strategy_max, MAX_ENTRY_PRICE))
+            return result
+        # Gate 7: re-check per-ticker risk cap. The retry adds size
+        # to the same ticker; aggregate exposure (existing positions
+        # which now include the parent's just-recorded fill +
+        # remaining*escalated_limit) must remain inside MAX_TICKER_RISK.
+        # Re-checking here is required because callers (execute(),
+        # _execute_*_taker) gate at scan time before the parent IOC,
+        # but we're inside _submit_taker by the time we reach here —
+        # the caller's gate is bypassed for the retry. Fail-closed on
+        # any error.
+        ticker = candidate.get("ticker", "")
+        try:
+            balance = candidate.get("balance_at_scan") or 0
+            if balance <= 0:
+                # No balance signal — fail closed.
+                logging.warning(
+                    "LADDER_ESCALATION_NO_BALANCE: %s strategy=%s — "
+                    "skipping (cannot validate ticker cap)",
+                    ticker, strategy)
+                return result
+            existing_ticker_cost = sum(
+                p.get("total_cost_cents", 0)
+                for p in self._state.get_open_positions()
+                if p.get("ticker") == ticker)
+            ticker_cap_cents = balance * MAX_TICKER_RISK
+            retry_cost = remaining * escalated_limit
+            if existing_ticker_cost + retry_cost > ticker_cap_cents:
+                logging.info(
+                    "LADDER_ESCALATION_TICKER_CAP_BLOCKED: %s "
+                    "strategy=%s existing=%dc retry_cost=%dc cap=%dc",
+                    ticker, strategy, existing_ticker_cost,
+                    retry_cost, int(ticker_cap_cents))
+                return result
+        except Exception:
+            # Fail-closed on any error reading state.
+            logging.warning(
+                "LADDER_ESCALATION_CAP_CHECK_RAISED: %s strategy=%s — "
+                "skipping defensively", ticker, strategy, exc_info=True)
+            return result
+        # Gate 8: explicit pre-retry phantom check. The recursive
+        # _submit_taker's PHANTOM_ABORT branch only fires when
+        # candidate.ob_snapshot.ask_depth is an int — but we set it to
+        # None on the retry to avoid stale-depth artifacts (the parent
+        # ob_snapshot referred to the original price level). That
+        # silent skip would leave the retry with NO catastrophic-tail
+        # guard. Round 3 fix: do an explicit fresh REST orderbook
+        # fetch here and abort if the escalated level shows zero
+        # depth. Failures (None / exception) → fail-closed skip.
+        try:
+            _ob_raw = self._client.get_orderbook(ticker)
+            if not isinstance(_ob_raw, dict):
+                logging.info(
+                    "LADDER_ESCALATION_OB_UNAVAILABLE: %s strategy=%s "
+                    "— skipping retry (cannot verify depth)",
+                    ticker, strategy)
+                return result
+            # Kalshi REST returns three possible shapes (mirror prod
+            # unwrap at bot.py:15810-15812 + 16419-16421):
+            #   1. {"orderbook_fp": {"yes_dollars": [["0.99","48"]...]}}
+            #      — current FP schema (Mar 2026 migration)
+            #   2. {"orderbook": {"yes": [[99, 48], ...]}} — wrapped legacy
+            #   3. {"yes": [[99, 48], ...]} — unwrapped (WS cache, older)
+            # Try FP first (matches prod ordering), then wrapped/unwrapped.
+            _ob_fp = _ob_raw.get("orderbook_fp")
+            if _ob_fp:
+                _ob = OpportunityScanner._convert_orderbook_fp(_ob_fp)
+            else:
+                _ob = _ob_raw.get("orderbook", _ob_raw)
+            if not isinstance(_ob, dict):
+                logging.info(
+                    "LADDER_ESCALATION_OB_MALFORMED: %s strategy=%s — "
+                    "skipping retry", ticker, strategy)
+                return result
+            # YES-side ladder. We're a YES BUYER with limit at
+            # escalated_limit. Kalshi will match our IOC against any
+            # YES ask priced AT-OR-BELOW our limit. Depth check sums
+            # those levels.
+            _yes_levels = _ob.get("yes") or []
+            _depth_at_or_below_limit = 0
+            for lvl in _yes_levels:
+                # Tolerate malformed levels: must be (price, qty) pair.
+                if not (isinstance(lvl, (list, tuple)) and len(lvl) >= 2):
+                    continue
+                try:
+                    _lp = int(lvl[0])
+                    _lq = int(lvl[1])
+                except (TypeError, ValueError):
+                    continue
+                if _lp <= escalated_limit and _lq > 0:
+                    _depth_at_or_below_limit += _lq
+            if _depth_at_or_below_limit <= 0:
+                logging.warning(
+                    "LADDER_ESCALATION_PHANTOM_ABORT: %s strategy=%s "
+                    "escalated=%dc — fresh orderbook shows 0 depth "
+                    "at <= limit; refusing retry",
+                    ticker, strategy, escalated_limit)
+                return result
+        except Exception:
+            logging.warning(
+                "LADDER_ESCALATION_OB_CHECK_RAISED: %s strategy=%s — "
+                "skipping defensively", ticker, strategy, exc_info=True)
+            return result
+        # Build the retry candidate. Carry _is_ladder_retry=True to
+        # block recursive escalation AND recursive maker-tail.
+        # Replace position_size with remaining; reset best_yes_ask to
+        # the escalated limit so the smart-IOC-picker / drift-checks
+        # operate on the right reference price.
+        # CRITICAL: do NOT rename strategy. STRATEGY_CLAMP_POLICY and
+        # STRATEGY_LIMIT_BUMP_RESERVE_CENTS are looked up by exact
+        # string match — renaming silently routes the retry through
+        # the default policy, which is top_of_book (not no_clamp). The
+        # per-strategy IOC mechanics MUST be preserved on the retry.
+        # Telemetry separation lives in the _is_ladder_retry flag and
+        # the LADDER_ESCALATION_ATTEMPT log line, NOT the strategy
+        # column.
+        retry_candidate = dict(candidate)
+        retry_candidate["_is_ladder_retry"] = True
+        retry_candidate["position_size"] = remaining
+        retry_candidate["best_yes_ask"] = escalated_limit
+        # Drop the parent's ob_snapshot — its ask_depth value applies
+        # to the original price level, not the escalated one. The
+        # downstream PHANTOM_ABORT in _submit_taker no-ops on None,
+        # but Gate 8 above did the equivalent check explicitly.
+        retry_candidate["ob_snapshot"] = None
+        logging.info(
+            "LADDER_ESCALATION_ATTEMPT: %s strategy=%s original=%dc "
+            "escalated=%dc remaining=%d ioc_filled=%d",
+            ticker, strategy, original_limit,
+            escalated_limit, remaining, ioc_filled)
+        self._session_ladder_escalations += 1
+        # Submit the retry IOC. Returns None on failure / no fill — we
+        # surface that as escalated=True (we attempted) but no fill so
+        # the caller still falls through to maker tail at original.
+        retry_result = self._submit_taker(retry_candidate)
+        result["escalated"] = True
+        result["escalated_limit"] = escalated_limit
+        result["escalated_filled"] = (
+            (retry_result or {}).get("filled_count", 0))
+        return result
+
     def _maybe_post_maker_tail(self, candidate: Dict, ioc_price: int,
                                remaining: int,
                                ioc_filled: int = 1) -> bool:
@@ -19927,9 +20189,18 @@ class OrderExecutor:
           4. strategy in MAKER_TAIL_ELIGIBLE_STRATEGIES
           5. per-asset cap not breached
           6. global cap not breached
+          7. NOT a ladder retry (the original IOC owns the tail)
         """
         # Gate 1: zero fill = phantom-book IOC; don't rest into nothing.
         if ioc_filled <= 0:
+            return False
+        # Gate 7: ladder retries must not post their own maker tail.
+        # The original (outer) IOC's _submit_taker will post the tail
+        # at the ORIGINAL price after the retry returns. Letting the
+        # retry post its own tail at the ESCALATED price would create
+        # two overlapping tails on the same ticker — the spec is one
+        # tail at the original price.
+        if candidate.get("_is_ladder_retry"):
             return False
         # Gate 2: min remainder.
         if remaining < MAKER_TAIL_MIN_REMAINDER:
