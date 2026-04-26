@@ -1197,6 +1197,19 @@ MAKER_TIMEOUT_SECONDS = 30.0     # hard timeout for maker orders
 # Shipped straight to prod (no shadow) on Apr 25 2026 with TDD +
 # adversarial review; risk capped via min STC + min remainder + per-
 # asset and global concurrency caps.
+# Pre-submit STC gate — kill 409 market_closed / 404 market_not_found
+# settlement race. Apr 26 forensic: ETH ~106 api_errors / 3d at avg
+# 98.8¢ near settlement (~30% of submissions in this zone), BTC 31,
+# SOL/XRP 20-28 each. Mechanism: candidate fires at STC≤2s, network
+# round-trip + Kalshi processing ~200ms-2s, by the time the order
+# hits the matching engine the window has settled. 3.0s buffer covers
+# typical Kalshi processing latency + clock-drift margin. STC value
+# read off candidate dict (scan-time snapshot) — accepts a small
+# residual race on the scan→submit gap (typically <1s). Set env to
+# 0 to disable the gate live without redeploy. See
+# kb/failures/order-submit-settlement-race-2026-04-26.md
+MIN_ORDER_SUBMIT_STC_S = float(os.environ.get("MIN_ORDER_SUBMIT_STC_S", "3.0"))
+
 MAKER_TAIL_AFTER_IOC_PARTIAL = (
     os.environ.get("MAKER_TAIL_AFTER_IOC_PARTIAL", "1") == "1")
 MAKER_TAIL_TTL_SECONDS = 60        # cancel any tail older than this on tick()
@@ -16929,6 +16942,38 @@ class OrderExecutor:
         else:
             self._post_only_rejections[ticker] = (entry[0] + 1, entry[1])
 
+    # ── Pre-submit settlement-race gate ─────────────────────────────────
+
+    def _should_skip_near_close(self, candidate: Dict) -> bool:
+        """Return True when candidate STC is too close to settlement
+        for a submission to land cleanly. None / non-numeric STC →
+        return False (no info, allow submit — this path is shared with
+        weather/sports where seconds_to_close may be unset)."""
+        stc = candidate.get("seconds_to_close")
+        try:
+            stc_f = float(stc)
+        except (TypeError, ValueError):
+            return False
+        return stc_f < MIN_ORDER_SUBMIT_STC_S
+
+    def _abort_near_close(self, candidate: Dict, path: str) -> None:
+        """Record the skip in evaluated_opportunities + log so the
+        forensic trail makes the abort discoverable (a missing
+        place_order would otherwise look like 'we never tried')."""
+        ticker = candidate.get("ticker", "?")
+        stc = candidate.get("seconds_to_close")
+        logging.warning(
+            "ORDER_ABORT_NEAR_CLOSE: %s path=%s stc=%s "
+            "threshold=%.1fs (skip to avoid 409/404 race)",
+            ticker, path, stc, MIN_ORDER_SUBMIT_STC_S)
+        try:
+            self._state.update_evaluated_opportunity_order(
+                ticker, order_outcome="skipped_near_close")
+        except Exception:
+            logging.warning(
+                "update_evaluated_opportunity_order(skipped_near_close) "
+                "failed for %s", ticker, exc_info=True)
+
     # ── Hourly taker-only execution ─────────────────────────────────────
 
     def _execute_hourly_taker(self, candidate: Dict) -> Optional[Dict]:
@@ -19432,6 +19477,10 @@ class OrderExecutor:
         Degraded: extra offset after post_only rejections (Tier 2).
         """
         ticker = candidate["ticker"]
+        # Settlement-race gate — see MIN_ORDER_SUBMIT_STC_S.
+        if self._should_skip_near_close(candidate):
+            self._abort_near_close(candidate, path="maker")
+            return
         # Block maker orders on hourly tickers — hourly must be taker-only (IOC).
         # Belt-and-suspenders: catches any code path that reaches maker with an hourly ticker.
         if any(ticker.startswith(p) for p in self._HOURLY_SERIES_PREFIXES):
@@ -19553,6 +19602,10 @@ class OrderExecutor:
     def _submit_taker(self, candidate: Dict) -> Optional[Dict]:
         """Submit taker order at best ask. Blocks briefly to verify fill."""
         ticker = candidate["ticker"]
+        # Settlement-race gate — see MIN_ORDER_SUBMIT_STC_S.
+        if self._should_skip_near_close(candidate):
+            self._abort_near_close(candidate, path="taker")
+            return None
         count = candidate["position_size"]
         price = candidate["best_yes_ask"]
         balance = candidate["balance_at_scan"]
@@ -20428,6 +20481,12 @@ class OrderExecutor:
         _price_kwarg = (
             {"no_price": ioc_price} if side == "no"
             else {"yes_price": ioc_price})
+        # Settlement-race gate (defense-in-depth): MAKER_TAIL_MIN_STC_SECONDS
+        # currently dominates this check, but if that floor is ever lowered
+        # below MIN_ORDER_SUBMIT_STC_S, this prevents the regression.
+        if self._should_skip_near_close(candidate):
+            self._abort_near_close(candidate, path="maker_tail")
+            return False
         try:
             resp = self._client.place_order(
                 ticker=ticker, side=side, action="buy",
