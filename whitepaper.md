@@ -76,7 +76,7 @@ header-includes:
 
 ## What It Does
 
-This system is an automated trading platform for **Kalshi**, a CFTC-regulated prediction market exchange. It began with **15-minute cryptocurrency price threshold contracts** and has expanded to cover **five distinct market verticals**: crypto (15M + hourly), S&P 500 intraday, daily weather temperature, and live sports outcomes — each with domain-specific models running in shadow or observation mode alongside the live crypto engine.
+This system is an automated trading platform for **Kalshi**, a CFTC-regulated prediction market exchange. The 15-minute cryptocurrency engine is the primary live business, augmented by several adjacent live strategies: decided contracts (high-conviction overlay), late-window momentum, weekend and overnight discount entries, low-price near-expiry, and weather temperature NO-side. Adjacent product engines (S&P 500 intraday, hourly crypto, sports comebacks) collect calibration data in observation mode, with hourly currently kill-switched off after a March incident.
 
 The bot monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models (EGARCH volatility for crypto/SPX, NWP ensemble forecasts for weather, Bayesian comeback likelihood for sports), and trades when it identifies a statistical edge over the market price.
 
@@ -84,7 +84,7 @@ The bot monitors real-time data from multiple sources per vertical, estimates ou
 
 Kalshi lists 15-minute crypto contracts around the clock. Each window produces fresh contracts for four assets at multiple strike prices, creating hundreds of tradeable markets per day. Because these are short-duration, binary-outcome instruments, mispricing tends to be small but frequent — an ideal environment for systematic, model-driven trading.
 
-Beyond crypto, the platform monitors four additional verticals in shadow/observation mode: S&P 500 intraday markets (EGARCH + VIX integration), daily weather temperature markets across 19 US cities (82-member NWP ensemble), live sports outcomes across 28 leagues including tennis (Bayesian comeback model), and hourly crypto markets (collecting calibration data). Each vertical uses domain-specific models while sharing the common edge detection, sizing, and execution infrastructure.
+Beyond the live 15M engine, the platform spans four adjacent verticals: S&P 500 intraday (observation, briefly live Mar 17 then reverted on Polygon 403), daily weather temperature across 19 US cities (NO-side LIVE since Apr 11 in 1-contract verification mode; YES-side observation), live sports outcomes across 28 leagues (observation; basketball alpha detected), and hourly crypto (kill-switched Apr 18 after correlated multi-strike losses). Each uses domain-specific models while sharing common edge detection, sizing, and execution infrastructure.
 
 ## Strategy in Plain English
 
@@ -92,7 +92,7 @@ Beyond crypto, the platform monitors four additional verticals in shadow/observa
 2. **Estimate** — For every active market, compute the probability that the asset stays above its threshold using EGARCH-conditioned volatility with fat-tailed NIG distributions fitted per asset.
 3. **Filter** — Reject markets that are too uncertain, too expensive, or offer insufficient edge after fees.
 4. **Size** — Use edge-tiered position sizing with automatic drawdown scaling.
-5. **Execute** — Place maker (limit) orders first to minimize fees, with three-tier post_only rejection handling, time-aware taker escalation, and direct taker execution below 180 seconds.
+5. **Execute** — Maker-first by default to minimize fees, with three-tier post_only rejection handling, time-aware taker escalation, and direct taker below 180 seconds. SOL bypasses maker entirely (taker-first) and decided contracts route direct taker regardless of STC.
 6. **Settle** — Track outcomes via the Kalshi settlements API and log performance for continuous evaluation.
 
 ## Key Differentiators
@@ -102,7 +102,7 @@ Beyond crypto, the platform monitors four additional verticals in shadow/observa
 | **Multi-exchange intelligence** | Aggregates spot prices from Coinbase and Kraken plus derivatives signals from Deribit, detecting cross-exchange lead-lag patterns before they appear in Kalshi prices |
 | **EGARCH-conditioned volatility** | Realized Kernel estimation (Barndorff-Nielsen 2008) with data-adaptive bandwidth, MZ R²-weighted blending, and EGARCH(1,1) conditional volatility — all promoted to live trading |
 | **Per-asset NIG distributions** | Normal Inverse Gaussian CDF replaces the generic Student-t, capturing both heavy tails and asymmetry specific to each cryptocurrency |
-| **Adaptive execution** | Three-tier post_only rejection handler, maker-first with time-aware escalation, and direct taker below 180s (data: 7.7% maker fill rate at low STC — direct taker strictly better) |
+| **Adaptive execution** | Three-tier post_only rejection handler, maker-first by default with per-asset overrides (SOL taker-first, decided contracts direct taker), time-aware escalation, and direct taker below 180s (data: 7.7% maker fill rate at low STC — direct taker strictly better) |
 | **Data-driven risk controls** | Edge-tiered sizing (25% max), drawdown scaling, z-score sanity checks, learned calibration, and model-market discrepancy detection |
 | **Multi-vertical expansion** | Five market verticals sharing common risk infrastructure, each with domain-specific probability models |
 
@@ -227,7 +227,7 @@ Jumps — sudden, large price moves — invalidate smooth volatility assumptions
 
 ### DVOL Integration
 
-When Deribit implied volatility (DVOL) exceeds realized volatility by more than 50%, the system blends in the implied estimate using inverse-variance weighting. This respects the market's forward-looking information during regime changes while anchoring to observed data.
+When Deribit implied volatility (DVOL) diverges materially from realized volatility, the system blends in the implied estimate using inverse-variance weighting. This respects the market's forward-looking information during regime changes while anchoring to observed data.
 
 ### Cross-Asset Beta
 
@@ -303,7 +303,8 @@ This 60/40 blend (60% model, 40% market) was validated against a no-blend altern
 ### Sanity Checks
 
 - **Z-score limit**: If $|z| > 25$, the market is refused (all historical losses have z-scores below this threshold; the previous limit of 12 was blocking only winners)
-- **Model-market discrepancy**: If $p_{cal} > 90\%$ but market price $< 75$¢, the market is refused (the model may be missing information the market has)
+- **Model-market discrepancy**: If $p_{cal} > 90\%$ (`DISCREPANCY_PROB`) but the market price is $< 75$¢ (`DISCREPANCY_PRICE`), the market is refused — the model may be missing material information the market has
+- **EGARCH/RV divergence clamp**: If the EGARCH-to-realized variance ratio falls outside `[1/3, 3]`, EGARCH is rejected and the engine falls back to RK-only volatility
 
 ## 3.3 Edge Detection
 
@@ -396,11 +397,11 @@ The SPX engine has a dedicated CalibrationEngine instance (`_CAL_REGISTRY["spx_h
 | Max positions per window | 2 |
 | Max risk per window | 15% |
 
-## 3.6 Weather Temperature Engine (Observation Mode)
+## 3.6 Weather Temperature Engine (NO-side Live, YES-side Observation)
 
-The weather engine trades daily high temperature prediction markets across **19 US cities** using numerical weather prediction (NWP) ensemble forecasts.
+The weather engine trades daily high temperature prediction markets across **{{WEATHER_CITY_COUNT}} US cities** using numerical weather prediction (NWP) ensemble forecasts.
 
-> **Research verdict: NO ALPHA.** As of March 2026, YES-side WR is 29.8% with +32pp overconfidence (model predicts much higher than actual outcomes). Brier score 0.3498. The NO-side shows 73.1% WR but pricing doesn't generate sufficient edge. Short-STC windows (1–8h before settlement) show marginal promise (n=34) but sample size is insufficient to draw conclusions. The NO-side execution pipeline is wired but kill-switched off (`WEATHER_NO_SIDE_LIVE = False`). Per-city CalEngines are learning in shadow to improve calibration.
+> **Status: SPLIT.** NO-side is **LIVE** since 2026-04-11 in 1-contract verification mode (entry zone 36–40¢, STC ≥ 16h, with a 36¢ floor added Apr 20). YES-side remains observation-only — research verdict is "no alpha" on YES: the per-city Gaussian fit materially overestimates YES probability vs. actual outcomes. Per-city CalEngines train on every settlement, with bias correction tracking forecast-vs-actual error per city. The 1-contract NO sizing reflects the verification-mode goal: collect outcome data on the bot's own NO entries (rather than counterfactuals) before any size promotion.
 
 ### Cities and Series
 
@@ -451,20 +452,22 @@ An EWMA bias tracker ($\lambda = 0.90$, 7-day half-life) maintains per-city fore
 
 | Config | Value |
 |---|---|
-| Status | Shadow (observation only) |
-| Entry price range | 10–99¢ |
-| Settle window | Daily (min 1hr before close) |
+| Status | NO-side LIVE (1-contract verification, since Apr 11), YES-side observation |
+| NO-side entry price range | 36–40¢ (36¢ floor since Apr 20) |
+| YES-side entry price range | 10–99¢ (logging only) |
+| NO-side STC requirement | ≥ 16h before close |
 | Market blend | 80/20 (model/market) — ensemble is primary signal |
-| Max risk per trade | 10% |
-| Kelly fraction | 0.25 (quarter-Kelly) |
+| NO-side fixed size | 1 contract per signal |
+| YES-side max risk per trade | 10% (only used by counterfactual sim) |
+| Kelly fraction (YES sim) | 0.25 (quarter-Kelly) |
 | Poll interval | 15 minutes (weather changes slowly) |
-| Max cities per day | 19 (all enabled for data collection) |
+| Cities tracked | {{WEATHER_CITY_COUNT}} |
 
 ## 3.7 Sports Comeback Engine (Observation Mode)
 
 The sports engine monitors live games across 28 leagues for Bayesian comeback signals — identifying situations where a pregame favorite is trailing but statistically likely to recover.
 
-> **Research status (March 2026):** ALPHA DETECTED (4/6 checks pass). Basketball is the clear alpha source (69.2% WR, n=39, Fisher p=0.035 vs other sports). Tennis is a drag (52.2% WR, -$1.64 PnL). NBA strong-config (pregame ≥60%, price ≤70c, time remaining >85%) is the best robust filter. Per-sport-group CalEngines are learning in shadow. Overall SPRT has not converged — needs approximately 2–3 more weeks of data collection before a promotion decision can be made.
+> **Research status:** ALPHA DETECTED (per-sport breakdown). Basketball is the clear alpha source — best-robust-filter is the NBA strong-config (pregame ≥60%, price ≤70c, time remaining >85%). Tennis is a drag (negative PnL). Per-sport-group CalEngines are learning in shadow. Overall SPRT has not converged — see `kb/decisions/sports-promotion-criteria.md` for current promotion gates and most-recent counts (refreshed by `researcher.py` 3× daily).
 
 ### Supported Leagues
 
@@ -567,15 +570,17 @@ For orders that are successfully placed but sit unfilled:
 
 A separate overlay identifies near-certain settlements and routes them to direct taker execution:
 
-| Tier | Z-Score Threshold | Price Range | Sizing |
-|---|---|---|---|
-| T1 | z ≤ -5.0 | 93¢+ | Fixed 20% bankroll |
-| T1B | z ≤ -4.0 | 95¢+ | Fixed 20% bankroll |
-| T2 | z ≤ -3.0 | 93–96¢ | Fixed 20% bankroll |
-| T2-Z25 | z ≤ -2.5 | 93–96¢ | Fixed 20% bankroll |
-| T2-Z2 | z ≤ -2.0 | 93–96¢ | Fixed 20% bankroll |
+| Tier | Z-Score Threshold | Price Range | Sizing | Status |
+|---|---|---|---|---|
+| T1 | z ≤ -5.0 | 93¢+ | 20% bankroll fixed | LIVE |
+| T1B | z ≤ -4.0 | 95¢+ | 20% bankroll fixed | LIVE |
+| T2 | z ≤ -3.0 | 93–96¢ | 20% bankroll fixed | LIVE |
+| T2-Z25 | z ≤ -2.5 | 93–96¢ | 10% bankroll fixed | LIVE (cut from 20% Apr 21 after a 14d -$95 / 17-trade run) |
+| T2-Z2 | z ≤ -2.0 | 93–96¢ | 20% bankroll fixed | SHADOW (re-promotion rejected Apr 22; -$313 / 47-trade history) |
 
-T1B was added based on research showing 40/40 = 100% win rate in the -5 < z ≤ -4 zone at 95¢+. T2-Z25 and T2-Z2 extend coverage into shallower z-score zones at 93–96¢. All five tiers are enabled by default (env var toggles) with a per-window cap of 35% bankroll risk. These are incremental — they add on top of the regular trading pipeline, capturing near-certain outcomes that the standard edge filter might not size aggressively enough.
+**SOL DC overrides**: SOL DC at ≥97c sized at 5% (vs. default 20%); 95–96c sized at 10%. Below 95¢, the default tier risk applies.
+
+T1B was added based on research showing near-perfect win rate in the -5 < z ≤ -4 zone at 95¢+. T2-Z25 and T2-Z2 extend coverage into shallower z-score zones at 93–96¢ — T2-Z25 promoted live, T2-Z2 returned to shadow after underperforming. All live tiers share a per-window cap of 35% bankroll risk. These are incremental — they add on top of the regular trading pipeline, capturing near-certain outcomes that the standard edge filter might not size aggressively enough.
 
 Six expansion shadow variants are also collecting data for potential future tiers:
 
@@ -648,11 +653,15 @@ Safety ceiling: max 25% of bankroll at risk per trade.
 
 | Vertical | Kelly Fraction | Rationale |
 |---|---|---|
-| 15M crypto | 1.0 (full Kelly) | Primary system, most data, well-calibrated |
-| Hourly crypto | 0.25 (quarter-Kelly) | Observation mode — conservative |
-| SPX hourly | 0.125 (eighth-Kelly) | Ultra-conservative for new vertical |
-| Weather | 0.25 (quarter-Kelly) | Observation mode |
-| Decided contracts | Fixed 20% risk | Not Kelly-derived — fixed sizing for near-certain outcomes |
+| 15M crypto (main) | 1.0 (full Kelly) | Primary system, most data, well-calibrated |
+| Hourly crypto | 0.25 (quarter-Kelly) | Currently kill-switched off; Kelly value retained for re-enable path |
+| SPX hourly | 0.125 (eighth-Kelly) | Ultra-conservative; observation only |
+| Weather (YES sim) | 0.25 (quarter-Kelly) | YES sim only; NO-side trades 1 contract fixed |
+| Decided contracts (T1/T1B/T2) | Fixed 20% risk | Not Kelly-derived — high-conviction near-certain outcomes |
+| Decided contracts (T2-Z25) | Fixed 10% risk | Cut from 20% after Apr 21 underperformance |
+| SOL DC (≥97¢ / 95–96¢) | Fixed 5% / 10% | SOL-specific overrides reflect tighter edges |
+| Weekend / overnight discount | Kelly with 7% floor | Bypasses Kelly when computed size is zero |
+| LPNE | 50 contracts fixed | Near-expiry BTC 80–87¢; only with model conviction at the strike |
 
 ### Per-Asset Risk Caps
 
@@ -672,14 +681,20 @@ Below 100 seconds before settlement (`LOW_STC_SIZING_CAP_THRESHOLD`), position s
 
 ### Drawdown Scaling
 
-| Balance vs. Starting | Sizing Adjustment |
+Sizing is scaled against a **rolling 7-day cash high-water mark** (`HWM_LOOKBACK_SECONDS = 7 × 86400`); the cash-only HWM avoids inflating against unrealized DC position value.
+
+| Balance vs. Rolling 7-day HWM | Sizing Adjustment |
 |---|---|
 | ≥ 85% | Full sizing |
 | 75–85% | Half sizing |
 | 65–75% | Quarter sizing |
 | < 65% | Halt trading |
 
-This creates a geometric de-risking curve that preserves capital during losing streaks.
+This creates a geometric de-risking curve that preserves capital during losing streaks. The 7-day window prevents a stale HWM from compressing sizing for weeks after a withdrawal or one-off drawdown.
+
+### Loss-Burst Cooldown
+
+Per-asset 2-hour lockout after any 15M loss. Triggered Apr 11 after data showed loss-clustering on the same asset within 30–120 minutes. Live efficacy is being tracked since deploy; the original deploy-time sim showed positive 30-day counterfactual but that figure is not a forward indicator.
 
 ## 3.10 AI Analyst System
 
@@ -697,20 +712,21 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 ## Position Sizing Controls
 
 - **Edge-tiered sizing**: Position size scales with conviction — 25% max at 4%+ edge, down to 2% at 0.25% edge
-- **Drawdown scaling**: Size halved below 85% of rolling 7-day peak balance, quartered below 75%, trading halted below 65%
+- **Drawdown scaling**: Size halved below 85% of the rolling 7-day cash high-water mark, quartered below 75%, halted below 65%
 - **Hard limits**: Maximum risk per trade capped at 25% of bankroll
 
 ## Market Selection Controls
 
 - **Multi-asset capable**: Can trade multiple assets per 15-minute window
-- **Price range guardrails**: Only trade contracts priced 75–99¢ (global floor), with per-asset overrides: BTC 88¢ (LPNE: 80–87¢ near-expiry), ETH 90¢, SOL 80¢ (gate blocks ≤85¢ at STC≥300s), XRP 92¢. Below these floors, win rates are insufficient after fees; above 99¢ offers insufficient reward
+- **Price range guardrails**: Global floor 75–99¢ with per-asset overrides — BTC 88¢ (with LPNE intercepting 80–87¢ near-expiry), ETH 90¢ main tier (plus a 75–79¢ live sub-tier capped at 50 contracts; the 80–89¢ band is rejected by the floor due to negative historical PnL), SOL 86¢, XRP 92¢. Below these floors, win rates are insufficient after fees; above 99¢ offers insufficient reward
 - **Price-dependent edge threshold**: Fee-adjusted edge must exceed a price-dependent minimum (0.25% at 80¢ up to 1.0% at 97¢+) after taker fees (worst-case)
 - **Scanner uses taker fees**: Every candidate is profitable even if forced to taker execution
 
 ## Model Sanity Controls
 
 - **Z-score limit**: Refuse markets where $|z| > 25$ (validated against settlement data: 82 tradeable z-score rejections above 12 were all winners, leading to the raise from 12 → 25)
-- **Model-market discrepancy**: If the model estimates >90% probability but the market prices below 75¢, refuse (the model may be missing material information)
+- **Model-market discrepancy**: If $p_{cal} > 90\%$ but the market price is < 75¢, the market is refused (`DISCREPANCY_PROB`/`DISCREPANCY_PRICE`)
+- **EGARCH/RV divergence clamp**: If the EGARCH-to-RV variance ratio falls outside `[1/3, 3]`, EGARCH is rejected and the engine falls back to RK-only volatility
 - **Dynamic probability cap**: Time-dependent ceiling (93–99.5%) prevents overconfidence during startup; bypassed (99.9% ceiling) once learned calibration is active
 - **Data-driven calibration**: CalibrationEngine learns from settlement outcomes, replacing fixed assumptions with empirical mappings
 - **Market-price blending**: 60/40 blend (60% model, 40% market) anchors estimates and prevents systematic overconfidence
@@ -741,30 +757,78 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 
 ## Live Trading Results
 
+All numbers below are auto-regenerated from `state.db` on every push. See `kb/decisions/doc-rewrite-2026-04-26.md` for the methodology behind the live/observation split.
+
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | {{TOTAL_SETTLED}} |
-| **Win rate** | {{WIN_RATE}} ({{TOTAL_WINS}}W / {{TOTAL_LOSSES}}L) |
-| **Assets** | BTC (88¢+, LPNE 80¢+), ETH (90¢+), SOL (80¢+, taker-first, sub-86¢ gate), XRP (92¢+) |
+| **Settled trades** | {{LIVE_SETTLED}} ({{LIVE_WINS}}W / {{LIVE_LOSSES}}L / {{LIVE_BREAKEVENS}} breakeven) |
+| **Win rate** | {{LIVE_WR}} |
+| **Live P&L (cumulative)** | ${{LIVE_PNL_DOLLARS}} |
+| **Live P&L (Kelly-comparable headline; excludes 1-contract weather + kill-switched hourly)** | ${{LIVE_PNL_HEADLINE_DOLLARS}} |
+| **Assets** | BTC (88¢+, LPNE 80–87¢), ETH (90¢+ main, 75–79¢ capped sub-tier), SOL (86¢+, taker-first), XRP (92¢+) |
+
+### Performance by Strategy Group
+
+| Strategy group | n | W / L | PnL ($) | Mean entry (¢) |
+|---|---|---|---|---|
+| 15M main (Kelly-sized) | {{SG_MAIN_N}} | {{SG_MAIN_WINS}} W / {{SG_MAIN_LOSSES}} L | {{SG_MAIN_PNL_DOLLARS}} | — |
+| Decided contracts | {{SG_DECIDED_N}} | {{SG_DECIDED_WINS}} W / {{SG_DECIDED_LOSSES}} L | {{SG_DECIDED_PNL_DOLLARS}} | — |
+| Weekend discount | {{SG_WEEKEND_N}} | {{SG_WEEKEND_WINS}} W / {{SG_WEEKEND_LOSSES}} L | {{SG_WEEKEND_PNL_DOLLARS}} | — |
+| Overnight discount | {{SG_OVERNIGHT_N}} | {{SG_OVERNIGHT_WINS}} W / {{SG_OVERNIGHT_LOSSES}} L | {{SG_OVERNIGHT_PNL_DOLLARS}} | — |
+| LPNE (BTC 80–87¢ near-expiry) | {{SG_LPNE_N}} | {{SG_LPNE_WINS}} W / {{SG_LPNE_LOSSES}} L | {{SG_LPNE_PNL_DOLLARS}} | — |
+| Weather NO (1-contract verification) | {{SG_WEATHER_NO_N}} | {{SG_WEATHER_NO_WINS}} W / {{SG_WEATHER_NO_LOSSES}} L | {{SG_WEATHER_NO_PNL_DOLLARS}} | — |
+| Hourly NO (pre-kill-switch) | {{SG_HOURLY_NO_N}} | {{SG_HOURLY_NO_WINS}} W / {{SG_HOURLY_NO_LOSSES}} L | {{SG_HOURLY_NO_PNL_DOLLARS}} | — |
+
+### Calibration
+
+The bot exposes two Brier scores:
+
+- **Brier (all live candidates)** — measures the **model's** calibration on every opportunity that passed the live-candidate filter, whether or not it filled: {{BRIER_OVERALL}} overall, {{BRIER_15M}} on 15M, {{BRIER_WEATHER}} on weather (side-aware: NO-side rows use $1-p_{raw}$ as the model's probability of the bot's bet winning).
+- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: {{BRIER_FILLED_OVERALL}} overall ({{BRIER_FILLED_N}} samples), {{BRIER_FILLED_15M}} on 15M.
+
+A small number of settled trades ({{LIVE_SETTLED}} total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
+
+### Regime Slices
+
+Two regime cutoffs are pinned to actual deploy commit timestamps:
+
+| Slice | Live PnL ($) | Settled | W / L | Brier (model) |
+|---|---|---|---|---|
+| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | {{APR11_LIVE_PNL_DOLLARS}} | {{APR11_LIVE_SETTLED}} | {{APR11_LIVE_WINS}} W / — L | {{APR11_BRIER}} |
+| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | {{APR23_LIVE_PNL_DOLLARS}} | {{APR23_LIVE_SETTLED}} | {{APR23_LIVE_WINS}} W / — L | {{APR23_BRIER}} |
+
+The post-Apr-23 slice is the cleanest "current regime" view: WS orderbook depth is now decoded correctly, loss-burst cooldown is shipped, weather NO has been live for 12 days, and XRP has been live at 92¢+ for ~5 days.
+
+### Shadow / Hypothetical PnL
+
+Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates), summed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`: ${{SHADOW_PNL_DOLLARS}} across {{SHADOW_TOTAL_N}} signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
 
 ## Markets
 
 ### Crypto 15-Minute (Live Trading)
 
-Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M. STC window: scan 0–900s, live 0–600s, shadow observation 600–900s. Decided contract overlay (T1/T1B/T2/T2-Z25/T2-Z2) adds incremental trades on near-certain outcomes, with 6 expansion shadows collecting data for future tiers. Terminal Momentum (TM) trades 95–99¢ contracts in the final 1–5 minutes (50–100 contracts fixed). Low-Price Near-Expiry (LPNE) intercepts BTC at 80–87¢ in the final 10–120 seconds (50 contracts fixed). STC sizing scaler reduces position size proportionally to time remaining (contracts × 300/STC for STC > 300s). SOL sub-86¢ time gate blocks entries at ≤85¢ with STC ≥ 300s.
+Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M. STC window: scan 0–900s, live 0–600s, shadow observation 600–900s. Several live overlays add incremental volume on top of the main 15M scan:
 
-### Crypto Hourly (Live — Kill Switch Gated)
+- **Decided contract overlay** — T1, T1B, T2, T2-Z25 live; T2-Z2 returned to shadow Apr 22 after underperformance (-$313 / 47 trades). Six T1/T2 expansion shadows (T1A, T1B-EXP, T2A, T2B, T3, T3A) collect data for potential future tiers
+- **Terminal Momentum (TM)** — trades the final 1–5 minutes at 96/98/99¢ (95 and 97 removed Apr 9 after −$980/2wk on 347 trades). Sizing is `TM_BASE_CONTRACTS=100` × margin × STC multiplier with caps (min 25, max 500); 96¢ is blocked when sourced from NBBO
+- **Low-Price Near-Expiry (LPNE)** — intercepts BTC at 80–87¢ in the final 10–120 seconds, 50 contracts fixed, only with model conviction at the strike
+- **Weekend / Overnight discount** — relaxed-edge entries during low-liquidity windows. Weekend (Sat/Sun) at 90¢+ STC≤600s; overnight (weekday 04–11 UTC) at 89¢+ STC≤600s; both with no-DC-overlap guards. Sub-floor and STC>600s remain shadow
+- **Loss-burst cooldown** — per-asset 2h lockout after any 15M loss (shipped Apr 11 on positive deploy-time sim; live efficacy still accumulating)
+- **Universal STC sizing scaler** — contracts ×= 300/STC for any strategy when STC > 300s
+- **SOL sub-86¢ gate** — blocks SOL entries at ≤85¢ when STC ≥ 300s (preserves the 86¢ floor at long horizons while allowing late-window flexibility)
 
-75 strikes per event, settling every hour. Currently collecting calibration data only — no live trading. Was briefly promoted to live trading (Feb 27–28) but reverted after -$97 overnight disaster from calibration overconfidence and correlated multi-strike exposure. Hourly CalEngine disabled (+44pp overconfident); uses T=1.45 temperature scaling instead. BTC is the only viable hourly asset — ETH/SOL structurally unprofitable after fees, XRP fundamentally broken. Series: KXBTCD, KXETHD, KXSOLD, KXXRPD.
+### Crypto Hourly (Disabled)
+
+75 strikes per event, settling every hour. **Disabled since 2026-04-18** — `HOURLY_LIVE_ENABLED` and `HOURLY_NO_SIDE_LIVE` env vars (default `0`) must both be flipped to `1` on the VPS to re-enable hourly window discovery and entry. The hourly DC overlay (`HOURLY_DC_ENABLED`, default `1`) remains available but does not fire while hourly windows aren't being scanned. The kill followed two regime issues: (1) Feb 27–28 brief live stint reverted after a -$97 overnight loss from calibration overconfidence and correlated multi-strike exposure; (2) the NO-side BTC 40–54¢ tier reached 53.9% WR (n=1,113, p=0.005) post-correction but was disabled when broader hourly economics turned negative. Hourly CalEngine remains disabled (+44pp overconfident historically); uses T=1.45 temperature scaling when re-enabled. BTC is the only historically viable hourly asset — ETH/SOL structurally unprofitable after fees, XRP fundamentally broken. Series: KXBTCD, KXETHD, KXSOLD, KXXRPD.
 
 ### S&P 500 Intraday (Observation Mode)
 
 15-minute binary contracts on the S&P 500 during NYSE regular trading hours. Series: KXINXU. Uses equity-adapted EGARCH with VIX integration and intraday seasonal adjustment. Was briefly promoted to live Mar 17, reverted same day due to Polygon.io 403 errors breaking the primary price feed. Now observation-only with Finnhub as primary fallback. Per-window limits: max 2 positions, 15% risk cap. Eighth-Kelly sizing (0.125), 90¢+ floor, no market blend (CalEngine only).
 
-### Weather Temperature (Observation Mode — NO ALPHA)
+### Weather Temperature (NO-side Live, YES-side Observation)
 
-Daily high temperature markets across 19 US cities. Bracket and threshold contracts settling based on the observed daily high. Probability from 82-member NWP ensemble (GFS + ECMWF). Research verdict: YES-side 29.8% WR with +32pp overconfidence, NO-side 73.1% WR but pricing doesn't generate sufficient edge. NO-side execution pipeline wired but kill-switched off.
+Daily high temperature markets across {{WEATHER_CITY_COUNT}} US cities. Bracket and threshold contracts settling based on the observed daily high. Probability from 82-member NWP ensemble (GFS + ECMWF). NO-side has been LIVE since 2026-04-11 in 1-contract verification mode (entry zone 36–40¢, 36¢ floor since Apr 20, STC ≥ 16h before settlement); YES-side remains observation-only (research verdict: Gaussian fit materially overestimates YES probability vs. actual outcomes — which is why NO at 36–40¢ is the profitable side). Per-city CalEngines train on every settlement; bias correction tracks per-city forecast-vs-actual error.
 
 ### Sports Outcomes (Observation Mode — ALPHA DETECTED)
 
@@ -836,7 +900,7 @@ Append-only journal files provide a complete audit trail:
 
 ## Test Suite
 
-8208 tests across 26+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, weekend discount, low-price shadow, NBBO fallback gates, DC routing priority, INSERT↔schema parity, _shadow_diag tri-contract, product_type enum contract, post-deploy DB-row verification, and regression tests for past bugs.
+Pytest suite spanning the volatility engine, probability model, calibration pipeline, executor, fee calculation, config / market_config consistency, DB signature drift guards, scan pipeline, ghost fill detection, decided contracts, weather NO-side, weekend discount, low-price shadow, NBBO fallback gates, DC routing priority, INSERT↔schema parity, `_shadow_diag` tri-contract guards, product_type enum contract, post-deploy DB-row verification, the whitepaper-stats generator (live/observation split, side-aware Brier, JOIN dedup), and regression tests for every prior incident captured in `kb/failures/`. Real-DB integration patterns (`tmp_path` fixtures, no mocks) are required for any test that touches sizing or settlement.
 
 ## Shadow Mode Features
 
@@ -844,28 +908,39 @@ The system supports shadow mode for experimental features — they compute and l
 
 | Feature | Status | Purpose |
 |---|---|---|
-| S&P 500 Intraday | Observation | EGARCH + VIX vol model for SPX 15M contracts (KXINXU) — reverted from brief live |
-| Weather Temperature | Observation | 82-member NWP ensemble for daily high temperature markets (19 cities) — verdict: NO ALPHA |
-| Sports Comeback | Observation | Bayesian LR comeback model across 28 leagues — basketball showing promise (69.2% WR) |
-| Hourly Crypto | Observation | Collecting calibration data for hourly markets (75 strikes/event) — CalEngine disabled |
-| 15M Shadow Engine | Shadow | A1 RecalibratedEGARCH, A2 LightGBM, A3 EGARCH gating, A4 LateWindow (55-74¢) |
+| S&P 500 Intraday | Observation | EGARCH + VIX vol model for SPX 15M contracts (KXINXU) — reverted from brief Mar 17 live stint |
+| Weather YES-side | Observation | YES sim is logged but not entered; Gaussian fit overestimates YES probability vs. actual outcomes (NO-side IS live, see §3.6) |
+| Sports Comeback | Observation | Bayesian LR comeback model across 28 leagues — basketball alpha detected (69.2% WR / Fisher p=0.035) |
+| Hourly Crypto | DISABLED | Both `HOURLY_LIVE_ENABLED` and `HOURLY_NO_SIDE_LIVE` env-gated off since Apr 18; no signals logged |
+| 15M Shadow Engine | Shadow | A1 RecalibratedEGARCH, A2 LightGBM, A3 EGARCH gating, A4 LateWindow |
+| Decided Contract expansions | Shadow | T1A, T1B-EXP, T2A, T2B, T3, T3A — six tier expansions (lower price floors / shallower z) |
+| T2-Z2 | Shadow | Re-promotion rejected Apr 22 after -$313/47-trade live history |
+| Weekend / Overnight discount sub-floor | Shadow | Below-floor and STC>600s remain shadow even though main bands are live |
 | Kalshi Order Flow | Shadow | Orderbook imbalance, depth velocity, spread convergence signals |
 | Sigmoid QLIKE | Shadow | Alternative EGARCH weight via QLIKE improvement ratio |
-| Shadow Cal Pipeline | Shadow | No-blend calibration monitoring (was promoted, caused +1.86pp overconfidence) |
 | Dip Addon | Shadow | Buy more when ask dips ≥3¢ below entry after fill (50% addon size, 35% total risk cap) |
 | SPX HAR-RV | Shadow | HAR-RV shadow strategy for SPX (parallel comparison to EGARCH) |
+| Position price monitor | Shadow | Logs live YES bid/ask for held 15M positions via WS for exit-signal research |
 
 Promoted features (driving live behavior):
-- **EGARCH core vol** — EGARCH(1,1) with Student-t innovations
+
+- **EGARCH core vol** — EGARCH(1,1) with Student-t innovations, MLE-fitted on 10,800 samples, refitted every 2 hours
 - **EGARCH blend** — MZ R²-weighted blending of EGARCH vs RK
-- **Time-varying RK weights** — adaptive multi-scale RK blending
-- **Adaptive jump detection** — percentile-based thresholds per asset
+- **Time-varying RK weights** — adaptive multi-scale RK blending (1m / 5m / 15m, weights vary with seconds-to-close)
+- **Adaptive jump detection** — percentile-based thresholds per asset (replaced fixed 3-sigma)
 - **Adaptive RK bandwidth** — data-driven H* selection
-- **Decided contracts (T1/T1B/T2)** — live overlay for z ≤ -5 (93¢+), z ≤ -4 (95¢+), and z ≤ -3 (93-96¢); 6 expansion shadows collecting data
-- **SOL taker-first** — SOL bypasses maker, direct IOC at all STC
-- **XRP live** — promoted from shadow at 92¢+ floor with 12% risk cap
-- **Price improvement addon** — adds to winning positions on price improvement
-- **Weekend edge discount** — live on Sat/Sun (89¢+, STC≤600s, no DC overlap); sub-89¢ and STC>600s remain shadow
+- **Decided contracts (T1, T1B, T2, T2-Z25)** — live overlay; T2-Z25 sized at 10%, others at 20%; SOL DC has separate 5% / 10% tiers at ≥97¢ / 95–96¢
+- **SOL taker-first** — SOL bypasses maker, direct IOC at all STC (data: SOL maker fills suffered adverse selection)
+- **XRP 15M live** — promoted from shadow at 92¢+ floor with 15% per-trade risk cap (data: 41W/2L = 95.3% WR at ≥92¢)
+- **ETH 75–79¢ sub-tier** — live with a 50-contract position cap (the 80–89¢ band remains rejected by the floor)
+- **Weekend discount** — live Sat/Sun at 90¢+, STC≤600s, no-DC-overlap guard; sub-floor and STC>600s remain shadow
+- **Overnight discount** — live weekday 04–11 UTC at 89¢+, STC≤600s, no-DC-overlap guard
+- **Low-Price Near-Expiry (LPNE)** — live on BTC at 80–87¢ with STC 10–120s, 50 contracts fixed, model-conviction gated
+- **Loss-burst cooldown** — per-asset 2h lockout after any 15M loss
+- **Weather NO-side** — live in 1-contract verification mode (NO 36–40¢, STC≥16h)
+- **Price improvement addon** — adds to winning positions on price improvement (50% addon size, 35% total risk cap)
+- **STC sizing scaler** — universal contracts ×= 300/STC for any strategy at STC > 300s
+- **Low-STC sizing cap** — 50% of computed size when STC < 100s
 
 ---
 
