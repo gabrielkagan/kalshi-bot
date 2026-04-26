@@ -313,5 +313,187 @@ class TestR_ReviewA1NoReconnectBomb(unittest.TestCase):
             "would tear down the freshly-reconnected WS.")
 
 
+def _windows_per_asset_with_stc(stcs):
+    """Build active_windows: one 15m window per asset with the given STC.
+    `stcs` is a dict {asset: seconds_to_close}."""
+    return [
+        {
+            "product_type": "15m",
+            "asset": asset,
+            "seconds_to_close": stc,
+            "event_ticker": f"KX{asset}15M-26APR261430",
+            "markets": [{"ticker": f"KX{asset}15M-26APR261430-T0"}],
+        }
+        for asset, stc in stcs.items()
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F/U 6 (Apr 26): rotation-boundary false positive
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestProductive15MRotationBoundaryGuard(unittest.TestCase):
+    """F/U 6 Apr 26: at rotation moments (e.g. 14:30:00 UTC), cached
+    active_windows briefly contains 15M windows with STC<0 — old
+    windows just settled, awaiting next 30s `_refresh_active_windows()`
+    call to bring fresh windows. The time-range filter in scan()
+    `0 <= stc <= 900` drops all 4. for-loop iterates non-15M only;
+    15M heartbeat at line 9921 (gated to `_pt in (None, '15m')`) never
+    fires. After 5 silent ticks, watchdog over-fires SCAN_UNPRODUCTIVE_15M.
+
+    Apr 26 14:30:00 UTC log evidence (commit 159b411 instrumentation):
+        F_U6_15M_TIME_FILTER_DROPPED_ALL: 4 15M windows ALL filtered
+        by time range — details=[BTC=-0.0s, ETH=-0.0s, SOL=-0.0s,
+        XRP=-0.0s]
+
+    Fix: extend the watchdog's existing 'no 15M markets' branch
+    (`n_15m == 0` → reset+return) to also short-circuit when 15M is in
+    active_windows but ALL are time-INELIGIBLE. The
+    F_U6_15M_TIME_FILTER_DROPPED_ALL diagnostic at scan() preserves
+    observability for any non-rotation case where this fires.
+    """
+
+    def test_all_15m_at_negative_stc_resets_counter(self):
+        """Rotation transition: all 4 cached 15M have STC<0.
+        Bot is healthy; just-settled windows awaiting next refresh.
+        Watchdog must NOT alert / increment."""
+        import bot
+        ml, kf = _make_main_loop()
+        ml._scan_15m_unproductive_count = 4  # one tick from threshold
+        ml._scan_15m_iter_heartbeat_ts = time.time() - 100  # blind
+        active = _windows_per_asset_with_stc({
+            "BTC": -0.0001, "ETH": -0.5, "SOL": -1.2, "XRP": -2.0,
+        })
+        ml._check_scan_productive_15m(active, _tick_ts())
+        self.assertEqual(
+            ml._scan_15m_unproductive_count, 0,
+            "All 15M at STC<0 → benign rotation transition; "
+            "watchdog must reset counter, not increment toward alert.")
+
+    def test_all_15m_at_zero_stc_treated_as_eligible(self):
+        """Boundary: STC=0 exactly passes scan()'s time filter
+        (`0 <= 0 <= 900`). Watchdog should NOT short-circuit on
+        STC=0 — those windows are still scannable."""
+        import bot
+        ml, kf = _make_main_loop()
+        ml._scan_15m_unproductive_count = 4
+        ml._scan_15m_iter_heartbeat_ts = time.time() - 100  # blind
+        active = _windows_per_asset_with_stc({
+            "BTC": 0.0, "ETH": 0.0, "SOL": 0.0, "XRP": 0.0,
+        })
+        ml._check_scan_productive_15m(active, _tick_ts())
+        # STC=0 is eligible → don't short-circuit. Heartbeat blind +
+        # zero rows → counter increments.
+        self.assertGreater(
+            ml._scan_15m_unproductive_count, 4,
+            "STC=0 passes the scan() time filter; watchdog must NOT "
+            "treat as benign rotation. Let normal heartbeat/rows "
+            "logic run.")
+
+    def test_all_15m_above_max_stc_resets_counter(self):
+        """Defensive: STC > MAX_SECONDS_BEFORE_CLOSE (900) for all 15M
+        also fails scan()'s time filter. Same benign-skip path."""
+        import bot
+        ml, kf = _make_main_loop()
+        ml._scan_15m_unproductive_count = 4
+        ml._scan_15m_iter_heartbeat_ts = time.time() - 100
+        active = _windows_per_asset_with_stc({
+            "BTC": 901.0, "ETH": 950.0, "SOL": 1000.0, "XRP": 1200.0,
+        })
+        ml._check_scan_productive_15m(active, _tick_ts())
+        self.assertEqual(
+            ml._scan_15m_unproductive_count, 0,
+            "All 15M above max STC → not currently scannable; reset.")
+
+    def test_at_least_one_15m_in_range_does_not_short_circuit(self):
+        """Mixed: 3 windows are sub-zero, 1 has STC=500. At least one
+        is time-eligible → DON'T reset via this branch. Counter must
+        increment normally (heartbeat blind + zero rows)."""
+        import bot
+        ml, kf = _make_main_loop()
+        ml._scan_15m_unproductive_count = 4
+        ml._scan_15m_iter_heartbeat_ts = time.time() - 100
+        active = _windows_per_asset_with_stc({
+            "BTC": -1.0, "ETH": -1.0, "SOL": -1.0, "XRP": 500.0,
+        })
+        ml._check_scan_productive_15m(active, _tick_ts())
+        self.assertGreater(
+            ml._scan_15m_unproductive_count, 4,
+            "When at least one 15M is time-eligible, the rotation guard "
+            "must NOT short-circuit. Run normal heartbeat/rows check.")
+
+    def test_normal_15m_in_range_unchanged_behavior(self):
+        """Regression: when all 15M have valid STC (e.g., 500s) AND
+        heartbeat is fresh (set AFTER prev tick_start), the existing
+        reset-on-productive-tick logic runs as before. The new guard
+        is a no-op here."""
+        import bot
+        ml, kf = _make_main_loop()
+        ml._scan_15m_unproductive_count = 4
+        # heartbeat must be NEWER than the prev_tick_ts we pass in so
+        # `heartbeat_ts > tick_start_epoch` returns True.
+        prev_tick_ts = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=2)
+        ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        ml._scan_15m_iter_heartbeat_ts = time.time() - 1.0  # 1s ago, newer than tick_start (-2s)
+        active = _windows_per_asset_with_stc({
+            "BTC": 500.0, "ETH": 500.0, "SOL": 500.0, "XRP": 500.0,
+        })
+        ml._check_scan_productive_15m(active, prev_tick_ts)
+        # Heartbeat fresh → counter resets via existing path.
+        self.assertEqual(ml._scan_15m_unproductive_count, 0)
+
+    def test_missing_seconds_to_close_treated_as_eligible(self):
+        """Defensive: missing/None seconds_to_close should NOT be
+        treated as the rotation transition signal. Let normal logic
+        decide. (Real bot data always has seconds_to_close set, but
+        be defensive.)"""
+        import bot
+        ml, kf = _make_main_loop()
+        ml._scan_15m_unproductive_count = 4
+        ml._scan_15m_iter_heartbeat_ts = time.time() - 100
+        active = [
+            {
+                "product_type": "15m", "asset": a,
+                "event_ticker": f"KX{a}15M-26APR261430",
+                "markets": [{"ticker": f"KX{a}15M-T0"}],
+                # Intentionally no seconds_to_close
+            }
+            for a in ("BTC", "ETH", "SOL", "XRP")
+        ]
+        ml._check_scan_productive_15m(active, _tick_ts())
+        self.assertGreater(
+            ml._scan_15m_unproductive_count, 4,
+            "Missing seconds_to_close ≠ rotation transition. Let "
+            "normal heartbeat/rows logic run.")
+
+    def test_non_numeric_seconds_to_close_does_not_crash(self):
+        """Defensive: a string or other non-numeric STC value would
+        crash `0 <= stc` with TypeError. R-review [A7]: try/except
+        around float() coercion. Bad data → alert-bias (treat as
+        eligible, let normal logic run, do NOT short-circuit reset)."""
+        import bot
+        ml, kf = _make_main_loop()
+        ml._scan_15m_unproductive_count = 4
+        ml._scan_15m_iter_heartbeat_ts = time.time() - 100
+        active = [
+            {
+                "product_type": "15m", "asset": a,
+                "event_ticker": f"KX{a}15M-26APR261430",
+                "seconds_to_close": "garbage",  # bad data
+                "markets": [{"ticker": f"KX{a}15M-T0"}],
+            }
+            for a in ("BTC", "ETH", "SOL", "XRP")
+        ]
+        # Must not raise.
+        ml._check_scan_productive_15m(active, _tick_ts())
+        # Bad data treated as eligible (alert-bias) → counter increments.
+        self.assertGreater(
+            ml._scan_15m_unproductive_count, 4,
+            "Non-numeric STC must not crash AND must not silence the "
+            "alert (default: treat as eligible).")
+
+
 if __name__ == "__main__":
     unittest.main()

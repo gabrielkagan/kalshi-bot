@@ -16406,11 +16406,58 @@ class OpportunityScanner:
         # first productive tick landed seconds after grace expired.
         # 7 min gives ~3.5 min buffer over observed warmup ceiling.
 
-        n_15m = sum(1 for w in active_windows
-                    if w.get("product_type") == "15m")
+        # Snapshot the 15M subset once — `active_windows` may be
+        # ref-swapped by the refresh worker mid-call, and the two
+        # downstream counts must be consistent (R-review [A3]).
+        _15m_windows = [
+            w for w in active_windows
+            if w.get("product_type") == "15m"
+        ]
+        n_15m = len(_15m_windows)
         if n_15m == 0:
             # No 15M windows available — reset counter so we don't carry
             # stale state into the next live window.
+            self._scan_15m_unproductive_count = 0
+            return
+
+        # F/U 6 (Apr 26): rotation-boundary false-positive guard. At
+        # rotation moments (every :00/:15/:30/:45), cached active_windows
+        # briefly holds settled 15M windows with STC<0 between the
+        # rotation and the next 30s `_refresh_active_windows()` call.
+        # scan()'s time-range filter (line 9863-9866) `min_seconds_before_close
+        # <= stc <= max_seconds_before_close` drops them all → for-loop
+        # iterates non-15M only → 15M heartbeat at line 9921 (gated to
+        # `_pt in (None, '15m')`) never fires → 5 silent ticks → false alert.
+        # Apr 26 14:30:00 UTC log evidence (commit 159b411 instrumentation):
+        #   F_U6_15M_TIME_FILTER_DROPPED_ALL: 4 15M windows ALL filtered
+        #   by time range — details=[BTC=-0.0s, ETH=-0.0s, SOL=-0.0s,
+        #   XRP=-0.0s]
+        # Fix: extend the catalog-gap branch to also short-circuit when
+        # 15M is in active_windows but ALL are time-INELIGIBLE. The
+        # F_U6_15M_TIME_FILTER_DROPPED_ALL diagnostic at scan() (commit
+        # 159b411) preserves observability for any non-rotation case.
+        # Note: range bound MAX_SECONDS_BEFORE_CLOSE must mirror the
+        # scan() time filter for 15M product. If a future per-product
+        # split changes scan()'s 15M max, update here too.
+        # See kb/failures/15m-scan-unproductive-rotation-2026-04-26.md.
+        def _stc_in_15m_range(w):
+            stc = w.get("seconds_to_close")
+            if stc is None:
+                # Missing STC → don't suppress the alert (R-review [A2]:
+                # alert-bias is safer than silence-bias when data is
+                # incomplete).
+                return True
+            try:
+                stc_f = float(stc)
+            except (TypeError, ValueError):
+                # Non-numeric (R-review [A7] defensiveness) — same as None.
+                return True
+            return 0 <= stc_f <= MAX_SECONDS_BEFORE_CLOSE
+        n_15m_time_eligible = sum(1 for w in _15m_windows if _stc_in_15m_range(w))
+        if n_15m_time_eligible == 0:
+            # All 15M markets currently outside the trading window —
+            # benign rotation transition or catalog edge. Same code
+            # path as the n_15m == 0 branch above.
             self._scan_15m_unproductive_count = 0
             return
 
