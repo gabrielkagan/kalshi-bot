@@ -32,9 +32,17 @@ jobs:
           username: botuser
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
+            set -euo pipefail
             cd ~/kalshi-bot-repo
-            git pull origin main
-            python3 -c "import ast; ast.parse(open('bot.py').read()); print('SYNTAX OK')" 2>/dev/null && \
-            sudo systemctl restart kalshi-bot || echo "No bot.py yet, skipping restart"
+            # Pin to the exact commit that triggered this deploy. `git pull`
+            # races with parallel auto-commits (whitepaper.yml pushes [skip ci]
+            # PDFs). `reset --hard` to ${{ github.sha }} stays on `main` (no
+            # detached HEAD for VPS-side cron / start.sh assumptions) and
+            # blasts through any dirty tree.
+            git fetch origin main
+            git checkout main
+            git reset --hard ${{ github.sha }}
+            python3 -c "import ast; ast.parse(open('bot.py').read()); print('SYNTAX OK')"
+            sudo systemctl restart kalshi-bot
             # Documentation drift check (warning only — never blocks deploy)
             python3 scripts/doc_drift_check.py --telegram 2>&1 || echo "DOC DRIFT DETECTED — see report above"

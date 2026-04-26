@@ -14,11 +14,14 @@ jobs:
         run: sleep 90
 
       - name: Verify deployment
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@v1
+        env:
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: botuser
           key: ${{ secrets.VPS_SSH_KEY }}
+          envs: EXPECTED_SHA
           script: |
             set -e
 
@@ -32,16 +35,24 @@ jobs:
             fi
             echo "  OK: Service is active"
 
-            # 2. Commit hash matches
+            # 2. Commit hash matches the SHA that triggered this deploy.
+            # Compare against the trigger SHA, NOT `git ls-remote origin main`
+            # — the latter races with parallel auto-commits (whitepaper.yml
+            # pushes a [skip ci] commit during our 90s sleep) and produces
+            # spurious "VPS != remote" failures. The trigger SHA is fixed for
+            # the lifetime of this workflow.
             echo "[2/5] Checking commit hash..."
-            cd ~/kalshi-bot-repo
-            LOCAL_HASH=$(git rev-parse HEAD)
-            REMOTE_HASH=$(git ls-remote origin main | cut -f1)
-            if [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
-              echo "FAIL: VPS commit ($LOCAL_HASH) != remote ($REMOTE_HASH)"
+            if [ -z "${EXPECTED_SHA:-}" ]; then
+              echo "FAIL: EXPECTED_SHA is empty (workflow_run payload issue)"
               exit 1
             fi
-            echo "  OK: Commit $LOCAL_HASH matches remote"
+            cd ~/kalshi-bot-repo
+            LOCAL_HASH=$(git rev-parse HEAD)
+            if [ "$LOCAL_HASH" != "$EXPECTED_SHA" ]; then
+              echo "FAIL: VPS commit ($LOCAL_HASH) != deploy trigger ($EXPECTED_SHA)"
+              exit 1
+            fi
+            echo "  OK: Commit $LOCAL_HASH matches deploy trigger"
 
             # 3. No errors in last 2 minutes of logs
             echo "[3/5] Checking recent logs for errors..."
@@ -75,7 +86,7 @@ jobs:
 
       - name: Alert on failure
         if: failure()
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: botuser
