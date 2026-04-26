@@ -60,6 +60,7 @@ def _make_feed():
     f._orderbooks = {}
     f._snapshot_request_pending = {}
     f._force_resub_cooldown = {}
+    f._unsubscribe_blacklist = {}
     f._get_snapshot_consecutive_failed_sweeps = 0
     f._get_snapshot_disabled = False
     f._get_snapshot_disabled_logged = False

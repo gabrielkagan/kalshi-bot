@@ -836,7 +836,7 @@ Append-only journal files provide a complete audit trail:
 
 ## Test Suite
 
-3368 tests across 26+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, weekend discount, low-price shadow, NBBO fallback gates, DC routing priority, INSERT↔schema parity, _shadow_diag tri-contract, product_type enum contract, post-deploy DB-row verification, and regression tests for past bugs.
+8177 tests across 26+ test files covering volatility engine, probability model, calibration engine, execution, fee calculation, config consistency, DB signatures, scan pipeline, ghost fill detection, decided contracts, weather NO-side, weekend discount, low-price shadow, NBBO fallback gates, DC routing priority, INSERT↔schema parity, _shadow_diag tri-contract, product_type enum contract, post-deploy DB-row verification, and regression tests for past bugs.
 
 ## Shadow Mode Features
 

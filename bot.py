@@ -447,6 +447,24 @@ SETTLEMENT_CHECK_SECONDS = 30.0
 # tracking; ship unsub+resub first as safe fallback.)
 WS_FORCE_RESUB_COOLDOWN_S = 30.0      # rate-limit per ticker; prevents loops
 WS_PERIODIC_RESNAPSHOT_INTERVAL_S = 300.0  # 5 min — full sweep of 15M tickers
+# Apr 26 2026 incident
+# (kb/failures/scan-loop-stall-window-rotation-2026-04-26.md):
+# at the 09:30 UTC 15M settlement boundary, worker thread unsubscribed
+# settled tickers while main-thread scan body's stale `_local_windows`
+# snapshot was still iterating those same tickers — `_get_orderbook_cached`
+# called `subscribe_ticker(OLD_t)`, undoing the worker's cleanup. Result:
+# 1Hz subscribe→delete→subscribe→delete loop on KXSOL15M-26APR260530-30
+# for 7 seconds, followed by 10 minutes of cache-recovery thrash and zero
+# 15M scan output.
+#
+# Fix: post-unsubscribe blacklist. `unsubscribe_ticker` records
+# `ticker -> monotonic() + WS_UNSUBSCRIBE_BLACKLIST_S`. Both
+# `subscribe_ticker` and `force_resubscribe` consult the map and silent-skip
+# while the entry is fresh. 30s is well above the observed thrash window
+# (~10 min was pathological; normal stale-window observation is sub-second
+# to ~5s) and well below the 15-min 15M cycle so legitimate next-window
+# subscriptions aren't blocked.
+WS_UNSUBSCRIBE_BLACKLIST_S = 30.0
 # Hybrid snapshot strategy: try `update_subscription` with
 # `action: get_snapshot` (per Kalshi docs — preserves subscription,
 # no gap). If no snapshot arrives within this timeout, fall back to
@@ -4377,6 +4395,15 @@ class KalshiFeed:
         # ticker -> monotonic timestamp of last force_resubscribe call
         # (rate-limit per WS_FORCE_RESUB_COOLDOWN_S; prevents loops).
         self._force_resub_cooldown: Dict[str, float] = {}
+        # Apr 26 2026 incident: window-rotation race produced
+        # subscribe→delete→subscribe→delete loop on settled tickers.
+        # `unsubscribe_ticker` records ticker->unblock_monotonic_ts here;
+        # `subscribe_ticker` and `force_resubscribe` consult and skip if
+        # the entry is fresh. Prevents lazy `_get_orderbook_cached`
+        # paths in scan body (running on stale `_local_windows`) from
+        # undoing the worker thread's discovery cleanup.
+        # See kb/failures/scan-loop-stall-window-rotation-2026-04-26.md.
+        self._unsubscribe_blacklist: Dict[str, float] = {}
         # R1 / A1 [P0] + R2 / P0-2 [CRITICAL]: track get_snapshot
         # health. Original "consecutive timeouts counter +=
         # len(timed_out)" was wrong — with 4 tickers in a periodic
@@ -4507,9 +4534,36 @@ class KalshiFeed:
 
     def subscribe_ticker(self, ticker: str):
         with self._lock:
+            # Apr 26 incident: silent-skip if recently unsubscribed.
+            # Lazy `_get_orderbook_cached` calls in scan body running
+            # on a stale `_local_windows` snapshot would otherwise
+            # undo the worker thread's window-rotation cleanup,
+            # producing the 1Hz subscribe→delete loop.
+            now_mono = time.monotonic()
+            self._sweep_unsubscribe_blacklist(now_mono)
+            unblock = self._unsubscribe_blacklist.get(ticker)
+            if unblock is not None and now_mono < unblock:
+                return
             if ticker not in self._subscribed_tickers:
                 self._pending_subscribes.append(ticker)
                 self._subscribed_tickers.add(ticker)
+
+    def _sweep_unsubscribe_blacklist(self, now_mono: float) -> None:
+        """Prune expired entries from `_unsubscribe_blacklist`. Called
+        from every subscribe_ticker / force_resubscribe / unsubscribe_ticker
+        invocation so the dict cannot grow unbounded over the bot's
+        lifetime — settled 15M tickers (~384/day) and weather/SPX/
+        sports tickers create unique strings that, without sweeping,
+        would accumulate forever in the dict. (R1 [A4].)
+
+        Caller MUST hold `self._lock`. Cheap O(n) scan; n is bounded
+        by tickers unsubscribed in the last WS_UNSUBSCRIBE_BLACKLIST_S
+        seconds, so n is small in steady state.
+        """
+        expired = [t for t, exp in self._unsubscribe_blacklist.items()
+                   if now_mono >= exp]
+        for t in expired:
+            del self._unsubscribe_blacklist[t]
 
     def get_subscribed_tickers(self) -> List[str]:
         """R1 / A3 [P1]: thread-safe snapshot of currently-subscribed
@@ -4575,9 +4629,20 @@ class KalshiFeed:
         symptom-bandaid; this is the actual reset action.
         """
         with self._lock:
+            # Apr 26 incident: defense-in-depth. Even if some path
+            # re-added the ticker to _subscribed_tickers (bypassing
+            # subscribe_ticker's blacklist check), the blacklist
+            # gate here prevents the R1 watchdog / drift-detector
+            # paths from injecting subscribe/snapshot work on a
+            # ticker that was just unsubscribed.
+            now_mono = time.monotonic()
+            self._sweep_unsubscribe_blacklist(now_mono)
+            unblock = self._unsubscribe_blacklist.get(ticker)
+            if unblock is not None and now_mono < unblock:
+                return
             if ticker not in self._subscribed_tickers:
                 return  # not subscribed; nothing to reset
-            now = time.monotonic()
+            now = now_mono
             if not bypass_cooldown:
                 last = self._force_resub_cooldown.get(ticker)
                 if (last is not None
@@ -4792,7 +4857,38 @@ class KalshiFeed:
         return timed_out
 
     def unsubscribe_ticker(self, ticker: str):
+        # KNOWN LIMITATION (R2 [A1]): the blacklist applies regardless
+        # of whether `ticker` is a held-position ticker. Two callers
+        # traverse window-rotation cleanup:
+        #   - `discovery_ob_subscribe` (worker thread) excludes
+        #     `_held_tickers` from the expired set before calling
+        #     this method.
+        #   - `OpportunityScanner` scan-tick cleanup (~bot.py:9762)
+        #     iterates `ws_expired = expired ∪ expired_ob` from
+        #     `_ticker_ask_history`/`_ob_cache` minus `active_tickers`,
+        #     and does NOT apply the same held-tickers exclusion.
+        # If a held ticker is ever unsubscribed by ANY caller (e.g.,
+        # the scan-tick path during a transient `_ticker_ask_history`
+        # mismatch), position-monitor WS subscribes will silent-skip
+        # for up to WS_UNSUBSCRIBE_BLACKLIST_S. Practical incidence
+        # is low (worker cleanup excludes held tickers, and held
+        # 15M positions only exist while the window is still active
+        # → ticker is in `active_tickers` → not expired). Mitigation
+        # if observed: add a held-tickers callback parameter and skip
+        # blacklist entry for held tickers, OR add the same held-
+        # tickers exclusion to the scan-tick cleanup loop.
+        # Out of scope for the immediate fix.
         with self._lock:
+            # Apr 26 incident: blacklist the ticker for
+            # WS_UNSUBSCRIBE_BLACKLIST_S so any concurrent lazy
+            # subscribe_ticker (scan body's stale _local_windows)
+            # or force_resubscribe (R1 watchdog reading stale
+            # active_windows) is suppressed until the bot's
+            # in-memory views converge on the new window set.
+            now_mono = time.monotonic()
+            self._sweep_unsubscribe_blacklist(now_mono)
+            self._unsubscribe_blacklist[ticker] = (
+                now_mono + WS_UNSUBSCRIBE_BLACKLIST_S)
             if ticker in self._subscribed_tickers:
                 self._pending_unsubscribes.append(ticker)
                 self._subscribed_tickers.discard(ticker)

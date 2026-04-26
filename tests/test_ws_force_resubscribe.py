@@ -55,6 +55,7 @@ def _make_feed():
     f._orderbooks = {}
     f._snapshot_request_pending = {}
     f._force_resub_cooldown = {}
+    f._unsubscribe_blacklist = {}
     # R1 / A1 [P0] + R2 / P0-2: get_snapshot disable tracking.
     f._get_snapshot_consecutive_failed_sweeps = 0
     f._get_snapshot_disabled = False
