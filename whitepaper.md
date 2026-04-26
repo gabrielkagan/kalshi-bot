@@ -2,7 +2,7 @@
 title: "Kalshi Crypto Trading Bot"
 subtitle: "Technical Whitepaper"
 author: "Gabriel Kagan"
-date: "March 2026"
+date: "April 2026"
 titlepage: true
 titlepage-color: "0F1B33"
 titlepage-text-color: "FFFFFF"
@@ -654,7 +654,7 @@ Safety ceiling: max 25% of bankroll at risk per trade.
 | Vertical | Kelly Fraction | Rationale |
 |---|---|---|
 | 15M crypto (main) | 1.0 (full Kelly) | Primary system, most data, well-calibrated |
-| Hourly crypto | 0.25 (quarter-Kelly) | Currently kill-switched off; Kelly value retained for re-enable path |
+| Hourly crypto | Fixed 25 contracts (bypasses Kelly) | Currently kill-switched off. `HOURLY_FIXED_CONTRACTS=25` for YES, `HOURLY_DC_CONTRACTS=25` for the DC overlay. `HOURLY_KELLY_FRACTION=0.25` exists but is unused under the fixed-sizing path |
 | SPX hourly | 0.125 (eighth-Kelly) | Ultra-conservative; observation only |
 | Weather (YES sim) | 0.25 (quarter-Kelly) | YES sim only; NO-side trades 1 contract fixed |
 | Decided contracts (T1/T1B/T2) | Fixed 20% risk | Not Kelly-derived — high-conviction near-certain outcomes |
