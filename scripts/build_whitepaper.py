@@ -216,10 +216,125 @@ def build_replacements(stats, config=None):
         "FILTER_CANDIDATE": f"{f_cand:,}",
         "FILTER_CANDIDATE_PCT": pct(f_cand, total),
         "TOTAL_TRADES": f"{total_trades:,}",
-        "OBSERVATION_PNL": f"{stats.get('observation_pnl', 0):,}",
+        # Note: legacy {{OBSERVATION_PNL}} placeholder DROPPED — the LABEL was the lie.
+        # Templates using it will render literal `{{OBSERVATION_PNL}}` and trigger the
+        # check_docs_freshness.py warning, forcing migration to LIVE_PNL_DOLLARS.
         "WIN_RATE": rate(total_wins, total_settled) if total_settled > 0 else "N/A",
         "GENERATED_AT": stats.get("generated_at", "N/A"),
     }
+
+    # ── Corrected stats placeholders (post-2026-04-26 generator patch) ──────
+    # All settled_trades rows are LIVE money. Shadow / hypothetical PnL comes from
+    # evaluated_opportunities.counterfactual_pnl, exposed via SHADOW_PNL_*_CENTS below.
+    # See kb/decisions/doc-rewrite-2026-04-26.md.
+    live_pnl = stats.get("live_pnl_cents", 0)
+    live_n = stats.get("live_settled", 0)
+    live_w = stats.get("live_wins", 0)
+    live_l = stats.get("live_losses", 0)
+    live_be = stats.get("live_breakevens", 0)
+    live_pnl_h = stats.get("live_pnl_headline_cents", 0)
+    live_n_h = stats.get("live_settled_headline", 0)
+
+    r["LIVE_PNL_CENTS"] = f"{live_pnl:,}"
+    r["LIVE_PNL_DOLLARS"] = f"{live_pnl / 100:,.2f}"
+    r["LIVE_SETTLED"] = f"{live_n:,}"
+    r["LIVE_WINS"] = f"{live_w:,}"
+    r["LIVE_LOSSES"] = f"{live_l:,}"
+    r["LIVE_BREAKEVENS"] = f"{live_be:,}"
+    r["LIVE_WR"] = rate(live_w, live_n)
+    # Headline = LIVE excluding 1ct verification (weather_no_live) + kill-switched (hourly_no_live)
+    r["LIVE_PNL_HEADLINE_CENTS"] = f"{live_pnl_h:,}"
+    r["LIVE_PNL_HEADLINE_DOLLARS"] = f"{live_pnl_h / 100:,.2f}"
+    r["LIVE_SETTLED_HEADLINE"] = f"{live_n_h:,}"
+    r["TOTAL_LIVE_CANDIDATES"] = f"{stats.get('total_live_candidates', 0):,}"
+
+    # Shadow / observation PnL — from evaluated_opportunities.counterfactual_pnl,
+    # NOT settled_trades (which has no observation rows).
+    shadow_by_stage = stats.get("shadow_counterfactual_pnl_by_stage", {}) or {}
+    shadow_total = sum(s.get("pnl_cents", 0) for s in shadow_by_stage.values())
+    shadow_total_n = sum(s.get("n", 0) for s in shadow_by_stage.values())
+    r["SHADOW_PNL_CENTS"] = f"{shadow_total:,}"
+    r["SHADOW_PNL_DOLLARS"] = f"{shadow_total / 100:,.2f}"
+    r["SHADOW_TOTAL_N"] = f"{shadow_total_n:,}"
+
+    # Per-product 15M filter funnel (uses 15M-only denominator, not the global one
+    # which was inflated by hourly/spx/weather/sports observation logs)
+    fbp = stats.get("filter_breakdown_by_product", {})
+    fb_15m = fbp.get("15m", {})
+    fb_15m_total = sum(fb_15m.values()) if fb_15m else 0
+    fb_15m_cands = fb_15m.get("candidate", 0)
+    r["FIFTEENM_TOTAL_EVALUATED"] = f"{fb_15m_total:,}"
+    r["FIFTEENM_CANDIDATES"] = f"{fb_15m_cands:,}"
+    r["FIFTEENM_PASS_RATE"] = pct(fb_15m_cands, fb_15m_total) if fb_15m_total else "N/A"
+    r["FIFTEENM_INSUFF_EDGE"] = f"{fb_15m.get('insufficient_edge', 0):,}"
+    r["FIFTEENM_PRICE_OOR"] = f"{fb_15m.get('price_out_of_range', 0):,}"
+
+    # Brier scores. Two flavors:
+    #   BRIER_*           = all live-candidate evaluations (filled + unfilled). Measures the
+    #                       MODEL'S calibration on viable opportunities.
+    #   BRIER_FILLED_*    = filled trades only (JOIN settled_trades). Measures the BOT'S
+    #                       paid-decision calibration. Use this for headline calibration claims.
+    brier = stats.get("brier") or {}
+    overall_brier = brier.get("overall")
+    r["BRIER_OVERALL"] = f"{overall_brier:.4f}" if overall_brier is not None else "N/A"
+    by_product_brier = brier.get("by_product") or {}
+    for pt_key, pt_label in [
+        ("15m", "BRIER_15M"),
+        ("hourly", "BRIER_HOURLY"),
+        ("weather", "BRIER_WEATHER"),
+        ("spx_hourly", "BRIER_SPX"),
+        ("sports", "BRIER_SPORTS"),
+    ]:
+        v = by_product_brier.get(pt_key)
+        r[pt_label] = f"{v:.4f}" if v is not None else "N/A"
+
+    brier_f = stats.get("brier_filled") or {}
+    overall_bf = brier_f.get("overall")
+    r["BRIER_FILLED_OVERALL"] = f"{overall_bf:.4f}" if overall_bf is not None else "N/A"
+    r["BRIER_FILLED_N"] = f"{brier_f.get('n', 0):,}"
+    bf_by_product = brier_f.get("by_product") or {}
+    for pt_key, pt_label in [
+        ("15m", "BRIER_FILLED_15M"),
+        ("hourly", "BRIER_FILLED_HOURLY"),
+        ("weather", "BRIER_FILLED_WEATHER"),
+    ]:
+        v = bf_by_product.get(pt_key)
+        r[pt_label] = f"{v:.4f}" if v is not None else "N/A"
+
+    # Per-strategy_group settled stats (for the deep whitepaper rewrite)
+    sbsg = stats.get("settled_by_strategy_group", {}) or {}
+    for sg_key, sg_prefix in [
+        ("main", "SG_MAIN"),
+        ("decided", "SG_DECIDED"),
+        ("weekend_discount", "SG_WEEKEND"),
+        ("overnight_discount", "SG_OVERNIGHT"),
+        ("low_price_near_expiry", "SG_LPNE"),
+        ("weather_no_live", "SG_WEATHER_NO"),
+        ("hourly_no_live", "SG_HOURLY_NO"),
+    ]:
+        sg = sbsg.get(sg_key, {"n": 0, "wins": 0, "pnl_cents": 0})
+        n = sg.get("n", 0)
+        w = sg.get("wins", 0)
+        p = sg.get("pnl_cents", 0)
+        r[f"{sg_prefix}_N"] = f"{n:,}"
+        r[f"{sg_prefix}_WINS"] = f"{w:,}"
+        r[f"{sg_prefix}_LOSSES"] = f"{(n - w):,}"
+        r[f"{sg_prefix}_PNL_CENTS"] = f"{p:,}"
+        r[f"{sg_prefix}_PNL_DOLLARS"] = f"{p / 100:,.2f}"
+        r[f"{sg_prefix}_WR"] = rate(w, n)
+
+    # Regime-filtered blocks. Cutoffs pinned to actual deploy commits (UTC):
+    #   APR11 = 2026-04-11T20:43:27Z (commit 4075655 — cooldown julianday + weather NO fix)
+    #   APR23 = 2026-04-23T23:46:07Z (commit 0ddcaf8 — WS schema yes_dollars_fp)
+    for regime_key, regime_prefix in [("since_apr11", "APR11"), ("since_apr23", "APR23")]:
+        rb = stats.get(regime_key, {}) or {}
+        r[f"{regime_prefix}_LIVE_PNL_CENTS"] = f"{rb.get('live_pnl_cents', 0):,}"
+        r[f"{regime_prefix}_LIVE_PNL_DOLLARS"] = f"{rb.get('live_pnl_cents', 0) / 100:,.2f}"
+        r[f"{regime_prefix}_LIVE_SETTLED"] = f"{rb.get('live_settled', 0):,}"
+        r[f"{regime_prefix}_LIVE_WINS"] = f"{rb.get('live_wins', 0):,}"
+        r[f"{regime_prefix}_LIVE_WR"] = rate(rb.get("live_wins", 0), rb.get("live_settled", 0))
+        rb_brier = rb.get("brier_overall")
+        r[f"{regime_prefix}_BRIER"] = f"{rb_brier:.4f}" if rb_brier is not None else "N/A"
 
     # Win rate by price bucket
     for bucket_key, prefix in [("80-84", "WR_80"), ("85-89", "WR_85"), ("90-94", "WR_90"), ("95-99", "WR_95")]:
