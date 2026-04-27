@@ -762,10 +762,10 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 2,972 (2,764W / 206L / 2 breakeven) |
+| **Settled trades** | 2,973 (2,765W / 206L / 2 breakeven) |
 | **Win rate** | 93.0\% |
-| **Live P&L (cumulative)** | $821.73 |
-| **Live P&L (Kelly-comparable headline; excludes 1-contract weather + kill-switched hourly)** | $821.05 |
+| **Live P&L (cumulative)** | $821.81 |
+| **Live P&L (Kelly-comparable headline; excludes 1-contract weather + kill-switched hourly)** | $821.13 |
 | **Assets** | BTC (88¢+, LPNE 80–87¢), ETH (90¢+ main, 75–79¢ capped sub-tier), SOL (86¢+, taker-first), XRP (92¢+) |
 
 ### Performance by Strategy Group
@@ -785,9 +785,9 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 The bot exposes two Brier scores:
 
 - **Brier (all live candidates)** — measures the **model's** calibration on every opportunity that passed the live-candidate filter, whether or not it filled: 0.0450 overall, 0.0322 on 15M, 0.3898 on weather (side-aware: NO-side rows use $1-p_{raw}$ as the model's probability of the bot's bet winning).
-- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0546 overall (2,795 samples), 0.0456 on 15M.
+- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0546 overall (2,796 samples), 0.0456 on 15M.
 
-A small number of settled trades (2,972 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
+A small number of settled trades (2,973 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
 
 ### Regime Slices
 
@@ -795,14 +795,14 @@ Two regime cutoffs are pinned to actual deploy commit timestamps:
 
 | Slice | Live PnL ($) | Settled | W / L | Brier (model) |
 |---|---|---|---|---|
-| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 764.24 | 1,150 | 1,062 W / — L | 0.0500 |
-| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 10.62 | 202 | 179 W / — L | 0.0360 |
+| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 764.32 | 1,151 | 1,063 W / — L | 0.0499 |
+| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 10.70 | 203 | 180 W / — L | 0.0357 |
 
 The post-Apr-23 slice is the cleanest "current regime" view: WS orderbook depth is now decoded correctly, loss-burst cooldown is shipped, weather NO has been live for 12 days, and XRP has been live at 92¢+ for ~5 days.
 
 ### Shadow / Hypothetical PnL
 
-Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates), summed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`: $-140,623.85 across 143,984 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
+Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates), summed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`: $-141,132.68 across 144,015 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
 
 ## Markets
 
@@ -944,4 +944,4 @@ Promoted features (driving live behavior):
 
 ---
 
-*Last updated: 2026-04-27T10:19:47Z*
+*Last updated: 2026-04-27T11:02:09Z*
