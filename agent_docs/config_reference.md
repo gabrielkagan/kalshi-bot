@@ -32,6 +32,12 @@ On change, run `python3 scripts/doc_drift_check.py` and update this file in the 
 | STC_EXTENDED_SOL_MIN_PRICE | 95 | SOL floor for 300-600s (95c+ = 100% WR, n=14) |
 | STC_EXTENDED_XRP_MIN_PRICE | 92 | XRP floor for 300-600s (same as main floor) |
 | SOL_LOW_ENTRY_STC_GATE | True | Block SOL ≤85c at STC≥300s (78.3% WR -$289; <300s is 100% WR +$228) |
+| HIGH_PRICE_STC_BLOCK_ENABLED | env-default `0` | 96¢ × {SOL,XRP} × 2-5min STC strategy-aware filter; saves $895/30d |
+| HIGH_PRICE_STC_BLOCK_ASSETS | {SOL, XRP} | Cell scope; BTC/ETH 96¢ profitable, untouched |
+| HIGH_PRICE_STC_BLOCK_PRICE_CENTS | 96 | Exact match — DO NOT widen, see KB |
+| HIGH_PRICE_STC_BLOCK_STC_LO_S | 121 | STC inclusive lower bound |
+| HIGH_PRICE_STC_BLOCK_STC_HI_S | 300 | STC inclusive upper bound |
+| HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES | {decided_t2, decided_t2_z2, decided_t2_z25, MAKER_PATIENT} | Strategies dropped within cell; wins (TM-96, TAKER_NOW, decided_t1*) preserved |
 | STC_SIZING_SCALER_KNEE | 300 | Seconds — start scaling contracts by 300/STC above this |
 | STC_SIZING_SCALER_ENABLED | True | Universal STC scaler: contracts *= 300/STC for 15M at STC>300s |
 

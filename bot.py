@@ -187,6 +187,38 @@ STC_EXTENDED_BTC_MIN_PRICE = 93   # BTC floor for 300-600s (data: 93c+ = 98.1% W
 STC_EXTENDED_ETH_MIN_PRICE = 90   # ETH floor for 300-600s (data: 90c+ = 100% WR, n=31; same as main floor)
 STC_EXTENDED_SOL_MIN_PRICE = 95   # SOL floor for 300-600s (data: 95c+ = 100% WR, n=14)
 STC_EXTENDED_XRP_MIN_PRICE = 92   # XRP floor for 300-600s (data: 92c+ = 100% WR, n=15; same as main floor)
+
+# ─── 96¢ STC Danger-Band Block (SOL/XRP) ─────────────────────────────────
+# 30-day forensic on 2026-04-26: YES entries on SOL or XRP at exactly 96¢ in the 2-5min
+# STC band lost -$974 across 98 trades (88W/10L). Adjacent cells profitable: BTC/ETH 96¢
+# (+$72), SOL/XRP 95¢ (+$199), SOL 97-99¢ (+$217 at 99.5% WR), and SOL/XRP 96¢ outside
+# this STC band (0-2min, 5+min). Wilson 95% CI on loss-rate [5.7%, 17.8%] entirely
+# exceeds the ~5-6% breakeven loss-rate at 96¢ (24:1 loss/win ratio).
+# Underlying cause: calibrator over-confidence on thin-buffer/short-horizon entries
+# (see kb/findings/proximity-calibration-miss-eth-2026-04-26.md). ML fix deferred;
+# this is the interim config gate.
+# DO NOT widen to >=96 — backtester confirmed 97-99¢ band is profitable, blocking it
+# costs ~$161/30d in foregone profit.
+# Decision doc: kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md
+HIGH_PRICE_STC_BLOCK_ENABLED = os.environ.get("HIGH_PRICE_STC_BLOCK_ENABLED", "0") == "1"
+HIGH_PRICE_STC_BLOCK_ASSETS = frozenset({"SOL", "XRP"})
+HIGH_PRICE_STC_BLOCK_PRICE_CENTS = 96      # exact match — DO NOT widen, see comment above
+HIGH_PRICE_STC_BLOCK_STC_LO_S = 121         # inclusive lower bound (seconds_to_close)
+HIGH_PRICE_STC_BLOCK_STC_HI_S = 300         # inclusive upper bound (seconds_to_close)
+HIGH_PRICE_STC_BLOCK_FILTER_STAGE = "96C_SOL_XRP_STC_DANGER_BAND"
+# Strategy-aware: only block bleeder strategies in the cell. Wins (TM-96, TM-untagged,
+# TAKER_NOW, MAKER_AGGRESSIVE, decided_t1*, weekend_discount, PANIC_CAPTURE) pass through
+# untouched. Saves +$895/30d vs +$753/30d for a crude block-everything gate.
+# Bleeder evidence (30d, scan-time strategy field, n / W-L / net PnL):
+#   decided_t2_z2:    8 / 6-2 / -$508.74
+#   decided_t2_z25:   8 / 6-2 / -$165.20
+#   decided_t2:       6 / 5-1 /  -$76.24
+#   MAKER_PATIENT:    5 / 3-2 / -$142.56
+HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES = frozenset({
+    "decided_t2", "decided_t2_z2", "decided_t2_z25",
+    "MAKER_PATIENT",
+})
+
 ONE_ASSET_PER_WINDOW = False
 
 # ─── Hourly Live Trading (sub-60c, BTC+ETH only) ────────────────────────────
@@ -1105,6 +1137,117 @@ def get_min_edge(entry_price_cents: int) -> float:
         if entry_price_cents >= price_floor:
             return min_edge
     return 0.005
+
+
+def should_block_high_price_stc_band(
+    asset: Optional[str],
+    side: Optional[str],
+    entry_price_cents: Optional[int],
+    seconds_to_close: Optional[float],
+    enabled: Optional[bool] = None,
+) -> bool:
+    """Return True if this entry falls in the 96¢ × {SOL,XRP} × 2-5min STC danger CELL.
+
+    PURE CELL PREDICATE — does NOT consider strategy. For the actual gate decision
+    (which exempts profitable strategies inside the cell), use
+    `should_block_high_price_stc_candidate()`.
+
+    See kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md for the data and rationale.
+    """
+    if enabled is None:
+        enabled = HIGH_PRICE_STC_BLOCK_ENABLED
+    if not enabled:
+        return False
+    if asset not in HIGH_PRICE_STC_BLOCK_ASSETS:
+        return False
+    if side != "yes":
+        return False
+    if entry_price_cents != HIGH_PRICE_STC_BLOCK_PRICE_CENTS:
+        return False
+    if seconds_to_close is None:
+        return False
+    if not (HIGH_PRICE_STC_BLOCK_STC_LO_S <= seconds_to_close <= HIGH_PRICE_STC_BLOCK_STC_HI_S):
+        return False
+    return True
+
+
+def should_block_high_price_stc_candidate(
+    asset: Optional[str],
+    side: Optional[str],
+    entry_price_cents: Optional[int],
+    seconds_to_close: Optional[float],
+    strategy: Optional[str],
+    enabled: Optional[bool] = None,
+) -> bool:
+    """Return True if this candidate is in the danger cell AND uses a bleeder strategy.
+
+    Strategy-aware composite of cell predicate + bleeder-strategy check. Wins
+    inside the cell (TM-96, TM-untagged, TAKER_NOW, MAKER_AGGRESSIVE, decided_t1*,
+    weekend_discount, PANIC_CAPTURE) pass through untouched.
+
+    Caller invokes this on each `selected` candidate at end of scan() and drops
+    matches before returning the candidate list.
+
+    See kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md.
+    """
+    if not should_block_high_price_stc_band(
+            asset, side, entry_price_cents, seconds_to_close, enabled=enabled):
+        return False
+    if strategy is None:
+        return False
+    return strategy in HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES
+
+
+_HPSB_VALIDATOR_UNAVAILABLE_REASON: Optional[str] = None
+
+
+def _validate_high_price_stc_block_bleeder_strings():
+    """Startup integrity check: every bleeder strategy string must appear in bot.py
+    source AT LEAST ONCE outside the BLEEDER_STRATEGIES declaration itself.
+
+    Guards adversarial review A1: if a strategy is renamed (e.g. decided_t2_z2 →
+    decided_t2_z_neg_2) without updating BLEEDER_STRATEGIES, the gate silently no-ops.
+    Self-introspecting the source catches the drift at boot.
+
+    Counts BOTH single- and double-quoted occurrences (codebase mixes quote styles).
+
+    Returns list of missing bleeder strings (empty = healthy). Logs a loud ERROR if
+    any are missing. Logs a separate WARNING `HPSB_VALIDATOR_UNAVAILABLE` if the
+    self-introspection fails (filesystem edge case) so a clean run is distinguishable
+    from a non-running validator.
+    """
+    global _HPSB_VALIDATOR_UNAVAILABLE_REASON
+    try:
+        with open(__file__, "r") as _src:
+            _source = _src.read()
+    except Exception as _exc:
+        _HPSB_VALIDATOR_UNAVAILABLE_REASON = f"{type(_exc).__name__}: {_exc}"
+        logging.warning(
+            "HPSB_VALIDATOR_UNAVAILABLE: bleeder string drift check skipped (%s) — "
+            "rename detection is OFFLINE; gate health depends on convention only.",
+            _HPSB_VALIDATOR_UNAVAILABLE_REASON)
+        return []  # don't crash boot, but signal loudly that the check did not run
+    _missing = []
+    for _bleeder in HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES:
+        # Count BOTH quote styles. Healthy state: ≥2 total occurrences (the
+        # BLEEDER_STRATEGIES declaration uses double-quotes; an assignment site
+        # may use either quote style).
+        _dquoted = _source.count(f'"{_bleeder}"')
+        _squoted = _source.count(f"'{_bleeder}'")
+        if _dquoted + _squoted < 2:
+            _missing.append(_bleeder)
+    if _missing:
+        logging.error(
+            "HPSB_BLEEDER_STRINGS_MISSING: %s — gate will silently no-op for these. "
+            "Update HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES or restore the strategy "
+            "string in bot.py. See kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md",
+            _missing)
+    return _missing
+
+
+# Run validator at module load — emits HPSB_BLEEDER_STRINGS_MISSING ERROR log if drift,
+# OR HPSB_VALIDATOR_UNAVAILABLE WARNING if self-introspection failed.
+_HPSB_MISSING_BLEEDERS = _validate_high_price_stc_block_bleeder_strings()
 
 
 # ─── Extended Feature Instrumentation (Tier 4 + Tier 5) ───────────────────
@@ -14793,6 +14936,109 @@ class OpportunityScanner:
         # LPNE overlay: add all low-price near-expiry candidates
         selected.extend(_lpne_candidates)
 
+        # ── 96¢ × {SOL,XRP} × 2-5min STC danger-band filter (strategy-aware) ──
+        # Strips bleeder-strategy candidates from the cell while preserving
+        # profitable strategies (TM-96, TAKER_NOW, decided_t1*, etc.).
+        # See kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md
+        if HIGH_PRICE_STC_BLOCK_ENABLED:
+            _hpsb_kept: List[Dict] = []
+            _hpsb_dropped: List[Dict] = []
+            for _cand in selected:
+                _cand_pt = _cand.get("product_type")
+                # Side convention (verified 2026-04-26 by grep):
+                #   - NO-side candidates ALWAYS set "side": "no" explicitly
+                #     (lines 13964, 15867, 15960 — scan_no_side path).
+                #   - YES-side candidates may omit "side" or set it to "yes" explicitly
+                #     (DC, TM overlays in scan() omit it; other paths set it).
+                # Therefore default="yes" is correct for missing-key candidates.
+                # If a future NO-side path forgets to set side="no", the gate would
+                # incorrectly fire — invariant guarded by the convention test below.
+                _cand_strat = _cand.get("strategy")
+                _cand_side = _cand.get("side", "yes")
+                if (_cand_pt in (None, "15m")
+                        and should_block_high_price_stc_candidate(
+                            asset=_cand.get("asset"),
+                            side=_cand_side,
+                            entry_price_cents=_cand.get("best_yes_ask"),
+                            seconds_to_close=_cand.get("seconds_to_close"),
+                            strategy=_cand_strat)):
+                    _hpsb_dropped.append(_cand)
+                else:
+                    _hpsb_kept.append(_cand)
+            if _hpsb_dropped:
+                selected = _hpsb_kept
+                for _drop in _hpsb_dropped:
+                    _drop_strat = _drop.get("strategy")
+                    _drop_asset = _drop.get("asset")
+                    _drop_ticker = _drop.get("ticker")
+                    _drop_stc_raw = _drop.get("seconds_to_close")
+                    _drop_stc = int(_drop_stc_raw) if _drop_stc_raw is not None else None
+                    _drop_price = _drop.get("best_yes_ask")
+                    _drop_side = _drop.get("side") or "yes"
+                    _drop_reason = (
+                        f"96c {_drop_asset} {_drop_side.upper()} {_drop_strat} blocked: "
+                        f"stc={_drop_stc}s in danger band (calibrator over-confident, see KB)")
+                    logging.info("HPSB_DROP: %s strat=%s asset=%s stc=%s",
+                                 _drop_ticker, _drop_strat, _drop_asset, _drop_stc)
+                    # setdefault guards against scan_stats not being pre-populated
+                    # for an unexpected asset key (defense for adversarial review A2)
+                    _stats_bucket = scan_stats.setdefault(_drop_asset, {})
+                    _stats_bucket[HIGH_PRICE_STC_BLOCK_FILTER_STAGE] = \
+                        _stats_bucket.get(HIGH_PRICE_STC_BLOCK_FILTER_STAGE, 0) + 1
+                    # Breakeven WR only meaningful for YES-side fills; for NO-side it
+                    # would be (1 - price/100). Compute conditionally.
+                    _bewr = (_drop_price / 100.0) if (_drop_side == "yes" and _drop_price) else None
+                    _hpsb_dedup = (_drop_ticker, HIGH_PRICE_STC_BLOCK_FILTER_STAGE)
+                    if _hpsb_dedup not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_hpsb_dedup)
+                        try:
+                            self._state.insert_evaluated_opportunity(
+                                _drop_ticker, _drop.get("event_ticker"), _drop_asset,
+                                HIGH_PRICE_STC_BLOCK_FILTER_STAGE,
+                                rejection_reason=_drop_reason,
+                                spot_price=_drop.get("spot"),
+                                threshold=_drop.get("threshold"),
+                                volatility=_drop.get("blended_rv"),
+                                market_price=_drop_price,
+                                seconds_to_close=_drop_stc_raw,
+                                calibrated_prob=_drop.get("calibrated_prob"),
+                                edge=_drop.get("edge"),
+                                ofa_adjustment=_drop.get("ofa_adjustment"),
+                                strategy=_drop_strat,
+                                z_score=_drop.get("z_score"),
+                                vol_regime=_drop.get("vol_regime"),
+                                calibrated_prob_raw=_drop.get("calibrated_prob_raw"),
+                                kelly_f=_drop.get("kelly_f"),
+                                position_size=_drop.get("position_size"),
+                                breakeven_wr=_bewr,
+                                ask_depth=_drop.get("ob_snapshot", {}).get("ask_depth"),
+                                best_ask_source=_drop.get("best_ask_source"),
+                                raw_prob=_drop.get("raw_prob"),
+                                calibration_method=_drop.get("calibration_method"),
+                                fee_adjusted_edge=_drop.get("fee_adjusted_edge"),
+                                product_type=_drop.get("product_type"))
+                        except Exception:
+                            logging.warning(
+                                "insert_evaluated_opportunity failed (%s)",
+                                HIGH_PRICE_STC_BLOCK_FILTER_STAGE, exc_info=True)
+                    try:
+                        self._logger.log_opportunity({
+                            "filter_stage": HIGH_PRICE_STC_BLOCK_FILTER_STAGE,
+                            "ticker": _drop_ticker,
+                            "asset": _drop_asset,
+                            "strategy": _drop_strat,
+                            "side": _drop_side,
+                            "rejection_reason": _drop_reason,
+                            "market_price": _drop_price,
+                            "seconds_to_close": _drop_stc,
+                            "calibrated_prob": _drop.get("calibrated_prob"),
+                            "edge": _drop.get("edge"),
+                            "fee_adjusted_edge": _drop.get("fee_adjusted_edge"),
+                            "position_size": _drop.get("position_size"),
+                        })
+                    except Exception:
+                        logging.debug("high_price_stc_band log failed", exc_info=True)
+
         if not selected:
             self._last_scan_stats = scan_stats
             _log_postloop_dt()
@@ -23246,6 +23492,16 @@ class MainLoop:
                 "KALSHI_API_KEY (or KALSHI_API_KEY_ID) and KALSHI_PRIVATE_KEY_PATH must be set"
             )
             sys.exit(1)
+
+        # Loud one-time log of HPSB gate state — distinguishes "VPS env lost the
+        # var so gate silently re-disabled" from "no candidates hit the cell" in
+        # the absence of HPSB_DROP rows. Grep journal weekly for HPSB_GATE_STATE.
+        logging.warning(
+            "HPSB_GATE_STATE: enabled=%s bleeders=%s missing_bleeder_strings=%s validator_unavailable=%s",
+            HIGH_PRICE_STC_BLOCK_ENABLED,
+            sorted(HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES),
+            _HPSB_MISSING_BLEEDERS or "none",
+            _HPSB_VALIDATOR_UNAVAILABLE_REASON or "no")
 
         self.client = KalshiClient(api_key, private_key_path)
         self.state = StateManager()
