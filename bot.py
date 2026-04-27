@@ -20,6 +20,7 @@ import asyncio
 import random
 import logging
 import inspect
+import traceback
 from collections import deque
 from typing import Optional, Dict, List, Set, Tuple, Any
 
@@ -32,6 +33,60 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from market_config import get_market_config, get_cal_excluded_types, validate_market_configs, MARKET_CONFIGS
 from config import *  # noqa: F401,F403 — shared constants (single source of truth)
 from circuit_breaker import REGISTRY as _BREAKER_REGISTRY  # circuit breaker for KalshiClient REST GETs
+
+
+def _extract_tick_error_location(exc) -> str:
+    """Return 'basename.py:LINE:func' for the deepest frame of `exc`'s
+    traceback, or '?' on any failure.
+
+    Used by the run-loop tick error handler so the operator gets a
+    diagnosable Telegram alert without having to chase journalctl.
+    Must never raise — it lives inside the exception handler that
+    keeps the bot from crashing.
+
+    Chained exceptions: prefers `__cause__` (explicit `raise Y from X`)
+    or `__context__` (implicit re-raise) over the wrapper's own
+    traceback so the alert points at the original raise site, not
+    the re-raise. Falls back to the exception's own traceback if
+    no chain is present.
+
+    Implementation walks `tb.tb_next` directly (rather than
+    `traceback.extract_tb`) to avoid loading source line text from
+    disk inside the error handler.
+    """
+    try:
+        if exc is None:
+            return "?"
+        # Resolve to the deepest exception in the chain.
+        origin = exc
+        seen = set()
+        while True:
+            chained = getattr(origin, "__cause__", None) or getattr(
+                origin, "__context__", None)
+            if chained is None or id(chained) in seen:
+                break
+            seen.add(id(origin))
+            origin = chained
+        tb = getattr(origin, "__traceback__", None)
+        if tb is None:
+            return "?"
+        # Walk to the deepest frame.
+        while getattr(tb, "tb_next", None) is not None:
+            tb = tb.tb_next
+        frame = getattr(tb, "tb_frame", None)
+        if frame is None:
+            return "?"
+        code = getattr(frame, "f_code", None)
+        if code is None:
+            return "?"
+        filename = getattr(code, "co_filename", None) or ""
+        funcname = getattr(code, "co_name", None) or "?"
+        lineno = getattr(tb, "tb_lineno", None)
+        fn = os.path.basename(filename) if filename else "?"
+        line_repr = str(lineno) if lineno else "?"
+        return f"{fn}:{line_repr}:{funcname}"
+    except Exception:
+        return "?"
 
 
 def _kalshi_breaker_success(resp) -> bool:
@@ -16943,8 +16998,14 @@ class OpportunityScanner:
         n_15m = len(_15m_windows)
         if n_15m == 0:
             # No 15M windows available — reset counter so we don't carry
-            # stale state into the next live window.
+            # stale state into the next live window. Also clear alert
+            # state so a renewed stuck-period after the gap re-fires
+            # entry/reconnect; do NOT fire a recovery telegram (the
+            # underlying bug is masked by the gap, not actually
+            # resolved). Adversarial review [A1].
             self._scan_15m_unproductive_count = 0
+            self._scan_15m_unproductive_entry_alerted = False
+            self._scan_15m_unproductive_max_count = 0
             return
 
         # F/U 6 (Apr 26): rotation-boundary false-positive guard. At
@@ -16984,8 +17045,13 @@ class OpportunityScanner:
         if n_15m_time_eligible == 0:
             # All 15M markets currently outside the trading window —
             # benign rotation transition or catalog edge. Same code
-            # path as the n_15m == 0 branch above.
+            # path as the n_15m == 0 branch above. Adversarial
+            # review [A1]: clear alert state to prevent stranding
+            # entry-alerted across the gap; don't fire recovery
+            # (benign mask, not real recovery).
             self._scan_15m_unproductive_count = 0
+            self._scan_15m_unproductive_entry_alerted = False
+            self._scan_15m_unproductive_max_count = 0
             return
 
         if not hasattr(self, "_scan_15m_process_start_ts"):
@@ -17048,31 +17114,98 @@ class OpportunityScanner:
             self, "_scan_15m_prev_ws_connected", True)
         self._scan_15m_prev_ws_connected = ws_connected
         if not prev_ws_connected and ws_connected:
-            # Just reconnected — start fresh.
+            # Just reconnected. If a stuck-period had emitted an entry
+            # alert, fire recovery NOW before clearing state so the
+            # operator sees closure (and the peak count, which would
+            # otherwise be clobbered by the reset below). Adversarial
+            # review [A3][A5].
+            if getattr(
+                    self, "_scan_15m_unproductive_entry_alerted", False):
+                peak = getattr(
+                    self, "_scan_15m_unproductive_max_count", 0)
+                logging.warning(
+                    "SCAN_UNPRODUCTIVE_15M_RECOVERED (ws_reconnect): "
+                    "peak=%d", peak)
+                if _TELEGRAM:
+                    try:
+                        _TELEGRAM.send(
+                            f"✅ *15M SCAN RECOVERED*\n"
+                            f"Stuck period ended (WS reconnect) after "
+                            f"peak {peak} consecutive unproductive ticks.")
+                    except Exception:
+                        logging.debug(
+                            "scan_unproductive_15m recovery telegram "
+                            "(ws) failed", exc_info=True)
+            # Start fresh. Reset alert state too so a renewed burn
+            # after reconnect re-fires entry/reconnect rather than
+            # being silently absorbed by stale flags.
             self._scan_15m_unproductive_count = 0
             self._scan_15m_last_recovery_ts = 0.0
             self._scan_15m_reconnect_triggered = False
+            self._scan_15m_unproductive_entry_alerted = False
+            self._scan_15m_unproductive_max_count = 0
 
         rows_written = row[0] if row else 0
         if heartbeat_recent or rows_written > 0:
             # Productive tick — reset detection counter AND Phase 3
             # auto-recovery state (throttle + one-shot reconnect flag)
             # so the next stuck period gets fresh recovery cadence.
+            #
+            # If we previously fired an entry alert, send a recovery
+            # telegram naming the peak count so the operator can size
+            # the event without grepping journal. (Apr 27 2026
+            # incident: 4 escalating telegrams over 3 min were noise;
+            # entry + recovery is the right pair.)
+            if getattr(
+                    self, "_scan_15m_unproductive_entry_alerted", False):
+                peak = getattr(
+                    self, "_scan_15m_unproductive_max_count",
+                    self._scan_15m_unproductive_count)
+                logging.warning(
+                    "SCAN_UNPRODUCTIVE_15M_RECOVERED: peak=%d", peak)
+                if _TELEGRAM:
+                    # No dedup_key: state-based flags already prevent
+                    # duplicates; the TelegramNotifier 60s TTL would
+                    # silently drop a back-to-back recovery within the
+                    # same minute. Adversarial review [A4].
+                    try:
+                        _TELEGRAM.send(
+                            f"✅ *15M SCAN RECOVERED*\n"
+                            f"Stuck period ended after peak "
+                            f"{peak} consecutive unproductive ticks.")
+                    except Exception:
+                        logging.debug(
+                            "scan_unproductive_15m recovery telegram "
+                            "failed", exc_info=True)
             self._scan_15m_unproductive_count = 0
             self._scan_15m_last_recovery_ts = 0.0
             self._scan_15m_reconnect_triggered = False
+            self._scan_15m_unproductive_entry_alerted = False
+            self._scan_15m_unproductive_max_count = 0
             return
 
         self._scan_15m_unproductive_count = getattr(
             self, "_scan_15m_unproductive_count", 0) + 1
+        # Peak tracking so recovery telegram can size the burn.
+        self._scan_15m_unproductive_max_count = max(
+            getattr(self, "_scan_15m_unproductive_max_count", 0),
+            self._scan_15m_unproductive_count)
         if self._scan_15m_unproductive_count < SCAN_UNPRODUCTIVE_THRESHOLD:
             return
 
+        # Always log every above-threshold tick — journal is the
+        # ground truth, even though the Telegram is state-deduped.
         logging.error(
             "SCAN_UNPRODUCTIVE_15M: %d consecutive ticks with %d active "
             "15M window(s) but zero DB rows written since %s",
             self._scan_15m_unproductive_count, n_15m, tick_start_ts)
-        if _TELEGRAM:
+        # State-based Telegram dedup: one entry alert per stuck-period.
+        # Reconnect-threshold escalation alert fires later (in the R2
+        # block below). Apr 27 2026 incident shipped 4 telegrams over
+        # 3 min; this caps the entry path at 1.
+        if _TELEGRAM and not getattr(
+                self, "_scan_15m_unproductive_entry_alerted", False):
+            self._scan_15m_unproductive_entry_alerted = True
             msg = (
                 f"\U0001f6a8 *15M SCAN UNPRODUCTIVE*\n"
                 f"{self._scan_15m_unproductive_count} consecutive ticks "
@@ -17082,11 +17215,12 @@ class OpportunityScanner:
                 f"ws-cache-drift-silent-scan-2026-04-24.md"
             )
             try:
-                _TELEGRAM.send(
-                    msg, dedup_key="scan_unproductive_15m_alert")
+                # No dedup_key: state flag is the dedup. TelegramNotifier
+                # 60s TTL would defeat back-to-back stuck-periods.
+                _TELEGRAM.send(msg)
             except Exception:
                 logging.debug(
-                    "scan_unproductive_15m telegram send failed",
+                    "scan_unproductive_15m entry telegram failed",
                     exc_info=True)
 
         # Phase 3 R1 — auto-recovery: force_resubscribe every active
@@ -17148,6 +17282,22 @@ class OpportunityScanner:
                 "reconnect at %d consecutive unproductive ticks "
                 "(R1 force_resubscribe didn't recover)",
                 self._scan_15m_unproductive_count)
+            # Surface the escalation to the operator. One-shot per
+            # stuck-period via the same flag that gates the action,
+            # so the Telegram and the action stay in lockstep.
+            if _TELEGRAM:
+                try:
+                    # No dedup_key: gated by `_reconnect_triggered`
+                    # flag (one-shot per stuck-period).
+                    _TELEGRAM.send(
+                        f"\U0001f6a8 *15M SCAN STILL UNPRODUCTIVE*\n"
+                        f"{self._scan_15m_unproductive_count} "
+                        f"consecutive ticks — forcing WS reconnect.\n"
+                        f"R1 force_resubscribe didn't recover.")
+                except Exception:
+                    logging.debug(
+                        "scan_unproductive_15m reconnect telegram "
+                        "failed", exc_info=True)
 
     def _drift_probe_tick(self) -> None:
         """Once per minute, diff REST orderbook vs WS cache for a random
@@ -25286,14 +25436,22 @@ class MainLoop:
                     self._last_error = str(e)
                     self._last_error_time = time.time()
                     _consecutive_errors += 1
-                    logging.error("Tick error (%d consecutive)",
-                                  _consecutive_errors, exc_info=True)
+                    # Capture deepest frame so first-fire Telegram alerts
+                    # are diagnosable without journalctl. Apr 27 2026
+                    # incident: a single `tuple index out of range` fired,
+                    # self-recovered, and the trace was unrecoverable from
+                    # journal retention afterward.
+                    err_loc = _extract_tick_error_location(e)
+                    logging.error("Tick error (%d consecutive) at %s",
+                                  _consecutive_errors, err_loc,
+                                  exc_info=True)
 
                     if _TELEGRAM:
                         if _consecutive_errors <= 1:
                             # First error: standard warning with dedup
                             _TELEGRAM.send(
-                                f"\u26a0\ufe0f Tick error: {str(e)[:200]}",
+                                f"\u26a0\ufe0f Tick error at `{err_loc}`: "
+                                f"{str(e)[:200]}",
                                 dedup_key="tick_error")
                         elif _consecutive_errors == 3 and not _incident_alerted:
                             # 3 consecutive: CRITICAL escalation
@@ -25301,6 +25459,7 @@ class MainLoop:
                                 f"\U0001f6a8 *INCIDENT: BOT BLOCKED*\n"
                                 f"{_consecutive_errors} consecutive tick "
                                 f"errors in {_consecutive_errors * 5}s\n"
+                                f"At: `{err_loc}`\n"
                                 f"Error: `{str(e)[:150]}`\n"
                                 f"Auto-restart in 30s if not resolved.")
                             _incident_alerted = True
@@ -25310,6 +25469,7 @@ class MainLoop:
                                 f"\U0001f6a8 *INCIDENT ONGOING*: "
                                 f"{_consecutive_errors} consecutive errors "
                                 f"({_consecutive_errors * 5}s blocked)\n"
+                                f"At: `{err_loc}`\n"
                                 f"Error: `{str(e)[:150]}`")
 
                     # Auto-restart: 6 consecutive errors = 30s blocked
