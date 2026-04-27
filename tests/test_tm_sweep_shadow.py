@@ -596,5 +596,457 @@ class TestWiring(unittest.TestCase):
         self.assertIn("99", tiers_text)
 
 
+# ════════════════════════════════════════════════════════════════════════
+# cf_pnl_cents_with_97 — production-realism column
+# ════════════════════════════════════════════════════════════════════════
+
+class TestCounterfactualWith97(unittest.TestCase):
+    """Kalshi IOCs cannot skip 97c — a sweep with limit=98 fills 97 first.
+    The original cf_pnl_cents column models an idealized "skip 97" sweep that
+    isn't implementable. cf_pnl_cents_with_97 models what production would
+    actually capture: includes 97 fills."""
+
+    def setUp(self):
+        from bot import tm_sweep_counterfactual_pnl
+        self.fn = tm_sweep_counterfactual_pnl
+
+    def test_with_97_sweeps_97_when_depth_present(self):
+        from bot import calculate_taker_fee
+        # Entry at 96, unfilled=48, depths 97c=10, 98c=5, 99c=20.
+        # With sweep_tiers=(97,98,99): take 10@97, 5@98, 20@99 — total 35ct fills.
+        pnl, legs = self.fn(
+            unfilled=48, entry_tier=96,
+            depths={97: 10, 98: 5, 99: 20},
+            market_result="yes",
+            sweep_tiers=(97, 98, 99))
+        f97 = calculate_taker_fee(10, 97)
+        f98 = calculate_taker_fee(5, 98)
+        f99 = calculate_taker_fee(20, 99)
+        expected = (10 * 3 - f97) + (5 * 2 - f98) + (20 * 1 - f99)
+        self.assertEqual(pnl, expected)
+        self.assertEqual([leg["tier"] for leg in legs], [97, 98, 99])
+
+    def test_with_97_loss_path_97_amplifies_loss(self):
+        # 97c loss = -97 per ct. 98c loss = -98 per ct. 99c loss = -99 per ct.
+        # On a loss, sweeping 97 makes the loss WORSE, not better. Critical.
+        from bot import calculate_taker_fee
+        pnl_with, _ = self.fn(
+            unfilled=10, entry_tier=96,
+            depths={97: 5, 98: 0, 99: 0},
+            market_result="no",
+            sweep_tiers=(97, 98, 99))
+        pnl_without, _ = self.fn(
+            unfilled=10, entry_tier=96,
+            depths={97: 5, 98: 0, 99: 0},
+            market_result="no",
+            sweep_tiers=(98, 99))
+        # With 97: lost 5 contracts at 97c. Without 97: no fills, no loss.
+        self.assertLess(pnl_with, pnl_without)
+        # Specifically: f97 = calculate_taker_fee(5,97), pnl_with = -(5*97 + f97)
+        f97 = calculate_taker_fee(5, 97)
+        self.assertEqual(pnl_with, -(5 * 97 + f97))
+        self.assertEqual(pnl_without, 0)
+
+    def test_with_97_entry_98_does_not_sweep_97_or_98(self):
+        # Entry at 98. sweep_tiers=(97,98,99) but tier <= entry filters those out.
+        # Only 99 should fire.
+        from bot import calculate_taker_fee
+        pnl, legs = self.fn(
+            unfilled=10, entry_tier=98,
+            depths={97: 100, 98: 100, 99: 5},
+            market_result="yes",
+            sweep_tiers=(97, 98, 99))
+        f99 = calculate_taker_fee(5, 99)
+        self.assertEqual(pnl, 5 * 1 - f99)
+        self.assertEqual([leg["tier"] for leg in legs], [99])
+
+
+class TestSchemaWith97Column(unittest.TestCase):
+    """cf_pnl_cents_with_97 must be present after StateManager init,
+    on both fresh and pre-existing DBs (idempotent migration)."""
+
+    def setUp(self):
+        self.tmp_db = "/tmp/test_tm_sweep_with97_schema.db"
+        if os.path.exists(self.tmp_db):
+            os.unlink(self.tmp_db)
+
+    def tearDown(self):
+        if os.path.exists(self.tmp_db):
+            os.unlink(self.tmp_db)
+
+    def test_fresh_db_has_with97_column(self):
+        from bot import StateManager
+        state = StateManager(db_path=self.tmp_db)
+        cols = {r["name"] for r in state.conn.execute(
+            "PRAGMA table_info(tm_sweep_shadow)").fetchall()}
+        self.assertIn("cf_pnl_cents_with_97", cols)
+        state.conn.close()
+
+    def test_alter_migration_idempotent(self):
+        """If the table exists WITHOUT the column (legacy DB), StateManager
+        init must add it. Re-init must not error."""
+        from bot import StateManager
+        # Create legacy table without the column.
+        conn = sqlite3.connect(self.tmp_db)
+        conn.execute("""
+            CREATE TABLE tm_sweep_shadow (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                event_ticker TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                entry_time TEXT NOT NULL,
+                entry_price_cents INTEGER NOT NULL,
+                requested_count INTEGER NOT NULL,
+                filled_count INTEGER NOT NULL,
+                unfilled_count INTEGER NOT NULL,
+                depth_at_entry_pre_fill INTEGER,
+                depth_96c_pre INTEGER, depth_97c_pre INTEGER,
+                depth_98c_pre INTEGER, depth_99c_pre INTEGER,
+                depth_96c_post INTEGER, depth_97c_post INTEGER,
+                depth_98c_post INTEGER, depth_99c_post INTEGER,
+                seconds_to_close REAL,
+                calibrated_prob REAL,
+                buf_pct REAL,
+                best_ask_source TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                market_result TEXT,
+                settled_at TEXT,
+                cf_pnl_cents INTEGER,
+                cf_breakdown_json TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+        # First StateManager init: adds the column.
+        state = StateManager(db_path=self.tmp_db)
+        cols = {r["name"] for r in state.conn.execute(
+            "PRAGMA table_info(tm_sweep_shadow)").fetchall()}
+        self.assertIn("cf_pnl_cents_with_97", cols,
+                      "ALTER migration must add cf_pnl_cents_with_97")
+        state.conn.close()
+        # Second init: must be idempotent (no error from re-adding the column).
+        state2 = StateManager(db_path=self.tmp_db)
+        state2.conn.close()
+
+
+class TestSettlementWritesBothCfColumns(unittest.TestCase):
+    """update_tm_sweep_shadow_on_settlement must compute and write BOTH
+    cf_pnl_cents (sweep_tiers=98,99) and cf_pnl_cents_with_97 (sweep_tiers=97,98,99)."""
+
+    def setUp(self):
+        from bot import StateManager
+        self.tmp_db = "/tmp/test_tm_sweep_with97_settle.db"
+        if os.path.exists(self.tmp_db):
+            os.unlink(self.tmp_db)
+        self.state = StateManager(db_path=self.tmp_db)
+
+    def tearDown(self):
+        self.state.conn.close()
+        if os.path.exists(self.tmp_db):
+            os.unlink(self.tmp_db)
+
+    def _insert(self, **kw):
+        defaults = {
+            "ticker": "KXXRP15M-X", "event_ticker": "EV", "asset": "XRP",
+            "entry_time": "2026-04-27T00:00:00Z",
+            "entry_price_cents": 96, "requested_count": 50,
+            "filled_count": 2, "unfilled_count": 48,
+            "depth_at_entry_pre_fill": 2,
+            "depth_96c_pre": 2, "depth_97c_pre": 10,
+            "depth_98c_pre": 5, "depth_99c_pre": 20,
+            "depth_96c_post": 0, "depth_97c_post": 10,
+            "depth_98c_post": 5, "depth_99c_post": 20,
+            "seconds_to_close": 200.0, "calibrated_prob": 0.93,
+            "buf_pct": 0.1, "best_ask_source": "orderbook",
+        }
+        defaults.update(kw)
+        self.state.insert_tm_sweep_shadow_row(**defaults)
+
+    def test_settlement_writes_both_columns_on_win(self):
+        from bot import calculate_taker_fee
+        self._insert()
+        self.state.update_tm_sweep_shadow_on_settlement(
+            ticker="KXXRP15M-X", market_result="yes")
+        r = self.state.conn.execute(
+            "SELECT cf_pnl_cents, cf_pnl_cents_with_97 FROM tm_sweep_shadow"
+        ).fetchone()
+        # Without 97: 5@98 + 20@99 → unfilled=48 minus 25 filled = 23 wasted
+        # Wait — 48 unfilled, take 5@98, take 20@99 = 25 filled, 23 wasted.
+        # cf_pnl_cents = (5*2 - f98) + (20*1 - f99)
+        f98 = calculate_taker_fee(5, 98)
+        f99 = calculate_taker_fee(20, 99)
+        expected_without = (5 * 2 - f98) + (20 * 1 - f99)
+        self.assertEqual(r["cf_pnl_cents"], expected_without)
+        # With 97: 10@97 + 5@98 + 20@99
+        f97 = calculate_taker_fee(10, 97)
+        expected_with = (10 * 3 - f97) + (5 * 2 - f98) + (20 * 1 - f99)
+        self.assertEqual(r["cf_pnl_cents_with_97"], expected_with)
+        # Sanity: with 97 should be larger on a win (more depth taken).
+        self.assertGreater(r["cf_pnl_cents_with_97"], r["cf_pnl_cents"])
+
+    def test_settlement_writes_both_columns_on_loss(self):
+        # On a loss, with-97 should be MORE NEGATIVE (we sweep into a losing
+        # position, taking more loss).
+        self._insert()
+        self.state.update_tm_sweep_shadow_on_settlement(
+            ticker="KXXRP15M-X", market_result="no")
+        r = self.state.conn.execute(
+            "SELECT cf_pnl_cents, cf_pnl_cents_with_97 FROM tm_sweep_shadow"
+        ).fetchone()
+        self.assertLess(r["cf_pnl_cents"], 0)
+        self.assertLess(r["cf_pnl_cents_with_97"], r["cf_pnl_cents"],
+                        "with_97 must be MORE negative on loss "
+                        "(97c liquidity is taken AND lost)")
+
+
+class TestBackfillExistingRows(unittest.TestCase):
+    """Existing settled rows have cf_pnl_cents populated but cf_pnl_cents_with_97
+    NULL. A one-time backfill must populate them from stored depth_97c_post."""
+
+    def setUp(self):
+        from bot import StateManager
+        self.tmp_db = "/tmp/test_tm_sweep_with97_backfill.db"
+        if os.path.exists(self.tmp_db):
+            os.unlink(self.tmp_db)
+        self.state = StateManager(db_path=self.tmp_db)
+
+    def tearDown(self):
+        self.state.conn.close()
+        if os.path.exists(self.tmp_db):
+            os.unlink(self.tmp_db)
+
+    def test_backfill_populates_settled_rows_with_null_with97(self):
+        from bot import calculate_taker_fee
+        # Insert a row, settle it WITHOUT writing with_97 (simulate legacy).
+        self.state.insert_tm_sweep_shadow_row(
+            ticker="KXBACK-1", event_ticker="E", asset="BTC",
+            entry_time="2026-04-26T12:00:00Z",
+            entry_price_cents=96, requested_count=50,
+            filled_count=0, unfilled_count=50,
+            depth_96c_post=0, depth_97c_post=10,
+            depth_98c_post=5, depth_99c_post=20)
+        # Manually settle with only the original cf column populated.
+        self.state.conn.execute(
+            "UPDATE tm_sweep_shadow SET status='settled', market_result='yes', "
+            "cf_pnl_cents=999, cf_breakdown_json='[]', settled_at='2026-04-26T12:15:00Z' "
+            "WHERE ticker='KXBACK-1'")
+        self.state.conn.commit()
+        # Pre-condition: with_97 is NULL.
+        r0 = self.state.conn.execute(
+            "SELECT cf_pnl_cents_with_97 FROM tm_sweep_shadow WHERE ticker='KXBACK-1'"
+        ).fetchone()
+        self.assertIsNone(r0["cf_pnl_cents_with_97"])
+        # Run backfill.
+        self.state.backfill_tm_sweep_with_97()
+        # Post-condition: with_97 is computed.
+        r = self.state.conn.execute(
+            "SELECT cf_pnl_cents, cf_pnl_cents_with_97 FROM tm_sweep_shadow "
+            "WHERE ticker='KXBACK-1'").fetchone()
+        self.assertIsNotNone(r["cf_pnl_cents_with_97"])
+        # Should equal: take 10@97, 5@98, 20@99 (50 unfilled, 35 swept).
+        f97 = calculate_taker_fee(10, 97)
+        f98 = calculate_taker_fee(5, 98)
+        f99 = calculate_taker_fee(20, 99)
+        expected = (10 * 3 - f97) + (5 * 2 - f98) + (20 * 1 - f99)
+        self.assertEqual(r["cf_pnl_cents_with_97"], expected)
+        # Original cf_pnl_cents must NOT be overwritten.
+        self.assertEqual(r["cf_pnl_cents"], 999,
+                         "backfill must not touch existing cf_pnl_cents")
+
+    def test_backfill_skips_open_rows(self):
+        # Open rows have cf_pnl_cents=NULL; backfill should leave with_97 NULL.
+        self.state.insert_tm_sweep_shadow_row(
+            ticker="KXOPEN-1", event_ticker="E", asset="BTC",
+            entry_time="2026-04-26T12:00:00Z",
+            entry_price_cents=96, requested_count=50,
+            filled_count=0, unfilled_count=50,
+            depth_97c_post=10, depth_98c_post=5, depth_99c_post=20)
+        self.state.backfill_tm_sweep_with_97()
+        r = self.state.conn.execute(
+            "SELECT status, cf_pnl_cents_with_97 FROM tm_sweep_shadow"
+        ).fetchone()
+        self.assertEqual(r["status"], "open")
+        self.assertIsNone(r["cf_pnl_cents_with_97"])
+
+    def test_backfill_idempotent(self):
+        # Running twice must not change values.
+        self._setup_settled_row()
+        self.state.backfill_tm_sweep_with_97()
+        v1 = self.state.conn.execute(
+            "SELECT cf_pnl_cents_with_97 FROM tm_sweep_shadow"
+        ).fetchone()[0]
+        self.state.backfill_tm_sweep_with_97()
+        v2 = self.state.conn.execute(
+            "SELECT cf_pnl_cents_with_97 FROM tm_sweep_shadow"
+        ).fetchone()[0]
+        self.assertEqual(v1, v2)
+
+    def test_backfill_skips_already_populated_rows(self):
+        # If a row already has with_97, backfill must NOT overwrite it.
+        self._setup_settled_row()
+        self.state.conn.execute(
+            "UPDATE tm_sweep_shadow SET cf_pnl_cents_with_97=42")
+        self.state.conn.commit()
+        self.state.backfill_tm_sweep_with_97()
+        r = self.state.conn.execute(
+            "SELECT cf_pnl_cents_with_97 FROM tm_sweep_shadow"
+        ).fetchone()
+        self.assertEqual(r["cf_pnl_cents_with_97"], 42)
+
+    def _setup_settled_row(self):
+        self.state.insert_tm_sweep_shadow_row(
+            ticker="KXBACK-1", event_ticker="E", asset="BTC",
+            entry_time="2026-04-26T12:00:00Z",
+            entry_price_cents=96, requested_count=50,
+            filled_count=0, unfilled_count=50,
+            depth_96c_post=0, depth_97c_post=10,
+            depth_98c_post=5, depth_99c_post=20)
+        self.state.conn.execute(
+            "UPDATE tm_sweep_shadow SET status='settled', market_result='yes', "
+            "cf_pnl_cents=999, cf_breakdown_json='[]', settled_at='2026-04-26T12:15:00Z' "
+            "WHERE ticker='KXBACK-1'")
+        self.state.conn.commit()
+
+
+class TestWith97AdversarialRegressions(unittest.TestCase):
+    """Adversary round 3 findings on the with_97 column."""
+
+    def setUp(self):
+        from bot import StateManager
+        self.tmp_db = "/tmp/test_tm_sweep_with97_adversarial.db"
+        if os.path.exists(self.tmp_db):
+            os.unlink(self.tmp_db)
+        self.state = StateManager(db_path=self.tmp_db)
+
+    def tearDown(self):
+        self.state.conn.close()
+        if os.path.exists(self.tmp_db):
+            os.unlink(self.tmp_db)
+
+    def test_A3_backfill_skips_unrecognized_market_result(self):
+        """Adversary A3: a settled row with market_result='void' (or NULL,
+        or some Kalshi-renamed string) must NOT get cf_pnl_cents_with_97=0
+        silently — that would be confidently wrong data. Skip the row instead."""
+        # Insert a row, mark settled with a weird market_result.
+        self.state.insert_tm_sweep_shadow_row(
+            ticker="KXVOID-1", event_ticker="E", asset="BTC",
+            entry_time="2026-04-26T12:00:00Z",
+            entry_price_cents=96, requested_count=50,
+            filled_count=0, unfilled_count=50,
+            depth_97c_post=10, depth_98c_post=5, depth_99c_post=20)
+        self.state.conn.execute(
+            "UPDATE tm_sweep_shadow SET status='settled', market_result='void', "
+            "cf_pnl_cents=0, cf_breakdown_json='[]', settled_at='X' "
+            "WHERE ticker='KXVOID-1'")
+        self.state.conn.commit()
+        self.state.backfill_tm_sweep_with_97()
+        r = self.state.conn.execute(
+            "SELECT cf_pnl_cents_with_97 FROM tm_sweep_shadow "
+            "WHERE ticker='KXVOID-1'").fetchone()
+        self.assertIsNone(r["cf_pnl_cents_with_97"],
+                          "void/unknown market_result must leave with_97 NULL, "
+                          "not write a misleading 0")
+
+    def test_A3_backfill_skips_null_market_result(self):
+        """NULL market_result also must not produce a 0."""
+        self.state.insert_tm_sweep_shadow_row(
+            ticker="KXNULL-1", event_ticker="E", asset="BTC",
+            entry_time="2026-04-26T12:00:00Z",
+            entry_price_cents=96, requested_count=50,
+            filled_count=0, unfilled_count=50,
+            depth_97c_post=10, depth_98c_post=5, depth_99c_post=20)
+        # Settled with NULL market_result (impossible via the live path,
+        # but defensive against historical or migrated rows).
+        self.state.conn.execute(
+            "UPDATE tm_sweep_shadow SET status='settled', "
+            "cf_pnl_cents=0, cf_breakdown_json='[]', settled_at='X' "
+            "WHERE ticker='KXNULL-1'")
+        self.state.conn.commit()
+        self.state.backfill_tm_sweep_with_97()
+        r = self.state.conn.execute(
+            "SELECT cf_pnl_cents_with_97 FROM tm_sweep_shadow "
+            "WHERE ticker='KXNULL-1'").fetchone()
+        self.assertIsNone(r["cf_pnl_cents_with_97"])
+
+    def test_A5_invariant_with97_ge_cf_on_win_property_based(self):
+        """Adversary A5: across many depth configurations, with_97 >= cf_pnl
+        on a YES win (sweeping 97 only adds positive payoff legs)."""
+        from bot import tm_sweep_counterfactual_pnl
+        # Sweep over a grid of depth configs; verify monotonicity.
+        for d97 in (0, 1, 5, 50, 500):
+            for d98 in (0, 1, 5, 50):
+                for d99 in (0, 1, 5, 50):
+                    for unfilled in (0, 5, 50, 500):
+                        cf, _ = tm_sweep_counterfactual_pnl(
+                            unfilled=unfilled, entry_tier=96,
+                            depths={97: d97, 98: d98, 99: d99},
+                            market_result="yes",
+                            sweep_tiers=(98, 99))
+                        cf_w97, _ = tm_sweep_counterfactual_pnl(
+                            unfilled=unfilled, entry_tier=96,
+                            depths={97: d97, 98: d98, 99: d99},
+                            market_result="yes",
+                            sweep_tiers=(97, 98, 99))
+                        self.assertGreaterEqual(
+                            cf_w97, cf,
+                            f"WIN invariant violated: with_97={cf_w97} < "
+                            f"cf={cf} at d97={d97} d98={d98} d99={d99} "
+                            f"unfilled={unfilled}")
+
+    def test_A5_invariant_zero_97_depth_means_equal_cf(self):
+        """Tight always-true invariant: when 97c depth is zero, including 97
+        in sweep_tiers must yield IDENTICAL cf_pnl to excluding it (the
+        97 leg has no contracts to take).
+
+        Note: when 97c depth > 0, the directional relationship between cf_w97
+        and cf is NOT monotonic — 97 fills can DISPLACE 99 fills on small
+        unfilled remainders (Kalshi sweeps low→high), so a loss can be
+        smaller with 97 included. The earlier wrong invariant was caught by
+        this property-based test before shipping; documenting it here so a
+        future maintainer doesn't 'fix' the 'inconsistency' by reverting."""
+        from bot import tm_sweep_counterfactual_pnl
+        for d98 in (0, 1, 5, 50):
+            for d99 in (0, 1, 5, 50):
+                for unfilled in (0, 5, 50, 500):
+                    for result in ("yes", "no"):
+                        cf, _ = tm_sweep_counterfactual_pnl(
+                            unfilled=unfilled, entry_tier=96,
+                            depths={97: 0, 98: d98, 99: d99},
+                            market_result=result,
+                            sweep_tiers=(98, 99))
+                        cf_w97, _ = tm_sweep_counterfactual_pnl(
+                            unfilled=unfilled, entry_tier=96,
+                            depths={97: 0, 98: d98, 99: d99},
+                            market_result=result,
+                            sweep_tiers=(97, 98, 99))
+                        self.assertEqual(
+                            cf, cf_w97,
+                            f"Zero-97-depth equivalence violated at "
+                            f"d98={d98} d99={d99} unfilled={unfilled} {result}")
+
+    def test_A4_post_migration_column_exists_assertion(self):
+        """Adversary A4: if ALTER silently fails the column is missing and
+        every downstream write fails with 'no such column'. The migration
+        path must verify the column exists post-ALTER and surface failure
+        loud (raise) rather than the current silent log.warning."""
+        with open(BOT_PATH) as f:
+            source = f.read()
+        # Slice _create_tables function.
+        start = source.find("def _create_tables")
+        end = source.find("\n    def ", start + 10)
+        body = source[start:end]
+        # The migration block must verify post-ALTER. Look for a re-read of
+        # PRAGMA table_info or an explicit assertion that the column exists.
+        # Either: a second PRAGMA after ALTER, or an explicit raise on missing.
+        # Search across newlines (DOTALL).
+        self.assertRegex(
+            body,
+            r"(?s)cf_pnl_cents_with_97.{0,500}raise|"
+            r"raise.{0,500}cf_pnl_cents_with_97",
+            "Post-ALTER must verify column exists and raise on missing — "
+            "silent ALTER failure produces 'no such column' downstream "
+            "(adversary A4)")
+
+
 if __name__ == "__main__":
     unittest.main()

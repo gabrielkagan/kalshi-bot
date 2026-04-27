@@ -2479,6 +2479,13 @@ class StateManager:
         # Returns empty dict for non-15M or if no state. Must be fast (called on every insert).
         self._extended_feature_provider: Optional[Any] = None
         self._create_tables()
+        # One-time backfill of cf_pnl_cents_with_97 for legacy tm_sweep_shadow
+        # rows. Idempotent: SQL guard on `cf_pnl_cents_with_97 IS NULL` makes
+        # subsequent restarts no-ops once all rows are populated.
+        try:
+            self.backfill_tm_sweep_with_97()
+        except Exception:
+            logging.warning("tm_sweep_shadow backfill at init failed", exc_info=True)
         # Seed balance cache from most recent DB value to avoid NULL gap after restart
         try:
             row = self.conn.execute(
@@ -2761,12 +2768,32 @@ class StateManager:
                 market_result TEXT,
                 settled_at TEXT,
                 cf_pnl_cents INTEGER,
-                cf_breakdown_json TEXT
+                cf_breakdown_json TEXT,
+                cf_pnl_cents_with_97 INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_tmss_ticker ON tm_sweep_shadow(ticker);
             CREATE INDEX IF NOT EXISTS idx_tmss_status ON tm_sweep_shadow(status);
         """)
+        # Idempotent migration for pre-existing DBs that lack cf_pnl_cents_with_97.
+        # Kalshi IOCs cannot skip 97c — limit=98 fills 97 first. cf_pnl_cents
+        # excludes 97 (analytical convenience, not implementable in production).
+        # cf_pnl_cents_with_97 reflects what live execution would actually capture.
+        # Adversary A4: silent ALTER failure produces "no such column" downstream.
+        # We commit the ALTER, then re-read PRAGMA and assert the column exists.
+        # If the assertion fails we raise — startup crash > silent shadow corruption.
+        _existing_cols = {r[1] for r in self.conn.execute(
+            "PRAGMA table_info(tm_sweep_shadow)").fetchall()}
+        if "cf_pnl_cents_with_97" not in _existing_cols:
+            self.conn.execute(
+                "ALTER TABLE tm_sweep_shadow ADD COLUMN cf_pnl_cents_with_97 INTEGER")
         self.conn.commit()
+        # Post-migration verification (loud failure on silent ALTER drop).
+        _post_cols = {r[1] for r in self.conn.execute(
+            "PRAGMA table_info(tm_sweep_shadow)").fetchall()}
+        if "cf_pnl_cents_with_97" not in _post_cols:
+            raise RuntimeError(
+                "tm_sweep_shadow.cf_pnl_cents_with_97 column missing after "
+                "migration — refusing to start with broken shadow schema")
 
         # Unified shadow view: combines 15M shadow engines + hourly alt shadows
         # Safe to re-run; depends on fifteenm_shadow_signals + hourly_alt_shadow_signals
@@ -4187,18 +4214,82 @@ class StateManager:
                     entry_tier=r["entry_price_cents"],
                     depths=depths,
                     market_result=market_result)
-                # Adversary A4: belt-and-suspenders int cast guards against
-                # any future change to calculate_taker_fee that might return
-                # float; cf_pnl_cents column is INTEGER.
+                # Production realism: Kalshi IOCs cannot skip 97c. Compute
+                # cf_pnl_cents_with_97 with sweep_tiers=(97,98,99) so we have
+                # an apples-to-apples number for "what would a real sweep
+                # actually have netted?" alongside the 97-skipped academic version.
+                cf_pnl_w97, _legs_w97 = tm_sweep_counterfactual_pnl(
+                    unfilled=r["unfilled_count"],
+                    entry_tier=r["entry_price_cents"],
+                    depths=depths,
+                    market_result=market_result,
+                    sweep_tiers=(97, 98, 99))
+                # Belt-and-suspenders int cast on cf_pnl values. Both columns
+                # (cf_pnl_cents, cf_pnl_cents_with_97) are INTEGER; the cf
+                # function returns int today via calculate_taker_fee→math.ceil
+                # but cast defensively in case that contract changes.
                 self.conn.execute(
                     "UPDATE tm_sweep_shadow SET status='settled', "
                     "market_result=?, cf_pnl_cents=?, cf_breakdown_json=?, "
-                    "settled_at=? WHERE id=?",
+                    "cf_pnl_cents_with_97=?, settled_at=? WHERE id=?",
                     (market_result, int(cf_pnl), json.dumps(legs, separators=(",", ":")),
-                     now, r["id"]))
+                     int(cf_pnl_w97), now, r["id"]))
             self.conn.commit()
         except Exception:
             logging.warning("tm_sweep_shadow settle failed for %s", ticker, exc_info=True)
+
+    def backfill_tm_sweep_with_97(self) -> int:
+        """Backfill cf_pnl_cents_with_97 for settled rows that have NULL in
+        that column (legacy rows from before the with-97 instrumentation).
+        Idempotent: skips rows where cf_pnl_cents_with_97 IS NOT NULL.
+        Open rows are skipped (no market_result yet).
+
+        Adversary A3: skips rows whose market_result is not in the
+        recognized set ('yes','all_yes','no','all_no'). Writing 0 for
+        a 'void'/NULL row would be confidently wrong shadow data.
+
+        Returns: count of rows updated."""
+        _OK_RESULTS = ("yes", "all_yes", "no", "all_no")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, entry_price_cents, unfilled_count, market_result, "
+                "depth_96c_post, depth_97c_post, depth_98c_post, depth_99c_post "
+                "FROM tm_sweep_shadow "
+                "WHERE status='settled' AND cf_pnl_cents_with_97 IS NULL"
+            ).fetchall()
+            if not rows:
+                return 0
+            updated = 0
+            skipped = 0
+            for r in rows:
+                if r["market_result"] not in _OK_RESULTS:
+                    skipped += 1
+                    continue
+                depths = {
+                    96: r["depth_96c_post"] or 0,
+                    97: r["depth_97c_post"] or 0,
+                    98: r["depth_98c_post"] or 0,
+                    99: r["depth_99c_post"] or 0,
+                }
+                cf_pnl_w97, _legs = tm_sweep_counterfactual_pnl(
+                    unfilled=r["unfilled_count"],
+                    entry_tier=r["entry_price_cents"],
+                    depths=depths,
+                    market_result=r["market_result"],
+                    sweep_tiers=(97, 98, 99))
+                self.conn.execute(
+                    "UPDATE tm_sweep_shadow SET cf_pnl_cents_with_97=? WHERE id=?",
+                    (int(cf_pnl_w97), r["id"]))
+                updated += 1
+            self.conn.commit()
+            if updated or skipped:
+                logging.info("tm_sweep_shadow backfill: populated %d row(s), "
+                             "skipped %d row(s) with non-whitelisted market_result",
+                             updated, skipped)
+            return updated
+        except Exception:
+            logging.warning("tm_sweep_shadow backfill failed", exc_info=True)
+            return 0
 
     def get_unsettled_evaluated_opportunities(self) -> List[Dict]:
         """Return evaluated opportunities with status='pending' and a market_price.
