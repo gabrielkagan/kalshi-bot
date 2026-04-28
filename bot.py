@@ -23,6 +23,9 @@ import inspect
 import traceback
 from collections import deque
 from typing import Optional, Dict, List, Set, Tuple, Any
+# Phase 7 cal_mlp deploy prerequisites (R-p7-deploy-r1#C1).
+import numpy as np
+from pathlib import Path
 
 import requests
 import websockets
@@ -33,6 +36,18 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from market_config import get_market_config, get_cal_excluded_types, validate_market_configs, MARKET_CONFIGS
 from config import *  # noqa: F401,F403 — shared constants (single source of truth)
 from circuit_breaker import REGISTRY as _BREAKER_REGISTRY  # circuit breaker for KalshiClient REST GETs
+
+# Phase 7: cal_mlp integration (single import surface).
+sys.path.insert(0, str(Path(__file__).parent / 'scripts' / 'cal_mlp'))
+from integration import (  # noqa: E402
+    CalMLPError, CalMLPParityError, CalMLPSchemaError,
+    migrate_schema as _calmlp_migrate_schema,
+    parity_assert as _calmlp_parity_assert_impl,
+    sizing_parity_assert as _calmlp_sizing_parity_assert_impl,
+    make_compute_for_15m_main_path,
+    CalMLPPredictor,
+    annotate_evaluation_kwargs as _calmlp_annotate_kwargs,
+)
 
 
 def _extract_tick_error_location(exc) -> str:
@@ -2539,6 +2554,13 @@ class TelegramNotifier:
 #  StateManager
 # ═════════════════════════════════════════════════════════════════════════════
 
+# Phase 7 Edit 2: static reimplementation of 15M main-path sizing for parity-assert.
+# DO NOT use in production trading — only consumed by sizing_parity_assert at startup.
+# Closes over bot.py globals so SIZING_TIERS / DRAWDOWN_* / per-asset risk caps /
+# STC scaler / DRAWDOWN_HALT_FLOOR fallback are read lazily.
+compute_for_15m_main_path = make_compute_for_15m_main_path(globals())
+
+
 class StateManager:
     """SQLite-backed persistent state. WAL mode for crash resilience."""
 
@@ -2578,6 +2600,17 @@ class StateManager:
         # Returns empty dict for non-15M or if no state. Must be fast (called on every insert).
         self._extended_feature_provider: Optional[Any] = None
         self._create_tables()
+        # Phase 7 Edit 3a: cal_mlp deploy preconditions.
+        # R-p7-cleanroom#M3: migrate_schema is in the same try/except as
+        # parity_assert so a CalMLPSchemaError from _verify_wal surfaces
+        # as a clean SystemExit(2) with a bot_startup_log row.
+        try:
+            _calmlp_migrate_schema(self.conn)
+            _calmlp_parity_assert_impl(globals(), self.conn)
+            _calmlp_sizing_parity_assert_impl(globals(), self.conn)
+        except (CalMLPParityError, CalMLPSchemaError) as _calmlp_e:
+            logging.error("[CALMLP_PARITY] FATAL: %s", _calmlp_e)
+            raise SystemExit(2)
         # One-time backfill of cf_pnl_cents_with_97 for legacy tm_sweep_shadow
         # rows. Idempotent: SQL guard on `cf_pnl_cents_with_97 IS NULL` makes
         # subsequent restarts no-ops once all rows are populated.
@@ -3915,7 +3948,14 @@ class StateManager:
                                      # (compact JSON via OrderExecutor._extract_book_levels).
                                      # Populated at trade-creation call sites only — not on
                                      # high-volume rejection rows (volume control).
-                                     orderbook_levels_json: Optional[str] = None):
+                                     orderbook_levels_json: Optional[str] = None,
+                                     # Phase 7 cal_mlp audit columns (R-p7-deploy)
+                                     cal_mlp_p_mean: Optional[float] = None,
+                                     cal_mlp_p_std: Optional[float] = None,
+                                     cal_mlp_final_lo: Optional[float] = None,
+                                     cal_mlp_final_hi: Optional[float] = None,
+                                     cal_mlp_train_id: Optional[str] = None,
+                                     cal_mlp_skipped_reason: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -4074,8 +4114,10 @@ class StateManager:
                      yes_spread_cents, bid_depth, spot_coinbase_kraken_gap_bps,
                      kalshi_flow_imbalance_level, kalshi_flow_depth_velocity,
                      kalshi_flow_depth_drain,
-                     orderbook_levels_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     orderbook_levels_json,
+                     cal_mlp_p_mean, cal_mlp_p_std, cal_mlp_final_lo,
+                     cal_mlp_final_hi, cal_mlp_train_id, cal_mlp_skipped_reason)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -4171,7 +4213,13 @@ class StateManager:
                     kalshi_flow_imbalance_level=excluded.kalshi_flow_imbalance_level,
                     kalshi_flow_depth_velocity=excluded.kalshi_flow_depth_velocity,
                     kalshi_flow_depth_drain=excluded.kalshi_flow_depth_drain,
-                    orderbook_levels_json=excluded.orderbook_levels_json
+                    orderbook_levels_json=excluded.orderbook_levels_json,
+                    cal_mlp_p_mean=excluded.cal_mlp_p_mean,
+                    cal_mlp_p_std=excluded.cal_mlp_p_std,
+                    cal_mlp_final_lo=excluded.cal_mlp_final_lo,
+                    cal_mlp_final_hi=excluded.cal_mlp_final_hi,
+                    cal_mlp_train_id=excluded.cal_mlp_train_id,
+                    cal_mlp_skipped_reason=excluded.cal_mlp_skipped_reason
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -4214,7 +4262,9 @@ class StateManager:
                   yes_spread_cents, bid_depth, spot_coinbase_kraken_gap_bps,
                   kalshi_flow_imbalance_level, kalshi_flow_depth_velocity,
                   kalshi_flow_depth_drain,
-                  orderbook_levels_json))
+                  orderbook_levels_json,
+                  cal_mlp_p_mean, cal_mlp_p_std, cal_mlp_final_lo,
+                  cal_mlp_final_hi, cal_mlp_train_id, cal_mlp_skipped_reason))
             self.conn.commit()
         except Exception as e:
             try:
@@ -4706,6 +4756,31 @@ class StateManager:
 
     def close(self):
         self.conn.close()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+#  Phase 7 Edit 3b: cal_mlp predictor cache (module-level)
+# ═════════════════════════════════════════════════════════════════════════════
+# Kill-switch contract (R-p7-cleanroom#H2 + R-p7-coldboot#C-S2):
+# Predictor INSTANCES are always constructed (CalMLPPredictor.__init__ is pure
+# attr-set; no IO). .warmup() is gated on CALMLP_ENABLED. This is required so
+# hot-flipping CALMLP_ENABLED=0→1 mid-process actually activates calibration
+# on the first scan tick — without it, an env=0 boot would leave the cache
+# unwarmed forever. The per-call env check in annotate_evaluation_kwargs
+# ensures predict() never runs when env=0.
+_calmlp_predictors = {a: CalMLPPredictor(a) for a in ('BTC', 'ETH', 'SOL', 'XRP')}
+_calmlp_enabled_at_boot = (
+    os.environ.get('CALMLP_ENABLED', '1').strip().lower() in ('1', 'true', 'yes')
+)
+if _calmlp_enabled_at_boot:
+    for _calmlp_p in _calmlp_predictors.values():
+        _calmlp_p.warmup()
+    _calmlp_warmed = sum(1 for p in _calmlp_predictors.values() if p._loaded)
+    logging.info("[CALMLP] enabled=1 at boot, predictors_warmed=%d/4", _calmlp_warmed)
+else:
+    logging.info("[CALMLP] enabled=0 at boot — predictors constructed but not warmed; "
+                  "hot env flip to 1 will lazy-load on first scan tick")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -11745,6 +11820,29 @@ class OpportunityScanner:
                 z_score = prob_with_market["z_score"]
                 raw_prob = prob_with_market.get("raw_prob")
                 calibration_method = prob_with_market.get("calibration_method")
+
+                # Phase 7 Edit 4: cal_mlp residual calibration hook.
+                # Mutates _shadow_diag with cal_mlp_* audit fields (which the
+                # `**_shadow_diag` splat at downstream insert_evaluated_opportunity
+                # call sites then writes to DB). Returns calibrated final_prob
+                # to override the temperature-scaling input below; returns None
+                # if calibration was skipped (env_disabled / no_predictor /
+                # no_current / etc. — all stamped in cal_mlp_skipped_reason).
+                _calmlp_vol_regime = vol_est["regime"]
+                _calmlp_predictor = _calmlp_predictors.get(asset)
+                _calmlp_row_features = {
+                    'price_tier': int(np.digitize(best_ask, [80, 90, 96], right=True)),
+                    'stc_bucket': int(np.digitize(seconds_remaining, [120, 300, 600], right=True)),
+                    'vol_regime_int': 1 if _calmlp_vol_regime == 'elevated' else 0,
+                    'vol_regime': _calmlp_vol_regime,
+                }
+                _calmlp_new_prob = _calmlp_annotate_kwargs(
+                    _shadow_diag, raw_prob=raw_prob, ticker=ticker, side=side,
+                    entry_price_cents=best_ask, row_features=_calmlp_row_features,
+                    predictor=_calmlp_predictor,
+                )
+                if _calmlp_new_prob is not None:
+                    final_prob = _calmlp_new_prob   # use calibrated; otherwise raw_prob path runs
 
                 # ── Temperature scaling (Layer 1) ──────────────
                 _hourly_pre_temp_prob = None
