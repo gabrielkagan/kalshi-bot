@@ -213,6 +213,20 @@ class Phase4Dataset(Dataset):
         self._tid = self.df['ticker_id'].to_numpy(np.int64)
         self._logit_raw = self.df['logit_raw_prob_clipped'].to_numpy(np.float32)
         self._outcome = self.df['outcome'].to_numpy(np.float32)
+        # R-p4-r5#H5: a constant-valued feature in a fold gives std=0 in
+        # apply_norm → NaN/inf in z-score → poisons gradients silently.
+        if not np.isfinite(self._cont_arr).all():
+            bad = [c for c in CONT_FEATURE_COLS
+                   if not np.isfinite(self.df[c].to_numpy(np.float32)).all()]
+            raise ValueError(
+                f"Phase4Dataset: non-finite values in CONT_FEATURE_COLS {bad} "
+                f"after apply_norm — likely zero-variance feature in this fold"
+            )
+        if not np.isfinite(self._logit_raw).all():
+            raise ValueError(
+                "Phase4Dataset: non-finite logit_raw_prob_clipped — extract "
+                "RAW_PROB_CLIP_EPS guard violated"
+            )
 
     def __len__(self) -> int:
         return len(self.df)
@@ -280,19 +294,22 @@ def compute_weighted_bce(model: nn.Module, batch: dict) -> torch.Tensor:
 
 
 def compute_cal_brier_weighted(model: nn.Module, ca_dataset: Dataset) -> float:
-    """Per-cell weighted Brier on cal split using train-fold w_cell."""
+    """Per-cell weighted Brier on cal split using train-fold w_cell.
+    R-p4-r5#H2: denominator is sum-of-weights, not unweighted count, so the
+    metric is a true weighted mean (consistent across folds with differing
+    w_cell distributions)."""
     model.eval()
     with torch.no_grad():
         loader = DataLoader(ca_dataset, batch_size=512, shuffle=False, num_workers=0)
         total = 0.0
-        n = 0
+        wsum = 0.0
         for batch in loader:
             _, p = model(**{k: batch[k] for k in FORWARD_KEYS})
             err = (p - batch['outcome']) ** 2
             total += float((err * batch['w_cell']).sum())
-            n += int(batch['outcome'].numel())
+            wsum += float(batch['w_cell'].sum())
     model.train()
-    return total / max(1, n)
+    return total / max(1e-12, wsum)
 
 
 @torch.no_grad()
@@ -504,6 +521,15 @@ def _setup_walltime_alarm(seconds: int) -> None:
     signal.alarm(seconds)
 
 
+def _disarm_walltime_alarm() -> None:
+    """R-p4-r5#H6: cancel SIGALRM so callers reusing the process aren't
+    interrupted mid-next-call. Idempotent."""
+    try:
+        signal.alarm(0)
+    except (ValueError, OSError):
+        pass
+
+
 def _check_rss(label: str, ceiling_mb: float = 1500.0) -> None:
     if not _HAS_PSUTIL:
         return
@@ -587,6 +613,8 @@ def run(args: argparse.Namespace) -> dict:
     models_lock = models_dir / '.lock'
     with acquire_lock(models_lock, fcntl.LOCK_EX):
         # R1#C7: arm wall-time alarm AFTER both locks are held.
+        # R-p4-r5#H6: disarm via try/finally below so callers reusing the
+        # process don't see SIGALRM after run() returns.
         _setup_walltime_alarm(args.wall_ceiling_s)
         # Compute train_id (matches Phase 2 cutoff_end + sha8 over our params).
         train_id_inputs = (
@@ -662,7 +690,16 @@ def run(args: argparse.Namespace) -> dict:
                 if len(te) < 50:
                     raise Phase4ContractError(f"fold {fold}: n_test={len(te)} < 50")
                 # Sanity: is_unk_ticker MUST be 0 in training data.
-                if 'is_unk_ticker' in tr.columns and (tr['is_unk_ticker'] != 0).any():
+                # R-p4-r5#C1: column ABSENCE is also a hard failure — we rely
+                # on extract_data.py emitting it; silent skip on rename would
+                # let UNK rows leak into training and defeat per-member
+                # randomization (kills ensemble disagreement signal).
+                if 'is_unk_ticker' not in tr.columns:
+                    raise Phase4ContractError(
+                        f"fold {fold}: is_unk_ticker column missing from train split; "
+                        f"extract_data.py contract violated"
+                    )
+                if (tr['is_unk_ticker'] != 0).any():
                     raise Phase4ContractError(f"fold {fold}: is_unk_ticker != 0 in train")
 
                 # Per-cell stats from extract audit.
@@ -871,6 +908,17 @@ def run(args: argparse.Namespace) -> dict:
                     'n_zero_std_rows': int((test_p_std == 0).sum()),
                     'n_zero_std_pct': float((test_p_std == 0).mean()),
                 })
+                # R-p4-r5#C2: ensemble disagreement is the entire reason we
+                # train M=5 members. If >50% of test rows have zero ensemble
+                # std, members converged to identical predictions — a
+                # degenerate ensemble. Hard fail so the bundle isn't deployed.
+                _zero_pct = float((test_p_std == 0).mean())
+                if _zero_pct > 0.5:
+                    raise Phase4ContractError(
+                        f"fold {fold}: ensemble disagreement collapsed "
+                        f"({_zero_pct:.1%} zero-std rows > 50%); members may "
+                        f"share identical weights post-zero-init head"
+                    )
 
             # bundle_sha chain
             ckpt_shas_sorted = sorted(s for s in all_member_checkpoint_shas if s)
@@ -932,6 +980,16 @@ def run(args: argparse.Namespace) -> dict:
                 'normstats_concat_sha256': normstats_concat_sha256,
                 'bundle_sha': phase4_bundle_sha,
                 'phase4_bundle_sha': phase4_bundle_sha,
+                # R-p4-r5#C3: document the ordering convention so Phase 5/7
+                # consumers can recompute model_identity_sha256 deterministically.
+                # checkpoint_sha256 list is sorted ASCENDING before joining
+                # with ':'. normstats_concat is in fold order (0..K-1).
+                '_sha_chain_conventions': {
+                    'checkpoint_shas_order': 'sorted_ascending',
+                    'normstats_concat_order': 'fold_index_ascending',
+                    'normstats_per_fold_serialization': 'json sort_keys=True separators=(",",":")',
+                    'phase4_formula': 'sha256(model_identity_sha256:normstats_concat_sha256:phase4)',
+                },
                 'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
                 'train_py_sha256': sha256_file(Path(__file__)),
                 'torch_version': torch.__version__,
@@ -989,6 +1047,9 @@ def run(args: argparse.Namespace) -> dict:
                 except (FileNotFoundError, OSError):
                     pass
             raise
+        finally:
+            # R-p4-r5#H6: disarm SIGALRM unconditionally before exiting run()
+            _disarm_walltime_alarm()
 
 
 def main() -> None:
