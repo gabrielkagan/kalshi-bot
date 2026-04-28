@@ -523,6 +523,25 @@ def test_phase4_bundle_sha_excludes_phase5_when_conformal_absent():
     _helpers.verify_bundle_sha_chain(bundle)
 
 
+def test_integration_all_matches_bot_py_diff_edit_1():
+    """The 9 names imported by bot-py-diff Edit 1 MUST be exported via
+    `integration.__all__` AND resolvable as module attributes. If a future
+    refactor renames or hides any of these, the operator's `from integration
+    import ...` line in bot.py would NameError on the next deploy."""
+    import integration
+    edit_1_imports = {
+        'CalMLPError', 'CalMLPParityError', 'CalMLPSchemaError',
+        'migrate_schema', 'parity_assert', 'sizing_parity_assert',
+        'make_compute_for_15m_main_path', 'CalMLPPredictor',
+        'annotate_evaluation_kwargs',
+    }
+    all_set = set(integration.__all__)
+    missing = edit_1_imports - all_set
+    assert not missing, f"Edit 1 names missing from __all__: {missing}"
+    for name in edit_1_imports:
+        assert hasattr(integration, name), f"{name} not on module"
+
+
 def test_normstats_concat_uses_per_file_sha_strings():
     """R-p4-r7-CRIT: producer/consumer alignment regression. The hash
     input is the per-file SHA hex strings from eval_fold_artifacts —
