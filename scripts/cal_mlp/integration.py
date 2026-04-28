@@ -84,11 +84,14 @@ SKIPPED_REASONS = frozenset({
 # ---------------------------------------------------------------------------
 
 def _import_cal_mlp_constants() -> dict:
-    """Import cal_mlp constants under aliases (R-p7-r2#C2 to prevent shadowing)."""
+    """Import cal_mlp constants under aliases (R-p7-r2#C2 to prevent shadowing).
+
+    R-p7-impl#C1: use `sys.path` (not `os.sys.path`); return an explicit dict
+    rather than locals() so the contract is unambiguous and self-documenting."""
+    import sys
     sys_path_added = False
     cal_mlp_dir = Path(__file__).resolve().parent
-    if str(cal_mlp_dir) not in os.sys.path:
-        import sys
+    if str(cal_mlp_dir) not in sys.path:
         sys.path.insert(0, str(cal_mlp_dir))
         sys_path_added = True
     try:
@@ -111,11 +114,29 @@ def _import_cal_mlp_constants() -> dict:
     finally:
         if sys_path_added:
             try:
-                import sys
                 sys.path.remove(str(cal_mlp_dir))
             except ValueError:
                 pass
-    return locals()
+    return {
+        'ASSET_FLOORS': ASSET_FLOORS, 'GLOBAL_MIN_ENTRY_PRICE': GLOBAL_MIN_ENTRY_PRICE,
+        'RAW_PROB_CLIP_EPS': RAW_PROB_CLIP_EPS, 'SETTLEMENT_WHITELIST': SETTLEMENT_WHITELIST,
+        'PRICE_BIN_CUTOFFS': PRICE_BIN_CUTOFFS, 'STC_BIN_CUTOFFS': STC_BIN_CUTOFFS,
+        'SIZING_TIERS': SIZING_TIERS, 'ASSET_MAX_RISK_PER_TRADE': ASSET_MAX_RISK_PER_TRADE,
+        'MAX_RISK_PER_TRADE': MAX_RISK_PER_TRADE,
+        'DRAWDOWN_HALF_THRESHOLD': DRAWDOWN_HALF_THRESHOLD,
+        'DRAWDOWN_QUARTER_THRESHOLD': DRAWDOWN_QUARTER_THRESHOLD,
+        'DRAWDOWN_HALT_THRESHOLD': DRAWDOWN_HALT_THRESHOLD,
+        'DRAWDOWN_HALT_FLOOR': DRAWDOWN_HALT_FLOOR,
+        'STC_SIZING_SCALER_KNEE': STC_SIZING_SCALER_KNEE,
+        'STC_SIZING_SCALER_ENABLED': STC_SIZING_SCALER_ENABLED,
+        'MIN_EDGE_BY_PRICE_SCHEDULE': MIN_EDGE_BY_PRICE_SCHEDULE,
+        'WEEKEND_EDGE_DISCOUNT': WEEKEND_EDGE_DISCOUNT,
+        'WEEKEND_EDGE_FLOOR': WEEKEND_EDGE_FLOOR,
+        'OVERNIGHT_EDGE_DISCOUNT': OVERNIGHT_EDGE_DISCOUNT,
+        'HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES': HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES,
+        'STC_EXTENDED_PER_ASSET_FLOOR': STC_EXTENDED_PER_ASSET_FLOOR,
+        'STC_EXTENDED_BUFFER_RESCUE': STC_EXTENDED_BUFFER_RESCUE,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -641,7 +662,8 @@ def annotate_evaluation_kwargs(
     if raw_prob is None:
         kwargs['cal_mlp_skipped_reason'] = 'raw_prob_null'
         return None
-    if os.environ.get('CALMLP_ENABLED', '1') != '1':
+    # R-p7-impl#C9: explicit truthy set; '' / 'no' / '0' all disable.
+    if os.environ.get('CALMLP_ENABLED', '1').strip().lower() not in ('1', 'true', 'yes'):
         kwargs['cal_mlp_skipped_reason'] = 'env_disabled'
         return None
     if predictor is None:
