@@ -160,7 +160,10 @@ where Δ = MLP(features_excluding_logit_raw_prob)   # the residual head
 n_train_per_cell = count of train rows in cell (price_tier, stc_bucket)
 p_cell           = train_positive_rate per cell                         # NaN if n_train_per_cell == 0
 prior_cell       = train_mean_method_output per cell                    # NaN if n_train_per_cell == 0
-miscal_cell      = np.where(n_train_per_cell > 0, abs(p_cell - prior_cell), 0.0)   # 0 for empty cells
+# R5#C1: nan_to_num pre-fill avoids np.where's eager-branch RuntimeWarning when both inputs are NaN
+p_safe           = np.nan_to_num(p_cell, nan=0.0)
+prior_safe       = np.nan_to_num(prior_cell, nan=0.0)
+miscal_cell      = np.where(n_train_per_cell > 0, abs(p_safe - prior_safe), 0.0)
 w_cell           = 1.0 + 4.0 * miscal_cell                              # in [1, 5]; floor=1 for empty cells
 loss = BCE(sigmoid(logit_raw_prob_clipped + Δ), outcome) * w_cell[row.cell]
 ```
