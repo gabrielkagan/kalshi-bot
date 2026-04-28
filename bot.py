@@ -2868,7 +2868,8 @@ class StateManager:
                 settled_at TEXT,
                 cf_pnl_cents INTEGER,
                 cf_breakdown_json TEXT,
-                cf_pnl_cents_with_97 INTEGER
+                cf_pnl_cents_with_97 INTEGER,
+                direct_bump_applied INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_tmss_ticker ON tm_sweep_shadow(ticker);
             CREATE INDEX IF NOT EXISTS idx_tmss_status ON tm_sweep_shadow(status);
@@ -2893,6 +2894,21 @@ class StateManager:
             raise RuntimeError(
                 "tm_sweep_shadow.cf_pnl_cents_with_97 column missing after "
                 "migration — refusing to start with broken shadow schema")
+        # Same idempotent ALTER for direct_bump_applied (Apr 28 2026 follow-up
+        # to RCA on no-op deploy). cf_pnl interpretation differs for direct-
+        # bumped rows (entry was effectively 99c, not scan-time price), so
+        # analysts must filter on this column when aggregating cf_pnl.
+        if "direct_bump_applied" not in _post_cols:
+            self.conn.execute(
+                "ALTER TABLE tm_sweep_shadow ADD COLUMN direct_bump_applied INTEGER")
+            self.conn.commit()
+            _post_cols2 = {r[1] for r in self.conn.execute(
+                "PRAGMA table_info(tm_sweep_shadow)").fetchall()}
+            if "direct_bump_applied" not in _post_cols2:
+                raise RuntimeError(
+                    "tm_sweep_shadow.direct_bump_applied column missing "
+                    "after migration — refusing to start")
+            _post_cols = _post_cols2
 
         # Unified shadow view: combines 15M shadow engines + hourly alt shadows
         # Safe to re-run; depends on fifteenm_shadow_signals + hourly_alt_shadow_signals
@@ -4258,11 +4274,25 @@ class StateManager:
                                     seconds_to_close: Optional[float] = None,
                                     calibrated_prob: Optional[float] = None,
                                     buf_pct: Optional[float] = None,
-                                    best_ask_source: Optional[str] = None) -> None:
+                                    best_ask_source: Optional[str] = None,
+                                    direct_bump_applied: Optional[int] = None) -> None:
         """Insert one tm_sweep_shadow row capturing a TM execution snapshot.
         Caller is responsible for ensuring this is only called from TM paths
         (DC/LPNE/maker do NOT capture). Idempotent at the row level only by
-        (ticker, entry_time) — duplicates would create separate rows."""
+        (ticker, entry_time) — duplicates would create separate rows.
+
+        direct_bump_applied semantics (R3 A1): 1 when the direct-bump POLICY
+        was active at IOC submit time (TM_SWEEP_LIVE_ENABLED + TM strategy +
+        not retry + not no_side + price < MAX). It is NOT a confirmation
+        that an IOC fill occurred — rows with direct_bump_applied=1 AND
+        filled_count=0 mean the IOC was submitted at limit=MAX_ENTRY_PRICE
+        but no liquidity at-or-below filled (or place_order returned None).
+        cf_pnl interpretation differs by this column: bumped rows entered at
+        IOC limit=MAX_ENTRY_PRICE, NOT the scan-time price stored in
+        entry_price_cents. Compute effective entry as
+        `CASE WHEN direct_bump_applied=1 THEN 99 ELSE entry_price_cents END`.
+        For realized cost basis on filled bumped rows, join settled_trades
+        — the limit was 99 but actual fills sweep 96/97/98."""
         try:
             self.conn.execute(
                 "INSERT INTO tm_sweep_shadow ("
@@ -4271,14 +4301,16 @@ class StateManager:
                 "depth_at_entry_pre_fill, "
                 "depth_96c_pre, depth_97c_pre, depth_98c_pre, depth_99c_pre, "
                 "depth_96c_post, depth_97c_post, depth_98c_post, depth_99c_post, "
-                "seconds_to_close, calibrated_prob, buf_pct, best_ask_source"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "seconds_to_close, calibrated_prob, buf_pct, best_ask_source, "
+                "direct_bump_applied"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (ticker, event_ticker, asset, entry_time, entry_price_cents,
                  requested_count, filled_count, unfilled_count,
                  depth_at_entry_pre_fill,
                  depth_96c_pre, depth_97c_pre, depth_98c_pre, depth_99c_pre,
                  depth_96c_post, depth_97c_post, depth_98c_post, depth_99c_post,
-                 seconds_to_close, calibrated_prob, buf_pct, best_ask_source))
+                 seconds_to_close, calibrated_prob, buf_pct, best_ask_source,
+                 direct_bump_applied))
             self.conn.commit()
         except Exception:
             logging.warning("tm_sweep_shadow insert failed for %s", ticker, exc_info=True)
@@ -19991,6 +20023,12 @@ class OrderExecutor:
                 # corrupts unfilled_count.
                 _tmss_raw = result.get("filled_count") if isinstance(result, dict) else 0
                 _tmss_filled = max(0, int(_tmss_raw or 0))
+                # Adversary R3 A1: read direct-bump status from candidate
+                # (set by _submit_taker after its gate ran). Single source
+                # of truth — eliminates the predicate-duplication that R2
+                # A1 caught (capture over-reporting when picker happens to
+                # fire and bump).
+                _direct_bump = int(bool(candidate.get("_tm_direct_bump_fired", False)))
                 self._state.insert_tm_sweep_shadow_row(
                     ticker=ticker,
                     event_ticker=candidate.get("event_ticker", ""),
@@ -20012,7 +20050,8 @@ class OrderExecutor:
                     seconds_to_close=seconds_to_close,
                     calibrated_prob=cal_prob,
                     buf_pct=candidate.get("spot_buffer_pct"),
-                    best_ask_source=fresh_source)
+                    best_ask_source=fresh_source,
+                    direct_bump_applied=_direct_bump)
             except Exception:
                 logging.debug("tm_sweep_shadow capture failed", exc_info=True)
 
@@ -20625,6 +20664,10 @@ class OrderExecutor:
         # candidate["best_yes_ask"] — that stays at the scan-time value
         # for downstream telemetry/audit/post-fill analysis.
         _ioc_limit_price = price  # default to original
+        # Hoist _bump_strategy so the TM_SWEEP_DIRECT_BUMP branch below
+        # can reference it even when the picker block doesn't enter
+        # (orderbook unavailable — the exact case the direct-bump fixes).
+        _bump_strategy = candidate.get("strategy") or ""
         # Round 2 [P0-A]: picker is YES-side only. For NO-side
         # candidates (bracket_no, hourly_no_live, weather_no_live,
         # dc_shadow_no_side), `candidate["best_yes_ask"]` is set
@@ -20658,7 +20701,8 @@ class OrderExecutor:
                     # fee). High-conviction strategies (DC tiers,
                     # addons) override to -1 (tolerate fee-cost on
                     # worst-fill margin).
-                    _bump_strategy = candidate.get("strategy") or ""
+                    # _bump_strategy hoisted above (used by the TM direct-bump
+                    # branch outside this picker block).
                     _reserve_cents = STRATEGY_LIMIT_BUMP_RESERVE_CENTS.get(
                         _bump_strategy,
                         STRATEGY_LIMIT_BUMP_DEFAULT_RESERVE)
@@ -20716,6 +20760,49 @@ class OrderExecutor:
         except Exception:
             logging.warning(
                 "smart_ioc_limit_picker failed", exc_info=True)
+        # ── TM Sweep Live: direct limit bump (no orderbook required) ─────
+        # The smart picker above is gated on _live_ob from the WS cache
+        # and has no REST fallback. TM tickers consistently lack fresh WS
+        # cache when TM fires (488/488 production rows showed
+        # best_ask_source='market_nbbo' as of 2026-04-28), so the picker
+        # silently no-ops for TM and the edge_ceiling override never runs.
+        # This branch sets the limit directly when the sweep gates are
+        # satisfied — independent of orderbook availability. Kalshi
+        # auto-cancels surplus at $0 on unfilled IOC tail.
+        # Conditions:
+        #   - TM_SWEEP_LIVE_ENABLED env-var-gated kill switch
+        #   - exact-set strategy match (no startswith footgun)
+        #   - not a ladder retry (don't compound with +1c escalation)
+        #   - not _is_no_side (NO-side `best_yes_ask` is no_price; bumping
+        #     would submit a 99c NO buy = ~$1/contract overpay; matches
+        #     the picker's NO-side bypass)
+        #   - price < MAX_ENTRY_PRICE (no bump possible at 99c entry)
+        #   - _ioc_limit_price < MAX_ENTRY_PRICE (don't lower a higher
+        #     picker-chosen limit on the rare path where picker did fire)
+        # Adversary R3 A1: write the gate result to the candidate dict so
+        # the shadow capture in _execute_tm_taker reads from a single
+        # source of truth — eliminating the predicate-duplication
+        # fragility that R2 caught.
+        _direct_bump_fired = (
+            TM_SWEEP_LIVE_ENABLED
+            and _bump_strategy in TM_LIVE_STRATEGIES
+            and not _is_ladder_retry
+            and not _is_no_side
+            and isinstance(price, int)
+            and price < MAX_ENTRY_PRICE
+            and _ioc_limit_price < MAX_ENTRY_PRICE)
+        candidate["_tm_direct_bump_fired"] = _direct_bump_fired
+        if _direct_bump_fired:
+            # Adversary R2 A3: assign FIRST, log AFTER — log records fact,
+            # not intent. A logging handler exception between the log call
+            # and the assignment would have created a misleading audit
+            # trail (claiming bump while actually submitting scan-time price).
+            _prev_limit = _ioc_limit_price
+            _ioc_limit_price = MAX_ENTRY_PRICE
+            logging.info(
+                "TM_SWEEP_DIRECT_BUMP: %s %d→%d¢ strategy=%s "
+                "(picker bypassed; orderbook unavailable for TM)",
+                ticker, _prev_limit, _ioc_limit_price, _bump_strategy)
         # `_ioc_limit_price` is the actual price submitted to Kalshi.
         # `price` and `candidate["best_yes_ask"]` remain at scan-time
         # values for the downstream drift-check + PHANTOM_ABORT logic
