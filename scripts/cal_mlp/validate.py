@@ -25,11 +25,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
-import hashlib
 import json
-import math
 import os
-import sqlite3
 import sys
 import uuid
 from collections import defaultdict
@@ -78,7 +75,8 @@ from stats import (  # noqa: E402
     day_bootstrap_ci,
     escalate_n_if_close,
 )
-from sizing import compute_size, SIZING_TIERS, SIZING_TIER_RISK_FRACTIONS
+# R-p2-r12-lint: sizing imports were unused in validate.py — they're consumed
+# by sim_pnl.py via _replay_one_path. validate.py only invokes run_sim_pnl.
 
 
 # ---------------------------------------------------------------------------

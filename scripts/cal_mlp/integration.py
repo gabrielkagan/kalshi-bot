@@ -31,7 +31,6 @@ bot_startup_log inserts (which the caller's connection commits).
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import logging
 import os
@@ -39,7 +38,7 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 logger = logging.getLogger('cal_mlp')
 
