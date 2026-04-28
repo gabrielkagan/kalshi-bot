@@ -23,7 +23,9 @@ Pull rows from `evaluated_opportunities`, build train/cal/test splits using K-fo
 
 ## Source query (single connection)
 
-All reads use **one** sqlite3 connection opened with `f'file:{db_path}?mode=ro&cache=shared'`. SQLite WAL gives a consistent read snapshot at first query; we capture `PRAGMA data_version` at open and at close to fingerprint the snapshot.
+All reads use **one** sqlite3 connection opened with `f'file:{db_path}?mode=ro'` (R2-OPS#C2: dropped `cache=shared` — intra-process only, irrelevant here). SQLite WAL gives a consistent read snapshot at first query.
+
+`PRAGMA data_version` is captured at open and at close, persisted in audit JSON. **R2-OPS#C3:** `data_version_at_close > data_version_at_open` is EXPECTED — the live bot commits ~10/sec. WAL gives a stable snapshot at first read regardless. The two values bracket the extraction window in commit-counter space; **DO NOT** treat inequality as a contract violation.
 
 Per-asset entry-floor filter is on by default; disable with `--include-sub-floor` (logged + recorded in audit).
 
@@ -53,16 +55,19 @@ WHERE asset = ?
   AND market_price >= ?              -- per-asset floor (skipped if --include-sub-floor)
   AND raw_prob IS NOT NULL
   AND evaluation_time IS NOT NULL
-  AND evaluation_time < ?            -- cutoff_end_evaluation
   AND market_result IN ('yes','all_yes','no','all_no')
   AND settled_time IS NOT NULL
   AND settled_time < ?               -- cutoff_end (settlement watermark)
+  -- R2-OPS#C4: rows already settled before cutoff are exempt from the
+  -- evaluation-watermark gap (they're caught up). Only unsettled rows need
+  -- the 1h buffer to allow batched-settlement to finish — but those have
+  -- already been excluded by `settled_time IS NOT NULL`.
 ORDER BY evaluation_time, ticker, rowid
 ```
 
 **R1#C1**: Settlement results include `'all_yes'` and `'all_no'` (bot.py:4351 `_OK_RESULTS`). Filtering to only `('yes','no')` silently drops fully-filled markets.
 
-**R1#C3**: `cutoff_end` is a SETTLEMENT watermark. We compute `cutoff_end_evaluation = cutoff_end - 1h` to allow for batched-settlement lag (`_SETTLEMENT_BATCH_SIZE=50` in bot.py). Both watermarks are persisted in `bundle.json`.
+**R1#C3 + R2-OPS#C4**: `cutoff_end` is a SETTLEMENT watermark. The evaluation-watermark gap was removed — rows with `settled_time IS NOT NULL AND settled_time < cutoff_end` are unambiguously caught up regardless of when they were evaluated. `cutoff_end` alone is persisted in `bundle.json`.
 
 **R1#C4**: Per-asset floor mirrored from bot.py:219-225, vendored into `cal_mlp/asset_floors.py` (single source of truth). Phase 7 startup parity-asserts.
 
@@ -103,19 +108,29 @@ side_int = (side == 'yes').astype(int)
 **R1#C7 / R2#C3 (residual parameterization):**
 
 ```python
-method_output = raw_prob   # locked. NOT a COALESCE on calibrated_prob.
+method_output_raw = raw_prob                          # unclipped, audit only
+RAW_PROB_CLIP_EPS = 1e-6                              # logit ≈ ±13.8
+logit_raw_prob_clipped = logit(clip(raw_prob, EPS, 1-EPS))   # what Phase 4 reads
 ```
 
-`calibrated_prob` is bot.py's `min(raw_prob, dynamic_cap)` post-cap value (bot.py:8453+). The calibrator predicts a residual on the raw prior; the cap is downstream sizing concern. Phase 7 deploys cleanly: bot.py computes `raw_prob`, MLP predicts `Δlogit`, bot writes `final_prob = sigmoid(logit(raw_prob) + Δlogit)`, then sizing applies the existing dynamic_cap.
+**R2-ML#C1 (clip site lock):** Phase 2 writes BOTH `method_output_raw` (audit) AND `logit_raw_prob_clipped` (the value Phase 4 uses as the skip term). The clip happens once at extract time; Phase 4 never recomputes. `RAW_PROB_CLIP_EPS` is part of `cfg_fp`. This mechanically prevents inf/NaN even if a buggy upstream change produces 1.0.
+
+`calibrated_prob` is bot.py's `min(raw_prob, dynamic_cap)` post-cap value (bot.py:8453+). The cap is downstream sizing concern. Phase 7 deploys cleanly: bot.py computes `raw_prob`, MLP predicts `Δ`, bot writes `final_prob = sigmoid(logit_raw_prob_clipped + Δ)`, then sizing applies the existing dynamic_cap.
 
 **Architecture lock for Phase 3** (binding for this spec's parquet schema):
 
 ```
-final_prob = sigmoid(logit(raw_prob) + Δ)
-where Δ = MLP(features_excluding_raw_prob)   # the residual head
+final_prob = sigmoid(logit_raw_prob_clipped + Δ)
+where Δ = MLP(features_excluding_logit_raw_prob)   # the residual head
 ```
 
-The MLP **does not see `raw_prob` as a continuous input** — including it would let the MLP collapse to `Δ ≈ 0` (predict the prior). Instead, `raw_prob` enters via the `logit(raw_prob)` skip term added to `Δ`. The parquet still stores `raw_prob` (as `method_output_raw`) for Phase 5/6 reference, but it's NOT in `CONT_FEATURE_COLS`.
+**R2-ML#C2 (honest framing):** raw_prob is excluded as a literal feature so the SKIP TERM dominates the prior path. The MLP can still recover information about it via correlated features (`market_price`, `time_decayed_proximity`, etc.), which is intentional — Δ should be allowed to depend on the prior, just not short-circuit through a literal copy.
+
+**R2-ML#C3 (loss formulation lock):** the MLP is trained with `BCE(sigmoid(logit_raw_prob_clipped + Δ), outcome)` weighted by `1 / sqrt(p_cell + ε)` where `p_cell` is the per-cell train positive rate (smoothed). This is part of the architecture lock and `cfg_fp`. Phase 3 may revise the smoothing constant but the form is locked here.
+
+**R2-ML#C4 (Phase 7 inference contract):** when bot.py's ProbabilityEngine returns `raw_prob = None` (null_result fallback at bot.py:8400), the MLP is bypassed — no calibrated_prob written, opportunity skipped just as today. The MLP is only invoked when `raw_prob ∈ [EPS, 1-EPS]`. Phase 7 must enforce this guard at the call site.
+
+**R2-ML#C15 (architecture lock phase boundary):** the parquet is a feature-superset. `raw_prob`, `logit_raw_prob_clipped`, `prob_breakeven_gap`, `breakeven_wr`, etc. are all written. `cfg_fp` commits the SUBSET that Phase 4 consumes. If Phase 3 review wants to revise (e.g., temperature-scaled raw_prob input), the parquet does NOT need re-extraction — only `cfg_fp` and the Phase 4 model definition change. Re-extraction is the fallback if Phase 3 wants different bucketization or different pre-filter rules.
 
 ## Outcome (target)
 
@@ -136,37 +151,40 @@ Unit test: all 4 cells of `(side, market_result) ∈ {yes,no} × {yes,all_yes,no
 **R2#C8:** bounded-support features get `logit` transform before z-score.
 
 ```python
-# Continuous, z-score normalized after per-column transform.
+# Continuous features — z-score normalized after per-column transform unless
+# marked 'identity_no_zscore'. Lives in cal_mlp/features.py (R2-OPS#C13).
+# R2-OPS#C5: removed `breakeven_wr` (linearly redundant with market_price).
 CONT_FEATURE_COLS = [
-    'breakeven_wr',                # logit transform → z-score
-    'market_price',                # log1p(market_price/100) → z-score (cents → log-dollars)
-    'seconds_to_close',            # identity → z-score
-    'z_score',                     # identity → z-score
-    'yes_spread_cents',            # identity → z-score
-    'spot_momentum_60s_bps',       # identity → z-score
-    'spot_momentum_5m_bps',        # identity → z-score
-    'spot_realized_range_15m_bps', # log1p → z-score
-    'btc_spot_change_5m_bps',      # identity → z-score
-    'btc_realized_vol_15m',        # log1p → z-score
-    'window_max_buf_pct',          # identity → z-score
-    'window_min_buf_pct',          # identity → z-score
-    'minutes_above_strike',        # identity → z-score
-    'spot_distance_to_strike_sigma',           # identity → z-score
-    'abs_spot_distance_to_strike_sigma',       # NEW (R2#C14): |spot_distance|, addresses SOL pocket
-    'time_decayed_proximity',                  # NEW: spot_distance_to_strike_sigma × (seconds_to_close/900)
-    'prob_breakeven_gap',          # identity → z-score
-    'spot_coinbase_kraken_gap_bps',# identity → z-score
-    'kalshi_flow_depth_velocity',  # identity → z-score
-    'log_balance_dollars',         # = log1p(available_balance_cents/100); identity → z-score
-    'hour_sin', 'hour_cos',        # = sin/cos(2π·hour_of_day_utc/24); identity → z-score
+    'market_price',                            # log1p(market_price/100) → z
+    'seconds_to_close',                        # identity → z
+    'z_score',                                 # identity → z
+    'yes_spread_cents',                        # identity → z
+    'spot_momentum_60s_bps',                   # identity → z
+    'spot_momentum_5m_bps',                    # identity → z
+    'spot_realized_range_15m_bps',             # log1p_signed → z
+    'btc_spot_change_5m_bps',                  # identity → z
+    'btc_realized_vol_15m',                    # log1p → z
+    'window_max_buf_pct',                      # identity → z
+    'window_min_buf_pct',                      # identity → z
+    'minutes_above_strike',                    # identity → z
+    'spot_distance_to_strike_sigma',           # identity → z
+    'abs_spot_distance_to_strike_sigma',       # |spot_distance| — symmetry prior (R2-ML#C6)
+    'time_decayed_proximity',                  # spot_distance × (1 - seconds_to_close/900) — R2-ML#C5 inverted formula
+    'prob_breakeven_gap',                      # identity → z (kept; collinear with raw_prob/market_price but small)
+    'spot_coinbase_kraken_gap_bps',            # identity → z
+    'kalshi_flow_depth_velocity',              # identity → z
+    'log_balance_dollars',                     # log1p(available_balance_cents/100) → z
+    'hour_sin', 'hour_cos',                    # identity_no_zscore (R2-ML#C14)
 ]
 
 CONT_FEATURE_TRANSFORMS = {
-    'breakeven_wr': 'logit',
     'market_price': 'log_cents_to_dollars',
     'spot_realized_range_15m_bps': 'log1p_signed',
     'btc_realized_vol_15m': 'log1p',
-    # all others: 'identity'
+    'log_balance_dollars': 'log_cents_to_dollars',
+    'hour_sin': 'identity_no_zscore',           # bounded [-1,1], analytical mean=0
+    'hour_cos': 'identity_no_zscore',
+    # all others: 'identity' (z-scored)
 }
 
 # WS-fed columns get a parallel _missing int8 indicator.
@@ -266,6 +284,9 @@ if (cutoff_end - oldest_row_ts).days < min_required_days:
 - `n_test < 50` → SystemExit (R1#C8 — conformal quantile is unstable)
 - `n_test < 200` → soft warning in audit
 - `n_train < N_TRAIN_MIN` (default 2000; per-asset CLI overridable) → SystemExit (R2#C13)
+- `n_tickers_dropped_at_boundary / n_pre_boundary_drop > 0.20` → soft flag `high_boundary_drop_rate` (R2-OPS#C15)
+
+**R2-OPS#C12 (namespace clarification):** the `n_test < 50` threshold applies to the FOLD's total test rows. Per-cell counts may be smaller and are surfaced in `audit.per_fold[k].small_cell_warnings` for Phase 5's `n_test < 20 → use global quantile` fallback. Phase 2 does NOT abort on small per-cell counts — small bleed-cell counts are expected.
 
 **Ticker-disjoint splits enforcement (R2#C15):** after the time-based split, assign each ticker entirely to the split its LATEST row belongs to. This eliminates correlated leakage at fold boundaries (15-min market straddling cal/test). Costs ~5-10% of rows at boundaries. Audit reports `n_tickers_dropped_at_boundary`.
 
@@ -328,9 +349,9 @@ sha8 = sha256(f"{asset}|{cfg_fp}|{cutoff_end}|{data_version_at_open}|{folds}|"
               f"{train_days}|{cal_days}|{test_days}|{fold_offset_days}").hexdigest()[:8]
 ```
 
-Re-running with identical inputs produces identical `train_id` (idempotent — overwrites in place; previous artifacts unchanged).
+**R2-OPS#C9:** when `--include-sub-floor` is set, `canonical_inputs['asset_floors']` is replaced with the sentinel string `'__sub_floor_included__'` BEFORE `cfg_fp` is computed. The two modes therefore have distinct `cfg_fp` and distinct `train_id`. Also adds `'include_sub_floor': bool` as a top-level key in `canonical_inputs` for redundant clarity.
 
-Re-running with different inputs creates a new `train_id` directory; old directories coexist until a separate retention/GC job (out of scope).
+Re-running with identical inputs produces identical `train_id`. **R2-OPS#C17 — idempotency is at LOGICAL CONTENT level, not bit level.** On-disk parquet bytes may differ across pyarrow versions; re-extract overwrites the parquet inode atomically. Bundle JSON's `parquet_sha256` may differ between two re-extracts of the same `train_id` — by design (logical, not bit, idempotence). Re-running with different inputs creates a new `train_id` directory; old directories coexist until a separate retention/GC job (out of scope).
 
 ## Atomic write protocol — REWRITTEN per R3#C1, C2, C3, C16
 
@@ -366,6 +387,10 @@ def atomic_parquet_write(table: pa.Table, final_path: Path) -> None:
 
 **Reader contract** (R1#C11): Phase 4 takes `LOCK_SH` on `data/cal_mlp/<asset>/.extract.lock` BEFORE opening CURRENT, and HOLDS it until all parquet/normstats/vocab reads are complete and loaded into memory. Releasing earlier voids atomicity (`os.replace` of a parquet under an open mmap returns stale data without error on macOS/Linux).
 
+**R2-OPS#C16 (POSIX flock semantics):** `fcntl.flock` is auto-released by the kernel when the holding process exits, including via SIGKILL or OOM-kill. There is NO stale-lock cleanup needed. Operators MUST NOT `rm .extract.lock` to "unstick" a perceived stuck lock — unlinking the file does not release any lock currently held against the inode; a concurrent process re-creating the path can then double-acquire. If a lock appears stuck, identify and kill the holding process (`fuser <path>` or `lsof`), do not delete the file.
+
+**R2-OPS#C11 (writer-starvation alert throttling):** Phase 2 with `LOCK_NB` exits cleanly (Phase2LockError, exit code 4) when a Phase 4 reader is mid-load. Cron should treat exit 4 as "try again next tick", not an alert. Per-cron throttling: if Phase 2 sees code 4 three ticks in a row, emit one Telegram alert (slow reader detected), not three.
+
 ## Ticker vocabulary (R1#C9)
 
 Build asset-wide vocab from the FULL post-filter source (all 3 folds combined):
@@ -388,6 +413,7 @@ Build asset-wide vocab from the FULL post-filter source (all 3 folds combined):
 ```
 ticker          string                                  -- human-readable (audit/dashboards)
 ticker_id       int32                                   -- vocab index (Phase 4 embedding)
+is_unk_ticker   int8                                    -- R2-ML#C8: 1 if ticker∉vocab; Phase 4 forces high uncertainty
 evaluation_time timestamp[us, UTC]
 asset           string
 side            string                                  -- 'yes'/'no'
@@ -396,8 +422,9 @@ strategy        string                                  -- 'unknown' if NULL
 market_result   string                                  -- 'yes' | 'all_yes' | 'no' | 'all_no'
 result_yes_int  int8                                    -- 1 if market_result IN ('yes','all_yes')
 outcome         int8                                    -- the target
-method_output_raw float32                               -- raw_prob (the input prior; NOT in CONT_FEATURE_COLS)
-calibrated_prob_audit float32                           -- bot.py's calibrated_prob; metadata only
+method_output_raw      float32                          -- raw_prob unclipped (audit only; NOT in CONT_FEATURE_COLS)
+logit_raw_prob_clipped float32                          -- the skip-term value Phase 4 reads (R2-ML#C1)
+calibrated_prob_audit  float32                          -- bot.py's post-cap value; metadata only
 price_tier      int8
 stc_bucket      int8
 vol_regime_int  int8
@@ -411,6 +438,8 @@ available_balance_cents int64                            -- audit only; Phase 6 
 settled_time            timestamp[us, UTC]               -- audit
 rowid                   int64                            -- source-table rowid (audit/repro)
 ```
+
+`is_unk_ticker` is always 0 in Phase 2 outputs (vocab is built from all rows in this extract — every ticker is in vocab by construction). The column exists for Phase 7 inference: bot.py at decision time may encounter a ticker not in the vocab; `is_unk_ticker=1` instructs Phase 4's predict path to inject ensemble-disagreeing init OR force high σ at the calibrator output.
 
 ## Bundle JSON (extract_bundle.json)
 
@@ -451,7 +480,7 @@ rowid                   int64                            -- source-table rowid (
   "cfg_fp": "...",
   "cutoff_end": "...",
   "data_version_at_open": 184321,
-  "source_total_rows_for_asset": 92334,    // R3#C7: indexed COUNT, fast
+  "source_total_rows_for_asset": 92334,    // SELECT COUNT(*) WHERE asset=? — full scan, ms-fast at current scale (R2-OPS#C12: bot.py has no asset index; if scale grows past 1M rows, add index in Phase 7)
   "source_total_rows_post_filter": 92110,
   "drops": {
     "below_asset_floor": 0,
@@ -468,13 +497,20 @@ rowid                   int64                            -- source-table rowid (
       "test_window_start": "...",
       "test_window_end": "...",
       "n_train": 8421, "n_cal": 2103, "n_test": 2087,
-      "imputed_pct": {"breakeven_wr": 0.0, "spot_momentum_60s_bps": 0.03, ...},
+      "imputed_pct": {
+        "train": {"spot_momentum_60s_bps": 0.03, ...},
+        "cal":   {"spot_momentum_60s_bps": 0.04, ...},
+        "test":  {"spot_momentum_60s_bps": 0.05, ...}
+      },
       "missing_pct_test": {"spot_momentum_60s_bps_missing": 0.04, ...},
       "small_cell_warnings": ["cell_(3,2)_n_test=12 <50 floor"],
       "per_cell": {
         "(3,2)": {"n_train": 821, "n_cal": 198, "n_test": 187,
-                   "train_positive_rate": 0.94, "test_positive_rate": 0.92,
-                   "mean_method_output": 0.97, "void_rate": 0.005},
+                   "train_positive_rate": 0.94, "cal_positive_rate": 0.93,
+                   "test_positive_rate": 0.92,
+                   "mean_method_output": 0.97,
+                   "void_count": 4,    // R2-OPS#C11: raw count (separate pre-filter pass)
+                   "n_pre_settle_filter": 1210},
         ...
       }
     },
@@ -553,10 +589,39 @@ The CLI catches each and raises `SystemExit(code, message)`.
 - No SMOTE / class balancing (per-cell positive rates surfaced in audit; Phase 3 chooses).
 - No model training, no normalization-eager parquet (transforms applied to a derived column; raw `market_price` etc. also kept in parquet for audit).
 
-## Open issues for Round 2 review
+## Module layout (R2-OPS#C13)
 
-1. The architecture lock (skip term `logit(raw_prob)` + MLP residual) is a Phase 3 commitment made in Phase 2. Confirm via review that this is the right phase boundary for that decision.
-2. The `time_decayed_proximity` feature is heuristic. Justify or drop.
-3. Ticker-disjoint splits drop ~5-10% of rows. Verify on real SOL data that the drop rate is acceptable.
-4. SQLite WAL snapshot consistency vs `--cache=shared` — confirm whether this connection-string variant changes snapshot semantics vs the default.
-5. `apply_norm` location in `cal_mlp/normalize.py` — verify that Phase 4/5/6 can import from there without a circular dep on Phase 2's main module.
+To break the import direction cleanly:
+
+```
+cal_mlp/
+├── features.py          # constants ONLY: CONT_FEATURE_COLS, CONT_FEATURE_TRANSFORMS,
+│                          MISSING_INDICATOR_COLS, PRICE_BIN_CUTOFFS, STC_BIN_CUTOFFS,
+│                          ASSET_FLOORS, RAW_PROB_CLIP_EPS. No I/O, no torch.
+├── normalize.py         # apply_norm, fit_normstats, transform helpers (logit, log_cents_to_dollars, ...)
+│                          Imports features.py only.
+├── extract_data.py      # CLI tool. Imports features.py, normalize.py, sqlite3, pyarrow.
+├── train.py             # CLI tool. Imports features.py, normalize.py, torch.
+├── conformal.py         # Imports features.py, normalize.py, torch.
+└── ...
+```
+
+No module imports `extract_data.py`. Phase 4/5/6 import `features.py` and `normalize.py` (lightweight) but never the I/O-heavy extract module.
+
+## Schema version contract (R2-OPS#C10)
+
+`schema_version: 2` in bundle. Phase 4/5/6 readers MUST refuse to load bundles where `schema_version != 2` and emit `Phase4SchemaError` / etc.
+
+Version 1 was the pre-R1 single-file layout (now obsolete). Future v3 will require a same-commit migration script that upgrades v2 bundles in place OR re-extracts from source. No automatic forward/backward compatibility.
+
+## Closed open issues (carried from R1)
+
+- Q1 (NULL `available_balance_cents`): keep rows, mean-impute. Closed (above).
+- Q2/Q3 (kelly_f / fee_adjusted_edge leakage): dropped from CONT_FEATURE_COLS, kept as audit columns. Closed.
+- Q4 (cutoff_end default): `now - 24h`. Closed.
+- Q5 (SOL proximity-to-strike features): added `abs_spot_distance_to_strike_sigma` (regularization prior on symmetry per R2-ML#C6) + `time_decayed_proximity` (with the FIXED 1 - stc/900 weighting per R2-ML#C5). Closed.
+
+## Open issues remaining for Round 3
+
+1. Per-asset feature lists (R2-OPS#C14): currently uniform across BTC/ETH/SOL/XRP. Phase 3 ablation will show whether `time_decayed_proximity` and `abs_spot_distance_to_strike_sigma` degrade non-SOL assets. If yes, add per-asset feature mask in Phase 4. Defer the decision to Phase 3 review; Phase 2 writes the columns regardless (parquet superset).
+2. Per-cell historical positive rate as a feature (R2-ML#C7): NOT included in this spec. Revisit in Phase 8 if residual analysis shows per-cell signal the MLP isn't capturing.
