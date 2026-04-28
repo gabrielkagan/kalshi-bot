@@ -604,7 +604,7 @@ def _replay_one_path(
         row_features = {
             'price_tier': int(row['price_tier']),
             'stc_bucket': int(row['stc_bucket']),
-            'vol_regime': int(row['vol_regime']),
+            'vol_regime': int(row['vol_regime_int']),  # R4#C1: was reading source string
         }
         result = predict_with_interval(
             float(row['p_pred']), float(row['p_std']),
