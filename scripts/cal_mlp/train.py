@@ -227,14 +227,33 @@ class Phase4Dataset(Dataset):
         }
 
 
-# R2#C1: backward-compat aliases for Phase 6 (sim_pnl.py + validate.py).
-# Phase 6 was rebuilt before Phase 4 renamed these; provide aliases.
-CalibrationDataset = Phase4Dataset
+# R2#C1 + R3 reverify: backward-compat shim for Phase 6 inference-only use.
+# Phase 6 (sim_pnl.py / validate.py) was rebuilt before Phase 4 redesigned
+# the Dataset constructor. Phase 6 only needs INFERENCE batches (no w_cell).
+
+class CalibrationDataset(Phase4Dataset):
+    """Inference-only wrapper supporting Phase 6's old constructor signature
+    `CalibrationDataset(df, cont_cols, ticker_to_id_or_vocab)`. Internally
+    maps to Phase4Dataset with a zero w_cell_lookup (unused at inference)."""
+    def __init__(self, df: pd.DataFrame, cont_cols=None, ticker_to_id_or_vocab=None):
+        # Detect old signature: 3-positional args from Phase 6 call sites.
+        if isinstance(ticker_to_id_or_vocab, dict):
+            vocab = ticker_to_id_or_vocab
+        else:
+            # Fallback: treat as vocab-less mapping; build identity from df.
+            unique = sorted(df['ticker'].astype(str).unique())
+            vocab = {'<UNK>': 0, **{t: i + 1 for i, t in enumerate(unique)}}
+        # Phase 6 doesn't need per-cell weights at inference; pass zeros.
+        w_cell_zeros = np.zeros(16, dtype=np.float32)
+        # Ensure ticker_id column is present for Phase4Dataset's __getitem__.
+        df = df.copy()
+        if 'ticker_id' not in df.columns:
+            df['ticker_id'] = df['ticker'].astype(str).map(vocab).fillna(0).astype(np.int64)
+        super().__init__(df, vocab, w_cell_zeros)
 
 
 def collate_dict(batch_list: list) -> dict:
-    """Default-collate equivalent for Phase4Dataset's __getitem__ output.
-    Stacks each key into a batched tensor."""
+    """Default-collate equivalent for Phase4Dataset's __getitem__ output."""
     if not batch_list:
         return {}
     out = {}
