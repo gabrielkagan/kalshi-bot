@@ -24,14 +24,18 @@ For each fold:
 
 ```
 inputs:
-  x_cont: float32[B, N_CONT]                    # post-apply_norm continuous features
+  x_cont: float32[B, N_CONT]                    # post-apply_norm continuous features (N_CONT=21)
+  x_missing: int8[B, N_MISSING]                 # WS-feed missing indicators (N_MISSING=7), 0/1
   price_tier: int8[B]                           # 0..3
   stc_bucket: int8[B]                           # 0..3
   vol_regime_int: int8[B]                       # 0..1
   side_int: int8[B]                             # 0..1
   ticker_id: int32[B]                           # 0..n_vocab; 0 = UNK
-  is_unk_ticker: int8[B]                        # 0 in train; may be 1 at inference
   logit_raw_prob_clipped: float32[B]            # the SKIP TERM
+
+# R1#C3: is_unk_ticker is NOT a model input. Phase 4 reads it from parquet
+# only for DataLoader-side asserts (must be 0 throughout training).
+# Inference-time UNK routing is Phase 5's job (σ-inflation via conformal).
 
 # Categorical one-hot
 oh_price = one_hot(price_tier, 4)               # [B, 4]
@@ -42,11 +46,15 @@ oh_side  = one_hot(side_int, 2)                 # [B, 2]
 # Ticker embedding
 emb_ticker = TickerEmbedding(ticker_id)         # [B, EMB_DIM]
 # UNK index 0 is initialized PER-MEMBER with high-variance random vector
-# (R2-ML#C8: forces ensemble disagreement on unseen tickers)
+# (R2-ML#C8: forces ensemble disagreement on unseen tickers — forensic only)
+
+# R1#C10: x_cont and x_missing both flow into the continuous block. Effective
+# continuous dim = N_CONT + N_MISSING = 28.
+x_cont_full = concat([x_cont, x_missing.float()], dim=-1)   # [B, 28]
 
 # Concat
-h = concat([x_cont, oh_price, oh_stc, oh_vol, oh_side, emb_ticker], dim=-1)
-# h shape: [B, N_CONT + 4 + 4 + 2 + 2 + EMB_DIM] = [B, INPUT_DIM]
+h = concat([x_cont_full, oh_price, oh_stc, oh_vol, oh_side, emb_ticker], dim=-1)
+# h shape: [B, 28 + 4 + 4 + 2 + 2 + EMB_DIM] = [B, 44]
 
 # MLP residual head
 h = LayerNorm(INPUT_DIM)(h)
@@ -67,10 +75,10 @@ final_prob = sigmoid(final_logit)               # [B]
 
 | Name | Value | Justification |
 |---|---|---|
-| `EMB_DIM` | 8 | small per-ticker capacity; vocab is ~1500/asset |
+| `EMB_DIM` | 4 | R1#C1: dropped from 8 → 4 because vocab ~1500 with `pct_tickers_with_only_one_row=0.72` means most tickers see 1 gradient step; 8-dim per-ticker would memorize. 4-dim halves embedding params (1500×4=6k) and leaves room for residual signal. Frequency-floor (collapse rare tickers to UNK at extract time) is a future Phase 2 amendment.|
 | `HIDDEN_1` | 64 | conservative for ~10k-row train cohorts |
 | `HIDDEN_2` | 32 | bottleneck → encourages residual signal |
-| `DROPOUT` | 0.1 | mild regularization; ensemble dominates uncertainty |
+| `DROPOUT` | 0.1 | regularization only (training mode); inference uses `model.eval()` so dropout is OFF. Ensemble std is the sole uncertainty signal (MC-dropout was DROPPED per anchor doc).|
 | `DELTA_LOGIT_CLAMP` | 2.5 | sigmoid(2.5)/sigmoid(-2.5) ≈ 0.92/0.08 — bounds the calibrator's adjustment to ±~10pp from the prior even at extreme prior values; prevents pathological divergence on small folds |
 | Activation | GELU | smooth alternative to ReLU, helps with the residual head's small-magnitude outputs |
 | Normalization | LayerNorm | per-row stats; consistent with M=5 ensemble training (no batch-cross-ensemble interference) |
@@ -92,16 +100,23 @@ for member in range(M):
     embedding_table[0] = rng.normal(0, EMB_DIM ** -0.5, size=EMB_DIM)
 ```
 
-## Loss (carried forward from Phase 2 lock)
+## Loss (carried forward from Phase 2 lock + R1#C2 precision tweak)
 
 ```python
-# w_cell precomputed at Phase 4 fit-time from train fold's per-cell stats
-# (read from extract_audit.json's per_fold[k].per_cell):
+# R1#C2: precision-weight by per-cell n to prevent thin small-n cells from
+# dominating gradients. Lock N_TRAIN_PER_CELL_FLOOR = 50.
+N_TRAIN_PER_CELL_FLOOR = 50
+
 n_train_per_cell, p_cell, prior_cell = read_per_cell_stats(audit, fold=k)
 p_safe     = np.nan_to_num(p_cell, nan=0.0)
 prior_safe = np.nan_to_num(prior_cell, nan=0.0)
 miscal_cell = np.where(n_train_per_cell > 0, np.abs(p_safe - prior_safe), 0.0)
-w_cell = 1.0 + 4.0 * miscal_cell                    # shape [n_cells]; one entry per (price_tier, stc_bucket)
+precision_factor = np.minimum(n_train_per_cell / N_TRAIN_PER_CELL_FLOOR, 1.0)
+w_cell = 1.0 + 4.0 * miscal_cell * precision_factor   # shape [n_cells]
+
+# At bleed cell (n~821, miscal~0.06): w_cell ≈ 1.24
+# At thin cell (n~30, miscal~0.40): w_cell ≈ 1 + 4 × 0.40 × 0.6 = 1.96 (down from 2.6)
+# At empty cell: w_cell = 1.0 (unchanged)
 
 # Per-row weight
 def cell_idx(pt: int, sb: int) -> int:
@@ -117,6 +132,8 @@ loss_per_row = F.binary_cross_entropy_with_logits(
 loss = (loss_per_row * w_row).mean()
 ```
 
+Audit JSON gains `per_cell_effective_weight` (the materialized `w_cell` table) and `per_cell_expected_gradient_mass = w_cell × n_train_per_cell` so reviewers can see where loss attention lands.
+
 `binary_cross_entropy_with_logits` is numerically stable (uses log-sum-exp internally), so we feed `final_logit` directly without computing `sigmoid` in the forward pass before the loss. The forward pass returns `final_prob` for downstream metrics; training uses `final_logit` for the loss.
 
 ## Optimizer + schedule
@@ -128,9 +145,10 @@ loss = (loss_per_row * w_row).mean()
 | Batch size | 256 | balances per-step variance with gradient quality |
 | Epochs | 30 | per-fold; early stopping on cal Brier stop-improvement for 5 epochs |
 | Gradient clipping | max_norm=1.0 | prevents the rare large-batch gradient spike |
-| LR warmup | 200 steps linear from 0 → 1e-3 | helps with the small clamped Δ output head |
+| LR warmup | 50 steps linear from 0 → 1e-3 (R1#C4: dropped from 200) | embedding's first few updates not dominating |
+| Cosine decay window | 80% of POST-WARMUP steps | locks decay start = warmup_steps; ~880 of 930 steps decay |
 
-The early-stopping signal is **per-cell weighted Brier** on the cal split (using the same `w_cell` weights as training loss). This aligns the stopping criterion with the loss objective.
+The early-stopping signal is **per-cell weighted Brier** on the cal split using the **train-fold w_cell** weights (R1#C5: locked — close open question 6). Train-fold w_cell is a deterministic, locked quantity; using cal stats would give a moving early-stop target across folds with their own variance. Bias acknowledgment: the metric is biased toward training-cell distribution; this matches the loss objective by construction.
 
 ## Per-fold model output (per ensemble member)
 
@@ -145,20 +163,36 @@ Phase 4 ensembles the M=5 per-row predictions:
 
 Phase 5 reads `p_mean` and `p_std`, then applies the conformal wrapper to produce `[final_lo, final_hi]`.
 
-## Determinism
+## Fold selection for deploy (R1#C8 — locked)
+
+The bundle's deployable predictions come from **fold K-1 (newest test)** ONLY. Earlier folds (0..K-2) are kept for stability auditing — Phase 6 reports fold-to-fold Brier delta as a soft-flag — but Phase 7 deploys **only fold K-1's per-member checkpoints**. Phase 5 reads `eval_fold_artifacts[K-1]` for conformal calibration (uses fold K-1's CAL split residuals). Phase 6 ship-blocker checks per-fold consistency; the production weights are fold K-1's.
+
+Locking this here (in Phase 3) so Phase 4/5/6 don't re-derive.
+
+## Determinism (R1#C6 — concrete CUDA spec)
 
 - Each ensemble member uses a deterministic seed: `seed_member_m = BASE_SEED * 1000 + m`.
 - `BASE_SEED` is recorded in the bundle and set on torch + numpy + Python `random`.
 - DataLoader uses `worker_init_fn` to set per-worker seeds.
-- CUDA non-determinism: training is CPU-default (datasets are small); if GPU is enabled, torch's `deterministic=True` is set even at the cost of throughput.
+- CUDA setup (locked, applied BEFORE `import torch`):
+  ```python
+  os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'   # required by torch.use_deterministic_algorithms
+  import torch
+  torch.use_deterministic_algorithms(True, warn_only=False)
+  torch.backends.cudnn.deterministic = True
+  torch.backends.cudnn.benchmark = False
+  ```
+- CPU-only is the default; if `CUDA_VISIBLE_DEVICES` is non-empty AND `torch.cuda.is_available()`, log a startup banner and proceed. Any operator missing a deterministic CUDA implementation is a hard fail (the warn_only=False above guarantees).
 
-## Memory and runtime budgets
+## Memory and runtime budgets (R1#C7 — tightened)
 
-| Budget | Target | Rationale |
+| Budget | Target | Hard ceiling (SystemExit) |
 |---|---|---|
-| Peak RSS per asset training | 4 GB | M=5 × ~5 MB per model state + batches + DataLoader buffers |
-| Wall time per fold per member (CPU) | ≤ 90 s | 30 epochs × 12k batches × O(B × INPUT_DIM × HIDDEN_1) |
-| Total per-asset training | ≤ 25 minutes (3 folds × 5 members) | fits comfortably in a cron window |
+| Peak RSS per asset training | 1 GB | 1.5 GB |
+| Wall time per fold per member (CPU) | ≤ 90 s | 5 min |
+| Total per-asset training | ≤ 25 min (3 folds × 5 members) | 60 min |
+
+Tighter peak-RSS catches DataLoader leaks, accidental `pin_memory=True` with workers>1, and full-parquet-in-RAM bugs. RSS sampled every 100 steps via psutil; threshold breach → Phase4ResourceError.
 
 `psutil` is required at training; missing → SystemExit (Phase 4's contract; Phase 6 already has the same rule). Phase 7 startup parity-asserts.
 
@@ -170,12 +204,14 @@ bot.py at Phase 7 deploy must instantiate the same architecture for inference. P
 {
   "model_kind": "ResidualMLPV1",
   "n_cont": 21,
+  "n_missing_indicator_cols": 7,
+  "input_continuous_dim": 28,
   "n_price_tiers": 4,
   "n_stc_buckets": 4,
   "n_vol_regimes": 2,
   "n_sides": 2,
   "n_vocab": 1283,
-  "emb_dim": 8,
+  "emb_dim": 4,
   "hidden_1": 64,
   "hidden_2": 32,
   "dropout": 0.1,
