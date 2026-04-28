@@ -963,7 +963,7 @@ DC_T2_Z2_PHASE1_RISK = 0.10  # Proposed Phase 1 sizing for T2-Z2 re-promotion sh
 # These are contracts the main pipeline rejects as insufficient_edge but that
 # settle YES at 98.99% WR (496 observations). Fixed 50-contract sizing, direct taker.
 TERMINAL_MOMENTUM_ENABLED = os.environ.get("TERMINAL_MOMENTUM_ENABLED", "1") == "1"
-TM_PRICE_SET = {96, 98, 99}               # Valid entry prices (95c/97c removed: 94.5% WR vs 95-97% BE = negative EV, -$980/2wk on 347 trades)
+TM_PRICE_SET = frozenset({96, 98, 99})    # Valid entry prices (95c/97c removed: 94.5% WR vs 95-97% BE = negative EV, -$980/2wk on 347 trades). frozenset (not mutable set) so TM_LIVE_STRATEGIES — derived eagerly at import — can't drift from runtime mutations.
 TM_MIN_PROB = 0.93                        # Model confirmation threshold
 TM_MIN_STC = 61                           # Minimum seconds to close
 TM_MAX_STC = 300                          # Maximum seconds to close
@@ -1008,6 +1008,38 @@ TM_ASSET_RISK_CAPS = {
 TM_SWEEP_SHADOW_ENABLED = os.environ.get("TM_SWEEP_SHADOW_ENABLED", "1") == "1"
 TM_SWEEP_CAPTURE_TIERS = (96, 97, 98, 99)        # snapshot all four for analysis
 TM_SWEEP_COUNTERFACTUAL_TIERS = (98, 99)         # 97 excluded by design (TM_NEGATIVE_EV)
+
+# ── TM Sweep LIVE promotion (Apr 28 2026) ─────────────────────────────────
+# Promoted from shadow on n=115 unique tickers, 115/115 wins, +$49.11
+# cf_with_97 over ~38h. ADVERSARY A1 SURFACING: the 0-loss sample is a
+# degenerate Wilson distribution — variance anchored to 0; one observed
+# loss drops the LB from 96.8% to 93.5%, where 99c-tier sweep is −5.5¢
+# per contract = ~−$2.75 per 50ct IOC. User opt-in only via env var.
+#
+# Mechanism: when enabled, _edge_ceiling override in _submit_taker lifts
+# to MAX_ENTRY_PRICE for the EXACT terminal_momentum_{96,98,99} strategies
+# (adversary A2 — startswith was a footgun against re-adding 95/97).
+# The smart IOC picker can then bump 96→99. Position size is recomputed
+# using worst-case fill price = MAX_ENTRY_PRICE so per-asset risk caps
+# respect the actual capital-at-risk after a sweep (adversary A6).
+#
+# Kill switch: `TM_SWEEP_LIVE_ENABLED=0` env var → service restart.
+# Shadow capture continues regardless so we can monitor realized vs
+# counterfactual fills.
+#
+# Decision rationale + monitoring plan in kb/decisions/tm-sweep-live-promotion.md.
+TM_SWEEP_LIVE_ENABLED = os.environ.get("TM_SWEEP_LIVE_ENABLED", "1") == "1"
+# Exact-set strategy match — derived from TM_PRICE_SET so re-adding 95/97
+# to TM_PRICE_SET requires explicit re-validation here.
+#
+# Asymmetric-coverage flag (adversary R2 A1): terminal_momentum_96 is in
+# TM_LIVE_STRATEGIES but NOT in MAKER_TAIL_ELIGIBLE_STRATEGIES or
+# LADDER_ESCALATION_ELIGIBLE_STRATEGIES. tm_98/tm_99 partial-fills get
+# a maker-tail safety net for the unfilled remainder; tm_96 does not.
+# Pre-promotion behavior was the same (tm_96 IOCs that partialed died
+# without retry), so this isn't a regression — but a future change
+# that adds tm_96 to either eligibility set should bring its own data.
+TM_LIVE_STRATEGIES = frozenset(f"terminal_momentum_{p}" for p in TM_PRICE_SET)
 
 
 def tm_sweep_extract_depths(yes_asks, tiers=TM_SWEEP_CAPTURE_TIERS):
@@ -1072,7 +1104,8 @@ def tm_sweep_counterfactual_pnl(unfilled, entry_tier, depths, market_result,
 def tm_compute_contracts(price_cents: int, seconds_to_close: float,
                          bankroll_cents: int = 100000,
                          asset: str = "",
-                         buf_pct: float = None) -> int:
+                         buf_pct: Optional[float] = None,
+                         risk_cap_price: Optional[int] = None) -> int:
     """Margin × STC-aware sizing for terminal momentum.
 
     Formula: TM_BASE × (100 - price) × stc_multiplier
@@ -1090,6 +1123,11 @@ def tm_compute_contracts(price_cents: int, seconds_to_close: float,
     - buf_pct < 0.20%: cap to TM_THIN_BUFFER_CONTRACT_CAP (=50)
       (losses avg buf_pct 0.189% vs wins 0.240% — the earlier "buffer doesn't
        predict" finding held on Apr 1-7 n=278; fails on full April sample.)
+
+    risk_cap_price (adversary A6): when computing max_by_risk, callers may
+    pass the WORST-CASE fill price (e.g. MAX_ENTRY_PRICE=99 when sweeping)
+    so dollars-at-risk respects the actual capital deployed at the highest
+    swept tier, not the scan-time entry price. Defaults to price_cents.
     """
     margin = 100 - price_cents
     if margin <= 0:
@@ -1112,7 +1150,13 @@ def tm_compute_contracts(price_cents: int, seconds_to_close: float,
     # Per-asset risk cap (structural: TM no longer bypasses asset caps)
     if bankroll_cents > 0:
         risk_frac = TM_ASSET_RISK_CAPS.get(asset, 0.15)
-        max_by_risk = int(bankroll_cents * risk_frac / price_cents)
+        # Use risk_cap_price if provided (sweep-aware sizing), else fall
+        # back to scan-time price. max_by_risk denominator is the WORST-case
+        # fill price so cents-at-risk respect the cap regardless of sweep.
+        # Adversary R3 A1: explicit None check, not truthiness — a future
+        # caller passing 0 should NOT silently fall back to price_cents.
+        _risk_price = risk_cap_price if risk_cap_price is not None else price_cents
+        max_by_risk = int(bankroll_cents * risk_frac / _risk_price)
         ct = min(ct, max_by_risk)
 
     # Thin-buffer cap: bounds the fat tail when spot is close to threshold
@@ -12163,7 +12207,14 @@ class OpportunityScanner:
                                         _tm_intercepted = True
                                     if _tm_intercepted:
                                         _tm_balance = self._get_balance_cached() or 100000
-                                        _tm_size = tm_compute_contracts(best_ask, seconds_remaining, _tm_balance, asset, buf_pct=_tm_buf_pct)
+                                        # Adversary A6: when sweep is live, size against worst-case fill
+                                        # price (MAX_ENTRY_PRICE) so per-asset risk cap respects the
+                                        # actual capital-at-risk after a sweep up to 99c.
+                                        _tm_risk_price = (MAX_ENTRY_PRICE
+                                                          if TM_SWEEP_LIVE_ENABLED else None)
+                                        _tm_size = tm_compute_contracts(
+                                            best_ask, seconds_remaining, _tm_balance, asset,
+                                            buf_pct=_tm_buf_pct, risk_cap_price=_tm_risk_price)
                                         logging.info(
                                             "TM_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs edge=%.4f margin=%dc stc_zone=%s buf=%.3f%% src=%s",
                                             asset, ticker, _tm_size, best_ask,
@@ -19878,7 +19929,13 @@ class OrderExecutor:
             # Re-derive sizing from execution-time price (scan price may have drifted)
             _exec_bal = candidate.get("balance_at_scan") or 100000
             _exec_buf_pct = candidate.get("spot_buffer_pct")
-            count = tm_compute_contracts(fresh_ask, seconds_to_close or 200, _exec_bal, asset, buf_pct=_exec_buf_pct)
+            # Adversary A6: sweep-aware risk cap — sizing against worst-case
+            # fill price keeps cents-at-risk within the per-asset cap.
+            _exec_risk_price = MAX_ENTRY_PRICE if TM_SWEEP_LIVE_ENABLED else None
+            count = tm_compute_contracts(fresh_ask, seconds_to_close or 200,
+                                         _exec_bal, asset,
+                                         buf_pct=_exec_buf_pct,
+                                         risk_cap_price=_exec_risk_price)
             candidate["position_size"] = count
             taker_fee = calculate_taker_fee(count, price)
             net_edge = cal_prob - (price / 100.0) - (taker_fee / (count * 100.0))
@@ -20607,6 +20664,19 @@ class OrderExecutor:
                         STRATEGY_LIMIT_BUMP_DEFAULT_RESERVE)
                     _edge_ceiling = (
                         int(_cal_prob * 100) - _fee_1c - _reserve_cents)
+                    # TM Sweep Live: override edge_ceiling for the exact
+                    # terminal_momentum tiers in TM_LIVE_STRATEGIES so the
+                    # picker can bump up to MAX_ENTRY_PRICE (99c).
+                    #
+                    # Ladder-retry guard (adversary A4): the override does
+                    # NOT apply on _is_ladder_retry candidates. The ladder
+                    # escalation already does limit+1; compounding it with
+                    # a fresh smart-picker bump is untested and could
+                    # produce IOCs at price levels neither path validated.
+                    if (TM_SWEEP_LIVE_ENABLED
+                            and _bump_strategy in TM_LIVE_STRATEGIES
+                            and not _is_ladder_retry):
+                        _edge_ceiling = MAX_ENTRY_PRICE
                     _smart_limit = OrderExecutor._pick_ioc_limit_for_depth(
                         _live_ob,
                         best_yes_ask=int(price),

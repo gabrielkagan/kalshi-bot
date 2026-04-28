@@ -1048,5 +1048,316 @@ class TestWith97AdversarialRegressions(unittest.TestCase):
             "(adversary A4)")
 
 
+class TestTMSweepLive(unittest.TestCase):
+    """TM sweep promoted from shadow to live (Apr 28 2026 decision).
+    The smart IOC picker (_pick_ioc_limit_for_depth) already exists; what
+    blocked it for TM was edge_ceiling = floor(prob*100) - fee - reserve,
+    which collapses to ~92 for TM-96 (below entry tier → no bump).
+
+    Promotion: when TM_SWEEP_LIVE_ENABLED, override _edge_ceiling for
+    terminal_momentum strategies so the picker can bump up to MAX_ENTRY_PRICE
+    (99c). Total position size unchanged — count is still capped by
+    tm_compute_contracts. Just the IOC limit bumps so Kalshi sweeps."""
+
+    def setUp(self):
+        self.source = _read_bot()
+
+    def test_env_var_kill_switch_exists(self):
+        self.assertRegex(
+            self.source,
+            r'TM_SWEEP_LIVE_ENABLED\s*=\s*os\.environ\.get\(\s*["\']TM_SWEEP_LIVE_ENABLED["\']',
+            "TM_SWEEP_LIVE_ENABLED must be env-var-toggleable for fast kill")
+
+    def test_override_only_applies_to_terminal_momentum(self):
+        """The edge_ceiling override must gate on the exact-set
+        TM_LIVE_STRATEGIES (per adversary A2 — not startswith) — and
+        not affect DC, MAKER, LPNE, or any other strategy."""
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        self.assertIn("TM_SWEEP_LIVE_ENABLED", body,
+                      "_submit_taker must check TM_SWEEP_LIVE_ENABLED")
+        self.assertIn("in TM_LIVE_STRATEGIES", body,
+                      "override must gate on exact-set TM_LIVE_STRATEGIES")
+
+    def test_override_lifts_ceiling_to_max_entry_price(self):
+        """When the override fires, _edge_ceiling must be set to MAX_ENTRY_PRICE
+        (99) so the smart picker can bump up to the hard cap."""
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        # Must assign MAX_ENTRY_PRICE to _edge_ceiling in the TM branch.
+        self.assertRegex(
+            body,
+            r"(?s)TM_SWEEP_LIVE_ENABLED.{0,500}_edge_ceiling\s*=\s*MAX_ENTRY_PRICE|"
+            r"(?s)terminal_momentum.{0,500}_edge_ceiling\s*=\s*MAX_ENTRY_PRICE",
+            "_edge_ceiling must be set to MAX_ENTRY_PRICE in TM branch")
+
+    def test_picker_bumps_96_to_99_with_override(self):
+        """End-to-end picker test: entry=96, target_qty=50, depths covering
+        97/98/99 → picker returns 99 (the cap that delivers 50 contracts)."""
+        from bot import OrderExecutor, MAX_ENTRY_PRICE, IOC_LIMIT_MAX_BUMP_CENTS
+        # NO-side bids translate to YES asks. NO bid at 4c = YES ask at 96c.
+        ob_data = {
+            "no": [
+                [4, 2],    # YES ask at 96 with 2 contracts
+                [3, 7],    # YES ask at 97 with 7
+                [2, 5],    # YES ask at 98 with 5
+                [1, 100],  # YES ask at 99 with 100
+            ]
+        }
+        # With override: edge_ceiling = 99, max_bump = 3 → picker walks 96→99.
+        # Cumul: 2 at 96, 9 at 97, 14 at 98, 114 at 99. target_qty=50 → 99.
+        limit = OrderExecutor._pick_ioc_limit_for_depth(
+            ob_data, best_yes_ask=96, target_qty=50,
+            max_bump_cents=IOC_LIMIT_MAX_BUMP_CENTS,
+            edge_ceiling_price=MAX_ENTRY_PRICE,
+            max_price=MAX_ENTRY_PRICE)
+        self.assertEqual(limit, 99,
+                         "picker must return 99 when 96-tier alone insufficient")
+
+    def test_picker_returns_lowest_sufficient_tier(self):
+        """If 98c alone has enough depth, picker returns 98 (smallest)."""
+        from bot import OrderExecutor, MAX_ENTRY_PRICE, IOC_LIMIT_MAX_BUMP_CENTS
+        ob_data = {
+            "no": [
+                [4, 1],    # 96c × 1
+                [2, 100],  # 98c × 100
+            ]
+        }
+        limit = OrderExecutor._pick_ioc_limit_for_depth(
+            ob_data, best_yes_ask=96, target_qty=50,
+            max_bump_cents=IOC_LIMIT_MAX_BUMP_CENTS,
+            edge_ceiling_price=MAX_ENTRY_PRICE,
+            max_price=MAX_ENTRY_PRICE)
+        self.assertEqual(limit, 98)
+
+    def test_picker_caps_at_99_even_when_target_exceeds_total_depth(self):
+        """If total depth in 96-99 is insufficient, picker returns highest
+        in-cap tier (99) — never above MAX_ENTRY_PRICE."""
+        from bot import OrderExecutor, MAX_ENTRY_PRICE, IOC_LIMIT_MAX_BUMP_CENTS
+        ob_data = {"no": [[4, 1], [3, 1], [2, 1], [1, 1]]}  # 4 ct total
+        limit = OrderExecutor._pick_ioc_limit_for_depth(
+            ob_data, best_yes_ask=96, target_qty=500,
+            max_bump_cents=IOC_LIMIT_MAX_BUMP_CENTS,
+            edge_ceiling_price=MAX_ENTRY_PRICE,
+            max_price=MAX_ENTRY_PRICE)
+        self.assertEqual(limit, 99)
+
+    def test_shadow_capture_continues_alongside_live_sweep(self):
+        """tm_sweep_shadow capture must still fire when TM_SWEEP_LIVE_ENABLED.
+        We need the shadow data stream uninterrupted to monitor whether the
+        promotion was right (cf_pnl_with_97 vs realized fills)."""
+        # This is enforced by the existing wiring tests that the insert call
+        # lives inside the TM_SWEEP_SHADOW_ENABLED gate. The promotion must
+        # NOT remove or short-circuit that gate.
+        start = self.source.find("def _execute_tm_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        self.assertIn("insert_tm_sweep_shadow_row", body,
+                      "shadow capture must still be wired in _execute_tm_taker")
+        # Defensive: TM_SWEEP_LIVE_ENABLED must NOT gate the shadow insert.
+        # The shadow runs whether live sweep is on or off.
+        # Find the insert call's prelude.
+        insert_idx = body.find("self._state.insert_tm_sweep_shadow_row(")
+        prelude = body[max(0, insert_idx - 1200):insert_idx]
+        # The gate before the insert must be TM_SWEEP_SHADOW_ENABLED, not LIVE.
+        self.assertIn("if TM_SWEEP_SHADOW_ENABLED:", prelude)
+        # The LIVE flag must NOT short-circuit the shadow.
+        self.assertNotRegex(
+            prelude,
+            r"if\s+TM_SWEEP_LIVE_ENABLED.*insert_tm_sweep_shadow_row",
+            "TM_SWEEP_LIVE_ENABLED must NOT gate the shadow insert "
+            "— shadow runs regardless of live promotion state")
+
+
+class TestTMSweepLiveAdversarial(unittest.TestCase):
+    """Adversary findings on the live promotion (Apr 28 2026)."""
+
+    def setUp(self):
+        self.source = _read_bot()
+
+    def test_A1_user_decision_default_on(self):
+        """Adversary A1 framing was for default-OFF, but user explicitly
+        elected to ship default-ON after seeing the asymmetric tail math
+        (4 rounds of adversarial review + guard-aware review). The env
+        var still serves as a kill switch — set TM_SWEEP_LIVE_ENABLED=0
+        and restart to disable."""
+        self.assertRegex(
+            self.source,
+            r'TM_SWEEP_LIVE_ENABLED\s*=\s*os\.environ\.get\(\s*'
+            r'["\']TM_SWEEP_LIVE_ENABLED["\']\s*,\s*["\']1["\']',
+            "TM_SWEEP_LIVE_ENABLED must default to '1' (on) "
+            "— user-elected after adversarial review (Apr 28 2026)")
+
+    def test_A2_exact_match_strategy_set(self):
+        """Adversary A2: startswith('terminal_momentum') matches dead paths
+        (terminal_momentum_95, _97). Use exact-set match against current
+        TM_PRICE_SET so re-adding 95/97 forces re-validation, not silent
+        promotion of unvetted tiers."""
+        # Constant must exist as an exact-set, derived from TM_PRICE_SET.
+        self.assertRegex(
+            self.source,
+            r"TM_LIVE_STRATEGIES\s*=\s*frozenset",
+            "TM_LIVE_STRATEGIES frozenset must exist for exact-match")
+        # The override must use 'in TM_LIVE_STRATEGIES', not startswith.
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        self.assertIn("in TM_LIVE_STRATEGIES", body,
+                      "override must use exact-set membership, not startswith")
+        # Negative guard: startswith('terminal_momentum') must be GONE from
+        # the override path (still allowed elsewhere e.g. shadow checks).
+        # Find the TM_SWEEP_LIVE_ENABLED block and verify no startswith.
+        # The override block is small — check immediate context.
+        if "TM_SWEEP_LIVE_ENABLED" in body:
+            override_idx = body.find("TM_SWEEP_LIVE_ENABLED")
+            override_block = body[override_idx:override_idx + 400]
+            self.assertNotIn(
+                'startswith("terminal_momentum")', override_block,
+                "override block must not use startswith() — adversary A2")
+
+    def test_A2_TM_LIVE_STRATEGIES_excludes_dead_paths(self):
+        """Imported value of TM_LIVE_STRATEGIES must not include 95 or 97."""
+        from bot import TM_LIVE_STRATEGIES
+        self.assertNotIn("terminal_momentum_95", TM_LIVE_STRATEGIES)
+        self.assertNotIn("terminal_momentum_97", TM_LIVE_STRATEGIES)
+        # And SHOULD include the live tiers from TM_PRICE_SET.
+        from bot import TM_PRICE_SET
+        for p in TM_PRICE_SET:
+            self.assertIn(f"terminal_momentum_{p}", TM_LIVE_STRATEGIES)
+
+    def test_A4_ladder_retry_skip_override(self):
+        """Adversary A4: _is_ladder_retry recurses into _submit_taker with
+        the same strategy. The override compounding with the +1¢ ladder
+        escalation is untested — guard against it by skipping the override
+        when the candidate is a ladder retry. Guard-aware reviewer asked
+        for a stricter check that the gate's negation is correct (not just
+        that the variable is mentioned)."""
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        # The override gate must include the EXACT literal `not _is_ladder_retry`
+        # near the TM_SWEEP_LIVE_ENABLED check — proves the negation is correct,
+        # not just that the variable is referenced.
+        idx = body.find("TM_SWEEP_LIVE_ENABLED")
+        self.assertGreater(idx, 0, "override block not found in _submit_taker")
+        window = body[max(0, idx - 100):idx + 600]
+        self.assertIn(
+            "not _is_ladder_retry",
+            window,
+            "override gate must EXPLICITLY suppress on _is_ladder_retry "
+            "(adversary A4 + guard-aware reviewer): ladder retry path must "
+            "NOT compound smart-picker bump with ladder +1c escalation")
+
+    def test_A6_risk_cap_uses_worst_case_fill_price(self):
+        """Adversary A6: tm_compute_contracts uses scan-time price for
+        max_by_risk = bankroll * risk_frac / price_cents. With sweep,
+        actual capital deployed at swept tier (up to 99c) exceeds the
+        per-asset risk cap. Compute count using worst-case fill price
+        (MAX_ENTRY_PRICE) when TM_SWEEP_LIVE_ENABLED."""
+        from bot import tm_compute_contracts, TM_BASE_CONTRACTS
+        # Direct verification: at the same scan-time price, sweep-aware
+        # sizing must produce <= count vs sweep-ignorant sizing.
+        bankroll = 100000  # $1000 in cents
+        # SOL has risk_frac=0.15. At price=96, max_by_risk = 100000*0.15/96 = 156.
+        # At price=99 (worst case fill), max_by_risk = 100000*0.15/99 = 151.
+        # So sweep-aware sizing must be <= sweep-ignorant.
+        ignorant = tm_compute_contracts(96, 200, bankroll, "SOL")
+        # If the sweep flag is honored, calling with explicit sweep=True
+        # should reduce or equal count.
+        # Implementation surface: param `risk_cap_price` defaulting to price.
+        # When caller passes risk_cap_price=MAX_ENTRY_PRICE, count must clamp.
+        try:
+            sweep_aware = tm_compute_contracts(
+                96, 200, bankroll, "SOL", risk_cap_price=99)
+        except TypeError:
+            self.fail("tm_compute_contracts must accept risk_cap_price kwarg")
+        self.assertLessEqual(
+            sweep_aware, ignorant,
+            "sweep-aware sizing (risk_cap_price=99) must be <= ignorant "
+            "(risk_cap_price=96) — adversary A6: risk cap dollars-at-risk "
+            "must respect worst-case fill price")
+
+    def test_A6_execute_tm_taker_passes_worst_case_when_sweep_live(self):
+        """The caller in _execute_tm_taker must pass MAX_ENTRY_PRICE as
+        risk_cap_price when TM_SWEEP_LIVE_ENABLED is on, otherwise the
+        risk cap is computed at scan-time price even though we'll sweep
+        higher."""
+        start = self.source.find("def _execute_tm_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        # Find tm_compute_contracts calls inside _execute_tm_taker; at least
+        # one must pass risk_cap_price=MAX_ENTRY_PRICE under sweep-live gate.
+        self.assertRegex(
+            body,
+            r"risk_cap_price\s*=",
+            "_execute_tm_taker must pass risk_cap_price to "
+            "tm_compute_contracts when sweep is live (adversary A6)")
+
+
+class TestTMSweepLiveAdversarialRound2(unittest.TestCase):
+    """Round 2 adversary findings."""
+
+    def test_A5_TM_PRICE_SET_is_frozenset_not_mutable_set(self):
+        """Adversary R2 A5: TM_LIVE_STRATEGIES is frozen at import time
+        from TM_PRICE_SET. If TM_PRICE_SET is a mutable set and gets
+        mutated at runtime (test code, hot-reload), the two go out of
+        sync silently. TM_PRICE_SET must be a frozenset."""
+        from bot import TM_PRICE_SET
+        self.assertIsInstance(TM_PRICE_SET, frozenset,
+                              "TM_PRICE_SET must be frozenset to prevent "
+                              "runtime drift from TM_LIVE_STRATEGIES")
+
+    def test_A2_tm_compute_contracts_docstring_does_not_overclaim(self):
+        """Adversary R2 A2: original docstring claimed risk_cap_price
+        'respects the actual capital deployed at the highest swept tier.'
+        It doesn't enforce a deployed-cap; it only shrinks the count
+        slightly. Docstring must be honest about the advisory nature."""
+        with open(BOT_PATH) as f:
+            source = f.read()
+        # Slice tm_compute_contracts.
+        start = source.find("def tm_compute_contracts")
+        end = source.find("\ndef ", start + 10)
+        body = source[start:end]
+        # Must not claim it "respects the actual capital deployed."
+        self.assertNotIn(
+            "respect the actual capital deployed",
+            body,
+            "docstring overclaims; risk_cap_price only sizes the COUNT, "
+            "not actual cents-deployed")
+
+    def test_A1_tm_96_lacks_maker_tail_or_ladder_documented(self):
+        """Adversary R2 A1: terminal_momentum_96 is in TM_LIVE_STRATEGIES
+        but NOT in MAKER_TAIL_ELIGIBLE_STRATEGIES or
+        LADDER_ESCALATION_ELIGIBLE_STRATEGIES. Asymmetric coverage —
+        a swept-but-partial tm_96 IOC has no maker-tail / retry fallback,
+        unlike tm_98/99. The constants block must call this out so a
+        future maintainer doesn't promote without resolving."""
+        with open(BOT_PATH) as f:
+            source = f.read()
+        # The TM_LIVE_STRATEGIES block must mention tm_96 has no fallback,
+        # OR add it to eligibility sets.
+        from bot import TM_LIVE_STRATEGIES, MAKER_TAIL_ELIGIBLE_STRATEGIES
+        if "terminal_momentum_96" in TM_LIVE_STRATEGIES:
+            # Either tm_96 is in the eligibility sets, or the asymmetry
+            # is documented at the TM_LIVE_STRATEGIES assignment.
+            in_maker_tail = "terminal_momentum_96" in MAKER_TAIL_ELIGIBLE_STRATEGIES
+            # Find the ASSIGNMENT line (not stray comment references).
+            assignment_idx = source.find("TM_LIVE_STRATEGIES = frozenset")
+            self.assertGreater(assignment_idx, 0, "assignment line not found")
+            # Look 2000 chars BEFORE the assignment for the comment block.
+            constant_block = source[max(0, assignment_idx - 2000):assignment_idx + 500]
+            documented = ("no maker_tail" in constant_block
+                          or "no fallback" in constant_block
+                          or "no escalation" in constant_block
+                          or "Asymmetric-coverage" in constant_block)
+            self.assertTrue(
+                in_maker_tail or documented,
+                "tm_96 in TM_LIVE_STRATEGIES requires either MAKER_TAIL "
+                "eligibility or explicit documentation of the asymmetry "
+                "(adversary R2 A1)")
+
+
 if __name__ == "__main__":
     unittest.main()

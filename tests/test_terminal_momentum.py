@@ -51,15 +51,19 @@ class TestTMConstants(unittest.TestCase):
         self.assertIn("TERMINAL_MOMENTUM_ENABLED", self.source)
 
     def test_price_set_is_set_not_range(self):
-        """TM_PRICE_SET must be a set literal {95, 96, 97, 98, 99}, NOT a range."""
-        m = re.search(r'^TM_PRICE_SET\s*=\s*(\{[^}]+\})', self.source, re.MULTILINE)
-        self.assertIsNotNone(m, "TM_PRICE_SET must be a set literal")
+        """TM_PRICE_SET must be a set or frozenset literal, NOT a range.
+        frozenset added Apr 28 2026 to prevent runtime drift from
+        TM_LIVE_STRATEGIES (eagerly derived at import)."""
+        m = re.search(r'^TM_PRICE_SET\s*=\s*(?:frozenset\()?(\{[^}]+\})',
+                      self.source, re.MULTILINE)
+        self.assertIsNotNone(m, "TM_PRICE_SET must be a set/frozenset literal")
         price_set = eval(m.group(1))
         self.assertEqual(price_set, {96, 98, 99})
 
     def test_negative_ev_prices_excluded(self):
         """95c/97c removed: 94.5% WR vs 95-97% breakeven = negative EV."""
-        m = re.search(r'^TM_PRICE_SET\s*=\s*(\{[^}]+\})', self.source, re.MULTILINE)
+        m = re.search(r'^TM_PRICE_SET\s*=\s*(?:frozenset\()?(\{[^}]+\})',
+                      self.source, re.MULTILINE)
         self.assertIsNotNone(m)
         price_set = eval(m.group(1))
         self.assertNotIn(95, price_set, "95c is negative EV — must not be in TM_PRICE_SET")
@@ -293,7 +297,8 @@ class TestTMThinBufferCap(unittest.TestCase):
 
     def _compile_fn(self):
         """Extract TM constants + tm_compute_contracts into an isolated namespace."""
-        ns = {}
+        from typing import Optional
+        ns = {"Optional": Optional}
         # Hoist the needed constants + TM_ASSET_RISK_CAPS
         const_names = [
             "TM_BASE_CONTRACTS", "TM_STC_SAFE_THRESHOLD", "TM_STC_DANGER_HI",
@@ -364,10 +369,18 @@ class TestTMThinBufferCap(unittest.TestCase):
         self.assertGreaterEqual(ct, _min, f"Cap must not drop ct below {_min}")
 
     def test_scan_passes_buf_pct(self):
-        """The scan-time call to tm_compute_contracts must pass buf_pct=_tm_buf_pct."""
+        """The scan-time call to tm_compute_contracts must pass buf_pct=_tm_buf_pct.
+        Check is component-based (not exact string) so multi-line call formatting
+        from later changes (e.g. risk_cap_price added Apr 28) doesn't false-fail."""
         tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:10000]
-        self.assertIn("tm_compute_contracts(best_ask, seconds_remaining, _tm_balance, asset, buf_pct=_tm_buf_pct)",
-                      tm_block)
+        # Find a tm_compute_contracts call and verify positional args + buf_pct.
+        self.assertIn("tm_compute_contracts(", tm_block,
+                      "scan must call tm_compute_contracts")
+        self.assertIn("best_ask", tm_block)
+        self.assertIn("seconds_remaining", tm_block)
+        self.assertIn("_tm_balance", tm_block)
+        self.assertIn("buf_pct=_tm_buf_pct", tm_block,
+                      "scan must pass buf_pct=_tm_buf_pct")
 
     def test_execution_passes_buf_pct(self):
         """_execute_tm_taker must pass buf_pct when re-deriving on price drift."""
