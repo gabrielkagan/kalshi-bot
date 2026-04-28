@@ -145,12 +145,14 @@ def parse_args() -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 def _setup_logging(quiet: bool, verbose: bool) -> None:
+    """R2#C10: force=True so re-config works if a parent process pre-configured logging."""
     level = logging.WARN if quiet else (logging.DEBUG if verbose else logging.INFO)
     logging.basicConfig(
         level=level,
         format='%(asctime)s %(levelname)s %(message)s',
         datefmt='%Y-%m-%dT%H:%M:%S',
         stream=sys.stderr,
+        force=True,
     )
 
 
@@ -163,7 +165,11 @@ def acquire_extract_lock(out_dir: Path, asset: str):
     """LOCK_EX | LOCK_NB on data/cal_mlp/<asset>/.extract.lock. Auto-released
     on process death by POSIX flock semantics."""
     lock_path = out_dir / '.extract.lock'
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    # R2#C4: catch OSError from os.open and re-raise as Phase2LockError.
+    try:
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as e:
+        raise Phase2LockError(f"failed to open lock file {lock_path}: {e}") from e
     handle = os.fdopen(fd, 'r+')
     try:
         try:
@@ -206,14 +212,21 @@ REQUIRED_SOURCE_COLS = (
 
 
 def _open_ro_conn(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
-    conn.execute("PRAGMA journal_mode=WAL")
+    """R2#C1: URL-encode the path to prevent ?/&/# from being interpreted as
+    URI parameters. R2#C12: drop journal_mode=WAL (no-op on RO connection)."""
+    from urllib.parse import quote
+    abs_path = str(Path(db_path).resolve())
+    conn = sqlite3.connect(f'file:{quote(abs_path, safe="/")}?mode=ro', uri=True)
+    # WAL is set by the writer (bot.py); RO connections don't need it. busy_timeout
+    # DOES apply to RO connections.
     conn.execute("PRAGMA busy_timeout=10000")
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def _check_schema(conn: sqlite3.Connection) -> None:
+def _check_schema(conn: sqlite3.Connection, db_path: str) -> None:
+    """R2#C2: take db_path explicitly so the error message doesn't rely on
+    a fragile second connection query."""
     cols = {row[1] for row in conn.execute("PRAGMA table_info(evaluated_opportunities)").fetchall()}
     if not cols:
         raise Phase2SchemaError("evaluated_opportunities table missing or empty schema")
@@ -222,7 +235,7 @@ def _check_schema(conn: sqlite3.Connection) -> None:
         raise Phase2SchemaError(
             f"Phase 2 schema mismatch — columns expected by extract but not in state.db: {missing}. "
             f"Either bot.py removed them (update extract spec + bump cfg_fp) or backfill incomplete. "
-            f"Run `sqlite3 {conn.execute('PRAGMA database_list').fetchone()[2]} 'PRAGMA table_info(evaluated_opportunities)'`."
+            f"Run `sqlite3 {db_path} 'PRAGMA table_info(evaluated_opportunities)'`."
         )
 
 
@@ -231,7 +244,12 @@ def _check_schema(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 def _classify_drop(row: sqlite3.Row, asset: str, asset_floor: int, cutoff_end: str) -> Optional[str]:
-    """Return the FIRST predicate the row fails, or None if it passes."""
+    """Return the FIRST predicate the row fails, or None if it passes.
+
+    R1#C7 + R2#C17: extends the spec's drop predicates with side / stc
+    NULL-checks because those columns must be non-null for outcome and
+    bucketization. Adding them here changes cfg_fp via DROP_PREDICATES_ORDER.
+    """
     if (row['product_type'] or '') != '15m':
         return 'non_15m_product_type'
     if (row['ticker'] or '').startswith('SPORTS-'):
@@ -252,6 +270,10 @@ def _classify_drop(row: sqlite3.Row, asset: str, asset_floor: int, cutoff_end: s
         return 'null_settled_time'
     if row['settled_time'] >= cutoff_end:
         return 'settled_after_cutoff'
+    if row['side'] is None or row['side'] not in ('yes', 'no'):
+        return 'null_or_invalid_side'
+    if row['seconds_to_close'] is None:
+        return 'null_seconds_to_close'
     return None
 
 
@@ -264,21 +286,27 @@ def pull_and_classify(
     """Single-pass pull of `WHERE asset=?` rows. Bucket-classifies each row
     via DROP_PREDICATES; returns (kept_rows, drops_dict, source_total)."""
     select_cols = ', '.join(REQUIRED_SOURCE_COLS) + ', rowid'
-    cur = conn.execute(
-        f"SELECT {select_cols} FROM evaluated_opportunities WHERE asset = ? "
-        f"ORDER BY evaluation_time, ticker, rowid",
-        (asset,),
-    )
     drops: dict[str, int] = {k: 0 for k in DROP_PREDICATES_ORDER}
     kept: list[dict] = []
     source_total = 0
-    for row in cur:
-        source_total += 1
-        bucket = _classify_drop(row, asset, asset_floor, cutoff_end)
-        if bucket is None:
-            kept.append(dict(row))
-        else:
-            drops[bucket] += 1
+    try:
+        cur = conn.execute(
+            f"SELECT {select_cols} FROM evaluated_opportunities WHERE asset = ? "
+            f"ORDER BY evaluation_time, ticker, rowid",
+            (asset,),
+        )
+        for row in cur:
+            source_total += 1
+            bucket = _classify_drop(row, asset, asset_floor, cutoff_end)
+            if bucket is None:
+                kept.append(dict(row))
+            else:
+                drops[bucket] += 1
+    except sqlite3.OperationalError as e:
+        # R2#C3: preserve documented exit-code contract for DB issues.
+        raise Phase2DBError(
+            f"state.db read failed (busy_timeout exceeded? schema drift?): {e}"
+        ) from e
     return kept, drops, source_total
 
 
@@ -382,21 +410,34 @@ def assign_split(df: pd.DataFrame, fold_window: dict) -> pd.Series:
 
 
 def enforce_ticker_disjoint(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Per ticker, assign all rows to the split where that ticker's LATEST
-    row falls. Drops boundary-straddling rows. Returns (df_with_split,
-    n_dropped)."""
+    """Per ticker, assign all in-span rows of that ticker to the split where
+    that ticker's LATEST in-span row falls. Out-of-span rows keep `split=None`.
+
+    R1#C4 + R1#C5 + R2#C9: prior version mass-promoted out-of-span rows into
+    splits via `df['ticker'].map(last_split)` unconditionally. Now restricted
+    to rows that already had a non-null split.
+    """
     if df.empty:
         return df, 0
+    pre_split = df['split'].copy()
+    in_span_mask = pre_split.notna()
+    if not in_span_mask.any():
+        return df, 0
     et = pd.to_datetime(df['evaluation_time'], utc=True)
-    df = df.assign(_et=et).sort_values(['ticker', '_et'])
-    # Per ticker: most-recent row's split → assign all rows of that ticker
-    last_split = df.dropna(subset=['split']).groupby('ticker')['split'].last()
-    n_pre = (df['split'].notna()).sum()
-    df['split'] = df['ticker'].map(last_split)
-    df = df.drop(columns=['_et'])
-    n_post = (df['split'].notna()).sum()
-    n_dropped = max(0, int(n_pre - n_post))
-    return df, n_dropped
+    sorted_df = df.assign(_et=et).sort_values(['ticker', '_et'])
+    # `.last()` after sort returns the latest-in-span split per ticker.
+    last_split = sorted_df[sorted_df['split'].notna()].groupby('ticker')['split'].last()
+    # Only reassign IN-SPAN rows; out-of-span stay None.
+    new_split = df['split'].copy()
+    new_split.loc[in_span_mask] = df.loc[in_span_mask, 'ticker'].map(last_split)
+    # Boundary-dropped rows = rows that were in-span before but lost their split now
+    # (because the ticker's latest in-span row was assigned to a different split,
+    # but the rule above re-applies the LATEST per-ticker split — so n_dropped here
+    # measures rows whose split CHANGED from non-null to null, not just the count diff).
+    dropped_mask = in_span_mask & new_split.isna()
+    df = df.copy()
+    df['split'] = new_split
+    return df, int(dropped_mask.sum())
 
 
 # ---------------------------------------------------------------------------
@@ -482,17 +523,35 @@ def run(args: argparse.Namespace) -> dict:
     asset_floor = asset_min_price(asset, include_sub_floor=args.include_sub_floor)
     cfg_fp = compute_cfg_fp(include_sub_floor=args.include_sub_floor)
 
-    out_dir = Path(args.out_dir or f'data/cal_mlp/{asset}')
+    out_dir = Path(args.out_dir or f'data/cal_mlp/{asset}').resolve()
+    # R2#C8: clamp out_dir to project tree to prevent path traversal via
+    # `--out-dir ../../etc`. CWD is assumed to be the project root.
+    project_root = Path.cwd().resolve()
+    if not str(out_dir).startswith(str(project_root)):
+        raise SystemExit(
+            f"--out-dir must be inside project root {project_root}; got {out_dir}"
+        )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     with acquire_extract_lock(out_dir, asset):
         conn = _open_ro_conn(args.db)
+        # R1#C14: pre-bind data_version_at_close so an early DB error
+        # doesn't cause UnboundLocalError when audit JSON is built.
+        data_version_at_open: int = 0
+        data_version_at_close: int = 0
         try:
-            data_version_at_open = conn.execute("PRAGMA data_version").fetchone()[0]
-            _check_schema(conn)
+            try:
+                data_version_at_open = int(conn.execute("PRAGMA data_version").fetchone()[0])
+            except sqlite3.OperationalError as e:
+                raise Phase2DBError(f"PRAGMA data_version failed: {e}") from e
+            data_version_at_close = data_version_at_open  # default if pull fails
+            _check_schema(conn, args.db)
             logging.info("[extract] pulling rows for asset=%s ...", asset)
             kept, drops, source_total = pull_and_classify(conn, asset, cutoff_end, asset_floor)
-            data_version_at_close = conn.execute("PRAGMA data_version").fetchone()[0]
+            try:
+                data_version_at_close = int(conn.execute("PRAGMA data_version").fetchone()[0])
+            except sqlite3.OperationalError:
+                pass  # non-fatal; audit just records the open value
         finally:
             conn.close()
 
@@ -510,15 +569,26 @@ def run(args: argparse.Namespace) -> dict:
             )
         logging.info("[extract] kept=%d dropped=%d source_total=%d", n_kept, n_dropped, source_total)
 
-        # Compute train_id (deterministic content-derived)
+        # Compute train_id (deterministic content-derived).
+        # R1#C23: data_version_at_open dropped from sha8 input — it's an audit
+        # field, not content. Identical (asset, cfg_fp, cutoff_end, fold params)
+        # → identical train_id even across data_version progressions.
         sha8_input = (
-            f"{asset}|{cfg_fp}|{cutoff_end}|{data_version_at_open}|{args.folds}|"
+            f"{asset}|{cfg_fp}|{cutoff_end}|{args.folds}|"
             f"{args.train_days}|{args.cal_days}|{args.test_days}|{args.fold_offset_days}"
         )
         sha8 = hashlib.sha256(sha8_input.encode()).hexdigest()[:8]
         train_id = f"{cutoff_end}-{sha8}"
         train_dir = out_dir / train_id
         train_dir.mkdir(parents=True, exist_ok=True)
+        # R1#C24 + R2#C5: clean any stale tmp files from a prior crashed extract.
+        # Lock guarantees no concurrent writer; safe to glob+unlink.
+        for stale in train_dir.glob('*.tmp-*'):
+            try:
+                stale.unlink()
+                logging.info("[extract] cleaned stale tmp: %s", stale.name)
+            except OSError:
+                pass
 
         # Build feature frame
         df = build_feature_frame(kept)
@@ -563,8 +633,6 @@ def run(args: argparse.Namespace) -> dict:
                              fw['test_start'].date(), fw['test_end'].date())
                 fold_df = df.copy()
                 fold_df['split'] = assign_split(fold_df, fw)
-                # Drop rows outside spans
-                n_pre_boundary = int(fold_df['split'].notna().sum())
                 fold_df, n_boundary_dropped = enforce_ticker_disjoint(fold_df)
                 fold_df = fold_df[fold_df['split'].notna()].reset_index(drop=True)
                 fold_df['fold'] = np.int8(k)
@@ -613,21 +681,13 @@ def run(args: argparse.Namespace) -> dict:
                     for label, sp in (('train', tr), ('cal', ca), ('test', te)):
                         tx = transform(sp[col], tname)
                         imputed_pct[label][col] = float(tx.isna().sum()) / max(1, len(sp))
-                # Per-cell
+                # Per-cell — Phase 5 owns per-cell aborts; Phase 2 just surfaces.
                 per_cell = compute_per_cell_stats(tr, ca, te)
                 small_cell_warnings = [
-                    f"cell_({pt},{sb})_n_test={cell['n_test']} <50"
-                    for k_str, cell in per_cell.items()
-                    for (pt, sb) in [eval(k_str.replace('(', '(').replace(')', ')'))]
-                    if cell['n_test'] < 50 and cell['n_test'] > 0
-                ] if False else []  # Phase 5 owns per-cell aborts; Phase 2 just surfaces
-                # Recompute per_cell warnings cleanly
-                small_cell_warnings = []
-                for cell_key, cell in per_cell.items():
-                    if 0 < cell['n_test'] < 50:
-                        small_cell_warnings.append(
-                            f"{cell_key} n_test={cell['n_test']} <50"
-                        )
+                    f"{cell_key} n_test={cell['n_test']} <50"
+                    for cell_key, cell in per_cell.items()
+                    if 0 < cell['n_test'] < 50
+                ]
                 # Assemble fold parquet
                 fold_parquet_path = train_dir / f"fold{k}.parquet"
                 # All columns (CONT in raw value space; Phase 4 applies normstats lazily)
@@ -715,6 +775,10 @@ def run(args: argparse.Namespace) -> dict:
                 'include_sub_floor': bool(args.include_sub_floor),
                 'data_version_at_open': int(data_version_at_open),
                 'data_version_at_close': int(data_version_at_close),
+                # R1#C2: paths are basenames; resolve against the bundle's
+                # directory `Path(bundle_path).parent` per locked Phase 2 spec.
+                # Phase 4 must rewrite to absolute or pass through the parent.
+                '_path_resolution': 'basenames_relative_to_bundle_dir',
                 'ticker_vocab_path': vocab_path.name,
                 'ticker_vocab_sha256': vocab_sha,
                 'audit_path': audit_path.name,
@@ -743,8 +807,9 @@ def run(args: argparse.Namespace) -> dict:
                 current_tmp = current_path.with_suffix(
                     current_path.suffix + f".tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
                 )
-                with open(current_tmp, 'w') as f:
-                    f.write(train_id)
+                # R2#C19: write in binary mode for byte-deterministic content.
+                with open(current_tmp, 'wb') as f:
+                    f.write(train_id.encode('utf-8'))
                     f.flush()
                     os.fsync(f.fileno())
                 os.replace(current_tmp, current_path)

@@ -136,6 +136,10 @@ DROP_PREDICATES_ORDER = [
     'non_yes_no_result',
     'null_settled_time',
     'settled_after_cutoff',
+    # R-p2-impl-r1#C7 + R2#C17: extended to catch null side/stc that would
+    # silently corrupt outcome label or bucketization. Reordering = schema bump.
+    'null_or_invalid_side',
+    'null_seconds_to_close',
 ]
 
 

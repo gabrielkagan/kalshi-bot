@@ -115,6 +115,12 @@ def fit_normstats(
             )
         mean = float(nn.mean())
         std = float(nn.std(ddof=1))
+        # R2#C13: defense in depth — reject inf/nan that could poison downstream.
+        if not (np.isfinite(mean) and np.isfinite(std)):
+            raise RuntimeError(
+                f"fit_normstats: column {col!r} has non-finite mean/std after "
+                f"transform={tname!r} (mean={mean}, std={std}); Phase 2 contract violation."
+            )
         if std == 0.0:
             raise RuntimeError(
                 f"fit_normstats: column {col!r} has std=0 after transform={tname!r} "
