@@ -7,9 +7,12 @@ small, targeted insertions only.
 
 Public surface (what bot.py imports):
     parity_assert(bot_globals, conn) → 'passed'/'failed' (logs to bot_startup_log)
-    sizing_parity_assert(conn) → 'passed'/'failed'
+    sizing_parity_assert(bot_globals, conn) → 'passed'/'failed' (UPDATEs the
+        same row parity_assert seeded; MUST run after parity_assert)
     migrate_schema(conn) → list of added columns
-    CalMLPPredictor(asset, project_root) → lazy-loaded per-asset predictor
+    CalMLPPredictor(asset, project_root) → lazy-loaded per-asset predictor.
+        Call .warmup() at bot startup to avoid first-prediction latency spike
+        (~1-2s wall clock per asset for model load).
     annotate_evaluation_kwargs(kwargs, raw_prob, ticker, side, entry_price_cents,
                                 row_features, predictor) → mutates kwargs in place
     CalMLPError, CalMLPParityError, CalMLPSchemaError
@@ -32,12 +35,20 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger('cal_mlp')
+
+# R-p7-r2#M1: one-time module-level sys.path setup so we can import
+# cal_mlp/* without per-call mutation. cal_mlp/* names don't shadow any
+# bot.py top-level names (verified by grep), so the addition is safe.
+_CAL_MLP_DIR = Path(__file__).resolve().parent
+if str(_CAL_MLP_DIR) not in sys.path:
+    sys.path.insert(0, str(_CAL_MLP_DIR))
 
 
 # ---------------------------------------------------------------------------
@@ -87,37 +98,23 @@ SKIPPED_REASONS = frozenset({
 def _import_cal_mlp_constants() -> dict:
     """Import cal_mlp constants under aliases (R-p7-r2#C2 to prevent shadowing).
 
-    R-p7-impl#C1: use `sys.path` (not `os.sys.path`); return an explicit dict
-    rather than locals() so the contract is unambiguous and self-documenting."""
-    import sys
-    sys_path_added = False
-    cal_mlp_dir = Path(__file__).resolve().parent
-    if str(cal_mlp_dir) not in sys.path:
-        sys.path.insert(0, str(cal_mlp_dir))
-        sys_path_added = True
-    try:
-        from features import (
-            ASSET_FLOORS, GLOBAL_MIN_ENTRY_PRICE, RAW_PROB_CLIP_EPS,
-            SETTLEMENT_WHITELIST, PRICE_BIN_CUTOFFS, STC_BIN_CUTOFFS,
-        )
-        from sizing import (
-            SIZING_TIERS, ASSET_MAX_RISK_PER_TRADE, MAX_RISK_PER_TRADE,
-            DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
-            DRAWDOWN_HALT_THRESHOLD, DRAWDOWN_HALT_FLOOR,
-            STC_SIZING_SCALER_KNEE, STC_SIZING_SCALER_ENABLED,
-        )
-        from sim_pnl import (
-            MIN_EDGE_BY_PRICE_SCHEDULE, WEEKEND_EDGE_DISCOUNT,
-            WEEKEND_EDGE_FLOOR, OVERNIGHT_EDGE_DISCOUNT,
-            HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES,
-            STC_EXTENDED_PER_ASSET_FLOOR, STC_EXTENDED_BUFFER_RESCUE,
-        )
-    finally:
-        if sys_path_added:
-            try:
-                sys.path.remove(str(cal_mlp_dir))
-            except ValueError:
-                pass
+    R-p7-r2#M1: relies on module-level sys.path setup (no per-call mutation)."""
+    from features import (
+        ASSET_FLOORS, GLOBAL_MIN_ENTRY_PRICE, RAW_PROB_CLIP_EPS,
+        SETTLEMENT_WHITELIST, PRICE_BIN_CUTOFFS, STC_BIN_CUTOFFS,
+    )
+    from sizing import (
+        SIZING_TIERS, ASSET_MAX_RISK_PER_TRADE, MAX_RISK_PER_TRADE,
+        DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
+        DRAWDOWN_HALT_THRESHOLD, DRAWDOWN_HALT_FLOOR,
+        STC_SIZING_SCALER_KNEE, STC_SIZING_SCALER_ENABLED,
+    )
+    from sim_pnl import (
+        MIN_EDGE_BY_PRICE_SCHEDULE, WEEKEND_EDGE_DISCOUNT,
+        WEEKEND_EDGE_FLOOR, OVERNIGHT_EDGE_DISCOUNT,
+        HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES,
+        STC_EXTENDED_PER_ASSET_FLOOR, STC_EXTENDED_BUFFER_RESCUE,
+    )
     return {
         'ASSET_FLOORS': ASSET_FLOORS, 'GLOBAL_MIN_ENTRY_PRICE': GLOBAL_MIN_ENTRY_PRICE,
         'RAW_PROB_CLIP_EPS': RAW_PROB_CLIP_EPS, 'SETTLEMENT_WHITELIST': SETTLEMENT_WHITELIST,
@@ -197,7 +194,11 @@ def _verify_wal(conn) -> None:
 def parity_assert(bot_globals: dict, conn) -> str:
     """Cross-check vendored cal_mlp constants against bot.py globals.
     bot_globals: caller passes vars() / globals() of the bot module.
-    Raises CalMLPParityError on drift; logs sentinel row to bot_startup_log."""
+    Raises CalMLPParityError on drift; logs sentinel row to bot_startup_log.
+
+    R-p7-r2#C1: invokes _verify_wal(conn) FIRST per CLAUDE.md anti-deadlock
+    rule — any sqlite write must run on a WAL+busy_timeout connection."""
+    _verify_wal(conn)
     cmc = _import_cal_mlp_constants()
 
     failures = []
@@ -269,17 +270,14 @@ def parity_assert(bot_globals: dict, conn) -> str:
 
 
 def sizing_parity_assert(bot_globals: dict, conn) -> str:
-    """8-vector sizing parity (Phase 7 R1#C4)."""
-    cal_mlp_dir = Path(__file__).resolve().parent
-    import sys
-    sys.path.insert(0, str(cal_mlp_dir))
-    try:
-        from sizing import compute_size
-    finally:
-        try:
-            sys.path.remove(str(cal_mlp_dir))
-        except ValueError:
-            pass
+    """8-vector sizing parity (Phase 7 R1#C4).
+
+    R-p7-r2#C1: WAL pre-check (CLAUDE.md anti-deadlock).
+    R-p7-r2#H1: requires parity_assert to have run first; no fallback INSERT
+    so the test-plan query (`ORDER BY id DESC LIMIT 1`) is guaranteed to
+    return a single row with both columns populated."""
+    _verify_wal(conn)
+    from sizing import compute_size  # R-p7-r2#M1: module-level sys.path
 
     g = bot_globals
     bot_compute = g.get('compute_for_15m_main_path')
@@ -312,21 +310,19 @@ def sizing_parity_assert(bot_globals: dict, conn) -> str:
             failures.append(f"vec={vec}: cal_mlp={cm_result.contract_count} expected={expected}")
 
     # R-p7-impl#C11: UPDATE the same row parity_assert created.
+    # R-p7-r2#H1: hard fail if parity_assert wasn't called first. No fallback
+    # INSERT — that would split the audit row, breaking the test-plan query.
     rowid = bot_globals.get('_calmlp_startup_log_rowid')
+    if rowid is None:
+        raise CalMLPParityError(
+            "sizing_parity_assert called before parity_assert; "
+            "deploy contract requires parity_assert first to seed bot_startup_log row"
+        )
     status = 'failed' if failures else 'passed'
-    if rowid is not None:
-        conn.execute(
-            "UPDATE bot_startup_log SET sizing_parity_status = ? WHERE id = ?",
-            (status, rowid),
-        )
-    else:
-        # Fallback: parity_assert wasn't called first (shouldn't happen via
-        # the diff doc's edit 3, but be defensive).
-        ts = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT INTO bot_startup_log (sizing_parity_status, ts, pid) VALUES (?, ?, ?)",
-            (status, ts, os.getpid()),
-        )
+    conn.execute(
+        "UPDATE bot_startup_log SET sizing_parity_status = ? WHERE id = ?",
+        (status, rowid),
+    )
     conn.commit()
     if failures:
         raise CalMLPParityError("CALMLP_SIZING_PARITY FAIL:\n  " + "\n  ".join(failures))
@@ -396,6 +392,10 @@ def make_compute_for_15m_main_path(bot_globals: dict):
 # ---------------------------------------------------------------------------
 
 _SHA_CHAIN_CACHE: dict = {}
+# R-p7-r2#H5: dict.__setitem__ is NOT atomic under PEP 703 free-threaded
+# Python; lock the cache. (CPython 3.13 default still has GIL but we lock
+# defensively for forward-compat.)
+_SHA_CHAIN_CACHE_LOCK = threading.Lock()
 
 
 class CalMLPPredictor:
@@ -425,8 +425,9 @@ class CalMLPPredictor:
     def _verify_bundle_sha_chain(self, bundle: dict, train_dir: Path) -> None:
         """Recompute phase4_bundle_sha + phase5_bundle_sha; assert match."""
         cache_key = (bundle.get('train_id'), self.asset)
-        if cache_key in _SHA_CHAIN_CACHE:
-            return
+        with _SHA_CHAIN_CACHE_LOCK:
+            if cache_key in _SHA_CHAIN_CACHE:
+                return
         deploy_idx = bundle['deploy_fold_idx']
         fold = next(r for r in bundle['eval_fold_artifacts'] if r['fold'] == deploy_idx)
         ckpt_shas = sorted(m['checkpoint_sha256'] for m in fold['members'])
@@ -447,7 +448,8 @@ class CalMLPPredictor:
         if expected_p5 != bundle.get('bundle_sha'):
             raise CalMLPError('sha_chain_fail',
                                 f"phase5 sha mismatch (expected={expected_p5} bundle={bundle.get('bundle_sha')})")
-        _SHA_CHAIN_CACHE[cache_key] = True
+        with _SHA_CHAIN_CACHE_LOCK:
+            _SHA_CHAIN_CACHE[cache_key] = True
 
     def _load(self) -> None:
         with self._lock:
@@ -469,12 +471,11 @@ class CalMLPPredictor:
                     fcntl.flock(lock_fd, fcntl.LOCK_SH)
                     train_id = current_path.read_text().strip()
                     train_dir = models_dir / train_id
+                    # R-p7-r2#H3: only phase-5 bundles deploy. Phase-4-only
+                    # ablation paths must explicitly opt in upstream.
                     bundle_path = train_dir / f'cal_mlp_{self.asset}_{train_id}_phase5_bundle.json'
                     if not bundle_path.exists():
-                        # Fallback: phase 4 bundle (for ablation).
-                        bundle_path = train_dir / f'cal_mlp_{self.asset}_{train_id}_bundle.json'
-                    if not bundle_path.exists():
-                        raise CalMLPError('no_current', f"bundle not found at {train_dir}")
+                        raise CalMLPError('no_current', f"phase5 bundle not found at {bundle_path}")
                     with open(bundle_path) as f:
                         bundle = json.load(f)
                     if bundle.get('phase') != 5:
@@ -491,36 +492,34 @@ class CalMLPPredictor:
                     extract_bundle_path = Path(extract_bundle_rel)
                     if not extract_bundle_path.is_absolute():
                         extract_bundle_path = self.project_root / extract_bundle_path
-                    ext_bundle = json.load(open(extract_bundle_path))
+                    # R-p7-r2#M5: use `with open(...)` consistently.
+                    with open(extract_bundle_path) as f:
+                        ext_bundle = json.load(f)
                     vocab_path = extract_bundle_path.parent / ext_bundle['ticker_vocab_path']
-                    _vocab = json.load(open(vocab_path))['vocab']
+                    with open(vocab_path) as f:
+                        _vocab = json.load(f)['vocab']
                     deploy_fold = next(
                         r for r in ext_bundle['eval_fold_artifacts'] if r['fold'] == deploy_idx
                     )
                     ns_path = extract_bundle_path.parent / deploy_fold['normstats_path']
-                    _normstats = json.load(open(ns_path))
-                    _conformal = json.load(open(train_dir / bundle['conformal_path']))
+                    with open(ns_path) as f:
+                        _normstats = json.load(f)
+                    with open(train_dir / bundle['conformal_path']) as f:
+                        _conformal = json.load(f)
 
-                    # Build per-member models (lazy import of train.py).
-                    cal_mlp_dir = Path(__file__).resolve().parent
-                    import sys
-                    sys.path.insert(0, str(cal_mlp_dir))
-                    try:
-                        from train import build_model_from_definition
-                    finally:
-                        try:
-                            sys.path.remove(str(cal_mlp_dir))
-                        except ValueError:
-                            pass
+                    # Build per-member models (R-p7-r2#M1: module-level path).
+                    from train import build_model_from_definition
                     import torch
                     fold_p4 = next(
                         r for r in bundle['eval_fold_artifacts'] if r['fold'] == deploy_idx
                     )
-                    model_def = json.load(open(train_dir / bundle['model_definition_path']))
+                    with open(train_dir / bundle['model_definition_path']) as f:
+                        model_def = json.load(f)
                     _models = []
                     for m in fold_p4['members']:
                         marker_path = train_dir / m['marker_path']
-                        marker = json.load(open(marker_path))
+                        with open(marker_path) as f:
+                            marker = json.load(f)
                         if marker['cfg_fp'] != bundle['cfg_fp']:
                             raise CalMLPError(
                                 'marker_drift',
@@ -537,15 +536,20 @@ class CalMLPPredictor:
                         _models.append(model)
 
                     # market_blend_w drift check (R-p7-r2#C9).
-                    sys.path.insert(0, str(self.project_root))
+                    # project_root is added/removed per-call since it's external.
+                    _proj_added = False
+                    if str(self.project_root) not in sys.path:
+                        sys.path.insert(0, str(self.project_root))
+                        _proj_added = True
                     try:
                         from market_config import MARKET_CONFIGS
                         live_w = float(MARKET_CONFIGS['15m'].market_blend_w)
                     finally:
-                        try:
-                            sys.path.remove(str(self.project_root))
-                        except ValueError:
-                            pass
+                        if _proj_added:
+                            try:
+                                sys.path.remove(str(self.project_root))
+                            except ValueError:
+                                pass
                     bundle_w = bundle.get('market_blend_w')
                     if bundle_w is not None and abs(bundle_w - live_w) > 1e-9:
                         raise CalMLPError(
@@ -571,52 +575,67 @@ class CalMLPPredictor:
             except Exception as e:
                 raise CalMLPError('load_failed', str(e)) from e
 
+    def warmup(self) -> None:
+        """R-p7-r2#C2: optional eager-load to avoid latency spike on first
+        predict() per asset. bot.py should call this at startup (after the
+        predictor cache is built) to amortize the ~1-2s model load off the
+        scan path. Soft-fails — exceptions are logged but don't abort
+        startup, since calibration is a graceful-skip subsystem."""
+        try:
+            with self._lock:
+                if not self._loaded:
+                    self._load()
+        except CalMLPError as e:
+            logger.warning("[CALMLP_WARMUP] %s asset=%s; deferring to first predict()",
+                           e, self.asset)
+
     def predict(self, raw_prob: float, ticker: str, side: str,
                 entry_price_cents: int, row_features: dict) -> tuple:
         """Returns (cal_prob, ens_std, final_lo, final_hi). Raises CalMLPError
         on failure. R-p7-impl#C2: derives price_tier/stc_bucket from
         entry_price_cents/seconds_to_close to keep the API minimal.
-        R-p7-impl#C1: missing CONT_FEATURE_COLS are mean-imputed (post-norm
-        z-score = 0), NOT zero-imputed (which would produce a non-trivial
-        signal the model treats as a real observation)."""
+        R-p7-r2#H2: NaN/None values in CONT_FEATURE_COLS flip the matching
+        *_missing indicator to 1 (preserving the missing-indicator contract)
+        AND mean-impute the value via normstats."""
         # R-p7-impl#C6: take the lock for the duration so reads of self.*
         # are correctly synchronized under PEP 703 (free-threaded CPython).
         with self._lock:
             if not self._loaded:
-                # _load takes the same Lock — must use RLock for re-entry.
-                # Tracked: change `threading.Lock` to `threading.RLock` in __init__.
                 self._load()
-        # Build single-row batch (lazy import of torch + helpers).
-        import sys
-        cal_mlp_dir = Path(__file__).resolve().parent
-        sys.path.insert(0, str(cal_mlp_dir))
-        try:
-            from features import (RAW_PROB_CLIP_EPS, MISSING_INDICATOR_COLS,
-                                    CONT_FEATURE_COLS, PRICE_BIN_CUTOFFS,
-                                    STC_BIN_CUTOFFS)
-            from normalize import apply_norm
-            from _helpers import predict_with_interval, FORWARD_KEYS
-        finally:
-            try:
-                sys.path.remove(str(cal_mlp_dir))
-            except ValueError:
-                pass
+        # R-p7-r2#M1: imports moved to module level.
+        from features import (RAW_PROB_CLIP_EPS, MISSING_INDICATOR_COLS,
+                                CONT_FEATURE_COLS, PRICE_BIN_CUTOFFS,
+                                STC_BIN_CUTOFFS, MISSING_INDICATOR_SOURCE_MAP)
+        from normalize import apply_norm
+        from _helpers import predict_with_interval, FORWARD_KEYS
 
         import torch
         import numpy as np
         import pandas as pd
 
         # R-p7-impl#C2: derive price_tier/stc_bucket if not provided.
+        # R-p7-r2#H4: accept either seconds_to_close (canonical) or
+        # seconds_remaining (bot.py local var name) so callers don't need to
+        # rename their scope variables.
+        row_features = dict(row_features)
         if 'price_tier' not in row_features:
-            row_features = dict(row_features)
             row_features['price_tier'] = int(
                 np.digitize(entry_price_cents, PRICE_BIN_CUTOFFS, right=True)
             )
         if 'stc_bucket' not in row_features:
-            stc = row_features.get('seconds_to_close', 0)
+            stc = row_features.get('seconds_to_close')
+            if stc is None:
+                stc = row_features.get('seconds_remaining')
+            if stc is None:
+                raise CalMLPError(
+                    'missing_features',
+                    'predict() requires seconds_to_close or seconds_remaining or stc_bucket',
+                )
             row_features['stc_bucket'] = int(
                 np.digitize(stc, STC_BIN_CUTOFFS, right=True)
             )
+            # Also seed seconds_to_close in row so apply_norm finds it.
+            row_features.setdefault('seconds_to_close', stc)
 
         # Build a 1-row DataFrame.
         row = dict(row_features)
@@ -629,14 +648,32 @@ class CalMLPPredictor:
         row.setdefault('side_int', 1 if side == 'yes' else 0)
         row.setdefault('vol_regime_int', int(row.get('vol_regime', 0) == 'elevated'))
         row['ticker_id'] = self.vocab.get(str(ticker), 0)
+        # R-p7-r2#H2: NaN/None values in CONT_FEATURE_COLS must flip the
+        # matching *_missing indicator. Build an inverse map src→indicator.
+        _src_to_ind = {v: k for k, v in MISSING_INDICATOR_SOURCE_MAP.items()}
+        # Initialize all indicator cols to 0 (truly-present default).
         for col in MISSING_INDICATOR_COLS:
             row.setdefault(col, 0)
-        # R-p7-impl#C1: impute MISSING CONT_FEATURE_COLS with the train-fold
-        # mean (from normstats), so post-z-score they're 0 (no spurious signal).
+        # R-p7-r2#H2 + R-p7-impl#C1: detect-and-impute. NaN/None in CONT cols:
+        # (a) flip companion *_missing flag to 1 (if companion exists), and
+        # (b) mean-impute so post-z-score the value is 0.
+        normstats_map = self.normstats.get('stats', {})
         for col in CONT_FEATURE_COLS:
-            if col not in row:
-                col_stats = self.normstats['stats'].get(col, {})
+            v = row.get(col)
+            is_missing = (v is None) or (
+                isinstance(v, float) and (v != v)  # NaN
+            )
+            if col not in row or is_missing:
+                col_stats = normstats_map.get(col, {})
+                if 'mean' not in col_stats and col not in row:
+                    raise CalMLPError(
+                        'missing_features',
+                        f"col {col!r} absent and no normstats mean to impute",
+                    )
                 row[col] = float(col_stats.get('mean', 0.0))
+                ind = _src_to_ind.get(col)
+                if ind is not None:
+                    row[ind] = 1
         df = pd.DataFrame([row])
         df_norm = apply_norm(df, self.normstats['stats'], CONT_FEATURE_COLS,
                               transforms=self.normstats.get('transforms', {}))

@@ -58,9 +58,14 @@ except CalMLPParityError as _calmlp_e:
     logging.error("[CALMLP_PARITY] FATAL: %s", _calmlp_e)
     raise SystemExit(2)
 
-# Per-asset lazy predictor cache.
+# Per-asset predictor cache. Eager warmup (R-p7-r2#C2) amortizes the
+# ~1-2s model-load cost off the scan thread.
 _calmlp_predictors = {a: CalMLPPredictor(a) for a in ('BTC', 'ETH', 'SOL', 'XRP')}
+for _calmlp_p in _calmlp_predictors.values():
+    _calmlp_p.warmup()
 ```
+
+**Note on bleed-cell semantics (R-p7-r2#M2):** `np.digitize(96, [80,90,96], right=True)` returns 2 (boundary value falls in lower bin). Therefore the calibrator's BLEED_CELL=(3,2) corresponds to entries 97¢-99¢, NOT 96¢-99¢. Phase 2 extraction uses identical semantics, so the calibrator is internally consistent — but the "≥96¢ × 300-600s" label in `kb-research/bot/finding_96c_sol_xrp_bleed_apr26.md` is loose. Operator-track item: decide whether to retroactively rebin (e.g. cutoffs `[80,90,95]` or `[80,90,96]` with `right=False`) or update the docs. Until then, 96¢ entries get the tier-2 quantile, not the bleed quantile.
 
 If the bot uses a different connection name (`conn` vs `self.conn`), adjust accordingly.
 
