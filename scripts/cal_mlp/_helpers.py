@@ -152,8 +152,7 @@ def lookup_cell_quantile(
     if (pt, sb) == (3, 2) and bleed_per_vr.get(str(vr)):
         bleed = artifact.get('bleed_fallback_quantiles', {}) or {}
         key_axes = bleed.get('key_axes', [])
-        sub_key = ','.join(f"{a}={row_features[a if a != 'stc' else 'stc_bucket']}"
-                            for a in key_axes) or '_all'
+        sub_key = format_bleed_key(key_axes, row_features)
         q = (bleed.get('quantiles') or {}).get(sub_key)
         if q is not None:
             chain.append(f"bleed[{sub_key}]")
@@ -251,6 +250,70 @@ def predict_with_interval(
     return p_center, p_std, final_lo, final_hi
 
 
+# ---------------------------------------------------------------------------
+# Hash + bundle discovery (R1#C8 + C9 — single source for cross-phase use)
+# ---------------------------------------------------------------------------
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(65536), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_artifact_sha(path: Path, expected: str) -> None:
+    """Raise RuntimeError on mismatch; common helper for Phase 4/5/6/7."""
+    actual = sha256_file(path)
+    if actual != expected:
+        raise RuntimeError(f"sha256 mismatch on {path}: expected={expected} actual={actual}")
+
+
+def find_bundle_by_sha(models_dir: Path, asset: str, bundle_sha: str) -> Path:
+    """Find Phase 4/5 bundle JSON whose `bundle_sha` matches.
+    Uses rglob to recurse into per-train_id subdirectories."""
+    pattern = f"cal_mlp_{asset}_*_bundle.json"
+    for path in models_dir.rglob(pattern):
+        try:
+            with open(path) as f:
+                bundle = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if bundle.get('bundle_sha') == bundle_sha:
+            return path
+    raise RuntimeError(f"bundle with sha={bundle_sha[:12]} not found in {models_dir}")
+
+
+def load_bundle_with_dir(bundle_path: Path) -> dict:
+    """Load a bundle JSON and inject `_bundle_dir` for downstream path
+    resolution (R1#C1 fix — Phase 5 load_predictor needs this)."""
+    with open(bundle_path) as f:
+        bundle = json.load(f)
+    bundle['_bundle_dir'] = str(bundle_path.parent)
+    return bundle
+
+
+# ---------------------------------------------------------------------------
+# Bleed key formatter (Phase 5 impl R1#C7)
+# ---------------------------------------------------------------------------
+
+_AXIS_TO_FEATURE_COL = {'price_tier': 'price_tier', 'stc': 'stc_bucket',
+                          'vol_regime': 'vol_regime'}
+
+
+def format_bleed_key(key_axes: list, row_features: dict) -> str:
+    """Build a sub-key string like 'vol_regime=0' (single axis) or
+    'vol_regime=0,price_tier=3' (multi-axis). Used by both fit_conformal
+    (write side) and lookup_cell_quantile (read side)."""
+    if not key_axes:
+        return '_all'
+    parts = []
+    for a in key_axes:
+        col = _AXIS_TO_FEATURE_COL.get(a, a)
+        parts.append(f"{a}={row_features[col]}")
+    return ','.join(parts)
+
+
 __all__ = [
     'FORWARD_KEYS',
     'compute_extract_logical_sha',
@@ -261,4 +324,9 @@ __all__ = [
     'predict_with_interval',
     'AuditDict',
     'N_CELL_FLOOR',
+    'sha256_file',
+    'verify_artifact_sha',
+    'find_bundle_by_sha',
+    'load_bundle_with_dir',
+    'format_bleed_key',
 ]

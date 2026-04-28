@@ -15,13 +15,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import errno
 import fcntl
 import hashlib
 import json
 import logging
 import os
-import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -31,24 +29,21 @@ from typing import Any, Optional, Protocol
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from features import (  # noqa: E402
-    BLEED_CELL,
-    CONT_FEATURE_COLS,
-    CONT_FEATURE_TRANSFORMS,
-    MISSING_INDICATOR_COLS,
-    RAW_PROB_CLIP_EPS,
-)
+from features import BLEED_CELL  # noqa: E402
 from _helpers import (  # noqa: E402
     N_CELL_FLOOR,
     fsync_directory,
+    sha256_file,
+    verify_artifact_sha,
+    find_bundle_by_sha,
+    load_bundle_with_dir,
+    format_bleed_key,
 )
 from train import (  # noqa: E402
     CalibrationMLP,
-    Phase4Dataset,
     build_model_from_definition,
 )
 
@@ -124,12 +119,12 @@ class EnsemblePredictor:
 
 
 def _verify_artifact_sha(path: Path, expected: str) -> None:
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for chunk in iter(lambda: f.read(65536), b''):
-            h.update(chunk)
-    if h.hexdigest() != expected:
-        raise Phase5SchemaError(f"sha256 mismatch on {path}")
+    """Wrapper around _helpers.verify_artifact_sha that re-raises as
+    Phase5SchemaError for the local exit-code contract."""
+    try:
+        verify_artifact_sha(path, expected)
+    except RuntimeError as e:
+        raise Phase5SchemaError(str(e)) from e
 
 
 def _load_normstats(path: Path, expected_sha: Optional[str] = None) -> dict:
@@ -140,12 +135,20 @@ def _load_normstats(path: Path, expected_sha: Optional[str] = None) -> dict:
 
 def load_predictor(bundle: dict, device: torch.device) -> Predictor:
     """Read deploy fold K-1's per-member checkpoints, build SinglePredictor
-    or EnsemblePredictor based on ensemble_size."""
+    or EnsemblePredictor based on ensemble_size.
+
+    R1#C1: requires `bundle['_bundle_dir']` to be populated (use
+    `load_bundle_with_dir` from _helpers, NOT `json.load`)."""
+    if '_bundle_dir' not in bundle:
+        raise Phase5SchemaError(
+            "load_predictor: bundle missing '_bundle_dir'. Use "
+            "_helpers.load_bundle_with_dir(bundle_path) instead of json.load."
+        )
     ensemble_size = bundle.get('ensemble_size', 1)
     deploy_idx = bundle.get('deploy_fold_idx',
                               max(r['fold'] for r in bundle['eval_fold_artifacts']))
     fold = next(r for r in bundle['eval_fold_artifacts'] if r['fold'] == deploy_idx)
-    bundle_dir = Path(bundle.get('_bundle_dir', '.'))
+    bundle_dir = Path(bundle['_bundle_dir'])
     model_def = json.load(open(bundle_dir / bundle['model_definition_path']))
     project_root = Path(__file__).resolve().parents[2]
     extract_bundle_path = project_root / bundle['extract_bundle_path']
@@ -179,75 +182,91 @@ def fit_conformal(
 ) -> dict:
     """Returns the conformal_artifact dict.
 
-    cal_df has per-row p_mean (ensemble mean) and outcome columns; group by
-    (price_tier, stc_bucket, vol_regime) — 4×4×2=32 cells max. Per cell with
-    n >= floor, compute (1-α)-quantile of |p_mean - outcome|.
+    Score = `|p_mean - outcome|`. Cells = (price_tier, stc_bucket, vol_regime),
+    32 max. Cells with n >= floor get an emitted entry; cells with n < floor
+    fall through to merged/global at lookup time. R1#C6: also emits
+    cell_kind='fallback_empty' for cells with n_cal=0 so audit doesn't
+    confuse "dispatch_miss" with "empty cell".
     """
     # Score = |p_mean - outcome|
     residuals = (cal_df['p_mean'].astype(np.float64) -
                   cal_df['outcome'].astype(np.float64)).abs().to_numpy()
     cal_df = cal_df.assign(_residual=residuals)
-
-    cells_out: list[dict] = []
-    bleed_per_vr: dict[str, bool] = {}
-    bleed_quantiles: dict[str, float] = {}
-    bleed_key_axes: list[str] = ['vol_regime']  # default merge axis
     n_cal_total = int(len(cal_df))
     global_q_alpha = float(np.quantile(residuals, 1 - alpha)) if n_cal_total > 0 else 1.0
 
-    # Concentration warning: top ticker share within a cell.
-    cal_df = cal_df.assign(_residual=residuals)
+    cells_out: list[dict] = []
+    bleed_quantiles: dict[str, float] = {}
+    bleed_key_axes: list[str] = ['vol_regime']
+    seen_cells: set[tuple[int, int, int]] = set()
+    bleed_above_floor: dict[int, bool] = {}  # vr → True if cell has n >= floor
+
     for (pt, sb, vr), sub in cal_df.groupby(['price_tier', 'stc_bucket', 'vol_regime']):
+        pt, sb, vr = int(pt), int(sb), int(vr)
+        seen_cells.add((pt, sb, vr))
         n = int(len(sub))
-        is_bleed_cell_pt_sb = (int(pt), int(sb)) == BLEED_CELL
+        is_bleed_cell_pt_sb = (pt, sb) == BLEED_CELL
         if n < n_cell_floor:
-            # Cell falls through; for the bleed cell we may compute a fallback below.
-            if is_bleed_cell_pt_sb and bleed_collapse:
-                bleed_per_vr[str(int(vr))] = True
+            if is_bleed_cell_pt_sb:
+                bleed_above_floor.setdefault(vr, False)
             continue
-        bleed_per_vr.setdefault(str(int(vr)), False)
+        if is_bleed_cell_pt_sb:
+            bleed_above_floor[vr] = True
         q_alpha = float(np.quantile(sub['_residual'].to_numpy(), 1 - alpha))
-        # Top-ticker concentration (Phase 6 reads soft-flag).
         ticker_counts = sub['ticker'].value_counts()
         top_share = float(ticker_counts.iloc[0] / n) if len(ticker_counts) else 0.0
         cells_out.append({
-            'price_tier': int(pt),
-            'stc_bucket': int(sb),
-            'vol_regime': int(vr),
-            'n_cal': n,
-            'q_alpha': q_alpha,
+            'price_tier': pt, 'stc_bucket': sb, 'vol_regime': vr,
+            'n_cal': n, 'q_alpha': q_alpha,
             'concentration_warning': bool(top_share > 0.5),
             'top_ticker_share': top_share,
+            'cell_kind': 'mondrian',
         })
 
-    # Compute bleed fallback if any vol_regime needs it.
-    if bleed_collapse and any(bleed_per_vr.get(str(vr_i), False) for vr_i in (0, 1)):
+    # R1#C6: emit fallback_empty entries for the 32-cell space minus seen cells.
+    for pt in range(4):
+        for sb in range(4):
+            for vr in range(2):
+                if (pt, sb, vr) not in seen_cells:
+                    cells_out.append({
+                        'price_tier': pt, 'stc_bucket': sb, 'vol_regime': vr,
+                        'n_cal': 0, 'q_alpha': global_q_alpha,
+                        'concentration_warning': False,
+                        'top_ticker_share': 0.0,
+                        'cell_kind': 'fallback_empty',
+                    })
+
+    # R1#C3: bleed_per_vr is deterministic — set False if cell has n>=floor,
+    # True if bleed cell exists and is below floor (or absent and bleed_collapse).
+    bleed_per_vr: dict[str, bool] = {}
+    for vr_i in (0, 1):
+        if vr_i in bleed_above_floor and bleed_above_floor[vr_i]:
+            bleed_per_vr[str(vr_i)] = False
+        else:
+            # Either explicitly below floor, or never appeared. Both cases
+            # warrant bleed-fallback collapse if --bleed-collapse is on.
+            bleed_per_vr[str(vr_i)] = bleed_collapse
+
+    bleed_collapsed_overall = any(bleed_per_vr.values())
+    if bleed_collapsed_overall:
         bleed_sub = cal_df[(cal_df['price_tier'] == BLEED_CELL[0]) &
                             (cal_df['stc_bucket'] == BLEED_CELL[1])]
-        # Group by remaining key_axes (just vol_regime by default).
         for vr_i in (0, 1):
+            if not bleed_per_vr[str(vr_i)]:
+                continue  # this vr has its own mondrian quantile
             sub_vr = bleed_sub[bleed_sub['vol_regime'] == vr_i]
             if len(sub_vr) >= 1:
-                # Use whatever quantile we can; if too few for tight quantile,
-                # the merged-cells fallback is conservative.
                 bleed_quantiles[f"vol_regime={vr_i}"] = float(
                     np.quantile(sub_vr['_residual'].to_numpy(), 1 - alpha)
                 )
             else:
-                # If empty: use global q_alpha.
                 bleed_quantiles[f"vol_regime={vr_i}"] = global_q_alpha
-        bleed_collapsed_overall = True
-    else:
-        bleed_collapsed_overall = False
-        # Ensure all vol_regimes default to False when not collapsed.
-        for vr_i in (0, 1):
-            bleed_per_vr.setdefault(str(vr_i), False)
 
-    artifact = {
+    return {
         'alpha': alpha,
         'n_cal_total': n_cal_total,
         'global_q_alpha': global_q_alpha,
-        'merged_axes': [],   # population-level merging not used; bleed handled separately
+        'merged_axes': [],
         'bleed_collapsed_by_merge': bleed_collapsed_overall,
         'bleed_collapsed_by_merge_per_vr': bleed_per_vr,
         'bleed_fallback_quantiles': {
@@ -256,7 +275,6 @@ def fit_conformal(
         },
         'cells': cells_out,
     }
-    return artifact
 
 
 # ---------------------------------------------------------------------------
@@ -300,12 +318,7 @@ def write_json_tmp(payload: dict, final_path: Path) -> tuple[Path, str]:
     return tmp, sha
 
 
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for chunk in iter(lambda: f.read(65536), b''):
-            h.update(chunk)
-    return h.hexdigest()
+# R1#C8: sha256_file moved to _helpers.py; imported above.
 
 
 # ---------------------------------------------------------------------------
@@ -338,19 +351,7 @@ def _setup_logging(quiet: bool, verbose: bool) -> None:
     )
 
 
-def find_bundle_by_sha(models_dir: Path, asset: str, bundle_sha: str) -> Path:
-    pattern = f"cal_mlp_{asset}_*_bundle.json"
-    for path in models_dir.rglob(pattern):
-        try:
-            with open(path) as f:
-                bundle = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        if bundle.get('bundle_sha') == bundle_sha:
-            return path
-    raise Phase5SchemaError(
-        f"bundle with sha={bundle_sha[:12]} not found in {models_dir}"
-    )
+# R1#C9: find_bundle_by_sha lives in _helpers.py; imported above.
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -359,13 +360,24 @@ def run(args: argparse.Namespace) -> dict:
     if not models_root.exists():
         raise Phase5ContractError(f"no models dir for {args.asset}: {models_root}")
 
-    bundle_path = find_bundle_by_sha(models_root, args.asset, args.bundle_sha)
-    bundle = json.load(open(bundle_path))
+    try:
+        bundle_path = find_bundle_by_sha(models_root, args.asset, args.bundle_sha)
+    except RuntimeError as e:
+        raise Phase5SchemaError(str(e)) from e
+    bundle = load_bundle_with_dir(bundle_path)  # populates _bundle_dir
     if bundle.get('phase') != 4:
         raise Phase5SchemaError(
             f"input bundle phase={bundle.get('phase')}; Phase 5 requires Phase 4"
         )
+    # R1#C14: cfg_fp cross-check between Phase 4 bundle and model_definition.
     train_dir = bundle_path.parent
+    model_def = json.load(open(train_dir / bundle['model_definition_path']))
+    if (bundle.get('cfg_fp')
+            and model_def.get('cfg_fp')
+            and bundle['cfg_fp'] != model_def['cfg_fp']):
+        raise Phase5SchemaError(
+            f"cfg_fp mismatch: bundle={bundle['cfg_fp']} model_def={model_def['cfg_fp']}"
+        )
 
     # Acquire models_lock EX (Phase 5 takes EX only; no extract_lock needed
     # per spec R1#C12 — Phase 4 bundle SHA chain is the integrity guarantee).
@@ -400,14 +412,26 @@ def run(args: argparse.Namespace) -> dict:
 
         # market_blend_w from market_config.py (live read at fit time; bundle
         # records it for drift detection only).
-        try:
+        # R1#C10/C12: narrow exception scope; sys.path entry cleaned up in finally.
+        sys_path_added = False
+        if str(project_root) not in sys.path:
             sys.path.insert(0, str(project_root))
-            from market_config import MARKET_CONFIGS
-            market_blend_w = float(MARKET_CONFIGS['15m'].market_blend_w)
-            market_blend_w_source = 'market_config.py'
-        except Exception:
-            market_blend_w = 0.0
-            market_blend_w_source = 'fallback_zero'
+            sys_path_added = True
+        try:
+            try:
+                from market_config import MARKET_CONFIGS
+                market_blend_w = float(MARKET_CONFIGS['15m'].market_blend_w)
+                market_blend_w_source = 'market_config.py'
+            except (ImportError, KeyError, AttributeError) as e:
+                raise Phase5ContractError(
+                    f"failed to load market_config.MARKET_CONFIGS['15m'].market_blend_w: {e}"
+                ) from e
+        finally:
+            if sys_path_added:
+                try:
+                    sys.path.remove(str(project_root))
+                except ValueError:
+                    pass
 
         # Write artifact tmp.
         artifact_final = train_dir / f"conformal_artifact_alpha{int(args.alpha * 100)}.json"
@@ -440,8 +464,10 @@ def run(args: argparse.Namespace) -> dict:
         phase5_tmp, phase5_sha = write_json_tmp(phase5_bundle, phase5_bundle_final)
 
         # Atomic rename: artifact first, then phase 5 bundle (gate).
+        # R1#C11: fsync between renames to limit stranded-artifact window.
         try:
             os.replace(artifact_tmp, artifact_final)
+            fsync_directory(train_dir)
             os.replace(phase5_tmp, phase5_bundle_final)
             fsync_directory(train_dir)
             # Update CURRENT to point to this train_id (already pointed; idempotent).

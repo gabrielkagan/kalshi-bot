@@ -146,12 +146,14 @@ class CalibrationMLP(nn.Module):
         nn.init.zeros_(self.head.bias)
 
     def init_unk_embedding(self, member_seed: int) -> None:
-        """Per Phase 3 R1#C8 — UNK row 0 random per-member for ensemble disagreement."""
+        """Per Phase 3 R1#C8 — UNK row 0 random per-member for ensemble disagreement.
+        R1#C1: copy onto the parameter's device to avoid CUDA mismatch."""
         rng = np.random.default_rng(member_seed)
         with torch.no_grad():
-            self.emb.weight[0] = torch.from_numpy(
+            cpu_init = torch.from_numpy(
                 rng.normal(0.0, EMB_DIM ** -0.5, size=EMB_DIM).astype(np.float32)
             )
+            self.emb.weight.data[0].copy_(cpu_init.to(self.emb.weight.device))
 
     def forward(self, x_cont, x_missing, price_tier, stc_bucket,
                 vol_regime_int, side_int, ticker_id, logit_raw_prob_clipped):
@@ -298,32 +300,8 @@ def compute_w_cell_lookup(per_cell: dict) -> np.ndarray:
 # Logical sha (R-p4-spec-r3#C1)
 # ---------------------------------------------------------------------------
 
-def compute_extract_logical_sha(audit_json: dict, normstats_per_fold: list[dict]) -> str:
-    """Stable across pyarrow upgrades. Reads transforms from top-level
-    `normstats['transforms']` (NOT inside individual stat dicts)."""
-    canonical = {
-        'normstats': [
-            {col: {
-                'mean': stats['mean'],
-                'std': stats['std'],
-                'transform': ns.get('transforms', {}).get(col, 'identity'),
-                '_no_zscore': stats.get('_no_zscore', False),
-             }
-             for col, stats in sorted(ns['stats'].items())}
-            for ns in normstats_per_fold
-        ],
-        'per_fold': [
-            {'fold': pf['fold'],
-             'n_train': pf['n_train'], 'n_cal': pf['n_cal'], 'n_test': pf['n_test'],
-             'per_cell': {k: {'n_train': v['n_train'], 'n_cal': v['n_cal'], 'n_test': v['n_test'],
-                              'train_positive_rate': v.get('train_positive_rate'),
-                              'train_mean_method_output': v.get('train_mean_method_output')}
-                          for k, v in sorted(pf.get('per_cell', {}).items())}}
-            for pf in audit_json.get('per_fold', [])
-        ],
-    }
-    raw = json.dumps(canonical, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
-    return hashlib.sha256(raw).hexdigest()
+# R1#C5: compute_extract_logical_sha lives in _helpers.py; imported above.
+from _helpers import compute_extract_logical_sha  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -393,20 +371,18 @@ def write_parquet_tmp(table: pa.Table, final_path: Path) -> Path:
     return tmp
 
 
-def fsync_directory(path: Path) -> None:
-    fd = os.open(str(path), os.O_RDONLY)
+# R1#C5/C8: fsync_directory + sha256_file moved to _helpers.py.
+from _helpers import fsync_directory, sha256_file  # noqa: E402, F811
+
+
+def _safe_relative(p: Path, root: Path) -> str:
+    """R1#C9: relative_to() raises ValueError if p is outside root.
+    Wrap to fall back to absolute string with a logged warning."""
     try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for chunk in iter(lambda: f.read(65536), b''):
-            h.update(chunk)
-    return h.hexdigest()
+        return str(p.resolve().relative_to(root))
+    except ValueError:
+        logging.warning("[train] %s is outside project_root %s; storing absolute path", p, root)
+        return str(p.resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -499,8 +475,7 @@ def run(args: argparse.Namespace) -> dict:
     if not _HAS_PSUTIL:
         raise Phase4ContractError("psutil REQUIRED — install psutil before training")
 
-    _setup_walltime_alarm(args.wall_ceiling_s)
-
+    # R1#C7: alarm armed AFTER lock acquisition (below). Spec line 411.
     asset = args.asset
     project_root = Path(__file__).resolve().parents[2]
     extract_dir = project_root / 'data' / 'cal_mlp' / asset
@@ -544,18 +519,21 @@ def run(args: argparse.Namespace) -> dict:
         n_vocab = len(vocab)
 
         # Load all fold data + normstats while holding LOCK_SH.
+        # R1#C8: index by fold integer to avoid list-position fragility.
         fold_records = ext_bundle['eval_fold_artifacts']
-        normstats_per_fold = []
-        fold_dfs = {}
+        normstats_by_fold: dict[int, dict] = {}
+        fold_dfs: dict[int, pd.DataFrame] = {}
         for fr in fold_records:
             ns_path = train_dir_extract / fr['normstats_path']
             if sha256_file(ns_path) != fr['normstats_sha256']:
                 raise Phase4SchemaError(f"normstats_sha256 mismatch fold {fr['fold']}")
-            normstats_per_fold.append(json.load(open(ns_path)))
+            normstats_by_fold[int(fr['fold'])] = json.load(open(ns_path))
             pq_path = train_dir_extract / fr['parquet_path']
             if sha256_file(pq_path) != fr['parquet_sha256']:
                 raise Phase4SchemaError(f"parquet_sha256 mismatch fold {fr['fold']}")
-            fold_dfs[fr['fold']] = pd.read_parquet(pq_path, engine='pyarrow', dtype_backend='numpy_nullable')
+            fold_dfs[int(fr['fold'])] = pd.read_parquet(pq_path, engine='pyarrow', dtype_backend='numpy_nullable')
+        # Stable list ordered by fold for sha-chain.
+        normstats_per_fold = [normstats_by_fold[f] for f in sorted(normstats_by_fold)]
 
         # logical sha (Phase 4 R3#C1)
         extract_bundle_logical_sha256 = compute_extract_logical_sha(
@@ -567,6 +545,8 @@ def run(args: argparse.Namespace) -> dict:
     models_dir.mkdir(parents=True, exist_ok=True)
     models_lock = models_dir / '.lock'
     with acquire_lock(models_lock, fcntl.LOCK_EX):
+        # R1#C7: arm wall-time alarm AFTER both locks are held.
+        _setup_walltime_alarm(args.wall_ceiling_s)
         # Compute train_id (matches Phase 2 cutoff_end + sha8 over our params).
         train_id_inputs = (
             f"{asset}|{cfg_fp}|{extract_train_id}|{args.base_seed}|{args.ensemble_size}|"
@@ -623,7 +603,7 @@ def run(args: argparse.Namespace) -> dict:
             for fold in folds_to_train:
                 fold_start = time.monotonic()
                 fold_record = next(fr for fr in fold_records if fr['fold'] == fold)
-                normstats = normstats_per_fold[fold]
+                normstats = normstats_by_fold[fold]
                 df_raw = fold_dfs[fold]
                 df_norm = apply_norm(df_raw, normstats['stats'], CONT_FEATURE_COLS,
                                        transforms=normstats.get('transforms', CONT_FEATURE_TRANSFORMS))
@@ -743,22 +723,37 @@ def run(args: argparse.Namespace) -> dict:
                         # IMPORTANT (R3#C2): marker BEFORE checkpoint in pending_renames.
                         pending_renames.append((marker_tmp, marker_final))
                         pending_renames.append((member_tmp, member_final))
+                        # R1#C4: capture shas of tmps (post-rename bytes are identical).
+                        marker_sha = sha256_file(marker_tmp)
+                        ckpt_sha = sha256_file(member_tmp)
+                        epochs_trained = epoch + 1
+                        final_train_loss = float(loss.detach().cpu().item())
+                    if resumed:
+                        # Resume path: shas of final files (already on disk).
+                        marker_sha = sha256_file(marker_final)
+                        ckpt_sha = sha256_file(member_final)
+                        epochs_trained = early_stop_epoch
+                        final_train_loss = float('nan')
 
+                    # Compute cal predictions on the (possibly resumed) model.
                     cal_preds[member] = predict_p(model, ds_cal)
                     test_preds[member] = predict_p(model, ds_test)
-                    # Compute checkpoint sha for bundle (use tmp if not yet renamed).
-                    ckpt_for_sha = member_final if member_final.exists() else (
-                        next((t for (t, f) in pending_renames if f == member_final), None)
-                    )
-                    ckpt_sha = sha256_file(ckpt_for_sha) if ckpt_for_sha else ''
+
+                    # R1#C3: best_cal_brier_raw — unweighted Brier on cal.
+                    best_cal_brier_raw = float(((cal_preds[member] - ca['outcome'].to_numpy(np.float32)) ** 2).mean())
+
                     all_member_checkpoint_shas.append(ckpt_sha)
                     fold_members_audit.append({
                         'member': member, 'seed': member_seed,
                         'checkpoint_path': member_final.name,
                         'checkpoint_sha256': ckpt_sha,
                         'marker_path': marker_final.name,
+                        'marker_sha256': marker_sha,
                         'best_cal_brier_w': float(best_cal_brier_w),
+                        'best_cal_brier_raw': best_cal_brier_raw,
                         'early_stop_epoch': early_stop_epoch,
+                        'epochs_trained': epochs_trained,
+                        'final_train_loss': final_train_loss,
                         'resumed_from_marker': resumed,
                     })
 
@@ -876,9 +871,7 @@ def run(args: argparse.Namespace) -> dict:
                 'model_definition_sha256': model_def_sha,
                 'ensemble_size': args.ensemble_size,
                 'base_seed': args.base_seed,
-                'extract_bundle_path': str(
-                    bundle_path.resolve().relative_to(project_root)
-                ),
+                'extract_bundle_path': _safe_relative(bundle_path, project_root),
                 'extract_bundle_sha256': sha256_file(bundle_path),
                 'extract_bundle_logical_sha256': extract_bundle_logical_sha256,
                 'ticker_vocab_path': ext_bundle['ticker_vocab_path'],
@@ -905,9 +898,19 @@ def run(args: argparse.Namespace) -> dict:
             # appended in order: marker, member, marker, member, ..., preds,
             # model_def, audit, bundle). Bundle is last.
             renamed: list[Path] = []
-            for tmp, final in pending_renames:
-                os.replace(tmp, final)
-                renamed.append(final)
+            try:
+                for tmp, final in pending_renames:
+                    os.replace(tmp, final)
+                    renamed.append(final)
+            except Exception:
+                # R1#C2: unlink already-renamed finals in REVERSE order.
+                for final in reversed(renamed):
+                    try:
+                        if final.exists():
+                            final.unlink()
+                    except (FileNotFoundError, OSError):
+                        pass
+                raise
             fsync_directory(train_dir)
 
             # Update CURRENT.
