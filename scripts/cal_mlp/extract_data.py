@@ -414,8 +414,11 @@ def enforce_ticker_disjoint(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     that ticker's LATEST in-span row falls. Out-of-span rows keep `split=None`.
 
     R1#C4 + R1#C5 + R2#C9: prior version mass-promoted out-of-span rows into
-    splits via `df['ticker'].map(last_split)` unconditionally. Now restricted
-    to rows that already had a non-null split.
+    splits unconditionally — restricted to in-span rows.
+    R2-impl#C1: returns `n_reassigned` = count of in-span rows whose split
+    actually changed (e.g., a train row that got moved to test because the
+    same ticker had a later test row). The previous "n_dropped to None"
+    metric was structurally always-zero by construction.
     """
     if df.empty:
         return df, 0
@@ -427,17 +430,13 @@ def enforce_ticker_disjoint(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     sorted_df = df.assign(_et=et).sort_values(['ticker', '_et'])
     # `.last()` after sort returns the latest-in-span split per ticker.
     last_split = sorted_df[sorted_df['split'].notna()].groupby('ticker')['split'].last()
-    # Only reassign IN-SPAN rows; out-of-span stay None.
-    new_split = df['split'].copy()
+    new_split = pre_split.copy()
     new_split.loc[in_span_mask] = df.loc[in_span_mask, 'ticker'].map(last_split)
-    # Boundary-dropped rows = rows that were in-span before but lost their split now
-    # (because the ticker's latest in-span row was assigned to a different split,
-    # but the rule above re-applies the LATEST per-ticker split — so n_dropped here
-    # measures rows whose split CHANGED from non-null to null, not just the count diff).
-    dropped_mask = in_span_mask & new_split.isna()
+    # Count rows whose split CHANGED — those are the boundary-cost reassignments.
+    reassigned_mask = in_span_mask & (new_split != pre_split)
     df = df.copy()
     df['split'] = new_split
-    return df, int(dropped_mask.sum())
+    return df, int(reassigned_mask.sum())
 
 
 # ---------------------------------------------------------------------------
@@ -523,11 +522,18 @@ def run(args: argparse.Namespace) -> dict:
     asset_floor = asset_min_price(asset, include_sub_floor=args.include_sub_floor)
     cfg_fp = compute_cfg_fp(include_sub_floor=args.include_sub_floor)
 
-    out_dir = Path(args.out_dir or f'data/cal_mlp/{asset}').resolve()
-    # R2#C8: clamp out_dir to project tree to prevent path traversal via
-    # `--out-dir ../../etc`. CWD is assumed to be the project root.
-    project_root = Path.cwd().resolve()
-    if not str(out_dir).startswith(str(project_root)):
+    # R2#C8 + R2-impl#C2: anchor project_root to script location (not cwd —
+    # cron and worktree invocations may run from any cwd). Resolve --out-dir
+    # against project_root and use is_relative_to() to avoid prefix-collision.
+    project_root = Path(__file__).resolve().parents[2]
+    if args.out_dir:
+        out_dir = (Path(args.out_dir) if Path(args.out_dir).is_absolute()
+                   else (project_root / args.out_dir)).resolve()
+    else:
+        out_dir = (project_root / 'data' / 'cal_mlp' / asset).resolve()
+    try:
+        out_dir.relative_to(project_root)
+    except ValueError:
         raise SystemExit(
             f"--out-dir must be inside project root {project_root}; got {out_dir}"
         )
@@ -581,12 +587,13 @@ def run(args: argparse.Namespace) -> dict:
         train_id = f"{cutoff_end}-{sha8}"
         train_dir = out_dir / train_id
         train_dir.mkdir(parents=True, exist_ok=True)
-        # R1#C24 + R2#C5: clean any stale tmp files from a prior crashed extract.
+        # R1#C24 + R2#C5 + R2-impl#C3: clean any stale tmp files from a prior
+        # crashed extract — both train_dir and out_dir's CURRENT.tmp-*.
         # Lock guarantees no concurrent writer; safe to glob+unlink.
-        for stale in train_dir.glob('*.tmp-*'):
+        for stale in list(train_dir.glob('*.tmp-*')) + list(out_dir.glob('CURRENT.tmp-*')):
             try:
                 stale.unlink()
-                logging.info("[extract] cleaned stale tmp: %s", stale.name)
+                logging.info("[extract] cleaned stale tmp: %s", stale)
             except OSError:
                 pass
 
