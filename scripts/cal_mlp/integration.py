@@ -440,8 +440,10 @@ class CalMLPPredictor:
 
     def _verify_bundle_sha_chain(self, bundle: dict, train_dir: Path) -> None:
         """R-p7-r3#H3-DRY-1: delegates to _helpers.verify_bundle_sha_chain
-        so phases 4/5/7 share ONE source of truth for the chain formula."""
-        cache_key = (bundle.get('train_id'), self.asset)
+        so phases 4/5/7 share ONE source of truth for the chain formula.
+        R-p7-r4#MED-CACHE: cache key includes project_root so test fixtures
+        with the same train_id under a fake root can't poison the prod cache."""
+        cache_key = (bundle.get('train_id'), self.asset, str(self.project_root))
         with _SHA_CHAIN_CACHE_LOCK:
             if cache_key in _SHA_CHAIN_CACHE:
                 return
@@ -562,6 +564,15 @@ class CalMLPPredictor:
                     # Atomic publish.
                     self.conformal = _conformal
                     self.models = _models
+                    # R-p7-r4#LOW-1: M=1 collapses ensemble std to 0 → conformal
+                    # interval degenerates. Bundle was likely misconfigured.
+                    if len(_models) < 2:
+                        logger.warning(
+                            "[CALMLP_LOAD] asset=%s loaded %d members (expected ≥2); "
+                            "ensemble std will collapse to 0 and conformal "
+                            "interval will degenerate.",
+                            self.asset, len(_models),
+                        )
                     self.vocab = _vocab
                     self.normstats = _normstats
                     self.market_blend_w = live_w
@@ -590,8 +601,11 @@ class CalMLPPredictor:
                 if not self._loaded:
                     self._load()
         except Exception as e:
+            # R-p7-r4#MED-EXC: log full traceback so AttributeError-class
+            # programming bugs in _load aren't silently indistinguishable from
+            # benign flock OSError on NFS.
             logger.warning("[CALMLP_WARMUP] %s asset=%s; deferring to first predict()",
-                           e, self.asset)
+                           e, self.asset, exc_info=True)
 
     def predict(self, raw_prob: float, ticker: str, side: str,
                 entry_price_cents: int, row_features: dict) -> tuple:
@@ -657,7 +671,14 @@ class CalMLPPredictor:
         row['ticker_id'] = self.vocab.get(str(ticker), 0)
         # R-p7-r2#H2: NaN/None values in CONT_FEATURE_COLS must flip the
         # matching *_missing indicator. Build an inverse map src→indicator.
+        # R-p7-r4#M-INV: assert no source-column collisions (silent dropping
+        # of a flag would break the missing-indicator contract).
         _src_to_ind = {v: k for k, v in MISSING_INDICATOR_SOURCE_MAP.items()}
+        if len(_src_to_ind) != len(MISSING_INDICATOR_SOURCE_MAP):
+            raise CalMLPSchemaError(
+                "MISSING_INDICATOR_SOURCE_MAP inverse has fewer keys than the "
+                "forward map — a source column maps to multiple indicators"
+            )
         # Initialize all indicator cols to 0 (truly-present default).
         for col in MISSING_INDICATOR_COLS:
             row.setdefault(col, 0)

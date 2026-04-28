@@ -468,15 +468,17 @@ def build_warmup_then_cosine(opt: torch.optim.Optimizer, warmup_steps: int,
 # ---------------------------------------------------------------------------
 
 def marker_matches(marker_path: Path, expected: dict) -> bool:
+    """R-p4-r7#MED1: iterate `expected.keys()` (NOT a hardcoded whitelist) so
+    new fields like `metric_version` actually gate resume. The previous
+    whitelist made the R6 metric_version=2 field inert — pre-R6 markers
+    would still match because the whitelist excluded it."""
     if not marker_path.exists():
         return False
     try:
         m = json.load(open(marker_path))
     except (OSError, json.JSONDecodeError):
         return False
-    keys = ('cfg_fp', 'extract_bundle_logical_sha256', 'base_seed',
-            'model_definition_sha256', 'train_id', 'fold', 'member')
-    return all(m.get(k) == expected.get(k) for k in keys)
+    return all(m.get(k) == expected.get(k) for k in expected.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -925,14 +927,20 @@ def run(args: argparse.Namespace) -> dict:
                         f"share identical weights post-zero-init head"
                     )
 
-            # bundle_sha chain
+            # bundle_sha chain (R-p4-r7-CRIT: producer matches the canonical
+            # _helpers.verify_bundle_sha_chain consumer exactly. Both sides
+            # hash the per-file normstats SHA hex strings so the consumer
+            # can verify with no extra I/O. Previously the producer hashed
+            # canonical-JSON bytes of the dicts while the consumer hashed
+            # the eval_fold_artifacts[].normstats_sha256 strings — every
+            # real Phase-5 bundle would fail verify_bundle_sha_chain.)
             ckpt_shas_sorted = sorted(s for s in all_member_checkpoint_shas if s)
             model_identity_sha256 = hashlib.sha256(
                 ':'.join(ckpt_shas_sorted).encode()
             ).hexdigest()
             ns_concat = hashlib.sha256()
-            for ns in normstats_per_fold:
-                ns_concat.update(json.dumps(ns, sort_keys=True, separators=(',', ':')).encode())
+            for fold_art in eval_fold_artifacts:
+                ns_concat.update(fold_art['normstats_sha256'].encode())
             normstats_concat_sha256 = ns_concat.hexdigest()
             phase4_bundle_sha = hashlib.sha256(
                 f"{model_identity_sha256}:{normstats_concat_sha256}:phase4".encode()
@@ -985,15 +993,19 @@ def run(args: argparse.Namespace) -> dict:
                 'normstats_concat_sha256': normstats_concat_sha256,
                 'bundle_sha': phase4_bundle_sha,
                 'phase4_bundle_sha': phase4_bundle_sha,
-                # R-p4-r5#C3: document the ordering convention so Phase 5/7
-                # consumers can recompute model_identity_sha256 deterministically.
-                # checkpoint_sha256 list is sorted ASCENDING before joining
-                # with ':'. normstats_concat is in fold order (0..K-1).
+                # R-p4-r5#C3 + R-p4-r7-CRIT: ordering convention for
+                # deterministic recomputation. Phases 5/7 use this to verify
+                # bundle integrity via _helpers.verify_bundle_sha_chain.
                 '_sha_chain_conventions': {
                     'checkpoint_shas_order': 'sorted_ascending',
                     'normstats_concat_order': 'fold_index_ascending',
-                    'normstats_per_fold_serialization': 'json sort_keys=True separators=(",",":")',
+                    # PRODUCER & CONSUMER both concat the per-file SHA hex
+                    # strings (from eval_fold_artifacts[].normstats_sha256),
+                    # NOT the canonical-JSON bytes of the normstats dicts.
+                    # This keeps the verifier I/O-free.
+                    'normstats_concat_input': 'eval_fold_artifacts[].normstats_sha256_hex',
                     'phase4_formula': 'sha256(model_identity_sha256:normstats_concat_sha256:phase4)',
+                    'phase5_formula': 'sha256(phase4_bundle_sha:conformal_sha256)',
                 },
                 'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
                 'train_py_sha256': sha256_file(Path(__file__)),
