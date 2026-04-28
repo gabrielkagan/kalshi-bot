@@ -284,10 +284,17 @@ models/
 ```python
 def compute_extract_logical_sha(audit_json: dict, normstats_per_fold: list[dict]) -> str:
     """Stable across pyarrow upgrades. Operates on logical content only:
-    sorted normstats values per fold + per_cell counts + n_train/cal/test."""
+    sorted normstats values per fold + per_cell counts + n_train/cal/test.
+
+    R3#C1: Phase 2's normstats schema puts `transforms` at top level (a dict
+    {col: transform_name}), NOT inside individual stat dicts. Read from
+    ns['transforms'][col], not ns['stats'][col].
+    """
     canonical = {
         'normstats': [
-            {col: {'mean': stats['mean'], 'std': stats['std'], 'transform': stats.get('transform', 'identity')}
+            {col: {'mean': stats['mean'], 'std': stats['std'],
+                    'transform': ns.get('transforms', {}).get(col, 'identity'),
+                    '_no_zscore': stats.get('_no_zscore', False)}
              for col, stats in sorted(ns['stats'].items())}
             for ns in normstats_per_fold
         ],
@@ -334,7 +341,7 @@ This chain lets Phase 6 verify the full provenance via a single `bundle_sha`.
 4. For each fold k for each member m: training-loop writes `fold{k}_member{m}.pt.tmp-...` with `torch.save` + fsync, plus a sibling `fold{k}_member{m}.marker.json.tmp-...`. All accumulated in `pending_renames` list — none renamed yet.
 5. After all folds × members complete: build per-fold predictions parquet tmps via `atomic_write_parquet`; append to `pending_renames`.
 6. Build `model_definition.json`, `train_audit.json`, `bundle.json` tmps; append.
-7. **Rename phase** — order: per-fold member checkpoints → markers → per-fold predictions → model_definition → audit → bundle (LAST).
+7. **Rename phase** — order: per-fold MARKERS → per-fold member checkpoints → per-fold predictions → model_definition → audit → bundle (LAST). **R3#C2:** marker-before-checkpoint preserves the invariant `checkpoint_final ⇒ marker_final` — a crash between rename ops can leave an orphan marker (harmless; resume deletes it) but never an orphan checkpoint.
 8. Update `models/cal_mlp_<asset>/CURRENT` pointer atomically via tmp+rename. **Reader contract (R1-ops#C11):** Phase 5/6 read CURRENT AFTER acquiring models_lock SH, so they see a stable train_id throughout their run.
 9. fsync directory after each rename batch.
 
@@ -421,6 +428,79 @@ class Phase4WriteError(Phase4Error): exit_code = 5
 class Phase4SchemaError(Phase4Error): exit_code = 6
 class Phase4ResourceError(Phase4Error): exit_code = 7    # OOM / wall-clock
 ```
+
+## Phase4Dataset + forward batch protocol (R3#C3 — locked)
+
+`FORWARD_KEYS` is a module-level tuple in `cal_mlp/_helpers.py`:
+
+```python
+FORWARD_KEYS = (
+    'x_cont', 'x_missing',
+    'price_tier', 'stc_bucket', 'vol_regime_int', 'side_int',
+    'ticker_id', 'logit_raw_prob_clipped',
+)
+```
+
+```python
+class Phase4Dataset(torch.utils.data.Dataset):
+    """Wraps a normalized fold DataFrame + ticker vocab + per-cell weights.
+    __getitem__ returns a dict whose keys exactly match FORWARD_KEYS plus
+    'outcome' and 'w_cell'. Default torch collate stacks each key into a
+    batched tensor."""
+
+    def __init__(self, df: pd.DataFrame, vocab: dict, w_cell_lookup: np.ndarray):
+        self.df = df.reset_index(drop=True)
+        self.vocab = vocab
+        self.w_cell_lookup = torch.from_numpy(w_cell_lookup.astype(np.float32))
+        self._cont_arr = self.df[CONT_FEATURE_COLS].to_numpy(np.float32)
+        self._missing_arr = self.df[MISSING_INDICATOR_COLS].to_numpy(np.float32)
+        self._price = self.df['price_tier'].to_numpy(np.int64)
+        self._stc   = self.df['stc_bucket'].to_numpy(np.int64)
+        self._vol   = self.df['vol_regime_int'].to_numpy(np.int64)
+        self._side  = self.df['side_int'].to_numpy(np.int64)
+        self._tid   = self.df['ticker_id'].to_numpy(np.int64)
+        self._logit_raw = self.df['logit_raw_prob_clipped'].to_numpy(np.float32)
+        self._outcome = self.df['outcome'].to_numpy(np.float32)
+
+    def __len__(self): return len(self.df)
+
+    def __getitem__(self, i: int) -> dict:
+        return {
+            'x_cont': torch.from_numpy(self._cont_arr[i]),
+            'x_missing': torch.from_numpy(self._missing_arr[i]),
+            'price_tier': torch.tensor(self._price[i], dtype=torch.long),
+            'stc_bucket': torch.tensor(self._stc[i], dtype=torch.long),
+            'vol_regime_int': torch.tensor(self._vol[i], dtype=torch.long),
+            'side_int': torch.tensor(self._side[i], dtype=torch.long),
+            'ticker_id': torch.tensor(self._tid[i], dtype=torch.long),
+            'logit_raw_prob_clipped': torch.tensor(self._logit_raw[i], dtype=torch.float32),
+            'outcome': torch.tensor(self._outcome[i], dtype=torch.float32),
+            'w_cell': self.w_cell_lookup[self._price[i] * 4 + self._stc[i]],
+        }
+```
+
+`compute_weighted_bce(model, batch_dict, w_cell_lookup) → loss`:
+
+```python
+def compute_weighted_bce(model: nn.Module, batch: dict, _unused_w_lookup) -> torch.Tensor:
+    """Forward + weighted BCE. The dataset already attached per-row w_cell."""
+    final_logit, _final_prob = model(**{k: batch[k] for k in FORWARD_KEYS})
+    bce = F.binary_cross_entropy_with_logits(final_logit, batch['outcome'], reduction='none')
+    return (bce * batch['w_cell']).mean()
+```
+
+DataLoader call site:
+
+```python
+ds = Phase4Dataset(tr, vocab, w_cell_lookup)
+loader = DataLoader(ds, batch_size=256, shuffle=True, num_workers=0,
+                    generator=torch.Generator().manual_seed(member_seed))
+for batch in loader:
+    loss = compute_weighted_bce(model, batch, w_cell_lookup)
+    ...
+```
+
+Phase 7's bot.py forward path uses the SAME `FORWARD_KEYS` ordering — drift = startup parity-assert fail.
 
 ## train_audit.json schema (R1-train#C11 — locked v1)
 

@@ -109,6 +109,17 @@ Phase 6 A/B comparisons use this interface to swap base/challenger without code 
 ## `predict_with_interval` (the runtime API)
 
 ```python
+class AuditDict(TypedDict):
+    q_alpha: float
+    half_width: float
+    clipped_lo: bool
+    clipped_hi: bool
+    chain: list[str]
+    p_pred_raw: float
+
+InferenceReturn = tuple[float, float, Optional[float], Optional[float]]
+AuditReturn = tuple[float, float, Optional[float], Optional[float], AuditDict]
+
 def predict_with_interval(
     p_pred: float,                # ensemble mean from predictor
     p_std: float,                 # ensemble std
@@ -118,7 +129,7 @@ def predict_with_interval(
     side: str,                    # 'yes' or 'no'
     market_blend_w: float,        # 0..1, blends prior with raw market_implied_prob
     mode: str,                    # 'inference' or 'audit'
-) -> tuple[float, float, Optional[float], Optional[float]]:
+) -> InferenceReturn | AuditReturn:    # R2#C3: typed audit return
     """Returns (p_mean, p_std, final_lo, final_hi) where:
       - p_mean is the input ensemble mean, possibly blended with market prior.
       - final_lo, final_hi are conformal interval bounds in [0, 1].
@@ -141,8 +152,10 @@ def lookup_cell_quantile(
     sb = row_features['stc_bucket']
     vr = row_features['vol_regime']
 
-    # 1. Bleed cell + collapse-by-merge
-    if (pt, sb) == (3, 2) and artifact.get('bleed_collapsed_by_merge'):
+    # 1. Bleed cell + collapse-by-merge.
+    # R2#C2: per-vol_regime granularity; the boolean is derived for back-compat.
+    bleed_per_vr = artifact.get('bleed_collapsed_by_merge_per_vr', {})
+    if (pt, sb) == (3, 2) and bleed_per_vr.get(str(vr)):
         bleed = artifact['bleed_fallback_quantiles']
         key = ','.join(f"{a}={row_features[a]}" for a in bleed['key_axes']) or '_all'
         q = bleed['quantiles'].get(key)
@@ -194,7 +207,7 @@ def lookup_cell_quantile(
 The earlier `q_alpha + ENSEMBLE_STD_MULTIPLIER * p_std` form sacrificed validity. Locked form:
 
 ```python
-breakeven = market_implied_prob_for_side(entry_price_cents, side)   # R1#C10 rename
+breakeven = market_implied_prob_yes(entry_price_cents, side)   # R1#C10 rename
 # market_blend_w default = 0 (production); >0 invalidates the conformal interval per R1#C10.
 p_center = market_blend_w * breakeven + (1 - market_blend_w) * p_pred
 
@@ -293,7 +306,7 @@ def _load_normstats(path: Path, expected_sha: Optional[str] = None) -> dict:
   "alpha": 0.20,
   "bleed_collapse_enabled": true,
   "n_cell_floor": 20,
-  "ensemble_std_multiplier": 0.5,
+  // R2#C5: ensemble_std_multiplier removed from runtime path (R1#C3); bundle no longer emits it.
 
   "phase4_bundle_path": "/abs/path/cal_mlp_SOL_<train_id>_bundle.json",
   "phase4_bundle_sha256": "...",
@@ -324,7 +337,7 @@ def _load_normstats(path: Path, expected_sha: Optional[str] = None) -> dict:
   "alpha": 0.20,
   "n_cal_total": 2103,
   "global_q_alpha": 0.142,
-  "ensemble_std_multiplier": 0.5,
+  // R2#C5: ensemble_std_multiplier removed (was 0.5; broke validity per R1#C3).
   "merged_axes": [],                         // axes that collapsed for low-n
   "bleed_collapsed_by_merge": true,
   "bleed_fallback_quantiles": {
