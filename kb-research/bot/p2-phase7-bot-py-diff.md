@@ -9,7 +9,7 @@
 1. Review this diff against current bot.py.
 2. Run `/ultrareview` on the rebuild branch.
 3. Apply the edits as ONE commit.
-4. Verify the parity-assert log line `[CALMLP_PARITY] 14 constants verified` at startup.
+4. Verify the parity-assert log line `[CALMLP_PARITY] N constants verified` (N is the dynamic _check() count — currently 17 with the R-p7-r3#M2 STC_SIZING_SCALER_ENABLED addition; will rise as more parity vectors land) at startup.
 5. Verify `bot_startup_log` table has a row with `parity_check_status='passed'`.
 6. Initial deploy: `CALMLP_ENABLED=0` env var to keep calibrator off until shadow data accumulates.
 7. After 24-48h of shadow data + spot-checks: flip `CALMLP_ENABLED=1`.
@@ -99,7 +99,7 @@ if _calmlp_new_prob is not None:
 
 1. **Startup logs check**:
    - `[CALMLP_MIGRATE] added columns: [...]` (only on first run after deploy)
-   - `[CALMLP_PARITY] 14 constants verified`
+   - `[CALMLP_PARITY] N constants verified` (N is the dynamic _check() count — currently 17 with the R-p7-r3#M2 STC_SIZING_SCALER_ENABLED addition; will rise as more parity vectors land)
    - `[CALMLP_PARITY] sizing parity verified across 8 vectors`
 2. **`bot_startup_log` table**:
    ```sql

@@ -375,7 +375,14 @@ def make_compute_for_15m_main_path(bot_globals: dict):
             return 1.0
         ratio = current_balance_cents / hwm_cents
         if ratio < g['DRAWDOWN_HALT_THRESHOLD']:
-            return g['DRAWDOWN_HALT_FLOOR']
+            # R-p7-spec-r1#C1: bot.py hardcodes 0.10 inside
+            # models.PositionSizer._drawdown_scaler; config.py exposes
+            # DRAWDOWN_HALT_THRESHOLD but NOT DRAWDOWN_HALT_FLOOR. Falling
+            # back to the same literal keeps the parity vector reachable
+            # without requiring a config.py edit at deploy time. If the
+            # operator lands the suggested config.py edit, the bot global
+            # takes precedence automatically.
+            return g.get('DRAWDOWN_HALT_FLOOR', 0.10)
         if ratio < g['DRAWDOWN_QUARTER_THRESHOLD']:
             return 0.25
         if ratio < g['DRAWDOWN_HALF_THRESHOLD']:

@@ -11,7 +11,7 @@ Wire the Phase 5 conformal-wrapped MLP into bot.py's live trade path so the exis
 
 ## Pre-conditions (must hold before deploy)
 
-1. Phase 4 bundle for each of {BTC, ETH, SOL, XRP} exists at `models/cal_mlp_<asset>/CURRENT/cal_mlp_<asset>_<train_id>_bundle.json`.
+1. Phase 5 bundle for each of {BTC, ETH, SOL, XRP} exists at `models/cal_mlp_<asset>/<train_id>/cal_mlp_<asset>_<train_id>_phase5_bundle.json` (R-p7-spec-r1#C2: this matches what `conformal.py` actually writes; the prior `_bundle.json` form was for Phase-4-only ablation and is no longer the primary deploy artifact).
 2. Phase 5 wrap exists at the same path with `phase: 5` in the bundle JSON.
 3. Phase 6 validation report has `ship_recommendation: ship` for ALL 4 assets (not `manual_review`, not `block`).
 4. `requirements_calmlp.txt` matches the runtime VPS environment (torch / numpy / pandas / pyarrow versions).
@@ -122,7 +122,9 @@ def _calmlp_parity_assert():
         self.conn.commit()
         raise SystemExit("CALMLP_PARITY FAIL:\n  " + "\n  ".join(failures))
 
-    logging.info("[CALMLP_PARITY] %d constants verified", 14)
+    # R-p7-spec-r1#H3: count is dynamic (impl uses _check_count[0] closure
+    # counter); spec example shows the literal call-site expectation.
+    logging.info("[CALMLP_PARITY] %d constants verified", _check_count[0])
     self.conn.execute(
         "INSERT INTO bot_startup_log (parity_check_status, ts, pid) VALUES (?, ?, ?)",
         ('passed', datetime.utcnow().isoformat(), os.getpid()),
@@ -162,12 +164,22 @@ def _bot_lookup_tier(fee_adj_edge_frac: float) -> tuple[int, float]:
     return (-1, 0.0)
 
 def _bot_drawdown_scaler(current_balance_cents: int, hwm_cents: int) -> float:
-    """Mirrors config.py drawdown ladder."""
+    """Mirrors config.py drawdown ladder.
+
+    R-p7-spec-r1#C1: bot.py hardcodes 0.10 inside models.PositionSizer._drawdown_scaler;
+    config.py exposes DRAWDOWN_HALT_THRESHOLD but NOT DRAWDOWN_HALT_FLOOR. The
+    impl (`integration.py`) uses `g.get('DRAWDOWN_HALT_FLOOR', 0.10)` so the
+    parity vector is reachable without requiring a config.py edit at deploy
+    time. Operator may optionally promote this to config.py:
+        DRAWDOWN_HALT_FLOOR = 0.10
+    in which case the bot global takes precedence automatically. If promoted,
+    also add `_check("DRAWDOWN_HALT_FLOOR", g['DRAWDOWN_HALT_FLOOR'], ...)` to
+    parity_assert. NOT required for the deploy to succeed."""
     if hwm_cents <= 0:
         return 1.0
     ratio = current_balance_cents / hwm_cents
     if ratio < DRAWDOWN_HALT_THRESHOLD:
-        return DRAWDOWN_HALT_FLOOR
+        return globals().get('DRAWDOWN_HALT_FLOOR', 0.10)
     if ratio < DRAWDOWN_QUARTER_THRESHOLD:
         return 0.25
     if ratio < DRAWDOWN_HALF_THRESHOLD:
@@ -271,7 +283,7 @@ class CalMLPPredictor:
                         raise CalMLPError('no_current', f"no CURRENT for {self.asset}")
                     train_id = current_path.read_text().strip()
                     train_dir = models_dir / train_id
-                    bundle_path = train_dir / f'cal_mlp_{self.asset}_{train_id}_bundle.json'
+                    bundle_path = train_dir / f'cal_mlp_{self.asset}_{train_id}_phase5_bundle.json'
                     with open(bundle_path) as f:
                         bundle = json.load(f)
                     if bundle.get('phase') != 5:
@@ -356,7 +368,13 @@ elif not calmlp_enabled_now:
     kwargs['cal_mlp_skipped_reason'] = 'env_disabled'
 else:
     try:
-        calibrator = _calmlp_predictors[asset]
+        # R-p7-spec-r1#M2: use .get(asset) — subscript would KeyError for any
+        # asset not in {BTC,ETH,SOL,XRP}, crashing alpha-engines that share
+        # this code path. Mirror bot-py-diff.md edit 4 exactly.
+        calibrator = _calmlp_predictors.get(asset)
+        if calibrator is None:
+            kwargs['cal_mlp_skipped_reason'] = 'no_predictor'
+            return raw_prob
         cal_prob, ens_std, final_lo, final_hi = calibrator.predict(
             features=row_features,
             raw_prob=raw_prob,
@@ -489,46 +507,19 @@ SKIPPED_REASONS = (
 
 In §D's `except CalMLPError`, write `kwargs['cal_mlp_skipped_reason'] = e.code` to the row. Operators monitor `cal_mlp_skipped_reason IS NULL` for >99%; non-null counts grouped by code surface specific failure modes.
 
-## `_verify_bundle_sha_chain` (R1#C6)
+## `_verify_bundle_sha_chain` (R1#C6 + R-p7-spec-r1#H1)
 
-```python
-def _verify_bundle_sha_chain(self, bundle: dict, train_dir: Path) -> None:
-    """Recompute phase4_bundle_sha and phase5_bundle_sha; assert match.
-    Cached per-process (no re-verify within a single bot startup)."""
-    if (bundle.get('train_id'), self.asset) in _SHA_CHAIN_CACHE:
-        return
-    deploy_idx = bundle['deploy_fold_idx']
-    fold = bundle['eval_fold_artifacts'][deploy_idx]
-    # Recompute model_identity_sha256 = sha over canonical-ordered checkpoint shas.
-    ckpt_shas = sorted(m['checkpoint_sha256'] for m in fold['members'])
-    model_id_sha = hashlib.sha256(':'.join(ckpt_shas).encode()).hexdigest()
-    # Recompute normstats_concat_sha256.
-    ns_concat = hashlib.sha256()
-    for fold_art in bundle['eval_fold_artifacts']:
-        ns_concat.update(fold_art['normstats_sha256'].encode())
-    ns_sha = ns_concat.hexdigest()
-    # Reconstruct phase4_bundle_sha.
-    expected_p4 = hashlib.sha256(f"{model_id_sha}:{ns_sha}:phase4".encode()).hexdigest()
-    if expected_p4 != bundle.get('phase4_bundle_sha'):
-        raise CalMLPError('sha_chain_fail',
-                            f"phase4_bundle_sha mismatch: expected={expected_p4} bundle={bundle.get('phase4_bundle_sha')}")
-    # Reconstruct phase5_bundle_sha.
-    expected_p5 = hashlib.sha256(
-        f"{expected_p4}:{bundle['conformal_sha256']}".encode()
-    ).hexdigest()
-    if expected_p5 != bundle.get('bundle_sha'):
-        raise CalMLPError('sha_chain_fail',
-                            f"phase5_bundle_sha mismatch: expected={expected_p5} bundle={bundle.get('bundle_sha')}")
-    _SHA_CHAIN_CACHE[(bundle['train_id'], self.asset)] = True
-```
+**The chain formula lives in ONE canonical place: `_helpers.verify_bundle_sha_chain`.** Phase 5 (`conformal.load_predictor`) and Phase 7 (`integration.CalMLPPredictor._verify_bundle_sha_chain`) BOTH delegate to it via thin try/except wrappers that translate `RuntimeError` to the phase-specific exception type. This was R-p7-r3#H3-DRY-1 — see `kb-research/bot/p2-phase5-conformal.md` § "bundle_sha_v1 chain" for the canonical formula description.
 
-Per-process cache via module-level `_SHA_CHAIN_CACHE: dict = {}`. First load per (train_id, asset) hashes; subsequent loads in same bot process skip the recompute.
+Phase 7's wrapper additionally caches `(train_id, asset, project_root)` → True in `_SHA_CHAIN_CACHE` (with `_SHA_CHAIN_CACHE_LOCK` for PEP 703 forward-compat) so re-loads within a single bot process skip the recompute.
+
+Do NOT inline the chain math in this spec. The producer/consumer alignment was a deploy-blocker until R-p4-r7-CRIT and R-p4-r8-CRIT landed; future maintainers MUST modify `_helpers.verify_bundle_sha_chain` (NOT a phase-local copy) so producer (`train.py`) and all consumers move in lockstep.
 
 ## What this phase does NOT do
 
 - No retraining. Models are the ones from Phase 4/5.
 - No live A/B. The deploy is "ship for all 4 assets at once". A/B is done OFFLINE in Phase 6 via `--challenger-bundle-sha`.
-- No promotion of `MARKET_BLEND_W` from current value (0.0 default). That's a separate amendment after the calibrator is shown to be net-positive on real shadow data.
+- No promotion of `MARKET_BLEND_W`. The bundle records whatever value `market_config.py['15m'].market_blend_w` returned at fit time. The drift check (`integration.py:_load`) refuses to load if live ≠ bundle. **R-p7-spec-r1#H2:** operators must read the current value directly from `market_config.py` at deploy time — DO NOT trust any inline value in this spec, which has historically drifted between revisions. (Phase 5 spec § "Determinism" describes this as informational at inference except the drift check.)
 
 ## Open questions for adversarial review
 
