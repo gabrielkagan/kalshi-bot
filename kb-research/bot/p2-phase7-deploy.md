@@ -86,6 +86,13 @@ def _calmlp_parity_assert():
     _check("DRAWDOWN_HALF_THRESHOLD", DRAWDOWN_HALF_THRESHOLD, _CAL_DRAWDOWN_HALF_THRESHOLD)
     _check("DRAWDOWN_QUARTER_THRESHOLD", DRAWDOWN_QUARTER_THRESHOLD, _CAL_DRAWDOWN_QUARTER_THRESHOLD)
     _check("DRAWDOWN_HALT_THRESHOLD", DRAWDOWN_HALT_THRESHOLD, _CAL_DRAWDOWN_HALT_THRESHOLD)
+    # R-p7-spec-r2#HIGH-1: bot.py hardcodes 0.10 inside models.PositionSizer
+    # rather than exposing DRAWDOWN_HALT_FLOOR as a config global. The check
+    # uses g.get(...) with the same fallback the impl uses, so a constant
+    # mismatch surfaces here directly rather than only via sizing parity vec 4.
+    _check("DRAWDOWN_HALT_FLOOR",
+           globals().get('DRAWDOWN_HALT_FLOOR', 0.10),
+           _CAL_DRAWDOWN_HALT_FLOOR)
 
     # Edge schedule (bot.py:1180)
     _check("MIN_EDGE_BY_PRICE",
@@ -99,6 +106,8 @@ def _calmlp_parity_assert():
 
     # STC scaler (bot.py:897-898)
     _check("STC_SIZING_SCALER_KNEE", STC_SIZING_SCALER_KNEE, _CAL_STC_SIZING_SCALER_KNEE)
+    # R-p7-r3#M2: ENABLED bool also drives sizing parity — track it explicitly.
+    _check("STC_SIZING_SCALER_ENABLED", STC_SIZING_SCALER_ENABLED, _CAL_STC_SIZING_SCALER_ENABLED)
 
     # STC_EXTENDED (bot.py:238, 241-244)
     _check("STC_EXTENDED_PER_ASSET_FLOOR",
@@ -343,10 +352,16 @@ class CalMLPPredictor:
                 # On failure, no partial state visible (we accumulated locally).
                 raise CalMLPError('load_failed', str(e)) from e
 
-    def predict(self, features: dict, raw_prob: float, ticker: str, side: str,
-                 entry_price_cents: int) -> tuple[float, float, float, float]:
+    def predict(self, raw_prob: float, ticker: str, side: str,
+                 entry_price_cents: int, row_features: dict) -> tuple[float, float, float, float]:
         """Returns (calibrated_prob, ensemble_std, final_lo, final_hi).
-        calibrated_prob is the 80%-coverage interval midpoint (= p_blend)."""
+        calibrated_prob is the 80%-coverage interval midpoint (= p_blend).
+
+        R-p7-r2#H4: positional order is (raw_prob, ticker, side,
+        entry_price_cents, row_features). bot.py call sites use kwargs
+        (annotate_evaluation_kwargs) so positional order is enforced
+        only inside the impl, but the spec must reflect it for any future
+        direct caller."""
         if not self._loaded:
             self._load()
         # ... build batch ... apply normstats ... ensemble predict ... apply conformal
