@@ -939,7 +939,26 @@ def run(args: argparse.Namespace) -> dict:
             # deploy fold's members (matching consumer at _helpers.py:59-60).
             # Aggregating across all folds would make every multi-fold bundle
             # fail verify_bundle_sha_chain at load.
-            deploy_fold_idx = max(fr['fold'] for fr in eval_fold_artifacts)
+            # R-p4-r8-MED: deploy_fold_idx is derived from fold_records (the
+            # extract-side ALL folds), NOT eval_fold_artifacts (only-trained
+            # folds). Per Phase 3 spec R1#C8, deploy = K-1 = max extract fold.
+            # If user passed --folds-to-train omitting the max fold, hard fail
+            # rather than ship a bundle whose deploy_fold_idx silently points
+            # to a non-final-walk-forward fold.
+            # R-p4-r8-LOW: typed exception (not bare ValueError) on empty trained-folds
+            if not eval_fold_artifacts:
+                raise Phase4ContractError(
+                    "eval_fold_artifacts is empty; no folds were trained"
+                )
+            true_deploy_fold_idx = max(fr['fold'] for fr in fold_records)
+            if not any(a['fold'] == true_deploy_fold_idx for a in eval_fold_artifacts):
+                raise Phase4ContractError(
+                    f"deploy fold K-1={true_deploy_fold_idx} not in trained folds "
+                    f"{sorted(a['fold'] for a in eval_fold_artifacts)}; "
+                    f"--folds-to-train must include the max extract fold or "
+                    f"the bundle would advertise a non-final-walk-forward deploy"
+                )
+            deploy_fold_idx = true_deploy_fold_idx
             deploy_fold_artifact = next(
                 a for a in eval_fold_artifacts if a['fold'] == deploy_fold_idx
             )
