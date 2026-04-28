@@ -73,6 +73,29 @@ ORDER BY evaluation_time, ticker, rowid
 
 **R1#C18 / R3#C5**: `rowid` tiebreaker for total order; `data_version` audited at open/close.
 
+## Drop counting algorithm (R4#C2 — locked)
+
+The single SELECT applies all WHERE clauses simultaneously, so a row failing multiple predicates cannot be unambiguously assigned to one drop bucket. To make the invariant `source_total_rows_for_asset == source_total_rows_post_filter + sum(drops)` mechanically achievable, drops are computed via a SECOND single-pass query that pulls `COUNT(*) WHERE asset=?` and bucket-classifies each excluded row by the FIRST failing predicate in this fixed order:
+
+```python
+DROP_PREDICATES = [   # order is part of cfg_fp; do not reorder without bumping schema_version
+    ('non_15m_product_type',     "product_type != '15m'"),
+    ('sports_ticker',            "ticker LIKE 'SPORTS-%'"),
+    ('null_market_price',        "market_price IS NULL"),
+    ('non_positive_market_price',"market_price IS NOT NULL AND market_price <= 0"),
+    ('below_asset_floor',        "market_price > 0 AND market_price < ?"),  # asset floor
+    ('null_raw_prob',            "raw_prob IS NULL"),
+    ('null_evaluation_time',     "evaluation_time IS NULL"),
+    ('non_yes_no_result',        "market_result NOT IN ('yes','all_yes','no','all_no')"),
+    ('null_settled_time',        "settled_time IS NULL"),
+    ('settled_after_cutoff',     "settled_time >= ?"),                       # cutoff
+]
+```
+
+Implementation: `SELECT * FROM evaluated_opportunities WHERE asset=?` (no other clauses), iterate rows, for each row determine which (first) predicate it fails — increment that bucket. After iteration, `sum(drops) + n_kept` MUST equal `source_total_rows_for_asset` or raise Phase2ContractError. This second pass is single-process, in-Python (no separate SQL), so cost is one full scan vs. the data SELECT's filtered scan — acceptable.
+
+Phase 2 unit test: inject a row failing TWO predicates (e.g., `null_market_price` AND `null_raw_prob`); assert it counts in the EARLIER bucket (`null_market_price`). Reordering DROP_PREDICATES is a schema change.
+
 ## Schema check at extract time (R3#C14)
 
 Before the SELECT, run `PRAGMA table_info(evaluated_opportunities)` on the SAME connection used for the data SELECT. Assert every column referenced exists.
@@ -130,16 +153,25 @@ where Δ = MLP(features_excluding_logit_raw_prob)   # the residual head
 
 **R2-ML#C2 (honest framing):** raw_prob is excluded as a literal feature so the SKIP TERM dominates the prior path. The MLP can still recover information about it via correlated features (`market_price`, `time_decayed_proximity`, etc.), which is intentional — Δ should be allowed to depend on the prior, just not short-circuit through a literal copy.
 
-**R2-ML#C3 + R3-ML#C1 (loss formulation lock — REVISED):** The earlier `1/sqrt(p_cell+ε)` form had the wrong direction — it weighted high-WR cells DOWN (so the bleed cell at p~0.88 got LESS training emphasis than thin cells at p~0.50, which is the opposite of intent). Locked form:
+**R2-ML#C3 + R3-ML#C1 + R4#C3 (loss formulation lock — REVISED):** The earlier `1/sqrt(p_cell+ε)` form had the wrong direction — it weighted high-WR cells DOWN (so the bleed cell at p~0.88 got LESS training emphasis than thin cells at p~0.50, which is the opposite of intent). Locked form:
 
 ```python
-# Per-cell calibration-residual weighting:
-miscalibration_cell = abs(p_cell - mean(method_output | cell))   # |empirical - predicted| at cell level
-w_cell = 1.0 + 4.0 * miscalibration_cell    # in [1, 5]; 1 for well-calibrated cells, ~5 for bleed
+# Per-cell calibration-residual weighting (fold-train only):
+n_train_per_cell = count of train rows in cell (price_tier, stc_bucket)
+p_cell           = train_positive_rate per cell                         # NaN if n_train_per_cell == 0
+prior_cell       = train_mean_method_output per cell                    # NaN if n_train_per_cell == 0
+miscal_cell      = np.where(n_train_per_cell > 0, abs(p_cell - prior_cell), 0.0)   # 0 for empty cells
+w_cell           = 1.0 + 4.0 * miscal_cell                              # in [1, 5]; floor=1 for empty cells
 loss = BCE(sigmoid(logit_raw_prob_clipped + Δ), outcome) * w_cell[row.cell]
 ```
 
-This explicitly up-weights cells where the production prior `method_output` diverges from the empirical positive rate — exactly the bleed cells we want to fix. The miscalibration is computed on the FOLD's TRAIN split only (no test leakage). The `4.0` multiplier and `1.0` floor are part of `cfg_fp`. Phase 3 ablation may tune them; the form is locked here.
+This explicitly up-weights cells where the production prior `method_output` diverges from the empirical positive rate — exactly the bleed cells we want to fix. **Both `p_cell` and `prior_cell` are computed on the FOLD'S TRAIN SPLIT ONLY** — never on cal or test (no leakage).
+
+**Empty-cell handling (R4#C3):** Cells with `n_train_per_cell == 0` get `w_cell = 1.0` (the floor). Since no train row falls in such a cell, the weight is never actually applied during training, but materializing the lookup with `np.where(..., 0.0)` avoids NaN propagation in vectorized implementations.
+
+**Audit field naming (R4#C3):** the audit JSON field `mean_method_output` is renamed to `train_mean_method_output` to match the loss-formula source unambiguously.
+
+The `4.0` multiplier and `1.0` floor are part of `cfg_fp`. Phase 3 ablation may tune them; the form is locked here.
 
 **R2-ML#C4 (Phase 7 inference contract):** when bot.py's ProbabilityEngine returns `raw_prob = None` (null_result fallback at bot.py:8400), the MLP is bypassed — no calibrated_prob written, opportunity skipped just as today. The MLP is only invoked when `raw_prob ∈ [EPS, 1-EPS]`. Phase 7 must enforce this guard at the call site.
 
@@ -255,23 +287,34 @@ Per-feature policy:
 5. **`available_balance_cents` NULL** (R1#C10): impute with FOLD-TRAIN MEAN (do NOT drop the row).
 6. **`strategy` NULL** (R1#C16): coalesce to `'unknown'` at read; metadata-only column.
 
-**R3-stitch#C3 (imputation order — locked):**
+**R3-stitch#C3 + R4#C1 (imputation order — LOCKED, fixed in R4):**
 
 ```python
 for fold in folds:
     for col in CONT_FEATURE_COLS:
-        train_non_null = fold.train[col].dropna()
-        mean = train_non_null.mean()                      # ddof=1 std for normstats
-        # Apply transform first (logit, log_*, identity), THEN impute, THEN z-score.
+        # Step 1: transform train/cal/test in place (raw value space → transformed space)
         for split in (fold.train, fold.cal, fold.test):
             split[col] = transform(split[col], CONT_FEATURE_TRANSFORMS[col])
-            n_imputed = split[col].isna().sum()           # tracked per-split for audit
+        # Step 2: compute mean/std on POST-TRANSFORM, NON-NULL train values only
+        train_non_null = fold.train[col].dropna()    # post-transform
+        mean = train_non_null.mean()
+        std  = train_non_null.std(ddof=1)
+        # Step 3: impute with the post-transform train mean and z-score (skipping no_zscore)
+        for split in (fold.train, fold.cal, fold.test):
+            n_imputed = split[col].isna().sum()      # per-split, audited
             split[col] = split[col].fillna(mean)
             if CONT_FEATURE_TRANSFORMS[col] != 'identity_no_zscore':
                 split[col] = (split[col] - mean) / std
+        # Persist {mean, std, p1, p99, median, mad} per fold from train_non_null
 ```
 
-Train, cal, AND test rows are all imputed with the FOLD-TRAIN MEAN (NOT the per-split mean, NOT zero, NOT median). Per-split or per-row imputation would leak distributional information from cal/test back into the feature, biasing Phase 5/6 metrics. Phase 2 unit test: deliberately inject NULL into a known-value test row, verify imputed value equals train mean.
+**Critical:** mean and std are computed on the POST-TRANSFORM train values. Imputing the pre-transform mean (e.g., raw `market_price ≈ 90¢`) into a post-transform column (`log_cents_to_dollars(market_price/100) ≈ 0.64`) would produce ~140× outliers — this was a bug in R3 caught in R4#C1.
+
+Train, cal, AND test rows are all imputed with the FOLD-TRAIN MEAN (not per-split, not zero, not median). Per-split imputation would leak distributional information from cal/test back into the feature.
+
+Phase 2 unit tests:
+- Inject NULL into a known-value test row → assert imputed value equals post-transform train mean.
+- Construct a column with raw mean=90 and `log_cents_to_dollars` transform → assert post-transform mean is ~log1p(0.9) ≈ 0.64, NOT 90.
 
 **Hard contract violations** (SystemExit):
 
@@ -530,16 +573,16 @@ rowid                   int64                            -- source-table rowid (
   "drops": {
     "non_15m_product_type": 0,
     "sports_ticker": 0,
-    "below_asset_floor": 0,
     "null_market_price": 0,
     "non_positive_market_price": 0,
+    "below_asset_floor": 0,
     "null_raw_prob": 142,
     "null_evaluation_time": 0,
     "non_yes_no_result": 0,
     "null_settled_time": 12,
     "settled_after_cutoff": 8932
   },
-  "_drops_invariant": "source_total_rows_for_asset == source_total_rows_post_filter + sum(drops); enforced via Phase2ContractError",
+  "_drops_invariant": "source_total_rows_for_asset == source_total_rows_post_filter + sum(drops); enforced via Phase2ContractError. Each excluded row is bucketed to the FIRST predicate it fails (sequential pass — see DROP_PREDICATES below).",
   "per_fold": [
     {
       "fold": 0,
@@ -558,7 +601,7 @@ rowid                   int64                            -- source-table rowid (
         "(3,2)": {"n_train": 821, "n_cal": 198, "n_test": 187,
                    "train_positive_rate": 0.94, "cal_positive_rate": 0.93,
                    "test_positive_rate": 0.92,
-                   "mean_method_output": 0.97,
+                   "train_mean_method_output": 0.97,    // R4#C3: train-only; loss-formula source
                    "void_count": 4,    // R2-OPS#C11b: raw count (separate pre-filter pass)
                    "n_pre_settle_filter": 1210},
         ...
