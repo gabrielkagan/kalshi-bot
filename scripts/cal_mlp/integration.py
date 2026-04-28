@@ -630,12 +630,37 @@ class CalMLPPredictor:
         entry_price_cents/seconds_to_close to keep the API minimal.
         R-p7-r2#H2: NaN/None values in CONT_FEATURE_COLS flip the matching
         *_missing indicator to 1 (preserving the missing-indicator contract)
-        AND mean-impute the value via normstats."""
-        # R-p7-impl#C6: take the lock for the duration so reads of self.*
-        # are correctly synchronized under PEP 703 (free-threaded CPython).
+        AND mean-impute the value via normstats.
+        R-p7-cleanroom#H1: ALL exceptions in the body are wrapped to
+        CalMLPError so the scan thread never sees an uncaught TypeError /
+        ImportError / KeyError / ValueError. annotate_evaluation_kwargs
+        catches CalMLPError and falls back to raw_prob."""
+        try:
+            return self._predict_inner(raw_prob, ticker, side,
+                                        entry_price_cents, row_features)
+        except CalMLPError:
+            raise
+        except (MemoryError,) as e:
+            raise CalMLPError('predict_oom', str(e)) from e
+        except Exception as e:
+            raise CalMLPError('predict_runtime', repr(e)) from e
+
+    def _predict_inner(self, raw_prob, ticker, side, entry_price_cents, row_features):
+        # R-p7-cleanroom#M1: lock held only for state-publish synchronization.
+        # Free-threaded Python: torch.eval forward path is self-contained on
+        # local references built outside the lock, so re-acquiring the lock
+        # for every attribute read isn't required for correctness.
         with self._lock:
             if not self._loaded:
                 self._load()
+            # Snapshot all self.* state into locals UNDER the lock so a
+            # concurrent reload (future hot-reload) can't tear our reads.
+            _vocab = self.vocab
+            _normstats = self.normstats
+            _models = self.models
+            _conformal = self.conformal
+            _market_blend_w = self.market_blend_w
+            _train_id = self.train_id
         # R-p7-r2#M1: imports moved to module level.
         from features import (RAW_PROB_CLIP_EPS, MISSING_INDICATOR_COLS,
                                 CONT_FEATURE_COLS, PRICE_BIN_CUTOFFS,
@@ -684,7 +709,7 @@ class CalMLPPredictor:
         row['logit_raw_prob_clipped'] = float(np.log(rp_c / (1.0 - rp_c)))
         row.setdefault('side_int', 1 if side == 'yes' else 0)
         row.setdefault('vol_regime_int', int(row.get('vol_regime', 0) == 'elevated'))
-        row['ticker_id'] = self.vocab.get(str(ticker), 0)
+        row['ticker_id'] = _vocab.get(str(ticker), 0)
         # R-p7-r2#H2: NaN/None values in CONT_FEATURE_COLS must flip the
         # matching *_missing indicator. Build an inverse map src→indicator.
         # R-p7-r4#M-INV: assert no source-column collisions (silent dropping
@@ -695,16 +720,20 @@ class CalMLPPredictor:
                 "MISSING_INDICATOR_SOURCE_MAP inverse has fewer keys than the "
                 "forward map — a source column maps to multiple indicators"
             )
-        # Initialize all indicator cols to 0 (truly-present default).
+        # R-p7-cleanroom#M2: indicator cols are AUTHORITATIVELY set by this
+        # layer based on source-col missingness. Pre-set values from the
+        # caller would silently violate the contract (indicator=1 with
+        # source present → model sees inconsistent input). Force-overwrite
+        # to 0; the source-missing loop below sets to 1 where applicable.
         for col in MISSING_INDICATOR_COLS:
-            row.setdefault(col, 0)
+            row[col] = 0
         # R-p7-r3#C1: previously this branch eagerly imputed with the
         # POST-transform mean and let apply_norm re-transform — wrong for
         # log/log1p columns. Fix: leave NaN, let apply_norm.fillna(mean)
         # run AFTER its transform step (normalize.py:171 path is correct).
         # We still flip the *_missing companion at this layer because that's
         # a Phase-7 feature engineering decision, not a normalize concern.
-        normstats_map = self.normstats.get('stats', {})
+        normstats_map = _normstats.get('stats', {})
         for col in CONT_FEATURE_COLS:
             v = row.get(col)
             is_missing = (v is None) or (
@@ -723,44 +752,40 @@ class CalMLPPredictor:
                 if ind is not None:
                     row[ind] = 1
         df = pd.DataFrame([row])
-        df_norm = apply_norm(df, self.normstats['stats'], CONT_FEATURE_COLS,
-                              transforms=self.normstats.get('transforms', {}))
+        df_norm = apply_norm(df, _normstats['stats'], CONT_FEATURE_COLS,
+                              transforms=_normstats.get('transforms', {}))
 
-        # Forward through ensemble.
-        try:
-            with torch.no_grad():
-                batch = {
-                    'x_cont': torch.tensor(df_norm[CONT_FEATURE_COLS].to_numpy(np.float32)),
-                    'x_missing': torch.tensor(df_norm[MISSING_INDICATOR_COLS].to_numpy(np.float32)),
-                    'price_tier': torch.tensor(df_norm['price_tier'].to_numpy(np.int64)),
-                    'stc_bucket': torch.tensor(df_norm['stc_bucket'].to_numpy(np.int64)),
-                    'vol_regime_int': torch.tensor(df_norm['vol_regime_int'].to_numpy(np.int64)),
-                    'side_int': torch.tensor(df_norm['side_int'].to_numpy(np.int64)),
-                    'ticker_id': torch.tensor(df_norm['ticker_id'].to_numpy(np.int64)),
-                    'logit_raw_prob_clipped': torch.tensor(
-                        df_norm['logit_raw_prob_clipped'].to_numpy(np.float32)
-                    ),
-                }
-                preds = []
-                for m in self.models:
-                    _, p = m(**{k: batch[k] for k in FORWARD_KEYS})
-                    preds.append(p.detach().cpu().numpy())
-                stacked = np.stack(preds)  # [M, 1]
-                p_mean = float(stacked.mean(axis=0)[0])
-                p_std = float(stacked.std(axis=0, ddof=0)[0])
-        except MemoryError as e:
-            raise CalMLPError('predict_oom', str(e)) from e
-        except RuntimeError as e:
-            raise CalMLPError('predict_runtime', str(e)) from e
+        # Forward through ensemble. R-p7-cleanroom#H1: outer predict()
+        # wraps all exceptions; the redundant inner try/except is removed.
+        with torch.no_grad():
+            batch = {
+                'x_cont': torch.tensor(df_norm[CONT_FEATURE_COLS].to_numpy(np.float32)),
+                'x_missing': torch.tensor(df_norm[MISSING_INDICATOR_COLS].to_numpy(np.float32)),
+                'price_tier': torch.tensor(df_norm['price_tier'].to_numpy(np.int64)),
+                'stc_bucket': torch.tensor(df_norm['stc_bucket'].to_numpy(np.int64)),
+                'vol_regime_int': torch.tensor(df_norm['vol_regime_int'].to_numpy(np.int64)),
+                'side_int': torch.tensor(df_norm['side_int'].to_numpy(np.int64)),
+                'ticker_id': torch.tensor(df_norm['ticker_id'].to_numpy(np.int64)),
+                'logit_raw_prob_clipped': torch.tensor(
+                    df_norm['logit_raw_prob_clipped'].to_numpy(np.float32)
+                ),
+            }
+            preds = []
+            for m in _models:
+                _, p = m(**{k: batch[k] for k in FORWARD_KEYS})
+                preds.append(p.detach().cpu().numpy())
+            stacked = np.stack(preds)  # [M, 1]
+            p_mean = float(stacked.mean(axis=0)[0])
+            p_std = float(stacked.std(axis=0, ddof=0)[0])
 
         # Apply conformal interval.
         result = predict_with_interval(
-            p_mean, p_std, self.conformal,
+            p_mean, p_std, _conformal,
             row_features={'price_tier': int(row['price_tier']),
                           'stc_bucket': int(row['stc_bucket']),
                           'vol_regime': int(row['vol_regime_int'])},
             entry_price_cents=entry_price_cents, side=side,
-            market_blend_w=self.market_blend_w, mode='inference',
+            market_blend_w=_market_blend_w, mode='inference',
         )
         cal_prob, ens_std, final_lo, final_hi = result
         return cal_prob, ens_std, final_lo, final_hi
@@ -790,12 +815,14 @@ def annotate_evaluation_kwargs(
         if new_prob is not None:
             final_prob = new_prob   # otherwise existing raw_prob path runs
     """
-    if raw_prob is None:
-        kwargs['cal_mlp_skipped_reason'] = 'raw_prob_null'
-        return None
+    # R-p7-cleanroom#M4: env check FIRST so kill-switch dashboards don't
+    # under-count when raw_prob is also None.
     # R-p7-impl#C9: explicit truthy set; '' / 'no' / '0' all disable.
     if os.environ.get('CALMLP_ENABLED', '1').strip().lower() not in ('1', 'true', 'yes'):
         kwargs['cal_mlp_skipped_reason'] = 'env_disabled'
+        return None
+    if raw_prob is None:
+        kwargs['cal_mlp_skipped_reason'] = 'raw_prob_null'
         return None
     if predictor is None:
         kwargs['cal_mlp_skipped_reason'] = 'no_predictor'

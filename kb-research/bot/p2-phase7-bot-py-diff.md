@@ -62,28 +62,37 @@ This closes over bot.py's globals (SIZING_TIERS, ASSET_MAX_RISK_PER_TRADE consta
 
 **R-p7-deploy-r1#H3 PRECONDITION:** Edit 3 MUST run on a connection that has already executed `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout >= 10000`. Currently true at `bot.py:2547-2548`. If you move Edit 3 to a different startup spot (earlier than the PRAGMA setup), `_verify_wal` will raise `CalMLPSchemaError` and the bot will refuse to start.
 
-**Edit 3a** (inside `StateManager.__init__`, immediately after `self._create_tables()`):
+**Edit 3a** (inside `StateManager.__init__`, immediately after `self._create_tables()`).
+
+**R-p7-cleanroom#M3:** wrap `_calmlp_migrate_schema` inside the try/except too — `_verify_wal` can raise `CalMLPSchemaError` if the conn isn't WAL+busy_timeout-configured, and an unwrapped exception leaves the operator with a raw stack trace and no `bot_startup_log` row.
 
 ```python
 # Phase 7: cal_mlp deploy preconditions.
-_calmlp_migrate_schema(self.conn)
 try:
+    _calmlp_migrate_schema(self.conn)
     _calmlp_parity_assert_impl(globals(), self.conn)
     _calmlp_sizing_parity_assert_impl(globals(), self.conn)
-except CalMLPParityError as _calmlp_e:
+except (CalMLPParityError, CalMLPSchemaError) as _calmlp_e:
     logging.error("[CALMLP_PARITY] FATAL: %s", _calmlp_e)
     raise SystemExit(2)
 ```
 
-**Edit 3b** — the predictor cache MUST live at module scope so the scan-path code (different class/function) can read it. Place this immediately AFTER the `StateManager` class definition (or anywhere at module top-level after Edit 1 is in scope):
+**Edit 3b** — the predictor cache MUST live at module scope so the scan-path code (different class/function) can read it. Place this immediately AFTER the `StateManager` class definition (or anywhere at module top-level after Edit 1 is in scope).
+
+**R-p7-cleanroom#H2:** gate construction + warmup on the kill-switch. With `CALMLP_ENABLED=0` the cache stays empty and `annotate_evaluation_kwargs` returns `'no_predictor'` (or `'env_disabled'`) — no torch loads, no file IO during boot, true no-op. The annotate_evaluation_kwargs hook ALSO checks the env per-call so flipping to `=1` mid-process still works (predictors lazy-load on first scan tick).
 
 ```python
 # Phase 7: per-asset predictor cache (module-level — accessed from scan path).
-# Eager warmup (R-p7-r2#C2) amortizes the ~1-2s model-load cost off the scan
-# thread. warmup() soft-fails if no bundle is deployed yet.
-_calmlp_predictors = {a: CalMLPPredictor(a) for a in ('BTC', 'ETH', 'SOL', 'XRP')}
-for _calmlp_p in _calmlp_predictors.values():
-    _calmlp_p.warmup()
+# Kill-switch leak fix (R-p7-cleanroom#H2): empty dict when CALMLP_ENABLED=0
+# so no model files are touched during boot.
+import os as _calmlp_os
+if _calmlp_os.environ.get('CALMLP_ENABLED', '1').strip().lower() in ('1', 'true', 'yes'):
+    _calmlp_predictors = {a: CalMLPPredictor(a) for a in ('BTC', 'ETH', 'SOL', 'XRP')}
+    for _calmlp_p in _calmlp_predictors.values():
+        _calmlp_p.warmup()
+else:
+    _calmlp_predictors = {}
+    logging.info("[CALMLP] CALMLP_ENABLED!=truthy at boot — predictor cache empty")
 ```
 
 **Note on bleed-cell semantics (R-p7-r2#M2):** `np.digitize(96, [80,90,96], right=True)` returns 2 (boundary value falls in lower bin). Therefore the calibrator's BLEED_CELL=(3,2) corresponds to entries 97¢-99¢, NOT 96¢-99¢. Phase 2 extraction uses identical semantics, so the calibrator is internally consistent — but the "≥96¢ × 300-600s" label in `kb-research/bot/finding_96c_sol_xrp_bleed_apr26.md` is loose. Operator-track item: decide whether to retroactively rebin (e.g. cutoffs `[80,90,95]` or `[80,90,96]` with `right=False`) or update the docs. Until then, 96¢ entries get the tier-2 quantile, not the bleed quantile.
