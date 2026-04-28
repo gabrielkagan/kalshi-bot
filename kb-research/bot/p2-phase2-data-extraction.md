@@ -89,8 +89,13 @@ DROP_PREDICATES = [   # order is part of cfg_fp; do not reorder without bumping 
     ('non_yes_no_result',        "market_result NOT IN ('yes','all_yes','no','all_no')"),
     ('null_settled_time',        "settled_time IS NULL"),
     ('settled_after_cutoff',     "settled_time >= ?"),                       # cutoff
+    # R-p2-impl-r1#C7 + R2#C17: two predicates added post-spec.
+    ('null_or_invalid_side',     "side NOT IN ('yes','no')"),                # R-p2-spec-r2#H1
+    ('null_seconds_to_close',    "seconds_to_close IS NULL"),
 ]
 ```
+
+**R-p2-spec-r2#H1:** the canonical list lives in `features.DROP_PREDICATES_ORDER` (12 entries). Spec body kept as historical reference; reorderings or new entries MUST update both `features.py` AND `compute_cfg_fp` (which embeds the order in `cfg_fp`). A spec-only change without bumping schema_version + updating impl will produce a different `cfg_fp` than existing bundles → all bundles refuse to load.
 
 Implementation: `SELECT * FROM evaluated_opportunities WHERE asset=?` (no other clauses), iterate rows, for each row determine which (first) predicate it fails — increment that bucket. After iteration, `sum(drops) + n_kept` MUST equal `source_total_rows_for_asset` or raise Phase2ContractError. This second pass is single-process, in-Python (no separate SQL), so cost is one full scan vs. the data SELECT's filtered scan — acceptable.
 
@@ -289,6 +294,8 @@ Per-feature policy:
 4. **Other continuous features** NULL → impute with FOLD-TRAIN MEAN (no indicator).
 5. **`available_balance_cents` NULL** (R1#C10): impute with FOLD-TRAIN MEAN (do NOT drop the row).
 6. **`strategy` NULL** (R1#C16): coalesce to `'unknown'` at read; metadata-only column.
+
+**R-p2-spec-r2#M1 IMPORTANT:** The pseudocode below describes the LOGICAL pipeline. In the impl, Phase 2 writes RAW post-feature-engineering values to the parquet (`extract_data.build_feature_frame`), and `apply_norm` is invoked LAZILY by Phase 4 (training), Phase 5 (conformal fit), Phase 6 (sim_pnl/validate), and Phase 7 (predict-time). Reading the parquet directly returns un-normalized values; only the model batch tensor sees post-z-score floats. This split lets Phase 4/5/6/7 use a single `apply_norm` implementation (`normalize.py`) and lets Phase 2 stay agnostic to the consumer's normstats version.
 
 **R3-stitch#C3 + R4#C1 (imputation order — LOCKED, fixed in R4):**
 
@@ -597,16 +604,14 @@ rowid                   int64                            -- source-table rowid (
         "cal":   {"spot_momentum_60s_bps": 0.04, ...},
         "test":  {"spot_momentum_60s_bps": 0.05, ...}
       },
-      "missing_pct_test": {"spot_momentum_60s_bps_missing": 0.04, ...},
       "small_cell_warnings": ["cell_(3,2)_n_test=12 <50 floor"],
+      "n_rows_reassigned_at_boundary": 487,
       "_per_cell_key_format": "f'({price_tier},{stc_bucket})' — exactly two integers, no whitespace; parser locked to re.fullmatch(r'\\((\\d+),(\\d+)\\)', key) (R3-cnv#C6)",
       "per_cell": {
         "(3,2)": {"n_train": 821, "n_cal": 198, "n_test": 187,
                    "train_positive_rate": 0.94, "cal_positive_rate": 0.93,
                    "test_positive_rate": 0.92,
-                   "train_mean_method_output": 0.97,    // R4#C3: train-only; loss-formula source
-                   "void_count": 4,    // R2-OPS#C11b: raw count (separate pre-filter pass)
-                   "n_pre_settle_filter": 1210},
+                   "train_mean_method_output": 0.97}    // R4#C3: train-only; loss-formula source
         ...
       }
     },
@@ -615,13 +620,21 @@ rowid                   int64                            -- source-table rowid (
   "ticker_stats": {
     "n_unique_tickers": 1281,
     "mean_rows_per_ticker": 1.6,
-    "pct_tickers_with_only_one_row": 0.72,
-    "n_tickers_train_only": 854, "n_tickers_cal_only": 211, "n_tickers_test_only": 197,
-    "n_rows_reassigned_at_boundary": 487
+    "pct_tickers_with_only_one_row": 0.72
   },
-  "void_rate": 0.003,
   "data_version_at_close": 184321,
+  "include_sub_floor": false,
+  "asset_floor_applied": 88,
   "generated_at": "..."
+  // R-p2-spec-r2#H2: dropped from this example (impl does not write):
+  //   - top-level `void_rate` (deferred — no Phase-5 ship-blocker actually
+  //     reads it; if/when one does, also implement the pre-filter pass that
+  //     would source `void_count` and `n_pre_settle_filter` per-cell)
+  //   - per_fold.missing_pct_test (subsumed by imputed_pct.test)
+  //   - ticker_stats.n_tickers_train_only/cal_only/test_only (informational,
+  //     can be reconstructed from per-fold splits)
+  // n_rows_reassigned_at_boundary moved INTO per_fold[k] where it was always
+  // computed (impl matches the new placement).
 }
 ```
 

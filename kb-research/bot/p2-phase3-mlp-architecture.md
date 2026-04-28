@@ -33,8 +33,12 @@ inputs:
   ticker_id: int32[B]                           # 0..n_vocab; 0 = UNK
   logit_raw_prob_clipped: float32[B]            # the SKIP TERM
 
-# R1#C3: is_unk_ticker is NOT a model input. Phase 4 reads it from parquet
-# only for DataLoader-side asserts (must be 0 throughout training).
+# R1#C3 + R-p3-spec-r2#M2: is_unk_ticker is NOT a model input. Phase 4
+# reads it from parquet at FOLD CONSTRUCTION TIME (train.py:693-704) and
+# raises Phase4ContractError if (a) the column is missing OR (b) any
+# train-split row has is_unk_ticker != 0. This is the same logical layer
+# as the DataLoader (the `tr` DataFrame is what feeds Phase4Dataset),
+# just earlier in the pipeline — earlier failure surfaces a cleaner error.
 # Inference-time UNK routing is Phase 5's job (σ-inflation via conformal).
 
 # Categorical one-hot
