@@ -348,9 +348,18 @@ def build_feature_frame(rows: list[dict]) -> pd.DataFrame:
     h = df['hour_of_day_utc'].astype(np.float32) % 24.0
     df['hour_sin'] = np.sin(2.0 * np.pi * h / 24.0)
     df['hour_cos'] = np.cos(2.0 * np.pi * h / 24.0)
-    # Log-balance
-    bal = df['available_balance_cents'].astype(np.float32)
-    df['log_balance_dollars'] = bal  # actual log applied by transform via normalize.py
+    # Log-balance — column NAME is the post-transform identity; the VALUE
+    # written here is raw cents. The `log_cents_to_dollars` transform
+    # (`log1p(x/100)`) is applied later by `normalize.apply_norm` via
+    # `CONT_FEATURE_TRANSFORMS`. Two contract concerns (R-p2-r1):
+    #   C1: the misleading name. Renaming cascades through normstats keys
+    #       and the parquet schema, so we keep the name and document here.
+    #   C2: log1p(x/100) is NaN for x <= -100. Settlement-race edges can
+    #       produce transiently negative balances in `state.db` (see memory
+    #       on Settlement Watermark Race). Clamp at 0 so the train mean
+    #       imputation captures it as "near-empty" rather than NaN-imputed.
+    bal = df['available_balance_cents'].astype(np.float32).clip(lower=0.0)
+    df['log_balance_dollars'] = bal
     # Audit columns (kept untransformed for Phase 6)
     df['breakeven_wr_audit'] = df['breakeven_wr'].astype(np.float32)
     df['fee_adjusted_edge_audit'] = df['fee_adjusted_edge'].astype(np.float32)
@@ -397,12 +406,24 @@ def compute_fold_windows(
 
 def assign_split(df: pd.DataFrame, fold_window: dict) -> pd.Series:
     """Returns a Series of {'train','cal','test', None} for each row of df.
-    None = row falls outside this fold's spans."""
+    None = row falls outside this fold's spans.
+    R-p2-r1#H2: assert masks are non-overlapping. By construction (cal_start
+    == train_end, test_start == cal_end, all half-open) they should be —
+    but the assert turns any future window-math bug into a loud failure
+    instead of a silent last-write-wins."""
     et = pd.to_datetime(df['evaluation_time'], utc=True)
     out = pd.Series(np.full(len(df), None, dtype=object), index=df.index)
     train_mask = (et >= fold_window['train_start']) & (et < fold_window['train_end'])
     cal_mask = (et >= fold_window['cal_start']) & (et < fold_window['cal_end'])
     test_mask = (et >= fold_window['test_start']) & (et < fold_window['test_end'])
+    overlap = (train_mask.astype(int) + cal_mask.astype(int) + test_mask.astype(int)).max()
+    if overlap > 1:
+        raise Phase2ContractError(
+            f"split masks overlap ({overlap} matches) for fold "
+            f"train=[{fold_window['train_start']}, {fold_window['train_end']}) "
+            f"cal=[{fold_window['cal_start']}, {fold_window['cal_end']}) "
+            f"test=[{fold_window['test_start']}, {fold_window['test_end']})"
+        )
     out.loc[train_mask] = 'train'
     out.loc[cal_mask] = 'cal'
     out.loc[test_mask] = 'test'
@@ -437,6 +458,42 @@ def enforce_ticker_disjoint(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     df = df.copy()
     df['split'] = new_split
     return df, int(reassigned_mask.sum())
+
+
+def assert_walk_forward_temporal(df: pd.DataFrame, fold_window: dict) -> None:
+    """R-p2-r1#H1: ticker-disjoint enforcement can promote a train-window row
+    into the test split (because the same ticker had a later test row).
+    Walk-forward semantics require test_min_ts >= cal_max_ts >= train_max_ts.
+    Reassignment keeps tickers disjoint but can violate the temporal invariant.
+    Raise Phase2ContractError if the post-disjoint splits violate that order."""
+    if df.empty:
+        return
+    et = pd.to_datetime(df['evaluation_time'], utc=True)
+    df_t = df.assign(_et=et)
+    train_rows = df_t[df_t['split'] == 'train']
+    cal_rows = df_t[df_t['split'] == 'cal']
+    test_rows = df_t[df_t['split'] == 'test']
+    train_max = train_rows['_et'].max() if not train_rows.empty else None
+    cal_min = cal_rows['_et'].min() if not cal_rows.empty else None
+    cal_max = cal_rows['_et'].max() if not cal_rows.empty else None
+    test_min = test_rows['_et'].min() if not test_rows.empty else None
+    # Reassignment reorders ticker-rows; allow up to a per-ticker rescue
+    # window equal to the cal_days span. Beyond that flag a hard violation.
+    rescue_window = (fold_window['cal_end'] - fold_window['cal_start'])
+    if train_max is not None and cal_min is not None:
+        if cal_min < train_max - rescue_window:
+            raise Phase2ContractError(
+                f"post-disjoint train_max={train_max} > cal_min={cal_min} "
+                f"by more than rescue_window={rescue_window}; ticker-disjoint "
+                f"enforcement violated walk-forward temporal invariant"
+            )
+    if cal_max is not None and test_min is not None:
+        if test_min < cal_max - rescue_window:
+            raise Phase2ContractError(
+                f"post-disjoint cal_max={cal_max} > test_min={test_min} "
+                f"by more than rescue_window={rescue_window}; ticker-disjoint "
+                f"enforcement violated walk-forward temporal invariant"
+            )
 
 
 # ---------------------------------------------------------------------------

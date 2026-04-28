@@ -77,6 +77,9 @@ def transform(s: pd.Series, name: str) -> pd.Series:
 # fit_normstats — POST-TRANSFORM mean/std + robust statistics
 # ---------------------------------------------------------------------------
 
+_STD_NEAR_ZERO_THRESHOLD = 1e-12  # R-p2-r1#M2: floating-point near-zero guard
+
+
 def fit_normstats(
     train_df: pd.DataFrame,
     cont_feature_cols: list[str] = CONT_FEATURE_COLS,
@@ -121,10 +124,14 @@ def fit_normstats(
                 f"fit_normstats: column {col!r} has non-finite mean/std after "
                 f"transform={tname!r} (mean={mean}, std={std}); Phase 2 contract violation."
             )
-        if std == 0.0:
+        if std < _STD_NEAR_ZERO_THRESHOLD:
+            # R-p2-r1#M2: tighten from `== 0.0` to `< 1e-12` so floating-point
+            # near-constant columns (std ≈ 1e-18) can't escape the guard and
+            # produce divide-by-near-zero z-scores ~1e18 downstream.
             raise RuntimeError(
-                f"fit_normstats: column {col!r} has std=0 after transform={tname!r} "
-                f"— constant column on train; Phase 2 contract violation."
+                f"fit_normstats: column {col!r} has std={std} < {_STD_NEAR_ZERO_THRESHOLD} "
+                f"after transform={tname!r} — near-constant column on train; "
+                f"Phase 2 contract violation."
             )
         out[col] = {
             'mean': mean,

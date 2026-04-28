@@ -16,6 +16,18 @@
 
 ## Edit 1 — top-of-file imports (after existing imports, ~line 100)
 
+**R-p7-deploy-r1#C1 prerequisites:** bot.py does NOT currently import `numpy` or `pathlib.Path`. Edit 1 (sys.path) and Edit 4 (np.digitize) require both. Verify with `grep -nE '^(import numpy|from pathlib)' bot.py`. If empty, add to bot.py's import block FIRST as a separate sub-step:
+
+```python
+# Required by Phase 7 cal_mlp integration.
+import numpy as np
+from pathlib import Path
+import os
+import sys
+```
+
+Then add the cal_mlp imports:
+
 ```python
 # Phase 7: cal_mlp integration (single import surface).
 sys.path.insert(0, str(Path(__file__).parent / 'scripts' / 'cal_mlp'))
@@ -30,7 +42,7 @@ from integration import (
 )
 ```
 
-The `sys.path.insert` is required because `bot.py` lives at the project root, not next to `scripts/cal_mlp/`. After import, the inserted entry stays on `sys.path` for the bot's lifetime — acceptable since cal_mlp modules don't shadow any bot.py names.
+The `sys.path.insert` is required because `bot.py` lives at the project root, not next to `scripts/cal_mlp/`. After import, the inserted entry stays on `sys.path` for the bot's lifetime — acceptable since cal_mlp modules don't shadow any bot.py names. Note that `integration.py:50` does an idempotent `sys.path.insert` of the same dir at module load, so the bot.py-side insert is technically redundant — keep it for explicitness.
 
 ## Edit 2 — sizing parity helper (after PositionSizer class definition)
 
@@ -46,7 +58,11 @@ This closes over bot.py's globals (SIZING_TIERS, ASSET_MAX_RISK_PER_TRADE consta
 
 ## Edit 3 — startup invocation (immediately after `_create_tables()` call)
 
-Find where bot.py calls `self._create_tables()` (or `_create_tables(conn)`) at startup. Add immediately after:
+**R-p7-deploy-r1#C2 SCOPING:** `self._create_tables()` is called inside `StateManager.__init__`. If you paste verbatim, `_calmlp_predictors` becomes a LOCAL variable inside __init__ and Edit 4's scan path (different class) will hit `NameError`. The fix: split Edit 3 into two parts.
+
+**R-p7-deploy-r1#H3 PRECONDITION:** Edit 3 MUST run on a connection that has already executed `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout >= 10000`. Currently true at `bot.py:2547-2548`. If you move Edit 3 to a different startup spot (earlier than the PRAGMA setup), `_verify_wal` will raise `CalMLPSchemaError` and the bot will refuse to start.
+
+**Edit 3a** (inside `StateManager.__init__`, immediately after `self._create_tables()`):
 
 ```python
 # Phase 7: cal_mlp deploy preconditions.
@@ -57,9 +73,14 @@ try:
 except CalMLPParityError as _calmlp_e:
     logging.error("[CALMLP_PARITY] FATAL: %s", _calmlp_e)
     raise SystemExit(2)
+```
 
-# Per-asset predictor cache. Eager warmup (R-p7-r2#C2) amortizes the
-# ~1-2s model-load cost off the scan thread.
+**Edit 3b** — the predictor cache MUST live at module scope so the scan-path code (different class/function) can read it. Place this immediately AFTER the `StateManager` class definition (or anywhere at module top-level after Edit 1 is in scope):
+
+```python
+# Phase 7: per-asset predictor cache (module-level — accessed from scan path).
+# Eager warmup (R-p7-r2#C2) amortizes the ~1-2s model-load cost off the scan
+# thread. warmup() soft-fails if no bundle is deployed yet.
 _calmlp_predictors = {a: CalMLPPredictor(a) for a in ('BTC', 'ETH', 'SOL', 'XRP')}
 for _calmlp_p in _calmlp_predictors.values():
     _calmlp_p.warmup()
@@ -71,10 +92,15 @@ If the bot uses a different connection name (`conn` vs `self.conn`), adjust acco
 
 ## Edit 4 — scan path integration (in `_evaluate_15m_candidate` or equivalent)
 
-Find the bot.py site where `raw_prob` is computed via `ProbabilityEngine.compute(...)` and `final_prob` is assigned (typically followed by an `insert_evaluated_opportunity(...)` call with kwargs). Add between raw_prob computation and final_prob usage:
+**R-p7-deploy-r1#H2 ANCHOR:** bot.py has multiple `ProbabilityEngine.compute(...)` call sites — at last grep, the 15M scan, hourly, and SPX/alt path all match. Land Edit 4 ONLY at the 15M scan site. The unique downstream anchor for the right call site is the assignment of `final_prob = prob_with_market["calibrated_prob"]` — that line ONLY appears in the 15M scan path. Verify with `grep -n 'final_prob = prob_with_market\["calibrated_prob"\]' bot.py` — should match exactly once.
+
+**R-p7-deploy-r1#H1 LOCAL VARS:** bot.py's scan scope uses `vol_est["regime"]` (NOT a bare `vol_regime` local). Add the binding line below first, OR inline it.
 
 ```python
 # Phase 7: cal_mlp residual calibration.
+# R-p7-deploy-r1#H1: bind vol_regime from vol_est["regime"]; bot.py never
+# declares a bare `vol_regime` local in this scope.
+vol_regime = vol_est["regime"]  # 'normal' | 'elevated'
 _calmlp_predictor = _calmlp_predictors.get(asset)
 _calmlp_row_features = {
     'price_tier': int(np.digitize(best_ask, [80, 90, 96], right=True)),
@@ -93,7 +119,7 @@ if _calmlp_new_prob is not None:
     final_prob = _calmlp_new_prob   # use calibrated; otherwise raw_prob path runs
 ```
 
-`kwargs` is the dict passed to `insert_evaluated_opportunity(**kwargs)`. The hook mutates it in-place to add cal_mlp_* columns. Adjust local variable names (`raw_prob`, `ticker`, `side`, `best_ask`, `seconds_remaining`, `vol_regime`, `kwargs`) to match the existing scan-path scope.
+`kwargs` is the dict passed to `insert_evaluated_opportunity(**kwargs)`. The hook mutates it in-place to add cal_mlp_* columns. Adjust local variable names (`raw_prob`, `ticker`, `side`, `best_ask`, `seconds_remaining`, `vol_est`, `kwargs`) to match the existing scan-path scope.
 
 ## Test plan (post-edit)
 

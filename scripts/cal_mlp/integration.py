@@ -237,6 +237,15 @@ def parity_assert(bot_globals: dict, conn) -> str:
     _check("DRAWDOWN_HALF_THRESHOLD", g['DRAWDOWN_HALF_THRESHOLD'], cmc['DRAWDOWN_HALF_THRESHOLD'])
     _check("DRAWDOWN_QUARTER_THRESHOLD", g['DRAWDOWN_QUARTER_THRESHOLD'], cmc['DRAWDOWN_QUARTER_THRESHOLD'])
     _check("DRAWDOWN_HALT_THRESHOLD", g['DRAWDOWN_HALT_THRESHOLD'], cmc['DRAWDOWN_HALT_THRESHOLD'])
+    # R-p7-r4-cross-phase-v2#M1: explicit check for DRAWDOWN_HALT_FLOOR.
+    # bot.py may not expose this constant (it's hardcoded inside
+    # models.PositionSizer._drawdown_scaler); g.get() with the same fallback
+    # impl uses, so a "constant mismatch" message surfaces here instead of
+    # surfacing ONLY via sizing_parity_assert vec 4 (which is correct but less
+    # specific). Operator may optionally promote DRAWDOWN_HALT_FLOOR=0.10 to
+    # config.py to make this assertion exact rather than fallback-equal.
+    _check("DRAWDOWN_HALT_FLOOR",
+           g.get('DRAWDOWN_HALT_FLOOR', 0.10), cmc['DRAWDOWN_HALT_FLOOR'])
 
     # Edge schedule
     _check("MIN_EDGE_BY_PRICE",
