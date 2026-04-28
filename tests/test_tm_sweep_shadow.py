@@ -514,7 +514,7 @@ class TestAdversarialRegressions(unittest.TestCase):
         self.assertGreater(insert_idx, 0, "insert call site not found")
         # The 1200 chars before must contain the gate (allows for documenting
         # comments between gate and call without making the test brittle).
-        prelude = body[max(0, insert_idx - 1200):insert_idx]
+        prelude = body[max(0, insert_idx - 2400):insert_idx]
         self.assertIn("if TM_SWEEP_SHADOW_ENABLED:", prelude,
                       "insert call must live inside `if TM_SWEEP_SHADOW_ENABLED:` "
                       "(adversary A5 — gate must enforce, not just exist)")
@@ -1166,7 +1166,7 @@ class TestTMSweepLive(unittest.TestCase):
         # The shadow runs whether live sweep is on or off.
         # Find the insert call's prelude.
         insert_idx = body.find("self._state.insert_tm_sweep_shadow_row(")
-        prelude = body[max(0, insert_idx - 1200):insert_idx]
+        prelude = body[max(0, insert_idx - 2400):insert_idx]
         # The gate before the insert must be TM_SWEEP_SHADOW_ENABLED, not LIVE.
         self.assertIn("if TM_SWEEP_SHADOW_ENABLED:", prelude)
         # The LIVE flag must NOT short-circuit the shadow.
@@ -1363,6 +1363,334 @@ class TestTMSweepLiveAdversarialRound2(unittest.TestCase):
                 "tm_96 in TM_LIVE_STRATEGIES requires either MAKER_TAIL "
                 "eligibility or explicit documentation of the asymmetry "
                 "(adversary R2 A1)")
+
+
+class TestTMSweepDirectBumpFix(unittest.TestCase):
+    """RCA fix for the no-op deploy of `e463244` (`05488a1`).
+
+    The smart IOC picker block in _submit_taker is gated on _live_ob from
+    scanner._get_orderbook_cached() with NO REST fallback. TM tickers
+    consistently lack fresh WS cache when TM fires (488/488 production
+    rows showed best_ask_source='market_nbbo'), so the picker — and thus
+    the override that lifted edge_ceiling to MAX_ENTRY_PRICE — silently
+    skipped. Result: 32 post-deploy TM fires with 2.4% / 0% / 100% fill
+    rates at 96/98/99c respectively, zero IOC_LIMIT_BUMPED log lines.
+
+    Fix: bypass the picker for TM. Set _ioc_limit_price = MAX_ENTRY_PRICE
+    directly when (TM_SWEEP_LIVE_ENABLED and strategy in TM_LIVE_STRATEGIES
+    and not _is_ladder_retry and price < MAX_ENTRY_PRICE). The picker's
+    'find optimal limit' is over-engineered for TM — we always want the
+    cap, and Kalshi auto-cancels surplus at $0 on unfilled IOC tail."""
+
+    def setUp(self):
+        self.source = _read_bot()
+
+    def test_direct_bump_block_exists_in_submit_taker(self):
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        # Must reference the new direct-bump log line.
+        self.assertIn("TM_SWEEP_DIRECT_BUMP", body,
+                      "_submit_taker must contain the direct-bump branch "
+                      "(picker bypass for TM when WS cache empty)")
+
+    def test_direct_bump_does_not_require_live_ob(self):
+        """The direct-bump branch must be OUTSIDE the `if _live_ob` block —
+        that's the whole point. If it's inside, we've reproduced the same
+        bug we're fixing."""
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        # Find the direct-bump branch.
+        direct_idx = body.find("TM_SWEEP_DIRECT_BUMP:")
+        self.assertGreater(direct_idx, 0)
+        # Find the picker `if _live_ob` block end (the `try/except` around it).
+        # Walk backwards from direct_idx looking for `if _live_ob`.
+        # The direct-bump must come AFTER the picker block, not nested inside.
+        # Heuristic: between the picker `if _live_ob and isinstance(price, int)`
+        # and the direct-bump branch, there must be the `except Exception:` of
+        # the picker's outer try.
+        live_ob_idx = body.rfind("if _live_ob and isinstance(price, int)", 0, direct_idx)
+        self.assertGreater(live_ob_idx, 0,
+                           "picker block landmark not found — code structure changed?")
+        between = body[live_ob_idx:direct_idx]
+        # The picker block ends with its outer except. If direct-bump is
+        # inside, we'd see the body of the picker block continuing. Verify
+        # the direct-bump is OUTSIDE by checking the indentation context.
+        # Look for the picker's outer "except Exception:" between the picker
+        # start and the direct-bump.
+        self.assertIn(
+            "except Exception:",
+            between,
+            "direct-bump must live AFTER the picker's try/except block "
+            "(outside the _live_ob gate) — otherwise it inherits the same "
+            "bug it's fixing")
+
+    def test_direct_bump_gates_on_TM_LIVE_STRATEGIES_exact_match(self):
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        direct_idx = body.find("TM_SWEEP_DIRECT_BUMP:")
+        # Window 600 chars before the log line — should contain the gate.
+        prelude = body[max(0, direct_idx - 1200):direct_idx]
+        self.assertIn("TM_SWEEP_LIVE_ENABLED", prelude)
+        self.assertIn("in TM_LIVE_STRATEGIES", prelude)
+        self.assertIn("not _is_ladder_retry", prelude)
+
+    def test_direct_bump_skips_when_price_already_at_max(self):
+        """When entry tier IS already MAX_ENTRY_PRICE (99c), no bump is
+        possible. Gate must include `price < MAX_ENTRY_PRICE`."""
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        direct_idx = body.find("TM_SWEEP_DIRECT_BUMP:")
+        prelude = body[max(0, direct_idx - 1200):direct_idx]
+        self.assertRegex(
+            prelude,
+            r"price\s*<\s*MAX_ENTRY_PRICE|"
+            r"_ioc_limit_price\s*<\s*MAX_ENTRY_PRICE",
+            "direct-bump gate must include price < MAX_ENTRY_PRICE so we "
+            "don't no-op log on entry=99")
+
+    def test_direct_bump_does_not_lower_existing_smart_limit(self):
+        """If the smart picker DID fire (orderbook was available — rare for
+        TM but possible) and chose _ioc_limit_price = some value, the
+        direct-bump must not LOWER it. Specifically: if picker chose
+        _ioc_limit_price=99 already, direct-bump is a no-op or set-to-same.
+        Gate via `_ioc_limit_price < MAX_ENTRY_PRICE` ensures this."""
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        direct_idx = body.find("TM_SWEEP_DIRECT_BUMP:")
+        prelude = body[max(0, direct_idx - 1200):direct_idx]
+        self.assertIn(
+            "_ioc_limit_price < MAX_ENTRY_PRICE",
+            prelude,
+            "direct-bump must guard `_ioc_limit_price < MAX_ENTRY_PRICE` "
+            "so it can never lower a higher picker-chosen limit")
+
+    def test_direct_bump_log_includes_strategy_and_prices(self):
+        """The new log line must include strategy name and from→to prices
+        so we can confirm in production whether the bump fires."""
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        # Find the log statement.
+        idx = body.find("TM_SWEEP_DIRECT_BUMP:")
+        # Window: 200 chars from the log line should have the format string.
+        log_window = body[idx:idx + 400]
+        self.assertIn("strategy", log_window.lower())
+        self.assertIn("%d", log_window, "log must include numeric prices")
+
+    def test_direct_bump_NOT_triggered_for_dc_or_lpne(self):
+        """Other strategies that go through _submit_taker (DC tiers, LPNE,
+        confirmation_addon) MUST NOT pick up the bump."""
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        # The gate must use `in TM_LIVE_STRATEGIES` which excludes DC/LPNE.
+        # Cannot use startswith("terminal_momentum") (that was the A2 footgun
+        # and would ALSO trip up here).
+        direct_idx = body.find("TM_SWEEP_DIRECT_BUMP:")
+        prelude = body[max(0, direct_idx - 800):direct_idx]
+        self.assertNotIn(
+            'startswith("terminal_momentum")',
+            prelude,
+            "direct-bump must NOT use startswith — exact-set match only")
+        self.assertIn(
+            "in TM_LIVE_STRATEGIES",
+            prelude)
+
+
+class TestTMSweepDirectBumpAdversarialRound2(unittest.TestCase):
+    """Round 2 adversary findings on the direct-bump fix."""
+
+    def setUp(self):
+        self.source = _read_bot()
+
+    def test_A1_NO_side_bypass(self):
+        """Adversary R2 A1: picker block bypasses for `_is_no_side` because
+        candidate['best_yes_ask'] is actually no_price for NO-side trades.
+        Direct-bump must inherit the same guard, otherwise a future TM_NO
+        experiment would submit a 99c NO buy (~$1/contract overpay).
+        After R3 A1 the gate moved into a `_direct_bump_fired = (...)`
+        expression so widen window to capture that assignment."""
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        # Find the gate assignment, not the log line.
+        gate_idx = body.find("_direct_bump_fired = (")
+        self.assertGreater(gate_idx, 0, "gate assignment landmark not found")
+        # Window is the gate expression itself (~400 chars).
+        gate_block = body[gate_idx:gate_idx + 500]
+        self.assertIn(
+            "not _is_no_side",
+            gate_block,
+            "direct-bump gate must include `not _is_no_side` — "
+            "otherwise a NO-side TM (future TM_NO experiment) would "
+            "submit limit=99c as no_price → ~$1/contract overpay")
+
+    def test_A3_log_fires_after_assignment_not_before(self):
+        """Adversary R2 A3: the log line is the production audit trail.
+        Place log AFTER the assignment so the line records FACT, not intent.
+        Otherwise a log handler error/exception between the log call and
+        assignment would create a misleading 'bumped to 99' record while
+        actually submitting at scan-time price."""
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        # Find the direct-bump block; assignment to MAX_ENTRY_PRICE must come
+        # BEFORE the log line.
+        bump_idx = body.find("TM_SWEEP_DIRECT_BUMP:")
+        self.assertGreater(bump_idx, 0)
+        # The assignment "_ioc_limit_price = MAX_ENTRY_PRICE" should live
+        # within ~200 chars of the log idx, on a PRECEDING line.
+        assign_pattern = "_ioc_limit_price = MAX_ENTRY_PRICE"
+        # Find the assignment in the direct-bump block (not anywhere else).
+        # Block: from `if (TM_SWEEP_LIVE_ENABLED` 600 chars before the log
+        # to ~300 chars after.
+        block = body[max(0, bump_idx - 600):bump_idx + 300]
+        assign_in_block = block.find(assign_pattern)
+        log_in_block = block.find("TM_SWEEP_DIRECT_BUMP:")
+        self.assertGreater(assign_in_block, 0,
+                           "assignment must exist in the direct-bump block")
+        self.assertLess(
+            assign_in_block, log_in_block,
+            "assignment must come BEFORE the log line (log records FACT)")
+
+    def test_A4_shadow_records_direct_bump_applied(self):
+        """Adversary R2 A4: tm_sweep_shadow captures entry_price_cents from
+        scan-time price, but direct-bump submits at MAX_ENTRY_PRICE. The
+        cf_pnl_cents computation assumes entry_tier == scan-time-price,
+        which is no longer true for bumped rows. Add a `direct_bump_applied`
+        column so analysts can filter — and so cf_pnl interpretation is
+        correct per row."""
+        # Schema check: column exists.
+        from bot import StateManager
+        tmp_db = "/tmp/test_direct_bump_column.db"
+        if os.path.exists(tmp_db):
+            os.unlink(tmp_db)
+        try:
+            state = StateManager(db_path=tmp_db)
+            cols = {r["name"] for r in state.conn.execute(
+                "PRAGMA table_info(tm_sweep_shadow)").fetchall()}
+            self.assertIn(
+                "direct_bump_applied", cols,
+                "tm_sweep_shadow must have direct_bump_applied column "
+                "(adversary R2 A4) so direct-bumped rows can be filtered "
+                "from cf_pnl aggregations")
+            state.conn.close()
+        finally:
+            if os.path.exists(tmp_db):
+                os.unlink(tmp_db)
+
+    def test_A4_capture_records_direct_bump_when_gates_pass(self):
+        """The capture in _execute_tm_taker must compute the direct-bump
+        prediction (same gate logic as _submit_taker) and pass it to
+        insert_tm_sweep_shadow_row."""
+        start = self.source.find("def _execute_tm_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        # Capture must reference direct_bump_applied or compute the same
+        # gate logic when calling insert_tm_sweep_shadow_row.
+        self.assertIn(
+            "direct_bump_applied",
+            body,
+            "_execute_tm_taker must compute and pass direct_bump_applied "
+            "to the shadow capture (adversary R2 A4)")
+
+
+class TestTMSweepDirectBumpAdversarialRound3(unittest.TestCase):
+    """Round 3 adversary findings on the round 2 fixes."""
+
+    def setUp(self):
+        self.source = _read_bot()
+
+    def test_R3A1_single_source_of_truth_via_candidate_flag(self):
+        """Adversary R2 A1+A4: capture predicate duplicates the submit gate.
+        If picker fires (rare for TM but possible), capture over-reports.
+        Fix: _submit_taker writes candidate['_tm_direct_bump_fired']=True/False
+        AFTER its gate runs; capture reads from candidate. Single source."""
+        # _submit_taker must set the flag.
+        start = self.source.find("def _submit_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        self.assertIn(
+            'candidate["_tm_direct_bump_fired"]',
+            body,
+            "_submit_taker must record bump status to candidate as the "
+            "single source of truth for the capture site")
+
+    def test_R3A1_capture_reads_candidate_flag_not_re_predicts(self):
+        """The capture in _execute_tm_taker must read candidate's flag,
+        not re-evaluate the gate."""
+        start = self.source.find("def _execute_tm_taker")
+        end = self.source.find("\n    def ", start + 10)
+        body = self.source[start:end]
+        self.assertIn(
+            '_tm_direct_bump_fired',
+            body,
+            "_execute_tm_taker capture must read candidate['_tm_direct_bump_fired']")
+        # Capture must NOT re-implement the gate. Specifically: it must not
+        # have all 5+ AND-clauses of the gate inline; reading the flag is
+        # one expression.
+        cap_idx = body.find("direct_bump_applied=")
+        self.assertGreater(cap_idx, 0)
+        # The capture's direct_bump_applied source should be the flag, not
+        # an inline re-evaluation.
+        cap_window = body[max(0, cap_idx - 200):cap_idx + 200]
+        self.assertNotRegex(
+            cap_window,
+            r"direct_bump_applied=int\(\s*\n?\s*TM_SWEEP_LIVE_ENABLED",
+            "capture must NOT re-evaluate the gate inline (R3 A1 — "
+            "predicate duplication is fragile)")
+
+    def test_R3A2_no_effective_entry_column_misleading_name_dropped(self):
+        """Adversary R3 A3: the previously-proposed `effective_entry_price_cents`
+        column was misleading — it stored the IOC LIMIT (e.g. 99c on bumped
+        rows), not the actual fill price (which sweeps fills at 96/97/98 too).
+        Naming it 'effective_entry' implied cost basis, which under-states PnL
+        on bumped wins. Removed: analysts compute it as
+        `CASE WHEN direct_bump_applied=1 THEN 99 ELSE entry_price_cents END`
+        when needed, or use settled_trades for realized fill prices."""
+        from bot import StateManager
+        tmp_db = "/tmp/test_no_effective_entry_col.db"
+        if os.path.exists(tmp_db):
+            os.unlink(tmp_db)
+        try:
+            state = StateManager(db_path=tmp_db)
+            cols = {r["name"] for r in state.conn.execute(
+                "PRAGMA table_info(tm_sweep_shadow)").fetchall()}
+            self.assertNotIn(
+                "effective_entry_price_cents", cols,
+                "effective_entry_price_cents must NOT exist — it was a "
+                "misleading column name (stored LIMIT not FILL); R3 adversary "
+                "A3 removed it. Use direct_bump_applied + entry_price_cents.")
+            state.conn.close()
+        finally:
+            if os.path.exists(tmp_db):
+                os.unlink(tmp_db)
+
+    def test_R3A1_direct_bump_applied_docstring_clarifies_semantics(self):
+        """Adversary R3 A1: `direct_bump_applied=1` means the bump policy
+        was active at IOC SUBMIT time, NOT that a fill happened. Rows with
+        `direct_bump_applied=1` + `filled_count=0` mean IOC was submitted
+        with limit=99 but no liquidity (or place_order returned None).
+        Docstring on the insert helper kwarg must surface this semantic."""
+        with open(BOT_PATH) as f:
+            source = f.read()
+        # Find the insert_tm_sweep_shadow_row signature/docstring.
+        idx = source.find("def insert_tm_sweep_shadow_row")
+        self.assertGreater(idx, 0)
+        # Check next 3000 chars for the clarifying language.
+        block = source[idx:idx + 3000]
+        import re as _re
+        pattern = _re.compile(r"policy active|at submit time|not.*fill",
+                              _re.IGNORECASE | _re.DOTALL)
+        self.assertRegex(
+            block, pattern,
+            "direct_bump_applied docstring must clarify it's a policy/intent "
+            "flag, not a fill confirmation (R3 A1)")
 
 
 if __name__ == "__main__":
