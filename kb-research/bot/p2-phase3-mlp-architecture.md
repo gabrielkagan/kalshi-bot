@@ -94,9 +94,10 @@ At inference time (Phase 7), an unseen ticker arrives. The deploy contract:
 - Phase 4's embedding INIT for row 0 is RANDOM PER-MEMBER (different across the M=5 ensemble seeds) so the ensemble std on UNK rows reflects honest disagreement, not zero. This is purely a forensic / sanity signal — Phase 5's σ-inflation is the load-bearing mechanism.
 
 ```python
-# Phase 4 init (per-member):
+# Phase 4 init (per-member) — R-p2-impl-r1#C2 reconcile: same formula across phases.
 for member in range(M):
-    rng = np.random.default_rng(seed=BASE_SEED + member)
+    member_seed = BASE_SEED * 1000 + member
+    rng = np.random.default_rng(seed=member_seed)
     embedding_table[0] = rng.normal(0, EMB_DIM ** -0.5, size=EMB_DIM)
 ```
 

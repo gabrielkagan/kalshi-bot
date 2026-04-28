@@ -45,12 +45,25 @@ else:
     train_dir = extract_dir / train_id
 
 with acquire_shared_lock(extract_dir / '.extract.lock'):
-    bundle = json.load(open(train_dir / 'extract_bundle.json'))
-    assert bundle['schema_version'] == 2  # phase-local SchemaError if mismatch
-    # ... read normstats, vocab, parquets while holding LOCK_SH
+    bundle_path = train_dir / 'extract_bundle.json'
+    bundle = json.load(open(bundle_path))
+    if bundle.get('schema_version') != 2:
+        raise Phase4SchemaError(
+            f"extract_bundle schema_version={bundle.get('schema_version')}, expected 2"
+        )
+    # Resolve audit + verify
+    audit_path = train_dir / bundle['audit_path']
+    if compute_sha256(audit_path) != bundle['audit_sha256']:
+        raise Phase4SchemaError(f"audit_sha256 mismatch")
+    audit = json.load(open(audit_path))
+    # ... read normstats, vocab, parquets, audit while holding LOCK_SH
 ```
 
-**R-p2-spec-r5#R1#C11 (reader contract):** Phase 4 holds `LOCK_SH` on `data/cal_mlp/<asset>/.extract.lock` from before opening `extract_bundle.json` until ALL parquet/normstats/vocab reads are complete and loaded into memory.
+**R-p2-spec-r5#R1#C11 + R1-train#C12 (reader contract):** Phase 4 holds `LOCK_SH` on `data/cal_mlp/<asset>/.extract.lock` from before opening `extract_bundle.json` until ALL parquet/normstats/vocab/AUDIT reads are complete and loaded into memory.
+
+## Lock-ordering invariant (R1-ops#C1)
+
+Phase 4 MUST acquire locks in this order: `extract_lock` (SHARED on `data/cal_mlp/<asset>/.extract.lock`) → `models_lock` (EXCLUSIVE on `models/cal_mlp_<asset>/.lock`). Both held until end of run. No code path may take models_lock first; future writers MUST honor this.
 
 ## Per-fold per-member training loop
 
@@ -74,8 +87,15 @@ for fold in args.folds_to_train:
     ca = fold_df_norm[fold_df_norm['split'] == 'cal']
     te = fold_df_norm[fold_df_norm['split'] == 'test']
 
+    # Pre-allocate ensemble prediction arrays (R1-ops#C12)
+    cal_preds = np.zeros((args.ensemble_size, len(ca)), dtype=np.float32)
+    test_preds = np.zeros((args.ensemble_size, len(te)), dtype=np.float32)
+
     # Train M ensemble members
     for member in range(args.ensemble_size):
+        # R1-train#C2: locked seed formula, used identically by Phase 3 (UNK init).
+        # Spec asserts BASE_SEED >= 1 to prevent collision with member offset.
+        assert args.base_seed >= 1, "BASE_SEED must be >= 1"
         member_seed = args.base_seed * 1000 + member
         torch.manual_seed(member_seed)
         np.random.seed(member_seed)
@@ -84,7 +104,7 @@ for fold in args.folds_to_train:
         model = build_model_from_definition(MODEL_DEF, n_vocab=n_vocab,
                                              unk_init_seed=member_seed)
         opt = AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-        scheduler = build_warmup_then_cosine(opt, warmup_steps=200,
+        scheduler = build_warmup_then_cosine(opt, warmup_steps=50,
                                               total_steps=len(tr) * 30 // 256,
                                               eta_min=1e-4)
 
@@ -94,8 +114,12 @@ for fold in args.folds_to_train:
 
         for epoch in range(30):
             model.train()
-            for batch in DataLoader(tr, batch_size=256, shuffle=True,
-                                     worker_init_fn=lambda i: np.random.seed(member_seed + i)):
+            # R1-train#C3: lock num_workers=0 (deterministic, removes worker_init_fn ambiguity).
+            for batch in DataLoader(tr, batch_size=256, shuffle=True, num_workers=0,
+                                     generator=torch.Generator().manual_seed(member_seed)):
+                # R1-train#C1: forward contract:
+                #   model(x_cont, x_missing, price_tier, stc_bucket, vol_regime_int,
+                #         side_int, ticker_id, logit_raw_prob_clipped) -> (final_logit, final_prob)
                 loss = compute_weighted_bce(model, batch, w_cell_lookup)
                 opt.zero_grad()
                 loss.backward()
@@ -114,9 +138,29 @@ for fold in args.folds_to_train:
                 if epochs_since_improve >= 5:
                     break  # early stop
 
-        # Save best member checkpoint
-        member_path = train_dir_phase4 / f"fold{fold}_member{member}.pt"
-        torch.save(best_state_dict, member_path)
+        # Save best member checkpoint AS TMP (R1-ops#C2: rename batch happens later).
+        member_final = train_dir_phase4 / f"fold{fold}_member{member}.pt"
+        member_tmp = member_final.with_suffix(
+            f".pt.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        )
+        with open(member_tmp, 'wb') as f:
+            torch.save(best_state_dict, f)
+            f.flush()
+            os.fsync(f.fileno())
+        # R1-train#C5: write per-checkpoint resume marker (sibling tmp).
+        marker_payload = {
+            'cfg_fp': cfg_fp, 'extract_bundle_logical_sha256': extract_bundle_logical_sha256,
+            'base_seed': args.base_seed, 'model_definition_sha256': MODEL_DEF_SHA,
+            'train_id': train_id, 'fold': fold, 'member': member,
+            'best_cal_brier_w': best_cal_brier_w,
+            'early_stop_epoch': epoch + 1,
+        }
+        marker_tmp = (train_dir_phase4 / f"fold{fold}_member{member}.marker.json").with_suffix(
+            f".json.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        )
+        atomic_write_json(marker_payload, marker_tmp.parent / f"fold{fold}_member{member}.marker.json")
+        pending_renames.append((member_tmp, member_final))
+        # marker_tmp's rename added by atomic_write_json above
 
         # Compute per-row predictions on cal + test for ensembling
         model.load_state_dict(best_state_dict)
@@ -125,11 +169,14 @@ for fold in args.folds_to_train:
             cal_preds[member] = predict_p(model, ca)
             test_preds[member] = predict_p(model, te)
 
-    # Ensemble aggregate
-    cal_p_mean = cal_preds.mean(axis=0)        # [N_cal]
-    cal_p_std  = cal_preds.std(axis=0, ddof=0) # ddof=0: members ARE the population
-    test_p_mean = test_preds.mean(axis=0)
-    test_p_std  = test_preds.std(axis=0, ddof=0)
+    # Ensemble aggregate — R1-train#C10: compute std in float64, store float32.
+    cal_preds_f64 = cal_preds.astype(np.float64)
+    test_preds_f64 = test_preds.astype(np.float64)
+    cal_p_mean = cal_preds_f64.mean(axis=0).astype(np.float32)
+    cal_p_std  = cal_preds_f64.std(axis=0, ddof=0).astype(np.float32)
+    test_p_mean = test_preds_f64.mean(axis=0).astype(np.float32)
+    test_p_std  = test_preds_f64.std(axis=0, ddof=0).astype(np.float32)
+    assert (cal_p_std >= 0).all() and (test_p_std >= 0).all()
 
     # Persist fold predictions (Phase 5 reads cal predictions for conformal calibration;
     # Phase 6 reads test predictions for ship-blocker evaluation)
@@ -137,21 +184,26 @@ for fold in args.folds_to_train:
                            ca['outcome'], te['outcome'], ca['ticker'], te['ticker'], ...)
 ```
 
-## Output structure
+## Output structure (R1-ops#C9 — restructured for symmetry with Phase 2)
 
 ```
 models/
-├── CURRENT_<asset>                                # text: latest train_id
-└── cal_mlp_<asset>_<train_id>/
-    ├── cal_mlp_<asset>_<train_id>_bundle.json     # the manifest (Phase 5 reads)
-    ├── model_definition.json                       # architecture spec for Phase 7
-    ├── fold0_member0.pt, ..., fold0_member4.pt     # per-member best-state checkpoints
-    ├── fold1_member0.pt, ..., fold1_member4.pt
-    ├── fold2_member0.pt, ..., fold2_member4.pt
-    ├── fold0_predictions.parquet                   # cal + test predictions, per-member + ensemble
-    ├── fold1_predictions.parquet
-    ├── fold2_predictions.parquet
-    └── train_audit.json                            # diagnostic counters, early-stop epoch per member
+└── cal_mlp_<asset>/
+    ├── CURRENT                                       # text: latest train_id
+    ├── .lock                                         # models_lock per asset
+    └── <train_id>/
+        ├── cal_mlp_<asset>_<train_id>_bundle.json    # the manifest (Phase 5 reads)
+        ├── model_definition.json                      # architecture spec for Phase 7
+        ├── fold0_member0.pt, ..., fold0_member4.pt    # per-member best-state checkpoints
+        ├── fold0_member0.marker.json, ...             # resume markers (R1-train#C5)
+        ├── fold1_member0.pt, ..., fold1_member4.pt
+        ├── fold1_member0.marker.json, ...
+        ├── fold2_member0.pt, ..., fold2_member4.pt
+        ├── fold2_member0.marker.json, ...
+        ├── fold0_predictions.parquet                  # cal + test predictions, per-member + ensemble
+        ├── fold1_predictions.parquet
+        ├── fold2_predictions.parquet
+        └── train_audit.json                           # diagnostic counters
 ```
 
 ## Bundle JSON
@@ -161,47 +213,59 @@ models/
   "phase": 4,
   "schema_version": 2,
   "asset": "SOL",
-  "train_id": "2026-04-27T00:00:00.000000Z-abcd1234",  // SAME train_id as Phase 2
-  "cfg_fp": "f3b201e8a7c1d0e9",                         // SAME cfg_fp as Phase 2
-  "model_definition_sha256": "...",                     // sha of model_definition.json
-  "model_definition_path": "model_definition.json",
+  "train_id": "2026-04-27T00:00:00.000000Z-abcd1234",   // SAME train_id as Phase 2
+  "cfg_fp": "f3b201e8a7c1d0e9",                          // SAME cfg_fp as Phase 2
+  "model_definition_path": "model_definition.json",      // basename
+  "model_definition_sha256": "...",
   "ensemble_size": 5,
   "base_seed": 42,
-  "extract_bundle_sha256": "...",                       // pin to specific Phase 2 bundle
-  "extract_bundle_path": "/abs/path/to/extract_bundle.json",  // absolute (R-p2-impl-r1#C2)
-  "ticker_vocab_path": "/abs/path/to/ticker_vocab.json",
+
+  // R1-train#C7: pin to logical content, not parquet bytes.
+  "extract_bundle_path": "data/cal_mlp/SOL/<extract_train_id>/extract_bundle.json",  // relative to project_root
+  "extract_bundle_sha256": "...",                        // bit-level (informational)
+  "extract_bundle_logical_sha256": "...",                // sha over canonical normstats + per-cell counts + n_train/cal/test
+  "ticker_vocab_path": "ticker_vocab.json",              // basename, resolved against extract bundle's parent
   "ticker_vocab_sha256": "...",
+
+  // R1-train#C4: explicit deploy fold (= K-1 by Phase 3 lock).
+  "deploy_fold_idx": 2,
+
+  "_path_resolution": "basenames_relative_to_bundle_dir; cross-bundle refs (extract_bundle_path) relative to project_root",
+
   "eval_fold_artifacts": [
     {
       "fold": 0,
       "n_train": 8421, "n_cal": 2103, "n_test": 2087,
       "test_window_start": "...", "test_window_end": "...",
-      "parquet_path": "/abs/path/to/fold0.parquet",                  // ABSOLUTE (Phase 6 reads)
-      "parquet_sha256": "...",
-      "normstats_path": "/abs/path/to/normstats_fold0.json",
-      "normstats_sha256": "...",
-      "predictions_path": "/abs/path/to/fold0_predictions.parquet",
+      "predictions_path": "fold0_predictions.parquet",   // basename
       "predictions_sha256": "...",
       "members": [
-        {"member": 0, "seed": 42000, "checkpoint_path": ".../fold0_member0.pt",
-         "checkpoint_sha256": "...", "best_cal_brier_w": 0.0612,
+        {"member": 0, "seed": 42000, "checkpoint_path": "fold0_member0.pt",
+         "checkpoint_sha256": "...", "marker_path": "fold0_member0.marker.json",
+         "marker_sha256": "...", "best_cal_brier_w": 0.0612,
          "early_stop_epoch": 18},
         ...
       ]
     },
     ...
   ],
-  "model_identity_sha256": "...",                       // hash of all member checkpoints concatenated
-  "normstats_sha256": "...",                            // hash of all per-fold normstats concatenated
-  "bundle_sha": "...",                                  // bundle_sha_v1 = sha256(model_id:normstats:NULL_at_phase4)
+  "model_identity_sha256": "...",                        // hash of all member checkpoints concatenated
+  "normstats_concat_sha256": "...",                      // hash of all per-fold normstats concatenated
+  "bundle_sha": "...",                                   // sha256(model_id:normstats_concat:phase4)
   "generated_at": "...",
   "train_py_sha256": "...",
   "torch_version": "...",
-  "pandas_version": "..."
+  "numpy_version": "...",
+  "pandas_version": "...",
+  "pyarrow_version": "..."
 }
 ```
 
-**R-p2-impl-r1#C2 path resolution:** Phase 4's bundle ABSOLUTIZES paths via `Path(...).resolve()` so Phase 6 (the eventual reader, possibly running from a different cwd) can open them without further resolution. Phase 2's bundle uses basenames + `_path_resolution` contract; Phase 4 reads Phase 2 by joining basenames against `bundle_path.parent`, then writes its own bundle with absolute paths.
+**R1-ops#C10 path resolution:** Phase 4's bundle uses BASENAMES (relative to bundle's directory) for in-train_id artifacts and `project_root`-relative paths for cross-bundle references (Phase 2 extract bundle). Phase 5/6 readers resolve via `Path(__file__).resolve().parents[2]` (already applied in validate.py per R-p2-impl-r3#C2). Worktree-move robust: re-running from a relocated checkout works without bundle rewriting.
+
+**R1-train#C7 logical sha:** `extract_bundle_logical_sha256` covers the LOGICAL content (canonical-sorted normstats values + per-cell counts + n_train/cal/test) — stable across pyarrow upgrades. The bit-level `extract_bundle_sha256` is informational only. Phase 7 verifies logical sha at deploy.
+
+**R1-train#C6 Phase 7 verification contract:** at boot, bot.py MUST recompute and verify (a) `phase4_bundle_sha = sha256(model_identity:normstats_concat:phase4)`, (b) `phase5_bundle_sha = sha256(phase4_bundle_sha:conformal_sha)`. Both assertions are hard ship-blockers (refuse to start; alert).
 
 ## bundle_sha_v1 (canonical chain)
 
@@ -222,27 +286,54 @@ This chain lets Phase 6 verify the full provenance via a single `bundle_sha`.
 
 ## Atomic write protocol
 
-Same as Phase 2:
-
-1. mkdir `models/cal_mlp_<asset>_<train_id>/`
-2. Acquire `models/.cal_mlp_<asset>.lock` with `LOCK_EX | LOCK_NB`. **Lock domain split (R-p2-spec-r1#R3-OPS#C4):** Phase 4's lock is the model lock; Phase 2's lock is the extract lock. Phase 4 takes BOTH for the duration of training: SHARED on extract_lock (so Phase 2 can't re-extract under us), EXCLUSIVE on models_lock.
-3. Clean stale `*.tmp-*` from prior crashed runs.
-4. For each fold k for each member m: write `fold{k}_member{m}.pt.tmp-...` with `torch.save` + fsync; later renamed.
-5. Build per-fold predictions parquet via `atomic_write_parquet`.
-6. Build `model_definition.json`, `train_audit.json`, `bundle.json`.
-7. Rename order: per-fold member checkpoints → per-fold predictions → model_definition → audit → bundle (LAST).
-8. Update `models/CURRENT_<asset>` pointer (atomic via tmp+rename).
+1. mkdir `models/cal_mlp_<asset>/<train_id>/`
+2. Acquire SHARED on `data/cal_mlp/<asset>/.extract.lock`, then EXCLUSIVE on `models/cal_mlp_<asset>/.lock` (lock-ordering invariant per above).
+3. **Stale-tmp cleanup (R1-ops#C3):** scope = `train_dir_phase4.glob('*.tmp-*')` (current train_id only). Orphan train_id sibling dirs are NOT auto-cleaned (operator concern; harmless because CURRENT doesn't point to them).
+4. For each fold k for each member m: training-loop writes `fold{k}_member{m}.pt.tmp-...` with `torch.save` + fsync, plus a sibling `fold{k}_member{m}.marker.json.tmp-...`. All accumulated in `pending_renames` list — none renamed yet.
+5. After all folds × members complete: build per-fold predictions parquet tmps via `atomic_write_parquet`; append to `pending_renames`.
+6. Build `model_definition.json`, `train_audit.json`, `bundle.json` tmps; append.
+7. **Rename phase** — order: per-fold member checkpoints → markers → per-fold predictions → model_definition → audit → bundle (LAST).
+8. Update `models/cal_mlp_<asset>/CURRENT` pointer atomically via tmp+rename. **Reader contract (R1-ops#C11):** Phase 5/6 read CURRENT AFTER acquiring models_lock SH, so they see a stable train_id throughout their run.
 9. fsync directory after each rename batch.
 
-On failure: roll back already-renamed final paths in REVERSE; bundle is the gate.
+**On failure** during steps 4-7 (training crash, OOM, wall-clock kill, rename error):
+- Outer except catches `Phase4Error` or `Phase4ResourceError`.
+- Cleanup unlinks ALL `pending_renames` tmps + ANY already-renamed final paths in REVERSE order.
+- ENOENT swallowed silently (file already gone).
+- Bundle is never written on failure → gate intact.
+- Re-raise as Phase4WriteError (or pass through Phase4ResourceError) with exit code per hierarchy.
 
-## Resume semantics (`--allow-resume`)
+Without `--allow-resume`, prior-run final checkpoints (renamed but bundle missing) are OVERWRITTEN by the new training pass via marker mismatch (R1-train#C5 contract). Concurrent readers are blocked by LOCK_EX.
 
-If a prior partial run left checkpoints `fold0_member0.pt, fold0_member1.pt` but no bundle:
-- With `--allow-resume`: skip per-member training where checkpoint exists AND `checkpoint_sha256` matches the bundle's expected sha (impossible if no prior bundle — so fall back to "checkpoint exists" only).
-- Without `--allow-resume`: clean stale tmps + retrain from scratch.
+## Resume semantics (`--allow-resume`) — REWRITTEN per R1-train#C5
 
-Resume is a developer convenience; production cron does NOT pass `--allow-resume`.
+The unsafe "checkpoint exists" fallback is replaced with marker-based verification.
+
+**Marker file** (written sibling to each checkpoint at `torch.save` time):
+
+```json
+{
+  "cfg_fp": "...",
+  "extract_bundle_logical_sha256": "...",
+  "base_seed": 42,
+  "model_definition_sha256": "...",
+  "train_id": "...",
+  "fold": 0,
+  "member": 0,
+  "best_cal_brier_w": 0.0612,
+  "early_stop_epoch": 18
+}
+```
+
+**Resume logic:** for each `(fold, member)` pair:
+- If `fold{k}_member{m}.pt` AND `fold{k}_member{m}.marker.json` both exist
+- AND every marker field matches the current run's values (cfg_fp, logical sha, base_seed, model_def_sha, train_id, fold, member)
+- THEN skip training; load the checkpoint as-is.
+- ELSE delete the stale checkpoint + marker; train this member from scratch.
+
+This is the RESUME CONTRACT regardless of whether `--allow-resume` is set. Without `--allow-resume`, the spec's earlier `clean stale tmps + retrain from scratch` policy is REPLACED by per-member resume — so the "from scratch" wording is misleading.
+
+Production cron may safely pass `--allow-resume` because the marker check guards against silent corruption. Documented as production-safe.
 
 ## Determinism + reproducibility
 
@@ -258,15 +349,24 @@ Resume is a developer convenience; production cron does NOT pass `--allow-resume
 
 Two runs with identical args + identical Phase 2 train_id produce identical `model_identity_sha256` (assuming no torch / numpy / pandas version drift). Train_id is derived from Phase 2 train_id + `(base_seed, ensemble_size)` — same inputs → same train_id.
 
-## Memory / runtime budgets
+## Memory / runtime budgets (R1-ops#C5/C6)
 
 | Budget | Target | Hard ceiling |
 |---|---|---|
-| Peak RSS per asset | 4 GB | 6 GB → SystemExit |
-| Wall time per fold per member (CPU) | ≤ 90 s | 5 min → SystemExit |
-| Wall time per asset (3 folds × 5 members) | ≤ 25 min | 60 min → SystemExit |
+| Peak RSS per asset | 1 GB (per Phase 3) | 1.5 GB → Phase4ResourceError exit 7 |
+| Wall time per fold per member (CPU) | ≤ 90 s | 5 min → Phase4ResourceError |
+| Wall time per asset (3 folds × 5 members) | ≤ 25 min | 60 min → Phase4ResourceError |
 
-`psutil` REQUIRED. Missing → SystemExit (Phase 4 ContractError, exit code 3).
+**`psutil` check:** Module load wraps `try: import psutil; _HAS_PSUTIL=True except: _HAS_PSUTIL=False`. First line of `main()` (after args parse + banner) raises `Phase4ContractError` if `not _HAS_PSUTIL`. Phase 4 enforces because OOM during training is unrecoverable; Phase 6 only reads and is allowed to soft-flag.
+
+**Wall-clock mechanism:** `signal.alarm(WALL_CEILING_S)` registered at start of `main()` after lock acquisition; SIGALRM handler raises `Phase4ResourceError(exit_code=7)`. Belt-and-suspenders: per-batch `if time.monotonic() - start > WALL_CEILING_S: raise` (signal.alarm can be masked by torch C++ code). POSIX-only; documented.
+
+**Resource breach handler (R1-train#C8):**
+1. Raise `Phase4ResourceError` from training thread.
+2. Outer handler catches: deletes ALL `*.tmp-*` files under `train_dir_phase4/`; deletes any final-path checkpoint whose marker file is missing or stale.
+3. Does NOT touch other folds' members (different fold's checkpoints stay).
+4. Bundle is never written on resource error (gate intact).
+5. Exits with code 7. Resume-after-resource-error is supported and safe via marker check.
 
 ## Failure modes (locked exit codes)
 
@@ -279,6 +379,60 @@ class Phase4WriteError(Phase4Error): exit_code = 5
 class Phase4SchemaError(Phase4Error): exit_code = 6
 class Phase4ResourceError(Phase4Error): exit_code = 7    # OOM / wall-clock
 ```
+
+## train_audit.json schema (R1-train#C11 — locked v1)
+
+```json
+{
+  "schema_version": 1,
+  "train_id": "...",
+  "asset": "SOL",
+  "wall_time_total_s": 1247.3,
+  "peak_rss_mb": 873.2,
+  "rss_samples": [{"step": 100, "rss_mb": 412.5}, ...],
+  "torch_version": "...",
+  "numpy_version": "...",
+  "pandas_version": "...",
+  "pyarrow_version": "...",
+  "folds": [
+    {
+      "fold": 0,
+      "wall_time_s": 380.5,
+      "members": [
+        {
+          "member": 0,
+          "seed": 42000,
+          "early_stop_epoch": 18,
+          "epochs_trained": 23,
+          "best_cal_brier_raw": 0.0589,
+          "best_cal_brier_weighted": 0.0612,
+          "final_train_loss": 0.234,
+          "resumed_from_marker": false
+        }, ...
+      ],
+      "ensemble_std_distribution": {"p10": 0.012, "p50": 0.035, "p90": 0.067, "max": 0.142},
+      "n_zero_std_rows": 3,
+      "n_zero_std_pct": 0.0014
+    }, ...
+  ]
+}
+```
+
+Phase 6 reads `ensemble_std_distribution` and `n_zero_std_rows` for ship-blocker checks (collapse detection: all members converge to same minimum → std artificially low).
+
+## Concurrency model (R1-ops#C7 + R1-train#C9)
+
+Each asset trains in a SEPARATE OS process (`subprocess.Popen` from a top-level cron driver), never in shared-process threads. Determinism env vars (`CUBLAS_WORKSPACE_CONFIG`) are set per-process at import time before `import torch`.
+
+Aggregate memory: 4 assets × 1 GB target = 4 GB; 4 × 1.5 GB ceiling = 6 GB. VPS must have ≥ 8 GB to run all 4 in parallel; otherwise, serialize via a wrapping `flock(/tmp/cal_mlp_train.global.lock)` in the cron entrypoint.
+
+Cron driver itself is out of scope for this spec (a small wrapper script in scripts/cron/).
+
+## Runtime version pinning (R1-ops#C8)
+
+`requirements_calmlp.txt` pins torch, numpy, pandas, pyarrow. Phase 4 records runtime versions in bundle JSON AND audit JSON. Phase 4 startup compares `torch.__version__` etc. against `requirements_calmlp.txt`; mismatch raises `Phase4ContractError`. Phase 5/6/7 mirror the check.
+
+This catches `pip auto-upgrade` regressions that would silently change `model_identity_sha256`.
 
 ## What this phase does NOT do
 
