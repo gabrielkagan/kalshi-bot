@@ -396,9 +396,11 @@ def run_sim_pnl(
         candidate_df['seconds_to_close'].astype(float).to_numpy(),
         STC_BIN_CUTOFFS, right=False,
     ).astype(np.int64)
-    candidate_df['vol_regime'] = (
+    candidate_df['vol_regime_int'] = (
         candidate_df['vol_regime'].astype(str) == 'elevated'
     ).astype(np.int64)
+    # R3#C2: derive Phase 4-required columns for the model forward pass.
+    candidate_df['side_int'] = (candidate_df['side'].astype(str) == 'yes').astype(np.int64)
     # R-p6-impl-2#C6: fall back to raw_prob when calibrated_prob is NULL.
     cal_series = pd.to_numeric(candidate_df['calibrated_prob'], errors='coerce')
     raw_series = pd.to_numeric(candidate_df['raw_prob'], errors='coerce')
@@ -406,9 +408,21 @@ def run_sim_pnl(
     candidate_df['outcome'] = (
         candidate_df['market_result'].str.lower() == candidate_df['side'].str.lower()
     ).astype(np.int8)
+    # R3#C2: clipped logit of raw_prob for the skip-term forward pass.
+    from features import RAW_PROB_CLIP_EPS, MISSING_INDICATOR_COLS
+    rp = pd.to_numeric(candidate_df['raw_prob'], errors='coerce').astype(np.float64).to_numpy()
+    rp_c = np.clip(rp, RAW_PROB_CLIP_EPS, 1.0 - RAW_PROB_CLIP_EPS)
+    candidate_df['logit_raw_prob_clipped'] = np.log(rp_c / (1.0 - rp_c)).astype(np.float32)
+    # MISSING_INDICATOR_COLS — Phase4Dataset requires these. Phase 6 doesn't
+    # have the source NULLs, so default to zero (no missing).
+    for col in MISSING_INDICATOR_COLS:
+        if col not in candidate_df.columns:
+            candidate_df[col] = np.int8(0)
 
     cand_normed = apply_norm(candidate_df, normstats, CONT_FEATURE_COLS)
     ticker_to_id = {t: i for i, t in enumerate(sorted(cand_normed['ticker'].unique()))}
+    # R3#C2: ticker_id column needed by Phase4Dataset.
+    cand_normed['ticker_id'] = cand_normed['ticker'].astype(str).map(ticker_to_id).fillna(0).astype(np.int64)
     ds = CalibrationDataset(cand_normed, CONT_FEATURE_COLS, ticker_to_id)
     from torch.utils.data import DataLoader
     loader = DataLoader(ds, batch_size=2048, shuffle=False, collate_fn=collate_dict)
@@ -484,16 +498,15 @@ def run_sim_pnl(
                 r for r in challenger_bundle['eval_fold_artifacts']
                 if r['fold'] == ch_deploy_idx
             )
-            # R2#C3: normstats lives in EXTRACT dir (not models bundle dir).
+            # R2#C3 + R3#C4: normstats in extract dir; fail fast if missing.
             ch_extract_rel = challenger_bundle.get('extract_bundle_path', '')
+            if not ch_extract_rel:
+                raise RuntimeError("challenger bundle missing extract_bundle_path")
             ch_project_root = Path(__file__).resolve().parents[2]
-            if ch_extract_rel:
-                ch_ext_bp = Path(ch_extract_rel)
-                if not ch_ext_bp.is_absolute():
-                    ch_ext_bp = ch_project_root / ch_ext_bp
-                ch_extract_dir = ch_ext_bp.parent
-            else:
-                ch_extract_dir = Path(challenger_bundle.get('_bundle_dir', '.'))
+            ch_ext_bp = Path(ch_extract_rel)
+            if not ch_ext_bp.is_absolute():
+                ch_ext_bp = ch_project_root / ch_ext_bp
+            ch_extract_dir = ch_ext_bp.parent
             ch_normstats_path = Path(ch_deploy_fold['normstats_path'])
             if not ch_normstats_path.is_absolute():
                 ch_normstats_path = ch_extract_dir / ch_normstats_path
@@ -503,6 +516,8 @@ def run_sim_pnl(
             )
             ch_normed = apply_norm(candidate_df, ch_normstats, CONT_FEATURE_COLS)
             ch_ticker_to_id = {t: i for i, t in enumerate(sorted(ch_normed['ticker'].unique()))}
+            # R3#C2: ticker_id column for Phase4Dataset.
+            ch_normed['ticker_id'] = ch_normed['ticker'].astype(str).map(ch_ticker_to_id).fillna(0).astype(np.int64)
             ch_ds = CalibrationDataset(ch_normed, CONT_FEATURE_COLS, ch_ticker_to_id)
             ch_loader = DataLoader(ch_ds, batch_size=2048, shuffle=False, collate_fn=collate_dict)
             ch_p_means, ch_p_stds = [], []

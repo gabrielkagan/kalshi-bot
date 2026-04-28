@@ -58,8 +58,7 @@ from train import (  # noqa: E402
     DEFAULT_DROPOUT,
     apply_norm,
     collate_dict,
-    predict_p_out,
-)
+)  # R3#C5: dropped unused predict_p_out import
 from conformal import (  # noqa: E402
     SinglePredictor,
     EnsemblePredictor,
@@ -380,10 +379,12 @@ def main() -> None:
                 f"input bundle phase={bundle.get('phase')}; Phase 6 requires "
                 f"Phase 5 bundle (one with conformal_path populated)"
             )
-        # R-p6-impl-2#C9: explicit bundle schema check.
+        # R-p6-impl-2#C9 + R3#C3: top-level keys actually present in
+        # Phase 5 bundles. normstats_path/sha lives per-fold under
+        # eval_fold_artifacts (NOT top level).
         _required_keys = (
             'phase', 'cfg_fp', 'train_id', 'conformal_path', 'conformal_sha256',
-            'normstats_path', 'normstats_sha256', 'eval_fold_artifacts',
+            'eval_fold_artifacts', 'extract_bundle_path', 'deploy_fold_idx',
         )
         _missing = [k for k in _required_keys if k not in bundle]
         if _missing:
@@ -477,18 +478,18 @@ def main() -> None:
         )
         if deploy_fold is None:
             raise SystemExit(f"bundle has no fold-{deploy_fold_idx} record")
-        # R2#C3: parquet + normstats are extract-dir-relative (Phase 2 wrote
-        # them in data/cal_mlp/<asset>/<extract_train_id>/), NOT models-dir-
-        # relative. Resolve via bundle['extract_bundle_path'].
+        # R2#C3 + R3#C4: parquet + normstats are extract-dir-relative.
+        # Fail fast if extract_bundle_path is missing — silent fallback
+        # masks malformed bundles.
         extract_bundle_rel = bundle.get('extract_bundle_path', '')
-        if extract_bundle_rel:
-            ext_bundle_path = Path(extract_bundle_rel)
-            if not ext_bundle_path.is_absolute():
-                ext_bundle_path = project_root / ext_bundle_path
-            extract_dir = ext_bundle_path.parent
-        else:
-            # Fallback: assume parquet is in Phase 4 bundle dir (legacy).
-            extract_dir = Path(bundle_path).parent
+        if not extract_bundle_rel:
+            raise SystemExit(
+                f"bundle missing extract_bundle_path (sha={args.bundle_sha[:12]})"
+            )
+        ext_bundle_path = Path(extract_bundle_rel)
+        if not ext_bundle_path.is_absolute():
+            ext_bundle_path = project_root / ext_bundle_path
+        extract_dir = ext_bundle_path.parent
         deploy_fold_path = Path(deploy_fold['parquet_path'])
         if not deploy_fold_path.is_absolute():
             deploy_fold_path = extract_dir / deploy_fold_path

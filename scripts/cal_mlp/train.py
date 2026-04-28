@@ -195,7 +195,12 @@ class Phase4Dataset(Dataset):
     """Wraps a normalized fold DataFrame + ticker vocab + per-cell weights.
     __getitem__ returns dict with FORWARD_KEYS + 'outcome' + 'w_cell'."""
 
-    def __init__(self, df: pd.DataFrame, vocab: dict, w_cell_lookup: np.ndarray):
+    def __init__(self, df: pd.DataFrame, vocab: dict,
+                 w_cell_lookup: Optional[np.ndarray] = None):
+        """R3#C1: w_cell_lookup is optional for inference-only callers.
+        When None, defaults to zeros[16] (no per-cell weighting at inference)."""
+        if w_cell_lookup is None:
+            w_cell_lookup = np.zeros(16, dtype=np.float32)
         self.df = df.reset_index(drop=True)
         self.vocab = vocab
         self.w_cell_lookup = torch.from_numpy(w_cell_lookup.astype(np.float32))
