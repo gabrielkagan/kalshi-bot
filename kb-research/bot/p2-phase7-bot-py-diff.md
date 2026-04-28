@@ -7,12 +7,19 @@
 ## Recommended workflow
 
 1. Review this diff against current bot.py.
-2. Run `/ultrareview` on the rebuild branch.
-3. Apply the edits as ONE commit.
-4. Verify the parity-assert log line `[CALMLP_PARITY] N constants verified` (N is the dynamic _check() count — currently 17 with the R-p7-r3#M2 STC_SIZING_SCALER_ENABLED addition; will rise as more parity vectors land) at startup.
-5. Verify `bot_startup_log` table has a row with `parity_check_status='passed'`.
-6. Initial deploy: `CALMLP_ENABLED=0` env var to keep calibrator off until shadow data accumulates.
-7. After 24-48h of shadow data + spot-checks: flip `CALMLP_ENABLED=1`.
+2. **Pre-deploy validation** (R-p7-r12 + R-p7-coldboot follow-up):
+   - `python3 -m pytest tests/test_cal_mlp_invariants.py -x` — 17 stdlib regression
+     tests covering every CRITICAL caught during the Apr 28 adversarial-review
+     session. Runs locally OR on VPS in <1s.
+   - `python3 scripts/cal_mlp/smoke_check.py` — 6 end-to-end synthetic-data
+     checks. Requires the VPS env (torch + pandas + pyarrow + psutil). Exit
+     0 → safe to proceed; exit 1/3 → read traceback, do NOT apply bot.py edits.
+3. Run `/ultrareview` on the rebuild branch.
+4. Apply the edits as ONE commit.
+5. Verify the parity-assert log line `[CALMLP_PARITY] N constants verified` (N is the dynamic _check() count — currently 17 with the R-p7-r3#M2 STC_SIZING_SCALER_ENABLED addition; will rise as more parity vectors land) at startup.
+6. Verify `bot_startup_log` table has a row with `parity_check_status='passed'`.
+7. Initial deploy: `CALMLP_ENABLED=0` env var to keep calibrator off until shadow data accumulates.
+8. After 24-48h of shadow data + spot-checks: flip `CALMLP_ENABLED=1`.
 
 ## Edit 1 — top-of-file imports (after existing imports, ~line 100)
 
