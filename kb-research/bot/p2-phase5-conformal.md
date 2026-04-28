@@ -72,7 +72,7 @@ bleed_fallback_quantiles = {
 
 If `key_axes` ends up empty (all dimensions merged), the bleed fallback is the merged-cells quantile across price_tier=3, stc_bucket=2 regardless of vol_regime.
 
-`bleed_collapsed_by_merge: bool` flag in the artifact records whether collapse fired.
+`bleed_collapsed_by_merge_per_vr: dict[str, bool]` is the source of truth (per-vol_regime granularity, R1#C5). The legacy `bleed_collapsed_by_merge: bool` is also emitted for Phase 6 already-rebuilt validate.py back-compat (validate.py:242 reads it); derived as `any(bleed_collapsed_by_merge_per_vr.values())`. Both fields are written; lookup chain consults `_per_vr` for per-row decisions.
 
 ## Predictor interface (`SinglePredictor` and `EnsemblePredictor`)
 
@@ -109,6 +109,12 @@ Phase 6 A/B comparisons use this interface to swap base/challenger without code 
 ## `predict_with_interval` (the runtime API)
 
 ```python
+# R2#C3 + R4#C2: Python 3.9.6 — module top must have
+# `from __future__ import annotations` so PEP-585 generics + `|` union
+# work as forward-evaluated strings. Otherwise use Union/Tuple/List from typing.
+
+from __future__ import annotations  # required at module top
+
 class AuditDict(TypedDict):
     q_alpha: float
     half_width: float
@@ -246,24 +252,50 @@ return p_center, p_std, final_lo, final_hi
 ## `_helpers.py` API surface
 
 ```python
-# Functions Phase 6 (and Phase 7) imports from cal_mlp/_helpers.py:
+# Functions and constants Phase 4/6/7 import from cal_mlp/_helpers.py:
+
+# --- Constants (tuples / dicts; pure data) ---
+
+FORWARD_KEYS: tuple[str, ...] = (
+    'x_cont', 'x_missing',
+    'price_tier', 'stc_bucket', 'vol_regime_int', 'side_int',
+    'ticker_id', 'logit_raw_prob_clipped',
+)
+"""R-p4-spec-r3#C3: ordered keys for the Phase 4 model forward signature.
+Phase 7 bot.py constructs its inference batch dict with EXACTLY these keys."""
+
+# --- Probability helpers ---
 
 def market_implied_prob_yes(entry_price_cents: int, side: str) -> float:
     """For YES side: breakeven = price/100. For NO side: breakeven = 1 - price/100.
     The 'price' is the YES ask in cents; trades on YES win at $1 - $price."""
 
-def predict_with_interval(...) -> tuple: ...   # see above
+def predict_with_interval(...) -> InferenceReturn | AuditReturn: ...   # see above
 
-def lookup_cell_quantile(...) -> tuple: ...    # see above
+def lookup_cell_quantile(...) -> tuple[Optional[float], list[str]]: ...   # see above
+
+# --- Stats ---
 
 def wilson_ci(n_success: int, n_total: int, z: float = 1.96) -> tuple[float, float]:
     """80% CI on a binomial proportion; lower/upper bounds. n_total=0 → (0, 1)."""
 
+# --- I/O ---
+
 def fsync_directory(path: Path) -> None:
     """fsync a directory file descriptor for atomicity guarantees."""
+
+# --- SHA chain (R-p4-spec-r2#C2) ---
+
+def compute_extract_logical_sha(audit_json: dict, normstats_per_fold: list[dict]) -> str:
+    """Stable across pyarrow upgrades. Operates on logical content only:
+    sorted normstats values per fold + per_cell counts + n_train/cal/test.
+    Phase 4 computes at bundle-load; Phase 5/7 recompute byte-identically
+    for verification. Function body locked in Phase 4 spec.
+    Reads transforms from normstats['transforms'] (top-level), per-column
+    `_no_zscore` flag from normstats['stats'][col]."""
 ```
 
-These functions are pure (no I/O except fsync_directory) and have no torch dependency. Phase 7 imports them at bot startup.
+These functions are pure (no I/O except `fsync_directory`) and have no torch dependency. Phase 4 imports `FORWARD_KEYS` + `compute_extract_logical_sha`. Phase 6 imports the probability/stats helpers. Phase 7 imports all of them at bot startup.
 
 ## `conformal.py` — fit + bundle write
 
@@ -419,7 +451,7 @@ class Phase5SchemaError(Phase5Error): exit_code = 6
 
 ## Open questions for adversarial review
 
-1. `ENSEMBLE_STD_MULTIPLIER = 0.5` — heuristic. Should it be data-derived (e.g., calibrated on cal residuals so coverage hits exactly 1-α)?
+1. ~~`ENSEMBLE_STD_MULTIPLIER = 0.5`~~ — REMOVED per R1#C3 + R2#C5 (broke validity). If a future amendment reintroduces σ-aware widths via normalized residuals, the multiplier reappears as a refit-time parameter.
 2. `N_CELL_FLOOR = 20` — below this, fall back to global. Is 20 enough for the conformal quantile to be stable? Theoretically, 80th percentile on n=20 has ±2 quantile-rank uncertainty.
 3. Bleed collapse-by-merge — currently only `key_axes=['vol_regime']` is implemented. What about price_tier or stc collapse if bleed cell is empty even after vol_regime merge?
 4. `market_blend_w` precedence — Phase 6 already implements CLI > ENV > market_config > bundle. Phase 5 just reads market_config.py at fit time and records source. Phase 6 may override at validation time. Verify cross-phase consistency.

@@ -39,7 +39,7 @@ Paths are anchored via `Path(__file__).resolve().parents[2]` (project_root) when
 ## Outputs
 
 - `data/cal_mlp/<asset>/validation_audit_v<art_tag>_<conformal_sha[:8]>.json` — diagnostic counters + ship_recommendation
-- `reports/p2_validation_<asset>_<art_tag>_<conformal_sha[:8]>.md` — 10-section human-readable report
+- `reports/p2_validation_<asset>_<art_tag>_<conformal_sha[:8]>.md` — 7-section human-readable report (R1#C4)
 - Atomic-bundle write: report tmp first, then audit JSON tmp + `os.replace`, then report `os.replace`. Bundle = audit+report; failure to write report unlinks audit (never publishes one without the other).
 
 ## Lock domain
@@ -67,6 +67,7 @@ def stat(d):
 
 - `#1 brier_band[<band>]`: `n >= 150` AND `ci_hi > 0.005` (degradation upper bound positive at α=0.05).
 - `#2 A50 inequality`: `d_[0.96+] ≤ d_[0.85, 0.92)` on point estimates. The bleed band must improve at least as much as the body band.
+- `#3` — **RETIRED** during R3 spec convergence (slot intentionally vacant; do not renumber). Original draft had a per-band MC-uncertainty check; subsumed by ensemble-std handling in Phase 5.
 
 **Soft-flag:** `n < 150` AND `point > 0.005` — degradation below power floor; manual_review.
 **Soft-flag:** `n_[0.96+] < 20` — A50 unverifiable (insufficient bleed-band data).
@@ -147,12 +148,12 @@ This section is the doc-drift contract. Phase 7 startup parity-asserts each cons
 | `MAX_RISK_PER_TRADE` | `config.py:148` | `cal_mlp/sizing.py` |
 | `STC_SIZING_SCALER_KNEE` | `bot.py:897` | `cal_mlp/sizing.py` |
 | `MIN_EDGE_BY_PRICE` | `bot.py:1180` (6-tier fractions) | `cal_mlp/sim_pnl.py` |
-| `WEEKEND_EDGE_DISCOUNT/FLOOR/HOURS` | `bot.py:853-864` | `cal_mlp/sim_pnl.py` |
+| `WEEKEND_EDGE_DISCOUNT/FLOOR` | `bot.py:853-864` | `cal_mlp/sim_pnl.py` (R1#C2: no `WEEKEND_HOURS` constant — gating uses `is_weekend` flag, not hour bounds) |
 | `OVERNIGHT_*` | `bot.py:861-864 + 12606` | `cal_mlp/sim_pnl.py` |
 | `HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES` | `bot.py:1213-1226` (4 strategies) | `cal_mlp/sim_pnl.py` |
 | `STC_EXTENDED_PER_ASSET_FLOOR` | `bot.py:241-244` | `cal_mlp/sim_pnl.py` |
 | `STC_EXTENDED_BUFFER_RESCUE` | `bot.py:238` | `cal_mlp/sim_pnl.py` |
-| `ASSET_FLOORS` (per-asset min entry) | `bot.py:219-225` | `cal_mlp/features.py` |
+| `ASSET_FLOORS` (per-asset min entry) | `bot.py:219-225` | `cal_mlp/features.py` (canonical); `sim_pnl.py:232 PER_ASSET_MIN_ENTRY_PRICE` is a pre-rebuild duplicate that should be replaced with an import from features.py — R1#C1 cleanup TODO |
 | `RAW_PROB_CLIP_EPS` | this project (1e-6) | `cal_mlp/features.py` |
 | `SETTLEMENT_WHITELIST` | `bot.py:4351` | `cal_mlp/features.py` |
 | Strategy taker-only set | bot.py STRATEGY_CLAMP_POLICY 1583-1623 | `cal_mlp/sim_pnl.py` (only MAKER_PATIENT is maker) |
@@ -187,12 +188,13 @@ Uses `stats.escalate_n_if_close(margin, current_n) → (target_n, abstain)`.
   "market_blend_w_drift": false,
   "brier_per_band": {<band>: {n, point, ci_lo, ci_hi, mc_se, ship_blocker_active, ship_blocker_fires}},
   "coverage_per_cell": [{cell_kind, price_tier, stc_bucket, vol_regime, n, n_covered, n_below_lo,
-                          n_above_hi, n_clipped, coverage, coverage_wilson_lo, coverage_wilson_hi,
-                          clip_rate, clip_wilson_hi, frac_below_lo, frac_above_hi}],
+                          n_above_hi, n_clipped, n_dispatch_miss, coverage, coverage_wilson_lo,
+                          coverage_wilson_hi, clip_rate, clip_wilson_hi, frac_below_lo, frac_above_hi}],
   "coverage_summary": {n_total_test_rows, n_eval_cells, n_total_dispatch_miss},
   "sim_pnl": {
     "block_off": {total_pessimistic_30d, total_modeled_30d, per_asset/band/strategy_pnl_30d,
-                   tier_migration, worst_7d_drawdown_cents, daily_pnl, daily_pnl_count},
+                   tier_migration, worst_7d_drawdown_cents, worst_7d_drawdown_prod_cents,
+                   daily_pnl, daily_pnl_count},
     "block_on": {...},
     "tier_migration": {tiers, risk_fractions, counts, pre_weighted_avg_risk, post_weighted_avg_risk, drop_pct},
     "weighted_avg_risk_drop": ...,

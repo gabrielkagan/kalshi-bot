@@ -112,14 +112,20 @@ def _calmlp_parity_assert():
            HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES,
            _CAL_HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES)
 
+    # R3#C2: write bot_startup_log row BEFORE SystemExit on failure too,
+    # so operators can distinguish "skipped" (no row) from "failed" (row).
     if failures:
+        self.conn.execute(
+            "INSERT INTO bot_startup_log (parity_check_status, ts, pid) VALUES (?, ?, ?)",
+            ('failed', datetime.utcnow().isoformat(), os.getpid()),
+        )
+        self.conn.commit()
         raise SystemExit("CALMLP_PARITY FAIL:\n  " + "\n  ".join(failures))
 
     logging.info("[CALMLP_PARITY] %d constants verified", 14)
-    # R1#C7: write sentinel to bot_startup_log so operator can detect skipped harness.
     self.conn.execute(
-        "INSERT INTO bot_startup_log (parity_check_status, ts) VALUES (?, ?)",
-        ('passed', datetime.utcnow().isoformat()),
+        "INSERT INTO bot_startup_log (parity_check_status, ts, pid) VALUES (?, ?, ?)",
+        ('passed', datetime.utcnow().isoformat(), os.getpid()),
     )
     self.conn.commit()
 
@@ -138,11 +144,40 @@ Phase 7 adds a NEW STATIC METHOD `PositionSizer.compute_for_15m_main_path(...)` 
 ```python
 # bot.py addition: a static reimplementation of the 15M main path math.
 # DO NOT use in production trading; this exists ONLY for parity-assert.
+# R3#C1: helpers defined inline (not external symbols).
+
+# Helper: per-asset cap dict (built from bot-globals BTC_MAX_RISK_PER_TRADE etc.).
+ASSET_MAX_RISK_PER_TRADE_DICT = {
+    'BTC': BTC_MAX_RISK_PER_TRADE,
+    'ETH': ETH_MAX_RISK_PER_TRADE,
+    'SOL': SOL_MAX_RISK_PER_TRADE,
+    'XRP': XRP_MAX_RISK_PER_TRADE,
+}
+
+def _bot_lookup_tier(fee_adj_edge_frac: float) -> tuple[int, float]:
+    """Mirrors config.py SIZING_TIERS lookup."""
+    for i, (floor, risk) in enumerate(SIZING_TIERS):
+        if fee_adj_edge_frac >= floor:
+            return (i, risk)
+    return (-1, 0.0)
+
+def _bot_drawdown_scaler(current_balance_cents: int, hwm_cents: int) -> float:
+    """Mirrors config.py drawdown ladder."""
+    if hwm_cents <= 0:
+        return 1.0
+    ratio = current_balance_cents / hwm_cents
+    if ratio < DRAWDOWN_HALT_THRESHOLD:
+        return DRAWDOWN_HALT_FLOOR
+    if ratio < DRAWDOWN_QUARTER_THRESHOLD:
+        return 0.25
+    if ratio < DRAWDOWN_HALF_THRESHOLD:
+        return 0.50
+    return 1.0
+
 @staticmethod
 def compute_for_15m_main_path(fee_adj_edge_frac: float, available_balance_cents: int,
                                 entry_price_cents: int, current_balance_cents: int,
                                 hwm_cents: int, seconds_to_close: float, asset: str) -> dict:
-    # Tier lookup (config.py SIZING_TIERS, fee-adjusted-edge frac)
     tier_idx, risk_fraction = _bot_lookup_tier(fee_adj_edge_frac)
     if tier_idx < 0:
         return {'contracts': 0}
@@ -182,11 +217,17 @@ def _calmlp_sizing_parity_assert():
         if expected is not None and cal_mlp_result.contract_count != expected:
             failures.append(f"vec={vec}: cal_mlp={cal_mlp_result.contract_count} expected={expected}")
     if failures:
+        # R3#C2: log failure row before SystemExit.
+        self.conn.execute(
+            "INSERT INTO bot_startup_log (sizing_parity_status, ts, pid) VALUES (?, ?, ?)",
+            ('failed', datetime.utcnow().isoformat(), os.getpid()),
+        )
+        self.conn.commit()
         raise SystemExit("CALMLP_SIZING_PARITY FAIL:\n  " + "\n  ".join(failures))
     logging.info("[CALMLP_PARITY] sizing parity verified across 8 vectors")
     self.conn.execute(
-        "INSERT INTO bot_startup_log (sizing_parity_status, ts) VALUES (?, ?)",
-        ('passed', datetime.utcnow().isoformat()),
+        "INSERT INTO bot_startup_log (sizing_parity_status, ts, pid) VALUES (?, ?, ?)",
+        ('passed', datetime.utcnow().isoformat(), os.getpid()),
     )
     self.conn.commit()
 
@@ -305,8 +346,15 @@ class CalMLPPredictor:
 The bot already has `ProbabilityEngine.compute(...) → raw_prob`. Phase 7 adds a layer:
 
 ```python
-# In ScanEngine._evaluate_15m_candidate, after raw_prob is computed:
-if raw_prob is not None and CALMLP_ENABLED:
+# In ScanEngine._evaluate_15m_candidate, after raw_prob is computed.
+# R3#C3: every skip path sets `cal_mlp_skipped_reason` from the locked enum.
+calmlp_enabled_now = (os.environ.get('CALMLP_ENABLED', '1') == '1')
+
+if raw_prob is None:
+    kwargs['cal_mlp_skipped_reason'] = 'raw_prob_null'
+elif not calmlp_enabled_now:
+    kwargs['cal_mlp_skipped_reason'] = 'env_disabled'
+else:
     try:
         calibrator = _calmlp_predictors[asset]
         cal_prob, ens_std, final_lo, final_hi = calibrator.predict(
@@ -318,14 +366,21 @@ if raw_prob is not None and CALMLP_ENABLED:
         )
         # Replace calibrated_prob downstream
         final_prob = cal_prob
-        # Annotate the eval_opportunity row for audit
         kwargs['cal_mlp_p_mean'] = cal_prob
         kwargs['cal_mlp_p_std'] = ens_std
         kwargs['cal_mlp_final_lo'] = final_lo
         kwargs['cal_mlp_final_hi'] = final_hi
+        kwargs['cal_mlp_train_id'] = calibrator.train_id
     except CalMLPError as e:
+        # Soft errors: structured `code` from the enum.
         logging.warning("[CALMLP] %s asset=%s; falling back to raw_prob", e, asset)
-        # Skip calibration; existing raw_prob path runs unchanged.
+        kwargs['cal_mlp_skipped_reason'] = e.code
+    except MemoryError:
+        logging.exception("[CALMLP] OOM during predict; falling back")
+        kwargs['cal_mlp_skipped_reason'] = 'predict_oom'
+    except RuntimeError:
+        logging.exception("[CALMLP] runtime error during predict; falling back")
+        kwargs['cal_mlp_skipped_reason'] = 'predict_runtime'
 ```
 
 `CALMLP_ENABLED` is the env-var kill switch (`os.environ.get('CALMLP_ENABLED', '1') == '1'`). Default ON. Set to '0' to instantly disable without bot restart on next eval.
