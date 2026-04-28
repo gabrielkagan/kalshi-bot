@@ -368,7 +368,11 @@ def main() -> None:
     asset_data_dir = data_dir / args.asset
     asset_data_dir.mkdir(parents=True, exist_ok=True)
 
-    lock_path = models_dir / f".cal_mlp_{args.asset}.lock"
+    # R-p4-spec-r2#C3: lock at per-asset directory (parallel to Phase 2's
+    # data/cal_mlp/<asset>/.extract.lock). Old path was models/.cal_mlp_<asset>.lock.
+    asset_models_dir = models_dir / f"cal_mlp_{args.asset}"
+    asset_models_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = asset_models_dir / ".lock"
     with acquire_shared_lock(lock_path, args.asset):
         bundle_path = find_bundle_by_sha(models_dir, args.asset, args.bundle_sha)
         with open(bundle_path) as f:
@@ -456,13 +460,25 @@ def main() -> None:
 
         predictor = load_predictor(bundle, device)
 
-        fold0 = next((r for r in bundle['eval_fold_artifacts'] if r['fold'] == 0), None)
-        if fold0 is None:
-            raise SystemExit("bundle has no fold-0 record")
-        fold0_path = Path(fold0['parquet_path'])
-        if not fold0_path.exists():
-            raise SystemExit(f"fold-0 parquet missing at {fold0_path}")
-        fold_df = pd.read_parquet(fold0_path, engine='pyarrow', dtype_backend='pyarrow')
+        # R-p5-spec-r1#C2: read deploy_fold_idx (= K-1) per Phase 3/5 lock —
+        # NOT fold==0. fold==0 is the OLDEST test window in walk-forward; the
+        # deployable model is fit on K-1's CAL split.
+        deploy_fold_idx = bundle.get('deploy_fold_idx')
+        if deploy_fold_idx is None:
+            # Fallback for Phase 4 bundles missing the field: use last fold.
+            deploy_fold_idx = max(r['fold'] for r in bundle['eval_fold_artifacts'])
+        deploy_fold = next(
+            (r for r in bundle['eval_fold_artifacts'] if r['fold'] == deploy_fold_idx),
+            None,
+        )
+        if deploy_fold is None:
+            raise SystemExit(f"bundle has no fold-{deploy_fold_idx} record")
+        deploy_fold_path = Path(deploy_fold['parquet_path'])
+        if not deploy_fold_path.is_absolute():
+            deploy_fold_path = Path(bundle_path).parent / deploy_fold_path
+        if not deploy_fold_path.exists():
+            raise SystemExit(f"deploy fold {deploy_fold_idx} parquet missing at {deploy_fold_path}")
+        fold_df = pd.read_parquet(deploy_fold_path, engine='pyarrow', dtype_backend='pyarrow')
         test_df = fold_df[fold_df['split'] == 'test'].copy()
         if test_df['outcome'].isna().any():
             raise SystemExit("test split has NaN outcomes — Phase 2 contract violation")

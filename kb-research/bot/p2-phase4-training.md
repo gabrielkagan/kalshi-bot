@@ -65,6 +65,21 @@ with acquire_shared_lock(extract_dir / '.extract.lock'):
 
 Phase 4 MUST acquire locks in this order: `extract_lock` (SHARED on `data/cal_mlp/<asset>/.extract.lock`) → `models_lock` (EXCLUSIVE on `models/cal_mlp_<asset>/.lock`). Both held until end of run. No code path may take models_lock first; future writers MUST honor this.
 
+## Cross-phase migration: lock-path move (R2#C3)
+
+R1-ops#C9 moves the model lock from `models/.cal_mlp_<asset>.lock` (sibling of models/) to `models/cal_mlp_<asset>/.lock` (inside per-asset dir). Phase 6's already-rebuilt `validate.py:367` currently reads the OLD path:
+
+```python
+lock_path = models_dir / f".cal_mlp_{args.asset}.lock"
+```
+
+**Required in the SAME commit as Phase 4 cutover:**
+1. Update `validate.py:367` to read `models_dir / f"cal_mlp_{args.asset}" / ".lock"`.
+2. Add a CI grep test: `grep -r "\.cal_mlp_.*\.lock" scripts/cal_mlp/` returns no matches outside the per-asset directory pattern.
+3. Block Phase 4 deploy until validate.py is patched (parity-assert at startup verifies the lock file is at the new location).
+
+If split across commits, Phase 4 (writer) and legacy Phase 6 (reader) hold non-overlapping locks → no mutual exclusion → readers observe partially-renamed train_dirs.
+
 ## Per-fold per-member training loop
 
 ```
@@ -139,6 +154,8 @@ for fold in args.folds_to_train:
                     break  # early stop
 
         # Save best member checkpoint AS TMP (R1-ops#C2: rename batch happens later).
+        # R2#C1: marker is also a tmp; renamed in step 7 BEFORE the checkpoint
+        # so the invariant "checkpoint final ⇒ marker final" holds.
         member_final = train_dir_phase4 / f"fold{fold}_member{member}.pt"
         member_tmp = member_final.with_suffix(
             f".pt.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
@@ -147,7 +164,7 @@ for fold in args.folds_to_train:
             torch.save(best_state_dict, f)
             f.flush()
             os.fsync(f.fileno())
-        # R1-train#C5: write per-checkpoint resume marker (sibling tmp).
+        # R1-train#C5: per-checkpoint resume marker.
         marker_payload = {
             'cfg_fp': cfg_fp, 'extract_bundle_logical_sha256': extract_bundle_logical_sha256,
             'base_seed': args.base_seed, 'model_definition_sha256': MODEL_DEF_SHA,
@@ -155,12 +172,11 @@ for fold in args.folds_to_train:
             'best_cal_brier_w': best_cal_brier_w,
             'early_stop_epoch': epoch + 1,
         }
-        marker_tmp = (train_dir_phase4 / f"fold{fold}_member{member}.marker.json").with_suffix(
-            f".json.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-        )
-        atomic_write_json(marker_payload, marker_tmp.parent / f"fold{fold}_member{member}.marker.json")
+        marker_final = train_dir_phase4 / f"fold{fold}_member{member}.marker.json"
+        marker_tmp = write_json_tmp(marker_payload, marker_final)  # writes .tmp-..., NO rename
+        # Marker renamed BEFORE checkpoint (step 7 ordering); resume invariant holds.
+        pending_renames.append((marker_tmp, marker_final))
         pending_renames.append((member_tmp, member_final))
-        # marker_tmp's rename added by atomic_write_json above
 
         # Compute per-row predictions on cal + test for ensembling
         model.load_state_dict(best_state_dict)
@@ -263,7 +279,33 @@ models/
 
 **R1-ops#C10 path resolution:** Phase 4's bundle uses BASENAMES (relative to bundle's directory) for in-train_id artifacts and `project_root`-relative paths for cross-bundle references (Phase 2 extract bundle). Phase 5/6 readers resolve via `Path(__file__).resolve().parents[2]` (already applied in validate.py per R-p2-impl-r3#C2). Worktree-move robust: re-running from a relocated checkout works without bundle rewriting.
 
-**R1-train#C7 logical sha:** `extract_bundle_logical_sha256` covers the LOGICAL content (canonical-sorted normstats values + per-cell counts + n_train/cal/test) — stable across pyarrow upgrades. The bit-level `extract_bundle_sha256` is informational only. Phase 7 verifies logical sha at deploy.
+**R1-train#C7 logical sha — locked computation (R2#C2):** `extract_bundle_logical_sha256` is computed by Phase 4 at bundle-load time (under `LOCK_SH` on extract_lock). Phase 2 does NOT emit it. The function is locked here so Phase 5/7 can recompute byte-identically:
+
+```python
+def compute_extract_logical_sha(audit_json: dict, normstats_per_fold: list[dict]) -> str:
+    """Stable across pyarrow upgrades. Operates on logical content only:
+    sorted normstats values per fold + per_cell counts + n_train/cal/test."""
+    canonical = {
+        'normstats': [
+            {col: {'mean': stats['mean'], 'std': stats['std'], 'transform': stats.get('transform', 'identity')}
+             for col, stats in sorted(ns['stats'].items())}
+            for ns in normstats_per_fold
+        ],
+        'per_fold': [
+            {'fold': pf['fold'],
+             'n_train': pf['n_train'], 'n_cal': pf['n_cal'], 'n_test': pf['n_test'],
+             'per_cell': {k: {'n_train': v['n_train'], 'n_cal': v['n_cal'], 'n_test': v['n_test'],
+                              'train_positive_rate': v['train_positive_rate'],
+                              'train_mean_method_output': v['train_mean_method_output']}
+                          for k, v in sorted(pf['per_cell'].items())}}
+            for pf in audit_json['per_fold']
+        ],
+    }
+    raw = json.dumps(canonical, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+    return hashlib.sha256(raw).hexdigest()
+```
+
+Phase 5/7 import this function from `cal_mlp/_helpers.py` and recompute. Mismatch → `Phase{5,7}SchemaError`.
 
 **R1-train#C6 Phase 7 verification contract:** at boot, bot.py MUST recompute and verify (a) `phase4_bundle_sha = sha256(model_identity:normstats_concat:phase4)`, (b) `phase5_bundle_sha = sha256(phase4_bundle_sha:conformal_sha)`. Both assertions are hard ship-blockers (refuse to start; alert).
 

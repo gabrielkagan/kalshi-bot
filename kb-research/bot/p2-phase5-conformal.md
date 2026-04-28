@@ -36,10 +36,10 @@ Computed on fold K-1's CAL split rows. Per row:
 
 ## Mondrian cells (per-cell quantiles)
 
-The conformal partition matches Phase 2's bucketization:
+**R1#C1 LOCKED 3D partition** — Phase 6 already-rebuilt code keys cells by `(price_tier, stc_bucket, vol_regime)`:
 
 ```python
-cells = {(price_tier, stc_bucket): residuals_in_this_cell}    # 4 × 4 = 16 cells max
+cells = {(price_tier, stc_bucket, vol_regime): residuals_in_this_cell}   # 4 × 4 × 2 = 32 cells max
 ```
 
 For each cell, compute the empirical `(1 - α)`-quantile:
@@ -150,22 +150,34 @@ def lookup_cell_quantile(
             chain.append(f"bleed[{key}]")
             return q, chain
 
-    # 2. Direct (price_tier, stc_bucket, vol_regime) lookup
-    direct_key = f"({pt},{sb},{vr})"
-    cell = next((c for c in artifact['cells'] if c['key'] == direct_key), None)
-    if cell and cell.get('n_cal') >= N_CELL_FLOOR_INFER:
-        chain.append(f"mondrian[{direct_key}]")
+    # 2. Direct (price_tier, stc_bucket, vol_regime) lookup.
+    # R1#C11: drop the redundant string-key field; lookup uses structured fields only.
+    cell = next(
+        (c for c in artifact['cells']
+         if c['price_tier'] == pt and c['stc_bucket'] == sb and c['vol_regime'] == vr),
+        None,
+    )
+    # R1#C4: cells with n_cal < N_CELL_FLOOR are NOT emitted at fit time;
+    # if a cell entry exists, it has a valid q_alpha by construction.
+    if cell:
+        chain.append(f"mondrian[({pt},{sb},{vr})]")
         return cell['q_alpha'], chain
 
-    # 3. Merged-axes fallback (collapse vol_regime if its axis was merged at fit)
+    # 3. Merged-axes fallback. R1#C6 LOCKED axis-name vocabulary:
+    # merged_axes ⊆ {'price_tier', 'stc', 'vol_regime'} (note 'stc' not 'stc_bucket').
     merged = artifact.get('merged_axes', [])
     fallback_pt = 0 if 'price_tier' in merged else pt
     fallback_sb = 0 if 'stc' in merged else sb
     fallback_vr = 0 if 'vol_regime' in merged else vr
-    fallback_key = f"({fallback_pt},{fallback_sb},{fallback_vr})"
-    fb_cell = next((c for c in artifact['cells'] if c['key'] == fallback_key), None)
+    fb_cell = next(
+        (c for c in artifact['cells']
+         if c['price_tier'] == fallback_pt
+            and c['stc_bucket'] == fallback_sb
+            and c['vol_regime'] == fallback_vr),
+        None,
+    )
     if fb_cell:
-        chain.append(f"merged[{fallback_key}]")
+        chain.append(f"merged[({fallback_pt},{fallback_sb},{fallback_vr})]")
         return fb_cell['q_alpha'], chain
 
     # 4. Global fallback
@@ -177,26 +189,46 @@ def lookup_cell_quantile(
     return None, chain
 ```
 
-### Final interval
+### Final interval (R1#C3 + R1#C10 — REVISED)
+
+The earlier `q_alpha + ENSEMBLE_STD_MULTIPLIER * p_std` form sacrificed validity. Locked form:
 
 ```python
-breakeven = market_implied_prob_yes(entry_price_cents, side)
-# market_blend_w blends p_pred with breakeven for ensemble-noisy rows
-p_blend = market_blend_w * breakeven + (1 - market_blend_w) * p_pred
+breakeven = market_implied_prob_for_side(entry_price_cents, side)   # R1#C10 rename
+# market_blend_w default = 0 (production); >0 invalidates the conformal interval per R1#C10.
+p_center = market_blend_w * breakeven + (1 - market_blend_w) * p_pred
 
 q_alpha, chain = lookup_cell_quantile(artifact, row_features, mode)
 if q_alpha is None:
-    return p_blend, p_std, None, None    # Phase 6 ship-blocker #7
+    return p_center, p_std, None, None    # Phase 6 ship-blocker #7
 
-# Conformal interval; expand by ensemble std (Phase 6 R-p6-impl-2 lock)
-sigma_term = ENSEMBLE_STD_MULTIPLIER * p_std    # default multiplier = 0.5
-half_width = q_alpha + sigma_term
-final_lo = max(0.0, p_blend - half_width)
-final_hi = min(1.0, p_blend + half_width)
-return p_blend, p_std, final_lo, final_hi
+# Pure conformal width (locked validity). Additive σ inflation is dropped
+# from the runtime path — was breaking marginal coverage. Audit-mode kept
+# as an option for ablation only.
+half_width = q_alpha
+final_lo_raw = p_center - half_width
+final_hi_raw = p_center + half_width
+clipped_lo = final_lo_raw < 0
+clipped_hi = final_hi_raw > 1
+final_lo = max(0.0, final_lo_raw)
+final_hi = min(1.0, final_hi_raw)
+
+if mode == 'audit':
+    return p_center, p_std, final_lo, final_hi, {
+        'q_alpha': q_alpha, 'half_width': half_width,
+        'clipped_lo': clipped_lo, 'clipped_hi': clipped_hi,
+        'chain': chain, 'p_pred_raw': p_pred,
+    }
+return p_center, p_std, final_lo, final_hi
 ```
 
-`ENSEMBLE_STD_MULTIPLIER = 0.5` is locked (Phase 5 audit-mode optionally allows tuning to study width trade-off vs coverage).
+**R1#C3:** the additive σ form is REMOVED from production path (sacrificed validity). Phase 6 verifies coverage empirically. If we want σ-aware widths in a future amendment, refit on normalized scores `score = |p̂-y| / max(σ̂, σ_floor)` — that preserves validity. Phase 5 fits on raw scores only for now.
+
+**R1#C7:** `mode='audit'` returns a 5-tuple with the audit dict; Phase 6 reads `clipped_lo/clipped_hi/q_alpha` from there instead of duplicating the math.
+
+**R1#C8 (market_blend_w source-of-truth):** the bundle's `market_blend_w` is INFORMATIONAL — recorded for drift detection. Production inference re-reads `market_config.MARKET_CONFIGS['15m'].market_blend_w` LIVE. Bundle's value is never used at inference except for the drift check Phase 6 emits as a ship-blocker.
+
+**R1#C10 (blend invalidates conformal):** when `market_blend_w > 0`, the conformal interval `[p_center ± q_alpha]` is centered on a blended value but `q_alpha` was fit on `|p_pred - y|` residuals, NOT `|p_center - y|`. Validity claim breaks. Production default = 0; runtime override emits a soft-flag. Future amendment: refit conformal on `|p_blend - y|` residuals if `market_blend_w > 0` is desired.
 
 ## `_helpers.py` API surface
 
@@ -268,10 +300,10 @@ def _load_normstats(path: Path, expected_sha: Optional[str] = None) -> dict:
   "model_definition_path": "...",
   "model_definition_sha256": "...",
 
-  "conformal_path": "/abs/path/conformal_artifact.json",
+  "conformal_path": "conformal_artifact.json",          // basename relative to bundle dir
   "conformal_sha256": "...",
-  "normstats_path": "/abs/path/normstats_fold2.json",   // fold K-1
-  "normstats_sha256": "...",
+  // R1#C17: normstats_path is NOT duplicated at top level. Phase 6 reads
+  // bundle['eval_fold_artifacts'][bundle['deploy_fold_idx']]['normstats_path'].
 
   "market_blend_w": 0.0,                     // resolved at fit time
   "market_blend_w_source": "market_config.py",
@@ -301,14 +333,16 @@ def _load_normstats(path: Path, expected_sha: Optional[str] = None) -> dict:
   },
   "cells": [
     {
-      "key": "(0,0,0)",
+      // R1#C11: structured fields only; no redundant string `key`.
       "price_tier": 0, "stc_bucket": 0, "vol_regime": 0,
       "n_cal": 184, "q_alpha": 0.121,
       "concentration_warning": false,
       "top_ticker_share": 0.04
     },
     ...
-  ]
+  ],
+  // R1#C5: bleed_collapsed_by_merge is per-vol_regime when partial.
+  "bleed_collapsed_by_merge_per_vr": {"0": false, "1": true}
 }
 ```
 
@@ -316,14 +350,25 @@ def _load_normstats(path: Path, expected_sha: Optional[str] = None) -> dict:
 
 ## Atomic write protocol
 
-1. mkdir `models/cal_mlp_<asset>_<train_id>/`
-2. Write conformal_artifact.json tmp + fsync
-3. Write phase5_bundle.json tmp + fsync
-4. Rename in order: conformal_artifact → phase5 bundle (LAST)
-5. fsync directory
-6. Update `models/CURRENT_<asset>` (text file, atomic via tmp)
+1. mkdir `models/cal_mlp_<asset>/<train_id>/` (Phase 4 already created; idempotent).
+2. Write `conformal_artifact.json` tmp + fsync.
+3. Write `phase5_bundle.json` tmp + fsync.
+4. Rename in order: conformal_artifact → phase5 bundle (LAST).
+5. fsync directory.
+6. Update `models/cal_mlp_<asset>/CURRENT` (text file, atomic via tmp).
 
-Same lock domain split as Phase 4: SHARED on extract_lock + EXCLUSIVE on models_lock.
+**R1#C12 (lock domain):** Phase 5 takes EXCLUSIVE on `models/cal_mlp_<asset>/.lock` ONLY. Does NOT take extract_lock SH — Phase 4's bundle SHA chain (`phase4_bundle_sha` includes `extract_bundle_logical_sha256`) is the integrity guarantee. If Phase 2 re-runs concurrently, Phase 5's loaded bundle still pins the correct artifact paths via SHA verification.
+
+## Validity assumptions (R1#C9)
+
+Mondrian split-conformal validity within each cell requires that cal residuals and test residuals be EXCHANGEABLE within that cell. With walk-forward folds (cal precedes test in time) and known regime drift (96¢ × 2-5min SOL bleed first detected Apr 26, 2026), within-cell stationarity is NOT guaranteed.
+
+**Compensating controls:**
+1. Phase 6 empirical-coverage check (cell-by-cell Wilson CI at α=0.20) is the post-hoc verification.
+2. When a cell's empirical Wilson_lo drops below `(1-α) - tol`, retrigger conformal fit on a more-recent CAL window (operator action).
+3. Phase 6 ship-blocker #4 fires on per-cell coverage shortfall; this is the load-bearing safety net.
+
+The exchangeability assumption is acknowledged here so Phase 6 reviewers know the conformal interval's validity is empirical (not theoretical) on this dataset.
 
 ## bundle_sha_v1 chain
 
@@ -331,7 +376,11 @@ Same lock domain split as Phase 4: SHARED on extract_lock + EXCLUSIVE on models_
 phase5_bundle_sha = sha256(f"{phase4_bundle_sha}:{conformal_sha256}".encode()).hexdigest()
 ```
 
-This extends Phase 4's `phase4_bundle_sha` (which itself was `sha256(model_id:normstats:phase4)`). Phase 6 verifies via a single sha256 by recomputing the chain.
+This extends Phase 4's `phase4_bundle_sha` (which itself was `sha256(model_id:normstats:phase4)`).
+
+**R1#C13 (verification ownership):** Phase 6 verifies the conformal artifact sha (`conformal_sha256`) against the file via `_verify_artifact_sha`, but does NOT recompute the chained `phase5_bundle_sha`. Chain verification is reserved for Phase 7 (bot.py boot — unattended); Phase 6 is operator-driven and the operator-supplied `--bundle-sha` is the trust anchor.
+
+Phase 7's contract (per Phase 4 R1#C6): at boot, recompute `phase4_bundle_sha = sha256(model_id:normstats:phase4)`, recompute `phase5_bundle_sha = sha256(phase4_bundle_sha:conformal_sha256)`, and assert match against `bundle['bundle_sha']`. Both are hard ship-blockers.
 
 ## Determinism
 
