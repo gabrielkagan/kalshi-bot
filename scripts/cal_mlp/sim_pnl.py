@@ -490,8 +490,13 @@ def run_sim_pnl(
     if challenger_bundle is not None and challenger_artifact is not None:
         try:
             from conformal import load_predictor as _load_pred, _load_normstats
-            # challenger_bundle should already have _bundle_dir set by caller
-            # (validate.py uses load_bundle_with_dir).
+            # R-p6-impl-r5#M3: defensive check at the sim_pnl boundary —
+            # challenger_bundle MUST be loaded via load_bundle_with_dir.
+            if '_bundle_dir' not in challenger_bundle:
+                raise RuntimeError(
+                    "challenger_bundle missing '_bundle_dir'; load via "
+                    "_helpers.load_bundle_with_dir, not json.load"
+                )
             ch_predictor = _load_pred(challenger_bundle, device)
             # Phase 4 bundle stores per-fold normstats under eval_fold_artifacts;
             # use deploy_fold_idx to find the right one.

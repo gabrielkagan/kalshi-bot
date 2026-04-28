@@ -243,10 +243,14 @@ def empirical_coverage(
     n_total = 0
     for _, row in df.iterrows():
         n_total += 1
+        # R-p6-impl-r5#C2: parquet has BOTH `vol_regime` (string: 'normal'/'elevated')
+        # and `vol_regime_int` (int 0/1). Conformal lookup uses the int. Reading
+        # `int(row['vol_regime'])` on the string raises ValueError on first
+        # 'elevated' row.
         row_features = {
             'price_tier': int(row['price_tier']),
             'stc_bucket': int(row['stc_bucket']),
-            'vol_regime': int(row['vol_regime']),
+            'vol_regime': int(row['vol_regime_int']),
         }
         is_bleed = (row_features['price_tier'] == 3 and row_features['stc_bucket'] == 2)
         if bleed_collapsed and is_bleed:
@@ -257,7 +261,7 @@ def empirical_coverage(
             merged = conformal_artifact['merged_axes']
             pt = 0 if 'price_tier' in merged else int(row['price_tier'])
             sb = 0 if 'stc' in merged else int(row['stc_bucket'])
-            vr = 0 if 'vol_regime' in merged else int(row['vol_regime'])
+            vr = 0 if 'vol_regime' in merged else int(row['vol_regime_int'])
             key = (pt, sb, vr)
         s = cell_stats[key]
         result = predict_with_interval(
@@ -367,10 +371,17 @@ def main() -> None:
 
     # R-p4-spec-r2#C3: lock at per-asset directory (parallel to Phase 2's
     # data/cal_mlp/<asset>/.extract.lock). Old path was models/.cal_mlp_<asset>.lock.
+    # R-p6-impl-r5#H2: also acquire extract_lock SH (outer, taken FIRST per
+    # train.py:562-564 ordering invariant) so the deploy-fold parquet and
+    # normstats files can't be replaced by a concurrent extract_data.py run
+    # mid-read. Lock domain split: extract (SH) wraps models (SH) for readers;
+    # writers take EX in the inverse order.
     asset_models_dir = models_dir / f"cal_mlp_{args.asset}"
     asset_models_dir.mkdir(parents=True, exist_ok=True)
+    extract_lock_path = asset_data_dir / ".extract.lock"
     lock_path = asset_models_dir / ".lock"
-    with acquire_shared_lock(lock_path, args.asset):
+    with acquire_shared_lock(extract_lock_path, args.asset), \
+         acquire_shared_lock(lock_path, args.asset):
         bundle_path = find_bundle_by_sha(models_dir, args.asset, args.bundle_sha)
         # R-impl-r2#C2: load_bundle_with_dir injects _bundle_dir for load_predictor.
         bundle = load_bundle_with_dir(bundle_path)
