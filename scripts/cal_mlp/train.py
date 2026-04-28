@@ -728,6 +728,11 @@ def run(args: argparse.Namespace) -> dict:
                         'train_id': train_id,
                         'fold': fold,
                         'member': member,
+                        # R-p4-r6#HIGH2: bumped after compute_cal_brier_weighted
+                        # denominator switched to sum-of-weights (was unweighted
+                        # count). Pre-2 markers have count-weighted Brier; mixing
+                        # them in resumed runs would silently corrupt audit metrics.
+                        'metric_version': 2,
                     }
                     resumed = False
                     if (args.allow_resume

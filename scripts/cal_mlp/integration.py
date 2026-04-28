@@ -154,7 +154,9 @@ CAL_MLP_COLUMNS = [
 def migrate_schema(conn) -> list:
     """Idempotent schema migration: PRAGMA table_info + explicit ADD COLUMN
     only for missing columns. Also creates bot_startup_log if absent.
-    Returns list of newly-added column names."""
+    Returns list of newly-added column names.
+    R-p7-r3#M7: WAL pre-check is also required here (third write site)."""
+    _verify_wal(conn)
     existing = {row[1] for row in conn.execute(
         "PRAGMA table_info(evaluated_opportunities)"
     ).fetchall()}
@@ -183,11 +185,19 @@ def migrate_schema(conn) -> list:
 # ---------------------------------------------------------------------------
 
 def _verify_wal(conn) -> None:
-    """R-p7-impl#C12: assert WAL + busy_timeout per CLAUDE.md anti-deadlock rules."""
+    """R-p7-impl#C12 + R-p7-r3#C2: assert WAL AND busy_timeout per CLAUDE.md
+    anti-deadlock rules. Both are required — busy_timeout governs whether
+    the connection waits for a lock or fails immediately."""
     mode = conn.execute("PRAGMA journal_mode").fetchone()
     if mode is None or str(mode[0]).lower() != 'wal':
         raise CalMLPSchemaError(
             f"connection journal_mode={mode}; CLAUDE.md requires WAL"
+        )
+    bt = conn.execute("PRAGMA busy_timeout").fetchone()
+    bt_ms = int(bt[0]) if bt else 0
+    if bt_ms < 10000:
+        raise CalMLPSchemaError(
+            f"connection busy_timeout={bt_ms}ms; CLAUDE.md requires ≥10000ms"
         )
 
 
@@ -202,7 +212,9 @@ def parity_assert(bot_globals: dict, conn) -> str:
     cmc = _import_cal_mlp_constants()
 
     failures = []
+    _check_count = [0]  # mutable counter for the closure
     def _check(label, expected, actual):
+        _check_count[0] += 1
         if expected != actual:
             failures.append(f"{label}: bot={expected!r} cal_mlp={actual!r}")
 
@@ -236,8 +248,10 @@ def parity_assert(bot_globals: dict, conn) -> str:
     _check("WEEKEND_EDGE_FLOOR", g['WEEKEND_EDGE_FLOOR'], cmc['WEEKEND_EDGE_FLOOR'])
     _check("OVERNIGHT_EDGE_DISCOUNT", g['OVERNIGHT_EDGE_DISCOUNT'], cmc['OVERNIGHT_EDGE_DISCOUNT'])
 
-    # STC scaler
+    # STC scaler (R-p7-r3#M2: bool also drives sizing parity)
     _check("STC_SIZING_SCALER_KNEE", g['STC_SIZING_SCALER_KNEE'], cmc['STC_SIZING_SCALER_KNEE'])
+    _check("STC_SIZING_SCALER_ENABLED",
+           g['STC_SIZING_SCALER_ENABLED'], cmc['STC_SIZING_SCALER_ENABLED'])
 
     # STC_EXTENDED
     _check("STC_EXTENDED_PER_ASSET_FLOOR",
@@ -265,7 +279,9 @@ def parity_assert(bot_globals: dict, conn) -> str:
     conn.commit()
     if failures:
         raise CalMLPParityError("CALMLP_PARITY FAIL:\n  " + "\n  ".join(failures))
-    logger.info("[CALMLP_PARITY] %d constants verified", 14)
+    # R-p7-r3#M5: log the actual count instead of a hardcoded literal so the
+    # log line tracks _check() additions/removals.
+    logger.info("[CALMLP_PARITY] %d constants verified", _check_count[0])
     return 'passed'
 
 
@@ -423,31 +439,17 @@ class CalMLPPredictor:
         self.train_id: Optional[str] = None
 
     def _verify_bundle_sha_chain(self, bundle: dict, train_dir: Path) -> None:
-        """Recompute phase4_bundle_sha + phase5_bundle_sha; assert match."""
+        """R-p7-r3#H3-DRY-1: delegates to _helpers.verify_bundle_sha_chain
+        so phases 4/5/7 share ONE source of truth for the chain formula."""
         cache_key = (bundle.get('train_id'), self.asset)
         with _SHA_CHAIN_CACHE_LOCK:
             if cache_key in _SHA_CHAIN_CACHE:
                 return
-        deploy_idx = bundle['deploy_fold_idx']
-        fold = next(r for r in bundle['eval_fold_artifacts'] if r['fold'] == deploy_idx)
-        ckpt_shas = sorted(m['checkpoint_sha256'] for m in fold['members'])
-        model_id_sha = hashlib.sha256(':'.join(ckpt_shas).encode()).hexdigest()
-        ns_concat = hashlib.sha256()
-        for fold_art in bundle['eval_fold_artifacts']:
-            ns_concat.update(fold_art['normstats_sha256'].encode())
-        ns_sha = ns_concat.hexdigest()
-        expected_p4 = hashlib.sha256(
-            f"{model_id_sha}:{ns_sha}:phase4".encode()
-        ).hexdigest()
-        if expected_p4 != bundle.get('phase4_bundle_sha'):
-            raise CalMLPError('sha_chain_fail',
-                                f"phase4 sha mismatch (expected={expected_p4} bundle={bundle.get('phase4_bundle_sha')})")
-        expected_p5 = hashlib.sha256(
-            f"{expected_p4}:{bundle['conformal_sha256']}".encode()
-        ).hexdigest()
-        if expected_p5 != bundle.get('bundle_sha'):
-            raise CalMLPError('sha_chain_fail',
-                                f"phase5 sha mismatch (expected={expected_p5} bundle={bundle.get('bundle_sha')})")
+        from _helpers import verify_bundle_sha_chain
+        try:
+            verify_bundle_sha_chain(bundle)
+        except RuntimeError as e:
+            raise CalMLPError('sha_chain_fail', str(e)) from e
         with _SHA_CHAIN_CACHE_LOCK:
             _SHA_CHAIN_CACHE[cache_key] = True
 
@@ -580,12 +582,14 @@ class CalMLPPredictor:
         predict() per asset. bot.py should call this at startup (after the
         predictor cache is built) to amortize the ~1-2s model load off the
         scan path. Soft-fails — exceptions are logged but don't abort
-        startup, since calibration is a graceful-skip subsystem."""
+        startup, since calibration is a graceful-skip subsystem.
+        R-p7-r3#H4: widened to Exception so non-CalMLPError (torch import,
+        flock OSError on NFS) also defer rather than abort the bot."""
         try:
             with self._lock:
                 if not self._loaded:
                     self._load()
-        except CalMLPError as e:
+        except Exception as e:
             logger.warning("[CALMLP_WARMUP] %s asset=%s; deferring to first predict()",
                            e, self.asset)
 
@@ -634,8 +638,11 @@ class CalMLPPredictor:
             row_features['stc_bucket'] = int(
                 np.digitize(stc, STC_BIN_CUTOFFS, right=True)
             )
-            # Also seed seconds_to_close in row so apply_norm finds it.
-            row_features.setdefault('seconds_to_close', stc)
+            # R-p7-r3#H1: seed seconds_to_close in row so apply_norm finds it.
+            # Use explicit None check (NOT setdefault) so a stale None value
+            # in row_features is replaced with the resolved stc.
+            if row_features.get('seconds_to_close') is None:
+                row_features['seconds_to_close'] = stc
 
         # Build a 1-row DataFrame.
         row = dict(row_features)
@@ -654,9 +661,12 @@ class CalMLPPredictor:
         # Initialize all indicator cols to 0 (truly-present default).
         for col in MISSING_INDICATOR_COLS:
             row.setdefault(col, 0)
-        # R-p7-r2#H2 + R-p7-impl#C1: detect-and-impute. NaN/None in CONT cols:
-        # (a) flip companion *_missing flag to 1 (if companion exists), and
-        # (b) mean-impute so post-z-score the value is 0.
+        # R-p7-r3#C1: previously this branch eagerly imputed with the
+        # POST-transform mean and let apply_norm re-transform — wrong for
+        # log/log1p columns. Fix: leave NaN, let apply_norm.fillna(mean)
+        # run AFTER its transform step (normalize.py:171 path is correct).
+        # We still flip the *_missing companion at this layer because that's
+        # a Phase-7 feature engineering decision, not a normalize concern.
         normstats_map = self.normstats.get('stats', {})
         for col in CONT_FEATURE_COLS:
             v = row.get(col)
@@ -665,12 +675,13 @@ class CalMLPPredictor:
             )
             if col not in row or is_missing:
                 col_stats = normstats_map.get(col, {})
-                if 'mean' not in col_stats and col not in row:
+                if 'mean' not in col_stats:
                     raise CalMLPError(
                         'missing_features',
-                        f"col {col!r} absent and no normstats mean to impute",
+                        f"col {col!r} missing and no normstats mean to impute",
                     )
-                row[col] = float(col_stats.get('mean', 0.0))
+                # Set to NaN so apply_norm's post-transform fillna runs.
+                row[col] = float('nan')
                 ind = _src_to_ind.get(col)
                 if ind is not None:
                     row[ind] = 1

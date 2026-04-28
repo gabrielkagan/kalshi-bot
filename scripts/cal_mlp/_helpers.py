@@ -42,6 +42,49 @@ FORWARD_KEYS: tuple[str, ...] = (
 
 
 # ---------------------------------------------------------------------------
+# Bundle SHA chain (R-p7-r2#H3 + R-p7-r3#H3-DRY-1)
+# ---------------------------------------------------------------------------
+# DRY home for the bundle_sha_v1 chain formula. Phase 5 (conformal.load_predictor),
+# Phase 7 (integration.CalMLPPredictor._verify_bundle_sha_chain), and any
+# future phase MUST go through this function so a chain-format change updates
+# both producers and consumers in lockstep.
+
+def verify_bundle_sha_chain(bundle: dict) -> None:
+    """Recompute phase4_bundle_sha + bundle_sha (phase5 chain hash) and
+    assert match. Caller-side wrapper translates RuntimeError into the
+    phase-specific exception type."""
+    deploy_idx = bundle.get('deploy_fold_idx',
+                              max(r['fold'] for r in bundle['eval_fold_artifacts']))
+    fold = next(r for r in bundle['eval_fold_artifacts'] if r['fold'] == deploy_idx)
+    ckpt_shas = sorted(m['checkpoint_sha256'] for m in fold['members'])
+    model_id_sha = hashlib.sha256(':'.join(ckpt_shas).encode()).hexdigest()
+    ns_concat = hashlib.sha256()
+    for fold_art in bundle['eval_fold_artifacts']:
+        ns_concat.update(fold_art['normstats_sha256'].encode())
+    ns_sha = ns_concat.hexdigest()
+    expected_p4 = hashlib.sha256(
+        f"{model_id_sha}:{ns_sha}:phase4".encode()
+    ).hexdigest()
+    if expected_p4 != bundle.get('phase4_bundle_sha'):
+        raise RuntimeError(
+            f"phase4 sha mismatch (expected={expected_p4} "
+            f"bundle={bundle.get('phase4_bundle_sha')})"
+        )
+    # Phase 5 chain only applies if the bundle records a conformal_sha256.
+    conformal_sha = bundle.get('conformal_sha256')
+    if conformal_sha is None:
+        return
+    expected_p5 = hashlib.sha256(
+        f"{expected_p4}:{conformal_sha}".encode()
+    ).hexdigest()
+    if expected_p5 != bundle.get('bundle_sha'):
+        raise RuntimeError(
+            f"phase5 sha mismatch (expected={expected_p5} "
+            f"bundle={bundle.get('bundle_sha')})"
+        )
+
+
+# ---------------------------------------------------------------------------
 # compute_extract_logical_sha (Phase 4 R3#C1)
 # ---------------------------------------------------------------------------
 

@@ -38,6 +38,7 @@ from _helpers import (  # noqa: E402
     fsync_directory,
     sha256_file,
     verify_artifact_sha,
+    verify_bundle_sha_chain,
     find_bundle_by_sha,
     load_bundle_with_dir,
     format_bleed_key,
@@ -49,6 +50,14 @@ from train import (  # noqa: E402
 
 DEFAULT_ALPHA = 0.20
 
+# R-p7-r3#M-DOC: top-level cal split must clear this floor for global
+# split-conformal validity at α=0.20. The Mondrian per-cell floor (N_CELL_FLOOR
+# in _helpers) governs cell-level emission; this floor governs whether we
+# can run fit_conformal at all. Spec ref: kb-research/bot/p2-phase5-conformal.md
+# § "calibration sample requirements". Asset rollout sequencing implication:
+# XRP/SOL may take longer to accumulate 100 cal rows than BTC/ETH.
+N_CAL_TOTAL_FLOOR = 100
+
 
 def _conformal_q_level(n: int, alpha: float) -> float:
     """R-p7-r2#H1: finite-sample correction for split-conformal coverage.
@@ -56,12 +65,23 @@ def _conformal_q_level(n: int, alpha: float) -> float:
     Standard split-conformal at miscoverage α achieves marginal coverage 1-α
     only when the quantile of residuals is taken at level ⌈(n+1)(1-α)⌉ / n.
     For n=20, α=0.20: 0.80 → 0.85 (the 17th order statistic, which is the
-    validity-preserving level). Clamps to [0,1] to handle edge cases."""
+    validity-preserving level). Clamps to [0,1] to handle edge cases.
+
+    R-p7-r3#M-H1-CLAMP: when the level clamps to 1.0, conformal validity at
+    1-α is mathematically unachievable for this n; we degrade to "use the
+    max residual" and warn so callers know coverage may be optimistic."""
     import math
     if n <= 0:
         return 1.0 - alpha
     level = math.ceil((n + 1) * (1.0 - alpha)) / n
-    return min(max(level, 0.0), 1.0)
+    if level >= 1.0:
+        logging.warning(
+            "_conformal_q_level: n=%d α=%.3f → level=%.3f clamped to 1.0; "
+            "true %d%% coverage unachievable at this sample size",
+            n, alpha, level, int((1 - alpha) * 100),
+        )
+        return 1.0
+    return max(level, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -148,35 +168,13 @@ def _load_normstats(path: Path, expected_sha: Optional[str] = None) -> dict:
 
 
 def _verify_bundle_sha_chain(bundle: dict) -> None:
-    """R-p7-r2#H3: recompute and verify phase4_bundle_sha + bundle_sha (the
-    phase5 chain hash). Mirrors integration._verify_bundle_sha_chain so all
-    callers of load_predictor (sim_pnl, validate, integration) get the same
-    integrity guarantee. Raises Phase5SchemaError on mismatch."""
-    deploy_idx = bundle.get('deploy_fold_idx',
-                              max(r['fold'] for r in bundle['eval_fold_artifacts']))
-    fold = next(r for r in bundle['eval_fold_artifacts'] if r['fold'] == deploy_idx)
-    ckpt_shas = sorted(m['checkpoint_sha256'] for m in fold['members'])
-    model_id_sha = hashlib.sha256(':'.join(ckpt_shas).encode()).hexdigest()
-    ns_concat = hashlib.sha256()
-    for fold_art in bundle['eval_fold_artifacts']:
-        ns_concat.update(fold_art['normstats_sha256'].encode())
-    ns_sha = ns_concat.hexdigest()
-    expected_p4 = hashlib.sha256(
-        f"{model_id_sha}:{ns_sha}:phase4".encode()
-    ).hexdigest()
-    if expected_p4 != bundle.get('phase4_bundle_sha'):
-        raise Phase5SchemaError(
-            f"phase4 sha mismatch (expected={expected_p4} "
-            f"bundle={bundle.get('phase4_bundle_sha')})"
-        )
-    expected_p5 = hashlib.sha256(
-        f"{expected_p4}:{bundle['conformal_sha256']}".encode()
-    ).hexdigest()
-    if expected_p5 != bundle.get('bundle_sha'):
-        raise Phase5SchemaError(
-            f"phase5 sha mismatch (expected={expected_p5} "
-            f"bundle={bundle.get('bundle_sha')})"
-        )
+    """R-p7-r3#H3-DRY-1: thin wrapper that delegates to the canonical
+    `_helpers.verify_bundle_sha_chain` so the formula has ONE source of
+    truth. Translates RuntimeError → Phase5SchemaError."""
+    try:
+        verify_bundle_sha_chain(bundle)
+    except RuntimeError as e:
+        raise Phase5SchemaError(str(e)) from e
 
 
 def load_predictor(bundle: dict, device: torch.device) -> Predictor:
@@ -192,7 +190,11 @@ def load_predictor(bundle: dict, device: torch.device) -> Predictor:
             "load_predictor: bundle missing '_bundle_dir'. Use "
             "_helpers.load_bundle_with_dir(bundle_path) instead of json.load."
         )
-    _verify_bundle_sha_chain(bundle)
+    # R-p7-r3#M-H3-SYNTHETIC: only verify the chain for phase-5 bundles.
+    # Phase 4 ablations / unit-test fixtures may pass bundles without
+    # conformal_sha256 — those don't have a phase-5 chain to verify.
+    if bundle.get('phase') == 5:
+        _verify_bundle_sha_chain(bundle)
     ensemble_size = bundle.get('ensemble_size', 1)
     deploy_idx = bundle.get('deploy_fold_idx',
                               max(r['fold'] for r in bundle['eval_fold_artifacts']))
@@ -237,6 +239,16 @@ def fit_conformal(
     cell_kind='fallback_empty' for cells with n_cal=0 so audit doesn't
     confuse "dispatch_miss" with "empty cell".
     """
+    # R-p7-r3#L-VERIFY: surface a clean contract failure if the parquet
+    # column name drifts from `vol_regime_int` back to `vol_regime`.
+    _required = {'price_tier', 'stc_bucket', 'vol_regime_int',
+                 'p_mean', 'outcome', 'ticker'}
+    _missing = _required - set(cal_df.columns)
+    if _missing:
+        raise RuntimeError(
+            f"fit_conformal: cal_df missing required columns {sorted(_missing)} "
+            f"(producer/consumer schema drift)"
+        )
     # Score = |p_mean - outcome|
     residuals = (cal_df['p_mean'].astype(np.float64) -
                   cal_df['outcome'].astype(np.float64)).abs().to_numpy()
@@ -457,16 +469,12 @@ def run(args: argparse.Namespace) -> dict:
             raise Phase5SchemaError("predictions_sha256 mismatch")
         preds_df = pd.read_parquet(preds_path, engine='pyarrow', dtype_backend='numpy_nullable')
         cal_df = preds_df[preds_df['split'] == 'cal'].reset_index(drop=True)
-        # R-p7-r2#M3: gate on TOTAL cal rows for global validity at α=0.20.
-        # n_cell_floor governs per-Mondrian-cell emission, not total. Keep
-        # this contract gate at 100 (5× the per-cell floor) so global_q_alpha
-        # is reliable even when Mondrian falls through. Below 100, abort.
-        N_CAL_TOTAL_FLOOR = 100
+        # R-p7-r2#M3 + R-p7-r3#M-DOC: module-scope N_CAL_TOTAL_FLOOR.
         if len(cal_df) < N_CAL_TOTAL_FLOOR:
             raise Phase5ContractError(
                 f"cal split has {len(cal_df)} rows < N_CAL_TOTAL_FLOOR={N_CAL_TOTAL_FLOOR}; "
                 f"Mondrian cells require {args.n_cell_floor} per cell but global validity "
-                f"at α=0.20 needs ≥100 total"
+                f"at α=0.20 needs ≥{N_CAL_TOTAL_FLOOR} total"
             )
 
         artifact = fit_conformal(
