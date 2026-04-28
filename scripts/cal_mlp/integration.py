@@ -75,7 +75,8 @@ SKIPPED_REASONS = frozenset({
     'env_disabled',         # CALMLP_ENABLED=0
     'raw_prob_null',        # ProbabilityEngine returned None
     'market_blend_w_drift', # bundle vs market_config divergence
-    'no_predictor',         # no predictor cached for asset
+    'no_predictor',         # no predictor cached for asset (impl-added; spec amended)
+    'missing_features',     # row_features dict missing required keys (impl-added)
 })
 
 
@@ -184,6 +185,15 @@ def migrate_schema(conn) -> list:
 # Parity asserts (R-p7-r2#C1 — bot-globals direct compare; aliased imports)
 # ---------------------------------------------------------------------------
 
+def _verify_wal(conn) -> None:
+    """R-p7-impl#C12: assert WAL + busy_timeout per CLAUDE.md anti-deadlock rules."""
+    mode = conn.execute("PRAGMA journal_mode").fetchone()
+    if mode is None or str(mode[0]).lower() != 'wal':
+        raise CalMLPSchemaError(
+            f"connection journal_mode={mode}; CLAUDE.md requires WAL"
+        )
+
+
 def parity_assert(bot_globals: dict, conn) -> str:
     """Cross-check vendored cal_mlp constants against bot.py globals.
     bot_globals: caller passes vars() / globals() of the bot module.
@@ -242,24 +252,23 @@ def parity_assert(bot_globals: dict, conn) -> str:
            cmc['HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES'])
 
     ts = datetime.now(timezone.utc).isoformat()
-    if failures:
-        conn.execute(
-            "INSERT INTO bot_startup_log (parity_check_status, ts, pid) VALUES (?, ?, ?)",
-            ('failed', ts, os.getpid()),
-        )
-        conn.commit()
-        raise CalMLPParityError("CALMLP_PARITY FAIL:\n  " + "\n  ".join(failures))
-
-    logger.info("[CALMLP_PARITY] %d constants verified", 14)
-    conn.execute(
+    pid = os.getpid()
+    # R-p7-impl#C11: insert single sentinel row up front; sizing_parity_assert
+    # UPDATEs it with sizing_parity_status. Then the test-plan query
+    # `SELECT ... ORDER BY id DESC LIMIT 1` returns BOTH columns populated.
+    cur = conn.execute(
         "INSERT INTO bot_startup_log (parity_check_status, ts, pid) VALUES (?, ?, ?)",
-        ('passed', ts, os.getpid()),
+        ('failed' if failures else 'passed', ts, pid),
     )
+    bot_globals['_calmlp_startup_log_rowid'] = cur.lastrowid
     conn.commit()
+    if failures:
+        raise CalMLPParityError("CALMLP_PARITY FAIL:\n  " + "\n  ".join(failures))
+    logger.info("[CALMLP_PARITY] %d constants verified", 14)
     return 'passed'
 
 
-def sizing_parity_assert(conn, bot_globals: dict) -> str:
+def sizing_parity_assert(bot_globals: dict, conn) -> str:
     """8-vector sizing parity (Phase 7 R1#C4)."""
     cal_mlp_dir = Path(__file__).resolve().parent
     import sys
@@ -302,21 +311,26 @@ def sizing_parity_assert(conn, bot_globals: dict) -> str:
         if expected is not None and cm_result.contract_count != expected:
             failures.append(f"vec={vec}: cal_mlp={cm_result.contract_count} expected={expected}")
 
-    ts = datetime.now(timezone.utc).isoformat()
-    if failures:
+    # R-p7-impl#C11: UPDATE the same row parity_assert created.
+    rowid = bot_globals.get('_calmlp_startup_log_rowid')
+    status = 'failed' if failures else 'passed'
+    if rowid is not None:
+        conn.execute(
+            "UPDATE bot_startup_log SET sizing_parity_status = ? WHERE id = ?",
+            (status, rowid),
+        )
+    else:
+        # Fallback: parity_assert wasn't called first (shouldn't happen via
+        # the diff doc's edit 3, but be defensive).
+        ts = datetime.now(timezone.utc).isoformat()
         conn.execute(
             "INSERT INTO bot_startup_log (sizing_parity_status, ts, pid) VALUES (?, ?, ?)",
-            ('failed', ts, os.getpid()),
+            (status, ts, os.getpid()),
         )
-        conn.commit()
-        raise CalMLPParityError("CALMLP_SIZING_PARITY FAIL:\n  " + "\n  ".join(failures))
-
-    logger.info("[CALMLP_PARITY] sizing parity verified across 8 vectors")
-    conn.execute(
-        "INSERT INTO bot_startup_log (sizing_parity_status, ts, pid) VALUES (?, ?, ?)",
-        ('passed', ts, os.getpid()),
-    )
     conn.commit()
+    if failures:
+        raise CalMLPParityError("CALMLP_SIZING_PARITY FAIL:\n  " + "\n  ".join(failures))
+    logger.info("[CALMLP_PARITY] sizing parity verified across 8 vectors")
     return 'passed'
 
 
@@ -390,7 +404,9 @@ class CalMLPPredictor:
 
     def __init__(self, asset: str, project_root: Optional[Path] = None):
         self.asset = asset
-        self._lock = threading.Lock()
+        # R-p7-impl#C6: RLock so predict() can re-enter while holding the
+        # lock when calling _load() (which also takes self._lock).
+        self._lock = threading.RLock()
         self._loaded = False
         if project_root is None:
             project_root = Path(os.environ.get(
@@ -439,14 +455,18 @@ class CalMLPPredictor:
                 return
             try:
                 models_dir = self.project_root / 'models' / f'cal_mlp_{self.asset}'
+                # R-p7-impl#C5: check CURRENT BEFORE creating lock file. Avoids
+                # polluting models/cal_mlp_<asset>/.lock on a fresh install
+                # with no Phase 4 bundle deployed yet.
+                if not models_dir.exists():
+                    raise CalMLPError('no_current', f"no models dir for {self.asset}")
+                current_path = models_dir / 'CURRENT'
+                if not current_path.exists():
+                    raise CalMLPError('no_current', f"no CURRENT for {self.asset}")
                 lock_path = models_dir / '.lock'
-                lock_path.parent.mkdir(parents=True, exist_ok=True)
                 lock_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
                 try:
                     fcntl.flock(lock_fd, fcntl.LOCK_SH)
-                    current_path = models_dir / 'CURRENT'
-                    if not current_path.exists():
-                        raise CalMLPError('no_current', f"no CURRENT for {self.asset}")
                     train_id = current_path.read_text().strip()
                     train_dir = models_dir / train_id
                     bundle_path = train_dir / f'cal_mlp_{self.asset}_{train_id}_phase5_bundle.json'
@@ -554,15 +574,26 @@ class CalMLPPredictor:
     def predict(self, raw_prob: float, ticker: str, side: str,
                 entry_price_cents: int, row_features: dict) -> tuple:
         """Returns (cal_prob, ens_std, final_lo, final_hi). Raises CalMLPError
-        on failure. raw_prob, ticker, side, entry_price_cents must be valid."""
-        if not self._loaded:
-            self._load()
+        on failure. R-p7-impl#C2: derives price_tier/stc_bucket from
+        entry_price_cents/seconds_to_close to keep the API minimal.
+        R-p7-impl#C1: missing CONT_FEATURE_COLS are mean-imputed (post-norm
+        z-score = 0), NOT zero-imputed (which would produce a non-trivial
+        signal the model treats as a real observation)."""
+        # R-p7-impl#C6: take the lock for the duration so reads of self.*
+        # are correctly synchronized under PEP 703 (free-threaded CPython).
+        with self._lock:
+            if not self._loaded:
+                # _load takes the same Lock — must use RLock for re-entry.
+                # Tracked: change `threading.Lock` to `threading.RLock` in __init__.
+                self._load()
         # Build single-row batch (lazy import of torch + helpers).
         import sys
         cal_mlp_dir = Path(__file__).resolve().parent
         sys.path.insert(0, str(cal_mlp_dir))
         try:
-            from features import RAW_PROB_CLIP_EPS, MISSING_INDICATOR_COLS, CONT_FEATURE_COLS
+            from features import (RAW_PROB_CLIP_EPS, MISSING_INDICATOR_COLS,
+                                    CONT_FEATURE_COLS, PRICE_BIN_CUTOFFS,
+                                    STC_BIN_CUTOFFS)
             from normalize import apply_norm
             from _helpers import predict_with_interval, FORWARD_KEYS
         finally:
@@ -575,13 +606,24 @@ class CalMLPPredictor:
         import numpy as np
         import pandas as pd
 
-        # Build a 1-row DataFrame from row_features.
+        # R-p7-impl#C2: derive price_tier/stc_bucket if not provided.
+        if 'price_tier' not in row_features:
+            row_features = dict(row_features)
+            row_features['price_tier'] = int(
+                np.digitize(entry_price_cents, PRICE_BIN_CUTOFFS, right=True)
+            )
+        if 'stc_bucket' not in row_features:
+            stc = row_features.get('seconds_to_close', 0)
+            row_features['stc_bucket'] = int(
+                np.digitize(stc, STC_BIN_CUTOFFS, right=True)
+            )
+
+        # Build a 1-row DataFrame.
         row = dict(row_features)
         row.setdefault('ticker', ticker)
         row.setdefault('raw_prob', raw_prob)
         row.setdefault('side', side)
         row.setdefault('market_price', entry_price_cents)
-        # Derive required columns.
         rp_c = float(np.clip(raw_prob, RAW_PROB_CLIP_EPS, 1.0 - RAW_PROB_CLIP_EPS))
         row['logit_raw_prob_clipped'] = float(np.log(rp_c / (1.0 - rp_c)))
         row.setdefault('side_int', 1 if side == 'yes' else 0)
@@ -589,8 +631,12 @@ class CalMLPPredictor:
         row['ticker_id'] = self.vocab.get(str(ticker), 0)
         for col in MISSING_INDICATOR_COLS:
             row.setdefault(col, 0)
+        # R-p7-impl#C1: impute MISSING CONT_FEATURE_COLS with the train-fold
+        # mean (from normstats), so post-z-score they're 0 (no spurious signal).
         for col in CONT_FEATURE_COLS:
-            row.setdefault(col, 0.0)
+            if col not in row:
+                col_stats = self.normstats['stats'].get(col, {})
+                row[col] = float(col_stats.get('mean', 0.0))
         df = pd.DataFrame([row])
         df_norm = apply_norm(df, self.normstats['stats'], CONT_FEATURE_COLS,
                               transforms=self.normstats.get('transforms', {}))

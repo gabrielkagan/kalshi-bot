@@ -468,20 +468,22 @@ class CalMLPParityError(RuntimeError): pass  # SystemExit at startup; deploy gat
 class CalMLPSchemaError(RuntimeError): pass  # SystemExit at startup
 ```
 
-**R1#C11 — `cal_mlp_skipped_reason` enum (locked):**
+**R1#C11 + R-p7-impl#C3 — `cal_mlp_skipped_reason` enum (locked at 12):**
 
 ```python
 SKIPPED_REASONS = (
-    'no_current',          # CURRENT pointer absent for this asset
-    'phase_mismatch',      # bundle phase != 5
-    'sha_chain_fail',      # bundle_sha chain verification failed
-    'marker_drift',        # member marker cfg_fp != bundle cfg_fp
-    'load_failed',         # generic load error (file IO, JSON, torch.load)
-    'predict_oom',         # MemoryError during predict
-    'predict_runtime',     # other RuntimeError during predict
-    'env_disabled',        # CALMLP_ENABLED=0
-    'raw_prob_null',       # ProbabilityEngine returned None
+    'no_current',           # CURRENT pointer absent for this asset
+    'phase_mismatch',       # bundle phase != 5
+    'sha_chain_fail',       # bundle_sha chain verification failed
+    'marker_drift',         # member marker cfg_fp != bundle cfg_fp
+    'load_failed',          # generic load error (file IO, JSON, torch.load)
+    'predict_oom',          # MemoryError during predict
+    'predict_runtime',      # other RuntimeError during predict
+    'env_disabled',         # CALMLP_ENABLED env var falsy
+    'raw_prob_null',        # ProbabilityEngine returned None
     'market_blend_w_drift', # bundle vs market_config divergence
+    'no_predictor',         # no predictor cached for asset (impl-added)
+    'missing_features',     # row_features dict missing required keys (impl-added)
 )
 ```
 

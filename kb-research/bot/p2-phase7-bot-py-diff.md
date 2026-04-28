@@ -53,7 +53,7 @@ Find where bot.py calls `self._create_tables()` (or `_create_tables(conn)`) at s
 _calmlp_migrate_schema(self.conn)
 try:
     _calmlp_parity_assert_impl(globals(), self.conn)
-    _calmlp_sizing_parity_assert_impl(self.conn, globals())
+    _calmlp_sizing_parity_assert_impl(globals(), self.conn)
 except CalMLPParityError as _calmlp_e:
     logging.error("[CALMLP_PARITY] FATAL: %s", _calmlp_e)
     raise SystemExit(2)
