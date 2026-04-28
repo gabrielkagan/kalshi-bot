@@ -671,7 +671,6 @@ def run(args: argparse.Namespace) -> dict:
         per_fold_audit: list[dict] = []
         pending_renames: list[tuple[Path, Path]] = []
         renamed: list[Path] = []  # R2#C6: hoisted for outer-except cleanup
-        all_member_checkpoint_shas: list[str] = []
 
         try:
             for fold in folds_to_train:
@@ -835,7 +834,9 @@ def run(args: argparse.Namespace) -> dict:
                     # R1#C3: best_cal_brier_raw — unweighted Brier on cal.
                     best_cal_brier_raw = float(((cal_preds[member] - ca['outcome'].to_numpy(np.float32)) ** 2).mean())
 
-                    all_member_checkpoint_shas.append(ckpt_sha)
+                    # R-p4-r8-CRIT: was `all_member_checkpoint_shas.append(...)`
+                    # for SHA chain — now derived from eval_fold_artifacts
+                    # deploy fold members directly so consumer matches.
                     fold_members_audit.append({
                         'member': member, 'seed': member_seed,
                         'checkpoint_path': member_final.name,
@@ -934,9 +935,19 @@ def run(args: argparse.Namespace) -> dict:
             # canonical-JSON bytes of the dicts while the consumer hashed
             # the eval_fold_artifacts[].normstats_sha256 strings — every
             # real Phase-5 bundle would fail verify_bundle_sha_chain.)
-            ckpt_shas_sorted = sorted(s for s in all_member_checkpoint_shas if s)
+            # R-p4-r8-CRIT: model_identity_sha256 must aggregate ONLY the
+            # deploy fold's members (matching consumer at _helpers.py:59-60).
+            # Aggregating across all folds would make every multi-fold bundle
+            # fail verify_bundle_sha_chain at load.
+            deploy_fold_idx = max(fr['fold'] for fr in eval_fold_artifacts)
+            deploy_fold_artifact = next(
+                a for a in eval_fold_artifacts if a['fold'] == deploy_fold_idx
+            )
+            deploy_member_ckpt_shas = sorted(
+                m['checkpoint_sha256'] for m in deploy_fold_artifact['members']
+            )
             model_identity_sha256 = hashlib.sha256(
-                ':'.join(ckpt_shas_sorted).encode()
+                ':'.join(deploy_member_ckpt_shas).encode()
             ).hexdigest()
             ns_concat = hashlib.sha256()
             for fold_art in eval_fold_artifacts:
@@ -970,7 +981,7 @@ def run(args: argparse.Namespace) -> dict:
             pending_renames.append((audit_tmp, audit_path_out))
 
             # bundle.json (LAST in pending_renames before CURRENT).
-            deploy_fold_idx = max(fr['fold'] for fr in eval_fold_artifacts)
+            # deploy_fold_idx already computed above for SHA chain.
             bundle_payload = {
                 'phase': 4,
                 'schema_version': 2,
