@@ -16,15 +16,15 @@
 
 ## Edit 1 — top-of-file imports (after existing imports, ~line 100)
 
-**R-p7-deploy-r1#C1 prerequisites:** bot.py does NOT currently import `numpy` or `pathlib.Path`. Edit 1 (sys.path) and Edit 4 (np.digitize) require both. Verify with `grep -nE '^(import numpy|from pathlib)' bot.py`. If empty, add to bot.py's import block FIRST as a separate sub-step:
+**R-p7-deploy-r1#C1 prerequisites:** bot.py already imports `os` and `sys`; verify it does NOT import `numpy` or `pathlib.Path`. Edit 1 (sys.path) and Edit 4 (np.digitize) require both. Verify with `grep -nE '^(import numpy|from pathlib)' bot.py`. If empty, add to bot.py's import block FIRST as a separate sub-step:
 
 ```python
 # Required by Phase 7 cal_mlp integration.
 import numpy as np
 from pathlib import Path
-import os
-import sys
 ```
+
+(Re-adding `os`/`sys` would be harmless but is redundant — bot.py:4-5 already imports both.)
 
 Then add the cal_mlp imports:
 
@@ -92,7 +92,14 @@ If the bot uses a different connection name (`conn` vs `self.conn`), adjust acco
 
 ## Edit 4 — scan path integration (in `_evaluate_15m_candidate` or equivalent)
 
-**R-p7-deploy-r1#H2 ANCHOR:** bot.py has multiple `ProbabilityEngine.compute(...)` call sites — at last grep, the 15M scan, hourly, and SPX/alt path all match. Land Edit 4 ONLY at the 15M scan site. The unique downstream anchor for the right call site is the assignment of `final_prob = prob_with_market["calibrated_prob"]` — that line ONLY appears in the 15M scan path. Verify with `grep -n 'final_prob = prob_with_market\["calibrated_prob"\]' bot.py` — should match exactly once.
+**R-p7-deploy-r1#H2 + R-p7-deploy-r2#C2 ANCHOR:** bot.py has multiple `ProbabilityEngine.compute(...)` call sites AND multiple `final_prob = prob_with_market["calibrated_prob"]` assignments (at last grep: bot.py:11744 in 15M scan, AND bot.py:15317 in `_process_price_shadow`). Single-line anchors are NOT unique. Use the TWO-line pair below — only the 15M scan immediately follows `final_prob` with `z_score = prob_with_market["z_score"]`:
+
+```
+final_prob = prob_with_market["calibrated_prob"]
+z_score = prob_with_market["z_score"]
+```
+
+Verify with `grep -B0 -A1 'final_prob = prob_with_market\["calibrated_prob"\]' bot.py` — only the 15M site should show the `z_score` follow-up. Land Edit 4 immediately after `z_score = prob_with_market["z_score"]`. Do NOT land at `_process_price_shadow` (bot.py:15317) — that path has no calibrator wiring.
 
 **R-p7-deploy-r1#H1 LOCAL VARS:** bot.py's scan scope uses `vol_est["regime"]` (NOT a bare `vol_regime` local). Add the binding line below first, OR inline it.
 

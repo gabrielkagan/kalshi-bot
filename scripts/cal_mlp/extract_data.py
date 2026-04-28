@@ -358,6 +358,10 @@ def build_feature_frame(rows: list[dict]) -> pd.DataFrame:
     #       produce transiently negative balances in `state.db` (see memory
     #       on Settlement Watermark Race). Clamp at 0 so the train mean
     #       imputation captures it as "near-empty" rather than NaN-imputed.
+    # R-p2-r12#H1: log_balance_dollars value is clipped here; the source
+    # column `available_balance_cents` in the parquet remains UNCLIPPED.
+    # Auditors reading raw balance see negatives (Settlement-race edges);
+    # only the feature pipeline sees the clipped form.
     bal = df['available_balance_cents'].astype(np.float32).clip(lower=0.0)
     df['log_balance_dollars'] = bal
     # Audit columns (kept untransformed for Phase 6)
@@ -696,6 +700,8 @@ def run(args: argparse.Namespace) -> dict:
                 fold_df = df.copy()
                 fold_df['split'] = assign_split(fold_df, fw)
                 fold_df, n_boundary_reassigned = enforce_ticker_disjoint(fold_df)
+                # R-p2-r12#C1: walk-forward temporal contract must hold POST-disjoint.
+                assert_walk_forward_temporal(fold_df, fw)
                 fold_df = fold_df[fold_df['split'].notna()].reset_index(drop=True)
                 fold_df['fold'] = np.int8(k)
                 # Split frames
