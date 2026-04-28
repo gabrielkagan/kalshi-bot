@@ -471,10 +471,26 @@ def run_sim_pnl(
     if challenger_bundle is not None and challenger_artifact is not None:
         try:
             from conformal import load_predictor as _load_pred, _load_normstats
+            # challenger_bundle should already have _bundle_dir set by caller
+            # (validate.py uses load_bundle_with_dir).
             ch_predictor = _load_pred(challenger_bundle, device)
+            # Phase 4 bundle stores per-fold normstats under eval_fold_artifacts;
+            # use deploy_fold_idx to find the right one.
+            ch_deploy_idx = challenger_bundle.get(
+                'deploy_fold_idx',
+                max(r['fold'] for r in challenger_bundle['eval_fold_artifacts']),
+            )
+            ch_deploy_fold = next(
+                r for r in challenger_bundle['eval_fold_artifacts']
+                if r['fold'] == ch_deploy_idx
+            )
+            ch_bundle_dir = Path(challenger_bundle.get('_bundle_dir', '.'))
+            ch_normstats_path = ch_bundle_dir / ch_deploy_fold['normstats_path']
+            if not ch_normstats_path.is_absolute():
+                ch_normstats_path = ch_bundle_dir / ch_deploy_fold['normstats_path']
             ch_normstats = _load_normstats(
-                Path(challenger_bundle['normstats_path']),
-                expected_sha=challenger_bundle.get('normstats_sha256'),
+                ch_normstats_path,
+                expected_sha=ch_deploy_fold.get('normstats_sha256'),
             )
             ch_normed = apply_norm(candidate_df, ch_normstats, CONT_FEATURE_COLS)
             ch_ticker_to_id = {t: i for i, t in enumerate(sorted(ch_normed['ticker'].unique()))}

@@ -151,20 +151,18 @@ def acquire_shared_lock(lock_path: Path, asset: str):
 # Bundle locator (find by SHA)
 # ---------------------------------------------------------------------------
 
+# R-impl-r2#C9: shared find_bundle_by_sha in _helpers.py uses rglob (recursive).
+from _helpers import find_bundle_by_sha as _find_bundle_helper  # noqa: E402
+from _helpers import load_bundle_with_dir  # noqa: E402
+
+
 def find_bundle_by_sha(models_dir: Path, asset: str, bundle_sha: str) -> Path:
-    pattern = f"cal_mlp_{asset}_*_bundle.json"
-    for path in models_dir.glob(pattern):
-        try:
-            with open(path) as f:
-                bundle = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        if bundle.get('bundle_sha') == bundle_sha:
-            return path
-    raise SystemExit(
-        f"bundle with sha={bundle_sha[:12]} not found in {models_dir}; "
-        f"verify the SHA from train.py / conformal.py output."
-    )
+    try:
+        return _find_bundle_helper(models_dir, asset, bundle_sha)
+    except RuntimeError as e:
+        raise SystemExit(
+            f"{e}; verify the SHA from train.py / conformal.py output."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -375,8 +373,8 @@ def main() -> None:
     lock_path = asset_models_dir / ".lock"
     with acquire_shared_lock(lock_path, args.asset):
         bundle_path = find_bundle_by_sha(models_dir, args.asset, args.bundle_sha)
-        with open(bundle_path) as f:
-            bundle = json.load(f)
+        # R-impl-r2#C2: load_bundle_with_dir injects _bundle_dir for load_predictor.
+        bundle = load_bundle_with_dir(bundle_path)
         if bundle.get('phase') != 5:
             raise SystemExit(
                 f"input bundle phase={bundle.get('phase')}; Phase 6 requires "
@@ -403,8 +401,7 @@ def main() -> None:
         challenger_artifact = None
         if args.challenger_bundle_sha:
             ch_path = find_bundle_by_sha(models_dir, args.asset, args.challenger_bundle_sha)
-            with open(ch_path) as f:
-                challenger_bundle = json.load(f)
+            challenger_bundle = load_bundle_with_dir(ch_path)
             if challenger_bundle.get('phase') != 5:
                 raise SystemExit("challenger bundle is not Phase 5")
             ch_conf_path = Path(challenger_bundle['conformal_path'])
