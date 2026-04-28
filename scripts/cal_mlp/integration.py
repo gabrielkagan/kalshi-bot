@@ -688,7 +688,7 @@ class CalMLPPredictor:
         # R-p7-r2#M1: imports moved to module level.
         from features import (RAW_PROB_CLIP_EPS, MISSING_INDICATOR_COLS,
                                 CONT_FEATURE_COLS, PRICE_BIN_CUTOFFS,
-                                STC_BIN_CUTOFFS, MISSING_INDICATOR_SOURCE_MAP)
+                                STC_BIN_CUTOFFS)
         from normalize import apply_norm
         from _helpers import predict_with_interval, FORWARD_KEYS
 
