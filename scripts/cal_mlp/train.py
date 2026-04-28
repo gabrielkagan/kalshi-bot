@@ -64,12 +64,8 @@ from features import (  # noqa: E402
 )
 from normalize import apply_norm  # noqa: E402
 
-# FORWARD_KEYS lives in _helpers.py per Phase 5 R1 lock.
-FORWARD_KEYS = (
-    'x_cont', 'x_missing',
-    'price_tier', 'stc_bucket', 'vol_regime_int', 'side_int',
-    'ticker_id', 'logit_raw_prob_clipped',
-)
+# R2#C7: FORWARD_KEYS imported from _helpers (single source of truth).
+from _helpers import FORWARD_KEYS  # noqa: E402
 
 N_MISSING = len(MISSING_INDICATOR_COLS)
 N_CONT = len(CONT_FEATURE_COLS)
@@ -229,6 +225,27 @@ class Phase4Dataset(Dataset):
             'outcome': torch.tensor(self._outcome[i], dtype=torch.float32),
             'w_cell': self.w_cell_lookup[self._price[i] * 4 + self._stc[i]],
         }
+
+
+# R2#C1: backward-compat aliases for Phase 6 (sim_pnl.py + validate.py).
+# Phase 6 was rebuilt before Phase 4 renamed these; provide aliases.
+CalibrationDataset = Phase4Dataset
+
+
+def collate_dict(batch_list: list) -> dict:
+    """Default-collate equivalent for Phase4Dataset's __getitem__ output.
+    Stacks each key into a batched tensor."""
+    if not batch_list:
+        return {}
+    out = {}
+    for k in batch_list[0].keys():
+        out[k] = torch.stack([b[k] for b in batch_list])
+    return out
+
+
+def predict_p_out(model: nn.Module, dataset) -> np.ndarray:
+    """Alias for predict_p — Phase 6 imports this name."""
+    return predict_p(model, dataset)
 
 
 def compute_weighted_bce(model: nn.Module, batch: dict) -> torch.Tensor:
@@ -572,8 +589,10 @@ def run(args: argparse.Namespace) -> dict:
             folds_to_train = all_folds
 
         # Build model_definition.json (early — needed for marker hashing).
+        # R2#C4: include cfg_fp so Phase 5 can cross-check.
         model_def = {
             'model_kind': 'ResidualMLPV1',
+            'cfg_fp': cfg_fp,
             'n_cont': N_CONT,
             'n_missing_indicator_cols': N_MISSING,
             'input_continuous_dim': N_CONT + N_MISSING,
@@ -597,6 +616,7 @@ def run(args: argparse.Namespace) -> dict:
         eval_fold_artifacts: list[dict] = []
         per_fold_audit: list[dict] = []
         pending_renames: list[tuple[Path, Path]] = []
+        renamed: list[Path] = []  # R2#C6: hoisted for outer-except cleanup
         all_member_checkpoint_shas: list[str] = []
 
         try:
@@ -681,6 +701,9 @@ def run(args: argparse.Namespace) -> dict:
                         epochs_since_improve = 0
                         best_state_dict = {k: v.cpu().clone() for k, v in model.state_dict().items()}
                         early_stop_epoch = args.epochs
+                        # R2#C10: pre-bind epoch/loss for the empty-epochs case.
+                        epoch = -1
+                        loss = torch.tensor(float('nan'))
                         for epoch in range(args.epochs):
                             model.train()
                             loader = DataLoader(
@@ -727,13 +750,15 @@ def run(args: argparse.Namespace) -> dict:
                         marker_sha = sha256_file(marker_tmp)
                         ckpt_sha = sha256_file(member_tmp)
                         epochs_trained = epoch + 1
-                        final_train_loss = float(loss.detach().cpu().item())
+                        # R2#C9: float('nan') in JSON serializes to non-standard NaN.
+                        loss_val = float(loss.detach().cpu().item()) if not torch.isnan(loss) else None
+                        final_train_loss = loss_val
                     if resumed:
                         # Resume path: shas of final files (already on disk).
                         marker_sha = sha256_file(marker_final)
                         ckpt_sha = sha256_file(member_final)
                         epochs_trained = early_stop_epoch
-                        final_train_loss = float('nan')
+                        final_train_loss = None  # not reconstructable from saved state
 
                     # Compute cal predictions on the (possibly resumed) model.
                     cal_preds[member] = predict_p(model, ds_cal)
@@ -897,7 +922,6 @@ def run(args: argparse.Namespace) -> dict:
             # Rename phase — ordering: markers first per R3#C2 (already
             # appended in order: marker, member, marker, member, ..., preds,
             # model_def, audit, bundle). Bundle is last.
-            renamed: list[Path] = []
             try:
                 for tmp, final in pending_renames:
                     os.replace(tmp, final)
@@ -927,11 +951,17 @@ def run(args: argparse.Namespace) -> dict:
 
             return bundle_payload
         except Exception:
-            # Cleanup tmps and any already-renamed final paths in REVERSE order.
-            for tmp, final in pending_renames:
+            # R2#C6: cleanup tmps AND already-renamed finals in REVERSE.
+            for tmp, _final in pending_renames:
                 try:
                     if tmp.exists():
                         tmp.unlink()
+                except (FileNotFoundError, OSError):
+                    pass
+            for final in reversed(renamed):
+                try:
+                    if final.exists():
+                        final.unlink()
                 except (FileNotFoundError, OSError):
                     pass
             raise

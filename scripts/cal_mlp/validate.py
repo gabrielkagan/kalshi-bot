@@ -390,7 +390,11 @@ def main() -> None:
             raise SystemExit(
                 f"bundle malformed (sha={args.bundle_sha[:12]}): missing keys {_missing}"
             )
+        # R2#C5: conformal_path is basename relative to bundle_dir.
+        bundle_dir = Path(bundle['_bundle_dir'])
         conformal_path = Path(bundle['conformal_path'])
+        if not conformal_path.is_absolute():
+            conformal_path = bundle_dir / conformal_path
         if not conformal_path.exists():
             raise SystemExit(f"conformal_path {conformal_path} does not exist")
         _verify_artifact_sha(conformal_path, bundle['conformal_sha256'])
@@ -404,7 +408,10 @@ def main() -> None:
             challenger_bundle = load_bundle_with_dir(ch_path)
             if challenger_bundle.get('phase') != 5:
                 raise SystemExit("challenger bundle is not Phase 5")
+            ch_bundle_dir = Path(challenger_bundle['_bundle_dir'])
             ch_conf_path = Path(challenger_bundle['conformal_path'])
+            if not ch_conf_path.is_absolute():
+                ch_conf_path = ch_bundle_dir / ch_conf_path
             _verify_artifact_sha(ch_conf_path, challenger_bundle['conformal_sha256'])
             with open(ch_conf_path) as f:
                 challenger_artifact = json.load(f)
@@ -470,9 +477,21 @@ def main() -> None:
         )
         if deploy_fold is None:
             raise SystemExit(f"bundle has no fold-{deploy_fold_idx} record")
+        # R2#C3: parquet + normstats are extract-dir-relative (Phase 2 wrote
+        # them in data/cal_mlp/<asset>/<extract_train_id>/), NOT models-dir-
+        # relative. Resolve via bundle['extract_bundle_path'].
+        extract_bundle_rel = bundle.get('extract_bundle_path', '')
+        if extract_bundle_rel:
+            ext_bundle_path = Path(extract_bundle_rel)
+            if not ext_bundle_path.is_absolute():
+                ext_bundle_path = project_root / ext_bundle_path
+            extract_dir = ext_bundle_path.parent
+        else:
+            # Fallback: assume parquet is in Phase 4 bundle dir (legacy).
+            extract_dir = Path(bundle_path).parent
         deploy_fold_path = Path(deploy_fold['parquet_path'])
         if not deploy_fold_path.is_absolute():
-            deploy_fold_path = Path(bundle_path).parent / deploy_fold_path
+            deploy_fold_path = extract_dir / deploy_fold_path
         if not deploy_fold_path.exists():
             raise SystemExit(f"deploy fold {deploy_fold_idx} parquet missing at {deploy_fold_path}")
         fold_df = pd.read_parquet(deploy_fold_path, engine='pyarrow', dtype_backend='pyarrow')
@@ -480,9 +499,14 @@ def main() -> None:
         if test_df['outcome'].isna().any():
             raise SystemExit("test split has NaN outcomes — Phase 2 contract violation")
 
+        # R2#C2: normstats is per-fold; read from eval_fold_artifacts[deploy_fold_idx].
+        ns_rel = deploy_fold['normstats_path']
+        ns_path = Path(ns_rel)
+        if not ns_path.is_absolute():
+            ns_path = extract_dir / ns_path
         normstats = _load_normstats(
-            Path(bundle['normstats_path']),
-            expected_sha=bundle.get('normstats_sha256'),
+            ns_path,
+            expected_sha=deploy_fold.get('normstats_sha256'),
         )
         test_normed = apply_norm(test_df, normstats, CONT_FEATURE_COLS)
         ticker_to_id = {t: i for i, t in enumerate(sorted(test_normed['ticker'].unique()))}

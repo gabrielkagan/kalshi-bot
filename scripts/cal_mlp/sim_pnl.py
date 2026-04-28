@@ -484,10 +484,19 @@ def run_sim_pnl(
                 r for r in challenger_bundle['eval_fold_artifacts']
                 if r['fold'] == ch_deploy_idx
             )
-            ch_bundle_dir = Path(challenger_bundle.get('_bundle_dir', '.'))
-            ch_normstats_path = ch_bundle_dir / ch_deploy_fold['normstats_path']
+            # R2#C3: normstats lives in EXTRACT dir (not models bundle dir).
+            ch_extract_rel = challenger_bundle.get('extract_bundle_path', '')
+            ch_project_root = Path(__file__).resolve().parents[2]
+            if ch_extract_rel:
+                ch_ext_bp = Path(ch_extract_rel)
+                if not ch_ext_bp.is_absolute():
+                    ch_ext_bp = ch_project_root / ch_ext_bp
+                ch_extract_dir = ch_ext_bp.parent
+            else:
+                ch_extract_dir = Path(challenger_bundle.get('_bundle_dir', '.'))
+            ch_normstats_path = Path(ch_deploy_fold['normstats_path'])
             if not ch_normstats_path.is_absolute():
-                ch_normstats_path = ch_bundle_dir / ch_deploy_fold['normstats_path']
+                ch_normstats_path = ch_extract_dir / ch_normstats_path
             ch_normstats = _load_normstats(
                 ch_normstats_path,
                 expected_sha=ch_deploy_fold.get('normstats_sha256'),
