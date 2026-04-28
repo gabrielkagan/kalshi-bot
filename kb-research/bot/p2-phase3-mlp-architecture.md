@@ -75,7 +75,7 @@ final_prob = sigmoid(final_logit)               # [B]
 
 | Name | Value | Justification |
 |---|---|---|
-| `EMB_DIM` | 4 | R1#C1: dropped from 8 → 4 because vocab ~1500 with `pct_tickers_with_only_one_row=0.72` means most tickers see 1 gradient step; 8-dim per-ticker would memorize. 4-dim halves embedding params (1500×4=6k) and leaves room for residual signal. Frequency-floor (collapse rare tickers to UNK at extract time) is a future Phase 2 amendment.|
+| `EMB_DIM` | 4 | R1#C1: dropped from 8 → 4 because vocab ~1283 with `pct_tickers_with_only_one_row=0.72` means most tickers see 1 gradient step; 8-dim per-ticker would memorize. 4-dim halves embedding params (1284×4≈5.1k including UNK row) and leaves room for residual signal. Frequency-floor (collapse rare tickers to UNK at extract time) is a future Phase 2 amendment.|
 | `HIDDEN_1` | 64 | conservative for ~10k-row train cohorts |
 | `HIDDEN_2` | 32 | bottleneck → encourages residual signal |
 | `DROPOUT` | 0.1 | regularization only (training mode); inference uses `model.eval()` so dropout is OFF. Ensemble std is the sole uncertainty signal (MC-dropout was DROPPED per anchor doc).|
@@ -222,12 +222,15 @@ bot.py at Phase 7 deploy must instantiate the same architecture for inference. P
 
 Phase 7's bot.py amendment loads this JSON and constructs the model. Architecture drift between training and inference is a hard ship-blocker (Phase 6 verifies via a model_definition_sha that's part of `bundle_sha_v1`).
 
-## Open questions for adversarial review
+## Closed open questions (R1)
 
-1. `EMB_DIM=8` for vocab ~1500 is small. Is 8-dimensional per-ticker representation enough to learn ticker-level idiosyncrasy? Vs 16 or 32 — at what point does overfit dominate sample efficiency?
-2. `HIDDEN_1=64, HIDDEN_2=32` — the bottleneck-decreasing layout encourages residual capacity. Should we try equal layers (`64-64`)?
-3. `DELTA_LOGIT_CLAMP=2.5` — this hard-clamps the calibrator's adjustment. At raw_prob=0.5, Δ=±2.5 → final_prob ∈ [0.076, 0.924]. At raw_prob=0.95 (logit≈2.94), Δ=±2.5 → final_prob ∈ [sigmoid(0.44), sigmoid(5.44)] ≈ [0.61, 0.996]. So the clamp is asymmetric around the prior — bigger upward room when prior is low, bigger downward room when prior is high. Defensible? Or should the clamp be on `final_prob` directly instead?
-4. AdamW vs SGD with momentum — AdamW handles the small-data residual case better in our experience but worth checking on this dataset.
-5. Cosine LR decay — 80% of training for the decay phase. On 30 epochs that's 24 epochs decaying. Is this too slow? Step decay alternative?
-6. Early stopping on cal_brier_weighted — but per-cell weighting at cal time uses Phase 2 `train_positive_rate`, not `cal_positive_rate`. That introduces a bias toward training-cell-distribution. Should cal weighting use cal_positive_rate or train_positive_rate? (Spec is silent.)
-7. Does the architecture need explicit handling of `is_unk_ticker=1` rows during training? At training time always 0, so the model never sees the case. At inference, Phase 5's σ-inflation handles it. Phase 4 just initializes the UNK embedding row randomly per-member; no other change. Confirm.
+- Q1 EMB_DIM (R1#C1): locked to 4. Revisit if ensemble disagreement on ticker-OOD is implausibly low after Phase 6.
+- Q5 (cosine decay window) (R1#C4): locked to 80% of post-warmup steps.
+- Q6 (cal_brier_weighted weighting) (R1#C5): locked to train-fold w_cell.
+- Q7 (is_unk_ticker training-time semantics) (R1#C3): NOT a model input; Phase 4 reads from parquet for asserts only; Phase 5 σ-inflation is the inference-time mechanism.
+
+## Open questions for adversarial review (R2+)
+
+1. `HIDDEN_1=64, HIDDEN_2=32` — the bottleneck-decreasing layout encourages residual capacity. Should we try equal layers (`64-64`)?
+2. `DELTA_LOGIT_CLAMP=2.5` — at raw_prob=0.5, Δ=±2.5 → final_prob ∈ [0.076, 0.924]. At raw_prob=0.95 (logit≈2.94), Δ=±2.5 → final_prob ∈ [sigmoid(0.44), sigmoid(5.44)] ≈ [0.61, 0.996]. The clamp is asymmetric in probability space. Defensible or move clamp to `final_prob`?
+3. AdamW vs SGD-with-momentum — AdamW handles small-data residual case better in our experience but worth ablating.
