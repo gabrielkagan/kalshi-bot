@@ -1087,10 +1087,16 @@ class TestTMSweepLive(unittest.TestCase):
         end = self.source.find("\n    def ", start + 10)
         body = self.source[start:end]
         # Must assign MAX_ENTRY_PRICE to _edge_ceiling in the TM branch.
+        # Use re.DOTALL via re.compile rather than inline (?s) — Python 3.11+
+        # rejects (?s) when not at the very start of the pattern (the
+        # alternation puts a second (?s) mid-pattern).
+        import re as _re
+        pattern = _re.compile(
+            r"TM_SWEEP_LIVE_ENABLED.{0,500}_edge_ceiling\s*=\s*MAX_ENTRY_PRICE|"
+            r"TM_LIVE_STRATEGIES.{0,500}_edge_ceiling\s*=\s*MAX_ENTRY_PRICE",
+            _re.DOTALL)
         self.assertRegex(
-            body,
-            r"(?s)TM_SWEEP_LIVE_ENABLED.{0,500}_edge_ceiling\s*=\s*MAX_ENTRY_PRICE|"
-            r"(?s)terminal_momentum.{0,500}_edge_ceiling\s*=\s*MAX_ENTRY_PRICE",
+            body, pattern,
             "_edge_ceiling must be set to MAX_ENTRY_PRICE in TM branch")
 
     def test_picker_bumps_96_to_99_with_override(self):

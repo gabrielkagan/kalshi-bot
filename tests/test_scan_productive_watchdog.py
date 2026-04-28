@@ -174,18 +174,27 @@ class TestAlertFiring(unittest.TestCase):
                 s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
         fake_telegram.send.assert_called()
 
-    def test_alert_uses_dedup_key(self):
-        """dedup_key prevents spam — Telegram notifier dedup'd within
-        its window, even if the watchdog continues to fire."""
+    def test_alert_state_based_dedup_prevents_spam(self):
+        """State-based dedup prevents spam: the watchdog uses the
+        `_scan_15m_unproductive_entry_alerted` boolean flag (set after the
+        first send) rather than a Telegram dedup_key. Per commit 159b411
+        and ws-cache-drift-silent-scan-2026-04-24.md, the 60s dedup_key TTL
+        would defeat back-to-back stuck-periods, so state flag is correct.
+        Verify the entry alert fires AT MOST ONCE per stuck-period even if
+        the threshold is crossed many times in a row."""
         s = _make_scanner(uptime_minutes=30.0, wrote_rows_this_tick=0)
         fake_telegram = MagicMock()
         with patch.object(bot, "_TELEGRAM", fake_telegram):
-            for _ in range(5):
+            # 10 consecutive unproductive ticks — well past threshold (5).
+            for _ in range(10):
                 s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
-        # At least one call with dedup_key keyword arg.
-        calls_with_dedup = [c for c in fake_telegram.send.call_args_list
-                            if c.kwargs.get("dedup_key")]
-        self.assertGreaterEqual(len(calls_with_dedup), 1)
+        # Entry alert path must fire exactly once, not repeatedly.
+        # (The state flag is the dedup; dedup_key kwarg is intentionally absent.)
+        entry_alerts = [c for c in fake_telegram.send.call_args_list
+                        if "15M SCAN UNPRODUCTIVE" in (c.args[0] if c.args else "")]
+        self.assertEqual(len(entry_alerts), 1,
+                         "entry alert must be state-deduped to exactly one send "
+                         "per stuck period — see commit 159b411")
 
     def test_alert_fires_once_at_threshold_not_lower(self):
         """First 4 ticks no alert; 5th tick alerts."""
