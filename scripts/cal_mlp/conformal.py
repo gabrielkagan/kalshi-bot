@@ -50,6 +50,20 @@ from train import (  # noqa: E402
 DEFAULT_ALPHA = 0.20
 
 
+def _conformal_q_level(n: int, alpha: float) -> float:
+    """R-p7-r2#H1: finite-sample correction for split-conformal coverage.
+
+    Standard split-conformal at miscoverage α achieves marginal coverage 1-α
+    only when the quantile of residuals is taken at level ⌈(n+1)(1-α)⌉ / n.
+    For n=20, α=0.20: 0.80 → 0.85 (the 17th order statistic, which is the
+    validity-preserving level). Clamps to [0,1] to handle edge cases."""
+    import math
+    if n <= 0:
+        return 1.0 - alpha
+    level = math.ceil((n + 1) * (1.0 - alpha)) / n
+    return min(max(level, 0.0), 1.0)
+
+
 # ---------------------------------------------------------------------------
 # Exit-code hierarchy
 # ---------------------------------------------------------------------------
@@ -133,17 +147,52 @@ def _load_normstats(path: Path, expected_sha: Optional[str] = None) -> dict:
     return json.load(open(path))
 
 
+def _verify_bundle_sha_chain(bundle: dict) -> None:
+    """R-p7-r2#H3: recompute and verify phase4_bundle_sha + bundle_sha (the
+    phase5 chain hash). Mirrors integration._verify_bundle_sha_chain so all
+    callers of load_predictor (sim_pnl, validate, integration) get the same
+    integrity guarantee. Raises Phase5SchemaError on mismatch."""
+    deploy_idx = bundle.get('deploy_fold_idx',
+                              max(r['fold'] for r in bundle['eval_fold_artifacts']))
+    fold = next(r for r in bundle['eval_fold_artifacts'] if r['fold'] == deploy_idx)
+    ckpt_shas = sorted(m['checkpoint_sha256'] for m in fold['members'])
+    model_id_sha = hashlib.sha256(':'.join(ckpt_shas).encode()).hexdigest()
+    ns_concat = hashlib.sha256()
+    for fold_art in bundle['eval_fold_artifacts']:
+        ns_concat.update(fold_art['normstats_sha256'].encode())
+    ns_sha = ns_concat.hexdigest()
+    expected_p4 = hashlib.sha256(
+        f"{model_id_sha}:{ns_sha}:phase4".encode()
+    ).hexdigest()
+    if expected_p4 != bundle.get('phase4_bundle_sha'):
+        raise Phase5SchemaError(
+            f"phase4 sha mismatch (expected={expected_p4} "
+            f"bundle={bundle.get('phase4_bundle_sha')})"
+        )
+    expected_p5 = hashlib.sha256(
+        f"{expected_p4}:{bundle['conformal_sha256']}".encode()
+    ).hexdigest()
+    if expected_p5 != bundle.get('bundle_sha'):
+        raise Phase5SchemaError(
+            f"phase5 sha mismatch (expected={expected_p5} "
+            f"bundle={bundle.get('bundle_sha')})"
+        )
+
+
 def load_predictor(bundle: dict, device: torch.device) -> Predictor:
     """Read deploy fold K-1's per-member checkpoints, build SinglePredictor
     or EnsemblePredictor based on ensemble_size.
 
     R1#C1: requires `bundle['_bundle_dir']` to be populated (use
-    `load_bundle_with_dir` from _helpers, NOT `json.load`)."""
+    `load_bundle_with_dir` from _helpers, NOT `json.load`).
+    R-p7-r2#H3: verifies SHA chain at the choke point so sim_pnl/validate
+    callers can't accidentally load a tampered or stale bundle."""
     if '_bundle_dir' not in bundle:
         raise Phase5SchemaError(
             "load_predictor: bundle missing '_bundle_dir'. Use "
             "_helpers.load_bundle_with_dir(bundle_path) instead of json.load."
         )
+    _verify_bundle_sha_chain(bundle)
     ensemble_size = bundle.get('ensemble_size', 1)
     deploy_idx = bundle.get('deploy_fold_idx',
                               max(r['fold'] for r in bundle['eval_fold_artifacts']))
@@ -193,7 +242,13 @@ def fit_conformal(
                   cal_df['outcome'].astype(np.float64)).abs().to_numpy()
     cal_df = cal_df.assign(_residual=residuals)
     n_cal_total = int(len(cal_df))
-    global_q_alpha = float(np.quantile(residuals, 1 - alpha)) if n_cal_total > 0 else 1.0
+    # R-p7-r2#H1: finite-sample correction. Split conformal at level (1-α)
+    # achieves marginal coverage only with quantile level ⌈(n+1)(1-α)⌉/n.
+    # At n=20, α=0.20 this raises the quantile level from 0.80 → 0.85.
+    global_q_alpha = (
+        float(np.quantile(residuals, _conformal_q_level(n_cal_total, alpha)))
+        if n_cal_total > 0 else 1.0
+    )
 
     cells_out: list[dict] = []
     bleed_quantiles: dict[str, float] = {}
@@ -201,7 +256,7 @@ def fit_conformal(
     seen_cells: set[tuple[int, int, int]] = set()
     bleed_above_floor: dict[int, bool] = {}  # vr → True if cell has n >= floor
 
-    for (pt, sb, vr), sub in cal_df.groupby(['price_tier', 'stc_bucket', 'vol_regime']):
+    for (pt, sb, vr), sub in cal_df.groupby(['price_tier', 'stc_bucket', 'vol_regime_int']):
         pt, sb, vr = int(pt), int(sb), int(vr)
         seen_cells.add((pt, sb, vr))
         n = int(len(sub))
@@ -212,7 +267,8 @@ def fit_conformal(
             continue
         if is_bleed_cell_pt_sb:
             bleed_above_floor[vr] = True
-        q_alpha = float(np.quantile(sub['_residual'].to_numpy(), 1 - alpha))
+        q_alpha = float(np.quantile(sub['_residual'].to_numpy(),
+                                    _conformal_q_level(n, alpha)))
         ticker_counts = sub['ticker'].value_counts()
         top_share = float(ticker_counts.iloc[0] / n) if len(ticker_counts) else 0.0
         cells_out.append({
@@ -254,10 +310,12 @@ def fit_conformal(
         for vr_i in (0, 1):
             if not bleed_per_vr[str(vr_i)]:
                 continue  # this vr has its own mondrian quantile
-            sub_vr = bleed_sub[bleed_sub['vol_regime'] == vr_i]
-            if len(sub_vr) >= 1:
+            sub_vr = bleed_sub[bleed_sub['vol_regime_int'] == vr_i]
+            n_vr = int(len(sub_vr))
+            if n_vr >= 1:
                 bleed_quantiles[f"vol_regime={vr_i}"] = float(
-                    np.quantile(sub_vr['_residual'].to_numpy(), 1 - alpha)
+                    np.quantile(sub_vr['_residual'].to_numpy(),
+                                _conformal_q_level(n_vr, alpha))
                 )
             else:
                 bleed_quantiles[f"vol_regime={vr_i}"] = global_q_alpha
@@ -399,9 +457,16 @@ def run(args: argparse.Namespace) -> dict:
             raise Phase5SchemaError("predictions_sha256 mismatch")
         preds_df = pd.read_parquet(preds_path, engine='pyarrow', dtype_backend='numpy_nullable')
         cal_df = preds_df[preds_df['split'] == 'cal'].reset_index(drop=True)
-        if len(cal_df) < args.n_cell_floor:
+        # R-p7-r2#M3: gate on TOTAL cal rows for global validity at α=0.20.
+        # n_cell_floor governs per-Mondrian-cell emission, not total. Keep
+        # this contract gate at 100 (5× the per-cell floor) so global_q_alpha
+        # is reliable even when Mondrian falls through. Below 100, abort.
+        N_CAL_TOTAL_FLOOR = 100
+        if len(cal_df) < N_CAL_TOTAL_FLOOR:
             raise Phase5ContractError(
-                f"cal split has {len(cal_df)} rows < N_CELL_FLOOR={args.n_cell_floor}"
+                f"cal split has {len(cal_df)} rows < N_CAL_TOTAL_FLOOR={N_CAL_TOTAL_FLOOR}; "
+                f"Mondrian cells require {args.n_cell_floor} per cell but global validity "
+                f"at α=0.20 needs ≥100 total"
             )
 
         artifact = fit_conformal(

@@ -19,8 +19,15 @@ import json
 import math
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Optional, TypedDict, Union
+
+# R-p7-r2#H2: import BLEED_CELL from features so this module and conformal.py
+# stay aligned through any future rebinning. features.py has no torch dep so
+# this is safe even though _helpers.py is intentionally torch-free.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from features import BLEED_CELL  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +117,10 @@ def fsync_directory(path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 class AuditDict(TypedDict):
-    q_alpha: float
-    half_width: float
+    """R-p7-r2#M1: q_alpha and half_width are Optional because dispatch_miss
+    cells return None. Audit consumers must None-check before float()."""
+    q_alpha: Optional[float]
+    half_width: Optional[float]
     clipped_lo: bool
     clipped_hi: bool
     chain: list
@@ -149,7 +158,7 @@ def lookup_cell_quantile(
 
     # 1. Bleed cell — per-vol_regime granularity (Phase 5 R1#C5)
     bleed_per_vr = artifact.get('bleed_collapsed_by_merge_per_vr', {})
-    if (pt, sb) == (3, 2) and bleed_per_vr.get(str(vr)):
+    if (pt, sb) == BLEED_CELL and bleed_per_vr.get(str(vr)):
         bleed = artifact.get('bleed_fallback_quantiles', {}) or {}
         key_axes = bleed.get('key_axes', [])
         sub_key = format_bleed_key(key_axes, row_features)
