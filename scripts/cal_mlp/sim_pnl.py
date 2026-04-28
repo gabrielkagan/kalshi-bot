@@ -419,7 +419,12 @@ def run_sim_pnl(
         if col not in candidate_df.columns:
             candidate_df[col] = np.int8(0)
 
-    cand_normed = apply_norm(candidate_df, normstats, CONT_FEATURE_COLS)
+    # R-p6-impl-r5#CRIT: _load_normstats returns the full payload {'stats':...,
+    # 'transforms':...}; apply_norm needs the inner per-column dict.
+    cand_normed = apply_norm(
+        candidate_df, normstats['stats'], CONT_FEATURE_COLS,
+        transforms=normstats.get('transforms', {}),
+    )
     ticker_to_id = {t: i for i, t in enumerate(sorted(cand_normed['ticker'].unique()))}
     # R3#C2: ticker_id column needed by Phase4Dataset.
     cand_normed['ticker_id'] = cand_normed['ticker'].astype(str).map(ticker_to_id).fillna(0).astype(np.int64)
@@ -514,7 +519,11 @@ def run_sim_pnl(
                 ch_normstats_path,
                 expected_sha=ch_deploy_fold.get('normstats_sha256'),
             )
-            ch_normed = apply_norm(candidate_df, ch_normstats, CONT_FEATURE_COLS)
+            # R-p6-impl-r5#CRIT: unwrap normstats payload {'stats':..., 'transforms':...}
+            ch_normed = apply_norm(
+                candidate_df, ch_normstats['stats'], CONT_FEATURE_COLS,
+                transforms=ch_normstats.get('transforms', {}),
+            )
             ch_ticker_to_id = {t: i for i, t in enumerate(sorted(ch_normed['ticker'].unique()))}
             # R3#C2: ticker_id column for Phase4Dataset.
             ch_normed['ticker_id'] = ch_normed['ticker'].astype(str).map(ch_ticker_to_id).fillna(0).astype(np.int64)

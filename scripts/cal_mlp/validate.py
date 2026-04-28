@@ -509,7 +509,11 @@ def main() -> None:
             ns_path,
             expected_sha=deploy_fold.get('normstats_sha256'),
         )
-        test_normed = apply_norm(test_df, normstats, CONT_FEATURE_COLS)
+        # R-p6-impl-r5#CRIT: _load_normstats returns full payload; unwrap.
+        test_normed = apply_norm(
+            test_df, normstats['stats'], CONT_FEATURE_COLS,
+            transforms=normstats.get('transforms', {}),
+        )
         ticker_to_id = {t: i for i, t in enumerate(sorted(test_normed['ticker'].unique()))}
         ds = CalibrationDataset(test_normed, CONT_FEATURE_COLS, ticker_to_id)
         loader = DataLoader(ds, batch_size=2048, shuffle=False, collate_fn=collate_dict)
