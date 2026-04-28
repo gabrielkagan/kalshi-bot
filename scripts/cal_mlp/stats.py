@@ -55,13 +55,15 @@ def cluster_bootstrap_ci(
         deltas[i] = float(stat_fn(sample))
     lo = float(np.quantile(deltas, alpha / 2))
     hi = float(np.quantile(deltas, 1 - alpha / 2))
-    # Monte Carlo SE on the CI endpoint via jackknife approximation.
-    mc_se = float(np.std(deltas) / math.sqrt(n_bootstrap))
+    # R-p6-r4#L2: this is SE of the bootstrap MEAN, not of the CI endpoint.
+    # The Maritz-Jarrett quantile SE would require kernel-density estimation;
+    # mean-SE is a useful audit-only diagnostic. Renamed for honesty.
+    mc_se_mean = float(np.std(deltas) / math.sqrt(n_bootstrap))
     return (point, lo, hi, {
         'n_clusters': int(n_clusters),
         'n_bootstrap': int(n_bootstrap),
         'seed': int(seed),
-        'mc_se': mc_se,
+        'mc_se_mean': mc_se_mean,
     })
 
 
@@ -87,12 +89,12 @@ def day_bootstrap_ci(
         means[i] = float(np.mean(daily_metrics[idx]))
     lo = float(np.quantile(means, alpha / 2))
     hi = float(np.quantile(means, 1 - alpha / 2))
-    mc_se = float(np.std(means) / math.sqrt(n_bootstrap))
+    mc_se_mean = float(np.std(means) / math.sqrt(n_bootstrap))
     return (point, lo, hi, {
         'n_days': int(n_days),
         'n_bootstrap': int(n_bootstrap),
         'seed': int(seed),
-        'mc_se': mc_se,
+        'mc_se_mean': mc_se_mean,
     })
 
 

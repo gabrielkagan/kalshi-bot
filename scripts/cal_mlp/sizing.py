@@ -92,7 +92,13 @@ def compute_drawdown_scaler(
 
 
 def compute_stc_scaler(seconds_to_close: float) -> float:
-    """bot.py STC_SIZING_SCALER: contracts *= 300/stc when stc>300."""
+    """bot.py STC_SIZING_SCALER: contracts *= 300/stc when stc>300.
+
+    R-p7-r4#M1: caller (compute_size) applies `max(1, int(...))` after
+    multiplication, so STC scaling can NEVER reduce a 1-contract position
+    to 0. This matches bot.py and the integration.py mirror — intentional
+    parity. Sim PnL operators should know that "STC scaler" is bounded
+    below by 1 contract."""
     if not STC_SIZING_SCALER_ENABLED:
         return 1.0
     if seconds_to_close <= STC_SIZING_SCALER_KNEE:

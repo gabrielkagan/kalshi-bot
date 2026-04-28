@@ -40,7 +40,13 @@ import pandas as pd
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path.cwd()))
+# R-p7-claude-md#LOW1: previously inserted Path.cwd() unconditionally — could
+# leak unusual CWD modules if sim_pnl was imported with a non-standard cwd.
+# sim_pnl is a CLI script-time tool (never imported by bot.py at runtime)
+# but tightening anyway: only add cwd if not already on path.
+_cwd = str(Path.cwd())
+if _cwd not in sys.path:
+    sys.path.insert(0, _cwd)
 
 from train import (  # noqa: E402
     CalibrationDataset, CONT_FEATURE_COLS, apply_norm, collate_dict,

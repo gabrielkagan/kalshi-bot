@@ -215,7 +215,7 @@ def per_band_brier(
             'point': float(point),
             'ci_lo': float(lo),
             'ci_hi': float(hi),
-            'mc_se': audit['mc_se'],
+            'mc_se_mean': audit['mc_se_mean'],
             'ship_blocker_active': ship_blocker_active,
             'ship_blocker_fires': ship_blocker_fires,
         }
