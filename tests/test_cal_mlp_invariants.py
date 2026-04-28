@@ -335,3 +335,204 @@ def test_verify_wal_requires_both_pragmas(tmp_path):
     conn.execute("PRAGMA busy_timeout=10000")
     integration._verify_wal(conn)  # no exception
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# annotate_evaluation_kwargs ordering + skip-reason contract
+# ---------------------------------------------------------------------------
+
+def test_annotate_env_disabled_fires_first():
+    """R-p7-cleanroom#M4 regression: env check must fire BEFORE
+    raw_prob_null check so kill-switch dashboards count correctly when
+    raw_prob is also None."""
+    import os
+    import integration
+    os.environ['CALMLP_ENABLED'] = '0'
+    try:
+        kwargs = {}
+        rv = integration.annotate_evaluation_kwargs(
+            kwargs, raw_prob=None, ticker='BTC-25APR2700-T117500',
+            side='yes', entry_price_cents=95, row_features={}, predictor=None,
+        )
+        assert rv is None
+        assert kwargs['cal_mlp_skipped_reason'] == 'env_disabled', \
+            f"expected env_disabled, got {kwargs.get('cal_mlp_skipped_reason')}"
+    finally:
+        os.environ.pop('CALMLP_ENABLED', None)
+
+
+def test_annotate_no_predictor_when_env_on_but_predictor_none():
+    """If CALMLP_ENABLED=1 + raw_prob set + predictor=None, must surface
+    'no_predictor' (not env_disabled or raw_prob_null)."""
+    import os
+    import integration
+    os.environ['CALMLP_ENABLED'] = '1'
+    try:
+        kwargs = {}
+        rv = integration.annotate_evaluation_kwargs(
+            kwargs, raw_prob=0.97, ticker='BTC-25APR2700-T117500',
+            side='yes', entry_price_cents=95, row_features={}, predictor=None,
+        )
+        assert rv is None
+        assert kwargs['cal_mlp_skipped_reason'] == 'no_predictor'
+    finally:
+        os.environ.pop('CALMLP_ENABLED', None)
+
+
+def test_annotate_raw_prob_null_when_env_on_predictor_present():
+    """env=1, predictor present, raw_prob=None → 'raw_prob_null'."""
+    import os
+    import integration
+    os.environ['CALMLP_ENABLED'] = '1'
+    try:
+        # Stub predictor (won't actually be called because raw_prob_null
+        # short-circuits before predictor.predict).
+        class StubPredictor:
+            asset = 'BTC'
+        kwargs = {}
+        rv = integration.annotate_evaluation_kwargs(
+            kwargs, raw_prob=None, ticker='BTC-25APR2700-T117500',
+            side='yes', entry_price_cents=95, row_features={},
+            predictor=StubPredictor(),
+        )
+        assert rv is None
+        assert kwargs['cal_mlp_skipped_reason'] == 'raw_prob_null'
+    finally:
+        os.environ.pop('CALMLP_ENABLED', None)
+
+
+def test_calmlp_error_code_round_trips_to_skipped_reason():
+    """R-p7-r2#C11: when predict() raises CalMLPError(code), annotate
+    stamps cal_mlp_skipped_reason=code IFF code is in SKIPPED_REASONS;
+    otherwise stamps 'load_failed'."""
+    import os
+    import integration
+    os.environ['CALMLP_ENABLED'] = '1'
+    try:
+        # Stub predictor that raises CalMLPError with each known code.
+        for code in integration.SKIPPED_REASONS:
+            class RaisingPredictor:
+                asset = 'BTC'
+                def predict(self, **kw):
+                    raise integration.CalMLPError(code, f'test {code}')
+            kwargs = {}
+            integration.annotate_evaluation_kwargs(
+                kwargs, raw_prob=0.97, ticker='BTC-25APR2700-T117500',
+                side='yes', entry_price_cents=95, row_features={},
+                predictor=RaisingPredictor(),
+            )
+            assert kwargs.get('cal_mlp_skipped_reason') == code, \
+                f"code={code!r} → got {kwargs.get('cal_mlp_skipped_reason')!r}"
+
+        # Unknown code falls back to 'load_failed'.
+        class WeirdPredictor:
+            asset = 'BTC'
+            def predict(self, **kw):
+                raise integration.CalMLPError('not_in_enum', 'test')
+        kwargs = {}
+        integration.annotate_evaluation_kwargs(
+            kwargs, raw_prob=0.97, ticker='BTC-25APR2700-T117500',
+            side='yes', entry_price_cents=95, row_features={},
+            predictor=WeirdPredictor(),
+        )
+        assert kwargs['cal_mlp_skipped_reason'] == 'load_failed'
+    finally:
+        os.environ.pop('CALMLP_ENABLED', None)
+
+
+# ---------------------------------------------------------------------------
+# features.py contract checks
+# ---------------------------------------------------------------------------
+
+def test_missing_indicator_source_map_keys_subset_of_indicator_cols():
+    """forward map's keys must be ⊆ MISSING_INDICATOR_COLS — otherwise the
+    inverse lookup at integration._predict_inner sets a non-existent col."""
+    import features
+    fwd_keys = set(features.MISSING_INDICATOR_SOURCE_MAP.keys())
+    indicator_cols = set(features.MISSING_INDICATOR_COLS)
+    assert fwd_keys.issubset(indicator_cols), \
+        f"orphan keys: {fwd_keys - indicator_cols}"
+
+
+def test_missing_indicator_source_values_subset_of_cont_cols():
+    """forward map's values must be ⊆ CONT_FEATURE_COLS — otherwise the
+    NaN→indicator flip targets a non-existent source col."""
+    import features
+    src_cols = set(features.MISSING_INDICATOR_SOURCE_MAP.values())
+    cont_cols = set(features.CONT_FEATURE_COLS)
+    assert src_cols.issubset(cont_cols), \
+        f"orphan source cols: {src_cols - cont_cols}"
+
+
+def test_cont_feature_transforms_keys_subset_of_cont_cols():
+    """CONT_FEATURE_TRANSFORMS only covers the columns it transforms;
+    every key MUST be in CONT_FEATURE_COLS."""
+    import features
+    transform_keys = set(features.CONT_FEATURE_TRANSFORMS.keys())
+    cont_cols = set(features.CONT_FEATURE_COLS)
+    assert transform_keys.issubset(cont_cols), \
+        f"orphan transform keys: {transform_keys - cont_cols}"
+    valid_transforms = {
+        'logit', 'log_cents_to_dollars', 'log1p', 'log1p_signed',
+        'identity', 'identity_no_zscore',
+    }
+    for col, name in features.CONT_FEATURE_TRANSFORMS.items():
+        assert name in valid_transforms, \
+            f"col {col!r} has invalid transform {name!r}"
+
+
+def test_skipped_reasons_is_immutable_frozenset():
+    """SKIPPED_REASONS is frozenset to prevent accidental runtime mutation
+    (e.g., a future caller doing `SKIPPED_REASONS.add('new_code')` would
+    silently break the audit contract)."""
+    import integration
+    assert isinstance(integration.SKIPPED_REASONS, frozenset)
+
+
+# ---------------------------------------------------------------------------
+# _SHA_CHAIN_CACHE keying invariants (R-p7-r4#MED-CACHE)
+# ---------------------------------------------------------------------------
+
+def test_sha_chain_cache_includes_project_root():
+    """R-p7-r4#MED-CACHE: cache key must include project_root so test
+    fixtures with the same train_id under a fake root can't poison the
+    real-prod cache entry."""
+    import inspect
+    import integration
+    src = inspect.getsource(integration.CalMLPPredictor._verify_bundle_sha_chain)
+    # The cache_key must combine train_id + asset + project_root.
+    assert 'project_root' in src or 'self.project_root' in src, \
+        "cache key missing project_root component"
+    assert 'train_id' in src
+    assert 'asset' in src or 'self.asset' in src
+
+
+# ---------------------------------------------------------------------------
+# bundle_sha producer/consumer alignment (R-p4-r7-CRIT, R-p4-r8-CRIT)
+# ---------------------------------------------------------------------------
+
+def test_phase4_bundle_sha_excludes_phase5_when_conformal_absent():
+    """The helper must short-circuit at phase4 when conformal_sha256 is
+    absent — phase-4-only bundles don't have a phase-5 chain to verify."""
+    import _helpers
+    bundle = _make_synthetic_bundle(with_phase5=False)
+    # Should NOT crash on missing 'bundle_sha'/'conformal_sha256'.
+    _helpers.verify_bundle_sha_chain(bundle)
+    # And missing 'bundle_sha' shouldn't matter at this point.
+    bundle.pop('bundle_sha', None)
+    _helpers.verify_bundle_sha_chain(bundle)
+
+
+def test_normstats_concat_uses_per_file_sha_strings():
+    """R-p4-r7-CRIT: producer/consumer alignment regression. The hash
+    input is the per-file SHA hex strings from eval_fold_artifacts —
+    NOT the canonical-JSON bytes of the normstats dicts. Mutating any
+    fold's normstats_sha256 hex MUST change phase4_bundle_sha."""
+    import hashlib
+    import _helpers
+    bundle = _make_synthetic_bundle()
+    # Mutate fold 1's normstats_sha (a non-deploy fold) — phase4_bundle_sha
+    # changes because it includes ALL folds' normstats_shas in the concat.
+    bundle['eval_fold_artifacts'][1]['normstats_sha256'] = 'mutated'.ljust(64, 'x')
+    with pytest.raises(RuntimeError, match='phase4 sha mismatch'):
+        _helpers.verify_bundle_sha_chain(bundle)
