@@ -372,11 +372,11 @@ if (cutoff_end - oldest_row_ts).days < min_required_days:
 - `n_test < 50` → SystemExit (R1#C8 — conformal quantile is unstable)
 - `n_test < 200` → soft warning in audit
 - `n_train < N_TRAIN_MIN` (default 2000; per-asset CLI overridable) → SystemExit (R2#C13)
-- `n_tickers_dropped_at_boundary / n_pre_boundary_drop > 0.20` → soft flag `high_boundary_drop_rate` (R2-OPS#C15)
+- `n_rows_reassigned_at_boundary / n_in_span > 0.30` → soft flag `high_boundary_reassign_rate` (R2-OPS#C15 + R-impl-r3#C1: threshold raised from 0.20 to 0.30 to match the renamed metric — reassignments naturally include same-fold cross-split moves and are higher than dropped-only counts)
 
 **R2-OPS#C12 (namespace clarification):** the `n_test < 50` threshold applies to the FOLD's total test rows. Per-cell counts may be smaller and are surfaced in `audit.per_fold[k].small_cell_warnings` for Phase 5's `n_test < 20 → use global quantile` fallback. Phase 2 does NOT abort on small per-cell counts — small bleed-cell counts are expected.
 
-**Ticker-disjoint splits enforcement (R2#C15):** after the time-based split, assign each ticker entirely to the split its LATEST row belongs to. This eliminates correlated leakage at fold boundaries (15-min market straddling cal/test). Costs ~5-10% of rows at boundaries. Audit reports `n_tickers_dropped_at_boundary`.
+**Ticker-disjoint splits enforcement (R2#C15):** after the time-based split, assign each ticker entirely to the split its LATEST IN-SPAN row belongs to. This eliminates correlated leakage at fold boundaries (15-min market straddling cal/test). Costs ~5-10% of rows at boundaries. Audit reports `n_rows_reassigned_at_boundary` — count of rows whose split CHANGED (e.g., a train row reassigned to test because the same ticker had a later test row); this is the boundary-cost metric, not "rows dropped to None" (that metric is structurally always 0 by construction).
 
 ## Normstats (per-fold)
 
@@ -497,7 +497,7 @@ Build asset-wide vocab from the FULL post-filter source (all 3 folds combined):
 
 `ticker_id (int32)` is added to the parquet schema. UNK index 0 reserved for inference-time tickers not in vocab (Phase 4 embedding layer initializes UNK to zero vector).
 
-**Cross-fold ticker constraint:** assert no ticker appears in more than one fold's split (after ticker-disjoint enforcement above). Audit reports `n_tickers_train_only, n_tickers_cal_only, n_tickers_test_only, n_tickers_dropped_at_boundary`.
+**Cross-fold ticker constraint:** assert no ticker appears in more than one fold's split (after ticker-disjoint enforcement above). Audit reports `n_tickers_train_only, n_tickers_cal_only, n_tickers_test_only, n_rows_reassigned_at_boundary`.
 
 ## Output parquet schema
 
@@ -617,7 +617,7 @@ rowid                   int64                            -- source-table rowid (
     "mean_rows_per_ticker": 1.6,
     "pct_tickers_with_only_one_row": 0.72,
     "n_tickers_train_only": 854, "n_tickers_cal_only": 211, "n_tickers_test_only": 197,
-    "n_tickers_dropped_at_boundary": 19
+    "n_rows_reassigned_at_boundary": 487
   },
   "void_rate": 0.003,
   "data_version_at_close": 184321,

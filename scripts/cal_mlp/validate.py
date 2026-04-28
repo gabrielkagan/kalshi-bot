@@ -354,9 +354,16 @@ def main() -> None:
     args = ap.parse_args()
 
     device = torch.device(args.device)
-    models_dir = Path(args.models_dir)
-    data_dir = Path(args.data_dir)
-    reports_dir = Path(args.reports_dir)
+    # R-impl-r3#C2: anchor relative paths to project_root (script location),
+    # NOT cwd — matches extract_data.py's anchoring so Phase 2 writer and
+    # Phase 6 reader agree on locations regardless of invocation cwd.
+    project_root = Path(__file__).resolve().parents[2]
+    def _resolve(p: str) -> Path:
+        pp = Path(p)
+        return (pp if pp.is_absolute() else (project_root / pp)).resolve()
+    models_dir = _resolve(args.models_dir)
+    data_dir = _resolve(args.data_dir)
+    reports_dir = _resolve(args.reports_dir)
     reports_dir.mkdir(parents=True, exist_ok=True)
     asset_data_dir = data_dir / args.asset
     asset_data_dir.mkdir(parents=True, exist_ok=True)

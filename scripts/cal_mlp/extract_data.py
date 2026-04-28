@@ -531,9 +531,7 @@ def run(args: argparse.Namespace) -> dict:
                    else (project_root / args.out_dir)).resolve()
     else:
         out_dir = (project_root / 'data' / 'cal_mlp' / asset).resolve()
-    try:
-        out_dir.relative_to(project_root)
-    except ValueError:
+    if not out_dir.is_relative_to(project_root):
         raise SystemExit(
             f"--out-dir must be inside project root {project_root}; got {out_dir}"
         )
@@ -640,7 +638,7 @@ def run(args: argparse.Namespace) -> dict:
                              fw['test_start'].date(), fw['test_end'].date())
                 fold_df = df.copy()
                 fold_df['split'] = assign_split(fold_df, fw)
-                fold_df, n_boundary_dropped = enforce_ticker_disjoint(fold_df)
+                fold_df, n_boundary_reassigned = enforce_ticker_disjoint(fold_df)
                 fold_df = fold_df[fold_df['split'].notna()].reset_index(drop=True)
                 fold_df['fold'] = np.int8(k)
                 # Split frames
@@ -726,7 +724,7 @@ def run(args: argparse.Namespace) -> dict:
                     'imputed_pct': imputed_pct,
                     'small_cell_warnings': small_cell_warnings,
                     'per_cell': per_cell,
-                    'n_tickers_dropped_at_boundary': n_boundary_dropped,
+                    'n_rows_reassigned_at_boundary': n_boundary_reassigned,
                 })
                 all_per_cell[f"fold{k}"] = per_cell
 
