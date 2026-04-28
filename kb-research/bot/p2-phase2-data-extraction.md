@@ -35,8 +35,8 @@ Per-asset entry-floor filter is on by default; disable with `--include-sub-floor
 
 SELECT ticker, evaluation_time, asset, side, strategy,
        market_price, seconds_to_close, vol_regime, z_score,
-       yes_spread_cents, calibrated_prob, calibration_method,
-       raw_prob, breakeven_wr, fee_adjusted_edge, kelly_f,
+       yes_spread_cents, calibrated_prob,
+       raw_prob, fee_adjusted_edge, kelly_f,
        is_weekend, hour_of_day_utc, day_of_week,
        market_result, settled_time, available_balance_cents,
        spot_momentum_60s_bps, spot_momentum_5m_bps,
@@ -69,13 +69,17 @@ ORDER BY evaluation_time, ticker, rowid
 
 **R1#C3 + R2-OPS#C4**: `cutoff_end` is a SETTLEMENT watermark. The evaluation-watermark gap was removed — rows with `settled_time IS NOT NULL AND settled_time < cutoff_end` are unambiguously caught up regardless of when they were evaluated. `cutoff_end` alone is persisted in `bundle.json`.
 
-**R1#C4**: Per-asset floor mirrored from bot.py:219-225, vendored into `cal_mlp/asset_floors.py` (single source of truth). Phase 7 startup parity-asserts.
+**R1#C4**: Per-asset floor mirrored from bot.py:219-225, vendored into `cal_mlp/features.py` as the constant `ASSET_FLOORS` (single source of truth — see Module layout section). Phase 7 startup parity-asserts.
 
 **R1#C18 / R3#C5**: `rowid` tiebreaker for total order; `data_version` audited at open/close.
 
 ## Schema check at extract time (R3#C14)
 
-Before the SELECT, run `PRAGMA table_info(evaluated_opportunities)`. Assert every column referenced exists. On mismatch:
+Before the SELECT, run `PRAGMA table_info(evaluated_opportunities)` on the SAME connection used for the data SELECT. Assert every column referenced exists.
+
+**R3-cnv#C7 (PRAGMA + SELECT consistency):** PRAGMA queries do not take their own read snapshot, but on a single connection any DDL applied between the PRAGMA and the SELECT would have to acquire SQLite's write lock, blocked by the running connection. Schema observed by PRAGMA == schema used by SELECT, by single-connection serialization. Spec contract: never split schema-check and data-pull across connections.
+
+On mismatch:
 
 ```
 SystemExit: Phase 2 schema mismatch — column <X> expected by extract but not in state.db.
@@ -126,11 +130,24 @@ where Δ = MLP(features_excluding_logit_raw_prob)   # the residual head
 
 **R2-ML#C2 (honest framing):** raw_prob is excluded as a literal feature so the SKIP TERM dominates the prior path. The MLP can still recover information about it via correlated features (`market_price`, `time_decayed_proximity`, etc.), which is intentional — Δ should be allowed to depend on the prior, just not short-circuit through a literal copy.
 
-**R2-ML#C3 (loss formulation lock):** the MLP is trained with `BCE(sigmoid(logit_raw_prob_clipped + Δ), outcome)` weighted by `1 / sqrt(p_cell + ε)` where `p_cell` is the per-cell train positive rate (smoothed). This is part of the architecture lock and `cfg_fp`. Phase 3 may revise the smoothing constant but the form is locked here.
+**R2-ML#C3 + R3-ML#C1 (loss formulation lock — REVISED):** The earlier `1/sqrt(p_cell+ε)` form had the wrong direction — it weighted high-WR cells DOWN (so the bleed cell at p~0.88 got LESS training emphasis than thin cells at p~0.50, which is the opposite of intent). Locked form:
+
+```python
+# Per-cell calibration-residual weighting:
+miscalibration_cell = abs(p_cell - mean(method_output | cell))   # |empirical - predicted| at cell level
+w_cell = 1.0 + 4.0 * miscalibration_cell    # in [1, 5]; 1 for well-calibrated cells, ~5 for bleed
+loss = BCE(sigmoid(logit_raw_prob_clipped + Δ), outcome) * w_cell[row.cell]
+```
+
+This explicitly up-weights cells where the production prior `method_output` diverges from the empirical positive rate — exactly the bleed cells we want to fix. The miscalibration is computed on the FOLD's TRAIN split only (no test leakage). The `4.0` multiplier and `1.0` floor are part of `cfg_fp`. Phase 3 ablation may tune them; the form is locked here.
 
 **R2-ML#C4 (Phase 7 inference contract):** when bot.py's ProbabilityEngine returns `raw_prob = None` (null_result fallback at bot.py:8400), the MLP is bypassed — no calibrated_prob written, opportunity skipped just as today. The MLP is only invoked when `raw_prob ∈ [EPS, 1-EPS]`. Phase 7 must enforce this guard at the call site.
 
-**R2-ML#C15 (architecture lock phase boundary):** the parquet is a feature-superset. `raw_prob`, `logit_raw_prob_clipped`, `prob_breakeven_gap`, `breakeven_wr`, etc. are all written. `cfg_fp` commits the SUBSET that Phase 4 consumes. If Phase 3 review wants to revise (e.g., temperature-scaled raw_prob input), the parquet does NOT need re-extraction — only `cfg_fp` and the Phase 4 model definition change. Re-extraction is the fallback if Phase 3 wants different bucketization or different pre-filter rules.
+**R3-cnv#C4 (Phase 4 scale handoff lock):** `logit_raw_prob_clipped` is in raw logit units (range `[-13.8156, +13.8156]`). Phase 4 MUST consume it WITHOUT normalization (it's not in CONT_FEATURE_COLS, not z-scored), and the MLP's Δ output MUST be unbounded logit-space (no final sigmoid/tanh on Δ). The forward computation `final_prob = sigmoid(logit_raw_prob_clipped + Δ)` is the locked architecture; Phase 4 review may not relax this. Phase 7 startup parity-asserts by computing one inference forward pass with `raw_prob=0.94, Δ=0` and asserting `final_prob == 0.94 ± 1e-6`.
+
+**R3-cnv#C5 (UNK ticker honest framing):** `is_unk_ticker` is always 0 in Phase 2 training data BY CONSTRUCTION (vocab built from this extract). Phase 4 cannot learn an "unk → high uncertainty" pathway from training data; the MLP's response to `is_unk_ticker=1` at Phase 7 inference is undefined extrapolation. Phase 5/6 MUST handle UNK uncertainty via conformal-side σ inflation (forced max-uncertainty cell quantile), NOT MLP-learned behavior. The `is_unk_ticker` column is a routing flag for downstream code, NOT a learned feature.
+
+**R2-ML#C15 (architecture lock phase boundary):** the parquet is a feature-superset. `method_output_raw` (raw_prob), `logit_raw_prob_clipped`, `prob_breakeven_gap`, `breakeven_wr_audit` (audit-only), etc. are all written. `cfg_fp` commits the SUBSET that Phase 4 consumes. If Phase 3 review wants to revise (e.g., temperature-scaled raw_prob input), the parquet does NOT need re-extraction — only `cfg_fp` and the Phase 4 model definition change. Re-extraction is the fallback if Phase 3 wants different bucketization or different pre-filter rules.
 
 ## Outcome (target)
 
@@ -233,10 +250,28 @@ Per-feature policy:
 
 1. **`raw_prob` NULL** → row dropped at SQL (`raw_prob IS NOT NULL`).
 2. **`market_result` NULL** → dropped at SQL.
-3. **WS-fed features** (in `MISSING_INDICATOR_COLS`): impute with fold-train mean AND emit indicator column = 1.
-4. **Other continuous features** NULL → impute with fold-train mean (no indicator).
-5. **`available_balance_cents` NULL** (R1#C10): impute with fold-train mean (do NOT drop the row).
+3. **WS-fed features** (in `MISSING_INDICATOR_COLS`): impute with FOLD-TRAIN MEAN AND emit indicator column = 1.
+4. **Other continuous features** NULL → impute with FOLD-TRAIN MEAN (no indicator).
+5. **`available_balance_cents` NULL** (R1#C10): impute with FOLD-TRAIN MEAN (do NOT drop the row).
 6. **`strategy` NULL** (R1#C16): coalesce to `'unknown'` at read; metadata-only column.
+
+**R3-stitch#C3 (imputation order — locked):**
+
+```python
+for fold in folds:
+    for col in CONT_FEATURE_COLS:
+        train_non_null = fold.train[col].dropna()
+        mean = train_non_null.mean()                      # ddof=1 std for normstats
+        # Apply transform first (logit, log_*, identity), THEN impute, THEN z-score.
+        for split in (fold.train, fold.cal, fold.test):
+            split[col] = transform(split[col], CONT_FEATURE_TRANSFORMS[col])
+            n_imputed = split[col].isna().sum()           # tracked per-split for audit
+            split[col] = split[col].fillna(mean)
+            if CONT_FEATURE_TRANSFORMS[col] != 'identity_no_zscore':
+                split[col] = (split[col] - mean) / std
+```
+
+Train, cal, AND test rows are all imputed with the FOLD-TRAIN MEAN (NOT the per-split mean, NOT zero, NOT median). Per-split or per-row imputation would leak distributional information from cal/test back into the feature, biasing Phase 5/6 metrics. Phase 2 unit test: deliberately inject NULL into a known-value test row, verify imputed value equals train mean.
 
 **Hard contract violations** (SystemExit):
 
@@ -245,29 +280,36 @@ Per-feature policy:
 
 ## Fold construction (walk-forward, rolling origin) — REWRITTEN per R2#C1
 
-**Rule:** test slices march FORWARD in time, are DISJOINT across folds, and each fold's `train_end ≤ cal_start ≤ cal_end ≤ test_start ≤ test_end ≤ next_fold.test_start`.
+**Rule:** test slices march FORWARD in time, are DISJOINT across folds, each fold's `train_end ≤ cal_start ≤ cal_end ≤ test_start ≤ test_end`. Across folds, `test_end_k < test_start_{k+1}` (gap is exactly `fold_offset_days - test_days = 15d` with default params).
 
-Concretely, with `cutoff_end = T`, `train=60d, cal=15d, test=15d, fold_offset=30d, K=3`:
+Mathematically, fold k (0-indexed, K=3):
 
 ```
-oldest         T-150d        T-120d        T-105d   T-90d        T-60d   T-45d   T-30d   T-15d    T (cutoff)
-                │             │             │       │             │       │       │       │       │
-fold 0:         ├──── train (60d)  ─────────┤      ├── cal(15d) ──┤      ├── test (15d) ──┤
-                                                   │              │
-fold 1:                       ├──── train (60d) ──────────────────┤      ├── cal(15d)─────┤      ├── test ───┤
-                                                                                          │              │
-fold 2:                                                  ├──── train (60d) ──────────────────┤      ├── cal──┤      ├── test ──┤
+test_end_k    = T - (K-1-k) × 30d              = T - 60d, T - 30d, T
+test_start_k  = test_end_k - 15d
+cal_end_k     = test_start_k
+cal_start_k   = cal_end_k - 15d
+train_end_k   = cal_start_k
+train_start_k = train_end_k - 60d
 ```
 
-Mathematically, fold k:
-- `test_end_k    = T - (K-1-k) × 30d                          = T - 60d, T - 30d, T`
-- `test_start_k  = test_end_k - 15d`
-- `cal_end_k     = test_start_k`
-- `cal_start_k   = cal_end_k - 15d`
-- `train_end_k   = cal_start_k`
-- `train_start_k = train_end_k - 60d`
+Concrete spans with `T = cutoff_end`:
 
-**Locked:** fold 0 is OLDEST test, fold K-1 is NEWEST test. Test slices are disjoint by construction.
+| fold | train       | cal           | test          |
+|------|-------------|---------------|---------------|
+| 0    | [T-150,T-90)| [T-90,T-75)  | [T-75,T-60)  |
+| 1    | [T-120,T-60)| [T-60,T-45)  | [T-45,T-30)  |
+| 2    | [T-90,T-30) | [T-30,T-15)  | [T-15,T)     |
+
+```
+T-150d   T-120d  T-90d   T-75d   T-60d   T-45d   T-30d   T-15d    T
+   │        │       │       │       │       │       │       │      │
+fold 0  ├── train (60d) ────┤  ├cal┤  ├test─┤
+fold 1               ├── train (60d) ────┤  ├cal┤  ├test─┤
+fold 2                            ├── train (60d) ──┤  ├cal┤  ├test┤
+```
+
+**Locked:** fold 0 is OLDEST test, fold K-1 is NEWEST test. Test slices are disjoint with 15d gaps between them. Train spans overlap across folds (this is normal walk-forward — fold 1's train [T-120,T-60) contains fold 0's TEST [T-75,T-60), which is fine because fold 1 trains on data that fold 0 reported test metrics for).
 
 **Minimum data check (R1#C6):**
 
@@ -294,11 +336,11 @@ if (cutoff_end - oldest_row_ts).days < min_required_days:
 
 For each fold, compute on the **train split only**:
 - For each col in `CONT_FEATURE_COLS`:
-  - Apply transform (`logit` / `log_cents_to_dollars` / `log1p` / `log1p_signed` / `identity`)
-  - `mean = train[col].mean(skipna=True)`
-  - `std = train[col].std(skipna=True, ddof=1)` (R2#C17 — sample std, locked)
-  - `p1 = quantile(0.01)`, `p99 = quantile(0.99)`, `median`, `mad` (R2#C9 — surface robust stats)
-  - if `std == 0`: emit error (constant column on train is a contract violation, not a benign edge case)
+  - Apply transform (`logit` / `log_cents_to_dollars` / `log1p` / `log1p_signed` / `identity` / `identity_no_zscore`)
+  - For `identity_no_zscore` columns (e.g., `hour_sin`, `hour_cos`): persist `{mean: 0.0, std: 1.0, _no_zscore: true}` analytical stats; do NOT fit from data. `apply_norm` short-circuits these columns (no z-score).
+  - For all other transforms: `mean = train_non_null[col].mean()`, `std = train_non_null[col].std(ddof=1)` (R2#C17 — sample std, locked).
+  - `p1 = quantile(0.01)`, `p99 = quantile(0.99)`, `median`, `mad` (R2#C9 — surface robust stats for Phase 3)
+  - **R3-stitch#C8/C9:** `std == 0` on a non-constant transform is a contract violation (Phase2ContractError); on `identity_no_zscore` it's a no-op.
 - For each col in `MISSING_INDICATOR_COLS`:
   - No transform; mean = fold_train_pct_missing; std = sqrt(p*(1-p)) clipped to ≥ 1e-3.
 
@@ -311,10 +353,13 @@ Persist `normstats_fold{F}.json`:
   "cutoff_end": "...",
   "n_train": 8421,
   "ddof": 1,
-  "transforms": { "breakeven_wr": "logit", ... },
+  "transforms": { "market_price": "log_cents_to_dollars", "btc_realized_vol_15m": "log1p", ... },
   "stats": {
-    "breakeven_wr": {"mean": 1.27, "std": 0.43, "n_nan": 0, "n_imputed": 12,
-                      "p1": 0.5, "p99": 2.4, "median": 1.30, "mad": 0.32},
+    "market_price": {"mean": -0.054, "std": 0.075, "n_nan": 0, "n_imputed": 0,
+                      "p1": -0.13, "p99": 0.00, "median": -0.05, "mad": 0.04},
+    "spot_momentum_60s_bps": {"mean": 0.012, "std": 4.7, "n_nan": 0, "n_imputed": 12,
+                                "p1": -14.2, "p99": 14.5, "median": 0.0, "mad": 2.8},
+    "hour_sin": {"mean": 0.0, "std": 1.0, "n_nan": 0, "n_imputed": 0, "_no_zscore": true},
     ...
   },
   "sha256_self": "<sha of canonical-json>"
@@ -357,7 +402,7 @@ Re-running with identical inputs produces identical `train_id`. **R2-OPS#C17 —
 
 Order:
 
-1. **mkdir** `data/cal_mlp/<asset>/<train_id>/` and `data/cal_mlp/<asset>/<train_id>/audit/`
+1. **mkdir** `data/cal_mlp/<asset>/<train_id>/` (audit JSON lives at the train_id directory root, not in a subdir; R3-stitch#C10)
 2. **Acquire** `.extract.lock` with `LOCK_EX | LOCK_NB` via `os.open(..., O_RDWR | O_CREAT)` (no truncate).
 3. **Write tmps** for each artifact in dependency order. For parquet: explicit fsync on file descriptor.
 
@@ -432,6 +477,7 @@ split           string                                  -- 'train' | 'cal' | 'te
 fold            int8
 [CONT_FEATURE_COLS as float32, post-transform]
 [MISSING_INDICATOR_COLS as int8, 0/1]
+breakeven_wr_audit     float32                           -- audit only; not in CONT_FEATURE_COLS (R3-stitch#C1)
 fee_adjusted_edge_audit float32                          -- audit only; Phase 6 sim_pnl uses for tier replay
 kelly_f_audit          float32                           -- audit only
 available_balance_cents int64                            -- audit only; Phase 6 uses for sizing
@@ -451,7 +497,6 @@ rowid                   int64                            -- source-table rowid (
   "train_id": "2026-04-27T00:00:00.000000Z-abcd1234",
   "cfg_fp": "f3b201e8a7c1d0e9",
   "cutoff_end": "2026-04-27T00:00:00.000000Z",
-  "cutoff_end_evaluation": "2026-04-26T23:00:00.000000Z",
   "include_sub_floor": false,
   "data_version_at_open": 184321,
   "data_version_at_close": 184321,
@@ -459,7 +504,7 @@ rowid                   int64                            -- source-table rowid (
   "ticker_vocab_sha256": "...",
   "audit_path": "extract_audit.json",
   "audit_sha256": "...",
-  "fold_artifacts": [
+  "eval_fold_artifacts": [
     {"fold": 0, "parquet_path": "fold0.parquet", "parquet_sha256": "...",
      "normstats_path": "normstats_fold0.json", "normstats_sha256": "...",
      "n_train": 8421, "n_cal": 2103, "n_test": 2087,
@@ -480,17 +525,21 @@ rowid                   int64                            -- source-table rowid (
   "cfg_fp": "...",
   "cutoff_end": "...",
   "data_version_at_open": 184321,
-  "source_total_rows_for_asset": 92334,    // SELECT COUNT(*) WHERE asset=? — full scan, ms-fast at current scale (R2-OPS#C12: bot.py has no asset index; if scale grows past 1M rows, add index in Phase 7)
+  "source_total_rows_for_asset": 92334,    // SELECT COUNT(*) WHERE asset=? — full scan, ms-fast at current scale (R2-OPS#C12b: bot.py has no asset index; if scale grows past 1M rows, add index in Phase 7)
   "source_total_rows_post_filter": 92110,
   "drops": {
+    "non_15m_product_type": 0,
+    "sports_ticker": 0,
     "below_asset_floor": 0,
     "null_market_price": 0,
+    "non_positive_market_price": 0,
     "null_raw_prob": 142,
-    "unsettled": 8932,
+    "null_evaluation_time": 0,
     "non_yes_no_result": 0,
     "null_settled_time": 12,
-    "null_evaluation_time": 0
+    "settled_after_cutoff": 8932
   },
+  "_drops_invariant": "source_total_rows_for_asset == source_total_rows_post_filter + sum(drops); enforced via Phase2ContractError",
   "per_fold": [
     {
       "fold": 0,
@@ -504,12 +553,13 @@ rowid                   int64                            -- source-table rowid (
       },
       "missing_pct_test": {"spot_momentum_60s_bps_missing": 0.04, ...},
       "small_cell_warnings": ["cell_(3,2)_n_test=12 <50 floor"],
+      "_per_cell_key_format": "f'({price_tier},{stc_bucket})' — exactly two integers, no whitespace; parser locked to re.fullmatch(r'\\((\\d+),(\\d+)\\)', key) (R3-cnv#C6)",
       "per_cell": {
         "(3,2)": {"n_train": 821, "n_cal": 198, "n_test": 187,
                    "train_positive_rate": 0.94, "cal_positive_rate": 0.93,
                    "test_positive_rate": 0.92,
                    "mean_method_output": 0.97,
-                   "void_count": 4,    // R2-OPS#C11: raw count (separate pre-filter pass)
+                   "void_count": 4,    // R2-OPS#C11b: raw count (separate pre-filter pass)
                    "n_pre_settle_filter": 1210},
         ...
       }
@@ -610,7 +660,7 @@ No module imports `extract_data.py`. Phase 4/5/6 import `features.py` and `norma
 
 ## Schema version contract (R2-OPS#C10)
 
-`schema_version: 2` in bundle. Phase 4/5/6 readers MUST refuse to load bundles where `schema_version != 2` and emit `Phase4SchemaError` / etc.
+`schema_version: 2` in bundle. Phase 4/5/6 readers MUST refuse to load bundles where `schema_version != 2` and emit a phase-local `*SchemaError` (defined in each phase's spec), with exit code mirroring Phase 2's exit-6 contract.
 
 Version 1 was the pre-R1 single-file layout (now obsolete). Future v3 will require a same-commit migration script that upgrades v2 bundles in place OR re-extracts from source. No automatic forward/backward compatibility.
 
