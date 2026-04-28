@@ -1,0 +1,264 @@
+"""Shared helpers consumed by Phase 4/5/6/7.
+
+Pure-math + I/O atomicity. NO torch dependency in this module — Phase 7's
+bot.py imports these without bringing in the model machinery.
+
+Locked exports (per Phase 5 R5 + Phase 4 R3):
+- FORWARD_KEYS: tuple of model forward-pass keys
+- compute_extract_logical_sha: stable across pyarrow versions
+- predict_with_interval: conformal interval at inference / audit mode
+- lookup_cell_quantile: per-cell dispatch chain (Mondrian → merged → global)
+- market_implied_prob_yes: side-aware breakeven helper
+- wilson_ci: 80% binomial CI
+- fsync_directory: directory fd fsync
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import re
+from pathlib import Path
+from typing import Any, Optional, TypedDict, Union
+
+
+# ---------------------------------------------------------------------------
+# FORWARD_KEYS (Phase 4 R3#C3 lock)
+# ---------------------------------------------------------------------------
+
+FORWARD_KEYS: tuple[str, ...] = (
+    'x_cont', 'x_missing',
+    'price_tier', 'stc_bucket', 'vol_regime_int', 'side_int',
+    'ticker_id', 'logit_raw_prob_clipped',
+)
+
+
+# ---------------------------------------------------------------------------
+# compute_extract_logical_sha (Phase 4 R3#C1)
+# ---------------------------------------------------------------------------
+
+def compute_extract_logical_sha(audit_json: dict, normstats_per_fold: list[dict]) -> str:
+    """Stable across pyarrow upgrades. Reads transforms from top-level
+    `normstats['transforms']` (NOT inside individual stat dicts)."""
+    canonical = {
+        'normstats': [
+            {col: {
+                'mean': stats['mean'],
+                'std': stats['std'],
+                'transform': ns.get('transforms', {}).get(col, 'identity'),
+                '_no_zscore': stats.get('_no_zscore', False),
+             }
+             for col, stats in sorted(ns['stats'].items())}
+            for ns in normstats_per_fold
+        ],
+        'per_fold': [
+            {'fold': pf['fold'],
+             'n_train': pf['n_train'], 'n_cal': pf['n_cal'], 'n_test': pf['n_test'],
+             'per_cell': {k: {'n_train': v['n_train'], 'n_cal': v['n_cal'], 'n_test': v['n_test'],
+                              'train_positive_rate': v.get('train_positive_rate'),
+                              'train_mean_method_output': v.get('train_mean_method_output')}
+                          for k, v in sorted(pf.get('per_cell', {}).items())}}
+            for pf in audit_json.get('per_fold', [])
+        ],
+    }
+    raw = json.dumps(canonical, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# market_implied_prob_yes (side-aware breakeven)
+# ---------------------------------------------------------------------------
+
+def market_implied_prob_yes(entry_price_cents: int, side: str) -> float:
+    """For YES side: breakeven = price/100. For NO side: breakeven = 1 - price/100.
+    The 'price' is the YES ask in cents (or NO ask if you're on the NO side)."""
+    p = max(0.0, min(1.0, entry_price_cents / 100.0))
+    return p if side == 'yes' else 1.0 - p
+
+
+# ---------------------------------------------------------------------------
+# wilson_ci (80% / 95% binomial CI)
+# ---------------------------------------------------------------------------
+
+def wilson_ci(n_success: int, n_total: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson 95% CI on a binomial proportion. n_total=0 → (0, 1)."""
+    if n_total <= 0:
+        return (0.0, 1.0)
+    p = n_success / n_total
+    denom = 1 + z * z / n_total
+    centre = (p + z * z / (2 * n_total)) / denom
+    half = (z * math.sqrt(p * (1 - p) / n_total + z * z / (4 * n_total * n_total))) / denom
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+# ---------------------------------------------------------------------------
+# fsync_directory
+# ---------------------------------------------------------------------------
+
+def fsync_directory(path: Path) -> None:
+    """fsync a directory file descriptor for atomicity guarantees."""
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+# ---------------------------------------------------------------------------
+# AuditDict (Phase 5 R2#C3) + return-type aliases
+# ---------------------------------------------------------------------------
+
+class AuditDict(TypedDict):
+    q_alpha: float
+    half_width: float
+    clipped_lo: bool
+    clipped_hi: bool
+    chain: list
+    p_pred_raw: float
+
+
+InferenceReturn = tuple  # (p_center, p_std, final_lo, final_hi)
+AuditReturn = tuple      # (p_center, p_std, final_lo, final_hi, AuditDict)
+
+
+# ---------------------------------------------------------------------------
+# lookup_cell_quantile (Phase 5 R5)
+# ---------------------------------------------------------------------------
+
+N_CELL_FLOOR = 20  # cells with n_cal < 20 are NOT emitted at fit; fall through
+
+
+def lookup_cell_quantile(
+    artifact: dict,
+    row_features: dict,
+    mode: str = 'inference',
+) -> tuple[Optional[float], list]:
+    """Returns (q_alpha, chain). q_alpha=None means dispatch missed.
+
+    Lookup chain:
+      1. Bleed cell (3, 2, *) per-vol_regime collapse-by-merge if active
+      2. Mondrian direct (price_tier, stc_bucket, vol_regime)
+      3. Merged-axes fallback (collapse axes listed in artifact['merged_axes'])
+      4. Global quantile fallback
+    """
+    chain: list = []
+    pt = int(row_features['price_tier'])
+    sb = int(row_features['stc_bucket'])
+    vr = int(row_features['vol_regime'])
+
+    # 1. Bleed cell — per-vol_regime granularity (Phase 5 R1#C5)
+    bleed_per_vr = artifact.get('bleed_collapsed_by_merge_per_vr', {})
+    if (pt, sb) == (3, 2) and bleed_per_vr.get(str(vr)):
+        bleed = artifact.get('bleed_fallback_quantiles', {}) or {}
+        key_axes = bleed.get('key_axes', [])
+        sub_key = ','.join(f"{a}={row_features[a if a != 'stc' else 'stc_bucket']}"
+                            for a in key_axes) or '_all'
+        q = (bleed.get('quantiles') or {}).get(sub_key)
+        if q is not None:
+            chain.append(f"bleed[{sub_key}]")
+            return float(q), chain
+
+    # 2. Direct mondrian lookup — structured fields only.
+    cell = next(
+        (c for c in artifact.get('cells', [])
+         if c.get('price_tier') == pt
+            and c.get('stc_bucket') == sb
+            and c.get('vol_regime') == vr),
+        None,
+    )
+    if cell is not None:
+        chain.append(f"mondrian[({pt},{sb},{vr})]")
+        return float(cell['q_alpha']), chain
+
+    # 3. Merged-axes fallback. Phase 5 R1#C6 vocabulary:
+    # merged_axes ⊆ {'price_tier', 'stc', 'vol_regime'}.
+    merged = artifact.get('merged_axes', [])
+    fb_pt = 0 if 'price_tier' in merged else pt
+    fb_sb = 0 if 'stc' in merged else sb
+    fb_vr = 0 if 'vol_regime' in merged else vr
+    fb_cell = next(
+        (c for c in artifact.get('cells', [])
+         if c.get('price_tier') == fb_pt
+            and c.get('stc_bucket') == fb_sb
+            and c.get('vol_regime') == fb_vr),
+        None,
+    )
+    if fb_cell is not None:
+        chain.append(f"merged[({fb_pt},{fb_sb},{fb_vr})]")
+        return float(fb_cell['q_alpha']), chain
+
+    # 4. Global fallback
+    if 'global_q_alpha' in artifact:
+        chain.append("global")
+        return float(artifact['global_q_alpha']), chain
+
+    chain.append("dispatch_miss")
+    return None, chain
+
+
+# ---------------------------------------------------------------------------
+# predict_with_interval (Phase 5 R5)
+# ---------------------------------------------------------------------------
+
+def predict_with_interval(
+    p_pred: float,
+    p_std: float,
+    conformal_artifact: dict,
+    row_features: dict,
+    entry_price_cents: int,
+    side: str,
+    market_blend_w: float,
+    mode: str = 'inference',
+) -> Union[tuple, tuple]:
+    """Returns (p_center, p_std, final_lo, final_hi) at inference; or
+    (..., AuditDict) at audit. final_lo=None on dispatch miss.
+
+    R1#C3: pure conformal width q_alpha (no σ inflation in production).
+    R1#C10: market_blend_w > 0 invalidates conformal validity guarantee
+            (soft-flag emitted by Phase 6; production default = 0).
+    """
+    breakeven = market_implied_prob_yes(int(entry_price_cents), str(side))
+    p_center = market_blend_w * breakeven + (1 - market_blend_w) * p_pred
+
+    q_alpha, chain = lookup_cell_quantile(conformal_artifact, row_features, mode)
+    if q_alpha is None:
+        if mode == 'audit':
+            return p_center, p_std, None, None, {
+                'q_alpha': None, 'half_width': None,
+                'clipped_lo': False, 'clipped_hi': False,
+                'chain': chain, 'p_pred_raw': float(p_pred),
+            }
+        return p_center, p_std, None, None
+
+    half_width = q_alpha
+    final_lo_raw = p_center - half_width
+    final_hi_raw = p_center + half_width
+    clipped_lo = final_lo_raw < 0
+    clipped_hi = final_hi_raw > 1
+    final_lo = max(0.0, final_lo_raw)
+    final_hi = min(1.0, final_hi_raw)
+
+    if mode == 'audit':
+        return p_center, p_std, final_lo, final_hi, {
+            'q_alpha': float(q_alpha),
+            'half_width': float(half_width),
+            'clipped_lo': bool(clipped_lo),
+            'clipped_hi': bool(clipped_hi),
+            'chain': chain,
+            'p_pred_raw': float(p_pred),
+        }
+    return p_center, p_std, final_lo, final_hi
+
+
+__all__ = [
+    'FORWARD_KEYS',
+    'compute_extract_logical_sha',
+    'market_implied_prob_yes',
+    'wilson_ci',
+    'fsync_directory',
+    'lookup_cell_quantile',
+    'predict_with_interval',
+    'AuditDict',
+    'N_CELL_FLOOR',
+]
