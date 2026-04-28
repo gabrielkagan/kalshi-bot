@@ -51,6 +51,30 @@ if str(_CAL_MLP_DIR) not in sys.path:
     sys.path.insert(0, str(_CAL_MLP_DIR))
 
 
+def _build_missing_indicator_inverse() -> dict:
+    """R-p7-cleanroom-r6#H1 + LOW#2: compute inverse map ONCE at module
+    import time so the collision check can't fire from inside predict()
+    (where it would be demoted from hard-fail to a per-call soft skip via
+    the outer Exception wrapper). Programming-class bugs in features.py
+    surface loudly at import."""
+    from features import MISSING_INDICATOR_SOURCE_MAP
+    inv = {v: k for k, v in MISSING_INDICATOR_SOURCE_MAP.items()}
+    if len(inv) != len(MISSING_INDICATOR_SOURCE_MAP):
+        # Module-load-time hard fail: a source column maps to multiple
+        # indicators. The forward map is dict (unique keys), so this can
+        # only happen if two distinct indicator names point at the same
+        # source column — a features.py drift.
+        raise RuntimeError(
+            "MISSING_INDICATOR_SOURCE_MAP inverse has fewer keys than the "
+            "forward map — a source column maps to multiple indicators. "
+            "Fix features.MISSING_INDICATOR_SOURCE_MAP before import."
+        )
+    return inv
+
+
+_MISSING_INDICATOR_SRC_TO_IND = _build_missing_indicator_inverse()
+
+
 # ---------------------------------------------------------------------------
 # Exception hierarchy
 # ---------------------------------------------------------------------------
@@ -710,16 +734,9 @@ class CalMLPPredictor:
         row.setdefault('side_int', 1 if side == 'yes' else 0)
         row.setdefault('vol_regime_int', int(row.get('vol_regime', 0) == 'elevated'))
         row['ticker_id'] = _vocab.get(str(ticker), 0)
-        # R-p7-r2#H2: NaN/None values in CONT_FEATURE_COLS must flip the
-        # matching *_missing indicator. Build an inverse map src→indicator.
-        # R-p7-r4#M-INV: assert no source-column collisions (silent dropping
-        # of a flag would break the missing-indicator contract).
-        _src_to_ind = {v: k for k, v in MISSING_INDICATOR_SOURCE_MAP.items()}
-        if len(_src_to_ind) != len(MISSING_INDICATOR_SOURCE_MAP):
-            raise CalMLPSchemaError(
-                "MISSING_INDICATOR_SOURCE_MAP inverse has fewer keys than the "
-                "forward map — a source column maps to multiple indicators"
-            )
+        # R-p7-cleanroom-r6#H1: inverse map + collision check ran at module
+        # import time. _MISSING_INDICATOR_SRC_TO_IND is module-frozen.
+        _src_to_ind = _MISSING_INDICATOR_SRC_TO_IND
         # R-p7-cleanroom#M2: indicator cols are AUTHORITATIVELY set by this
         # layer based on source-col missingness. Pre-set values from the
         # caller would silently violate the contract (indicator=1 with

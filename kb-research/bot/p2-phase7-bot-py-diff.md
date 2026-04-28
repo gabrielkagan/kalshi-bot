@@ -85,8 +85,9 @@ except (CalMLPParityError, CalMLPSchemaError) as _calmlp_e:
 # Phase 7: per-asset predictor cache (module-level — accessed from scan path).
 # Kill-switch leak fix (R-p7-cleanroom#H2): empty dict when CALMLP_ENABLED=0
 # so no model files are touched during boot.
-import os as _calmlp_os
-if _calmlp_os.environ.get('CALMLP_ENABLED', '1').strip().lower() in ('1', 'true', 'yes'):
+# bot.py already imports `os` at top of file (per R-p7-deploy-r1#C1
+# pre-step), so use it directly.
+if os.environ.get('CALMLP_ENABLED', '1').strip().lower() in ('1', 'true', 'yes'):
     _calmlp_predictors = {a: CalMLPPredictor(a) for a in ('BTC', 'ETH', 'SOL', 'XRP')}
     for _calmlp_p in _calmlp_predictors.values():
         _calmlp_p.warmup()
