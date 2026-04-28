@@ -79,21 +79,27 @@ except (CalMLPParityError, CalMLPSchemaError) as _calmlp_e:
 
 **Edit 3b** — the predictor cache MUST live at module scope so the scan-path code (different class/function) can read it. Place this immediately AFTER the `StateManager` class definition (or anywhere at module top-level after Edit 1 is in scope).
 
-**R-p7-cleanroom#H2:** gate construction + warmup on the kill-switch. With `CALMLP_ENABLED=0` the cache stays empty and `annotate_evaluation_kwargs` returns `'no_predictor'` (or `'env_disabled'`) — no torch loads, no file IO during boot, true no-op. The annotate_evaluation_kwargs hook ALSO checks the env per-call so flipping to `=1` mid-process still works (predictors lazy-load on first scan tick).
+**R-p7-cleanroom#H2 + R-p7-coldboot#C-S2:** kill-switch contract is "no model files touched, no torch.load runs," NOT "no predictor objects in memory." Predictor INSTANCES are always constructed (`CalMLPPredictor.__init__` is pure attribute-set — no IO, no torch). `.warmup()` (which DOES file IO + `torch.load`) is gated on the env. This is required so that hot-flipping `CALMLP_ENABLED=0→1` mid-process actually activates calibration on the first scan tick after the flip — without it the cache would be empty forever and the env flip would be a no-op.
+
+The per-call env check in `annotate_evaluation_kwargs` ensures `predict()` never runs when env=0, so an idle warmup race can't activate calibration.
 
 ```python
 # Phase 7: per-asset predictor cache (module-level — accessed from scan path).
-# Kill-switch leak fix (R-p7-cleanroom#H2): empty dict when CALMLP_ENABLED=0
-# so no model files are touched during boot.
+# Predictors always constructed; warmup only when env=1.
 # bot.py already imports `os` at top of file (per R-p7-deploy-r1#C1
 # pre-step), so use it directly.
-if os.environ.get('CALMLP_ENABLED', '1').strip().lower() in ('1', 'true', 'yes'):
-    _calmlp_predictors = {a: CalMLPPredictor(a) for a in ('BTC', 'ETH', 'SOL', 'XRP')}
+_calmlp_predictors = {a: CalMLPPredictor(a) for a in ('BTC', 'ETH', 'SOL', 'XRP')}
+_calmlp_enabled_at_boot = (
+    os.environ.get('CALMLP_ENABLED', '1').strip().lower() in ('1', 'true', 'yes')
+)
+if _calmlp_enabled_at_boot:
     for _calmlp_p in _calmlp_predictors.values():
         _calmlp_p.warmup()
+    _calmlp_warmed = sum(1 for p in _calmlp_predictors.values() if p._loaded)
+    logging.info("[CALMLP] enabled=1 at boot, predictors_warmed=%d/4", _calmlp_warmed)
 else:
-    _calmlp_predictors = {}
-    logging.info("[CALMLP] CALMLP_ENABLED!=truthy at boot — predictor cache empty")
+    logging.info("[CALMLP] enabled=0 at boot — predictors constructed but not warmed; "
+                  "hot env flip to 1 will lazy-load on first scan tick")
 ```
 
 **Note on bleed-cell semantics (R-p7-r2#M2):** `np.digitize(96, [80,90,96], right=True)` returns 2 (boundary value falls in lower bin). Therefore the calibrator's BLEED_CELL=(3,2) corresponds to entries 97¢-99¢, NOT 96¢-99¢. Phase 2 extraction uses identical semantics, so the calibrator is internally consistent — but the "≥96¢ × 300-600s" label in `kb-research/bot/finding_96c_sol_xrp_bleed_apr26.md` is loose. Operator-track item: decide whether to retroactively rebin (e.g. cutoffs `[80,90,95]` or `[80,90,96]` with `right=False`) or update the docs. Until then, 96¢ entries get the tier-2 quantile, not the bleed quantile.
@@ -155,21 +161,27 @@ if _calmlp_new_prob is not None:
    PRAGMA table_info(evaluated_opportunities);
    ```
    Expect: 6 new `cal_mlp_*` columns present.
-4. **Calibrator-off path** (default with no Phase 5 bundles deployed):
+4. **Calibrator-off path with `CALMLP_ENABLED=0`** (initial deploy):
    - Wait 5 min for first 15M scan.
    - Check: `SELECT cal_mlp_skipped_reason, COUNT(*) FROM evaluated_opportunities WHERE evaluation_time >= datetime('now', '-5 minutes') GROUP BY cal_mlp_skipped_reason;`
-   - Expect: `'no_predictor'` (no bundle yet) or `'no_current'` for >99% of rows.
-5. **After Phase 4/5 bundles land** (separate cron run):
+   - Expect: **`'env_disabled'` for >99% of rows** (env gate fires first in annotate_evaluation_kwargs). R-p7-coldboot fix to test plan: with `CALMLP_ENABLED=0` at boot, the env gate is the first check — `'no_predictor'` / `'no_current'` only appear when env=1 + bundles missing.
+5. **After Phase 4/5 bundles land** (separate cron run, `CALMLP_ENABLED=1`):
    - Check: `SELECT cal_mlp_skipped_reason, COUNT(*) FROM evaluated_opportunities WHERE evaluation_time >= datetime('now', '-1 hour') GROUP BY cal_mlp_skipped_reason;`
    - Expect: NULL for >99% (calibration succeeded), with `cal_mlp_p_mean IS NOT NULL`.
-6. **Kill switch**:
-   - `export CALMLP_ENABLED=0; <restart bot>` (or wait 60s — env is read per evaluation).
+   - Verify: `[CALMLP] enabled=1 at boot, predictors_warmed=4/4` log line appears at startup.
+6. **Kill switch (live env flip — no restart required)**:
+   - `export CALMLP_ENABLED=0` and wait 60s; env is re-read per evaluation.
    - Check: `cal_mlp_skipped_reason='env_disabled'` for next batch of evals.
+   - Reverse: `export CALMLP_ENABLED=1`; lazy-load fires on first scan (~1-2s latency for that one tick) — this works because predictors are constructed at boot regardless of env.
+7. **Bundle deploy / drift (R-p7-coldboot#C-S3)**: in-memory predictors are NOT auto-reloaded on `CURRENT` swap. After deploying a new bundle:
+   - `cp models/cal_mlp_<asset>/<new_train_id>/...` then atomic `CURRENT` rewrite + `fsync`
+   - **`systemctl restart kalshi-bot`** is required for the new bundle to take effect. Without restart, `cal_mlp_train_id` audit column stays at the old train_id.
+   - Verify: post-restart query `SELECT DISTINCT cal_mlp_train_id FROM evaluated_opportunities WHERE evaluation_time > datetime('now','-30 minutes')` should show the new train_id.
 
 ## Rollback paths
 
-- **Soft (env)**: `CALMLP_ENABLED=0`. Calibrator skipped; raw_prob path resumes. No DB or code change.
-- **Hard (revert commit)**: `git revert <Phase-7-bot.py-edit-commit>` + push to main. Schema columns remain (idempotent ALTER, no DROP). Bundles in `models/cal_mlp_*/` remain on disk for future re-enable.
+- **Soft (env)**: `CALMLP_ENABLED=0`. Calibrator skipped; raw_prob path resumes. **No restart required** — env is re-checked per scan tick.
+- **Hard (revert commit)**: `git revert <Phase-7-bot.py-edit-commit>` + push to main. Schema columns remain (idempotent ALTER, no DROP). Bundles in `models/cal_mlp_*/` remain on disk for future re-enable. `bot_startup_log` table remains (CREATE IF NOT EXISTS is idempotent).
 
 ## Cross-references
 

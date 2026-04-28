@@ -116,8 +116,11 @@ Phase 6 A/B comparisons use this interface to swap base/challenger without code 
 from __future__ import annotations  # required at module top
 
 class AuditDict(TypedDict):
-    q_alpha: float
-    half_width: float
+    # R-p7-r2#M1 + R-p5-spec-r2#H2: dispatch-miss cells return None for
+    # both q_alpha and half_width. Audit consumers MUST None-check before
+    # float() — calling float(None) raises TypeError.
+    q_alpha: Optional[float]
+    half_width: Optional[float]
     clipped_lo: bool
     clipped_hi: bool
     chain: list[str]
@@ -402,7 +405,12 @@ def _load_normstats(path: Path, expected_sha: Optional[str] = None) -> dict:
 5. fsync directory.
 6. Update `models/cal_mlp_<asset>/CURRENT` (text file, atomic via tmp).
 
-**R1#C12 (lock domain):** Phase 5 takes EXCLUSIVE on `models/cal_mlp_<asset>/.lock` ONLY. Does NOT take extract_lock SH — Phase 4's bundle SHA chain (`phase4_bundle_sha` includes `extract_bundle_logical_sha256`) is the integrity guarantee. If Phase 2 re-runs concurrently, Phase 5's loaded bundle still pins the correct artifact paths via SHA verification.
+**R1#C12 (lock domain) + R-p5-spec-r2#C3:** Phase 5 takes EXCLUSIVE on `models/cal_mlp_<asset>/.lock` ONLY. Does NOT take extract_lock SH. Integrity guarantee comes from per-artifact SHA verification at load time:
+- `predictions_sha256` is verified against the on-disk parquet at `conformal.py:468` before reading cal_df.
+- `normstats_sha256` (per-fold, in `eval_fold_artifacts[]`) is verified by `_load_normstats(expected_sha=...)` at the producer-of-the-chain side.
+- `bundle_sha` (the phase5 chain hash) is verified by `_helpers.verify_bundle_sha_chain` at load.
+
+**Note:** `extract_bundle_logical_sha256` is RECORDED in the bundle as a sibling field (audit trail) but is NOT part of the SHA chain. The chain is `model_identity_sha256 : normstats_concat_sha256 : 'phase4'` then `phase4_bundle_sha : conformal_sha256`. Prior phrasing implying the logical-sha was in the chain was a spec drift.
 
 ## Validity assumptions (R1#C9)
 
@@ -418,9 +426,9 @@ The exchangeability assumption is acknowledged here so Phase 6 reviewers know th
 ## bundle_sha_v1 chain
 
 ```python
-# model_id aggregates ONLY the deploy fold's per-member checkpoint SHAs,
+# model_identity_sha256 aggregates ONLY the deploy fold's per-member checkpoint SHAs,
 # sorted ascending and joined by ':'. NOT all folds × members.
-model_id = sha256(":".join(
+model_identity_sha256 = sha256(":".join(
     sorted(deploy_fold.members[].checkpoint_sha256)
 ).encode()).hexdigest()
 
@@ -432,18 +440,18 @@ normstats_concat_sha256 = sha256(b''.join(
     for fold_art in eval_fold_artifacts  # fold-index-ascending
 )).hexdigest()
 
-phase4_bundle_sha = sha256(f"{model_id}:{normstats_concat_sha256}:phase4".encode()).hexdigest()
+phase4_bundle_sha = sha256(f"{model_identity_sha256}:{normstats_concat_sha256}:phase4".encode()).hexdigest()
 phase5_bundle_sha = sha256(f"{phase4_bundle_sha}:{conformal_sha256}".encode()).hexdigest()
 ```
 
 **Locked across phases (R-p4-r8-CRIT, R-p4-r7-CRIT):** producer (`train.py`) and consumer (`_helpers.verify_bundle_sha_chain`) MUST use the formulas above byte-for-byte. Drift in either direction blocks all bundle loads.
 
-- `model_id`: deploy-fold-only members. Aggregating across all folds (the prior incorrect form) makes every multi-fold bundle fail Phase-7 verify.
+- `model_identity_sha256`: deploy-fold-only members. Aggregating across all folds (the prior incorrect form) makes every multi-fold bundle fail Phase-7 verify.
 - `normstats_concat_sha256`: input is the per-file SHA hex strings (already in `eval_fold_artifacts`). Hashing canonical-JSON bytes (the prior incorrect form) introduces a re-serialization fragility.
 
 **Convention recorded in bundle:** `bundle._sha_chain_conventions` (written by train.py) documents `checkpoint_shas_order=sorted_ascending`, `normstats_concat_order=fold_index_ascending`, `normstats_concat_input=eval_fold_artifacts[].normstats_sha256_hex`, `phase4_formula`, `phase5_formula` so future maintainers can recompute without reading the implementation.
 
-**R1#C13 (verification ownership):** Phase 6 verifies the conformal artifact sha (`conformal_sha256`) against the file via `_verify_artifact_sha`, but does NOT recompute the chained `phase5_bundle_sha`. Chain verification is reserved for Phase 7 (bot.py boot — unattended); Phase 6 is operator-driven and the operator-supplied `--bundle-sha` is the trust anchor.
+**R1#C13 (verification ownership) + R-p5-spec-r2#H1:** the bundle_sha chain is verified at the `load_predictor` choke point (`conformal.py:196-197`), which delegates to `_helpers.verify_bundle_sha_chain` for any `bundle.get('phase') == 5`. Phase 5/6/7 ALL go through this choke point — `validate.py` and `sim_pnl.py` both call `load_predictor`, and Phase 7 (`integration.py`) calls it via `_verify_bundle_sha_chain` (the integration.py wrapper that translates exceptions). There is ONE source of truth for the chain formula in `_helpers.verify_bundle_sha_chain` (R-p7-r3#H3-DRY-1). A maintainer should NOT remove the chain check from `load_predictor` — it's the load-bearing integrity guarantee.
 
 Phase 7's contract (per Phase 4 R1#C6): at boot, recompute `phase4_bundle_sha` and `phase5_bundle_sha` per the formulas above, and assert match against `bundle['phase4_bundle_sha']` and `bundle['bundle_sha']`. Both are hard ship-blockers. The canonical implementation is `_helpers.verify_bundle_sha_chain` — Phase 5 (`conformal.py`) and Phase 7 (`integration.py`) BOTH delegate to it, so any chain-formula change ripples through all phases in lockstep.
 

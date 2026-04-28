@@ -68,15 +68,22 @@ Constants that exist in both bot.py and cal_mlp/* MUST be updated in the same co
 - `*_MAX_RISK_PER_TRADE` per-asset (bot.py:226-229 ↔ sizing.py)
 - `STC_SIZING_SCALER_*` (bot.py:897-898 ↔ sizing.py)
 
-## Reconstruction status (2026-04-28)
+## Reconstruction status (2026-04-28 EOD)
 
 | Phase | Spec | Impl | Status |
 |---|---|---|---|
-| 2 | — | — | not yet rebuilt |
-| 3 | — | n/a | not yet rebuilt |
-| 4 | — | `train.py` lost | not yet rebuilt |
-| 5 | — | `conformal.py`+`_helpers.py` lost | not yet rebuilt |
-| 6 | — | `validate.py`+`sim_pnl.py`+`sizing.py`+`stats.py` rebuilt + committed at `22755d7` | impl OK, spec doc pending rewrite |
-| 7 | — | — | not yet rebuilt |
+| 2 | `p2-phase2-data-extraction.md` (R16 doc-aligned) | `extract_data.py` + `features.py` + `normalize.py` | CONVERGED |
+| 3 | `p2-phase3-mlp-architecture.md` (R16 doc-aligned) | (model lives in `train.py`) | CONVERGED |
+| 4 | (in this design doc) | `train.py` (R9 + walk-forward assert wired) | CONVERGED |
+| 5 | `p2-phase5-conformal.md` (R2 spec-aligned) | `conformal.py` + `_helpers.py` (R9 + DRY chain home) | CONVERGED |
+| 6 | (in this design doc) | `validate.py` + `sim_pnl.py` + `sizing.py` + `stats.py` (R11 + normstats unwrap + vol_regime_int + lock domain) | CONVERGED |
+| 7 | `p2-phase7-deploy.md` (R8 cross-spec) + `p2-phase7-bot-py-diff.md` (R12 operator-deploy) | `integration.py` (R8 final hardening — predict() exception wrapping, snapshot pattern, env-first ordering, force-overwrite indicators, module-load inverse-map check, Edit 3b always-construct + warmup-gated for hot env flip) | CONVERGED — bot.py edits documented but NOT applied (gated on operator authorization per CLAUDE.md "bot.py is sacred") |
+| 8 | none yet | none | DEFERRED (May A/B bake-off — see MEMORY.md `project_p2_design_amendment_apr27.md`) |
 
-Phase 6 was rebuilt first because that's where the prior session was working when the loss occurred. It compiles but cannot run end-to-end until Phase 4/5 dependencies are restored.
+**Key load-bearing facts (locked):**
+- bundle_sha chain producer/consumer byte-equivalent at R8: `phase4 = sha256(model_identity_sha256 : normstats_concat_sha256 : 'phase4')` where `model_identity_sha256` aggregates ONLY the deploy fold's member SHAs (sorted asc, joined by ':') and `normstats_concat_sha256` hashes the per-file SHA hex strings from `eval_fold_artifacts[].normstats_sha256`. `phase5 = sha256(phase4_bundle_sha : conformal_sha256)`. Single source of truth: `_helpers.verify_bundle_sha_chain`.
+- 12 SKIPPED_REASONS frozenset, 17 `_check()` parity calls (DRAWDOWN_HALT_FLOOR + STC_SIZING_SCALER_ENABLED added at R12).
+- Kill switch contract (R-p7-coldboot#C-S2): predictor INSTANCES always constructed at boot; `.warmup()` gated on `CALMLP_ENABLED`. Hot env flip activates calibration on first scan tick after the flip.
+- Bundle CURRENT swap requires `systemctl restart kalshi-bot` (R-p7-coldboot#C-S3) — no in-process reload mechanism by design.
+
+**Operator next step:** apply the 4 bot.py edits per `kb-research/bot/p2-phase7-bot-py-diff.md` and deploy with `CALMLP_ENABLED=0` for shadow soak.
