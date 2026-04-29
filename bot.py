@@ -9772,13 +9772,21 @@ class OpportunityScanner:
             "egarch_sigma", "egarch_blend_sigma", "egarch_blend_weight",
             "mz_r_squared", "shadow_tv_blend_rv", "mz_shadow_sigmoid_w",
             "mz_baseline_qlike", "mz_qlike", "no_ask_cents",
+            # Phase 7 cal_mlp audit fields (added by Edit 4 hook to _shadow_diag).
+            # insert_rejection does NOT receive cal_mlp_* (hook only mutates
+            # AFTER all rejection sites), so the assertion only enforces
+            # acceptance on insert_evaluated_opportunity.
         }
-        for _fn_name, _fn in [
-            ("insert_rejection", self._state.insert_rejection),
-            ("insert_evaluated_opportunity", self._state.insert_evaluated_opportunity),
+        _SHADOW_DIAG_KEYS_EVAL_OPP_ONLY = _SHADOW_DIAG_KEYS | {
+            "cal_mlp_p_mean", "cal_mlp_p_std", "cal_mlp_final_lo",
+            "cal_mlp_final_hi", "cal_mlp_train_id", "cal_mlp_skipped_reason",
+        }
+        for _fn_name, _fn, _expected in [
+            ("insert_rejection", self._state.insert_rejection, _SHADOW_DIAG_KEYS),
+            ("insert_evaluated_opportunity", self._state.insert_evaluated_opportunity, _SHADOW_DIAG_KEYS_EVAL_OPP_ONLY),
         ]:
             _accepted = set(inspect.signature(_fn).parameters.keys())
-            _unknown = _SHADOW_DIAG_KEYS - _accepted
+            _unknown = _expected - _accepted
             assert not _unknown, (
                 f"_shadow_diag keys {_unknown} not accepted by {_fn_name}(). "
                 f"Add them to the function signature + SQL or remove from _shadow_diag."
@@ -11828,21 +11836,29 @@ class OpportunityScanner:
                 # to override the temperature-scaling input below; returns None
                 # if calibration was skipped (env_disabled / no_predictor /
                 # no_current / etc. — all stamped in cal_mlp_skipped_reason).
-                _calmlp_vol_regime = vol_est["regime"]
-                _calmlp_predictor = _calmlp_predictors.get(asset)
-                _calmlp_row_features = {
-                    'price_tier': int(np.digitize(best_ask, [80, 90, 96], right=True)),
-                    'stc_bucket': int(np.digitize(seconds_remaining, [120, 300, 600], right=True)),
-                    'vol_regime_int': 1 if _calmlp_vol_regime == 'elevated' else 0,
-                    'vol_regime': _calmlp_vol_regime,
-                }
-                _calmlp_new_prob = _calmlp_annotate_kwargs(
-                    _shadow_diag, raw_prob=raw_prob, ticker=ticker, side=side,
-                    entry_price_cents=best_ask, row_features=_calmlp_row_features,
-                    predictor=_calmlp_predictor,
-                )
-                if _calmlp_new_prob is not None:
-                    final_prob = _calmlp_new_prob   # use calibrated; otherwise raw_prob path runs
+                # R-p7-deploy-r2 ADVERSARIAL FIXES:
+                # C1: 15M main path is YES-only entry; pass side="yes" hardcoded
+                #     (no `side` local is bound at this scope).
+                # H1: gate by _pt so the hook fires ONLY for 15M; hourly/SPX/
+                #     weather windows skip cal_mlp entirely (predictors are
+                #     trained on 15M data; applying to hourly/SPX is wrong AND
+                #     pollutes the skip-reason histogram with no_predictor rows).
+                if _pt in (None, "15m"):
+                    _calmlp_vol_regime = vol_est["regime"]
+                    _calmlp_predictor = _calmlp_predictors.get(asset)
+                    _calmlp_row_features = {
+                        'price_tier': int(np.digitize(best_ask, [80, 90, 96], right=True)),
+                        'stc_bucket': int(np.digitize(seconds_remaining, [120, 300, 600], right=True)),
+                        'vol_regime_int': 1 if _calmlp_vol_regime == 'elevated' else 0,
+                        'vol_regime': _calmlp_vol_regime,
+                    }
+                    _calmlp_new_prob = _calmlp_annotate_kwargs(
+                        _shadow_diag, raw_prob=raw_prob, ticker=ticker, side="yes",
+                        entry_price_cents=best_ask, row_features=_calmlp_row_features,
+                        predictor=_calmlp_predictor,
+                    )
+                    if _calmlp_new_prob is not None:
+                        final_prob = _calmlp_new_prob   # use calibrated; otherwise raw_prob path runs
 
                 # ── Temperature scaling (Layer 1) ──────────────
                 _hourly_pre_temp_prob = None
@@ -12005,7 +12021,10 @@ class OpportunityScanner:
                         "ask_depth": ask_depth,
                         "best_ask_source": best_ask_source,
                         "product_type": window.get("product_type"),
-                        "_shadow_diag": _shadow_diag.copy(),
+                        # R-p7-deploy-r2#MED1: strip cal_mlp_* from shadow-queue
+                        # snapshot — main-path calibrator audit data shouldn't
+                        # tag shadow-strategy rows.
+                        "_shadow_diag": {k: v for k, v in _shadow_diag.items() if not k.startswith('cal_mlp_')},
                         "_oft_db": _oft_db.copy(),
                         "_shadow_extra": _shadow_extra.copy(),
                         "final_prob": final_prob,  # already computed (temp+blend+cap)
@@ -12589,7 +12608,8 @@ class OpportunityScanner:
                             "ask_depth": ask_depth,
                             "best_ask_source": best_ask_source,
                             "product_type": window.get("product_type"),
-                            "_shadow_diag": _shadow_diag.copy(),
+                            # R-p7-deploy-r2#MED1: strip cal_mlp_* from shadow-queue snapshot
+                            "_shadow_diag": {k: v for k, v in _shadow_diag.items() if not k.startswith('cal_mlp_')},
                             "_oft_db": _oft_db.copy(),
                             "has_prob": True,
                             "final_prob": final_prob,
