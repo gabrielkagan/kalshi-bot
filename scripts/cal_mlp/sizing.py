@@ -53,6 +53,42 @@ STC_SIZING_SCALER_KNEE = 300
 STC_SIZING_SCALER_ENABLED = True
 
 
+# R-p7-deploy-r3: edge-schedule + discount + bleeder constants previously
+# lived in sim_pnl.py. Moved here to decouple integration.parity_assert from
+# the sim_pnl module (which imports torch + pandas — heavy chain that broke
+# tests/test_db_signatures.py on local-only-no-pandas environments).
+# sim_pnl.py re-exports for back-compat.
+
+# MIN_EDGE_BY_PRICE — 6-tier FRACTION schedule per bot.py:1180-1187.
+MIN_EDGE_BY_PRICE_SCHEDULE = [
+    (97, 0.0100),   # 97-99¢: 1.00%
+    (95, 0.0075),   # 95-96¢: 0.75%
+    (93, 0.0050),   # 93-94¢: 0.50%
+    (91, 0.0020),   # 91-92¢: 0.20%
+    (89, 0.0025),   # 89-90¢: 0.25%
+    (0,  0.0025),   # <89¢: 0.25%
+]
+
+# Weekend / overnight discount thresholds (bot.py:853-864).
+WEEKEND_EDGE_DISCOUNT = 0.60
+WEEKEND_EDGE_FLOOR = 0.0
+OVERNIGHT_EDGE_DISCOUNT = 0.60
+
+# bot.py:1213-1226 — strategies that get blocked at high price + low STC.
+HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES = frozenset({
+    'decided_t2', 'decided_t2_z2', 'decided_t2_z25', 'MAKER_PATIENT',
+})
+
+# bot.py:238-244 — STC_EXTENDED zone per-asset floors.
+STC_EXTENDED_BUFFER_RESCUE = 0.25
+STC_EXTENDED_PER_ASSET_FLOOR = {
+    'BTC': 93,
+    'ETH': 90,
+    'SOL': 95,
+    'XRP': 92,
+}
+
+
 @dataclass
 class SizingResult:
     contract_count: int

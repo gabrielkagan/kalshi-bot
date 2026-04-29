@@ -78,16 +78,10 @@ def _strategy_uses_taker(strategy: str) -> bool:
 # Live gate replay (A26)
 # ---------------------------------------------------------------------------
 
-# MIN_EDGE_BY_PRICE — 6-tier FRACTION schedule per bot.py:1180-1187.
-# R-p6-impl-2#C1/C2: values verified verbatim against bot.py.
-MIN_EDGE_BY_PRICE_SCHEDULE = [
-    (97, 0.0100),   # 97-99¢: 1.00%
-    (95, 0.0075),   # 95-96¢: 0.75%
-    (93, 0.0050),   # 93-94¢: 0.50%
-    (91, 0.0020),   # 91-92¢: 0.20%
-    (89, 0.0025),   # 89-90¢: 0.25%
-    (0,  0.0025),   # <89¢: 0.25%
-]
+# R-p7-deploy-r3: MIN_EDGE_BY_PRICE_SCHEDULE moved to sizing.py for
+# import-decoupling (integration.parity_assert no longer needs to load
+# torch/pandas via sim_pnl). Re-exported here for back-compat.
+from sizing import MIN_EDGE_BY_PRICE_SCHEDULE  # noqa: E402,F401
 
 
 def min_edge_for_price(entry_price_cents: int) -> float:
@@ -98,13 +92,12 @@ def min_edge_for_price(entry_price_cents: int) -> float:
     return 0.0025
 
 
-# R-p6-impl-3#C2: weekend/overnight discount constants mirrored from bot.py
-# (853-864 + 12431-12609). Discount applies on TIME alone; *_DISCOUNT_MIN_PRICE
-# / *_DISCOUNT_MAX_STC are LIVE-eligibility filters that gate whether the
-# trade FIRES (separate from the threshold).
-WEEKEND_EDGE_DISCOUNT = 0.60
-WEEKEND_EDGE_FLOOR = 0.0           # bot.py:857 — weekend threshold cap = 0
-OVERNIGHT_EDGE_DISCOUNT = 0.60
+# R-p6-impl-3#C2: weekend/overnight discount constants mirrored from bot.py.
+# R-p7-deploy-r3: WEEKEND_EDGE_DISCOUNT/FLOOR + OVERNIGHT_EDGE_DISCOUNT moved
+# to sizing.py (re-exported here). Live-eligibility filters stay local.
+from sizing import (  # noqa: E402,F401
+    WEEKEND_EDGE_DISCOUNT, WEEKEND_EDGE_FLOOR, OVERNIGHT_EDGE_DISCOUNT,
+)
 WEEKEND_DISCOUNT_MIN_PRICE = 90
 WEEKEND_DISCOUNT_MAX_STC = 600
 OVERNIGHT_DISCOUNT_MIN_PRICE = 89
@@ -158,11 +151,8 @@ def gate_passes(
     return False
 
 
-# R-p6-impl-1#C4 — bot.py:1213-1226 actual values. 96¢ EXACT, STC 121-300
-# inclusive, explicit 4-strategy bleeder list, side='yes' only.
-HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES = frozenset({
-    'decided_t2', 'decided_t2_z2', 'decided_t2_z25', 'MAKER_PATIENT',
-})
+# R-p7-deploy-r3: HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES moved to sizing.py.
+from sizing import HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES  # noqa: E402,F401
 
 
 def high_price_stc_block_passes(
@@ -242,15 +232,12 @@ PER_ASSET_MIN_ENTRY_PRICE = {
     'XRP': 92,
 }
 
-# R-p6-impl-3#C5 — bot.py:238-244: STC_EXTENDED zone (300-600s) per-asset floors.
+# R-p6-impl-3#C5 — bot.py:238-244: STC_EXTENDED zone per-asset floors.
+# R-p7-deploy-r3: BUFFER_RESCUE + PER_ASSET_FLOOR moved to sizing.py.
 STC_EXTENDED_LIVE_FLOOR = 300
-STC_EXTENDED_BUFFER_RESCUE = 0.25
-STC_EXTENDED_PER_ASSET_FLOOR = {
-    'BTC': 93,
-    'ETH': 90,
-    'SOL': 95,
-    'XRP': 92,
-}
+from sizing import (  # noqa: E402,F401
+    STC_EXTENDED_BUFFER_RESCUE, STC_EXTENDED_PER_ASSET_FLOOR,
+)
 
 
 def min_entry_price_for_asset(asset: str) -> int:

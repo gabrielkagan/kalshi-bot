@@ -126,13 +126,15 @@ def _import_cal_mlp_constants() -> dict:
         ASSET_FLOORS, GLOBAL_MIN_ENTRY_PRICE, RAW_PROB_CLIP_EPS,
         SETTLEMENT_WHITELIST, PRICE_BIN_CUTOFFS, STC_BIN_CUTOFFS,
     )
+    # R-p7-deploy-r3: all parity-checked constants now live in sizing.py
+    # (torch-free), decoupling parity_assert from sim_pnl's torch+pandas
+    # import chain. This fixes test_db_signatures.py on local-only-no-pandas
+    # environments and reduces parity_assert's import surface.
     from sizing import (
         SIZING_TIERS, ASSET_MAX_RISK_PER_TRADE, MAX_RISK_PER_TRADE,
         DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
         DRAWDOWN_HALT_THRESHOLD, DRAWDOWN_HALT_FLOOR,
         STC_SIZING_SCALER_KNEE, STC_SIZING_SCALER_ENABLED,
-    )
-    from sim_pnl import (
         MIN_EDGE_BY_PRICE_SCHEDULE, WEEKEND_EDGE_DISCOUNT,
         WEEKEND_EDGE_FLOOR, OVERNIGHT_EDGE_DISCOUNT,
         HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES,
@@ -209,12 +211,24 @@ def migrate_schema(conn) -> list:
 
 def _verify_wal(conn) -> None:
     """R-p7-impl#C12 + R-p7-r3#C2: assert WAL AND busy_timeout per CLAUDE.md
-    anti-deadlock rules. Both are required — busy_timeout governs whether
-    the connection waits for a lock or fails immediately."""
+    anti-deadlock rules. Both are required for FILE-BACKED dbs.
+
+    R-p7-deploy-r3: in-memory dbs (`:memory:`) silently fall back to
+    journal_mode='memory' — they have no inter-process/thread contention
+    by definition (no shared file), so the anti-deadlock rule doesn't
+    apply. We accept 'memory' mode (test-only path) without checking
+    busy_timeout. Production bot.py uses state.db (file-backed) and
+    sets WAL+busy_timeout=30000 at StateManager.__init__ — the file
+    case still gates correctly."""
     mode = conn.execute("PRAGMA journal_mode").fetchone()
-    if mode is None or str(mode[0]).lower() != 'wal':
+    mode_str = str(mode[0]).lower() if mode else ''
+    if mode_str == 'memory':
+        # In-memory db — no contention possible, anti-deadlock rule N/A.
+        return
+    if mode_str != 'wal':
         raise CalMLPSchemaError(
-            f"connection journal_mode={mode}; CLAUDE.md requires WAL"
+            f"connection journal_mode={mode_str!r}; CLAUDE.md requires WAL "
+            f"for file-backed dbs (:memory: dbs are exempted)"
         )
     bt = conn.execute("PRAGMA busy_timeout").fetchone()
     bt_ms = int(bt[0]) if bt else 0
