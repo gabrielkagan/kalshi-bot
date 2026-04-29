@@ -1089,6 +1089,181 @@ def drain_predict_pool(timeout_sec: float = 10.0) -> None:
 
 
 # ---------------------------------------------------------------------------
+# R-p7-deploy-r10: TM-96 cal_mlp lower-bound gate
+# ---------------------------------------------------------------------------
+
+# Round-1 #5: fail-open metric. Operators need a counter to distinguish
+# "gate is doing its job" from "predictor is silently broken." Logged
+# periodically to operator-facing channel.
+_TM96_GATE_METRICS = {
+    'calls': 0,
+    'blocks': 0,             # would_block=True (regardless of env-flag)
+    'allows': 0,             # would_block=False with valid prediction
+    'fail_open_no_predictor': 0,
+    'fail_open_env_disabled': 0,
+    'fail_open_raw_prob_null': 0,
+    'fail_open_not_loaded': 0,
+    'fail_open_feature_error': 0,
+    'fail_open_predict_error': 0,
+    'fail_open_dispatch_miss': 0,   # final_lo is None
+}
+_TM96_GATE_METRICS_LOCK = threading.Lock()
+
+
+def _tm96_gate_bump(key: str) -> None:
+    with _TM96_GATE_METRICS_LOCK:
+        _TM96_GATE_METRICS[key] = _TM96_GATE_METRICS.get(key, 0) + 1
+
+
+def get_tm96_gate_metrics() -> dict:
+    """Snapshot for dashboard / health checks."""
+    with _TM96_GATE_METRICS_LOCK:
+        return dict(_TM96_GATE_METRICS)
+
+def should_block_tm96(
+    *,
+    predictor,
+    raw_prob: float,
+    calibrated_prob: float,      # post-CalEngine; used for prob_breakeven_gap
+    ticker: str,
+    market_price: int,           # entry_price_cents
+    seconds_to_close: float,
+    spot: float,
+    threshold: float,
+    blended_rv: float,
+    vol_regime: str,
+):
+    """Synchronous cal_mlp gate for TM-96 trades.
+
+    Returns (should_block: bool, diag: dict). Gate fires (returns True)
+    when cal_mlp's conformal LOWER bound `final_lo` is below the market
+    price — i.e., the prob could plausibly be below break-even given v1's
+    uncertainty. Fails OPEN: any error → returns False (don't block).
+
+    Why a synchronous predict here: TM-96 fires a few times per day, so
+    the inline ~25ms cost doesn't accumulate the way it did when we ran
+    cal_mlp on every scan-tick window. The post-hoc processor still
+    handles the bulk audit annotation; this gate is a targeted decision-
+    time check for the one strategy that doesn't gate on edge.
+
+    The gate ALWAYS computes (so we can shadow-log) — bot.py is
+    responsible for honoring `TM96_CALMLP_GATE_ENABLED` to decide whether
+    a True return blocks the trade or just gets logged.
+    """
+    diag: dict = {}
+    _tm96_gate_bump('calls')
+    if raw_prob is None:
+        diag['cal_mlp_skipped_reason'] = 'raw_prob_null'
+        _tm96_gate_bump('fail_open_raw_prob_null')
+        return False, diag
+    if predictor is None:
+        diag['cal_mlp_skipped_reason'] = 'no_predictor'
+        _tm96_gate_bump('fail_open_no_predictor')
+        return False, diag
+    if os.environ.get('CALMLP_ENABLED', '1').strip().lower() not in ('1', 'true', 'yes'):
+        diag['cal_mlp_skipped_reason'] = 'env_disabled'
+        _tm96_gate_bump('fail_open_env_disabled')
+        return False, diag
+    if not getattr(predictor, '_loaded', True):
+        diag['cal_mlp_skipped_reason'] = 'predictor_not_loaded'
+        _tm96_gate_bump('fail_open_not_loaded')
+        return False, diag
+
+    # Build v1's row_features dict from raw inputs. Same schema as
+    # post_hoc_processor._process_row + bot.py Edit-4 (pre-trim) but
+    # operating on values from the live scan iteration rather than DB
+    # columns. Keep the formula EXACTLY matching training:
+    # - hour: integer dt.hour (R-p7-deploy-r9 Round-1#1: training used
+    #   `hour_of_day_utc % 24` which is an integer; minute-fractional
+    #   would be out-of-distribution for hour_sin/hour_cos which are
+    #   identity_no_zscore raw passthrough).
+    # - tdp: distance × clip(1 - stc/900, 0, 1).
+    import math as _math
+    import numpy as _np
+    from datetime import datetime as _dt, timezone as _tz
+
+    # Tier 5 derived features (pure math, ~100µs).
+    spot_dist_sigma = None
+    breakeven_gap = None
+    try:
+        if (spot is not None and threshold is not None and threshold > 0
+                and blended_rv is not None and blended_rv > 0
+                and seconds_to_close is not None and seconds_to_close > 0):
+            buf_pct = (spot - threshold) / threshold * 100
+            sigma_denom = blended_rv * _math.sqrt(seconds_to_close / 5.0) * 100
+            if sigma_denom > 0:
+                spot_dist_sigma = buf_pct / sigma_denom
+        # Round-1 #1 train/serve skew fix: training extracted
+        # `prob_breakeven_gap` from the DB column populated via
+        # `compute_derived_features(calibrated_prob=calibrated_prob, ...)`
+        # in insert_evaluated_opportunity. Use calibrated_prob (post-CalEngine)
+        # to match training distribution, NOT raw_prob.
+        cb_prob = calibrated_prob if calibrated_prob is not None else raw_prob
+        if cb_prob is not None and market_price is not None:
+            breakeven_gap = cb_prob - (market_price / 100.0)
+    except Exception as e:
+        diag['cal_mlp_skipped_reason'] = f'feature_build_error:{type(e).__name__}'
+        _tm96_gate_bump('fail_open_feature_error')
+        return False, diag
+
+    if spot_dist_sigma is not None:
+        decay = max(0.0, min(1.0, 1.0 - seconds_to_close / 900.0))
+        tdp = spot_dist_sigma * decay
+        abs_dist = abs(spot_dist_sigma)
+    else:
+        tdp = None
+        abs_dist = None
+
+    now_dt = _dt.now(_tz.utc)
+    int_hour = float(now_dt.hour)
+    row_features = {
+        'price_tier': int(_np.digitize(market_price, [80, 90, 96], right=True)),
+        'stc_bucket': int(_np.digitize(seconds_to_close, [120, 300, 600], right=True)),
+        'vol_regime_int': 1 if vol_regime == 'elevated' else 0,
+        'vol_regime': vol_regime or 'normal',
+        'spot_distance_to_strike_sigma': spot_dist_sigma,
+        'abs_spot_distance_to_strike_sigma': abs_dist,
+        'time_decayed_proximity': tdp,
+        'prob_breakeven_gap': breakeven_gap,
+        'hour_sin': _math.sin(2.0 * _math.pi * int_hour / 24.0),
+        'hour_cos': _math.cos(2.0 * _math.pi * int_hour / 24.0),
+        'seconds_to_close': seconds_to_close,
+    }
+
+    # Synchronous predict.
+    try:
+        cal_prob, ens_std, final_lo, final_hi = predictor.predict(
+            raw_prob=raw_prob, ticker=ticker, side='yes',
+            entry_price_cents=market_price, row_features=row_features,
+        )
+    except Exception as e:
+        diag['cal_mlp_skipped_reason'] = f'predict_error:{type(e).__name__}'
+        _tm96_gate_bump('fail_open_predict_error')
+        logger.debug("[CALMLP_TM96_GATE] predict raised for %s: %s", ticker, e)
+        return False, diag
+
+    diag['cal_mlp_p_mean'] = cal_prob
+    diag['cal_mlp_p_std'] = ens_std
+    diag['cal_mlp_final_lo'] = final_lo
+    diag['cal_mlp_final_hi'] = final_hi
+    diag['cal_mlp_train_id'] = getattr(predictor, 'train_id', None)
+
+    # Round-1 #7: dispatch miss observability. final_lo=None means the
+    # conformal-cell dispatch failed (cell key not in conformal table).
+    if final_lo is None or market_price is None:
+        diag['cal_mlp_skipped_reason'] = 'dispatch_miss'
+        _tm96_gate_bump('fail_open_dispatch_miss')
+        return False, diag
+    market_p = market_price / 100.0
+    blocked = (final_lo < market_p)
+    if blocked:
+        _tm96_gate_bump('blocks')
+    else:
+        _tm96_gate_bump('allows')
+    return blocked, diag
+
+
+# ---------------------------------------------------------------------------
 # Per-evaluation hook (R-p7-r2#C11 + R-p7-r3#C3)
 # ---------------------------------------------------------------------------
 

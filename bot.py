@@ -1005,6 +1005,18 @@ TM_MAX_CONCURRENT = 8                     # Max simultaneous TM positions (raise
 TM_NEGATIVE_EV_TIERS = set()              # Cleared — 95c removed from TM_PRICE_SET entirely (was min-sizing, now fully blocked)
 TM_NBBO_MIN_BUFFER_PCT = 0.10            # NBBO-sourced TM at 98-99c requires >= 0.10% buffer
 TM_NBBO_BLOCKED_PRICES = {96}            # Block TM at 96c when NBBO (data: 96c NBBO -$326, orderbook 21/21 +$60). 97c removed from TM_PRICE_SET entirely.
+
+# R-p7-deploy-r10: cal_mlp lower-bound gate for TM-96. ALWAYS evaluated for
+# shadow logging; only BLOCKS the trade when env var is "1". Default 0 so
+# operators can ship the wiring shadow-only first, then flip live after
+# observing the gate's would-block / would-allow rate over a few days.
+# Motivating loss: ETH terminal_momentum_96 trade 2026-04-29 -$140 had
+# raw_prob 0.93 (negative edge at 96¢) AND cal_mlp_final_lo 0.86 (well
+# below 96¢). cal_mlp catches this class of overconfident high-price
+# entries; gate provides the wiring without committing to full v1
+# promotion across all strategies.
+TM96_CALMLP_GATE_ENABLED = os.environ.get(
+    'TM96_CALMLP_GATE_ENABLED', '0').strip().lower() in ('1', 'true', 'yes')
 TM_THIN_BUFFER_PCT = 0.20                # Below this buffer %, apply TM_THIN_BUFFER_CONTRACT_CAP (all sources)
 TM_THIN_BUFFER_CONTRACT_CAP = 50         # Contract cap when buf_pct < TM_THIN_BUFFER_PCT. Apr 1-23: 10/14 TM losses
                                          # (-$578) had buf_pct<0.20% avg 114ct; capping bounds each to ~-$50.
@@ -12309,6 +12321,13 @@ class OpportunityScanner:
                     # qualifies for the terminal momentum strategy: extreme price,
                     # high model confidence, final minutes before expiry.
                     _tm_intercepted = False
+                    # R-p7-deploy-r10 Round-2 H1: init at outer scope. The
+                    # nested-block init (deep inside TM eligibility chain)
+                    # caused UnboundLocalError on the dominant path: any
+                    # insufficient-edge candidate that DIDN'T match TM
+                    # eligibility (price not in {96,98,99}, etc.) reached
+                    # the read site without the local being assigned.
+                    _tm96_gate_blocked_trade = False
                     if (TERMINAL_MOMENTUM_ENABLED
                             and not OBSERVATION_MODE
                             and _pt in (None, "15m")
@@ -12380,6 +12399,78 @@ class OpportunityScanner:
                                                 logging.warning("insert_evaluated_opportunity failed (tm_nbbo_buffer)", exc_info=True)
                                     else:
                                         _tm_intercepted = True
+                                    # R-p7-deploy-r10: cal_mlp lower-bound gate for TM-96.
+                                    # Evaluated whenever _tm_intercepted (i.e., we'd otherwise
+                                    # trade) AND best_ask == 96. ALWAYS shadow-logs when
+                                    # would_block=True (independent of env-flag, so we have
+                                    # data to validate the gate's PnL impact before flipping
+                                    # live). Only the trade-block (_tm_intercepted=False) is
+                                    # env-gated by TM96_CALMLP_GATE_ENABLED.
+                                    # R-p7-deploy-r10 Round-1 #1: pass calibrated_prob (final_prob,
+                                    # post-CalEngine) so gate's prob_breakeven_gap matches the
+                                    # training-time formula. Round-1 #2: shadow row writes
+                                    # on would_block regardless of env-flag. Round-2 H1:
+                                    # _tm96_gate_blocked_trade init moved to outer scope.
+                                    if _tm_intercepted and best_ask == 96:
+                                        from integration import should_block_tm96
+                                        _tm96_would_block, _tm96_diag = should_block_tm96(
+                                            predictor=_calmlp_predictors.get(asset),
+                                            raw_prob=raw_prob, calibrated_prob=final_prob,
+                                            ticker=ticker, market_price=best_ask,
+                                            seconds_to_close=seconds_remaining,
+                                            spot=spot, threshold=threshold,
+                                            blended_rv=blended_rv,
+                                            vol_regime=(vol_est or {}).get("regime", "normal"),
+                                        )
+                                        logging.info(
+                                            "TM96_CALMLP_GATE: %s %s @%dc raw=%.4f "
+                                            "p_mean=%s lo=%s would_block=%s enabled=%s",
+                                            asset, ticker, best_ask, raw_prob,
+                                            _tm96_diag.get('cal_mlp_p_mean'),
+                                            _tm96_diag.get('cal_mlp_final_lo'),
+                                            _tm96_would_block, TM96_CALMLP_GATE_ENABLED)
+                                        # ALWAYS write the shadow row on would_block — even
+                                        # when env-flag is off — so the validation query
+                                        # `WHERE filter_stage='tm96_calmlp_gate_blocked'`
+                                        # has data to join with settlement outcomes.
+                                        if _tm96_would_block:
+                                            _tm96_dedup_shadow = (ticker, "tm96_calmlp_gate_blocked")
+                                            if _tm96_dedup_shadow not in self._eval_opp_seen:
+                                                self._eval_opp_seen.add(_tm96_dedup_shadow)
+                                                try:
+                                                    _tm96_diag_clean = {k: v for k, v in _tm96_diag.items()
+                                                                          if k.startswith('cal_mlp_')}
+                                                    self._state.insert_evaluated_opportunity(
+                                                        ticker, window["event_ticker"], asset,
+                                                        "tm96_calmlp_gate_blocked",
+                                                        rejection_reason=(
+                                                            f"cal_mlp_final_lo={_tm96_diag.get('cal_mlp_final_lo')} "
+                                                            f"< market_price/100={best_ask/100} "
+                                                            f"(env_enabled={TM96_CALMLP_GATE_ENABLED}, "
+                                                            f"shadow_only={not TM96_CALMLP_GATE_ENABLED}, "
+                                                            f"trade_actually_blocked={TM96_CALMLP_GATE_ENABLED})"),
+                                                        spot_price=spot, threshold=threshold,
+                                                        volatility=blended_rv, market_price=best_ask,
+                                                        seconds_to_close=seconds_remaining,
+                                                        calibrated_prob=final_prob, edge=edge,
+                                                        ofa_adjustment=ofa_adjustment,
+                                                        strategy=f"terminal_momentum_{best_ask}",
+                                                        z_score=z_score, raw_prob=raw_prob,
+                                                        fee_adjusted_edge=fee_adjusted_edge,
+                                                        best_ask_source=best_ask_source,
+                                                        product_type="15m",
+                                                        **{k: v for k, v in _shadow_diag.items()
+                                                           if not k.startswith('cal_mlp_')},
+                                                        **_tm96_diag_clean)
+                                                except Exception:
+                                                    logging.warning("insert_evaluated_opportunity failed (tm96_calmlp_gate)", exc_info=True)
+                                            # Round-1 #3: distinguish "trade was actually
+                                            # blocked" from "would-have-been-blocked" so the
+                                            # outer `if _tm_intercepted` falls-through-to-
+                                            # insufficient_edge logic doesn't double-count.
+                                            if TM96_CALMLP_GATE_ENABLED:
+                                                _tm_intercepted = False
+                                                _tm96_gate_blocked_trade = True
                                     if _tm_intercepted:
                                         _tm_balance = self._get_balance_cached() or 100000
                                         # Adversary A6: when sweep is live, size against worst-case fill
@@ -12475,6 +12566,16 @@ class OpportunityScanner:
 
                     if _tm_intercepted:
                         continue  # Skip insufficient_edge rejection — this is now a TM candidate
+
+                    # R-p7-deploy-r10 Round-1 #3: when TM-96 gate blocks the
+                    # trade, _tm_intercepted=False but the candidate has
+                    # already been logged as `tm96_calmlp_gate_blocked`.
+                    # Falling through to `insufficient_edge` would double-
+                    # count the funnel (one row + one JSONL entry both
+                    # claiming the same window). Skip the insufficient_edge
+                    # path for gate-blocked candidates.
+                    if _tm96_gate_blocked_trade:
+                        continue
 
                     scan_stats[asset]["insufficient_edge"] += 1
                     self._recent_opportunities.append({
