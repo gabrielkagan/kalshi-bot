@@ -763,6 +763,20 @@ class CalMLPPredictor:
         # run AFTER its transform step (normalize.py:171 path is correct).
         # We still flip the *_missing companion at this layer because that's
         # a Phase-7 feature engineering decision, not a normalize concern.
+        # R-p7-deploy-r4#C1 SAFETY NET: silently mean-imputing features that
+        # have NO missing-indicator companion is a SHIP-BLOCKER bug — the
+        # model loses ~13 of ~20 conditioning features and predictions
+        # collapse toward the training prior. Raise missing_features for
+        # any non-companion column that wasn't explicitly seeded by the
+        # caller. This forces Edit 4 (or any future caller) to populate
+        # the full row, OR triggers a graceful skip with audit trail.
+        # Exception: identity_no_zscore columns (hour_sin/hour_cos) are
+        # analytical, deterministic from datetime, and never legitimately
+        # missing — they get fillna(0.0) inside apply_norm.
+        from features import CONT_FEATURE_TRANSFORMS as _CFT
+        _IDENTITY_NO_Z = frozenset(
+            c for c, t in _CFT.items() if t == 'identity_no_zscore'
+        )
         normstats_map = _normstats.get('stats', {})
         for col in CONT_FEATURE_COLS:
             v = row.get(col)
@@ -776,9 +790,20 @@ class CalMLPPredictor:
                         'missing_features',
                         f"col {col!r} missing and no normstats mean to impute",
                     )
+                ind = _src_to_ind.get(col)
+                if ind is None and col not in _IDENTITY_NO_Z:
+                    # NO missing-indicator companion AND not analytical.
+                    # The model was trained with this feature ALWAYS PRESENT;
+                    # mean-imputing would silently degrade the prediction.
+                    raise CalMLPError(
+                        'missing_features',
+                        f"col {col!r} not provided by caller and has no "
+                        f"*_missing indicator. Edit 4 must populate this "
+                        f"feature in row_features (or wire the scan loop to "
+                        f"compute it). Calibrator falling back to raw_prob.",
+                    )
                 # Set to NaN so apply_norm's post-transform fillna runs.
                 row[col] = float('nan')
-                ind = _src_to_ind.get(col)
                 if ind is not None:
                     row[ind] = 1
         df = pd.DataFrame([row])

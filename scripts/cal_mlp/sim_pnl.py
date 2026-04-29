@@ -379,15 +379,20 @@ def run_sim_pnl(
         'market_price': 'entry_price_cents',
         'yes_spread_cents': 'spread_cents',
     })
+    # R-p7-deploy-r4#H1: features.py:21 documents `right=True` as the
+    # canonical convention. bot.py + integration.py (Edit 4) and Phase 2
+    # extract_data all use right=True. sim_pnl was using right=False —
+    # off-by-one binning that silently misaligned counterfactual cells
+    # against the production calibrator. Now matches.
     PRICE_BIN_CUTOFFS = [80, 90, 96]
     STC_BIN_CUTOFFS = [120, 300, 600]
     candidate_df['price_tier'] = np.digitize(
         candidate_df['entry_price_cents'].astype(float).to_numpy(),
-        PRICE_BIN_CUTOFFS, right=False,
+        PRICE_BIN_CUTOFFS, right=True,
     ).astype(np.int64)
     candidate_df['stc_bucket'] = np.digitize(
         candidate_df['seconds_to_close'].astype(float).to_numpy(),
-        STC_BIN_CUTOFFS, right=False,
+        STC_BIN_CUTOFFS, right=True,
     ).astype(np.int64)
     candidate_df['vol_regime_int'] = (
         candidate_df['vol_regime'].astype(str) == 'elevated'

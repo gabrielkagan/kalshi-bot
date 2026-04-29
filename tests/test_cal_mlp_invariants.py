@@ -601,7 +601,10 @@ def test_edit4_hook_gated_by_pt_15m():
     # Match the pattern: `if _pt in (None, "15m"):` ... `_calmlp_annotate_kwargs`
     pat = re.compile(
         r'if\s+_pt\s+in\s*\(\s*None\s*,\s*[\'"]15m[\'"]\s*\)\s*:'
-        r'(?:[\s\S]{0,1500})_calmlp_annotate_kwargs',
+        # Accept up to ~5000 chars of intermediate code — the row_features
+        # build expanded in R-p7-deploy-r4#C1 to populate the full
+        # CONT_FEATURE_COLS set (~70 lines of dict construction).
+        r'(?:[\s\S]{0,5000})_calmlp_annotate_kwargs',
     )
     assert pat.search(src), (
         "Edit 4 hook must be wrapped in `if _pt in (None, \"15m\"):` so "
