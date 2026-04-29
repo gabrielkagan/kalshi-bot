@@ -11869,13 +11869,20 @@ class OpportunityScanner:
                     ) or {}
                     _calmlp_dist_sigma = _calmlp_derived.get('spot_distance_to_strike_sigma')
                     # time-decayed proximity = distance × (1 - stc/900)
-                    _calmlp_tdp = (
-                        _calmlp_dist_sigma * (1.0 - seconds_remaining / 900.0)
-                        if _calmlp_dist_sigma is not None else None
-                    )
-                    # hour cyclic features (analytical, never NaN).
-                    _calmlp_now_h = (datetime.datetime.now(timezone.utc).hour
-                                       + datetime.datetime.now(timezone.utc).minute / 60.0)
+                    # R-p7-deploy-r5#M1: clip the decay factor to [0, 1] to
+                    # match the training prior. Without clip: race-window
+                    # rotation can put seconds_remaining > 900 (negative tdp)
+                    # or already-overdue evaluations < 0 (tdp > distance).
+                    if _calmlp_dist_sigma is not None:
+                        _calmlp_decay = max(0.0, min(1.0, 1.0 - seconds_remaining / 900.0))
+                        _calmlp_tdp = _calmlp_dist_sigma * _calmlp_decay
+                    else:
+                        _calmlp_tdp = None
+                    # R-p7-deploy-r5#L1: bind datetime.now() once (saves a
+                    # syscall per candidate; no risk of microsecond drift
+                    # crossing an hour boundary).
+                    _calmlp_now_dt = datetime.datetime.now(timezone.utc)
+                    _calmlp_now_h = _calmlp_now_dt.hour + _calmlp_now_dt.minute / 60.0
                     _calmlp_row_features = {
                         # Mondrian cell keys.
                         'price_tier': int(np.digitize(best_ask, [80, 90, 96], right=True)),

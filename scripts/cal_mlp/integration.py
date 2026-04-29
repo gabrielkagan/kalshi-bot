@@ -74,6 +74,19 @@ def _build_missing_indicator_inverse() -> dict:
 _MISSING_INDICATOR_SRC_TO_IND = _build_missing_indicator_inverse()
 
 
+def _build_identity_no_zscore_set() -> frozenset:
+    """R-p7-deploy-r5#L2: hoist the identity_no_zscore lookup out of the
+    per-call _predict_inner path. Used by the safety net that decides
+    whether a missing CONT col can be mean-imputed (companion or analytical)
+    or must raise missing_features (no signal to convey "missing")."""
+    from features import CONT_FEATURE_TRANSFORMS
+    return frozenset(c for c, t in CONT_FEATURE_TRANSFORMS.items()
+                     if t == 'identity_no_zscore')
+
+
+_IDENTITY_NO_Z = _build_identity_no_zscore_set()
+
+
 # ---------------------------------------------------------------------------
 # Exception hierarchy
 # ---------------------------------------------------------------------------
@@ -773,10 +786,7 @@ class CalMLPPredictor:
         # Exception: identity_no_zscore columns (hour_sin/hour_cos) are
         # analytical, deterministic from datetime, and never legitimately
         # missing — they get fillna(0.0) inside apply_norm.
-        from features import CONT_FEATURE_TRANSFORMS as _CFT
-        _IDENTITY_NO_Z = frozenset(
-            c for c, t in _CFT.items() if t == 'identity_no_zscore'
-        )
+        # R-p7-deploy-r5#L2: _IDENTITY_NO_Z is module-level (hoisted).
         normstats_map = _normstats.get('stats', {})
         for col in CONT_FEATURE_COLS:
             v = row.get(col)

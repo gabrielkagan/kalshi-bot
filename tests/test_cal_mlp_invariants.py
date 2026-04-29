@@ -601,10 +601,11 @@ def test_edit4_hook_gated_by_pt_15m():
     # Match the pattern: `if _pt in (None, "15m"):` ... `_calmlp_annotate_kwargs`
     pat = re.compile(
         r'if\s+_pt\s+in\s*\(\s*None\s*,\s*[\'"]15m[\'"]\s*\)\s*:'
-        # Accept up to ~5000 chars of intermediate code — the row_features
+        # Accept up to ~8000 chars of intermediate code — the row_features
         # build expanded in R-p7-deploy-r4#C1 to populate the full
-        # CONT_FEATURE_COLS set (~70 lines of dict construction).
-        r'(?:[\s\S]{0,5000})_calmlp_annotate_kwargs',
+        # CONT_FEATURE_COLS set, plus R-p7-deploy-r5 added derivation +
+        # tdp clip + datetime hoist.
+        r'(?:[\s\S]{0,8000})_calmlp_annotate_kwargs',
     )
     assert pat.search(src), (
         "Edit 4 hook must be wrapped in `if _pt in (None, \"15m\"):` so "
@@ -721,15 +722,21 @@ def test_predict_inner_safety_net_logic():
     )
 
 
-def test_predict_inner_imports_cont_feature_transforms():
-    """R-p7-deploy-r4#C1: the safety net needs CONT_FEATURE_TRANSFORMS to
-    identify identity_no_zscore columns. Verify it's imported."""
-    import inspect
+def test_predict_inner_uses_module_level_identity_no_zscore():
+    """R-p7-deploy-r5#L2: _IDENTITY_NO_Z is now hoisted to module scope
+    (avoids per-call import overhead in the hot path). The safety net
+    references the module-level constant; verify."""
     import integration
+    assert hasattr(integration, '_IDENTITY_NO_Z')
+    # hour_sin and hour_cos are the canonical identity_no_zscore cols.
+    assert 'hour_sin' in integration._IDENTITY_NO_Z
+    assert 'hour_cos' in integration._IDENTITY_NO_Z
+    # _predict_inner must reference _IDENTITY_NO_Z (the safety net branch).
+    import inspect
     src = inspect.getsource(integration.CalMLPPredictor._predict_inner)
-    assert "CONT_FEATURE_TRANSFORMS" in src, (
-        "_predict_inner must import CONT_FEATURE_TRANSFORMS to identify "
-        "identity_no_zscore columns (hour_sin/hour_cos exemption)."
+    assert '_IDENTITY_NO_Z' in src, (
+        "_predict_inner must reference module-level _IDENTITY_NO_Z to "
+        "exempt analytical columns from missing_features raise."
     )
 
 
