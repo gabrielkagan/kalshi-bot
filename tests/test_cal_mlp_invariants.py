@@ -695,6 +695,75 @@ def test_insert_evaluated_opportunity_signature_has_cal_mlp_params():
     pytest.fail('insert_evaluated_opportunity not found in bot.py AST')
 
 
+# ---------------------------------------------------------------------------
+# _predict_inner safety net (R-p7-deploy-r4#C1)
+# ---------------------------------------------------------------------------
+# These tests pin the fail-loud behavior that surfaces incomplete row_features
+# instead of silently mean-imputing toward the training prior.
+
+def test_predict_inner_safety_net_logic():
+    """R-p7-deploy-r4#C1: _predict_inner must raise CalMLPError('missing_features')
+    for any CONT_FEATURE_COL that is missing AND has no *_missing companion AND
+    is not identity_no_zscore. AST-style guard so a future refactor can't
+    remove the safety net without failing this test."""
+    import inspect
+    import integration
+    src = inspect.getsource(integration.CalMLPPredictor._predict_inner)
+    # The safety check must include the no-companion + not-identity branch.
+    assert "_IDENTITY_NO_Z" in src or "identity_no_zscore" in src, (
+        "_predict_inner missing the identity_no_zscore exemption — "
+        "hour_sin/hour_cos would falsely raise missing_features."
+    )
+    assert "missing_features" in src
+    # The branch must check `ind is None` (no missing-indicator companion).
+    assert "ind is None" in src or "ind is not None" in src, (
+        "Safety net must distinguish cols WITH vs WITHOUT a *_missing companion."
+    )
+
+
+def test_predict_inner_imports_cont_feature_transforms():
+    """R-p7-deploy-r4#C1: the safety net needs CONT_FEATURE_TRANSFORMS to
+    identify identity_no_zscore columns. Verify it's imported."""
+    import inspect
+    import integration
+    src = inspect.getsource(integration.CalMLPPredictor._predict_inner)
+    assert "CONT_FEATURE_TRANSFORMS" in src, (
+        "_predict_inner must import CONT_FEATURE_TRANSFORMS to identify "
+        "identity_no_zscore columns (hour_sin/hour_cos exemption)."
+    )
+
+
+def test_edit4_populates_full_cont_feature_cols():
+    """R-p7-deploy-r4#C1: Edit 4's _calmlp_row_features dict must include
+    every CONT_FEATURE_COL that doesn't have a missing-indicator companion
+    and isn't auto-seeded by predict() (market_price, seconds_to_close,
+    side_int, ticker_id, logit_raw_prob_clipped) and isn't identity_no_zscore.
+    Otherwise the safety net raises missing_features and calibration skips."""
+    src = _read_bot_py()
+    if '_calmlp_annotate_kwargs' not in src:
+        pytest.skip('Edit 4 not yet applied to bot.py')
+    # Locate the Edit 4 row_features dict literal.
+    import re
+    m = re.search(
+        r'_calmlp_row_features\s*=\s*\{(.*?)\}\s*\n\s*_calmlp_new_prob',
+        src, re.DOTALL,
+    )
+    assert m, 'Edit 4 _calmlp_row_features dict not found in expected form'
+    rf_block = m.group(1)
+    # Required cols (no companion + not identity_no_zscore + not auto-seeded):
+    required = [
+        'z_score', 'yes_spread_cents', 'window_max_buf_pct',
+        'window_min_buf_pct', 'minutes_above_strike',
+        'spot_distance_to_strike_sigma', 'abs_spot_distance_to_strike_sigma',
+        'time_decayed_proximity', 'prob_breakeven_gap', 'log_balance_dollars',
+    ]
+    missing = [k for k in required if f"'{k}'" not in rf_block and f'"{k}"' not in rf_block]
+    assert not missing, (
+        f"Edit 4 row_features missing required keys (would skip via "
+        f"safety net): {missing}"
+    )
+
+
 def test_normstats_concat_uses_per_file_sha_strings():
     """R-p4-r7-CRIT: producer/consumer alignment regression. The hash
     input is the per-file SHA hex strings from eval_fold_artifacts —
