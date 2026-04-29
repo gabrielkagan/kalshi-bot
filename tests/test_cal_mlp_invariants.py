@@ -542,6 +542,156 @@ def test_integration_all_matches_bot_py_diff_edit_1():
         assert hasattr(integration, name), f"{name} not on module"
 
 
+# ---------------------------------------------------------------------------
+# bot.py Edit 4 deploy-blocker regressions (R-p7-deploy-r2)
+# These tests exist because the original bee1ebb commit would have crashed
+# the scan loop on first 15M window. Adversarial review caught the issues
+# pre-deploy. Each test pins one of the ship-blockers in place.
+# ---------------------------------------------------------------------------
+
+def _read_bot_py():
+    """Cached read of bot.py for the AST guards below."""
+    p = Path(__file__).resolve().parents[1] / 'bot.py'
+    if not p.exists():
+        pytest.skip('bot.py not present (running on rebuild branch without bot.py edits)')
+    return p.read_text()
+
+
+def test_edit4_hook_does_not_pass_unbound_side():
+    """R-p7-deploy-r2#C1 regression: Edit 4's annotate_evaluation_kwargs call
+    must NOT pass `side=side` — `side` is unbound in the 15M scan scope and
+    Python evaluates kwargs at call time, NameError-ing before the function
+    enters and the predictor=None graceful-skip can fire. Hardcode 'yes'.
+    """
+    src = _read_bot_py()
+    if '_calmlp_annotate_kwargs' not in src:
+        pytest.skip('Edit 4 not yet applied to bot.py (rebuild-only branch)')
+    # Find the annotate_kwargs call block and check the side kwarg.
+    import re
+    m = re.search(
+        r'_calmlp_annotate_kwargs\s*\((.*?)\)',
+        src, re.DOTALL,
+    )
+    assert m, 'expected exactly one _calmlp_annotate_kwargs call'
+    call_args = m.group(1)
+    # Must pass side="yes" (the literal — anything else risks NameError or
+    # silent miscalibration for a side that the model wasn't trained on).
+    assert 'side="yes"' in call_args or "side='yes'" in call_args, (
+        f"Edit 4 must hardcode side='yes' (15M main path is YES-only entry); "
+        f"call_args={call_args!r}"
+    )
+    # And the bare side=side foot-gun MUST NOT be there.
+    assert 'side=side' not in call_args, (
+        "Edit 4 passed `side=side` (unbound local in 15M scan scope). "
+        "This NameError'd on first run; commit bee1ebb shipped the bug, R2 fixed it."
+    )
+
+
+def test_edit4_hook_gated_by_pt_15m():
+    """R-p7-deploy-r2#H1 regression: the cal_mlp hook must be wrapped in
+    `if _pt in (None, "15m"):` so calibration only runs for 15M windows.
+    Without this gate, hourly windows that share BTC/ETH/XRP assets would
+    get silently miscalibrated (model trained on 15M data) and SPX/weather
+    would pollute the skipped-reason histogram with no_predictor rows."""
+    src = _read_bot_py()
+    if '_calmlp_annotate_kwargs' not in src:
+        pytest.skip('Edit 4 not yet applied to bot.py (rebuild-only branch)')
+    import re
+    # The gate must appear BEFORE the hook call, in close proximity.
+    # Match the pattern: `if _pt in (None, "15m"):` ... `_calmlp_annotate_kwargs`
+    pat = re.compile(
+        r'if\s+_pt\s+in\s*\(\s*None\s*,\s*[\'"]15m[\'"]\s*\)\s*:'
+        r'(?:[\s\S]{0,1500})_calmlp_annotate_kwargs',
+    )
+    assert pat.search(src), (
+        "Edit 4 hook must be wrapped in `if _pt in (None, \"15m\"):` so "
+        "calibration only fires for 15M product_type. Hourly/SPX/weather "
+        "windows must skip the hook entirely."
+    )
+
+
+def test_edit4_shadow_queue_strips_cal_mlp_prefix():
+    """R-p7-deploy-r2#MED1 regression: shadow-queue snapshots taken AFTER
+    Edit 4's _shadow_diag mutation must filter out cal_mlp_* keys so
+    shadow-strategy DB rows don't get tagged with main-path calibrator
+    audit data that those shadows didn't actually go through."""
+    src = _read_bot_py()
+    if '_calmlp_annotate_kwargs' not in src:
+        pytest.skip('Edit 4 not yet applied to bot.py')
+    # The post-hook snapshot pattern uses a dict comprehension with
+    # `not k.startswith('cal_mlp_')`. Pin that the bare `_shadow_diag.copy()`
+    # is not used in the post-hook path (where cal_mlp_* keys exist).
+    # Heuristic: count `_shadow_diag.copy()` (pre-hook) vs the comprehension
+    # filter (post-hook). Pre-hook path has 4 copies, post-hook has 0;
+    # post-hook should have 2 filter-comprehensions.
+    n_copy = src.count('_shadow_diag.copy()')
+    n_filter = src.count(
+        "if not k.startswith('cal_mlp_')"
+    ) + src.count(
+        'if not k.startswith("cal_mlp_")'
+    )
+    # 4 pre-hook _shadow_diag.copy() sites are unchanged (rejection paths).
+    # 2 post-hook sites must use the filter comprehension.
+    assert n_copy >= 4, f"expected ≥4 _shadow_diag.copy() pre-hook sites, got {n_copy}"
+    assert n_filter >= 2, (
+        f"expected ≥2 cal_mlp_* prefix-filter comprehensions for post-hook "
+        f"snapshots, got {n_filter}. Without the filter, shadow-strategy rows "
+        f"get tagged with main-path cal_mlp_* audit data."
+    )
+
+
+def test_shadow_diag_assertion_includes_cal_mlp_keys():
+    """R-p7-deploy-r2#MED2 regression: the startup assertion that pins
+    _shadow_diag keys against insert function signatures must include the
+    6 cal_mlp_* keys for insert_evaluated_opportunity. Otherwise a future
+    refactor that drops the cal_mlp_* params silently breaks the splat."""
+    src = _read_bot_py()
+    if '_calmlp_annotate_kwargs' not in src:
+        pytest.skip('Edit 4 not yet applied to bot.py')
+    # The assertion block names a key set including cal_mlp_*.
+    expected_calmlp_keys = [
+        'cal_mlp_p_mean', 'cal_mlp_p_std', 'cal_mlp_final_lo',
+        'cal_mlp_final_hi', 'cal_mlp_train_id', 'cal_mlp_skipped_reason',
+    ]
+    # Find the _SHADOW_DIAG_KEYS_EVAL_OPP_ONLY (or equivalent) block.
+    # Pin: each key appears in the assertion's expected set.
+    for k in expected_calmlp_keys:
+        assert f'"{k}"' in src or f"'{k}'" in src, (
+            f"_shadow_diag startup assertion missing key {k!r}. "
+            f"Without it, dropping the param from insert_evaluated_opportunity "
+            f"would silently break the **_shadow_diag splat at runtime."
+        )
+
+
+def test_insert_evaluated_opportunity_signature_has_cal_mlp_params():
+    """Lock the insert_evaluated_opportunity surgery: signature MUST accept
+    the 6 cal_mlp_* params. Without these, the **_shadow_diag splat at the
+    Edit 4 hook downstream raises TypeError ('unexpected keyword argument')
+    on every scan tick that has a calibrator result."""
+    src = _read_bot_py()
+    if '_calmlp_annotate_kwargs' not in src:
+        pytest.skip('Edit 4 not yet applied to bot.py')
+    # Use AST instead of regex — comments inside the signature can contain
+    # `):` literals that fool a regex.
+    import ast
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.FunctionDef)
+                and node.name == 'insert_evaluated_opportunity'):
+            param_names = {a.arg for a in node.args.args}
+            param_names.update(a.arg for a in node.args.kwonlyargs)
+            for required in [
+                'cal_mlp_p_mean', 'cal_mlp_p_std', 'cal_mlp_final_lo',
+                'cal_mlp_final_hi', 'cal_mlp_train_id', 'cal_mlp_skipped_reason',
+            ]:
+                assert required in param_names, (
+                    f"insert_evaluated_opportunity signature missing {required!r}. "
+                    f"The **_shadow_diag splat at Edit 4 downstream would TypeError."
+                )
+            return
+    pytest.fail('insert_evaluated_opportunity not found in bot.py AST')
+
+
 def test_normstats_concat_uses_per_file_sha_strings():
     """R-p4-r7-CRIT: producer/consumer alignment regression. The hash
     input is the per-file SHA hex strings from eval_fold_artifacts —
