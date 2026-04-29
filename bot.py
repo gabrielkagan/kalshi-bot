@@ -56,7 +56,7 @@ from integration import (  # noqa: E402
     CalMLPPredictor,
     annotate_evaluation_kwargs as _calmlp_annotate_kwargs,
     annotate_evaluation_async_enqueue as _calmlp_annotate_async,
-    drain_predict_pool as _calmlp_drain_pool,
+    stop_post_hoc_processor as _calmlp_drain_pool,
 )
 
 
@@ -4798,6 +4798,15 @@ if _calmlp_enabled_at_boot:
 else:
     logging.info("[CALMLP] enabled=0 at boot — predictors constructed but not warmed; "
                   "hot env flip to 1 will lazy-load on first scan tick")
+
+# R-p7-deploy-r9: post-hoc processor lifecycle imported here; STARTED later
+# from MainLoop.startup() AFTER StateManager + migrate_schema have run.
+# Round-1#3: starting at module-import time raced StateManager construction;
+# moved to MainLoop.startup() so the cal_mlp_request_id column + partial
+# index exist before the first poll.
+from integration import (  # noqa: E402
+    start_post_hoc_processor as _calmlp_start_posthoc,
+)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -11862,73 +11871,19 @@ class OpportunityScanner:
                 #     trained on 15M data; applying to hourly/SPX is wrong AND
                 #     pollutes the skip-reason histogram with no_predictor rows).
                 if _pt in (None, "15m"):
-                    # R-p7-deploy-r4#C1: populate the FULL CONT_FEATURE_COLS
-                    # row. Without this, _predict_inner raises 'missing_features'
-                    # for any non-companion column → calibrator skips on every
-                    # tick. Every feature is reachable at this site per the
-                    # scope review (extended-features aggregator, scan caches,
-                    # local arithmetic).
-                    # R-p7-deploy-r9: BUILD ONLY V1's 8 features. Earlier
-                    # iterations populated 21 keys defensively for v2/v3,
-                    # but v1's predictor only consumes 8 + Mondrian keys.
-                    # The expensive calls (_extended_feature_provider,
-                    # _scan_ms_cache, _scan_cx_gap_cache, _get_balance_cached,
-                    # plus the duplicate _extended_feature_provider call that
-                    # insert_evaluated_opportunity already does for the row's
-                    # tier-1/2/3 columns) ran every scan tick on every 15M
-                    # market with env=1, contributing ~50-100ms × 4 markets
-                    # to per-tick latency. Trim to v1's actual schema.
-                    # When v2 retrains and adds back features, expand here.
-                    _calmlp_vol_regime = vol_est["regime"]
-                    _calmlp_predictor = _calmlp_predictors.get(asset)
-                    # Tier 5 derived features — pure math, ~100µs total.
-                    _calmlp_derived = compute_derived_features(
-                        spot_price=spot, threshold=threshold,
-                        volatility=blended_rv,
-                        seconds_to_close=seconds_remaining,
-                        calibrated_prob=raw_prob,
-                        market_price_cents=best_ask,
-                    ) or {}
-                    _calmlp_dist_sigma = _calmlp_derived.get('spot_distance_to_strike_sigma')
-                    # time-decayed proximity = distance × clip(1 - stc/900, 0, 1)
-                    if _calmlp_dist_sigma is not None:
-                        _calmlp_decay = max(0.0, min(1.0, 1.0 - seconds_remaining / 900.0))
-                        _calmlp_tdp = _calmlp_dist_sigma * _calmlp_decay
-                    else:
-                        _calmlp_tdp = None
-                    _calmlp_now_dt = datetime.datetime.now(timezone.utc)
-                    _calmlp_now_h = _calmlp_now_dt.hour + _calmlp_now_dt.minute / 60.0
-                    _calmlp_row_features = {
-                        # Mondrian cell keys (always required).
-                        'price_tier': int(np.digitize(best_ask, [80, 90, 96], right=True)),
-                        'stc_bucket': int(np.digitize(seconds_remaining, [120, 300, 600], right=True)),
-                        'vol_regime_int': 1 if _calmlp_vol_regime == 'elevated' else 0,
-                        'vol_regime': _calmlp_vol_regime,
-                        # v1's CONT_FEATURE_COLS (8 keys). market_price and
-                        # seconds_to_close are passed via predict()'s function
-                        # signature; the other 6 must be in row_features:
-                        'spot_distance_to_strike_sigma': _calmlp_dist_sigma,
-                        'abs_spot_distance_to_strike_sigma': (
-                            abs(_calmlp_dist_sigma) if _calmlp_dist_sigma is not None else None
-                        ),
-                        'time_decayed_proximity': _calmlp_tdp,
-                        'prob_breakeven_gap': _calmlp_derived.get('prob_breakeven_gap'),
-                        'hour_sin': math.sin(2.0 * math.pi * _calmlp_now_h / 24.0),
-                        'hour_cos': math.cos(2.0 * math.pi * _calmlp_now_h / 24.0),
-                        # seconds_to_close also needed by predict() for
-                        # apply_norm even though stc_bucket is precomputed.
-                        'seconds_to_close': seconds_remaining,
-                    }
-                    # R-p7-deploy-r8: switched to async enqueue. predict()
-                    # runs in a worker thread; cal_mlp_p_mean / etc. populated
-                    # via deferred UPDATE keyed on cal_mlp_request_id (uuid
-                    # set into _shadow_diag here, written by INSERT below).
+                    # R-p7-deploy-r9: post-hoc cal_mlp design. Edit 4 reduces
+                    # to a single uuid stamp; the actual feature reconstruction
+                    # + predict + UPDATE happens in CalMLPPostHocProcessor's
+                    # daemon thread (started at bot boot). All v1 features are
+                    # derivable from DB columns, so the processor doesn't need
+                    # bot state. Net cost on the scan thread: ~1µs per 15M
+                    # market for the env check + uuid generation.
                     # final_prob is NEVER overridden — v1 is shadow-only by
                     # design (see kb/decisions/p2-cal-mlp-v1v2v3-retraining-plan.md).
                     _calmlp_annotate_async(
                         _shadow_diag, raw_prob=raw_prob, ticker=ticker, side="yes",
-                        entry_price_cents=best_ask, row_features=_calmlp_row_features,
-                        predictor=_calmlp_predictor, db_path=DB_PATH,
+                        entry_price_cents=best_ask, row_features={},
+                        predictor=_calmlp_predictors.get(asset), db_path=DB_PATH,
                     )
 
                 # ── Temperature scaling (Layer 1) ──────────────
@@ -24392,6 +24347,18 @@ class MainLoop:
                 "PEAK_HOURS_START: Bot started at %02d:00 UTC — RK warmup will "
                 "degrade edge for ~5 minutes. Deploy during 04-06 UTC to avoid fill loss.",
                 _start_hour)
+
+        # R-p7-deploy-r9: start the cal_mlp post-hoc processor here, AFTER
+        # StateManager has run migrate_schema (so cal_mlp_request_id column
+        # + partial index exist). The processor polls evaluated_opportunities
+        # every 10s in its own daemon thread, finds unannotated 15M rows,
+        # runs predict, and UPDATEs. Edit 4 in scan() just stamps the uuid.
+        # Always start (cheap if env=0 — early-exits at the env check inside
+        # _process_one_batch). Stops in _cleanup() before state.close().
+        _calmlp_start_posthoc(
+            db_path=DB_PATH, predictors=_calmlp_predictors,
+            poll_interval_sec=10.0, batch_size=50,
+        )
 
         # Load previously logged fill IDs
         self.logger.load_logged_fill_ids()

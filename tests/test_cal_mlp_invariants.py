@@ -34,17 +34,18 @@ def test_drop_predicates_locked_at_12():
     assert 'null_seconds_to_close' in names
 
 
-def test_skipped_reasons_locked_at_15():
-    """R-p7-impl#C11 + R-p7-r2#H1 + R-p7-deploy-r8: enum locked at 15 entries
-    (12 sync + 3 async-predict additions: queue_full, async_predict_failed,
-    row_not_found)."""
+def test_skipped_reasons_locked_at_12():
+    """R-p7-impl#C11 + R-p7-r2#H1: enum locked at 12 entries.
+    R-p7-deploy-r9: post-hoc processor uses only existing reasons
+    (missing_features, no_predictor, predict_runtime, env_disabled);
+    the v1.5 async-pool extras (queue_full, async_predict_failed,
+    row_not_found) were removed when the pool was retired."""
     import integration
-    assert len(integration.SKIPPED_REASONS) == 15
+    assert len(integration.SKIPPED_REASONS) == 12
     expected = {
         'no_current', 'phase_mismatch', 'sha_chain_fail', 'marker_drift',
         'load_failed', 'predict_oom', 'predict_runtime', 'env_disabled',
         'raw_prob_null', 'market_blend_w_drift', 'no_predictor', 'missing_features',
-        'queue_full', 'async_predict_failed', 'row_not_found',
     }
     assert integration.SKIPPED_REASONS == frozenset(expected)
 
@@ -742,46 +743,32 @@ def test_predict_inner_uses_module_level_identity_no_zscore():
     )
 
 
-def test_edit4_populates_full_cont_feature_cols():
-    """R-p7-deploy-r4#C1: Edit 4's _calmlp_row_features dict must include
-    every CONT_FEATURE_COL that doesn't have a missing-indicator companion
-    and isn't auto-seeded by predict() (market_price, seconds_to_close,
-    side_int, ticker_id, logit_raw_prob_clipped) and isn't identity_no_zscore.
-    Otherwise the safety net raises missing_features and calibration skips."""
-    src = _read_bot_py()
-    if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
-        pytest.skip('Edit 4 not yet applied to bot.py')
-    # Locate the Edit 4 row_features dict literal.
-    import re
-    # R-p7-deploy-r8: the trailing line after the dict literal changed from
-    # `_calmlp_new_prob = ...` (sync return) to a comment + `_calmlp_annotate_async(`
-    # (async enqueue). Match either form.
-    m = re.search(
-        r'_calmlp_row_features\s*=\s*\{(.*?)\}\s*\n'
-        r'(?:[\s\S]{0,1000})_calmlp_annotate(?:_async|_kwargs)',
-        src, re.DOTALL,
-    )
-    assert m, 'Edit 4 _calmlp_row_features dict not found in expected form'
-    rf_block = m.group(1)
+def test_post_hoc_processor_populates_full_cont_feature_cols():
+    """R-p7-deploy-r4#C1 + R-p7-deploy-r9: the row_features dict built by the
+    post-hoc processor's _process_row must include every CONT_FEATURE_COL
+    that isn't auto-seeded by predict() (market_price, side_int, ticker_id,
+    logit_raw_prob_clipped) and isn't identity_no_zscore (hour_sin/cos).
+    Otherwise the safety net raises missing_features and calibration skips.
+    R-p7-deploy-r9 moved feature reconstruction from bot.py Edit 4 (synchronous
+    on scan thread) to post_hoc_processor.py (daemon-thread polling)."""
+    import inspect
+    from post_hoc_processor import CalMLPPostHocProcessor
+    src = inspect.getsource(CalMLPPostHocProcessor._process_row)
     # Derive the actual v1 schema from features.py at test time, so this
     # test self-updates when v2/v3 expand the feature set.
-    # R-p7-deploy-r9: Edit 4 was trimmed to v1's actual 8-feature schema —
-    # building defensive keys for v2/v3 was costing ~50-100ms × 4 markets
-    # per scan tick. Test now derives the requirement from features.py.
     import features
     cont_cols = list(features.CONT_FEATURE_COLS)
     transforms = features.CONT_FEATURE_TRANSFORMS
-    # Auto-seeded by predict() (signature args, not row_features keys):
-    AUTO_SEEDED = {'market_price'}  # plus side/ticker_id/logit_raw_prob_clipped
+    AUTO_SEEDED = {'market_price'}
     required = [
         c for c in cont_cols
         if c not in AUTO_SEEDED
         and transforms.get(c) != 'identity_no_zscore'
     ]
-    missing = [k for k in required if f"'{k}'" not in rf_block and f'"{k}"' not in rf_block]
+    missing = [k for k in required if f"'{k}'" not in src and f'"{k}"' not in src]
     assert not missing, (
-        f"Edit 4 row_features missing required keys (would skip via "
-        f"safety net): {missing}. CONT_FEATURE_COLS={cont_cols}"
+        f"post_hoc_processor._process_row missing required CONT_FEATURE_COLS keys "
+        f"(would skip via safety net): {missing}. CONT_FEATURE_COLS={cont_cols}"
     )
 
 
@@ -910,36 +897,21 @@ def test_thread_env_imported_before_numerical_libs_in_bot_py():
 
 @pytest.fixture(autouse=True)
 def _reset_async_pool_state():
-    """R-p7-deploy-r8 Round-2 #3 + Round-3 #5/#6 + Round-4 #2:
-    reset _PREDICT_POOL_SHUTDOWN, shutdown the pool, close worker conns,
-    re-init the semaphore (otherwise capacity leaks silently across tests
-    if any path acquired but failed to release), then null.
-
-    Order: pool.shutdown FIRST so worker finishes any in-flight UPDATE
-    before its conn gets closed under it; THEN close conns; THEN re-init
-    the semaphore (so no in-flight worker tries to release the old one)."""
+    """R-p7-deploy-r9: tests that touch the post-hoc processor leave a
+    daemon thread + open sqlite conn behind. This fixture stops the
+    processor between tests so module-level state doesn't leak."""
     yield
     try:
         import integration
     except ImportError:
         return
-    import threading as _threading
-    pool = getattr(integration, '_PREDICT_POOL', None)
-    if pool is not None:
+    proc = getattr(integration, '_POSTHOC_PROCESSOR', None)
+    if proc is not None:
         try:
-            pool.shutdown(wait=True, cancel_futures=True)
+            proc.stop(timeout_sec=5.0)
         except Exception:
             pass
-    integration._PREDICT_POOL = None
-    integration._PREDICT_POOL_SHUTDOWN = False
-    if hasattr(integration, '_close_all_worker_conns'):
-        integration._close_all_worker_conns()
-    # Round-4 #2: re-init semaphore to full capacity. Module-level state
-    # persists across tests; any leak (acquire-without-release path) silently
-    # accumulates. Resetting here costs nothing and guarantees a clean slate.
-    integration._PREDICT_QUEUE_SEMAPHORE = _threading.Semaphore(
-        integration._PREDICT_QUEUE_MAX
-    )
+        integration._POSTHOC_PROCESSOR = None
 
 
 def test_annotate_async_returns_none_no_calibrated_prob():
@@ -970,70 +942,81 @@ def test_annotate_async_returns_none_no_calibrated_prob():
             )
 
 
-def test_async_predict_worker_updates_row_via_request_id(tmp_path, monkeypatch):
-    """R-p7-deploy-r8 + Round-1#9: integration test that the async worker
-    actually UPDATEs the row after predict(). Builds a tmp sqlite, calls
-    the enqueue, INSERTs a row using the freshly-allocated uuid, drains the
-    pool, asserts the UPDATE landed.
-
-    Round-3 #7: simplified — single enqueue + INSERT + drain (was previously
-    two passes with a wasted drain that hit row_not_found)."""
+def test_post_hoc_processor_updates_row_via_request_id(tmp_path):
+    """R-p7-deploy-r9: integration test that the post-hoc processor polls
+    evaluated_opportunities, finds the row by cal_mlp_request_id, runs
+    predict(), and UPDATEs the row's cal_mlp_* columns. Replaces the v1.5
+    worker test (the worker pool was retired)."""
     try:
         import torch  # noqa: F401  — integration imports torch via predictor
     except ImportError:
         pytest.skip("torch not installed")
     import integration
     import sqlite3 as _sql
+    import time as _time
+    from datetime import datetime, timezone
     db_path = str(tmp_path / "state.db")
     conn = _sql.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
+    # Schema includes the columns the post-hoc processor SELECTs from.
     conn.execute("""
         CREATE TABLE evaluated_opportunities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT, asset TEXT, side TEXT, product_type TEXT,
+            evaluation_time TEXT,
+            market_price INTEGER, seconds_to_close REAL,
+            spot_distance_to_strike_sigma REAL, prob_breakeven_gap REAL,
+            vol_regime TEXT, raw_prob REAL,
             cal_mlp_request_id TEXT,
-            cal_mlp_p_mean REAL,
-            cal_mlp_p_std REAL,
-            cal_mlp_final_lo REAL,
-            cal_mlp_final_hi REAL,
-            cal_mlp_train_id TEXT,
-            cal_mlp_skipped_reason TEXT
+            cal_mlp_p_mean REAL, cal_mlp_p_std REAL,
+            cal_mlp_final_lo REAL, cal_mlp_final_hi REAL,
+            cal_mlp_train_id TEXT, cal_mlp_skipped_reason TEXT
         )
     """)
+    request_id = "test-request-id-posthoc"
+    eval_time = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    conn.execute("""
+        INSERT INTO evaluated_opportunities
+            (ticker, asset, side, product_type, evaluation_time,
+             market_price, seconds_to_close, spot_distance_to_strike_sigma,
+             prob_breakeven_gap, vol_regime, raw_prob, cal_mlp_request_id)
+        VALUES (?, 'BTC', 'yes', '15m', ?, 96, 240, 0.3, 0.05,
+                'normal', 0.9, ?)
+    """, ('KXBTC15M-TEST', eval_time, request_id))
     conn.commit()
+
     class StubPredictor:
-        train_id = "test-train-id"
+        train_id = "test-train-id-posthoc"
         asset = "BTC"
         def predict(self, raw_prob, ticker, side, entry_price_cents, row_features):
             return (0.85, 0.05, 0.75, 0.95)
-    monkeypatch.setattr(integration, '_PREDICT_POOL_SHUTDOWN', False)
-    monkeypatch.setattr(integration, '_PREDICT_POOL', None)
-    diag = {}
-    integration.annotate_evaluation_async_enqueue(
-        diag, raw_prob=0.9, ticker="KXBTC15M-TEST", side="yes",
-        entry_price_cents=96, row_features={}, predictor=StubPredictor(),
-        db_path=db_path,
+
+    proc = integration.start_post_hoc_processor(
+        db_path=db_path, predictors={'BTC': StubPredictor()},
+        poll_interval_sec=0.1, batch_size=10,
     )
-    new_uuid = diag.get('cal_mlp_request_id')
-    assert new_uuid is not None, f"enqueue did not write request_id; diag={diag}"
-    # INSERT the row with the freshly-allocated uuid (mimics the bot's
-    # insert_evaluated_opportunity path).
-    conn.execute(
-        "INSERT INTO evaluated_opportunities (cal_mlp_request_id) VALUES (?)",
-        (new_uuid,),
-    )
-    conn.commit()
-    # Drain pool — blocks until worker finishes; UPDATE retries until it
-    # finds the row (it's already there, so first attempt succeeds).
-    integration.drain_predict_pool(timeout_sec=5.0)
-    row = conn.execute(
+    deadline = _time.monotonic() + 5.0
+    pmean = None
+    while _time.monotonic() < deadline:
+        row = conn.execute(
+            "SELECT cal_mlp_p_mean FROM evaluated_opportunities WHERE cal_mlp_request_id=?",
+            (request_id,),
+        ).fetchone()
+        if row and row[0] is not None:
+            pmean = row[0]
+            break
+        _time.sleep(0.1)
+    integration.stop_post_hoc_processor(timeout_sec=2.0)
+    assert pmean is not None, "post-hoc processor did not UPDATE the row within 5s"
+    final = conn.execute(
         "SELECT cal_mlp_p_mean, cal_mlp_p_std, cal_mlp_final_lo, "
         "cal_mlp_final_hi, cal_mlp_train_id, cal_mlp_skipped_reason "
         "FROM evaluated_opportunities WHERE cal_mlp_request_id=?",
-        (new_uuid,),
+        (request_id,),
     ).fetchone()
-    assert row == (0.85, 0.05, 0.75, 0.95, "test-train-id", None), (
-        f"async worker did not UPDATE the row correctly: row={row}"
+    assert final == (0.85, 0.05, 0.75, 0.95, "test-train-id-posthoc", None), (
+        f"post-hoc processor did not UPDATE all fields correctly: {final}"
     )
     conn.close()
 
