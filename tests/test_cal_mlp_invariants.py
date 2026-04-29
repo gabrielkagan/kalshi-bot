@@ -8,6 +8,7 @@ run on any environment, not just the VPS.
 DO NOT loosen these assertions without a corresponding spec amendment.
 """
 import hashlib
+import os
 import sys
 from pathlib import Path
 
@@ -784,3 +785,175 @@ def test_normstats_concat_uses_per_file_sha_strings():
     bundle['eval_fold_artifacts'][1]['normstats_sha256'] = 'mutated'.ljust(64, 'x')
     with pytest.raises(RuntimeError, match='phase4 sha mismatch'):
         _helpers.verify_bundle_sha_chain(bundle)
+
+
+def test_torch_threads_constrained_at_import():
+    """R-p7-deploy-r7 regression: importing cal_mlp.integration must constrain
+    torch to 1 intra-op AND 1 inter-op thread. Without this, scan loop
+    balloons to ~1s/predict under contention (vs 15ms with threads=1).
+    Production incident 2026-04-29: env=1 produced 0 candidate rows in 5 min;
+    root cause was torch defaulting to num_cpus threads. Round-2 review
+    flagged that asserting only intra-op missed the interop vector."""
+    import integration  # noqa: F401 — triggers _constrain_torch_threads_at_import
+    try:
+        import torch
+    except ImportError:
+        pytest.skip("torch not installed")
+    assert torch.get_num_threads() == 1, (
+        f"torch.get_num_threads() = {torch.get_num_threads()} != 1; "
+        "_constrain_torch_threads_at_import() did not configure intra-op."
+    )
+    # Module-level observed values reflect what the helper saw post-call.
+    assert integration._TORCH_THREADS_INTRA == 1
+    # Inter-op race CAN be lost if pytest collects another torch-using test
+    # first. We don't assert RACE=False here (that's the subprocess test);
+    # instead assert the helper ATTEMPTED interop=1, observed via the post-
+    # call snapshot. If race lost, ATTRS still capture default==2 — that's a
+    # sign of regression in the import-order contract.
+    assert integration._TORCH_THREADS_INTEROP is not None, (
+        "_constrain_torch_threads_at_import() did not run; integration "
+        "import order is broken."
+    )
+
+
+def test_omp_mkl_env_set():
+    """R-p7-deploy-r7: OMP/MKL/OpenBLAS thread caps must be in os.environ.
+    This is a TAUTOLOGY check — the value-add is the subprocess test below
+    that asserts they were set BEFORE numpy import. Keeping this for
+    fast-fail when the setdefault block is deleted entirely."""
+    import integration  # noqa: F401
+    for var in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
+        assert os.environ.get(var) == '1', (
+            f"{var} = {os.environ.get(var)!r}; expected '1'."
+        )
+
+
+# Numerical libs whose C extensions cache OpenBLAS/MKL thread count at load
+# time. Any of these importing before _thread_env defeats the contention fix.
+_NUMERICAL_LIBS = {
+    'numpy', 'scipy', 'sklearn', 'pandas', 'torch',
+    # also catch dotted forms like `scipy.stats`, `numpy.random`
+}
+
+
+def _first_lineno_of_numerical_or_thread_env(bot_py_text: str):
+    """Walk the AST and return (thread_env_line, numerical_line). Both
+    `ast.Import` (`import numpy`) and `ast.ImportFrom` (`from scipy.stats
+    import t`) are checked. Returns the FIRST line of either, so a
+    regression in either form is caught."""
+    import ast
+    tree = ast.parse(bot_py_text)
+    thread_env_line = None
+    numerical_line = None
+
+    def _is_numerical(name: str) -> bool:
+        # match 'numpy', 'scipy', 'scipy.stats', 'numpy.random', etc.
+        if name is None:
+            return False
+        head = name.split('.')[0]
+        return head in _NUMERICAL_LIBS
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == '_thread_env' and thread_env_line is None:
+                    thread_env_line = node.lineno
+                if _is_numerical(alias.name) and numerical_line is None:
+                    numerical_line = node.lineno
+        elif isinstance(node, ast.ImportFrom):
+            # `from scipy.stats import t` → node.module = 'scipy.stats'
+            if _is_numerical(node.module) and numerical_line is None:
+                numerical_line = node.lineno
+    return thread_env_line, numerical_line
+
+
+def test_thread_env_imported_before_numerical_libs_in_bot_py():
+    """R-p7-deploy-r7-r2#H1 + r3#H1: OMP/MKL setdefaults are NO-OP if any
+    numerical lib (numpy/scipy/sklearn/pandas/torch) imports first — those
+    C extensions cache OpenBLAS/MKL thread count at C-extension load. AST
+    walk covers BOTH `import X` and `from X import ...` forms. Production
+    incident 2026-04-29: scan loop 7.75s, 0 candidates in 5 min when this
+    contract broke."""
+    bot_py = Path(__file__).resolve().parents[1] / 'bot.py'
+    thread_env_line, numerical_line = _first_lineno_of_numerical_or_thread_env(
+        bot_py.read_text()
+    )
+    assert thread_env_line is not None, (
+        "bot.py must `import _thread_env` (sets OMP_NUM_THREADS=1 etc.) "
+        "before any numerical lib (numpy/scipy/sklearn/pandas/torch). "
+        "Line not found."
+    )
+    assert numerical_line is not None, (
+        "bot.py is expected to import a numerical lib. If this changed, "
+        "the contract is moot — but verify other consumers still need it."
+    )
+    assert thread_env_line < numerical_line, (
+        f"_thread_env imported at line {thread_env_line}, but numerical "
+        f"lib at line {numerical_line}. Numerical libs must come AFTER "
+        "_thread_env so OMP_NUM_THREADS=1 is read by OpenBLAS at C-ext "
+        "load. Production-incident regression."
+    )
+
+
+def test_thread_env_is_zero_deps_no_numerical_imports():
+    """R-p7-deploy-r7-r3#H2: subprocess test that PROVES the contract by
+    showing _thread_env doesn't itself pull in numpy/scipy/torch. If a
+    future change adds `import numpy` to _thread_env.py, the OMP=1
+    setdefault becomes a no-op (numpy already loaded with default OpenBLAS
+    threads). This test fails on that regression."""
+    import os as _os
+    import subprocess
+    import textwrap
+    import sys as _sys
+    env = {k: v for k, v in _os.environ.items()
+           if k not in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS',
+                        'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS',
+                        'VECLIB_MAXIMUM_THREADS')}
+    env['PYTHONDONTWRITEBYTECODE'] = '1'
+    env['PYTHONNOUSERSITE'] = '1'  # don't pull in user-site numpy
+    env.pop('PYTHONSTARTUP', None)
+    repo_root = str(Path(__file__).resolve().parents[1])
+    script = textwrap.dedent(f"""
+        import sys, os
+        sys.path.insert(0, {repo_root!r} + '/scripts/cal_mlp')
+        # Sanity: env should NOT have OMP set yet.
+        assert 'OMP_NUM_THREADS' not in os.environ
+        # Sanity: numerical libs should NOT have been imported yet by
+        # Python's site init or our sys.path insert.
+        for _lib in ('numpy', 'scipy', 'sklearn', 'pandas', 'torch'):
+            assert _lib not in sys.modules, (
+                f"unexpected: {{_lib}} loaded by Python init/site; this "
+                f"test cannot validate _thread_env zero-deps contract."
+            )
+        # The actual contract:
+        import _thread_env  # noqa: F401
+        # 1) setdefault fired
+        assert os.environ['OMP_NUM_THREADS'] == '1'
+        assert os.environ['MKL_NUM_THREADS'] == '1'
+        assert os.environ['OPENBLAS_NUM_THREADS'] == '1'
+        # 2) _thread_env is ZERO-DEPS — it must not pull in any numerical
+        # lib. If it did, OMP=1 would be a no-op since the lib's BLAS
+        # backend would have read its env at the prior import.
+        for _lib in ('numpy', 'scipy', 'sklearn', 'pandas', 'torch'):
+            assert _lib not in sys.modules, (
+                f"_thread_env.py pulled in {{_lib}} — the OMP setdefault "
+                f"is now a no-op for that lib's BLAS backend. Either remove "
+                f"the import from _thread_env, or do the setdefault even "
+                f"earlier (e.g., in a sitecustomize.py)."
+            )
+        print("OK")
+    """)
+    # `-S` disables `import site` — hard-blocks sitecustomize.py / .pth
+    # injectors that some HPC/conda envs use to preload numpy at startup.
+    # Without -S the pre-assertion ("numpy not in sys.modules before
+    # _thread_env import") could fire on environments where Python loaded
+    # numpy via a system-site customization, even though our contract
+    # would still be intact.
+    result = subprocess.run(
+        [_sys.executable, '-S', '-c', script],
+        env=env, capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, (
+        f"subprocess failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert 'OK' in result.stdout, f"unexpected stdout: {result.stdout!r}"

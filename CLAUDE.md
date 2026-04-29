@@ -46,6 +46,7 @@ Each links to the postmortem in `kb/failures/` for full context. The rule itself
 - Sim PnL and counterfactuals use actual Kelly sizing. Never flat 1-contract.
 - Dashboard changes: `dashboard_snapshot.py` and `dashboard/index.html` (gh-pages) ship in the same commit per `kb/decisions/dashboard-overhaul-plan.md`.
 - Doc drift: when changing config values, update README.md / whitepaper.md / whitepaper_investor.md / CLAUDE.md / `agent_docs/config_reference.md` in the same commit. Run `python3 scripts/doc_drift_check.py`.
+- **Don't import torch directly in bot.py.** Cal_mlp is the single torch entry point via `scripts/cal_mlp/integration.py`, which constrains threads at module-import time. AND: `import _thread_env` must remain the FIRST import in bot.py — numpy/scipy C extensions cache OpenBLAS thread count at load time, so OMP_NUM_THREADS=1 has to be in os.environ before they import. Direct `import torch` or any reorder defeats the contention fix (postmortem: production incident 2026-04-29, scan loop ballooned to 7.75s, 0 candidates in 5 min). AST regression: `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_py`.
 
 ## Anti-patterns
 

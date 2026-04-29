@@ -88,6 +88,109 @@ _IDENTITY_NO_Z = _build_identity_no_zscore_set()
 
 
 # ---------------------------------------------------------------------------
+# Torch thread constraint (R-p7-deploy-r7)
+#
+# Pin torch + OMP/MKL/OpenBLAS to 1 thread each, at module-import time.
+#
+# Why: the bot's scan thread shares CPU with WS feeds, calibration workers,
+# supabase_sync, sports thread, etc. By default torch uses num_cpus intra-op
+# threads (= 2 on the VPS), so a single predict() can grab both cores and
+# starve the scan thread via GIL contention.
+#
+# Empirical benchmark on prod VPS (2 vCPU / 2 GB):
+#     default 2 threads, no contention      → 22ms median
+#     1 thread,           no contention     → 15ms median
+#     default 2 threads, 3 busy threads     → 992ms median   ← outage mode
+#     1 thread,           3 busy threads    → 372ms median
+#
+# IMPORTANT: `torch.set_num_interop_threads()` raises RuntimeError if torch's
+# parallel pool has already initialized — which happens at *first parallel
+# op* in the process. To beat that race we must run BEFORE any other module
+# imports torch (e.g. train.py at integration:_load() does
+# `torch.use_deterministic_algorithms` which can lock the dispatcher).
+# Hence: module-import time, before any sub-imports.
+#
+# Belt-and-suspenders: OMP/MKL/OPENBLAS env vars are also set in the systemd
+# EnvironmentFile (VPS ~/kalshi-bot-repo/.env) so the OpenMP/MKL backends are
+# constrained at first `import torch` regardless of who imports it first.
+# ---------------------------------------------------------------------------
+
+# Single source of truth for the OMP/MKL setdefaults: scripts/cal_mlp/_thread_env.py.
+# bot.py imports _thread_env BEFORE numpy at line 1; integration.py imports it
+# here as belt-and-suspenders for tests/scripts that bypass bot.py. Either path
+# guarantees the env vars are set before any C extension that reads them.
+import _thread_env  # noqa: F401 — side-effect import: sets OMP_NUM_THREADS=1 etc.
+
+_TORCH_THREADS_INTRA = None       # post-call observed value (or None on failure)
+_TORCH_THREADS_INTEROP = None
+_TORCH_THREADS_INTEROP_RACE = False  # True if interop call lost race to default-2
+
+
+def _constrain_torch_threads_at_import() -> None:
+    """Run at module import. Imports torch eagerly and pins thread counts.
+
+    DO NOT call importlib.reload(integration) at runtime: torch's interop
+    pool is initialized after the first call here, so a second invocation
+    will set _TORCH_THREADS_INTEROP_RACE=True spuriously. Hot-reloading the
+    bundle should be done via re-instantiating CalMLPPredictor (which only
+    re-loads the model files), not by reloading this module.
+    """
+    global _TORCH_THREADS_INTRA, _TORCH_THREADS_INTEROP, _TORCH_THREADS_INTEROP_RACE
+    try:
+        import torch
+    except ImportError:
+        # torch not installed (e.g. during static analysis / lint): skip
+        # silently. The bot can't run without torch anyway, so this only
+        # matters for tests that don't touch torch.
+        return
+    # set_num_interop_threads MUST be called before any parallel work, OR it
+    # raises RuntimeError. Call it FIRST so we get the explicit signal.
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError as e:
+        # Pool already initialized — interop stuck at default. Surface as a
+        # WARNING (not info): under contention this re-introduces the issue.
+        _TORCH_THREADS_INTEROP_RACE = True
+        logger.warning(
+            "[CALMLP_THREADS] torch.set_num_interop_threads(1) lost race "
+            "(another module imported torch first): %s — interop=%d",
+            e, torch.get_num_interop_threads(),
+        )
+    # set_num_threads (intra-op) can be called any time and is the bigger
+    # lever (matrix mult uses these). Failure is fatal — we don't silently
+    # flip the constrained flag if this fails.
+    torch.set_num_threads(1)
+    _TORCH_THREADS_INTRA = torch.get_num_threads()
+    _TORCH_THREADS_INTEROP = torch.get_num_interop_threads()
+    # R-p7-deploy-r7-r3: NOT setting torch.set_grad_enabled(False) globally;
+    # predict() uses `with torch.no_grad():` locally, and a process-wide flip
+    # is a footgun for any future audit/REPL code path that imports
+    # integration.py and expects autograd. (Round-3 review #M5.)
+    # R-p7-deploy-r7-r3: NOT calling torch.set_flush_denormal(True); our
+    # post-clip logit values are bounded in [-13.8, +13.8] (RAW_PROB_CLIP_EPS
+    # = 1e-6), nowhere near float32 denormal range (~1.18e-38). The flag
+    # would be perf-neutral for our pipeline, and the comment had a wrong
+    # rationale claim. (Round-3 review #L6.)
+    if _TORCH_THREADS_INTRA != 1:
+        # set_num_threads(1) didn't take. Loud.
+        logger.error(
+            "[CALMLP_THREADS] torch threads NOT constrained — get_num_threads()=%d "
+            "after set_num_threads(1). Cal_mlp will likely cause scan "
+            "loop slowdowns under contention.", _TORCH_THREADS_INTRA,
+        )
+    else:
+        logger.info(
+            "[CALMLP_THREADS] constrained: intra=%d interop=%d "
+            "(interop_race_lost=%s)",
+            _TORCH_THREADS_INTRA, _TORCH_THREADS_INTEROP,
+            _TORCH_THREADS_INTEROP_RACE,
+        )
+
+
+_constrain_torch_threads_at_import()
+
+
+# ---------------------------------------------------------------------------
 # Exception hierarchy
 # ---------------------------------------------------------------------------
 
@@ -578,6 +681,10 @@ class CalMLPPredictor:
                         _conformal = json.load(f)
 
                     # Build per-member models (R-p7-r2#M1: module-level path).
+                    # R-p7-deploy-r7: torch threads already constrained to 1
+                    # at integration.py module-import time (see
+                    # _constrain_torch_threads_at_import above), BEFORE
+                    # train.py is imported — so the interop-pool race is won.
                     from train import build_model_from_definition
                     import torch
                     fold_p4 = next(

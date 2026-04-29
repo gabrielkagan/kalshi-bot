@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """Kalshi cryptocurrency prediction market trading bot."""
 
+# R-p7-deploy-r7 CRITICAL: pin OMP/MKL/OpenBLAS to 1 thread BEFORE numpy /
+# scipy / torch / sklearn / pandas C-extensions load. These libraries cache
+# their thread-pool size at LIBRARY LOAD TIME — setting OMP_NUM_THREADS=1
+# AFTER `import numpy` is a no-op. See scripts/cal_mlp/_thread_env.py and
+# CLAUDE.md "Critical rules". AST regression in test_cal_mlp_invariants.py.
 import os
 import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts', 'cal_mlp'))
+import _thread_env  # noqa: F401, E402 — side-effect: sets OMP_NUM_THREADS=1 before numpy below
 import re
 import time
 import json
@@ -38,7 +45,8 @@ from config import *  # noqa: F401,F403 — shared constants (single source of t
 from circuit_breaker import REGISTRY as _BREAKER_REGISTRY  # circuit breaker for KalshiClient REST GETs
 
 # Phase 7: cal_mlp integration (single import surface).
-sys.path.insert(0, str(Path(__file__).parent / 'scripts' / 'cal_mlp'))
+# Note: sys.path.insert for scripts/cal_mlp already happened at top of file
+# so _thread_env could load before numpy. Leave this comment; don't re-insert.
 from integration import (  # noqa: E402
     CalMLPError, CalMLPParityError, CalMLPSchemaError,
     migrate_schema as _calmlp_migrate_schema,
