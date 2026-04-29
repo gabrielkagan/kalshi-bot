@@ -34,14 +34,17 @@ def test_drop_predicates_locked_at_12():
     assert 'null_seconds_to_close' in names
 
 
-def test_skipped_reasons_locked_at_12():
-    """R-p7-impl#C11 + R-p7-r2#H1: enum locked at 12 entries."""
+def test_skipped_reasons_locked_at_15():
+    """R-p7-impl#C11 + R-p7-r2#H1 + R-p7-deploy-r8: enum locked at 15 entries
+    (12 sync + 3 async-predict additions: queue_full, async_predict_failed,
+    row_not_found)."""
     import integration
-    assert len(integration.SKIPPED_REASONS) == 12
+    assert len(integration.SKIPPED_REASONS) == 15
     expected = {
         'no_current', 'phase_mismatch', 'sha_chain_fail', 'marker_drift',
         'load_failed', 'predict_oom', 'predict_runtime', 'env_disabled',
         'raw_prob_null', 'market_blend_w_drift', 'no_predictor', 'missing_features',
+        'queue_full', 'async_predict_failed', 'row_not_found',
     }
     assert integration.SKIPPED_REASONS == frozenset(expected)
 
@@ -559,21 +562,23 @@ def _read_bot_py():
 
 
 def test_edit4_hook_does_not_pass_unbound_side():
-    """R-p7-deploy-r2#C1 regression: Edit 4's annotate_evaluation_kwargs call
-    must NOT pass `side=side` — `side` is unbound in the 15M scan scope and
-    Python evaluates kwargs at call time, NameError-ing before the function
-    enters and the predictor=None graceful-skip can fire. Hardcode 'yes'.
+    """R-p7-deploy-r2#C1 regression: Edit 4's annotate call must NOT pass
+    `side=side` — `side` is unbound in the 15M scan scope and Python
+    evaluates kwargs at call time, NameError-ing before the function enters
+    and the predictor=None graceful-skip can fire. Hardcode 'yes'.
+    R-p7-deploy-r8: the hook is now `_calmlp_annotate_async` (async enqueue);
+    same contract applies.
     """
     src = _read_bot_py()
-    if '_calmlp_annotate_kwargs' not in src:
+    if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
         pytest.skip('Edit 4 not yet applied to bot.py (rebuild-only branch)')
-    # Find the annotate_kwargs call block and check the side kwarg.
     import re
+    # Match either the legacy sync call or the new async enqueue.
     m = re.search(
-        r'_calmlp_annotate_kwargs\s*\((.*?)\)',
+        r'_calmlp_annotate(?:_async|_kwargs)\s*\((.*?)\)',
         src, re.DOTALL,
     )
-    assert m, 'expected exactly one _calmlp_annotate_kwargs call'
+    assert m, 'expected exactly one _calmlp_annotate_async/kwargs call'
     call_args = m.group(1)
     # Must pass side="yes" (the literal — anything else risks NameError or
     # silent miscalibration for a side that the model wasn't trained on).
@@ -595,18 +600,14 @@ def test_edit4_hook_gated_by_pt_15m():
     get silently miscalibrated (model trained on 15M data) and SPX/weather
     would pollute the skipped-reason histogram with no_predictor rows."""
     src = _read_bot_py()
-    if '_calmlp_annotate_kwargs' not in src:
+    if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
         pytest.skip('Edit 4 not yet applied to bot.py (rebuild-only branch)')
     import re
     # The gate must appear BEFORE the hook call, in close proximity.
     # Match the pattern: `if _pt in (None, "15m"):` ... `_calmlp_annotate_kwargs`
     pat = re.compile(
         r'if\s+_pt\s+in\s*\(\s*None\s*,\s*[\'"]15m[\'"]\s*\)\s*:'
-        # Accept up to ~8000 chars of intermediate code — the row_features
-        # build expanded in R-p7-deploy-r4#C1 to populate the full
-        # CONT_FEATURE_COLS set, plus R-p7-deploy-r5 added derivation +
-        # tdp clip + datetime hoist.
-        r'(?:[\s\S]{0,8000})_calmlp_annotate_kwargs',
+        r'(?:[\s\S]{0,8000})_calmlp_annotate(?:_async|_kwargs)',
     )
     assert pat.search(src), (
         "Edit 4 hook must be wrapped in `if _pt in (None, \"15m\"):` so "
@@ -621,7 +622,7 @@ def test_edit4_shadow_queue_strips_cal_mlp_prefix():
     shadow-strategy DB rows don't get tagged with main-path calibrator
     audit data that those shadows didn't actually go through."""
     src = _read_bot_py()
-    if '_calmlp_annotate_kwargs' not in src:
+    if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
         pytest.skip('Edit 4 not yet applied to bot.py')
     # The post-hook snapshot pattern uses a dict comprehension with
     # `not k.startswith('cal_mlp_')`. Pin that the bare `_shadow_diag.copy()`
@@ -646,20 +647,19 @@ def test_edit4_shadow_queue_strips_cal_mlp_prefix():
 
 
 def test_shadow_diag_assertion_includes_cal_mlp_keys():
-    """R-p7-deploy-r2#MED2 regression: the startup assertion that pins
+    """R-p7-deploy-r2#MED2 + R-p7-deploy-r8: the startup assertion that pins
     _shadow_diag keys against insert function signatures must include the
-    6 cal_mlp_* keys for insert_evaluated_opportunity. Otherwise a future
-    refactor that drops the cal_mlp_* params silently breaks the splat."""
+    7 cal_mlp_* keys (6 audit + 1 request_id) for
+    insert_evaluated_opportunity. Otherwise a future refactor that drops a
+    cal_mlp_* param silently breaks the **_shadow_diag splat."""
     src = _read_bot_py()
-    if '_calmlp_annotate_kwargs' not in src:
+    if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
         pytest.skip('Edit 4 not yet applied to bot.py')
-    # The assertion block names a key set including cal_mlp_*.
     expected_calmlp_keys = [
         'cal_mlp_p_mean', 'cal_mlp_p_std', 'cal_mlp_final_lo',
         'cal_mlp_final_hi', 'cal_mlp_train_id', 'cal_mlp_skipped_reason',
+        'cal_mlp_request_id',
     ]
-    # Find the _SHADOW_DIAG_KEYS_EVAL_OPP_ONLY (or equivalent) block.
-    # Pin: each key appears in the assertion's expected set.
     for k in expected_calmlp_keys:
         assert f'"{k}"' in src or f"'{k}'" in src, (
             f"_shadow_diag startup assertion missing key {k!r}. "
@@ -670,14 +670,14 @@ def test_shadow_diag_assertion_includes_cal_mlp_keys():
 
 def test_insert_evaluated_opportunity_signature_has_cal_mlp_params():
     """Lock the insert_evaluated_opportunity surgery: signature MUST accept
-    the 6 cal_mlp_* params. Without these, the **_shadow_diag splat at the
-    Edit 4 hook downstream raises TypeError ('unexpected keyword argument')
-    on every scan tick that has a calibrator result."""
+    the 7 cal_mlp_* params (6 audit + 1 request_id). Without these, the
+    **_shadow_diag splat at the Edit 4 hook downstream raises TypeError
+    ('unexpected keyword argument') on every scan tick that has a
+    calibrator result. R-p7-deploy-r8 adds cal_mlp_request_id (uuid for
+    the async UPDATE)."""
     src = _read_bot_py()
-    if '_calmlp_annotate_kwargs' not in src:
+    if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
         pytest.skip('Edit 4 not yet applied to bot.py')
-    # Use AST instead of regex — comments inside the signature can contain
-    # `):` literals that fool a regex.
     import ast
     tree = ast.parse(src)
     for node in ast.walk(tree):
@@ -688,6 +688,7 @@ def test_insert_evaluated_opportunity_signature_has_cal_mlp_params():
             for required in [
                 'cal_mlp_p_mean', 'cal_mlp_p_std', 'cal_mlp_final_lo',
                 'cal_mlp_final_hi', 'cal_mlp_train_id', 'cal_mlp_skipped_reason',
+                'cal_mlp_request_id',
             ]:
                 assert required in param_names, (
                     f"insert_evaluated_opportunity signature missing {required!r}. "
@@ -748,12 +749,16 @@ def test_edit4_populates_full_cont_feature_cols():
     side_int, ticker_id, logit_raw_prob_clipped) and isn't identity_no_zscore.
     Otherwise the safety net raises missing_features and calibration skips."""
     src = _read_bot_py()
-    if '_calmlp_annotate_kwargs' not in src:
+    if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
         pytest.skip('Edit 4 not yet applied to bot.py')
     # Locate the Edit 4 row_features dict literal.
     import re
+    # R-p7-deploy-r8: the trailing line after the dict literal changed from
+    # `_calmlp_new_prob = ...` (sync return) to a comment + `_calmlp_annotate_async(`
+    # (async enqueue). Match either form.
     m = re.search(
-        r'_calmlp_row_features\s*=\s*\{(.*?)\}\s*\n\s*_calmlp_new_prob',
+        r'_calmlp_row_features\s*=\s*\{(.*?)\}\s*\n'
+        r'(?:[\s\S]{0,1000})_calmlp_annotate(?:_async|_kwargs)',
         src, re.DOTALL,
     )
     assert m, 'Edit 4 _calmlp_row_features dict not found in expected form'
@@ -893,6 +898,136 @@ def test_thread_env_imported_before_numerical_libs_in_bot_py():
         "_thread_env so OMP_NUM_THREADS=1 is read by OpenBLAS at C-ext "
         "load. Production-incident regression."
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_async_pool_state():
+    """R-p7-deploy-r8 Round-2 #3 + Round-3 #5/#6 + Round-4 #2:
+    reset _PREDICT_POOL_SHUTDOWN, shutdown the pool, close worker conns,
+    re-init the semaphore (otherwise capacity leaks silently across tests
+    if any path acquired but failed to release), then null.
+
+    Order: pool.shutdown FIRST so worker finishes any in-flight UPDATE
+    before its conn gets closed under it; THEN close conns; THEN re-init
+    the semaphore (so no in-flight worker tries to release the old one)."""
+    yield
+    try:
+        import integration
+    except ImportError:
+        return
+    import threading as _threading
+    pool = getattr(integration, '_PREDICT_POOL', None)
+    if pool is not None:
+        try:
+            pool.shutdown(wait=True, cancel_futures=True)
+        except Exception:
+            pass
+    integration._PREDICT_POOL = None
+    integration._PREDICT_POOL_SHUTDOWN = False
+    if hasattr(integration, '_close_all_worker_conns'):
+        integration._close_all_worker_conns()
+    # Round-4 #2: re-init semaphore to full capacity. Module-level state
+    # persists across tests; any leak (acquire-without-release path) silently
+    # accumulates. Resetting here costs nothing and guarantees a clean slate.
+    integration._PREDICT_QUEUE_SEMAPHORE = _threading.Semaphore(
+        integration._PREDICT_QUEUE_MAX
+    )
+
+
+def test_annotate_async_returns_none_no_calibrated_prob():
+    """R-p7-deploy-r8 + Round-1#10: the async enqueue MUST return None.
+    The sync version returned a calibrated final_prob that overrode raw;
+    if a future regression returns a value, bot.py would mis-trade because
+    Edit 4 no longer captures or uses the return value (v1 is shadow-only).
+    Pin: signature has no `-> Optional[float]` return annotation OR returns
+    None unconditionally."""
+    import integration
+    import inspect
+    sig = inspect.signature(integration.annotate_evaluation_async_enqueue)
+    # Either return annotation is None / Optional[None] / no annotation,
+    # OR the function body has no `return` with an expression.
+    src = inspect.getsource(integration.annotate_evaluation_async_enqueue)
+    # Walk AST: every Return node must have value=None or no value.
+    import ast
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Return):
+            assert node.value is None or (
+                isinstance(node.value, ast.Constant) and node.value.value is None
+            ), (
+                "annotate_evaluation_async_enqueue returned a non-None value at "
+                f"line {node.lineno}: v1 is shadow-only by spec; bot.py does "
+                "not capture or use the return value, so a future regression "
+                "would silently change trading behavior."
+            )
+
+
+def test_async_predict_worker_updates_row_via_request_id(tmp_path, monkeypatch):
+    """R-p7-deploy-r8 + Round-1#9: integration test that the async worker
+    actually UPDATEs the row after predict(). Builds a tmp sqlite, calls
+    the enqueue, INSERTs a row using the freshly-allocated uuid, drains the
+    pool, asserts the UPDATE landed.
+
+    Round-3 #7: simplified — single enqueue + INSERT + drain (was previously
+    two passes with a wasted drain that hit row_not_found)."""
+    try:
+        import torch  # noqa: F401  — integration imports torch via predictor
+    except ImportError:
+        pytest.skip("torch not installed")
+    import integration
+    import sqlite3 as _sql
+    db_path = str(tmp_path / "state.db")
+    conn = _sql.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("""
+        CREATE TABLE evaluated_opportunities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cal_mlp_request_id TEXT,
+            cal_mlp_p_mean REAL,
+            cal_mlp_p_std REAL,
+            cal_mlp_final_lo REAL,
+            cal_mlp_final_hi REAL,
+            cal_mlp_train_id TEXT,
+            cal_mlp_skipped_reason TEXT
+        )
+    """)
+    conn.commit()
+    class StubPredictor:
+        train_id = "test-train-id"
+        asset = "BTC"
+        def predict(self, raw_prob, ticker, side, entry_price_cents, row_features):
+            return (0.85, 0.05, 0.75, 0.95)
+    monkeypatch.setattr(integration, '_PREDICT_POOL_SHUTDOWN', False)
+    monkeypatch.setattr(integration, '_PREDICT_POOL', None)
+    diag = {}
+    integration.annotate_evaluation_async_enqueue(
+        diag, raw_prob=0.9, ticker="KXBTC15M-TEST", side="yes",
+        entry_price_cents=96, row_features={}, predictor=StubPredictor(),
+        db_path=db_path,
+    )
+    new_uuid = diag.get('cal_mlp_request_id')
+    assert new_uuid is not None, f"enqueue did not write request_id; diag={diag}"
+    # INSERT the row with the freshly-allocated uuid (mimics the bot's
+    # insert_evaluated_opportunity path).
+    conn.execute(
+        "INSERT INTO evaluated_opportunities (cal_mlp_request_id) VALUES (?)",
+        (new_uuid,),
+    )
+    conn.commit()
+    # Drain pool — blocks until worker finishes; UPDATE retries until it
+    # finds the row (it's already there, so first attempt succeeds).
+    integration.drain_predict_pool(timeout_sec=5.0)
+    row = conn.execute(
+        "SELECT cal_mlp_p_mean, cal_mlp_p_std, cal_mlp_final_lo, "
+        "cal_mlp_final_hi, cal_mlp_train_id, cal_mlp_skipped_reason "
+        "FROM evaluated_opportunities WHERE cal_mlp_request_id=?",
+        (new_uuid,),
+    ).fetchone()
+    assert row == (0.85, 0.05, 0.75, 0.95, "test-train-id", None), (
+        f"async worker did not UPDATE the row correctly: row={row}"
+    )
+    conn.close()
 
 
 def test_thread_env_is_zero_deps_no_numerical_imports():

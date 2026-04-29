@@ -227,6 +227,12 @@ SKIPPED_REASONS = frozenset({
     'market_blend_w_drift', # bundle vs market_config divergence
     'no_predictor',         # no predictor cached for asset (impl-added; spec amended)
     'missing_features',     # row_features dict missing required keys (impl-added)
+    # R-p7-deploy-r8 async-predict additions:
+    'queue_full',           # async pool's bounded queue is at capacity
+    'async_predict_failed', # worker thread raised an exception
+    'row_not_found',        # async UPDATE hit rowcount=0 after retries (likely
+                            # row got UPSERT-overwritten by newer tick with a
+                            # different request_id)
 })
 
 
@@ -289,6 +295,13 @@ CAL_MLP_COLUMNS = [
     ('cal_mlp_final_hi',        'REAL'),
     ('cal_mlp_train_id',        'TEXT'),
     ('cal_mlp_skipped_reason',  'TEXT'),
+    # R-p7-deploy-r8 async-predict: uuid generated at scan-tick, written at
+    # INSERT, used by the async worker to UPDATE the SAME ROW after predict()
+    # completes. UPSERT semantics on (ticker, filter_stage, side) make the row
+    # PK 'id' stable across re-evaluations BUT the row contents are mutated
+    # by newer ticks; using a uuid avoids the worker overwriting a newer
+    # tick's audit data with stale predictions.
+    ('cal_mlp_request_id',      'TEXT'),
 ]
 
 
@@ -961,6 +974,390 @@ class CalMLPPredictor:
         )
         cal_prob, ens_std, final_lo, final_hi = result
         return cal_prob, ens_std, final_lo, final_hi
+
+
+# ---------------------------------------------------------------------------
+# R-p7-deploy-r8: async predict pool (decouple predict() from scan loop)
+#
+# Design summary:
+# - bot.py Edit 4 calls annotate_evaluation_async_enqueue() — synchronous, fast
+#   (validates inputs, generates uuid, submits to pool, returns).
+# - INSERT writes the row with cal_mlp_request_id=<uuid>, cal_mlp_p_mean=NULL.
+# - Worker thread (1 of them, max_workers=1 for ordering + DB lock simplicity)
+#   pulls task, calls predict(), then UPDATEs the row WHERE cal_mlp_request_id=?.
+# - UPSERT can overwrite the row before worker UPDATEs — but with a fresh uuid
+#   per scan tick, the worker's WHERE clause won't match the new row, so we
+#   stamp 'row_not_found' instead of corrupting newer audit data.
+#
+# Round-1 critiques addressed:
+#  C1/C2/C3: uuid request_id avoids eval_time mismatch + UPSERT overwrites.
+#  H4 (qsize race): threading.Semaphore for bounded queue, not private API.
+#  H5 (busy_timeout retry interaction): short connect timeout + BEGIN IMMEDIATE.
+#  H6 (connection per call): thread-local sqlite conn, opened once.
+#  H7 (signal handler drain): drain_predict_pool documented as "main loop only".
+#  H8 (re-init race): module-level lock guards _PREDICT_POOL access.
+#  H10 (pending_async pollution): we DO NOT write 'pending_async'; row stays
+#       cal_mlp_skipped_reason=NULL until UPDATE lands with the real value.
+#  M14 (rowcount swallow): explicit rowcount handling + row_not_found stamp.
+#  M15 (BEGIN IMMEDIATE): explicit in worker.
+#  L19 (future swallows): worker has top-level try/except BaseException.
+#  L20 (no metrics): _async_metrics dict + periodic log line every 60s.
+# ---------------------------------------------------------------------------
+
+import concurrent.futures
+import sqlite3
+import time
+import uuid
+
+_PREDICT_POOL: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_PREDICT_POOL_LOCK = threading.Lock()
+_PREDICT_POOL_SHUTDOWN = False
+_PREDICT_QUEUE_MAX = 256
+_PREDICT_QUEUE_SEMAPHORE = threading.Semaphore(_PREDICT_QUEUE_MAX)
+_ASYNC_METRICS = {
+    'submitted': 0, 'completed_ok': 0, 'completed_predict_failed': 0,
+    'completed_row_not_found': 0, 'queue_full': 0,
+}
+_ASYNC_METRICS_LOCK = threading.Lock()
+_ASYNC_LAST_LOG_TS = 0.0  # for periodic metrics log line
+
+
+def _get_predict_pool() -> Optional[concurrent.futures.ThreadPoolExecutor]:
+    """Lazy-init the pool. Returns None during/after shutdown so callers
+    stamp env_disabled instead of submitting work that won't drain."""
+    global _PREDICT_POOL
+    with _PREDICT_POOL_LOCK:
+        if _PREDICT_POOL_SHUTDOWN:
+            return None
+        if _PREDICT_POOL is None:
+            _PREDICT_POOL = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix='cal_mlp_predict',
+            )
+        return _PREDICT_POOL
+
+
+def drain_predict_pool(timeout_sec: float = 5.0) -> None:
+    """Bot-shutdown hook. MUST NOT be called from a signal handler — call from
+    the main shutdown loop after `_shutdown.is_set()` is observed.
+
+    The `timeout_sec` parameter is ignored by stdlib's `pool.shutdown` (it
+    has no timeout arg). Production tolerance: a single in-flight predict()
+    is ~25ms median, p95 62ms; bounded queue (256) × ~62ms = ~16s worst-case
+    drain. systemd TimeoutStopSec should be ≥30s to accommodate. Round-2 #4
+    addressed worker conn leak by closing them explicitly here.
+    """
+    global _PREDICT_POOL, _PREDICT_POOL_SHUTDOWN
+    with _PREDICT_POOL_LOCK:
+        _PREDICT_POOL_SHUTDOWN = True
+        pool = _PREDICT_POOL
+        _PREDICT_POOL = None
+    if pool is not None:
+        try:
+            # shutdown(wait=True) blocks until the executor's worker drains
+            # its current task. cancel_futures=False because each pending
+            # task is already cheap (~62ms p95) and we want the audit data.
+            pool.shutdown(wait=True, cancel_futures=False)
+        except Exception as e:  # pragma: no cover
+            logger.warning("[CALMLP_ASYNC] pool drain raised: %s", e)
+    # Close any sqlite conns opened by worker threads (Round-2 #4).
+    _close_all_worker_conns()
+    logger.info("[CALMLP_ASYNC] pool drained; metrics=%s", _ASYNC_METRICS)
+
+
+# Thread-local DB connection — single worker means one conn ever, opened once.
+_WORKER_TLOCAL = threading.local()
+
+
+def _worker_db_conn(db_path: str) -> sqlite3.Connection:
+    """Open-once sqlite conn for the worker thread. Round-2 #4: registered
+    on _ALL_WORKER_CONNS so drain_predict_pool can close them deterministically
+    instead of leaking until thread GC.
+
+    Round-2 #2 + Round-3 #4: busy_timeout=2000ms (between CLAUDE.md's 10000
+    for main scan and a tighter cal_mlp budget). Rationale: under sustained
+    main-thread writer contention >500ms (e.g. supabase_sync batch), 500ms
+    busy_timeout caused a retry-storm + queue saturation. 2s lets the worker
+    actually wait for the writer to finish; combined with 5 retries the
+    worst-case is 5 × 2s + LOCK backoff (~265ms) = ~10.3s per task. Bounded
+    queue + add_done_callback semaphore release prevents queue runaway.
+
+    Round-3 #3: check_same_thread=False so drain_predict_pool can close
+    these conns from the drain caller's thread (the conn was opened in the
+    worker thread, sqlite3 normally forbids cross-thread close)."""
+    conn = getattr(_WORKER_TLOCAL, 'conn', None)
+    if conn is None:
+        conn = sqlite3.connect(
+            db_path, timeout=2.0, isolation_level=None,
+            check_same_thread=False,
+        )
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=2000")
+        _WORKER_TLOCAL.conn = conn
+        with _ALL_WORKER_CONNS_LOCK:
+            _ALL_WORKER_CONNS.append(conn)
+    return conn
+
+
+# Track all worker-thread sqlite connections so drain_predict_pool can close
+# them deterministically (Round-2 #4: was thread-local + GC-on-thread-death,
+# which doesn't fire predictably on pool shutdown).
+_ALL_WORKER_CONNS: list = []
+_ALL_WORKER_CONNS_LOCK = threading.Lock()
+
+
+def _close_all_worker_conns() -> None:
+    """Called from drain_predict_pool. Closes any sqlite connections opened
+    by worker threads. Idempotent.
+
+    Round-3 #3: sqlite3 forbids cross-thread close by default (Connection was
+    opened in the worker thread; this runs in the drain caller's thread).
+    The conn was opened with check_same_thread=False (set in
+    _worker_db_conn) so close from any thread is permitted."""
+    with _ALL_WORKER_CONNS_LOCK:
+        for c in _ALL_WORKER_CONNS:
+            try:
+                c.close()
+            except Exception:
+                pass
+        _ALL_WORKER_CONNS.clear()
+
+
+def _release_pool_slot(_future) -> None:
+    """Round-3 #1: module-level done-callback for the pool. Must NEVER raise
+    — callback exceptions abort the worker thread (in some CPython versions
+    they bubble up and the thread dies without releasing). Wrapped in
+    try/finally so the semaphore release is unconditional."""
+    try:
+        _PREDICT_QUEUE_SEMAPHORE.release()
+    except BaseException as e:  # pragma: no cover — release should not raise
+        try:
+            logger.error("[CALMLP_ASYNC] semaphore release failed: %s", e)
+        except Exception:
+            pass
+
+
+def _bump_metric(key: str) -> None:
+    global _ASYNC_LAST_LOG_TS
+    with _ASYNC_METRICS_LOCK:
+        _ASYNC_METRICS[key] = _ASYNC_METRICS.get(key, 0) + 1
+        now = time.time()
+        if now - _ASYNC_LAST_LOG_TS >= 60.0:
+            _ASYNC_LAST_LOG_TS = now
+            logger.info("[CALMLP_ASYNC] metrics %s", _ASYNC_METRICS)
+
+
+def _async_predict_and_update(
+    *,
+    predictor: 'CalMLPPredictor',
+    raw_prob: float,
+    ticker: str,
+    side: str,
+    entry_price_cents: int,
+    row_features: dict,
+    request_id: str,
+    db_path: str,
+) -> None:
+    """Worker function. NEVER raises — all errors stamped to skip_reason
+    via UPDATE."""
+    try:
+        diag: dict = {}
+        try:
+            annotate_evaluation_kwargs(
+                diag, raw_prob=raw_prob, ticker=ticker, side=side,
+                entry_price_cents=entry_price_cents, row_features=row_features,
+                predictor=predictor,
+            )
+        except Exception as e:
+            # Should be impossible (annotate catches its own exceptions), but
+            # defense-in-depth.
+            diag = {
+                'cal_mlp_skipped_reason': 'async_predict_failed',
+            }
+            logger.warning("[CALMLP_ASYNC] predict failed for %s: %s",
+                           ticker, e, exc_info=True)
+        # UPDATE the row keyed by request_id. Retry up to 5 times if the row
+        # isn't INSERTed yet (worker can fire before scan's INSERT commits).
+        conn = _worker_db_conn(db_path)
+        sql = """
+            UPDATE evaluated_opportunities
+            SET cal_mlp_p_mean=?,
+                cal_mlp_p_std=?,
+                cal_mlp_final_lo=?,
+                cal_mlp_final_hi=?,
+                cal_mlp_train_id=?,
+                cal_mlp_skipped_reason=?
+            WHERE cal_mlp_request_id=?
+        """
+        params = (
+            diag.get('cal_mlp_p_mean'),
+            diag.get('cal_mlp_p_std'),
+            diag.get('cal_mlp_final_lo'),
+            diag.get('cal_mlp_final_hi'),
+            diag.get('cal_mlp_train_id'),
+            diag.get('cal_mlp_skipped_reason'),
+            request_id,
+        )
+        # Round-1 critique #1+#2: a single scan-iteration's _shadow_diag is
+        # splatted into MULTIPLE insert_evaluated_opportunity calls (canonical
+        # 15M filter_stage + terminal_momentum + decided_contract + various
+        # shadow paths). They all carry the SAME cal_mlp_request_id, all
+        # represent the same scan-tick's view of the market, and ALL should
+        # get the same calibration data. Hence `rowcount >= 1` is success.
+        # Round-1 #4/#5: split retry handling. INSERT-not-yet-committed gets
+        # short backoff (rowcount=0 path); lock contention gets a tighter
+        # backoff because busy_timeout=2000 already waited up to 2s on the
+        # blocking call. Skip sleep on the last attempt (#4).
+        ROWCOUNT0_BACKOFF_MS = (10, 25, 50, 150, 400)  # total 0.635s worst-case
+        LOCK_BACKOFF_MS = (5, 10, 25, 75, 150)         # total 0.265s worst-case
+        n_attempts = len(ROWCOUNT0_BACKOFF_MS)
+        # Round-3 #2: explicit txn lifecycle. With isolation_level=None
+        # (autocommit) + manual BEGIN IMMEDIATE, the conn holds the writer
+        # lock until COMMIT or ROLLBACK. If the worker thread is interrupted
+        # (Exception inside loop, KeyboardInterrupt during time.sleep), the
+        # txn must be rolled back or the lock leaks until process exit.
+        txn_open = False
+        try:
+            for attempt in range(n_attempts):
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    txn_open = True
+                    cur = conn.execute(sql, params)
+                    conn.execute("COMMIT")
+                    txn_open = False
+                    if cur.rowcount >= 1:
+                        if diag.get('cal_mlp_skipped_reason') == 'async_predict_failed':
+                            _bump_metric('completed_predict_failed')
+                        else:
+                            _bump_metric('completed_ok')
+                        return
+                    # rowcount=0 → INSERT not yet committed; backoff + retry.
+                    if attempt < n_attempts - 1:
+                        time.sleep(ROWCOUNT0_BACKOFF_MS[attempt] / 1000.0)
+                except sqlite3.OperationalError as e:
+                    # Lock contention or BEGIN IMMEDIATE conflict.
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.OperationalError:
+                        pass
+                    txn_open = False
+                    logger.debug("[CALMLP_ASYNC] update lock retry %d: %s",
+                                 attempt, e)
+                    if attempt < n_attempts - 1:
+                        time.sleep(LOCK_BACKOFF_MS[attempt] / 1000.0)
+            # Retries exhausted: row(s) not yet INSERTed (or all UPSERT-
+            # overwritten by newer ticks). Stamp metric — not an error.
+            _bump_metric('completed_row_not_found')
+        finally:
+            # Round-3 #2: defense-in-depth. If we leave the loop with txn_open
+            # (impossible via explicit paths above, but possible if a
+            # BaseException landed mid-execute), force a rollback so the
+            # worker conn doesn't stay holding the writer lock forever.
+            if txn_open:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+    except Exception as e:  # absolute last resort — protect the pool
+        # Round-2 #5: narrow to Exception (not BaseException). SystemExit /
+        # KeyboardInterrupt should propagate up to the executor and abort
+        # the worker thread; swallowing them silently masks fatals (e.g.,
+        # torch sys.exit on hardware error).
+        logger.error("[CALMLP_ASYNC] worker raised: %s", e, exc_info=True)
+    # Round-2 #9: semaphore is released by the future's done_callback (set
+    # in annotate_evaluation_async_enqueue), NOT here. Single-owner pattern
+    # avoids the double-release race where KeyboardInterrupt fires between
+    # pool.submit() return and the submit_succeeded=True assignment.
+
+
+def annotate_evaluation_async_enqueue(
+    kwargs: dict,
+    *,
+    raw_prob: Optional[float],
+    ticker: str,
+    side: str,
+    entry_price_cents: int,
+    row_features: dict,
+    predictor: Optional['CalMLPPredictor'],
+    db_path: str,
+) -> None:
+    """Enqueue cal_mlp predict for async execution. Mutates kwargs ONLY to
+    set kwargs['cal_mlp_request_id']=<uuid> (which the synchronous INSERT
+    writes). predict() runs in the worker thread; cal_mlp_p_mean / p_std /
+    final_lo / final_hi / train_id / skipped_reason are written by the
+    worker's UPDATE keyed on cal_mlp_request_id.
+
+    Synchronous skip paths (no work submitted to pool):
+    - env=0 → kwargs['cal_mlp_skipped_reason']='env_disabled', no request_id.
+    - raw_prob None → 'raw_prob_null'.
+    - predictor None → 'no_predictor'.
+    - pool full → 'queue_full'.
+    - pool shutdown → 'env_disabled' (treat as off).
+
+    NOTE: this function does NOT return a calibrated probability — v1 is
+    shadow-only. final_prob downstream uses raw_prob path.
+    """
+    # Synchronous early-exit checks (cheap, no submit needed).
+    if os.environ.get('CALMLP_ENABLED', '1').strip().lower() not in ('1', 'true', 'yes'):
+        kwargs['cal_mlp_skipped_reason'] = 'env_disabled'
+        return
+    if raw_prob is None:
+        kwargs['cal_mlp_skipped_reason'] = 'raw_prob_null'
+        return
+    if predictor is None:
+        kwargs['cal_mlp_skipped_reason'] = 'no_predictor'
+        return
+    pool = _get_predict_pool()
+    if pool is None:
+        kwargs['cal_mlp_skipped_reason'] = 'env_disabled'  # shutdown in progress
+        return
+    # Bounded queue via semaphore. Non-blocking acquire — drop if full.
+    if not _PREDICT_QUEUE_SEMAPHORE.acquire(blocking=False):
+        kwargs['cal_mlp_skipped_reason'] = 'queue_full'
+        _bump_metric('queue_full')
+        return
+    # Round-2 #9: SINGLE-OWNER semaphore release pattern.
+    # We register a future done-callback that releases the semaphore exactly
+    # once when the worker finishes (success OR exception). This eliminates
+    # the race where KeyboardInterrupt fires between pool.submit() return
+    # and a `submit_succeeded=True` flag assignment, which under the old
+    # double-release pattern caused capacity-leak by the slot.
+    request_id = uuid.uuid4().hex
+    kwargs['cal_mlp_request_id'] = request_id
+    # NOTE: we do NOT set cal_mlp_skipped_reason='pending_async' — leaving
+    # it NULL means audit queries naturally see "rows where worker hasn't
+    # written yet" as NULL; the worker's UPDATE replaces with real value.
+    try:
+        future = pool.submit(
+            _async_predict_and_update,
+            predictor=predictor,
+            raw_prob=raw_prob,
+            ticker=ticker,
+            side=side,
+            entry_price_cents=entry_price_cents,
+            row_features=row_features,
+            request_id=request_id,
+            db_path=db_path,
+        )
+    except RuntimeError as e:
+        # Pool shutting down — the request_id was set but no worker will
+        # process it. Release semaphore + clean up kwargs.
+        _PREDICT_QUEUE_SEMAPHORE.release()
+        kwargs['cal_mlp_skipped_reason'] = 'env_disabled'
+        kwargs.pop('cal_mlp_request_id', None)
+        logger.debug("[CALMLP_ASYNC] submit raced pool shutdown: %s", e)
+        return
+    # Round-3 #1: use module-level _release_pool_slot (try/finally protected,
+    # never raises) instead of an inline lambda. add_done_callback runs the
+    # callback ON THE WORKER THREAD synchronously after the future completes;
+    # any callback exception abort the worker thread without releasing the
+    # semaphore in some CPython versions, so the callback body MUST be
+    # exception-safe.
+    try:
+        future.add_done_callback(_release_pool_slot)
+    except Exception:  # pragma: no cover — should never raise per docs
+        _PREDICT_QUEUE_SEMAPHORE.release()
+        raise
+    _bump_metric('submitted')
 
 
 # ---------------------------------------------------------------------------

@@ -55,6 +55,8 @@ from integration import (  # noqa: E402
     make_compute_for_15m_main_path,
     CalMLPPredictor,
     annotate_evaluation_kwargs as _calmlp_annotate_kwargs,
+    annotate_evaluation_async_enqueue as _calmlp_annotate_async,
+    drain_predict_pool as _calmlp_drain_pool,
 )
 
 
@@ -3963,7 +3965,11 @@ class StateManager:
                                      cal_mlp_final_lo: Optional[float] = None,
                                      cal_mlp_final_hi: Optional[float] = None,
                                      cal_mlp_train_id: Optional[str] = None,
-                                     cal_mlp_skipped_reason: Optional[str] = None):
+                                     cal_mlp_skipped_reason: Optional[str] = None,
+                                     # R-p7-deploy-r8 async-predict: uuid set by
+                                     # annotate_evaluation_async_enqueue at scan-tick;
+                                     # async worker UPDATEs the row WHERE this matches.
+                                     cal_mlp_request_id: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -4124,8 +4130,9 @@ class StateManager:
                      kalshi_flow_depth_drain,
                      orderbook_levels_json,
                      cal_mlp_p_mean, cal_mlp_p_std, cal_mlp_final_lo,
-                     cal_mlp_final_hi, cal_mlp_train_id, cal_mlp_skipped_reason)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     cal_mlp_final_hi, cal_mlp_train_id, cal_mlp_skipped_reason,
+                     cal_mlp_request_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -4227,7 +4234,8 @@ class StateManager:
                     cal_mlp_final_lo=excluded.cal_mlp_final_lo,
                     cal_mlp_final_hi=excluded.cal_mlp_final_hi,
                     cal_mlp_train_id=excluded.cal_mlp_train_id,
-                    cal_mlp_skipped_reason=excluded.cal_mlp_skipped_reason
+                    cal_mlp_skipped_reason=excluded.cal_mlp_skipped_reason,
+                    cal_mlp_request_id=excluded.cal_mlp_request_id
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -4272,7 +4280,8 @@ class StateManager:
                   kalshi_flow_depth_drain,
                   orderbook_levels_json,
                   cal_mlp_p_mean, cal_mlp_p_std, cal_mlp_final_lo,
-                  cal_mlp_final_hi, cal_mlp_train_id, cal_mlp_skipped_reason))
+                  cal_mlp_final_hi, cal_mlp_train_id, cal_mlp_skipped_reason,
+                  cal_mlp_request_id))
             self.conn.commit()
         except Exception as e:
             try:
@@ -9788,6 +9797,7 @@ class OpportunityScanner:
         _SHADOW_DIAG_KEYS_EVAL_OPP_ONLY = _SHADOW_DIAG_KEYS | {
             "cal_mlp_p_mean", "cal_mlp_p_std", "cal_mlp_final_lo",
             "cal_mlp_final_hi", "cal_mlp_train_id", "cal_mlp_skipped_reason",
+            "cal_mlp_request_id",  # R-p7-deploy-r8: async-predict uuid
         }
         for _fn_name, _fn, _expected in [
             ("insert_rejection", self._state.insert_rejection, _SHADOW_DIAG_KEYS),
@@ -11926,13 +11936,17 @@ class OpportunityScanner:
                         # apply_norm even though stc_bucket is precomputed.
                         'seconds_to_close': seconds_remaining,
                     }
-                    _calmlp_new_prob = _calmlp_annotate_kwargs(
+                    # R-p7-deploy-r8: switched to async enqueue. predict()
+                    # runs in a worker thread; cal_mlp_p_mean / etc. populated
+                    # via deferred UPDATE keyed on cal_mlp_request_id (uuid
+                    # set into _shadow_diag here, written by INSERT below).
+                    # final_prob is NEVER overridden — v1 is shadow-only by
+                    # design (see kb/decisions/p2-cal-mlp-v1v2v3-retraining-plan.md).
+                    _calmlp_annotate_async(
                         _shadow_diag, raw_prob=raw_prob, ticker=ticker, side="yes",
                         entry_price_cents=best_ask, row_features=_calmlp_row_features,
-                        predictor=_calmlp_predictor,
+                        predictor=_calmlp_predictor, db_path=DB_PATH,
                     )
-                    if _calmlp_new_prob is not None:
-                        final_prob = _calmlp_new_prob   # use calibrated; otherwise raw_prob path runs
 
                 # ── Temperature scaling (Layer 1) ──────────────
                 _hourly_pre_temp_prob = None
@@ -25904,6 +25918,13 @@ class MainLoop:
         if hasattr(self, 'dvol_fetcher'):
             self.dvol_fetcher.stop()
         self.feed.stop()
+        # R-p7-deploy-r8: drain async predict pool BEFORE closing state.db so
+        # in-flight UPDATEs land. Worker holds a sqlite connection that will
+        # error if state.close() runs first.
+        try:
+            _calmlp_drain_pool(timeout_sec=5.0)
+        except Exception as e:
+            logging.warning(f"cal_mlp pool drain failed: {e}")
         self.state.close()
         if _TELEGRAM:
             _TELEGRAM.send("\U0001f534 Bot shutting down")
