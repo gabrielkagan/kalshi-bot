@@ -178,8 +178,8 @@ def performance_summary(conn: sqlite3.Connection, since: str,
         SELECT COUNT(*) AS trades,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS wins,
           SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) AS losses,
-          SUM(pnl_cents) AS pnl,
-          SUM(fee_cents) AS fees,
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl,
+          SUM(COALESCE(fee_cents, 0)) AS fees,
           SUM(count) AS contracts,
           SUM(count * entry_price_cents) AS risk_cents,
           ROUND(AVG(entry_price_cents), 1) AS avg_price,
@@ -226,8 +226,8 @@ def performance_summary(conn: sqlite3.Connection, since: str,
         SELECT date(settled_at) AS day,
           COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl,
-          SUM(fee_cents) AS fees,
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl,
+          SUM(COALESCE(fee_cents, 0)) AS fees,
           SUM(count * entry_price_cents) AS risk
         FROM settled_trades
         WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
@@ -250,8 +250,8 @@ def performance_summary(conn: sqlite3.Connection, since: str,
         SELECT asset,
           COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl,
-          SUM(fee_cents) AS fees,
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl,
+          SUM(COALESCE(fee_cents, 0)) AS fees,
           ROUND(AVG(entry_price_cents), 1) AS avg_p,
           ROUND(AVG(seconds_to_close), 1) AS avg_stc
         FROM settled_trades
@@ -286,8 +286,8 @@ def execution_quality(conn: sqlite3.Connection, since: str,
         SELECT strategy,
           COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl,
-          SUM(fee_cents) AS fees,
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl,
+          SUM(COALESCE(fee_cents, 0)) AS fees,
           ROUND(AVG(fill_latency_seconds), 2) AS avg_lat,
           ROUND(AVG(seconds_to_close), 1) AS avg_stc
         FROM settled_trades
@@ -335,8 +335,8 @@ def execution_quality(conn: sqlite3.Connection, since: str,
         SELECT COALESCE(LOWER(escalation_type), 'none') AS esc_type,
           COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl,
-          SUM(fee_cents) AS fees,
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl,
+          SUM(COALESCE(fee_cents, 0)) AS fees,
           ROUND(AVG(maker_wait_seconds), 1) AS avg_wait,
           ROUND(AVG(fill_latency_seconds), 2) AS avg_lat
         FROM settled_trades
@@ -404,7 +404,7 @@ def execution_quality(conn: sqlite3.Connection, since: str,
           END AS bucket,
           COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl,
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl,
           ROUND(AVG(count), 1) AS avg_ct,
           ROUND(AVG(entry_price_cents), 1) AS avg_p
         FROM settled_trades
@@ -443,8 +443,8 @@ def bucket_analysis(conn: sqlite3.Connection, since: str,
           END AS bucket,
           COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl,
-          SUM(fee_cents) AS fees,
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl,
+          SUM(COALESCE(fee_cents, 0)) AS fees,
           ROUND(AVG(entry_price_cents), 1) AS avg_p
         FROM settled_trades
         WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
@@ -476,7 +476,7 @@ def bucket_analysis(conn: sqlite3.Connection, since: str,
           END AS bucket,
           COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl,
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl,
           ROUND(AVG(edge), 4) AS avg_edge,
           ROUND(AVG(entry_price_cents), 1) AS avg_p
         FROM settled_trades
@@ -507,8 +507,8 @@ def bucket_analysis(conn: sqlite3.Connection, since: str,
           END AS bucket,
           COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl,
-          SUM(fee_cents) AS fees,
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl,
+          SUM(COALESCE(fee_cents, 0)) AS fees,
           ROUND(AVG(entry_price_cents), 1) AS avg_p,
           ROUND(AVG(seconds_to_close), 1) AS avg_stc
         FROM settled_trades
@@ -584,7 +584,7 @@ def bucket_analysis(conn: sqlite3.Connection, since: str,
         SELECT CAST(strftime('%H', settled_at) AS INTEGER) AS hr,
           COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl
         FROM settled_trades
         WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
         GROUP BY hr ORDER BY hr
@@ -603,7 +603,7 @@ def bucket_analysis(conn: sqlite3.Connection, since: str,
         SELECT vol_regime,
           COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl
         FROM settled_trades
         WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
         GROUP BY vol_regime
@@ -879,7 +879,7 @@ def profit_leakage(conn: sqlite3.Connection, since: str,
     xrp_live = conn.execute(f"""
         SELECT COUNT(*) AS n,
           SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-          SUM(pnl_cents) AS pnl
+          SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl
         FROM settled_trades
         WHERE settled_at >= ? {SETTLED_15M_FILTER} AND asset='XRP'
     """, (since,)).fetchone()
@@ -1098,7 +1098,7 @@ def config_sensitivity(conn: sqlite3.Connection, since: str,
         rows = conn.execute(f"""
             SELECT COUNT(*) AS n,
               SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-              SUM(pnl_cents) AS pnl,
+              SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl,
               ROUND(AVG(entry_price_cents), 1) AS avg_p
             FROM settled_trades
             WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
@@ -1342,7 +1342,7 @@ def config_sensitivity(conn: sqlite3.Connection, since: str,
         below = conn.execute(f"""
             SELECT COUNT(*) AS n,
               SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS w,
-              SUM(pnl_cents) AS pnl,
+              SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl,
               SUM(CASE WHEN strategy='TAKER_NOW' THEN 1 ELSE 0 END) AS takers
             FROM settled_trades
             WHERE settled_at >= ? {SETTLED_15M_FILTER} {asset_clause}
@@ -2783,7 +2783,7 @@ def main():
             SELECT asset, COUNT(*) AS n,
               SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) AS wins,
               SUM(CASE WHEN market_result='no' THEN 1 ELSE 0 END) AS losses,
-              SUM(pnl_cents) AS pnl
+              SUM(pnl_cents - COALESCE(fee_cents, 0)) AS pnl
             FROM settled_trades
             WHERE settled_at >= ? {SETTLED_15M_FILTER}
             GROUP BY asset

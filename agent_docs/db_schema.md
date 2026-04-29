@@ -15,7 +15,7 @@
 | entry_price_cents | INTEGER | Entry price in cents |
 | revenue_cents | INTEGER | Settlement revenue |
 | fee_cents | INTEGER | Fees paid |
-| pnl_cents | INTEGER | Net PnL in cents |
+| pnl_cents | INTEGER | **GROSS** PnL in cents (`revenue_cents - count*entry_price_cents`). EXCLUDES fees. For true net use `SUM(pnl_cents - COALESCE(fee_cents, 0))`. See `kb/failures/audit-pnl-fee-omission-apr29.md`. |
 | settled_at | TEXT | Settlement timestamp |
 | product_type | TEXT | 15m, hourly, spx_hourly, weather, sports |
 

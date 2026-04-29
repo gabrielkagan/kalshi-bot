@@ -57,9 +57,9 @@ def section_1(c, regime_start):
         SELECT COUNT(*) as n,
             SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins,
             SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as losses,
-            SUM(pnl_cents) as total_pnl,
-            ROUND(AVG(pnl_cents), 1) as avg_pnl,
-            SUM(fee_cents) as total_fees,
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as total_pnl,
+            ROUND(AVG(pnl_cents - COALESCE(fee_cents, 0)), 1) as avg_pnl,
+            SUM(COALESCE(fee_cents, 0)) as total_fees,
             ROUND(AVG(entry_price_cents), 1) as avg_entry,
             ROUND(AVG(seconds_to_close), 1) as avg_stc,
             ROUND(AVG(count), 1) as avg_contracts,
@@ -85,7 +85,7 @@ def section_1(c, regime_start):
     rows = c.execute("""
         SELECT asset, COUNT(*) as n,
             SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins,
-            SUM(pnl_cents) as pnl, SUM(fee_cents) as fees,
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl, SUM(COALESCE(fee_cents, 0)) as fees,
             ROUND(AVG(entry_price_cents), 1) as avg_entry,
             ROUND(AVG(seconds_to_close), 1) as avg_stc,
             ROUND(AVG(count), 1) as avg_ctx
@@ -102,7 +102,7 @@ def section_1(c, regime_start):
     rows = c.execute("""
         SELECT COALESCE(escalation_type, 'unknown') as esc, COUNT(*) as n,
             SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins,
-            SUM(pnl_cents) as pnl, SUM(fee_cents) as fees,
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl, SUM(COALESCE(fee_cents, 0)) as fees,
             ROUND(AVG(entry_price_cents), 1) as avg_entry,
             ROUND(AVG(COALESCE(fill_latency_seconds,0)), 1) as avg_fill_lat,
             ROUND(AVG(seconds_to_close), 1) as avg_stc
@@ -125,7 +125,7 @@ def section_1(c, regime_start):
             WHEN entry_price_cents <= 96 THEN '95-96'
             ELSE '97-99' END as bucket,
         COUNT(*) as n, SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins,
-        SUM(pnl_cents) as pnl, SUM(fee_cents) as fees, ROUND(AVG(pnl_cents),1) as avg_pnl
+        SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl, SUM(COALESCE(fee_cents, 0)) as fees, ROUND(AVG(pnl_cents),1) as avg_pnl
         FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?
         GROUP BY bucket ORDER BY bucket
     """, (regime_start,)).fetchall()
@@ -145,7 +145,7 @@ def section_1(c, regime_start):
             WHEN seconds_to_close < 600 THEN 'e.300-600s'
             ELSE 'f.600s+' END as bucket,
         COUNT(*) as n, SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins,
-        SUM(pnl_cents) as pnl, SUM(fee_cents) as fees,
+        SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl, SUM(COALESCE(fee_cents, 0)) as fees,
         ROUND(AVG(entry_price_cents),1) as avg_entry
         FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?
         GROUP BY bucket ORDER BY bucket
@@ -180,7 +180,7 @@ def section_1(c, regime_start):
             CASE WHEN maker_price_cents IS NOT NULL AND maker_price_cents > 0 THEN 'maker' ELSE 'taker_or_unknown' END as fill_type,
             COUNT(*) as n,
             SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins,
-            SUM(pnl_cents) as pnl, SUM(fee_cents) as fees,
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl, SUM(COALESCE(fee_cents, 0)) as fees,
             ROUND(AVG(entry_price_cents),1) as avg_entry
         FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?
         GROUP BY fill_type
@@ -193,7 +193,7 @@ def section_1(c, regime_start):
 
     print("\n--- Fee Analysis ---")
     r = c.execute("""
-        SELECT SUM(fee_cents) as total_fees,
+        SELECT SUM(COALESCE(fee_cents, 0)) as total_fees,
             SUM(CASE WHEN fee_cents <= 1 THEN 1 ELSE 0 END) as maker_fee_count,
             SUM(CASE WHEN fee_cents > 1 THEN 1 ELSE 0 END) as taker_fee_count,
             SUM(CASE WHEN fee_cents <= 1 THEN fee_cents ELSE 0 END) as maker_fees,
@@ -394,7 +394,7 @@ def section_3(c, narrow_start, medium_start, broad_start):
             SELECT COUNT(*) as n,
                 SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as w,
                 SUM(CASE WHEN pnl_cents <= 0 THEN 1 ELSE 0 END) as l,
-                SUM(pnl_cents) as pnl
+                SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl
             FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?
         """, (start,)).fetchone()
         if r["n"]:
@@ -407,7 +407,7 @@ def section_3(c, narrow_start, medium_start, broad_start):
     rows = c.execute("""
         SELECT entry_price_cents, COUNT(*) as n,
             SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as w,
-            SUM(pnl_cents) as pnl, SUM(fee_cents) as fees,
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl, SUM(COALESCE(fee_cents, 0)) as fees,
             ROUND(AVG(count), 1) as avg_ctx
         FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?
         GROUP BY entry_price_cents ORDER BY entry_price_cents
@@ -451,7 +451,7 @@ def section_3(c, narrow_start, medium_start, broad_start):
             ELSE 'h.600s+' END as bucket,
         COUNT(*) as n,
         SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as w,
-        SUM(pnl_cents) as pnl,
+        SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl,
         ROUND(AVG(entry_price_cents), 1) as avg_entry,
         ROUND(AVG(fee_cents), 1) as avg_fee
         FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?
@@ -469,7 +469,7 @@ def section_3(c, narrow_start, medium_start, broad_start):
         SELECT COALESCE(escalation_type, 'unknown') as esc,
             COUNT(*) as n,
             SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as w,
-            SUM(pnl_cents) as pnl, SUM(fee_cents) as fees,
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl, SUM(COALESCE(fee_cents, 0)) as fees,
             ROUND(AVG(entry_price_cents), 1) as avg_entry,
             ROUND(AVG(COALESCE(fill_latency_seconds,0)), 1) as avg_lat
         FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?
@@ -502,7 +502,7 @@ def section_3(c, narrow_start, medium_start, broad_start):
     r = c.execute("""
         SELECT COUNT(*) as n,
             SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as w,
-            SUM(pnl_cents) as pnl, SUM(fee_cents) as fees,
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl, SUM(COALESCE(fee_cents, 0)) as fees,
             ROUND(AVG(entry_price_cents), 1) as avg_entry
         FROM settled_trades WHERE ticker LIKE '%15M%' AND asset = 'BTC' AND settled_at > ?
     """, (broad_start,)).fetchone()
@@ -561,7 +561,7 @@ def section_3(c, narrow_start, medium_start, broad_start):
         SELECT CAST(SUBSTR(settled_at, 12, 2) AS INTEGER) as hour,
             COUNT(*) as n,
             SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as w,
-            SUM(pnl_cents) as pnl
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl
         FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?
         GROUP BY hour ORDER BY hour
     """, (broad_start,)).fetchall()
@@ -659,7 +659,7 @@ def section_4(c, narrow_start, broad_start):
             ELSE 'e.30s+' END as bucket,
         COUNT(*) as n,
         SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as w,
-        SUM(pnl_cents) as pnl,
+        SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl,
         ROUND(AVG(fee_cents), 1) as avg_fee,
         ROUND(AVG(seconds_to_close), 0) as avg_stc
         FROM settled_trades
@@ -677,7 +677,7 @@ def section_4(c, narrow_start, broad_start):
     rows = c.execute("""
         SELECT fee_cents, COUNT(*) as n,
             SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as w,
-            SUM(pnl_cents) as pnl
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl
         FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?
         GROUP BY fee_cents ORDER BY fee_cents
     """, (broad_start,)).fetchall()
@@ -691,7 +691,7 @@ def section_4(c, narrow_start, broad_start):
     rows = c.execute("""
         SELECT asset, COUNT(*) as n,
             SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as w,
-            SUM(pnl_cents) as pnl, SUM(fee_cents) as fees,
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl, SUM(COALESCE(fee_cents, 0)) as fees,
             ROUND(AVG(entry_price_cents), 1) as avg_entry,
             SUM(count * entry_price_cents) as risk_deployed
         FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?
@@ -738,7 +738,7 @@ def section_4(c, narrow_start, broad_start):
     rows = c.execute("""
         SELECT COALESCE(vol_regime, 'unknown') as vr, COUNT(*) as n,
             SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as w,
-            SUM(pnl_cents) as pnl
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl
         FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?
         GROUP BY vr ORDER BY n DESC
     """, (broad_start,)).fetchall()
@@ -763,8 +763,8 @@ def section_4(c, narrow_start, broad_start):
     # PnL attribution
     print(f"\n--- PnL attribution ({broad_start[:10]}+) ---")
     r = c.execute("""
-        SELECT SUM(pnl_cents) as net_pnl,
-            SUM(fee_cents) as total_fees,
+        SELECT SUM(pnl_cents - COALESCE(fee_cents, 0)) as net_pnl,
+            SUM(COALESCE(fee_cents, 0)) as total_fees,
             SUM(CASE WHEN pnl_cents > 0 THEN pnl_cents ELSE 0 END) as win_pnl,
             SUM(CASE WHEN pnl_cents <= 0 THEN pnl_cents ELSE 0 END) as loss_pnl
         FROM settled_trades WHERE ticker LIKE '%15M%' AND settled_at > ?

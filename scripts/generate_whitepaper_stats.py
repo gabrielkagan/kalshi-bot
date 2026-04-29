@@ -4,7 +4,7 @@
 OUTPUT FIELDS:
 
 Core (settled_trades = real LIVE money outcomes; the bot left observation mode in Feb 2026):
-  - live_pnl_cents:           SUM(pnl_cents) across all settled_trades.
+  - live_pnl_cents:           SUM(pnl_cents - COALESCE(fee_cents, 0)) across all settled_trades.
   - live_settled / live_wins / live_losses
   - settled_by_strategy_group: {strategy_group: {n, wins, pnl_cents, mean_entry_price_cents}}
   - unknown_strategy_groups:  list of strategy_group values not in KNOWN_STRATEGY_GROUPS;
@@ -193,7 +193,7 @@ def _settled_by_strategy_group(conn, since=None):
     sql = (
         "SELECT strategy_group, COUNT(*) AS n, "
         "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) AS wins, "
-        "COALESCE(SUM(pnl_cents), 0) AS pnl_cents, "
+        "COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) AS pnl_cents, "
         "AVG(entry_price_cents) AS mean_entry_price_cents "
         "FROM settled_trades"
     )

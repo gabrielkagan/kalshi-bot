@@ -214,8 +214,8 @@ def compute_15m(conn, since):
             COUNT(*) as total,
             SUM(CASE WHEN COALESCE(side,'yes') = market_result THEN 1 ELSE 0 END) as wins,
             SUM(CASE WHEN COALESCE(side,'yes') != market_result THEN 1 ELSE 0 END) as losses,
-            SUM(pnl_cents) as total_pnl,
-            SUM(fee_cents) as total_fees,
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as total_pnl,
+            SUM(COALESCE(fee_cents, 0)) as total_fees,
             AVG(entry_price_cents) as avg_entry,
             AVG(fill_latency_seconds) as avg_fill_latency,
             SUM(count) as total_contracts
@@ -234,7 +234,7 @@ def compute_15m(conn, since):
     # Today's PnL
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     daily_row = c.execute("""
-        SELECT SUM(pnl_cents) FROM settled_trades
+        SELECT SUM(pnl_cents - COALESCE(fee_cents, 0)) FROM settled_trades
         WHERE settled_at >= ? AND product_type = '15m' AND date(settled_at) = ?
     """, (since, today)).fetchone()
     daily_pnl = daily_row[0] or 0 if daily_row else 0
@@ -244,7 +244,7 @@ def compute_15m(conn, since):
         SELECT asset,
             COUNT(*) as n,
             SUM(CASE WHEN COALESCE(side,'yes') = market_result THEN 1 ELSE 0 END) as w,
-            SUM(pnl_cents) as pnl
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl
         FROM settled_trades
         WHERE settled_at >= ? AND product_type = '15m'
         GROUP BY asset ORDER BY pnl DESC
@@ -839,12 +839,15 @@ def compute_sports(conn, since):
     """, (since,)).fetchall()
     leagues = [r[0] for r in league_rows if r[0]]
 
-    # Signal W/L and simulated PnL
+    # Signal W/L and simulated PnL.
+    # NOTE: sports_shadow_log has NO fee_cents column — this table tracks
+    # simulated/observation PnL pre-fees by design. Bare SUM(pnl_cents) is
+    # CORRECT here, not a bug; do not mechanically rewrite to subtract fees.
     sig_row = c.execute("""
         SELECT
             SUM(CASE WHEN fav_won = 1 THEN 1 ELSE 0 END) as wins,
             SUM(CASE WHEN fav_won = 0 THEN 1 ELSE 0 END) as losses,
-            SUM(pnl_cents) as pnl
+            SUM(pnl_cents) as pnl  -- noqa: sports_shadow_log has no fee_cents
         FROM sports_shadow_log
         WHERE signal_fired = 1
           AND evaluation_time >= ?

@@ -1217,7 +1217,7 @@ class Analyst:
             trades = conn.execute(
                 "SELECT asset, COUNT(*) as cnt, "
                 "SUM(CASE WHEN pnl_cents > 0 THEN 1 ELSE 0 END) as wins, "
-                "SUM(pnl_cents) as total_pnl, "
+                "SUM(pnl_cents - COALESCE(fee_cents, 0)) as total_pnl, "
                 "AVG(entry_price_cents) as avg_price "
                 "FROM settled_trades GROUP BY asset"
             ).fetchall()

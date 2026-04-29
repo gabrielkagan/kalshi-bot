@@ -193,7 +193,7 @@ def run(db_path: str, since: str = None, asset_filter: str = None):
     # ── 4. Comparison to actual PnL ──────────────────────────────────────
     actual_pnl = (
         c.execute(
-            f"""SELECT SUM(pnl_cents) FROM settled_trades
+            f"""SELECT SUM(pnl_cents - COALESCE(fee_cents, 0)) FROM settled_trades
             WHERE event_ticker NOT LIKE '%D-%'
             {'AND settled_at >= ?' if since else ''}""",
             (since,) if since else (),
@@ -202,7 +202,7 @@ def run(db_path: str, since: str = None, asset_filter: str = None):
     )
     actual_fees = (
         c.execute(
-            f"""SELECT SUM(fee_cents) FROM settled_trades
+            f"""SELECT SUM(COALESCE(fee_cents, 0)) FROM settled_trades
             WHERE event_ticker NOT LIKE '%D-%'
             {'AND settled_at >= ?' if since else ''}""",
             (since,) if since else (),

@@ -1192,14 +1192,14 @@ def check_stacking_health(db: sqlite3.Connection, verbose: bool) -> list[tuple[s
     alerts = []
     try:
         row = db.execute(
-            "SELECT COUNT(*) as n, COALESCE(SUM(pnl_cents), 0) as pnl "
+            "SELECT COUNT(*) as n, COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) as pnl "
             "FROM settled_trades WHERE is_stacked = 1"
         ).fetchone()
         n = row["n"]
         pnl = row["pnl"]
         if verbose:
             print(f"  Stacking: {n} trades, PnL ${pnl/100:.2f}")
-        if pnl < -2500:  # -$25 alert
+        if pnl < -2500:  # -$25 alert (NET, post-fee — R-p7-deploy-r9 fee-fix). Originally calibrated when pnl was gross; threshold may need widening if stacking volume grows + fees compound.
             alerts.append((
                 "stacking_pnl_alert",
                 f"stacking_pnl_{n}",
@@ -1207,7 +1207,7 @@ def check_stacking_health(db: sqlite3.Connection, verbose: bool) -> list[tuple[s
                 f"Cumulative stacking PnL: ${pnl/100:.2f} on {n} trades.\n"
                 f"Alert threshold: -$25.00",
             ))
-        if pnl < -7500:  # -$75 kill recommendation
+        if pnl < -7500:  # -$75 kill recommendation (NET, post-fee).
             alerts.append((
                 "stacking_kill_recommendation",
                 f"stacking_kill_{n}",

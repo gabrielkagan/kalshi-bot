@@ -254,7 +254,7 @@ def section_4_wr_by_stc(conn: sqlite3.Connection, since: str, asset_filter: str)
             END as stc_bucket,
             COUNT(*) as trades,
             SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) as wins,
-            SUM(pnl_cents) as pnl
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl
         FROM settled_trades
         WHERE settled_at >= ?
         AND seconds_to_close IS NOT NULL
@@ -333,7 +333,7 @@ def section_6_asset_performance(conn: sqlite3.Connection, since: str, asset_filt
             asset,
             COUNT(*) as trades,
             SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) as wins,
-            SUM(pnl_cents) as pnl,
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl,
             AVG(entry_price_cents) as avg_price,
             AVG(count) as avg_contracts
         FROM settled_trades
@@ -341,7 +341,7 @@ def section_6_asset_performance(conn: sqlite3.Connection, since: str, asset_filt
         {SETTLED_15M_FILTER}
         {asset_filter}
         GROUP BY asset
-        ORDER BY SUM(pnl_cents) DESC
+        ORDER BY SUM(pnl_cents - COALESCE(fee_cents, 0)) DESC
     """, (since,)).fetchall()
 
     if not rows:
@@ -492,7 +492,7 @@ def section_9_weekend_weekday(conn: sqlite3.Connection, since: str, asset_filter
                 THEN 'Weekend' ELSE 'Weekday' END as period,
             COUNT(*) as trades,
             SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) as wins,
-            SUM(pnl_cents) as pnl
+            SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl
         FROM settled_trades
         WHERE settled_at >= ?
         {SETTLED_15M_FILTER}

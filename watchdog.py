@@ -135,7 +135,7 @@ def check_balance() -> float:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
         total_pnl = conn.execute(
-            "SELECT SUM(pnl_cents) FROM settled_trades"
+            "SELECT SUM(pnl_cents - COALESCE(fee_cents, 0)) FROM settled_trades"
         ).fetchone()[0] or 0
         conn.close()
         # This is net PnL, not absolute balance — but we can detect big drops

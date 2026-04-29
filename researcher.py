@@ -890,7 +890,7 @@ def section_post_blr_regime(ctx: ReportContext) -> str:
     trades = ctx.db.execute(
         "SELECT asset, COUNT(*) as n, "
         "SUM(CASE WHEN market_result='yes' THEN 1 ELSE 0 END) as w, "
-        "SUM(pnl_cents) as pnl "
+        "SUM(pnl_cents - COALESCE(fee_cents, 0)) as pnl "
         "FROM settled_trades "
         "WHERE product_type='15m' AND settled_at >= ? AND settled_at <= ? "
         "GROUP BY asset ORDER BY n DESC",

@@ -332,7 +332,7 @@ HOURLY_NO_SIDE_LIVE = os.environ.get("HOURLY_NO_SIDE_LIVE", "0") == "1"
 HOURLY_NO_MIN_PRICE = 40               # Minimum NO entry price (cents)
 HOURLY_NO_MAX_PRICE = 54               # Maximum NO entry price (cents)
 HOURLY_NO_FIXED_CONTRACTS = 1          # Flat 1-contract — verification mode
-HOURLY_NO_KILL_THRESHOLD = -2000       # Auto-disable if cumulative NO PnL < -$20
+HOURLY_NO_KILL_THRESHOLD = -2000       # Auto-disable if cumulative NET NO PnL < -$20 (R-p7-deploy-r9 fee-fix changed comparison from gross to net; kill now fires marginally sooner under fee burden — safer)
 
 # ─── Hourly Decided Contracts (separate from sub-60c, separate kill switch) ──
 # Same DC thesis as 15M but on hourly BTC tickers. Conservative: z≤-4, 93-96c,
@@ -472,7 +472,7 @@ WEATHER_NO_SIDE_MIN_STC = 57600.0        # 16 hours — tightened from 8h (data:
 WEATHER_NO_MIN_PRICE = 36                # Data Apr 20: sub-36c cohort 4/33 = 12.1% WR, Wilson UB 27.7% < 40% breakeven
 WEATHER_NO_MAX_PRICE = 40                # Only buy NO contracts priced ≤ 40c (YES ≥ 60c)
 WEATHER_NO_ASSUMED_PROB = 0.70           # Bypass model (structurally wrong on NO). Shadow: 79.7% WR, worst week 74%
-WEATHER_NO_KILL_THRESHOLD = -2000        # Auto-disable if cumulative NO PnL drops below -$20
+WEATHER_NO_KILL_THRESHOLD = -2000        # Auto-disable if cumulative NET NO PnL < -$20 (R-p7-deploy-r9 fee-fix changed comparison from gross to net; safer)
 # ─── Weather Bracket NO-Side ────────────────────────────────────────────
 # Brackets at YES 88-96c settle NO 91.7% of the time (157 single-strike, Wilson CI 86.3-95.1%).
 # Breakeven is only 4-12%. Mechanism: narrow 5°F brackets overprice YES because 2-3°F forecast
@@ -484,7 +484,7 @@ BRACKET_NO_FIXED_CONTRACTS = 5             # Fixed sizing — start small, verif
 BRACKET_NO_ASSUMED_PROB = 0.92             # NO probability (91.7% actual, conservative)
 BRACKET_NO_MIN_STC = 28800                 # 8 hours minimum STC (data: 84.8% NO at 8-16h, 92.6% at 16h+)
 BRACKET_NO_MAX_CONCURRENT = 6             # Max simultaneous bracket NO positions
-BRACKET_NO_KILL_THRESHOLD = -2000          # -$20 cumulative PnL kill switch
+BRACKET_NO_KILL_THRESHOLD = -2000          # -$20 cumulative NET PnL kill switch (R-p7-deploy-r9 fee-fix changed comparison from gross to net; safer)
 
 # ─── Stacking Infrastructure ────────────────────────────────────────────
 STACKING_ENABLED = os.environ.get("STACKING_ENABLED", "0") == "1"
@@ -10205,7 +10205,7 @@ class OpportunityScanner:
 
             # Recent PnL last 30m
             pnl_row = conn.execute(
-                "SELECT SUM(pnl_cents) FROM settled_trades "
+                "SELECT SUM(pnl_cents - COALESCE(fee_cents, 0)) FROM settled_trades "
                 "WHERE settled_at > datetime('now', '-30 minutes')"
             ).fetchone()
             recent_pnl = pnl_row[0] if pnl_row and pnl_row[0] is not None else 0
@@ -10333,7 +10333,7 @@ class OpportunityScanner:
         if WEATHER_NO_SIDE_LIVE:
             try:
                 _wx_no_pnl = self._state.conn.execute(
-                    "SELECT COALESCE(SUM(pnl_cents), 0) FROM settled_trades "
+                    "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) FROM settled_trades "
                     "WHERE product_type='weather' AND side='no'"
                 ).fetchone()[0]
                 if _wx_no_pnl < WEATHER_NO_KILL_THRESHOLD:
@@ -10353,7 +10353,7 @@ class OpportunityScanner:
         if HOURLY_NO_SIDE_LIVE:
             try:
                 _hno_pnl = self._state.conn.execute(
-                    "SELECT COALESCE(SUM(pnl_cents), 0) FROM settled_trades "
+                    "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) FROM settled_trades "
                     "WHERE product_type='hourly' AND side='no'"
                 ).fetchone()[0]
                 if _hno_pnl < HOURLY_NO_KILL_THRESHOLD:
@@ -10373,7 +10373,7 @@ class OpportunityScanner:
         if BRACKET_NO_ENABLED:
             try:
                 _bn_pnl = self._state.conn.execute(
-                    "SELECT COALESCE(SUM(pnl_cents), 0) FROM settled_trades "
+                    "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) FROM settled_trades "
                     "WHERE strategy='bracket_no'"
                 ).fetchone()[0]
                 if _bn_pnl < BRACKET_NO_KILL_THRESHOLD:

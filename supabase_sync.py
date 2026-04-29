@@ -759,10 +759,15 @@ class SupabaseSyncer:
         data fixes that the forward-only watermark sync misses.
         """
         try:
-            # Get per-day PnL from SQLite
+            # Get per-day PnL from SQLite. Stays GROSS for parity with the
+            # Supabase remote `daily_pnl_summary()` RPC (which also sums gross).
+            # Audit-PnL-fee-omission v3 (R-p7-deploy-r9): switching local to
+            # net would mismatch every historical day with non-zero fees,
+            # triggering the reconciliation's destructive DELETE+INSERT path
+            # 4×/hour. Migrate the remote RPC FIRST, then revisit.
             local_rows = self._db.execute("""
                 SELECT DATE(settled_at) AS day,
-                       SUM(pnl_cents) AS pnl,
+                       SUM(pnl_cents) AS pnl,  -- noqa: keep gross until Supabase migration 006
                        COUNT(*) AS cnt
                 FROM settled_trades
                 WHERE settled_at IS NOT NULL
