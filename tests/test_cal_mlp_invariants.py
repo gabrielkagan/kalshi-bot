@@ -763,17 +763,25 @@ def test_edit4_populates_full_cont_feature_cols():
     )
     assert m, 'Edit 4 _calmlp_row_features dict not found in expected form'
     rf_block = m.group(1)
-    # Required cols (no companion + not identity_no_zscore + not auto-seeded):
+    # Derive the actual v1 schema from features.py at test time, so this
+    # test self-updates when v2/v3 expand the feature set.
+    # R-p7-deploy-r9: Edit 4 was trimmed to v1's actual 8-feature schema —
+    # building defensive keys for v2/v3 was costing ~50-100ms × 4 markets
+    # per scan tick. Test now derives the requirement from features.py.
+    import features
+    cont_cols = list(features.CONT_FEATURE_COLS)
+    transforms = features.CONT_FEATURE_TRANSFORMS
+    # Auto-seeded by predict() (signature args, not row_features keys):
+    AUTO_SEEDED = {'market_price'}  # plus side/ticker_id/logit_raw_prob_clipped
     required = [
-        'z_score', 'yes_spread_cents', 'window_max_buf_pct',
-        'window_min_buf_pct', 'minutes_above_strike',
-        'spot_distance_to_strike_sigma', 'abs_spot_distance_to_strike_sigma',
-        'time_decayed_proximity', 'prob_breakeven_gap', 'log_balance_dollars',
+        c for c in cont_cols
+        if c not in AUTO_SEEDED
+        and transforms.get(c) != 'identity_no_zscore'
     ]
     missing = [k for k in required if f"'{k}'" not in rf_block and f'"{k}"' not in rf_block]
     assert not missing, (
         f"Edit 4 row_features missing required keys (would skip via "
-        f"safety net): {missing}"
+        f"safety net): {missing}. CONT_FEATURE_COLS={cont_cols}"
     )
 
 

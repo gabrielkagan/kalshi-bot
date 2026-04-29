@@ -11868,16 +11868,20 @@ class OpportunityScanner:
                     # tick. Every feature is reachable at this site per the
                     # scope review (extended-features aggregator, scan caches,
                     # local arithmetic).
+                    # R-p7-deploy-r9: BUILD ONLY V1's 8 features. Earlier
+                    # iterations populated 21 keys defensively for v2/v3,
+                    # but v1's predictor only consumes 8 + Mondrian keys.
+                    # The expensive calls (_extended_feature_provider,
+                    # _scan_ms_cache, _scan_cx_gap_cache, _get_balance_cached,
+                    # plus the duplicate _extended_feature_provider call that
+                    # insert_evaluated_opportunity already does for the row's
+                    # tier-1/2/3 columns) ran every scan tick on every 15M
+                    # market with env=1, contributing ~50-100ms × 4 markets
+                    # to per-tick latency. Trim to v1's actual schema.
+                    # When v2 retrains and adds back features, expand here.
                     _calmlp_vol_regime = vol_est["regime"]
                     _calmlp_predictor = _calmlp_predictors.get(asset)
-                    _calmlp_ext = self._state._extended_feature_provider(
-                        ticker, asset, spot, threshold, _pt,
-                    ) if self._state._extended_feature_provider else {}
-                    _calmlp_ms = self._state._scan_ms_cache.get(ticker, {}) or {}
-                    _calmlp_cx_gap = self._state._scan_cx_gap_cache.get(asset)
-                    _calmlp_yes_spread = _calmlp_ms.get("yes_spread_cents")
-                    _calmlp_flow_velocity = _calmlp_ms.get("kalshi_flow_depth_velocity")
-                    # Tier 5 derived features — single helper call.
+                    # Tier 5 derived features — pure math, ~100µs total.
                     _calmlp_derived = compute_derived_features(
                         spot_price=spot, threshold=threshold,
                         volatility=blended_rv,
@@ -11886,50 +11890,29 @@ class OpportunityScanner:
                         market_price_cents=best_ask,
                     ) or {}
                     _calmlp_dist_sigma = _calmlp_derived.get('spot_distance_to_strike_sigma')
-                    # time-decayed proximity = distance × (1 - stc/900)
-                    # R-p7-deploy-r5#M1: clip the decay factor to [0, 1] to
-                    # match the training prior. Without clip: race-window
-                    # rotation can put seconds_remaining > 900 (negative tdp)
-                    # or already-overdue evaluations < 0 (tdp > distance).
+                    # time-decayed proximity = distance × clip(1 - stc/900, 0, 1)
                     if _calmlp_dist_sigma is not None:
                         _calmlp_decay = max(0.0, min(1.0, 1.0 - seconds_remaining / 900.0))
                         _calmlp_tdp = _calmlp_dist_sigma * _calmlp_decay
                     else:
                         _calmlp_tdp = None
-                    # R-p7-deploy-r5#L1: bind datetime.now() once (saves a
-                    # syscall per candidate; no risk of microsecond drift
-                    # crossing an hour boundary).
                     _calmlp_now_dt = datetime.datetime.now(timezone.utc)
                     _calmlp_now_h = _calmlp_now_dt.hour + _calmlp_now_dt.minute / 60.0
                     _calmlp_row_features = {
-                        # Mondrian cell keys.
+                        # Mondrian cell keys (always required).
                         'price_tier': int(np.digitize(best_ask, [80, 90, 96], right=True)),
                         'stc_bucket': int(np.digitize(seconds_remaining, [120, 300, 600], right=True)),
                         'vol_regime_int': 1 if _calmlp_vol_regime == 'elevated' else 0,
                         'vol_regime': _calmlp_vol_regime,
-                        # CONT_FEATURE_COLS — auto-seeded by predictor:
-                        #   market_price (=entry_price_cents), seconds_to_close,
-                        #   side_int, ticker_id, logit_raw_prob_clipped.
-                        # Remaining must be passed here:
-                        'z_score': z_score,
-                        'yes_spread_cents': _calmlp_yes_spread,
-                        'spot_momentum_60s_bps': _calmlp_ext.get('spot_momentum_60s_bps'),
-                        'spot_momentum_5m_bps': _calmlp_ext.get('spot_momentum_5m_bps'),
-                        'spot_realized_range_15m_bps': _calmlp_ext.get('spot_realized_range_15m_bps'),
-                        'btc_spot_change_5m_bps': _calmlp_ext.get('btc_spot_change_5m_bps'),
-                        'btc_realized_vol_15m': _calmlp_ext.get('btc_realized_vol_15m'),
-                        'window_max_buf_pct': _calmlp_ext.get('window_max_buf_pct'),
-                        'window_min_buf_pct': _calmlp_ext.get('window_min_buf_pct'),
-                        'minutes_above_strike': _calmlp_ext.get('minutes_above_strike'),
+                        # v1's CONT_FEATURE_COLS (8 keys). market_price and
+                        # seconds_to_close are passed via predict()'s function
+                        # signature; the other 6 must be in row_features:
                         'spot_distance_to_strike_sigma': _calmlp_dist_sigma,
                         'abs_spot_distance_to_strike_sigma': (
                             abs(_calmlp_dist_sigma) if _calmlp_dist_sigma is not None else None
                         ),
                         'time_decayed_proximity': _calmlp_tdp,
                         'prob_breakeven_gap': _calmlp_derived.get('prob_breakeven_gap'),
-                        'spot_coinbase_kraken_gap_bps': _calmlp_cx_gap,
-                        'kalshi_flow_depth_velocity': _calmlp_flow_velocity,
-                        'log_balance_dollars': self._get_balance_cached(),
                         'hour_sin': math.sin(2.0 * math.pi * _calmlp_now_h / 24.0),
                         'hour_cos': math.cos(2.0 * math.pi * _calmlp_now_h / 24.0),
                         # seconds_to_close also needed by predict() for
