@@ -57,63 +57,41 @@ RAW_PROB_CLIP_EPS = 1e-6
 # transform == 'identity_no_zscore'.
 # ---------------------------------------------------------------------------
 
+# R-p7-deploy-r6 v1 REDUCED FEATURE SET (8 features):
+# The full feature set requires 11 columns (yes_spread_cents, spot_momentum_*,
+# btc_spot_change_5m_bps, btc_realized_vol_15m, window_*, minutes_above_strike,
+# spot_coinbase_kraken_gap_bps, kalshi_flow_depth_velocity) that were only
+# added to bot.py Apr 19/23. Plus z_score is 31% NULL even on candidate
+# stages. v1 ships now with the 8 features that have ≥67 days of clean
+# history; v2 retrains in ~30d once Apr-19-cohort accumulates 30d; v3 in
+# ~150d (or ~60d at K=2) with the full set. See
+# kb/decisions/p2-cal-mlp-v1v2v3-retraining-plan.md for the staging plan.
 CONT_FEATURE_COLS = [
     'market_price',                            # log_cents_to_dollars → z
     'seconds_to_close',                        # identity → z
-    'z_score',                                 # identity → z
-    'yes_spread_cents',                        # identity → z
-    'spot_momentum_60s_bps',                   # identity → z
-    'spot_momentum_5m_bps',                    # identity → z
-    'spot_realized_range_15m_bps',             # log1p_signed → z
-    'btc_spot_change_5m_bps',                  # identity → z
-    'btc_realized_vol_15m',                    # log1p → z
-    'window_max_buf_pct',                      # identity → z
-    'window_min_buf_pct',                      # identity → z
-    'minutes_above_strike',                    # identity → z
     'spot_distance_to_strike_sigma',           # identity → z
     'abs_spot_distance_to_strike_sigma',       # identity → z (symmetry prior)
     'time_decayed_proximity',                  # identity → z; engineered as
                                                # spot_distance × (1 - stc/900)
     'prob_breakeven_gap',                      # identity → z
-    'spot_coinbase_kraken_gap_bps',            # identity → z
-    'kalshi_flow_depth_velocity',              # identity → z
-    'log_balance_dollars',                     # log_cents_to_dollars → z
-    'hour_sin', 'hour_cos',                    # identity_no_zscore
+    'hour_sin', 'hour_cos',                    # identity_no_zscore (analytical)
 ]
 
 CONT_FEATURE_TRANSFORMS = {
     'market_price': 'log_cents_to_dollars',
-    'spot_realized_range_15m_bps': 'log1p_signed',
-    'btc_realized_vol_15m': 'log1p',
-    'log_balance_dollars': 'log_cents_to_dollars',
     'hour_sin': 'identity_no_zscore',
     'hour_cos': 'identity_no_zscore',
     # all others: 'identity'
 }
 
-# WS-fed columns — populated by live websocket caches; their NULLs correlate
-# with stress events (feed drops). Indicator captures the event.
-MISSING_INDICATOR_COLS = [
-    'spot_momentum_60s_bps_missing',
-    'spot_momentum_5m_bps_missing',
-    'spot_realized_range_15m_bps_missing',
-    'btc_spot_change_5m_bps_missing',
-    'btc_realized_vol_15m_missing',
-    'spot_coinbase_kraken_gap_bps_missing',
-    'kalshi_flow_depth_velocity_missing',
-]
+# v1 has NO missing-indicator columns — every feature in CONT_FEATURE_COLS
+# is either always-present (market_price, seconds_to_close, prob_breakeven_gap)
+# or analytical (hour_sin/cos) or near-always-present (~0.02% NULL on
+# spot_distance_to_strike_sigma, which we filter out via Phase 2 contract).
+# Reintroduced for v2 alongside the WS-fed momentum/realized-vol features.
+MISSING_INDICATOR_COLS: list[str] = []
 
-# Map from the source column to its missing-indicator column. Used by
-# extract_data.py to compute indicators in lockstep with NULL detection.
-MISSING_INDICATOR_SOURCE_MAP = {
-    'spot_momentum_60s_bps_missing': 'spot_momentum_60s_bps',
-    'spot_momentum_5m_bps_missing': 'spot_momentum_5m_bps',
-    'spot_realized_range_15m_bps_missing': 'spot_realized_range_15m_bps',
-    'btc_spot_change_5m_bps_missing': 'btc_spot_change_5m_bps',
-    'btc_realized_vol_15m_missing': 'btc_realized_vol_15m',
-    'spot_coinbase_kraken_gap_bps_missing': 'spot_coinbase_kraken_gap_bps',
-    'kalshi_flow_depth_velocity_missing': 'kalshi_flow_depth_velocity',
-}
+MISSING_INDICATOR_SOURCE_MAP: dict[str, str] = {}
 
 
 N_CONT = len(CONT_FEATURE_COLS)

@@ -50,12 +50,12 @@ def test_missing_indicator_inverse_built_at_module_load():
     runtime check inside predict() got demoted to soft skip. Must run at
     module import time; can't fire from inside predict()."""
     import integration
+    import features
     assert hasattr(integration, '_MISSING_INDICATOR_SRC_TO_IND')
     inv = integration._MISSING_INDICATOR_SRC_TO_IND
-    # Must be a frozen 7-entry dict (matches MISSING_INDICATOR_COLS count).
-    assert len(inv) == 7
-    # Inverse must round-trip: indicator → source → indicator.
-    import features
+    # Inverse must mirror MISSING_INDICATOR_SOURCE_MAP exactly. v1 has 0;
+    # v2 reintroduces 7 with the WS-fed momentum/realized-vol features.
+    assert len(inv) == len(features.MISSING_INDICATOR_SOURCE_MAP)
     fwd = features.MISSING_INDICATOR_SOURCE_MAP
     for src, ind in inv.items():
         assert fwd[ind] == src
