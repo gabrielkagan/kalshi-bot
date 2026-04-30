@@ -88,10 +88,10 @@ This document describes an automated trading platform for **Kalshi**, the first 
 The platform monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
 \begin{metricbox}
-\textbf{Live trading results (auto-updated; last refresh 2026-04-30T01:54:00Z):}
+\textbf{Live trading results (auto-updated; last refresh 2026-04-30T14:52:03Z):}
 \begin{itemize}
-\item \textbf{3,164} settled trades with a \textbf{92.8\%} win rate (2,936W / 226L / 2 breakeven)
-\item Cumulative live P\&L: \textbf{\$669.71}
+\item \textbf{3,198} settled trades with a \textbf{92.7\%} win rate (2,963W / 233L / 2 breakeven)
+\item Cumulative live P\&L: \textbf{\$565.37}
 \item Live trading with real capital since February 22, 2026
 \item Fully automated, always-on operation with complete audit trail
 \item Adjacent verticals — each follows the same shadow→validate→promote pipeline:
@@ -292,9 +292,9 @@ Below 180 seconds before settlement, the system switches to **direct taker execu
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 3,164 (2,936W / 226L / 2 BE) |
-| **Win rate** | 92.8\% |
-| **Cumulative P&L** | $669.71 |
+| **Settled trades** | 3,198 (2,963W / 233L / 2 BE) |
+| **Win rate** | 92.7\% |
+| **Cumulative P&L** | $565.37 |
 | **Assets** | BTC, ETH, SOL, XRP |
 | **Entry prices** | 75–99¢ (per-asset: BTC 88¢+, ETH 90¢+ main tier with 75–79¢ capped sub-tier, SOL 86¢+, XRP 92¢+; overlays extend lower in the final minutes) |
 
@@ -430,4 +430,4 @@ For readers interested in the mathematical foundations, the full technical white
 
 ---
 
-*Last updated: 2026-04-30T01:54:00Z*
+*Last updated: 2026-04-30T14:52:03Z*
