@@ -38,6 +38,21 @@ On change, run `python3 scripts/doc_drift_check.py` and update this file in the 
 | HIGH_PRICE_STC_BLOCK_STC_LO_S | 121 | STC inclusive lower bound |
 | HIGH_PRICE_STC_BLOCK_STC_HI_S | 300 | STC inclusive upper bound |
 | HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES | {decided_t2, decided_t2_z2, decided_t2_z25, MAKER_PATIENT} | Strategies dropped within cell; wins (TM-96, TAKER_NOW, decided_t1*) preserved |
+| TM98_HIGHPRICE_BLEED_BLOCK_ENABLED | env-default `0` | {BTC,ETH,XRP} × TM-98 × 97-98¢ × 121-300s STC; -$980/30d projected (R-bleed-1) |
+| TM98_HIGHPRICE_BLEED_BLOCK_ASSETS | {BTC, ETH, XRP} | SOL TM-98 NOT catastrophic, untouched |
+| TM98_HIGHPRICE_BLEED_BLOCK_PRICE_LO | 97 | Covers maker fill 1c below TM trigger |
+| TM98_HIGHPRICE_BLEED_BLOCK_PRICE_HI | 98 | TM-99 NOT blocked (profitable per 14d) |
+| TM98_HIGHPRICE_BLEED_BLOCK_STC_LO_S | 121 | Lower bound of 2-5min danger zone (inclusive) |
+| TM98_HIGHPRICE_BLEED_BLOCK_STC_HI_S | 300 | Upper bound of 2-5min danger zone (inclusive) |
+| TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES | {terminal_momentum_98} | Strategy-aware; TM-99 in same range = profitable, untouched |
+| SOL_TAKER_LOWPRICE_BLEED_BLOCK_ENABLED | env-default `0` | SOL × TAKER_NOW × 85-89¢ × 121-300s STC; -$782/30d projected (R-bleed-1) |
+| SOL_TAKER_LOWPRICE_BLEED_BLOCK_ASSETS | {SOL} | Other assets do not have this bleed pattern |
+| SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_LO | 85 | Near-asset-floor thin-buffer disaster zone |
+| SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_HI | 89 | 90+¢ TAKER profitable, untouched |
+| SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_LO_S | 121 | Lower bound of 2-5min danger zone (inclusive) |
+| SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_HI_S | 300 | Upper bound of 2-5min danger zone (inclusive) |
+| SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES | {TAKER_NOW} | MAKER cohorts not blocked |
+| BINANCE_FEED_ENABLED | env-default `0` | US-VPS HTTP-451 geoblocked; CROSS_EXCHANGE_CONSENSUS_MIN auto-lowers to 2 (Kraken+Bybit) when off |
 | STC_SIZING_SCALER_KNEE | 300 | Seconds — start scaling contracts by 300/STC above this |
 | STC_SIZING_SCALER_ENABLED | True | Universal STC scaler: contracts *= 300/STC for 15M at STC>300s |
 

@@ -299,6 +299,59 @@ HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES = frozenset({
     "MAKER_PATIENT",
 })
 
+
+# ─── Additional bleed-cell blocks (R-bleed-1, 2026-04-30) ──────────────────
+#
+# Two cells identified in 7d post-WS-fix data as catastrophic-tail dominators.
+# Mirror HIGH_PRICE_STC_BLOCK_* pattern: env-flag controlled, default OFF,
+# blocked candidates STILL get a shadow row written so v2/v3 training data
+# continues flowing.
+#
+# Cell 1: TM-98 high-price 2-5min STC bleed
+#   {BTC, ETH, XRP} × terminal_momentum_98 × 97-98¢ × 121-300s STC
+#   7d data: BTC -$28 / ETH -$154 / XRP -$47 → -$980/30d projected
+#   Pattern: high-WR (93-95%) but ONE catastrophic loss per asset (-$50 to
+#   -$179) erases dozens of small wins. Same shape across all 3 assets.
+#   SOL TM-98 NOT included: -$23/14d, not catastrophic.
+#
+# Price band 97-98¢ rationale: TM-98 strategy is TRIGGERED when best_ask=98
+# (per `f"terminal_momentum_{best_ask}"` at scan-time), but the actual
+# ENTRY price can be 97 (maker fill 1c below ask) or 98 (taker/escalated).
+# Both fill modes carry the same catastrophic-tail risk. PRICE_HI = 98
+# (not 99 — TM-99 is profitable per 14d data, 100% WR).
+TM98_HIGHPRICE_BLEED_BLOCK_ENABLED = os.environ.get(
+    "TM98_HIGHPRICE_BLEED_BLOCK_ENABLED", "0") == "1"
+TM98_HIGHPRICE_BLEED_BLOCK_ASSETS = frozenset({"BTC", "ETH", "XRP"})
+TM98_HIGHPRICE_BLEED_BLOCK_PRICE_LO = 97
+TM98_HIGHPRICE_BLEED_BLOCK_PRICE_HI = 98
+TM98_HIGHPRICE_BLEED_BLOCK_STC_LO_S = 121
+TM98_HIGHPRICE_BLEED_BLOCK_STC_HI_S = 300
+TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE = "TM98_97_98C_2_5MIN_BLEED"
+TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES = frozenset({"terminal_momentum_98"})
+
+# Cell 2: SOL TAKER low-price 2-5min STC bleed
+#   SOL × TAKER_NOW × 85-89¢ × 121-300s STC
+#   7d: -$182, worst single -$213. Projects -$782/30d.
+#   Pattern: SOL near-asset-floor IOC fills with thin buffer; one bad
+#   downward move while bot is sized 200+ contracts wipes 17 small wins.
+SOL_TAKER_LOWPRICE_BLEED_BLOCK_ENABLED = os.environ.get(
+    "SOL_TAKER_LOWPRICE_BLEED_BLOCK_ENABLED", "0") == "1"
+SOL_TAKER_LOWPRICE_BLEED_BLOCK_ASSETS = frozenset({"SOL"})
+SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_LO = 85
+SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_HI = 89
+SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_LO_S = 121
+SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_HI_S = 300
+SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE = "SOL_TAKER_85_89C_2_5MIN_BLEED"
+SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES = frozenset({"TAKER_NOW"})
+
+
+# ─── Binance feed kill-switch ──────────────────────────────────────────────
+# US-VPS deploys are geoblocked from Binance.com WebSocket (HTTP 451). The
+# feed reconnects every ~70s in a tight loop forever, adding event-loop noise
+# and log spam. Coinbase + Kraken still feed BTC; Binance was tertiary.
+# Default OFF — operator must opt in if running outside the US.
+BINANCE_FEED_ENABLED = os.environ.get("BINANCE_FEED_ENABLED", "0") == "1"
+
 ONE_ASSET_PER_WINDOW = False
 
 # ─── Hourly Live Trading (sub-60c, BTC+ETH only) ────────────────────────────
@@ -727,7 +780,23 @@ BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/spot"
 CROSS_EXCHANGE_BUFFER_SIZE = 15
 CROSS_EXCHANGE_LEAD_THRESHOLD = 0.002     # 0.2% for single-exchange lead
 CROSS_EXCHANGE_CONSENSUS_THRESHOLD = 0.003  # 0.3% for consensus
-CROSS_EXCHANGE_CONSENSUS_MIN = 3
+# R-bleed-1 R1-H1: when BINANCE_FEED_ENABLED=0 (US-VPS deploys), only
+# Kraken+Bybit feed prices. Static MIN=3 silently makes consensus branches
+# unreachable, killing the OFA_CONSENSUS_BOOST signal. Adapt threshold to
+# the number of effectively-feeding exchanges.
+#
+# R2-M1: this evaluates ONCE at module import. Tests that mutate
+# `bot.BINANCE_FEED_ENABLED` at runtime must ALSO patch
+# `CROSS_EXCHANGE_CONSENSUS_MIN` — this derivation does NOT re-evaluate.
+#
+# R2-M2: lowering MIN from 3→2 keeps the consensus branch reachable but
+# does NOT restore the original signal frequency. With N=2 feeds requiring
+# both above 0.3% threshold, consensus events fire roughly 1/3 as often
+# as the original "any 2 of 3" calibration. OFA_CONSENSUS_BOOST=+2pp is
+# not load-bearing for trading decisions; "fires rarely" is acceptable
+# vs the prior "never fires". Revisit calibration after 30d of N=2 logs.
+_CROSS_EXCHANGE_FEEDS_ACTIVE = 3 if BINANCE_FEED_ENABLED else 2
+CROSS_EXCHANGE_CONSENSUS_MIN = _CROSS_EXCHANGE_FEEDS_ACTIVE
 CROSS_EXCHANGE_STALE_SECONDS = 30.0
 
 # ─── CoinGlass Derivatives ─────────────────────────────────────────────
@@ -1398,6 +1467,117 @@ def _validate_high_price_stc_block_bleeder_strings():
 # Run validator at module load — emits HPSB_BLEEDER_STRINGS_MISSING ERROR log if drift,
 # OR HPSB_VALIDATOR_UNAVAILABLE WARNING if self-introspection failed.
 _HPSB_MISSING_BLEEDERS = _validate_high_price_stc_block_bleeder_strings()
+
+
+# ─── New bleed-cell predicates (R-bleed-1) ─────────────────────────────────
+
+def should_block_tm98_highprice_bleed_candidate(
+    asset: Optional[str],
+    side: Optional[str],
+    entry_price_cents: Optional[int],
+    seconds_to_close: Optional[float],
+    strategy: Optional[str],
+    enabled: Optional[bool] = None,
+) -> bool:
+    """Return True iff candidate is in {BTC,ETH,XRP} × TM98 × 97-98¢ × 121-300s.
+
+    Strategy-aware: only fires for terminal_momentum_98 (other strategies in
+    the same price/STC cell aren't catastrophic).
+
+    Default-OFF until operator flips TM98_HIGHPRICE_BLEED_BLOCK_ENABLED=1
+    on the VPS .env.
+    """
+    if enabled is None:
+        enabled = TM98_HIGHPRICE_BLEED_BLOCK_ENABLED
+    if not enabled:
+        return False
+    if asset is None or asset not in TM98_HIGHPRICE_BLEED_BLOCK_ASSETS:
+        return False
+    if side != "yes":
+        return False
+    if entry_price_cents is None:
+        return False
+    if not (TM98_HIGHPRICE_BLEED_BLOCK_PRICE_LO <= entry_price_cents
+            <= TM98_HIGHPRICE_BLEED_BLOCK_PRICE_HI):
+        return False
+    if seconds_to_close is None:
+        return False
+    if not (TM98_HIGHPRICE_BLEED_BLOCK_STC_LO_S <= seconds_to_close
+            <= TM98_HIGHPRICE_BLEED_BLOCK_STC_HI_S):
+        return False
+    if strategy is None or strategy not in TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES:
+        return False
+    return True
+
+
+def should_block_sol_taker_lowprice_bleed_candidate(
+    asset: Optional[str],
+    side: Optional[str],
+    entry_price_cents: Optional[int],
+    seconds_to_close: Optional[float],
+    strategy: Optional[str],
+    enabled: Optional[bool] = None,
+) -> bool:
+    """Return True iff candidate is SOL × TAKER_NOW × 85-89¢ × 121-300s STC.
+
+    Default-OFF until operator flips SOL_TAKER_LOWPRICE_BLEED_BLOCK_ENABLED=1.
+    """
+    if enabled is None:
+        enabled = SOL_TAKER_LOWPRICE_BLEED_BLOCK_ENABLED
+    if not enabled:
+        return False
+    if asset is None or asset not in SOL_TAKER_LOWPRICE_BLEED_BLOCK_ASSETS:
+        return False
+    if side != "yes":
+        return False
+    if entry_price_cents is None:
+        return False
+    if not (SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_LO <= entry_price_cents
+            <= SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_HI):
+        return False
+    if seconds_to_close is None:
+        return False
+    if not (SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_LO_S <= seconds_to_close
+            <= SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_HI_S):
+        return False
+    if strategy is None or strategy not in SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES:
+        return False
+    return True
+
+
+def _validate_bleed_block_bleeder_strings():
+    """Mirror of HPSB validator — catches strategy-name renames that would
+    silently no-op the new bleed-cell gates. Self-introspects bot.py source
+    and asserts every bleeder string in TM98_*_STRATEGIES and
+    SOL_TAKER_*_STRATEGIES appears at least twice (declaration + at least
+    one usage site). Drift = ERROR log at boot."""
+    try:
+        with open(__file__, "r") as _src:
+            _source = _src.read()
+    except Exception as _exc:
+        logging.warning(
+            "BLEED_BLOCK_VALIDATOR_UNAVAILABLE: bleeder string drift check "
+            "skipped (%s) — rename detection OFFLINE.",
+            f"{type(_exc).__name__}: {_exc}")
+        return []
+    _missing = []
+    _all_bleeders = (TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES
+                     | SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES)
+    for _bleeder in _all_bleeders:
+        _dquoted = _source.count(f'"{_bleeder}"')
+        _squoted = _source.count(f"'{_bleeder}'")
+        if _dquoted + _squoted < 2:
+            _missing.append(_bleeder)
+    if _missing:
+        logging.error(
+            "BLEED_BLOCK_BLEEDER_STRINGS_MISSING: %s — gate silently no-ops. "
+            "Update TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES / "
+            "SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES or restore source.",
+            _missing)
+    return _missing
+
+
+_BLEED_BLOCK_MISSING_BLEEDERS = _validate_bleed_block_bleeder_strings()
 
 
 # ─── Extended Feature Instrumentation (Tier 4 + Tier 5) ───────────────────
@@ -7144,12 +7324,22 @@ class CrossExchangeFeed:
             self._loop.close()
 
     async def _run(self):
-        await asyncio.gather(
-            self._ws_binance(),
-            self._ws_kraken(),
-            self._ws_bybit(),
-            self._snapshot_loop(),
-        )
+        # R-bleed-1: BINANCE_FEED_ENABLED defaults OFF. US-VPS deploys are
+        # geoblocked from stream.binance.com (HTTP 451) so the reconnect
+        # loop fires every ~70s for the lifetime of the process. Coinbase +
+        # Kraken still feed BTC for cross-asset spillover features.
+        _tasks = [self._ws_kraken(), self._ws_bybit(), self._snapshot_loop()]
+        if BINANCE_FEED_ENABLED:
+            _tasks.insert(0, self._ws_binance())
+        else:
+            # R1-H1: lowered CONSENSUS_MIN to 2 to keep OFA consensus
+            # signal alive on Kraken+Bybit. Make this auditable in logs.
+            logging.info(
+                "Binance feed DISABLED via BINANCE_FEED_ENABLED=0 "
+                "(geoblocked on US-VPS deploys); CROSS_EXCHANGE_CONSENSUS_MIN "
+                "auto-lowered to %d (Kraken+Bybit only)",
+                CROSS_EXCHANGE_CONSENSUS_MIN)
+        await asyncio.gather(*_tasks)
 
     # ── Binance WebSocket ──────────────────────────────────────────────
 
@@ -15666,6 +15856,90 @@ class OpportunityScanner:
                         })
                     except Exception:
                         logging.debug("high_price_stc_band log failed", exc_info=True)
+
+        # ── R-bleed-1: TM98 high-price + SOL TAKER low-price bleed cells ──
+        # Strategy-aware blocks targeting two cells identified in 7d
+        # post-WS-fix data as catastrophic-tail dominators. Each cell has
+        # its own env flag so operators can roll back independently.
+        # Blocked candidates STILL get a shadow row written for v2/v3
+        # training data continuity.
+        for _bleed_predicate, _bleed_stage, _bleed_log_tag in (
+            (should_block_tm98_highprice_bleed_candidate,
+             TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE, "TM98_BLEED_DROP"),
+            (should_block_sol_taker_lowprice_bleed_candidate,
+             SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE, "SOL_TAKER_BLEED_DROP"),
+        ):
+            _bleed_kept: List[Dict] = []
+            _bleed_dropped: List[Dict] = []
+            for _cand in selected:
+                _cand_pt = _cand.get("product_type")
+                _cand_strat = _cand.get("strategy")
+                _cand_side = _cand.get("side", "yes")
+                if (_cand_pt in (None, "15m")
+                        and _bleed_predicate(
+                            asset=_cand.get("asset"),
+                            side=_cand_side,
+                            entry_price_cents=_cand.get("best_yes_ask"),
+                            seconds_to_close=_cand.get("seconds_to_close"),
+                            strategy=_cand_strat)):
+                    _bleed_dropped.append(_cand)
+                else:
+                    _bleed_kept.append(_cand)
+            if _bleed_dropped:
+                selected = _bleed_kept
+                for _drop in _bleed_dropped:
+                    _drop_strat = _drop.get("strategy")
+                    _drop_asset = _drop.get("asset")
+                    _drop_ticker = _drop.get("ticker")
+                    _drop_stc_raw = _drop.get("seconds_to_close")
+                    _drop_stc = int(_drop_stc_raw) if _drop_stc_raw is not None else None
+                    _drop_price = _drop.get("best_yes_ask")
+                    _drop_side = _drop.get("side") or "yes"
+                    _drop_reason = (
+                        f"{_bleed_stage}: {_drop_asset} {_drop_side.upper()} "
+                        f"{_drop_strat} @{_drop_price}c stc={_drop_stc}s "
+                        f"(7d data: catastrophic-tail cell, see "
+                        f"kb/decisions/bleed-cell-blocks-2026-04-30.md)")
+                    logging.info(
+                        "%s: %s strat=%s asset=%s stc=%s price=%s",
+                        _bleed_log_tag, _drop_ticker, _drop_strat,
+                        _drop_asset, _drop_stc, _drop_price)
+                    _stats_bucket = scan_stats.setdefault(_drop_asset, {})
+                    _stats_bucket[_bleed_stage] = _stats_bucket.get(_bleed_stage, 0) + 1
+                    _bewr = (_drop_price / 100.0) if (_drop_side == "yes" and _drop_price) else None
+                    _bleed_dedup = (_drop_ticker, _bleed_stage)
+                    if _bleed_dedup not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_bleed_dedup)
+                        try:
+                            self._state.insert_evaluated_opportunity(
+                                _drop_ticker, _drop.get("event_ticker"), _drop_asset,
+                                _bleed_stage,
+                                rejection_reason=_drop_reason,
+                                spot_price=_drop.get("spot"),
+                                threshold=_drop.get("threshold"),
+                                volatility=_drop.get("blended_rv"),
+                                market_price=_drop_price,
+                                seconds_to_close=_drop_stc_raw,
+                                calibrated_prob=_drop.get("calibrated_prob"),
+                                edge=_drop.get("edge"),
+                                ofa_adjustment=_drop.get("ofa_adjustment"),
+                                strategy=_drop_strat,
+                                z_score=_drop.get("z_score"),
+                                vol_regime=_drop.get("vol_regime"),
+                                calibrated_prob_raw=_drop.get("calibrated_prob_raw"),
+                                kelly_f=_drop.get("kelly_f"),
+                                position_size=_drop.get("position_size"),
+                                breakeven_wr=_bewr,
+                                ask_depth=_drop.get("ob_snapshot", {}).get("ask_depth"),
+                                best_ask_source=_drop.get("best_ask_source"),
+                                raw_prob=_drop.get("raw_prob"),
+                                calibration_method=_drop.get("calibration_method"),
+                                fee_adjusted_edge=_drop.get("fee_adjusted_edge"),
+                                product_type=_drop.get("product_type"))
+                        except Exception:
+                            logging.warning(
+                                "insert_evaluated_opportunity failed (%s)",
+                                _bleed_stage, exc_info=True)
 
         if not selected:
             self._last_scan_stats = scan_stats
@@ -24324,8 +24598,19 @@ class MainLoop:
         for _pt, _cfg in MARKET_CONFIGS.items():
             if _cfg.cal_subtypes:
                 # Per-subtype engines (weather cities, sports groups, 15M per-asset)
-                # 15M engines only train on candidates (not shadow/rejected noise)
-                _stages = ("candidate", "observation_trade") if _pt == "15m" else None
+                # 15M engines train on candidates + cell-block shadow rows.
+                # R-bleed-1 R9-H1: bleed-cell blocks intercept candidates and write
+                # them under their cell tag instead of 'candidate'. Without
+                # including those tags here, the CalEngines stop receiving the
+                # observations from EXACTLY the cells we just gated — silently
+                # narrowing training signal where the calibrator most needs it.
+                _stages = (
+                    ("candidate", "observation_trade",
+                     HIGH_PRICE_STC_BLOCK_FILTER_STAGE,
+                     TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE,
+                     SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE)
+                    if _pt == "15m" else None
+                )
                 for _sub_code, _sub_path in _cfg.cal_subtypes.items():
                     _reg_key = f"{_pt}_{_sub_code}"
                     assert _sub_path != CALIBRATION_STATE_PATH, (

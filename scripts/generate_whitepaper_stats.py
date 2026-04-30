@@ -102,6 +102,12 @@ LIVE_CANDIDATE_STAGES = frozenset({
     "terminal_momentum",
     "low_price_near_expiry",
     # NOT observation_trade — OBSERVATION_MODE rows that did NOT actually trade
+    # R-bleed-1 R9-MED: bleed-cell blocks intercept candidates and write
+    # them under cell tags. Include those tags so whitepaper Brier/calibration
+    # stats keep counting these (blocked) live-eligible rows post-activation.
+    "96C_SOL_XRP_STC_DANGER_BAND",
+    "TM98_97_98C_2_5MIN_BLEED",
+    "SOL_TAKER_85_89C_2_5MIN_BLEED",
 })
 
 # Regime cutoffs — pinned to actual deploy commit timestamps (UTC).

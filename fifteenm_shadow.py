@@ -162,12 +162,19 @@ class RecalibratedEGARCHApproach:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
             for asset in ("BTC", "ETH", "SOL", "XRP"):
+                # R-bleed-1 R9-H2: bleed-cell blocks (HPSB + TM98 + SOL_TAKER)
+                # write shadow rows under their cell tag instead of 'candidate'.
+                # Include those tags here so per-asset temperature recalibration
+                # keeps seeing the relevant high-WR + catastrophic-tail samples.
                 rows = conn.execute(
                     "SELECT calibrated_prob, market_result FROM evaluated_opportunities "
                     "WHERE asset = ? AND (product_type IS NULL OR product_type = '15m') "
                     "AND status = 'settled' "
                     "AND filter_stage IN ('candidate', 'xrp_shadow', 'stc_shadow', "
-                    "  'stc_shadow_xrp', 'stc_shadow_no_xrp', 'stc_shadow_promoted') "
+                    "  'stc_shadow_xrp', 'stc_shadow_no_xrp', 'stc_shadow_promoted', "
+                    "  '96C_SOL_XRP_STC_DANGER_BAND', "
+                    "  'TM98_97_98C_2_5MIN_BLEED', "
+                    "  'SOL_TAKER_85_89C_2_5MIN_BLEED') "
                     "AND calibrated_prob IS NOT NULL AND market_result IS NOT NULL",
                     (asset,)
                 ).fetchall()

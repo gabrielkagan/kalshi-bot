@@ -182,6 +182,12 @@ def filter_replay(config: Config, trades: List[Dict], balance: float = 90000) ->
 EXPANSION_STAGES = (
     'candidate', 'insufficient_edge', 'relaxed_edge_shadow',
     'zero_sizing', 'single_asset_selection',
+    # R-bleed-1 R9-MED: bleed-cell blocks intercept candidates and write
+    # them under cell tags. Include those tags so expansion-signal
+    # backtest universe stays complete post-activation.
+    '96C_SOL_XRP_STC_DANGER_BAND',
+    'TM98_97_98C_2_5MIN_BLEED',
+    'SOL_TAKER_85_89C_2_5MIN_BLEED',
 )
 
 

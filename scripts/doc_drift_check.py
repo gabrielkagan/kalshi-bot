@@ -111,6 +111,15 @@ SIMPLE_CONSTANTS = [
     # without corresponding doc update is caught by `doc_drift_check.py`.
     ("SIGMA_WINSOR_ABS_CAP", "Sigma winsor abs cap (cal_mlp)"),
     ("RAW_PROB_CLIP_EPS", "Raw prob clip eps (cal_mlp)"),
+    # R-bleed-1 R3-MED4: bleed-cell numerics. Source = bot.py.
+    ("TM98_HIGHPRICE_BLEED_BLOCK_PRICE_LO", "TM-98 bleed block price lo"),
+    ("TM98_HIGHPRICE_BLEED_BLOCK_PRICE_HI", "TM-98 bleed block price hi"),
+    ("TM98_HIGHPRICE_BLEED_BLOCK_STC_LO_S", "TM-98 bleed block STC lo seconds"),
+    ("TM98_HIGHPRICE_BLEED_BLOCK_STC_HI_S", "TM-98 bleed block STC hi seconds"),
+    ("SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_LO", "SOL TAKER bleed block price lo"),
+    ("SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_HI", "SOL TAKER bleed block price hi"),
+    ("SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_LO_S", "SOL TAKER bleed block STC lo seconds"),
+    ("SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_HI_S", "SOL TAKER bleed block STC hi seconds"),
 ]
 
 
