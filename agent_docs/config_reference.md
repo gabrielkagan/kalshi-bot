@@ -165,3 +165,25 @@ To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (
 | WEATHER_MAX_SECONDS_BEFORE_CLOSE | 86400 | Weather settles daily — always eligible |
 | WEATHER_NO_SIDE_LIVE | True | LIVE — NO 36-40c, STC ≥ 16h, 1-contract |
 | WEATHER_NO_MIN_PRICE | 36 | Floor added Apr 20 — sub-36c cohort 4/33 = 12.1% WR |
+
+## Calibrator (P2 cal_mlp)
+
+| Config | Value | Source | Notes |
+|--------|-------|--------|-------|
+| `SIGMA_WINSOR_ABS_CAP` | 25.0 | `scripts/cal_mlp/features.py` | Clip for `spot_distance_to_strike_sigma` at extract + post-hoc + sync-gate. Below empirical max benign (~19); above the 30+ outlier tail. Captured in cfg_fp; changing it changes the bundle fingerprint. |
+| `GLOBAL_MIN_ENTRY_PRICE` | 75 | `features.py` | Floor when `--include-sub-floor` is set. Per-asset floors (88/90/86/92) used otherwise. |
+| `INCLUDE_SUB_FLOOR` (env) | 1 | `scripts/cal_mlp/run_pipeline.sh` | Default ON. Pulls 75¢-MIN_ENTRY-1¢ shadow rows into v2/v3 training. |
+| `RAW_PROB_CLIP_EPS` | 1e-6 | `features.py` | Logit clipping for the skip term. |
+| `SPOT_BUFFER_PERSIST_PATH` | `state/spot_buffer.json` | `bot.py` | 30-min spot price buffer persisted to disk every 30s. |
+| `SPOT_BUFFER_PERSIST_INTERVAL_S` | 30 | `bot.py` | Flush cadence. Async via `asyncio.to_thread` so disk I/O doesn't block WS event loop. |
+| `PRICE_BUFFER_SIZE` | 1800 | `bot.py` | 30 min @ 1s sampling. |
+
+## External market data poller
+
+| Config | Source | Notes |
+|--------|--------|-------|
+| OKX funding + OI | `https://www.okx.com/api/v5/public/{funding-rate,open-interest}` | Switched from Binance.com (HTTP 451 from US). 4 symbols × 2 endpoints. |
+| Deribit DVOL | `https://www.deribit.com/api/v2/public/get_index_price?index_name={btcdvol_usdc,ethdvol_usdc}` | BTC + ETH only. |
+| Poll interval | 60 s | `scripts/external_market_poller.py --once` cron. |
+| Stale threshold | 900 s (15 min) | Above Deribit's typical weekly maintenance window (~10 min). |
+| Process-start grace | 900 s | Suppresses NEVER-stale alerts in cron mode for the first 15 min. |

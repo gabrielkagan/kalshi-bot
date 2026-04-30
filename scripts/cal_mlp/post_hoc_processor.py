@@ -226,6 +226,15 @@ class CalMLPPostHocProcessor:
         # Match training: use integer hour only.
         hour = float(dt.hour)
 
+        # R-p7-deploy-r11 R3 CRITICAL: clip DB-loaded sigma to match the
+        # train-time winsorize. extract_data clips at ±SIGMA_WINSOR_ABS_CAP
+        # before training; without the matching clip here, model trained on
+        # ±25 sees ±3,337 in prod (terminal-STC blowup). All three derived
+        # values (abs, tdp, the row_features sigma key itself) MUST come
+        # from the clipped value.
+        from features import apply_sigma_winsor
+        spot_dist_sigma = apply_sigma_winsor(spot_dist_sigma)
+
         if spot_dist_sigma is not None:
             decay = max(0.0, min(1.0, 1.0 - seconds_to_close / 900.0))
             tdp = spot_dist_sigma * decay

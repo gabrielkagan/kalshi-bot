@@ -26,8 +26,43 @@
 #   models/cal_mlp_<asset>/<train_id>/cal_mlp_<asset>_<train_id>_phase5_bundle.json
 #   plus member checkpoints + conformal artifact
 #   plus models/cal_mlp_<asset>/CURRENT pointing at the latest train_id
+#
+# DATA-SCOPE FLAG (R-p7-deploy-r11, 2026-04-29):
+#   By default this pipeline passes `--include-sub-floor` to extract_data.py,
+#   which lowers the per-asset extract floor from ASSET_FLOORS (BTC 88 / ETH 90
+#   / SOL 86 / XRP 92) to GLOBAL_MIN_ENTRY_PRICE=75. Without this flag, all
+#   `floor_raise_shadow` / `eth_low_floor_shadow` / `low_price_shadow` rows
+#   below per-asset MIN_ENTRY get bucketed into `below_asset_floor` and
+#   discarded — wasting the carefully-collected sub-floor shadow data.
+#
+#   Override for legacy/v1-style runs: set INCLUDE_SUB_FLOOR=0 in env to
+#   reproduce the v1 (Apr 28) per-asset-floor cfg_fp. Note this changes
+#   cfg_fp, so the resulting bundle is NOT bit-equivalent to v1 even if
+#   trained on the same window — bundles with different cfg_fp can't be
+#   A/B compared at Phase 6.
+#
+#   Decision rationale: kb/concepts/calibrator-data-hygiene-apr29.md.
 
 set -uo pipefail  # NOT -e — we want to capture per-asset failures, not abort
+
+# Default: include sub-floor data (v2/v3-and-beyond).
+# Override: set `INCLUDE_SUB_FLOOR=0 bash scripts/cal_mlp/run_pipeline.sh ...`
+# to reproduce the v1 cfg_fp with per-asset floors only.
+INCLUDE_SUB_FLOOR="${INCLUDE_SUB_FLOOR:-1}"
+if [ "$INCLUDE_SUB_FLOOR" = "1" ]; then
+    SUB_FLOOR_FLAG="--include-sub-floor"
+    BUNDLE_CLASS="v2+ (sub-floor data INCLUDED + sigma winsor=25; new cfg_fp lineage)"
+else
+    SUB_FLOOR_FLAG=""
+    # NOT bit-equivalent to the original v1 (Apr 28) bundle: cfg_fp now
+    # also includes sigma_winsor_abs_cap=25 which the original v1 lacked.
+    # Strict v1 reproduction would also require reverting the winsorize.
+    BUNDLE_CLASS="v1+winsor (per-asset floors only, sigma winsor=25; NOT bit-equal to Apr 28 v1)"
+fi
+echo "================================================================"
+echo "[pipeline] cfg_fp class: $BUNDLE_CLASS"
+echo "[pipeline] To switch: INCLUDE_SUB_FLOOR=$([ "$INCLUDE_SUB_FLOOR" = "1" ] && echo 0 || echo 1) bash $0 ..."
+echo "================================================================"
 
 if [ ! -f "scripts/cal_mlp/run_pipeline.sh" ]; then
     echo "ERROR: run from repo root (where scripts/cal_mlp/run_pipeline.sh lives)"
@@ -56,8 +91,9 @@ for ASSET in "${ASSETS[@]}"; do
     echo "================================================================" | tee -a "$LOG"
     echo "[$(date -u +%H:%M:%S)] $ASSET — Phase 2 (extract)" | tee -a "$LOG"
     echo "================================================================" | tee -a "$LOG"
+    echo "[$(date -u +%H:%M:%S)] $ASSET extract: INCLUDE_SUB_FLOOR=$INCLUDE_SUB_FLOOR (flag=\"$SUB_FLOOR_FLAG\")" | tee -a "$LOG"
     if ! python3 scripts/cal_mlp/extract_data.py --asset "$ASSET" \
-            --cutoff-end "$CUTOFF_END" 2>&1 | tee -a "$LOG"; then
+            --cutoff-end "$CUTOFF_END" $SUB_FLOOR_FLAG 2>&1 | tee -a "$LOG"; then
         echo "[$(date -u +%H:%M:%S)] FAIL $ASSET — extract" | tee -a "$LOG"
         FAILED+=("$ASSET (extract)")
         continue

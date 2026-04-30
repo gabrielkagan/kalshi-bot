@@ -35,11 +35,20 @@ SOURCE_FILES = [
     "bot.py", "config.py", "market_config.py", "models.py",
     "spx_engine.py", "weather_engine.py", "sports_engine.py",
     "fifteenm_shadow.py", "hourly_alt_shadow.py",
+    # R-p7-deploy-r11 R5: cal_mlp constants live here. Without this entry,
+    # changing SIGMA_WINSOR_ABS_CAP / GLOBAL_MIN_ENTRY_PRICE etc. without
+    # updating agent_docs/config_reference.md passes drift-check silently.
+    "scripts/cal_mlp/features.py",
 ]
 
 # Documentation files to check
 DOC_FILES = [
     "README.md", "whitepaper.md", "whitepaper_investor.md", "CLAUDE.md",
+    # R-p7-deploy-r11 R6: agent_docs/config_reference.md mirrors many
+    # of the same constants; without it in DOC_FILES the drift-check
+    # is structurally blind to the file the rule explicitly points
+    # operators to update.
+    "agent_docs/config_reference.md",
 ]
 
 # Constants to extract via regex from Python source files.
@@ -97,6 +106,11 @@ SIMPLE_CONSTANTS = [
     ("DRAWDOWN_HALF_THRESHOLD", "Drawdown half threshold"),
     ("DRAWDOWN_QUARTER_THRESHOLD", "Drawdown quarter threshold"),
     ("DRAWDOWN_HALT_THRESHOLD", "Drawdown halt threshold"),
+    # R-p7-deploy-r11 R6: cal_mlp constants. Source = scripts/cal_mlp/features.py
+    # (added to SOURCE_FILES). Adding here so a future bump to any of these
+    # without corresponding doc update is caught by `doc_drift_check.py`.
+    ("SIGMA_WINSOR_ABS_CAP", "Sigma winsor abs cap (cal_mlp)"),
+    ("RAW_PROB_CLIP_EPS", "Raw prob clip eps (cal_mlp)"),
 ]
 
 

@@ -1124,7 +1124,11 @@ def should_block_tm96(
     *,
     predictor,
     raw_prob: float,
-    calibrated_prob: float,      # post-CalEngine; used for prob_breakeven_gap
+    calibrated_prob: float,      # final_prob (post-CalEngine + post-temp + post-OFA + post-blend);
+                                 # MUST be the same value passed to insert_evaluated_opportunity
+                                 # so the gate's prob_breakeven_gap matches the DB column used
+                                 # for training. NOT raw_prob, NOT pre-blend cal_prob.
+                                 # See R-p7-deploy-r11 R2 critique log.
     ticker: str,
     market_price: int,           # entry_price_cents
     seconds_to_close: float,
@@ -1193,6 +1197,12 @@ def should_block_tm96(
             sigma_denom = blended_rv * _math.sqrt(seconds_to_close / 5.0) * 100
             if sigma_denom > 0:
                 spot_dist_sigma = buf_pct / sigma_denom
+                # R-p7-deploy-r11 R3 CRITICAL: clip to match train-time
+                # winsorize. At terminal STC (T→0) raw sigma blows up to
+                # ±3,000+; train sees ±25 max. Without this clip, the
+                # gate's row_features distribution diverges from training.
+                from features import apply_sigma_winsor
+                spot_dist_sigma = apply_sigma_winsor(spot_dist_sigma)
         # Round-1 #1 train/serve skew fix: training extracted
         # `prob_breakeven_gap` from the DB column populated via
         # `compute_derived_features(calibrated_prob=calibrated_prob, ...)`

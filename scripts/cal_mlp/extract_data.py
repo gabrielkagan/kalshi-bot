@@ -43,6 +43,11 @@ import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import features  # noqa: E402  (R3-H1: import the module so mutations to
+                  # features.SIGMA_WINSOR_ABS_CAP are observed at call time;
+                  # `from features import SIGMA_WINSOR_ABS_CAP` would bake
+                  # in the import-time value and silently diverge from
+                  # cfg_fp under monkey-patch / hot-reload).
 from features import (  # noqa: E402
     ASSET_FLOORS,
     BLEED_CELL,
@@ -340,7 +345,17 @@ def build_feature_frame(rows: list[dict]) -> pd.DataFrame:
     df['logit_raw_prob_clipped'] = np.log(rp_c / (1.0 - rp_c)).astype(np.float32)
     df['calibrated_prob_audit'] = df['calibrated_prob'].astype(np.float32)
     # Engineered features
-    sd = df['spot_distance_to_strike_sigma'].astype(np.float32)
+    # R-p7-deploy-r11: winsorize sigma at ±SIGMA_WINSOR_ABS_CAP BEFORE
+    # deriving abs() and time_decayed_proximity. At terminal STC (T→0) the
+    # raw sigma denominator collapses, producing ±3000+ outliers in prod
+    # data. R3 (CRITICAL): centralized in features.apply_sigma_winsor so
+    # post_hoc_processor + should_block_tm96 apply the same clip at serve
+    # time. R3-H1: read constant via module attr so monkey-patches in tests
+    # propagate through cfg_fp consistently.
+    cap = features.SIGMA_WINSOR_ABS_CAP
+    sd_raw = df['spot_distance_to_strike_sigma'].astype(np.float32)
+    sd = sd_raw.clip(lower=-cap, upper=cap)
+    df['spot_distance_to_strike_sigma'] = sd
     df['abs_spot_distance_to_strike_sigma'] = sd.abs()
     stc = df['seconds_to_close'].astype(np.float32)
     df['time_decayed_proximity'] = sd * (1.0 - stc / 900.0)

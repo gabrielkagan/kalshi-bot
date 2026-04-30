@@ -53,6 +53,50 @@ RAW_PROB_CLIP_EPS = 1e-6
 
 
 # ---------------------------------------------------------------------------
+# Sigma winsorize cap (R-p7-deploy-r11)
+# ---------------------------------------------------------------------------
+# At terminal STC (seconds_to_close → 0) the spot_distance_to_strike_sigma
+# denominator (volatility × sqrt(STC/5) × 100) collapses, producing pseudo-
+# infinite z-scores up to ±3,337 in production data. Without winsorization,
+# z-scoring across the column inflates std by 100×+ and collapses real signal.
+#
+# Cap chosen at 25 — above the empirical max benign value (~19) but well below
+# the 30+ outlier tail. Applied in extract_data.build_feature_frame BEFORE
+# deriving abs_spot_distance_to_strike_sigma and time_decayed_proximity, so
+# all three features see the clipped value. cfg_fp captures this constant.
+SIGMA_WINSOR_ABS_CAP = 25.0
+
+
+def apply_sigma_winsor(sd):
+    """Clip a single spot_distance_to_strike_sigma value to ±SIGMA_WINSOR_ABS_CAP.
+
+    Centralized helper so all three sites that touch sigma at serve/extract
+    time apply IDENTICAL clipping. Without this, train (extract) clipped
+    while serve (post_hoc_processor + should_block_tm96) read raw values
+    from DB → train/serve skew, model trained on ±25 saw ±3,337 in prod.
+
+    Returns:
+        - None if input is None (NULL passthrough for missing-indicator path)
+        - clipped value otherwise
+
+    NaN-safe: NaN compared with `>` returns False, so NaN passes through
+    unchanged (downstream NULL-imputation handles it).
+
+    Use the module-level lookup `features.SIGMA_WINSOR_ABS_CAP` so test
+    monkey-patches (and any future hot-reload) are honored at call time
+    rather than baked-in via `from features import` at the call site.
+    """
+    if sd is None:
+        return None
+    cap = SIGMA_WINSOR_ABS_CAP
+    if sd > cap:
+        return cap
+    if sd < -cap:
+        return -cap
+    return sd
+
+
+# ---------------------------------------------------------------------------
 # Continuous feature set — z-scored after per-column transform unless
 # transform == 'identity_no_zscore'.
 # ---------------------------------------------------------------------------
@@ -145,6 +189,7 @@ def compute_cfg_fp(*, include_sub_floor: bool) -> str:
         'null_imputation_policy': 'fold_train_mean_with_missing_indicator',
         'normstats_ddof': 1,
         'raw_prob_clip_eps': RAW_PROB_CLIP_EPS,
+        'sigma_winsor_abs_cap': SIGMA_WINSOR_ABS_CAP,
         'drop_predicates_order': DROP_PREDICATES_ORDER,
         'loss_form': 'bce_w_calibration_residual_v1',
         'loss_w_floor': 1.0,

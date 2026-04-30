@@ -12,6 +12,11 @@ calibration_state.json
 weather_ensemble_cache.json
 backfill_data/
 DOC_DRIFT_REPORT.txt
+# R-p7-deploy-r11 R6: bot-runtime persistence dir (spot_buffer.json,
+# external_poller_state.json). Local-only; never commit.
+# R7 (LOW): leading slash anchors to repo root only — without it, any
+# nested `tests/fixtures/state/` etc. would also be silently ignored.
+/state/
 
 
 
