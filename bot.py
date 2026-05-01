@@ -15834,7 +15834,14 @@ class OpportunityScanner:
                                 raw_prob=_drop.get("raw_prob"),
                                 calibration_method=_drop.get("calibration_method"),
                                 fee_adjusted_edge=_drop.get("fee_adjusted_edge"),
-                                product_type=_drop.get("product_type"))
+                                product_type=_drop.get("product_type"),
+                                cal_mlp_request_id=_drop.get("cal_mlp_request_id"),
+                                cal_mlp_skipped_reason=_drop.get("cal_mlp_skipped_reason"),
+                                cal_mlp_p_mean=_drop.get("cal_mlp_p_mean"),
+                                cal_mlp_p_std=_drop.get("cal_mlp_p_std"),
+                                cal_mlp_final_lo=_drop.get("cal_mlp_final_lo"),
+                                cal_mlp_final_hi=_drop.get("cal_mlp_final_hi"),
+                                cal_mlp_train_id=_drop.get("cal_mlp_train_id"))
                         except Exception:
                             logging.warning(
                                 "insert_evaluated_opportunity failed (%s)",
@@ -15935,7 +15942,14 @@ class OpportunityScanner:
                                 raw_prob=_drop.get("raw_prob"),
                                 calibration_method=_drop.get("calibration_method"),
                                 fee_adjusted_edge=_drop.get("fee_adjusted_edge"),
-                                product_type=_drop.get("product_type"))
+                                product_type=_drop.get("product_type"),
+                                cal_mlp_request_id=_drop.get("cal_mlp_request_id"),
+                                cal_mlp_skipped_reason=_drop.get("cal_mlp_skipped_reason"),
+                                cal_mlp_p_mean=_drop.get("cal_mlp_p_mean"),
+                                cal_mlp_p_std=_drop.get("cal_mlp_p_std"),
+                                cal_mlp_final_lo=_drop.get("cal_mlp_final_lo"),
+                                cal_mlp_final_hi=_drop.get("cal_mlp_final_hi"),
+                                cal_mlp_train_id=_drop.get("cal_mlp_train_id"))
                         except Exception:
                             logging.warning(
                                 "insert_evaluated_opportunity failed (%s)",
@@ -18917,7 +18931,18 @@ class OrderExecutor:
                         hourly_shadow_blend_30=candidate.get("hourly_shadow_blend_30"),
                         hourly_shadow_blend_60=candidate.get("hourly_shadow_blend_60"),
                         hourly_post_temp_prob=candidate.get("hourly_post_temp_prob"),
-                        available_balance_cents=candidate.get("balance_at_scan"))
+                        available_balance_cents=candidate.get("balance_at_scan"),
+                        # cal_mlp_* propagation: candidate dict carries these via
+                        # **_shadow_diag splat at line ~15425. Without these kwargs
+                        # the post-hoc processor's WHERE cal_mlp_request_id IS NOT NULL
+                        # never matches the row → 0% annotation on real trades.
+                        cal_mlp_request_id=candidate.get("cal_mlp_request_id"),
+                        cal_mlp_skipped_reason=candidate.get("cal_mlp_skipped_reason"),
+                        cal_mlp_p_mean=candidate.get("cal_mlp_p_mean"),
+                        cal_mlp_p_std=candidate.get("cal_mlp_p_std"),
+                        cal_mlp_final_lo=candidate.get("cal_mlp_final_lo"),
+                        cal_mlp_final_hi=candidate.get("cal_mlp_final_hi"),
+                        cal_mlp_train_id=candidate.get("cal_mlp_train_id"))
             except Exception as e:
                 logging.error(f"OBSERVATION_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
             return None
@@ -18992,7 +19017,14 @@ class OrderExecutor:
                 hourly_shadow_blend_30=candidate.get("hourly_shadow_blend_30"),
                 hourly_shadow_blend_60=candidate.get("hourly_shadow_blend_60"),
                 hourly_post_temp_prob=candidate.get("hourly_post_temp_prob"),
-                available_balance_cents=candidate.get("balance_at_scan"))
+                available_balance_cents=candidate.get("balance_at_scan"),
+                cal_mlp_request_id=candidate.get("cal_mlp_request_id"),
+                cal_mlp_skipped_reason=candidate.get("cal_mlp_skipped_reason"),
+                cal_mlp_p_mean=candidate.get("cal_mlp_p_mean"),
+                cal_mlp_p_std=candidate.get("cal_mlp_p_std"),
+                cal_mlp_final_lo=candidate.get("cal_mlp_final_lo"),
+                cal_mlp_final_hi=candidate.get("cal_mlp_final_hi"),
+                cal_mlp_train_id=candidate.get("cal_mlp_train_id"))
         except Exception as e:
             logging.error(f"CANDIDATE_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
 
