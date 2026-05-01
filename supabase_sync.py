@@ -471,6 +471,11 @@ class SupabaseSyncer:
         self._sync_harrv()
 
     # Columns that map to Supabase `evaluations` table
+    # cal_mlp_* fields require remote columns to exist (migration
+    # `add_cal_mlp_columns_to_evaluations`, applied 2026-05-01) — adding to
+    # this list without the remote columns silently 400s every batch (see
+    # _check_schema_parity for the failure mode that lost data 2026-04-04).
+    # Regression test: tests/test_supabase_eval_columns_calmlp.py.
     _EVAL_COLUMNS = (
         "id, ticker, event_ticker, asset, filter_stage, rejection_reason, evaluation_time, "
         "spot_price, threshold, volatility, market_price, seconds_to_close, calibrated_prob, "
@@ -481,7 +486,9 @@ class SupabaseSyncer:
         "egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared, "
         "shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike, "
         "counterfactual, shadow_cal_prob, shadow_cal_fee_edge, shadow_cal_temperature, "
-        "product_type"
+        "product_type, "
+        "cal_mlp_request_id, cal_mlp_skipped_reason, cal_mlp_p_mean, cal_mlp_p_std, "
+        "cal_mlp_final_lo, cal_mlp_final_hi, cal_mlp_train_id"
     )
 
     # Columns that map to Supabase `rejections` table
