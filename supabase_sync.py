@@ -500,6 +500,59 @@ class SupabaseSyncer:
         "mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike, counterfactual, product_type"
     )
 
+    # Columns that are integer-typed in Postgres but loose-typed (REAL-acceptable)
+    # in SQLite. Any float value here causes 22P02 ("invalid input syntax for
+    # type integer") and freezes the watermark on that batch. Defensive
+    # round-to-int at sync time so a single upstream bug (like sports_engine
+    # commit b6436f3 emitting float qty into ask_depth) can't wedge the mirror
+    # for days. Source-side fixes are still required — this is belt-and-
+    # suspenders.
+    #
+    # Authoritative union across all sync targets — derived from
+    #   SELECT table_name, column_name FROM information_schema.columns
+    #   WHERE table_schema='public' AND table_name IN
+    #     ('evaluations','rejections','trades','spx_harrv_shadow_signals')
+    #   AND data_type IN ('integer','bigint','smallint');
+    # Re-run that query and update this set when adding new int columns.
+    _INT_COLUMNS = frozenset({
+        # evaluations
+        "ask_depth", "available_balance_cents", "counterfactual_pnl", "id",
+        "market_price", "no_ask_cents", "oft_n_snapshots", "position_size",
+        "taker_ask_at_submit", "wx_n_members",
+        # spx_harrv_shadow_signals (delta vs evaluations)
+        "bankroll_cents", "best_ask", "best_bid", "est_fee_cents",
+        "gates_passed", "n_ols_obs", "n_returns_1d", "n_returns_1h",
+        "n_returns_1w", "no_contracts", "no_counterfactual_pnl",
+        "no_gates_passed", "no_pnl_cents", "no_price", "rv_1d_imputed",
+        "rv_1w_imputed", "settled_pnl", "shadow_contracts", "shadow_pnl_cents",
+        # trades (delta)
+        "count", "entry_price_cents", "fee_cents", "maker_price_cents",
+        "pnl_cents", "revenue_cents",
+        # bid_depth: not yet in remote evaluations schema but is the symmetric
+        # twin of ask_depth (same source bug class — sports_engine.py:1634).
+        # Including is a no-op if absent from payload; future-proofs a remote
+        # migration that adds the column.
+        "bid_depth",
+    })
+
+    @classmethod
+    def _coerce_int_columns(cls, row: dict) -> dict:
+        """Return a NEW dict with known-integer columns rounded to int.
+        None passes through; non-numeric values pass through unchanged
+        (let Postgres raise the real error rather than masking type bugs).
+        Mutating in place would make the sync non-idempotent on retry, so
+        we copy. Cheap — dict is ~50 keys."""
+        out = dict(row)
+        for col in cls._INT_COLUMNS:
+            v = out.get(col)
+            if v is None or isinstance(v, bool):
+                continue
+            if isinstance(v, float):
+                out[col] = int(round(v))
+            # int passes through; str / other left alone (will surface as 22P02
+            # if genuinely bad — that's the right escalation path)
+        return out
+
     def _sync_evaluations(self):
         """Incremental sync of evaluated_opportunities by rowid."""
         try:
@@ -509,7 +562,12 @@ class SupabaseSyncer:
             ).fetchall()
             if not rows:
                 return
-            mapped = [{col: self._clean(r[col]) for col in r.keys()} for r in rows]
+            mapped = [
+                self._coerce_int_columns(
+                    {col: self._clean(r[col]) for col in r.keys()}
+                )
+                for r in rows
+            ]
             if self._post("evaluations", mapped):
                 new_wm = max(r["id"] for r in rows)
                 self._wm_evaluations = new_wm
@@ -530,7 +588,7 @@ class SupabaseSyncer:
             mapped = []
             for r in rows:
                 row_dict = {col: self._clean(r[col]) for col in r.keys() if col != "rowid"}
-                mapped.append(row_dict)
+                mapped.append(self._coerce_int_columns(row_dict))
             if self._post("rejections", mapped):
                 new_wm = max(r["rowid"] for r in rows)
                 self._wm_rejections = new_wm
@@ -564,7 +622,12 @@ class SupabaseSyncer:
             """, (self._wm_trades_rowid,)).fetchall()
             if not rows:
                 return
-            mapped = [{col: self._clean(r[col]) for col in r.keys() if col != "rowid"} for r in rows]
+            mapped = [
+                self._coerce_int_columns(
+                    {col: self._clean(r[col]) for col in r.keys() if col != "rowid"}
+                )
+                for r in rows
+            ]
             if self._post("trades", mapped):
                 new_wm = max(r["rowid"] for r in rows)
                 self._wm_trades_rowid = new_wm
@@ -635,7 +698,12 @@ class SupabaseSyncer:
             ).fetchall()
             if not rows:
                 return
-            mapped = [{col: self._clean(r[col]) for col in r.keys()} for r in rows]
+            mapped = [
+                self._coerce_int_columns(
+                    {col: self._clean(r[col]) for col in r.keys()}
+                )
+                for r in rows
+            ]
             if self._post("spx_harrv_shadow_signals", mapped):
                 new_wm = max(r["id"] for r in rows)
                 self._wm_harrv = new_wm

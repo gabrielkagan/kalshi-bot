@@ -1630,8 +1630,16 @@ class SportsEngine:
                     mid = (yes_bid + yes_ask) / 2.0
                     spread = yes_ask - yes_bid
 
-                ask_depth = sum(b[1] for b in no_bids if b) if no_bids else 0
-                bid_depth = sum(b[1] for b in yes_bids if b) if yes_bids else 0
+                # int(round(...)) cast: _parse_orderbook returns float qty
+                # for the orderbook_fp shape (qty arrives as string "9703.00").
+                # Local SQLite (loose typing) accepts floats; Postgres
+                # `integer` rejects with 22P02 → supabase sync wedge for
+                # 12 days starting 2026-04-19. round() (not bare int truncate)
+                # avoids fp-noise off-by-one and matches the supabase_sync
+                # _coerce_int_columns convention. See kb/failures/.
+                # Regression test: tests/test_sports_ask_depth_int.py.
+                ask_depth = int(round(sum(b[1] for b in no_bids if b))) if no_bids else 0
+                bid_depth = int(round(sum(b[1] for b in yes_bids if b))) if yes_bids else 0
 
                 return {
                     "ticker": matched_ticker,
