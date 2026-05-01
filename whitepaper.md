@@ -401,7 +401,7 @@ The SPX engine has a dedicated CalibrationEngine instance (`_CAL_REGISTRY["spx_h
 
 The weather engine trades daily high temperature prediction markets across **{{WEATHER_CITY_COUNT}} US cities** using numerical weather prediction (NWP) ensemble forecasts.
 
-> **Status: SPLIT.** NO-side is **LIVE** since 2026-04-11 in 1-contract verification mode (entry zone 36–40¢, STC ≥ 16h, with a 36¢ floor added Apr 20). YES-side remains observation-only — research verdict is "no alpha" on YES: the per-city Gaussian fit materially overestimates YES probability vs. actual outcomes. Per-city CalEngines train on every settlement, with bias correction tracking forecast-vs-actual error per city. The 1-contract NO sizing reflects the verification-mode goal: collect outcome data on the bot's own NO entries (rather than counterfactuals) before any size promotion.
+> **Status: SPLIT.** NO-side is **LIVE** since 2026-04-11 in 1-contract verification mode (entry zone 37–40¢, STC ≥ 16h, with the floor raised from 36¢ to 37¢ on May 1). YES-side remains observation-only — research verdict is "no alpha" on YES: the per-city Gaussian fit materially overestimates YES probability vs. actual outcomes. Per-city CalEngines train on every settlement, with bias correction tracking forecast-vs-actual error per city. The 1-contract NO sizing reflects the verification-mode goal: collect outcome data on the bot's own NO entries (rather than counterfactuals) before any size promotion.
 
 ### Cities and Series
 
@@ -453,7 +453,7 @@ An EWMA bias tracker ($\lambda = 0.90$, 7-day half-life) maintains per-city fore
 | Config | Value |
 |---|---|
 | Status | NO-side LIVE (1-contract verification, since Apr 11), YES-side observation |
-| NO-side entry price range | 36–40¢ (36¢ floor since Apr 20) |
+| NO-side entry price range | 37–40¢ (37¢ floor since May 1, raised from 36¢) |
 | YES-side entry price range | 10–99¢ (logging only) |
 | NO-side STC requirement | ≥ 16h before close |
 | Market blend | 80/20 (model/market) — ensemble is primary signal |
@@ -828,7 +828,7 @@ Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M
 
 ### Weather Temperature (NO-side Live, YES-side Observation)
 
-Daily high temperature markets across {{WEATHER_CITY_COUNT}} US cities. Bracket and threshold contracts settling based on the observed daily high. Probability from 82-member NWP ensemble (GFS + ECMWF). NO-side has been LIVE since 2026-04-11 in 1-contract verification mode (entry zone 36–40¢, 36¢ floor since Apr 20, STC ≥ 16h before settlement); YES-side remains observation-only (research verdict: Gaussian fit materially overestimates YES probability vs. actual outcomes — which is why NO at 36–40¢ is the profitable side). Per-city CalEngines train on every settlement; bias correction tracks per-city forecast-vs-actual error.
+Daily high temperature markets across {{WEATHER_CITY_COUNT}} US cities. Bracket and threshold contracts settling based on the observed daily high. Probability from 82-member NWP ensemble (GFS + ECMWF). NO-side has been LIVE since 2026-04-11 in 1-contract verification mode (entry zone 37–40¢, 37¢ floor since May 1, STC ≥ 16h before settlement); YES-side remains observation-only (research verdict: Gaussian fit materially overestimates YES probability vs. actual outcomes — which is why NO at 37–40¢ is the profitable side). Per-city CalEngines train on every settlement; bias correction tracks per-city forecast-vs-actual error.
 
 ### Sports Outcomes (Observation Mode — ALPHA DETECTED)
 
@@ -937,7 +937,7 @@ Promoted features (driving live behavior):
 - **Overnight discount** — live weekday 04–11 UTC at 89¢+, STC≤600s, no-DC-overlap guard
 - **Low-Price Near-Expiry (LPNE)** — live on BTC at 80–87¢ with STC 10–120s, 50 contracts fixed, model-conviction gated
 - **Loss-burst cooldown** — per-asset 2h lockout after any 15M loss
-- **Weather NO-side** — live in 1-contract verification mode (NO 36–40¢, STC≥16h)
+- **Weather NO-side** — live in 1-contract verification mode (NO 37–40¢, STC≥16h)
 - **Price improvement addon** — adds to winning positions on price improvement (50% addon size, 35% total risk cap)
 - **STC sizing scaler** — universal contracts ×= 300/STC for any strategy at STC > 300s
 - **Low-STC sizing cap** — 50% of computed size when STC < 100s
