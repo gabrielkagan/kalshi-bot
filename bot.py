@@ -522,7 +522,7 @@ WEATHER_NO_SHADOW_MIN_YES_PROB = 0.55  # Only shadow when model is confident YES
 # Gate: STC >= 8h (short STC NO loses), fixed 1-contract sizing, all 19 cities.
 WEATHER_NO_SIDE_LIVE = True              # LIVE — NO ≤ 40c, STC ≥ 16h, 1-contract
 WEATHER_NO_SIDE_MIN_STC = 57600.0        # 16 hours — tightened from 8h (data: 77.1% WR at 16-24h, 32.5% at 0-8h)
-WEATHER_NO_MIN_PRICE = 37                # Raised from 36 May 1: 36c cohort post-Apr-20 1/6 = 16.7% WR, -$1.16 net. Continuing to collect data on 37-40c band.
+WEATHER_NO_MIN_PRICE = 39                # Tightened from 37 May 2: 37c=25%WR -$1.44 (n=12), 38c=14.3%WR -$1.66 (n=7) bleeding harder than the 36c tier. 39-40c band profitable (39c +$1.54 n=14, 40c +$6.20 n=47).
 WEATHER_NO_MAX_PRICE = 40                # Only buy NO contracts priced ≤ 40c (YES ≥ 60c)
 WEATHER_NO_ASSUMED_PROB = 0.70           # Bypass model (structurally wrong on NO). Shadow: 79.7% WR, worst week 74%
 WEATHER_NO_KILL_THRESHOLD = -2000        # Auto-disable if cumulative NET NO PnL < -$20 (R-p7-deploy-r9 fee-fix changed comparison from gross to net; safer)

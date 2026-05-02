@@ -14,7 +14,7 @@
 - **Overnight discount LIVE:** weekday 04-11 UTC, 89c+, STC≤600s, no DC overlap; sub-89c/STC>600s remain shadow
 - **Weekend discount LIVE:** Sat/Sun, 90c+, STC≤600s, no DC overlap; sub-90c/STC>600s remain shadow
 - **Loss burst cooldown LIVE (Apr 11):** per-asset 2h lockout after any 15M loss (+$441/30d counterfactual)
-- **Weather NO-side LIVE (Apr 11):** NO 37-40c, STC ≥ 16h, 1-contract. Floor 36→37 May 1 (36c bucket post-Apr-20: 1/6 = 16.7% WR).
+- **Weather NO-side LIVE (Apr 11):** NO 39-40c, STC ≥ 16h, 1-contract. Floor tightened 37→39 May 2 (37c=25%WR/-$1.44 n=12, 38c=14.3%WR/-$1.66 n=7; 39-40c band profitable). Prior step 36→37 shipped May 1.
 - **STC zones:** scan 0-900s, core live 0-300s, extended live 300-600s (per-asset higher floors), shadow 600-900s
 - **STC sizing scaler:** contracts *= 300/STC for 15M at STC>300s
 - **SOL sub-86c gate:** blocks SOL ≤85c at STC≥300s

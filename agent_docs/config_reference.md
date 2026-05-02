@@ -178,8 +178,8 @@ To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (
 | WEATHER_KELLY_FRACTION | 0.25 | Quarter-Kelly |
 | WEATHER_MIN_SECONDS_BEFORE_CLOSE | 3600 | At least 1 hour before settlement |
 | WEATHER_MAX_SECONDS_BEFORE_CLOSE | 86400 | Weather settles daily — always eligible |
-| WEATHER_NO_SIDE_LIVE | True | LIVE — NO 37-40c, STC ≥ 16h, 1-contract |
-| WEATHER_NO_MIN_PRICE | 37 | Raised May 1 from 36 — 36c cohort post-Apr-20 1/6 = 16.7% WR |
+| WEATHER_NO_SIDE_LIVE | True | LIVE — NO 39-40c, STC ≥ 16h, 1-contract |
+| WEATHER_NO_MIN_PRICE | 39 | Tightened May 2 from 37 — 37c/38c sub-bands bleeding (25%/14.3% WR), 39-40c band profitable |
 
 ## Calibrator (P2 cal_mlp)
 
