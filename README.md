@@ -6,7 +6,7 @@ Automated trading platform for Kalshi prediction markets. The core engine trades
 
 ```
 Coinbase (1s prices) ──┐
-Kraken ────────────────┤                                          ┌─ Maker post_only ($0 fee)
+Kraken ────────────────┤                                          ┌─ Maker post_only (no fee)
 Bybit ─────────────────┼──→ Volatility ──→ Probability ──→ Edge ──┤  ↓ if unfilled or near-close
 Binance (geo-blocked)──┤     Engine          Engine      Filter   └─ Cancel-replace IOC taker
 Deribit DVOL ──────────┤
@@ -60,13 +60,13 @@ Total cross-exchange adjustment is capped at ±3pp.
 
 Maker-first by default, but with several asset- and product-specific overrides. Taker fills are allowed at any seconds-to-close (`MAKER_ONLY_THRESHOLD = 0`). The decision tree:
 
-1. **Default 15M (BTC, ETH, XRP)** --- place maker `post_only=True` (maker fee is $0), poll for fills via Kalshi WebSocket. If unfilled after the per-tier wait (15s for ≥180s STC, 7s for 120--180s, 5s for 60--120s), `amend_order()` to taker price; fall back to cancel + IOC taker if amend rejects
+1. **Default 15M (BTC, ETH, XRP)** --- place maker `post_only=True` (no maker fee), poll for fills via Kalshi WebSocket. If unfilled after the per-tier wait (15s for ≥180s STC, 7s for 120--180s, 5s for 60--120s), `amend_order()` to taker price; fall back to cancel + IOC taker if amend rejects
 2. **SOL** --- `SOL_TAKER_FIRST = True`. Skip maker entirely, go direct IOC at all STC (data: SOL maker fills suffered adverse selection; taker-first net positive)
 3. **Direct taker zone** --- when STC < 180s, all assets skip maker and submit IOC directly
 4. **Decided contracts (T1, T1B, T2, T2-Z25)** --- route direct taker regardless of STC; structural high-conviction signals
 5. **Three-tier post_only rejection handler** --- normal → degraded → taker IOC after 3+ rejections
 
-Fee schedule: maker = **$0** (free). Taker = `ceil(0.07 * C * P * (1-P))` --- ceil on total, not per contract.
+Fee schedule: maker = **free**. Taker = `ceil(0.07 * C * P * (1-P))` --- ceil on total, not per contract.
 
 ### Position Sizing
 
@@ -90,7 +90,7 @@ Per-asset hard caps (lower than the global 25% ceiling):
 Per-strategy fixed sizing (overrides Kelly):
 
 - **Decided contracts T1 / T1B / T2** --- 20% of bankroll, fixed; 35% per-window cap
-- **Decided contract T2-Z25** --- 10% (cut from 20% Apr 21 after a 14d -$95 / 17-trade run)
+- **Decided contract T2-Z25** --- 10% (cut from 20% Apr 21 after a 14d / 17-trade losing run)
 - **SOL decided-contract overrides** --- SOL DC at ≥97c sized at 5%, 95--96c at 10% (below the default 20%)
 - **Weather NO-side** --- 1 contract per signal
 - **Low-price near-expiry (LPNE, BTC 80--87c)** --- 50 contracts fixed, only with model conviction at the entry strike
@@ -104,7 +104,7 @@ Drawdown scaling (driven by a rolling 7-day high-water mark, cash balance only):
 - At 75% of HWM: quarter sizes
 - At 65% of HWM: halt trading entirely
 
-Loss-burst cooldown: per-asset 2-hour lockout after any 15M loss (sim PnL at deploy time: +$441/30d counterfactual).
+Loss-burst cooldown: per-asset 2-hour lockout after any 15M loss.
 
 ### State & Persistence
 
@@ -134,7 +134,6 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 | Top rejection reason | Insufficient Edge (51,469) |
 | Settled trades | 3,252 (3,016 W / 234 L / 2 BE) |
 | Win rate | 92.7\% |
-| Live P&L | $664.64 |
 
 *Last updated: 2026-05-01T12:02:13Z*
 
@@ -209,7 +208,7 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 - **Orderbook**: returns separate YES and NO orderbooks. Market NBBO provides `yes_ask`, `yes_bid`, `no_ask`, `no_bid`. YES + NO prices do **not** always sum to 100
 - **Order type**: all orders are limit orders (no market orders as of Feb 2026)
 - **Settlements**: bot uses the settlements API for outcome detection, never z-score heuristics or balance deltas
-- **Fee formula**: maker = **$0**; taker = `ceil(0.07 * C * P * (1-P))` --- ceil on the total, not per contract
+- **Fee formula**: maker = **free**; taker = `ceil(0.07 * C * P * (1-P))` --- ceil on the total, not per contract
 
 ## Project Structure
 

@@ -91,7 +91,6 @@ The platform monitors real-time data from multiple sources per vertical, estimat
 \textbf{Live trading results (auto-updated; last refresh {{GENERATED_AT}}):}
 \begin{itemize}
 \item \textbf{{{LIVE_SETTLED}}} settled trades with a \textbf{{{LIVE_WR}}} win rate ({{LIVE_WINS}}W / {{LIVE_LOSSES}}L / {{LIVE_BREAKEVENS}} breakeven)
-\item Cumulative live P\&L: \textbf{\${{LIVE_PNL_DOLLARS}}}
 \item Live trading with real capital since February 22, 2026
 \item Fully automated, always-on operation with complete audit trail
 \item Adjacent verticals — each follows the same shadow→validate→promote pipeline:
@@ -120,7 +119,7 @@ Kalshi is the only CFTC-regulated prediction market exchange in the US, providin
 |---|---|
 | **Frequency** | New contracts every 15 minutes, 24/7, across 4 cryptocurrencies |
 | **Duration** | Each contract settles within 15 minutes — capital never locked up long |
-| **Binary outcomes** | Pays exactly $1 if above threshold, $0 otherwise — no partial payoffs |
+| **Binary outcomes** | Pays full contract value if above threshold, nothing otherwise — no partial payoffs |
 | **Market depth** | Hundreds of tradeable markets per day across multiple assets and strikes |
 
 ## The Systematic Edge
@@ -202,7 +201,7 @@ The bot uses a fee-minimizing execution strategy with intelligent escalation:
 
 | Execution Phase | Description |
 |---|---|
-| **Maker-first** | Places limit orders with `post_only` guarantees — $0 maker fee (taker fee only on escalation) |
+| **Maker-first** | Places limit orders with `post_only` guarantees — no maker fee (taker fee only on escalation) |
 | **3-tier rejection handling** | If maker rejected (locked spread): try degraded maker → taker IOC (re-verifying profitability at higher fees) |
 | **Direct taker below 180s** | When <180s remain, skip maker entirely — data shows only 7.7% fill rate at low STC; direct taker strictly better |
 | **Real-time fill detection** | Kalshi WebSocket provides instant fill notifications at zero API cost, with REST backup |
@@ -294,7 +293,6 @@ Below 180 seconds before settlement, the system switches to **direct taker execu
 | **Status** | Live trading since February 22, 2026 |
 | **Settled trades** | {{LIVE_SETTLED}} ({{LIVE_WINS}}W / {{LIVE_LOSSES}}L / {{LIVE_BREAKEVENS}} BE) |
 | **Win rate** | {{LIVE_WR}} |
-| **Cumulative P&L** | ${{LIVE_PNL_DOLLARS}} |
 | **Assets** | BTC, ETH, SOL, XRP |
 | **Entry prices** | 75–99¢ (per-asset: BTC 88¢+, ETH 90¢+ main tier with 75–79¢ capped sub-tier, SOL 86¢+, XRP 92¢+; overlays extend lower in the final minutes) |
 
@@ -317,7 +315,7 @@ Hourly cryptocurrency markets (KXBTCD, KXETHD, KXSOLD, KXXRPD) with 75 strikes p
 | **Leverage effect** | Down moves increase equity volatility ~4× more than crypto — different EGARCH bounds |
 | **VIX integration** | Forward-looking volatility signal blended with realized when they diverge significantly |
 | **Intraday seasonality** | U-shaped pattern deseasonalized via 13 half-hour buckets to prevent time-of-day bias |
-| **Lower fees** | Finance category — half the crypto fee multiplier (0.035 vs 0.07 taker), $0 maker |
+| **Lower fees** | Finance category — half the crypto fee multiplier (0.035 vs 0.07 taker), no maker fee |
 | **Correlation controls** | Max 2 positions and 15% risk per window to prevent multi-strike blowups |
 
 This vertical leverages the same infrastructure while accessing a much larger and more liquid underlying market. It was briefly promoted to live trading on March 17 but reverted the same day after the primary price data feed (Polygon.io) began returning errors. Currently in observation mode with a fallback price feed, collecting calibration data with conservative eighth-Kelly sizing.
@@ -420,7 +418,7 @@ For readers interested in the mathematical foundations, the full technical white
 
 **Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Eight tiers from 25% at 4%+ edge down to 2% at 0.25%+ edge, with automatic de-risking against the rolling 7-day cash HWM (half at 85%, quarter at 75%, halt at 65%). Per-asset max risk per trade: BTC 15%, ETH 20%, SOL 15%, XRP 15%, hourly 15%, SPX 10%, weather 10%. 15M main uses full Kelly; hourly (when re-enabled) sizes at fixed 25 contracts on YES and 25 contracts on its DC overlay (bypassing Kelly); SPX uses eighth-Kelly (0.125); weather YES sim uses quarter-Kelly (0.25), weather NO is fixed 1-contract. Decided contracts use fixed sizing (T1/T1B/T2 at 20%, T2-Z25 at 10%, with SOL DC overrides at 5%/10% for ≥97¢/95–96¢). Low-STC sizing cap halves position below 100s; universal STC sizing scaler reduces position proportionally to time remaining (contracts × 300/STC) above 300s. LPNE is 50 contracts fixed.
 
-**Execution Model** — Maker-first by default with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Direct taker below 180s STC (data: 7.7% maker fill rate at low STC). Maker orders use `post_only=True` for $0 maker fee. SOL bypasses maker entirely (direct taker at all STC). BTC uses 7s escalation wait (vs 15s default). Decided contract overlay routes near-certain outcomes to direct taker — four live tiers (T1, T1B, T2 at 20% fixed; T2-Z25 at 10% after Apr 21 underperformance cut); T2-Z2 returned to shadow Apr 22; 6 expansion shadows collect data for future tiers. Terminal Momentum trades 96/98/99¢ in the final 1–5 min. Low-Price Near-Expiry intercepts BTC 80–87¢ at 50 contracts in the final 10–120 sec. Weekend (90¢+) and overnight (89¢+) discount overlays operate in low-liquidity windows with STC≤600s. Loss-burst cooldown locks each asset for 2 hours after any 15M loss. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. Full order lifecycle tracking (order_id, submission time, outcome).
+**Execution Model** — Maker-first by default with three-tier post_only rejection handler: normal maker → degraded maker (1¢ worse) → taker IOC (with edge re-verification). Direct taker below 180s STC (data: 7.7% maker fill rate at low STC). Maker orders use `post_only=True` for no maker fee. SOL bypasses maker entirely (direct taker at all STC). BTC uses 7s escalation wait (vs 15s default). Decided contract overlay routes near-certain outcomes to direct taker — four live tiers (T1, T1B, T2 at 20% fixed; T2-Z25 at 10% after Apr 21 underperformance cut); T2-Z2 returned to shadow Apr 22; 6 expansion shadows collect data for future tiers. Terminal Momentum trades 96/98/99¢ in the final 1–5 min. Low-Price Near-Expiry intercepts BTC 80–87¢ at 50 contracts in the final 10–120 sec. Weekend (90¢+) and overnight (89¢+) discount overlays operate in low-liquidity windows with STC≤600s. Loss-burst cooldown locks each asset for 2 hours after any 15M loss. Fill detection via Kalshi WebSocket (zero API cost). Unfilled orders escalate via in-place amendment (`amend_order()`) before falling back to cancel + IOC (`time_in_force="immediate_or_cancel"`). Queue position monitoring every ~5s enables optimal escalation timing. Full order lifecycle tracking (order_id, submission time, outcome).
 
 **SPX Engine** — Adapts the crypto EGARCH framework for S&P 500 equities: stronger leverage effect bounds (4× crypto), VIX-implied volatility integration when realized and implied diverge >30%, intraday seasonal deseasonalization (13 half-hour buckets), NYSE market hours guard with holiday calendar, half-rate fees (finance category), and per-window correlation controls (max 2 positions, 15% risk).
 

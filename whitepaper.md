@@ -298,7 +298,7 @@ The calibrated probability is blended with the market-implied probability:
 
 $$p_{final} = 0.60 \times p_{cal} + 0.40 \times p_{market}$$
 
-This 60/40 blend (60% model, 40% market) was validated against a no-blend alternative: the no-blend system was +1.86 percentage points overconfident (Brier score 0.0946 vs 0.0422), and would have generated 16 trades that were net -$53.54. The 40% market weight was subsequently tuned from 50% after data showed the model was underconfident by 0.8–2.1pp at 90%+ probabilities. The no-blend system now monitors in shadow mode.
+This 60/40 blend (60% model, 40% market) was validated against a no-blend alternative: the no-blend system was +1.86 percentage points overconfident (Brier score 0.0946 vs 0.0422), and would have generated 16 net-negative trades. The 40% market weight was subsequently tuned from 50% after data showed the model was underconfident by 0.8–2.1pp at 90%+ probabilities. The no-blend system now monitors in shadow mode.
 
 ### Sanity Checks
 
@@ -315,7 +315,7 @@ A trade requires positive expected value after accounting for fees.
 Kalshi charges fees using a variance-based formula:
 
 $$\text{taker fee} = \left\lceil \text{fee\_mult} \times C \times P \times (100 - P) / 100 \right\rceil \text{ cents}$$
-$$\text{maker fee} = \$0$$
+$$\text{maker fee} = 0$$
 
 where $C$ is the number of contracts and $P$ is the trade price in cents. The ceiling is applied to the total, not per contract. Default `fee_mult` is 0.07 for crypto; SPX ("finance" category) uses 0.035 (half rate). Maker fills incur no fee on any product.
 
@@ -392,7 +392,7 @@ The SPX engine has a dedicated CalibrationEngine instance (`_CAL_REGISTRY["spx_h
 | Max risk per trade | 10% |
 | Kelly fraction | 0.125 (eighth-Kelly) |
 | Fee multiplier (taker) | 0.035 (half crypto) |
-| Fee multiplier (maker) | 0.0 ($0 — maker fills are free) |
+| Fee multiplier (maker) | 0.0 (maker fills are free) |
 | Bankroll fraction | 15% (SPX sizes off 15% of total balance — crypto unaffected) |
 | Max positions per window | 2 |
 | Max risk per window | 15% |
@@ -537,7 +537,7 @@ The executor uses a maker-first approach with three-tier post_only rejection han
 
 When less than **180 seconds** remain before settlement, the system skips the maker order entirely and submits a direct IOC (immediate-or-cancel) taker order.
 
-> **Data justification**: Maker fill rate was only 7.7% (1/13 candidates) at 0–60s STC. Twelve missed candidates were all winners (~$49 net missed profit). Threshold raised from 60s → 75s → 180s. Edge and liquidity checks still apply.
+> **Data justification**: Maker fill rate was only 7.7% (1/13 candidates) at 0–60s STC. Twelve missed candidates were all winners. Threshold raised from 60s → 75s → 180s. Edge and liquidity checks still apply.
 
 ### Three-Tier Post-Only Handler
 
@@ -575,8 +575,8 @@ A separate overlay identifies near-certain settlements and routes them to direct
 | T1 | z ≤ -5.0 | 93¢+ | 20% bankroll fixed | LIVE |
 | T1B | z ≤ -4.0 | 95¢+ | 20% bankroll fixed | LIVE |
 | T2 | z ≤ -3.0 | 93–96¢ | 20% bankroll fixed | LIVE |
-| T2-Z25 | z ≤ -2.5 | 93–96¢ | 10% bankroll fixed | LIVE (cut from 20% Apr 21 after a 14d -$95 / 17-trade run) |
-| T2-Z2 | z ≤ -2.0 | 93–96¢ | 20% bankroll fixed | SHADOW (re-promotion rejected Apr 22; -$313 / 47-trade history) |
+| T2-Z25 | z ≤ -2.5 | 93–96¢ | 10% bankroll fixed | LIVE (cut from 20% Apr 21 after a 14d / 17-trade losing run) |
+| T2-Z2 | z ≤ -2.0 | 93–96¢ | 20% bankroll fixed | SHADOW (re-promotion rejected Apr 22; 47-trade losing history) |
 
 **SOL DC overrides**: SOL DC at ≥97c sized at 5% (vs. default 20%); 95–96c sized at 10%. Below 95¢, the default tier risk applies.
 
@@ -595,7 +595,7 @@ Six expansion shadow variants are also collecting data for potential future tier
 
 ### Maker-to-Taker Conversion
 
-1. Place maker order with `post_only=True` ($0 maker fee)
+1. Place maker order with `post_only=True` (no maker fee)
 2. Monitor for fills via Kalshi WebSocket (zero API cost) with REST polling fallback
 3. Poll queue position every ~5s for queue-aware escalation timing
 4. If timeout reached without fill:
@@ -734,7 +734,7 @@ The analyst engine (`analyst.py`) uses the Claude API to provide automated post-
 ## Execution Controls
 
 - **Three-tier post_only handler**: Escalates from normal maker → degraded maker → taker IOC after repeated rejections, with edge re-verification at each tier
-- **Maker-first with `post_only`**: $0 maker fee (taker fee only on escalation), rejected if it would cross the spread
+- **Maker-first with `post_only`**: no maker fee (taker fee only on escalation), rejected if it would cross the spread
 - **Direct taker below 180 seconds**: Below 180s STC, maker orders are skipped entirely (7.7% fill rate at low STC) — direct IOC taker submitted with full edge/liquidity validation
 - **WebSocket fill detection**: Zero-cost fill monitoring via Kalshi WebSocket, with REST polling fallback
 - **Amend-first escalation**: Uses `amend_order()` API to convert maker→taker in-place, avoiding cancel+replace race conditions
@@ -764,21 +764,19 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 | **Status** | Live trading since February 22, 2026 |
 | **Settled trades** | {{LIVE_SETTLED}} ({{LIVE_WINS}}W / {{LIVE_LOSSES}}L / {{LIVE_BREAKEVENS}} breakeven) |
 | **Win rate** | {{LIVE_WR}} |
-| **Live P&L (cumulative)** | ${{LIVE_PNL_DOLLARS}} |
-| **Live P&L (Kelly-comparable headline; excludes 1-contract weather + kill-switched hourly)** | ${{LIVE_PNL_HEADLINE_DOLLARS}} |
 | **Assets** | BTC (88¢+, LPNE 80–87¢), ETH (90¢+ main, 75–79¢ capped sub-tier), SOL (86¢+, taker-first), XRP (92¢+) |
 
 ### Performance by Strategy Group
 
-| Strategy group | n | W / L | PnL ($) | Mean entry (¢) |
-|---|---|---|---|---|
-| 15M main (Kelly-sized) | {{SG_MAIN_N}} | {{SG_MAIN_WINS}} W / {{SG_MAIN_LOSSES}} L | {{SG_MAIN_PNL_DOLLARS}} | — |
-| Decided contracts | {{SG_DECIDED_N}} | {{SG_DECIDED_WINS}} W / {{SG_DECIDED_LOSSES}} L | {{SG_DECIDED_PNL_DOLLARS}} | — |
-| Weekend discount | {{SG_WEEKEND_N}} | {{SG_WEEKEND_WINS}} W / {{SG_WEEKEND_LOSSES}} L | {{SG_WEEKEND_PNL_DOLLARS}} | — |
-| Overnight discount | {{SG_OVERNIGHT_N}} | {{SG_OVERNIGHT_WINS}} W / {{SG_OVERNIGHT_LOSSES}} L | {{SG_OVERNIGHT_PNL_DOLLARS}} | — |
-| LPNE (BTC 80–87¢ near-expiry) | {{SG_LPNE_N}} | {{SG_LPNE_WINS}} W / {{SG_LPNE_LOSSES}} L | {{SG_LPNE_PNL_DOLLARS}} | — |
-| Weather NO (1-contract verification) | {{SG_WEATHER_NO_N}} | {{SG_WEATHER_NO_WINS}} W / {{SG_WEATHER_NO_LOSSES}} L | {{SG_WEATHER_NO_PNL_DOLLARS}} | — |
-| Hourly NO (pre-kill-switch) | {{SG_HOURLY_NO_N}} | {{SG_HOURLY_NO_WINS}} W / {{SG_HOURLY_NO_LOSSES}} L | {{SG_HOURLY_NO_PNL_DOLLARS}} | — |
+| Strategy group | n | W / L | Win rate |
+|---|---|---|---|
+| 15M main (Kelly-sized) | {{SG_MAIN_N}} | {{SG_MAIN_WINS}} W / {{SG_MAIN_LOSSES}} L | {{SG_MAIN_WR}} |
+| Decided contracts | {{SG_DECIDED_N}} | {{SG_DECIDED_WINS}} W / {{SG_DECIDED_LOSSES}} L | {{SG_DECIDED_WR}} |
+| Weekend discount | {{SG_WEEKEND_N}} | {{SG_WEEKEND_WINS}} W / {{SG_WEEKEND_LOSSES}} L | {{SG_WEEKEND_WR}} |
+| Overnight discount | {{SG_OVERNIGHT_N}} | {{SG_OVERNIGHT_WINS}} W / {{SG_OVERNIGHT_LOSSES}} L | {{SG_OVERNIGHT_WR}} |
+| LPNE (BTC 80–87¢ near-expiry) | {{SG_LPNE_N}} | {{SG_LPNE_WINS}} W / {{SG_LPNE_LOSSES}} L | {{SG_LPNE_WR}} |
+| Weather NO (1-contract verification) | {{SG_WEATHER_NO_N}} | {{SG_WEATHER_NO_WINS}} W / {{SG_WEATHER_NO_LOSSES}} L | {{SG_WEATHER_NO_WR}} |
+| Hourly NO (pre-kill-switch) | {{SG_HOURLY_NO_N}} | {{SG_HOURLY_NO_WINS}} W / {{SG_HOURLY_NO_LOSSES}} L | {{SG_HOURLY_NO_WR}} |
 
 ### Calibration
 
@@ -793,16 +791,16 @@ A small number of settled trades ({{LIVE_SETTLED}} total, of which N lack a matc
 
 Two regime cutoffs are pinned to actual deploy commit timestamps:
 
-| Slice | Live PnL ($) | Settled | W / L | Brier (model) |
+| Slice | Settled | Wins | Win rate | Brier (model) |
 |---|---|---|---|---|
-| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | {{APR11_LIVE_PNL_DOLLARS}} | {{APR11_LIVE_SETTLED}} | {{APR11_LIVE_WINS}} W / — L | {{APR11_BRIER}} |
-| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | {{APR23_LIVE_PNL_DOLLARS}} | {{APR23_LIVE_SETTLED}} | {{APR23_LIVE_WINS}} W / — L | {{APR23_BRIER}} |
+| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | {{APR11_LIVE_SETTLED}} | {{APR11_LIVE_WINS}} | {{APR11_LIVE_WR}} | {{APR11_BRIER}} |
+| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | {{APR23_LIVE_SETTLED}} | {{APR23_LIVE_WINS}} | {{APR23_LIVE_WR}} | {{APR23_BRIER}} |
 
 The post-Apr-23 slice is the cleanest "current regime" view: WS orderbook depth is now decoded correctly, loss-burst cooldown is shipped, weather NO has been live for 12 days, and XRP has been live at 92¢+ for ~5 days.
 
 ### Shadow / Hypothetical PnL
 
-Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates), summed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`: ${{SHADOW_PNL_DOLLARS}} across {{SHADOW_TOTAL_N}} signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
+Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates) is computed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`, totalling {{SHADOW_TOTAL_N}} signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
 
 ## Markets
 
@@ -810,8 +808,8 @@ Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gat
 
 Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M. STC window: scan 0–900s, live 0–600s, shadow observation 600–900s. Several live overlays add incremental volume on top of the main 15M scan:
 
-- **Decided contract overlay** — T1, T1B, T2, T2-Z25 live; T2-Z2 returned to shadow Apr 22 after underperformance (-$313 / 47 trades). Six T1/T2 expansion shadows (T1A, T1B-EXP, T2A, T2B, T3, T3A) collect data for potential future tiers
-- **Terminal Momentum (TM)** — trades the final 1–5 minutes at 96/98/99¢ (95 and 97 removed Apr 9 after −$980/2wk on 347 trades). Sizing is `TM_BASE_CONTRACTS=100` × margin × STC multiplier with caps (min 25, max 500); 96¢ is blocked when sourced from NBBO
+- **Decided contract overlay** — T1, T1B, T2, T2-Z25 live; T2-Z2 returned to shadow Apr 22 after underperformance (47 trades). Six T1/T2 expansion shadows (T1A, T1B-EXP, T2A, T2B, T3, T3A) collect data for potential future tiers
+- **Terminal Momentum (TM)** — trades the final 1–5 minutes at 96/98/99¢ (95 and 97 removed Apr 9 after a 2wk losing run on 347 trades). Sizing is `TM_BASE_CONTRACTS=100` × margin × STC multiplier with caps (min 25, max 500); 96¢ is blocked when sourced from NBBO
 - **Low-Price Near-Expiry (LPNE)** — intercepts BTC at 80–87¢ in the final 10–120 seconds, 50 contracts fixed, only with model conviction at the strike
 - **Weekend / Overnight discount** — relaxed-edge entries during low-liquidity windows. Weekend (Sat/Sun) at 90¢+ STC≤600s; overnight (weekday 04–11 UTC) at 89¢+ STC≤600s; both with no-DC-overlap guards. Sub-floor and STC>600s remain shadow
 - **Loss-burst cooldown** — per-asset 2h lockout after any 15M loss (shipped Apr 11 on positive deploy-time sim; live efficacy still accumulating)
@@ -820,7 +818,7 @@ Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M
 
 ### Crypto Hourly (Disabled)
 
-75 strikes per event, settling every hour. **Disabled since 2026-04-18** — `HOURLY_LIVE_ENABLED` and `HOURLY_NO_SIDE_LIVE` env vars (default `0`) must both be flipped to `1` on the VPS to re-enable hourly window discovery and entry. The hourly DC overlay (`HOURLY_DC_ENABLED`, default `1`) remains available but does not fire while hourly windows aren't being scanned. The kill followed two regime issues: (1) Feb 27–28 brief live stint reverted after a -$97 overnight loss from calibration overconfidence and correlated multi-strike exposure; (2) the NO-side BTC 40–54¢ tier reached 53.9% WR (n=1,113, p=0.005) post-correction but was disabled when broader hourly economics turned negative. Hourly CalEngine remains disabled (+44pp overconfident historically); uses T=1.45 temperature scaling when re-enabled. BTC is the only historically viable hourly asset — ETH/SOL structurally unprofitable after fees, XRP fundamentally broken. Series: KXBTCD, KXETHD, KXSOLD, KXXRPD.
+75 strikes per event, settling every hour. **Disabled since 2026-04-18** — `HOURLY_LIVE_ENABLED` and `HOURLY_NO_SIDE_LIVE` env vars (default `0`) must both be flipped to `1` on the VPS to re-enable hourly window discovery and entry. The hourly DC overlay (`HOURLY_DC_ENABLED`, default `1`) remains available but does not fire while hourly windows aren't being scanned. The kill followed two regime issues: (1) Feb 27–28 brief live stint reverted after an overnight loss from calibration overconfidence and correlated multi-strike exposure; (2) the NO-side BTC 40–54¢ tier reached 53.9% WR (n=1,113, p=0.005) post-correction but was disabled when broader hourly economics turned negative. Hourly CalEngine remains disabled (+44pp overconfident historically); uses T=1.45 temperature scaling when re-enabled. BTC is the only historically viable hourly asset — ETH/SOL structurally unprofitable after fees, XRP fundamentally broken. Series: KXBTCD, KXETHD, KXSOLD, KXXRPD.
 
 ### S&P 500 Intraday (Observation Mode)
 
@@ -914,7 +912,7 @@ The system supports shadow mode for experimental features — they compute and l
 | Hourly Crypto | DISABLED | Both `HOURLY_LIVE_ENABLED` and `HOURLY_NO_SIDE_LIVE` env-gated off since Apr 18; no signals logged |
 | 15M Shadow Engine | Shadow | A1 RecalibratedEGARCH, A2 LightGBM, A3 EGARCH gating, A4 LateWindow |
 | Decided Contract expansions | Shadow | T1A, T1B-EXP, T2A, T2B, T3, T3A — six tier expansions (lower price floors / shallower z) |
-| T2-Z2 | Shadow | Re-promotion rejected Apr 22 after -$313/47-trade live history |
+| T2-Z2 | Shadow | Re-promotion rejected Apr 22 after 47-trade losing live history |
 | Weekend / Overnight discount sub-floor | Shadow | Below-floor and STC>600s remain shadow even though main bands are live |
 | Kalshi Order Flow | Shadow | Orderbook imbalance, depth velocity, spread convergence signals |
 | Sigmoid QLIKE | Shadow | Alternative EGARCH weight via QLIKE improvement ratio |
