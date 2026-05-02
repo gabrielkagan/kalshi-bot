@@ -37,6 +37,7 @@ Master plan: kb/decisions/shadow-coverage-expansion-may01.md.
 """
 
 import argparse
+import bisect
 import datetime
 import json
 import logging
@@ -908,6 +909,341 @@ def backfill_path_metrics(
     return total
 
 
+# ── Phase G-5: OKX + Deribit perp funding rate backfill ────────────────
+
+# OKX uses USDT-quoted perps for these assets.
+OKX_FUNDING_INSTRUMENTS = {
+    "BTC": "BTC-USDT-SWAP",
+    "ETH": "ETH-USDT-SWAP",
+    "SOL": "SOL-USDT-SWAP",
+    "XRP": "XRP-USDT-SWAP",
+}
+# Deribit uses USD-quoted PERPETUAL for BTC/ETH; SOL/XRP are USDC-quoted.
+DERIBIT_FUNDING_INSTRUMENTS = {
+    "BTC": "BTC-PERPETUAL",
+    "ETH": "ETH-PERPETUAL",
+    "SOL": "SOL_USDC-PERPETUAL",
+    "XRP": "XRP_USDC-PERPETUAL",
+}
+OKX_FUNDING_URL = "https://www.okx.com/api/v5/public/funding-rate-history"
+DERIBIT_FUNDING_URL = "https://www.deribit.com/api/v2/public/get_funding_rate_history"
+
+
+def parse_okx_funding_response(resp: Dict) -> List[Tuple[int, float]]:
+    """OKX returns reverse-chronological JSON. Parse + sort ascending
+    by fundingTime. Skips malformed entries."""
+    if not isinstance(resp, dict):
+        return []
+    rows = resp.get("data") or []
+    out: List[Tuple[int, float]] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        try:
+            ts = int(r["fundingTime"])
+            rate = float(r["fundingRate"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append((ts, rate))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def parse_deribit_funding_response(resp: Dict) -> List[Tuple[int, float]]:
+    """Deribit returns chronological. Parse + (re)sort defensively."""
+    if not isinstance(resp, dict):
+        return []
+    rows = resp.get("result") or []
+    out: List[Tuple[int, float]] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        try:
+            ts = int(r["timestamp"])
+            rate = float(r["interest_8h"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append((ts, rate))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def lookup_funding_rate_at_or_before(
+    rates: List[Tuple[int, float]], eval_ms: int,
+) -> Optional[float]:
+    """Return the rate of the most-recent entry with funding_time <= eval_ms.
+    None if rates is empty or all entries are after eval. O(log n) bisect."""
+    if not rates:
+        return None
+    # bisect_right returns insertion point such that rates[i-1] <= eval_ms.
+    keys = [r[0] for r in rates]
+    i = bisect.bisect_right(keys, eval_ms)
+    if i == 0:
+        return None
+    return rates[i - 1][1]
+
+
+def fetch_okx_funding(
+    asset: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    request_fn: Optional[Callable] = None,
+    max_retries: int = 3,
+    page_sleep_ms: int = 200,
+) -> Dict:
+    """Fetch ALL OKX funding history in [start_ms, end_ms]. OKX caps at
+    100 entries per request (newest first). For a 90-day backfill at
+    8h cadence ≈ 270 entries/asset, that's 3 paginated requests.
+
+    Phase G-5 round 1 C1 fix: pagination loop. Pre-fix sent ONE request
+    with limit=100 → silently dropped 170 entries per asset for the
+    older 60 days of the backfill range. Pagination uses `after` cursor
+    set to the oldest fundingTime from the previous page to fetch the
+    next-older batch.
+
+    Phase G-5 round 1 C4 fix: OKX returns HTTP 200 with `code != "0"`
+    on application-layer failures (rate limit on certain endpoints, bad
+    inst, etc.). We detect + log + return empty `data` so caller can't
+    silently treat a bad response as 'no funding entries'.
+    """
+    if request_fn is None:
+        import requests as _requests
+        def request_fn(url, params, timeout):
+            return _requests.get(url, params=params, timeout=timeout)
+    inst = OKX_FUNDING_INSTRUMENTS.get(asset)
+    if inst is None:
+        return {"data": []}
+
+    # `after` cursor — start at end_ms (means: "give me entries with
+    # fundingTime < end_ms"). Each subsequent page narrows it.
+    after = end_ms
+    all_entries: List[Dict] = []
+    while True:
+        params = {"instId": inst, "limit": 100,
+                  "before": str(start_ms), "after": str(after)}
+        last_err = None
+        page = None
+        for attempt in range(max_retries):
+            try:
+                resp = request_fn(OKX_FUNDING_URL, params, 30)
+                status = getattr(resp, "status_code", 0)
+                if status == 200:
+                    page = resp.json()
+                    break
+                if status == 429:
+                    _time_mod.sleep(2 ** attempt)
+                    last_err = "HTTP 429"
+                    continue
+                last_err = f"HTTP {status}"
+                break
+            except Exception as e:
+                last_err = str(e)
+                _time_mod.sleep(2 ** attempt)
+        if page is None:
+            logger.warning("g5: OKX %s page fetch failed: %s",
+                           asset, last_err)
+            break
+        # Phase G-5 round 1 C4: detect application-layer failures.
+        if str(page.get("code", "0")) != "0":
+            logger.warning(
+                "g5: OKX %s app-layer error: code=%s msg=%s",
+                asset, page.get("code"), page.get("msg"),
+            )
+            break
+        entries = page.get("data") or []
+        if not entries:
+            break
+        all_entries.extend(entries)
+        # Advance cursor to the oldest fundingTime from this page
+        # (entries are newest-first within a page).
+        try:
+            oldest_ts = min(int(e["fundingTime"]) for e in entries
+                            if "fundingTime" in e)
+        except (ValueError, TypeError):
+            break
+        if oldest_ts <= start_ms:
+            break
+        # Phase G-5 round 2 M1 fix: pagination stall guard. If `after`
+        # didn't advance (API ignored cursor / returned same page), break
+        # with warning rather than infinite-loop.
+        if oldest_ts >= after:
+            logger.warning(
+                "g5: OKX %s pagination stalled at %d (no cursor advance) — "
+                "stopping fetch", asset, after,
+            )
+            break
+        after = oldest_ts
+        if page_sleep_ms > 0:
+            _time_mod.sleep(page_sleep_ms / 1000.0)
+    return {"data": all_entries}
+
+
+def fetch_deribit_funding(
+    asset: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    request_fn: Optional[Callable] = None,
+    max_retries: int = 3,
+) -> Dict:
+    """Fetch Deribit funding history for [start_ms, end_ms]. Deribit's
+    endpoint accepts a time range and returns all entries in it."""
+    if request_fn is None:
+        import requests as _requests
+        def request_fn(url, params, timeout):
+            return _requests.get(url, params=params, timeout=timeout)
+    inst = DERIBIT_FUNDING_INSTRUMENTS.get(asset)
+    if inst is None:
+        return {"result": []}
+    params = {
+        "instrument_name": inst,
+        "start_timestamp": start_ms, "end_timestamp": end_ms,
+    }
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            resp = request_fn(DERIBIT_FUNDING_URL, params, 30)
+            status = getattr(resp, "status_code", 0)
+            if status == 200:
+                return resp.json()
+            if status == 429:
+                _time_mod.sleep(2 ** attempt)
+                last_err = "HTTP 429"
+                continue
+            last_err = f"HTTP {status}"
+            break
+        except Exception as e:
+            last_err = str(e)
+            _time_mod.sleep(2 ** attempt)
+    logger.warning("g5: Deribit %s fetch failed: %s", asset, last_err)
+    return {"result": []}
+
+
+def backfill_funding_rates(
+    conn: sqlite3.Connection,
+    okx_fetcher: Optional[Callable] = None,
+    deribit_fetcher: Optional[Callable] = None,
+    batch_size: int = 50,
+    sleep_ms: int = 200,
+    checkpoint_dir: Optional[str] = None,
+) -> int:
+    """Phase G-5 backfill: per-row OKX + Deribit funding rates from
+    public funding-rate-history endpoints.
+
+    Strategy:
+      1. Discover historical date range over rows missing okx_funding_*.
+      2. Per asset per exchange, fetch all funding entries in range,
+         build sorted (timestamp_ms, rate) list.
+      3. Per row, lookup most-recent rate ≤ row.evaluation_time on each
+         exchange. UPDATE.
+
+    Unlike G-2/G-4, does NOT abort if an exchange returns empty for an
+    asset — funding can legitimately be unavailable for some pairs (e.g.,
+    Deribit USDC perps for SOL/XRP have shorter history). NULL is
+    semantically 'no data' rather than 'computation failed'.
+    """
+    if okx_fetcher is None:
+        okx_fetcher = fetch_okx_funding
+    if deribit_fetcher is None:
+        deribit_fetcher = fetch_deribit_funding
+
+    # 1. Date range. Phase G-5 round 1 C2 fix: pre-filter is OR (was AND)
+    # so rows where only ONE column is populated still get the missing
+    # one filled in. Pre-fix: a partial-run (OKX failed mid-backfill,
+    # Deribit succeeded) would leave OKX permanently NULL because the
+    # row's deribit IS NOT NULL excluded it from re-runs.
+    rng = conn.execute(
+        "SELECT MIN(evaluation_time), MAX(evaluation_time) "
+        "FROM evaluated_opportunities "
+        "WHERE (okx_funding_rate_at_decision IS NULL "
+        "       OR deribit_funding_rate_at_decision IS NULL) "
+        "AND evaluation_time IS NOT NULL"
+    ).fetchone()
+    if not rng or rng[0] is None:
+        return 0
+    start_iso, end_iso = rng[0], rng[1]
+    logger.info("g5: backfilling funding rates over [%s .. %s]",
+                start_iso, end_iso)
+    start_dt = datetime.datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+    end_dt = datetime.datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+    start_ms = int(start_dt.timestamp() * 1000)
+    end_ms = int(end_dt.timestamp() * 1000)
+
+    # 2. Per (exchange, asset) fetch + parse.
+    okx_rates: Dict[str, List[Tuple[int, float]]] = {}
+    deribit_rates: Dict[str, List[Tuple[int, float]]] = {}
+    for asset in OKX_FUNDING_INSTRUMENTS:
+        okx_rates[asset] = parse_okx_funding_response(
+            okx_fetcher(asset, start_ms, end_ms))
+        logger.info("g5: OKX %s — %d funding entries", asset, len(okx_rates[asset]))
+        if sleep_ms > 0:
+            _time_mod.sleep(sleep_ms / 1000.0)
+    for asset in DERIBIT_FUNDING_INSTRUMENTS:
+        deribit_rates[asset] = parse_deribit_funding_response(
+            deribit_fetcher(asset, start_ms, end_ms))
+        logger.info("g5: Deribit %s — %d funding entries",
+                    asset, len(deribit_rates[asset]))
+        if sleep_ms > 0:
+            _time_mod.sleep(sleep_ms / 1000.0)
+
+    # 3. Per-row UPDATE.
+    last_id = read_checkpoint(checkpoint_dir, "g5_funding") if checkpoint_dir else 0
+    total = 0
+    while True:
+        rows = conn.execute(
+            "SELECT id, asset, evaluation_time, "
+            "okx_funding_rate_at_decision, deribit_funding_rate_at_decision "
+            "FROM evaluated_opportunities "
+            "WHERE id > ? AND (okx_funding_rate_at_decision IS NULL "
+            "                  OR deribit_funding_rate_at_decision IS NULL) "
+            "AND evaluation_time IS NOT NULL "
+            "ORDER BY id LIMIT ?",
+            (last_id, batch_size),
+        ).fetchall()
+        if not rows:
+            break
+        for r in rows:
+            asset = r["asset"]
+            try:
+                eval_dt = datetime.datetime.fromisoformat(
+                    r["evaluation_time"].replace("Z", "+00:00"))
+                eval_ms = int(eval_dt.timestamp() * 1000)
+            except Exception:
+                last_id = r["id"]
+                continue
+            # Phase G-5 round 1 C2 fix: only write a column if the row's
+            # current value is NULL — preserves any previously-populated
+            # value (live capture or prior backfill). Pre-fix
+            # unconditionally overwrote both columns on every UPDATE,
+            # which would clobber non-NULL existing values.
+            okx_rate = (lookup_funding_rate_at_or_before(
+                            okx_rates.get(asset, []), eval_ms)
+                        if r["okx_funding_rate_at_decision"] is None
+                        else r["okx_funding_rate_at_decision"])
+            deribit_rate = (lookup_funding_rate_at_or_before(
+                                deribit_rates.get(asset, []), eval_ms)
+                            if r["deribit_funding_rate_at_decision"] is None
+                            else r["deribit_funding_rate_at_decision"])
+            conn.execute(
+                "UPDATE evaluated_opportunities SET "
+                "okx_funding_rate_at_decision = ?, "
+                "deribit_funding_rate_at_decision = ? "
+                "WHERE id = ?",
+                (okx_rate, deribit_rate, r["id"]),
+            )
+            total += 1
+            last_id = r["id"]
+        conn.commit()
+        if checkpoint_dir:
+            write_checkpoint(checkpoint_dir, "g5_funding", last_id)
+        if sleep_ms > 0:
+            _time_mod.sleep(sleep_ms / 1000.0)
+        if len(rows) < batch_size:
+            break
+    return total
+
+
 # ── Driver ─────────────────────────────────────────────────────────────
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -925,7 +1261,7 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--phase", required=True,
         choices=["final_spot", "maker", "streak", "tslf", "xasset",
-                 "pathmetrics", "all"],
+                 "pathmetrics", "funding", "all"],
         help="which backfill to run",
     )
     parser.add_argument(
@@ -961,7 +1297,8 @@ def main(argv=None) -> int:
         "sleep_ms": args.sleep_ms,
         "checkpoint_dir": args.checkpoint_dir,
     }
-    phases = (["final_spot", "maker", "streak", "tslf", "xasset", "pathmetrics"]
+    phases = (["final_spot", "maker", "streak", "tslf", "xasset",
+               "pathmetrics", "funding"]
               if args.phase == "all" else [args.phase])
     for p in phases:
         logger.info("starting phase %s (batch_size=%d sleep_ms=%d)",
@@ -978,6 +1315,8 @@ def main(argv=None) -> int:
             n = backfill_xasset_spots(conn, **kwargs)
         elif p == "pathmetrics":
             n = backfill_path_metrics(conn, **kwargs)
+        elif p == "funding":
+            n = backfill_funding_rates(conn, **kwargs)
         else:
             raise ValueError(f"unknown phase: {p}")
         logger.info("phase %s: updated %d rows", p, n)
