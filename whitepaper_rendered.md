@@ -762,7 +762,7 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 3,320 (3,076W / 242L / 2 breakeven) |
+| **Settled trades** | 3,323 (3,079W / 242L / 2 breakeven) |
 | **Win rate** | 92.7\% |
 | **Assets** | BTC (88¢+, LPNE 80–87¢), ETH (90¢+ main, 75–79¢ capped sub-tier), SOL (86¢+, taker-first), XRP (92¢+) |
 
@@ -772,7 +772,7 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 |---|---|---|---|
 | 15M main (Kelly-sized) | 1,440 | 1,305 W / 135 L | 90.6\% |
 | Decided contracts | 225 | 217 W / 8 L | 96.4\% |
-| Weekend discount | 131 | 123 W / 8 L | 93.9\% |
+| Weekend discount | 132 | 124 W / 8 L | 93.9\% |
 | Overnight discount | 75 | 72 W / 3 L | 96.0\% |
 | LPNE (BTC 80–87¢ near-expiry) | 2 | 2 W / 0 L | 100.0\% |
 | Weather NO (1-contract verification) | 103 | 41 W / 62 L | 39.8\% |
@@ -782,10 +782,10 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 
 The bot exposes two Brier scores:
 
-- **Brier (all live candidates)** — measures the **model's** calibration on every opportunity that passed the live-candidate filter, whether or not it filled: 0.0432 overall, 0.0307 on 15M, 0.3954 on weather (side-aware: NO-side rows use $1-p_{raw}$ as the model's probability of the bot's bet winning).
-- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0579 overall (3,131 samples), 0.0457 on 15M.
+- **Brier (all live candidates)** — measures the **model's** calibration on every opportunity that passed the live-candidate filter, whether or not it filled: 0.0431 overall, 0.0306 on 15M, 0.3954 on weather (side-aware: NO-side rows use $1-p_{raw}$ as the model's probability of the bot's bet winning).
+- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0578 overall (3,134 samples), 0.0457 on 15M.
 
-A small number of settled trades (3,320 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
+A small number of settled trades (3,323 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
 
 ### Regime Slices
 
@@ -793,14 +793,14 @@ Two regime cutoffs are pinned to actual deploy commit timestamps:
 
 | Slice | Settled | Wins | Win rate | Brier (model) |
 |---|---|---|---|---|
-| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 1,498 | 1,374 | 91.7\% | 0.0454 |
-| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 550 | 491 | 89.3\% | 0.0324 |
+| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 1,501 | 1,377 | 91.7\% | 0.0453 |
+| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 553 | 494 | 89.3\% | 0.0322 |
 
 The post-Apr-23 slice is the cleanest "current regime" view: WS orderbook depth is now decoded correctly, loss-burst cooldown is shipped, weather NO has been live for 12 days, and XRP has been live at 92¢+ for ~5 days.
 
 ### Shadow / Hypothetical PnL
 
-Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates) is computed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`, totalling 156,605 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
+Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates) is computed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`, totalling 156,691 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
 
 ## Markets
 
@@ -942,4 +942,4 @@ Promoted features (driving live behavior):
 
 ---
 
-*Last updated: 2026-05-02T16:49:19Z*
+*Last updated: 2026-05-02T18:32:38Z*
