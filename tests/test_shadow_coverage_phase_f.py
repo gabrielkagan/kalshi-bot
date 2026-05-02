@@ -100,16 +100,18 @@ class TestPhaseFResolutionMetadataFromWindowStates:
         import bot
 
         class _Stub:
-            _window_states = {}
-        _Stub._compute_window_features = bot.OpportunityScanner._compute_window_features
+            _compute_window_features = bot.OpportunityScanner._compute_window_features
+            _compute_knockout_time_relative = bot.OpportunityScanner._compute_knockout_time_relative
+        s = _Stub()
+        s._window_states = {}
 
         # Ticker doesn't exist yet → returns {} (existing behavior).
-        feats = _Stub._compute_window_features(_Stub, "NONEXISTENT")
+        feats = s._compute_window_features("NONEXISTENT")
         assert feats == {}
 
         # Create a window state manually with the new accumulator fields.
         from collections import deque
-        _Stub._window_states["TST"] = {
+        s._window_states["TST"] = {
             "spot_at_open": 67000.0,
             "first_above_since": None,
             "max_buf": 1.5,        # +1.5% above strike at peak
@@ -122,7 +124,7 @@ class TestPhaseFResolutionMetadataFromWindowStates:
             "time_below_total_s": 60.0,
             "threshold": 67500.0,
         }
-        feats = _Stub._compute_window_features(_Stub, "TST")
+        feats = s._compute_window_features("TST")
         # Phase F additions:
         assert "time_above_strike_seconds" in feats, "time_above_strike_seconds missing"
         assert "time_below_strike_seconds" in feats, "time_below_strike_seconds missing"
@@ -140,10 +142,12 @@ class TestPhaseFResolutionMetadataFromWindowStates:
         from collections import deque
 
         class _Stub:
-            _window_states = {}
-        _Stub._compute_window_features = bot.OpportunityScanner._compute_window_features
+            _compute_window_features = bot.OpportunityScanner._compute_window_features
+            _compute_knockout_time_relative = bot.OpportunityScanner._compute_knockout_time_relative
+        s = _Stub()
+        s._window_states = {}
 
-        _Stub._window_states["TST"] = {
+        s._window_states["TST"] = {
             "spot_at_open": 67000.0,
             "first_above_since": None,
             "max_buf": 0.3,          # +0.3% above
@@ -155,7 +159,7 @@ class TestPhaseFResolutionMetadataFromWindowStates:
             "time_below_total_s": 300.0,
             "threshold": 50000.0,
         }
-        feats = _Stub._compute_window_features(_Stub, "TST")
+        feats = s._compute_window_features("TST")
         # Magnitude = 2.0% * 50000 / 100 = 1000. Sign negative.
         assert feats["max_excursion_from_strike"] == pytest.approx(-1000.0, rel=1e-6)
 
@@ -289,6 +293,7 @@ class TestPhaseFEndToEndProvider:
         # `self` properly when the provider does `self._compute_*(...)`.
         class _Stub:
             _compute_window_features = bot.OpportunityScanner._compute_window_features
+            _compute_knockout_time_relative = bot.OpportunityScanner._compute_knockout_time_relative
             _compute_momentum_features = bot.OpportunityScanner._compute_momentum_features
             _compute_cross_asset_features = bot.OpportunityScanner._compute_cross_asset_features
             _compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features

@@ -4360,14 +4360,15 @@ class StateManager:
                     recent_n_outcome_streak = _ext.get("recent_n_outcome_streak")
                 # Phase F: cross-asset spot snapshot + resolution metadata.
                 # Cross-asset (4): absolute spot levels at decision tick.
-                # Resolution (3 of 5): max_excursion_from_strike +
+                # Resolution (4 of 5): max_excursion_from_strike +
                 # time_above/below_strike_seconds derived from
                 # _window_states; final_spot_price uses current spot
                 # (each ON-CONFLICT-UPDATE overwrites — last decision-tick
-                # value approximates spot-at-settlement). knockout_time_relative
-                # and OKX/Deribit funding rates DEFERRED — knockout
-                # detection requires explicit event tagging; no
-                # exchange-specific funding feed in current bot.
+                # value approximates spot-at-settlement). Phase F-3 added
+                # decision-tick approximate `knockout_time_relative` from
+                # `_window_states.crossings + window_open_ts`. OKX/Deribit
+                # funding rates remain DEFERRED — no exchange-specific
+                # funding feed in current bot (CoinGlass returns AVG only).
                 if btc_spot_at_decision is None:
                     btc_spot_at_decision = _ext.get("btc_spot_at_decision")
                 if eth_spot_at_decision is None:
@@ -4382,6 +4383,9 @@ class StateManager:
                     time_above_strike_seconds = _ext.get("time_above_strike_seconds")
                 if time_below_strike_seconds is None:
                     time_below_strike_seconds = _ext.get("time_below_strike_seconds")
+                # Phase F-3: knockout_time_relative approximation.
+                if knockout_time_relative is None:
+                    knockout_time_relative = _ext.get("knockout_time_relative")
         # final_spot_price: derive from caller-provided spot_price (current
         # decision-tick spot). Independent of `_extended_feature_provider`
         # since it depends only on the caller's `spot_price` kwarg, not on
@@ -10526,6 +10530,11 @@ class OpportunityScanner:
                 "time_above_total_s": 0.0,
                 "time_below_total_s": 0.0,
                 "threshold": threshold,
+                # Phase F-3: window-open timestamp pinned ONCE on creation —
+                # never overwritten on subsequent ticks. Used by
+                # _compute_knockout_time_relative to normalize "time decided"
+                # by total observation window elapsed.
+                "window_open_ts": now,
             }
             self._window_states[ticker] = state
 
@@ -10603,6 +10612,8 @@ class OpportunityScanner:
             "time_above_strike_seconds": state.get("time_above_total_s"),
             "time_below_strike_seconds": state.get("time_below_total_s"),
             "max_excursion_from_strike": max_excursion_from_strike,
+            # Phase F-3: decision-time approximation of knockout-time-relative.
+            "knockout_time_relative": self._compute_knockout_time_relative(state, now),
         }
 
     def _compute_momentum_features(self, asset: str) -> Dict[str, Any]:
@@ -10739,6 +10750,49 @@ class OpportunityScanner:
                 pass
 
         return result
+
+    def _compute_knockout_time_relative(
+        self, state: Dict[str, Any], now: float,
+    ) -> Optional[float]:
+        """Phase F-3 (shadow coverage expansion 2026-05-02): approximate
+        decision-time knockout-time-relative from a window state.
+
+        Formula: (now - last_crossing_ts) / (now - window_open_ts).
+        Bounded [0, 1]. Higher = market has been on one side longer
+        relative to total observation window.
+          - 1.0 = no crossings since window open (perfectly decided)
+          - ~0.0 = crossing JUST happened (still in flux)
+          - intermediate = X% of window-elapsed has been "decided"
+
+        Returns None if `window_open_ts` is missing (pre-Phase-F-3 state)
+        or in the future (clock skew).
+
+        DEFERRED to a Phase F-3b: a settlement-time backfill via
+        SettlementTracker would produce a more accurate value relative to
+        the FULL window (including post-decision-tick activity). Phase F-3
+        ships the decision-tick approximation. Master plan:
+        kb/decisions/shadow-coverage-expansion-may01.md.
+        """
+        window_open_ts = state.get("window_open_ts")
+        if window_open_ts is None:
+            return None
+        elapsed = now - window_open_ts
+        if elapsed <= 0:
+            return None
+        crossings = state.get("crossings") or ()
+        # Pull the most recent crossing — `crossings` is a deque appended
+        # in chronological order, so [-1] is the latest.
+        try:
+            last_crossing = crossings[-1] if len(crossings) > 0 else None
+        except Exception:
+            last_crossing = None
+        if last_crossing is None:
+            # Never crossed since window open → fully decided since open.
+            return 1.0
+        decided_seconds = now - last_crossing
+        # Clamp into [0, 1] — last_crossing < window_open_ts shouldn't
+        # happen in well-formed state but defends against legacy data.
+        return max(0.0, min(1.0, decided_seconds / elapsed))
 
     @staticmethod
     def _compute_maker_counterfactual(
