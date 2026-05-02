@@ -88,9 +88,9 @@ This document describes an automated trading platform for **Kalshi**, the first 
 The platform monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
 \begin{metricbox}
-\textbf{Live trading results (auto-updated; last refresh 2026-05-02T12:18:34Z):}
+\textbf{Live trading results (auto-updated; last refresh 2026-05-02T16:49:19Z):}
 \begin{itemize}
-\item \textbf{3,310} settled trades with a \textbf{92.6\%} win rate (3,066W / 242L / 2 breakeven)
+\item \textbf{3,320} settled trades with a \textbf{92.7\%} win rate (3,076W / 242L / 2 breakeven)
 \item Live trading with real capital since February 22, 2026
 \item Fully automated, always-on operation with complete audit trail
 \item Adjacent verticals — each follows the same shadow→validate→promote pipeline:
@@ -291,8 +291,8 @@ Below 180 seconds before settlement, the system switches to **direct taker execu
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 3,310 (3,066W / 242L / 2 BE) |
-| **Win rate** | 92.6\% |
+| **Settled trades** | 3,320 (3,076W / 242L / 2 BE) |
+| **Win rate** | 92.7\% |
 | **Assets** | BTC, ETH, SOL, XRP |
 | **Entry prices** | 75–99¢ (per-asset: BTC 88¢+, ETH 90¢+ main tier with 75–79¢ capped sub-tier, SOL 86¢+, XRP 92¢+; overlays extend lower in the final minutes) |
 
@@ -331,7 +331,7 @@ Daily high temperature markets across **19 major US cities** — from New York a
 | **Bias correction** | Per-city learning system tracks and corrects forecast errors over time |
 | **Model-heavy blend** | 80% model / 20% market — ensemble forecasts are the primary signal |
 
-Research to date indicates the YES-side does not currently have a tradeable edge — the per-city Gaussian fit materially overestimates YES probability vs. actual outcomes. However, the **NO-side has been LIVE since 2026-04-11** in 1-contract verification mode: buying NO contracts at 37–40¢ (floor raised from 36¢ to 37¢ on May 1) when STC ≥ 16 hours before settlement. This exploits weather markets where the YES outcome is overpriced — making NO at 37–40¢ the profitable side. The 1-contract sizing reflects the verification-mode goal: collect outcome data on the bot's own NO entries (rather than counterfactuals) before any size promotion. Per-city CalEngines continue learning on every settlement to correct the model's biases. The YES-side remains observation only.
+Research to date indicates the YES-side does not currently have a tradeable edge — the per-city Gaussian fit materially overestimates YES probability vs. actual outcomes. However, the **NO-side has been LIVE since 2026-04-11** in 1-contract verification mode: buying NO contracts at 39–40¢ (floor stepped 36→37 on May 1 and then tightened to 39 on May 2 after the 37/38¢ tiers underperformed) when STC ≥ 16 hours before settlement. This exploits weather markets where the YES outcome is overpriced — making NO at 39–40¢ the profitable side. The 1-contract sizing reflects the verification-mode goal: collect outcome data on the bot's own NO entries (rather than counterfactuals) before any size promotion. Per-city CalEngines continue learning on every settlement to correct the model's biases. The YES-side remains observation only.
 
 ### Live Sports Outcomes
 
@@ -428,4 +428,4 @@ For readers interested in the mathematical foundations, the full technical white
 
 ---
 
-*Last updated: 2026-05-02T12:18:34Z*
+*Last updated: 2026-05-02T16:49:19Z*

@@ -401,7 +401,7 @@ The SPX engine has a dedicated CalibrationEngine instance (`_CAL_REGISTRY["spx_h
 
 The weather engine trades daily high temperature prediction markets across **19 US cities** using numerical weather prediction (NWP) ensemble forecasts.
 
-> **Status: SPLIT.** NO-side is **LIVE** since 2026-04-11 in 1-contract verification mode (entry zone 37–40¢, STC ≥ 16h, with the floor raised from 36¢ to 37¢ on May 1). YES-side remains observation-only — research verdict is "no alpha" on YES: the per-city Gaussian fit materially overestimates YES probability vs. actual outcomes. Per-city CalEngines train on every settlement, with bias correction tracking forecast-vs-actual error per city. The 1-contract NO sizing reflects the verification-mode goal: collect outcome data on the bot's own NO entries (rather than counterfactuals) before any size promotion.
+> **Status: SPLIT.** NO-side is **LIVE** since 2026-04-11 in 1-contract verification mode (entry zone 39–40¢, STC ≥ 16h, floor stepped 36→37 on May 1 then tightened to 39 on May 2 after 37/38¢ tiers underperformed). YES-side remains observation-only — research verdict is "no alpha" on YES: the per-city Gaussian fit materially overestimates YES probability vs. actual outcomes. Per-city CalEngines train on every settlement, with bias correction tracking forecast-vs-actual error per city. The 1-contract NO sizing reflects the verification-mode goal: collect outcome data on the bot's own NO entries (rather than counterfactuals) before any size promotion.
 
 ### Cities and Series
 
@@ -453,7 +453,7 @@ An EWMA bias tracker ($\lambda = 0.90$, 7-day half-life) maintains per-city fore
 | Config | Value |
 |---|---|
 | Status | NO-side LIVE (1-contract verification, since Apr 11), YES-side observation |
-| NO-side entry price range | 37–40¢ (37¢ floor since May 1, raised from 36¢) |
+| NO-side entry price range | 39–40¢ (39¢ floor since May 2; stepped 36→37 May 1, then 37→39 May 2) |
 | YES-side entry price range | 10–99¢ (logging only) |
 | NO-side STC requirement | ≥ 16h before close |
 | Market blend | 80/20 (model/market) — ensemble is primary signal |
@@ -762,17 +762,17 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 3,310 (3,066W / 242L / 2 breakeven) |
-| **Win rate** | 92.6\% |
+| **Settled trades** | 3,320 (3,076W / 242L / 2 breakeven) |
+| **Win rate** | 92.7\% |
 | **Assets** | BTC (88¢+, LPNE 80–87¢), ETH (90¢+ main, 75–79¢ capped sub-tier), SOL (86¢+, taker-first), XRP (92¢+) |
 
 ### Performance by Strategy Group
 
 | Strategy group | n | W / L | Win rate |
 |---|---|---|---|
-| 15M main (Kelly-sized) | 1,438 | 1,303 W / 135 L | 90.6\% |
+| 15M main (Kelly-sized) | 1,440 | 1,305 W / 135 L | 90.6\% |
 | Decided contracts | 225 | 217 W / 8 L | 96.4\% |
-| Weekend discount | 126 | 118 W / 8 L | 93.7\% |
+| Weekend discount | 131 | 123 W / 8 L | 93.9\% |
 | Overnight discount | 75 | 72 W / 3 L | 96.0\% |
 | LPNE (BTC 80–87¢ near-expiry) | 2 | 2 W / 0 L | 100.0\% |
 | Weather NO (1-contract verification) | 103 | 41 W / 62 L | 39.8\% |
@@ -782,10 +782,10 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 
 The bot exposes two Brier scores:
 
-- **Brier (all live candidates)** — measures the **model's** calibration on every opportunity that passed the live-candidate filter, whether or not it filled: 0.0434 overall, 0.0308 on 15M, 0.3954 on weather (side-aware: NO-side rows use $1-p_{raw}$ as the model's probability of the bot's bet winning).
-- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0580 overall (3,123 samples), 0.0458 on 15M.
+- **Brier (all live candidates)** — measures the **model's** calibration on every opportunity that passed the live-candidate filter, whether or not it filled: 0.0432 overall, 0.0307 on 15M, 0.3954 on weather (side-aware: NO-side rows use $1-p_{raw}$ as the model's probability of the bot's bet winning).
+- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0579 overall (3,131 samples), 0.0457 on 15M.
 
-A small number of settled trades (3,310 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
+A small number of settled trades (3,320 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
 
 ### Regime Slices
 
@@ -793,14 +793,14 @@ Two regime cutoffs are pinned to actual deploy commit timestamps:
 
 | Slice | Settled | Wins | Win rate | Brier (model) |
 |---|---|---|---|---|
-| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 1,488 | 1,364 | 91.7\% | 0.0458 |
-| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 540 | 481 | 89.1\% | 0.0330 |
+| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 1,498 | 1,374 | 91.7\% | 0.0454 |
+| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 550 | 491 | 89.3\% | 0.0324 |
 
 The post-Apr-23 slice is the cleanest "current regime" view: WS orderbook depth is now decoded correctly, loss-burst cooldown is shipped, weather NO has been live for 12 days, and XRP has been live at 92¢+ for ~5 days.
 
 ### Shadow / Hypothetical PnL
 
-Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates) is computed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`, totalling 156,310 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
+Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates) is computed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`, totalling 156,605 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
 
 ## Markets
 
@@ -826,7 +826,7 @@ Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M
 
 ### Weather Temperature (NO-side Live, YES-side Observation)
 
-Daily high temperature markets across 19 US cities. Bracket and threshold contracts settling based on the observed daily high. Probability from 82-member NWP ensemble (GFS + ECMWF). NO-side has been LIVE since 2026-04-11 in 1-contract verification mode (entry zone 37–40¢, 37¢ floor since May 1, STC ≥ 16h before settlement); YES-side remains observation-only (research verdict: Gaussian fit materially overestimates YES probability vs. actual outcomes — which is why NO at 37–40¢ is the profitable side). Per-city CalEngines train on every settlement; bias correction tracks per-city forecast-vs-actual error.
+Daily high temperature markets across 19 US cities. Bracket and threshold contracts settling based on the observed daily high. Probability from 82-member NWP ensemble (GFS + ECMWF). NO-side has been LIVE since 2026-04-11 in 1-contract verification mode (entry zone 39–40¢, 39¢ floor since May 2 — stepped 36→37 May 1 then 37→39 May 2 as sub-bands underperformed, STC ≥ 16h before settlement); YES-side remains observation-only (research verdict: Gaussian fit materially overestimates YES probability vs. actual outcomes — which is why NO at 39–40¢ is the profitable side). Per-city CalEngines train on every settlement; bias correction tracks per-city forecast-vs-actual error.
 
 ### Sports Outcomes (Observation Mode — ALPHA DETECTED)
 
@@ -935,11 +935,11 @@ Promoted features (driving live behavior):
 - **Overnight discount** — live weekday 04–11 UTC at 89¢+, STC≤600s, no-DC-overlap guard
 - **Low-Price Near-Expiry (LPNE)** — live on BTC at 80–87¢ with STC 10–120s, 50 contracts fixed, model-conviction gated
 - **Loss-burst cooldown** — per-asset 2h lockout after any 15M loss
-- **Weather NO-side** — live in 1-contract verification mode (NO 37–40¢, STC≥16h)
+- **Weather NO-side** — live in 1-contract verification mode (NO 39–40¢, STC≥16h)
 - **Price improvement addon** — adds to winning positions on price improvement (50% addon size, 35% total risk cap)
 - **STC sizing scaler** — universal contracts ×= 300/STC for any strategy at STC > 300s
 - **Low-STC sizing cap** — 50% of computed size when STC < 100s
 
 ---
 
-*Last updated: 2026-05-02T12:18:34Z*
+*Last updated: 2026-05-02T16:49:19Z*
