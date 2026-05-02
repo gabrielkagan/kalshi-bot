@@ -4351,6 +4351,53 @@ class StateManager:
                     time_since_last_fill_s = _ext.get("time_since_last_fill_s")
                 if recent_n_outcome_streak is None:
                     recent_n_outcome_streak = _ext.get("recent_n_outcome_streak")
+                # Phase F: cross-asset spot snapshot + resolution metadata.
+                # Cross-asset (4): absolute spot levels at decision tick.
+                # Resolution (3 of 5): max_excursion_from_strike +
+                # time_above/below_strike_seconds derived from
+                # _window_states; final_spot_price uses current spot
+                # (each ON-CONFLICT-UPDATE overwrites — last decision-tick
+                # value approximates spot-at-settlement). knockout_time_relative
+                # and OKX/Deribit funding rates DEFERRED — knockout
+                # detection requires explicit event tagging; no
+                # exchange-specific funding feed in current bot.
+                if btc_spot_at_decision is None:
+                    btc_spot_at_decision = _ext.get("btc_spot_at_decision")
+                if eth_spot_at_decision is None:
+                    eth_spot_at_decision = _ext.get("eth_spot_at_decision")
+                if sol_spot_at_decision is None:
+                    sol_spot_at_decision = _ext.get("sol_spot_at_decision")
+                if xrp_spot_at_decision is None:
+                    xrp_spot_at_decision = _ext.get("xrp_spot_at_decision")
+                if max_excursion_from_strike is None:
+                    max_excursion_from_strike = _ext.get("max_excursion_from_strike")
+                if time_above_strike_seconds is None:
+                    time_above_strike_seconds = _ext.get("time_above_strike_seconds")
+                if time_below_strike_seconds is None:
+                    time_below_strike_seconds = _ext.get("time_below_strike_seconds")
+        # final_spot_price: derive from caller-provided spot_price (current
+        # decision-tick spot). Independent of `_extended_feature_provider`
+        # since it depends only on the caller's `spot_price` kwarg, not on
+        # asset state. Placed OUTSIDE the `if _ext:` block (Phase F adversarial
+        # round 2 MEDIUM-1) so the column populates on EVERY row that has a
+        # spot_price, including non-15M rows and provider-failure paths.
+        # Per-stage semantic:
+        #   - Stages re-emitted on every tick (candidate, etc.) converge to
+        #     spot-at-final-tick ≈ spot-at-settlement (ON CONFLICT UPDATE
+        #     overwrites).
+        #   - One-shot stages dedup'd via `_eval_opp_seen` (e.g.
+        #     floor_raise_shadow, low_price_shadow, sol_low_entry_high_stc)
+        #     freeze at the FIRST-tick spot — this is spot-at-DECISION, not
+        #     at settlement.
+        # Downstream analysts must consider stage type when interpreting.
+        # A future Phase F-2 may add explicit settlement-time backfill via
+        # SettlementTracker. For product_type='weather' / 'spx_hourly',
+        # `spot_price` is overloaded (temperature in °F / SPX index value
+        # respectively); `final_spot_price` inherits that overload — same
+        # convention as the existing `spot_price` column. See
+        # kb/decisions/shadow-coverage-expansion-may01.md.
+        if final_spot_price is None and spot_price is not None:
+            final_spot_price = spot_price
         try:
             self.conn.execute("""
                 INSERT INTO evaluated_opportunities
@@ -10465,6 +10512,13 @@ class OpportunityScanner:
                 "crossings": deque(maxlen=50),  # (timestamp,) per crossing event
                 "was_above": None,  # last observed state
                 "last_ts": now,
+                # Phase F (shadow coverage expansion 2026-05-02): cumulative
+                # time-above/below accumulators + threshold for excursion
+                # price-unit conversion. See
+                # kb/decisions/shadow-coverage-expansion-may01.md.
+                "time_above_total_s": 0.0,
+                "time_below_total_s": 0.0,
+                "threshold": threshold,
             }
             self._window_states[ticker] = state
 
@@ -10480,6 +10534,17 @@ class OpportunityScanner:
         # Detect crossings (transition between above/below)
         if state["was_above"] is not None and is_above != state["was_above"]:
             state["crossings"].append(now)
+
+        # Phase F: accumulate time above/below using prior was_above and
+        # time delta since last_ts. Skips the first call (was_above=None);
+        # subsequent calls add the dt to whichever bucket the spot was in
+        # PRIOR to this update.
+        if state["was_above"] is not None:
+            dt = max(0.0, now - state["last_ts"])
+            if state["was_above"]:
+                state["time_above_total_s"] += dt
+            else:
+                state["time_below_total_s"] += dt
         state["was_above"] = is_above
 
         # Track contiguous time above strike
@@ -10489,6 +10554,11 @@ class OpportunityScanner:
         else:
             state["first_above_since"] = None
 
+        # Phase F: refresh threshold so the excursion calc uses the most
+        # current strike (15M strikes are static per window — this is a
+        # no-op for the second+ tick — but defensive against future
+        # multi-strike paths).
+        state["threshold"] = threshold
         state["last_ts"] = now
 
     def _compute_window_features(self, ticker: str) -> Dict[str, Any]:
@@ -10502,12 +10572,30 @@ class OpportunityScanner:
             minutes_above = (now - state["first_above_since"]) / 60.0
         cutoff = now - 300  # 5 min
         recent_crossings = sum(1 for t in state["crossings"] if t >= cutoff)
+        # Phase F (shadow coverage expansion 2026-05-02): resolution
+        # metadata. max_excursion is signed price (max above wins if its
+        # |buf_pct| > |min_buf|; otherwise min_buf wins with negative sign).
+        # See kb/decisions/shadow-coverage-expansion-may01.md.
+        max_excursion_from_strike = None
+        max_buf = state.get("max_buf")
+        min_buf = state.get("min_buf")
+        threshold = state.get("threshold")
+        if threshold is not None and threshold > 0 and (
+            max_buf is not None or min_buf is not None
+        ):
+            mb = max_buf if max_buf is not None else 0.0
+            nb = min_buf if min_buf is not None else 0.0
+            picked = mb if abs(mb) >= abs(nb) else nb
+            max_excursion_from_strike = picked * threshold / 100.0
         return {
             "minutes_above_strike": minutes_above,
-            "window_max_buf_pct": state.get("max_buf"),
-            "window_min_buf_pct": state.get("min_buf"),
+            "window_max_buf_pct": max_buf,
+            "window_min_buf_pct": min_buf,
             "recent_crossings_5m": recent_crossings,
             "spot_at_window_open": state.get("spot_at_open"),
+            "time_above_strike_seconds": state.get("time_above_total_s"),
+            "time_below_strike_seconds": state.get("time_below_total_s"),
+            "max_excursion_from_strike": max_excursion_from_strike,
         }
 
     def _compute_momentum_features(self, asset: str) -> Dict[str, Any]:
@@ -10644,6 +10732,34 @@ class OpportunityScanner:
                 pass
 
         return result
+
+    def _compute_cross_asset_spot_snapshot(self) -> Dict[str, Any]:
+        """Phase F (shadow coverage expansion 2026-05-02): absolute spot
+        snapshot of all 4 crypto assets at the current decision tick.
+
+        Distinct from `_compute_cross_asset_features` (which returns
+        relative `*_bps` changes) — these are LEVELS. Used to enable
+        cross-asset interaction analysis on shadow rows post-hoc, where
+        the relative-change features alone are insufficient (e.g.,
+        "what was BTC spot when this XRP signal fired?"). One feed lookup
+        per asset (cheap; CoinbaseFeed caches in-memory). Missing prices
+        return None — caller will write NULL.
+
+        Master plan: kb/decisions/shadow-coverage-expansion-may01.md.
+        """
+        # Single get_all_prices() acquires the feed lock once vs 4
+        # acquires for per-asset get_price (Phase F adversarial round 2 LOW-2).
+        # ASSETS is the module-level constant from config.py (NOT an
+        # OpportunityScanner attribute) — Phase F adversarial round 4
+        # caught a `self.ASSETS` typo that would have silently NULL'd
+        # all 4 cross-asset spot columns in production (the per-helper
+        # try/except in _get_extended_features_for_ticker would swallow
+        # the AttributeError).
+        try:
+            prices = self._feed.get_all_prices()
+        except Exception:
+            prices = {}
+        return {f"{a.lower()}_spot_at_decision": prices.get(a) for a in ASSETS}
 
     def _compute_bot_state_features(self, asset: str) -> Dict[str, Any]:
         """Tier 6: active positions, recent PnL, drawdown, IOC fill rate.
@@ -10798,13 +10914,23 @@ class OpportunityScanner:
         if asset is None:
             return {}
         out: Dict[str, Any] = {}
-        try:
-            out.update(self._compute_window_features(ticker))
-            out.update(self._compute_momentum_features(asset))
-            out.update(self._compute_cross_asset_features(asset))
-            out.update(self._compute_bot_state_features(asset))
-        except Exception as e:
-            logging.debug("extended_features compute failed for %s: %s", ticker, e)
+        # Phase F (shadow coverage expansion 2026-05-02): each helper
+        # gets its own try/except so a failure in one (e.g. bot state
+        # SQL hits a transient DB lock) doesn't drop the others. Pre-
+        # Phase-F a single shared try/except meant a bot_state DB
+        # error wiped all 4 helpers' output. See
+        # kb/decisions/shadow-coverage-expansion-may01.md.
+        for _helper in (
+            lambda: self._compute_window_features(ticker),
+            lambda: self._compute_momentum_features(asset),
+            lambda: self._compute_cross_asset_features(asset),
+            lambda: self._compute_bot_state_features(asset),
+            lambda: self._compute_cross_asset_spot_snapshot(),
+        ):
+            try:
+                out.update(_helper())
+            except Exception as e:
+                logging.debug("extended_features helper failed for %s: %s", ticker, e)
         return out
 
     # ── Public entry point ────────────────────────────────────────────────
