@@ -4252,6 +4252,13 @@ class StateManager:
                 kalshi_flow_depth_velocity = _ms.get("kalshi_flow_depth_velocity")
             if kalshi_flow_depth_drain is None:
                 kalshi_flow_depth_drain = _ms.get("kalshi_flow_depth_drain")
+            # Phase F-2 (shadow coverage expansion 2026-05-02): maker
+            # counterfactual snapshot. Cache populated in scan tick at
+            # _scan_ms_cache write site (bot.py around line 12085).
+            if maker_price_cents is None:
+                maker_price_cents = _ms.get("maker_price_cents")
+            if maker_depth_at_post is None:
+                maker_depth_at_post = _ms.get("maker_depth_at_post")
         # Phase 1 cross-exchange gap (per-asset).
         if spot_coinbase_kraken_gap_bps is None and asset is not None:
             spot_coinbase_kraken_gap_bps = self._scan_cx_gap_cache.get(asset)
@@ -10733,6 +10740,59 @@ class OpportunityScanner:
 
         return result
 
+    @staticmethod
+    def _compute_maker_counterfactual(
+        best_yes_bid: Optional[int],
+        best_yes_ask: Optional[int],
+        ladder_json: Optional[str],
+    ) -> Dict[str, Any]:
+        """Phase F-2 (shadow coverage expansion 2026-05-02): snapshot half
+        of the maker-counterfactual fields. Computes:
+
+          - `maker_price_cents` = best_yes_bid + 1 (a "1-cent improve"
+            maker post that becomes the new top of book). NULL if either
+            best_yes_bid or best_yes_ask is unavailable, OR if the implied
+            maker price would cross the ask (in which case a "maker post"
+            is mathematically a taker — better to mark NULL than mislabel).
+
+          - `maker_depth_at_post` = sum of YES-bid quantities at the
+            target maker price level in the current ladder. 0 if no level
+            (typical for an improve maker) or ladder unparseable; ladder
+            None / non-JSON also returns 0 (the conservative answer for
+            "level didn't exist" — distinct from NULL price which signals
+            "the question itself doesn't apply").
+
+        DEFERRED to a future Phase F-2b: `maker_would_fill_within_30s`
+        requires a post-hoc fillability daemon tracking ask depletion +
+        trade prints over 30s. Master plan:
+        kb/decisions/shadow-coverage-expansion-may01.md.
+        """
+        out: Dict[str, Any] = {
+            "maker_price_cents": None,
+            "maker_depth_at_post": None,
+        }
+        if best_yes_bid is None or best_yes_ask is None:
+            return out
+        maker_price = best_yes_bid + 1
+        if maker_price >= best_yes_ask:
+            # Post would cross the ask → not a maker at all.
+            return out
+        out["maker_price_cents"] = maker_price
+        # Depth lookup. Default 0 (the answer for "level not in ladder").
+        depth = 0
+        if ladder_json:
+            try:
+                ladder = json.loads(ladder_json)
+                for entry in (ladder.get("yes_bids") or []):
+                    if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                        if int(entry[0]) == maker_price:
+                            depth += int(entry[1])
+            except Exception:
+                # Malformed JSON → treat as level-absent (depth 0).
+                pass
+        out["maker_depth_at_post"] = depth
+        return out
+
     def _compute_cross_asset_spot_snapshot(self) -> Dict[str, Any]:
         """Phase F (shadow coverage expansion 2026-05-02): absolute spot
         snapshot of all 4 crypto assets at the current decision tick.
@@ -12083,6 +12143,17 @@ class OpportunityScanner:
                         "yes_spread_cents": _spread,
                         "bid_depth": _bid_depth,
                     }
+                    # Phase F-2 (shadow coverage expansion 2026-05-02):
+                    # maker counterfactual snapshot. Reuses _ob_levels JSON
+                    # already extracted above, so no extra orderbook fetch.
+                    # See kb/decisions/shadow-coverage-expansion-may01.md.
+                    _maker = self._compute_maker_counterfactual(
+                        best_yes_bid=yes_bid_cents,
+                        best_yes_ask=best_ask,
+                        ladder_json=_ob_levels,
+                    )
+                    _ms["maker_price_cents"] = _maker["maker_price_cents"]
+                    _ms["maker_depth_at_post"] = _maker["maker_depth_at_post"]
                     if self._kalshi_oft is not None:
                         _flow = self._kalshi_oft.get_signals(ticker)
                         if _flow:
