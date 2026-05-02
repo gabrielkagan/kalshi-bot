@@ -759,15 +759,15 @@ class TestReadmeTemplateMigrated:
             "Update to {{LIVE_PNL_DOLLARS}} and fix the surrounding 'Observation P&L' label."
         )
 
-    def test_readme_template_uses_live_pnl(self):
+    def test_readme_template_uses_live_settled(self):
         readme_template = os.path.join(PROJECT_ROOT, "README.template.md")
         with open(readme_template) as f:
             content = f.read()
-        # Either dollars or cents; either label form is acceptable.
-        assert (
-            "{{LIVE_PNL_DOLLARS}}" in content
-            or "{{LIVE_PNL_CENTS}}" in content
-        ), "README.template.md must reference one of the new LIVE_PNL_* placeholders"
+        assert "{{LIVE_SETTLED}}" in content, (
+            "README.template.md must reference live trading stats placeholders. "
+            "Dollar-amount placeholders ({{LIVE_PNL_*}}) were intentionally "
+            "removed; counts/win-rate placeholders should remain."
+        )
 
 
 class TestFixtureUsesProperPragmas:
