@@ -2077,11 +2077,15 @@ PRICE_SHADOW_ENABLED = True        # Shadow-evaluate POR for edge data collectio
 PRICE_SHADOW_FLOOR = 70            # Lowest price to shadow-evaluate
 NO_SIDE_MIN_ENTRY_PRICE = 5        # Lowest NO price for shadow data collection (all product types)
 
-# ─── Low-Price Shadow — dual-sizing sim for 70-79c expansion ─────────
-LOW_PRICE_SHADOW_ENABLED = True    # Shadow-evaluate 70-79c 15M signals
-LOW_PRICE_SHADOW_MIN_PRICE = 70    # Floor
+# ─── Low-Price Shadow — observation-only data collection band ────────
+# Phase C of shadow coverage expansion (2026-05-02): floor 70 → 20,
+# STC cap 600 → 900. Operator principle: "We should not be limited by
+# data collection." MIN_ENTRY_PRICE (live floor) is unchanged — this band
+# is shadow-only. See kb/decisions/shadow-coverage-expansion-may01.md.
+LOW_PRICE_SHADOW_ENABLED = True    # Shadow-evaluate 20-79c 15M signals
+LOW_PRICE_SHADOW_MIN_PRICE = 20    # Floor (was 70 pre-Phase-C; 20 leaves room for far-from-BE training data)
 LOW_PRICE_SHADOW_MAX_PRICE = 79    # Ceiling (80c+ already live for some assets)
-LOW_PRICE_SHADOW_MAX_STC = 600     # Match live STC gate
+LOW_PRICE_SHADOW_MAX_STC = 900     # Full scan-window (was 600; captures entire decision life)
 LP_MAX_RISK_PER_TRADE = 0.10       # Capped sizing: 10% bankroll cap
 LP_KELLY_FRACTION = 0.25           # Capped sizing: quarter-Kelly
 LP_WINDOW_CAP = 2                  # Max signals per 15M window (correlation cap)
@@ -3375,6 +3379,29 @@ class StateManager:
             # of top-N YES ladder via OrderExecutor._extract_book_levels.
             # See kb/concepts/orderbook-depth-logging.md.
             ("orderbook_levels_json", "TEXT"),
+            # Shadow coverage expansion Phase B (2026-05-02). 18 nullable
+            # columns spanning state-at-decision, maker counterfactual,
+            # path-of-rejection, resolution metadata, cross-asset, funding.
+            # Schema-only here; population ships in phases D/E/F.
+            # See kb/decisions/shadow-coverage-expansion-may01.md.
+            ("n_open_positions", "INTEGER"),
+            ("recent_n_outcome_streak", "INTEGER"),
+            ("time_since_last_fill_s", "REAL"),
+            ("maker_price_cents", "INTEGER"),
+            ("maker_depth_at_post", "INTEGER"),
+            ("maker_would_fill_within_30s", "INTEGER"),
+            ("next_blocking_gate", "TEXT"),
+            ("final_spot_price", "REAL"),
+            ("knockout_time_relative", "REAL"),
+            ("max_excursion_from_strike", "REAL"),
+            ("time_above_strike_seconds", "REAL"),
+            ("time_below_strike_seconds", "REAL"),
+            ("btc_spot_at_decision", "REAL"),
+            ("eth_spot_at_decision", "REAL"),
+            ("sol_spot_at_decision", "REAL"),
+            ("xrp_spot_at_decision", "REAL"),
+            ("okx_funding_rate_at_decision", "REAL"),
+            ("deribit_funding_rate_at_decision", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -4175,7 +4202,32 @@ class StateManager:
                                      # R-p7-deploy-r8 async-predict: uuid set by
                                      # annotate_evaluation_async_enqueue at scan-tick;
                                      # async worker UPDATEs the row WHERE this matches.
-                                     cal_mlp_request_id: Optional[str] = None):
+                                     cal_mlp_request_id: Optional[str] = None,
+                                     # Shadow coverage expansion Phase B (2026-05-02).
+                                     # 18 nullable kwargs for future-phase population
+                                     # (D/E/F). Schema lands here so older rows can be
+                                     # backfilled and so insert call sites that already
+                                     # have a value (e.g. next_blocking_gate at
+                                     # rejection-decision time) can stamp it now.
+                                     # See kb/decisions/shadow-coverage-expansion-may01.md.
+                                     n_open_positions: Optional[int] = None,
+                                     recent_n_outcome_streak: Optional[int] = None,
+                                     time_since_last_fill_s: Optional[float] = None,
+                                     maker_price_cents: Optional[int] = None,
+                                     maker_depth_at_post: Optional[int] = None,
+                                     maker_would_fill_within_30s: Optional[int] = None,
+                                     next_blocking_gate: Optional[str] = None,
+                                     final_spot_price: Optional[float] = None,
+                                     knockout_time_relative: Optional[float] = None,
+                                     max_excursion_from_strike: Optional[float] = None,
+                                     time_above_strike_seconds: Optional[float] = None,
+                                     time_below_strike_seconds: Optional[float] = None,
+                                     btc_spot_at_decision: Optional[float] = None,
+                                     eth_spot_at_decision: Optional[float] = None,
+                                     sol_spot_at_decision: Optional[float] = None,
+                                     xrp_spot_at_decision: Optional[float] = None,
+                                     okx_funding_rate_at_decision: Optional[float] = None,
+                                     deribit_funding_rate_at_decision: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -4289,6 +4341,16 @@ class StateManager:
                     current_drawdown_pct = _ext.get("current_drawdown_pct")
                 if recent_ioc_fill_success_rate_1h is None:
                     recent_ioc_fill_success_rate_1h = _ext.get("recent_ioc_fill_success_rate_1h")
+                # Phase E (shadow coverage expansion 2026-05-02): state-at-
+                # decision-time fields. Computed once per 60s in
+                # _compute_bot_state_features and propagated here uniformly.
+                # See kb/decisions/shadow-coverage-expansion-may01.md.
+                if n_open_positions is None:
+                    n_open_positions = _ext.get("n_open_positions")
+                if time_since_last_fill_s is None:
+                    time_since_last_fill_s = _ext.get("time_since_last_fill_s")
+                if recent_n_outcome_streak is None:
+                    recent_n_outcome_streak = _ext.get("recent_n_outcome_streak")
         try:
             self.conn.execute("""
                 INSERT INTO evaluated_opportunities
@@ -4337,8 +4399,19 @@ class StateManager:
                      orderbook_levels_json,
                      cal_mlp_p_mean, cal_mlp_p_std, cal_mlp_final_lo,
                      cal_mlp_final_hi, cal_mlp_train_id, cal_mlp_skipped_reason,
-                     cal_mlp_request_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     cal_mlp_request_id,
+                     n_open_positions, recent_n_outcome_streak,
+                     time_since_last_fill_s,
+                     maker_price_cents, maker_depth_at_post,
+                     maker_would_fill_within_30s,
+                     next_blocking_gate,
+                     final_spot_price, knockout_time_relative,
+                     max_excursion_from_strike,
+                     time_above_strike_seconds, time_below_strike_seconds,
+                     btc_spot_at_decision, eth_spot_at_decision,
+                     sol_spot_at_decision, xrp_spot_at_decision,
+                     okx_funding_rate_at_decision, deribit_funding_rate_at_decision)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -4441,7 +4514,25 @@ class StateManager:
                     cal_mlp_final_hi=excluded.cal_mlp_final_hi,
                     cal_mlp_train_id=excluded.cal_mlp_train_id,
                     cal_mlp_skipped_reason=excluded.cal_mlp_skipped_reason,
-                    cal_mlp_request_id=excluded.cal_mlp_request_id
+                    cal_mlp_request_id=excluded.cal_mlp_request_id,
+                    n_open_positions=excluded.n_open_positions,
+                    recent_n_outcome_streak=excluded.recent_n_outcome_streak,
+                    time_since_last_fill_s=excluded.time_since_last_fill_s,
+                    maker_price_cents=excluded.maker_price_cents,
+                    maker_depth_at_post=excluded.maker_depth_at_post,
+                    maker_would_fill_within_30s=excluded.maker_would_fill_within_30s,
+                    next_blocking_gate=excluded.next_blocking_gate,
+                    final_spot_price=excluded.final_spot_price,
+                    knockout_time_relative=excluded.knockout_time_relative,
+                    max_excursion_from_strike=excluded.max_excursion_from_strike,
+                    time_above_strike_seconds=excluded.time_above_strike_seconds,
+                    time_below_strike_seconds=excluded.time_below_strike_seconds,
+                    btc_spot_at_decision=excluded.btc_spot_at_decision,
+                    eth_spot_at_decision=excluded.eth_spot_at_decision,
+                    sol_spot_at_decision=excluded.sol_spot_at_decision,
+                    xrp_spot_at_decision=excluded.xrp_spot_at_decision,
+                    okx_funding_rate_at_decision=excluded.okx_funding_rate_at_decision,
+                    deribit_funding_rate_at_decision=excluded.deribit_funding_rate_at_decision
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -4487,7 +4578,18 @@ class StateManager:
                   orderbook_levels_json,
                   cal_mlp_p_mean, cal_mlp_p_std, cal_mlp_final_lo,
                   cal_mlp_final_hi, cal_mlp_train_id, cal_mlp_skipped_reason,
-                  cal_mlp_request_id))
+                  cal_mlp_request_id,
+                  n_open_positions, recent_n_outcome_streak,
+                  time_since_last_fill_s,
+                  maker_price_cents, maker_depth_at_post,
+                  maker_would_fill_within_30s,
+                  next_blocking_gate,
+                  final_spot_price, knockout_time_relative,
+                  max_excursion_from_strike,
+                  time_above_strike_seconds, time_below_strike_seconds,
+                  btc_spot_at_decision, eth_spot_at_decision,
+                  sol_spot_at_decision, xrp_spot_at_decision,
+                  okx_funding_rate_at_decision, deribit_funding_rate_at_decision))
             self.conn.commit()
         except Exception as e:
             try:
@@ -10155,9 +10257,12 @@ class OpportunityScanner:
             "mz_r_squared", "shadow_tv_blend_rv", "mz_shadow_sigmoid_w",
             "mz_baseline_qlike", "mz_qlike", "no_ask_cents",
             # Phase 7 cal_mlp audit fields (added by Edit 4 hook to _shadow_diag).
-            # insert_rejection does NOT receive cal_mlp_* (hook only mutates
-            # AFTER all rejection sites), so the assertion only enforces
-            # acceptance on insert_evaluated_opportunity.
+            # insert_rejection's signature does NOT receive cal_mlp_* params,
+            # so the assertion only enforces acceptance on
+            # insert_evaluated_opportunity. Phase D (2026-05-02) moved the
+            # hook earlier in the scan iteration; the one post-annotate
+            # insert_rejection site (tradeable_false with_market) strips
+            # cal_mlp_* inline at its splat to satisfy this constraint.
         }
         _SHADOW_DIAG_KEYS_EVAL_OPP_ONLY = _SHADOW_DIAG_KEYS | {
             "cal_mlp_p_mean", "cal_mlp_p_std", "cal_mlp_final_lo",
@@ -10586,12 +10691,90 @@ class OpportunityScanner:
             if ioc_row and ioc_row[1] and ioc_row[1] > 0:
                 ioc_rate = ioc_row[0] / ioc_row[1]
 
+            # Phase E (shadow coverage expansion 2026-05-02): state-at-
+            # decision-time fields. All three are GLOBAL (not per-asset)
+            # but stored uniformly in the per-asset cache for reuse.
+            # Master plan: kb/decisions/shadow-coverage-expansion-may01.md.
+            #
+            # n_open_positions: total open positions across ALL assets
+            # (distinct from active_positions_same_asset which is
+            # same-asset only — already exposed above).
+            n_open_positions = sum(pos_counts.values())
+
+            # time_since_last_fill_s: seconds since the most recent fill
+            # event. Uses MAX across positions.opened_at AND
+            # settled_trades.settled_at because (a) `positions` is
+            # mutated by reconciliation — bot.py issues `DELETE FROM
+            # positions WHERE ticker=?` when Kalshi REST reports
+            # position_count=0 — so a quiet-period reconciliation can
+            # drop all rows and turn `MAX(opened_at)` into NULL despite
+            # recent activity; (b) `settled_trades` is append-only, so
+            # `MAX(settled_at)` survives reconciliation. settled_at
+            # slightly UNDERSTATES the actual fill-to-now duration (the
+            # fill happened earlier than settlement) but that's a small
+            # bias < the position's hold time. NULL only if there has
+            # never been a fill OR settlement on this DB.
+            tslf_row = conn.execute(
+                "SELECT MAX(t) FROM ("
+                "  SELECT MAX(opened_at) AS t FROM positions"
+                "  UNION ALL"
+                "  SELECT MAX(settled_at) AS t FROM settled_trades"
+                ") WHERE t IS NOT NULL"
+            ).fetchone()
+            time_since_last_fill_s = None
+            if tslf_row and tslf_row[0] is not None:
+                # Compute via julianday so SQLite's ISO-8601 parser handles
+                # the same timestamp formats (`datetime('now')` writes UTC).
+                tslf_calc = conn.execute(
+                    "SELECT (julianday('now') - julianday(?)) * 86400.0",
+                    (tslf_row[0],),
+                ).fetchone()
+                if tslf_calc and tslf_calc[0] is not None:
+                    # max(0,) defends against clock skew producing tiny negatives.
+                    time_since_last_fill_s = max(0.0, float(tslf_calc[0]))
+
+            # recent_n_outcome_streak: signed streak count from the most
+            # recent settlement. Outcome semantics on net PnL
+            # (pnl_cents - COALESCE(fee_cents,0)):
+            #   net > 0 → WIN  (contributes +1)
+            #   net < 0 → LOSS (contributes -1)
+            #   net = 0 → PUSH (breaks streak; contributes 0)
+            # Returns: positive int = consecutive wins, negative int =
+            # consecutive losses, 0 = no trades OR most-recent is a push.
+            # Bound to last 50 trades to limit sort cost (no index on
+            # settled_at). 50 covers any operationally-relevant streak;
+            # streaks longer than 50 would warrant a dedicated "regime
+            # alert" signal, not just a count.
+            streak = 0
+            try:
+                streak_rows = conn.execute(
+                    "SELECT pnl_cents - COALESCE(fee_cents, 0) AS net_pnl "
+                    "FROM settled_trades "
+                    "ORDER BY settled_at DESC LIMIT 50"
+                ).fetchall()
+                if streak_rows:
+                    first_net = streak_rows[0][0] or 0
+                    if first_net != 0:
+                        sign = 1 if first_net > 0 else -1
+                        for r in streak_rows:
+                            net = r[0] or 0
+                            if (sign > 0 and net > 0) or (sign < 0 and net < 0):
+                                streak += sign
+                            else:
+                                # PUSH (net=0) or sign change → break.
+                                break
+            except Exception:
+                pass
+
             for a in ASSETS:
                 features_by_asset[a] = {
                     "active_positions_same_asset": pos_counts.get(a, 0),
                     "recent_bot_pnl_30m_cents": int(recent_pnl),
                     "current_drawdown_pct": drawdown_pct,
                     "recent_ioc_fill_success_rate_1h": ioc_rate,
+                    "n_open_positions": n_open_positions,
+                    "time_since_last_fill_s": time_since_last_fill_s,
+                    "recent_n_outcome_streak": streak,
                 }
             cache["features_by_asset"] = features_by_asset
             cache["ts"] = now
@@ -10876,7 +11059,7 @@ class OpportunityScanner:
         _price_shadow_queue = []
         _no_side_queue = []  # NO-side shadow: markets queued for NO evaluation
         _overnight_lp_queue = []  # Overnight low-price shadow: 50-85c YES during overnight hours
-        _low_price_shadow_queue = []  # Low-price shadow: 70-79c 15M signals
+        _low_price_shadow_queue = []  # Low-price shadow: 20-79c 15M signals (Phase C)
 
         # 1. Filter windows by time range (config-driven thresholds)
         time_ok_windows = []
@@ -11177,6 +11360,23 @@ class OpportunityScanner:
 
             for mkt in window["markets"]:
                 ticker = mkt.get("ticker", "")
+                # Phase D (shadow coverage expansion 2026-05-02): _shadow_diag
+                # is window-scoped (built at line ~11247) and reused per
+                # market. The pre-Phase-D `_calmlp_annotate_async` only
+                # mutated cal_mlp_* keys on the success path AND only in
+                # one branch — so iterations N+1...K inherited a stale
+                # cal_mlp_request_id from iteration N until N+1's annotate
+                # ran. Inserts firing BEFORE the annotate (price_out_of_range,
+                # floor_raise_shadow, queue snapshots, etc.) carried the
+                # prior ticker's uuid. Reset here defensively.
+                # See kb/decisions/shadow-coverage-expansion-may01.md.
+                for _cmk in [
+                    "cal_mlp_request_id", "cal_mlp_skipped_reason",
+                    "cal_mlp_p_mean", "cal_mlp_p_std",
+                    "cal_mlp_final_lo", "cal_mlp_final_hi",
+                    "cal_mlp_train_id",
+                ]:
+                    _shadow_diag.pop(_cmk, None)
                 threshold = self._parse_threshold(mkt)
                 if threshold is None:
                     # R1 [P0-1] / R2 [A1]: previously silent. Schema
@@ -11648,6 +11848,44 @@ class OpportunityScanner:
                         pass
                     continue
 
+                # Phase D (shadow coverage expansion 2026-05-02): annotate
+                # cal_mlp_request_id on _shadow_diag EARLY — before any
+                # downstream insert_evaluated_opportunity / queue snapshot
+                # splats _shadow_diag. The pre-Phase-D annotate at the
+                # post-`prob_with_market` candidate path only stamped uuids
+                # on the candidate row; shadow stages (low_price_shadow,
+                # floor_raise_shadow, overnight_lp_shadow, weekend_discount,
+                # no_side, etc.) had NULL cal_mlp_request_id and the
+                # post-hoc daemon never predicted on them. Stamping here
+                # fans the uuid out to every downstream **_shadow_diag
+                # splat in this iteration. side="yes" is the iteration's
+                # primary side; NO-side rows inherit the same uuid via
+                # queue snapshot — the post-hoc daemon dispatches features
+                # by the row's stored `side` column, so the uuid is just a
+                # "predict me" marker (master plan caveat: v1 may not be
+                # calibrated for NO-side; capture anyway).
+                # entry_price_cents is documented as ignored by the
+                # post-hoc processor (re-derives features from DB row);
+                # passed for API stability with the v1.5 signature.
+                # See kb/decisions/shadow-coverage-expansion-may01.md.
+                #
+                # Phase D adversarial review (round 1, MEDIUM-1): gate is
+                # `_pt == "15m"` only — strict-equal to the daemon's
+                # `WHERE product_type = '15m'` filter at
+                # scripts/cal_mlp/post_hoc_processor.py:172. Pre-Phase-D
+                # the gate was `_pt in (None, "15m")` to allow legacy
+                # null-product-type 15M rows; in current production
+                # 15M markets always have product_type="15m" set by
+                # discover_active_windows(). Tighter gate prevents
+                # stamping cal_mlp_request_id on rows the daemon will
+                # never read (orphaned annotations).
+                if _pt == "15m":
+                    _calmlp_annotate_async(
+                        _shadow_diag, raw_prob=raw_prob_pre, ticker=ticker,
+                        side="yes", entry_price_cents=best_ask, row_features={},
+                        predictor=_calmlp_predictors.get(asset), db_path=DB_PATH,
+                    )
+
                 # Diagnostic: log when orderbook and market NBBO disagree
                 try:
                     mkt_yes_ask_raw = mkt.get("yes_ask")
@@ -11908,7 +12146,7 @@ class OpportunityScanner:
                             "_shadow_diag": _shadow_diag.copy(),
                             "_oft_db": _oft_db.copy(),
                         })
-                    # Low-price shadow: queue 70-79c 15M signals for dual-sizing analysis
+                    # Low-price shadow: queue 20-79c 15M signals for dual-sizing analysis
                     if (LOW_PRICE_SHADOW_ENABLED
                             and _pt in (None, "15m")
                             and LOW_PRICE_SHADOW_MIN_PRICE <= best_ask <= LOW_PRICE_SHADOW_MAX_PRICE
@@ -12173,6 +12411,14 @@ class OpportunityScanner:
                     if _dk_tf2 not in self._eval_opp_seen:
                         self._eval_opp_seen.add(_dk_tf2)
                         try:
+                            # Phase D (shadow coverage expansion 2026-05-02):
+                            # this is the ONLY insert_rejection that fires
+                            # AFTER the new early annotate site. Strip
+                            # cal_mlp_* keys so the splat doesn't TypeError
+                            # against insert_rejection's signature (which
+                            # never accepted cal_mlp_* per the
+                            # _SHADOW_DIAG_KEYS startup assertion at
+                            # line ~10254).
                             self._state.insert_rejection(
                                 ticker, window["event_ticker"], asset, reason,
                                 prob_with_market.get("z_score"), spot, threshold,
@@ -12180,7 +12426,9 @@ class OpportunityScanner:
                                 prob_with_market.get("calibrated_prob"),
                                 raw_prob=prob_with_market.get("raw_prob"),
                                 product_type=window.get("product_type"),
-                                **_oft_db, **_shadow_diag)
+                                **_oft_db,
+                                **{k: v for k, v in _shadow_diag.items()
+                                   if not k.startswith("cal_mlp_")})
                         except Exception:
                             logging.warning(
                                 "tradeable_false (with_market) insert_rejection failed",
@@ -12212,35 +12460,12 @@ class OpportunityScanner:
                 raw_prob = prob_with_market.get("raw_prob")
                 calibration_method = prob_with_market.get("calibration_method")
 
-                # Phase 7 Edit 4: cal_mlp residual calibration hook.
-                # Mutates _shadow_diag with cal_mlp_* audit fields (which the
-                # `**_shadow_diag` splat at downstream insert_evaluated_opportunity
-                # call sites then writes to DB). Returns calibrated final_prob
-                # to override the temperature-scaling input below; returns None
-                # if calibration was skipped (env_disabled / no_predictor /
-                # no_current / etc. — all stamped in cal_mlp_skipped_reason).
-                # R-p7-deploy-r2 ADVERSARIAL FIXES:
-                # C1: 15M main path is YES-only entry; pass side="yes" hardcoded
-                #     (no `side` local is bound at this scope).
-                # H1: gate by _pt so the hook fires ONLY for 15M; hourly/SPX/
-                #     weather windows skip cal_mlp entirely (predictors are
-                #     trained on 15M data; applying to hourly/SPX is wrong AND
-                #     pollutes the skip-reason histogram with no_predictor rows).
-                if _pt in (None, "15m"):
-                    # R-p7-deploy-r9: post-hoc cal_mlp design. Edit 4 reduces
-                    # to a single uuid stamp; the actual feature reconstruction
-                    # + predict + UPDATE happens in CalMLPPostHocProcessor's
-                    # daemon thread (started at bot boot). All v1 features are
-                    # derivable from DB columns, so the processor doesn't need
-                    # bot state. Net cost on the scan thread: ~1µs per 15M
-                    # market for the env check + uuid generation.
-                    # final_prob is NEVER overridden — v1 is shadow-only by
-                    # design (see kb/decisions/p2-cal-mlp-v1v2v3-retraining-plan.md).
-                    _calmlp_annotate_async(
-                        _shadow_diag, raw_prob=raw_prob, ticker=ticker, side="yes",
-                        entry_price_cents=best_ask, row_features={},
-                        predictor=_calmlp_predictors.get(asset), db_path=DB_PATH,
-                    )
+                # cal_mlp_request_id annotation moved EARLIER in the
+                # iteration (Phase D shadow coverage expansion 2026-05-02)
+                # so shadow-stage inserts/queue snapshots that fire BEFORE
+                # this point get cal_mlp_request_id stamped via _shadow_diag
+                # splat. See the new annotate site after no_best_ask, plus
+                # kb/decisions/shadow-coverage-expansion-may01.md.
 
                 # ── Temperature scaling (Layer 1) ──────────────
                 _hourly_pre_temp_prob = None
@@ -12403,10 +12628,15 @@ class OpportunityScanner:
                         "ask_depth": ask_depth,
                         "best_ask_source": best_ask_source,
                         "product_type": window.get("product_type"),
-                        # R-p7-deploy-r2#MED1: strip cal_mlp_* from shadow-queue
-                        # snapshot — main-path calibrator audit data shouldn't
-                        # tag shadow-strategy rows.
-                        "_shadow_diag": {k: v for k, v in _shadow_diag.items() if not k.startswith('cal_mlp_')},
+                        # Phase D (shadow coverage expansion 2026-05-02):
+                        # PROPAGATE cal_mlp_request_id to NO-side shadow rows
+                        # so the post-hoc daemon predicts on them too. The
+                        # pre-Phase-D R-p7-deploy-r2#MED1 strip was the
+                        # opposite design (shadow rows kept raw); master
+                        # plan now requires shadow coverage. NO-side gets
+                        # the iteration's YES uuid; daemon dispatches per
+                        # row's stored `side` column.
+                        "_shadow_diag": _shadow_diag.copy(),
                         "_oft_db": _oft_db.copy(),
                         "_shadow_extra": _shadow_extra.copy(),
                         "final_prob": final_prob,  # already computed (temp+blend+cap)
@@ -13061,7 +13291,7 @@ class OpportunityScanner:
                             calibrated_prob_raw, est_fee_1c,
                             ask_depth, best_ask_source, _cf, _shadow_diag)
 
-                    # ── Low-price shadow: queue IE signals at 70-79c ──
+                    # ── Low-price shadow: queue IE signals at 20-79c ──
                     if (LOW_PRICE_SHADOW_ENABLED
                             and _pt in (None, "15m")
                             and LOW_PRICE_SHADOW_MIN_PRICE <= best_ask <= LOW_PRICE_SHADOW_MAX_PRICE
@@ -13079,8 +13309,11 @@ class OpportunityScanner:
                             "ask_depth": ask_depth,
                             "best_ask_source": best_ask_source,
                             "product_type": window.get("product_type"),
-                            # R-p7-deploy-r2#MED1: strip cal_mlp_* from shadow-queue snapshot
-                            "_shadow_diag": {k: v for k, v in _shadow_diag.items() if not k.startswith('cal_mlp_')},
+                            # Phase D (shadow coverage expansion 2026-05-02):
+                            # propagate cal_mlp_request_id so the post-hoc
+                            # daemon predicts on low_price_shadow rows too.
+                            # See kb/decisions/shadow-coverage-expansion-may01.md.
+                            "_shadow_diag": _shadow_diag.copy(),
                             "_oft_db": _oft_db.copy(),
                             "has_prob": True,
                             "final_prob": final_prob,
@@ -15571,7 +15804,7 @@ class OpportunityScanner:
         if _overnight_lp_queue:
             self._process_overnight_lp_shadow(_overnight_lp_queue)
 
-        # Low-price shadow: dual-sizing sim for 70-79c expansion analysis
+        # Low-price shadow: dual-sizing sim for 20-79c expansion analysis
         if LOW_PRICE_SHADOW_ENABLED and _low_price_shadow_queue:
             self._process_low_price_shadow(_low_price_shadow_queue)
 
@@ -16408,7 +16641,7 @@ class OpportunityScanner:
             logging.warning("overnight_lp_shadow processing error", exc_info=True)
 
     def _process_low_price_shadow(self, queue: list) -> None:
-        """Shadow-evaluate 70-79c 15M signals with dual sizing simulation.
+        """Shadow-evaluate 20-79c 15M signals with dual sizing simulation.
 
         Collects data for potential MIN_ENTRY_PRICE expansion. Logs to both
         evaluated_opportunities (for settlement linking) and low_price_shadow_signals
@@ -16573,7 +16806,7 @@ class OpportunityScanner:
                         ticker, event_ticker, asset,
                         "low_price_shadow",
                         rejection_reason=(
-                            "shadow: 70-79c dual-sizing sim, "
+                            "shadow: 20-79c dual-sizing sim, "
                             "full={} capped={} w_ct={} h_ct={}".format(
                                 _full_position, _capped_position,
                                 _window_count, _hour_count)

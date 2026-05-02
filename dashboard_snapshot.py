@@ -3262,7 +3262,7 @@ class DashboardSnapshotBuilder:
                                     "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {}},
             "low_price_shadow": {"total_signals": 0, "settled": 0, "wins": 0, "wr": 0,
                                   "sim_pnl_cents": 0, "by_asset": {}, "by_price_tier": {},
-                                  "config": {"price_range": "70-79c", "max_stc": 600,
+                                  "config": {"price_range": "20-79c", "max_stc": 900,
                                              "lp_kelly_fraction": 0.25, "lp_max_risk": 0.10,
                                              "window_cap": 2, "hour_cap": 4}},
         }
@@ -3354,11 +3354,17 @@ class DashboardSnapshotBuilder:
                 return "88-89"
 
             def _bucket_low_price(mp):
-                """70-74, 75-79"""
+                """20-39, 40-54, 55-69, 70-74, 75-79 (Phase C of shadow
+                coverage expansion 2026-05-02 widened the band from 70-79
+                to 20-79; tiers added so the dashboard rollup doesn't
+                silently bucket 20-69¢ rows into 70-74)."""
                 if mp is None:
                     return "unknown"
                 if mp >= 75: return "75-79"
-                return "70-74"
+                if mp >= 70: return "70-74"
+                if mp >= 55: return "55-69"
+                if mp >= 40: return "40-54"
+                return "20-39"
 
             _tier_bucketers = {
                 "weekend_discount_shadow": _bucket_standard,
@@ -3458,10 +3464,10 @@ class DashboardSnapshotBuilder:
             }
             snap["overnight_lp_shadow"] = _olp
 
-            # Low-price shadow (70-79c dual-sizing sim + correlation)
+            # Low-price shadow (20-79c dual-sizing sim + correlation; Phase C 2026-05-02)
             _lps = _panel_snap("low_price_shadow", _sh_totals, _sh_asset_map, _sh_tier_map)
             _lps["config"] = {
-                "price_range": "70-79c", "max_stc": 600,
+                "price_range": "20-79c", "max_stc": 900,
                 "lp_kelly_fraction": 0.25, "lp_max_risk": 0.10,
                 "window_cap": 2, "hour_cap": 4,
             }

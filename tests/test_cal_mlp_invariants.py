@@ -595,55 +595,79 @@ def test_edit4_hook_does_not_pass_unbound_side():
 
 
 def test_edit4_hook_gated_by_pt_15m():
-    """R-p7-deploy-r2#H1 regression: the cal_mlp hook must be wrapped in
-    `if _pt in (None, "15m"):` so calibration only runs for 15M windows.
-    Without this gate, hourly windows that share BTC/ETH/XRP assets would
-    get silently miscalibrated (model trained on 15M data) and SPX/weather
-    would pollute the skipped-reason histogram with no_predictor rows."""
+    """R-p7-deploy-r2#H1 + Phase D (shadow coverage expansion 2026-05-02):
+    the cal_mlp hook must be gated by product_type so it only fires for
+    15M windows. Without this gate, hourly windows that share BTC/ETH/XRP
+    assets would get silently miscalibrated (model trained on 15M data)
+    and SPX/weather would pollute the skipped-reason histogram with
+    no_predictor rows.
+
+    Phase D tightened the gate from `_pt in (None, "15m")` to
+    `_pt == "15m"` (strict-equal) to match the post-hoc daemon's
+    `WHERE product_type = '15m'` filter at
+    scripts/cal_mlp/post_hoc_processor.py:172. Pre-Phase-D the loose
+    gate stamped uuids on legacy null-product-type rows the daemon
+    would never read (orphan annotations).
+    """
     src = _read_bot_py()
     if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
         pytest.skip('Edit 4 not yet applied to bot.py (rebuild-only branch)')
     import re
-    # The gate must appear BEFORE the hook call, in close proximity.
-    # Match the pattern: `if _pt in (None, "15m"):` ... `_calmlp_annotate_kwargs`
-    pat = re.compile(
+    # Accept either the strict-equal Phase-D form or the legacy
+    # tuple-membership form, in close proximity to the annotate call.
+    strict = re.compile(
+        r'if\s+_pt\s*==\s*[\'"]15m[\'"]\s*:'
+        r'(?:[\s\S]{0,8000})_calmlp_annotate(?:_async|_kwargs)',
+    )
+    legacy = re.compile(
         r'if\s+_pt\s+in\s*\(\s*None\s*,\s*[\'"]15m[\'"]\s*\)\s*:'
         r'(?:[\s\S]{0,8000})_calmlp_annotate(?:_async|_kwargs)',
     )
-    assert pat.search(src), (
-        "Edit 4 hook must be wrapped in `if _pt in (None, \"15m\"):` so "
+    assert strict.search(src) or legacy.search(src), (
+        "Edit 4 hook must be wrapped in `if _pt == \"15m\":` (Phase D) "
+        "or `if _pt in (None, \"15m\"):` (pre-Phase-D legacy) so "
         "calibration only fires for 15M product_type. Hourly/SPX/weather "
         "windows must skip the hook entirely."
     )
 
 
 def test_edit4_shadow_queue_strips_cal_mlp_prefix():
-    """R-p7-deploy-r2#MED1 regression: shadow-queue snapshots taken AFTER
-    Edit 4's _shadow_diag mutation must filter out cal_mlp_* keys so
-    shadow-strategy DB rows don't get tagged with main-path calibrator
-    audit data that those shadows didn't actually go through."""
+    """Phase D (shadow coverage expansion 2026-05-02) REVERSES the
+    R-p7-deploy-r2#MED1 design decision. Pre-Phase-D: shadow-queue
+    snapshots stripped cal_mlp_* keys (rationale: don't tag shadow rows
+    with main-path calibrator audit data). Phase D: shadow rows are now
+    a first-class predict target — the post-hoc daemon should annotate
+    them too so v2 retraining has training data outside the candidate
+    band. Therefore the queue snapshots now PROPAGATE cal_mlp_* via
+    `_shadow_diag.copy()`, with the cross-ticker leak prevented by a
+    top-of-iteration `pop("cal_mlp_*")` reset.
+
+    EXCEPTION: the TM96 cal_mlp gate (around bot.py:12920) computes its
+    own `_tm96_diag_clean` and splats `_shadow_diag` MINUS cal_mlp_* to
+    avoid double-stamping. That single strip is intentional and stays.
+
+    Master plan: kb/decisions/shadow-coverage-expansion-may01.md."""
     src = _read_bot_py()
     if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
         pytest.skip('Edit 4 not yet applied to bot.py')
-    # The post-hook snapshot pattern uses a dict comprehension with
-    # `not k.startswith('cal_mlp_')`. Pin that the bare `_shadow_diag.copy()`
-    # is not used in the post-hook path (where cal_mlp_* keys exist).
-    # Heuristic: count `_shadow_diag.copy()` (pre-hook) vs the comprehension
-    # filter (post-hook). Pre-hook path has 4 copies, post-hook has 0;
-    # post-hook should have 2 filter-comprehensions.
     n_copy = src.count('_shadow_diag.copy()')
     n_filter = src.count(
         "if not k.startswith('cal_mlp_')"
     ) + src.count(
         'if not k.startswith("cal_mlp_")'
     )
-    # 4 pre-hook _shadow_diag.copy() sites are unchanged (rejection paths).
-    # 2 post-hook sites must use the filter comprehension.
-    assert n_copy >= 4, f"expected ≥4 _shadow_diag.copy() pre-hook sites, got {n_copy}"
-    assert n_filter >= 2, (
-        f"expected ≥2 cal_mlp_* prefix-filter comprehensions for post-hook "
-        f"snapshots, got {n_filter}. Without the filter, shadow-strategy rows "
-        f"get tagged with main-path cal_mlp_* audit data."
+    # Post-Phase-D + adversarial-review HIGH-1 fix: 2 strips remain.
+    # 1. TM96 cal_mlp gate (avoids double-stamping its own prediction).
+    # 2. tradeable_false (with_market) insert_rejection post-annotate
+    #    (insert_rejection's signature does NOT accept cal_mlp_*).
+    # Queue-snapshot strips for low_price_shadow / no_side / etc. are
+    # GONE so shadow rows propagate cal_mlp_request_id.
+    assert n_copy >= 4, f"expected ≥4 _shadow_diag.copy() sites, got {n_copy}"
+    assert n_filter == 2, (
+        f"Phase D expects exactly 2 cal_mlp_* prefix-filter comprehensions "
+        f"(TM96 gate + tradeable_false insert_rejection post-annotate); "
+        f"got {n_filter}. Queue-snapshot strips removed in Phase D. See "
+        f"kb/decisions/shadow-coverage-expansion-may01.md."
     )
 
 

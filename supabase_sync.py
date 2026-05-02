@@ -488,7 +488,19 @@ class SupabaseSyncer:
         "counterfactual, shadow_cal_prob, shadow_cal_fee_edge, shadow_cal_temperature, "
         "product_type, "
         "cal_mlp_request_id, cal_mlp_skipped_reason, cal_mlp_p_mean, cal_mlp_p_std, "
-        "cal_mlp_final_lo, cal_mlp_final_hi, cal_mlp_train_id"
+        "cal_mlp_final_lo, cal_mlp_final_hi, cal_mlp_train_id, "
+        # Shadow coverage expansion Phase B (2026-05-02). Whitelist parity with
+        # supabase migration 011 — adding here without the remote columns
+        # silently HTTP-400s every batch and freezes sync (per migration 010
+        # header + dashboard-drift postmortem). Migration 011 ships first.
+        "n_open_positions, recent_n_outcome_streak, time_since_last_fill_s, "
+        "maker_price_cents, maker_depth_at_post, maker_would_fill_within_30s, "
+        "next_blocking_gate, "
+        "final_spot_price, knockout_time_relative, max_excursion_from_strike, "
+        "time_above_strike_seconds, time_below_strike_seconds, "
+        "btc_spot_at_decision, eth_spot_at_decision, "
+        "sol_spot_at_decision, xrp_spot_at_decision, "
+        "okx_funding_rate_at_decision, deribit_funding_rate_at_decision"
     )
 
     # Columns that map to Supabase `rejections` table
@@ -533,6 +545,12 @@ class SupabaseSyncer:
         # Including is a no-op if absent from payload; future-proofs a remote
         # migration that adds the column.
         "bid_depth",
+        # Shadow coverage expansion Phase B (2026-05-02): integer-typed cols
+        # in supabase migration 011. Defensive against future float upstream
+        # writes (memory: project_may01_calmlp_dashboard_chain — 12d 22P02
+        # wedge from a single float ask_depth).
+        "n_open_positions", "recent_n_outcome_streak",
+        "maker_price_cents", "maker_depth_at_post", "maker_would_fill_within_30s",
     })
 
     @classmethod

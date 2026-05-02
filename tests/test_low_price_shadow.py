@@ -1,8 +1,11 @@
-"""Tests for Low-Price Shadow (70-79c) dual-sizing simulation.
+"""Tests for Low-Price Shadow (20-79c) dual-sizing simulation.
+
+Phase C of shadow coverage expansion (2026-05-02): floor 70 → 20,
+STC cap 600 → 900. See kb/decisions/shadow-coverage-expansion-may01.md.
 
 Guards against:
-- Price gate: only captures 70-79c signals (LOW_PRICE_SHADOW_MIN/MAX_PRICE)
-- STC gate: LOW_PRICE_SHADOW_MAX_STC = 600s ceiling
+- Price gate: captures 20-79c signals (LOW_PRICE_SHADOW_MIN/MAX_PRICE)
+- STC gate: LOW_PRICE_SHADOW_MAX_STC = 900s ceiling (full window)
 - Product type gate: 15M only (not hourly, weather, sports)
 - Dual sizing: both full Kelly and capped Kelly (LP_*) are computed
 - Correlation tracking: window_signal_count and hour_signal_count recorded
@@ -43,13 +46,17 @@ class TestLowPriceShadowConstants(unittest.TestCase):
         self.assertIn("LOW_PRICE_SHADOW_ENABLED = True", self.source)
 
     def test_min_price(self):
-        self.assertIn("LOW_PRICE_SHADOW_MIN_PRICE = 70", self.source)
+        # Phase C of shadow coverage expansion (2026-05-02): 70 → 20.
+        # Master plan: kb/decisions/shadow-coverage-expansion-may01.md.
+        # MIN_ENTRY_PRICE (live floor) is unchanged — this is shadow-only.
+        self.assertIn("LOW_PRICE_SHADOW_MIN_PRICE = 20", self.source)
 
     def test_max_price(self):
         self.assertIn("LOW_PRICE_SHADOW_MAX_PRICE = 79", self.source)
 
     def test_max_stc(self):
-        self.assertIn("LOW_PRICE_SHADOW_MAX_STC = 600", self.source)
+        # Phase C: 600 → 900 (full scan-window).
+        self.assertIn("LOW_PRICE_SHADOW_MAX_STC = 900", self.source)
 
     def test_lp_max_risk(self):
         self.assertIn("LP_MAX_RISK_PER_TRADE = 0.10", self.source)
@@ -253,6 +260,56 @@ class TestLowPriceShadowQueueProcessing(unittest.TestCase):
         process_idx = self.source.find("self._process_low_price_shadow(_low_price_shadow_queue)")
         pre_block = self.source[process_idx - 200:process_idx]
         self.assertIn("LOW_PRICE_SHADOW_ENABLED", pre_block)
+
+
+class TestLowPriceShadowDashboardBucketer(unittest.TestCase):
+    """Phase C of shadow coverage expansion widened the band to 20-79¢; the
+    dashboard `_bucket_low_price` rollup must cover the full new range so
+    20-69¢ rows don't silently bucket into 70-74."""
+
+    def setUp(self):
+        self.dash_source = _read_dash()
+
+    def test_bucketer_covers_new_tiers(self):
+        """Tiers 20-39, 40-54, 55-69 must exist alongside legacy 70-74, 75-79."""
+        bucketer_idx = self.dash_source.find("def _bucket_low_price")
+        self.assertGreater(bucketer_idx, 0)
+        body = self.dash_source[bucketer_idx:bucketer_idx + 600]
+        for tier in ('"20-39"', '"40-54"', '"55-69"', '"70-74"', '"75-79"'):
+            self.assertIn(tier, body, f"bucketer missing tier {tier}")
+
+
+class TestLowPriceShadowDocReference(unittest.TestCase):
+    """agent_docs/config_reference.md must list LOW_PRICE_SHADOW_* with the
+    current values (Phase C of shadow coverage expansion). Doc-drift rule
+    per CLAUDE.md."""
+
+    def setUp(self):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "agent_docs", "config_reference.md")
+        with open(path) as f:
+            self.doc = f.read()
+
+    def test_min_price_documented(self):
+        self.assertIn("LOW_PRICE_SHADOW_MIN_PRICE", self.doc)
+        # value must appear as a whole-number token (avoids matching "120", "200", etc.)
+        for line in self.doc.splitlines():
+            if "LOW_PRICE_SHADOW_MIN_PRICE" in line:
+                self.assertRegex(
+                    line, r"(?<!\d)20(?!\d)",
+                    f"min_price doc row missing standalone 20: {line!r}")
+                return
+        self.fail("LOW_PRICE_SHADOW_MIN_PRICE not in config_reference.md")
+
+    def test_max_stc_documented(self):
+        for line in self.doc.splitlines():
+            if "LOW_PRICE_SHADOW_MAX_STC" in line:
+                self.assertRegex(
+                    line, r"(?<!\d)900(?!\d)",
+                    f"max_stc doc row missing standalone 900: {line!r}")
+                return
+        self.fail("LOW_PRICE_SHADOW_MAX_STC not in config_reference.md")
 
 
 if __name__ == "__main__":

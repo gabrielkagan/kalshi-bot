@@ -118,6 +118,21 @@ Canonical reference: `kb/concepts/dc-strategy.md`
 | WEEKEND_DISCOUNT_MAX_STC | 600 | STC gate for live |
 | WEEKEND_EDGE_DISCOUNT | 0.60 | 40% edge reduction applied on weekends |
 
+## Low-Price Shadow (observation-only; Phase C of shadow coverage expansion 2026-05-02)
+
+`low_price_shadow` is shadow-only data collection — never affects live trades. `MIN_ENTRY_PRICE` (live floor) is unchanged. See `kb/decisions/shadow-coverage-expansion-may01.md`.
+
+| Config | Value | Notes |
+|--------|-------|-------|
+| LOW_PRICE_SHADOW_ENABLED | True | Master kill switch |
+| LOW_PRICE_SHADOW_MIN_PRICE | 20 | Floor (was 70 pre-Phase-C; 20 leaves room for far-from-BE training data) |
+| LOW_PRICE_SHADOW_MAX_PRICE | 79 | Ceiling (80c+ already live for some assets) |
+| LOW_PRICE_SHADOW_MAX_STC | 900 | Full scan-window (was 600; captures entire decision life) |
+| LP_MAX_RISK_PER_TRADE | 0.10 | Capped sizing — 10% bankroll cap |
+| LP_KELLY_FRACTION | 0.25 | Capped sizing — quarter-Kelly |
+| LP_WINDOW_CAP | 2 | Max signals per 15M window (correlation cap) |
+| LP_HOUR_CAP | 4 | Max signals per hour (correlation cap) |
+
 ## Hourly (DISABLED Apr 18 — both kill switches 0)
 
 To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (NO) in VPS .env + restart.
