@@ -37,12 +37,14 @@ Master plan: kb/decisions/shadow-coverage-expansion-may01.md.
 """
 
 import argparse
+import datetime
 import json
 import logging
 import os
 import sqlite3
 import sys
-from typing import Optional
+import time as _time_mod
+from typing import Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +368,284 @@ def backfill_tslf(
     return total
 
 
+# ── Phase G-2: Coinbase candles → cross-asset spot at decision ────────
+
+# Map asset → Coinbase product id. ASSETS comes from config but we hardcode
+# here to avoid importing bot.py (which loads heavy deps).
+COINBASE_PRODUCTS = {
+    "BTC": "BTC-USD",
+    "ETH": "ETH-USD",
+    "SOL": "SOL-USD",
+    "XRP": "XRP-USD",
+}
+
+COINBASE_CANDLES_URL = "https://api.exchange.coinbase.com/products/{product_id}/candles"
+# Coinbase returns max 300 candles per request. At 1-min granularity that's 5 hours.
+COINBASE_MAX_CANDLES_PER_REQUEST = 300
+COINBASE_GRANULARITY_SEC = 60  # 1-minute candles
+
+
+class CoinbaseFetchError(Exception):
+    """Raised by fetch_coinbase_candles when ALL retries are exhausted.
+    Distinguishes "API failed" from "API succeeded but window has no
+    candles" — the latter is a legitimate empty list."""
+
+
+def fetch_coinbase_candles(
+    asset: str,
+    start_iso: str,
+    end_iso: str,
+    *,
+    request_fn: Optional[Callable] = None,
+    max_retries: int = 3,
+) -> List[List]:
+    """Fetch 1-minute OHLCV candles for `asset` between [start_iso, end_iso].
+
+    Coinbase returns `[time, low, high, open, close, volume]` per candle.
+    Caps at 300 per request — caller paginates.
+
+    Phase G-2 round 1 HIGH fix: retries on 429 (rate limit) with
+    exponential backoff (1s, 2s, 4s) up to `max_retries`. Raises
+    `CoinbaseFetchError` on final exhaustion or repeated non-200 — caller
+    can catch + log + count failures. Distinguishes "API failed" from
+    "successful empty response" (the latter is `[]`).
+
+    `request_fn` is the HTTP requestor (defaults to `requests.get`);
+    injected for tests."""
+    if request_fn is None:
+        import requests as _requests
+        def request_fn(url, params, timeout):
+            return _requests.get(url, params=params, timeout=timeout)
+    product_id = COINBASE_PRODUCTS.get(asset)
+    if product_id is None:
+        return []
+    url = COINBASE_CANDLES_URL.format(product_id=product_id)
+    params = {
+        "start": start_iso, "end": end_iso,
+        "granularity": COINBASE_GRANULARITY_SEC,
+    }
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            resp = request_fn(url, params, 30)
+            status = getattr(resp, "status_code", 0)
+            if status == 200:
+                return resp.json()
+            if status == 429:
+                # Rate limited — exponential backoff.
+                _time_mod.sleep(2 ** attempt)
+                last_err = f"HTTP 429 (rate limit)"
+                continue
+            # Other non-200: count as a failure but don't infinitely retry.
+            last_err = f"HTTP {status}"
+            break
+        except Exception as e:
+            last_err = str(e)
+            _time_mod.sleep(2 ** attempt)
+            continue
+    raise CoinbaseFetchError(
+        f"asset={asset} window=[{start_iso}, {end_iso}]: {last_err}"
+    )
+
+
+def build_candle_lookup(candles: List) -> Dict[int, float]:
+    """Convert raw Coinbase candle list → {epoch_minute: close_price}.
+
+    Skips malformed entries silently. Coinbase's candle format:
+      [time_epoch_sec, low, high, open, close, volume]
+    `close` (index 4) is the spot at the END of the minute — the value
+    most representative of "the price at minute M:M."
+    """
+    lookup: Dict[int, float] = {}
+    for c in candles:
+        if not isinstance(c, (list, tuple)) or len(c) < 5:
+            continue
+        try:
+            ts = int(c[0])
+            close = float(c[4])
+        except (TypeError, ValueError):
+            continue
+        # Prefer first-seen on duplicate minutes (Phase G-2 round 1 LOW fix).
+        # Coinbase pagination boundaries can re-return the same minute;
+        # first-seen avoids cache-race nondeterminism.
+        key = ts // 60
+        if key not in lookup:
+            lookup[key] = close
+    return lookup
+
+
+def lookup_xasset_spots_for_row(
+    eval_time_iso: str,
+    lookups: Dict[str, Dict[int, float]],
+    fallback_minutes: int = 3,
+) -> Dict[str, Optional[float]]:
+    """Resolve cross-asset spots for a given evaluation_time.
+
+    Returns dict with btc/eth/sol/xrp_spot_at_decision keys. If exact
+    minute is missing for an asset, falls back to the nearest minute
+    within ±`fallback_minutes`. Beyond that, returns None for that asset
+    (staler is dishonest for a minute-grade feature)."""
+    try:
+        dt = datetime.datetime.fromisoformat(eval_time_iso.replace("Z", "+00:00"))
+        epoch_min = int(dt.timestamp()) // 60
+    except Exception:
+        return {f"{a.lower()}_spot_at_decision": None for a in lookups}
+
+    out: Dict[str, Optional[float]] = {}
+    for asset, lookup in lookups.items():
+        key = f"{asset.lower()}_spot_at_decision"
+        # Exact minute first.
+        v = lookup.get(epoch_min)
+        if v is not None:
+            out[key] = v
+            continue
+        # ±fallback_minutes search.
+        v_found = None
+        for delta in range(1, fallback_minutes + 1):
+            v_pre = lookup.get(epoch_min - delta)
+            v_post = lookup.get(epoch_min + delta)
+            if v_pre is not None:
+                v_found = v_pre
+                break
+            if v_post is not None:
+                v_found = v_post
+                break
+        out[key] = v_found
+    return out
+
+
+def backfill_xasset_spots(
+    conn: sqlite3.Connection,
+    fetcher: Optional[Callable] = None,
+    batch_size: int = 50,
+    sleep_ms: int = 200,
+    checkpoint_dir: Optional[str] = None,
+) -> int:
+    """Phase G-2 backfill: per-row cross-asset spots from Coinbase candles.
+
+    `fetcher(asset, start_iso, end_iso) → List[candle]` is injected for
+    tests. Production default: `fetch_coinbase_candles`.
+
+    Default `sleep_ms=200` (Phase G-2 round 1 MEDIUM fix): Coinbase
+    Exchange public API rate-limits at ~10 req/sec per IP. 200ms gives
+    5 req/sec headroom — well under the limit. The existing 50ms G-1
+    default is too aggressive when the same parameter ALSO paces API calls.
+
+    Strategy:
+      1. Find earliest/latest evaluation_time over rows missing xasset spots.
+      2. For each asset, paginate Coinbase candles across the range and
+         build a minute-keyed lookup.
+      3. For each row missing spots, look up each asset's close at the
+         row's evaluation_time minute (±3 min fallback). UPDATE.
+    """
+    if fetcher is None:
+        fetcher = fetch_coinbase_candles
+
+    # Phase G-2 round 2 MEDIUM fix: clamp sleep_ms at the function
+    # boundary so the CLI default of 50ms (tuned for the SQL phases)
+    # cannot accidentally smash Coinbase's 10 req/sec ceiling. 200ms
+    # gives 5 req/sec headroom. Function-level defense regardless of caller.
+    if sleep_ms < 200:
+        logger.info(
+            "g2: bumping sleep_ms %d → 200 (Coinbase rate-limit floor)",
+            sleep_ms,
+        )
+        sleep_ms = 200
+
+    # 1. Discover historical date range.
+    rng = conn.execute(
+        "SELECT MIN(evaluation_time), MAX(evaluation_time) "
+        "FROM evaluated_opportunities "
+        "WHERE btc_spot_at_decision IS NULL "
+        "AND evaluation_time IS NOT NULL"
+    ).fetchone()
+    if not rng or rng[0] is None:
+        return 0
+    start_iso, end_iso = rng[0], rng[1]
+    logger.info("g2: backfilling xasset spots over [%s .. %s]", start_iso, end_iso)
+
+    # 2. Fetch + build per-asset lookups. Coinbase caps at 300 candles
+    # per request → paginate by 299-minute chunks (Phase G-2 round 1
+    # LOW fix: 5-hour window with inclusive boundaries can return 301
+    # candles, exceeding Coinbase's 300 cap and silently dropping the
+    # last minute).
+    lookups: Dict[str, Dict[int, float]] = {}
+    for asset in COINBASE_PRODUCTS:
+        all_candles: List = []
+        n_chunks_ok = 0
+        n_chunks_failed = 0
+        cur_start = datetime.datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        end_dt = datetime.datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+        # Extend end by 1 minute so a single-row range (start == end) still
+        # fetches one candle. Coinbase's [start, end] is inclusive on the
+        # closest-to-now side; +1min covers the row's exact minute.
+        end_dt = end_dt + datetime.timedelta(minutes=1)
+        chunk = datetime.timedelta(minutes=299)  # safely under Coinbase's 300 cap
+        while cur_start < end_dt:
+            cur_end = min(cur_start + chunk, end_dt)
+            chunk_start_iso = cur_start.isoformat().replace("+00:00", "Z")
+            chunk_end_iso = cur_end.isoformat().replace("+00:00", "Z")
+            try:
+                page = fetcher(asset, chunk_start_iso, chunk_end_iso)
+                all_candles.extend(page or [])
+                n_chunks_ok += 1
+            except CoinbaseFetchError as e:
+                n_chunks_failed += 1
+                logger.warning("g2: chunk failed asset=%s: %s", asset, e)
+            cur_start = cur_end
+            if sleep_ms > 0:
+                _time_mod.sleep(sleep_ms / 1000.0)
+        lookups[asset] = build_candle_lookup(all_candles)
+        logger.info(
+            "g2: %s — %d/%d chunks OK, %d candles, %d unique minutes",
+            asset, n_chunks_ok, n_chunks_ok + n_chunks_failed,
+            len(all_candles), len(lookups[asset]),
+        )
+        # Phase G-2 round 1 HIGH fix: abort if API failed completely for
+        # any asset — silently writing all-NULL for that asset is worse
+        # than not writing at all (the rows would look "backfilled").
+        if len(lookups[asset]) == 0:
+            raise CoinbaseFetchError(
+                f"g2: asset={asset} produced ZERO candles — refusing to write "
+                f"all-NULL spots. Re-run when Coinbase API is healthy."
+            )
+
+    # 3. Per-row UPDATE.
+    last_id = read_checkpoint(checkpoint_dir, "g2_xasset") if checkpoint_dir else 0
+    total = 0
+    while True:
+        rows = conn.execute(
+            "SELECT id, evaluation_time FROM evaluated_opportunities "
+            "WHERE id > ? AND btc_spot_at_decision IS NULL "
+            "AND evaluation_time IS NOT NULL "
+            "ORDER BY id LIMIT ?",
+            (last_id, batch_size),
+        ).fetchall()
+        if not rows:
+            break
+        for r in rows:
+            spots = lookup_xasset_spots_for_row(r["evaluation_time"], lookups)
+            conn.execute(
+                "UPDATE evaluated_opportunities SET "
+                "btc_spot_at_decision = ?, eth_spot_at_decision = ?, "
+                "sol_spot_at_decision = ?, xrp_spot_at_decision = ? "
+                "WHERE id = ?",
+                (spots["btc_spot_at_decision"], spots["eth_spot_at_decision"],
+                 spots["sol_spot_at_decision"], spots["xrp_spot_at_decision"],
+                 r["id"]),
+            )
+            total += 1
+            last_id = r["id"]
+        conn.commit()
+        if checkpoint_dir:
+            write_checkpoint(checkpoint_dir, "g2_xasset", last_id)
+        if sleep_ms > 0:
+            _time_mod.sleep(sleep_ms / 1000.0)
+        if len(rows) < batch_size:
+            break
+    return total
+
+
 # ── Driver ─────────────────────────────────────────────────────────────
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -382,7 +662,7 @@ def main(argv=None) -> int:
     parser.add_argument("--db", required=True, help="path to state.db")
     parser.add_argument(
         "--phase", required=True,
-        choices=["final_spot", "maker", "streak", "tslf", "all"],
+        choices=["final_spot", "maker", "streak", "tslf", "xasset", "all"],
         help="which backfill to run",
     )
     parser.add_argument(
@@ -395,7 +675,9 @@ def main(argv=None) -> int:
     )
     parser.add_argument(
         "--sleep-ms", type=int, default=50,
-        help="sleep between batches to yield DB lock to live writers (default 50ms)",
+        help=("sleep between batches to yield DB lock to live writers "
+              "(default 50ms; xasset phase clamps to ≥200ms because "
+              "Coinbase Exchange API rate-limits at ~10 req/sec)"),
     )
     args = parser.parse_args(argv)
 
@@ -416,7 +698,8 @@ def main(argv=None) -> int:
         "sleep_ms": args.sleep_ms,
         "checkpoint_dir": args.checkpoint_dir,
     }
-    phases = ["final_spot", "maker", "streak", "tslf"] if args.phase == "all" else [args.phase]
+    phases = (["final_spot", "maker", "streak", "tslf", "xasset"]
+              if args.phase == "all" else [args.phase])
     for p in phases:
         logger.info("starting phase %s (batch_size=%d sleep_ms=%d)",
                     p, args.batch_size, args.sleep_ms)
@@ -428,6 +711,8 @@ def main(argv=None) -> int:
             n = backfill_recent_streak(conn, **kwargs)
         elif p == "tslf":
             n = backfill_tslf(conn, **kwargs)
+        elif p == "xasset":
+            n = backfill_xasset_spots(conn, **kwargs)
         else:
             raise ValueError(f"unknown phase: {p}")
         logger.info("phase %s: updated %d rows", p, n)
