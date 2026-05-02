@@ -646,6 +646,268 @@ def backfill_xasset_spots(
     return total
 
 
+# ── Phase G-4: Path metrics from per-row Coinbase candle samples ──────
+
+def compute_path_metrics_for_row(
+    asset_lookup: Dict[int, float],
+    eval_epoch_min: int,
+    seconds_to_close: float,
+    threshold: float,
+) -> Dict[str, Optional[float]]:
+    """Compute the 4 path-metric fields from per-row asset candle data.
+
+    Window definition: a 15M market opens 900s before settlement.
+    Eval is at `evaluation_time` with `seconds_to_close` until settlement.
+    Therefore the OBSERVATION window seen so far at eval time is:
+      [eval - (900 - seconds_to_close), eval] = [eval - observed_secs, eval]
+    where `observed_secs = 900 - seconds_to_close` (clamped ≥ 0).
+
+    Returns dict with the 4 fields. Returns all-None if threshold is 0
+    (div-by-zero protection) OR if no candles fall in the window.
+
+    Match Phase F live-capture semantics:
+      - max_excursion = signed price (positive if max-above wins by |val|;
+        else negative). Tie favors above.
+      - knockout_time_relative = (eval - last_crossing) / (eval - window_open)
+        bounded [0, 1]; 1.0 if no crossings.
+
+    NOTE: 1-min candle granularity → time_above/below precision is ±60s.
+    Acceptable for retrospective research (Phase F live captures the same
+    granularity through the scan loop's tick cadence).
+    """
+    out = {
+        "time_above_strike_seconds": None,
+        "time_below_strike_seconds": None,
+        "max_excursion_from_strike": None,
+        "knockout_time_relative": None,
+    }
+    # Phase G-4 round 1 L2: defense-in-depth — negative thresholds are
+    # impossible for a real strike price but cheap to guard.
+    if threshold is None or threshold <= 0:
+        return out
+    # Phase G-4 round 3 MEDIUM fix: clamp observed_secs into [0, 900].
+    # max() floors negative-stc cases (post-settlement straggler row,
+    # clock skew); min() caps if seconds_to_close < 0 — without the cap
+    # observed_secs could exceed 900, walking more candles than the
+    # 15M window has, violating time_above + time_below <= 900s and
+    # creating train/serve skew with Phase F live capture.
+    observed_secs = max(0.0, min(900.0, 900.0 - float(seconds_to_close or 0.0)))
+    if observed_secs <= 0.0:
+        return out
+    observed_min = int(observed_secs // 60)
+    window_start_min = eval_epoch_min - observed_min
+    # Walk candles oldest-to-newest in the window.
+    # Phase G-4 round 2 fix (R1 H2 fix went the WRONG direction):
+    # Coinbase candle `time` field is the BUCKET START, so the candle
+    # at minute M represents [M, M+1) of price-time. For an observation
+    # window ending at eval_epoch_min, the candle at eval_epoch_min
+    # covers a period ENTIRELY POST-eval — it's leakage. Correct range
+    # is [window_start_min, eval_epoch_min) — exactly observed_min
+    # candles, all strictly pre-eval. Pre-fix would have polluted path
+    # metrics with up to 60s of post-eval price action (and ghost
+    # crossings at settlement-edge whipsaws), creating train/serve skew
+    # vs. Phase F live capture which is bounded by `last_ts <= now`.
+    samples: List[Tuple[int, float]] = []
+    for m in range(window_start_min, eval_epoch_min):
+        v = asset_lookup.get(m)
+        if v is not None:
+            samples.append((m, v))
+    if not samples:
+        return out
+
+    time_above = 0.0
+    time_below = 0.0
+    max_above_excursion = 0.0  # >= 0; price units
+    max_below_excursion = 0.0  # >= 0 magnitude (will negate at output)
+    crossings: List[int] = []  # epoch_min of crossings
+    prev_above: Optional[bool] = None
+    for m, close in samples:
+        # Phase G-4 round 2 MEDIUM fix: match live `_update_window_state`
+        # at-strike semantics — bot.py uses `spot >= threshold` (inclusive).
+        is_above = close >= threshold
+        diff = close - threshold
+        if is_above:
+            time_above += 60.0
+            if diff > max_above_excursion:
+                max_above_excursion = diff
+        else:
+            time_below += 60.0
+            if -diff > max_below_excursion:
+                max_below_excursion = -diff
+        if prev_above is not None and is_above != prev_above:
+            crossings.append(m)
+        prev_above = is_above
+
+    # max_excursion: signed; max-magnitude wins; tie favors above.
+    if max_above_excursion >= max_below_excursion:
+        max_excursion = max_above_excursion
+    else:
+        max_excursion = -max_below_excursion
+
+    # knockout_time_relative: (eval - last_crossing) / (eval - window_open).
+    if crossings:
+        last_crossing_min = crossings[-1]
+        decided_min = eval_epoch_min - last_crossing_min
+        knockout = max(0.0, min(1.0, decided_min / observed_min)) if observed_min > 0 else 1.0
+    else:
+        knockout = 1.0
+
+    out["time_above_strike_seconds"] = time_above
+    out["time_below_strike_seconds"] = time_below
+    out["max_excursion_from_strike"] = max_excursion
+    out["knockout_time_relative"] = knockout
+    return out
+
+
+def backfill_path_metrics(
+    conn: sqlite3.Connection,
+    fetcher: Optional[Callable] = None,
+    batch_size: int = 50,
+    sleep_ms: int = 200,
+    checkpoint_dir: Optional[str] = None,
+) -> int:
+    """Phase G-4 backfill: per-row path metrics from Coinbase candles.
+
+    Reuses the G-2 fetch + lookup pattern. SELECTs rows missing
+    time_above_strike_seconds (Phase F's primary populated field —
+    rows missing it are pre-Phase-F historical). Pulls candles for
+    the FULL date range across all 4 assets ONCE (avoids per-row API
+    calls). Per-row computation in Python.
+
+    Like G-2, clamps `sleep_ms = max(sleep_ms, 200)` for the API
+    pacing portion."""
+    if fetcher is None:
+        fetcher = fetch_coinbase_candles
+    if sleep_ms < 200:
+        logger.info(
+            "g4: bumping sleep_ms %d → 200 (Coinbase rate-limit floor)",
+            sleep_ms,
+        )
+        sleep_ms = 200
+
+    # 1. Discover historical date range.
+    rng = conn.execute(
+        "SELECT MIN(evaluation_time), MAX(evaluation_time) "
+        "FROM evaluated_opportunities "
+        "WHERE time_above_strike_seconds IS NULL "
+        "AND product_type = '15m' "
+        "AND threshold IS NOT NULL "
+        "AND seconds_to_close IS NOT NULL "
+        "AND evaluation_time IS NOT NULL"
+    ).fetchone()
+    if not rng or rng[0] is None:
+        return 0
+    start_iso, end_iso = rng[0], rng[1]
+    logger.info("g4: backfilling path metrics over [%s .. %s]", start_iso, end_iso)
+
+    # 2. Fetch candles for the full range (extend start by 15min to cover
+    # the earliest row's full window-open).
+    extended_start = (
+        datetime.datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        - datetime.timedelta(minutes=16)
+    )
+    extended_start_iso = extended_start.isoformat().replace("+00:00", "Z")
+    end_dt = datetime.datetime.fromisoformat(end_iso.replace("Z", "+00:00")) + datetime.timedelta(minutes=1)
+
+    lookups: Dict[str, Dict[int, float]] = {}
+    chunk = datetime.timedelta(minutes=299)
+    for asset in COINBASE_PRODUCTS:
+        all_candles: List = []
+        n_chunks_ok = 0
+        n_chunks_failed = 0
+        cur_start = extended_start
+        while cur_start < end_dt:
+            cur_end = min(cur_start + chunk, end_dt)
+            chunk_start_iso = cur_start.isoformat().replace("+00:00", "Z")
+            chunk_end_iso = cur_end.isoformat().replace("+00:00", "Z")
+            try:
+                page = fetcher(asset, chunk_start_iso, chunk_end_iso)
+                all_candles.extend(page or [])
+                n_chunks_ok += 1
+            except CoinbaseFetchError as e:
+                n_chunks_failed += 1
+                logger.warning("g4: chunk failed asset=%s: %s", asset, e)
+            cur_start = cur_end
+            if sleep_ms > 0:
+                _time_mod.sleep(sleep_ms / 1000.0)
+        lookups[asset] = build_candle_lookup(all_candles)
+        logger.info(
+            "g4: %s — %d/%d chunks OK, %d candles, %d unique minutes",
+            asset, n_chunks_ok, n_chunks_ok + n_chunks_failed,
+            len(all_candles), len(lookups[asset]),
+        )
+        # Phase G-4 round 1 H1 fix: mirror G-2's per-asset zero-candle
+        # abort. Without this, a complete API failure for one asset would
+        # silently write all-NULL path metrics to every row of that asset
+        # AND increment `total` — operator gets misleading "n=X updated"
+        # while the rows are unusable. WORSE than G-2 because backfill
+        # marks rows as "processed" via the UPDATE, so re-runs won't retry.
+        if len(lookups[asset]) == 0:
+            raise CoinbaseFetchError(
+                f"g4: asset={asset} produced ZERO candles — refusing to "
+                f"write all-NULL path metrics. Re-run when API healthy."
+            )
+
+    # 3. Per-row UPDATE.
+    last_id = read_checkpoint(checkpoint_dir, "g4_path") if checkpoint_dir else 0
+    total = 0
+    while True:
+        rows = conn.execute(
+            "SELECT id, asset, evaluation_time, threshold, seconds_to_close "
+            "FROM evaluated_opportunities "
+            "WHERE id > ? AND time_above_strike_seconds IS NULL "
+            "AND product_type = '15m' "
+            "AND threshold IS NOT NULL "
+            "AND seconds_to_close IS NOT NULL "
+            "AND evaluation_time IS NOT NULL "
+            "ORDER BY id LIMIT ?",
+            (last_id, batch_size),
+        ).fetchall()
+        if not rows:
+            break
+        for r in rows:
+            asset = r["asset"]
+            asset_lookup = lookups.get(asset, {})
+            try:
+                eval_dt = datetime.datetime.fromisoformat(
+                    r["evaluation_time"].replace("Z", "+00:00"))
+                eval_epoch_min = int(eval_dt.timestamp()) // 60
+            except Exception:
+                eval_epoch_min = None
+            if eval_epoch_min is None:
+                last_id = r["id"]
+                continue
+            metrics = compute_path_metrics_for_row(
+                asset_lookup=asset_lookup,
+                eval_epoch_min=eval_epoch_min,
+                seconds_to_close=float(r["seconds_to_close"] or 0.0),
+                threshold=float(r["threshold"] or 0.0),
+            )
+            conn.execute(
+                "UPDATE evaluated_opportunities SET "
+                "time_above_strike_seconds = ?, time_below_strike_seconds = ?, "
+                "max_excursion_from_strike = ?, knockout_time_relative = ? "
+                "WHERE id = ?",
+                (metrics["time_above_strike_seconds"],
+                 metrics["time_below_strike_seconds"],
+                 metrics["max_excursion_from_strike"],
+                 metrics["knockout_time_relative"],
+                 r["id"]),
+            )
+            total += 1
+            last_id = r["id"]
+        conn.commit()
+        if checkpoint_dir:
+            write_checkpoint(checkpoint_dir, "g4_path", last_id)
+        # Phase G-4 round 1 M1 fix: yield DB lock to live writers
+        # between batches (mirror G-2 pattern; was missing here).
+        if sleep_ms > 0:
+            _time_mod.sleep(sleep_ms / 1000.0)
+        if len(rows) < batch_size:
+            break
+    return total
+
+
 # ── Driver ─────────────────────────────────────────────────────────────
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -662,7 +924,8 @@ def main(argv=None) -> int:
     parser.add_argument("--db", required=True, help="path to state.db")
     parser.add_argument(
         "--phase", required=True,
-        choices=["final_spot", "maker", "streak", "tslf", "xasset", "all"],
+        choices=["final_spot", "maker", "streak", "tslf", "xasset",
+                 "pathmetrics", "all"],
         help="which backfill to run",
     )
     parser.add_argument(
@@ -698,7 +961,7 @@ def main(argv=None) -> int:
         "sleep_ms": args.sleep_ms,
         "checkpoint_dir": args.checkpoint_dir,
     }
-    phases = (["final_spot", "maker", "streak", "tslf", "xasset"]
+    phases = (["final_spot", "maker", "streak", "tslf", "xasset", "pathmetrics"]
               if args.phase == "all" else [args.phase])
     for p in phases:
         logger.info("starting phase %s (batch_size=%d sleep_ms=%d)",
@@ -713,6 +976,8 @@ def main(argv=None) -> int:
             n = backfill_tslf(conn, **kwargs)
         elif p == "xasset":
             n = backfill_xasset_spots(conn, **kwargs)
+        elif p == "pathmetrics":
+            n = backfill_path_metrics(conn, **kwargs)
         else:
             raise ValueError(f"unknown phase: {p}")
         logger.info("phase %s: updated %d rows", p, n)
