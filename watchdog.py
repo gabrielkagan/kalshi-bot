@@ -144,6 +144,101 @@ def check_balance() -> float:
         return 999.0
 
 
+# ── Layer 3.5: orphan-DB detection (mid-session) ──────────────────────
+#
+# Layer 3 (`bot.py:detect_orphan_db_holders`) catches orphan H-4
+# backfill processes at bot startup. If an orphan spawns DURING bot
+# uptime (operator-triggered manual H-4 run mid-day), Layer 3 misses
+# it until the next bot restart. This Layer 3.5 hooks into the
+# 2-min watchdog cron so mid-session orphans are detected within
+# ≤2 min. Adversarial-review C-8 from the Layer 3 review.
+#
+# Same positive-list as Layer 3: only alert on cmdlines matching
+# known orphan-creator scripts (cryptocompare_news_backfill,
+# gdelt_backfill, glassnode_backfill). Legitimate cron processes
+# (auditor, audit_cron, dashboard_snapshot) and the watchdog itself
+# don't trigger alerts.
+
+_ORPHAN_PATTERNS = (
+    "gdelt_backfill",
+    "cryptocompare_news_backfill",
+    "glassnode_backfill",
+)
+
+
+def _run_lsof_for_db(db_path: str):
+    """Return list of PIDs holding `db_path` open. Mirrors
+    `bot.py:_run_lsof_for_db`. Separate function so tests can stub
+    it out without intercepting subprocess globally."""
+    out = subprocess.check_output(
+        ["lsof", "-t", db_path], timeout=10, text=True,
+    )
+    pids = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            pids.append(int(line))
+        except ValueError:
+            continue
+    return pids
+
+
+def _get_pid_cmdline(pid: int) -> str:
+    """Best-effort cmdline lookup. /proc on Linux, ps fallback."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            raw = f.read()
+        return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    try:
+        return subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "command="],
+            timeout=5, text=True,
+        ).strip()
+    except Exception:
+        return ""
+
+
+def check_orphan_db_holders(db_path: str):
+    """Return Telegram alert text if a known-orphan-class PID holds
+    `db_path` open, else None.
+
+    Detection-only — does NOT auto-kill (matches Layer 3 design).
+
+    Robustness: any failure (lsof missing, parse error) returns None
+    so the watchdog itself doesn't crash on environmental issues.
+    Layer 3 in bot.py separately alerts once if lsof is missing, so
+    duplication here would be alert noise."""
+    try:
+        pids = _run_lsof_for_db(db_path)
+    except Exception:
+        return None
+    self_pid = os.getpid()
+    for pid in pids:
+        if pid == self_pid:
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except OSError:
+            pass
+        cmdline = _get_pid_cmdline(pid)
+        if any(pat in cmdline for pat in _ORPHAN_PATTERNS):
+            return (
+                f"⚠️ *ORPHAN DB HOLDER (mid-session)*\n"
+                f"pid=`{pid}`\n"
+                f"cmd: `{cmdline[:200] or '(unknown)'}`\n"
+                f"Holds state.db lock from outside the bot. "
+                f"`ssh kalshi-vps; ps -p {pid}` and kill if stale "
+                f"(May 3 2026 incident pattern)."
+            )
+    return None
+
+
 def check_memory() -> tuple:
     """Returns (memory_mb, is_concerning)."""
     try:
@@ -194,7 +289,18 @@ def main():
         )
     state["loss_streak"] = streak
 
-    # 4. Memory check
+    # 4. Orphan-DB check (Layer 3.5 — mid-session orphan detection)
+    orphan_alert = check_orphan_db_holders(str(DB_PATH))
+    if orphan_alert is not None:
+        # Dedup: only re-alert every 30 min for the same orphan PID
+        # (the alert text contains the pid). Pattern matches the
+        # other deduped alerts in this file.
+        last_orphan_alert = state.get("last_orphan_alert", 0)
+        if now - last_orphan_alert > 1800:
+            alerts.append(orphan_alert)
+            state["last_orphan_alert"] = now
+
+    # 5. Memory check
     mem_mb, mem_high = check_memory()
     if mem_high:
         last_mem_alert = state.get("last_mem_alert", 0)
