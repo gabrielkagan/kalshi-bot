@@ -2819,6 +2819,17 @@ class StateManager:
         # Signature: (ticker, asset, spot_price, threshold, product_type) -> Dict[str, Any]
         # Returns empty dict for non-15M or if no state. Must be fast (called on every insert).
         self._extended_feature_provider: Optional[Any] = None
+        # Phase H-2 (2026-05-03): bot microstate snapshot provider callback.
+        # MainLoop wires this AFTER both StateManager and MainLoop are
+        # constructed (avoids circular ref at __init__). Signature:
+        # `() -> Optional[Dict[str, Any]]` — returns the snapshot dict
+        # (or None on failure). insert_evaluated_opportunity patches
+        # lock_wait_ms after BEGIN IMMEDIATE and serializes inside the
+        # lock; this decouples the heavy field-extraction from the
+        # writer lock (round-1 wiring review #3 lock-window inflation).
+        # Called on every 15M insert when the kwarg isn't explicitly
+        # passed.
+        self._bot_state_provider: Optional[Any] = None
         self._create_tables()
         # Phase 7 Edit 3a: cal_mlp deploy preconditions.
         # R-p7-cleanroom#M3: migrate_schema is in the same try/except as
@@ -3827,6 +3838,35 @@ class StateManager:
                     WHERE order_id=?
                 """, (now, row["order_id"]))
 
+    # ── Phase H-2 provider hook ───────────────────────────────────────────
+
+    def set_bot_state_provider(self, provider) -> None:
+        """Wire a callable that returns the bot microstate snapshot dict
+        for `bot_state_snapshot_json` on 15M inserts.
+
+        Signature: `provider() -> Optional[Dict[str, Any]]`.
+        Returns the snapshot dict OR None if the provider cannot build
+        one. insert_evaluated_opportunity calls this per-insert on 15M
+        rows when the kwarg isn't explicitly passed; it patches
+        `lock_wait_ms` (measured AFTER BEGIN IMMEDIATE) into the dict
+        and serializes inside the writer lock.
+
+        Why dict (not pre-serialized JSON): the heavy field-extraction
+        (api_error_counts walk, ws_cache_age_ms walk, open_positions
+        cache read) happens OUTSIDE the writer lock; only the
+        json.dumps + dict-patch run inside the lock.
+
+        Why a setter (not constructor injection): MainLoop holds the
+        StateManager AND the references the snapshot reads from
+        (kalshi_feed, executor, _scan_iter, etc.). Setting the provider
+        AFTER both are constructed avoids a circular import / partial-
+        init problem at __init__ time.
+
+        See bot_state_snapshot.compute_bot_state_snapshot for the helper
+        that callers typically wrap in this provider.
+        """
+        self._bot_state_provider = provider
+
     # ── CRUD ──────────────────────────────────────────────────────────────
 
     def get_open_positions(self, asset: Optional[str] = None) -> List[Dict]:
@@ -4436,6 +4476,68 @@ class StateManager:
         # kb/decisions/shadow-coverage-expansion-may01.md.
         if final_spot_price is None and spot_price is not None:
             final_spot_price = spot_price
+
+        # Phase H-2: compute snapshot DICT before BEGIN IMMEDIATE so the
+        # heavy field-extraction work (api_error_counts walk, ws_cache_age_ms
+        # walk, open_positions cache read) happens OUTSIDE the writer
+        # lock. lock_wait_ms is unknown at this point; it gets patched
+        # into the dict after BEGIN succeeds, and json.dumps runs INSIDE
+        # the lock (sub-ms). Round-1 wiring review #3 — keeps lock-held
+        # time minimal under contention with cal_mlp post-hoc + settlement.
+        # Scoped to product_type='15m' per the design doc.
+        # Provider contract: returns dict (not JSON string) so the insert
+        # site can patch lock_wait_ms in-place.
+        _h2_snap_dict: Optional[Dict[str, Any]] = None
+        if (bot_state_snapshot_json is None
+                and product_type == '15m'
+                and self._bot_state_provider is not None):
+            try:
+                _h2_snap_dict = self._bot_state_provider()
+            except Exception:
+                logging.warning(
+                    "bot_state_provider raised — bot_state_snapshot_json NULL",
+                    exc_info=True,
+                )
+                _h2_snap_dict = None
+
+        # Phase H-2: BEGIN IMMEDIATE timing pattern for lock_wait_ms.
+        # Mandated per bot_state_snapshot.py "lock_wait_ms semantics —
+        # MANDATED PATTERN": measure the wall-clock delay between issuing
+        # BEGIN IMMEDIATE and the lock being granted, in milliseconds.
+        # Falls through to the implicit-tx path under two conditions:
+        #   1. Another thread already has an implicit tx open on the
+        #      shared connection (Python-side "cannot start a transaction
+        #      within a transaction" error).
+        #   2. busy_timeout exceeded (SQLite-side "database is locked").
+        # In both cases lock_wait_ms remains None — best-effort under
+        # thread contention. v2 training should treat NULL as "unmeasured".
+        _lock_wait_ms: Optional[float] = None
+        _began_explicitly: bool = False
+        _t0_lock = time.perf_counter()
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            _lock_wait_ms = (time.perf_counter() - _t0_lock) * 1000.0
+            _began_explicitly = True
+        except sqlite3.OperationalError:
+            pass
+
+        # Phase H-2: patch lock_wait_ms into the pre-computed snapshot
+        # and serialize. Done INSIDE the lock but it's just a dict write
+        # + json.dumps — sub-millisecond.
+        if _h2_snap_dict is not None:
+            try:
+                _h2_snap_dict["lock_wait_ms"] = (
+                    round(_lock_wait_ms, 3)
+                    if _lock_wait_ms is not None else None
+                )
+                bot_state_snapshot_json = json.dumps(_h2_snap_dict, allow_nan=False)
+            except Exception:
+                logging.warning(
+                    "bot_state snapshot serialization failed; column NULL",
+                    exc_info=True,
+                )
+                bot_state_snapshot_json = None
+
         try:
             self.conn.execute("""
                 INSERT INTO evaluated_opportunities
@@ -4635,12 +4737,18 @@ class StateManager:
                     -- COALESCEing here would freeze the snapshot at
                     -- first-tick while every other column tracks last-tick,
                     -- creating within-row temporal inconsistency for v2
-                    -- training joins. Round-2 step-1 review #R2-NEW-1.
-                    -- Trade-off: a step-2 call site that forgets to pass
-                    -- the kwarg silently NULLs populated rows. Mitigated
-                    -- by an AST regression test in step 2 that enumerates
-                    -- all 15M-emitting call sites and asserts each passes
-                    -- bot_state_snapshot_json.
+                    -- training joins.
+                    --
+                    -- Step-2 design eliminates the "split-caller" risk by
+                    -- having insert_evaluated_opportunity AUTO-POPULATE
+                    -- bot_state_snapshot_json from a provider callback
+                    -- (see StateManager.set_bot_state_provider). Callers
+                    -- never need to pass the kwarg. The only paths that
+                    -- write NULL to this column are: (a) provider import
+                    -- failed at MainLoop init (logged once at startup),
+                    -- (b) BEGIN IMMEDIATE raised + provider raised, or
+                    -- (c) product_type != '15m' (by design — non-15M
+                    -- product_types leave the column NULL).
                     bot_state_snapshot_json=excluded.bot_state_snapshot_json
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
@@ -4700,7 +4808,13 @@ class StateManager:
                   sol_spot_at_decision, xrp_spot_at_decision,
                   okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
                   data_provenance, bot_state_snapshot_json))
-            self.conn.commit()
+            # Phase H-2: explicit COMMIT only if we BEGAN IMMEDIATE explicitly.
+            # Otherwise fall back to the implicit-tx commit() that paired
+            # with the implicit BEGIN that fired on the INSERT above.
+            if _began_explicitly:
+                self.conn.execute("COMMIT")
+            else:
+                self.conn.commit()
         except Exception as e:
             try:
                 self.conn.rollback()
@@ -11006,6 +11120,17 @@ class OpportunityScanner:
             # same-asset only — already exposed above).
             n_open_positions = sum(pos_counts.values())
 
+            # Phase H-2: also publish to MainLoop._open_positions_count_cache
+            # so the bot microstate snapshot avoids per-insert SQL hits.
+            # 60s cache (this whole block is gated by `now - cache.get('ts',
+            # 0) < 60` above) — approximate, NOT decision-tick-exact. v2
+            # training treats `open_positions_count` as approximate.
+            if self._ml is not None:
+                try:
+                    self._ml._open_positions_count_cache = int(n_open_positions)
+                except (TypeError, ValueError):
+                    pass
+
             # time_since_last_fill_s: seconds since the most recent fill
             # event. Uses MAX across positions.opened_at AND
             # settled_trades.settled_at because (a) `positions` is
@@ -11128,6 +11253,19 @@ class OpportunityScanner:
         """Evaluate all windows/markets, return best candidate or None."""
         now = time.time()
         _scan_tick_start_perf = time.perf_counter()
+        # Phase H-2: per-tick monotonic counter + scan-loop-start pin for
+        # the bot microstate snapshot. These attributes live on MainLoop
+        # (this method runs in OpportunityScanner; `self._ml` is the
+        # MainLoop ref). Round-1 wiring review caught this — writing to
+        # `self._scan_iter` here would AttributeError on every tick.
+        if self._ml is not None:
+            try:
+                self._ml._scan_iter += 1
+                self._ml._scan_loop_start = _scan_tick_start_perf
+            except Exception:
+                # Defensive: a missing attr or non-int would not crash scan
+                # (insert_evaluated_opportunity already tolerates None).
+                pass
         ob_fetches_this_tick = 0
         candidates: List[Dict] = []
 
@@ -25456,6 +25594,34 @@ class MainLoop:
         self._observation_mode: bool = OBSERVATION_MODE
         self._last_db_health_check: float = 0.0
         self._db_locked_count: int = 0
+        # Phase H-2: bot microstate forward capture state.
+        # `_scan_iter` is the monotonic per-tick counter (incremented at
+        # the top of `scan()`). `_open_positions_count_cache` is populated
+        # by `_compute_bot_state_features` (60s cache) so the snapshot
+        # avoids a per-insert SQL hit. `_scan_loop_start` (pinned to
+        # `time.perf_counter()` at top of scan()) lets the helper derive
+        # `scan_dt_ms` defensively.
+        self._scan_iter: int = 0
+        self._open_positions_count_cache: Optional[int] = None
+        self._scan_loop_start: Optional[float] = None
+        # Phase H-2: wire the bot microstate provider into StateManager.
+        # AFTER all MainLoop attributes are initialized (so the provider
+        # closure has everything it needs to read). The provider returns
+        # the snapshot DICT (not a JSON string) — the insert site patches
+        # `lock_wait_ms` in-place and serializes. This decouples the
+        # heavy snapshot computation from the writer lock (round-1 wiring
+        # review #3). Wrapped in try/except — if the import fails the
+        # bot still runs (column stays NULL on every 15M insert).
+        try:
+            from bot_state_snapshot import compute_bot_state_snapshot as _moc_snap
+            def _bot_state_provider():
+                """Returns the snapshot dict (lock_wait_ms=None — patched
+                in by insert_evaluated_opportunity after BEGIN IMMEDIATE)."""
+                return _moc_snap(self, lock_wait_ms=None)
+            self.state.set_bot_state_provider(_bot_state_provider)
+            logging.info("H-2 bot state provider wired into StateManager")
+        except Exception as e:
+            logging.warning(f"H-2 bot state provider unavailable: {e}")
 
     # ── DB Health Watchdog ────────────────────────────────────────────────
 
