@@ -1,0 +1,45 @@
+{
+  "_comment": "Representative GDELT 2.0 Doc API ArtList JSON shape per the Round 3 fix #3 fallback chain. Operator validates against real API response later.",
+  "_source": "https://api.gdeltproject.org/api/v2/doc/doc?query=bitcoin&mode=ArtList&format=json",
+  "articles": [
+    {
+      "url": "https://example.com/btc-rally",
+      "url_mobile": "",
+      "title": "Bitcoin rallies past 80k on ETF inflows",
+      "seendate": "20260415091500",
+      "socialimage": "https://example.com/img.jpg",
+      "domain": "example.com",
+      "language": "English",
+      "sourcecountry": "United States",
+      "tone": "2.81"
+    },
+    {
+      "url": "https://news2.example/eth-merge-followup",
+      "url_mobile": "",
+      "title": "Ethereum developers chart 2026 roadmap",
+      "seendate": "20260415093000",
+      "socialimage": "",
+      "domain": "news2.example",
+      "language": "English",
+      "sourcecountry": "United Kingdom",
+      "documenttone": "-1.42"
+    },
+    {
+      "url": "https://oldfeed.example/btc-tax",
+      "title": "BTC tax guidance updated by IRS",
+      "seendate": "20260415094500",
+      "domain": "oldfeed.example",
+      "language": "English",
+      "sourcecountry": "United States",
+      "docTone": "0.55"
+    },
+    {
+      "url": "https://feed.example/no-tone-field",
+      "title": "Crypto market commentary (no tone)",
+      "seendate": "20260415095900",
+      "domain": "feed.example",
+      "language": "English",
+      "sourcecountry": "United States"
+    }
+  ]
+}
