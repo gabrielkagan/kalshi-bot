@@ -94,13 +94,12 @@ jobs:
       fail-fast: false
       matrix:
         source: ${{ fromJson(needs.resolve.outputs.sources) }}
-        include:
-          - source: gdelt
-            script: scripts/gdelt_backfill.py
-          - source: glassnode
-            script: scripts/glassnode_backfill.py
-          - source: cryptocompare
-            script: scripts/cryptocompare_news_backfill.py
+        # Source → script path mapping is done in the bash script below
+        # (NOT via `include:`). Reason: `include:` entries that don't
+        # match the dynamic `source` axis get ADDED as new combinations
+        # by GH Actions — so an include for {source: glassnode, script: X}
+        # creates a glassnode job EVEN WHEN we asked for gdelt only. The
+        # bash-side case statement avoids that footgun entirely.
     steps:
       - name: Run ${{ matrix.source }} backfill on VPS
         uses: appleboy/ssh-action@v1
@@ -109,29 +108,32 @@ jobs:
           username: botuser
           key: ${{ secrets.VPS_SSH_KEY }}
           # 30-min ceiling per backfill. GDELT first-week catch-up may
-          # approach this; the wrapper's SIGTERM handler alerts before
-          # SSH client tears down.
+          # approach this; the wrapper's SIGHUP handler alerts before
+          # SSH client tears down (appleboy/ssh-action timeout closes
+          # the channel → SIGHUP, not SIGTERM).
           command_timeout: 30m
           script: |
             set -euo pipefail
             cd ~/kalshi-bot-repo
-            # Round-1 critique #1 fix: fail loud if matrix/include drift
-            # produces an empty script value. (subprocess.Popen would
-            # currently surface a non-zero exit from python's "no script"
-            # error, but explicit > implicit.)
-            if [ -z "${{ matrix.script }}" ]; then
-              echo "ERROR: no script mapped for source='${{ matrix.source }}'" >&2
-              exit 1
-            fi
-            # Round-1 critique #3 fix: extract specific .env vars instead
-            # of `source .env` — avoids `set -u` blowing up on unset
-            # references AND avoids shell-evaluating arbitrary .env content
-            # (defense-in-depth; .env is currently shell-safe but grows
-            # organically).
+            # Source → backfill script mapping. Fail-loud on unknown
+            # source (catches typos in the resolve step's case dispatch).
+            case "${{ matrix.source }}" in
+              gdelt)         BACKFILL_SCRIPT="scripts/gdelt_backfill.py" ;;
+              glassnode)     BACKFILL_SCRIPT="scripts/glassnode_backfill.py" ;;
+              cryptocompare) BACKFILL_SCRIPT="scripts/cryptocompare_news_backfill.py" ;;
+              *)
+                echo "ERROR: unknown source '${{ matrix.source }}' — update the case statement" >&2
+                exit 1
+                ;;
+            esac
+            # Extract specific .env vars instead of `source .env` — avoids
+            # `set -u` tripping on unset references AND avoids shell-
+            # evaluating arbitrary .env content (defense-in-depth).
             grep_env() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | sed 's/^"//; s/"$//'; }
             export TELEGRAM_BOT_TOKEN="$(grep_env TELEGRAM_BOT_TOKEN)"
             export TELEGRAM_CHAT_ID="$(grep_env TELEGRAM_CHAT_ID)"
             export GLASSNODE_API_KEY="$(grep_env GLASSNODE_API_KEY)"
+            echo "Running ${{ matrix.source }} backfill: $BACKFILL_SCRIPT"
             venv/bin/python3 scripts/h4_run_with_alert.py \
               --label ${{ matrix.source }} \
-              -- venv/bin/python3 ${{ matrix.script }} --db state.db
+              -- venv/bin/python3 "$BACKFILL_SCRIPT" --db state.db
