@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 171760,
+  "total_evaluated": 171763,
   "filter_breakdown": {
     "SOL_TAKER_85_89C_2_5MIN_BLEED": 11,
     "TM98_97_98C_2_5MIN_BLEED": 52,
@@ -41,7 +41,7 @@
     "hourly_observation_v2": 7341,
     "hourly_timing_restricted": 1714,
     "hourly_window_limit": 595,
-    "insufficient_edge": 52978,
+    "insufficient_edge": 52980,
     "low_price_shadow": 3130,
     "no_side_price_shadow_no_xrp": 4694,
     "no_side_price_shadow_xrp": 992,
@@ -87,7 +87,7 @@
     "weather_excluded_city": 155,
     "weather_excluded_mtype_bracket": 520,
     "weather_excluded_mtype_upper_tail": 51,
-    "weather_observation": 3487,
+    "weather_observation": 3488,
     "weather_shadow_capped30": 45,
     "weather_shadow_capped30_short_stc": 3,
     "weather_shadow_short_stc": 12,
@@ -97,8 +97,8 @@
     "xrp_shadow": 126,
     "zero_sizing": 869
   },
-  "total_settled": 3370,
-  "total_wins": 3123,
+  "total_settled": 3371,
+  "total_wins": 3124,
   "total_trades": 6712,
   "win_rate_by_price": {
     "80-84": {
@@ -162,15 +162,15 @@
     "XRP"
   ],
   "observation_period": "2026-02-22 to 2026-05-03",
-  "live_pnl_cents": 52347,
-  "live_settled": 3370,
-  "live_wins": 3123,
+  "live_pnl_cents": 52407,
+  "live_settled": 3371,
+  "live_wins": 3124,
   "live_losses": 245,
   "live_breakevens": 2,
   "live_pnl_headline_cents": 52150,
   "live_settled_headline": 3251,
   "unknown_strategy_groups": [],
-  "observation_pnl": 52347,
+  "observation_pnl": 52407,
   "filter_breakdown_by_product": {
     "15m": {
       "SOL_TAKER_85_89C_2_5MIN_BLEED": 11,
@@ -282,13 +282,13 @@
     },
     "weather": {
       "candidate": 125,
-      "insufficient_edge": 6517,
+      "insufficient_edge": 6519,
       "price_out_of_range": 1900,
       "strategy_wait": 21,
       "weather_excluded_city": 155,
       "weather_excluded_mtype_bracket": 520,
       "weather_excluded_mtype_upper_tail": 51,
-      "weather_observation": 3487,
+      "weather_observation": 3488,
       "weather_shadow_capped30": 45,
       "weather_shadow_capped30_short_stc": 3,
       "weather_shadow_short_stc": 12,
@@ -365,10 +365,10 @@
       "mean_entry_price_cents": 98.85
     },
     "weather_no_live": {
-      "n": 105,
-      "wins": 42,
-      "pnl_cents": 67,
-      "mean_entry_price_cents": 37.43
+      "n": 106,
+      "wins": 43,
+      "pnl_cents": 125,
+      "mean_entry_price_cents": 37.45
     },
     "weekend_discount": {
       "n": 141,
@@ -798,19 +798,19 @@
     }
   },
   "brier_filled": {
-    "overall": 0.0579,
+    "overall": 0.0582,
     "by_product": {
       "15m": 0.0457,
-      "weather": 0.386,
+      "weather": 0.3917,
       "hourly": 0.2742
     },
-    "n": 3181
+    "n": 3182
   },
   "settled_without_matching_eo": 164,
   "since_apr11": {
-    "live_pnl_cents": 46598,
-    "live_settled": 1548,
-    "live_wins": 1421,
+    "live_pnl_cents": 46658,
+    "live_settled": 1549,
+    "live_wins": 1422,
     "live_losses": 125,
     "live_breakevens": 2,
     "live_pnl_headline_cents": 46401,
@@ -819,9 +819,9 @@
     "brier_overall": 0.045061967970215853
   },
   "since_apr23": {
-    "live_pnl_cents": -28764,
-    "live_settled": 600,
-    "live_wins": 538,
+    "live_pnl_cents": -28704,
+    "live_settled": 601,
+    "live_wins": 539,
     "live_losses": 61,
     "live_breakevens": 1,
     "live_pnl_headline_cents": -28890,
@@ -829,6 +829,6 @@
     "unknown_strategy_groups": [],
     "brier_overall": 0.0331946860213364
   },
-  "generated_at": "2026-05-03T21:16:24Z",
+  "generated_at": "2026-05-03T21:26:22Z",
   "_classifier_version": "v3-2026-04-26"
 }
