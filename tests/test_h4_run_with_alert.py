@@ -256,6 +256,36 @@ def test_sigterm_handler_installed_by_main(monkeypatch):
     )
 
 
+def test_sighup_handler_installed_by_main(monkeypatch):
+    """H-4 GH-Actions pivot critique #5: appleboy/ssh-action command_timeout
+    closes the SSH channel → child gets SIGHUP (not SIGTERM). Without a
+    SIGHUP handler, the wrapper dies silently in the GH-Actions timeout
+    case — exactly the failure mode the alerting was meant to surface.
+    """
+    import h4_run_with_alert
+    import signal as _signal
+    handler_at_popen = []
+
+    real_popen = h4_run_with_alert.subprocess.Popen
+
+    def spy_popen(*args, **kwargs):
+        handler_at_popen.append(_signal.getsignal(_signal.SIGHUP))
+        return real_popen(['true'], **{k: v for k, v in kwargs.items() if k != 'cmd'})
+
+    monkeypatch.setattr(h4_run_with_alert.subprocess, 'Popen', spy_popen)
+    monkeypatch.setattr(
+        h4_run_with_alert, 'send_telegram_alert', lambda msg: True,
+    )
+    rc = h4_run_with_alert.main(['--label', 'gdelt', '--', 'true'])
+    assert rc == 0
+    assert handler_at_popen, "Popen was not called"
+    h = handler_at_popen[0]
+    assert h is h4_run_with_alert._on_sigterm, (
+        f"SIGHUP handler not installed before subprocess start; "
+        f"got: {h}"
+    )
+
+
 def test_end_to_end_sigterm_during_subprocess(monkeypatch, tmp_path):
     """E2E regression: spawn wrapper as a subprocess running `sleep 30`,
     SIGTERM the wrapper after 1s, assert wrapper exits 143 AND the

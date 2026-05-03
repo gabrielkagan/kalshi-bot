@@ -147,11 +147,18 @@ def main(argv=None) -> int:
 
     # Round-2 fix: install SIGTERM handler BEFORE starting subprocess so
     # systemd's TimeoutStartSec doesn't kill us before the alert fires.
+    # H-4 GH-Actions pivot round-1 critique #5: also handle SIGHUP — when
+    # appleboy/ssh-action's command_timeout fires, it tears down the SSH
+    # channel; the controlling terminal goes away → child process group
+    # receives SIGHUP, not SIGTERM. Without SIGHUP handling, the GH
+    # Actions timeout case bypasses alerting (the very failure mode the
+    # alert is for).
     global _LABEL, _CMD, _START_TIME, _PROC
     _LABEL = args.label
     _CMD = cmd
     _START_TIME = time.monotonic()
     signal.signal(signal.SIGTERM, _on_sigterm)
+    signal.signal(signal.SIGHUP, _on_sigterm)
 
     try:
         _PROC = subprocess.Popen(cmd)

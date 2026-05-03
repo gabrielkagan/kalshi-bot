@@ -1,0 +1,137 @@
+name: H-4 daily backfills
+
+# H-4a/b/c daily cron via GitHub Actions instead of systemd timers.
+# Pivoted from setup_h4_cron.sh (blocked by narrow VPS sudoers — botuser
+# has NOPASSWD only for `systemctl restart kalshi-bot`, not for the
+# `tee /etc/systemd/system/* + systemctl daemon-reload + enable + start`
+# the install needs). GH Actions only needs SSH as botuser (no sudo)
+# to run the backfill scripts.
+#
+# Scheduling: 3 staggered daily crons via GitHub-Actions native scheduler.
+#   - 04:00 UTC → GDELT
+#   - 04:30 UTC → Glassnode
+#   - 05:00 UTC → CryptoCompare
+# Each cron triggers the SAME workflow but the job dispatches on
+# github.event.schedule to run only the matching backfill.
+#
+# Manual trigger:
+#   gh workflow run h4_backfill.yml -f source=gdelt
+#   gh workflow run h4_backfill.yml -f source=glassnode
+#   gh workflow run h4_backfill.yml -f source=cryptocompare
+#   gh workflow run h4_backfill.yml -f source=all   # all 3 sequentially
+#
+# Telegram alerting: each backfill runs through h4_run_with_alert.py
+# which posts to Telegram on non-zero exit. Creds (TELEGRAM_BOT_TOKEN /
+# CHAT_ID) come from the VPS .env, sourced before invocation.
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # gdelt
+    - cron: '30 4 * * *'  # glassnode
+    - cron: '0 5 * * *'   # cryptocompare
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'Which backfill to run (gdelt|glassnode|cryptocompare|all)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - gdelt
+          - glassnode
+          - cryptocompare
+          - all
+
+# Serialize H-4 backfills among themselves (no overlap with concurrent
+# manual + scheduled runs), but DON'T share the deploy.yml lock — the
+# backfill is read-only on the working tree (no git operations) and can
+# safely run alongside a deploy. Relevant context for crit #4 of the
+# round-1 review: prior design held vps-deploy for the full workflow,
+# blocking deploys for up to 90m on a `source=all` run.
+concurrency:
+  group: vps-h4
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    # Map cron schedule → source name, OR pass through workflow_dispatch input.
+    runs-on: ubuntu-latest
+    outputs:
+      sources: ${{ steps.pick.outputs.sources }}
+    steps:
+      - id: pick
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            sel="${{ github.event.inputs.source }}"
+          else
+            case "${{ github.event.schedule }}" in
+              "0 4 * * *")   sel="gdelt" ;;
+              "30 4 * * *")  sel="glassnode" ;;
+              "0 5 * * *")   sel="cryptocompare" ;;
+              # Round-1 critique #2 fix: don't fall through to "all" on
+              # an unknown schedule string. If GH ever normalizes whitespace
+              # or we add a cron without updating this case, fail loud
+              # instead of silently 3x-firing all backfills.
+              *) echo "ERROR: unknown schedule '${{ github.event.schedule }}'" >&2; exit 1 ;;
+            esac
+          fi
+          if [ "$sel" = "all" ]; then
+            echo 'sources=["gdelt","glassnode","cryptocompare"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "sources=[\"$sel\"]" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved sources: $sel"
+
+  backfill:
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      # Sequential, not parallel — avoids 3 concurrent SQLite writers
+      # racing against the bot's main scan-loop writer (WAL absorbs the
+      # contention but tail-latency on the bot side spikes).
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        source: ${{ fromJson(needs.resolve.outputs.sources) }}
+        include:
+          - source: gdelt
+            script: scripts/gdelt_backfill.py
+          - source: glassnode
+            script: scripts/glassnode_backfill.py
+          - source: cryptocompare
+            script: scripts/cryptocompare_news_backfill.py
+    steps:
+      - name: Run ${{ matrix.source }} backfill on VPS
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: botuser
+          key: ${{ secrets.VPS_SSH_KEY }}
+          # 30-min ceiling per backfill. GDELT first-week catch-up may
+          # approach this; the wrapper's SIGTERM handler alerts before
+          # SSH client tears down.
+          command_timeout: 30m
+          script: |
+            set -euo pipefail
+            cd ~/kalshi-bot-repo
+            # Round-1 critique #1 fix: fail loud if matrix/include drift
+            # produces an empty script value. (subprocess.Popen would
+            # currently surface a non-zero exit from python's "no script"
+            # error, but explicit > implicit.)
+            if [ -z "${{ matrix.script }}" ]; then
+              echo "ERROR: no script mapped for source='${{ matrix.source }}'" >&2
+              exit 1
+            fi
+            # Round-1 critique #3 fix: extract specific .env vars instead
+            # of `source .env` — avoids `set -u` blowing up on unset
+            # references AND avoids shell-evaluating arbitrary .env content
+            # (defense-in-depth; .env is currently shell-safe but grows
+            # organically).
+            grep_env() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | sed 's/^"//; s/"$//'; }
+            export TELEGRAM_BOT_TOKEN="$(grep_env TELEGRAM_BOT_TOKEN)"
+            export TELEGRAM_CHAT_ID="$(grep_env TELEGRAM_CHAT_ID)"
+            export GLASSNODE_API_KEY="$(grep_env GLASSNODE_API_KEY)"
+            venv/bin/python3 scripts/h4_run_with_alert.py \
+              --label ${{ matrix.source }} \
+              -- venv/bin/python3 ${{ matrix.script }} --db state.db
