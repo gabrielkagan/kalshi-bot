@@ -25,10 +25,15 @@ name: H-4 daily backfills
 # CHAT_ID) come from the VPS .env, sourced before invocation.
 
 on:
-  schedule:
-    - cron: '0 4 * * *'   # gdelt
-    - cron: '30 4 * * *'  # glassnode
-    - cron: '0 5 * * *'   # cryptocompare
+  # Schedules disabled 2026-05-04 pending backfill-script fixes:
+  #   - GDELT: HTTP 429 on first call (rate-limit; needs backoff)
+  #   - CryptoCompare: requires API key (CC policy changed)
+  #   - Glassnode: untested; needs GLASSNODE_API_KEY for paid metrics
+  # Re-enable by un-commenting once each script handles its API requirement.
+  # schedule:
+  #   - cron: '0 4 * * *'   # gdelt
+  #   - cron: '30 4 * * *'  # glassnode
+  #   - cron: '0 5 * * *'   # cryptocompare
   workflow_dispatch:
     inputs:
       source:
