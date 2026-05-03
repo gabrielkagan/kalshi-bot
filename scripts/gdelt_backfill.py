@@ -146,19 +146,42 @@ def fetch_gdelt_articles(
             resp = request_fn(GDELT_DOC_URL, params, 30)
             status = getattr(resp, "status_code", 0)
             if status == 200:
+                # Bug 1.1 (2026-05-03): GDELT free-tier sometimes
+                # returns 200 with empty/HTML body (Cloudflare
+                # challenge, anti-bot WAF, brief upstream blip).
+                # Pre-fix this raised on the very first bucket of
+                # the smoke test (workflow 25293299100, SOL-2026-
+                # 02-22-04). Treat all malformed-200 cases as
+                # transient: retry per the same backoff schedule
+                # used for 429.
+                # Adversarial-review CRIT-D: initialize `body = None`
+                # so the chained checks below cannot hit
+                # UnboundLocalError if a future refactor changes the
+                # short-circuit ordering.
+                body = None
+                _malformed_reason: Optional[str] = None
                 try:
                     body = resp.json()
                 except Exception as e:
-                    last_err = f"non-json body: {e}"
-                    break
-                if not isinstance(body, dict):
-                    last_err = f"unexpected body type: {type(body).__name__}"
-                    break
-                arts = body.get("articles") or []
-                if not isinstance(arts, list):
-                    last_err = "articles field not a list"
-                    break
-                return arts
+                    _malformed_reason = f"non-json body: {e}"
+                if _malformed_reason is None and not isinstance(body, dict):
+                    _malformed_reason = (
+                        f"unexpected body type: {type(body).__name__}"
+                    )
+                if _malformed_reason is None:
+                    arts = body.get("articles") or []
+                    if not isinstance(arts, list):
+                        _malformed_reason = "articles field not a list"
+                    else:
+                        return arts
+                # Malformed 200 — retry per schedule, same as 429.
+                last_err = _malformed_reason
+                if attempt < max_retries - 1:
+                    _idx = min(
+                        attempt, len(_GDELT_429_BACKOFF_SCHEDULE_S) - 1,
+                    )
+                    _time_mod.sleep(_GDELT_429_BACKOFF_SCHEDULE_S[_idx])
+                continue
             if status == 429:
                 # Bug 1 (2026-05-04): the previous `2 ** attempt`
                 # backoff (1+2+4=7s for 3 attempts) was insufficient

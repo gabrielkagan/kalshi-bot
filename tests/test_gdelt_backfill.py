@@ -401,6 +401,186 @@ class TestHandlesApi429WithBackoff:
             f"would-be 5th sleep of 120s is pure budget burn."
         )
 
+    def test_200_with_non_json_body_retries_per_schedule(self, monkeypatch):
+        """Bug 1.1 (2026-05-03): GDELT free-tier sometimes returns
+        HTTP 200 with an empty/HTML body (Cloudflare challenge,
+        anti-bot WAF, brief upstream blip). Pre-fix: `resp.json()`
+        raises JSONDecodeError → `break` exits retry loop → script
+        raises GdeltFetchError on the very first bucket without
+        retrying. The cron run that smoke-tested Bug 1 (workflow
+        25293299100, 2026-05-03 22:59 UTC) hit exactly this path on
+        the very first SOL-2026-02-22-04 bucket.
+
+        Post-fix: treat "200 with non-JSON body" as transient and
+        retry per the same backoff schedule used for 429.
+
+        This test simulates: 4 calls return 200 with empty body, 5th
+        returns 200 with valid JSON. Asserts the function eventually
+        returns the articles list."""
+        from gdelt_backfill import fetch_gdelt_articles
+        import gdelt_backfill as gd
+
+        sleeps: list = []
+        monkeypatch.setattr(gd._time_mod, "sleep", lambda s: sleeps.append(s))
+
+        class _RespEmpty:
+            status_code = 200
+
+            def json(self):
+                # Simulate `resp.json()` raising on empty body.
+                import json as _j
+                raise _j.JSONDecodeError(
+                    "Expecting value", "", 0,
+                )
+
+        class _Resp200:
+            status_code = 200
+
+            def json(self):
+                return {"articles": [{"tone": "0.5"}]}
+
+        seq = [_RespEmpty(), _RespEmpty(), _RespEmpty(),
+               _RespEmpty(), _Resp200()]
+        idx = {"i": 0}
+
+        def _req(url, params, timeout):
+            r = seq[idx["i"]]
+            idx["i"] += 1
+            return r
+
+        out = fetch_gdelt_articles(
+            "SOL",
+            datetime.datetime(2026, 2, 22, 3, 0, 0,
+                              tzinfo=datetime.timezone.utc),
+            datetime.datetime(2026, 2, 22, 4, 0, 0,
+                              tzinfo=datetime.timezone.utc),
+            request_fn=_req,
+            max_retries=5,
+        )
+        assert len(out) == 1
+        assert sleeps == [5, 15, 30, 60], (
+            f"non-JSON body must retry per the [5,15,30,60,120] "
+            f"schedule (skip-final-sleep applied); got {sleeps}"
+        )
+
+    def test_200_with_non_dict_body_retries_per_schedule(self, monkeypatch):
+        """Adversarial-review CRIT-A: body is valid JSON but not a
+        dict (e.g., GDELT returned a JSON array or string at some
+        edge case). Pre-fix: `break` exits retry loop. Post-fix:
+        treat as transient malformed-200, retry per schedule."""
+        from gdelt_backfill import fetch_gdelt_articles
+        import gdelt_backfill as gd
+
+        sleeps: list = []
+        monkeypatch.setattr(gd._time_mod, "sleep", lambda s: sleeps.append(s))
+
+        class _RespArrayBody:
+            status_code = 200
+
+            def json(self):
+                return ["not", "a", "dict"]
+
+        class _Resp200:
+            status_code = 200
+
+            def json(self):
+                return {"articles": [{"tone": "0.5"}]}
+
+        seq = [_RespArrayBody(), _Resp200()]
+        idx = {"i": 0}
+
+        def _req(url, params, timeout):
+            r = seq[idx["i"]]
+            idx["i"] += 1
+            return r
+
+        out = fetch_gdelt_articles(
+            "BTC",
+            datetime.datetime(2026, 4, 15, 10, 0, 0,
+                              tzinfo=datetime.timezone.utc),
+            datetime.datetime(2026, 4, 15, 11, 0, 0,
+                              tzinfo=datetime.timezone.utc),
+            request_fn=_req,
+            max_retries=5,
+        )
+        assert len(out) == 1
+        assert sleeps == [5], f"non-dict body must retry; got {sleeps}"
+
+    def test_200_with_non_list_articles_retries_per_schedule(
+        self, monkeypatch,
+    ):
+        """Adversarial-review CRIT-A: body is dict + has `articles`
+        key but `articles` is not a list (e.g., GDELT returned
+        `articles: "error"` at some edge case). Treat as transient."""
+        from gdelt_backfill import fetch_gdelt_articles
+        import gdelt_backfill as gd
+
+        sleeps: list = []
+        monkeypatch.setattr(gd._time_mod, "sleep", lambda s: sleeps.append(s))
+
+        class _RespBadArticles:
+            status_code = 200
+
+            def json(self):
+                return {"articles": "not a list"}
+
+        class _Resp200:
+            status_code = 200
+
+            def json(self):
+                return {"articles": [{"tone": "0.5"}]}
+
+        seq = [_RespBadArticles(), _Resp200()]
+        idx = {"i": 0}
+
+        def _req(url, params, timeout):
+            r = seq[idx["i"]]
+            idx["i"] += 1
+            return r
+
+        out = fetch_gdelt_articles(
+            "BTC",
+            datetime.datetime(2026, 4, 15, 10, 0, 0,
+                              tzinfo=datetime.timezone.utc),
+            datetime.datetime(2026, 4, 15, 11, 0, 0,
+                              tzinfo=datetime.timezone.utc),
+            request_fn=_req,
+            max_retries=5,
+        )
+        assert len(out) == 1
+        assert sleeps == [5], (
+            f"non-list articles field must retry; got {sleeps}"
+        )
+
+    def test_200_with_non_json_body_exhaustion_raises(self, monkeypatch):
+        """All 5 attempts returning 200 with non-JSON body → raise
+        GdeltFetchError with `non-json body` in the message so the
+        Telegram alert distinguishes from 429 / network error."""
+        from gdelt_backfill import fetch_gdelt_articles, GdeltFetchError
+        import gdelt_backfill as gd
+        monkeypatch.setattr(gd._time_mod, "sleep", lambda *_: None)
+
+        class _RespEmpty:
+            status_code = 200
+
+            def json(self):
+                import json as _j
+                raise _j.JSONDecodeError("Expecting value", "", 0)
+
+        def _req(url, params, timeout):
+            return _RespEmpty()
+
+        with pytest.raises(GdeltFetchError, match="non-json body"):
+            fetch_gdelt_articles(
+                "SOL",
+                datetime.datetime(2026, 2, 22, 3, 0, 0,
+                                  tzinfo=datetime.timezone.utc),
+                datetime.datetime(2026, 2, 22, 4, 0, 0,
+                                  tzinfo=datetime.timezone.utc),
+                request_fn=_req,
+                max_retries=5,
+            )
+
     def test_generic_exception_uses_new_backoff_schedule(self, monkeypatch):
         """Adversarial-review CRIT-2: the new schedule is applied in
         BOTH the HTTP-429 branch AND the generic `except Exception`
