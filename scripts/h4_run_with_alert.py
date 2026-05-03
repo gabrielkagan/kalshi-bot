@@ -44,6 +44,55 @@ _START_TIME: Optional[float] = None
 _PROC: Optional[subprocess.Popen] = None
 
 
+# Grace periods for child-process termination on signal. Tuned for the
+# H-4 backfill scripts (which do API calls + DB writes — should respond
+# to SIGTERM within seconds if cooperative). After _TERM_GRACE_S without
+# child exit, escalate to SIGKILL.
+_TERM_GRACE_S = 10
+_KILL_GRACE_S = 5
+
+
+def _wait_for_exit(pid: int, timeout: float) -> bool:
+    """Poll for `pid` to exit AND be reaped, using
+    `os.waitpid(pid, WNOHANG)`. Returns True if the process is gone
+    within `timeout`, False if it's still alive after.
+
+    Why not `_PROC.wait(timeout=N)`: when this runs from inside the
+    SIGTERM/SIGHUP handler, the wrapper's main thread is already
+    blocked in `_PROC.wait()` (line `exit_code = _PROC.wait()` below).
+    Python's subprocess.Popen uses a non-reentrant `_waitpid_lock` to
+    serialize waitpid() calls, and `Popen.wait(timeout)` / `Popen.poll()`
+    both try to acquire it. The outer wait() holds it; our inner call
+    deadlocks. Raw `os.waitpid(pid, WNOHANG)` skips Popen's lock —
+    it's just a syscall — so it's signal-handler-safe.
+
+    Why not `os.kill(pid, 0)`: that returns success on a ZOMBIE (the
+    child exited but no one has called waitpid to reap it). The outer
+    Popen.wait() can't reap because it's suspended by our signal
+    handler. So `os.kill(pid, 0)` would loop until timeout. Using
+    `os.waitpid(WNOHANG)` actively reaps the zombie, satisfying both
+    the "is it gone" question and the "release the zombie" duty in one
+    call. The OUTER wait() that we never return to may see ECHILD
+    afterward — that's fine because we sys.exit() before resuming."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            wpid, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            # ECHILD: child already reaped (e.g., by outer wait that
+            # raced us, or because the child wasn't ours to begin with).
+            return True
+        except OSError:
+            # Defensive: treat unexpected errors as "process gone"
+            # rather than spinning forever.
+            return True
+        if wpid == pid:
+            return True  # reaped
+        # wpid == 0 → child still running.
+        time.sleep(0.05)
+    return False
+
+
 def _on_sigterm(signum, frame):
     """Round-2 critique fix: systemd's TimeoutStartSec sends SIGTERM,
     which by default (SIG_DFL) terminates the wrapper before the post-
@@ -52,16 +101,56 @@ def _on_sigterm(signum, frame):
     kill, system shutdown). Without this, multi-day catch-up timeouts
     are exactly the silent-failure mode the alerting was meant to
     prevent.
+
+    May 3 2026 fix (orphan prevention): the original implementation
+    called `_PROC.terminate()` and then immediately `sys.exit(143)`
+    without waiting for the child to actually exit. A
+    `cryptocompare_news_backfill.py` instance survived 2h42m holding
+    state.db's writer lock, eventually wedging the live bot's
+    eval-write path. See `kb/decisions/h4-backfill-bugs-may04.md`
+    (Bug 2 SEVERITY UPGRADE).
+
+    Escalation policy: terminate() → wait up to `_TERM_GRACE_S` →
+    if still alive, kill() → wait up to `_KILL_GRACE_S` → exit. The
+    waits give the child time to release its sqlite3 connection and
+    flush, while the SIGKILL escalation guarantees we don't leak the
+    process even if it ignores SIGTERM.
     """
     elapsed = time.monotonic() - _START_TIME if _START_TIME else 0.0
     label = _LABEL or '<unknown>'
     cmd = _CMD or []
-    # Try to terminate the child process so we don't leak it. Best-effort.
-    if _PROC is not None and _PROC.poll() is None:
+    # Reap the child. terminate() → poll-wait → kill() → poll-wait. We
+    # use `os.kill(pid, 0)` polling instead of `_PROC.wait(timeout=N)`
+    # because we're inside a signal handler that interrupted the outer
+    # `_PROC.wait()` — Popen's `_waitpid_lock` is non-reentrant, so any
+    # call into Popen.wait()/poll() from here would deadlock. See
+    # `_wait_for_exit` docstring. Exceptions are swallowed because the
+    # alert + exit must happen regardless.
+    if _PROC is not None:
+        pid = _PROC.pid
+        # Use raw `os.kill` instead of `_PROC.terminate()/kill()` because
+        # `Popen.send_signal` calls `Popen.poll()` first which tries to
+        # acquire `_waitpid_lock`. The outer `_PROC.wait()` (in main())
+        # holds that lock; `acquire(False)` in poll() returns False, so
+        # send_signal falls through and signals the PID anyway — but
+        # the PID-recycle protection is bypassed. Raw `os.kill(pid, sig)`
+        # is no worse on the recycle front and skips the misleading
+        # detour through Popen's lock. Adversarial-review critique #1.
         try:
-            _PROC.terminate()
-        except Exception:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # already dead
+        except OSError:
             pass
+        if not _wait_for_exit(pid, _TERM_GRACE_S):
+            # Child ignored SIGTERM; escalate to SIGKILL.
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                pass
+            _wait_for_exit(pid, _KILL_GRACE_S)
     msg = (
         f"H-4 backfill SIGTERM'd: {label}\n"
         f"ran {elapsed:.0f}s\n"
@@ -161,7 +250,14 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGHUP, _on_sigterm)
 
     try:
-        _PROC = subprocess.Popen(cmd)
+        # `start_new_session=True` puts the child in its own session +
+        # process group. Without this, if the wrapper itself is SIGKILLed
+        # (uncatchable, no handler runs), the child is reparented to
+        # init/systemd and may linger as an orphan — the May 3 incident
+        # signature. With its own session, systemd's cgroup cleanup OR
+        # the SIGHUP that propagates on SSH session teardown reaches the
+        # child reliably. Adversarial-review critique #6.
+        _PROC = subprocess.Popen(cmd, start_new_session=True)
     except FileNotFoundError as e:
         print(f"h4_alert: command not found: {e}", file=sys.stderr)
         send_telegram_alert(format_failure_message(args.label, 127, cmd))

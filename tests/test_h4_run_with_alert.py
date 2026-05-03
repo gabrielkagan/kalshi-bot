@@ -193,12 +193,14 @@ def test_sigterm_handler_alerts_and_exits_143(monkeypatch):
     )
 
 
-def test_sigterm_handler_terminates_child_process(monkeypatch):
+def test_sigterm_handler_signals_child_with_sigterm(monkeypatch):
     """If a child subprocess is still running when SIGTERM arrives, the
-    handler must terminate it to avoid leaking the process. Otherwise
-    systemd waits for SIGKILL after TimeoutStopSec and the operator
-    sees zombies in journalctl.
-    """
+    handler must send SIGTERM to its PID to avoid leaking the process.
+    Verifies the raw `os.kill(pid, SIGTERM)` call (post-adversarial-
+    review #1: we use raw os.kill instead of `_PROC.terminate()` to
+    avoid the misleading detour through `Popen.send_signal` that
+    contends with `_waitpid_lock`)."""
+    import signal as _signal
     import h4_run_with_alert
     monkeypatch.setattr(
         h4_run_with_alert, 'send_telegram_alert',
@@ -206,12 +208,18 @@ def test_sigterm_handler_terminates_child_process(monkeypatch):
     )
 
     class FakeProc:
-        def __init__(self):
-            self.terminated = False
-        def poll(self):
-            return None  # still running
-        def terminate(self):
-            self.terminated = True
+        pid = 12345
+
+    # Track signals sent. Initial state: child cooperates (dies on
+    # SIGTERM, _wait_for_exit returns True without escalation).
+    signals_sent = []
+    monkeypatch.setattr(
+        h4_run_with_alert.os, 'kill',
+        lambda pid, sig: signals_sent.append((pid, sig)),
+    )
+    monkeypatch.setattr(
+        h4_run_with_alert, '_wait_for_exit', lambda pid, timeout: True,
+    )
 
     fake = FakeProc()
     monkeypatch.setattr(h4_run_with_alert, '_LABEL', 'glassnode')
@@ -221,7 +229,123 @@ def test_sigterm_handler_terminates_child_process(monkeypatch):
 
     with pytest.raises(SystemExit):
         h4_run_with_alert._on_sigterm(15, None)
-    assert fake.terminated, "child process must be terminated by SIGTERM handler"
+    assert (12345, _signal.SIGTERM) in signals_sent, (
+        f"handler must send SIGTERM to child pid; got: {signals_sent}"
+    )
+
+
+# ── Orphan-prevention regression (May 3 2026 incident) ────────────────
+
+def test_sigterm_handler_kills_uncooperative_child(monkeypatch):
+    """Regression for the 2026-05-03 orphan: a child process that
+    IGNORES SIGTERM (e.g., a backfill script with no signal handler,
+    or one stuck in an uninterruptible system call) must be escalated
+    to SIGKILL after a short grace period — not left for the wrapper
+    to abandon.
+
+    Pre-fix: `_on_sigterm` called `_PROC.terminate()` then immediately
+    `sys.exit(143)`, leaving the child orphaned. A
+    `cryptocompare_news_backfill.py` instance survived 2h42m holding
+    the state.db writer lock, eventually wedging the live bot's
+    eval-write path post-restart. See
+    `kb/decisions/h4-backfill-bugs-may04.md` (Bug 2 SEVERITY UPGRADE)
+    and `kb/failures/shape-d-contention-explosion-may03.md`.
+
+    Post-fix: handler must call `terminate()` → `wait(timeout=N)` →
+    on `TimeoutExpired` escalate to `kill()` → `wait(timeout=M)` →
+    exit. This test installs a fake child that survives terminate but
+    dies on kill, and asserts BOTH escalation calls happened."""
+    import subprocess
+    import h4_run_with_alert
+    monkeypatch.setattr(
+        h4_run_with_alert, 'send_telegram_alert',
+        lambda msg: True,
+    )
+
+    import signal as _signal
+
+    class UncooperativeProc:
+        pid = 99999
+
+    fake = UncooperativeProc()
+    monkeypatch.setattr(h4_run_with_alert, '_LABEL', 'cryptocompare')
+    monkeypatch.setattr(h4_run_with_alert, '_CMD', ['python3', 'x.py'])
+    monkeypatch.setattr(h4_run_with_alert, '_START_TIME', 0.0)
+    monkeypatch.setattr(h4_run_with_alert, '_PROC', fake)
+
+    # After SIGTERM: _wait_for_exit returns False (child ignored).
+    # After SIGKILL: _wait_for_exit returns True (child died).
+    signals_sent = []
+    monkeypatch.setattr(
+        h4_run_with_alert.os, 'kill',
+        lambda pid, sig: signals_sent.append((pid, sig)),
+    )
+    wait_calls = []
+    def fake_wait_for_exit(pid, timeout):
+        wait_calls.append((pid, timeout))
+        # First call (after SIGTERM): child still alive → False.
+        # Second call (after SIGKILL): child dead → True.
+        return len(wait_calls) >= 2
+    monkeypatch.setattr(
+        h4_run_with_alert, '_wait_for_exit', fake_wait_for_exit,
+    )
+
+    with pytest.raises(SystemExit):
+        h4_run_with_alert._on_sigterm(1, None)  # SIGHUP
+
+    assert (99999, _signal.SIGTERM) in signals_sent, (
+        "must send SIGTERM first"
+    )
+    assert (99999, _signal.SIGKILL) in signals_sent, (
+        "must escalate to SIGKILL when SIGTERM doesn't reap the child "
+        "— this is the orphan-prevention regression"
+    )
+    assert len(wait_calls) == 2, (
+        f"must call _wait_for_exit twice (after SIGTERM AND after "
+        f"SIGKILL); got {len(wait_calls)} calls"
+    )
+
+
+def test_sigterm_handler_returns_quickly_when_child_cooperates(monkeypatch):
+    """Companion to the orphan-prevention test: when the child DOES
+    cooperate with SIGTERM, the handler must NOT escalate to kill().
+    Otherwise we'd be sending unnecessary SIGKILLs to well-behaved
+    children, masking real bugs in their shutdown paths."""
+    import h4_run_with_alert
+    monkeypatch.setattr(
+        h4_run_with_alert, 'send_telegram_alert',
+        lambda msg: True,
+    )
+
+    import signal as _signal
+
+    class CooperativeProc:
+        pid = 88888
+
+    fake = CooperativeProc()
+    monkeypatch.setattr(h4_run_with_alert, '_LABEL', 'glassnode')
+    monkeypatch.setattr(h4_run_with_alert, '_CMD', ['x'])
+    monkeypatch.setattr(h4_run_with_alert, '_START_TIME', 0.0)
+    monkeypatch.setattr(h4_run_with_alert, '_PROC', fake)
+    # Child cooperates: dies on SIGTERM (_wait_for_exit returns True),
+    # so SIGKILL escalation is not reached.
+    signals_sent = []
+    monkeypatch.setattr(
+        h4_run_with_alert.os, 'kill',
+        lambda pid, sig: signals_sent.append((pid, sig)),
+    )
+    monkeypatch.setattr(
+        h4_run_with_alert, '_wait_for_exit', lambda pid, timeout: True,
+    )
+
+    with pytest.raises(SystemExit):
+        h4_run_with_alert._on_sigterm(15, None)
+
+    sigs = [s for (_, s) in signals_sent]
+    assert _signal.SIGTERM in sigs
+    assert _signal.SIGKILL not in sigs, (
+        "must NOT send SIGKILL when SIGTERM was honored"
+    )
 
 
 def test_sigterm_handler_installed_by_main(monkeypatch):
@@ -289,24 +413,36 @@ def test_sighup_handler_installed_by_main(monkeypatch):
 def test_end_to_end_sigterm_during_subprocess(monkeypatch, tmp_path):
     """E2E regression: spawn wrapper as a subprocess running `sleep 30`,
     SIGTERM the wrapper after 1s, assert wrapper exits 143 AND the
-    alert was POSTed (we verify via a sentinel file the fake telegram
-    function writes, since we can't intercept across processes).
+    alert was POSTed AND the inner `sleep 30` child is dead — the
+    third assertion is the orphan-prevention regression that the
+    May 3 incident bypassed (pre-fix, wrapper exited 143 but child
+    survived 2h42m).
     """
     import os as _os
     import shutil
+    import signal as _signal
     import subprocess as _subprocess
     import textwrap
     import time as _time
 
     sentinel = tmp_path / 'alert_fired'
-    # Write a shim script that monkeypatches send_telegram_alert to touch
-    # the sentinel, then invokes h4_run_with_alert.main(). Run it under
-    # the same Python.
+    pid_file = tmp_path / 'inner_pid'
+    # Write a shim script that monkeypatches send_telegram_alert to
+    # write the sentinel AND records the inner subprocess PID so the
+    # test can verify the inner child dies. Run it under the same Python.
     shim = tmp_path / 'shim.py'
     shim.write_text(textwrap.dedent(f"""
-        import sys
+        import sys, subprocess as _sp
         sys.path.insert(0, {str(SCRIPT_DIR)!r})
         import h4_run_with_alert
+        # Capture the child PID by patching subprocess.Popen.
+        _orig_popen = _sp.Popen
+        def _spying_popen(*a, **k):
+            p = _orig_popen(*a, **k)
+            with open({str(pid_file)!r}, 'w') as f:
+                f.write(str(p.pid))
+            return p
+        h4_run_with_alert.subprocess.Popen = _spying_popen
         def _fake_alert(msg):
             with open({str(sentinel)!r}, 'w') as f:
                 f.write(msg)
@@ -334,3 +470,94 @@ def test_end_to_end_sigterm_during_subprocess(monkeypatch, tmp_path):
     msg = sentinel.read_text()
     assert 'SIGTERM' in msg
     assert 'gdelt' in msg
+    # Orphan-prevention regression check: inner `sleep 30` MUST be dead.
+    # This is the precise May 3 incident behavior that previous tests
+    # missed — wrapper exited 143 but child survived.
+    assert pid_file.exists(), "inner PID was not captured — shim broken"
+    inner_pid = int(pid_file.read_text())
+    # Give the OS a brief moment to fully reap (the wrapper just exited;
+    # init/launchd may need a tick to clean up if the child was orphaned).
+    _time.sleep(0.5)
+    try:
+        _os.kill(inner_pid, 0)
+        # Process exists → orphan! Clean up to avoid leaving zombies.
+        try:
+            _os.kill(inner_pid, _signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        raise AssertionError(
+            f"inner sleep child (pid={inner_pid}) survived wrapper "
+            f"exit — orphan-prevention regression"
+        )
+    except ProcessLookupError:
+        pass  # child is dead, as required
+
+
+# ── Direct tests of `_wait_for_exit` polling logic (Round 1 #11) ─────
+
+def test_wait_for_exit_returns_true_when_child_exits_quickly(tmp_path):
+    """`_wait_for_exit` must return True when the child exits within
+    the timeout. Uses a real short-lived subprocess so the polling
+    logic is exercised end-to-end (not mocked)."""
+    import subprocess
+    import time as _time
+    import h4_run_with_alert
+
+    proc = subprocess.Popen(['sleep', '0.1'])
+    t0 = _time.monotonic()
+    result = h4_run_with_alert._wait_for_exit(proc.pid, timeout=2.0)
+    elapsed = _time.monotonic() - t0
+    assert result is True, "should return True when child exits"
+    assert elapsed < 1.0, f"should detect exit quickly; took {elapsed:.2f}s"
+    # Note: the function reaped the child, so proc.wait() may raise.
+    try:
+        proc.wait(timeout=0.1)
+    except (subprocess.TimeoutExpired, ChildProcessError):
+        pass
+
+
+def test_wait_for_exit_returns_false_when_child_outlives_timeout(tmp_path):
+    """`_wait_for_exit` must return False when timeout elapses with the
+    child still alive. Verifies the timeout path doesn't false-positive
+    a long-running process as exited."""
+    import os as _os
+    import signal as _signal
+    import subprocess
+    import h4_run_with_alert
+
+    proc = subprocess.Popen(['sleep', '5'])
+    try:
+        result = h4_run_with_alert._wait_for_exit(proc.pid, timeout=0.3)
+        assert result is False, (
+            "should return False when child outlives timeout"
+        )
+        assert proc.poll() is None, "child should still be alive"
+    finally:
+        # Clean up — kill the sleep, reap.
+        try:
+            _os.kill(proc.pid, _signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def test_wait_for_exit_handles_already_reaped_child(tmp_path):
+    """If the child has already been reaped (e.g., outer wait() got
+    there first), `_wait_for_exit` must NOT spin forever — it must
+    treat ECHILD from os.waitpid as 'process is gone' and return
+    True."""
+    import subprocess
+    import h4_run_with_alert
+
+    proc = subprocess.Popen(['true'])
+    proc.wait()  # outer wait reaps; PID is no longer waitable by us
+    pid = proc.pid
+
+    # _wait_for_exit will get ChildProcessError immediately.
+    result = h4_run_with_alert._wait_for_exit(pid, timeout=2.0)
+    assert result is True, (
+        "must return True when child has already been reaped (ECHILD)"
+    )
