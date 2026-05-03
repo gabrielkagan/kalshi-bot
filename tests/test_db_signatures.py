@@ -252,6 +252,22 @@ class TestInsertFunctionSignatures:
             assert field in sig.parameters, (
                 f"insert_evaluated_opportunity missing {field}")
 
+    def test_insert_evaluated_opportunity_has_data_provenance(self):
+        """Phase G-6: insert_evaluated_opportunity must accept data_provenance
+        with default 'live_ws'. v2 calibrator training filters held-out
+        validation on this column — losing the kwarg silently regresses to
+        all-NULL provenance and breaks the train/serve skew gate.
+
+        See kb/decisions/v2-train-must-account-for-backfill-skew-may02.md.
+        """
+        from bot import StateManager
+        sig = inspect.signature(StateManager.insert_evaluated_opportunity)
+        assert "data_provenance" in sig.parameters, (
+            "insert_evaluated_opportunity missing data_provenance parameter")
+        assert sig.parameters["data_provenance"].default == "live_ws", (
+            "data_provenance default must be 'live_ws' so live-bot inserts "
+            "auto-tag without each caller having to remember the kwarg")
+
 
 class TestSyntaxCheck:
     """All critical production files parse without syntax errors."""

@@ -3402,6 +3402,12 @@ class StateManager:
             ("xrp_spot_at_decision", "REAL"),
             ("okx_funding_rate_at_decision", "REAL"),
             ("deribit_funding_rate_at_decision", "REAL"),
+            # Phase G-6 (2026-05-02): provenance flag for v2 calibrator
+            # train/serve skew control. Live-bot inserts default 'live_ws'.
+            # Backfilled rows stamped 'backfill_60s_inputs' via
+            # scripts/stamp_data_provenance.py (one-time post-migration).
+            # See kb/decisions/v2-train-must-account-for-backfill-skew-may02.md.
+            ("data_provenance", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -4227,7 +4233,15 @@ class StateManager:
                                      sol_spot_at_decision: Optional[float] = None,
                                      xrp_spot_at_decision: Optional[float] = None,
                                      okx_funding_rate_at_decision: Optional[float] = None,
-                                     deribit_funding_rate_at_decision: Optional[float] = None):
+                                     deribit_funding_rate_at_decision: Optional[float] = None,
+                                     # Phase G-6 (2026-05-02): provenance flag.
+                                     # Live-bot inserts always default 'live_ws'. Existing
+                                     # backfilled rows are stamped retroactively by
+                                     # scripts/stamp_data_provenance.py (no caller passes this
+                                     # kwarg today — backfill scripts use raw UPDATE SQL with
+                                     # COALESCE(data_provenance, '<source>') instead).
+                                     # See kb/decisions/v2-train-must-account-for-backfill-skew-may02.md.
+                                     data_provenance: str = 'live_ws'):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -4468,8 +4482,9 @@ class StateManager:
                      time_above_strike_seconds, time_below_strike_seconds,
                      btc_spot_at_decision, eth_spot_at_decision,
                      sol_spot_at_decision, xrp_spot_at_decision,
-                     okx_funding_rate_at_decision, deribit_funding_rate_at_decision)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
+                     data_provenance)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -4590,7 +4605,16 @@ class StateManager:
                     sol_spot_at_decision=excluded.sol_spot_at_decision,
                     xrp_spot_at_decision=excluded.xrp_spot_at_decision,
                     okx_funding_rate_at_decision=excluded.okx_funding_rate_at_decision,
-                    deribit_funding_rate_at_decision=excluded.deribit_funding_rate_at_decision
+                    deribit_funding_rate_at_decision=excluded.deribit_funding_rate_at_decision,
+                    -- Phase G-6: COALESCE so an existing non-default value
+                    -- (e.g. a backfill-source marker stamped by H-4 scripts
+                    -- or by stamp_data_provenance.py) survives an UPSERT
+                    -- whose caller relies on the 'live_ws' default. Round-2
+                    -- adversarial review #11. Without COALESCE every UPSERT
+                    -- of an existing row resets data_provenance to the
+                    -- default kwarg, silently re-labeling backfilled rows
+                    -- as live.
+                    data_provenance=COALESCE(evaluated_opportunities.data_provenance, excluded.data_provenance)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -4647,7 +4671,8 @@ class StateManager:
                   time_above_strike_seconds, time_below_strike_seconds,
                   btc_spot_at_decision, eth_spot_at_decision,
                   sol_spot_at_decision, xrp_spot_at_decision,
-                  okx_funding_rate_at_decision, deribit_funding_rate_at_decision))
+                  okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
+                  data_provenance))
             self.conn.commit()
         except Exception as e:
             try:

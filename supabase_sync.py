@@ -500,7 +500,11 @@ class SupabaseSyncer:
         "time_above_strike_seconds, time_below_strike_seconds, "
         "btc_spot_at_decision, eth_spot_at_decision, "
         "sol_spot_at_decision, xrp_spot_at_decision, "
-        "okx_funding_rate_at_decision, deribit_funding_rate_at_decision"
+        "okx_funding_rate_at_decision, deribit_funding_rate_at_decision, "
+        # Phase G-6 (2026-05-03). Whitelist parity with supabase migration 012
+        # — adding here without the remote column silently HTTP-400s every
+        # batch. Migration 012 ships first.
+        "data_provenance"
     )
 
     # Columns that map to Supabase `rejections` table
