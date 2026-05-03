@@ -11,12 +11,12 @@ Design choices (per kb/decisions/phase-h3-deferred-needs-nbbo-infra-may02.md):
   (`_apply_fp_delta`). The non-deep variant would race during iteration.
 - Single daemon thread; sleep-based cadence.
 - Filters to active 15M tickers via injected `active_tickers_provider`.
-  Provider must return ticker STRINGS (not window/market dicts). Typical
-  bot.py wiring:
-      lambda: [m["ticker"]
-               for w in discover_active_windows(client)
-               for m in w["markets"]
-               if w.get("product_type") == "15m"]
+  Provider must return ticker STRINGS (not window/market dicts). Use the
+  `extract_active_15m_tickers()` helper exported from this module:
+      lambda: extract_active_15m_tickers(self._active_windows)
+  Read the cached `_active_windows` list (build-then-swap published by
+  `_refresh_active_windows`); do NOT call `discover_active_windows()`
+  per tick — that would burn REST calls on the events endpoint.
 - Batched commits ≤BATCH_SIZE rows per CLAUDE.md DB lock rules; uses
   `executemany` so each batch is a single Python→SQLite round-trip.
 - Surfaces errors + liveness via `metrics` dict for dashboard observability.
@@ -106,6 +106,32 @@ _INDEX_TIME = """
 CREATE INDEX IF NOT EXISTS idx_moc_time
   ON market_observations_continuous (observation_time)
 """
+
+
+def extract_active_15m_tickers(active_windows: Iterable) -> List[str]:
+    """Flatten `discover_active_windows` output to a list of 15M ticker
+    strings, suitable for the snapshotter's `active_tickers_provider`.
+
+    Each input window is `{"product_type": str, "markets": [{"ticker": str, ...}]}`.
+    Filters to product_type=='15m' and skips malformed entries gracefully.
+    Empty input → empty output (no exception). Used by bot.py wiring as:
+        lambda: extract_active_15m_tickers(self._active_windows)
+    """
+    out: List[str] = []
+    if not active_windows:
+        return out
+    for w in active_windows:
+        if not isinstance(w, dict) or w.get("product_type") != "15m":
+            continue
+        markets = w.get("markets") or []
+        if not isinstance(markets, list):
+            continue
+        for m in markets:
+            if isinstance(m, dict):
+                t = m.get("ticker")
+                if isinstance(t, str) and t:
+                    out.append(t)
+    return out
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:

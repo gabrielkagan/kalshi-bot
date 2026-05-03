@@ -25273,6 +25273,53 @@ class MainLoop:
         except Exception as e:
             logging.warning(f"Hourly alt shadow engine unavailable: {e}")
 
+        # ── H-3a Continuous NBBO Snapshotter ─────────────────────────────
+        # Periodic in-memory WS orderbook → market_observations_continuous.
+        # Foundation for the deferred H-3 fill simulator. Reads existing WS
+        # cache (no new REST traffic). Schema migration MUST run from main
+        # thread (not the daemon) to avoid racing other ALTER TABLE migrations
+        # at startup. Disabled if kalshi_feed unavailable (nothing to read).
+        # See kb/decisions/phase-h3-deferred-needs-nbbo-infra-may02.md.
+        self.market_obs_snapshotter = None
+        try:
+            from market_observations_snapshotter import (
+                MarketObservationsSnapshotter,
+                ensure_schema as _moc_ensure_schema,
+                extract_active_15m_tickers as _moc_extract_15m,
+            )
+            _moc_ensure_schema(self.state.conn)
+            # Round-1 wiring #8: defensive capability check. If the WS
+            # client is ever refactored and the deep-copy method is
+            # renamed, surface that immediately at init rather than
+            # producing 8.6K WARNING/day from per-tick AttributeError.
+            if (
+                self.kalshi_feed is not None
+                and hasattr(self.kalshi_feed, "get_all_orderbooks_snapshot")
+            ):
+                self.market_obs_snapshotter = MarketObservationsSnapshotter(
+                    db_path=DB_PATH,
+                    ws_client=self.kalshi_feed,
+                    active_tickers_provider=lambda: _moc_extract_15m(
+                        self._active_windows
+                    ),
+                )
+                logging.info(
+                    "Market observations snapshotter initialized "
+                    "(H-3a — continuous NBBO capture for fill simulator)"
+                )
+            elif self.kalshi_feed is not None:
+                logging.warning(
+                    "Market observations snapshotter not started — "
+                    "kalshi_feed missing get_all_orderbooks_snapshot method "
+                    "(WS client API drift; review bot.py vs "
+                    "market_observations_snapshotter.py contract)"
+                )
+        except Exception as e:
+            logging.warning(
+                f"Market observations snapshotter unavailable: {e}"
+            )
+            self.market_obs_snapshotter = None
+
         # ── SPX HAR-RV Shadow Engine ────────────────────────────────────────
         self.spx_harrv_shadow = None
         if SPX_HOURLY_ENABLED:
@@ -25611,6 +25658,20 @@ class MainLoop:
 
         # Initial market scan
         self._refresh_active_windows()
+
+        # Start H-3a NBBO snapshotter — AFTER both kalshi_feed.start() (so
+        # orderbooks are subscribing) AND _refresh_active_windows() (so
+        # the active-tickers provider returns a populated list rather
+        # than producing a burst of 'ws_no_data' rows on every restart).
+        # Round-1 wiring review #2.
+        if self.market_obs_snapshotter is not None:
+            try:
+                self.market_obs_snapshotter.start()
+                logging.info("Market observations snapshotter starting...")
+            except Exception as e:
+                logging.warning(
+                    f"Market observations snapshotter failed to start: {e}"
+                )
 
         logging.info(
             f"Startup complete. Monitoring {len(ASSETS)} assets "
@@ -26962,6 +27023,23 @@ class MainLoop:
                 len(self.vol._adaptive_returns_15s["XRP"]))
         if hasattr(self, 'kalshi_feed') and self.kalshi_feed:
             self.kalshi_feed.stop()
+        # Stop H-3a snapshotter — it holds its OWN sqlite connection
+        # (separate from self.state.conn), but if join times out the
+        # daemon thread is force-killed at process exit which can leave
+        # a partial WAL segment. Bumped to 25s (one tick + commit + slack)
+        # and we log if still alive after timeout (round-1 wiring #4).
+        if hasattr(self, 'market_obs_snapshotter') and self.market_obs_snapshotter is not None:
+            try:
+                self.market_obs_snapshotter.stop()
+                self.market_obs_snapshotter.join(timeout=25.0)
+                if self.market_obs_snapshotter.is_alive():
+                    logging.warning(
+                        "Market obs snapshotter join timed out — thread still "
+                        "alive at shutdown. Daemon will be force-killed; "
+                        "WAL recovery on next startup."
+                    )
+            except Exception as e:
+                logging.warning(f"Market obs snapshotter stop failed: {e}")
         # snapshot_builder has no thread — nothing to stop
         if hasattr(self, 'supabase_syncer') and self.supabase_syncer:
             self.supabase_syncer.stop()

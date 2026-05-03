@@ -58,9 +58,10 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts"))
+# Module lives at repo root (matches spx_engine, weather_engine pattern
+# — bot.py imports as a top-level module).
+sys.path.insert(0, str(ROOT))
 
-# Module under test — to be created at scripts/market_observations_snapshotter.py
 import market_observations_snapshotter as mod  # noqa: E402
 
 
@@ -919,7 +920,7 @@ def test_ensure_schema_not_called_from_run():
     thread. A future refactor that moves it back races the bot.py ALTER
     TABLE migrations at startup."""
     import ast
-    src = (ROOT / "scripts" / "market_observations_snapshotter.py").read_text()
+    src = (ROOT / "market_observations_snapshotter.py").read_text()
     tree = ast.parse(src)
 
     run_method = None
