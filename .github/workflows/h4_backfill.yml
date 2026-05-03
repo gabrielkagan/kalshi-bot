@@ -117,6 +117,15 @@ jobs:
           # SSH client tears down (appleboy/ssh-action timeout closes
           # the channel → SIGHUP, not SIGTERM).
           command_timeout: 30m
+          # Pass GitHub repo secrets as env vars to the SSH session.
+          # Avoids putting them in VPS .env (so the secret lives only
+          # in GitHub's encrypted secret store + ephemeral runner env).
+          envs: CC_API_KEY_FROM_SECRET
+          # `envs:` exports the named env vars from the runner into the
+          # remote shell. The runner-side env is set via the env: block
+          # below. We map secrets.CRYPTOCOMPARE_API_KEY → an env var
+          # the SSH script then re-exports under the name the script
+          # expects (CRYPTOCOMPARE_API_KEY).
           script: |
             set -euo pipefail
             cd ~/kalshi-bot-repo
@@ -138,7 +147,12 @@ jobs:
             export TELEGRAM_BOT_TOKEN="$(grep_env TELEGRAM_BOT_TOKEN)"
             export TELEGRAM_CHAT_ID="$(grep_env TELEGRAM_CHAT_ID)"
             export GLASSNODE_API_KEY="$(grep_env GLASSNODE_API_KEY)"
+            # Re-export the GH-secret-injected CC key under the name the
+            # python script reads. Empty string treated by script as unset.
+            export CRYPTOCOMPARE_API_KEY="${CC_API_KEY_FROM_SECRET:-}"
             echo "Running ${{ matrix.source }} backfill: $BACKFILL_SCRIPT"
             venv/bin/python3 scripts/h4_run_with_alert.py \
               --label ${{ matrix.source }} \
               -- venv/bin/python3 "$BACKFILL_SCRIPT" --db state.db
+        env:
+          CC_API_KEY_FROM_SECRET: ${{ secrets.CRYPTOCOMPARE_API_KEY }}

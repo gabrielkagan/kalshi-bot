@@ -124,6 +124,15 @@ def fetch_cryptocompare_news(
         "categories": cat,
         "lTs": int(end_dt.timestamp()),
     }
+    # CryptoCompare (now CoinDesk Indices) requires an API key on the news
+    # endpoint as of late 2024 — without it the API returns "You need a
+    # valid auth key or api key to access this endpoint". The key is read
+    # from CRYPTOCOMPARE_API_KEY env var (lives in the workflow secret /
+    # VPS .env). If unset we still call without it so the original
+    # auth-error surfaces clearly in the wrapper's Telegram alert.
+    api_key = os.environ.get("CRYPTOCOMPARE_API_KEY", "").strip()
+    if api_key:
+        params["api_key"] = api_key
     last_err: Optional[str] = None
     for attempt in range(max_retries):
         try:

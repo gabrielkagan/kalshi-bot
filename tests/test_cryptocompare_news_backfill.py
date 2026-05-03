@@ -504,3 +504,78 @@ class TestDefaultMinEvalAgeHours:
         conservative ceiling."""
         from cryptocompare_news_backfill import DEFAULT_MIN_EVAL_AGE_HOURS
         assert DEFAULT_MIN_EVAL_AGE_HOURS == 24
+
+
+# ── 2026-05-04: CC API key required (CoinDesk policy change) ─────────
+
+class TestCryptoCompareApiKey:
+    """CryptoCompare (now CoinDesk Indices) requires an API key on the
+    news endpoint as of late 2024. fetch_cryptocompare_news must read
+    CRYPTOCOMPARE_API_KEY from env and forward it as the `api_key`
+    query parameter. Live failure mode without this: 401-style "you
+    need a valid auth key" surfaced via wrapper Telegram alert.
+    """
+
+    def test_api_key_forwarded_when_env_set(self, monkeypatch):
+        """Env set → params include api_key=<value>."""
+        from cryptocompare_news_backfill import fetch_cryptocompare_news
+        monkeypatch.setenv('CRYPTOCOMPARE_API_KEY', 'sentinel-test-key-12345')
+        captured: list = []
+
+        def spy_request(url, params, timeout):
+            captured.append(dict(params))
+            class _R:
+                status_code = 200
+                def json(self): return {"Type": 100, "Data": []}
+            return _R()
+
+        end = datetime.datetime(2026, 5, 4, 12, 0, 0,
+                                 tzinfo=datetime.timezone.utc)
+        fetch_cryptocompare_news('BTC', end, request_fn=spy_request)
+        assert captured, "request_fn was not called"
+        assert captured[0].get('api_key') == 'sentinel-test-key-12345', (
+            f"api_key must be forwarded; got params: {captured[0]}"
+        )
+
+    def test_api_key_omitted_when_env_unset(self, monkeypatch):
+        """Env unset → params omit api_key (so the original auth-error
+        surfaces clearly in the Telegram alert instead of being masked
+        by an empty key value)."""
+        from cryptocompare_news_backfill import fetch_cryptocompare_news
+        monkeypatch.delenv('CRYPTOCOMPARE_API_KEY', raising=False)
+        captured: list = []
+
+        def spy_request(url, params, timeout):
+            captured.append(dict(params))
+            class _R:
+                status_code = 200
+                def json(self): return {"Type": 100, "Data": []}
+            return _R()
+
+        end = datetime.datetime(2026, 5, 4, 12, 0, 0,
+                                 tzinfo=datetime.timezone.utc)
+        fetch_cryptocompare_news('BTC', end, request_fn=spy_request)
+        assert captured
+        assert 'api_key' not in captured[0], (
+            f"api_key must NOT be present when env is unset; got params: {captured[0]}"
+        )
+
+    def test_empty_or_whitespace_env_treated_as_unset(self, monkeypatch):
+        """Whitespace-only value → omit, same as unset (mirrors the
+        CALMLP_BUNDLE_DIR + CALMLP_ENABLED .strip() pattern)."""
+        from cryptocompare_news_backfill import fetch_cryptocompare_news
+        monkeypatch.setenv('CRYPTOCOMPARE_API_KEY', '   ')
+        captured: list = []
+
+        def spy_request(url, params, timeout):
+            captured.append(dict(params))
+            class _R:
+                status_code = 200
+                def json(self): return {"Type": 100, "Data": []}
+            return _R()
+
+        end = datetime.datetime(2026, 5, 4, 12, 0, 0,
+                                 tzinfo=datetime.timezone.utc)
+        fetch_cryptocompare_news('BTC', end, request_fn=spy_request)
+        assert captured
+        assert 'api_key' not in captured[0]
