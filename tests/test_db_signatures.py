@@ -268,6 +268,25 @@ class TestInsertFunctionSignatures:
             "data_provenance default must be 'live_ws' so live-bot inserts "
             "auto-tag without each caller having to remember the kwarg")
 
+    def test_insert_evaluated_opportunity_has_bot_state_snapshot_json(self):
+        """Phase H-2: insert_evaluated_opportunity must accept
+        bot_state_snapshot_json with default None. Forward-going microstate
+        capture for v2 cal_mlp; default None means callers that don't pass
+        it (e.g., legacy paths) get NULL rather than crashing.
+
+        See kb/decisions/phase-h2-bot-microstate-fwd-may02.md.
+        """
+        from bot import StateManager
+        sig = inspect.signature(StateManager.insert_evaluated_opportunity)
+        assert "bot_state_snapshot_json" in sig.parameters, (
+            "insert_evaluated_opportunity missing bot_state_snapshot_json"
+        )
+        assert sig.parameters["bot_state_snapshot_json"].default is None, (
+            "bot_state_snapshot_json default must be None so legacy callers "
+            "(or callers that fail to compute the snapshot) write NULL "
+            "rather than crashing the insert"
+        )
+
 
 class TestSyntaxCheck:
     """All critical production files parse without syntax errors."""

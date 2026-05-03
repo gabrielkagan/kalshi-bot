@@ -3408,6 +3408,13 @@ class StateManager:
             # scripts/stamp_data_provenance.py (one-time post-migration).
             # See kb/decisions/v2-train-must-account-for-backfill-skew-may02.md.
             ("data_provenance", "TEXT"),
+            # Phase H-2 (2026-05-03): bot microstate forward capture.
+            # JSON blob with scan_iter, scan_dt_ms, active_cooldowns,
+            # api_error_counts, ws_cache_age_ms, open_positions_count,
+            # lock_wait_ms. Default NULL until step 2 wires the
+            # snapshot computation at the call site.
+            # See kb/decisions/phase-h2-bot-microstate-fwd-may02.md.
+            ("bot_state_snapshot_json", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -4241,7 +4248,13 @@ class StateManager:
                                      # kwarg today — backfill scripts use raw UPDATE SQL with
                                      # COALESCE(data_provenance, '<source>') instead).
                                      # See kb/decisions/v2-train-must-account-for-backfill-skew-may02.md.
-                                     data_provenance: str = 'live_ws'):
+                                     data_provenance: str = 'live_ws',
+                                     # Phase H-2 (2026-05-03): bot microstate JSON blob.
+                                     # Default None — Step 1 ships only the plumbing; Step 2
+                                     # wires the snapshot computation at the call site so
+                                     # callers actually pass the JSON string.
+                                     # See kb/decisions/phase-h2-bot-microstate-fwd-may02.md.
+                                     bot_state_snapshot_json: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -4483,8 +4496,8 @@ class StateManager:
                      btc_spot_at_decision, eth_spot_at_decision,
                      sol_spot_at_decision, xrp_spot_at_decision,
                      okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
-                     data_provenance)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     data_provenance, bot_state_snapshot_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -4614,7 +4627,21 @@ class StateManager:
                     -- of an existing row resets data_provenance to the
                     -- default kwarg, silently re-labeling backfilled rows
                     -- as live.
-                    data_provenance=COALESCE(evaluated_opportunities.data_provenance, excluded.data_provenance)
+                    data_provenance=COALESCE(evaluated_opportunities.data_provenance, excluded.data_provenance),
+                    -- Phase H-2: bot microstate snapshot. Overwrite on UPSERT
+                    -- (no COALESCE) — matches the dynamic-column pattern
+                    -- (spot_price, seconds_to_close, market_price, etc.)
+                    -- Re-emitted stages must reflect latest-tick state;
+                    -- COALESCEing here would freeze the snapshot at
+                    -- first-tick while every other column tracks last-tick,
+                    -- creating within-row temporal inconsistency for v2
+                    -- training joins. Round-2 step-1 review #R2-NEW-1.
+                    -- Trade-off: a step-2 call site that forgets to pass
+                    -- the kwarg silently NULLs populated rows. Mitigated
+                    -- by an AST regression test in step 2 that enumerates
+                    -- all 15M-emitting call sites and asserts each passes
+                    -- bot_state_snapshot_json.
+                    bot_state_snapshot_json=excluded.bot_state_snapshot_json
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -4672,7 +4699,7 @@ class StateManager:
                   btc_spot_at_decision, eth_spot_at_decision,
                   sol_spot_at_decision, xrp_spot_at_decision,
                   okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
-                  data_provenance))
+                  data_provenance, bot_state_snapshot_json))
             self.conn.commit()
         except Exception as e:
             try:

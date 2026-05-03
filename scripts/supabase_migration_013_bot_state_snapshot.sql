@@ -1,0 +1,100 @@
+-- Migration 013: bot_state_snapshot_json column on evaluated_opportunities
+--
+-- Phase H-2 — Bot microstate forward capture.
+--
+-- Adds a single TEXT column to hold a JSON blob of the bot's internal
+-- state at decision-tick time. Schema (see scripts/_compute_bot_state_snapshot.py
+-- for canonical definition):
+--
+--   {
+--     "schema_version":       int (== 1 for this migration),
+--     "scan_iter":            int | null,    // current scan iteration
+--     "scan_dt_ms":           float | null,  // elapsed scan time in ms
+--     "active_cooldowns":     [string, ...], // assets in loss cooldown
+--     "api_error_counts":     {asset: int},  // per-asset api error totals (15M-only)
+--     "ws_cache_age_ms":      {asset: float},// per-asset NBBO cache age (ms, 15M-only)
+--     "open_positions_count": int | null,    // 60s-cached, NOT decision-exact
+--     "lock_wait_ms":         float | null,  // BEGIN IMMEDIATE wait time (ms)
+--   }
+--
+-- Field-level notes that downstream training MUST respect:
+--   * `schema_version`: pin training joins on this. Bumped on any
+--     breaking field change so a silent format flip cannot ship.
+--   * `api_error_counts` / `ws_cache_age_ms`: scoped to product_type='15m'
+--     (Phase H-2 captures decision-tick state for the 15M bot). Hourly
+--     KXBTCD-... tickers are EXCLUDED so they don't conflate the 15M
+--     buckets. Caller can override via product_type_filter kwarg.
+--   * `open_positions_count`: cached at 60s resolution
+--     (bot.py:10898 — `if now - cache.get("ts", 0) < 60`). NOT exact.
+--     v2 training must treat as approximate state, not a precise gate.
+--   * `lock_wait_ms`: measured via the BEGIN IMMEDIATE timing pattern
+--     (see helper docstring "lock_wait_ms semantics — MANDATED PATTERN").
+--     Wall-clock delay between issuing BEGIN IMMEDIATE and the lock
+--     being granted, in ms.
+--
+-- The column is TEXT (not jsonb) to mirror the SQLite TEXT type used in
+-- the local state.db. Downstream queries can cast with `::jsonb` as
+-- needed; not casting at write time keeps the supabase mirror sync path
+-- identical to every other TEXT column (no per-column special handling
+-- in supabase_sync.py — see kb/failures/supabase-cal-mlp-mirror-gap-may01.md
+-- for the cost of mismatched types).
+--
+-- Why historical rows stay NULL: this is a forward-only feature (see
+-- kb/decisions/shadow-coverage-phase-h-data-recovery-may02.md, Class 2).
+--
+-- v2 calibrator training filter (BINDING / CANONICAL — adversarial round 3
+-- critique #9, hardened in round 4 critique #3 for invalid-JSON safety):
+--
+--   SELECT ...
+--   FROM evaluated_opportunities
+--   WHERE data_provenance = 'live_ws'
+--     AND bot_state_snapshot_json IS NOT NULL
+--     AND bot_state_snapshot_json LIKE '{%}'  -- cheap pre-check (TEXT level)
+--     AND jsonb_typeof(bot_state_snapshot_json::jsonb) = 'object'
+--     AND (bot_state_snapshot_json::jsonb->>'schema_version')::int = 1
+--   ;
+--
+-- Why the extra pre-checks (round-4 hardening):
+--   * `LIKE '{%}'` is a cheap text-level filter. If a stray non-JSON
+--     string ever lands in the column (e.g. a botched manual UPDATE),
+--     casting `'oops'::jsonb` raises `invalid input syntax for type json`
+--     and the WHOLE training query aborts. The LIKE filter rejects
+--     malformed rows BEFORE the cast is attempted.
+--   * `jsonb_typeof(...) = 'object'` guards against valid-JSON-but-
+--     wrong-shape rows (e.g. a JSON array `[1,2,3]` or a bare string
+--     `"foo"` would pass the `LIKE` check on something like `'{"foo"'`
+--     edge cases — well, the `LIKE '{%}'` covers most of those, but
+--     this is belt-and-suspenders). If `bot_state_snapshot_json` is a
+--     JSON array, the `->>'schema_version'` access returns NULL and
+--     the `::int` cast then chokes on NULL — `jsonb_typeof = 'object'`
+--     short-circuits before that path.
+--   * Order matters: the LIKE pre-check executes left-to-right per
+--     Postgres planner conventions and cheaply eliminates 100% of
+--     malformed rows so the cast cost is paid only on well-formed
+--     candidates.
+--
+-- The `data_provenance='live_ws'` filter excludes simulated/replayed
+-- rows (Phase G-6). The `IS NOT NULL` filter excludes pre-deploy rows
+-- where the column never got populated. The `schema_version=1` pin
+-- protects against accidentally training on a future schema bump.
+--
+-- Operator: apply via Supabase SQL editor or:
+--   PGPASSWORD="$SUPABASE_DB_PASSWORD" psql "$SUPABASE_DB_URL" \
+--     -f scripts/supabase_migration_013_bot_state_snapshot.sql
+--
+-- Idempotent — IF NOT EXISTS guard.
+
+-- NOTE: SQLite-side table is `evaluated_opportunities`; the Supabase
+-- mirror table is `public.evaluations` (per supabase_sync._TABLE_MAP).
+-- A previous draft of this migration referenced the SQLite name and
+-- would have failed at apply (same bug as 012, caught by 012's
+-- adversarial review).
+ALTER TABLE public.evaluations
+    ADD COLUMN IF NOT EXISTS bot_state_snapshot_json TEXT;
+
+-- No index. Column is freeform JSON, not used in WHERE clauses on hot
+-- queries; v2 training reads it during batch feature extraction only.
+
+-- Reload PostgREST schema cache so supabase_sync.py can include the
+-- new column in INSERT bodies without HTTP-400 (PGRST204).
+NOTIFY pgrst, 'reload schema';

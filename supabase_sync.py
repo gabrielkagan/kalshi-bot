@@ -504,7 +504,10 @@ class SupabaseSyncer:
         # Phase G-6 (2026-05-03). Whitelist parity with supabase migration 012
         # — adding here without the remote column silently HTTP-400s every
         # batch. Migration 012 ships first.
-        "data_provenance"
+        "data_provenance, "
+        # Phase H-2 (2026-05-03). Whitelist parity with supabase migration
+        # 013. Same HTTP-400 risk if added without remote column.
+        "bot_state_snapshot_json"
     )
 
     # Columns that map to Supabase `rejections` table
