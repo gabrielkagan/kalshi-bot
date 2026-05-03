@@ -21,8 +21,13 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 # Files that are called from multiple threads and MUST use check_same_thread=False
+# bot.py was removed 2026-05-03: it now uses per-thread connections via
+# `_PerThreadStateConn` (each thread gets its own sqlite3.Connection on first
+# access), which makes `check_same_thread=False` unnecessary and unsafe — the
+# default `check_same_thread=True` is the correct choice for a per-thread
+# pattern because it loudly errors on accidental cross-thread misuse.
+# Postmortem: kb/failures/another-row-available-may03.md.
 MULTI_THREAD_FILES = [
-    "bot.py",
     "fifteenm_shadow.py",
     "hourly_alt_shadow.py",
     "spx_harrv_shadow.py",

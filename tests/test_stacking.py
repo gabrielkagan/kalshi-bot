@@ -233,10 +233,16 @@ class TestExposureCaps(unittest.TestCase):
 
     def setUp(self):
         self.source = _read_bot()
-        # Extract execute() method body
-        m = re.search(r'def execute\(self.*?(?=\n    def |\nclass |\Z)',
-                       self.source, re.DOTALL)
-        self.execute_body = m.group(0) if m else ""
+        # Extract OrderExecutor.execute() method body. Anchor on the
+        # class first because bot.py also defines `_ThreadSafeConn.execute`
+        # and `_ThreadSafeCursor.execute` wrappers (May 3 2026 cursor-race
+        # fix), which would otherwise match the bare `def execute(self`
+        # regex first and return an unrelated tiny body.
+        oe_match = re.search(
+            r"class OrderExecutor\b.*?def execute\(self.*?(?=\n    def |\nclass |\Z)",
+            self.source, re.DOTALL,
+        )
+        self.execute_body = oe_match.group(0) if oe_match else ""
 
     def test_max_ticker_risk_in_execute(self):
         self.assertIn("MAX_TICKER_RISK", self.execute_body)
