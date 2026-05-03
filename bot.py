@@ -6216,6 +6216,29 @@ class KalshiFeed:
         with self._lock:
             return dict(self._orderbooks)
 
+    def get_all_orderbooks_snapshot(self) -> Dict[str, Dict]:
+        """Return a DEEP snapshot of all cached orderbooks, safe for
+        cross-thread iteration.
+
+        Phase H-3a — the snapshotter thread iterates yes/no level lists
+        outside the WS thread. The shallow `get_all_orderbooks()` would
+        give back references to lists that the WS thread mutates in place
+        under `_apply_fp_delta` (pop/append/setitem on `levels`), causing
+        `RuntimeError: list changed size during iteration` or stale-by-one
+        reads + non-atomic ts/level pairing. This deep-copy variant takes
+        the lock once, copies entire (yes, no, ts) trios atomically, and
+        returns objects no other thread can mutate.
+
+        Holding `_lock` across deepcopy is the right trade-off: the deep
+        copy of ~30 active 15M tickers × ~5 levels per side is ~300 ints,
+        which is sub-millisecond. The WS thread waits at most that long
+        on the next delta — much shorter than the 10s polling cadence of
+        the only caller.
+        """
+        import copy as _copy
+        with self._lock:
+            return _copy.deepcopy(self._orderbooks)
+
     # ── Auth ───────────────────────────────────────────────────────────────
 
     def _create_ws_headers(self) -> Dict[str, str]:
