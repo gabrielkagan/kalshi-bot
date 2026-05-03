@@ -244,10 +244,206 @@ class TestHandlesApi429WithBackoff:
             datetime.datetime(2026, 4, 15, 11, 0, 0,
                               tzinfo=datetime.timezone.utc),
             request_fn=_req,
-            max_retries=3,
+            max_retries=5,
         )
         assert calls["n"] == 2
         assert len(out) == 1
+
+    def test_429_backoff_schedule_is_5_15_30_60_120(self, monkeypatch):
+        """May 4 2026 fix (Bug 1 in kb/decisions/h4-backfill-bugs-may04.md):
+        the previous backoff `2 ** attempt` produced 1+2+4=7s for 3
+        retries — observed insufficient against GDELT free-tier IP
+        throttle on May 4 smoke test (workflow exited 429 on the very
+        first bucket). New schedule: 5, 15, 30, 60, 120 seconds for 5
+        retries = ~232s cumulative budget. Pin the schedule here so a
+        future refactor can't silently regress to the old budget."""
+        from gdelt_backfill import fetch_gdelt_articles
+        import gdelt_backfill as gd
+
+        sleeps: list = []
+        monkeypatch.setattr(gd._time_mod, "sleep", lambda s: sleeps.append(s))
+
+        class _Resp429:
+            status_code = 429
+
+            def json(self):
+                return {}
+
+        class _Resp200:
+            status_code = 200
+
+            def json(self):
+                return {"articles": []}
+
+        # 4 × 429 then 200 — exercises the full backoff schedule.
+        seq = [_Resp429(), _Resp429(), _Resp429(), _Resp429(), _Resp200()]
+        idx = {"i": 0}
+
+        def _req(url, params, timeout):
+            r = seq[idx["i"]]
+            idx["i"] += 1
+            return r
+
+        fetch_gdelt_articles(
+            "BTC",
+            datetime.datetime(2026, 4, 15, 10, 0, 0,
+                              tzinfo=datetime.timezone.utc),
+            datetime.datetime(2026, 4, 15, 11, 0, 0,
+                              tzinfo=datetime.timezone.utc),
+            request_fn=_req,
+            max_retries=5,
+        )
+        # 4 429s = 4 backoff sleeps before the 200.
+        assert sleeps == [5, 15, 30, 60], (
+            f"backoff schedule must be [5, 15, 30, 60, 120]; "
+            f"observed sleeps before 200 = {sleeps}. If you're "
+            f"changing this, update the cumulative-budget claim in "
+            f"kb/decisions/h4-backfill-bugs-may04.md."
+        )
+
+    def test_429_exhaustion_raises_with_clear_message(self, monkeypatch):
+        """If all 5 retries return 429, raise GdeltFetchError with a
+        message that mentions 'HTTP 429' so the wrapper's Telegram
+        alert distinguishes 'rate limit exhausted' from other failure
+        modes (auth, network, 500s)."""
+        from gdelt_backfill import fetch_gdelt_articles, GdeltFetchError
+        import gdelt_backfill as gd
+        monkeypatch.setattr(gd._time_mod, "sleep", lambda *_: None)
+
+        class _Resp429:
+            status_code = 429
+
+            def json(self):
+                return {}
+
+        def _req(url, params, timeout):
+            return _Resp429()
+
+        with pytest.raises(GdeltFetchError) as excinfo:
+            fetch_gdelt_articles(
+                "BTC",
+                datetime.datetime(2026, 4, 15, 10, 0, 0,
+                                  tzinfo=datetime.timezone.utc),
+                datetime.datetime(2026, 4, 15, 11, 0, 0,
+                                  tzinfo=datetime.timezone.utc),
+                request_fn=_req,
+                max_retries=5,
+            )
+        assert "429" in str(excinfo.value)
+
+    def test_429_default_max_retries_is_5(self):
+        """The function default `max_retries=5` (was 3) ensures the
+        new budget is in effect even when callers don't explicitly
+        pass max_retries. Pin it so a future refactor can't regress
+        the default and silently re-introduce the May 4 failure."""
+        import inspect
+        from gdelt_backfill import fetch_gdelt_articles
+        sig = inspect.signature(fetch_gdelt_articles)
+        assert sig.parameters["max_retries"].default == 5, (
+            "fetch_gdelt_articles default max_retries must be 5 "
+            "(was 3 pre-May 4 fix). Lowering this re-introduces the "
+            "GDELT free-tier 429 starvation hazard."
+        )
+
+    def test_backoff_schedule_constant_is_5_15_30_60_120(self):
+        """Adversarial-review CRIT-4: the existing tests verify the
+        SLEEP SEQUENCE up to attempt 4 ([5, 15, 30, 60]) but no test
+        observes the 120s entry — the success-after-4-fails test
+        short-circuits and the exhaustion test no-ops sleeps. Pin
+        the constant directly so a typo or refactor changing the
+        last entry can't slip through."""
+        from gdelt_backfill import _GDELT_429_BACKOFF_SCHEDULE_S
+        assert _GDELT_429_BACKOFF_SCHEDULE_S == [5, 15, 30, 60, 120], (
+            f"backoff schedule constant must be [5, 15, 30, 60, 120]; "
+            f"got {_GDELT_429_BACKOFF_SCHEDULE_S}. Cumulative budget "
+            f"230s; if you change this, update the rationale in "
+            f"kb/decisions/h4-backfill-bugs-may04.md (Bug 1)."
+        )
+
+    def test_429_does_not_sleep_on_final_attempt(self, monkeypatch):
+        """Adversarial-review CRIT-1: the FINAL retry attempt must
+        NOT be followed by a backoff sleep — the next iteration
+        won't run, so any sleep is pure budget burn. Pre-fix:
+        all-429 path slept 5+15+30+60+120 = 230s; post-fix should
+        sleep 5+15+30+60 = 110s before raising.
+
+        This test exercises the all-429 exhaustion path and asserts
+        only 4 sleeps were observed (one per non-final attempt)."""
+        from gdelt_backfill import fetch_gdelt_articles, GdeltFetchError
+        import gdelt_backfill as gd
+
+        sleeps: list = []
+        monkeypatch.setattr(gd._time_mod, "sleep", lambda s: sleeps.append(s))
+
+        class _Resp429:
+            status_code = 429
+
+            def json(self):
+                return {}
+
+        def _req(url, params, timeout):
+            return _Resp429()
+
+        with pytest.raises(GdeltFetchError):
+            fetch_gdelt_articles(
+                "BTC",
+                datetime.datetime(2026, 4, 15, 10, 0, 0,
+                                  tzinfo=datetime.timezone.utc),
+                datetime.datetime(2026, 4, 15, 11, 0, 0,
+                                  tzinfo=datetime.timezone.utc),
+                request_fn=_req,
+                max_retries=5,
+            )
+        # 4 sleeps, not 5 — the final attempt's would-be sleep is skipped.
+        assert sleeps == [5, 15, 30, 60], (
+            f"all-429 path must sleep 4 times (between attempts) and "
+            f"NOT after the final attempt; got sleeps={sleeps}. The "
+            f"would-be 5th sleep of 120s is pure budget burn."
+        )
+
+    def test_generic_exception_uses_new_backoff_schedule(self, monkeypatch):
+        """Adversarial-review CRIT-2: the new schedule is applied in
+        BOTH the HTTP-429 branch AND the generic `except Exception`
+        branch (e.g., requests.ConnectionError, JSON decode errors).
+        Tests previously only covered the 429 branch; a future
+        refactor could silently regress the generic path. Pin it
+        with a connection-error simulation."""
+        from gdelt_backfill import fetch_gdelt_articles
+        import gdelt_backfill as gd
+
+        sleeps: list = []
+        monkeypatch.setattr(gd._time_mod, "sleep", lambda s: sleeps.append(s))
+
+        class _Resp200:
+            status_code = 200
+
+            def json(self):
+                return {"articles": []}
+
+        # 4 raises, then 200.
+        seq_idx = {"i": 0}
+
+        def _req(url, params, timeout):
+            i = seq_idx["i"]
+            seq_idx["i"] += 1
+            if i < 4:
+                raise ConnectionError("simulated transient network failure")
+            return _Resp200()
+
+        fetch_gdelt_articles(
+            "BTC",
+            datetime.datetime(2026, 4, 15, 10, 0, 0,
+                              tzinfo=datetime.timezone.utc),
+            datetime.datetime(2026, 4, 15, 11, 0, 0,
+                              tzinfo=datetime.timezone.utc),
+            request_fn=_req,
+            max_retries=5,
+        )
+        assert sleeps == [5, 15, 30, 60], (
+            f"generic-exception path must use the same backoff "
+            f"schedule as 429 (and skip sleep on final attempt); "
+            f"got {sleeps}"
+        )
 
 
 # ── Resume from checkpoint ─────────────────────────────────────────────

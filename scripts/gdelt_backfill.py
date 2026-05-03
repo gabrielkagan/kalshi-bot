@@ -92,13 +92,21 @@ class GdeltFetchError(Exception):
 
 # ── Network ────────────────────────────────────────────────────────────
 
+# Bug 1 fix (2026-05-04): GDELT free-tier IP throttle on 429 persists
+# longer than the previous 1+2+4=7s exponential budget. Observed in
+# May 4 smoke test — workflow exited on the very first bucket. New
+# schedule gives 5+15+30+60+120 = 230s cumulative budget across 5
+# attempts, which empirically clears the throttle.
+_GDELT_429_BACKOFF_SCHEDULE_S: List[int] = [5, 15, 30, 60, 120]
+
+
 def fetch_gdelt_articles(
     asset: str,
     start_dt: datetime.datetime,
     end_dt: datetime.datetime,
     *,
     request_fn: Optional[Callable] = None,
-    max_retries: int = 3,
+    max_retries: int = 5,
 ) -> List[Dict]:
     """Fetch GDELT articles for `asset` in [start_dt, end_dt].
 
@@ -107,7 +115,11 @@ def fetch_gdelt_articles(
 
     GDELT timestamps use the format YYYYMMDDHHMMSS (UTC). The Doc API
     returns at most 250 articles per call — adequate for a 1-hour window
-    on these 4 crypto queries (typical: 5-50 articles/hour/asset)."""
+    on these 4 crypto queries (typical: 5-50 articles/hour/asset).
+
+    On HTTP 429, sleeps per `_GDELT_429_BACKOFF_SCHEDULE_S` between
+    attempts. On other exceptions (network, JSON parse), uses the
+    same schedule. Both cases bounded by `max_retries`."""
     if request_fn is None:
         import requests as _requests
 
@@ -148,14 +160,35 @@ def fetch_gdelt_articles(
                     break
                 return arts
             if status == 429:
-                _time_mod.sleep(2 ** attempt)
-                last_err = "HTTP 429 (rate limit)"
+                # Bug 1 (2026-05-04): the previous `2 ** attempt`
+                # backoff (1+2+4=7s for 3 attempts) was insufficient
+                # against GDELT free-tier IP throttle. New schedule:
+                # 5/15/30/60/120s = 230s cumulative across 5 attempts.
+                last_err = (
+                    f"HTTP 429 (rate limit, attempt {attempt + 1}/"
+                    f"{max_retries})"
+                )
+                # Adversarial-review CRIT-1: skip the sleep on the
+                # final attempt — the next iteration won't run, so
+                # sleeping is pure budget burn (up to 120s). Without
+                # this, an all-429 path wastes 120s right before
+                # raising the GdeltFetchError.
+                if attempt < max_retries - 1:
+                    _idx = min(
+                        attempt, len(_GDELT_429_BACKOFF_SCHEDULE_S) - 1,
+                    )
+                    _time_mod.sleep(_GDELT_429_BACKOFF_SCHEDULE_S[_idx])
                 continue
             last_err = f"HTTP {status}"
             break
         except Exception as e:
             last_err = str(e)
-            _time_mod.sleep(2 ** attempt)
+            # Same final-attempt skip as the 429 branch.
+            if attempt < max_retries - 1:
+                _idx = min(
+                    attempt, len(_GDELT_429_BACKOFF_SCHEDULE_S) - 1,
+                )
+                _time_mod.sleep(_GDELT_429_BACKOFF_SCHEDULE_S[_idx])
             continue
     raise GdeltFetchError(
         f"asset={asset} window=[{start_dt.isoformat()}, {end_dt.isoformat()}]: {last_err}"
