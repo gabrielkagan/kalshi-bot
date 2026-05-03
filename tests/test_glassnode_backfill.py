@@ -6,6 +6,7 @@ that distinguishes H-4b from H-4a/c)."""
 
 import datetime
 import os
+import sqlite3
 import sys
 
 import pytest
@@ -415,3 +416,110 @@ class TestGlassnodeStampsDataProvenance:
             "SELECT data_provenance FROM evaluated_opportunities WHERE id=1"
         ).fetchone()
         assert row[0] == "backfill_60s_inputs"
+
+
+# ── Schema-add regression: lock contention must NOT silently swallow ───
+
+class TestEnsureLocalColumnsUnderLockContention:
+    """Regression for the May 4 smoke-test failure on VPS, where
+    `_ensure_local_columns` silently passed on a `database is locked`
+    error (a transient lock-contention `OperationalError`, not the
+    intended `duplicate column` `OperationalError`), then the next
+    SELECT crashed with `no such column`. The original `try: ALTER ...
+    except sqlite3.OperationalError: pass` was too broad."""
+
+    def test_lock_contention_raises_does_not_silently_pass(self, tmp_path):
+        """Hold an exclusive write lock on a separate connection while
+        calling `_ensure_local_columns` with a short busy_timeout. A
+        transient lock failure must propagate (so callers see it) — NOT
+        be silently swallowed and leave columns missing.
+
+        Repros the May 4 VPS failure: bot's snapshotter thread held the
+        write lock long enough that the script's ALTER TABLE timed out;
+        the broad except hid the failure; the next SELECT crashed."""
+        from glassnode_backfill import _ensure_local_columns
+        # Use a real file so a second connection on the same DB is
+        # meaningful (unlike :memory:).
+        db_path = tmp_path / "lock_test.db"
+        # Ensure the table exists first.
+        bootstrap = sqlite3.connect(str(db_path))
+        bootstrap.execute("PRAGMA journal_mode=WAL")
+        bootstrap.execute(
+            "CREATE TABLE evaluated_opportunities (id INTEGER PRIMARY KEY)"
+        )
+        bootstrap.commit()
+        bootstrap.close()
+
+        # Connection A: hold a write lock.
+        holder = sqlite3.connect(str(db_path), timeout=30.0)
+        holder.execute("PRAGMA journal_mode=WAL")
+        # BEGIN IMMEDIATE acquires RESERVED — blocks DDL exclusive.
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute(
+            "INSERT INTO evaluated_opportunities (id) VALUES (1)"
+        )
+        try:
+            # Connection B: short busy_timeout so ALTER fails fast.
+            target = sqlite3.connect(str(db_path), timeout=0.5)
+            target.execute("PRAGMA journal_mode=WAL")
+            target.execute("PRAGMA busy_timeout=200")
+            with pytest.raises(sqlite3.OperationalError) as excinfo:
+                _ensure_local_columns(target)
+            # The failure must be lock-related, not a duplicate-column
+            # bystander. Both phrases SQLite uses for lock failures.
+            msg = str(excinfo.value).lower()
+            assert "lock" in msg or "busy" in msg, (
+                f"expected lock/busy error, got: {excinfo.value!r}"
+            )
+            target.close()
+        finally:
+            holder.rollback()
+            holder.close()
+
+    def test_duplicate_column_still_swallowed(self, tmp_path):
+        """The narrow exception filter must STILL swallow
+        `duplicate column` errors — that's the intended idempotency
+        path. Calling `_ensure_local_columns` twice on the same DB
+        must succeed both times without raising."""
+        from glassnode_backfill import _ensure_local_columns
+        sm = _make_db(tmp_path)
+        # First call adds the columns.
+        _ensure_local_columns(sm.conn)
+        # Second call: ALTER would emit "duplicate column" — must still
+        # be swallowed. Function returns cleanly.
+        _ensure_local_columns(sm.conn)
+        # Verify columns are in fact present.
+        existing = {
+            row[1] for row in sm.conn.execute(
+                "PRAGMA table_info(evaluated_opportunities)"
+            ).fetchall()
+        }
+        for col in (
+            "btc_active_addresses_24h_zscore",
+            "eth_active_addresses_24h_zscore",
+            "btc_exchange_inflow_24h_zscore",
+            "data_provenance",
+        ):
+            assert col in existing, f"column {col} missing after _ensure_local_columns"
+
+    def test_columns_actually_present_after_ensure(self, tmp_path):
+        """Belt-and-braces: after `_ensure_local_columns` returns
+        successfully (no exception), all four expected columns MUST
+        exist. Regression against any future refactor that decouples
+        the ALTER from the column appearing in PRAGMA table_info."""
+        from glassnode_backfill import _ensure_local_columns
+        sm = _make_db(tmp_path)
+        _ensure_local_columns(sm.conn)
+        existing = {
+            row[1] for row in sm.conn.execute(
+                "PRAGMA table_info(evaluated_opportunities)"
+            ).fetchall()
+        }
+        required = {
+            "btc_active_addresses_24h_zscore",
+            "eth_active_addresses_24h_zscore",
+            "btc_exchange_inflow_24h_zscore",
+            "data_provenance",
+        }
+        missing = required - existing
+        assert not missing, f"_ensure_local_columns left missing: {missing}"

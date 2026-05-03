@@ -265,28 +265,32 @@ def parse_glassnode_series(
 # ── Backfill driver ────────────────────────────────────────────────────
 
 def _ensure_local_columns(conn: sqlite3.Connection) -> None:
-    for col in (
-        "btc_active_addresses_24h_zscore",
-        "eth_active_addresses_24h_zscore",
-        "btc_exchange_inflow_24h_zscore",
-    ):
-        try:
-            conn.execute(
-                f"ALTER TABLE evaluated_opportunities ADD COLUMN {col} REAL"
-            )
-        except sqlite3.OperationalError:
-            pass
-    # Round 4 fix #2 (MEDIUM): defensively ensure the data_provenance
-    # column exists. G-6 normally adds this, but H-4b stamps it via
-    # COALESCE in the UPDATE — so if a DB has not had G-6 run yet, the
-    # stamp would crash on a missing column. ADD COLUMN IF NOT EXISTS
-    # is unsupported on SQLite < 3.35; use try/except for portability.
-    try:
+    # Pre-check via PRAGMA: only ALTER for columns that are actually
+    # missing. The previous pattern (`try: ALTER; except OperationalError:
+    # pass`) was too broad — it swallowed `database is locked` the same
+    # way it swallowed `duplicate column`. Under VPS lock contention
+    # (May 4 2026 smoke test), the ALTER timed out, the broad except
+    # hid the failure, and the next SELECT crashed with `no such column`.
+    existing = {
+        row[1] for row in conn.execute(
+            "PRAGMA table_info(evaluated_opportunities)"
+        ).fetchall()
+    }
+    needed = [
+        ("btc_active_addresses_24h_zscore", "REAL"),
+        ("eth_active_addresses_24h_zscore", "REAL"),
+        ("btc_exchange_inflow_24h_zscore", "REAL"),
+        # G-6 normally adds data_provenance; H-4b stamps it via COALESCE
+        # in the UPDATE, so we defensively add it here for DBs that
+        # haven't had G-6 run.
+        ("data_provenance", "TEXT"),
+    ]
+    for col, typ in needed:
+        if col in existing:
+            continue
         conn.execute(
-            "ALTER TABLE evaluated_opportunities ADD COLUMN data_provenance TEXT"
+            f"ALTER TABLE evaluated_opportunities ADD COLUMN {col} {typ}"
         )
-    except sqlite3.OperationalError:
-        pass
     conn.commit()
 
 

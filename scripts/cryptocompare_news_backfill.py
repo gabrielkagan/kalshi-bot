@@ -225,22 +225,27 @@ def summarize_sentiment(articles: List[Dict]) -> Tuple[int, Optional[float]]:
 # ── Backfill driver ────────────────────────────────────────────────────
 
 def _ensure_local_columns(conn: sqlite3.Connection) -> None:
-    try:
+    # Pre-check via PRAGMA (see h4-backfill-bugs-may04.md). The previous
+    # `try: ALTER; except OperationalError: pass` pattern swallowed
+    # `database is locked` the same way it swallowed `duplicate column`,
+    # which under VPS lock contention left the column missing and the
+    # next SELECT crashed with `no such column`.
+    existing = {
+        row[1] for row in conn.execute(
+            "PRAGMA table_info(evaluated_opportunities)"
+        ).fetchall()
+    }
+    needed = [
+        ("news_sentiment_score_1h_pre_decision", "REAL"),
+        # G-6 normally adds data_provenance; H-4c stamps it via COALESCE.
+        ("data_provenance", "TEXT"),
+    ]
+    for col, typ in needed:
+        if col in existing:
+            continue
         conn.execute(
-            "ALTER TABLE evaluated_opportunities "
-            "ADD COLUMN news_sentiment_score_1h_pre_decision REAL"
+            f"ALTER TABLE evaluated_opportunities ADD COLUMN {col} {typ}"
         )
-    except sqlite3.OperationalError:
-        pass
-    # Round 4 cross-cutting (MEDIUM): defensively ensure data_provenance
-    # column exists so the COALESCE stamp does not fail on a DB where
-    # G-6 has not run.
-    try:
-        conn.execute(
-            "ALTER TABLE evaluated_opportunities ADD COLUMN data_provenance TEXT"
-        )
-    except sqlite3.OperationalError:
-        pass
     conn.commit()
 
 
