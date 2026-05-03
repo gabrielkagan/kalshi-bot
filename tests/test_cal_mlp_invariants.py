@@ -1107,3 +1107,281 @@ def test_thread_env_is_zero_deps_no_numerical_imports():
         f"subprocess failed: stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     assert 'OK' in result.stdout, f"unexpected stdout: {result.stdout!r}"
+
+
+# ---------------------------------------------------------------------------
+# CALMLP_BUNDLE_DIR per-version kill-switch (v2 deploy runbook 2026-05-03).
+# Companion to CALMLP_ENABLED. CALMLP_ENABLED=0 disables ALL cal_mlp;
+# CALMLP_BUNDLE_DIR pins a specific bundle directory so v2→v1 rollback
+# doesn't require disabling cal_mlp entirely. <ASSET> placeholder is
+# substituted with self.asset (uppercase) at lookup time so one env var
+# rolls back all 4 assets at once.
+# Spec: kb/decisions/v2-cal-mlp-deploy-runbook-may03.md (Per-version kill-switch).
+# ---------------------------------------------------------------------------
+
+def test_calmlp_bundle_dir_referenced_in_load():
+    """AST guard — CALMLP_BUNDLE_DIR env var MUST be read in
+    CalMLPPredictor._load. A refactor that drops the override silently
+    would break the v2→v1 rollback path.
+    """
+    import inspect
+    import integration
+    src = inspect.getsource(integration.CalMLPPredictor._load)
+    assert 'CALMLP_BUNDLE_DIR' in src, (
+        "_load source must reference CALMLP_BUNDLE_DIR for v2 rollback path; "
+        "see kb/decisions/v2-cal-mlp-deploy-runbook-may03.md"
+    )
+    assert '<ASSET>' in src, (
+        "_load must substitute <ASSET> placeholder so the same env var "
+        "rolls back all 4 assets at once"
+    )
+
+
+def test_calmlp_bundle_dir_not_in_init():
+    """CALMLP_BUNDLE_DIR resolution must happen in _load, NOT __init__,
+    to preserve the kill-switch contract that __init__ does no IO.
+    Companion to test_cal_mlp_predictor_init_zero_io.
+    """
+    import inspect
+    import integration
+    src = inspect.getsource(integration.CalMLPPredictor.__init__)
+    assert 'CALMLP_BUNDLE_DIR' not in src, (
+        "CALMLP_BUNDLE_DIR must NOT be read in __init__ — that would "
+        "break the zero-IO init contract (test_cal_mlp_predictor_init_zero_io)"
+    )
+
+
+def test_calmlp_bundle_dir_unset_uses_current_path(tmp_path, monkeypatch):
+    """Env unset → existing CURRENT-based resolution unchanged.
+    Asserts the no-override codepath still hits the no_current branch
+    via the CURRENT file (not via override resolution).
+    """
+    import integration
+    monkeypatch.delenv('CALMLP_BUNDLE_DIR', raising=False)
+    monkeypatch.setenv('CALMLP_ENABLED', '1')
+    asset_dir = tmp_path / 'models' / 'cal_mlp_BTC'
+    asset_dir.mkdir(parents=True)
+    # No CURRENT file → no_current via existing path.
+    pred = integration.CalMLPPredictor('BTC', project_root=tmp_path)
+    with pytest.raises(integration.CalMLPError) as exc:
+        pred._load()
+    assert exc.value.code == 'no_current'
+    assert 'CURRENT' in str(exc.value), (
+        f"expected error to reference CURRENT, got: {exc.value}"
+    )
+
+
+def test_calmlp_bundle_dir_override_skips_current(tmp_path, monkeypatch):
+    """Env set → CURRENT file is ignored; resolver uses override directory.
+    CURRENT points to a name we never read (override wins). Override path
+    is nonexistent so we fail before attempting the bundle load — and the
+    error message must reference the OVERRIDE path (not CURRENT).
+    """
+    import integration
+    asset_dir = tmp_path / 'models' / 'cal_mlp_BTC'
+    asset_dir.mkdir(parents=True)
+    (asset_dir / 'CURRENT').write_text('current_train_id_should_be_ignored\n')
+    bad_override = tmp_path / 'models' / 'cal_mlp_BTC' / 'override_train_id_DNE'
+    monkeypatch.setenv('CALMLP_BUNDLE_DIR', str(bad_override))
+    monkeypatch.setenv('CALMLP_ENABLED', '1')
+    pred = integration.CalMLPPredictor('BTC', project_root=tmp_path)
+    with pytest.raises(integration.CalMLPError) as exc:
+        pred._load()
+    msg = str(exc.value)
+    assert exc.value.code == 'no_current'
+    assert 'override_train_id_DNE' in msg, (
+        f"expected override path in error (proves CURRENT was ignored); "
+        f"got: {msg}"
+    )
+    assert 'current_train_id_should_be_ignored' not in msg, (
+        f"CURRENT was consulted despite override being set; got: {msg}"
+    )
+
+
+def test_calmlp_bundle_dir_substitutes_asset_placeholder(tmp_path, monkeypatch):
+    """<ASSET> in CALMLP_BUNDLE_DIR is replaced with self.asset (uppercase).
+    Enables one env var to roll back BTC+ETH+SOL+XRP simultaneously.
+    """
+    import integration
+    asset_dir = tmp_path / 'models' / 'cal_mlp_ETH'
+    asset_dir.mkdir(parents=True)
+    (asset_dir / 'CURRENT').write_text('whatever\n')
+    template = str(tmp_path / 'models' / 'cal_mlp_<ASSET>' / 'pinned_v1_id')
+    monkeypatch.setenv('CALMLP_BUNDLE_DIR', template)
+    monkeypatch.setenv('CALMLP_ENABLED', '1')
+    pred = integration.CalMLPPredictor('ETH', project_root=tmp_path)
+    with pytest.raises(integration.CalMLPError) as exc:
+        pred._load()
+    msg = str(exc.value)
+    assert 'cal_mlp_ETH' in msg, f"<ASSET> must be substituted; got: {msg}"
+    assert '<ASSET>' not in msg, f"placeholder leaked unsubstituted: {msg}"
+    assert 'pinned_v1_id' in msg
+
+
+def test_calmlp_bundle_dir_relative_resolved_against_project_root(
+    tmp_path, monkeypatch,
+):
+    """Relative override paths resolve under project_root, mirroring the
+    existing extract_bundle_path behavior in _load. Operators can set
+    `CALMLP_BUNDLE_DIR=models/cal_mlp_<ASSET>/<train_id>` (relative)
+    without depending on the bot's CWD.
+    """
+    import integration
+    asset_dir = tmp_path / 'models' / 'cal_mlp_BTC'
+    asset_dir.mkdir(parents=True)
+    (asset_dir / 'CURRENT').write_text('whatever\n')
+    monkeypatch.setenv(
+        'CALMLP_BUNDLE_DIR',
+        'models/cal_mlp_<ASSET>/relative_pinned_id',
+    )
+    monkeypatch.setenv('CALMLP_ENABLED', '1')
+    pred = integration.CalMLPPredictor('BTC', project_root=tmp_path)
+    with pytest.raises(integration.CalMLPError) as exc:
+        pred._load()
+    msg = str(exc.value)
+    assert str(tmp_path) in msg, (
+        f"relative path must resolve against project_root; got: {msg}"
+    )
+    assert 'relative_pinned_id' in msg
+
+
+def test_calmlp_bundle_dir_empty_treated_as_unset(tmp_path, monkeypatch):
+    """Empty / whitespace-only env var must NOT trigger override path.
+    Mirrors the .strip() pattern used by CALMLP_ENABLED (case-sensitive
+    paths so we skip the .lower()).
+    """
+    import integration
+    asset_dir = tmp_path / 'models' / 'cal_mlp_BTC'
+    asset_dir.mkdir(parents=True)
+    # No CURRENT file.
+    monkeypatch.setenv('CALMLP_BUNDLE_DIR', '   ')
+    monkeypatch.setenv('CALMLP_ENABLED', '1')
+    pred = integration.CalMLPPredictor('BTC', project_root=tmp_path)
+    with pytest.raises(integration.CalMLPError) as exc:
+        pred._load()
+    # Must hit no_current via CURRENT path (not override).
+    assert exc.value.code == 'no_current'
+    assert 'CURRENT' in str(exc.value), (
+        f"whitespace env var should be treated as unset; got: {exc.value}"
+    )
+
+
+def test_calmlp_bundle_dir_train_id_derived_from_directory_name(
+    tmp_path, monkeypatch,
+):
+    """Round-1 critique #1: CONVENTION — override directory NAME must
+    equal the bundle's train_id. If operator uses a symlink or renamed
+    dir for memorability, bundle filename lookup fails — and the error
+    message must surface the convention so the operator knows what to
+    fix (instead of the misleading "phase5 bundle not found" alone).
+    """
+    import integration
+    asset_dir = tmp_path / 'models' / 'cal_mlp_BTC'
+    asset_dir.mkdir(parents=True)
+    real_train_id = '2026-04-28T11_50_29-real'
+    real_dir = asset_dir / real_train_id
+    real_dir.mkdir()
+    # Real bundle file lives under real_train_id directory name.
+    (real_dir / f'cal_mlp_BTC_{real_train_id}_phase5_bundle.json').write_text('{}')
+    # Operator uses a renamed symlink → directory NAME no longer matches.
+    aliased = asset_dir / 'v1_pinned'
+    aliased.symlink_to(real_dir)
+    monkeypatch.setenv('CALMLP_BUNDLE_DIR', str(aliased))
+    monkeypatch.setenv('CALMLP_ENABLED', '1')
+    pred = integration.CalMLPPredictor('BTC', project_root=tmp_path)
+    with pytest.raises(integration.CalMLPError) as exc:
+        pred._load()
+    msg = str(exc.value)
+    # train_id derived from directory NAME ('v1_pinned') so bundle filename
+    # mismatches what's actually on disk.
+    assert 'cal_mlp_BTC_v1_pinned_phase5_bundle.json' in msg, (
+        f"train_id must come from directory name; got: {msg}"
+    )
+    # Error must surface the convention so operator can self-diagnose.
+    assert 'directory NAME' in msg or 'CALMLP_BUNDLE_DIR convention' in msg, (
+        f"error must reference the naming convention; got: {msg}"
+    )
+
+
+def test_calmlp_bundle_dir_override_still_acquires_flock(tmp_path, monkeypatch):
+    """Round-1 critique #2: override branch MUST still acquire the
+    per-asset flock at models_dir/.lock so it coordinates with concurrent
+    CURRENT publishers (the operator runbook updates CURRENT in lock-step
+    with setting the env var). A future refactor that drops the lock in
+    override mode would silently break write/read synchronization.
+    """
+    import integration
+    asset_dir = tmp_path / 'models' / 'cal_mlp_BTC'
+    asset_dir.mkdir(parents=True)
+    # Override dir exists (passes is_dir check) but bundle file missing →
+    # we get past the override gates and into the locked region, then fail.
+    override_dir = asset_dir / 'pinned_id'
+    override_dir.mkdir()
+    monkeypatch.setenv('CALMLP_BUNDLE_DIR', str(override_dir))
+    monkeypatch.setenv('CALMLP_ENABLED', '1')
+
+    flock_calls: list = []
+    real_flock = integration.fcntl.flock
+
+    def spy_flock(fd, op):
+        flock_calls.append(op)
+        return real_flock(fd, op)
+
+    monkeypatch.setattr(integration.fcntl, 'flock', spy_flock)
+    pred = integration.CalMLPPredictor('BTC', project_root=tmp_path)
+    with pytest.raises(integration.CalMLPError) as exc:
+        pred._load()
+    assert exc.value.code == 'no_current'  # phase5 bundle not found
+    assert integration.fcntl.LOCK_SH in flock_calls, (
+        f"override branch must acquire LOCK_SH on models_dir/.lock; "
+        f"flock calls observed: {flock_calls}"
+    )
+    # And the lock file was actually created on disk at the expected location.
+    assert (asset_dir / '.lock').exists(), (
+        "models_dir/.lock must be created (per-asset coordination point)"
+    )
+
+
+def test_calmlp_bundle_dir_requires_models_dir_to_exist(tmp_path, monkeypatch):
+    """Round-1 critique #3: pin current behavior — override branch reuses
+    the per-asset lock at models_dir/.lock, so operator-set overrides for
+    assets that have NEVER had a bundle deployed fail loudly with
+    'no models dir for {asset}'. Adding a 5th asset via override-only
+    is NOT a supported workflow today; deploy a real bundle first, then
+    optionally override CURRENT via CALMLP_BUNDLE_DIR.
+    """
+    import integration
+    # Deliberately do NOT create models/cal_mlp_BTC/.
+    monkeypatch.setenv('CALMLP_BUNDLE_DIR', str(tmp_path / 'override_dir'))
+    monkeypatch.setenv('CALMLP_ENABLED', '1')
+    pred = integration.CalMLPPredictor('BTC', project_root=tmp_path)
+    with pytest.raises(integration.CalMLPError) as exc:
+        pred._load()
+    assert exc.value.code == 'no_current'
+    assert 'no models dir' in str(exc.value), (
+        f"missing models_dir must fail loudly even with override set; "
+        f"got: {exc.value}"
+    )
+
+
+def test_calmlp_bundle_dir_rejects_file_path(tmp_path, monkeypatch):
+    """Round-1 critique #4: operator typo — pointing CALMLP_BUNDLE_DIR
+    at a FILE (e.g., the bundle JSON itself) must fail with a clear
+    'not a directory' error rather than the misleading 'phase5 bundle
+    not found at <file>/<filename>' that would surface from blindly
+    treating the file as a directory.
+    """
+    import integration
+    asset_dir = tmp_path / 'models' / 'cal_mlp_BTC'
+    asset_dir.mkdir(parents=True)
+    typo_path = asset_dir / 'bundle.json'
+    typo_path.write_text('{}')
+    monkeypatch.setenv('CALMLP_BUNDLE_DIR', str(typo_path))
+    monkeypatch.setenv('CALMLP_ENABLED', '1')
+    pred = integration.CalMLPPredictor('BTC', project_root=tmp_path)
+    with pytest.raises(integration.CalMLPError) as exc:
+        pred._load()
+    msg = str(exc.value)
+    assert 'not a directory' in msg.lower(), (
+        f"file-path typo should fail with 'not a directory'; got: {msg}"
+    )

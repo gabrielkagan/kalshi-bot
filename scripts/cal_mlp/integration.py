@@ -655,19 +655,73 @@ class CalMLPPredictor:
                 # with no Phase 4 bundle deployed yet.
                 if not models_dir.exists():
                     raise CalMLPError('no_current', f"no models dir for {self.asset}")
-                current_path = models_dir / 'CURRENT'
-                if not current_path.exists():
-                    raise CalMLPError('no_current', f"no CURRENT for {self.asset}")
+                # CALMLP_BUNDLE_DIR per-version kill-switch
+                # (kb/decisions/v2-cal-mlp-deploy-runbook-may03.md). When set,
+                # overrides the CURRENT file so v2→v1 rollback doesn't require
+                # disabling cal_mlp entirely. <ASSET> placeholder is substituted
+                # with self.asset (uppercase) so one env var rolls back all
+                # 4 assets at once. Empty/whitespace value is treated as unset
+                # to mirror CALMLP_ENABLED's strip()-then-check pattern.
+                # Conventions (NOT enforced beyond the error messages below):
+                #   1. Override path must point to a DIRECTORY (not a file).
+                #   2. The directory NAME must equal the bundle's train_id —
+                #      the phase5 bundle filename pattern depends on it.
+                #      Symlinks / renamed dirs are not supported.
+                #   3. Override paths SHOULD live under models/cal_mlp_<asset>/
+                #      so the per-asset .lock still coordinates with the
+                #      CURRENT publisher. Adding a new asset via override-only
+                #      is NOT supported (models_dir.exists() pre-check fires
+                #      first, by design — see test_calmlp_bundle_dir_requires_
+                #      models_dir_to_exist).
+                override_raw = os.environ.get('CALMLP_BUNDLE_DIR', '').strip()
+                override_train_dir: Optional[Path] = None
+                if override_raw:
+                    substituted = override_raw.replace('<ASSET>', self.asset)
+                    override_train_dir = Path(substituted)
+                    if not override_train_dir.is_absolute():
+                        override_train_dir = self.project_root / override_train_dir
+                    if not override_train_dir.exists():
+                        raise CalMLPError(
+                            'no_current',
+                            f"CALMLP_BUNDLE_DIR override directory not found: "
+                            f"{override_train_dir}",
+                        )
+                    # Convention 1: must be a directory, not a regular file.
+                    if not override_train_dir.is_dir():
+                        raise CalMLPError(
+                            'no_current',
+                            f"CALMLP_BUNDLE_DIR override path is not a directory: "
+                            f"{override_train_dir}",
+                        )
+                else:
+                    current_path = models_dir / 'CURRENT'
+                    if not current_path.exists():
+                        raise CalMLPError('no_current', f"no CURRENT for {self.asset}")
                 lock_path = models_dir / '.lock'
                 lock_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
                 try:
                     fcntl.flock(lock_fd, fcntl.LOCK_SH)
-                    train_id = current_path.read_text().strip()
-                    train_dir = models_dir / train_id
+                    if override_train_dir is not None:
+                        train_dir = override_train_dir
+                        # Convention 2: directory name == train_id. If operator
+                        # used a symlink/renamed dir, bundle filename below
+                        # won't match — we surface the convention in the error.
+                        train_id = train_dir.name
+                    else:
+                        train_id = current_path.read_text().strip()
+                        train_dir = models_dir / train_id
                     # R-p7-r2#H3: only phase-5 bundles deploy. Phase-4-only
                     # ablation paths must explicitly opt in upstream.
                     bundle_path = train_dir / f'cal_mlp_{self.asset}_{train_id}_phase5_bundle.json'
                     if not bundle_path.exists():
+                        if override_train_dir is not None:
+                            raise CalMLPError(
+                                'no_current',
+                                f"phase5 bundle not found at {bundle_path} "
+                                f"(CALMLP_BUNDLE_DIR convention: directory NAME "
+                                f"must equal train_id; symlinks/renames are not "
+                                f"supported)",
+                            )
                         raise CalMLPError('no_current', f"phase5 bundle not found at {bundle_path}")
                     with open(bundle_path) as f:
                         bundle = json.load(f)
