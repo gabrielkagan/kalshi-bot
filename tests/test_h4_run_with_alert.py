@@ -50,6 +50,45 @@ def test_exit_code_nonzero_triggers_alert(monkeypatch):
     assert 'glassnode' in sent[0]
 
 
+def test_format_failure_message_labels_124_as_hard_timeout(monkeypatch):
+    """Exit code 124 is the GNU `timeout` convention used by
+    `_h4_runtime_safety.install_hard_timeout` — the in-script
+    orphan-prevention layer fires `sys.exit(124)`. The wrapper must
+    label this distinctly from generic FAILURE so the operator
+    doesn't mistake an expected first-run hard-timeout (multi-day
+    historical backfill drain) for a fault that needs investigation."""
+    import h4_run_with_alert
+    msg = h4_run_with_alert.format_failure_message(
+        label='gdelt',
+        exit_code=124,
+        cmd=['python3', 'scripts/gdelt_backfill.py', '--db', 'state.db'],
+    )
+    assert 'HARD TIMEOUT' in msg, (
+        f"exit code 124 must be labeled 'HARD TIMEOUT'; got: {msg!r}"
+    )
+    assert 'will resume' in msg.lower(), (
+        f"hard-timeout message must signal that the script will resume "
+        f"on the next run (idempotent under retry); got: {msg!r}"
+    )
+    assert 'FAILED' not in msg, (
+        f"must NOT label 124 as 'FAILED' — that's for non-orphan-"
+        f"prevention faults; got: {msg!r}"
+    )
+
+
+def test_format_failure_message_labels_other_codes_as_failed(monkeypatch):
+    """Non-124 exit codes still get the generic 'FAILED' label."""
+    import h4_run_with_alert
+    for code in (1, 2, 127, 143):
+        msg = h4_run_with_alert.format_failure_message(
+            label='gdelt', exit_code=code, cmd=['x'],
+        )
+        assert 'FAILED' in msg, f"code {code} must say 'FAILED'; got: {msg!r}"
+        assert 'HARD TIMEOUT' not in msg, (
+            f"code {code} should not say 'HARD TIMEOUT'; got: {msg!r}"
+        )
+
+
 def test_alert_message_includes_label_exit_code_and_journal_hint(monkeypatch):
     """Operator needs label + exit_code + how-to-find-logs in one shot."""
     import h4_run_with_alert

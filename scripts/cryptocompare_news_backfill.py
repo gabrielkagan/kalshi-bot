@@ -461,6 +461,15 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def main(argv=None) -> int:
+    # Layer 2 of orphan prevention (May 3 2026 postmortem): hard 25-min
+    # alarm so this script self-kills at the ceiling. CRITICAL for this
+    # script specifically — the May 3 incident's 2h42m orphan was
+    # exactly an instance of THIS script. The wrapper's signal handling
+    # would have reaped earlier if SIGTERM had reached us; this alarm
+    # is the in-script defense regardless of upstream signals.
+    from _h4_runtime_safety import install_hard_timeout
+    install_hard_timeout(label="h4c_cc_news")
+
     parser = argparse.ArgumentParser(
         description="Phase H-4c — CryptoCompare news sentiment backfill"
     )

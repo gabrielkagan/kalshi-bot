@@ -494,6 +494,12 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def main(argv=None) -> int:
+    # Layer 2 of orphan prevention (May 3 2026 postmortem): hard 25-min
+    # alarm so the script self-kills at the ceiling regardless of any
+    # stuck loop, DNS hang, or DB lock.
+    from _h4_runtime_safety import install_hard_timeout
+    install_hard_timeout(label="h4b_glassnode")
+
     parser = argparse.ArgumentParser(
         description="Phase H-4b — Glassnode on-chain z-score backfill"
     )

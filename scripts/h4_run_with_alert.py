@@ -199,8 +199,22 @@ def format_failure_message(label: str, exit_code: int, cmd: List[str]) -> str:
     """Compact Telegram message for a backfill failure.
 
     Plain text (no Markdown) to avoid escaping foot-guns on file paths.
+
+    Special-case exit_code == 124 (GNU `timeout` convention, used by
+    `_h4_runtime_safety.install_hard_timeout`): label as "HARD TIMEOUT"
+    instead of "FAILED" so the operator knows this is the orphan-
+    prevention ceiling firing — not a fault that needs investigation.
+    First-run on a multi-day historical backfill is expected to hit
+    this ceiling repeatedly until the historical NULL rows are drained.
     """
     cmd_str = " ".join(cmd)
+    if exit_code == 124:
+        return (
+            f"H-4 backfill HARD TIMEOUT (will resume next run): {label}\n"
+            f"exit_code=124\n"
+            f"cmd: {cmd_str}\n"
+            f"View logs: journalctl -u kalshi-h4-{label}.service -n 100"
+        )
     return (
         f"H-4 backfill FAILED: {label}\n"
         f"exit_code={exit_code}\n"
