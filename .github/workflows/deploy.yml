@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
 
+# Serialize VPS-touching workflows (deploy + install_h4_cron) so they
+# can't race on ~/kalshi-bot-repo working tree. cancel-in-progress=false
+# means we wait rather than kill an in-flight deploy mid-pull.
+concurrency:
+  group: vps-deploy
+  cancel-in-progress: false
+
 jobs:
   test:
     runs-on: ubuntu-latest

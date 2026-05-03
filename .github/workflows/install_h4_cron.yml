@@ -1,0 +1,72 @@
+name: Install H-4 cron on VPS
+
+# Manually-triggered counterpart to setup_h4_cron.sh. Use this to install
+# (or re-install) the 3 H-4 daily backfill systemd timers without needing
+# operator shell access. Mirrors deploy.yml's SSH pattern: appleboy/ssh-action
+# into botuser@VPS, run the install script. The install script is idempotent
+# (tee overwrites unit files; daemon-reload + enable + start are all idempotent),
+# so re-runs are safe.
+#
+# Trigger:
+#   gh workflow run install_h4_cron.yml
+# Watch:
+#   gh run watch <run-id>
+# Verify:
+#   workflow output prints `systemctl list-timers 'kalshi-h4-*'` at end
+
+on:
+  workflow_dispatch:
+
+# Serialize VPS-touching workflows so install + deploy can't race on
+# ~/kalshi-bot-repo working tree. cancel-in-progress=false means we
+# wait for any in-flight deploy rather than killing it.
+concurrency:
+  group: vps-deploy
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install H-4 systemd timers on VPS
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: botuser
+          key: ${{ secrets.VPS_SSH_KEY }}
+          # The install script invokes sudo for tee + systemctl. botuser
+          # has sudo permission per deploy.yml convention (which uses
+          # `sudo systemctl restart kalshi-bot`). If sudoers is configured
+          # narrowly (e.g., NOPASSWD only for `systemctl restart kalshi-bot`),
+          # this workflow will fail fast at the preflight check below
+          # with a clear error so operator can widen sudoers and retry.
+          # The install script itself is non-interactive (no `read`/prompts).
+          script: |
+            set -euo pipefail
+            cd ~/kalshi-bot-repo
+            # Land the latest origin/main: deploy.yml uses `reset --hard
+            # ${{ github.sha }}` to pin to a deploy SHA; this workflow
+            # has no SHA to pin, so reset to origin/main after fetch.
+            # This guarantees we install from the freshest setup_h4_cron.sh,
+            # not a stale version left by a prior failed deploy.
+            git fetch origin main
+            git checkout main
+            git reset --hard origin/main
+            if [ ! -f scripts/setup_h4_cron.sh ]; then
+              echo "ERROR: scripts/setup_h4_cron.sh not present on origin/main" >&2
+              echo "Push the H-4 cron infra commit first, then re-run." >&2
+              exit 1
+            fi
+            # Preflight: confirm passwordless sudo is available for the
+            # commands the install script needs. Fails fast with a clear
+            # remediation hint instead of leaving the script half-installed.
+            if ! sudo -n /bin/systemctl --version > /dev/null 2>&1; then
+              echo "ERROR: passwordless sudo for systemctl not available for botuser" >&2
+              echo "Update /etc/sudoers.d/botuser to grant:" >&2
+              echo "  botuser ALL=(ALL) NOPASSWD: /bin/systemctl, /usr/bin/tee /etc/systemd/system/*" >&2
+              exit 1
+            fi
+            bash scripts/setup_h4_cron.sh
+            echo ""
+            echo "=== Post-install verification ==="
+            systemctl list-timers 'kalshi-h4-*' --no-pager
