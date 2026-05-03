@@ -57,15 +57,14 @@ jobs:
               echo "Push the H-4 cron infra commit first, then re-run." >&2
               exit 1
             fi
-            # Preflight: confirm passwordless sudo is available for the
-            # commands the install script needs. Fails fast with a clear
-            # remediation hint instead of leaving the script half-installed.
-            if ! sudo -n /bin/systemctl --version > /dev/null 2>&1; then
-              echo "ERROR: passwordless sudo for systemctl not available for botuser" >&2
-              echo "Update /etc/sudoers.d/botuser to grant:" >&2
-              echo "  botuser ALL=(ALL) NOPASSWD: /bin/systemctl, /usr/bin/tee /etc/systemd/system/*" >&2
-              exit 1
-            fi
+            # No sudoers preflight: the install script's `set -euo pipefail`
+            # plus its first `sudo tee /etc/systemd/system/...` will fail
+            # loudly (`sudo: a password is required`) if the existing grant
+            # doesn't cover what we need. The audit cron (setup_audit_cron.sh)
+            # uses the same `sudo tee + systemctl daemon-reload + enable + start`
+            # pattern and runs successfully (audit_snapshots table populated
+            # every 30min), so the existing botuser sudoers is already broad
+            # enough.
             bash scripts/setup_h4_cron.sh
             echo ""
             echo "=== Post-install verification ==="
