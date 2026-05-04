@@ -263,10 +263,14 @@ def empirical_coverage(
             vr = 0 if 'vol_regime' in merged else int(row['vol_regime_int'])
             key = (pt, sb, vr)
         s = cell_stats[key]
+        # The parquet test_df uses the canonical Phase 2 column name
+        # `market_price` (extract_data.py:218,374). `entry_price_cents` is
+        # sim_pnl.py's internal rename of the SQL-pulled candidate_df
+        # (sim_pnl.py:403) and does NOT exist on the parquet-loaded df.
         result = predict_with_interval(
             float(row['p_pred']), float(row.get('p_std', 0.0)),
             conformal_artifact, row_features,
-            int(row['entry_price_cents']), str(row['side']),
+            int(row['market_price']), str(row['side']),
             market_blend_w, mode='inference',
         )
         p_mean, p_std, final_lo, final_hi = result
