@@ -70,6 +70,10 @@ def _make_executor():
     e._state = MagicMock()
     e._logger = MagicMock()
     e._log_fill_model_sample = MagicMock()
+    # Mirrors OrderExecutor.__init__ — required after V8-followup
+    # removal of the `getattr(self, '_cancel_404_count', 0)` fallback
+    # in _handle_cancel_404 (single source of truth: __init__).
+    e._cancel_404_count = 0
     return e
 
 
@@ -897,6 +901,94 @@ class TestResetBreakerRegistryActuallyResets(unittest.TestCase):
             "this fails, the setUp pattern in classes that exercise "
             "real _request is a no-op and round-2 critique #6 "
             "(cross-test breaker pollution) is unfixed.")
+
+
+class TestCancel404CounterExplicitInit(unittest.TestCase):
+    """V8 design note (kb/decisions/cancel-404-fix-v2-design-may04.md
+    "Counter initialization") + Round-3 critique P1-5: replace lazy
+    `getattr(self, '_cancel_404_count', 0) + 1` in _handle_cancel_404
+    with explicit `self._cancel_404_count = 0` in __init__ + a direct
+    `self._cancel_404_count += 1` in the helper.
+
+    OrderExecutor.__init__ is pure in-memory state (no DB, no API),
+    so a real construction with mocked dependencies is the right
+    integration surface — exercising the actual init body, not its AST.
+    """
+
+    def test_cancel_404_count_initialized_to_zero(self):
+        client = MagicMock()
+        state = MagicMock()
+        logger = MagicMock()
+        e = bot.OrderExecutor(client, state, logger)
+        self.assertEqual(
+            e._cancel_404_count, 0,
+            "OrderExecutor.__init__ must explicitly initialize "
+            "_cancel_404_count = 0. The prior `getattr(...)` lazy "
+            "pattern in _handle_cancel_404 was racy under any future "
+            "multi-thread refactor (two threads could each observe "
+            "attribute-missing, both write 1, lose one increment).")
+
+    def test_handle_cancel_404_increments_initialized_counter(self):
+        """End-to-end: with the explicit init in place, the helper can
+        increment without the getattr fallback. Pin that the counter
+        actually reflects helper invocations."""
+        client = MagicMock()
+        state = MagicMock()
+        logger = MagicMock()
+        e = bot.OrderExecutor(client, state, logger)
+        e._client.get_orders = MagicMock(return_value={"orders": []})
+        e._log_fill_model_sample = MagicMock()
+        order = _make_active_order(asset="ETH")
+        e._active_orders["ETH"] = order
+
+        e._handle_cancel_404(order, "ETH", "test_reason", "direct")
+        e._active_orders["ETH"] = order
+        e._handle_cancel_404(order, "ETH", "test_reason", "direct")
+
+        self.assertEqual(
+            e._cancel_404_count, 2,
+            "Counter must increment once per helper invocation.")
+
+
+class TestKalshiBreakerSuccessOnCancel404Sentinel(unittest.TestCase):
+    """V8 design "P2 deferred" #1 + resume-doc P2.2: pin the contract
+    that `_kalshi_breaker_success` classifies the cancel-404 sentinel
+    as breaker-SUCCESS.
+
+    The sentinel uses key `_error` (underscore prefix);
+    `_kalshi_breaker_success` checks for `error` (no underscore) and
+    `errors` only. The (intentional) underscore mismatch is exactly
+    what keeps the sentinel from tripping the breaker.
+
+    What this test pins (the classification contract):
+      (a) Sentinel rename `_error` → `error` would collide with the
+          existing failure check in `_kalshi_breaker_success`.
+      (b) `_kalshi_breaker_success` extended to also reject `_error`.
+
+    What's pinned ELSEWHERE (the wiring contract): `cancel_order` is
+    NOT decorated with `@_kalshi_breaker` today —
+    `tests/test_kalshi_client_breakers.py::test_cancel_order_not_wrapped`
+    (line 226). The two pins together close the loop: any future
+    decoration of `cancel_order` would route the sentinel through the
+    breaker, and at that point this test guarantees the sentinel
+    classifies as success rather than tripping it.
+
+    Either pin moving silently re-creates the May 4 lockout class:
+    breaker counts every 404 as failure → 3 fail → OPEN → cancel
+    returns None for 5 min → asset re-locks-out.
+    """
+
+    def test_breaker_treats_cancel_404_sentinel_as_success(self):
+        # Exact shape `_request` returns at bot.py line 2486-2487.
+        sentinel = {"_error": True, "_status_code": 404}
+        self.assertTrue(
+            bot._kalshi_breaker_success(sentinel),
+            "Cancel-404 sentinel must classify as breaker-success. "
+            "If this fails, the cancel path will trip the breaker on "
+            "every 404 and re-create the asset-lockout incident from "
+            "May 4 2026 in a different shape. See "
+            "kb/decisions/cancel-404-fix-v2-design-may04.md "
+            "P2 deferred #1.")
 
 
 if __name__ == "__main__":

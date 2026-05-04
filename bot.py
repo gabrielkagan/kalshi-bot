@@ -19385,6 +19385,14 @@ class OrderExecutor:
         self._dc_retry_queue: List[Dict] = []
         self._session_dc_retries: int = 0
         self._session_dc_retry_fills: int = 0
+        # Cancel-404 session counter. Explicit init removes the
+        # attribute-missing race the prior `getattr(...)` lazy pattern
+        # in `_handle_cancel_404` carried (`+= 1` is still non-atomic
+        # under any future multi-thread refactor — explicit init
+        # narrows the surface, doesn't make the counter thread-safe).
+        # See kb/decisions/cancel-404-fix-v2-design-may04.md
+        # "Counter initialization".
+        self._cancel_404_count: int = 0
 
     @property
     def _active_order(self) -> Optional[Dict]:
@@ -24380,7 +24388,7 @@ class OrderExecutor:
                 f"_handle_cancel_404 unknown source={source!r} — "
                 f"falling back to 'unknown' to keep pop priority")
             source = "unknown"
-        self._cancel_404_count = getattr(self, '_cancel_404_count', 0) + 1
+        self._cancel_404_count += 1
         filled = order.get("filled_so_far", 0)
 
         # Defensive verify: 404 should mean the order is gone, but
