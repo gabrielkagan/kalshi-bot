@@ -83,7 +83,6 @@ On change, run `python3 scripts/doc_drift_check.py` and update this file in the 
 |--------|-------|-------|
 | IOC_TICKER_COOLDOWN | 15 | Seconds cooldown per ticker after IOC attempt (was 60) |
 | IOC_RETRY_OFFSET | 1 | Cents above ask for taker-first IOC + retry offset |
-| MAX_CONCURRENT_TAKER_PER_ASSET | 3 | Safety cap on simultaneous taker positions per asset |
 | DIP_ADDON_ENABLED | False | Killed — 55.2% WR, no edge |
 
 ## Decided contracts

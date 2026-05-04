@@ -1846,7 +1846,13 @@ SOL_EMPTY_BOOK_MAKER_MIN_PRICE = 87  # SOL maker fallback: only on empty books a
 SOL_EMPTY_BOOK_MIN_STC = 60.0        # SOL maker fallback: skip if STC < 60s (too tight for maker rest)
 IOC_TICKER_COOLDOWN = 15          # seconds cooldown after IOC attempt per ticker (was 60 — too long for 15min windows)
 IOC_RETRY_OFFSET = 1              # cents above ask for taker-first IOC (1c worse entry, much higher fill rate)
-MAX_CONCURRENT_TAKER_PER_ASSET = 3  # safety cap: max simultaneous taker positions per asset
+# Per-asset taker concurrency cap removed 2026-05-04 — was dead code
+# (counter never incremented anywhere). Per-asset concurrency under
+# single-thread architecture is already enforced by IOC_TICKER_COOLDOWN
+# and the sequential scan loop. If parallel submission is ever
+# introduced, real concurrency control needs designing (locks, atomic
+# counters), not retrofitted onto a counter pattern.
+# See kb/failures/active-taker-count-dead-cap-may04.md
 
 # ─── IOC Size-Clamp Policy (per-strategy) ──────────────────────────────
 # Option X originally clamped every orderbook-source IOC to top-of-book depth
@@ -19315,7 +19321,6 @@ class OrderExecutor:
         # by comparing to settlement-level ladder fill counts.
         self._session_ladder_escalations: int = 0
         self._recent_taker_tickers: Dict[str, float] = {}  # ticker → timestamp (cooldown after IOC)
-        self._active_taker_count: Dict[str, int] = {}  # asset → concurrent IOC count
         # Session counters for execution engine stats
         self._session_amend_attempts: int = 0
         self._session_amend_successes: int = 0
@@ -19469,12 +19474,6 @@ class OrderExecutor:
                 logging.info("HOURLY_TAKER: %s cooldown %.0fs remaining", ticker, _cd_remaining)
                 return None
 
-        # Concurrent taker cap per asset
-        _concurrent = self._active_taker_count.get(asset, 0)
-        if _concurrent >= MAX_CONCURRENT_TAKER_PER_ASSET:
-            logging.info("HOURLY_TAKER: %s concurrent cap (%d/%d)", asset, _concurrent, MAX_CONCURRENT_TAKER_PER_ASSET)
-            return None
-
         candidate["entry_path"] = "hourly_taker"
 
         # Apply ask+1c offset for fill certainty (same pattern as SOL taker-first).
@@ -19570,12 +19569,6 @@ class OrderExecutor:
             if _cd_remaining > 0:
                 logging.info("HOURLY_NO_TAKER: %s cooldown %.0fs remaining", ticker, _cd_remaining)
                 return None
-
-        # Concurrent taker cap per asset
-        _concurrent = self._active_taker_count.get(asset, 0)
-        if _concurrent >= MAX_CONCURRENT_TAKER_PER_ASSET:
-            logging.info("HOURLY_NO_TAKER: %s concurrent cap (%d/%d)", asset, _concurrent, MAX_CONCURRENT_TAKER_PER_ASSET)
-            return None
 
         candidate["entry_path"] = "hourly_no_taker"
 
