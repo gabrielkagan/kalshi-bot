@@ -328,7 +328,7 @@ def empirical_coverage(
 # Sim PnL (delegated to sim_pnl module)
 # ---------------------------------------------------------------------------
 
-from sim_pnl import run_sim_pnl  # noqa: E402
+from sim_pnl import compute_method_output, run_sim_pnl  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +590,13 @@ def main() -> None:
         )
         test_df['p_pred'] = np.asarray(p_means, dtype=np.float64)
         test_df['p_std'] = np.asarray(p_stds, dtype=np.float64)
+
+        # `method_output` is the prod baseline used in per_band_brier
+        # (line ~191) and Brier delta (line ~202). Single source of
+        # truth in sim_pnl.compute_method_output — both Phase 6 paths
+        # MUST go through it to prevent drift (cf. CLAUDE.md "cal_mlp
+        # feature transforms" four-site-lock-step anti-pattern).
+        test_df['method_output'] = compute_method_output(test_df)
 
         _check_rss_ceiling('after_predict')
 

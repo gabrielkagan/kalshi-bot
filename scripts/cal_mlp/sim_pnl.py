@@ -62,6 +62,31 @@ from sizing import compute_size, SIZING_TIERS, SIZING_TIER_RISK_FRACTIONS
 from models import calculate_taker_fee, calculate_maker_fee  # noqa: E402
 
 
+# ── Shared method_output construction ──────────────────────────────────
+
+def compute_method_output(df: "pd.DataFrame") -> "pd.Series":
+    """Return the canonical "production output" baseline column:
+    `calibrated_prob` with `raw_prob` fallback when `calibrated_prob` is
+    NULL. Output is float32 to match the parquet's
+    `calibrated_prob_audit` numeric encoding.
+
+    Single source of truth for Phase 6 — both `sim_pnl.run_sim_pnl` and
+    `validate.main` MUST go through this helper. Hand-rolled duplicates
+    drift silently (cf. CLAUDE.md "cal_mlp feature transforms (four-site
+    lock-step)" anti-pattern). When the formula changes, this is the
+    one site to update.
+
+    Inputs: DataFrame REQUIRED to contain `calibrated_prob` and
+    `raw_prob` columns (numeric or numeric-coercible). Missing columns
+    raise KeyError — there is no graceful degradation. Errors-coerce
+    protects against legacy rows with stringified probabilities; for
+    current extract_data.py output (both columns are float64), the
+    coerce is a defensive no-op."""
+    cal_series = pd.to_numeric(df['calibrated_prob'], errors='coerce')
+    raw_series = pd.to_numeric(df['raw_prob'], errors='coerce')
+    return cal_series.fillna(raw_series).astype(np.float32)
+
+
 # R-p6-impl-2#C4 — bot.py STRATEGY_CLAMP_POLICY (1583-1623) + MAKER_PATIENT
 # is the ONLY strategy that posts and waits for maker fill in 15M flow. All
 # other strategies cross the spread. Default: taker.
@@ -400,9 +425,8 @@ def run_sim_pnl(
     # R3#C2: derive Phase 4-required columns for the model forward pass.
     candidate_df['side_int'] = (candidate_df['side'].astype(str) == 'yes').astype(np.int64)
     # R-p6-impl-2#C6: fall back to raw_prob when calibrated_prob is NULL.
-    cal_series = pd.to_numeric(candidate_df['calibrated_prob'], errors='coerce')
-    raw_series = pd.to_numeric(candidate_df['raw_prob'], errors='coerce')
-    candidate_df['method_output'] = cal_series.fillna(raw_series).astype(np.float32)
+    # Single source of truth: compute_method_output (top of this module).
+    candidate_df['method_output'] = compute_method_output(candidate_df)
     candidate_df['outcome'] = (
         candidate_df['market_result'].str.lower() == candidate_df['side'].str.lower()
     ).astype(np.int8)
