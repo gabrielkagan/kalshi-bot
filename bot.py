@@ -20516,7 +20516,7 @@ class OrderExecutor:
             filled = order.get("filled_so_far", 0)
             if filled > 0:
                 db_status = "partial_canceled"
-                outcome = "partial_fill"
+                outcome = "partial_filled"
                 fm_label = "partial_canceled"
             else:
                 db_status = "expired"
@@ -24416,7 +24416,7 @@ class OrderExecutor:
         # treats partial_canceled as label=1).
         if filled > 0:
             db_status = "partial_canceled"
-            outcome = "partial_fill"
+            outcome = "partial_filled"
             fm_label = "partial_canceled"
         else:
             db_status = "expired"
@@ -24513,7 +24513,7 @@ class OrderExecutor:
         self._active_orders.pop(asset, None)
         # Update order outcome — skip if escalating (escalation handler sets outcome)
         if asset not in self._escalating_assets:
-            _outcome = "partial_fill" if filled > 0 else "canceled"
+            _outcome = "partial_filled" if filled > 0 else "canceled"
             self._state.update_evaluated_opportunity_order(
                 order["ticker"], order_outcome=_outcome)
         return True

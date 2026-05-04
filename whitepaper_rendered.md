@@ -626,7 +626,7 @@ Every evaluated opportunity that reaches candidate status gets full order lifecy
 
 - **`order_id`**: Kalshi's assigned order identifier
 - **`order_submitted_at`**: Timestamp of API submission
-- **`order_outcome`**: Final disposition — `filled`, `unfilled`, `canceled`, or `partial_fill`
+- **`order_outcome`**: Final disposition — `filled`, `unfilled`, `canceled`, or `partial_filled`
 
 This enables post-hoc analysis of execution quality, fill rates by STC zone, and maker vs. taker performance comparison.
 

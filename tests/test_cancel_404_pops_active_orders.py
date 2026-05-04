@@ -398,9 +398,16 @@ class TestCancel404DefensiveVerify(unittest.TestCase):
 class TestCancel404PartialFillLabeling(unittest.TestCase):
     """If an order partially filled before Kalshi 404'd the cancel,
     label preservation matters: status='partial_canceled' (not 'expired')
-    and order_outcome='partial_fill' (not 'expired'). Round-2 review
+    and order_outcome='partial_filled' (not 'expired'). Round-2 review
     flagged this — `_handle_cancel_404` was overwriting partial-fill
-    information with the unconditional 'expired' label."""
+    information with the unconditional 'expired' label.
+
+    Vocab note (2026-05-04): order_outcome uses the past-tense
+    `partial_filled` to match the production family
+    (filled/unfilled/partial_filled). The `partial_fill` (singular)
+    string is reserved for the DIFFERENT `event_type` field in
+    `order_lifecycle_snapshots`. See tests/test_order_outcome_vocab.py.
+    """
 
     def test_404_with_partial_fill_marks_partial_canceled(self):
         e = _make_executor()
@@ -421,7 +428,7 @@ class TestCancel404PartialFillLabeling(unittest.TestCase):
         # the V3 helper actually ran.
         e._client.get_orders.assert_called()
 
-    def test_404_with_partial_fill_logs_outcome_partial_fill(self):
+    def test_404_with_partial_fill_logs_outcome_partial_filled(self):
         e = _make_executor()
         order = _make_active_order(
             asset="ETH", order_id="uuid-partial", count=30)
@@ -435,8 +442,8 @@ class TestCancel404PartialFillLabeling(unittest.TestCase):
         e._state.update_evaluated_opportunity_order.assert_called_once()
         _, kwargs = e._state.update_evaluated_opportunity_order.call_args
         self.assertEqual(
-            kwargs.get("order_outcome"), "partial_fill",
-            "Partial-fill 404s must preserve partial_fill outcome — "
+            kwargs.get("order_outcome"), "partial_filled",
+            "Partial-fill 404s must preserve partial_filled outcome — "
             "kalshi_fill_simulator.py treats partial_canceled as "
             "label=1 in fill-model training.")
         # Round-3 P0-1: ensure V3 helper ran (existing else branch
