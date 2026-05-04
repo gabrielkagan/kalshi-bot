@@ -2472,6 +2472,13 @@ class KalshiClient:
                 result = self._request(method, path, params, json_body)
                 self._429_retries = 0
                 return result
+            # Idempotent-DELETE 404: Kalshi has already expired/canceled
+            # the resource. Return a sentinel so callers can distinguish
+            # "gone" (success-equivalent) from None (transient → retry).
+            # Other methods' 404s preserve current None semantics.
+            # See kb/failures/cancel-404-asset-lockout-may04.md
+            if resp.status_code == 404 and method == "DELETE":
+                return {"_error": True, "_status_code": 404}
             if resp.status_code >= 400:
                 body_text = resp.text[:500] if resp.text else "(empty)"
                 logging.error(f"API error: {method} {path} -> {resp.status_code} body={body_text}")
@@ -20505,6 +20512,59 @@ class OrderExecutor:
                   ws_fills: list) -> Optional[Dict]:
         """Handle one active order: poll for fill, escalate if needed."""
         now = time.time()
+
+        # Backstop: if more than 60s past expected close and order still
+        # tracked, some path failed to clean up (404-variant the
+        # targeted fix doesn't anticipate, missed WS expiry, etc.).
+        # Force-pop with WARNING. See kb/failures/cancel-404-asset-lockout-may04.md
+        elapsed = now - order["submit_time"]
+        remaining = order["seconds_to_close_at_submit"] - elapsed
+        if remaining < -60.0:
+            filled = order.get("filled_so_far", 0)
+            if filled > 0:
+                db_status = "partial_canceled"
+                outcome = "partial_fill"
+                fm_label = "partial_canceled"
+            else:
+                db_status = "expired"
+                outcome = "expired"
+                fm_label = "expired"
+            backstop_reason = (
+                f"force_pop_after_close"
+                f"_pending={order.get('cancel_pending', False)}"
+                f"_esc={order.get('escalated', False)}"
+            )
+            # POP FIRST. Single outer try wraps audit writes — see
+            # _handle_cancel_404 docstring for rationale.
+            self._active_orders.pop(asset, None)
+            try:
+                self._state.mark_order_status(order["order_id"], db_status)
+                self._logger.log_order({
+                    "action": "maker_canceled",
+                    "ticker": order["ticker"],
+                    "order_id": order["order_id"],
+                    "reason": backstop_reason,
+                    "elapsed": round(elapsed, 1),
+                    "filled_so_far": filled,
+                })
+                self._log_fill_model_sample(
+                    order, fm_label, cancel_reason=backstop_reason)
+                if asset not in self._escalating_assets:
+                    self._state.update_evaluated_opportunity_order(
+                        order["ticker"], order_outcome=outcome)
+            except Exception:
+                logging.error(
+                    f"force_pop_audit_failed: {order['ticker']} "
+                    f"{order['order_id']} — pop complete, audit "
+                    f"incomplete.",
+                    exc_info=True)
+            logging.warning(
+                f"force_pop_after_close: {order['ticker']} "
+                f"{order['order_id']} remaining={remaining:.1f}s "
+                f"filled={filled}/{order['count']} "
+                f"reason={backstop_reason} — backstop fired.")
+            return None
+
         if now - order["_last_poll"] < MAKER_POLL_INTERVAL:
             return None
         order["_last_poll"] = now
@@ -20513,6 +20573,12 @@ class OrderExecutor:
         if order.get("cancel_pending"):
             try:
                 cancel_resp = self._client.cancel_order(order["order_id"])
+                # 404 sentinel — Kalshi has aged it; route through helper.
+                if isinstance(cancel_resp, dict) and cancel_resp.get("_status_code") == 404:
+                    self._handle_cancel_404(
+                        order, asset, "cancel_pending_retry",
+                        source="reconciliation")
+                    return None
                 if cancel_resp is not None:
                     logging.info(f"cancel_pending resolved: {order['ticker']} cancel succeeded on retry")
                     order.pop("cancel_pending", None)
@@ -24280,6 +24346,132 @@ class OrderExecutor:
 
     # ── Cancel ────────────────────────────────────────────────────────────
 
+    # Allowed sources for _handle_cancel_404 (round-5/6/7 reviews).
+    # Bad source values are logged + downgraded to "unknown" rather
+    # than raising — _tick_one's broad except would swallow an
+    # AssertionError and leave the asset stuck.
+    # See kb/decisions/cancel-404-fix-v2-design-may04.md
+    _CANCEL_404_SOURCES = ("direct", "reconciliation")
+
+    def _handle_cancel_404(self, order: Dict, asset: str,
+                           reason: str, source: str) -> bool:
+        """Handle a 404 from cancel API.
+
+        404 *should* mean Kalshi already expired/canceled the order.
+        Verify defensively via get_orders to guard against
+        wrong-order-id / caller bugs (the conservative cancel_pending
+        branch's original purpose).
+
+        Args:
+            order: Order dict in self._active_orders[asset].
+            asset: Asset key (BTC/ETH/SOL/XRP).
+            reason: Free-form trigger label (close_approaching, timeout,
+                escalation_*, cancel_pending_retry). Threaded into
+                cancel_reason for forensics.
+            source: One of _CANCEL_404_SOURCES. Unknown values logged
+                and downgraded to "unknown" — must not block the pop.
+
+        Returns True if popped (caller may submit replacement).
+        Returns False if held conservatively (order still resting on
+        Kalshi — something is wrong).
+
+        Note: pop happens BEFORE audit writes (mark_order_status,
+        log_order, _log_fill_model_sample, update_evaluated_opportunity_order)
+        so audit failures cannot resurrect the lockout. Of those four,
+        only mark_order_status is un-self-guarded (can raise
+        sqlite3.OperationalError); the others catch internally
+        (bot.py:2716, 23630, 5089).
+        """
+        if source not in self._CANCEL_404_SOURCES:
+            logging.error(
+                f"_handle_cancel_404 unknown source={source!r} — "
+                f"falling back to 'unknown' to keep pop priority")
+            source = "unknown"
+        self._cancel_404_count = getattr(self, '_cancel_404_count', 0) + 1
+        filled = order.get("filled_so_far", 0)
+
+        # Defensive verify: 404 should mean the order is gone, but
+        # confirm via get_orders before popping. Three failure modes:
+        #   (a) get_orders raises → exception path → log + pop
+        #   (b) get_orders returns None (breaker OPEN) → log + pop
+        #   (c) get_orders shows order resting → HOLD cancel_pending
+        try:
+            orders_resp = self._client.get_orders(ticker=order["ticker"])
+            if orders_resp is None:
+                logging.warning(
+                    f"cancel_404_verify_unavailable: {order['ticker']} "
+                    f"from {source} — get_orders returned None "
+                    f"(breaker open?), falling through to pop.")
+            elif orders_resp:
+                for o in orders_resp.get("orders", []):
+                    if (o.get("order_id") == order["order_id"]
+                            and o.get("status") in ("resting", "open")):
+                        logging.error(
+                            f"cancel_404_but_resting: {order['ticker']} "
+                            f"{order['order_id']} from {source} — "
+                            f"Kalshi 404'd cancel but order still in "
+                            f"/orders. Holding cancel_pending for retry.")
+                        order["cancel_pending"] = True
+                        return False
+        except Exception:
+            logging.warning(
+                f"cancel_404_verify_failed: {order['ticker']} from "
+                f"{source} — falling through to pop based on 404 signal",
+                exc_info=True)
+
+        # Preserve partial-fill labeling (kalshi_fill_simulator.py
+        # treats partial_canceled as label=1).
+        if filled > 0:
+            db_status = "partial_canceled"
+            outcome = "partial_fill"
+            fm_label = "partial_canceled"
+        else:
+            db_status = "expired"
+            outcome = "expired"
+            fm_label = "expired"
+
+        cancel_reason_str = f"kalshi_404_{source}_{reason}"
+
+        # POP FIRST. Audit writes must NOT be a prerequisite to the
+        # pop — if any audit write raises, the asset would stay stuck
+        # and re-create the May 4 lockout.
+        self._active_orders.pop(asset, None)
+
+        # Of the four audit writes, only mark_order_status is un-self-
+        # guarded (can raise sqlite3.OperationalError on lock
+        # contention). log_order/_log_fill_model_sample/
+        # update_evaluated_opportunity_order catch internally
+        # (bot.py:2716, 23630, 5089). Single outer try is
+        # belt-and-suspenders defense-in-depth — primary protection
+        # is the pop above.
+        try:
+            self._state.mark_order_status(order["order_id"], db_status)
+            self._logger.log_order({
+                "action": "maker_canceled",
+                "ticker": order["ticker"],
+                "order_id": order["order_id"],
+                "reason": cancel_reason_str,
+                "elapsed": round(time.time() - order["submit_time"], 1),
+                "filled_so_far": filled,
+            })
+            self._log_fill_model_sample(
+                order, fm_label, cancel_reason=cancel_reason_str)
+            if asset not in self._escalating_assets:
+                self._state.update_evaluated_opportunity_order(
+                    order["ticker"], order_outcome=outcome)
+        except Exception:
+            logging.error(
+                f"cancel_404_audit_failed: {order['ticker']} "
+                f"{order['order_id']} — pop already complete, audit "
+                f"writes incomplete.",
+                exc_info=True)
+
+        logging.warning(
+            f"cancel_404_already_gone: {order['ticker']} "
+            f"{order['order_id']} filled={filled}/{order['count']} "
+            f"from {source} (session count: {self._cancel_404_count})")
+        return True
+
     def _cancel_order(self, asset: str, reason: str) -> bool:
         """Cancel the active maker order for a specific asset.
 
@@ -24299,9 +24491,16 @@ class OrderExecutor:
             order["cancel_pending"] = True
             # Do NOT pop — order may still be live, prevent double position
             return False
-        else:
-            status = "partial_canceled" if filled > 0 else "canceled"
-            self._state.mark_order_status(order["order_id"], status)
+
+        # 404 sentinel — Kalshi has aged out the order. Route through
+        # _handle_cancel_404 (defensive verify + pop-first + correct
+        # labeling). See kb/failures/cancel-404-asset-lockout-may04.md
+        if isinstance(cancel_resp, dict) and cancel_resp.get("_status_code") == 404:
+            return self._handle_cancel_404(order, asset, reason, source="direct")
+
+        # Normal success
+        status = "partial_canceled" if filled > 0 else "canceled"
+        self._state.mark_order_status(order["order_id"], status)
 
         # Log fill model sample for canceled order
         self._log_fill_model_sample(order, "canceled", cancel_reason=reason)
