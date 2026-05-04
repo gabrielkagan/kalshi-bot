@@ -222,6 +222,15 @@ class TestPullAndClassifyProvenanceFilter:
     """The SQL pull must apply WHERE data_provenance IN (...) for the new
     filter modes, while preserving the existing 'all' behavior."""
 
+    @pytest.fixture(autouse=True)
+    def _require_pandas(self):
+        # extract_data.py imports pandas/numpy/pyarrow at module load.
+        # CI doesn't install these (they're cal_mlp-pipeline-only deps);
+        # gracefully skip rather than fail on ModuleNotFoundError.
+        pytest.importorskip("numpy")
+        pytest.importorskip("pandas")
+        pytest.importorskip("pyarrow")
+
     def test_live_only_keeps_only_live_ws(self, tmp_path):
         from extract_data import pull_and_classify
 
@@ -355,6 +364,12 @@ class TestDataProvenanceInKeptRows:
     """data_provenance must appear in the kept-row dicts so Phase 6 can
     later filter the test fold to live_ws-only at evaluation time."""
 
+    @pytest.fixture(autouse=True)
+    def _require_pandas(self):
+        pytest.importorskip("numpy")
+        pytest.importorskip("pandas")
+        pytest.importorskip("pyarrow")
+
     def test_provenance_value_preserved_on_kept_rows(self, tmp_path):
         from extract_data import pull_and_classify
 
@@ -383,6 +398,14 @@ class TestSchemaCheckRequiresDataProvenance:
     """REQUIRED_SOURCE_COLS must include data_provenance so pre-G6 state.db
     snapshots fail-loud rather than silently extracting NULL provenance."""
 
+    @pytest.fixture(autouse=True)
+    def _require_pandas(self):
+        # Importing extract_data triggers `import pandas` at module load,
+        # even though this test only inspects a tuple constant.
+        pytest.importorskip("numpy")
+        pytest.importorskip("pandas")
+        pytest.importorskip("pyarrow")
+
     def test_data_provenance_in_required_source_cols(self):
         from extract_data import REQUIRED_SOURCE_COLS
 
@@ -398,6 +421,12 @@ class TestSchemaCheckRequiresDataProvenance:
 class TestCliFlagSurface:
     """parse_args must expose --provenance-filter with the three valid
     choices and a backwards-compat 'all' default."""
+
+    @pytest.fixture(autouse=True)
+    def _require_pandas(self):
+        pytest.importorskip("numpy")
+        pytest.importorskip("pandas")
+        pytest.importorskip("pyarrow")
 
     def test_provenance_filter_flag_present_with_choices(self, monkeypatch):
         import extract_data
