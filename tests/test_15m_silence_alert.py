@@ -433,6 +433,1099 @@ class TestSilent15MAlertSilentBailDetection(unittest.TestCase):
             mock_tele.send.assert_called_once()
 
 
+def _seed_bail_rows(conn, reason: str, n: int,
+                    rejection_age_minutes: float = 2,
+                    ticker_prefix: str = "KXBTC15M-26APR241400-"):
+    """Append n rejected_opportunities rows with the given reason and
+    age, using distinct ticker suffixes (incl. full reason name) to
+    avoid namespace collisions across reasons. Adversarial review C8:
+    earlier `reason[:3]` truncation collided `no_orderbook` with
+    `no_best_ask` (both → "no_") — when callers seed both, ticker
+    collisions could silently lose rows under a future UNIQUE
+    constraint. Full reason in suffix is namespace-safe.
+    """
+    base_ts = (datetime.datetime.now(datetime.timezone.utc)
+               - datetime.timedelta(minutes=rejection_age_minutes))
+    for i in range(n):
+        ts = (base_ts - datetime.timedelta(seconds=i * 0.5))
+        conn.execute(
+            "INSERT INTO rejected_opportunities VALUES (?, ?, ?)",
+            (f"{ticker_prefix}{reason}-{i:04d}",
+             ts.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+             reason))
+    conn.commit()
+
+
+class TestBailFloodMessageDifferentiation(unittest.TestCase):
+    """Regression for 2026-05-04 ~19:47 UTC live alert: the BAIL FLOOD
+    message hardcoded "Likely: WS-cache-drift recurrence" and pointed
+    operators to the cache-drift KB doc, but the actual cause was
+    Kalshi-side threshold-publish delay — `floor_strike=null` and
+    `yes_sub_title="Target price: TBD"` for all 4 newly-opened 15M
+    windows. Restart would have been useless. Operator only diagnosed
+    correctly by ad-hoc curling Kalshi REST.
+
+    The watchdog already detected the silent-bail signature correctly
+    (`_BAIL_REJECTION_REASONS` includes `threshold_unparsable`); only
+    the message was misleading. These tests pin the per-shape routing
+    so the message matches the diagnosis.
+
+    Routing rule: route to THRESHOLD UNPARSABLE message only when (a)
+    threshold_unparsable count clears the bail threshold AND (b) zero
+    WS-cache-shape rows present. Mixed shapes default to BAIL FLOOD
+    (cache-drift dominates because it carries higher fix-urgency:
+    missed trades + risk of bad fills vs. wait-for-Kalshi).
+    """
+
+    def test_threshold_unparsable_only_routes_to_threshold_message(self):
+        """4 threshold_unparsable rows + 0 WS rows → THRESHOLD UNPARSABLE
+        message, NOT WS-cache-drift. Matches May 4 incident shape."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            mock_tele.send.assert_called_once()
+            call = mock_tele.send.call_args
+            msg = call.args[0]
+            self.assertIn("THRESHOLD UNPARSABLE", msg)
+            self.assertNotIn("WS-cache-drift", msg)
+            self.assertNotIn("BAIL FLOOD", msg)
+            # Different dedup_key so this can fire concurrently with a
+            # WS-shape alert if both pathologies happen back-to-back.
+            self.assertEqual(
+                call.kwargs.get("dedup_key"),
+                "silent_15m_threshold_unparsable_alert")
+
+    def test_threshold_message_includes_kalshi_probe_guidance(self):
+        """The whole point of the new message is to send the operator
+        to the right diagnostic. It must include the curl probe
+        instructions and the wait-vs-code-fix decision tree."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            self.assertIn("api.elections.kalshi.com", msg)
+            self.assertIn("floor_strike", msg)
+            self.assertIn("TBD", msg)
+            # Explicit no-restart guidance — May 4 lesson.
+            self.assertIn("Restart will NOT help", msg)
+
+    def test_ws_cache_drift_volume_preserves_bail_flood_message(self):
+        """200 no_orderbook rows + 0 threshold rows → existing BAIL
+        FLOOD message preserved (backward compat with the 2026-04-24
+        cache-drift recurrence detector)."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="no_orderbook",
+            n_rejection_rows=200)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            call = mock_tele.send.call_args
+            msg = call.args[0]
+            self.assertIn("BAIL FLOOD", msg)
+            self.assertIn("WS-cache-drift", msg)
+            self.assertNotIn("THRESHOLD UNPARSABLE", msg)
+            self.assertEqual(
+                call.kwargs.get("dedup_key"),
+                "silent_15m_bail_flood_alert")
+
+    def test_no_best_ask_signature_preserves_bail_flood_message(self):
+        """Same as above with the other WS-cache bail reason. Locks the
+        full WS-shape path, not just no_orderbook."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="no_best_ask",
+            n_rejection_rows=50)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            self.assertIn("BAIL FLOOD", msg)
+            self.assertIn("WS-cache-drift", msg)
+            self.assertNotIn("THRESHOLD UNPARSABLE", msg)
+
+    def test_mixed_threshold_and_ws_routes_to_bail_flood(self):
+        """Both threshold_unparsable AND no_orderbook firing → BAIL
+        FLOOD. WS-cache-drift carries higher fix-urgency (missed trades
+        + bad-fill risk) than the wait-for-Kalshi case. Conservative
+        routing: any WS-shape row at all defaults to BAIL FLOOD."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        # Add WS-cache rows on top of the threshold_unparsable seed.
+        _seed_bail_rows(s._state.conn, "no_orderbook", n=10)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            self.assertIn("BAIL FLOOD", msg)
+            self.assertNotIn("THRESHOLD UNPARSABLE", msg)
+
+    def test_bail_breakdown_query_returns_dict(self):
+        """The new `_query_recent_bail_breakdown` method returns
+        Dict[str, int] keyed by rejection_reason. Direct contract test
+        independent of the alert path."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        _seed_bail_rows(s._state.conn, "no_orderbook", n=7)
+        _seed_bail_rows(s._state.conn, "no_best_ask", n=3)
+        breakdown = s._query_recent_bail_breakdown()
+        self.assertIsInstance(breakdown, dict)
+        self.assertEqual(breakdown.get("threshold_unparsable", 0), 4)
+        self.assertEqual(breakdown.get("no_orderbook", 0), 7)
+        self.assertEqual(breakdown.get("no_best_ask", 0), 3)
+
+    def test_bail_breakdown_query_returns_empty_on_no_rows(self):
+        """No bail rows at all → empty dict (not None, not exception).
+        Caller must use `.get(reason, 0)` to handle missing keys."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="low_probability_15m",  # healthy, not bail
+            n_rejection_rows=10)
+        breakdown = s._query_recent_bail_breakdown()
+        self.assertEqual(breakdown, {})
+
+    def test_bail_breakdown_query_swallows_db_errors(self):
+        """SQL error in the breakdown query mirrors the count query's
+        behavior: return empty (caller's `.get(..., 0)` handles it),
+        advance the throttle to avoid query storm."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        s._state.conn.close()  # force future queries to error
+        # Should not raise; returns empty dict
+        result = s._query_recent_bail_breakdown()
+        self.assertEqual(result, {})
+
+    def test_bail_breakdown_failure_advances_throttle_clock(self):
+        """Adversarial review C5: docstring promises that on query
+        failure we advance `_silence_bail_breakdown_last_ts` to `now`
+        — required to prevent query storm during permanent failure
+        (matches `_query_recent_bail_count` failure-path behavior).
+        Pin the contract."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        s._state.conn.close()  # force future queries to error
+        before = time.time()
+        s._query_recent_bail_breakdown()
+        after = time.time()
+        ts = getattr(s, "_silence_bail_breakdown_last_ts", 0.0)
+        self.assertGreaterEqual(ts, before)
+        self.assertLessEqual(ts, after)
+
+    def test_bail_breakdown_returns_cached_within_throttle(self):
+        """Adversarial review C4: the throttle must actually return
+        cached data — otherwise the per-tick scan loop hits a
+        non-indexed GROUP BY query every tick. Add rows after first
+        call; second call (within 30 s) must return the FIRST snapshot,
+        not the freshly-augmented one."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        first = s._query_recent_bail_breakdown()
+        self.assertEqual(first.get("threshold_unparsable", 0), 4)
+        # Add 100 more threshold rows. If caching works, second call
+        # within throttle returns first snapshot (=4); without caching
+        # it would return 104.
+        _seed_bail_rows(s._state.conn, "threshold_unparsable", n=100)
+        second = s._query_recent_bail_breakdown()
+        self.assertEqual(second.get("threshold_unparsable", 0), 4)
+
+    def test_bail_breakdown_re_queries_after_throttle_window(self):
+        """Inverse of the cache-hit test: after the throttle window
+        expires, the next call must re-query and reflect new rows.
+        Manually rewinds `_silence_bail_breakdown_last_ts` to simulate
+        elapsed time without a real sleep."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        s._query_recent_bail_breakdown()
+        _seed_bail_rows(s._state.conn, "threshold_unparsable", n=100)
+        # Rewind throttle past _BAIL_QUERY_THROTTLE_SECONDS (30s).
+        s._silence_bail_breakdown_last_ts = time.time() - 60
+        refreshed = s._query_recent_bail_breakdown()
+        self.assertEqual(refreshed.get("threshold_unparsable", 0), 104)
+
+    # ── Discriminator boundary tests (adversarial review C1, C6) ─────
+
+    def test_threshold_dominant_with_one_stray_ws_row_routes_threshold(self):
+        """Adversarial C1: today's incident had 4 threshold + 0 WS, but
+        the next similar incident might have 1 stray WS blip alongside
+        the real Kalshi-TBD pattern. With ratio-based dominance
+        (≥80% threshold = ≥4× WS), `(n_thr=4, n_ws=1)` still routes to
+        the THRESHOLD message — operator gets the right diagnostic
+        despite a single transient WS hiccup."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        _seed_bail_rows(s._state.conn, "no_orderbook", n=1)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            self.assertIn("THRESHOLD UNPARSABLE", msg)
+            self.assertNotIn("BAIL FLOOD", msg)
+
+    def test_threshold_below_ratio_with_two_ws_routes_bail_flood(self):
+        """Adversarial C6: just-past-the-ratio mixed shape. `(n_thr=4,
+        n_ws=2)` fails the ≥4× rule (4 < 8) → BAIL FLOOD with breakdown
+        in the message. Pins the exact boundary so any future tweak
+        of `_THRESHOLD_SHAPE_DOMINANCE_RATIO` surfaces here
+        intentionally rather than as a silent behavior change."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        _seed_bail_rows(s._state.conn, "no_orderbook", n=2)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            self.assertIn("BAIL FLOOD", msg)
+            self.assertNotIn("THRESHOLD UNPARSABLE", msg)
+            # Self-consistency: header total = breakdown sum (C2)
+            # Header shows "Primary stale + N silent-bail rejection
+            # rows" where N must equal threshold + ws sum (4 + 2 = 6).
+            self.assertIn("Primary stale + 6 silent-bail", msg)
+
+    def test_message_header_total_matches_breakdown_sum(self):
+        """Adversarial C2: the displayed total in the message header
+        MUST equal the sum of the Breakdown line counts. Pre-fix the
+        header used gate-cached `bail_count` from a different throttle
+        window than the breakdown query — operator could see
+        `Primary stale + 7 ... Breakdown: ...=4, ...=10, ...=0` (sum
+        14, header 7). Now header is derived from breakdown sum.
+        Pin that.
+
+        Setup: 4 threshold + 50 no_orderbook = 54 total. Header must
+        say "+ 54 silent-bail" AND breakdown line must sum to 54."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        _seed_bail_rows(s._state.conn, "no_orderbook", n=50)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            # Header
+            self.assertIn("Primary stale + 54 silent-bail", msg)
+            # Breakdown line: extract the per-reason counts and sum
+            # them; must equal 54 by definition of the contract.
+            import re as _re
+            m = _re.search(r"Breakdown: (.+?)\n", msg)
+            self.assertIsNotNone(m,
+                "BAIL FLOOD message must include 'Breakdown:' line")
+            counts = _re.findall(r"=(\d+)", m.group(1))
+            self.assertEqual(sum(int(c) for c in counts), 54)
+
+    # ── Shape-bucket constant contract (adversarial review C3) ───────
+
+    def test_shape_buckets_partition_bail_reasons(self):
+        """Adversarial C3: shape buckets must partition (cover, no
+        overlap) `_BAIL_REJECTION_REASONS`. A new bail reason that's
+        not in either bucket would be invisible to the discriminator
+        — `bail_count` would still increment but n_thr and n_ws would
+        not, leading to misclassification AND the Breakdown line
+        showing zero for the new reason. Module-load assertion
+        enforces this; this test pins the contract from the test
+        side."""
+        scanner = bot.OpportunityScanner
+        ws = scanner._WS_SHAPE_BAIL_REASONS
+        thr = scanner._THRESHOLD_SHAPE_BAIL_REASONS
+        bail = set(scanner._BAIL_REJECTION_REASONS)
+        self.assertEqual(ws | thr, bail,
+            "Shape buckets must cover all _BAIL_REJECTION_REASONS")
+        self.assertEqual(ws & thr, set(),
+            "Shape buckets must be disjoint")
+
+    def test_breakdown_str_iterates_all_bail_reasons(self):
+        """Adversarial C3 follow-up: `_format_bail_breakdown` must
+        surface every member of `_BAIL_REJECTION_REASONS` so a future
+        new reason is visible in the alert without a separate edit
+        site. Pin via direct call with a pre-built dict."""
+        scanner = bot.OpportunityScanner
+        formatted = scanner._format_bail_breakdown(
+            {"threshold_unparsable": 5})
+        for reason in scanner._BAIL_REJECTION_REASONS:
+            self.assertIn(reason, formatted,
+                f"Breakdown string must mention {reason}")
+        # Missing keys in input dict must render as 0 (not absent).
+        self.assertIn("no_orderbook=0", formatted)
+        self.assertIn("no_best_ask=0", formatted)
+        self.assertIn("threshold_unparsable=5", formatted)
+
+    def test_breakdown_str_is_alphabetically_sorted(self):
+        """Adversarial round-2 C5: `_format_bail_breakdown` must sort
+        alphabetically, not by tuple order, so a maintainer reordering
+        `_BAIL_REJECTION_REASONS` doesn't silently flip alert layout.
+        Pin the order with explicit position assertions."""
+        scanner = bot.OpportunityScanner
+        formatted = scanner._format_bail_breakdown({
+            "no_orderbook": 7,
+            "threshold_unparsable": 1,
+            "no_best_ask": 3,
+        })
+        idx_nba = formatted.index("no_best_ask=")
+        idx_nob = formatted.index("no_orderbook=")
+        idx_thr = formatted.index("threshold_unparsable=")
+        # Alphabetical: no_best_ask < no_orderbook < threshold_unparsable
+        self.assertLess(idx_nba, idx_nob)
+        self.assertLess(idx_nob, idx_thr)
+
+    # ── Failure-mode coverage (adversarial round-2 C1, C6, C7, C9) ──
+
+    def test_bail_breakdown_failure_logs_warning_once(self):
+        """Adversarial round-2 C1: breakdown query failure must surface
+        in journalctl as a rate-limited warning. Without this, a
+        permanent failure (e.g., schema change breaks the GROUP BY)
+        leaves the operator with zero-everywhere alerts and no log
+        evidence of why. Mirrors `_query_recent_bail_count`'s warn
+        pattern. Sticky flag prevents per-tick log flood (~30/min).
+        """
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        s._state.conn.close()  # force query failure
+        # First call: warning logged, flag set.
+        with self.assertLogs(level="WARNING") as cm:
+            s._query_recent_bail_breakdown()
+        self.assertTrue(any(
+            "bail-breakdown query failed" in r.getMessage()
+            for r in cm.records),
+            "First failure should log a warning")
+        self.assertTrue(getattr(
+            s, "_silence_watchdog_warned_breakdown", False))
+        # Second call within throttle: no new warning (cached empty).
+        # (The throttle returns cached empty without re-querying or
+        # re-logging.)
+
+    def test_bail_breakdown_failure_resets_flag_on_recovery(self):
+        """Adversarial round-2 C9: warn-flag must reset after a
+        successful query. Without this, a transient failure followed
+        by recovery leaves the flag stuck → next failure not logged.
+        Mirrors count query's reset-on-success at bot.py:18494-18496.
+        """
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        # Manually set flag as if a previous failure happened.
+        s._silence_watchdog_warned_breakdown = True
+        # Successful call should reset the flag.
+        s._query_recent_bail_breakdown()
+        self.assertFalse(getattr(
+            s, "_silence_watchdog_warned_breakdown", True),
+            "Successful query must reset the warn flag")
+
+    def test_bail_breakdown_failure_with_operational_error(self):
+        """Adversarial round-2 C6: production failure modes are
+        `OperationalError: database is locked` and similar — not
+        `ProgrammingError` from a closed conn. Use a wrapper that
+        raises OperationalError to mirror production. Bare
+        `except Exception:` catches both; this test pins the contract
+        for the operator-realistic case."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        real_conn = s._state.conn
+
+        class _RaisingConn:
+            def execute(self, *args, **kwargs):
+                raise sqlite3.OperationalError("database is locked")
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        s._state.conn = _RaisingConn()
+        result = s._query_recent_bail_breakdown()
+        self.assertEqual(result, {})
+        # Throttle clock advanced so the query storm is bounded
+        # (matches count-query failure-path contract).
+        self.assertGreater(
+            getattr(s, "_silence_bail_breakdown_last_ts", 0.0), 0.0)
+
+    def test_threshold_dominance_ratio_is_three(self):
+        """Adversarial round-3 C4: original ratio of 4 (80%) was
+        asymmetric at small n — at `(n_thr=3, n_ws=1)` the boundary
+        rejected a real 75%-threshold case as BAIL FLOOD. Ratio
+        loosened to 3 (75%) so a 3-ticker incident with 1 WS blip
+        routes correctly. Pin the constant + boundary cases here."""
+        scanner = bot.OpportunityScanner
+        self.assertEqual(scanner._THRESHOLD_SHAPE_DOMINANCE_RATIO, 3)
+
+    def test_three_threshold_one_ws_routes_threshold_at_new_ratio(self):
+        """Adversarial round-3 C4: `(n_thr=3, n_ws=1)` is the case
+        the loosened ratio is meant to fix. 3 ≥ 3×1 → THRESHOLD."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=3)
+        _seed_bail_rows(s._state.conn, "no_orderbook", n=1)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            self.assertIn("THRESHOLD UNPARSABLE", msg)
+            self.assertNotIn("BAIL FLOOD", msg)
+
+    def test_three_threshold_two_ws_routes_bail_flood(self):
+        """Adversarial round-3 C4 inverse: just past the new 3×
+        boundary. `(n_thr=3, n_ws=2)`: 3 < 3×2=6 → BAIL FLOOD.
+        Pins that the loosening didn't go too far."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=3)
+        _seed_bail_rows(s._state.conn, "no_orderbook", n=2)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            self.assertIn("BAIL FLOOD", msg)
+            self.assertNotIn("THRESHOLD UNPARSABLE", msg)
+
+    def test_threshold_message_includes_affected_ticker_list(self):
+        """Adversarial round-3 C3: the May 4 incident was only
+        diagnosed by ad-hoc curl. Bare `<ticker>` template would
+        recreate that friction. Embed the actual rejecting tickers
+        and the curl example must use a real ticker, not `<ticker>`.
+
+        Round-4 C6: tighten the assertion to the specific
+        `Affected tickers:` LINE rather than `assertIn("KX", split[1])`
+        — the loose check passed if "KX" appeared anywhere in the
+        rest of the message (including the curl URL itself), so a
+        regression to `<no recent tickers found>` would have passed.
+        """
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            # Pull the SPECIFIC `Affected tickers:` line, not the
+            # rest-of-message — this catches the empty-list regression.
+            affected_line = next(
+                (l for l in msg.split("\n")
+                 if l.startswith("Affected tickers:")),
+                None)
+            self.assertIsNotNone(affected_line,
+                "THRESHOLD message must include Affected tickers: line")
+            # The fixture writes tickers like
+            # KXBTC15M-26APR241400-threshold_unparsable-0000.
+            # Real Kalshi prefix should be on the line itself.
+            self.assertIn("KX", affected_line)
+            self.assertNotIn("(cache empty", affected_line)
+            # Bare placeholder must be replaced with a real ticker.
+            self.assertNotIn("markets/<ticker>", msg)
+
+    def test_threshold_header_label_derives_from_bucket(self):
+        """Adversarial round-3 C2: header label is derived from
+        `_THRESHOLD_SHAPE_BAIL_REASONS` (sorted), not a hardcoded
+        `"threshold_unparsable"` literal. Locks the contract: if a
+        future maintainer adds a 2nd reason to the bucket, the header
+        will surface it without a parallel literal edit.
+
+        Round-4 C5: patch BOTH `_BAIL_REJECTION_REASONS` and the
+        bucket together so the partition invariant
+        `WS | THRESHOLD == _BAIL_REJECTION_REASONS` is preserved at
+        runtime. Earlier version patched only the bucket, leaving the
+        runtime invariant violated — the test passed by exploiting
+        that assertions are import-time only, not by exercising the
+        intended contract.
+        """
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        new_thr_bucket = frozenset({
+            "threshold_unparsable", "another_threshold_reason"})
+        new_bail_reasons = (
+            "no_orderbook", "no_best_ask",
+            "threshold_unparsable", "another_threshold_reason")
+        with patch.object(
+                bot.OpportunityScanner,
+                "_THRESHOLD_SHAPE_BAIL_REASONS", new_thr_bucket), \
+             patch.object(
+                bot.OpportunityScanner,
+                "_BAIL_REJECTION_REASONS", new_bail_reasons):
+            # Verify the invariant holds at runtime under the patch
+            # (would fail if either patch was forgotten).
+            scanner = bot.OpportunityScanner
+            self.assertEqual(
+                scanner._WS_SHAPE_BAIL_REASONS
+                | scanner._THRESHOLD_SHAPE_BAIL_REASONS,
+                set(scanner._BAIL_REJECTION_REASONS),
+                "Patched constants must preserve the partition contract")
+            with patch.object(bot, "_TELEGRAM") as mock_tele:
+                s._check_15m_silence_alert(_ACTIVE_15M)
+                msg = mock_tele.send.call_args.args[0]
+                # Both bucket members must appear in the header
+                # (alphabetical order).
+                header_line = msg.split("\n")[1]
+                self.assertIn("another_threshold_reason", header_line)
+                self.assertIn("threshold_unparsable", header_line)
+                self.assertLess(
+                    header_line.index("another_threshold_reason"),
+                    header_line.index("threshold_unparsable"),
+                    "Header label must be alphabetically sorted")
+
+    def test_breakdown_failure_preserves_last_good_cache(self):
+        """Adversarial round-3 C1/C5: a transient query failure must
+        NOT clobber the last-good breakdown cache. Without this, a
+        single locked-DB tick during a real Kalshi-TBD incident
+        flipped routing from THRESHOLD (good cache) to BAIL FLOOD
+        ('(breakdown unavailable)' annotation) and back when the next
+        tick recovered — two contradictory dedup_keys for the same
+        underlying incident. Pin: failure path returns the last-good
+        cache, not empty."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        # First call: succeeds, populates cache with {tu: 4}.
+        first = s._query_recent_bail_breakdown()
+        self.assertEqual(first.get("threshold_unparsable", 0), 4)
+        # Force the cache's throttle to expire so next call re-queries.
+        s._silence_bail_breakdown_last_ts = 0.0
+        # Wrap conn so the next breakdown query raises.
+        real_conn = s._state.conn
+
+        class _RaisingConn:
+            def execute(self, sql, *args, **kwargs):
+                if "GROUP BY rejection_reason" in sql:
+                    raise sqlite3.OperationalError(
+                        "database is locked")
+                return real_conn.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        s._state.conn = _RaisingConn()
+        # Second call: query fails, but should return the LAST-GOOD
+        # cache, not empty.
+        second = s._query_recent_bail_breakdown()
+        self.assertEqual(second.get("threshold_unparsable", 0), 4,
+            "Failure path must preserve last-good breakdown")
+        # Throttle clock advanced regardless.
+        self.assertGreater(
+            getattr(s, "_silence_bail_breakdown_last_ts", 0.0), 0.0)
+
+    def test_breakdown_failure_first_call_returns_empty(self):
+        """Adversarial round-3 C1/C5 boundary: when there is NO
+        last-good cache (very first call ever, query fails), the
+        method falls back to `{}` rather than crashing on missing
+        attribute. Operator sees the (breakdown unavailable) message,
+        which is the correct degraded behavior."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        s._state.conn.close()  # break first call
+        # Confirm no last-good cache exists yet.
+        self.assertFalse(
+            hasattr(s, "_silence_bail_breakdown_last_dict"))
+        result = s._query_recent_bail_breakdown()
+        self.assertEqual(result, {})
+
+    def test_threshold_shape_bucket_label_drift_tripwire(self):
+        """Adversarial round-3 C2 belt-and-suspenders: even with the
+        derived-from-bucket label, the message rendering MUST be
+        consistent across bucket size. If a future PR adds a bail
+        reason but mistakenly hardcodes the singular label somewhere
+        else, this asserts the bucket-size matches the header. Today
+        bucket size is 1; this test will fail loudly if someone
+        extends `_THRESHOLD_SHAPE_BAIL_REASONS` without updating
+        whatever would need to change."""
+        scanner = bot.OpportunityScanner
+        # If the bucket grows, all the test's assumptions about
+        # 'threshold_unparsable' as the sole label need re-review.
+        # Loud failure beats silent label drift.
+        self.assertEqual(
+            len(scanner._THRESHOLD_SHAPE_BAIL_REASONS), 1,
+            "Bucket size changed — review all 'threshold_unparsable' "
+            "literals in tests + KB docs for label drift before "
+            "updating this assertion.")
+
+    # ── Tickers query (round-4 C1, C2, C7) ──────────────────────────
+
+    def test_tickers_query_failure_logs_warning_once(self):
+        """Adversarial round-4 C1: the tickers query has a different
+        SQL shape (GROUP BY + ORDER BY + LIMIT) than the breakdown
+        query and can fail independently. Warn-flag mirrors the
+        breakdown pattern so a permanent failure surfaces in
+        journalctl rather than being masked by the breakdown query's
+        success."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        s._state.conn.close()  # force query failure
+        with self.assertLogs(level="WARNING") as cm:
+            s._query_recent_threshold_unparsable_tickers()
+        self.assertTrue(any(
+            "threshold-tickers query failed" in r.getMessage()
+            for r in cm.records),
+            "First failure should log a warning for tickers query")
+        self.assertTrue(getattr(
+            s, "_silence_watchdog_warned_tickers", False))
+
+    def test_tickers_query_failure_resets_flag_on_recovery(self):
+        """Adversarial round-4 C1: warn-flag must reset on success
+        so the next failure (e.g., later in a long-running process)
+        also logs once. Mirrors breakdown query pattern."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        s._silence_watchdog_warned_tickers = True
+        s._query_recent_threshold_unparsable_tickers()
+        self.assertFalse(getattr(
+            s, "_silence_watchdog_warned_tickers", True),
+            "Successful tickers query must reset the warn flag")
+
+    def test_tickers_query_failure_preserves_last_good(self):
+        """Adversarial round-4 C1 (extension of round-3 C1/C5):
+        transient failure must preserve last-good cache rather than
+        clobber to []. Otherwise a momentary lock-DB during a
+        sustained Kalshi-TBD incident would empty the affected list,
+        flipping the THRESHOLD message to the empty-affected path
+        (different probe text, different operator action) for one
+        throttle window."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        first = s._query_recent_threshold_unparsable_tickers()
+        self.assertGreater(len(first), 0,
+            "Fixture should produce affected tickers")
+        # Force throttle to expire then break the next call.
+        s._silence_threshold_tickers_last_ts = 0.0
+        real_conn = s._state.conn
+
+        class _RaisingConn:
+            def execute(self, sql, *args, **kwargs):
+                if "GROUP BY ticker" in sql:
+                    raise sqlite3.OperationalError(
+                        "database is locked")
+                return real_conn.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        s._state.conn = _RaisingConn()
+        second = s._query_recent_threshold_unparsable_tickers()
+        self.assertEqual(second, first,
+            "Failure must preserve last-good tickers list")
+
+    def test_empty_affected_probe_sql_derives_from_bucket(self):
+        """Adversarial round-6 C2: the OPERATOR-FACING fallback SQL
+        in the empty-affected probe must derive its `IN (...)` clause
+        from `_THRESHOLD_SHAPE_BAIL_REASONS` — not hardcode
+        `'threshold_unparsable'`. Otherwise a future bucket extension
+        would mask half the affected tickers in the operator's
+        copy-paste query (mirror of round-5 C1 for the bot's own SQL).
+
+        Patches BOTH `_BAIL_REJECTION_REASONS` and the bucket together
+        to preserve the partition contract at runtime. Wraps the conn
+        so breakdown succeeds (gives THRESHOLD routing) but tickers
+        fails (forces the empty-affected fallback)."""
+        new_thr_bucket = frozenset({
+            "threshold_unparsable", "another_threshold_reason"})
+        new_bail_reasons = (
+            "no_orderbook", "no_best_ask",
+            "threshold_unparsable", "another_threshold_reason")
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        real_conn = s._state.conn
+
+        class _TickerOnlyRaisingConn:
+            def execute(self, sql, *args, **kwargs):
+                if "GROUP BY ticker" in sql:
+                    raise sqlite3.OperationalError(
+                        "database is locked")
+                return real_conn.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        s._state.conn = _TickerOnlyRaisingConn()
+        with patch.object(
+                bot.OpportunityScanner,
+                "_THRESHOLD_SHAPE_BAIL_REASONS", new_thr_bucket), \
+             patch.object(
+                bot.OpportunityScanner,
+                "_BAIL_REJECTION_REASONS", new_bail_reasons):
+            with patch.object(bot, "_TELEGRAM") as mock_tele:
+                s._check_15m_silence_alert(_ACTIVE_15M)
+                msg = mock_tele.send.call_args.args[0]
+                self.assertIn("THRESHOLD UNPARSABLE", msg)
+                self.assertIn("(cache empty", msg)
+                probe_line = next(
+                    (l for l in msg.split("\n")
+                     if l.startswith("Probe:")),
+                    None)
+                self.assertIsNotNone(probe_line)
+                # Both bucket reasons must appear in operator SQL.
+                self.assertIn("'another_threshold_reason'", probe_line)
+                self.assertIn("'threshold_unparsable'", probe_line)
+                # IN(...) form, not = '...'.
+                self.assertIn("rejection_reason IN (", probe_line)
+                self.assertNotIn(
+                    "rejection_reason='threshold_unparsable'",
+                    probe_line)
+
+    def test_empty_affected_probe_window_derives_from_constant(self):
+        """Adversarial round-7 C1: the operator-facing fallback SQL's
+        time window must derive from `_SILENCE_AGE_THRESHOLD_SECONDS`
+        — not hardcode a literal value. Otherwise tuning the constant
+        leaves the operator's copy-paste query referencing a stale
+        window, producing tickers from a different incident than the
+        bot is alerting on. Mirror of round-5 C1 / round-6 C2 (drift
+        prevention via single source of truth).
+
+        Round-8 C2 follow-up: window now rendered in SECONDS (full
+        precision), not `// 60` minutes (lossy for non-multiples-of-60).
+        Patch to 300s and assert SQL reflects exactly 300 seconds."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        real_conn = s._state.conn
+
+        class _TickerOnlyRaisingConn:
+            def execute(self, sql, *args, **kwargs):
+                if "GROUP BY ticker" in sql:
+                    raise sqlite3.OperationalError(
+                        "database is locked")
+                return real_conn.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        s._state.conn = _TickerOnlyRaisingConn()
+        with patch.object(
+                bot.OpportunityScanner,
+                "_SILENCE_AGE_THRESHOLD_SECONDS", 300):
+            with patch.object(bot, "_TELEGRAM") as mock_tele:
+                s._check_15m_silence_alert(_ACTIVE_15M)
+                msg = mock_tele.send.call_args.args[0]
+                probe_line = next(
+                    (l for l in msg.split("\n")
+                     if l.startswith("Probe:")),
+                    None)
+                self.assertIsNotNone(probe_line)
+                # Patched 300s renders as `'-300 seconds'` exactly.
+                self.assertIn("'-300 seconds'", probe_line)
+                # Header line uses same constant for minutes (display
+                # convention) — verify they tell consistent stories.
+                header_line = msg.split("\n")[1]
+                self.assertIn("in last 5 min", header_line)
+
+    def test_empty_affected_probe_window_at_non_multiple_of_60(self):
+        """Adversarial round-8 C2: at non-60-multiple values of
+        `_SILENCE_AGE_THRESHOLD_SECONDS`, the operator SQL must still
+        be precise. Pre-fix, 599s → `// 60 = 9 minutes` → operator
+        misses the most-recent 59s of bail rows. Post-fix uses
+        seconds form — exact regardless of value."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        real_conn = s._state.conn
+
+        class _TickerOnlyRaisingConn:
+            def execute(self, sql, *args, **kwargs):
+                if "GROUP BY ticker" in sql:
+                    raise sqlite3.OperationalError("locked")
+                return real_conn.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        s._state.conn = _TickerOnlyRaisingConn()
+        with patch.object(
+                bot.OpportunityScanner,
+                "_SILENCE_AGE_THRESHOLD_SECONDS", 599):
+            with patch.object(bot, "_TELEGRAM") as mock_tele:
+                s._check_15m_silence_alert(_ACTIVE_15M)
+                msg = mock_tele.send.call_args.args[0]
+                probe_line = next(
+                    (l for l in msg.split("\n")
+                     if l.startswith("Probe:")),
+                    None)
+                self.assertIn("'-599 seconds'", probe_line)
+
+    def test_threshold_message_when_tickers_empty_omits_placeholder(self):
+        """Adversarial round-4 C2/C7: if tickers list is empty (cache
+        empty due to first-call failure / cache miss), DO NOT render
+        the bare `<ticker>` placeholder URL — that recreates exactly
+        the friction the embed was meant to remove. Instead show a
+        next-step DB query so the operator has actionable guidance.
+        """
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        # Wrap conn so the tickers query fails on first call (no
+        # last-good cache to fall back on).
+        real_conn = s._state.conn
+
+        class _TickerRaisingConn:
+            def execute(self, sql, *args, **kwargs):
+                if "GROUP BY ticker" in sql:
+                    raise sqlite3.OperationalError(
+                        "database is locked")
+                return real_conn.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        s._state.conn = _TickerRaisingConn()
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            # Routing still THRESHOLD (breakdown succeeded).
+            self.assertIn("THRESHOLD UNPARSABLE", msg)
+            # Crucially: NO bare placeholder URL.
+            self.assertNotIn("markets/<ticker>", msg)
+            # Affected line should indicate cache empty + next steps.
+            self.assertIn("(cache empty", msg)
+            # Probe section uses the SQL fallback, not curl <ticker>.
+            self.assertIn("rejected_opportunities", msg)
+
+    # ── Markdown-parser safety (round-8 C1) ──────────────────────────
+
+    def test_threshold_message_has_balanced_markdown_entities(self):
+        """Adversarial round-8 C1: Telegram sends with parse_mode=
+        'Markdown' (legacy). An odd-parity unmatched `_` (italic
+        marker) in the message body causes HTTP 400 → alert never
+        delivered → operator never sees the diagnostic this
+        multi-round project is meant to deliver. Pin: the rendered
+        THRESHOLD message must have balanced `*`, `_`, and `` ` ``
+        markers (even count after stripping backtick code spans for
+        underscores)."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            self._assert_markdown_balanced(msg)
+
+    def test_bail_flood_message_has_balanced_markdown_entities(self):
+        """Adversarial round-8 C1 sibling: same parse-validity
+        guarantee for the BAIL FLOOD path. Breakdown line includes
+        `no_best_ask=N` etc. with word-internal underscores; must be
+        wrapped in backticks via `_format_bail_breakdown`."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="no_orderbook",
+            n_rejection_rows=200)
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            self._assert_markdown_balanced(msg)
+
+    def test_threshold_empty_affected_message_has_balanced_markdown(self):
+        """Adversarial round-8 C1: third path — empty-affected
+        fallback. Operator-facing SQL line contains
+        `rejected_opportunities` and `rejection_reason` etc., all
+        wrapped in backticks. Pin parse validity."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="threshold_unparsable",
+            n_rejection_rows=4)
+        real_conn = s._state.conn
+
+        class _TickerOnlyRaisingConn:
+            def execute(self, sql, *args, **kwargs):
+                if "GROUP BY ticker" in sql:
+                    raise sqlite3.OperationalError("locked")
+                return real_conn.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        s._state.conn = _TickerOnlyRaisingConn()
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            msg = mock_tele.send.call_args.args[0]
+            self._assert_markdown_balanced(msg)
+
+    def test_markdown_balance_helper_catches_unbalanced_underscore(self):
+        """Adversarial round-9: the `_assert_markdown_balanced` helper
+        is the sole guard for the round-8 fix. A future regex
+        refactor (e.g., word-boundary `\\b_|_\\b` which inverts
+        semantics) would silently neuter the helper while all
+        positive callers continue to pass — production alerts would
+        again fail HTTP 400. Negative tests pin the helper itself."""
+        # 1 word-internal underscore (unbalanced) — must raise.
+        with self.assertRaises(AssertionError):
+            self._assert_markdown_balanced("foo _italic bar baz")
+
+    def test_markdown_balance_helper_catches_unbalanced_backtick(self):
+        """Same as above for backticks — unbalanced count must raise."""
+        with self.assertRaises(AssertionError):
+            self._assert_markdown_balanced("foo `code bar")
+
+    def test_markdown_balance_helper_catches_unbalanced_asterisk(self):
+        """Same as above for asterisks."""
+        with self.assertRaises(AssertionError):
+            self._assert_markdown_balanced("foo *bold bar")
+
+    def test_markdown_balance_helper_strips_backtick_spans_correctly(self):
+        """Underscores INSIDE a backtick span are neutralized (legacy
+        Markdown spec). Helper must strip backtick spans before
+        counting word-internal underscores.
+
+        Asymmetry demo: `threshold_unparsable` (1 word-internal `_`,
+        odd) inside a backtick span → 0 after strip → balanced.
+        Same identifier raw → 1 word-internal `_` → unbalanced.
+
+        This is the EXACT failure mode the round-8 fix prevents: a
+        single `_` in `threshold_unparsable` (used in the THRESHOLD
+        message header) was odd-parity until backticks neutralized it."""
+        # Inside backticks → stripped → balanced (passes).
+        self._assert_markdown_balanced(
+            "Breakdown: `threshold_unparsable=4`")
+        # Same identifier raw, ODD count of word-internal `_`: raises.
+        with self.assertRaises(AssertionError):
+            self._assert_markdown_balanced(
+                "Breakdown: threshold_unparsable=4")
+
+    @staticmethod
+    def _assert_markdown_balanced(msg: str):
+        """Helper: assert balanced *, `, and word-internal _ markers
+        in a message intended for parse_mode='Markdown'. Strips
+        backtick code spans before counting underscores (since `code`
+        spans neutralize underscores per the legacy Markdown spec).
+        Asterisks and backticks are checked as raw counts (must be
+        even — paired)."""
+        import re
+        backtick_count = msg.count("`")
+        if backtick_count % 2 != 0:
+            raise AssertionError(
+                f"Unbalanced backticks ({backtick_count}) in message:"
+                f"\n{msg!r}")
+        asterisk_count = msg.count("*")
+        if asterisk_count % 2 != 0:
+            raise AssertionError(
+                f"Unbalanced asterisks ({asterisk_count}) in message:"
+                f"\n{msg!r}")
+        # Strip backtick code spans before counting underscores.
+        stripped = re.sub(r"`[^`]*`", "", msg)
+        # Within the stripped text, count word-internal underscores
+        # (any `_` adjacent to alphanumeric chars on either side).
+        # Word-boundary-only underscores are not parsed as italic by
+        # legacy Markdown; only word-internal pairs are at risk.
+        word_internal = re.findall(r"(?<=\w)_|_(?=\w)", stripped)
+        if len(word_internal) % 2 != 0:
+            raise AssertionError(
+                "Unbalanced word-internal underscore count "
+                f"({len(word_internal)}) outside backtick spans in "
+                f"message:\n{msg!r}\n"
+                f"Word-internal underscores found: {word_internal}")
+
+    def test_partition_invariant_holds_at_runtime(self):
+        """Adversarial round-4 C4: the partition + disjointness
+        invariants moved from class-body assertions (which would
+        crash bot.py at import on a developer mistake → systemd
+        backoff loop with no Telegram) to test-only enforcement.
+        This test owns the contract.
+
+        Adding a new bail reason without bucketing it would: (a)
+        fail this test in CI, (b) leave the new reason routed as
+        zero in the discriminator, and (c) surface in the Breakdown
+        line via `_format_bail_breakdown` (so it's visible to
+        operators even if untested)."""
+        scanner = bot.OpportunityScanner
+        ws = scanner._WS_SHAPE_BAIL_REASONS
+        thr = scanner._THRESHOLD_SHAPE_BAIL_REASONS
+        bail = set(scanner._BAIL_REJECTION_REASONS)
+        self.assertEqual(
+            ws | thr, bail,
+            "Shape buckets must cover all _BAIL_REJECTION_REASONS — "
+            "any new bail reason MUST be added to either "
+            "_WS_SHAPE_BAIL_REASONS or _THRESHOLD_SHAPE_BAIL_REASONS "
+            "in the same commit.")
+        self.assertEqual(
+            ws & thr, set(),
+            "Shape buckets must be disjoint — a reason can only be "
+            "in one bucket.")
+
+    def test_alert_with_breakdown_unavailable_uses_bail_flood(self):
+        """Adversarial round-2 C2/C7/C8: when breakdown query fails
+        but the gate-cached `bail_count` admitted us to the alert
+        branch, we must (a) route to BAIL FLOOD as the conservative
+        default (cannot determine shape), (b) display
+        "(breakdown unavailable)" as the breakdown line — not
+        zero-everywhere — so the operator knows shape info is
+        missing rather than being misled into thinking ALL bail
+        reasons happened to be zero, and (c) preserve a non-zero
+        header total derived from the gate's count."""
+        s = _make_scanner_with_eval_age(
+            age_minutes=30, rejection_age_minutes=2,
+            rejection_reason="no_orderbook",
+            n_rejection_rows=5)  # gate sees 5
+        # Prime the count query so the gate admits us.
+        s._query_recent_bail_count()
+        # Now break breakdown on the next call by making `execute`
+        # raise. The count query already cached its 5; the next gate
+        # call will return that cached 5. The breakdown query, when
+        # called by the alert path, will hit our raising wrapper and
+        # return empty.
+        real_conn = s._state.conn
+
+        class _BreakdownRaisingConn:
+            def __init__(self, real):
+                self._real = real
+                self._fail_breakdown = False
+
+            def execute(self, sql, *args, **kwargs):
+                # Only fail GROUP BY (the breakdown query)
+                if "GROUP BY rejection_reason" in sql:
+                    raise sqlite3.OperationalError(
+                        "database is locked")
+                return self._real.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        s._state.conn = _BreakdownRaisingConn(real_conn)
+        # Reset breakdown throttle so the alert path actually queries.
+        s._silence_bail_breakdown_last_ts = 0.0
+
+        with patch.object(bot, "_TELEGRAM") as mock_tele:
+            s._check_15m_silence_alert(_ACTIVE_15M)
+            mock_tele.send.assert_called_once()
+            call = mock_tele.send.call_args
+            msg = call.args[0]
+            # Conservative routing: BAIL FLOOD (not threshold).
+            self.assertIn("BAIL FLOOD", msg)
+            self.assertNotIn("THRESHOLD UNPARSABLE", msg)
+            # Explicit annotation, not zero-everywhere.
+            self.assertIn("(breakdown unavailable)", msg)
+            # Header total preserved from gate count.
+            self.assertIn("Primary stale + 5 silent-bail", msg)
+            self.assertEqual(
+                call.kwargs.get("dedup_key"),
+                "silent_15m_bail_flood_alert")
+
+
 class TestBailReasonConstantContract(unittest.TestCase):
     """AST-walk audit of bot.py: enumerate every literal-string
     rejection_reason passed to `insert_rejection(...)`, classify each

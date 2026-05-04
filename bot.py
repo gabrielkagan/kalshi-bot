@@ -18338,9 +18338,58 @@ class OpportunityScanner:
     )
     # Empty constant would yield SQL `NOT IN ()` syntax error → silent
     # watchdog disable. Catch at module load.
+    #
+    # Module-load assertion policy (round-8 C3 unifying comment):
+    # - HARD-ASSERT (this line): permanent silent-disable contracts.
+    #   An empty `_BAIL_REJECTION_REASONS` would silently disable the
+    #   watchdog — unrecoverable until the bot restarts AND a fix is
+    #   deployed. Crashing at import (→ systemd backoff loop, operator
+    #   notices missing PnL within minutes) is strictly better than
+    #   running with the watchdog silently broken indefinitely.
+    # - TEST-ONLY (e.g., `_WS_SHAPE_BAIL_REASONS` / `_THRESHOLD_SHAPE_BAIL_REASONS`
+    #   partition): transient routing-degradation contracts. A
+    #   forgotten bucketing mis-classifies the alert message but the
+    #   bot continues to trade and the watchdog continues to fire;
+    #   crashing at import would be DISPROPORTIONATELY costly because
+    #   the Telegram notifier never initializes, depriving the
+    #   operator of any failure signal at all.
+    # The asymmetry is deliberate. New invariants should be classified
+    # with this distinction in mind.
     assert _BAIL_REJECTION_REASONS, (
         "_BAIL_REJECTION_REASONS must not be empty — empty produces "
         "invalid SQL `NOT IN ()` and silently disables the watchdog.")
+
+    # Shape buckets — partition `_BAIL_REJECTION_REASONS` into the two
+    # diagnostic shapes the BAIL FLOOD alert routes between. The
+    # partition + disjointness invariants are enforced via tests in
+    # `tests/test_15m_silence_alert.py::TestBailFloodMessageDifferentiation`
+    # (search for `test_shape_buckets_partition_bail_reasons`), NOT
+    # via class-body assertions — adversarial round-4 critique C4:
+    # module-load assertions on a recoverable contract (a forgotten
+    # bucketing only degrades routing accuracy, not correctness)
+    # would crash the bot at import → systemd backoff loop, with
+    # NO Telegram alert because the Telegram client never initializes.
+    # Test-time enforcement preserves the contract without the
+    # production-startup risk. The original `assert _BAIL_REJECTION_REASONS`
+    # at module load remains because that one guards an unambiguously
+    # broken state (`NOT IN ()` SQL syntax error → silent watchdog
+    # disable, even worse than crash-loop).
+    _WS_SHAPE_BAIL_REASONS = frozenset({"no_orderbook", "no_best_ask"})
+    _THRESHOLD_SHAPE_BAIL_REASONS = frozenset({"threshold_unparsable"})
+
+    # Threshold-dominance ratio: classify as threshold-shape when
+    # threshold-bucket count >= 3 × WS-bucket count (i.e., ≥75% of
+    # bail rows are threshold-shape). Round-3 critique C4: original
+    # ratio of 4 (80%) was asymmetric at small n — at n_thr=3,
+    # n_ws=1 → 75% threshold but routed to BAIL FLOOD (3 < 4×1).
+    # A 3-ticker incident (one asset in catalog-gap) plus a single
+    # WS blip would have been the exact misroute the change is
+    # meant to prevent. Loosened to 3 so the boundary covers
+    # n_thr=3, n_ws=1 (3 >= 3×1). Still rejects n_thr=3, n_ws=2
+    # (3 < 6) and any case where WS contributes >25% — those have
+    # legitimately mixed signal and conservatively route to BAIL
+    # FLOOD with the breakdown line for operator inspection.
+    _THRESHOLD_SHAPE_DOMINANCE_RATIO = 3
     # Bail signal triggers when primary is stale/None AND bail rows
     # ≥ `_BAIL_MIN_ROWS_WHEN_STALE` exist in the recent window.
     # Threshold of 3 is the smallest value that:
@@ -18473,6 +18522,208 @@ class OpportunityScanner:
         self._silence_bail_query_last_ts = now
         return count
 
+    @classmethod
+    def _format_bail_breakdown(cls, breakdown: Dict[str, int]) -> str:
+        """Render breakdown dict as a stable, alphabetically-sorted
+        string for log + alert display. Iterates over
+        `_BAIL_REJECTION_REASONS` so any future bail reason added to
+        the constant (and shape-bucketed per the module-load
+        assertion) is automatically surfaced — there is no
+        separately-maintained literal list of reasons.
+
+        Sort order is alphabetical (not tuple order) — alert messages
+        going to operator memory benefit from stable layout
+        independent of internal constant ordering. Adversarial round-2
+        critique C5: tuple-order coupled display layout to opaque
+        internal order, which a maintainer reordering for any reason
+        would silently change.
+
+        Round-8 C1: each `reason=count` pair is wrapped in backticks
+        so word-internal underscores in reason names (e.g., `no_best_ask`,
+        `threshold_unparsable`) are inside an inline-code span and
+        cannot be misinterpreted as italic markers by Telegram's
+        legacy Markdown parser. Without this, an odd-parity underscore
+        count in the rendered message could fail at parse_mode=Markdown
+        and the alert would never reach the operator.
+        """
+        return ", ".join(
+            f"`{r}={breakdown.get(r, 0)}`"
+            for r in sorted(cls._BAIL_REJECTION_REASONS))
+
+    def _query_recent_bail_breakdown(self):
+        """Return Dict[str, int] mapping bail rejection_reason → count
+        over the same window as `_query_recent_bail_count`. Used by the
+        BAIL FLOOD alert path to differentiate WS-cache-drift signature
+        (no_orderbook/no_best_ask, tens-to-hundreds of rows) from the
+        Kalshi-side threshold-publish issue (threshold_unparsable,
+        ≤4 dedup-bounded rows). May 4 2026 incident: alert message
+        hardcoded "WS-cache-drift recurrence" so an operator hit by
+        the threshold-only shape was sent to the wrong KB doc.
+        See kb/failures/threshold-tbd-stuck-may04.md.
+
+        Throttled by `_BAIL_QUERY_THROTTLE_SECONDS` independent of
+        `_query_recent_bail_count` — separate cache state by design
+        so a count-query call doesn't inadvertently refresh the
+        breakdown cache (or vice versa).
+
+        Returns empty dict on query failure (caller MUST handle missing
+        keys defensively via `.get(reason, 0)`). Failure path also
+        advances the throttle clock to avoid query storm during
+        permanent failure, matching `_query_recent_bail_count`.
+        """
+        now = time.time()
+        last = getattr(self, "_silence_bail_breakdown_last_ts", 0.0)
+        cached = getattr(self, "_silence_bail_breakdown_last_dict", {})
+        if now - last < self._BAIL_QUERY_THROTTLE_SECONDS:
+            return cached
+        cutoff_dt = (datetime.datetime.now(timezone.utc)
+                     - datetime.timedelta(
+                         seconds=self._SILENCE_AGE_THRESHOLD_SECONDS))
+        cutoff_iso = (
+            cutoff_dt.isoformat(timespec="microseconds")
+            .replace("+00:00", "Z"))
+        bail_reasons = self._BAIL_REJECTION_REASONS
+        placeholders = self._bail_placeholders()
+        try:
+            rows = self._state.conn.execute(
+                "SELECT rejection_reason, COUNT(*) "
+                "FROM rejected_opportunities "
+                "WHERE ticker LIKE 'KX%15M%' "
+                "  AND rejection_time >= ? "
+                f"  AND rejection_reason IN ({placeholders}) "
+                "GROUP BY rejection_reason",
+                (cutoff_iso, *bail_reasons),
+            ).fetchall()
+        except Exception:
+            # Mirror `_query_recent_bail_count` failure handling:
+            # rate-limited warning so a permanent failure surfaces in
+            # journalctl exactly once (not every tick), AND the alert
+            # path can detect the failure via empty-dict return and
+            # render an explicit "(breakdown unavailable)" message
+            # instead of zero-everywhere (adversarial round-2 C1).
+            #
+            # Round-3 C1/C5: preserve last-good cache on transient
+            # failure. Clobbering to {} on a one-tick locked-DB error
+            # caused the alert to flip routing to BAIL FLOOD (with
+            # "(breakdown unavailable)") for one throttle window, then
+            # back to THRESHOLD when the next tick succeeded — two
+            # contradictory dedup_keys for the same incident, sending
+            # the operator to opposite KB docs. Now the cache survives
+            # transient failures; only a never-successful path returns
+            # the empty default.
+            if not getattr(
+                    self,
+                    "_silence_watchdog_warned_breakdown",
+                    False):
+                logging.warning(
+                    "silent_15m bail-breakdown query failed",
+                    exc_info=True)
+                self._silence_watchdog_warned_breakdown = True
+            # Initialize cache to empty if this is the first call ever
+            # (no last-good); otherwise preserve the existing dict.
+            if not hasattr(self, "_silence_bail_breakdown_last_dict"):
+                self._silence_bail_breakdown_last_dict = {}
+            # Advance throttle clock so query storm is bounded.
+            self._silence_bail_breakdown_last_ts = now
+            return self._silence_bail_breakdown_last_dict
+        # Reset warn-flag on success so the next failure also logs once
+        # (adversarial round-2 C9 — match count query's reset pattern).
+        if getattr(
+                self, "_silence_watchdog_warned_breakdown", False):
+            self._silence_watchdog_warned_breakdown = False
+        breakdown = {row[0]: row[1] for row in rows}
+        self._silence_bail_breakdown_last_dict = breakdown
+        self._silence_bail_breakdown_last_ts = now
+        return breakdown
+
+    def _query_recent_threshold_unparsable_tickers(self, limit: int = 4):
+        """Return up to `limit` distinct ticker strings that fired
+        `threshold_unparsable` rejections in the silence window, most
+        recent first. Used to embed actual affected tickers in the
+        THRESHOLD UNPARSABLE alert so the operator can paste-and-go
+        with the curl probe without a separate DB query — round-3 C3:
+        the May 4 incident was only diagnosed by ad-hoc curl, and a
+        bare `<ticker>` template recreated that friction.
+
+        Throttled like the breakdown query. Returns empty list on
+        failure (caller renders gracefully). The query is non-indexed
+        (LIKE on PK + filters), but only runs in the THRESHOLD branch
+        of the alert path (not on BAIL FLOOD), so it does not add
+        per-tick load during WS-cache-drift incidents.
+        """
+        now = time.time()
+        last = getattr(
+            self,
+            "_silence_threshold_tickers_last_ts",
+            0.0)
+        cached = getattr(
+            self,
+            "_silence_threshold_tickers_last_list",
+            [])
+        if now - last < self._BAIL_QUERY_THROTTLE_SECONDS:
+            return cached
+        cutoff_dt = (datetime.datetime.now(timezone.utc)
+                     - datetime.timedelta(
+                         seconds=self._SILENCE_AGE_THRESHOLD_SECONDS))
+        cutoff_iso = (
+            cutoff_dt.isoformat(timespec="microseconds")
+            .replace("+00:00", "Z"))
+        # Round-5 C1: filter from `_THRESHOLD_SHAPE_BAIL_REASONS`
+        # rather than the literal `'threshold_unparsable'`. If a future
+        # maintainer adds a 2nd member to the bucket (e.g.,
+        # `tradeable_false_15m`), the bucket-derived header label and
+        # n_thr count both surface it — but the SQL filter would have
+        # silently kept showing tickers from the original reason only,
+        # masking a fraction of the real affected tickers. Now SQL
+        # parallels the breakdown query's `IN ({placeholders})` shape.
+        thr_reasons = tuple(sorted(self._THRESHOLD_SHAPE_BAIL_REASONS))
+        thr_placeholders = ",".join("?" * len(thr_reasons))
+        try:
+            rows = self._state.conn.execute(
+                "SELECT ticker, MAX(rejection_time) AS most_recent "
+                "FROM rejected_opportunities "
+                "WHERE ticker LIKE 'KX%15M%' "
+                f"  AND rejection_reason IN ({thr_placeholders}) "
+                "  AND rejection_time >= ? "
+                "GROUP BY ticker "
+                "ORDER BY most_recent DESC "
+                "LIMIT ?",
+                (*thr_reasons, cutoff_iso, limit),
+            ).fetchall()
+        except Exception:
+            # Round-4 C1: failure path now warn-logs once (rate-limited
+            # via own flag). The earlier rationale ("breakdown query's
+            # warning covers it") was wrong: this query has a different
+            # shape (GROUP BY + ORDER BY + LIMIT) and can fail
+            # independently — e.g., a corrupted index on `ticker` or a
+            # SQLite version regression on the GROUP+ORDER combination.
+            # Without its own warn-flag, the operator gets a THRESHOLD
+            # alert with empty `Affected tickers` and no journal
+            # evidence of the underlying failure.
+            if not getattr(
+                    self,
+                    "_silence_watchdog_warned_tickers",
+                    False):
+                logging.warning(
+                    "silent_15m threshold-tickers query failed",
+                    exc_info=True)
+                self._silence_watchdog_warned_tickers = True
+            # Preserve last-good list to avoid the same dual-alert
+            # pathology fixed for the breakdown cache (round-3 C1/C5).
+            if not hasattr(
+                    self, "_silence_threshold_tickers_last_list"):
+                self._silence_threshold_tickers_last_list = []
+            self._silence_threshold_tickers_last_ts = now
+            return self._silence_threshold_tickers_last_list
+        # Reset warn-flag on success (round-4 C1 follow-up to round-3 C9).
+        if getattr(
+                self, "_silence_watchdog_warned_tickers", False):
+            self._silence_watchdog_warned_tickers = False
+        tickers = [row[0] for row in rows]
+        self._silence_threshold_tickers_last_list = tickers
+        self._silence_threshold_tickers_last_ts = now
+        return tickers
+
     def _check_15m_silence_alert(self, active_windows: List[Dict]) -> None:
         """Alert via Telegram if no productive 15M evaluation has been
         produced in the last 10 minutes. Observation-only — doesn't
@@ -18586,29 +18837,223 @@ class OpportunityScanner:
             # WS-cache-drift shape produces hundreds of rows, far
             # above threshold; the dedup-bounded threshold_unparsable
             # case produces ≤4 rows, also above threshold of 3.
-            logging.error(
-                "SILENT_15M_BAIL_FLOOD: primary stale + %d "
-                "silent-bail rejection rows in last %d min; "
-                "uptime=%.1fmin",
-                bail_count, self._SILENCE_AGE_THRESHOLD_SECONDS // 60,
-                uptime / 60)
-            msg = (
-                f"\U0001f6a8 *15M SCAN SILENT (BAIL FLOOD)*\n"
-                f"Primary stale + {bail_count} silent-bail "
-                f"rejection rows in last "
-                f"{self._SILENCE_AGE_THRESHOLD_SECONDS // 60} min.\n"
-                f"Bot uptime: {uptime/60:.1f} min\n"
-                f"WS connected: {ws_connected}\n"
-                f"Likely: WS-cache-drift recurrence — see "
-                f"kb/failures/ws-cache-drift-silent-scan-2026-04-24.md")
+            #
+            # May 4 2026: alert text was hardcoded to "WS-cache-drift
+            # recurrence" but live incident was Kalshi-side TBD strikes
+            # (threshold_unparsable only, zero WS rows). Operator was
+            # nearly sent to wrong KB doc + would have done a useless
+            # restart. Routing now branches on dominant bail-reason
+            # shape via `_query_recent_bail_breakdown`. See
+            # kb/failures/threshold-tbd-stuck-may04.md.
+            #
+            # Adversarial review summary (rounds 2-7, see inline
+            # comments below + per-method docstrings for per-fix
+            # rationale, plus tests/test_15m_silence_alert.py
+            # ::TestBailFloodMessageDifferentiation):
+            # - R2: single source of truth — breakdown drives routing
+            #   AND display; "(breakdown unavailable)" annotation
+            #   when query empty; alphabetical breakdown sort.
+            # - R3: ratio loosened 4→3 (`_THRESHOLD_SHAPE_DOMINANCE_RATIO`)
+            #   to 75% so 3-ticker incident + 1 stray WS blip routes
+            #   correctly; affected-tickers embed in THRESHOLD message;
+            #   bucket-derived header label; last-good cache preserved
+            #   on transient breakdown failure.
+            # - R4: warn-once flag for breakdown query failure (mirror
+            #   count query); empty-affected probe falls back to a
+            #   next-step DB query (no bare `<ticker>` placeholder);
+            #   partition assertion moved from class-body to test-only
+            #   to avoid systemd backoff on developer mistake.
+            # - R5: in-bot tickers SQL filter parameter-bound from
+            #   `_THRESHOLD_SHAPE_BAIL_REASONS` via `IN (?,?,...)`;
+            #   warn-once flag for tickers query failure.
+            # - R6: operator-facing fallback SQL also bucket-derived
+            #   via `IN ('a','b',...)`.
+            # - R7: operator-facing window cutoff derived from
+            #   `_SILENCE_AGE_THRESHOLD_SECONDS` (no `-10 minutes`
+            #   literal drift).
+            breakdown = self._query_recent_bail_breakdown()
+            if breakdown:
+                n_thr = sum(breakdown.get(r, 0)
+                            for r in self._THRESHOLD_SHAPE_BAIL_REASONS)
+                n_ws = sum(breakdown.get(r, 0)
+                           for r in self._WS_SHAPE_BAIL_REASONS)
+                display_total = n_thr + n_ws
+                breakdown_str = self._format_bail_breakdown(breakdown)
+                # Ratio-based dominance: threshold count >=
+                # `_THRESHOLD_SHAPE_DOMINANCE_RATIO` × WS count AND at
+                # least the bail threshold. Constant currently 3 (≥75%
+                # threshold); see its definition for rationale and
+                # boundary worked examples (round-3 C4 loosened from
+                # 4 to 3 to fix asymmetric routing at small n).
+                # Boundary pinned by TestBailFloodMessageDifferentiation.
+                is_threshold_dominant = (
+                    n_thr >= self._BAIL_MIN_ROWS_WHEN_STALE
+                    and n_thr >= (
+                        self._THRESHOLD_SHAPE_DOMINANCE_RATIO * n_ws))
+            else:
+                # Breakdown query failed or returned empty. Cannot
+                # route by shape — default to BAIL FLOOD with explicit
+                # annotation so operator can see the gap rather than
+                # be misled by zero-everywhere. Gate already admitted
+                # us via cached count, which we surface as display
+                # total even though it may be from an older throttle
+                # window than the (failed) breakdown query.
+                n_thr = 0
+                n_ws = 0
+                display_total = bail_count
+                breakdown_str = "(breakdown unavailable)"
+                is_threshold_dominant = False
+
+            if is_threshold_dominant:
+                # Round-3 C3: embed actual affected tickers (most
+                # recent up to 4) so the operator can paste-and-go
+                # with the curl probe without a separate DB query.
+                # Round-4 C2+C7: when affected is empty (tickers
+                # query failed or cache stale-empty), DO NOT emit
+                # the bare `<ticker>` placeholder URL — that
+                # recreates exactly the friction the embed was
+                # meant to remove. Replace the Probe: line with a
+                # next-step DB query so the operator has actionable
+                # guidance regardless.
+                affected = self._query_recent_threshold_unparsable_tickers(
+                    limit=4)
+                logging.error(
+                    "SILENT_15M_THRESHOLD_UNPARSABLE: primary stale + "
+                    "%d threshold rows (ws=%d) in last %d min; "
+                    "uptime=%.1fmin (%s); affected=%s",
+                    n_thr, n_ws,
+                    self._SILENCE_AGE_THRESHOLD_SECONDS // 60,
+                    uptime / 60, breakdown_str,
+                    (", ".join(affected) if affected
+                     else "<empty>"))
+                # Header label is derived from the bucket so a future
+                # add to `_THRESHOLD_SHAPE_BAIL_REASONS` is reflected
+                # without a parallel literal edit (round-3 C2).
+                # Round-8 C1: each reason wrapped in backticks so
+                # word-internal underscores cannot be misinterpreted
+                # as italic markers by Telegram's legacy Markdown
+                # parser (would fail HTTP 400, alert never delivered).
+                threshold_label = ", ".join(
+                    f"`{r}`"
+                    for r in sorted(
+                        self._THRESHOLD_SHAPE_BAIL_REASONS))
+                # Build the affected-tickers + probe sections
+                # conditionally on whether tickers are populated.
+                if affected:
+                    affected_line = (
+                        f"Affected tickers: {', '.join(affected)}\n")
+                    # Round-8 C1: wrap `floor_strike` field name in
+                    # backticks so its word-internal underscore is
+                    # neutralized for Markdown parsing. Tickers
+                    # themselves are hyphen-only so don't need wrapping.
+                    probe_line = (
+                        f"Probe: curl https://api.elections.kalshi.com/"
+                        f"trade-api/v2/markets/{affected[0]}\n"
+                        f"  → if `floor_strike=null` + sub=\"TBD\": "
+                        f"wait, Kalshi will populate\n"
+                        f"  → if `floor_strike` populated but parser "
+                        f"fails: code fix required\n")
+                else:
+                    # Round-6 C2: operator-facing fallback SQL must
+                    # also derive its `IN (...)` clause from the
+                    # bucket. Earlier draft hardcoded
+                    # `rejection_reason='threshold_unparsable'`,
+                    # which would silently mask half the affected
+                    # tickers if `_THRESHOLD_SHAPE_BAIL_REASONS`
+                    # gained a 2nd member — exactly the drift round-5
+                    # C1 fixed in the bot's own SQL.
+                    #
+                    # Round-7 C1: window cutoff also derives from
+                    # `_SILENCE_AGE_THRESHOLD_SECONDS` rather than a
+                    # literal `'-10 minutes'`. Same drift class —
+                    # if the constant is tuned, the operator's
+                    # copy-paste SQL would otherwise reference a
+                    # different window than the bot, producing
+                    # tickers from a different incident.
+                    #
+                    # Round-7 C2 (degenerate-case note): if the bucket
+                    # is empty, `operator_thr_in` is "" and the
+                    # rendered SQL becomes `IN ()` (invalid). This is
+                    # unreachable in practice because `n_thr` would be
+                    # 0 → `is_threshold_dominant=False` → routes to
+                    # BAIL FLOOD, never entering this branch. Bucket
+                    # members are also Python module-level constants,
+                    # so they cannot contain SQL-special characters
+                    # (apostrophe, comma) that would corrupt the
+                    # interpolated literal.
+                    operator_thr_in = ", ".join(
+                        f"'{r}'"
+                        for r in sorted(
+                            self._THRESHOLD_SHAPE_BAIL_REASONS))
+                    # Round-8 C2: render the SQL window in seconds
+                    # (full precision) rather than `// 60` minutes
+                    # which was lossy for non-multiple-of-60 values
+                    # of `_SILENCE_AGE_THRESHOLD_SECONDS`. SQLite
+                    # supports the `seconds` modifier; using it
+                    # eliminates the bot-vs-operator window drift
+                    # that integer-floor minutes introduced.
+                    window_seconds = (
+                        self._SILENCE_AGE_THRESHOLD_SECONDS)
+                    affected_line = (
+                        "Affected tickers: (cache empty — query "
+                        "`rejected_opportunities` for live list)\n")
+                    # Round-8 C1: wrap the SQL in a backtick code span
+                    # so identifiers like `rejection_reason` and
+                    # `rejected_opportunities` (containing word-internal
+                    # underscores) cannot trigger Markdown parser quirks.
+                    probe_line = (
+                        f"Probe: `SELECT ticker FROM "
+                        f"rejected_opportunities WHERE "
+                        f"rejection_reason IN ({operator_thr_in}) "
+                        f"AND rejection_time >= datetime('now',"
+                        f"'-{window_seconds} seconds')` — then curl "
+                        f"Kalshi REST for that ticker.\n")
+                msg = (
+                    f"\U0001f6a8 *15M SCAN SILENT (THRESHOLD "
+                    f"UNPARSABLE)*\n"
+                    f"Primary stale + {n_thr} {threshold_label} "
+                    f"rows in last "
+                    f"{self._SILENCE_AGE_THRESHOLD_SECONDS // 60} "
+                    f"min.\n"
+                    f"Breakdown: {breakdown_str}\n"
+                    f"{affected_line}"
+                    f"Bot uptime: {uptime/60:.1f} min\n"
+                    f"WS connected: {ws_connected}\n"
+                    f"Likely: Kalshi delayed publishing strike "
+                    f"(\"Target price: TBD\") OR renamed strike "
+                    f"fields (parser regression).\n"
+                    f"{probe_line}"
+                    f"Restart will NOT help.")
+                dedup_key = "silent_15m_threshold_unparsable_alert"
+            else:
+                logging.error(
+                    "SILENT_15M_BAIL_FLOOD: primary stale + %d "
+                    "silent-bail rejection rows in last %d min; "
+                    "uptime=%.1fmin (%s)",
+                    display_total,
+                    self._SILENCE_AGE_THRESHOLD_SECONDS // 60,
+                    uptime / 60, breakdown_str)
+                msg = (
+                    f"\U0001f6a8 *15M SCAN SILENT (BAIL FLOOD)*\n"
+                    f"Primary stale + {display_total} silent-bail "
+                    f"rejection rows in last "
+                    f"{self._SILENCE_AGE_THRESHOLD_SECONDS // 60} "
+                    f"min.\n"
+                    f"Breakdown: {breakdown_str}\n"
+                    f"Bot uptime: {uptime/60:.1f} min\n"
+                    f"WS connected: {ws_connected}\n"
+                    f"Likely: WS-cache-drift recurrence — see "
+                    f"kb/failures/ws-cache-drift-silent-scan-"
+                    f"2026-04-24.md")
+                dedup_key = "silent_15m_bail_flood_alert"
+
             if _TELEGRAM:
                 try:
-                    _TELEGRAM.send(
-                        msg, dedup_key="silent_15m_bail_flood_alert")
+                    _TELEGRAM.send(msg, dedup_key=dedup_key)
                 except Exception:
                     logging.debug(
-                        "silent_15m_bail_flood telegram send failed",
-                        exc_info=True)
+                        "silent_15m bail-flood telegram send failed "
+                        "(dedup_key=%s)", dedup_key, exc_info=True)
             return
 
         # Apr 26 incident #2: heartbeat-based aliveness check. The
