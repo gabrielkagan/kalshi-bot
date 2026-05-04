@@ -26,6 +26,7 @@ import argparse
 import contextlib
 import fcntl
 import json
+import logging
 import os
 import sys
 import uuid
@@ -331,6 +332,46 @@ from sim_pnl import run_sim_pnl  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _check_cfg_fp_compat(
+    base_cfg_fp: str,
+    challenger_cfg_fp: str,
+    allow_mismatch: bool,
+) -> None:
+    """Enforce or escape the A/B cfg_fp identity guard.
+
+    Default contract: bundles must share `cfg_fp` (= same canonical-dict
+    feature schema + extraction policy). Cross-cfg_fp comparison is
+    refused because predictions across schema-incompatible bundles are
+    nonsense.
+
+    `allow_mismatch=True` mirrors the `--allow-alpha-mismatch` escape:
+    operator explicitly opts into the comparison. Used for the v2
+    ablation where live_only and full_dataset bundles differ in cfg_fp
+    only by `provenance_filter` value (canonical-dict feature-schema
+    keys are identical). Logs a loud warning so the override is visible
+    in audit trails.
+    """
+    if base_cfg_fp == challenger_cfg_fp:
+        return
+    if not allow_mismatch:
+        raise SystemExit(
+            "A/B cfg_fp mismatch — different feature schemas; refusing. "
+            "Use --allow-cfg-fp-mismatch to force (manual_review; only "
+            "valid when canonical-dict drift is provenance_filter-only)."
+        )
+    logging.warning(
+        "A/B cfg_fp mismatch ALLOWED via --allow-cfg-fp-mismatch: "
+        "base=%s challenger=%s — operator owns verifying that the "
+        "canonical-dict drift is benign (provenance_filter only, not "
+        "feature-schema keys).",
+        base_cfg_fp, challenger_cfg_fp,
+    )
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -350,6 +391,15 @@ def main() -> None:
     ap.add_argument('--allow-shipblocker-fail', action='store_true')
     ap.add_argument('--override-market-blend-w', type=float, default=None)
     ap.add_argument('--allow-alpha-mismatch', action='store_true')
+    # v2 ablation escape hatch: live_only vs full_dataset bundles share
+    # CONT_FEATURE_COLS but differ in cfg_fp by `provenance_filter` only
+    # (per kb/decisions/v2-cal-mlp-deploy-runbook-may03.md). The default
+    # cfg_fp guard refuses the comparison; this flag mirrors the
+    # `--allow-alpha-mismatch` precedent and emits a loud warning rather
+    # than silently bypassing identity. Operator owns ensuring the
+    # canonical-dict drift is benign (i.e., only provenance_filter, not
+    # CONT_FEATURE_COLS or other feature-schema keys).
+    ap.add_argument('--allow-cfg-fp-mismatch', action='store_true')
     args = ap.parse_args()
 
     device = torch.device(args.device)
@@ -432,10 +482,11 @@ def main() -> None:
                         f"challenger={challenger_artifact['alpha']}; use "
                         f"--allow-alpha-mismatch to force (manual_review)"
                     )
-            if bundle['cfg_fp'] != challenger_bundle['cfg_fp']:
-                raise SystemExit(
-                    f"A/B cfg_fp mismatch — different feature schemas; refusing"
-                )
+            _check_cfg_fp_compat(
+                base_cfg_fp=bundle['cfg_fp'],
+                challenger_cfg_fp=challenger_bundle['cfg_fp'],
+                allow_mismatch=args.allow_cfg_fp_mismatch,
+            )
 
         # MARKET_BLEND_W resolution: CLI > ENV > market_config.py > bundle.
         # R-p6-impl-2#C5: strip env, treat blank as missing, surface bad floats.
@@ -769,6 +820,7 @@ def main() -> None:
             'shipblocker_overrides': blockers if (blockers and args.allow_shipblocker_fail) else [],
             'allow_shipblocker_fail': bool(args.allow_shipblocker_fail),
             'allow_alpha_mismatch': bool(args.allow_alpha_mismatch),
+            'allow_cfg_fp_mismatch': bool(args.allow_cfg_fp_mismatch),
             'override_market_blend_w': args.override_market_blend_w,
             'ship_recommendation': ship_rec,
             'peak_rss_mb': _peak_rss_mb(),
