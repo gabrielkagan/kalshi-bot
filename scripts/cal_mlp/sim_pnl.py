@@ -329,6 +329,91 @@ def reconstruct_hwm_init(
 
 
 # ---------------------------------------------------------------------------
+# Candidate feature preparation (post-SQL → pre-apply_norm)
+# ---------------------------------------------------------------------------
+
+def _prepare_candidate_features(candidate_df: 'pd.DataFrame') -> 'pd.DataFrame':
+    """Augment the SQL-pulled candidate_df with the columns apply_norm
+    + downstream replay both need. Mirrors the canonical Phase 2 train-
+    time derivation at extract_data.py:396-406.
+
+    Operates IN-PLACE on the passed df (matches the inline pre-helper
+    code path) and ALSO returns it. **Callers MUST reassign the return
+    value** — see test_run_sim_pnl_assigns_helper_return_to_candidate_df
+    for the AST-level lock-step rationale. The reassignment shape is
+    the contract; treating the helper as side-effect-only would silently
+    drift if the helper later switched to returning a new df.
+
+    Output columns added to whatever the SQL pulled in:
+      - entry_price_cents := market_price       (alias; downstream
+        sizing/replay reads this label, but apply_norm reads
+        market_price via CONT_FEATURE_COLS — duplicate, do not rename)
+      - spread_cents      := yes_spread_cents   (alias)
+      - price_tier        := digitize over PRICE_BIN_CUTOFFS [80,90,96]
+                              with right=True (matches features.py:21
+                              canonical convention; bot.py + integration.py
+                              + extract_data all use right=True)
+      - stc_bucket        := digitize over STC_BIN_CUTOFFS [120,300,600]
+                              with right=True
+      - vol_regime_int    := 1 if vol_regime == 'elevated' else 0
+      - spot_distance_to_strike_sigma := WINSORIZED to ±SIGMA_WINSOR_ABS_CAP
+                              (overwrites column with clipped value;
+                              train/serve invariant per CLAUDE.md
+                              "cal_mlp feature transforms ship in ONE
+                              commit"; mirror of extract_data.py:396-399)
+      - abs_spot_distance_to_strike_sigma := abs(winsorized sd)
+      - time_decayed_proximity := winsorized_sd * (1 - stc/900)
+      - hour_sin / hour_cos := analytical from hour_of_day_utc % 24
+
+    The helper exists so apply_norm's `out['market_price']` lookup +
+    downstream sizing's `entry_price_cents` lookup BOTH succeed. The
+    original code renamed market_price → entry_price_cents pre-norm,
+    silently breaking apply_norm.
+    """
+    import features  # module-level lookup so monkey-patches in tests
+                     # propagate (per features.SIGMA_WINSOR_ABS_CAP doc)
+
+    # Aliases (duplicate, NOT rename — apply_norm reads market_price).
+    candidate_df['entry_price_cents'] = candidate_df['market_price']
+    candidate_df['spread_cents'] = candidate_df['yes_spread_cents']
+
+    # Mondrian/conformal cell axes. Import the cutoffs from features
+    # (NOT inlined) so any future change there propagates here in
+    # lock-step — matches extract_data.py:60-65 import pattern. int8
+    # dtype matches extract_data.py:365,376 — train/serve parity.
+    candidate_df['price_tier'] = np.digitize(
+        candidate_df['entry_price_cents'].astype(float).to_numpy(),
+        features.PRICE_BIN_CUTOFFS, right=True,
+    ).astype(np.int8)
+    candidate_df['stc_bucket'] = np.digitize(
+        candidate_df['seconds_to_close'].astype(float).to_numpy(),
+        features.STC_BIN_CUTOFFS, right=True,
+    ).astype(np.int8)
+    candidate_df['vol_regime_int'] = (
+        candidate_df['vol_regime'].astype(str) == 'elevated'
+    ).astype(np.int8)
+
+    # Sigma winsorization MUST happen before deriving abs() and
+    # time_decayed_proximity. Cap=25.0 (features.SIGMA_WINSOR_ABS_CAP) —
+    # raw sigma can hit ±3,000+ at terminal STC; without the clip,
+    # train (extract) and serve (here) diverge silently.
+    cap = features.SIGMA_WINSOR_ABS_CAP
+    sd_raw = candidate_df['spot_distance_to_strike_sigma'].astype(np.float32)
+    sd = sd_raw.clip(lower=-cap, upper=cap)
+    candidate_df['spot_distance_to_strike_sigma'] = sd
+    candidate_df['abs_spot_distance_to_strike_sigma'] = sd.abs()
+    stc = candidate_df['seconds_to_close'].astype(np.float32)
+    candidate_df['time_decayed_proximity'] = sd * (1.0 - stc / 900.0)
+
+    # Cyclic hour. mod-24 mirrors extract_data.py:404 exactly.
+    h = candidate_df['hour_of_day_utc'].astype(np.float32) % 24.0
+    candidate_df['hour_sin'] = np.sin(2.0 * np.pi * h / 24.0)
+    candidate_df['hour_cos'] = np.cos(2.0 * np.pi * h / 24.0)
+
+    return candidate_df
+
+
+# ---------------------------------------------------------------------------
 # Main sim PnL entrypoint
 # ---------------------------------------------------------------------------
 
@@ -370,6 +455,7 @@ def run_sim_pnl(
                    yes_spread_cents, calibrated_prob, calibration_method,
                    raw_prob, breakeven_wr, fee_adjusted_edge, kelly_f,
                    is_weekend, hour_of_day_utc,
+                   spot_distance_to_strike_sigma, prob_breakeven_gap,
                    market_result, available_balance_cents
             FROM evaluated_opportunities
             WHERE asset = ?
@@ -381,6 +467,14 @@ def run_sim_pnl(
               AND evaluation_time IS NOT NULL
               AND evaluation_time >= ? AND evaluation_time < ?
               AND raw_prob IS NOT NULL
+              -- spot_distance_to_strike_sigma + prob_breakeven_gap are
+              -- NOT filtered: extract_data.py also does not filter NULLs
+              -- on these columns (build_feature_frame relies on apply_norm
+              -- mean-imputation per features.MISSING_INDICATOR_COLS doc
+              -- and the cfg_fp-locked null_imputation_policy =
+              -- 'fold_train_mean_with_missing_indicator'). Adding NULL
+              -- filters here would shrink the candidate universe vs
+              -- train, biasing v1-vs-v2 comparison silently.
             ORDER BY evaluation_time, ticker
             """,
             conn, params=(asset, asset_min_price, ts_start_iso, ts_end_iso),
@@ -400,30 +494,27 @@ def run_sim_pnl(
     n_universe = len(candidate_df)
     unsettled_drop_rate = (n_unsettled / max(1, n_total))
 
-    candidate_df = candidate_df.rename(columns={
-        'market_price': 'entry_price_cents',
-        'yes_spread_cents': 'spread_cents',
-    })
-    # R-p7-deploy-r4#H1: features.py:21 documents `right=True` as the
-    # canonical convention. bot.py + integration.py (Edit 4) and Phase 2
-    # extract_data all use right=True. sim_pnl was using right=False —
-    # off-by-one binning that silently misaligned counterfactual cells
-    # against the production calibrator. Now matches.
-    PRICE_BIN_CUTOFFS = [80, 90, 96]
-    STC_BIN_CUTOFFS = [120, 300, 600]
-    candidate_df['price_tier'] = np.digitize(
-        candidate_df['entry_price_cents'].astype(float).to_numpy(),
-        PRICE_BIN_CUTOFFS, right=True,
-    ).astype(np.int64)
-    candidate_df['stc_bucket'] = np.digitize(
-        candidate_df['seconds_to_close'].astype(float).to_numpy(),
-        STC_BIN_CUTOFFS, right=True,
-    ).astype(np.int64)
-    candidate_df['vol_regime_int'] = (
-        candidate_df['vol_regime'].astype(str) == 'elevated'
-    ).astype(np.int64)
+    # Imputation observability — count rows that reach apply_norm with
+    # NULL in the unfiltered columns (apply_norm fillna-imputes them to
+    # fold-train mean per train parity with extract_data.py). A sudden
+    # spike in null rate would silently shift the imputed-mean
+    # distribution. Computed POST-settlement-filter so the count
+    # reflects what apply_norm actually sees (not the pre-filter pull).
+    n_null_imputed_spot_distance = int(
+        candidate_df['spot_distance_to_strike_sigma'].isna().sum()
+    )
+    n_null_imputed_prob_breakeven_gap = int(
+        candidate_df['prob_breakeven_gap'].isna().sum()
+    )
+
+    # Aliases + cell axes + winsorize + derive (mirror of
+    # extract_data.py:396-406). Helper is testable in isolation; pre-helper
+    # code did `rename(market_price → entry_price_cents)` which stripped
+    # the `market_price` column apply_norm needs.
+    candidate_df = _prepare_candidate_features(candidate_df)
     # R3#C2: derive Phase 4-required columns for the model forward pass.
-    candidate_df['side_int'] = (candidate_df['side'].astype(str) == 'yes').astype(np.int64)
+    # int8 dtype matches extract_data.py:377 — train/serve parity.
+    candidate_df['side_int'] = (candidate_df['side'].astype(str) == 'yes').astype(np.int8)
     # R-p6-impl-2#C6: fall back to raw_prob when calibrated_prob is NULL.
     # Single source of truth: compute_method_output (top of this module).
     candidate_df['method_output'] = compute_method_output(candidate_df)
@@ -495,7 +586,16 @@ def run_sim_pnl(
         'n_candidate_universe': n_universe,
         'n_total_pre_filter': n_total,
         'n_unsettled_in_window': n_unsettled,
+        # Audit-field denominator note: `excluded_null_market_price` is
+        # counted on the FULL test-window query (asset + product_type +
+        # !sports), pre any other SQL filter — historical convention,
+        # downstream consumers depend on the name. The two `n_null_imputed_*`
+        # counts are computed on the POST-settlement-filter candidate_df
+        # (the universe that actually reaches apply_norm). The two
+        # denominators are NOT comparable; do not sum them.
         'excluded_null_market_price': excluded_null_market_price,
+        'n_null_imputed_spot_distance_to_strike_sigma': n_null_imputed_spot_distance,
+        'n_null_imputed_prob_breakeven_gap': n_null_imputed_prob_breakeven_gap,
         'block_deprecation_confound_note': (
             "MIN_EDGE_BY_PRICE was tuned with HIGH_PRICE_STC_BLOCK ON; "
             "block_off marginal PnL is confounded — manual MIN_EDGE_BY_PRICE "
