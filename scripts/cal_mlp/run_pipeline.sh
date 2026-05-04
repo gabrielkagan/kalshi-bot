@@ -59,9 +59,23 @@ else
     # Strict v1 reproduction would also require reverting the winsorize.
     BUNDLE_CLASS="v1+winsor (per-asset floors only, sigma winsor=25; NOT bit-equal to Apr 28 v1)"
 fi
+# Default: 'all' provenance (no SQL filter; identity-preserving cfg_fp
+# vs. pre-G6 v1 path). Override via PROVENANCE_FILTER env var for the v2
+# ablation per `kb/decisions/v2-cal-mlp-deploy-runbook-may03.md`:
+#   PROVENANCE_FILTER=live_only     bash run_pipeline.sh ...
+#   PROVENANCE_FILTER=full_dataset  bash run_pipeline.sh ...
+# 'all' (default) preserves the pre-change cfg_fp; the other two values
+# bake into cfg_fp so live_only and full_dataset bundles have distinct
+# identities.
+PROVENANCE_FILTER="${PROVENANCE_FILTER:-all}"
+# No shell-side enum check — argparse `choices=PROVENANCE_FILTER_CHOICES`
+# in extract_data.py is the single source of truth. Adding shell-side
+# enumeration here would diverge silently if a fourth mode is ever added.
 echo "================================================================"
 echo "[pipeline] cfg_fp class: $BUNDLE_CLASS"
-echo "[pipeline] To switch: INCLUDE_SUB_FLOOR=$([ "$INCLUDE_SUB_FLOOR" = "1" ] && echo 0 || echo 1) bash $0 ..."
+echo "[pipeline] provenance_filter: $PROVENANCE_FILTER"
+echo "[pipeline] To switch sub-floor: INCLUDE_SUB_FLOOR=$([ "$INCLUDE_SUB_FLOOR" = "1" ] && echo 0 || echo 1) bash $0 ..."
+echo "[pipeline] To switch provenance: PROVENANCE_FILTER=live_only|full_dataset|all bash $0 ..."
 echo "================================================================"
 
 if [ ! -f "scripts/cal_mlp/run_pipeline.sh" ]; then
@@ -93,7 +107,8 @@ for ASSET in "${ASSETS[@]}"; do
     echo "================================================================" | tee -a "$LOG"
     echo "[$(date -u +%H:%M:%S)] $ASSET extract: INCLUDE_SUB_FLOOR=$INCLUDE_SUB_FLOOR (flag=\"$SUB_FLOOR_FLAG\")" | tee -a "$LOG"
     if ! python3 scripts/cal_mlp/extract_data.py --asset "$ASSET" \
-            --cutoff-end "$CUTOFF_END" $SUB_FLOOR_FLAG 2>&1 | tee -a "$LOG"; then
+            --cutoff-end "$CUTOFF_END" $SUB_FLOOR_FLAG \
+            --provenance-filter "$PROVENANCE_FILTER" 2>&1 | tee -a "$LOG"; then
         echo "[$(date -u +%H:%M:%S)] FAIL $ASSET — extract" | tee -a "$LOG"
         FAILED+=("$ASSET (extract)")
         continue

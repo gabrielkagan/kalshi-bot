@@ -58,6 +58,7 @@ from features import (  # noqa: E402
     MISSING_INDICATOR_COLS,
     MISSING_INDICATOR_SOURCE_MAP,
     PRICE_BIN_CUTOFFS,
+    PROVENANCE_FILTER_CHOICES,
     RAW_PROB_CLIP_EPS,
     SETTLEMENT_WHITELIST,
     SETTLEMENT_YES_VALUES,
@@ -139,6 +140,18 @@ def parse_args() -> argparse.Namespace:
                     help='ISO timestamp (default: now - 24h)')
     ap.add_argument('--db', default='state.db')
     ap.add_argument('--include-sub-floor', action='store_true')
+    # v2 ablation: SQL-side filter on `data_provenance`. Per
+    # `kb/decisions/v2-cal-mlp-deploy-runbook-may03.md`:
+    #   live_only      → WHERE data_provenance = 'live_ws'
+    #   full_dataset   → WHERE data_provenance IN ('live_ws','backfill_60s_inputs')
+    #   all (default)  → no SQL filter (backwards-compat with v1 reproduction)
+    # Filter is baked into cfg_fp so live_only and full_dataset bundles have
+    # distinct identities.
+    ap.add_argument(
+        '--provenance-filter',
+        choices=list(PROVENANCE_FILTER_CHOICES),
+        default='all',
+    )
     ap.add_argument('--n-train-min', type=int, default=2000)
     ap.add_argument('--quiet', action='store_true')
     ap.add_argument('--verbose', action='store_true')
@@ -213,6 +226,10 @@ REQUIRED_SOURCE_COLS = (
     'window_max_buf_pct', 'window_min_buf_pct', 'minutes_above_strike',
     'spot_distance_to_strike_sigma', 'prob_breakeven_gap',
     'spot_coinbase_kraken_gap_bps', 'kalshi_flow_depth_velocity',
+    # G-6 (shipped 2026-05-03) — required so v2 ablation can SQL-filter
+    # by training cohort and downstream Phase 6 can scope held-out to
+    # `data_provenance='live_ws'`. Pre-G6 state.db will fail _check_schema.
+    'data_provenance',
 )
 
 
@@ -287,19 +304,43 @@ def pull_and_classify(
     asset: str,
     cutoff_end: str,
     asset_floor: int,
+    *,
+    provenance_filter: str = 'all',
 ) -> tuple[list[dict], dict[str, int], int]:
     """Single-pass pull of `WHERE asset=?` rows. Bucket-classifies each row
-    via DROP_PREDICATES; returns (kept_rows, drops_dict, source_total)."""
+    via DROP_PREDICATES; returns (kept_rows, drops_dict, source_total).
+
+    `provenance_filter` adds an SQL-side `data_provenance` clause:
+        live_only     → AND data_provenance = 'live_ws'
+        full_dataset  → AND data_provenance IN ('live_ws','backfill_60s_inputs')
+        all (default) → no provenance clause (backwards-compat)
+    Unknown values raise ValueError. `source_total` reflects only rows the
+    SQL pull returned — it does NOT count rows excluded by the provenance
+    filter (those never reached the bucketing stage)."""
+    if provenance_filter not in PROVENANCE_FILTER_CHOICES:
+        raise ValueError(
+            f"provenance_filter must be one of {PROVENANCE_FILTER_CHOICES}; "
+            f"got {provenance_filter!r}"
+        )
     select_cols = ', '.join(REQUIRED_SOURCE_COLS) + ', rowid'
+    where_clauses = ['asset = ?']
+    params: list = [asset]
+    if provenance_filter == 'live_only':
+        where_clauses.append('data_provenance = ?')
+        params.append('live_ws')
+    elif provenance_filter == 'full_dataset':
+        where_clauses.append('data_provenance IN (?, ?)')
+        params.extend(['live_ws', 'backfill_60s_inputs'])
+    sql = (
+        f"SELECT {select_cols} FROM evaluated_opportunities "
+        f"WHERE {' AND '.join(where_clauses)} "
+        f"ORDER BY evaluation_time, ticker, rowid"
+    )
     drops: dict[str, int] = {k: 0 for k in DROP_PREDICATES_ORDER}
     kept: list[dict] = []
     source_total = 0
     try:
-        cur = conn.execute(
-            f"SELECT {select_cols} FROM evaluated_opportunities WHERE asset = ? "
-            f"ORDER BY evaluation_time, ticker, rowid",
-            (asset,),
-        )
+        cur = conn.execute(sql, tuple(params))
         for row in cur:
             source_total += 1
             bucket = _classify_drop(row, asset, asset_floor, cutoff_end)
@@ -596,7 +637,10 @@ def run(args: argparse.Namespace) -> dict:
     cutoff_end = _normalize_cutoff_end(args.cutoff_end)
     cutoff_end_dt = datetime.strptime(cutoff_end, '%Y-%m-%dT%H:%M:%S.%fZ').replace(tzinfo=timezone.utc)
     asset_floor = asset_min_price(asset, include_sub_floor=args.include_sub_floor)
-    cfg_fp = compute_cfg_fp(include_sub_floor=args.include_sub_floor)
+    cfg_fp = compute_cfg_fp(
+        include_sub_floor=args.include_sub_floor,
+        provenance_filter=args.provenance_filter,
+    )
 
     # R2#C8 + R2-impl#C2: anchor project_root to script location (not cwd —
     # cron and worktree invocations may run from any cwd). Resolve --out-dir
@@ -627,7 +671,10 @@ def run(args: argparse.Namespace) -> dict:
             data_version_at_close = data_version_at_open  # default if pull fails
             _check_schema(conn, args.db)
             logging.info("[extract] pulling rows for asset=%s ...", asset)
-            kept, drops, source_total = pull_and_classify(conn, asset, cutoff_end, asset_floor)
+            kept, drops, source_total = pull_and_classify(
+                conn, asset, cutoff_end, asset_floor,
+                provenance_filter=args.provenance_filter,
+            )
             try:
                 data_version_at_close = int(conn.execute("PRAGMA data_version").fetchone()[0])
             except sqlite3.OperationalError:
@@ -841,6 +888,7 @@ def run(args: argparse.Namespace) -> dict:
                 'ticker_stats': ticker_stats,
                 'include_sub_floor': bool(args.include_sub_floor),
                 'asset_floor_applied': asset_floor,
+                'provenance_filter': args.provenance_filter,
                 'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
             }
             audit_tmp, audit_sha = atomic_write_json(audit_payload, audit_path)
@@ -856,6 +904,7 @@ def run(args: argparse.Namespace) -> dict:
                 'cfg_fp': cfg_fp,
                 'cutoff_end': cutoff_end,
                 'include_sub_floor': bool(args.include_sub_floor),
+                'provenance_filter': args.provenance_filter,
                 'data_version_at_open': int(data_version_at_open),
                 'data_version_at_close': int(data_version_at_close),
                 # R1#C2: paths are basenames; resolve against the bundle's

@@ -169,11 +169,28 @@ DROP_PREDICATES_ORDER = [
 # Feature-schema fingerprint (cfg_fp)
 # ---------------------------------------------------------------------------
 
-def compute_cfg_fp(*, include_sub_floor: bool) -> str:
+PROVENANCE_FILTER_CHOICES = ('live_only', 'full_dataset', 'all')
+
+
+def compute_cfg_fp(
+    *,
+    include_sub_floor: bool,
+    provenance_filter: str = 'all',
+) -> str:
     """sha256[:16] of the canonical extraction-policy JSON. Two extracts
     with the same cfg_fp produce the same parquet schema and the same
     bucketization. Phase 6 A/B refuses to compare bundles with different
-    cfg_fp."""
+    cfg_fp.
+
+    `provenance_filter` is one of `PROVENANCE_FILTER_CHOICES` and bakes the
+    SQL-side `data_provenance` filter into bundle identity — live_only
+    vs full_dataset must produce distinct bundles per the v2 ablation
+    runbook (`kb/decisions/v2-cal-mlp-deploy-runbook-may03.md`)."""
+    if provenance_filter not in PROVENANCE_FILTER_CHOICES:
+        raise ValueError(
+            f"provenance_filter must be one of {PROVENANCE_FILTER_CHOICES}; "
+            f"got {provenance_filter!r}"
+        )
     canonical = {
         'CONT_FEATURE_COLS': CONT_FEATURE_COLS,
         'CONT_FEATURE_TRANSFORMS': CONT_FEATURE_TRANSFORMS,
@@ -195,6 +212,14 @@ def compute_cfg_fp(*, include_sub_floor: bool) -> str:
         'loss_w_floor': 1.0,
         'loss_w_multiplier': 4.0,
     }
+    # Identity-preserving omission: when provenance_filter='all', the SQL
+    # pull is identical to pre-change behavior (no WHERE clause for
+    # data_provenance). Including the key in the canonical dict would
+    # silently re-fingerprint every existing v1-reproduction call site
+    # (e.g., `INCLUDE_SUB_FLOOR=0 run_pipeline.sh`). Only inject the key
+    # when it actually changes the extracted dataset.
+    if provenance_filter != 'all':
+        canonical['provenance_filter'] = provenance_filter
     return hashlib.sha256(
         json.dumps(canonical, sort_keys=True).encode()
     ).hexdigest()[:16]
