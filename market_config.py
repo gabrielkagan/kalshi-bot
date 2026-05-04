@@ -354,6 +354,11 @@ def validate_market_configs() -> None:
         f"WEATHER_NO_SIDE_MIN_STC must be numeric, got {type(bot.WEATHER_NO_SIDE_MIN_STC)}")
     assert bot.WEATHER_NO_SIDE_MIN_STC >= 3600, (
         f"WEATHER_NO_SIDE_MIN_STC must be >= 1h, got {bot.WEATHER_NO_SIDE_MIN_STC}")
+    assert isinstance(bot.WEATHER_NO_CONTRACT_COUNT, int) and bot.WEATHER_NO_CONTRACT_COUNT >= 1, (
+        f"WEATHER_NO_CONTRACT_COUNT must be int >= 1, got {bot.WEATHER_NO_CONTRACT_COUNT!r}")
+    assert isinstance(bot.WEATHER_NO_EXCLUDED_CITY_PREFIXES, frozenset), (
+        f"WEATHER_NO_EXCLUDED_CITY_PREFIXES must be frozenset, got "
+        f"{type(bot.WEATHER_NO_EXCLUDED_CITY_PREFIXES).__name__}")
 
     # ── Sports ──
     cfg_sp = MARKET_CONFIGS["sports"]

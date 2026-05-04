@@ -520,12 +520,14 @@ WEATHER_NO_SHADOW_MIN_YES_PROB = 0.55  # Only shadow when model is confident YES
 # YES-side remains fully gated by WEATHER_OBSERVATION_ONLY = True.
 # Data: 397 settled, 73.6% WR, +$181 sim PnL, 40pp+ cushion above breakeven.
 # Gate: STC >= 8h (short STC NO loses), fixed 1-contract sizing, all 19 cities.
-WEATHER_NO_SIDE_LIVE = True              # LIVE — NO ≤ 40c, STC ≥ 16h, 1-contract
+WEATHER_NO_SIDE_LIVE = True              # LIVE — NO ≤ 40c, STC ≥ 16h, 2-contract ex-LAS
 WEATHER_NO_SIDE_MIN_STC = 57600.0        # 16 hours — tightened from 8h (data: 77.1% WR at 16-24h, 32.5% at 0-8h)
 WEATHER_NO_MIN_PRICE = 39                # Tightened from 37 May 2: 37c=25%WR -$1.44 (n=12), 38c=14.3%WR -$1.66 (n=7) bleeding harder than the 36c tier. 39-40c band profitable (39c +$1.54 n=14, 40c +$6.20 n=47).
 WEATHER_NO_MAX_PRICE = 40                # Only buy NO contracts priced ≤ 40c (YES ≥ 60c)
 WEATHER_NO_ASSUMED_PROB = 0.70           # Bypass model (structurally wrong on NO). Shadow: 79.7% WR, worst week 74%
 WEATHER_NO_KILL_THRESHOLD = -2000        # Auto-disable if cumulative NET NO PnL < -$20 (R-p7-deploy-r9 fee-fix changed comparison from gross to net; safer)
+WEATHER_NO_CONTRACT_COUNT = 2            # Sized 1→2 May 4: 39c+ ex-LAS n=56, 57.1% WR, Wilson 95% LB 44.1% > 40c BE; PF 2.02; max DD historical $1.57 → ~$3.14 at 2x.
+WEATHER_NO_EXCLUDED_CITY_PREFIXES = frozenset({"KXHIGHTLV"})  # LAS bleeds within 39c+ band: -$1.19 on 8 trades, 25% WR (May 4). Kalshi event_ticker family for Las Vegas high-temp markets.
 # ─── Weather Bracket NO-Side ────────────────────────────────────────────
 # Brackets at YES 88-96c settle NO 91.7% of the time (157 single-strike, Wilson CI 86.3-95.1%).
 # Breakeven is only 4-12%. Mechanism: narrow 5°F brackets overprice YES because 2-3°F forecast
@@ -1580,6 +1582,31 @@ def _validate_bleed_block_bleeder_strings():
 _BLEED_BLOCK_MISSING_BLEEDERS = _validate_bleed_block_bleeder_strings()
 
 
+def should_exclude_weather_no_ticker(
+    ticker: Optional[str],
+    excluded_prefixes: Optional[frozenset] = None,
+) -> bool:
+    """Return True iff ticker belongs to an excluded weather-NO city family.
+
+    Excluded cities (default: KXHIGHTLV / Las Vegas) bleed within the 39c+ live
+    band even after the May-2 floor tightening. Predicate gates the live
+    candidate creation in `_process_no_side_shadow`; shadow logging is
+    unaffected so the data trail continues for forward-going analysis.
+
+    Match is `ticker == prefix` or `ticker.startswith(prefix + "-")`. The
+    trailing-dash anchor prevents collisions with hypothetical future Kalshi
+    series that share a prefix substring (e.g. KXHIGHTLVENICE).
+    """
+    if excluded_prefixes is None:
+        excluded_prefixes = WEATHER_NO_EXCLUDED_CITY_PREFIXES
+    if not ticker:
+        return False
+    for _pfx in excluded_prefixes:
+        if ticker == _pfx or ticker.startswith(_pfx + "-"):
+            return True
+    return False
+
+
 # ─── Extended Feature Instrumentation (Tier 4 + Tier 5) ───────────────────
 # Feature helpers for per-scan logging to evaluated_opportunities.
 # See kb-research/bot/buffer-rescue-analysis.md for motivation and schema.
@@ -1767,7 +1794,7 @@ MAKER_TAIL_MIN_STC_SECONDS = 60    # near-expiry zombie risk; skip
 MAKER_TAIL_MAX_PER_ASSET = 2       # bound capital escrow per asset
 MAKER_TAIL_MAX_GLOBAL = 5          # bound total escrow across the bot
 # 8 currently-live IOC-firing strategies. Excluded by design: lpne
-# (STC<120s already gated), weather_no_live (1ct fixed), hourly* (env
+# (STC<120s already gated), weather_no_live (small fixed sizing, ex-LAS), hourly* (env
 # kill switches). Expand only with data.
 MAKER_TAIL_ELIGIBLE_STRATEGIES = frozenset({
     "decided_t1", "decided_t1b",
@@ -17635,7 +17662,8 @@ class OpportunityScanner:
                         and candidates is not None
                         and stc >= WEATHER_NO_SIDE_MIN_STC
                         and no_price >= WEATHER_NO_MIN_PRICE
-                        and no_price <= WEATHER_NO_MAX_PRICE):
+                        and no_price <= WEATHER_NO_MAX_PRICE
+                        and not should_exclude_weather_no_ticker(ticker)):
                     _wnl_assumed_edge = WEATHER_NO_ASSUMED_PROB - no_price / 100.0 - no_fee_1c / 100.0
                     if _wnl_assumed_edge > 0:
                         _wnl_cand_dedup = (ticker, "weather_no_candidate")
@@ -17667,7 +17695,7 @@ class OpportunityScanner:
                                         vol_regime=item.get("vol_regime", "normal"),
                                         ask_depth=item.get("ask_depth"),
                                         best_ask_source=item.get("best_ask_source"),
-                                        position_size=1, kelly_f=0.0, drawdown_scaler=1.0,
+                                        position_size=WEATHER_NO_CONTRACT_COUNT, kelly_f=0.0, drawdown_scaler=1.0,
                                         strategy="weather_no_live",
                                         product_type="weather", side="no",
                                         raw_prob=1.0 - raw_prob if raw_prob is not None else None,
@@ -17701,7 +17729,7 @@ class OpportunityScanner:
                                     "best_ask_source": item.get("best_ask_source"),
                                     "edge": round(WEATHER_NO_ASSUMED_PROB - no_price / 100.0, 6),
                                     "fee_adjusted_edge": round(_wnl_assumed_edge, 6),
-                                    "position_size": 1,
+                                    "position_size": WEATHER_NO_CONTRACT_COUNT,
                                     "kelly_f": 0.0,
                                     "drawdown_scaler": 1.0,
                                     "vol_regime": item.get("vol_regime", "normal"),
@@ -17719,9 +17747,9 @@ class OpportunityScanner:
                                     "counterfactual_json": None,
                                 })
                                 logging.info(
-                                    "WEATHER_NO_CANDIDATE: %s no_price=%dc assumed_edge=%.2f%% "
+                                    "WEATHER_NO_CANDIDATE: %s count=%d no_price=%dc assumed_edge=%.2f%% "
                                     "stc=%.0fs (model_no_prob=%.1f%%, assumed=%.0f%%)",
-                                    ticker, no_price, _wnl_assumed_edge * 100,
+                                    ticker, WEATHER_NO_CONTRACT_COUNT, no_price, _wnl_assumed_edge * 100,
                                     stc, no_prob * 100, WEATHER_NO_ASSUMED_PROB * 100)
 
                 # ── Hourly NO-side LIVE candidate ──
@@ -19481,13 +19509,13 @@ class OrderExecutor:
         """Weather NO-side IOC execution. Direct taker, no maker, no escalation.
 
         Weather NO books are structurally empty — resting NO asks at 30-40c don't
-        exist. Maker-first always cancels. 1 contract at ~35c makes taker fee
-        negligible vs the 30%+ assumed-prob edge.
+        exist. Maker-first always cancels. Small fixed sizing (WEATHER_NO_CONTRACT_COUNT)
+        at ~39-40c keeps taker fee negligible vs the 30%+ assumed-prob edge.
         """
         ticker = candidate["ticker"]
         asset = candidate["asset"]
         best_ask = candidate["best_yes_ask"]  # NO price for NO-side
-        count = candidate["position_size"]     # Always 1
+        count = candidate["position_size"]     # WEATHER_NO_CONTRACT_COUNT (gated, ex-LAS)
 
         # Ticker cooldown (shared with all products)
         cooldown_ts = self._recent_taker_tickers.get(ticker)
