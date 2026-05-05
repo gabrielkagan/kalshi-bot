@@ -54,7 +54,10 @@ from train import (  # noqa: E402
 from _helpers import (  # noqa: E402
     market_implied_prob_yes, predict_with_interval, lookup_cell_quantile,
 )
-from sizing import compute_size, SIZING_TIERS, SIZING_TIER_RISK_FRACTIONS
+from sizing import (
+    compute_size, compute_drawdown_scaler,
+    SIZING_TIERS, SIZING_TIER_RISK_FRACTIONS, SizingResult,
+)
 
 # R-p6-impl-2#C2/C11: import fees from models.py (pure-math module — no
 # bot.py side effects). models.calculate_taker_fee / calculate_maker_fee
@@ -99,6 +102,431 @@ def _strategy_uses_taker(strategy: str) -> bool:
     return strategy not in MAKER_ONLY_STRATEGIES
 
 
+# H3+H5: stages where production rejects at runtime for reasons sim_pnl
+# does NOT model (cooldowns, post-gate sizing rejects, time-window
+# tightenings, cell-blocks, the cal_mlp TM-96 gate). Without filtering
+# these out, sim_pnl admits rows production never took and counts them
+# as wins/losses — the dominant cause of the live_ws sim_pnl divergence
+# documented in kb/findings/sim-pnl-live-ws-divergence-rca-may05.md.
+#
+# Cell-block stage names (string literals stored in DB — NOT Python
+# constant names) per CLAUDE.md "Cell-block activations deflate
+# `filter_stage='candidate'` rollups" and
+# kb/decisions/bleed-cell-blocks-2026-04-30.md.
+#
+# HPSB note: sim_pnl has its own block_off / block_on toggle for HPSB,
+# but the toggle only matters for ROWS THAT REACHED HPSB. Once
+# production already wrote `'96C_SOL_XRP_STC_DANGER_BAND'` as the
+# filter_stage, the row is in production-rejected state — sim_pnl can't
+# faithfully replay block_off vs block_on on it because the upstream
+# decision pipeline already short-circuited. Conservative call: exclude.
+_PRODUCTION_RUNTIME_BLOCKED_STAGES = frozenset({
+    # Cooldowns / time-window rejections (production wouldn't have taken
+    # regardless of gate width):
+    'silent_loss_cooldown',
+    'dead_hour_passed',
+    'usaft_short_stc',
+    # Post-gate sizing rejection (production sized to 0 contracts —
+    # sim_pnl would too if it replicated the same Kelly+balance state):
+    'zero_sizing',
+    # Cell-blocks shipped 2026-04-30 (not internally modeled by sim_pnl):
+    'TM98_97_98C_2_5MIN_BLEED',
+    'SOL_TAKER_85_89C_2_5MIN_BLEED',
+    '96C_SOL_XRP_STC_DANGER_BAND',  # HPSB
+    # cal_mlp TM-96 gate (sim_pnl doesn't model the TM-96 cal_mlp path):
+    'tm96_calmlp_gate_blocked',
+    # TM NBBO gate (bot.py:13651-13683) — production rejects 96/97c TM
+    # rows on NBBO source AND sub-0.10% buffer 98/99c rows. sim_pnl
+    # doesn't replicate the source-aware gate. (n=11 in the May 2-6
+    # window per snapshot DB.)
+    'tm_nbbo_buffer_shadow',
+    # H7 dedup: scan-block precursor logs for executed live trades.
+    # bot.py logs each TM/DC/weekend/overnight decision twice — once
+    # at the strategy-specific scan block (filter_stages below) and
+    # once at the executor (filter_stage='candidate'). Sim_pnl's
+    # universe pre-dedup admitted both rows, double-counting PnL for
+    # the executed trade. The 'candidate' row is the canonical row
+    # because it represents the EXECUTOR state (with `order_id` set
+    # when fired per snapshot verification 2026-05-05), not the SCAN
+    # state. Precursor row populates strategy in some cases
+    # (`terminal_momentum` per bot.py:13834 = "terminal_momentum_{ask}")
+    # and not others (DC/weekend/overnight per bot.py:14140 / 14227
+    # / 14446 omit `strategy=`); both are dropped uniformly so the
+    # 'candidate' row's strategy field drives H7 dispatch. For
+    # shadow-only rows without a candidate sibling, this filter loses
+    # counterfactual coverage — accepted trade-off for this round;
+    # future work: derive strategy from filter_stage for shadow-only
+    # rows. See kb/findings/sim-pnl-live-ws-divergence-rca-may05.md
+    # adversarial round 1 CRITICAL #1+#2.
+    'decided_contract_t1',
+    'decided_contract_t1b',
+    'decided_contract_t2',
+    'decided_contract_t2_z25',
+    'decided_contract_t2_z2',
+    'weekend_discount',
+    'weekend_discount_shadow',
+    'overnight_discount',
+    'overnight_discount_shadow',
+    'terminal_momentum',
+    # R4: floor_raise_shadow rows are sub-floor entries production
+    # logs but does NOT trade (the scan-time floor rejection is what
+    # this stage shadows). With the BTC min-price floor lowered to 80
+    # to capture LPNE rows, sim_pnl SQL would otherwise admit these
+    # 50+ rows whose `strategy=NULL` would fall through to standard
+    # Kelly and contribute counterfactual PnL on trades production
+    # never took.
+    'floor_raise_shadow',
+})
+
+
+def _dedup_by_ticker_keep_canonical(df: 'pd.DataFrame') -> 'pd.DataFrame':
+    """R6 MAJOR #1: drop duplicate rows on the same `ticker` so sim_pnl
+    counts each ticker's outcome AT MOST ONCE.
+
+    bot.py logs each ticker MANY times during a scan cycle: (a) one
+    `filter_stage='candidate'` row when it actually trades, (b) various
+    `*_shadow*` filter_stage rows for counterfactual observability
+    (relaxed_edge_shadow, golden_hour_shadow, dc_shadow_t2_z2, etc.),
+    (c) gate-rejection log rows (`insufficient_edge`). Each row carries
+    the SAME `market_result` (the ticker resolved YES or NO once); if
+    sim_pnl admits N rows for the ticker, it counts the outcome N
+    times — systematic over-counting.
+
+    Production realized AT MOST ONE trade per ticker (concurrent-
+    position cap + executor-row-is-canonical). Sim_pnl should mirror.
+
+    Dedup priority (highest first):
+        1. `filter_stage='candidate'` (the executor row when trade fired)
+        2. `filter_stage='terminal_momentum'` only intersects pre-block;
+           after `_exclude_production_runtime_blocked` it's gone.
+        3. Latest `evaluation_time` among remaining rows for the ticker
+           (closest to settlement; matches the moment the bot would have
+           last evaluated the gate).
+
+    Empirical: 312 shadow rows in the May 2-6 window had `candidate`
+    siblings on the same ticker. 282 `low_price_shadow` rows alone —
+    each previously contributed PnL on top of the candidate sibling's.
+    Aggregate over-count was the dominant component of the residual
+    `_unknown` PnL bucket per the round-6 adversarial review.
+
+    Output: dedup'd df with index reset; preserves all columns.
+    """
+    if 'ticker' not in df.columns:
+        raise RuntimeError(
+            "candidate_df missing `ticker` column — required for ticker-"
+            "level dedup. Check that the SELECT-list includes ticker."
+        )
+    if 'filter_stage' not in df.columns:
+        raise RuntimeError(
+            "candidate_df missing `filter_stage` column — required for "
+            "candidate-vs-shadow dedup priority."
+        )
+    if len(df) == 0:
+        return df.reset_index(drop=True)
+    # Sort: candidate=1 first (descending), then evaluation_time DESC
+    # (latest first). drop_duplicates(subset='ticker', keep='first') then
+    # picks the candidate when it exists, else the latest row.
+    df = df.copy()
+    df['_is_candidate'] = (df['filter_stage'] == 'candidate').astype('int8')
+    df = df.sort_values(
+        ['ticker', '_is_candidate', 'evaluation_time'],
+        ascending=[True, False, False],
+    ).drop_duplicates(subset='ticker', keep='first')
+    return df.drop(columns=['_is_candidate']).sort_values(
+        ['evaluation_time', 'ticker']
+    ).reset_index(drop=True)
+
+
+def _exclude_production_runtime_blocked(df: 'pd.DataFrame') -> 'pd.DataFrame':
+    """Drop rows whose `filter_stage` is in
+    `_PRODUCTION_RUNTIME_BLOCKED_STAGES`. Preserves all other rows + all
+    columns + resets the index. Raises if `filter_stage` is missing
+    (SELECT-list regression guard — without this column the H3+H5
+    filter is a silent no-op).
+
+    Wired in `run_sim_pnl` AFTER the SQL pull and BEFORE
+    `_replay_one_path`. See kb/findings/sim-pnl-live-ws-divergence-rca-may05.md
+    H3+H5.
+    """
+    if 'filter_stage' not in df.columns:
+        raise RuntimeError(
+            "candidate_df is missing the `filter_stage` column — the SQL "
+            "SELECT-list must include it for the H3+H5 production-eligibility "
+            "filter to apply. Without it, sim_pnl admits rows production "
+            "rejected at runtime."
+        )
+    mask = ~df['filter_stage'].isin(_PRODUCTION_RUNTIME_BLOCKED_STAGES)
+    return df[mask].reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# H7 — strategy-specific sizing dispatch
+# ---------------------------------------------------------------------------
+#
+# bot.py sizes four strategy families via paths that bypass the standard
+# Kelly-tier compute_size pipeline. Without per-strategy dispatch, sim_pnl
+# over-sizes TM/DC candidates by 5-25× and under-sizes weekend rows whose
+# Kelly clamps to zero. Mirrors documented in
+# kb/findings/sim-pnl-live-ws-divergence-rca-may05.md H7.
+#
+# Drift contract: bot.py lines numbered are the source of truth. Any
+# change there MUST update both this block AND the constants below in
+# the same commit (same lock-step rule as cal_mlp feature transforms in
+# CLAUDE.md).
+
+# Terminal momentum — bot.py:1075-1115 + tm_compute_contracts at 1226.
+TM_BASE_CONTRACTS = 100
+TM_PRICE_SET = frozenset({96, 98, 99})
+TM_STC_SAFE_THRESHOLD = 180
+TM_STC_DANGER_HI = 240
+TM_STC_SAFE_MULT = 1.5
+TM_STC_DANGER_MULT = 0.5
+TM_STC_NORMAL_MULT = 1.0
+TM_MIN_CONTRACTS = 25
+TM_MAX_CONTRACTS = 500
+TM_THIN_BUFFER_PCT = 0.20
+TM_THIN_BUFFER_CONTRACT_CAP = 50
+TM_NEGATIVE_EV_TIERS: frozenset = frozenset()  # bot.py:1090 cleared
+TM_ASSET_RISK_CAPS = {'BTC': 0.15, 'ETH': 0.20, 'SOL': 0.15, 'XRP': 0.15}
+# bot.py:1153 TM_SWEEP_LIVE_ENABLED defaults to "1"; bot.py:13763 passes
+# MAX_ENTRY_PRICE(=99) as the worst-case sweep-tier denom for risk caps.
+# Pin the worst-case so sim_pnl doesn't accidentally over-size TM at low
+# prices (96c) when production would clamp at the 99c sweep tier.
+TM_SWEEP_LIVE_RISK_DENOM_PRICE = 99
+
+TM_LIVE_STRATEGIES = frozenset(f'terminal_momentum_{p}' for p in TM_PRICE_SET)
+
+
+def _tm_size(
+    price_cents: int,
+    stc: float,
+    balance_cents: int,
+    asset: str,
+    buf_pct: Optional[float] = None,
+) -> int:
+    """Mirror bot.py:1226 tm_compute_contracts. Returns contract count.
+
+    Formula: TM_BASE × margin × stc_mult, capped by per-asset risk frac
+    against the sweep-live worst-case price (=99c), then by thin-buffer
+    cap when buf_pct < 0.20%, then floored at TM_MIN_CONTRACTS and
+    capped at TM_MAX_CONTRACTS.
+    """
+    margin = 100 - price_cents
+    if margin <= 0:
+        return TM_MIN_CONTRACTS
+    if price_cents in TM_NEGATIVE_EV_TIERS:
+        return TM_MIN_CONTRACTS
+    if stc < TM_STC_SAFE_THRESHOLD:
+        stc_mult = TM_STC_SAFE_MULT
+    elif stc < TM_STC_DANGER_HI:
+        stc_mult = TM_STC_DANGER_MULT
+    else:
+        stc_mult = TM_STC_NORMAL_MULT
+    ct = int(TM_BASE_CONTRACTS * margin * stc_mult)
+    if balance_cents > 0:
+        risk_frac = TM_ASSET_RISK_CAPS.get(asset, 0.15)
+        max_by_risk = int(balance_cents * risk_frac / TM_SWEEP_LIVE_RISK_DENOM_PRICE)
+        ct = min(ct, max_by_risk)
+    if buf_pct is not None and buf_pct < TM_THIN_BUFFER_PCT:
+        ct = min(ct, TM_THIN_BUFFER_CONTRACT_CAP)
+    return max(TM_MIN_CONTRACTS, min(TM_MAX_CONTRACTS, ct))
+
+
+# Decided contract — bot.py:1042-1048 + sizing block at bot.py:14401-14425.
+DECIDED_CONTRACT_T2_Z25_RISK = 0.10
+DECIDED_CONTRACT_T2_Z2_RISK = 0.20
+DECIDED_CONTRACT_RISK = 0.20
+# bot.py:1048 — ordered (price_floor, risk) pairs; first match wins.
+SOL_DC_RISK_TIERS = ((97, 0.05), (95, 0.10))
+# bot.py:14418-14424 — only BTC/SOL/XRP are capped (ETH skipped).
+DC_PER_ASSET_RISK_CAP = {'BTC': 0.15, 'SOL': 0.15, 'XRP': 0.15}
+
+# bot.py:14586-14590 strategy → tier mapping.
+_DC_STRATEGY_TO_RISK = {
+    'decided_t1':     DECIDED_CONTRACT_RISK,
+    'decided_t1b':    DECIDED_CONTRACT_RISK,
+    'decided_t2':     DECIDED_CONTRACT_RISK,
+    'decided_t2_z25': DECIDED_CONTRACT_T2_Z25_RISK,
+    'decided_t2_z2':  DECIDED_CONTRACT_T2_Z2_RISK,
+}
+DC_LIVE_STRATEGIES = frozenset(_DC_STRATEGY_TO_RISK.keys())
+
+
+def _dc_size(
+    strategy: str,
+    price_cents: int,
+    balance_cents: int,
+    asset: str,
+) -> int:
+    """Mirror bot.py:14401-14425 fixed-% per tier sizing.
+
+    Out-of-scope vs production: window risk cap (`DECIDED_CONTRACT_MAX_WINDOW_RISK`)
+    requires multi-row state (`_dc_window_risk` per event_ticker) sim_pnl
+    doesn't track. Same-ticker existing-exposure cap (bot.py:14560-14579)
+    is also stateful and out of scope. Both effects are minor in
+    aggregate per the H3+H5 structural insight in the RCA — the dominant
+    sizing divergence is the per-trade 20% vs 25% Kelly mismatch which
+    THIS function fixes.
+    """
+    if balance_cents <= 0:
+        return 0
+    # Round-1 adversarial MINOR #2: guard against price_cents <= 0.
+    # SQL filters market_price > 0 so this should never fire from the
+    # production path, but defends against direct-helper callers (e.g.
+    # tests) and keeps the contract symmetric with bot.py's max(1, ...)
+    # floor below.
+    if price_cents <= 0:
+        return 0
+    risk = _DC_STRATEGY_TO_RISK.get(strategy, DECIDED_CONTRACT_RISK)
+    if asset == 'SOL':
+        for floor, sol_risk in SOL_DC_RISK_TIERS:
+            if price_cents >= floor:
+                risk = sol_risk
+                break
+    pos = max(1, int(balance_cents * risk / price_cents))
+    cap_frac = DC_PER_ASSET_RISK_CAP.get(asset)
+    if cap_frac is not None:
+        cap = int(balance_cents * cap_frac / price_cents)
+        if pos > cap >= 1:
+            pos = cap
+    return pos
+
+
+# Weekend discount fixed fallback — bot.py:968 + 14076-14079.
+WEEKEND_FIXED_RISK = 0.07
+
+
+# Low-Price Near-Expiry — bot.py:1327-1334 + 13013/13057.
+# BTC-only intercept at 80-87c, STC 10-120s, sized at FLAT
+# LPNE_FIXED_CONTRACTS=50. Bypasses Kelly entirely; production stores
+# kelly_f=0.0 and drawdown_scaler=1.0 for every LPNE row.
+LPNE_FIXED_CONTRACTS = 50
+LPNE_LIVE_STRATEGIES = frozenset({'low_price_near_expiry'})
+
+
+def _lpne_size(balance_cents: int) -> int:
+    """Mirror bot.py:13013 + 13057. Flat 50 contracts when balance > 0;
+    0 otherwise (defensive — bot.py only fires LPNE when balance is
+    nonzero implicitly via scan-time eligibility)."""
+    if balance_cents <= 0:
+        return 0
+    return LPNE_FIXED_CONTRACTS
+
+
+def _strategy_size(
+    strategy: Optional[str],
+    fee_adjusted_edge_frac: float,
+    available_balance_cents: int,
+    entry_price_cents: int,
+    current_balance_cents: int,
+    hwm_cents: int,
+    seconds_to_close: float,
+    asset: str,
+    spot_price: Optional[float] = None,
+    threshold: Optional[float] = None,
+) -> SizingResult:
+    """Per-strategy dispatcher. Routes terminal_momentum_* and
+    decided_t* via their bot.py-specific sizing formulas; weekend_discount
+    falls back to WEEKEND_FIXED_RISK when Kelly produces 0; everything
+    else (including overnight_discount, TAKER_NOW, MAKER_PATIENT, NULL)
+    uses the standard compute_size path.
+
+    Bankroll input semantics match the standard sim_pnl path:
+        * available_balance_cents — per-row stored snapshot (production's
+          balance at decision time). Used as the bankroll for ALL
+          per-strategy formulas (parity with bot.py's
+          `self._get_balance_cached()`).
+        * current_balance_cents — sim_pnl's running cumulative used for
+          drawdown_scaler input. Only relevant to the standard
+          compute_size + WEEKEND_FIXED_RISK fallback paths; TM/DC are
+          drawdown-agnostic in production.
+
+    Returns a SizingResult. For TM/DC, tier_idx is set to -1 (these
+    strategies bypass the SIZING_TIERS Kelly ladder); risk_fraction is
+    set to the formula's effective per-trade risk where applicable, or
+    0.0 for TM (which is margin-based, not edge-based).
+    """
+    if strategy in TM_LIVE_STRATEGIES:
+        # R3 MINOR #3: bot.py:13649 defaults `_tm_buf_pct = 0` when
+        # spot/threshold missing — 0 < TM_THIN_BUFFER_PCT(0.20) so the
+        # thin-buffer cap fires (50ct cap). Sim_pnl pre-fix used None
+        # which skipped the cap entirely, over-sizing TM rows with
+        # missing-feature rows by 6×. May 2-6 window has 0 such rows
+        # so latent only; align with bot.py default for wider backtests.
+        if spot_price is not None and threshold is not None and threshold > 0:
+            buf_pct = (spot_price - threshold) / threshold * 100.0
+        else:
+            buf_pct = 0.0
+        ct = _tm_size(
+            price_cents=entry_price_cents,
+            stc=seconds_to_close,
+            balance_cents=available_balance_cents,
+            asset=asset,
+            buf_pct=buf_pct,
+        )
+        return SizingResult(
+            contract_count=int(ct),
+            risk_fraction=0.0,
+            tier_idx=-1,
+            drawdown_scaler=1.0,
+            stc_scaler=1.0,
+            notional_cents=int(ct * entry_price_cents),
+        )
+    if strategy in DC_LIVE_STRATEGIES:
+        ct = _dc_size(
+            strategy=strategy,
+            price_cents=entry_price_cents,
+            balance_cents=available_balance_cents,
+            asset=asset,
+        )
+        risk = _DC_STRATEGY_TO_RISK.get(strategy, DECIDED_CONTRACT_RISK)
+        return SizingResult(
+            contract_count=int(ct),
+            risk_fraction=float(risk),
+            tier_idx=-1,
+            drawdown_scaler=1.0,
+            stc_scaler=1.0,
+            notional_cents=int(ct * entry_price_cents),
+        )
+    if strategy in LPNE_LIVE_STRATEGIES:
+        # R4 MAJOR #1: bot.py:13013 sizes LPNE flat 50ct regardless of
+        # balance/edge/STC. Without this dispatch, sim_pnl Kelly-sizes
+        # LPNE rows ~350× over-sized at production-typical $100k bankroll.
+        ct = _lpne_size(balance_cents=available_balance_cents)
+        return SizingResult(
+            contract_count=int(ct),
+            risk_fraction=0.0,
+            tier_idx=-1,
+            drawdown_scaler=1.0,
+            stc_scaler=1.0,
+            notional_cents=int(ct * entry_price_cents),
+        )
+    sizing = compute_size(
+        fee_adjusted_edge_frac, available_balance_cents, entry_price_cents,
+        current_balance_cents=current_balance_cents, hwm_cents=hwm_cents,
+        seconds_to_close=seconds_to_close, asset=asset,
+    )
+    if (strategy == 'weekend_discount'
+            and sizing.contract_count == 0
+            and available_balance_cents > 0
+            and entry_price_cents > 0):
+        # bot.py:14074-14085 — Kelly=0 fallback to WEEKEND_FIXED_RISK.
+        # Drawdown scaler applied to the fixed sizing too (bot.py:14077-79).
+        drawdown = compute_drawdown_scaler(current_balance_cents, hwm_cents)
+        fixed_raw = max(1, int(available_balance_cents * WEEKEND_FIXED_RISK / entry_price_cents))
+        if drawdown < 1.0:
+            fixed_raw = max(1, int(fixed_raw * drawdown))
+        return SizingResult(
+            contract_count=int(fixed_raw),
+            risk_fraction=float(WEEKEND_FIXED_RISK),
+            tier_idx=-1,
+            drawdown_scaler=float(drawdown),
+            stc_scaler=1.0,
+            notional_cents=int(fixed_raw * entry_price_cents),
+        )
+    return sizing
+
+
 # ---------------------------------------------------------------------------
 # Live gate replay (A26)
 # ---------------------------------------------------------------------------
@@ -133,7 +561,7 @@ GLOBAL_MIN_ENTRY_PRICE = 75        # bot.py:219 floor for any 15M discount path
 
 
 def gate_passes(
-    final_lo: float,
+    prob_yes_calibrated: float,
     breakeven: float,
     min_edge_frac: float,
     is_weekend: bool,
@@ -144,12 +572,18 @@ def gate_passes(
 ) -> bool:
     """A31 gate with bot-faithful discount fallbacks.
 
+    First parameter is the post-calibration YES probability (production's
+    `final_prob`, stored in DB as `calibrated_prob`). Pre-H4 this was
+    `final_lo` (conformal lower bound), which was strictly more
+    conservative than production — see
+    kb/findings/sim-pnl-live-ws-divergence-rca-may05.md H4.
+
     R-p6-impl-4#C1/C2: bot.py runs the regular gate FIRST (bot.py:12104).
     Only on insufficient_edge rejection does it fall through to weekend
     (bot.py:12430) then overnight (bot.py:12606) discount paths. Fee
     subtraction is applied to the edge (bot.py uses fee_adjusted_edge for
     every comparison)."""
-    fee_adj_edge = (final_lo - breakeven) - fee_frac
+    fee_adj_edge = (prob_yes_calibrated - breakeven) - fee_frac
     # 1) Regular gate first.
     if fee_adj_edge >= min_edge_frac:
         return True
@@ -249,9 +683,18 @@ def _iso_z(ts: pd.Timestamp) -> str:
     return ts.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 
 
-# Per-asset minimum entry price floors mirrored from bot.py:219-225.
+# Per-asset minimum entry price floors mirrored from bot.py:246-250.
+# R4: BTC's effective scan-time floor is LPNE_MIN_PRICE(=80), not
+# BTC_MIN_ENTRY_PRICE(=88) — bot.py:12978-12997 LPNE intercepts BTC
+# rows at 80-87c BEFORE the main-pipeline floor rejection. Sub-88c
+# BTC rows that aren't LPNE-eligible reach `filter_stage='floor_raise_shadow'`
+# (added to _PRODUCTION_RUNTIME_BLOCKED_STAGES so they're dropped from
+# the audit universe). Without this expansion, the H7 LPNE dispatcher
+# is dead code for the main audit window — the SQL filter excluded
+# the 10 LPNE candidate rows in the May 2-6 snapshot before they
+# could be sized.
 PER_ASSET_MIN_ENTRY_PRICE = {
-    'BTC': 88,
+    'BTC': 80,    # LPNE_MIN_PRICE per bot.py:1329
     'ETH': 90,
     'SOL': 86,
     'XRP': 92,
@@ -273,10 +716,25 @@ def stc_extended_floor_passes(
     asset: str,
     entry_price_cents: int,
     seconds_to_close: float,
-    edge_frac: float,
+    buf_pct: Optional[float],
 ) -> bool:
-    """bot.py:14511-14520: in 300-600s STC zone, per-asset floor applies
-    UNLESS edge_frac >= STC_EXTENDED_BUFFER_RESCUE."""
+    """bot.py:16125-16151: in 300-600s STC zone, per-asset floor applies
+    UNLESS buf_pct >= STC_EXTENDED_BUFFER_RESCUE.
+
+    R5 MAJOR #1: the rescue threshold is a BUFFER PERCENT, not an edge
+    fraction. bot.py:16134 computes `_ext_buf = (spot - threshold) /
+    threshold * 100` (e.g. 0.260% = 0.260) and compares
+    `_ext_buf >= STC_EXTENDED_BUFFER_RESCUE` (= 0.25, meaning 0.25%).
+    Pre-fix sim_pnl compared `edge_frac` (probability edge fraction)
+    against 0.25 — an implausibly high threshold that always rejected
+    realistic rows. Empirical impact on May 2-6 window: 18 BTC/SOL
+    candidate rows (most wins) were silently rejected by sim_pnl that
+    bot.py admitted via buffer rescue.
+
+    `buf_pct` is the (spot-threshold)/threshold*100 percentage. None
+    indicates spot/threshold unavailable — defensive: treat as 0
+    buffer (no rescue).
+    """
     if seconds_to_close <= STC_EXTENDED_LIVE_FLOOR:
         return True
     if seconds_to_close > 600:
@@ -284,34 +742,66 @@ def stc_extended_floor_passes(
     floor = STC_EXTENDED_PER_ASSET_FLOOR.get(asset, 100)
     if entry_price_cents >= floor:
         return True
-    return edge_frac >= STC_EXTENDED_BUFFER_RESCUE
+    if buf_pct is None:
+        return False
+    return buf_pct >= STC_EXTENDED_BUFFER_RESCUE
 
 
 def reconstruct_hwm_init(
     db_path: str,
     test_start_ts: pd.Timestamp,
-) -> tuple[int, str]:
-    """Returns (hwm_cents, source). Source ∈ {'balance_walked',
-    'forward_only_from_now'}.
+) -> tuple[int, int, str]:
+    """Returns (hwm_cents, start_balance_cents, source).
 
-    R-p6-impl-2#C5/#C6: `audit_snapshots` table doesn't exist in bot.py
-    schema and `positions` has `total_cost_cents`. Reconstructable signal
-    is `evaluated_opportunities.available_balance_cents` per-scan. Take
-    MAX over rows BEFORE test_start_ts as the HWM init."""
+    Source ∈ {'balance_walked', 'forward_only_from_now'}.
+
+    `hwm_cents` — MAX(available_balance_cents) in the 7-day rolling
+        window BEFORE test_start_ts. Matches bot.py PositionSizer's
+        7-day rolling deque (`models.py:1011` —
+        `deque(maxlen=60480)` = 7 days at 10s intervals).
+    `start_balance_cents` — LATEST available_balance_cents BEFORE
+        test_start_ts. Used as the initial running balance for
+        drawdown-scaler input. Pre-fix sim_pnl used hwm as the
+        initial balance, so drawdown ratio = 1.0 → no drawdown
+        scaler → top-tier sizing even when bot was in 50%+ drawdown.
+        See kb/findings/sim-pnl-live-ws-divergence-rca-may05.md H1b.
+
+    Pre-fix returned (hwm, source) and assumed start_balance == hwm,
+    silently inflating sizing during drawdown. Combined H1a+H1b fix
+    matches bot.py's PositionSizer: 7-day rolling HWM AND current
+    balance separately tracked.
+    """
     conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
         ts_iso = _iso_z(test_start_ts)
+        # 7-day rolling window — matches PositionSizer.balance_history maxlen.
+        ts_window_start_iso = _iso_z(test_start_ts - pd.Timedelta(days=7))
         try:
             row = conn.execute(
                 "SELECT MAX(available_balance_cents) FROM evaluated_opportunities "
-                "WHERE evaluation_time < ? AND available_balance_cents IS NOT NULL",
-                (ts_iso,),
+                "WHERE evaluation_time < ? AND evaluation_time >= ? "
+                "AND available_balance_cents IS NOT NULL",
+                (ts_iso, ts_window_start_iso),
             ).fetchone()
             hwm = int(row[0] or 0) if row else 0
+            # Separately fetch the LATEST pre-window balance — this is the
+            # start-of-window state, NOT the historical peak.
+            start_row = conn.execute(
+                "SELECT available_balance_cents FROM evaluated_opportunities "
+                "WHERE evaluation_time < ? AND available_balance_cents IS NOT NULL "
+                "ORDER BY evaluation_time DESC LIMIT 1",
+                (ts_iso,),
+            ).fetchone()
+            start_balance = int(start_row[0] or 0) if start_row else 0
             if hwm > 0:
-                return (hwm, 'balance_walked')
+                # Defensive: if no recent pre-window balance available
+                # (gap in evaluations), fall back to hwm so sim_pnl
+                # doesn't size against zero.
+                if start_balance <= 0:
+                    start_balance = hwm
+                return (hwm, start_balance, 'balance_walked')
         except sqlite3.OperationalError:
             pass
         try:
@@ -321,9 +811,9 @@ def reconstruct_hwm_init(
                 "ORDER BY evaluation_time DESC LIMIT 1"
             ).fetchone()
             current = int(row[0] or 0) if row else 0
-            return (current, 'forward_only_from_now')
+            return (current, current, 'forward_only_from_now')
         except sqlite3.OperationalError:
-            return (0, 'forward_only_from_now')
+            return (0, 0, 'forward_only_from_now')
     finally:
         conn.close()
 
@@ -456,7 +946,13 @@ def run_sim_pnl(
                    raw_prob, breakeven_wr, fee_adjusted_edge, kelly_f,
                    is_weekend, hour_of_day_utc,
                    spot_distance_to_strike_sigma, prob_breakeven_gap,
-                   market_result, available_balance_cents
+                   market_result, available_balance_cents,
+                   filter_stage,
+                   -- H7: spot_price + threshold derive TM thin-buffer
+                   -- buf_pct = (spot - threshold) / threshold * 100. NULL
+                   -- on legacy rows is fine — _strategy_size passes
+                   -- buf_pct=None, no thin-buffer cap applied.
+                   spot_price, threshold
             FROM evaluated_opportunities
             WHERE asset = ?
               AND product_type = '15m'
@@ -467,6 +963,16 @@ def run_sim_pnl(
               AND evaluation_time IS NOT NULL
               AND evaluation_time >= ? AND evaluation_time < ?
               AND raw_prob IS NOT NULL
+              -- R6 CRITICAL #1: side IS NULL rows (e.g. the
+              -- dc_shadow_t1b_93c / dc_shadow_t2_90c family at
+              -- bot.py:13543) were admitted by the gate, then
+              -- mis-bucketed at trade_pnl_cents because
+              -- `str(None) == 'yes'` is False → all 46 May 2-6
+              -- rows (100% YES outcomes) counted as systematic
+              -- losses. The side filter drops them universally
+              -- and locks against future shadow stages that
+              -- forget to populate the column.
+              AND side IN ('yes', 'no')
               -- spot_distance_to_strike_sigma + prob_breakeven_gap are
               -- NOT filtered: extract_data.py also does not filter NULLs
               -- on these columns (build_feature_frame relies on apply_norm
@@ -491,6 +997,23 @@ def run_sim_pnl(
     candidate_df = candidate_df[
         candidate_df['market_result'].isin(['yes', 'no'])
     ].reset_index(drop=True)
+    # H3+H5: drop rows production rejected at runtime (cooldowns,
+    # cell-blocks, cal_mlp TM-96 gate, zero-sizing). sim_pnl can't model
+    # these, so admitting them = counterfactual PnL on trades production
+    # never could have taken. See
+    # kb/findings/sim-pnl-live-ws-divergence-rca-may05.md H3+H5.
+    n_pre_eligibility = len(candidate_df)
+    candidate_df = _exclude_production_runtime_blocked(candidate_df)
+    n_excluded_runtime_blocked = n_pre_eligibility - len(candidate_df)
+    # R6 MAJOR #1: dedup multiple rows per ticker so sim_pnl counts each
+    # ticker's outcome AT MOST ONCE. Pre-fix the same ticker's outcome
+    # was counted by every shadow + candidate row that passed the gate
+    # (282 low_price_shadow + 115 relaxed_edge_shadow + ... = ~700 over-
+    # counted contributions in May 2-6 window). Helper prefers
+    # 'candidate' rows, falls back to latest evaluation_time per ticker.
+    n_pre_dedup = len(candidate_df)
+    candidate_df = _dedup_by_ticker_keep_canonical(candidate_df)
+    n_excluded_ticker_dedup = n_pre_dedup - len(candidate_df)
     n_universe = len(candidate_df)
     unsettled_drop_rate = (n_unsettled / max(1, n_total))
 
@@ -555,7 +1078,7 @@ def run_sim_pnl(
     candidate_df['p_pred'] = np.asarray(p_means, dtype=np.float64)
     candidate_df['p_std'] = np.asarray(p_stds, dtype=np.float64)
 
-    hwm_init_cents, hwm_source = reconstruct_hwm_init(
+    hwm_init_cents, start_balance_cents, hwm_source = reconstruct_hwm_init(
         db_path, pd.Timestamp(test_start),
     )
 
@@ -564,6 +1087,12 @@ def run_sim_pnl(
         results[block_label] = _replay_one_path(
             candidate_df, conformal_artifact, market_blend_w,
             asset, block_enabled, hwm_init_cents,
+            start_balance_cents=start_balance_cents,
+            # H4: BASE replay against the production-matching bundle uses
+            # the exact stored calibrated_prob so sim_pnl decisions track
+            # production's. Challenger replay below stays on the
+            # 'p_mean' default (different bundle → must re-compute).
+            gate_prob_source='stored_calibrated_prob',
         )
     tier_migration = results['block_off'].get('tier_migration', {})
     weighted_drop = tier_migration.get('drop_pct', 0.0)
@@ -586,6 +1115,14 @@ def run_sim_pnl(
         'n_candidate_universe': n_universe,
         'n_total_pre_filter': n_total,
         'n_unsettled_in_window': n_unsettled,
+        # H3+H5: count of rows dropped because production rejected them
+        # at runtime (cooldowns, cell-blocks, cal_mlp gate, zero-sizing).
+        # Surface so the audit JSON shows the filter is active.
+        'n_excluded_production_runtime_blocked': n_excluded_runtime_blocked,
+        # R6 MAJOR #1: count of duplicate rows per ticker dropped post-
+        # blocked-stage filter. High value indicates many shadow rows
+        # had candidate siblings (= would have double-counted PnL pre-fix).
+        'n_excluded_ticker_dedup': n_excluded_ticker_dedup,
         # Audit-field denominator note: `excluded_null_market_price` is
         # counted on the FULL test-window query (asset + product_type +
         # !sports), pre any other SQL filter — historical convention,
@@ -672,6 +1209,7 @@ def run_sim_pnl(
                 ch_results[block_label] = _replay_one_path(
                     ch_df, challenger_artifact, market_blend_w,
                     asset, block_enabled, hwm_init_cents,
+                    start_balance_cents=start_balance_cents,
                 )
             out['challenger'] = {
                 'block_off': ch_results['block_off'],
@@ -709,6 +1247,9 @@ def run_sim_pnl(
     return out
 
 
+_VALID_GATE_PROB_SOURCES = ('p_mean', 'stored_calibrated_prob')
+
+
 def _replay_one_path(
     df: pd.DataFrame,
     conformal_artifact: dict,
@@ -716,17 +1257,50 @@ def _replay_one_path(
     asset: str,
     block_enabled: bool,
     hwm_init_cents: int,
+    start_balance_cents: Optional[int] = None,
+    gate_prob_source: str = 'p_mean',
 ) -> dict:
     """Walk forward through candidates in evaluation_time order, replaying
     the gate. Tracks per-band/per-strategy/per-asset PnL + tier migration +
-    drawdown 7d worst-case."""
+    drawdown 7d worst-case.
+
+    `start_balance_cents` defaults to `hwm_init_cents` for backwards-compat
+    with old callers, but new callers should pass the actual start-of-window
+    balance (from `reconstruct_hwm_init` 3-tuple). When the bot is in
+    drawdown at audit-window start, start_balance < hwm_init.
+
+    `gate_prob_source` selects what flows into `gate_passes`:
+      - 'p_mean' (default) — pass the post-blend center recomputed from
+        THIS bundle's prediction. Right choice for the v2 challenger
+        path and for any base run where the bundle differs from
+        production at decision time.
+      - 'stored_calibrated_prob' — pass `row['calibrated_prob']` (the
+        exact value production used at decision time per bot.py:13675/
+        13702/13739/13832/13949). Right choice for the BASE replay where
+        the bundle == production's bundle; this is what makes sim_pnl's
+        BASE-run aggregate match production within tolerance. Falls back
+        to `p_mean` when the row's calibrated_prob is NaN/None (legacy
+        rows pre cal_mlp annotation).
+    See kb/findings/sim-pnl-live-ws-divergence-rca-may05.md H4.
+    """
+    if start_balance_cents is None:
+        start_balance_cents = hwm_init_cents
+    if gate_prob_source not in _VALID_GATE_PROB_SOURCES:
+        raise ValueError(
+            f"gate_prob_source={gate_prob_source!r} not in "
+            f"{_VALID_GATE_PROB_SOURCES}"
+        )
     df = df.sort_values(['evaluation_time', 'ticker']).reset_index(drop=True)
     pnl_per_strategy = defaultdict(int)
     pnl_per_band = defaultdict(int)
     pnl_per_asset = defaultdict(int)
     pnl_pessimistic_total = 0
     pnl_modeled_total = 0
-    tier_counts_pre = defaultdict(int)
+    # R4 MINOR #1: removed orphaned `tier_counts_pre`. R2's pre/post
+    # symmetry refactor switched all consumers to `tier_counts_post`;
+    # the pre dict was retained-but-unused. Removing avoids a future
+    # maintainer reintroducing the asymmetric denominator that R1+R2
+    # fixed.
     tier_counts_post = defaultdict(lambda: defaultdict(int))
     daily_pnl = defaultdict(int)
     cumulative = 0
@@ -776,19 +1350,41 @@ def _replay_one_path(
         # at the gate (bot.py:12104 + models.py:1053 use taker for tier).
         fee_1c_taker = calculate_taker_fee(1, int(row['entry_price_cents']))
         fee_frac_taker = fee_1c_taker / 100.0
+        # H4: select gate input per gate_prob_source. Defaults to p_mean
+        # (this-bundle re-computed post-blend); BASE replay can opt into
+        # row['calibrated_prob'] (exact production decision value) with
+        # NaN-safe fallback.
+        if gate_prob_source == 'stored_calibrated_prob':
+            stored_cal = row.get('calibrated_prob')
+            if pd.notna(stored_cal):
+                gate_prob = float(stored_cal)
+            else:
+                gate_prob = float(p_mean)
+        else:
+            gate_prob = float(p_mean)
         if not gate_passes(
-            final_lo, breakeven, min_edge_frac,
+            gate_prob, breakeven, min_edge_frac,
             is_weekend_b, hour_i,
             int(row['entry_price_cents']),
             float(row['seconds_to_close']),
             fee_frac_taker,
         ):
             continue
-        # STC_EXTENDED 300-600s zone per-asset floor.
-        approx_edge_frac = float(p_mean) - breakeven
+        # STC_EXTENDED 300-600s zone per-asset floor. R5 MAJOR #1:
+        # rescue compares buffer_pct, not edge_frac. Pre-fix sim_pnl
+        # used edge_frac vs threshold=0.25 → always rejected; bot.py
+        # admits when buf_pct >= 0.25%. Pull spot/threshold (added to
+        # SQL in H7 for the TM thin-buffer cap) and reuse here.
+        _spot_pre = row.get('spot_price')
+        _thr_pre = row.get('threshold')
+        if (pd.notna(_spot_pre) and pd.notna(_thr_pre)
+                and float(_thr_pre) > 0):
+            _buf_pct_pre = (float(_spot_pre) - float(_thr_pre)) / float(_thr_pre) * 100.0
+        else:
+            _buf_pct_pre = None
         if not stc_extended_floor_passes(
             asset, int(row['entry_price_cents']),
-            float(row['seconds_to_close']), approx_edge_frac,
+            float(row['seconds_to_close']), _buf_pct_pre,
         ):
             continue
         # HIGH_PRICE_STC_BLOCK gate (only when block_enabled).
@@ -800,19 +1396,42 @@ def _replay_one_path(
         ):
             continue
         # Sizing — taker fee always for tier (matches bot.py / models.py:1053).
+        # H7: dispatch through _strategy_size so terminal_momentum_*,
+        # decided_t*, and weekend_discount honor their bot.py-specific
+        # paths. Default fall-through is compute_size.
         edge_frac = float(p_mean) - breakeven - fee_frac_taker
-        sizing = compute_size(
-            edge_frac,
-            int(row.get('available_balance_cents') or 100000),
-            int(row['entry_price_cents']),
-            current_balance_cents=cumulative + hwm_init_cents,
+        _spot_val = row.get('spot_price')
+        _thr_val = row.get('threshold')
+        # R3 MAJOR #1: NaN-safe balance coercion. `np.nan or 100000`
+        # evaluates to NaN (NaN is truthy in Python's bool semantics),
+        # then `int(NaN)` raises ValueError. The May 2-6 window has no
+        # NULL-balance rows but wider backtests do; failing-fast here
+        # lets the operator notice rather than crashing mid-replay.
+        _bal_raw = row.get('available_balance_cents')
+        _bal_cents = (int(_bal_raw)
+                      if pd.notna(_bal_raw) and _bal_raw and int(_bal_raw) > 0
+                      else 100000)
+        # R3 MINOR #5: NaN-safe strategy coercion. Same `or` pitfall
+        # — `np.nan or '_unknown'` returns NaN, then `str(NaN)` =
+        # 'nan' which would corrupt the per_strategy_pnl key. Use
+        # pd.notna explicitly.
+        _strat_val = row.get('strategy')
+        _strat_str = (str(_strat_val) if pd.notna(_strat_val) else None)
+        sizing = _strategy_size(
+            strategy=_strat_str,
+            fee_adjusted_edge_frac=edge_frac,
+            available_balance_cents=_bal_cents,
+            entry_price_cents=int(row['entry_price_cents']),
+            current_balance_cents=cumulative + start_balance_cents,
             hwm_cents=hwm,
             seconds_to_close=float(row['seconds_to_close']),
             asset=asset,
+            spot_price=(float(_spot_val) if pd.notna(_spot_val) else None),
+            threshold=(float(_thr_val) if pd.notna(_thr_val) else None),
         )
         if sizing.contract_count <= 0:
             continue
-        is_taker = _strategy_uses_taker(str(row.get('strategy', '')))
+        is_taker = _strategy_uses_taker(_strat_str if _strat_str is not None else '')
         pnl = trade_pnl_cents(
             sizing.contract_count, int(row['entry_price_cents']),
             str(row['side']), str(row['market_result']), is_taker,
@@ -820,9 +1439,9 @@ def _replay_one_path(
         pnl_pessimistic_total += pnl
         pnl_modeled_total += pnl
         cumulative += pnl
-        if cumulative + hwm_init_cents > hwm:
-            hwm = cumulative + hwm_init_cents
-        strategy = str(row.get('strategy') or '_unknown')
+        if cumulative + start_balance_cents > hwm:
+            hwm = cumulative + start_balance_cents
+        strategy = _strat_str if _strat_str is not None else '_unknown'
         band = '<0.85'
         for (lo, hi), name in zip(
             [(0, 0.85), (0.85, 0.92), (0.92, 0.96), (0.96, 1.0)],
@@ -845,7 +1464,6 @@ def _replay_one_path(
                 pre_tier = i
                 break
         if pre_tier >= 0:
-            tier_counts_pre[pre_tier] += 1
             tier_counts_post[pre_tier][post_tier] += 1
         # Daily PnL — explicit UTC bucketing.
         eval_ts = pd.Timestamp(row['evaluation_time'])
@@ -874,18 +1492,46 @@ def _replay_one_path(
             for post, c in post_counts.items():
                 if 0 <= post < n_tiers:
                     matrix[pre][post] += c
-    pre_total_risk = sum(
-        SIZING_TIER_RISK_FRACTIONS[i] * tier_counts_pre.get(i, 0)
-        for i in range(n_tiers)
+    # Adversarial round-1+2: pre and post cohorts must be symmetric
+    # (apples-to-apples). H7 dispatch sets tier_idx=-1 for TM/DC
+    # strategies that bypass the SIZING_TIERS Kelly ladder. Round 1
+    # filtered post=-1 from numerator only → biased denominator;
+    # Round 2 (this fix): filter from BOTH AND restrict pre cohort to
+    # rows where post also stayed on the Kelly ladder so
+    # `pre_weighted_avg_risk` and `post_weighted_avg_risk` measure the
+    # same set of trades. TM/DC bypass count surfaced as
+    # `n_tm_dc_bypass` separately so the audit consumer sees the
+    # bypassed share.
+    pre_kelly_ladder_risk = sum(
+        sum(SIZING_TIER_RISK_FRACTIONS[pre] * cnt
+            for post, cnt in counts.items() if 0 <= post < n_tiers)
+        for pre, counts in tier_counts_post.items()
+        if 0 <= pre < n_tiers
     )
+    # R5 MINOR #1: belt-and-suspenders against future regression — the
+    # populate loop only writes pre>=0 keys, but explicitly filtering
+    # the outer loop too means a future maintainer adding pre=-1 keys
+    # (e.g. to track TM/DC pre-bypass routing) won't silently
+    # reintroduce the asymmetric-denominator bug R1+R2 fixed.
     post_total_risk = sum(
         sum(SIZING_TIER_RISK_FRACTIONS[post] * cnt
             for post, cnt in counts.items() if 0 <= post < n_tiers)
-        for counts in tier_counts_post.values()
+        for pre, counts in tier_counts_post.items()
+        if 0 <= pre < n_tiers
     )
-    n_total_pre = sum(tier_counts_pre.values()) or 1
-    n_total_post = sum(sum(c.values()) for c in tier_counts_post.values()) or 1
-    pre_weighted = pre_total_risk / n_total_pre
+    n_kelly_ladder = sum(
+        sum(cnt for post, cnt in counts.items() if 0 <= post < n_tiers)
+        for pre, counts in tier_counts_post.items()
+        if 0 <= pre < n_tiers
+    )
+    n_tm_dc_bypass = sum(
+        sum(cnt for post, cnt in counts.items() if post == -1)
+        for pre, counts in tier_counts_post.items()
+        if 0 <= pre < n_tiers
+    )
+    n_total_pre = n_kelly_ladder or 1
+    n_total_post = n_kelly_ladder or 1
+    pre_weighted = pre_kelly_ladder_risk / n_total_pre
     post_weighted = post_total_risk / n_total_post
     drop_pct = (pre_weighted - post_weighted) / pre_weighted if pre_weighted > 0 else 0.0
 
@@ -902,6 +1548,23 @@ def _replay_one_path(
             'pre_weighted_avg_risk': pre_weighted,
             'post_weighted_avg_risk': post_weighted,
             'drop_pct': drop_pct,
+            # Adversarial round 2 MAJOR #2: pre/post avgs are restricted
+            # to the Kelly-ladder cohort (rows where pre>=0 AND
+            # 0<=post<n_tiers). TM/DC dispatch rows (post=-1) bypass the
+            # ladder entirely; surface their count separately so audit
+            # consumers see how much of the universe routed through H7.
+            # n_kelly_ladder + n_tm_dc_bypass equals the count of sized
+            # rows whose pre-tier was on the Kelly ladder. R3 MINOR #2:
+            # weekend_discount fallback rows where pre_tier=-1 (edge
+            # below all SIZING_TIERS, fixed-7%-fallback fires) are NOT
+            # in either count — they sit in `per_strategy_pnl_30d`'s
+            # 'weekend_discount' bucket but aren't tracked by
+            # `tier_counts_post` (which only writes pre>=0 keys). If you
+            # need full sized-row reconciliation, sum
+            # `per_strategy_pnl_30d.values()` against PnL totals; the
+            # tier_migration counters are Kelly-ladder-cohort only.
+            'n_kelly_ladder': int(n_kelly_ladder),
+            'n_tm_dc_bypass': int(n_tm_dc_bypass),
         },
         'worst_7d_drawdown_cents': worst_7d,
         'worst_7d_drawdown_prod_cents': worst_7d,
