@@ -26,7 +26,12 @@ from typing import Any, Optional, TypedDict, Union
 # R-p7-r2#H2: import BLEED_CELL from features so this module and conformal.py
 # stay aligned through any future rebinning. features.py has no torch dep so
 # this is safe even though _helpers.py is intentionally torch-free.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Phase 1b R4: conditional insert (mirrors integration.py:48-50). The
+# unconditional form left a duplicate sys.path entry across pytest
+# invocations that exercise this module under a `_PathInsulator` block.
+_HELPERS_DIR = str(Path(__file__).resolve().parent)
+if _HELPERS_DIR not in sys.path:
+    sys.path.insert(0, _HELPERS_DIR)
 from features import BLEED_CELL  # noqa: E402
 
 
