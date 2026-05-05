@@ -19,8 +19,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-import pandas as pd
 import pytest
+
+# CI runner doesn't install pandas/torch (heavy deps not in
+# requirements.txt). importorskip skips the whole file at collection
+# time when the dep is missing rather than crashing pytest. Sibling
+# test files (test_sim_pnl_gate_prob_source.py etc.) already follow
+# this pattern.
+pd = pytest.importorskip("pandas")
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts" / "cal_mlp"))
