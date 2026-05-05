@@ -603,6 +603,42 @@ _SHA_CHAIN_CACHE: dict = {}
 _SHA_CHAIN_CACHE_LOCK = threading.Lock()
 
 
+def _resolve_bundle_dir(asset: str) -> str:
+    """Resolve CALMLP_BUNDLE_DIR override path with per-asset precedence.
+
+    Phase 1a of v2 asymmetric rollout
+    (kb/decisions/v2-asymmetric-rollout-and-xrp-rca-may05.md). Operator
+    can pin a v2 bundle for ETH in isolation by setting
+    CALMLP_BUNDLE_DIR_ETH while leaving CALMLP_BUNDLE_DIR (global, with
+    <ASSET> placeholder) at v1 — or unset.
+
+    Precedence:
+      1. CALMLP_BUNDLE_DIR_<ASSET_UPPER> (per-asset)
+      2. CALMLP_BUNDLE_DIR                (global; <ASSET> substituted by caller)
+      3. ''                               (no override; CURRENT file is read)
+
+    Returns the RAW string. Caller (CalMLPPredictor._load) continues to
+    do <ASSET> placeholder substitution and relative-path resolution
+    against project_root — keeping ONE substitution site avoids the
+    double-substitute foot-gun.
+
+    Whitespace-only values are treated as unset (mirrors the
+    .strip()-then-check pattern shared with CALMLP_ENABLED + the
+    pre-Phase-1a global override).
+
+    AST guard: tests/test_calmlp_bundle_dir_per_asset.py asserts that
+    the CALMLP_BUNDLE_DIR* env vars are ONLY read inside this function.
+    """
+    asset_key = asset.strip().upper() if asset else ''
+    if asset_key:
+        per_asset = os.environ.get(
+            f'CALMLP_BUNDLE_DIR_{asset_key}', '',
+        ).strip()
+        if per_asset:
+            return per_asset
+    return os.environ.get('CALMLP_BUNDLE_DIR', '').strip()
+
+
 class CalMLPPredictor:
     """Lazy-loaded per-asset predictor. Thread-safe via _lock; uses LOCK_SH
     on models/cal_mlp_<asset>/.lock during _load."""
@@ -656,12 +692,17 @@ class CalMLPPredictor:
                 if not models_dir.exists():
                     raise CalMLPError('no_current', f"no models dir for {self.asset}")
                 # CALMLP_BUNDLE_DIR per-version kill-switch
-                # (kb/decisions/v2-cal-mlp-deploy-runbook-may03.md). When set,
-                # overrides the CURRENT file so v2→v1 rollback doesn't require
-                # disabling cal_mlp entirely. <ASSET> placeholder is substituted
-                # with self.asset (uppercase) so one env var rolls back all
-                # 4 assets at once. Empty/whitespace value is treated as unset
-                # to mirror CALMLP_ENABLED's strip()-then-check pattern.
+                # (kb/decisions/v2-cal-mlp-deploy-runbook-may03.md +
+                # kb/decisions/calmlp-bundle-dir-per-asset-may06.md).
+                # Resolution lives in module-level `_resolve_bundle_dir`
+                # (per-asset CALMLP_BUNDLE_DIR_<ASSET> beats global
+                # CALMLP_BUNDLE_DIR; both stripped, empty=unset).
+                # <ASSET> placeholder is substituted with self.asset
+                # (uppercase by bot.py callers' convention) HERE so one
+                # env var still rolls back all 4 assets at once when the
+                # global form is used. Substitution is intentionally a
+                # raw string replace (no normalization) — bot.py is the
+                # only production caller and uses uppercase asset names.
                 # Conventions (NOT enforced beyond the error messages below):
                 #   1. Override path must point to a DIRECTORY (not a file).
                 #   2. The directory NAME must equal the bundle's train_id —
@@ -673,7 +714,7 @@ class CalMLPPredictor:
                 #      is NOT supported (models_dir.exists() pre-check fires
                 #      first, by design — see test_calmlp_bundle_dir_requires_
                 #      models_dir_to_exist).
-                override_raw = os.environ.get('CALMLP_BUNDLE_DIR', '').strip()
+                override_raw = _resolve_bundle_dir(self.asset)
                 override_train_dir: Optional[Path] = None
                 if override_raw:
                     substituted = override_raw.replace('<ASSET>', self.asset)

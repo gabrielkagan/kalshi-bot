@@ -1110,29 +1110,58 @@ def test_thread_env_is_zero_deps_no_numerical_imports():
 
 
 # ---------------------------------------------------------------------------
-# CALMLP_BUNDLE_DIR per-version kill-switch (v2 deploy runbook 2026-05-03).
+# CALMLP_BUNDLE_DIR per-version kill-switch (v2 deploy runbook 2026-05-03,
+# extended to per-asset 2026-05-06).
 # Companion to CALMLP_ENABLED. CALMLP_ENABLED=0 disables ALL cal_mlp;
 # CALMLP_BUNDLE_DIR pins a specific bundle directory so v2→v1 rollback
 # doesn't require disabling cal_mlp entirely. <ASSET> placeholder is
-# substituted with self.asset (uppercase) at lookup time so one env var
-# rolls back all 4 assets at once.
-# Spec: kb/decisions/v2-cal-mlp-deploy-runbook-may03.md (Per-version kill-switch).
+# substituted with self.asset (uppercase by bot.py callers' convention)
+# at lookup time so one env var rolls back all 4 assets at once.
+# Spec: kb/decisions/v2-cal-mlp-deploy-runbook-may03.md (Per-version kill-switch)
+#       kb/decisions/calmlp-bundle-dir-per-asset-may06.md (Phase 1a per-asset).
 # ---------------------------------------------------------------------------
 
+
+@pytest.fixture(autouse=True)
+def _isolate_calmlp_bundle_env(monkeypatch):
+    """Operator-env hygiene for kill-switch tests, autouse module-wide.
+
+    A developer running these tests with CALMLP_BUNDLE_DIR_<ASSET>
+    exported in their shell (the exact pattern Phase 1a ships) would
+    otherwise see global-form tests fail because per-asset overrides
+    global. Clear all variants before every test in this file.
+
+    Autouse: a future kill-switch test added to this file inherits the
+    isolation automatically (no "forgot the fixture" drift hazard).
+    The cost — five `delenv` calls per non-bundle test in this file —
+    is microseconds and changes no behavior for tests that don't read
+    these env vars.
+    """
+    for var in (
+        'CALMLP_BUNDLE_DIR',
+        'CALMLP_BUNDLE_DIR_BTC',
+        'CALMLP_BUNDLE_DIR_ETH',
+        'CALMLP_BUNDLE_DIR_SOL',
+        'CALMLP_BUNDLE_DIR_XRP',
+    ):
+        monkeypatch.delenv(var, raising=False)
+
 def test_calmlp_bundle_dir_referenced_in_load():
-    """AST guard — CALMLP_BUNDLE_DIR env var MUST be read in
-    CalMLPPredictor._load. A refactor that drops the override silently
-    would break the v2→v1 rollback path.
+    """AST guard — CalMLPPredictor._load MUST resolve the override via
+    `_resolve_bundle_dir(self.asset)`. A refactor that drops the call
+    silently bypasses the per-asset precedence (Phase 1a) AND the v2→v1
+    rollback path (May 4 ship). Spec: kb/decisions/calmlp-bundle-dir-
+    per-asset-may06.md.
     """
     import inspect
     import integration
     src = inspect.getsource(integration.CalMLPPredictor._load)
-    assert 'CALMLP_BUNDLE_DIR' in src, (
-        "_load source must reference CALMLP_BUNDLE_DIR for v2 rollback path; "
-        "see kb/decisions/v2-cal-mlp-deploy-runbook-may03.md"
+    assert '_resolve_bundle_dir(self.asset)' in src, (
+        "_load must resolve override via _resolve_bundle_dir(self.asset); "
+        "see kb/decisions/calmlp-bundle-dir-per-asset-may06.md"
     )
     assert '<ASSET>' in src, (
-        "_load must substitute <ASSET> placeholder so the same env var "
+        "_load must substitute <ASSET> placeholder so a global env var "
         "rolls back all 4 assets at once"
     )
 
@@ -1148,6 +1177,10 @@ def test_calmlp_bundle_dir_not_in_init():
     assert 'CALMLP_BUNDLE_DIR' not in src, (
         "CALMLP_BUNDLE_DIR must NOT be read in __init__ — that would "
         "break the zero-IO init contract (test_cal_mlp_predictor_init_zero_io)"
+    )
+    assert '_resolve_bundle_dir' not in src, (
+        "_resolve_bundle_dir must NOT be called in __init__ — that "
+        "reads env vars and breaks zero-IO init"
     )
 
 
