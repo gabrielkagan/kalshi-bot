@@ -44,6 +44,15 @@ SOURCE_FILES = [
 # Documentation files to check
 DOC_FILES = [
     "README.md", "whitepaper.md", "whitepaper_investor.md", "CLAUDE.md",
+    # Bit 1.3 (Sprint 1 modularization): AGENTS.md is a symlink to CLAUDE.md.
+    # Today the scan is redundant (same file via symlink, no false positives).
+    # If a future Bit flips the GO/NO-GO to two-file mode (Phase α1 option 2,
+    # `kb/decisions/repo-modularization-plan-may05.md` line 891), this entry
+    # is what catches divergence between the portable and Claude-specific
+    # surfaces. Plan reference: line 897 ("doc_drift_check.py extended to
+    # detect symlink target drift"). Pinned by
+    # tests/test_agents_md_symlink.py::test_doc_drift_check_includes_agents_md.
+    "AGENTS.md",
     # R-p7-deploy-r11 R6: agent_docs/config_reference.md mirrors many
     # of the same constants; without it in DOC_FILES the drift-check
     # is structurally blind to the file the rule explicitly points
@@ -622,6 +631,19 @@ def main():
     all_claims = []
     for doc_name in DOC_FILES:
         doc_path = REPO_ROOT / doc_name
+        # Bit 1.3 (Sprint 1 modularization): skip symlinks. AGENTS.md is a
+        # symlink to CLAUDE.md today (option 1, plan line 890); scanning
+        # both would emit two separate `doc_file` rows for the same
+        # physical file (dedupe_results would NOT collapse them — it keys
+        # on (fact_key, doc_file) and `doc_name = doc_path.name` returns
+        # different names for the symlink and its target — so reports
+        # would inflate and confuse drift triage). When a future Bit flips
+        # to two-file mode (plan line 891), AGENTS.md becomes a regular
+        # file and this skip falls through naturally, activating the
+        # DOC_FILES entry's divergence-detection purpose. Pinned by
+        # tests/test_agents_md_symlink.py::test_doc_drift_check_includes_agents_md.
+        if doc_path.is_symlink():
+            continue
         claims = scan_doc_for_claims(doc_path, patterns)
         all_claims.extend(claims)
 
