@@ -4,8 +4,6 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 
 ## Reference docs (read on demand)
 
-Listed here so Claude knows when to pull them. They cost zero tokens until read.
-
 - `agent_docs/current_state.md` — what's live, what's shadow, what's disabled. Refresh-target.
 - `agent_docs/config_reference.md` — every constant in `bot.py` with data justifications.
 - `agent_docs/db_schema.md` — `state.db` schema for all tables.
@@ -13,6 +11,7 @@ Listed here so Claude knows when to pull them. They cost zero tokens until read.
 - `agent_docs/calibration_pipeline.md` — calibration, hourly three-layer, three-commit rule.
 - `kb/_index.md` — design decisions, postmortems, strategy specs (read for any deep "why" question).
 - `kb-research/_index.md` — compiled research findings.
+- Package-level guides auto-load when working in-dir: `tests/CLAUDE.md`, `scripts/CLAUDE.md` (and `bot/CLAUDE.md` once Sprint 2 Bit 2.2 ships).
 
 ## Interaction rules
 
@@ -22,33 +21,24 @@ Listed here so Claude knows when to pull them. They cost zero tokens until read.
 
 ## Critical rules
 
-Each links to the postmortem in `kb/failures/` for full context. The rule itself fires here.
+Each one-liner fires here; rationale + history live in `kb/failures/` postmortems.
 
 - **bot.py is sacred.** systemd → `start.sh` → `bot.py`. Don't rename or split.
-- Never commit `.env` or `*.jsonl` (gitignored).
+- Never commit `.env` or `*.jsonl` (gitignored). KB files (`kb/`, `kb-research/`) are local-only by convention — don't `git add` new files there (existing tracked entries are pre-rule legacy).
 - Syntax-check before commit: `make ast-check` (alias for `python3 -c "import ast; ast.parse(open('bot.py').read())"`).
 - Pushing to main auto-deploys. Always verify the VPS pulled the new commit hash.
 - Data-driven changes only. No config tuning without backing data.
 - After signature changes: grep all call sites. `ast.parse` won't catch unbound names.
 - After constant changes in `bot.py`: grep across the repo, especially `market_config.py` (asserts at startup → crash loop on mismatch).
-- After changes to `discover_active_windows()` or `product_type` assignments: grep every `window.get("product_type")` in `scan()`.
-- Adding keys to `_shadow_diag`: also update `insert_rejection()` + `insert_evaluated_opportunity()` signatures + SQL.
-- New `sqlite3.connect()`: set `PRAGMA journal_mode=WAL` + `PRAGMA busy_timeout=10000`. Multi-thread access shares `state.db`.
-- WAL checkpoints: use `PASSIVE`, never `TRUNCATE`. TRUNCATE creates deadlocks with concurrent readers.
-- DB write batches: ≤50 rows per commit. Larger holds the write lock long enough to deadlock readers + checkpoints.
-- Don't commit inside loops — accumulate writes, commit once at the end.
-- Engine → CalEngine wiring ships in ONE commit: engine `INSERT` adds `raw_prob`, settlement routes to the right CalEngine, audit script checks for observations. (`agent_docs/calibration_pipeline.md`)
 - Performance analysis filters to current config regime. Pre-regime data is misleading.
-- After deploy: verify expected DB rows are being created (e.g., stc_shadow when STC 300-600s, weather_observation when weather is on). "Service running, no errors" is not enough.
+- After deploy: verify expected DB rows are being created (e.g., `stc_shadow` when STC 300-600s, `weather_observation` when weather is on). "Service running, no errors" is not enough.
 - Investigate before explaining. Look at actual data, not assumptions about it.
 - Verify schema before querying: `PRAGMA table_info()` and `SELECT DISTINCT`.
-- After bug fixes: root-cause it, write a regression test, draft a postmortem (`kb/failures/`). Never just fix and move on.
+- After bug fixes: root-cause it, write a regression test, draft a postmortem in `kb/failures/`. Never just fix and move on.
 - Sim PnL and counterfactuals use actual Kelly sizing. Never flat 1-contract.
 - Dashboard changes: `dashboard_snapshot.py` and `dashboard/index.html` (gh-pages) ship in the same commit per `kb/decisions/dashboard-overhaul-plan.md`.
-- Doc drift: when changing config values, update README.md / whitepaper.md / whitepaper_investor.md / CLAUDE.md / `agent_docs/config_reference.md` in the same commit. Run `make doc-drift` (alias for `python3 scripts/doc_drift_check.py`).
-- **Don't import torch directly in bot.py.** Cal_mlp is the single torch entry point via `scripts/cal_mlp/integration.py`, which constrains threads at module-import time. AND: `import _thread_env` must remain the FIRST import in bot.py — numpy/scipy C extensions cache OpenBLAS thread count at load time, so OMP_NUM_THREADS=1 has to be in os.environ before they import. Direct `import torch` or any reorder defeats the contention fix (postmortem: production incident 2026-04-29, scan loop ballooned to 7.75s, 0 candidates in 5 min). AST regression: `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_py`.
-- **cal_mlp feature transforms ship in ONE commit across four sites.** Any change to a feature transform (winsorize cap `SIGMA_WINSOR_ABS_CAP=25.0`, hour_sin/cos derivation, prob_breakeven_gap formula, sigma derivation) must update extract_data.py + post_hoc_processor.py + integration.py + features.compute_cfg_fp simultaneously. Splitting → train/serve skew (model trained on one distribution, served from another). See `agent_docs/calibration_pipeline.md` "cal_mlp feature transforms (four-site lock-step)" for the rationale. Regression tests in `tests/test_calmlp_sigma_winsorize.py` + `tests/test_calmlp_tm96_gate.py`.
-- **Cell-block activations deflate `filter_stage='candidate'` rollups.** Audit + dashboard scripts that query `WHERE filter_stage = 'candidate'` for "all 15M trades" totals will under-count post-activation. The actual filter_stage VALUES (string literals stored in DB — NOT Python constant names) are: `'96C_SOL_XRP_STC_DANGER_BAND'` (HPSB), `'TM98_97_98C_2_5MIN_BLEED'`, `'SOL_TAKER_85_89C_2_5MIN_BLEED'`. To re-aggregate true total candidate volume, UNION these stage values. **Pattern:** any script that filters `WHERE filter_stage = 'candidate'` (or `IN ('candidate', 'observation_trade')`) on 15M-scoped queries. Identify via: `grep -rn "filter_stage[ =]*[='IN ]*candidate" scripts/ *.py .claude/`. Confirmed-affected (Apr 30): `scripts/15m_live_audit.py`, `scripts/15m_alpha_research.py` (`/15m-alpha`), `scripts/alpha_audit.py` (`/alpha-audit`), `scripts/data_health_monitor.py`, `scripts/generate_whitepaper_stats.py`, `scripts/maker_opportunity_cost.py`, `scripts/quiet_market_monitor.py`, `dashboard_snapshot.py` (root), `analyst.py`, `auditor.py`, `researcher.py`, `.claude/skills/status/SKILL.md` (`/status` skill). Decision doc: `kb/decisions/bleed-cell-blocks-2026-04-30.md`.
+- Doc drift: when changing config values, update `README.md` / `whitepaper.md` / `whitepaper_investor.md` / `CLAUDE.md` / `agent_docs/config_reference.md` in the same commit. Run `make doc-drift` (alias for `python3 scripts/doc_drift_check.py`).
+- **bot.py implementation rules** (torch threading + `_thread_env` import ordering, `cal_mlp` four-site lock-step, cell-block `filter_stage` string literals, SQLite WAL pragmas + ≤50-row commit batches, `_shadow_diag` schema chain, engine→CalEngine one-commit wiring, `discover_active_windows()`/`product_type` cross-checks, shadow-strategy add workflow): see `agent_docs/bot-claude-md-draft.md`. Sprint 2 Bit 2.2 promotes this draft to `bot/CLAUDE.md`, after which it auto-loads when working inside `bot/`.
 
 ## Anti-patterns
 
@@ -59,38 +49,6 @@ Each links to the postmortem in `kb/failures/` for full context. The rule itself
 - Don't refactor for readability during a bug fix. Fix the bug.
 - Don't change Kelly fraction, blend weights, or edge thresholds without data.
 - Don't write tests unsolicited. Regression tests after bug fixes only.
-
-## Workflows
-
-### Investigate a loss or anomaly
-1. Query `state.db` for the trade(s): entry, settlement, PnL, fees, STC, asset, product_type.
-2. Pull `raw_prob`, `calibrated_prob`, `blended_prob` from `evaluated_opportunities`.
-3. Verify settlement against actual price data.
-4. Decide: config issue, model issue, or variance.
-5. Numbers first, then offer next steps.
-
-### Performance analysis
-1. Identify current config regime (`git log` major config changes).
-2. Filter `settled_trades` to current regime only.
-3. Use actual Kelly sizing.
-4. Report n / W-L / WR / total PnL / PnL per trade / Brier (if applicable).
-5. Break down by asset / STC zone / price bucket.
-
-### Add a shadow strategy
-1. Shadow flag constant (e.g. `NEW_FEATURE_SHADOW = True`).
-2. Wire into `scan()`; log to `evaluated_opportunities` with the right `filter_stage`.
-3. New DB columns: update INSERT + signature + SQL in same commit.
-4. Add a metric to `dashboard_snapshot.py`.
-5. Shadow only — don't promote without explicit instruction.
-
-### Deploy a change
-1. Make the edit.
-2. Syntax-check `bot.py`.
-3. Grep call sites if signatures changed; grep constants across files.
-4. Present a change summary — wait for approval.
-5. `git add` + `commit` + `push` (triggers auto-deploy).
-6. Verify VPS pulled the commit hash.
-7. Verify expected DB rows are appearing.
 
 ## Skill routing
 
@@ -116,3 +74,5 @@ When a user request fits a skill, prefer the skill over ad-hoc work.
 | KB structural maintenance | `/kb-evolve` |
 
 **Disambiguation:** Status = quick. Audit = rigorous. Alpha-audit = cross-system funnel. *-alpha = single-system grid search.
+
+**Two-file-mode flag (Bit 1.3, forward-looking):** `AGENTS.md` is a symlink to this file. If Claude-Code-specific content here (skill routing, hook references) grows past what makes sense in a portable file, see `kb/decisions/bit-1.3-agents-md-shipped-may06.md` commitment 2 for the GO/NO-GO trigger to flip to two-file mode.

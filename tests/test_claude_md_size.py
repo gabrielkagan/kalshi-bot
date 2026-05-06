@@ -1,0 +1,499 @@
+"""Regression tests for pruned CLAUDE.md (Bit 1.4 of repo modularization).
+
+Sprint 1 of repo modularization plan
+(kb/decisions/repo-modularization-plan-may05.md), Bit 1.4
+(plan lines 1328-1336).
+
+Pins the Bit 1.4 contract:
+- CLAUDE.md is ≤80 lines (the bit's hard done-when criterion).
+- AGENTS.md (symlink to CLAUDE.md per Bit 1.3) inherits the prune —
+  read-through line count matches. Catches a future "fix" that
+  replaces the symlink with a stale copy.
+- The five load-bearing structural `##` headings are present
+  (Reference docs, Interaction rules, Critical rules, Anti-patterns,
+  Skill routing). Catches a future agent who deletes a whole section
+  while pruning further. The H1 project summary header
+  (`# Kalshi Crypto Trading Bot`) is pinned separately by
+  `test_required_sections_present` (the file must START with that
+  line) — line-cap and AGENTS.md content equality alone don't cover
+  H1 deletion (a future prune that drops the H1 + adds a blank line
+  still passes both, and AGENTS.md inherits any CLAUDE.md change via
+  the symlink, so byte-equality is satisfied either way).
+- The "bot.py is sacred" rule line is present (literal). Sacred-file
+  invariant; deleting it would be a serious regression.
+- Reference-doc pointers (agent_docs/*) resolve to real files. Catches
+  the case where a referenced doc is deleted but the pointer is left
+  behind.
+- Forward-looking pointers required by Bit 1.4 design:
+  - bot.py implementation rules pointer (the breadcrumb to
+    `agent_docs/bot-claude-md-draft.md`, which Sprint 2 Bit 2.2
+    promotes via `git mv` to `bot/CLAUDE.md`). R1 review moved the
+    draft out of the plan's literal `kb/drafts/` path because `kb/`
+    is local-only by convention and would leave the breadcrumb
+    pointing at a file absent on a fresh clone.
+  - Two-file-mode flag pointer (Bit 1.3 closeout commitment 2 — the
+    GO/NO-GO trigger to flip to separate AGENTS.md + CLAUDE.md).
+- `make test-fast` recipe invokes this file (symmetry with
+  `tests/test_agents_md_symlink.py` from Bit 1.3 — fast-tier pin).
+"""
+import re
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
+AGENTS_MD = REPO_ROOT / "AGENTS.md"
+MAKEFILE = REPO_ROOT / "Makefile"
+
+# Bit 1.4 hard cap. Plan line 1331: "root CLAUDE.md ≤80 lines".
+# Margin matters: every interaction loads CLAUDE.md, so each line is a
+# tax on context. Aim for headroom under the cap (today ~78); a future
+# agent who pushes back to 80 isn't strictly violating the contract,
+# but the rising-line-count drift is the early signal of bloat.
+MAX_LINES = 80
+
+
+def _line_count(path: Path) -> int:
+    """Count lines using the wc -l semantics: number of '\\n' terminators.
+
+    A trailing newline is conventional for POSIX text files (and
+    enforced by most editors). A file without a trailing newline
+    reports as one less than visible lines, which is fine for a
+    ≤80 cap — if anything it nudges authors to land cleanly.
+    """
+    return path.read_bytes().count(b"\n")
+
+
+def test_claude_md_within_line_cap():
+    """CLAUDE.md must be ≤80 lines.
+
+    Pins the Bit 1.4 done-when criterion. Every interaction loads
+    CLAUDE.md, so each line is context budget; the cap forces detail
+    into agent_docs/ + kb/_index.md + package-level CLAUDE.md files
+    where it costs zero tokens until pulled.
+    """
+    n = _line_count(CLAUDE_MD)
+    assert n <= MAX_LINES, (
+        f"CLAUDE.md is {n} lines (limit: {MAX_LINES}). Push detail to "
+        f"agent_docs/, kb/_index.md, or package-level CLAUDE.md "
+        f"(`bot/CLAUDE.md`, `tests/CLAUDE.md`, `scripts/CLAUDE.md`) "
+        f"rather than expanding root. Plan reference: "
+        f"kb/decisions/repo-modularization-plan-may05.md line 1331."
+    )
+
+
+def test_agents_md_line_count_matches_claude_md():
+    """AGENTS.md (symlink to CLAUDE.md per Bit 1.3) must read through to
+    the same line count.
+
+    Belt-and-suspenders for `tests/test_agents_md_symlink.py::
+    test_agents_md_content_matches_claude_md` — that test pins
+    byte-equal content; this one pins the line count specifically. If
+    a future "fix" replaces the symlink with a stale text copy, the
+    drift surfaces here as a count mismatch the moment CLAUDE.md is
+    edited.
+    """
+    claude_lines = _line_count(CLAUDE_MD)
+    agents_lines = _line_count(AGENTS_MD)
+    assert agents_lines == claude_lines, (
+        f"AGENTS.md line count ({agents_lines}) does not match "
+        f"CLAUDE.md ({claude_lines}). Bit 1.3 ships AGENTS.md as a "
+        f"symlink to CLAUDE.md; if these differ, the symlink was "
+        f"replaced with a copy and is now drifting. Restore with: "
+        f"rm AGENTS.md && ln -s CLAUDE.md AGENTS.md && git add AGENTS.md"
+    )
+
+
+# Required headings — match exactly as they appear in CLAUDE.md so a
+# rename (e.g., "Critical rules" → "Rules") fires the test.
+# Headings are detected as start-of-line matches to avoid false
+# positives from quoted references in body text.
+REQUIRED_SECTIONS = (
+    "## Reference docs (read on demand)",
+    "## Interaction rules",
+    "## Critical rules",
+    "## Anti-patterns",
+    "## Skill routing",
+)
+
+
+def test_required_sections_present():
+    """The five load-bearing sections + the H1 project summary must remain.
+
+    These are the structural anchors: an agent (or doc-drift script)
+    looking for "where do I find the skill routing" expects exactly
+    `## Skill routing` and not `## Skills` or `## Routing`. A future
+    further-prune that drops a section entirely would be caught here.
+    Renaming a section without updating the test is the intended
+    failure mode (forces a deliberate decision).
+
+    H1 pin: the file must START with `# Kalshi Crypto Trading Bot\\n`.
+    R9 review caught that line-cap + AGENTS.md byte-equality alone
+    don't cover H1 deletion (line-cap is satisfied if the H1 line is
+    replaced with a blank; AGENTS.md is a symlink, so any deletion
+    propagates and byte-equality is preserved either way). This is
+    the only test that would fire if a future prune accidentally
+    drops the H1.
+    """
+    text = CLAUDE_MD.read_text()
+    assert text.startswith("# Kalshi Crypto Trading Bot\n"), (
+        "CLAUDE.md must START with `# Kalshi Crypto Trading Bot` "
+        "as the H1 project summary header. AGENTS.md (Bit 1.3 "
+        "symlink) inherits this; if a future prune drops the H1, "
+        "neither the line-cap nor AGENTS.md content-equality test "
+        "would catch it."
+    )
+    missing = [s for s in REQUIRED_SECTIONS if f"\n{s}\n" not in f"\n{text}"]
+    assert not missing, (
+        f"CLAUDE.md is missing required section headings: {missing}. "
+        f"If you renamed a section deliberately, update REQUIRED_SECTIONS "
+        f"in this test."
+    )
+
+
+def test_bot_py_sacred_rule_present():
+    """The bot.py-is-sacred rule must remain in the Critical rules.
+
+    Sacred-file rule per CLAUDE.md and `kb/failures/`. A regression
+    agent that "tidies" by removing the rule line creates a path to
+    accidental refactor of the canonical file. Match the leading
+    bullet so a stray prose mention elsewhere doesn't satisfy the
+    check.
+    """
+    text = CLAUDE_MD.read_text()
+    assert "- **bot.py is sacred.**" in text, (
+        "CLAUDE.md is missing the canonical bot.py-sacred rule "
+        "(`- **bot.py is sacred.**`). This rule is load-bearing: it "
+        "blocks the recurring temptation to refactor bot.py into "
+        "modules outside the Sprint 2+ plan."
+    )
+
+
+# Pointers in the "Reference docs" section. A pointer to a deleted
+# file is a silent rot; we want loud breakage. The list is the
+# minimum survivable set — a future prune that drops one of these
+# should rename the test, not skip it.
+REFERENCED_DOCS = (
+    "agent_docs/current_state.md",
+    "agent_docs/config_reference.md",
+    "agent_docs/db_schema.md",
+    "agent_docs/bot_layout.md",
+    "agent_docs/calibration_pipeline.md",
+    "kb/_index.md",
+    "kb-research/_index.md",
+)
+
+
+@pytest.mark.parametrize("rel_path", REFERENCED_DOCS)
+def test_referenced_doc_path_is_mentioned(rel_path: str):
+    """Each referenced doc path must appear literally in CLAUDE.md.
+
+    Catches the case where a future prune drops one of the seven
+    on-demand reference docs that fire on agent demand. The pointer
+    is the contract; deletion of the file should also delete the
+    pointer (or an agent following the pointer hits a dead link).
+    """
+    text = CLAUDE_MD.read_text()
+    assert rel_path in text, (
+        f"CLAUDE.md no longer references {rel_path!r}. If the doc "
+        f"was renamed/moved, update the pointer; if removed, drop "
+        f"the entry from REFERENCED_DOCS in this test."
+    )
+
+
+@pytest.mark.parametrize("rel_path", REFERENCED_DOCS)
+def test_referenced_doc_path_exists_on_disk(rel_path: str):
+    """Each referenced doc path must resolve to a real file.
+
+    `kb/_index.md` and `kb-research/_index.md` are git-tracked
+    pre-rule legacy entries; on a normal `git clone` the parent
+    `kb/` / `kb-research/` directories exist and the files are
+    present, so the skip below does NOT fire. The skip is an edge-
+    case backstop for pathological package installs (sdist/wheel
+    builds that strip non-package content via MANIFEST.in
+    exclusions, or out-of-tree harness scenarios) where the kb tree
+    is intentionally absent. The broader local-only-by-convention
+    rule applies to net-new files, not to these tracked legacy
+    entries. The literal pointer presence (covered by
+    `test_referenced_doc_path_is_mentioned`) is the portable
+    contract that always fires.
+    """
+    parent = (REPO_ROOT / rel_path).parent
+    if not parent.exists():
+        pytest.skip(
+            f"{parent} does not exist on this checkout (likely a "
+            f"sdist/wheel/non-author clone without local kb/). The "
+            f"literal pointer presence is covered by "
+            f"test_referenced_doc_path_is_mentioned."
+        )
+    target = REPO_ROOT / rel_path
+    assert target.exists(), (
+        f"CLAUDE.md references {rel_path!r} but the file does not "
+        f"exist at {target}. Either restore the doc or remove the "
+        f"pointer from CLAUDE.md (and from REFERENCED_DOCS in this "
+        f"test)."
+    )
+
+
+# Active-breadcrumb pattern: an "active pointer" is the canonical
+# `see \`PATH\`` form Bit 1.4's Critical-rules breadcrumb uses. Forward-
+# looking mentions ("Sprint 2 Bit 2.2 promotes this draft to
+# `bot/CLAUDE.md`", "Package-level guides ... `bot/CLAUDE.md` once
+# Sprint 2 Bit 2.2 ships") deliberately do NOT match — they're
+# describing future state, not pointing at a file that should exist
+# today. The `see \`...\`` regex captures the path INSIDE backticks
+# preceded by literal "see `" so a casual mention isn't promoted to
+# an active-breadcrumb claim.
+_ACTIVE_BREADCRUMB_RE = re.compile(r"see `([^`]+)`")
+
+# Subset of paths that are considered "breadcrumb candidates" for this
+# test. Other `see \`...\`` references (e.g., to a postmortem) live in
+# `kb/failures/` and are out of scope for the dead-link check (they're
+# covered by the broader pointer-presence convention; their absence
+# isn't a Bit 1.4 contract).
+#
+# **Maintenance contract:** when adding a new active `see \`<path>\``
+# breadcrumb to CLAUDE.md (e.g., a draft for `tests/CLAUDE.md`, or a
+# third package guide), add the path here so its existence is
+# checked. Otherwise the addition gets silent under-coverage.
+_BREADCRUMB_CANDIDATES = {
+    "agent_docs/bot-claude-md-draft.md",
+    "bot/CLAUDE.md",
+}
+
+# Files outside CLAUDE.md that may carry pointers to the bot.py-rules
+# draft path. Bit 1.4 R1+R3 introduced these cross-file pointers (in
+# README.md "Repository conventions" and scripts/CLAUDE.md cell-block
+# one-liner). Sprint 2 Bit 2.2 must update all three sites in the
+# same commit, otherwise the cross-file pointers become dead links.
+# `test_cross_file_draft_references_resolve` enforces that hand-off.
+_CROSS_FILE_DRAFT_REFERENCE_SITES = (
+    "README.md",
+    "scripts/CLAUDE.md",
+)
+
+
+def test_bot_claude_md_draft_exists_on_disk():
+    """Every ACTIVE breadcrumb path in CLAUDE.md must exist on disk.
+
+    Distinct from `test_bot_py_implementation_rules_breadcrumb_present`
+    (which only checks the path appears in the file). This one catches
+    dead pointers — the breadcrumb file is moved/deleted but
+    CLAUDE.md still references it via "see `<path>`".
+
+    "Active breadcrumb" = the `see \\`PATH\\`` form. Forward-looking
+    mentions ("once Sprint 2 ships", "promotes to") deliberately
+    don't match; they describe future state and the target file isn't
+    expected to exist today. The R2 review hardened the prior
+    `if A and not B → check A` conditional which silently passed when
+    both paths were referenced; this regex-driven version checks every
+    active pointer independently.
+
+    Sprint progression:
+      - Today (Bit 1.4 → Bit 2.1): the active pointer is
+        `see \\`agent_docs/bot-claude-md-draft.md\\``; that file must exist.
+        `bot/CLAUDE.md` is only mentioned as forward-looking text and
+        is not flagged.
+      - Bit 2.2: the active pointer flips to `see \\`bot/CLAUDE.md\\``
+        in the same commit that ships `bot/CLAUDE.md`; the draft is
+        `git mv`d. Both `bot/CLAUDE.md` and the (now-missing) draft
+        are covered correctly.
+    """
+    text = CLAUDE_MD.read_text()
+    active_paths = _ACTIVE_BREADCRUMB_RE.findall(text)
+    breadcrumb_targets = [
+        REPO_ROOT / p for p in active_paths if p in _BREADCRUMB_CANDIDATES
+    ]
+    assert breadcrumb_targets, (
+        "CLAUDE.md has no active breadcrumb (`see `<path>``) pointing "
+        "at `agent_docs/bot-claude-md-draft.md` or `bot/CLAUDE.md`. "
+        "The breadcrumb is the contract; if this is intentional "
+        "(e.g., draft retired and bot.py rules fully reabsorbed at "
+        "root), update or remove this test."
+    )
+    missing = [str(p) for p in breadcrumb_targets if not p.exists()]
+    assert not missing, (
+        f"CLAUDE.md has active breadcrumb(s) (`see `<path>``) "
+        f"pointing at file(s) that are missing on disk: {missing}. "
+        f"Either restore the file(s), or remove the dead `see `...`` "
+        f"reference from CLAUDE.md."
+    )
+
+
+def test_bot_py_implementation_rules_breadcrumb_present():
+    """The breadcrumb to `agent_docs/bot-claude-md-draft.md` must remain.
+
+    Bit 1.4 design: bot.py-specific implementation rules
+    (torch threading + `_thread_env` ordering, cal_mlp four-site
+    lock-step, cell-block string literals, SQLite WAL pragmas, etc.)
+    were moved out of root CLAUDE.md and staged at
+    `agent_docs/bot-claude-md-draft.md` (R1 review fix: the original
+    plan path `kb/drafts/` is local-only-by-convention and would
+    leave the breadcrumb pointing at a file absent on a fresh
+    clone). Sprint 2 Bit 2.2 promotes the draft to `bot/CLAUDE.md`.
+    Until that ships, the breadcrumb at root is the only on-load
+    reminder in the Critical-rules section that those rules exist —
+    deleting it strands the rules.
+
+    Two pinned elements:
+      1. The literal label `**bot.py implementation rules**` (the
+         Critical-rules bullet prefix). Stable across the
+         draft → `bot/CLAUDE.md` transition.
+      2. A pointer (today: `agent_docs/bot-claude-md-draft.md`;
+         after Bit 2.2: `bot/CLAUDE.md`). Either form satisfies.
+
+    Pinning the LABEL specifically (rather than just the path)
+    closes the R1 bypass: without the label check, the OR-with
+    `bot/CLAUDE.md` was satisfied by the unrelated reference-docs
+    line that mentions `bot/CLAUDE.md` "once Sprint 2 Bit 2.2
+    ships", and the actual breadcrumb could be deleted silently.
+    """
+    text = CLAUDE_MD.read_text()
+    assert "**bot.py implementation rules**" in text, (
+        "CLAUDE.md is missing the `**bot.py implementation rules**` "
+        "Critical-rules bullet label. This is the load-bearing "
+        "breadcrumb that points operators at the moved bot.py rules "
+        "(torch threading, cal_mlp four-site lock-step, cell-block "
+        "filter_stage values, SQLite WAL pragmas, etc.). Without "
+        "this label at root, citations across the codebase that "
+        "reference 'CLAUDE.md' for these rules become wrong-by-pointer."
+    )
+    assert (
+        "agent_docs/bot-claude-md-draft.md" in text
+        or "bot/CLAUDE.md" in text
+    ), (
+        "CLAUDE.md is missing the bot.py-implementation-rules path "
+        "pointer. Until Sprint 2 Bit 2.2 ships `bot/CLAUDE.md`, the "
+        "breadcrumb must point at `agent_docs/bot-claude-md-draft.md`. "
+        "After Bit 2.2 ships, the pointer should reference "
+        "`bot/CLAUDE.md` instead. (The label assertion above is the "
+        "primary contract; this is the secondary check.)"
+    )
+
+
+def test_two_file_mode_flag_present():
+    """The Bit 1.3 closeout-commitment-2 forward-looking flag must remain.
+
+    Bit 1.3 closeout (`kb/decisions/bit-1.3-agents-md-shipped-may06.md`
+    commitment 2) committed to a forward-looking flag in CLAUDE.md
+    that names the GO/NO-GO trigger for flipping AGENTS.md from
+    symlink to a separate portable file. Without this flag, a future
+    agent considering option 2 has no on-load reminder of the
+    decision criteria and re-relitigates the choice.
+
+    The flag has two checked elements:
+      1. Mention of `AGENTS.md` (the surface affected).
+      2. Pointer to the Bit 1.3 closeout doc (the criteria source).
+    """
+    text = CLAUDE_MD.read_text()
+    assert "AGENTS.md" in text, (
+        "CLAUDE.md is missing the AGENTS.md mention required by the "
+        "two-file-mode flag (Bit 1.3 closeout commitment 2)."
+    )
+    assert "bit-1.3-agents-md-shipped-may06.md" in text, (
+        "CLAUDE.md is missing the pointer to "
+        "kb/decisions/bit-1.3-agents-md-shipped-may06.md required "
+        "by the two-file-mode flag (Bit 1.3 closeout commitment 2). "
+        "The pointer is the on-load reminder of the GO/NO-GO trigger."
+    )
+
+
+@pytest.mark.parametrize("rel_path", _CROSS_FILE_DRAFT_REFERENCE_SITES)
+def test_cross_file_draft_references_resolve(rel_path: str):
+    """Every literal candidate path mention in a cross-file site must
+    resolve to a real file on disk.
+
+    Bit 1.4 introduced two cross-file pointers when the draft was
+    moved out of `kb/drafts/` (R1 review fix): one in
+    `README.md` "Repository conventions" and one in `scripts/CLAUDE.md`
+    cell-block one-liner. Sprint 2 Bit 2.2 must update both in the
+    same commit when it `git mv`s the draft to `bot/CLAUDE.md`.
+
+    Policy (R10 review hardened): if any literal substring from
+    `_BREADCRUMB_CANDIDATES` appears in a cross-file site, its
+    target file must exist. The earlier "active-path-only" check
+    silently passed both directions of partial migration (today: a
+    forward-looking `bot/CLAUDE.md` mention without the file
+    existing; post-Bit-2.2: a stale `agent_docs/...` mention after
+    the file is `git mv`d). Tightened to require resolution either
+    way.
+
+    Implication for cross-file prose: forward-looking text must use
+    indirection (e.g., "the `bot/` package's runtime CLAUDE.md"),
+    not the literal `bot/CLAUDE.md` substring, until the file
+    exists. Sprint 2 Bit 2.2 then updates the prose to use the
+    literal in the same commit that creates the file. This is the
+    R3 hand-off contract enforced strictly.
+
+    Sprint progression:
+      - Today (Bit 1.4 → Bit 2.1): `agent_docs/bot-claude-md-draft.md`
+        is the only candidate substring that may appear in
+        cross-files; it must resolve.
+      - Bit 2.2 commit: in the SAME commit, (a) `git mv`
+        `agent_docs/bot-claude-md-draft.md` → `bot/CLAUDE.md`,
+        (b) drop the `agent_docs/...` literal from every cross-file,
+        (c) reintroduce the `bot/CLAUDE.md` literal in those files.
+        After the commit lands, `agent_docs/bot-claude-md-draft.md`
+        no longer exists, so any remaining literal mention of it in
+        cross-files fails this test — the cleanup must happen in the
+        same commit.
+      - Post-Bit-2.2: `bot/CLAUDE.md` is the only candidate in
+        cross-files; the draft path is gone; resolution still holds.
+    """
+    site_path = REPO_ROOT / rel_path
+    if not site_path.exists():
+        pytest.fail(
+            f"{rel_path} is missing — required by Bit 1.4 cross-file "
+            f"pointer contract. Either restore the file or drop "
+            f"{rel_path!r} from _CROSS_FILE_DRAFT_REFERENCE_SITES "
+            f"in this test."
+        )
+    site_text = site_path.read_text()
+    for candidate in _BREADCRUMB_CANDIDATES:
+        if candidate not in site_text:
+            continue
+        target = REPO_ROOT / candidate
+        assert target.exists(), (
+            f"{rel_path} contains the literal substring "
+            f"{candidate!r} but the target file does not exist at "
+            f"{target}. Two legitimate fixes: (a) if this is "
+            f"forward-looking prose about a file that doesn't exist "
+            f"yet, rewrite using indirection (e.g., 'the `bot/` "
+            f"package's runtime CLAUDE.md') so the literal "
+            f"substring doesn't appear; or (b) if this is a stale "
+            f"reference left over from a partial migration, update "
+            f"or remove it. The strict policy is: any literal "
+            f"candidate path in a cross-file must resolve."
+        )
+
+
+def test_test_fast_recipe_invokes_claude_md_size_test():
+    """`make test-fast` must run `tests/test_claude_md_size.py`.
+
+    Symmetric with
+    `tests/test_agents_md_symlink.py::test_test_fast_recipe_invokes_agents_md_test`
+    (the same pin pattern Bit 1.3 introduced). Bit 1.4's invariants
+    (line cap, structural sections, breadcrumb pointers) belong in
+    the dev-tooling fast-tier alongside the other invariant suites.
+    A future Makefile edit that drops this file from the recipe goes
+    silent — the broader `make test` would still cover it, but the
+    fast-tier guarantee Bit 1.4 contributes is unpinned. Pinning the
+    contract here means that drop fails this very test.
+    """
+    text = MAKEFILE.read_text()
+    folded = re.sub(r"\\\n", " ", text)
+    recipe_match = re.search(
+        r"^test-fast:[^\n]*\n((?:\t.*\n?)+)",
+        folded,
+        re.MULTILINE,
+    )
+    assert recipe_match is not None, (
+        "Makefile is missing a `test-fast:` target. This is the Bit 1.2 "
+        "contract — likely an unrelated regression; check tests/test_makefile.py."
+    )
+    recipe = recipe_match.group(1)
+    assert "tests/test_claude_md_size.py" in recipe, (
+        f"`make test-fast` recipe must invoke tests/test_claude_md_size.py "
+        f"(Bit 1.4). Current recipe: {recipe!r}"
+    )
