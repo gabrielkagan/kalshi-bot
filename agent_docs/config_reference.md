@@ -1,7 +1,7 @@
 # Config Reference
 
 All values mirror constants in `bot.py`. `market_config.py` asserts they match at startup.
-On change, run `python3 scripts/doc_drift_check.py` and update this file in the same commit.
+On change, run `make doc-drift` (alias for `python3 scripts/doc_drift_check.py`) and update this file in the same commit.
 
 ## Global / 15M
 
