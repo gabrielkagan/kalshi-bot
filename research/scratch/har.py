@@ -2,10 +2,13 @@
 """Standalone tests for HAREstimator — no pip dependencies required.
 
 NOTE: HAR model was deleted from production (misapplied at sub-hourly
-timescales). These tests cover dead code and are skipped in CI.
-Kept for reference in case HAR is revisited.
+timescales). These tests cover dead code. Bit 1.5 (modularization
+Sprint 1) moved this file from the repo root to research/scratch/ and
+dropped the `test_` prefix so pytest no longer collects it. Kept for
+reference in case HAR is revisited.
 
-Run: python3 test_har.py
+Direct invocation will raise `pytest.Skipped` (the module-level skip
+below) — this file is reference-only.
 """
 import sys
 import pytest

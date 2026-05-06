@@ -16,8 +16,9 @@ Root cause analysis of bugs #1-#5 (March 6 2026):
   Run it after any change to either file to catch mismatches before deploy.
 
 Usage:
-  python3 test_dashboard_contract.py               # quick (no Firebase needed)
-  python3 test_dashboard_contract.py --with-mock    # builds snapshot from mock, checks keys
+  python3 -m pytest tests/regression/test_dashboard_contract.py
+  python3 tests/regression/test_dashboard_contract.py            # direct (no Firebase needed)
+  python3 tests/regression/test_dashboard_contract.py --with-mock  # builds snapshot from mock, checks keys
 """
 
 import re
@@ -29,7 +30,13 @@ import math
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
 
-DASHBOARD_SNAPSHOT_PATH = os.path.join(os.path.dirname(__file__), "dashboard_snapshot.py")
+# Bit 1.5 (modularization Sprint 1) moved this file from the repo root
+# into tests/regression/. The contract under test is between
+# dashboard_snapshot.py (repo root) and the dashboard repo, so the
+# anchor must be the repo root, not __file__. Walk up two levels:
+# tests/regression/ → tests/ → repo root.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DASHBOARD_SNAPSHOT_PATH = os.path.join(PROJECT_ROOT, "dashboard_snapshot.py")
 DASHBOARD_PATH = "/private/tmp/gabekagan-dash/dashboard/index.html"
 
 # Every key that dashboard_snapshot.py writes as snap["key"]

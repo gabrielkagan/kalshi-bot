@@ -268,30 +268,32 @@ def test_pyproject_ruff_target_version_pinned_to_vps():
     )
 
 
-def test_pyproject_ruff_perfile_ignores_cover_root_test_files():
-    """Per-file-ignores must cover root-level test_*.py until Bit 1.5 moves them.
+def test_pyproject_ruff_perfile_ignores_post_bit_1_5():
+    """Per-file-ignores must cover tests/ (recursively) and not regress to
+    a legacy root pattern.
 
-    pytest currently discovers root test_*.py (testpaths='.'), so ruff must
-    treat them as tests for ignore purposes. After Bit 1.5 consolidates root
-    test files into tests/, the second pattern can be dropped.
+    Bit 1.5 (modularization Sprint 1) moved all root-level test_*.py files
+    into tests/regression/, then dropped the transitional `test_*.py`
+    per-file-ignore pattern. The repo-root invariant ("no test_*.py at
+    root") is enforced by tests/test_no_root_test_files.py — this test
+    pins the lint side of the same contract.
     """
     data = _load()
     ignores = (
         data.get("tool", {}).get("ruff", {}).get("lint", {}).get("per-file-ignores", {})
     )
-    root_test_glob = ignores.get("test_*.py") or ignores.get("**/test_*.py")
     nested_test_glob = ignores.get("tests/**")
-    assert root_test_glob, (
-        "Per-file-ignores missing pattern for root test_*.py. Either add "
-        "`test_*.py` (current legacy locations) or `**/test_*.py`. Drop after "
-        "Bit 1.5 if all tests live in tests/."
+    assert nested_test_glob, (
+        "Per-file-ignores missing `tests/**`. Bit 1.5 made this the sole "
+        "source of test-file ignores; without it, tests/regression/ "
+        "files lose their unused-import / line-length grace."
     )
-    assert nested_test_glob, "Per-file-ignores missing pattern for tests/**."
-    # Both globs should ignore the same set so a test moving from root → tests/
-    # doesn't change its lint coverage.
-    assert set(root_test_glob) == set(nested_test_glob), (
-        f"Per-file-ignores divergence: root tests ignore {root_test_glob}, "
-        f"tests/ ignores {nested_test_glob}. Keep symmetric until Bit 1.5."
+    legacy_root = ignores.get("test_*.py") or ignores.get("**/test_*.py")
+    assert legacy_root is None, (
+        f"Legacy root test_*.py per-file-ignore reappeared: {legacy_root!r}. "
+        f"Bit 1.5 dropped this pattern. Real tests belong under "
+        f"tests/regression/; root-level test_*.py is rejected by "
+        f"tests/test_no_root_test_files.py."
     )
 
 

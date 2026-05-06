@@ -125,9 +125,17 @@ fixable = []
 [tool.ruff.lint.per-file-ignores]
 # Tests routinely have unused imports (fixtures via side-effect) and long
 # assertion strings. Don't drown the signal in test noise.
-# Two patterns until Bit 1.5 consolidates root test_*.py into tests/:
-# `tests/**` covers the new location; `test_*.py` covers the legacy roots.
-# After Bit 1.5 the second pattern can be dropped.
+# Bit 1.5 consolidated root test_*.py files into tests/regression/, so
+# the legacy `test_*.py` pattern (originally a second entry alongside
+# `tests/**`) was dropped. The repo-root invariant is enforced by
+# tests/test_no_root_test_files.py.
 "tests/**" = ["E501", "F401", "F811"]
-"test_*.py" = ["E501", "F401", "F811"]
 "conftest.py" = ["E501", "F401", "F811"]
+# research/scratch/ is reference-only space (Bit 1.5 landed dead-code
+# HAR files there with `pytest.skip(allow_module_level=True)` followed
+# by imports — i.e., E402 by design). The autoresearch comment under
+# `[tool.ruff]` (research/ NOT extend-excluded) targets *active*
+# research code that ships under research/<topic>/, not scratchpads.
+# Adding E402 here on top of the standard tests-style trio because the
+# skip-then-import pattern is the whole point of the file.
+"research/scratch/**" = ["E402", "E501", "F401", "F811"]
