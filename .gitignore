@@ -12,6 +12,9 @@ calibration_state.json
 weather_ensemble_cache.json
 backfill_data/
 DOC_DRIFT_REPORT.txt
+# Local snapshot dump dir (state_snapshot_*.db files for Mac-side cal_mlp drain).
+# 0-byte placeholder state.db + multi-hundred-MB snapshots — never commit.
+/data/
 # R-p7-deploy-r11 R6: bot-runtime persistence dir (spot_buffer.json,
 # external_poller_state.json). Local-only; never commit.
 # R7 (LOW): leading slash anchors to repo root only — without it, any
@@ -23,3 +26,11 @@ DOC_DRIFT_REPORT.txt
 
 # Ignore Smart Environment folder
 .smart-env
+
+# macOS Finder artifacts
+.DS_Store
+**/.DS_Store
+
+# Claude Code session locks — transient, machine-local; iCloud Drive
+# creates conflict copies (`scheduled_tasks 2.lock` etc.). Never commit.
+.claude/scheduled_tasks*.lock

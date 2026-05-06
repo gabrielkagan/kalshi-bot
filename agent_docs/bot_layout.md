@@ -1,44 +1,124 @@
 # bot.py Layout
 
-Approximate line ranges. May drift — `grep -n 'class \|^def ' bot.py` to verify before quoting line numbers.
+bot.py is **28,166 lines** as of 2026-05-05. Class line ranges below
+are auto-verifiable. Repo modularization plan (`kb/decisions/repo-modularization-plan-may05.md`)
+will turn bot.py into a thin entrypoint shim with logic in a `bot/` package.
 
-| Lines | Component | Notes |
+## Regenerate
+
+This doc drifts when bot.py grows. Regression test
+`tests/test_repo_hygiene.py::test_bot_layout_class_lines_match_bot_py`
+fails when class line numbers diverge by >5. Regenerate with:
+
+```bash
+python3 -c "
+import re
+text = open('bot.py').read(); lines = text.splitlines(); total = len(lines)
+classes = []
+for i, line in enumerate(lines, 1):
+    m = re.match(r'^class ([A-Za-z_][A-Za-z0-9_]*)', line)
+    if m: classes.append((i, m.group(1)))
+print(f'Total bot.py lines: {total}')
+print('| Lines | Class | Size |'); print('|---|---|---|')
+for idx, (start, name) in enumerate(classes):
+    end = classes[idx+1][0]-1 if idx+1 < len(classes) else total
+    print(f'| {start}–{end} | \`{name}\` | {end-start+1} |')
+"
+```
+
+## Top-level structure (approximate)
+
+bot.py interleaves imports, constants, helpers, classes, and a tail
+entry point. Boundaries below are inexact (no AST split exists yet);
+verify by reading 5-10 lines around each line number before quoting.
+
+| Lines | Section |
+|---|---|
+| 1–~60 | Header import block (sys.path tweak at line 11 inserts `scripts/cal_mlp/`; `_thread_env` import at line 12 loads BEFORE `numpy` at line 34 — load-bearing per CLAUDE.md) |
+| ~60–~2150 | Module-level constants AND helpers, interleaved (cell-block bleeder lists, MIN_EDGE/TM_SWEEP tables, validators, `compute_derived_features`, `compute_time_regime_features`, sizing helpers, dollars/fp helpers, cell-block predicates `should_block_*`). Future split: constants → `bot/constants.py` (Bit 3.1); helpers → `bot/helpers/*` (Bit 3.2). The exact split-point lands in Bit 3.1. |
+| ~2150–~2364 | `evaluate_execution_strategy()` + tail helpers. (Future home undecided — likely `bot/helpers/execution.py` since it's diagnostic-only.) |
+| 2365–28166 | Class definitions (see table below). One module-level `def discover_active_windows()` at line 26078 sits in the body region between SettlementTracker's class body and the MainLoop class def at line 26163; it ships with MainLoop in Bit 9.3. |
+
+### Class-body end vs class-range note
+
+The class table below uses *next-class-start − 1* as the range end. So
+`SettlementTracker 24984–26162` includes the inter-class
+`discover_active_windows()` def at line 26078. The class body itself
+ends earlier (around 26077). The class size column counts those inter-class
+lines, which is conservative (over-counts by ~80 for SettlementTracker).
+
+## Classes (auto-verifiable)
+
+Generated 2026-05-05 from `grep -nE '^class ' bot.py`.
+
+| Lines | Class | Size |
 |---|---|---|
-| 1–600 | Imports, constants, config | Trading params, API config, vol engine, calibration, sizing, execution |
-| 600–620 | Utility functions | FP/dollar string helpers |
-| 620–815 | `evaluate_execution_strategy()` | Diagnostic only, does NOT control execution |
-| 820–1085 | `KalshiClient` | API wrapper, order management, orderbook fetching |
-| 1089–1150 | `Logger` | JSONL trade/event logging |
-| 1152–1185 | `TelegramNotifier` | Telegram alerts |
-| 1188–2480 | `StateManager` | DB init (`_create_tables` at 1209), positions, settlement |
-| 2483–2635 | `CoinbaseFeed` | WebSocket price feed, OHLCV snapshots |
-| 2645–2970 | `KalshiFeed` | WebSocket orderbook stream, fill detection |
-| 2977–3050 | `DeribitDVOLFetcher` | Implied volatility index |
-| 3058–3370 | `CrossExchangeFeed` | Kraken, Binance, Bybit order flow |
-| 3376–3450 | `CoinGlassFetcher` | Derivative funding rates |
-| 3453–3730 | `OrderFlowEngine` + `KalshiOrderFlowTracker` | Kalshi OB flow signals |
-| 3736–4640 | `VolatilityEngine` | RK, GARCH, RV estimation, TV RK weights |
-| 4643–4805 | `ProbabilityEngine` | Z-score, NIG CDF, market blend |
-| 4809–5670 | `CalibrationEngine` | Beta/Platt/isotonic, `_CAL_REGISTRY`, shadow pipeline |
-| 5674–9844 | `OpportunityScanner` | `scan()` at 5904, market discovery, filter pipeline, shadow signals |
-| 9848–12220 | `OrderExecutor` | `execute()` at 9945, maker→taker escalation, fill detection |
-| 12223–12980 | `SettlementTracker` | Settlement detection, CalEngine routing, PnL computation |
-| 12983–13065 | `discover_active_windows()` | Market discovery from Kalshi API |
-| 13068–14030 | `MainLoop` | `run()` at 13902, init, WS subscription, periodic tasks |
-| 14030–14043 | Entry point | |
+| 2365–2717 | `KalshiClient` | 353 |
+| 2718–2780 | `Logger` | 63 |
+| 2781–3029 | `TelegramNotifier` | 249 |
+| 3030–5593 | `StateManager` | 2564 |
+| 5594–5927 | `CoinbaseFeed` | 334 |
+| 5928–5939 | `OrderbookSchemaError` | 12 |
+| 5940–7709 | `KalshiFeed` | 1770 |
+| 7710–7790 | `DeribitDVOLFetcher` | 81 |
+| 7791–8118 | `CrossExchangeFeed` | 328 |
+| 8119–8195 | `CoinGlassFetcher` | 77 |
+| 8196–8317 | `OrderFlowEngine` | 122 |
+| 8318–8478 | `KalshiOrderFlowTracker` | 161 |
+| 8479–9438 | `VolatilityEngine` | 960 |
+| 9439–9641 | `ProbabilityEngine` | 203 |
+| 9642–10651 | `CalibrationEngine` | 1010 |
+| 10652–19729 | `OpportunityScanner` | 9078 |
+| 19730–24983 | `OrderExecutor` | 5254 |
+| 24984–26162 | `SettlementTracker` | 1179 |
+| 26163–28166 | `MainLoop` | 2004 |
 
-## Project Structure
+## Project file map (root, 2026-05-05)
 
-- `bot.py` — Main bot (all trading logic, ~23.5K lines)
-- `analyst.py` — AI analyst (news sentiment, loss analysis, Telegram alerts)
-- `spx_engine.py` — SPX hourly engine (Polygon.io, EGARCH, RK, VIX)
-- `weather_engine.py` — Weather ensemble fetcher + probability model (Open-Meteo GFS/ECMWF)
-- `sports_engine.py` — Sports comeback engine (ESPN live data, Bayesian posterior)
-- `market_config.py` — Centralized MarketTypeConfig (asserts against bot.py at startup)
-- `dashboard_snapshot.py` — Dashboard state snapshots (Supabase syncer)
-- `fifteenm_shadow.py` — 15M shadow strategies (A1/A2/A3/A4)
-- `hourly_alt_shadow.py` — Hourly alt shadow strategies (HAR-RV, market-making sim)
-- `auditor.py` — Hourly cron health checks → Telegram
-- `researcher.py` — 3x daily performance reports → Telegram
-- `start.sh` — Startup script (venv + .env + bot.py)
-- `.github/workflows/deploy.yml` — Auto-deploy to VPS on push to main
+Live trading process:
+- `bot.py` — main bot, all trading logic (28,166 lines)
+- `start.sh` — systemd entrypoint (venv + .env + bot.py)
+- `scripts/cal_mlp/_thread_env.py` — sets OMP/MKL/OpenBLAS thread caps. bot.py inserts `scripts/cal_mlp/` into sys.path at line 11 then imports `_thread_env` at line 12, BEFORE numpy on line 34. Order is load-bearing per CLAUDE.md and AST-asserted by `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_py`.
+
+Engines (separate threads/processes):
+- `spx_engine.py` — SPX hourly (Polygon, EGARCH, RK, VIX)
+- `weather_engine.py` — weather ensemble (Open-Meteo GFS/ECMWF)
+- `sports_engine.py` — sports comeback (ESPN, Bayesian posterior)
+- `sports_data.py` — sports data fetcher
+
+Shadows (observation-only):
+- `fifteenm_shadow.py` — 15M variants A1/A2/A3/A4
+- `hourly_alt_shadow.py` — hourly alternate sims
+- `spx_harrv_shadow.py` — SPX HAR-RV shadow
+
+AI helpers:
+- `analyst.py`, `auditor.py`, `researcher.py` — Telegram-driven analysis
+
+Snapshots/sync:
+- `dashboard_snapshot.py` — Supabase syncer (paired with `dashboard/index.html` on `gh-pages`)
+- `bot_state_snapshot.py` — bot microstate forward-capture
+- `market_observations_snapshotter.py` — NBBO continuous snapshotter
+- `supabase_sync.py` — Postgres mirror
+
+Infra:
+- `capital_allocator.py`, `circuit_breaker.py`, `watchdog.py`, `models.py`
+
+Config:
+- `market_config.py` — MarketTypeConfig dataclass; asserts against bot.py at startup
+- `config.py`, `config.json`, `dist_config.json` — multiple sources (consolidation pending Phase II)
+
+Operator scripts: `scripts/` (~80 files; subdir reorg pending Phase HH)
+
+Tests: `tests/` (~3,000 collected; verify with `pytest tests/ --collect-only -q | tail -5`. Unit/integration/regression split pending Phase JJ)
+
+KB (local-only, never committed): `kb/`, `kb-research/`
+
+## Modularization destination
+
+Per `kb/decisions/repo-modularization-plan-may05.md`:
+- Sprint 3 → constants + helpers extracted to `bot/constants.py` + `bot/helpers/*`
+- Sprint 4–6 → leaf classes (Logger, TelegramNotifier, KalshiClient, fetchers, feeds, engines)
+- Sprint 7 → StateManager → `bot/state.py`
+- Sprint 8 → OpportunityScanner → `bot/scanner/` (verbatim then internal split)
+- Sprint 9 → OrderExecutor + SettlementTracker + MainLoop → `bot/`
+- After Sprint 9, bot.py = ~50-line entrypoint.
