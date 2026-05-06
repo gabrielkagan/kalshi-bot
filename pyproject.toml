@@ -1,0 +1,133 @@
+# Bit 1.1 of repo modularization plan (kb/decisions/repo-modularization-plan-may05.md).
+# Sprint 1: tooling only — no installable Python code yet. Real `bot/` package
+# lands in Sprint 2 (Bit 2.1); until then this is a metadata-only install.
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kalshi-bot"
+version = "0.1.0"
+description = "Cryptocurrency prediction market trading bot for Kalshi (15-minute crypto windows + observation engines)."
+readme = "README.md"
+requires-python = ">=3.9,<4"
+# Runtime deps. Mirror requirements.txt EXACTLY (bidirectional) —
+# tests/test_pyproject.py asserts the symmetric difference is empty so the
+# two cannot drift. requirements.txt remains the CI / VPS install path
+# (see .github/workflows/test.yml + start.sh); pyproject deps are the
+# packaging-tool view of the same set.
+dependencies = [
+    "requests",
+    "websocket-client",
+    "websockets",
+    "cryptography",
+    "scipy",
+    "numpy",
+    "lightgbm",
+    "scikit-learn",
+]
+
+[project.optional-dependencies]
+# Install with: pip install -e .[dev]
+dev = [
+    "pytest>=8",
+    # Ruff 0.5 introduced the [tool.ruff.lint] table; <0.5 silently no-ops
+    # on the `select` list because it expected the deprecated top-level form.
+    # Pin floor + cap < 1 to track the 0.x release line until ruff stabilizes.
+    "ruff>=0.6,<1",
+    "tomli; python_version < '3.11'",
+]
+# ML extras used by cal_mlp + analysis paths. Not required for the live bot
+# loop, so kept optional.
+ml = [
+    "torch",
+    "pandas",
+    "pyarrow",
+]
+
+[tool.setuptools]
+# Sprint 1 invariant: no installable code. Both lists explicit-empty so
+# setuptools' flat-layout auto-discovery doesn't sweep in tests/, scripts/,
+# kb/, models/, etc. AS PACKAGES (top_level.txt stays empty). They may
+# still land in an sdist's SOURCES.txt as data files; that's fine for
+# Sprint 1 — what matters is that no Python module is importable from a
+# wheel. Sprint 2 (Bit 2.1) creates `bot/` and flips this.
+# Guarded by tests/test_pyproject.py::test_pyproject_no_installable_code_yet.
+#
+# Sprint-2 hand-off note: Bit 2.1 must NOT leave both `bot.py` (file) and
+# `bot/` (package) coexisting at the repo root — Python resolves them
+# ambiguously based on sys.path order. Either delete `bot.py` in the same
+# commit that creates `bot/__init__.py`, or rename one of them.
+# Sprint-2 migration recipe: delete this whole [tool.setuptools] block —
+# setuptools' default flat-layout discovery picks up `bot/` correctly.
+# Then update `tests/test_pyproject.py::test_pyproject_no_installable_code_yet`
+# to assert `packages == ["bot"]` (or just delete the test as the canary
+# has done its job).
+py-modules = []
+packages = []
+
+[tool.pytest.ini_options]
+# Ported verbatim from the deleted pytest.ini. Pytest prefers pytest.ini over
+# pyproject.toml when both exist — see test_pytest_ini_removed for the guard
+# that prevents it from coming back.
+testpaths = ["."]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks integration tests",
+    "smoke: marks quick smoke tests for CI",
+    "fragile: marks tests that verify code structure via string matching (non-blocking in CI)",
+]
+# List form (not space-split string) is shell-safe — pytest splits the
+# string on whitespace, so a future flag value with a space would silently
+# misroute.
+addopts = ["-v", "--tb=short", "--ignore=venv"]
+
+[tool.ruff]
+target-version = "py39"
+# Don't fight existing line lengths in bot.py / dashboards. Sprint 1 is
+# "ruff runs and reports", not "ruff is clean".
+line-length = 120
+# Patterns are unanchored — they match a directory of that name at any
+# depth. That's what we want here: `kb/` should be excluded wherever it
+# appears. Ruff's defaults already cover venv/.venv/dist/build/.ruff_cache/
+# .pytest_cache/__pycache__/.git — don't relist.
+# `research/` deliberately NOT excluded — autoresearch (per
+# kb/decisions/autoresearch-design-may05.md) ships Python under research/
+# and we want it linted when it lands.
+# Regression: tests/test_pyproject.py::test_extend_exclude_actually_excludes
+# verifies these patterns are functional, not just declarative.
+extend-exclude = [
+    ".smart-env",
+    "kb",
+    "kb-research",
+    "agent_docs",
+    "models",
+    "data",
+    "reports",
+]
+
+[tool.ruff.lint]
+# Lenient per Bit 1.1 spec. Pycodestyle errors (E) + Pyflakes (F) only;
+# import sorting (I), naming (N), bugbear (B), etc. deferred until later
+# sprints. Goal here is "ruff check . exits with a count", not a clean repo.
+select = ["E", "F"]
+ignore = []
+# Sprint 1 spec: "don't fix yet". Empty fixable list neutralizes
+# `ruff check . --fix` so a contributor (or IDE-on-save) can't silently
+# mutate bot.py, which is sacred per CLAUDE.md. Future sprints can flip
+# this once targeted cleanup is in scope.
+fixable = []
+
+[tool.ruff.lint.per-file-ignores]
+# Tests routinely have unused imports (fixtures via side-effect) and long
+# assertion strings. Don't drown the signal in test noise.
+# Two patterns until Bit 1.5 consolidates root test_*.py into tests/:
+# `tests/**` covers the new location; `test_*.py` covers the legacy roots.
+# After Bit 1.5 the second pattern can be dropped.
+"tests/**" = ["E501", "F401", "F811"]
+"test_*.py" = ["E501", "F401", "F811"]
+"conftest.py" = ["E501", "F401", "F811"]

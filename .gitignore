@@ -34,3 +34,18 @@ DOC_DRIFT_REPORT.txt
 # Claude Code session locks — transient, machine-local; iCloud Drive
 # creates conflict copies (`scheduled_tasks 2.lock` etc.). Never commit.
 .claude/scheduled_tasks*.lock
+
+# Bit 1.1 (Sprint 1 modularization): tooling artifacts.
+# `.ruff_cache/` is created by `ruff check`; `*.egg-info/` and `build/` by
+# `pip install -e .`. All transient, machine-local — never commit.
+# Leading `/` anchors to repo root so a nested `tests/fixtures/build/` or
+# similar isn't silently ignored (per `R7 (LOW)` rationale above for /data/).
+/.ruff_cache/
+/*.egg-info/
+/build/
+# Defense in depth for tests/test_pyproject.py::test_extend_exclude_actually_excludes:
+# the test drops `_ruff_exclude_probe_<pid>_<uuid>.py` into kb/, models/, etc.
+# (most NOT gitignored) and relies on a finally-block to clean up. If pytest
+# is killed mid-test, leak risk is real. This pattern guarantees stray probes
+# never end up in a `git add -A` commit.
+**/_ruff_exclude_probe_*.py

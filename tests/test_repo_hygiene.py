@@ -47,6 +47,18 @@ EXCLUDED_DIRS = {
     "htmlcov", ".mypy_cache", ".ruff_cache",
 }
 
+# Build artifacts whose names match a glob, not an exact directory name.
+# Setuptools always emits `<distname>.egg-info/` with a dot prefix; the
+# suffix here intentionally includes the leading `.` so a hypothetical
+# `tests/fixtures/egg-info/` (no prefix) would NOT be wrongly excluded.
+EXCLUDED_DIR_SUFFIXES = (".egg-info",)
+
+
+def _excluded_part(name: str) -> bool:
+    if name in EXCLUDED_DIRS:
+        return True
+    return any(name.endswith(s) for s in EXCLUDED_DIR_SUFFIXES)
+
 
 def _walk_paths(want_dirs=False):
     """Yield Path objects for every file (or directory) under REPO_ROOT,
@@ -57,7 +69,7 @@ def _walk_paths(want_dirs=False):
         if not want_dirs and not path.is_file():
             continue
         rel = path.relative_to(REPO_ROOT)
-        if any(part in EXCLUDED_DIRS for part in rel.parts):
+        if any(_excluded_part(part) for part in rel.parts):
             continue
         yield path
 

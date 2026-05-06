@@ -158,19 +158,26 @@ Create `conftest.py` at project root with:
 
 This eliminates the "inline copy of bot.py classes" pattern that causes tests to drift from reality.
 
-### C. `pytest.ini`
+### C. Pytest config — `[tool.pytest.ini_options]` in `pyproject.toml`
 
-```ini
-[pytest]
-testpaths = tests .
-python_files = test_*.py
-python_classes = Test*
-python_functions = test_*
-markers =
-    slow: marks tests as slow (deselect with '-m "not slow"')
-    integration: marks integration tests
-    smoke: marks quick smoke tests for CI
-addopts = -v --tb=short
+(As of repo modularization Bit 1.1, pytest config lives in `pyproject.toml`,
+not `pytest.ini`. Pytest prefers `pytest.ini` if it exists, so re-introducing
+that file silently overrides the canonical config — `tests/test_pyproject.py`
+guards against it.)
+
+```toml
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks integration tests",
+    "smoke: marks quick smoke tests for CI",
+    "fragile: marks tests that verify code structure via string matching (non-blocking in CI)",
+]
+addopts = ["-v", "--tb=short", "--ignore=venv"]
 ```
 
 ### D. Pre-Commit Hook (Optional but Recommended)
@@ -190,7 +197,7 @@ This catches config mismatches and signature bugs before they even get committed
 
 | Phase | What | Effort | Impact |
 |-------|------|--------|--------|
-| **1** | CI gating + `conftest.py` + `pytest.ini` | 1 day | Turns all existing tests into deploy gates |
+| **1** | CI gating + `conftest.py` + `[tool.pytest.ini_options]` in `pyproject.toml` | 1 day | Turns all existing tests into deploy gates |
 | **2** | Config consistency tests | 0.5 day | Prevents crash loops (highest blast radius) |
 | **3** | DB signature alignment tests | 0.5 day | Prevents first-trade crashes |
 | **4** | Cross-file call-site tests | 1 day | Prevents runtime TypeErrors |
