@@ -714,7 +714,7 @@ class TestHourlyNoSideAssetGate(unittest.TestCase):
     def test_no_excluded_asset_gate_blocks(self):
         """If an asset is added to HOURLY_NO_EXCLUDED_ASSETS, it's blocked."""
         from bot import HOURLY_NO_EXCLUDED_ASSETS
-        # Simulate the gate logic at bot.py:12023
+        # Simulate the gate logic at bot/_impl.py:12023
         test_excl = {"XRP"}
         for asset in ("BTC", "ETH", "SOL", "XRP"):
             blocked = asset in test_excl

@@ -76,7 +76,7 @@ Evaluate weekend and overnight edge discount shadow strategies — performance, 
    - "should we promote?" → check all 4 graduation criteria explicitly
 
 6. **If VERDICT is YES (ready to promote)**, draft the code change:
-   - Apply the relevant discount multiplier to the live edge check in bot.py
+   - Apply the relevant discount multiplier to the live edge check in bot/_impl.py
    - Show the exact diff before/after
    - Wait for user confirmation before deploying
 
@@ -94,12 +94,12 @@ Evaluate weekend and overnight edge discount shadow strategies — performance, 
 ## Config Reference
 
 ### Weekend
-- `WEEKEND_EDGE_DISCOUNT = 0.60` in bot.py
+- `WEEKEND_EDGE_DISCOUNT = 0.60` in bot/_impl.py
 - filter_stage: `weekend_discount_shadow`
 - Active: Saturday/Sunday (UTC weekday >= 5)
 
 ### Overnight
-- `OVERNIGHT_EDGE_DISCOUNT = 0.60` in bot.py
+- `OVERNIGHT_EDGE_DISCOUNT = 0.60` in bot/_impl.py
 - `OVERNIGHT_QUIET_START = 4`, `OVERNIGHT_QUIET_END = 11` (UTC hours)
 - filter_stage: `overnight_discount_shadow`
 - Active: weekdays only, 04:00-11:00 UTC (23:00-06:00 ET)

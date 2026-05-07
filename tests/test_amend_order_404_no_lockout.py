@@ -7,12 +7,12 @@ decision and API arrival.
 
 Audit findings (P2.3, 2026-05-04):
 
-  1. `KalshiClient.amend_order` (bot.py:2605) uses POST, not DELETE,
+  1. `KalshiClient.amend_order` (bot/_impl.py:2605) uses POST, not DELETE,
      so the cancel-404 sentinel `{"_error": True, "_status_code": 404}`
      does NOT fire on amend-404. Amend-404 → `_request` raises
      `HTTPError` → caught by `except RequestException` → returns None.
 
-  2. `OrderExecutor._reprice_maker` (bot.py:21085) is the only
+  2. `OrderExecutor._reprice_maker` (bot/_impl.py:21085) is the only
      consumer of `client.amend_order`. On `resp is None` it logs
      `amend_failed_fallback` and returns False. CRITICALLY it does
      NOT mutate `self._active_orders`. The asset-lockout class
@@ -22,7 +22,7 @@ Audit findings (P2.3, 2026-05-04):
      `_active_orders`, still resting on Kalshi until natural
      expiry/fill/escalation).
 
-  3. `_reprice_maker` itself has NO production callers in bot.py
+  3. `_reprice_maker` itself has NO production callers in bot/_impl.py
      (only references are its own definition, a stale docstring in
      `_cancel_active`, and `tests/test_weather_no_side.py`).
      Residual code from before the multi-asset refactor (commit
@@ -144,7 +144,7 @@ class TestAmend404DoesNotLockOut(unittest.TestCase):
 
 
 class TestPost404DoesNotReturnSentinel(unittest.TestCase):
-    """The cancel-404 sentinel is DELETE-only by design (bot.py:2486:
+    """The cancel-404 sentinel is DELETE-only by design (bot/_impl.py:2486:
     `if resp.status_code == 404 and method == "DELETE"`). POST 404
     must fall through to the existing `RequestException` handler →
     return None.
@@ -152,7 +152,7 @@ class TestPost404DoesNotReturnSentinel(unittest.TestCase):
     Why this matters for amend: if a future change broadens the
     sentinel to all 404s ("safer to be idempotent everywhere"),
     `amend_order` (a POST) would return the dict sentinel. Then
-    `_reprice_maker`'s `if resp is None` check at bot.py:21099 would
+    `_reprice_maker`'s `if resp is None` check at bot/_impl.py:21099 would
     be False, the truthy dict would flow into the success path, and
     `price_cents` (line 21105) would be mutated against an order
     that no longer exists on Kalshi. State-divergence: bot thinks

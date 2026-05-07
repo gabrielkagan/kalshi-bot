@@ -1,7 +1,7 @@
 """Snapshot / Contract Tests.
 
 Failure mode: Dashboard, Supabase sync, or analyst.py expect a specific data shape
-that bot.py silently changes.
+that bot/_impl.py silently changes.
 
 Wraps the existing test_dashboard_contract.py tests into pytest format, and adds
 additional schema stability tests.

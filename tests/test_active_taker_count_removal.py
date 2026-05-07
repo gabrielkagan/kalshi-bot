@@ -8,7 +8,7 @@ so the gate's right-hand side was always 0; the cap never fired.
 
 RCA finding:
 - `executor.execute()` is called sequentially in a `for` loop
-  (bot.py:27231 — single scan thread).
+  (bot/_impl.py:27231 — single scan thread).
 - `_submit_taker` is synchronous; IOCs resolve in <1s within a single
   call.
 - Every `_submit_taker` call is reached synchronously from the
@@ -64,7 +64,7 @@ class TestDeadCapSymbolsRemoved(unittest.TestCase):
         # taken. We can't easily exercise __init__ without the full
         # client/state setup, so we grep the source instead — same
         # intent as a structural test.
-        with open(bot.__file__) as f:
+        with open(bot._impl.__file__) as f:
             src = f.read()
         self.assertNotIn(
             "_active_taker_count", src,

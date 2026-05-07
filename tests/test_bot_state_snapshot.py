@@ -25,7 +25,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 # Helper module under test (moved to repo root in H-2 step 2 to match
-# the H-3a pattern — bot.py imports as a top-level module).
+# the H-3a pattern — bot/_impl.py imports as a top-level module).
 from bot_state_snapshot import (  # noqa: E402
     compute_bot_state_snapshot,
 )
@@ -305,7 +305,7 @@ def test_snapshot_state_get_open_positions_raises_returns_none():
 def test_snapshot_uses_cached_open_positions_count_when_set():
     """Round-1 adversarial fix: helper prefers a cached count over SQL.
 
-    bot.py is expected to populate `_open_positions_count_cache` from its
+    bot/_impl.py is expected to populate `_open_positions_count_cache` from its
     existing 60s-cached `_compute_bot_state_features` so the helper does
     not issue 50 SELECTs per scan tick.
     """
@@ -364,7 +364,7 @@ def test_active_cooldowns_filters_expired():
     `time.time()`). Otherwise stale cooldowns leak into v2 features
     until the next sweep runs.
 
-    Current bot.py shape (bot.py:11193) is a `set` already filtered by
+    Current bot/_impl.py shape (bot/_impl.py:11193) is a `set` already filtered by
     SQL `julianday()` window — no expiry timestamps. This test pins the
     defensive code path against future structure changes.
     """
@@ -402,7 +402,7 @@ def test_active_cooldowns_bounded_by_assets_not_input():
 def test_ws_cache_age_excludes_24h_old():
     """Round-3 critique #1: clock-domain-mismatch sanity bound.
 
-    If a future bot.py refactor accidentally writes `time.monotonic()`
+    If a future bot/_impl.py refactor accidentally writes `time.monotonic()`
     instead of `time.time()` to the orderbook `ts` field, ages computed
     via `time.time() - ts` would be wildly wrong (potentially many
     decades). The 24h sanity bound omits any entry with age > 86_400_000ms
@@ -499,9 +499,9 @@ def test_compute_raises_on_unknown_product_type_filter():
 
 def test_default_assets_matches_bot_py():
     """Round-4 critique #2: drift guard — `_DEFAULT_ASSETS` must mirror
-    bot.py's canonical asset list (sourced from `config.py:ASSETS`).
+    bot/_impl.py's canonical asset list (sourced from `config.py:ASSETS`).
 
-    bot.py imports `ASSETS` via `from config import *` (bot.py:44), so
+    bot/_impl.py imports `ASSETS` via `from config import *` (bot/_impl.py:44), so
     the canonical literal lives in `config.py`. AST-parse `config.py` to
     extract its `ASSETS = [...]` literal at module scope and assert that
     the helper's `_DEFAULT_ASSETS` tuple matches.

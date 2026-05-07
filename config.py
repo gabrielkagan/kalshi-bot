@@ -1,10 +1,10 @@
 """Shared constants for kalshi-bot.
 
-Extracted from bot.py so that models.py and tests can import constants
-without pulling in bot.py's full dependency tree (requests, websockets,
+Extracted from bot/_impl.py so that models.py and tests can import constants
+without pulling in bot/_impl.py's full dependency tree (requests, websockets,
 cryptography, etc.).
 
-bot.py does `from config import *` so runtime behavior is unchanged.
+bot/_impl.py does `from config import *` so runtime behavior is unchanged.
 """
 
 import json
@@ -15,6 +15,15 @@ from typing import Dict
 
 # ─── Assets ──────────────────────────────────────────────────────────────────
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
+
+# Module-scoped logger. Using `logging.info(...)` directly at module-load time
+# auto-triggers `logging.basicConfig()` when no handler is configured yet,
+# which clobbers pytest's caplog fixture handlers — silent test-suite
+# regression. A NullHandler-backed module logger leaves caplog handlers
+# intact (Bit 2.1a follow-up to the gate (e) caplog regression).
+_log = logging.getLogger(__name__)
+if not _log.handlers:
+    _log.addHandler(logging.NullHandler())
 
 # ─── Probability Engine ──────────────────────────────────────────────────────
 VOL_RETURN_INTERVAL = 5           # seconds between log returns
@@ -55,15 +64,15 @@ def _load_dist_config() -> Dict:
                 entry["nig_scale"] = float(p.get("scale", 1.0))
             config[asset_name] = entry
 
-        logging.info(
+        _log.info(
             "Loaded dist config: %s",
             {a: f"{c['distribution']}(df={c.get('student_t_df')})" if c['distribution'] == 'student_t'
              else "nig" for a, c in config.items()}
         )
     except FileNotFoundError:
-        logging.info("No %s found, using defaults (Student-t df=%d)", DIST_CONFIG_PATH, STUDENT_T_DF)
+        _log.info("No %s found, using defaults (Student-t df=%d)", DIST_CONFIG_PATH, STUDENT_T_DF)
     except Exception as e:
-        logging.warning("Error loading %s, using defaults: %s", DIST_CONFIG_PATH, e)
+        _log.warning("Error loading %s, using defaults: %s", DIST_CONFIG_PATH, e)
 
     return config
 

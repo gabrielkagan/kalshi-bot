@@ -843,7 +843,7 @@ Live game outcome markets across 28 leagues including NBA, NHL, MLB, NFL, EPL, A
 | **Host** | DigitalOcean droplet (Ubuntu 24.04), 1 vCPU / 2GB RAM / 48GB disk |
 | **Runtime** | Python 3, virtualenv |
 | **Process manager** | systemd (`kalshi-bot` service) — auto-restarts on crash |
-| **Startup** | `ops/kalshi-bot.service` (source-of-truth in git, installed via `ops/install.sh`) → `start.sh` (venv + `.env`) → `bot.py` |
+| **Startup** | `ops/kalshi-bot.service` (source-of-truth in git, installed via `ops/install.sh`) → `start.sh` (venv + `.env`) → `python -m bot` → `bot/__main__.py` → `bot/_impl.py` |
 | **Auto-deploy** | Push to `main` → GitHub Action → SSH → pull → syntax-check → restart |
 
 ## Data Persistence

@@ -292,7 +292,7 @@ def test_should_block_tm96_winsorizes_sigma():
 
 def test_post_hoc_processor_winsorizes_sigma_when_loading_db_value():
     """R-p7-deploy-r11 R3 (C1): the DB stores RAW sigma (compute_derived_features
-    in bot.py writes unclipped values). The post-hoc processor must clip
+    in bot/_impl.py writes unclipped values). The post-hoc processor must clip
     on read before passing to predict() so the model never sees an
     out-of-distribution sigma at serve time."""
     import ast

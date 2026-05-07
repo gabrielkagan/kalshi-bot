@@ -9,9 +9,9 @@ Per kb/findings/sim-pnl-live-ws-divergence-rca-may05.md H7:
     momentum + decided-contract candidates by 5-25× because they bypass
     Kelly entirely in production.
 
-    Strategy-specific paths in bot.py (must be mirrored in sim_pnl):
+    Strategy-specific paths in bot/_impl.py (must be mirrored in sim_pnl):
 
-      1. terminal_momentum_{96,98,99} — bot.py:1226 `tm_compute_contracts`:
+      1. terminal_momentum_{96,98,99} — bot/_impl.py:1226 `tm_compute_contracts`:
          ct = TM_BASE_CONTRACTS(=100) × margin × stc_mult
          stc_mult ∈ {1.5 (<180s), 0.5 (180-240s), 1.0 (≥240s)}
          per-asset risk cap × MAX_ENTRY_PRICE worst-case denom
@@ -19,22 +19,22 @@ Per kb/findings/sim-pnl-live-ws-divergence-rca-may05.md H7:
          thin-buffer cap of 50 contracts when buf_pct < 0.20%
          min 25, max 500. kelly_f stored as 0.0.
 
-      2. decided_t1 / _t1b / _t2 / _t2_z25 / _t2_z2 — bot.py:14402 fixed-%:
+      2. decided_t1 / _t1b / _t2 / _t2_z25 / _t2_z2 — bot/_impl.py:14402 fixed-%:
          risk = 10% (T2_Z25) or 20% (T2_Z2 / T1 / T1B / T2)
          SOL price-tiered override: [(97c, 5%), (95c, 10%)]
          pos = max(1, balance * risk / price)
          per-asset risk cap (BTC/SOL/XRP=15%) applied after.
 
-      3. weekend_discount — bot.py:14056 standard Kelly + fallback:
+      3. weekend_discount — bot/_impl.py:14056 standard Kelly + fallback:
          WEEKEND_FIXED_RISK=7% kicks in when Kelly produces 0 contracts.
          Drawdown scaler applied to fallback sizing too.
 
-      4. overnight_discount — bot.py:14232 standard Kelly only:
+      4. overnight_discount — bot/_impl.py:14232 standard Kelly only:
          No fallback. Identical to standard compute_size.
 
 Fix shape (H7 contract — what these tests pin):
 
-    1. Module constants mirroring bot.py:
+    1. Module constants mirroring bot/_impl.py:
        - TM_BASE_CONTRACTS, TM_STC_SAFE_THRESHOLD, TM_STC_DANGER_HI,
          TM_STC_SAFE_MULT, TM_STC_DANGER_MULT, TM_STC_NORMAL_MULT,
          TM_MIN_CONTRACTS, TM_MAX_CONTRACTS, TM_THIN_BUFFER_PCT,
@@ -56,8 +56,8 @@ Fix shape (H7 contract — what these tests pin):
     4. `_replay_one_path` calls `_strategy_size` instead of `compute_size`
        directly.
 
-See bot.py:1075-1288 (TM constants + tm_compute_contracts) and
-bot.py:14367-14617 (decided contract sizing) for the production
+See bot/_impl.py:1075-1288 (TM constants + tm_compute_contracts) and
+bot/_impl.py:14367-14617 (decided contract sizing) for the production
 references.
 """
 from __future__ import annotations
@@ -83,7 +83,7 @@ def _require_deps():
 
 
 def test_tm_constants_match_bot_py():
-    """TM constants must match bot.py:1075-1115 (drift-protection per
+    """TM constants must match bot/_impl.py:1075-1115 (drift-protection per
     CLAUDE.md "doc-drift" rule)."""
     import sim_pnl
 
@@ -100,8 +100,8 @@ def test_tm_constants_match_bot_py():
     assert sim_pnl.TM_ASSET_RISK_CAPS == {
         'BTC': 0.15, 'ETH': 0.20, 'SOL': 0.15, 'XRP': 0.15,
     }
-    # MAX_ENTRY_PRICE = 99 (bot.py:245). TM_SWEEP_LIVE_ENABLED defaults
-    # to "1" (bot.py:1153) so risk denom is the worst-case 99 sweep tier.
+    # MAX_ENTRY_PRICE = 99 (bot/_impl.py:245). TM_SWEEP_LIVE_ENABLED defaults
+    # to "1" (bot/_impl.py:1153) so risk denom is the worst-case 99 sweep tier.
     assert sim_pnl.TM_SWEEP_LIVE_RISK_DENOM_PRICE == 99
     assert sim_pnl.TM_LIVE_STRATEGIES == frozenset({
         'terminal_momentum_96', 'terminal_momentum_98', 'terminal_momentum_99',
@@ -109,7 +109,7 @@ def test_tm_constants_match_bot_py():
 
 
 def test_dc_constants_match_bot_py():
-    """Decided-contract constants must match bot.py:1042-1048."""
+    """Decided-contract constants must match bot/_impl.py:1042-1048."""
     import sim_pnl
 
     assert sim_pnl.DECIDED_CONTRACT_T2_Z25_RISK == 0.10
@@ -118,13 +118,13 @@ def test_dc_constants_match_bot_py():
     # Order matters: SOL_DC_RISK_TIERS is iterated and matches the FIRST
     # tier whose price floor the entry meets. Must be high→low.
     assert tuple(sim_pnl.SOL_DC_RISK_TIERS) == ((97, 0.05), (95, 0.10))
-    # Per-asset risk caps from bot.py:251-254 (BTC/SOL/XRP=15%; ETH=20%
-    # but DC code at bot.py:14418-14424 only caps BTC/SOL/XRP — ETH
+    # Per-asset risk caps from bot/_impl.py:251-254 (BTC/SOL/XRP=15%; ETH=20%
+    # but DC code at bot/_impl.py:14418-14424 only caps BTC/SOL/XRP — ETH
     # uses raw DC risk).
     assert sim_pnl.DC_PER_ASSET_RISK_CAP == {
         'BTC': 0.15, 'SOL': 0.15, 'XRP': 0.15,
     }
-    # Strategy → risk mapping (bot.py:14402-14404 + 14586-14590).
+    # Strategy → risk mapping (bot/_impl.py:14402-14404 + 14586-14590).
     assert sim_pnl._DC_STRATEGY_TO_RISK == {
         'decided_t1': 0.20,
         'decided_t1b': 0.20,
@@ -139,7 +139,7 @@ def test_dc_constants_match_bot_py():
 
 
 def test_weekend_fixed_risk_constant_matches_bot_py():
-    """WEEKEND_FIXED_RISK must match bot.py:968 (= 0.07)."""
+    """WEEKEND_FIXED_RISK must match bot/_impl.py:968 (= 0.07)."""
     import sim_pnl
 
     assert sim_pnl.WEEKEND_FIXED_RISK == 0.07
@@ -230,7 +230,7 @@ def test_tm_size_thin_buffer_does_not_apply_when_buf_above_threshold():
 
 def test_tm_size_buf_pct_none_passes_through():
     """buf_pct=None (caller has no spot/threshold info) → no thin-buffer
-    cap. Mirrors bot.py: buf_pct=None defaults the cap off."""
+    cap. Mirrors bot/_impl.py: buf_pct=None defaults the cap off."""
     import sim_pnl
 
     ct = sim_pnl._tm_size(
@@ -353,7 +353,7 @@ def test_dc_size_btc_per_asset_cap_binds():
 
 
 def test_dc_size_eth_no_per_asset_cap_applies():
-    """ETH lives outside DC_PER_ASSET_RISK_CAP per bot.py:14418-14424
+    """ETH lives outside DC_PER_ASSET_RISK_CAP per bot/_impl.py:14418-14424
     (only BTC/SOL/XRP get the asset-cap branch). The structural lock
     is the constant: ETH absent from DC_PER_ASSET_RISK_CAP. A function-
     behavior assertion alone risks a coincidental match where the cap
@@ -361,7 +361,7 @@ def test_dc_size_eth_no_per_asset_cap_applies():
     import sim_pnl
 
     assert 'ETH' not in sim_pnl.DC_PER_ASSET_RISK_CAP, (
-        "DC_PER_ASSET_RISK_CAP must NOT include ETH per bot.py:14418-14424 — "
+        "DC_PER_ASSET_RISK_CAP must NOT include ETH per bot/_impl.py:14418-14424 — "
         "ETH bypasses the per-asset cap branch in the DC sizing code."
     )
     # Behavior assertion: ETH gets 21ct (= int(10000 * 0.20 / 95)).
@@ -380,7 +380,7 @@ def test_dc_size_zero_balance_returns_zero():
 
 
 def test_dc_size_floors_at_one_contract():
-    """`max(1, int(...))` per bot.py:14411 — DC always sizes at least 1
+    """`max(1, int(...))` per bot/_impl.py:14411 — DC always sizes at least 1
     when balance > 0."""
     import sim_pnl
 
@@ -463,11 +463,11 @@ def test_strategy_size_terminal_momentum_buf_pct_thin_caps_at_50():
 
 
 def test_strategy_size_terminal_momentum_no_spot_threshold_defaults_buf_to_zero():
-    """Without spot/threshold inputs, sim_pnl mirrors bot.py:13649 by
+    """Without spot/threshold inputs, sim_pnl mirrors bot/_impl.py:13649 by
     defaulting buf_pct=0 (= 0% buffer), which fires the thin-buffer cap
     (50ct). Pre-fix sim_pnl used buf_pct=None which skipped the cap
     entirely → 6× over-sizing for missing-feature TM rows. R3 MINOR #3
-    fix aligned the fallback with bot.py."""
+    fix aligned the fallback with bot/_impl.py."""
     import sim_pnl
 
     got = sim_pnl._strategy_size(
@@ -565,7 +565,7 @@ def test_strategy_size_weekend_discount_falls_back_to_fixed_when_kelly_zero():
 
 def test_strategy_size_weekend_discount_fallback_applies_drawdown_scaler():
     """WEEKEND_FIXED_RISK fallback sizes scaled by drawdown ratio per
-    bot.py:14077-14079."""
+    bot/_impl.py:14077-14079."""
     import sim_pnl
 
     # Drawdown ratio = 50k/100k = 0.50 → DRAWDOWN_HALT_THRESHOLD(0.65) →
@@ -586,7 +586,7 @@ def test_strategy_size_weekend_discount_fallback_applies_drawdown_scaler():
 
 
 def test_strategy_size_overnight_discount_no_fallback():
-    """overnight_discount has NO Kelly=0 fallback (bot.py:14232 only
+    """overnight_discount has NO Kelly=0 fallback (bot/_impl.py:14232 only
     applies the standard compute_size — no equivalent of WEEKEND_FIXED_RISK)."""
     import sim_pnl
 
@@ -605,7 +605,7 @@ def test_strategy_size_overnight_discount_no_fallback():
 
 
 def test_lpne_constants_match_bot_py():
-    """Round-4 adversarial MAJOR #1 — LPNE constants must match bot.py:1327-1334.
+    """Round-4 adversarial MAJOR #1 — LPNE constants must match bot/_impl.py:1327-1334.
     LPNE bypasses Kelly entirely (flat fixed sizing); without the H7
     dispatcher mirror, sim_pnl Kelly-sizes LPNE rows at 3.5-5.9× the
     production size."""
@@ -616,7 +616,7 @@ def test_lpne_constants_match_bot_py():
 
 
 def test_lpne_size_returns_fixed_50_when_balance_positive():
-    """Mirror bot.py:13013 + 13057 — production stores position_size=50
+    """Mirror bot/_impl.py:13013 + 13057 — production stores position_size=50
     for every LPNE candidate row regardless of bankroll, edge, or STC."""
     import sim_pnl
 
@@ -628,7 +628,7 @@ def test_lpne_size_returns_fixed_50_when_balance_positive():
 
 def test_lpne_size_returns_zero_when_balance_zero():
     """Defensive: a zero/negative balance produces 0 contracts (no
-    bot.py equivalent fires this path because LPNE intercepts at scan
+    bot/_impl.py equivalent fires this path because LPNE intercepts at scan
     time when balance is non-zero, but the H7 dispatcher must handle
     edge cases gracefully)."""
     import sim_pnl
@@ -819,7 +819,7 @@ def test_replay_one_path_calls_strategy_size_not_compute_size_directly():
         "H7 AST guard: `_replay_one_path` must call `_strategy_size(...)` "
         "to dispatch per-strategy sizing. Without this call, sim_pnl "
         "applies standard Kelly to terminal_momentum + decided_contract "
-        "candidates that bot.py sizes via fundamentally different "
+        "candidates that bot/_impl.py sizes via fundamentally different "
         "formulas."
     )
     assert not _calls('compute_size'), (
@@ -834,13 +834,13 @@ def test_replay_one_path_calls_strategy_size_not_compute_size_directly():
 
 
 def test_stc_extended_floor_passes_uses_buf_pct_not_edge_frac():
-    """R5 MAJOR #1 — bot.py:16135 compares `_ext_buf` (= percent buffer
+    """R5 MAJOR #1 — bot/_impl.py:16135 compares `_ext_buf` (= percent buffer
     `(spot - threshold) / threshold * 100`) against
     `STC_EXTENDED_BUFFER_RESCUE = 0.25` (i.e. 0.25% buffer). Pre-fix
     sim_pnl compared `edge_frac` (probability edge fraction, e.g.
     0.013) against the same 0.25 → always rejected realistic rows.
     Real-world impact: 18 BTC/SOL candidate rows in May 2-6 window
-    that bot.py admitted via buffer rescue were silently rejected
+    that bot/_impl.py admitted via buffer rescue were silently rejected
     by sim_pnl (most wins, costing PnL accuracy)."""
     import sim_pnl
 
@@ -877,14 +877,14 @@ def test_stc_extended_floor_passes_uses_buf_pct_not_edge_frac():
 
 def test_stc_extended_floor_passes_buf_pct_units_match_bot_py():
     """Lock the units: `STC_EXTENDED_BUFFER_RESCUE` = 0.25 means 0.25%
-    buffer (NOT 25% edge). bot.py:16131-16135 documents this as
+    buffer (NOT 25% edge). bot/_impl.py:16131-16135 documents this as
     `buf>=0.25%`. A future maintainer changing the units in either
     file would silently break the rescue gate."""
     from sizing import STC_EXTENDED_BUFFER_RESCUE
 
     assert STC_EXTENDED_BUFFER_RESCUE == 0.25, (
         f"STC_EXTENDED_BUFFER_RESCUE={STC_EXTENDED_BUFFER_RESCUE}, "
-        f"expected 0.25 (= 0.25% buffer threshold per bot.py:264)"
+        f"expected 0.25 (= 0.25% buffer threshold per bot/_impl.py:264)"
     )
 
 

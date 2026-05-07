@@ -24,7 +24,7 @@ jobs:
           pip install pytest
           pip install -r requirements.txt
       - name: Syntax check
-        run: python3 -c "import ast; ast.parse(open('bot.py').read())"
+        run: python3 -c "import ast; ast.parse(open('bot/_impl.py').read())"
       - name: Run blocking tests
         run: pytest tests/ -m "not fragile" -v --tb=short --ignore=venv
 
@@ -66,7 +66,7 @@ jobs:
             diff <(echo "$ON_VPS_UNIT" | grep -E -v '^# /(etc|run|usr/lib)/') <(echo "$REPO_UNIT" | grep -E -v '^# /(etc|run|usr/lib)/') \
               || { echo "FAIL: on-VPS systemd unit differs from ops/kalshi-bot.service @ ${{ github.sha }}. Recovery (ssh -t to VPS): cd ~/kalshi-bot-repo && git fetch origin main && git reset --hard origin/main && bash ops/install.sh, then re-trigger this deploy. NOTE: bare 'bash ops/install.sh' without the fetch+reset would re-install the PRIOR commit's unit and the next deploy would loop on the same drift FAIL."; exit 1; }
             git reset --hard ${{ github.sha }}
-            python3 -c "import ast; ast.parse(open('bot.py').read()); print('SYNTAX OK')"
+            python3 -c "import ast; ast.parse(open('bot/_impl.py').read()); print('SYNTAX OK')"
             sudo systemctl restart kalshi-bot
             # Documentation drift check (warning only — never blocks deploy)
             python3 scripts/doc_drift_check.py --telegram 2>&1 || echo "DOC DRIFT DETECTED — see report above"

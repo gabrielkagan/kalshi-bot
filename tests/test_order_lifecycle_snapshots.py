@@ -189,7 +189,7 @@ class TestExecutorWiringInPlace(_TempState):
     have zero rows in production (per kb/failures/feedback_verify_new_features.md)."""
 
     def _executor_src(self):
-        import bot as bot_mod
+        import bot._impl as bot_mod
         src = open(bot_mod.__file__).read()
         # Bound the search to OrderExecutor class
         start = src.find("class OrderExecutor")

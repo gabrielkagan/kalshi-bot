@@ -19,13 +19,13 @@ Pins the Bit 1.4 contract:
   H1 deletion (a future prune that drops the H1 + adds a blank line
   still passes both, and AGENTS.md inherits any CLAUDE.md change via
   the symlink, so byte-equality is satisfied either way).
-- The "bot.py is sacred" rule line is present (literal). Sacred-file
+- The "bot/_impl.py is sacred" rule line is present (literal). Sacred-file
   invariant; deleting it would be a serious regression.
 - Reference-doc pointers (agent_docs/*) resolve to real files. Catches
   the case where a referenced doc is deleted but the pointer is left
   behind.
 - Forward-looking pointers required by Bit 1.4 design:
-  - bot.py implementation rules pointer (the breadcrumb to
+  - bot/_impl.py implementation rules pointer (the breadcrumb to
     `agent_docs/bot-claude-md-draft.md`, which Sprint 2 Bit 2.2
     promotes via `git mv` to `bot/CLAUDE.md`). R1 review moved the
     draft out of the plan's literal `kb/drafts/` path because `kb/`
@@ -154,7 +154,7 @@ def test_required_sections_present():
 
 
 def test_bot_py_sacred_rule_present():
-    """The bot.py-is-sacred rule must remain in the Critical rules.
+    """The bot/_impl.py-is-sacred rule must remain in the Critical rules.
 
     Sacred-file rule per CLAUDE.md and `kb/failures/`. A regression
     agent that "tidies" by removing the rule line creates a path to
@@ -163,11 +163,13 @@ def test_bot_py_sacred_rule_present():
     check.
     """
     text = CLAUDE_MD.read_text()
-    assert "- **bot.py is sacred.**" in text, (
-        "CLAUDE.md is missing the canonical bot.py-sacred rule "
-        "(`- **bot.py is sacred.**`). This rule is load-bearing: it "
-        "blocks the recurring temptation to refactor bot.py into "
-        "modules outside the Sprint 2+ plan."
+    assert "**`bot/__main__.py` is the runtime entrypoint; `bot/_impl.py` is the body.**" in text, (
+        "CLAUDE.md is missing the canonical entrypoint/body rule "
+        "(`**`bot/__main__.py` is the runtime entrypoint; `bot/_impl.py` "
+        "is the body.**`). This rule is load-bearing post-Bit-2.1a: it "
+        "blocks the recurring temptation to refactor bot/_impl.py into "
+        "modules outside the Sprint 2+ plan, and pins the entrypoint that "
+        "systemd → start.sh → `python -m bot` invokes."
     )
 
 
@@ -181,7 +183,7 @@ def test_bot_py_sacred_rule_present():
 # breaks the test instead of silently drifting away from production.
 #
 # The chain reads `systemd -> ops/kalshi-bot.service -> start.sh ->
-# bot.py` (in `->` arrow form here for source readability; CLAUDE.md
+# bot/_impl.py` (in `->` arrow form here for source readability; CLAUDE.md
 # itself uses the unicode arrow). Each segment in CLAUDE.md is
 # wrapped in backticks (matching the existing code-reference
 # convention); the test pins the literal form including backticks.
@@ -194,18 +196,19 @@ def test_bot_py_sacred_rule_present():
 #     CLAUDE.md and start.sh — otherwise CI fails on the test
 #     mismatch and forces the deliberate decision.
 SYSTEMD_CHAIN_LITERAL = (
-    "systemd → `ops/kalshi-bot.service` → `start.sh` → `bot.py`"
+    "systemd → `ops/kalshi-bot.service` → `start.sh` → `python -m bot` → "
+    "`bot/__main__.py` → `bot/_impl.py`"
 )
 
 
 def test_systemd_chain_documented_in_claude_md():
     """The startup chain `systemd -> ops/kalshi-bot.service -> start.sh
-    -> bot.py` must appear literally in CLAUDE.md.
+    -> bot/_impl.py` must appear literally in CLAUDE.md.
 
     This pin exists because the Bit 2.1a incident proved that an
     unenforced architectural claim in CLAUDE.md is a future incident.
-    Pre-Bit-2.0.5.1 CLAUDE.md said `systemd -> start.sh -> bot.py`
-    but the on-VPS unit invoked `python3 bot.py` directly, bypassing
+    Pre-Bit-2.0.5.1 CLAUDE.md said `systemd -> start.sh -> bot/_impl.py`
+    but the on-VPS unit invoked `python3 bot/_impl.py` directly, bypassing
     start.sh entirely. The mismatch went undetected through 14+3
     adversarial review rounds because no test backed the claim.
 
@@ -282,7 +285,7 @@ def test_systemd_chain_documented_in_claude_md():
 
 # Bit 2.0.5.1 R2 review #5. start.sh becomes load-bearing once the
 # on-VPS systemd unit's ExecStart points at it (rather than directly
-# at python3 bot.py). Without `set -e`, a silent venv-activate failure
+# at python3 bot/_impl.py). Without `set -e`, a silent venv-activate failure
 # would fall back to system python3 with missing dependencies — exactly
 # the kind of "documentation-claim-without-enforcement" smell that
 # Bit 2.1a's incident reinforced. Pin the line here so a future "tidy"
@@ -298,8 +301,8 @@ def test_start_sh_has_set_e_for_load_bearing_invocation():
     ops/install.sh`), start.sh is load-bearing for production startup.
     A silent failure in `source venv/bin/activate` (corrupt venv,
     missing file, partial pip install) without `set -e` falls through
-    to `exec python3 bot.py` resolving to system python3 — which
-    typically lacks lightgbm/scipy/scikit-learn and crashes bot.py
+    to `exec python3 bot/_impl.py` resolving to system python3 — which
+    typically lacks lightgbm/scipy/scikit-learn and crashes bot/_impl.py
     at import. That confusing failure mode is what `set -e` prevents.
 
     The shebang must be `/bin/bash` (not `/bin/sh`) because `set -o
@@ -414,7 +417,7 @@ _BREADCRUMB_CANDIDATES = {
     "bot/CLAUDE.md",
 }
 
-# Files outside CLAUDE.md that may carry pointers to the bot.py-rules
+# Files outside CLAUDE.md that may carry pointers to the bot/_impl.py-rules
 # draft path. Bit 1.4 R1+R3 introduced these cross-file pointers (in
 # README.md "Repository conventions" and scripts/CLAUDE.md cell-block
 # one-liner). Sprint 2 Bit 2.2 must update all three sites in the
@@ -461,7 +464,7 @@ def test_bot_claude_md_draft_exists_on_disk():
         "CLAUDE.md has no active breadcrumb (`see `<path>``) pointing "
         "at `agent_docs/bot-claude-md-draft.md` or `bot/CLAUDE.md`. "
         "The breadcrumb is the contract; if this is intentional "
-        "(e.g., draft retired and bot.py rules fully reabsorbed at "
+        "(e.g., draft retired and bot/_impl.py rules fully reabsorbed at "
         "root), update or remove this test."
     )
     missing = [str(p) for p in breadcrumb_targets if not p.exists()]
@@ -476,7 +479,7 @@ def test_bot_claude_md_draft_exists_on_disk():
 def test_bot_py_implementation_rules_breadcrumb_present():
     """The breadcrumb to `agent_docs/bot-claude-md-draft.md` must remain.
 
-    Bit 1.4 design: bot.py-specific implementation rules
+    Bit 1.4 design: bot/_impl.py-specific implementation rules
     (torch threading + `_thread_env` ordering, cal_mlp four-site
     lock-step, cell-block string literals, SQLite WAL pragmas, etc.)
     were moved out of root CLAUDE.md and staged at
@@ -489,7 +492,7 @@ def test_bot_py_implementation_rules_breadcrumb_present():
     deleting it strands the rules.
 
     Two pinned elements:
-      1. The literal label `**bot.py implementation rules**` (the
+      1. The literal label `**bot/_impl.py implementation rules**` (the
          Critical-rules bullet prefix). Stable across the
          draft → `bot/CLAUDE.md` transition.
       2. A pointer (today: `agent_docs/bot-claude-md-draft.md`;
@@ -502,10 +505,10 @@ def test_bot_py_implementation_rules_breadcrumb_present():
     ships", and the actual breadcrumb could be deleted silently.
     """
     text = CLAUDE_MD.read_text()
-    assert "**bot.py implementation rules**" in text, (
-        "CLAUDE.md is missing the `**bot.py implementation rules**` "
+    assert "**`bot/_impl.py` implementation rules**" in text, (
+        "CLAUDE.md is missing the ``**`bot/_impl.py` implementation rules**`` "
         "Critical-rules bullet label. This is the load-bearing "
-        "breadcrumb that points operators at the moved bot.py rules "
+        "breadcrumb that points operators at the moved bot/_impl.py rules "
         "(torch threading, cal_mlp four-site lock-step, cell-block "
         "filter_stage values, SQLite WAL pragmas, etc.). Without "
         "this label at root, citations across the codebase that "
@@ -515,7 +518,7 @@ def test_bot_py_implementation_rules_breadcrumb_present():
         "agent_docs/bot-claude-md-draft.md" in text
         or "bot/CLAUDE.md" in text
     ), (
-        "CLAUDE.md is missing the bot.py-implementation-rules path "
+        "CLAUDE.md is missing the bot/_impl.py-implementation-rules path "
         "pointer. Until Sprint 2 Bit 2.2 ships `bot/CLAUDE.md`, the "
         "breadcrumb must point at `agent_docs/bot-claude-md-draft.md`. "
         "After Bit 2.2 ships, the pointer should reference "

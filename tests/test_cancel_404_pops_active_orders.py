@@ -839,7 +839,7 @@ class TestCancel404PopFirstOrdering(unittest.TestCase):
 class TestDelete404DoesNotEmitErrorLog(unittest.TestCase):
     """Round-5 critique C4: pin that the V4 fix's sentinel return
     fires BEFORE the existing `if status_code >= 400: logging.error`
-    block (line 2477-2478 of bot.py). Reviewer was concerned the
+    block (line 2477-2478 of bot/_impl.py). Reviewer was concerned the
     early-return placement might be wrong; this test locks in the
     correct placement so a future refactor doesn't re-introduce the
     spam."""
@@ -979,7 +979,7 @@ class TestKalshiBreakerSuccessOnCancel404Sentinel(unittest.TestCase):
     """
 
     def test_breaker_treats_cancel_404_sentinel_as_success(self):
-        # Exact shape `_request` returns at bot.py line 2486-2487.
+        # Exact shape `_request` returns at bot/_impl.py line 2486-2487.
         sentinel = {"_error": True, "_status_code": 404}
         self.assertTrue(
             bot._kalshi_breaker_success(sentinel),

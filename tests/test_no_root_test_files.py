@@ -11,8 +11,8 @@ will happily collect a stray root `test_X.py` (testpaths=["."]) without
 any other guardrail noticing.
 
 Sprint-2 hand-off note: when Bit 2.1 creates the `bot/` package and
-deletes `bot.py`, this test continues to be load-bearing — it remains
-valid regardless of how `bot.py` is laid out.
+deletes `bot/_impl.py`, this test continues to be load-bearing — it remains
+valid regardless of how `bot/_impl.py` is laid out.
 """
 
 import glob

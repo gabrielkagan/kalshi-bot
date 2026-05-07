@@ -1,4 +1,4 @@
-"""Tests for CalibrationEngine (bot.py).
+"""Tests for CalibrationEngine (bot/_impl.py).
 
 Guards against:
 - Fallback calibration drift from β=0.85 Platt scaling
@@ -17,7 +17,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import sys
 
-# Mock heavy dependencies that bot.py imports at module level.
+# Mock heavy dependencies that bot/_impl.py imports at module level.
 # These are not needed for CalibrationEngine's pure-math logic.
 _MOCKED = []
 for _mod in ["websockets", "websocket", "requests",

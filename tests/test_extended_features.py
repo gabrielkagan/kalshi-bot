@@ -246,7 +246,7 @@ class TestInsertAutoPopulates(unittest.TestCase):
 class TestCalibrationConfidenceIntegration(unittest.TestCase):
     """calibration_confidence is populated from the active CalEngine's observation count.
 
-    Regression: bot.py:2796 previously hardcoded n_recent_cal_trades=None, so the
+    Regression: bot/_impl.py:2796 previously hardcoded n_recent_cal_trades=None, so the
     column was 100% NULL across 20K+ rows in 7d (2026-04-22 audit).
     """
 

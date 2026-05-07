@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Documentation drift detection — compares config values in code vs docs.
 
-Extracts "facts" from the codebase (bot.py, config.py, market_config.py, etc.)
+Extracts "facts" from the codebase (bot/_impl.py, config.py, market_config.py, etc.)
 and compares them against claims in documentation files. Reports DRIFT when a
 doc claims a value that differs from the code.
 
@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Source files to extract facts from
 SOURCE_FILES = [
-    "bot.py", "config.py", "market_config.py", "models.py",
+    "bot/_impl.py", "config.py", "market_config.py", "models.py",
     "spx_engine.py", "weather_engine.py", "sports_engine.py",
     "fifteenm_shadow.py", "hourly_alt_shadow.py",
     # R-p7-deploy-r11 R5: cal_mlp constants live here. Without this entry,
@@ -120,7 +120,7 @@ SIMPLE_CONSTANTS = [
     # without corresponding doc update is caught by `doc_drift_check.py`.
     ("SIGMA_WINSOR_ABS_CAP", "Sigma winsor abs cap (cal_mlp)"),
     ("RAW_PROB_CLIP_EPS", "Raw prob clip eps (cal_mlp)"),
-    # R-bleed-1 R3-MED4: bleed-cell numerics. Source = bot.py.
+    # R-bleed-1 R3-MED4: bleed-cell numerics. Source = bot/_impl.py.
     ("TM98_HIGHPRICE_BLEED_BLOCK_PRICE_LO", "TM-98 bleed block price lo"),
     ("TM98_HIGHPRICE_BLEED_BLOCK_PRICE_HI", "TM-98 bleed block price hi"),
     ("TM98_HIGHPRICE_BLEED_BLOCK_STC_LO_S", "TM-98 bleed block STC lo seconds"),
@@ -184,8 +184,8 @@ def normalize_value(raw: str) -> str:
 
 
 def get_line_count() -> int:
-    """Get bot.py line count."""
-    bot_path = REPO_ROOT / "bot.py"
+    """Get bot/_impl.py line count."""
+    bot_path = REPO_ROOT / "bot" / "_impl.py"
     if not bot_path.exists():
         return 0
     with open(bot_path) as f:
@@ -253,7 +253,7 @@ def extract_all_facts(source_lines: Dict[str, List[str]]) -> Dict[str, Any]:
     lc = get_line_count()
     if lc:
         facts["BOT_LINE_COUNT"] = {
-            "label": "bot.py line count",
+            "label": "bot/_impl.py line count",
             "value": str(lc),
             "raw": str(lc),
         }
@@ -437,7 +437,7 @@ def _is_false_positive(claim: Dict, code_val: str) -> bool:
     ptype = claim["pattern_type"]
     doc_val = claim["claimed_value"]
 
-    # Line count: ignore matches that are clearly not about bot.py
+    # Line count: ignore matches that are clearly not about bot/_impl.py
     # (e.g., "4096" in Telegram message truncation)
     if ptype == "line_count":
         try:

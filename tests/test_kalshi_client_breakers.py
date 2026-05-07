@@ -43,20 +43,20 @@ def _make_client_with_mocked_request():
 
 
 class TestKalshiClientBreakerImports(unittest.TestCase):
-    """AST regression: bot.py must import REGISTRY from
+    """AST regression: bot/_impl.py must import REGISTRY from
     circuit_breaker so the breakers are reachable from
     KalshiClient methods."""
 
     def test_bot_imports_registry(self):
-        with open(bot.__file__) as f:
+        with open(bot._impl.__file__) as f:
             src = f.read()
         self.assertIn(
             "from circuit_breaker import", src,
-            "bot.py must import from circuit_breaker so REGISTRY is "
+            "bot/_impl.py must import from circuit_breaker so REGISTRY is "
             "available to KalshiClient methods.")
         self.assertIn(
             "REGISTRY", src,
-            "REGISTRY symbol must appear in bot.py")
+            "REGISTRY symbol must appear in bot/_impl.py")
 
 
 class TestKalshiClientGetBalanceBreaker(unittest.TestCase):
@@ -210,7 +210,7 @@ class TestKalshiClientWritesAreNotWrapped(unittest.TestCase):
     A7: cover all 3 writes via parametrized AST check."""
 
     def _assert_method_not_wrapped(self, method_name):
-        with open(bot.__file__) as f:
+        with open(bot._impl.__file__) as f:
             src = f.read()
         i = src.index(f"def {method_name}")
         j = src.index("\n    def ", i + 1)

@@ -4,7 +4,7 @@ Per kb/findings/sim-pnl-live-ws-divergence-rca-may05.md H4:
 
     Sim_pnl's `gate_passes` (sim_pnl.py:135 + call site sim_pnl.py:820)
     is invoked with `final_lo` (conformal lower bound = p_center − q_alpha).
-    Production's gate (bot.py:13486) checks `fee_adjusted_edge` derived
+    Production's gate (bot/_impl.py:13486) checks `fee_adjusted_edge` derived
     from `final_prob` (= post-blend center, stored in DB as
     `calibrated_prob`).
 
@@ -166,8 +166,8 @@ def test_gate_receives_stored_calibrated_prob_when_base_mode(monkeypatch):
     re-computed p_mean (= 0.95) and NOT final_lo (= 0.88).
 
     Stored calibrated_prob is the exact value production used at decision
-    time (bot.py writes final_prob into this column at sites including
-    bot.py:13675/13702/13739/13832/13949). Replaying with stored value
+    time (bot/_impl.py writes final_prob into this column at sites including
+    bot/_impl.py:13675/13702/13739/13832/13949). Replaying with stored value
     is what makes the BASE run match production within tolerance.
 
     Pre-fix: function does not accept `gate_prob_source` kwarg → TypeError.

@@ -1,6 +1,6 @@
 """Phase 5: orderbook_levels_json on position_price_observations.
 
-Two INSERT sites in bot.py (15M monitor + weather monitor) both need to
+Two INSERT sites in bot/_impl.py (15M monitor + weather monitor) both need to
 write the cached ladder. Logic is identical: pull from _scan_ob_cache
 with the same 10s freshness gate used by eval_opportunities and
 order_lifecycle_snapshots.
@@ -56,7 +56,7 @@ class TestPPOInsertWiringInPlace(_TempState):
     Phase 6 post-deploy verification confirms rows actually populate."""
 
     def _bot_src(self):
-        import bot as bot_mod
+        import bot._impl as bot_mod
         return open(bot_mod.__file__).read()
 
     def test_ppo_insert_lists_orderbook_levels_json(self):

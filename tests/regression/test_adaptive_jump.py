@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Standalone tests for adaptive jump detection — no pip dependencies required.
 
-Copies adaptive jump logic inline to avoid importing bot.py which has heavy
+Copies adaptive jump logic inline to avoid importing bot/_impl.py which has heavy
 dependencies (websockets, etc.).
 
 DRIFT RISK: The AdaptiveJumpEngine logic is copied from VolatilityEngine in
-bot.py. If the production code changes, these inline copies may drift out of
+bot/_impl.py. If the production code changes, these inline copies may drift out of
 sync. The jump detection code has not been extracted to models.py yet because
 it's embedded in VolatilityEngine (not a standalone class).
 
@@ -21,7 +21,7 @@ import tempfile
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 
-# ── Constants (mirrored from bot.py) ────────────────────────────────────
+# ── Constants (mirrored from bot/_impl.py) ────────────────────────────────────
 
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 JUMP_ADAPTIVE_SHADOW_MODE = False
@@ -41,7 +41,7 @@ JUMP_ADAPTIVE_MAG_CAP = 3.0
 JUMP_ADAPTIVE_MAX_HISTORY = 10
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Adaptive Jump Detection (copied from bot.py for standalone testing)
+#  Adaptive Jump Detection (copied from bot/_impl.py for standalone testing)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class AdaptiveJumpEngine:

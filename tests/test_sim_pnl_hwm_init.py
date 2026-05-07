@@ -9,7 +9,7 @@ sim_pnl at 25% Kelly → 25× sizing divergence → all PnL anomalies
 downstream.
 
 Fix: reconstruct_hwm_init should use the MAX over the 7 days BEFORE
-test_start_ts, not all-time max. Matches bot.py rolling-HWM behavior.
+test_start_ts, not all-time max. Matches bot/_impl.py rolling-HWM behavior.
 """
 from __future__ import annotations
 

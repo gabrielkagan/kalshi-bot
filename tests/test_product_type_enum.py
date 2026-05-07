@@ -8,7 +8,7 @@ while 15M windows had `product_type == "15m"` — the gate was dead for
 weeks (98c954d Mar 1 2026).
 
 The canonical source of truth is `market_config.MARKET_CONFIGS` — the
-dataclass registry validated against bot.py at startup by
+dataclass registry validated against bot/_impl.py at startup by
 `validate_market_configs()`. This test asserts every string literal
 compared against or assigned to `product_type` anywhere in production
 code is a member of that set, and that the canonical set itself has
@@ -16,7 +16,7 @@ not silently drifted from {"15m", "hourly", "spx_hourly", "weather",
 "sports"}.
 
 Deliberate grep-based implementation — no refactor of scan(). The
-CLAUDE.md anti-pattern "Don't refactor bot.py" plus the scan() edit
+CLAUDE.md anti-pattern "Don't refactor bot/_impl.py" plus the scan() edit
 track record (dead-code STC shadow gate, nested-gate weather-no) made
 the enum-registry refactor too risky. Grep is uglier but strictly
 additive: the contract lives in tests, not in runtime code.
@@ -38,7 +38,7 @@ sys.path.insert(0, PROJECT_ROOT)
 # layers. Scripts/migrations are explicitly excluded — they handle legacy
 # data where old product_type values (e.g., NULL) are expected.
 PRODUCTION_FILES = [
-    "bot.py",
+    "bot/_impl.py",
     "analyst.py",
     "auditor.py",
     "capital_allocator.py",
@@ -67,14 +67,14 @@ EXPECTED_CANONICAL = frozenset({
 # requires a removal plan — this is not a general allowlist. Every entry
 # must have a scheduled cleanup path documented below.
 #
-#   "dip_addon_shadow"   — bot.py:16857 passes this to
+#   "dip_addon_shadow"   — bot/_impl.py:16857 passes this to
 #       insert_evaluated_opportunity. `filter_stage` is already set to
-#       the same tag at bot.py:16838, so the product_type column gets
+#       the same tag at bot/_impl.py:16838, so the product_type column gets
 #       duplicated context. Code path is gated by DIP_ADDON_ENABLED=False
 #       (killed Mar 2026, 55.2% WR), so no new rows are generated.
 #       Historical rows in state.db still carry this value. Fix: change
-#       the bot.py:16857 write site to product_type="15m". Deferred to
-#       avoid touching bot.py in Tier 1 scope.
+#       the bot/_impl.py:16857 write site to product_type="15m". Deferred to
+#       avoid touching bot/_impl.py in Tier 1 scope.
 LEGACY_PRODUCT_TYPES = frozenset({
     "dip_addon_shadow",
 })

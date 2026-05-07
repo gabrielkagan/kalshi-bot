@@ -101,7 +101,7 @@ class TestFeeCalculation:
         assert pnl_loss == -(900 + fee)
 
     def test_bot_fee_function_matches(self):
-        """Verify bot.py calculate_fee matches Kalshi billing: taker = formula, maker = $0."""
+        """Verify bot/_impl.py calculate_fee matches Kalshi billing: taker = formula, maker = $0."""
         from bot import calculate_fee
         for count in [1, 5, 10, 25]:
             for price in [50, 70, 86, 90, 95, 99]:
@@ -209,13 +209,13 @@ class TestCalibrationPipeline:
 
 
 # ============================================================================
-#  4. Config Sync (bot.py ↔ market_config.py) — Crash loop prevention
-#     Bug: MAX_SECONDS_BEFORE_CLOSE changed in bot.py but not market_config.py
+#  4. Config Sync (bot/_impl.py ↔ market_config.py) — Crash loop prevention
+#     Bug: MAX_SECONDS_BEFORE_CLOSE changed in bot/_impl.py but not market_config.py
 #     → assertion failure at startup → 80s crash loop on VPS.
 # ============================================================================
 
 class TestConfigSync:
-    """Verify bot.py constants match market_config.py (prevents crash loops)."""
+    """Verify bot/_impl.py constants match market_config.py (prevents crash loops)."""
 
     def test_15m_config_matches_bot(self):
         import bot
@@ -317,7 +317,7 @@ class TestBusyTimeout:
 
     # Production files that write to state.db and MUST set WAL mode
     WAL_REQUIRED_FILES = [
-        "bot.py", "supabase_sync.py", "sports_engine.py",
+        "bot/_impl.py", "supabase_sync.py", "sports_engine.py",
         "fifteenm_shadow.py", "hourly_alt_shadow.py", "spx_harrv_shadow.py",
     ]
 
@@ -463,7 +463,7 @@ class TestCheckSameThread:
             content = f.read()
         assert "busy_timeout" in content, (
             "fifteenm_shadow.py missing PRAGMA busy_timeout — "
-            "it shares state.db with bot.py and supabase_sync.py"
+            "it shares state.db with bot/_impl.py and supabase_sync.py"
         )
 
     def test_fifteenm_shadow_a3_gating_exists(self):
@@ -519,13 +519,13 @@ class TestCheckSameThread:
 
 # ============================================================================
 #  8. Syntax Check (all commits)
-#     Pre-deploy check: bot.py and market_config.py must parse cleanly.
+#     Pre-deploy check: bot/_impl.py and market_config.py must parse cleanly.
 # ============================================================================
 
 class TestSyntaxCheck:
     """Every Python file must parse without syntax errors."""
 
-    CRITICAL_FILES = ["bot.py", "market_config.py", "dashboard_snapshot.py",
+    CRITICAL_FILES = ["bot/_impl.py", "market_config.py", "dashboard_snapshot.py",
                       "sports_engine.py", "spx_engine.py", "weather_engine.py",
                       "fifteenm_shadow.py"]
 
@@ -686,7 +686,7 @@ class TestIOCTimeInForce:
         Note: 'ioc' in journal log dicts is fine — only API call sites matter.
         The actual API call uses time_in_force= keyword arg (not dict key).
         """
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             content = f.read()
         # The actual Kalshi API call uses keyword arg: time_in_force="..."
@@ -736,14 +736,14 @@ class TestEscalationTypeCompleteness:
     """All order execution paths must set escalation_type."""
 
     def test_escalation_types_in_codebase(self):
-        """Verify all execution path labels exist in bot.py."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        """Verify all execution path labels exist in bot/_impl.py."""
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             content = f.read()
         required_types = ["direct_taker", "post_only_taker", "sol_taker_override"]
         for etype in required_types:
             assert f'"{etype}"' in content or f"'{etype}'" in content, (
-                f"escalation_type '{etype}' not found in bot.py"
+                f"escalation_type '{etype}' not found in bot/_impl.py"
             )
 
 
@@ -891,7 +891,7 @@ class TestRetryLoopPrevention:
 
 
 # ============================================================================
-# 20. TV RK Weights Time Boundary (bot.py)
+# 20. TV RK Weights Time Boundary (bot/_impl.py)
 #     Bug: Using wrong time buckets for analysis.
 # ============================================================================
 
@@ -939,7 +939,7 @@ class TestInstrumentationIntegrity:
         execution), but DB writes must use _configured_temp_t which preserves
         the configured value for instrumentation.
         """
-        source = open(os.path.join(PROJECT_ROOT, "bot.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot/_impl.py")).read()
 
         # Find all assignments of _configured_temp_t
         config_assigns = [
@@ -975,7 +975,7 @@ class TestInstrumentationIntegrity:
 
     def test_no_bare_temp_t_in_candidate_dict(self):
         """The candidate dict must store _configured_temp_t, not _temp_t."""
-        source = open(os.path.join(PROJECT_ROOT, "bot.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot/_impl.py")).read()
 
         for i, line in enumerate(source.splitlines(), 1):
             stripped = line.strip()
@@ -1002,7 +1002,7 @@ class TestSubmitTakerReturnValue:
         """The return statement in the total_filled > 0 branch must return
         order_info, not fill. `fill` is the while-loop variable and is always
         None/falsy after the loop breaks."""
-        source = open(os.path.join(PROJECT_ROOT, "bot.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot/_impl.py")).read()
         tree = ast.parse(source)
 
         found_func = False
@@ -1024,7 +1024,7 @@ class TestSubmitTakerReturnValue:
                         )
             break
 
-        assert found_func, "_submit_taker function not found in bot.py"
+        assert found_func, "_submit_taker function not found in bot/_impl.py"
 
 
 # ============================================================================
@@ -1327,8 +1327,8 @@ class TestDedupSetTupleSafety:
     """_eval_opp_seen may contain 2-tuples or 3-tuples. Never destructure."""
 
     def test_no_tuple_destructuring_in_eval_opp_seen(self):
-        """Scan bot.py for any (tk, stage) unpacking of _eval_opp_seen."""
-        source = open(os.path.join(PROJECT_ROOT, "bot.py")).read()
+        """Scan bot/_impl.py for any (tk, stage) unpacking of _eval_opp_seen."""
+        source = open(os.path.join(PROJECT_ROOT, "bot/_impl.py")).read()
         # Find any set comprehension or for loop that destructures _eval_opp_seen
         # Pattern: "for tk, stage in self._eval_opp_seen" or similar 2-var unpack
         dangerous_patterns = [
@@ -1345,7 +1345,7 @@ class TestDedupSetTupleSafety:
 
     def test_eval_opp_seen_cleanup_uses_key_index(self):
         """The cleanup comprehension must use key[0], not destructuring."""
-        source = open(os.path.join(PROJECT_ROOT, "bot.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot/_impl.py")).read()
         # Find the cleanup line
         cleanup_match = re.search(
             r'self\._eval_opp_seen\s*=\s*\{[^}]+\}',
@@ -1374,7 +1374,7 @@ class TestShadowCallsiteVariables:
 
     def _get_scan_source(self):
         """Return the source of the scan() method."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             source = f.read()
         return source
@@ -1412,7 +1412,7 @@ class TestShadowCallsiteVariables:
         source = self._get_scan_source()
         # Find the price filter
         price_filter_pos = source.find("# Filter: ask must be in entry price range")
-        assert price_filter_pos > 0, "Price filter comment not found in bot.py"
+        assert price_filter_pos > 0, "Price filter comment not found in bot/_impl.py"
         # Find the first shadow callsite
         first_shadow_pos = source.find("fifteenm_shadow.evaluate_strike")
         assert first_shadow_pos > 0, "No fifteenm_shadow.evaluate_strike found"
@@ -1428,7 +1428,7 @@ class TestShadowCallsiteVariables:
         silently swallow real errors like NameError, making the shadow engine
         appear to work when it's actually dead code.
         """
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             lines = f.readlines()
         for i, line in enumerate(lines):
@@ -1438,7 +1438,7 @@ class TestShadowCallsiteVariables:
                 for j in range(i - 1, max(0, i - 3), -1):
                     if lines[j].strip().startswith("except"):
                         pytest.fail(
-                            f"bot.py:{i+1}: fifteenm_shadow error handler uses "
+                            f"bot/_impl.py:{i+1}: fifteenm_shadow error handler uses "
                             f"logging.debug — must use logging.warning to catch "
                             f"silent failures like NameError "
                             f"(Bug 6b017bb: dead code for weeks)"
@@ -1457,7 +1457,7 @@ class TestNoSideOrderbookPricing:
     """NO-side pricing must use actual NO ask from market NBBO, never derived from YES prices."""
 
     def _get_bot_source(self):
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             return f.read()
 
@@ -1526,7 +1526,7 @@ class TestNoSideOrderbookPricing:
                 continue
             # Check for NO-price patterns using 100 - best_ask
             if re.search(r'_?no_?price\s*=\s*100\s*-\s*best_ask', line):
-                violations.append(f"bot.py:{i+1}: {stripped}")
+                violations.append(f"bot/_impl.py:{i+1}: {stripped}")
         assert not violations, (
             f"Found {len(violations)} location(s) computing NO price as "
             f"'100 - best_ask' (= NO BID, wrong!):\n" +
@@ -1591,7 +1591,7 @@ class TestV2VariantSafety:
 
     def test_v2_filter_stage_in_calengine_exclusion(self):
         """V2 rows must NOT feed CalEngine (would double-count raw_prob)."""
-        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+        with open(os.path.join(PROJECT_ROOT, "bot/_impl.py")) as f:
             source = f.read()
         # The CalEngine feed section must exclude _v2 filter stages
         assert 'not filter_stage.endswith("_v2")' in source, (
@@ -1601,7 +1601,7 @@ class TestV2VariantSafety:
 
     def test_v2_dedup_key_is_2tuple(self):
         """V2 dedup key must be a 2-tuple (ticker, 'hourly_observation_v2')."""
-        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+        with open(os.path.join(PROJECT_ROOT, "bot/_impl.py")) as f:
             source = f.read()
         # The helper method must use the correct dedup key format
         assert '(ticker, "hourly_observation_v2")' in source, (
@@ -1611,15 +1611,15 @@ class TestV2VariantSafety:
 
     def test_v2_helper_method_exists(self):
         """_insert_hourly_v2_variant helper must exist on OpportunityScanner."""
-        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+        with open(os.path.join(PROJECT_ROOT, "bot/_impl.py")) as f:
             source = f.read()
         assert "def _insert_hourly_v2_variant(" in source, (
-            "V2 variant helper method missing from bot.py"
+            "V2 variant helper method missing from bot/_impl.py"
         )
 
     def test_v2_called_at_both_gates(self):
         """V2 must be inserted at both insufficient_edge and hourly_observation gates."""
-        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+        with open(os.path.join(PROJECT_ROOT, "bot/_impl.py")) as f:
             source = f.read()
         call_count = source.count("self._insert_hourly_v2_variant(")
         assert call_count >= 2, (
@@ -1630,7 +1630,7 @@ class TestV2VariantSafety:
 
     def test_v2_uses_shadow_cal_prob(self):
         """V2 must use shadow cal pipeline probability, not live probability."""
-        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+        with open(os.path.join(PROJECT_ROOT, "bot/_impl.py")) as f:
             source = f.read()
         # The helper should reference cal_pipeline or old_cal_system
         assert 'calibration_method="shadow_cal_v2"' in source, (
@@ -1674,7 +1674,7 @@ class TestKellySizerZeroPayout:
 
     def test_compute_guard_exists_in_source(self):
         """Source code must guard b <= 0 before Kelly division."""
-        # PositionSizer lives in models.py (extracted from bot.py)
+        # PositionSizer lives in models.py (extracted from bot/_impl.py)
         with open(os.path.join(PROJECT_ROOT, "models.py")) as f:
             source = f.read()
         assert "if b <= 0:" in source, (
@@ -1683,7 +1683,7 @@ class TestKellySizerZeroPayout:
 
     def test_guard_precedes_kelly_division(self):
         """The b <= 0 guard must appear BEFORE the kelly_edge division in compute()."""
-        # PositionSizer lives in models.py (extracted from bot.py)
+        # PositionSizer lives in models.py (extracted from bot/_impl.py)
         with open(os.path.join(PROJECT_ROOT, "models.py")) as f:
             source = f.read()
         guard_pos = source.find("if b <= 0:")
@@ -1697,7 +1697,7 @@ class TestKellySizerZeroPayout:
 
     def test_guard_returns_early(self):
         """The b <= 0 guard must return result (not just pass)."""
-        # PositionSizer lives in models.py (extracted from bot.py)
+        # PositionSizer lives in models.py (extracted from bot/_impl.py)
         with open(os.path.join(PROJECT_ROOT, "models.py")) as f:
             source = f.read()
         guard_idx = source.find("if b <= 0:")
@@ -1714,7 +1714,7 @@ class TestKellySizerZeroPayout:
 # ============================================================================
 
 class TestNoBatchCommitInLoops:
-    """conn.commit() must not appear inside for/while loops in bot.py.
+    """conn.commit() must not appear inside for/while loops in bot/_impl.py.
     Per-row commits multiply the contention window with concurrent DB readers.
     Rule: accumulate writes, commit once at the end. See POSTMORTEMS.md PM-001."""
 
@@ -1729,7 +1729,7 @@ class TestNoBatchCommitInLoops:
 
     def test_no_commit_inside_for_loops_in_bot(self):
         """Static analysis: find .commit() calls nested inside for/while loops."""
-        with open(os.path.join(PROJECT_ROOT, "bot.py")) as f:
+        with open(os.path.join(PROJECT_ROOT, "bot/_impl.py")) as f:
             source = f.read()
 
         tree = ast.parse(source)
@@ -1756,7 +1756,7 @@ class TestNoBatchCommitInLoops:
                                     break
                     if not exempt:
                         violations.append(
-                            f"bot.py:{child.lineno} — .commit() inside loop "
+                            f"bot/_impl.py:{child.lineno} — .commit() inside loop "
                             f"starting at line {node.lineno}"
                         )
                     break  # Only flag once per loop
@@ -2096,7 +2096,7 @@ class TestSOLEdgeFloor:
 
     def test_sol_min_edge_in_scan_code(self):
         """Verify SOL edge floor is applied in the scan edge check."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             content = f.read()
         assert "SOL_MIN_EDGE" in content
@@ -2161,7 +2161,7 @@ class TestNBBOFallbackGates:
 
     def test_nbbo_fallback_method_exists(self):
         """OrderExecutor must have _nbbo_fallback_price method."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             content = f.read()
         assert "def _nbbo_fallback_price(" in content
@@ -2173,7 +2173,7 @@ class TestNBBOFallbackGates:
         Main execute paths use _nbbo_fallback_price directly.
         DC/TM/bracket paths use _dc_get_ask_with_depth (which calls _nbbo_fallback_price internally).
         """
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             content = f.read()
         lines = content.split("\n")
@@ -2206,7 +2206,7 @@ class TestNBBOFallbackGates:
     @pytest.mark.fragile
     def test_real_book_path_unaffected(self):
         """When _get_addon_best_ask succeeds, NBBO fallback is not called."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             content = f.read()
         # _nbbo_fallback_price should only appear inside "is None" guards or
@@ -2227,7 +2227,7 @@ class TestNBBOFallbackGates:
 
     def test_session_counters_exist(self):
         """Session counters for NBBO fallback must be initialized."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             content = f.read()
         assert "_session_nbbo_fallback_attempts" in content
@@ -2247,7 +2247,7 @@ class TestDCRoutingPriority:
 
     def test_dc_check_before_sol_taker_first(self):
         """DC taker override must appear BEFORE SOL taker-first in execute()."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             content = f.read()
         dc_pos = content.find('Decided contract taker override')
@@ -2260,7 +2260,7 @@ class TestDCRoutingPriority:
 
     def test_dc_check_before_direct_taker(self):
         """DC taker override must appear BEFORE direct taker <180s."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             content = f.read()
         dc_pos = content.find('Decided contract taker override')
@@ -2269,7 +2269,7 @@ class TestDCRoutingPriority:
 
     def test_dc_strategies_include_z2_z25(self):
         """DC strategy check must include z2 and z25 variants."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             content = f.read()
         # Find the DC strategy condition
@@ -2283,7 +2283,7 @@ class TestDCRoutingPriority:
     @pytest.mark.fragile
     def test_dc_uses_permissive_edge_threshold(self):
         """DC path must use -0.01 edge threshold, not MIN_EDGE_PCT."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             lines = f.readlines()
         # The -0.01 threshold is now inside _execute_dc_taker method
@@ -2303,7 +2303,7 @@ class TestDCRoutingPriority:
         """A SOL candidate with DC strategy must NOT reach SOL taker-first path.
 
         The DC check returns via _execute_dc_taker before SOL taker-first is reached."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             lines = f.readlines()
         # Verify DC block has 'return self._execute_dc_taker' before SOL block
@@ -2320,7 +2320,7 @@ class TestDCRoutingPriority:
 
     def test_no_duplicate_dc_block(self):
         """DC taker override should appear exactly once."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             content = f.read()
         count = content.count('Decided contract taker override')
@@ -2398,7 +2398,7 @@ class TestSettlementLossCountCheck:
 
     def test_loss_side_cross_check_present(self):
         """Ensure _process_settlement has the LOSS + get_fills cross-check."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             src = f.read()
         assert "SETTLEMENT_LOSS_COUNT_MISMATCH" in src, (
@@ -2410,7 +2410,7 @@ class TestSettlementLossCountCheck:
     def test_loss_side_check_runs_before_pnl_loop(self):
         """Cross-check must correct aggregate_count BEFORE the per-position
         PnL loop; otherwise the correction never reaches settled_trades."""
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             lines = f.readlines()
         loss_check_line = None
@@ -2452,7 +2452,7 @@ class TestWinCrossCheckSubDollarGuard:
 
     @staticmethod
     def _find_process_settlement():
-        fpath = os.path.join(PROJECT_ROOT, "bot.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(fpath) as f:
             src = f.read()
         tree = ast.parse(src)
@@ -2486,7 +2486,7 @@ class TestWinCrossCheckSubDollarGuard:
     def test_process_settlement_exists(self):
         """Sanity: _process_settlement must be findable via AST."""
         assert self._find_process_settlement() is not None, (
-            "_process_settlement method not found in bot.py")
+            "_process_settlement method not found in bot/_impl.py")
 
     def test_sub_dollar_guard_present(self):
         """Guard If-node must exist inside _process_settlement."""

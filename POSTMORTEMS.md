@@ -6,7 +6,7 @@
 
 | Time | Event |
 |------|-------|
-| ~13:14 | "database is locked" errors begin firing in `_poll_evaluated_opportunities()` (bot.py:13235). Errors come in bursts of 10-24 per settlement cycle (~30s intervals). |
+| ~13:14 | "database is locked" errors begin firing in `_poll_evaluated_opportunities()` (bot.py:13235; pre-Bit-2.1a — file is now `bot/_impl.py`). Errors come in bursts of 10-24 per settlement cycle (~30s intervals). |
 | ~13:15 | CPU spikes to 100% — settlement loop hammering 91 individual Kalshi API calls + 91 individual DB commits in tight loop, compounded by retry-on-lock. |
 | ~13:28 | Errors subside as contested hourly tickers settle and pending backlog clears. |
 | 13:36 | Fix deployed (commit `38754ef`). Bot restarts cleanly, no errors. |

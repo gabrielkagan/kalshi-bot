@@ -22,7 +22,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 # Files that are called from multiple threads and MUST use check_same_thread=False
 MULTI_THREAD_FILES = [
-    "bot.py",
+    "bot/_impl.py",
     "fifteenm_shadow.py",
     "hourly_alt_shadow.py",
     "spx_harrv_shadow.py",
@@ -31,7 +31,7 @@ MULTI_THREAD_FILES = [
 
 # All production .py files (exclude venv, tests, scripts, migration utilities)
 PRODUCTION_FILES = [
-    "bot.py",
+    "bot/_impl.py",
     "analyst.py",
     "dashboard_snapshot.py",
     "fifteenm_shadow.py",
@@ -51,15 +51,15 @@ class TestShadowDiagKeyCoverage:
     """Every _shadow_diag key must be accepted by both insert functions."""
 
     def _get_shadow_diag_keys(self):
-        """Parse bot.py AST to find all keys in _shadow_diag = {...}."""
-        bot_path = os.path.join(PROJECT_ROOT, "bot.py")
+        """Parse bot/_impl.py AST to find all keys in _shadow_diag = {...}."""
+        bot_path = os.path.join(PROJECT_ROOT, "bot/_impl.py")
         with open(bot_path) as f:
             source = f.read()
 
         # Find _shadow_diag = { ... } via regex (AST won't easily find dict in function body)
         pattern = r'_shadow_diag\s*=\s*\{([^}]+)\}'
         match = re.search(pattern, source)
-        assert match, "_shadow_diag dict not found in bot.py"
+        assert match, "_shadow_diag dict not found in bot/_impl.py"
 
         # Extract keys from the dict literal
         dict_content = match.group(1)
@@ -68,7 +68,7 @@ class TestShadowDiagKeyCoverage:
         return set(keys)
 
     def _get_function_params(self, func_name):
-        """Get the parameter names of a function from bot.py's StateManager."""
+        """Get the parameter names of a function from bot/_impl.py's StateManager."""
         from bot import StateManager
         func = getattr(StateManager, func_name)
         sig = inspect.signature(func)
@@ -292,7 +292,7 @@ class TestSyntaxCheck:
     """All critical production files parse without syntax errors."""
 
     CRITICAL_FILES = [
-        "bot.py",
+        "bot/_impl.py",
         "market_config.py",
         "dashboard_snapshot.py",
         "analyst.py",

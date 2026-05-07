@@ -1,7 +1,7 @@
 """Config & Wiring Consistency Tests.
 
-Failure mode: MarketTypeConfig drifts from bot.py constants -> crash loop on VPS startup.
-Past incidents: Multiple — any time a constant was changed in bot.py but not market_config.py.
+Failure mode: MarketTypeConfig drifts from bot/_impl.py constants -> crash loop on VPS startup.
+Past incidents: Multiple — any time a constant was changed in bot/_impl.py but not market_config.py.
 
 These tests duplicate what validate_market_configs() does at runtime, but catch it
 *before deploy* in CI.
@@ -17,7 +17,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 
 class TestConfigConstantParity:
-    """Every MarketTypeConfig field matches its corresponding bot.py constant."""
+    """Every MarketTypeConfig field matches its corresponding bot/_impl.py constant."""
 
     def test_validate_market_configs_succeeds(self):
         """The runtime validation function itself should pass."""
@@ -165,7 +165,7 @@ class TestMinEdgeByPrice:
 
 
 class TestObservationModeFlags:
-    """Observation-only configs have matching bot.py flags."""
+    """Observation-only configs have matching bot/_impl.py flags."""
 
     def test_observation_configs_have_filter_labels(self):
         """Every observation-only config must have a non-empty observation_filter_label."""

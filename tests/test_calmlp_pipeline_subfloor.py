@@ -134,7 +134,7 @@ def test_features_module_supports_sub_floor():
     assert hasattr(features, 'GLOBAL_MIN_ENTRY_PRICE')
     assert features.GLOBAL_MIN_ENTRY_PRICE == 75, (
         "GLOBAL_MIN_ENTRY_PRICE was 75 when low_price_shadow was scoped to 70¢+ "
-        "(bot.py:LOW_PRICE_SHADOW_MIN_PRICE). Changing it loses sub-floor coverage."
+        "(bot/_impl.py:LOW_PRICE_SHADOW_MIN_PRICE). Changing it loses sub-floor coverage."
     )
     # asset_min_price contract: include_sub_floor=True returns GLOBAL_MIN_ENTRY_PRICE
     # for every asset; False returns ASSET_FLOORS lookup.

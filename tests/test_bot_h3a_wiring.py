@@ -1,20 +1,20 @@
-"""Phase H-3a: bot.py integration tests.
+"""Phase H-3a: bot/_impl.py integration tests.
 
-Verifies the wiring from `bot.py` main loop to `MarketObservationsSnapshotter`:
-- Schema migration runs at startup (bot.py main thread, NOT the daemon thread)
+Verifies the wiring from `bot/_impl.py` main loop to `MarketObservationsSnapshotter`:
+- Schema migration runs at startup (bot/_impl.py main thread, NOT the daemon thread)
 - Snapshotter is instantiated with the WS feed + active-tickers provider
 - Snapshotter is started after WS feed connects
 - Snapshotter is stopped + joined during shutdown
 - Failure to instantiate is non-fatal (matches the pattern for spx_engine,
   weather_engine, sports_engine, fifteenm_shadow)
 
-These are AST-based tests rather than runtime tests because bot.py is too
+These are AST-based tests rather than runtime tests because bot/_impl.py is too
 heavy to import in a unit test (network calls, threads, env vars). The
 AST-style guards protect against signature drift / wiring regression at
 the same level as `tests/test_call_sites.py`.
 
 The active-tickers provider helper (`extract_active_15m_tickers`) is
-runtime-tested directly via the snapshotter module (NOT via bot.py).
+runtime-tested directly via the snapshotter module (NOT via bot/_impl.py).
 """
 from __future__ import annotations
 
@@ -88,12 +88,12 @@ def test_extract_active_15m_tickers_preserves_order():
     assert mod.extract_active_15m_tickers(windows) == ["Z", "A", "M"]
 
 
-# ── AST regression tests on bot.py wiring ────────────────────────────────
+# ── AST regression tests on bot/_impl.py wiring ────────────────────────────────
 
 
 @pytest.fixture(scope="module")
 def bot_py_source() -> str:
-    return (ROOT / "bot.py").read_text()
+    return (ROOT / "bot/_impl.py").read_text()
 
 
 @pytest.fixture(scope="module")
@@ -102,19 +102,19 @@ def bot_py_tree(bot_py_source) -> ast.AST:
 
 
 def test_bot_imports_snapshotter_module(bot_py_source):
-    """bot.py main loop must import the snapshotter (for the wiring to
+    """bot/_impl.py main loop must import the snapshotter (for the wiring to
     do anything). The import is conditional/lazy inside __init__, so we
     grep the source rather than walk top-level imports."""
     has_module = "market_observations_snapshotter" in bot_py_source
     has_class = "MarketObservationsSnapshotter" in bot_py_source
-    assert has_module, "bot.py missing import of market_observations_snapshotter"
-    assert has_class, "bot.py missing reference to MarketObservationsSnapshotter"
+    assert has_module, "bot/_impl.py missing import of market_observations_snapshotter"
+    assert has_class, "bot/_impl.py missing reference to MarketObservationsSnapshotter"
 
 
 def test_bot_calls_ensure_schema_for_market_obs(bot_py_source):
-    """The schema migration MUST be called from bot.py main thread
+    """The schema migration MUST be called from bot/_impl.py main thread
     (NOT from the daemon thread per round-1 #7 fix). Prove the call
-    site exists in bot.py."""
+    site exists in bot/_impl.py."""
     # Either as a renamed import (`_moc_ensure_schema(`) or via attribute
     # access (`market_observations_snapshotter.ensure_schema(`) is fine.
     has_call = (
@@ -122,7 +122,7 @@ def test_bot_calls_ensure_schema_for_market_obs(bot_py_source):
         or "market_observations_snapshotter.ensure_schema" in bot_py_source
         or "snapshotter.ensure_schema" in bot_py_source
     )
-    assert has_call, "bot.py must call ensure_schema from market_observations_snapshotter"
+    assert has_call, "bot/_impl.py must call ensure_schema from market_observations_snapshotter"
 
 
 def test_bot_instantiates_snapshotter_attribute(bot_py_source):
@@ -165,7 +165,7 @@ def test_bot_uses_extract_active_15m_tickers_helper(bot_py_source):
     not be caught by test_extract_active_15m_tickers_*."""
     has_helper = "extract_active_15m_tickers" in bot_py_source
     assert has_helper, (
-        "bot.py must use the extract_active_15m_tickers helper, "
+        "bot/_impl.py must use the extract_active_15m_tickers helper, "
         "not an inline list-comprehension over self._active_windows"
     )
 

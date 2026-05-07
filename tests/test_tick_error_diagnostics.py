@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _import_helper():
-    """Lazy import so the test file can be collected even if bot.py
+    """Lazy import so the test file can be collected even if bot/_impl.py
     has unrelated import-time issues."""
     from bot import _extract_tick_error_location
     return _extract_tick_error_location
@@ -82,7 +82,7 @@ def test_returns_sentinel_for_none_input():
 def test_uses_basename_not_full_path():
     """Telegram has a 4096-char limit but tick-error alerts share
     space with str(e)[:200] and other context. Full path (e.g.,
-    /home/botuser/kalshi-bot-repo/bot.py) is wasted bytes — basename
+    /home/botuser/kalshi-bot-repo/bot/_impl.py) is wasted bytes — basename
     suffices for routing."""
     extract = _import_helper()
 
@@ -188,7 +188,7 @@ def test_implicit_chained_exception_reports_original():
 
 
 def test_output_fits_telegram_budget():
-    """Any reasonable bot.py call site produces a location string
+    """Any reasonable bot/_impl.py call site produces a location string
     well under 100 chars — leaves plenty of room for str(e)[:200]
     in the Telegram alert."""
     extract = _import_helper()

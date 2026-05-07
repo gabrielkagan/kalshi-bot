@@ -55,7 +55,8 @@ class TestFlagTruthy:
 
 class TestReadBotConstants:
     def test_parses_module_level_assignments(self, verify, tmp_path):
-        f = tmp_path / "fake_bot.py"
+        f = tmp_path / "fake_bot" / "_impl.py"
+        f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(
             "import os\n"
             "WEATHER_NO_SIDE_LIVE = True  # comment\n"

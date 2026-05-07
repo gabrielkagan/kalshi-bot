@@ -475,29 +475,29 @@ def test_extend_exclude_actually_excludes():
 
 
 def test_bot_module_and_bot_package_dont_collide():
-    """Sprint-2 guard: never let `bot.py` (file) and `bot/` (package) coexist.
+    """Sprint-2 guard: never let the OLD top-level `bot.py` and `bot/` package coexist.
 
     Python resolves `import bot` ambiguously when both exist (regular package
-    > module > namespace package). Sprint 1 ships `bot.py` only; Sprint 2
-    (Bit 2.1) creates `bot/__init__.py`. The Bit 2.1 commit MUST delete
-    `bot.py` (or rename it) in the same commit so this assertion stays green.
+    > module > namespace package). Sprint 1 shipped `bot.py` only; Bit 2.1a
+    renamed `bot.py` → `bot/_impl.py` in the same commit it created
+    `bot/__init__.py` — so the OLD root-level `bot.py` must not return.
 
-    Test holds across the Sprint 1 → Sprint 2 transition without modification.
+    Test holds post-Bit-2.1a: `bot.py` doesn't exist, the assertion's left
+    arm is False, the AND is False, and `not False` is True (passes).
     """
     bot_py = REPO_ROOT / "bot.py"
     bot_dir = REPO_ROOT / "bot"
     # Catches both regular packages (bot/__init__.py) AND namespace packages
     # (bot/ with submodules but no __init__.py). Either form coexisting with
-    # bot.py creates an ambiguous import.
+    # the OLD top-level bot.py creates an ambiguous import.
     bot_dir_has_python = bot_dir.is_dir() and any(
         p.suffix == ".py" for p in bot_dir.rglob("*.py")
     )
     assert not (bot_py.exists() and bot_dir_has_python), (
-        "BOTH `bot.py` and a `bot/` package directory with Python content "
-        "exist at the repo root. Python's import resolver picks one "
-        "ambiguously based on sys.path order — production at risk. "
-        "Sprint 2 (Bit 2.1) should delete `bot.py` in the same commit it "
-        "creates the `bot/` package, or rename one of them."
+        "BOTH the OLD top-level `bot.py` and a `bot/` package directory with "
+        "Python content exist at the repo root. Python's import resolver picks "
+        "one ambiguously based on sys.path order — production at risk. The "
+        "Bit 2.1a commit should have renamed `bot.py` → `bot/_impl.py`."
     )
 
 

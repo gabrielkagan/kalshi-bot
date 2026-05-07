@@ -15,7 +15,7 @@ reached its init's parity-check stage.
 Threshold:
 - 0 rows in window: FAIL (Bit 2.1a class — deploy didn't restart bot,
   OR bot crashed BEFORE reaching cal_mlp parity check: ExecStart,
-  missing/invalid Kalshi credentials at bot.py:26173, WAL verify, or
+  missing/invalid Kalshi credentials at bot/_impl.py:26173, WAL verify, or
   cal_mlp import failed).
 - count > max_events (default 2): FAIL (post-init crash loop — bot
   inits, runs briefly, crashes, repeats).
@@ -28,7 +28,7 @@ window historically (Apr 29 + May 3 + May 5 dev-churn iterations).
 SQL form: `julianday(ts) > julianday('now', '-N seconds')` —
 numerical compare, NOT lex. `bot_startup_log.ts` uses Python's
 `datetime.now(timezone.utc).isoformat()` which renders with `+00:00`
-offset (NOT `Z` suffix as other bot.py write sites use). julianday()
+offset (NOT `Z` suffix as other bot/_impl.py write sites use). julianday()
 handles both forms identically.
 
 Why this is a separate script (not inline in the workflow): mirrors
@@ -145,14 +145,14 @@ def main() -> int:
             f"{args.window_seconds}s — deploy didn't restart bot, "
             f"OR bot crashed before reaching cal_mlp parity check "
             f"(Bit 2.1a class: ExecStart, missing/invalid Kalshi "
-            f"credentials at bot.py:26173, WAL verify, or cal_mlp "
+            f"credentials at bot/_impl.py:26173, WAL verify, or cal_mlp "
             f"import failed)",
             file=sys.stderr,
         )
         return 1
     if count > args.max_events:
         # Post-init crash loop: bot inits, runs briefly, crashes,
-        # repeats — bot.py:28053 cascading OR repeated SystemExit(2)
+        # repeats — bot/_impl.py:28053 cascading OR repeated SystemExit(2)
         # from CalMLPParityError.
         print(
             f"FAIL: bot has {count} startup events in last "

@@ -1,6 +1,6 @@
 """Standalone tests for the Confirmation Addon feature.
 
-Inline copies of key functions (no bot.py import) following existing test patterns.
+Inline copies of key functions (no bot/_impl.py import) following existing test patterns.
 Run: python3 test_addon.py
 """
 

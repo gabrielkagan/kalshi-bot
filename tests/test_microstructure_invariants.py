@@ -169,7 +169,7 @@ class TestCalibrationConfidencePerProduct(unittest.TestCase):
     """Existing TestCalibrationConfidenceIntegration covers only the 15M
     path (_CALIBRATION_ENGINE). Production data (2026-04-24) shows 100%
     NULL for hourly/weather/sports rows — the per-product CalEngine
-    branch at bot.py:2857 is uncovered.
+    branch at bot/_impl.py:2857 is uncovered.
 
     These tests exercise the non-15M branch so the coverage gap that
     produced 266 hourly + 240 weather + 26 sports NULL rows does not

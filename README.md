@@ -188,10 +188,10 @@ Optional:
 
 ```bash
 source .env
-python3 bot.py
+python3 -m bot
 ```
 
-Set `OBSERVATION_MODE = True` in `bot.py` to log everything but place no orders.
+Set `OBSERVATION_MODE = True` in `bot/_impl.py` to log everything but place no orders.
 
 ## Deployment
 
@@ -199,7 +199,7 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 
 1. SSH into VPS as `botuser`
 2. `git pull origin main`
-3. Syntax-check `bot.py` (`python3 -c "import ast; ast.parse(...)"`)
+3. Syntax-check `bot/_impl.py` (`python3 -c "import ast; ast.parse(...)"`)
 4. `sudo systemctl restart kalshi-bot`
 
 ## Kalshi API Notes
@@ -213,11 +213,11 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot.py                         -- core bot logic (~28,166 lines, never rename)
+bot/_impl.py                         -- core bot logic (~28,166 lines, never rename)
 config.py                      -- centralized SIZING_TIERS / DRAWDOWN_* / MIN_EDGE_BY_PRICE
 models.py                      -- EGARCH / Mincer-Zarnowitz / PositionSizer / fee math
 analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)
-market_config.py               -- centralized MarketTypeConfig (validates against bot.py at startup)
+market_config.py               -- centralized MarketTypeConfig (validates against bot/_impl.py at startup)
 fifteenm_shadow.py             -- 15M shadow engine (recalibrated EGARCH + LightGBM research)
 spx_engine.py                  -- S&P 500 intraday engine (EGARCH + VIX, observation mode)
 weather_engine.py              -- weather temperature engine (NWP ensemble, NO-side live + observation)
@@ -229,7 +229,7 @@ dashboard_snapshot.py          -- builds dashboard state snapshots for Supabase
 supabase_sync.py               -- pushes snapshots to Supabase Realtime every 10s
 watchdog.py                    -- process health monitoring
 ops/kalshi-bot.service         -- systemd unit, source of truth (installed via ops/install.sh)
-start.sh                       -- wrapper invoked by ops/kalshi-bot.service (venv + .env + bot.py)
+start.sh                       -- wrapper invoked by ops/kalshi-bot.service (venv + .env + bot/_impl.py)
 requirements.txt               -- Python dependencies
 .env.example                   -- credential template
 .github/workflows/deploy.yml   -- auto-deploy on push to main

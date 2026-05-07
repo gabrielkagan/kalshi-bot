@@ -10,7 +10,7 @@ days of history on three high-signal series we currently don't capture:
 Starting polling NOW lets v3 train on 50d of data by June 22. Without it,
 v3 ships missing the highest-value forward-looking features.
 
-This poller runs as a separate process (NOT bot.py — keeps blast radius
+This poller runs as a separate process (NOT bot/_impl.py — keeps blast radius
 small) writing to a new `external_market_data` table.
 """
 import json

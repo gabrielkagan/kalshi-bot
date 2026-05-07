@@ -18,7 +18,7 @@ C. Win rate computed `market_result IN ('yes','all_yes')` regardless of
    their WR inverted: a NO opp wins when result is NO, not YES.
 
 D. counterfactual_pnl IS net-of-fees + Kelly-sized + side-aware in source
-   (bot.py:25721, 25731-25736). RETRACTED early concern; tests confirm.
+   (bot/_impl.py:25721, 25731-25736). RETRACTED early concern; tests confirm.
 
 E. Section 8 promotion gate omitted Wilson lower CI check. Promoted
    strategies could fail the statistical-significance bar from SKILL.md.
@@ -431,7 +431,7 @@ def test_shadow_pnl_uses_cf_pnl_when_populated(tmp_path):
 
 
 def test_shadow_pnl_flags_1ct_sim_when_size_null(tmp_path):
-    """Shadows with NULL position_size: bot.py falls back to 1ct sim. Flag it."""
+    """Shadows with NULL position_size: bot/_impl.py falls back to 1ct sim. Flag it."""
     import alpha_audit
 
     db = tmp_path / "1ct.db"

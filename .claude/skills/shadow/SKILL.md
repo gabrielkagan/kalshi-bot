@@ -53,7 +53,7 @@ Comprehensive report across ALL shadow/observation systems — 15M live, hourly,
 
    **Always use `--regime auto`** — it auto-detects the last relevant config change from git history. Never hardcode regime dates (they go stale).
 
-4. **Read current shadow constants** from bot.py:
+4. **Read current shadow constants** from bot/_impl.py:
    - Grep for `_SHADOW_MODE`, `_OBSERVATION_ONLY`, and `SHADOW_` constants
    - For each, report: True (shadow/collecting) or False (promoted/live)
 

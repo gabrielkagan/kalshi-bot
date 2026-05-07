@@ -64,7 +64,7 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
 
 
 def _find_scan_method() -> ast.FunctionDef:
@@ -218,7 +218,7 @@ class TestScanBodyHasNoDirectNetworkIO(unittest.TestCase):
             f"a worker thread that populates a cache that scan() "
             f"reads from. Violations:\n"
             + "\n".join(
-                f"  bot.py:{v['lineno']} → {v['pattern']}"
+                f"  bot/_impl.py:{v['lineno']} → {v['pattern']}"
                 for v in violations))
 
 
@@ -402,13 +402,13 @@ def outer():
 
 class TestNegativeControl(unittest.TestCase):
     """Round-1 P2: prove the harness would actually catch a
-    regression in the real bot.py file (vs only testing against
+    regression in the real bot/_impl.py file (vs only testing against
     synthetic strings)."""
 
     def test_synthetic_bad_scan_is_caught(self):
         """Construct a synthetic scan() with a known-bad pattern
         and verify the detector flags it. If this passes silently
-        on real bot.py, the harness is broken."""
+        on real bot/_impl.py, the harness is broken."""
         src = """
 class OpportunityScanner:
     def scan(self, active_windows):

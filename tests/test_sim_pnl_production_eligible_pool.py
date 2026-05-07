@@ -88,7 +88,7 @@ _CANONICAL_BLOCKED_STAGES = {
 def test_production_runtime_blocked_stages_constant_exists():
     """sim_pnl must export the module constant with the canonical set
     (or a superset). Drift = silent regression: if a new cell-block
-    ships in bot.py and the maintainer forgets to add it here, sim_pnl
+    ships in bot/_impl.py and the maintainer forgets to add it here, sim_pnl
     starts admitting blocked rows again."""
     import sim_pnl
 
@@ -122,7 +122,7 @@ def test_exclude_helper_drops_blocked_stages():
     Updated post-H7 (round-1 adversarial review CRITICAL #1+#2): the
     weekend_discount / overnight_discount / decided_contract_* /
     terminal_momentum / *_shadow filter_stages are scan-block precursor
-    rows that the bot.py executor double-logs at filter_stage='candidate'
+    rows that the bot/_impl.py executor double-logs at filter_stage='candidate'
     when fired. Sim_pnl dedupes by dropping the precursor; the
     `candidate` row carries the populated `strategy` field that H7's
     dispatcher needs.
@@ -275,7 +275,7 @@ def test_ticker_dedup_raises_on_missing_columns():
 
 def test_run_sim_pnl_select_excludes_null_side_rows():
     """R6 CRITICAL #1 — SQL must include `side IN ('yes', 'no')` so
-    side=NULL rows (dc_shadow_t1b_93c family per bot.py:13543) don't
+    side=NULL rows (dc_shadow_t1b_93c family per bot/_impl.py:13543) don't
     reach the gate. The 46 such rows in May 2-6 window have
     market_result='yes' but side=NULL → trade_pnl_cents would treat
     them all as systematic losses (`str(None) != 'yes'`)."""
@@ -309,7 +309,7 @@ def test_run_sim_pnl_select_excludes_null_side_rows():
 
 def test_dedup_executed_trade_counts_once():
     """Round-2 adversarial MINOR #1 — invariant test for the precursor
-    dedup. bot.py logs each executed TM/DC/weekend/overnight live trade
+    dedup. bot/_impl.py logs each executed TM/DC/weekend/overnight live trade
     TWICE: once at the strategy-specific scan-block (`filter_stage='decided_contract_t1'`
     etc.) and once at the executor (`filter_stage='candidate'`). The
     fix adds the precursor stages to the blocked set; this test pins

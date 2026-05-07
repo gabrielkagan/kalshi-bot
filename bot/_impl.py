@@ -8,7 +8,7 @@
 # CLAUDE.md "Critical rules". AST regression in test_cal_mlp_invariants.py.
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts', 'cal_mlp'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts', 'cal_mlp'))
 import _thread_env  # noqa: F401, E402 — side-effect: sets OMP_NUM_THREADS=1 before numpy below
 import re
 import time
@@ -1423,7 +1423,7 @@ _HPSB_VALIDATOR_UNAVAILABLE_REASON: Optional[str] = None
 
 
 def _validate_high_price_stc_block_bleeder_strings():
-    """Startup integrity check: every bleeder strategy string must appear in bot.py
+    """Startup integrity check: every bleeder strategy string must appear in bot/_impl.py
     source AT LEAST ONCE outside the BLEEDER_STRATEGIES declaration itself.
 
     Guards adversarial review A1: if a strategy is renamed (e.g. decided_t2_z2 →
@@ -1461,7 +1461,7 @@ def _validate_high_price_stc_block_bleeder_strings():
         logging.error(
             "HPSB_BLEEDER_STRINGS_MISSING: %s — gate will silently no-op for these. "
             "Update HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES or restore the strategy "
-            "string in bot.py. See kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md",
+            "string in bot/_impl.py. See kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md",
             _missing)
     return _missing
 
@@ -1549,7 +1549,7 @@ def should_block_sol_taker_lowprice_bleed_candidate(
 
 def _validate_bleed_block_bleeder_strings():
     """Mirror of HPSB validator — catches strategy-name renames that would
-    silently no-op the new bleed-cell gates. Self-introspects bot.py source
+    silently no-op the new bleed-cell gates. Self-introspects bot/_impl.py source
     and asserts every bleeder string in TM98_*_STRATEGIES and
     SOL_TAKER_*_STRATEGIES appears at least twice (declaration + at least
     one usage site). Drift = ERROR log at boot."""
@@ -2816,7 +2816,7 @@ class TelegramNotifier:
 
 # Phase 7 Edit 2: static reimplementation of 15M main-path sizing for parity-assert.
 # DO NOT use in production trading — only consumed by sizing_parity_assert at startup.
-# Closes over bot.py globals so SIZING_TIERS / DRAWDOWN_* / per-asset risk caps /
+# Closes over bot/_impl.py globals so SIZING_TIERS / DRAWDOWN_* / per-asset risk caps /
 # STC scaler / DRAWDOWN_HALT_FLOOR fallback are read lazily.
 compute_for_15m_main_path = make_compute_for_15m_main_path(globals())
 
@@ -2924,7 +2924,7 @@ def detect_orphan_db_holders(
     records `{"pid": int, "cmdline": str}` (the full filtered list,
     pre-alert) for caller-side logging / tests.
 
-    Why positive-list and not "anything not bot.py": the live VPS has
+    Why positive-list and not "anything not bot/_impl.py": the live VPS has
     several legitimate cron-spawned `state.db` openers (watchdog.py
     every 2 min, auditor.py hourly, audit_cron.py every 30 min,
     operator-run dashboard_snapshot.py). Any of them can collide
@@ -4567,7 +4567,7 @@ class StateManager:
                 kalshi_flow_depth_drain = _ms.get("kalshi_flow_depth_drain")
             # Phase F-2 (shadow coverage expansion 2026-05-02): maker
             # counterfactual snapshot. Cache populated in scan tick at
-            # _scan_ms_cache write site (bot.py around line 12085).
+            # _scan_ms_cache write site (bot/_impl.py around line 12085).
             if maker_price_cents is None:
                 maker_price_cents = _ms.get("maker_price_cents")
             if maker_depth_at_post is None:
@@ -5572,10 +5572,16 @@ if _calmlp_enabled_at_boot:
     for _calmlp_p in _calmlp_predictors.values():
         _calmlp_p.warmup()
     _calmlp_warmed = sum(1 for p in _calmlp_predictors.values() if p._loaded)
-    logging.info("[CALMLP] enabled=1 at boot, predictors_warmed=%d/4", _calmlp_warmed)
+    # Module-scoped logger (NOT bare `logging.info`) — `logging.info` auto-triggers
+    # `logging.basicConfig()` when root has no handlers, which clobbers pytest's
+    # caplog fixture handlers. Bit 2.1a regression test
+    # `tests/regression/test_no_basicconfig_in_bot_impl.py` pins this contract.
+    logging.getLogger(__name__).info(
+        "[CALMLP] enabled=1 at boot, predictors_warmed=%d/4", _calmlp_warmed)
 else:
-    logging.info("[CALMLP] enabled=0 at boot — predictors constructed but not warmed; "
-                  "hot env flip to 1 will lazy-load on first scan tick")
+    logging.getLogger(__name__).info(
+        "[CALMLP] enabled=0 at boot — predictors constructed but not warmed; "
+        "hot env flip to 1 will lazy-load on first scan tick")
 
 # R-p7-deploy-r9: post-hoc processor lifecycle imported here; STARTED later
 # from MainLoop.startup() AFTER StateManager + migrate_schema have run.
@@ -6450,7 +6456,7 @@ class KalshiFeed:
         #   - `discovery_ob_subscribe` (worker thread) excludes
         #     `_held_tickers` from the expired set before calling
         #     this method.
-        #   - `OpportunityScanner` scan-tick cleanup (~bot.py:9762)
+        #   - `OpportunityScanner` scan-tick cleanup (~bot/_impl.py:9762)
         #     iterates `ws_expired = expired ∪ expired_ob` from
         #     `_ticker_ask_history`/`_ob_cache` minus `active_tickers`,
         #     and does NOT apply the same held-tickers exclusion.
@@ -10846,7 +10852,7 @@ class OpportunityScanner:
                 "CONFIG_VERIFY (sports): ENABLED=%s OBS_ONLY=%s",
                 SPORTS_ENABLED, SPORTS_OBSERVATION_ONLY)
 
-        # ── Validate market_config.py matches bot.py constants ──
+        # ── Validate market_config.py matches bot/_impl.py constants ──
         validate_market_configs()
 
     # ── V2 variant helper (shadow cal pipeline: temperature + no blend) ──
@@ -11380,7 +11386,7 @@ class OpportunityScanner:
             # time_since_last_fill_s: seconds since the most recent fill
             # event. Uses MAX across positions.opened_at AND
             # settled_trades.settled_at because (a) `positions` is
-            # mutated by reconciliation — bot.py issues `DELETE FROM
+            # mutated by reconciliation — bot/_impl.py issues `DELETE FROM
             # positions WHERE ticker=?` when Kalshi REST reports
             # position_count=0 — so a quiet-period reconciliation can
             # drop all rows and turn `MAX(opened_at)` into NULL despite
@@ -11575,7 +11581,7 @@ class OpportunityScanner:
                     "WHERE product_type='weather' AND side='no'"
                 ).fetchone()[0]
                 if _wx_no_pnl < WEATHER_NO_KILL_THRESHOLD:
-                    import bot as _self_module
+                    import bot._impl as _self_module
                     _self_module.WEATHER_NO_SIDE_LIVE = False
                     logging.error(
                         "WEATHER_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
@@ -11595,7 +11601,7 @@ class OpportunityScanner:
                     "WHERE product_type='hourly' AND side='no'"
                 ).fetchone()[0]
                 if _hno_pnl < HOURLY_NO_KILL_THRESHOLD:
-                    import bot as _self_module
+                    import bot._impl as _self_module
                     _self_module.HOURLY_NO_SIDE_LIVE = False
                     logging.error(
                         "HOURLY_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
@@ -11615,7 +11621,7 @@ class OpportunityScanner:
                     "WHERE strategy='bracket_no'"
                 ).fetchone()[0]
                 if _bn_pnl < BRACKET_NO_KILL_THRESHOLD:
-                    import bot as _self_module
+                    import bot._impl as _self_module
                     _self_module.BRACKET_NO_ENABLED = False
                     logging.error(
                         "BRACKET_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
@@ -19071,8 +19077,8 @@ class OpportunityScanner:
         # by the same magnitude — small relative to the 600s
         # threshold but worth knowing when debugging.
         #
-        # `_scan_15m_iter_heartbeat_ts` (set at bot.py:9909 every
-        # 15M window iteration; init=0.0 at bot.py:9087) decouples
+        # `_scan_15m_iter_heartbeat_ts` (set at bot/_impl.py:9909 every
+        # 15M window iteration; init=0.0 at bot/_impl.py:9087) decouples
         # "scan is alive" from "DB rows are appearing" — same fix
         # `c1c2096` applied to the productive (2.5-min) watchdog
         # per kb/failures/scan-tick-stall-cluster-2026-04-25.md.
@@ -19504,7 +19510,7 @@ class OpportunityScanner:
             return
 
         # Kalshi REST returns one of two shapes (same pattern as
-        # _get_orderbook_cached at bot.py:13538-13546):
+        # _get_orderbook_cached at bot/_impl.py:13538-13546):
         #   - New FP format: {"orderbook_fp": {"yes_dollars": [[dollar_str,
         #     fp_qty_str], ...], "no_dollars": [...]}}
         #   - Legacy:        {"orderbook": {"yes": [[cents_int, qty_int],
@@ -22844,7 +22850,7 @@ class OrderExecutor:
                 if _cal_prob is not None and 0 < _cal_prob < 1:
                     _fee_1c = calculate_taker_fee(1, price)
                     # Per-strategy edge reserve — see
-                    # STRATEGY_LIMIT_BUMP_RESERVE_CENTS in bot.py
+                    # STRATEGY_LIMIT_BUMP_RESERVE_CENTS in bot/_impl.py
                     # constants. Default (B) is 0 (break-even after
                     # fee). High-conviction strategies (DC tiers,
                     # addons) override to -1 (tolerate fee-cost on
@@ -23618,7 +23624,7 @@ class OrderExecutor:
                     ticker, strategy)
                 return result
             # Kalshi REST returns three possible shapes (mirror prod
-            # unwrap at bot.py:15810-15812 + 16419-16421):
+            # unwrap at bot/_impl.py:15810-15812 + 16419-16421):
             #   1. {"orderbook_fp": {"yes_dollars": [["0.99","48"]...]}}
             #      — current FP schema (Mar 2026 migration)
             #   2. {"orderbook": {"yes": [[99, 48], ...]}} — wrapped legacy
@@ -24826,7 +24832,7 @@ class OrderExecutor:
         so audit failures cannot resurrect the lockout. Of those four,
         only mark_order_status is un-self-guarded (can raise
         sqlite3.OperationalError); the others catch internally
-        (bot.py:2716, 23630, 5089).
+        (bot/_impl.py:2716, 23630, 5089).
         """
         if source not in self._CANCEL_404_SOURCES:
             logging.error(
@@ -24887,7 +24893,7 @@ class OrderExecutor:
         # guarded (can raise sqlite3.OperationalError on lock
         # contention). log_order/_log_fill_model_sample/
         # update_evaluated_opportunity_order catch internally
-        # (bot.py:2716, 23630, 5089). Single outer try is
+        # (bot/_impl.py:2716, 23630, 5089). Single outer try is
         # belt-and-suspenders defense-in-depth — primary protection
         # is the pop above.
         try:
@@ -26355,7 +26361,7 @@ class MainLoop:
                 logging.warning(
                     "Market observations snapshotter not started — "
                     "kalshi_feed missing get_all_orderbooks_snapshot method "
-                    "(WS client API drift; review bot.py vs "
+                    "(WS client API drift; review bot/_impl.py vs "
                     "market_observations_snapshotter.py contract)"
                 )
         except Exception as e:
@@ -28150,17 +28156,5 @@ class MainLoop:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Entrypoint
+#  Entrypoint moved to bot/__main__.py — `python -m bot` invokes it.
 # ═════════════════════════════════════════════════════════════════════════════
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stderr)],
-    force=True,
-)
-
-if __name__ == "__main__":
-    bot = MainLoop()
-    bot.run()

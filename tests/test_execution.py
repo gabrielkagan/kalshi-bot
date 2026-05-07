@@ -1,4 +1,4 @@
-"""Tests for OrderExecutor (bot.py).
+"""Tests for OrderExecutor (bot/_impl.py).
 
 Guards against:
 - Maker-first execution not using post_only=True

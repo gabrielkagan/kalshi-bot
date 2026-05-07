@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import MagicMock, patch, call
 
 
-# ── Inline helpers (from bot.py) ───────────────────────────────────────
+# ── Inline helpers (from bot/_impl.py) ───────────────────────────────────────
 
 def fp_str_to_int(s) -> int:
     if s is None:
@@ -39,7 +39,7 @@ def calculate_taker_fee(count: int, price_cents: int) -> int:
 
 
 # ── Simulated _submit_taker logic ──────────────────────────────────────
-# This mirrors the ghost fill detection code path from bot.py's _submit_taker.
+# This mirrors the ghost fill detection code path from bot/_impl.py's _submit_taker.
 # We extract just the decision logic after fill polling returns total_filled=0.
 
 def ghost_fill_check(

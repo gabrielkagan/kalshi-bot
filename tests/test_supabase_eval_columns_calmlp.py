@@ -1,6 +1,6 @@
 """Supabase _EVAL_COLUMNS must include all cal_mlp_* fields.
 
-Failure mode (May 1 2026): bot.py was fixed so the candidate / observation_trade /
+Failure mode (May 1 2026): bot/_impl.py was fixed so the candidate / observation_trade /
 bleed-cell rows now carry cal_mlp_request_id (commit f7d2f47), enabling the
 post-hoc processor to annotate every 15M trade. But supabase_sync._EVAL_COLUMNS
 is an explicit whitelist that does NOT include cal_mlp_*, so the dashboard
@@ -8,7 +8,7 @@ mirror to Postgres silently drops these annotations — operators can't see them
 in the dashboard / public site even though the local DB is 100% annotated.
 
 This test pins the column list to the cal_mlp_* schema, so:
-  - if someone adds a new cal_mlp_* field to bot.py without extending the list,
+  - if someone adds a new cal_mlp_* field to bot/_impl.py without extending the list,
     sync silently drops the new field (caught here),
   - if someone removes one of the 7 fields from the list, dashboard observability
     breaks (caught here).
@@ -73,7 +73,7 @@ def test_eval_columns_subset_of_local_evaluated_opportunities_schema(tmp_path):
     """Every column in _EVAL_COLUMNS must exist in the local sqlite
     evaluated_opportunities schema, otherwise the SELECT will raise
     OperationalError at runtime and freeze sync. Uses a fresh StateManager
-    DB so the schema reflects the current bot.py."""
+    DB so the schema reflects the current bot/_impl.py."""
     import bot
     db_path = str(tmp_path / "state.db")
     state = bot.StateManager(db_path)

@@ -1,4 +1,4 @@
-"""Tests for ProbabilityEngine (bot.py).
+"""Tests for ProbabilityEngine (bot/_impl.py).
 
 Guards against:
 - Z-score computation errors (wrong sigma_move formula)
@@ -14,7 +14,7 @@ import sys
 import unittest
 from unittest.mock import patch, MagicMock
 
-# Mock heavy dependencies that bot.py imports at module level.
+# Mock heavy dependencies that bot/_impl.py imports at module level.
 for _mod in ["websockets", "websocket", "requests",
              "cryptography", "cryptography.hazmat",
              "cryptography.hazmat.primitives",

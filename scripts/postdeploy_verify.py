@@ -107,7 +107,7 @@ def flag_truthy(value: Optional[str]) -> bool:
 # ───────────────── Bot-source flag reader ─────────────────
 
 def read_bot_constants(bot_py: Path) -> dict:
-    """Parse bot.py for module-level flag assignments. Regex-based rather
+    """Parse bot/_impl.py for module-level flag assignments. Regex-based rather
     than import-based to avoid side effects (WebSocket threads etc.)
     starting on import."""
     import re
@@ -388,7 +388,7 @@ def main(argv: List[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--db", default="state.db", help="path to state.db")
     p.add_argument("--env", default=".env", help="path to .env")
-    p.add_argument("--bot-py", default="bot.py", help="path to bot.py")
+    p.add_argument("--bot-py", default="bot/_impl.py", help="path to bot/_impl.py")
     p.add_argument("--strict-all", action="store_true",
                    help="treat all warnings as failures")
     p.add_argument("--dry-run", action="store_true",

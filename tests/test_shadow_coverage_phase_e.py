@@ -11,7 +11,7 @@ posture at scan time:
   - `time_since_last_fill_s` (REAL): seconds since the last position
     opened (MAX(opened_at) on positions). NULL if no positions ever.
 
-Implementation: extend `_compute_bot_state_features` (bot.py around
+Implementation: extend `_compute_bot_state_features` (bot/_impl.py around
 line 10638) which is already cached at 60s + per-asset and feeds
 `_extended_feature_provider`. The 3 new fields are GLOBAL (not
 per-asset) but stored in the per-asset cache for uniform access; all
@@ -228,7 +228,7 @@ class TestPhaseEStateAtDecisionInsert:
 
 class TestPhaseEReconciliationSurvival:
     """Phase E adversarial review MEDIUM-1 regression: time_since_last_fill_s
-    must survive reconciliation row deletes. bot.py issues
+    must survive reconciliation row deletes. bot/_impl.py issues
     `DELETE FROM positions WHERE ticker=?` when Kalshi REST reports
     position_count=0. Pre-fix: tslf would drop to NULL despite recent
     activity. Post-fix: settled_trades is also queried, so tslf reflects

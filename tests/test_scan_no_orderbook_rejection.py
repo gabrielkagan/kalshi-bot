@@ -24,7 +24,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
 
 
 def _find_scan_method() -> ast.FunctionDef:
@@ -36,7 +36,7 @@ def _find_scan_method() -> ast.FunctionDef:
             for node in cls.body:
                 if isinstance(node, ast.FunctionDef) and node.name == "scan":
                     return node
-    raise AssertionError("OpportunityScanner.scan not found in bot.py")
+    raise AssertionError("OpportunityScanner.scan not found in bot/_impl.py")
 
 
 def _insert_rejection_calls_in(node: ast.AST) -> list:
@@ -67,7 +67,7 @@ def _call_has_first_reason_arg(call: ast.Call, reason: str) -> bool:
 
 
 class TestScanSilentBailLeavesDbTrace(unittest.TestCase):
-    """bot.py scan() must insert_rejection before `continue` on both
+    """bot/_impl.py scan() must insert_rejection before `continue` on both
     silent-bail paths (no_orderbook, no_best_ask). Otherwise the next
     WS-cache-drift outage produces zero DB evidence — same failure
     shape as 2026-04-24 22:12 UTC."""

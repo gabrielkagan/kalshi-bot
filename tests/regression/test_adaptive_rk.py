@@ -1,9 +1,9 @@
 """Tests for Adaptive Realized Kernel Bandwidth (BN 2008/2009).
 
 Standalone test file with inline copies of the relevant static methods
-so tests run without importing bot.py's full dependency tree.
+so tests run without importing bot/_impl.py's full dependency tree.
 
-DRIFT RISK: These methods are copied from VolatilityEngine in bot.py.
+DRIFT RISK: These methods are copied from VolatilityEngine in bot/_impl.py.
 If the production code changes, these inline copies may drift out of sync.
 The RK/bandwidth code has not been extracted to models.py yet because it's
 embedded in VolatilityEngine (not a standalone class).
@@ -13,7 +13,7 @@ import math
 import random
 import unittest
 
-# ─── Constants (mirror bot.py) ─────────────────────────────────────────────
+# ─── Constants (mirror bot/_impl.py) ─────────────────────────────────────────────
 RK_CSTAR_FLAT_TOP_PARZEN = 3.5134
 RK_NOISE_VAR_FLOOR = 1e-20
 RK_BANDWIDTH_MAX_FRACTION = 1 / 3

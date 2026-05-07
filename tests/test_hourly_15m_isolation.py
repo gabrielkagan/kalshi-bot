@@ -72,7 +72,7 @@ class TestHourlyConstants:
 
 
 class TestMarketConfigSync:
-    """Verify market_config.py matches bot.py constants."""
+    """Verify market_config.py matches bot/_impl.py constants."""
 
     def test_hourly_config_values(self):
         from market_config import MARKET_CONFIGS
@@ -83,7 +83,7 @@ class TestMarketConfigSync:
         assert cfg.excluded_assets == frozenset({"SOL", "XRP"})
 
     def test_validate_market_configs_passes(self):
-        """Full validation against bot.py constants."""
+        """Full validation against bot/_impl.py constants."""
         from market_config import validate_market_configs
         validate_market_configs()  # Raises AssertionError if mismatch
 

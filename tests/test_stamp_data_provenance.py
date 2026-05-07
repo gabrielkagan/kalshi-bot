@@ -58,7 +58,7 @@ def db_with_column(tmp_path: Path) -> Path:
         (7, '15m', '2026-04-15T10:00:00.000000Z', 78400.0, 5.0,
          'backfill_60s_inputs'),
         # 8: REGRESSION for #4 — microseconds AFTER cutoff in same second.
-        #    bot.py writes '2026-05-02T19:53:19.500000Z' style strings.
+        #    bot/_impl.py writes '2026-05-02T19:53:19.500000Z' style strings.
         #    Naive cutoff '2026-05-02T19:53:19Z' would lexically compare
         #    AFTER this string ('.' < 'Z') → classify as pre-cutoff (WRONG).
         #    With microsecond-bearing cutoff this row stamps live_ws.
@@ -161,7 +161,7 @@ def test_main_aborts_if_column_missing(tmp_path):
 
 def test_phase_f3_cutoff_carries_microseconds():
     """Regression for round-1 review #4: cutoff string MUST carry
-    microseconds so lexical comparison with bot.py timestamps
+    microseconds so lexical comparison with bot/_impl.py timestamps
     ('%Y-%m-%dT%H:%M:%S.%fZ') is correct."""
     assert stamp_mod.PHASE_F3_DEPLOY_ISO == "2026-05-02T19:53:19.000000Z"
     # Sanity: '.000000Z' is lexically less than '.500000Z' — so a
@@ -214,7 +214,7 @@ def test_pre_phase_f_uncaptured_rows_left_null(db_with_column):
 
 
 def test_upsert_coalesce_preserves_backfill_stamp():
-    """Round-2 #11 regression: bot.py UPSERT must use COALESCE so an
+    """Round-2 #11 regression: bot/_impl.py UPSERT must use COALESCE so an
     existing backfill stamp survives a live-bot UPSERT (which always
     passes the default 'live_ws'). Without COALESCE, every re-evaluation
     would overwrite the stamp and silently re-label backfilled rows."""

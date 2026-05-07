@@ -254,7 +254,7 @@ class TestDriftProbeRestErrors(unittest.TestCase):
 class TestDriftProbeRestShapes(unittest.TestCase):
     """Kalshi REST /orderbook returns one of two shapes. Probe supports both.
 
-    See bot.py:13538-13546 for the same dual-shape handling pattern in
+    See bot/_impl.py:13538-13546 for the same dual-shape handling pattern in
     _get_orderbook_cached.
     """
 

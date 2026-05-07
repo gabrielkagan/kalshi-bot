@@ -424,7 +424,7 @@ def test_gate_excludes_z_form_in_addition_to_offset_form(tmp_path):
     """julianday() handles BOTH ISO-8601 quirks (T+offset and TZ-suffix).
 
     bot_startup_log writes `+00:00` form (Python isoformat); other
-    bot.py write sites use `Z` suffix. julianday() should parse both.
+    bot/_impl.py write sites use `Z` suffix. julianday() should parse both.
     Pin this so a future signal change to a Z-form table works.
     """
     db = tmp_path / "state.db"

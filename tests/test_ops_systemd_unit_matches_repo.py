@@ -9,7 +9,7 @@ Bit 2.0.5.2 of repo modularization plan
   /etc/systemd/system/kalshi-bot.service.
 - The unit's ExecStart routes through start.sh (current chain) or
   `python -m bot` (post-Bit-2.1a future state). Anything else (e.g.,
-  `python3 bot.py` direct) repeats the Bit 2.1a incident class.
+  `python3 bot/_impl.py` direct) repeats the Bit 2.1a incident class.
 - .github/workflows/deploy.yml contains the pre-deploy drift check
   introduced by Bit 2.0.5.2, and that check runs BEFORE
   `git reset --hard` so an aborted deploy leaves the VPS untouched.
@@ -89,7 +89,7 @@ def test_ops_install_sh_targets_correct_dst():
 def test_ops_unit_execstart_calls_start_sh_or_python_m_bot():
     """ExecStart must route through start.sh or `python -m bot`.
 
-    Anything else (e.g., `python3 bot.py` direct) repeats the Bit 2.1a
+    Anything else (e.g., `python3 bot/_impl.py` direct) repeats the Bit 2.1a
     incident class — the on-VPS systemd unit bypasses the documented
     sacred-rule chain in CLAUDE.md.
     """
@@ -103,7 +103,7 @@ def test_ops_unit_execstart_calls_start_sh_or_python_m_bot():
     assert via_start_sh or via_python_m_bot, (
         f"ExecStart={cmd!r} doesn't route through start.sh or `python -m "
         f"bot`. Bit 2.1a postmortem (kb/failures/bit-2.1a-systemd-mismatch-"
-        f"may06.md): direct `python3 bot.py` invocation bypasses the "
+        f"may06.md): direct `python3 bot/_impl.py` invocation bypasses the "
         f"documented sacred-rule chain in CLAUDE.md and is the original "
         f"incident class this Bit's safety net catches."
     )

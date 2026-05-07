@@ -1,7 +1,7 @@
 """Layer 3.5 of orphan prevention — mid-session detection via the
 existing 2-min `watchdog.py` cron.
 
-Layer 3 (`bot.py:detect_orphan_db_holders`) runs at bot startup. If
+Layer 3 (`bot/_impl.py:detect_orphan_db_holders`) runs at bot startup. If
 an orphan H-4 backfill spawns DURING bot uptime (operator manually
 triggers `gh workflow run h4_backfill.yml -f source=...` mid-day,
 script orphans itself), Layer 3 won't catch it until the next bot
@@ -46,7 +46,7 @@ def test_watchdog_check_orphan_db_holders_returns_no_offenders_clean(
     )
     monkeypatch.setattr(
         watchdog, "_get_pid_cmdline",
-        lambda pid: "venv/bin/python3 bot.py" if pid == 12345 else "watchdog.py",
+        lambda pid: "venv/bin/python3 bot/_impl.py" if pid == 12345 else "watchdog.py",
     )
 
     msg = watchdog.check_orphan_db_holders(str(db))
@@ -93,7 +93,7 @@ def test_watchdog_check_orphan_db_holders_skips_legitimate_processes(
     db.touch()
 
     legit_pids = {
-        2001: "venv/bin/python3 bot.py",
+        2001: "venv/bin/python3 bot/_impl.py",
         2002: "venv/bin/python3 watchdog.py",
         2003: "venv/bin/python3 auditor.py",
         2004: "venv/bin/python3 scripts/audit_cron.py --db state.db",
@@ -120,7 +120,7 @@ def test_watchdog_check_orphan_db_holders_handles_lsof_missing(
 ):
     """If `lsof` is not installed, the check must return None
     silently (defense-in-depth that has zero observability of its
-    own health is acceptable here because Layer 3 in bot.py emits
+    own health is acceptable here because Layer 3 in bot/_impl.py emits
     its own one-shot Telegram if lsof is missing)."""
     import watchdog
     db = tmp_path / "state.db"

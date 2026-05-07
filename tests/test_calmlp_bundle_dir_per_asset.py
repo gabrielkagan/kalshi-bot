@@ -78,7 +78,7 @@ def test_resolver_returns_empty_when_neither_set(monkeypatch):
 
 def test_resolver_uppercases_asset_for_env_lookup(monkeypatch):
     """Env-var name is always uppercase. Caller may pass mixed-case asset
-    (bot.py uses uppercase but defensive normalization avoids a silent
+    (bot/_impl.py uses uppercase but defensive normalization avoids a silent
     fall-through to global if a future caller passes 'eth')."""
     import integration
     monkeypatch.setenv('CALMLP_BUNDLE_DIR_ETH', '/per-asset/eth')

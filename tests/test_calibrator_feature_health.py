@@ -143,7 +143,7 @@ def test_failure_mode_returns_1(tmp_path: Path):
 
 
 def test_since_iso_uses_microsecond_format(tmp_path: Path):
-    """R-p7-deploy-r11 R2 (P3 MEDIUM): bot.py writes evaluation_time with
+    """R-p7-deploy-r11 R2 (P3 MEDIUM): bot/_impl.py writes evaluation_time with
     microsecond precision (`%Y-%m-%dT%H:%M:%S.%fZ`). The monitor's
     rolling-window cutoff must use the same format, otherwise lexical
     `evaluation_time >= since_iso` excludes rows whose second matches

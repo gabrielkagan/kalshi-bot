@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Standalone tests for HAR/EGARCH buffer persistence across restarts.
 
-Copies minimal estimator logic inline to avoid importing bot.py.
+Copies minimal estimator logic inline to avoid importing bot/_impl.py.
 
 NOTE: HAR model was deleted from production. HAR tests here cover dead code
 but are kept to verify the buffer persistence pattern (EGARCH uses the same
@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Any
 from unittest.mock import patch, MagicMock
 import logging
 
-# ── Constants (mirrored from bot.py) ────────────────────────────────────
+# ── Constants (mirrored from bot/_impl.py) ────────────────────────────────────
 
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 HAR_OBSERVATION_MAXLEN = 288

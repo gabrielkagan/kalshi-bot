@@ -6,7 +6,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-# Activate venv if present (bot.py imports websockets, etc.)
+# Activate venv if present (bot/_impl.py imports websockets, etc.)
 if [ -f "venv/bin/activate" ]; then
     source venv/bin/activate
 fi
@@ -15,7 +15,7 @@ echo "=== Pre-Deploy Check ==="
 
 # 1. Syntax check critical files
 echo "[1/4] Syntax checking critical files..."
-for f in bot.py market_config.py dashboard_snapshot.py sports_engine.py spx_engine.py weather_engine.py; do
+for f in bot/_impl.py market_config.py dashboard_snapshot.py sports_engine.py spx_engine.py weather_engine.py; do
     if [ -f "$f" ]; then
         python3 -c "import ast; ast.parse(open('$f').read())" 2>&1 || {
             echo "FAIL: $f has syntax errors"
@@ -26,7 +26,7 @@ done
 echo "  OK: All files parse cleanly"
 
 # 2. Config sync check (import market_config which calls validate_market_configs)
-echo "[2/4] Validating config sync (bot.py ↔ market_config.py)..."
+echo "[2/4] Validating config sync (bot/_impl.py ↔ market_config.py)..."
 python3 -c "
 import sys
 sys.path.insert(0, '.')
@@ -34,7 +34,7 @@ from market_config import validate_market_configs
 validate_market_configs()
 print('  OK: All configs in sync')
 " 2>&1 || {
-    echo "FAIL: Config mismatch between bot.py and market_config.py"
+    echo "FAIL: Config mismatch between bot/_impl.py and market_config.py"
     exit 1
 }
 

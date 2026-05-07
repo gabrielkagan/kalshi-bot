@@ -45,7 +45,7 @@ Constant lives in `features.py`. cfg_fp captures `sigma_winsor_abs_cap`. Regress
 ### Train/serve consistency invariants
 
 The three pipelines use the SAME formulas. Any drift = silent training-distribution mismatch.
-- `prob_breakeven_gap = calibrated_prob - market_price/100` (post-CalEngine; bot.py:1513). Locked by `tests/test_calmlp_tm96_gate.py`.
+- `prob_breakeven_gap = calibrated_prob - market_price/100` (post-CalEngine; bot/_impl.py:1513). Locked by `tests/test_calmlp_tm96_gate.py`.
 - `hour_sin/cos` from INTEGER `dt.hour` (NOT minute-fractional). Locked.
 - `spot_distance_to_strike_sigma` clipped to ±25. Locked.
 
@@ -66,7 +66,7 @@ Health monitoring: `scripts/calibrator_feature_health.py` (cron 6h) alerts via T
 
 External polling: `scripts/external_market_poller.py --once` (cron 1m) writes OKX funding+OI for BTC/ETH/SOL/XRP perpetuals + Deribit BTC/ETH DVOL to `external_market_data` table.
 
-### Spot price buffer persistence (`bot.py:CoinbaseFeed`)
+### Spot price buffer persistence (`bot/_impl.py:CoinbaseFeed`)
 
 30-min buffer persists to `state/spot_buffer.json` every 30s; reloads on bot startup. Drops entries >30min old AND >60s in the future. Without this, every bot restart creates a 5-min hole in `spot_momentum_5m_bps` and 30-min hole in `btc_spot_change_30m_bps`. Multiple deploys/day → 25-50% NULL on bad days.
 
