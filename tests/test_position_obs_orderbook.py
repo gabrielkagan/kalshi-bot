@@ -56,7 +56,7 @@ class TestPPOInsertWiringInPlace(_TempState):
     Phase 6 post-deploy verification confirms rows actually populate."""
 
     def _bot_src(self):
-        import bot as bot_mod
+        import bot._impl as bot_mod
         return open(bot_mod.__file__).read()
 
     def test_ppo_insert_lists_orderbook_levels_json(self):

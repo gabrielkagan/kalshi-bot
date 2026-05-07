@@ -2,7 +2,7 @@
 """
 AI Analyst System for Kalshi Crypto Trading Bot.
 
-Standalone script — does NOT import bot.py.
+Standalone script — does NOT import bot/_impl.py.
 Reads state.db read-only, calls Claude API for pattern recognition,
 pushes results to Firebase dashboard and analyst_journal.jsonl.
 
@@ -42,7 +42,7 @@ MIN_SETTLED_FOR_EDGE_DISCOVERY = 500
 MIN_SETTLED_FOR_PARAM_OPTIMIZER = 500
 
 # Current bot config (for param optimizer context)
-# !! Keep in sync with bot.py — last verified 2026-02-28 !!
+# !! Keep in sync with bot/_impl.py — last verified 2026-02-28 !!
 CURRENT_CONFIG = {
     "MIN_ENTRY_PRICE": 80,
     "BTC_MIN_ENTRY_PRICE": 89,

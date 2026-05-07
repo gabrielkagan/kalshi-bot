@@ -206,7 +206,7 @@ def test_sizing_parity_vectors_match_integration_mirror():
         'DRAWDOWN_HALF_THRESHOLD': sizing.DRAWDOWN_HALF_THRESHOLD,
         'DRAWDOWN_QUARTER_THRESHOLD': sizing.DRAWDOWN_QUARTER_THRESHOLD,
         'DRAWDOWN_HALT_THRESHOLD': sizing.DRAWDOWN_HALT_THRESHOLD,
-        # DRAWDOWN_HALT_FLOOR not exposed by bot.py — mirror falls back to 0.10.
+        # DRAWDOWN_HALT_FLOOR not exposed by bot/_impl.py — mirror falls back to 0.10.
         'STC_SIZING_SCALER_KNEE': sizing.STC_SIZING_SCALER_KNEE,
         'STC_SIZING_SCALER_ENABLED': sizing.STC_SIZING_SCALER_ENABLED,
     }
@@ -239,7 +239,7 @@ def test_sizing_parity_vectors_match_integration_mirror():
 
 
 def test_drawdown_halt_floor_fallback_matches_literal():
-    """R-p7-spec-r1#C1: bot.py hardcodes DRAWDOWN_HALT_FLOOR=0.10 inline
+    """R-p7-spec-r1#C1: bot/_impl.py hardcodes DRAWDOWN_HALT_FLOOR=0.10 inline
     inside models.PositionSizer. integration.py uses g.get(..., 0.10) so
     parity vec 4 (XRP halt path) is reachable without a config.py edit."""
     import integration
@@ -532,7 +532,7 @@ def test_integration_all_matches_bot_py_diff_edit_1():
     """The 9 names imported by bot-py-diff Edit 1 MUST be exported via
     `integration.__all__` AND resolvable as module attributes. If a future
     refactor renames or hides any of these, the operator's `from integration
-    import ...` line in bot.py would NameError on the next deploy."""
+    import ...` line in bot/_impl.py would NameError on the next deploy."""
     import integration
     edit_1_imports = {
         'CalMLPError', 'CalMLPParityError', 'CalMLPSchemaError',
@@ -548,17 +548,17 @@ def test_integration_all_matches_bot_py_diff_edit_1():
 
 
 # ---------------------------------------------------------------------------
-# bot.py Edit 4 deploy-blocker regressions (R-p7-deploy-r2)
+# bot/_impl.py Edit 4 deploy-blocker regressions (R-p7-deploy-r2)
 # These tests exist because the original bee1ebb commit would have crashed
 # the scan loop on first 15M window. Adversarial review caught the issues
 # pre-deploy. Each test pins one of the ship-blockers in place.
 # ---------------------------------------------------------------------------
 
 def _read_bot_py():
-    """Cached read of bot.py for the AST guards below."""
-    p = Path(__file__).resolve().parents[1] / 'bot.py'
+    """Cached read of bot/_impl.py for the AST guards below."""
+    p = Path(__file__).resolve().parents[1] / 'bot' / '_impl.py'
     if not p.exists():
-        pytest.skip('bot.py not present (running on rebuild branch without bot.py edits)')
+        pytest.skip('bot/_impl.py not present (running on rebuild branch without bot/_impl.py edits)')
     return p.read_text()
 
 
@@ -572,7 +572,7 @@ def test_edit4_hook_does_not_pass_unbound_side():
     """
     src = _read_bot_py()
     if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
-        pytest.skip('Edit 4 not yet applied to bot.py (rebuild-only branch)')
+        pytest.skip('Edit 4 not yet applied to bot/_impl.py (rebuild-only branch)')
     import re
     # Match either the legacy sync call or the new async enqueue.
     m = re.search(
@@ -611,7 +611,7 @@ def test_edit4_hook_gated_by_pt_15m():
     """
     src = _read_bot_py()
     if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
-        pytest.skip('Edit 4 not yet applied to bot.py (rebuild-only branch)')
+        pytest.skip('Edit 4 not yet applied to bot/_impl.py (rebuild-only branch)')
     import re
     # Accept either the strict-equal Phase-D form or the legacy
     # tuple-membership form, in close proximity to the annotate call.
@@ -642,14 +642,14 @@ def test_edit4_shadow_queue_strips_cal_mlp_prefix():
     `_shadow_diag.copy()`, with the cross-ticker leak prevented by a
     top-of-iteration `pop("cal_mlp_*")` reset.
 
-    EXCEPTION: the TM96 cal_mlp gate (around bot.py:12920) computes its
+    EXCEPTION: the TM96 cal_mlp gate (around bot/_impl.py:12920) computes its
     own `_tm96_diag_clean` and splats `_shadow_diag` MINUS cal_mlp_* to
     avoid double-stamping. That single strip is intentional and stays.
 
     Master plan: kb/decisions/shadow-coverage-expansion-may01.md."""
     src = _read_bot_py()
     if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
-        pytest.skip('Edit 4 not yet applied to bot.py')
+        pytest.skip('Edit 4 not yet applied to bot/_impl.py')
     n_copy = src.count('_shadow_diag.copy()')
     n_filter = src.count(
         "if not k.startswith('cal_mlp_')"
@@ -679,7 +679,7 @@ def test_shadow_diag_assertion_includes_cal_mlp_keys():
     cal_mlp_* param silently breaks the **_shadow_diag splat."""
     src = _read_bot_py()
     if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
-        pytest.skip('Edit 4 not yet applied to bot.py')
+        pytest.skip('Edit 4 not yet applied to bot/_impl.py')
     expected_calmlp_keys = [
         'cal_mlp_p_mean', 'cal_mlp_p_std', 'cal_mlp_final_lo',
         'cal_mlp_final_hi', 'cal_mlp_train_id', 'cal_mlp_skipped_reason',
@@ -702,7 +702,7 @@ def test_insert_evaluated_opportunity_signature_has_cal_mlp_params():
     the async UPDATE)."""
     src = _read_bot_py()
     if '_calmlp_annotate_async' not in src and '_calmlp_annotate_kwargs' not in src:
-        pytest.skip('Edit 4 not yet applied to bot.py')
+        pytest.skip('Edit 4 not yet applied to bot/_impl.py')
     import ast
     tree = ast.parse(src)
     for node in ast.walk(tree):
@@ -720,7 +720,7 @@ def test_insert_evaluated_opportunity_signature_has_cal_mlp_params():
                     f"The **_shadow_diag splat at Edit 4 downstream would TypeError."
                 )
             return
-    pytest.fail('insert_evaluated_opportunity not found in bot.py AST')
+    pytest.fail('insert_evaluated_opportunity not found in bot/_impl.py AST')
 
 
 # ---------------------------------------------------------------------------
@@ -773,7 +773,7 @@ def test_post_hoc_processor_populates_full_cont_feature_cols():
     that isn't auto-seeded by predict() (market_price, side_int, ticker_id,
     logit_raw_prob_clipped) and isn't identity_no_zscore (hour_sin/cos).
     Otherwise the safety net raises missing_features and calibration skips.
-    R-p7-deploy-r9 moved feature reconstruction from bot.py Edit 4 (synchronous
+    R-p7-deploy-r9 moved feature reconstruction from bot/_impl.py Edit 4 (synchronous
     on scan thread) to post_hoc_processor.py (daemon-thread polling)."""
     import inspect
     from post_hoc_processor import CalMLPPostHocProcessor
@@ -891,24 +891,24 @@ def _first_lineno_of_numerical_or_thread_env(bot_py_text: str):
     return thread_env_line, numerical_line
 
 
-def test_thread_env_imported_before_numerical_libs_in_bot_py():
+def test_thread_env_imported_before_numerical_libs_in_bot_impl():
     """R-p7-deploy-r7-r2#H1 + r3#H1: OMP/MKL setdefaults are NO-OP if any
     numerical lib (numpy/scipy/sklearn/pandas/torch) imports first — those
     C extensions cache OpenBLAS/MKL thread count at C-extension load. AST
     walk covers BOTH `import X` and `from X import ...` forms. Production
     incident 2026-04-29: scan loop 7.75s, 0 candidates in 5 min when this
     contract broke."""
-    bot_py = Path(__file__).resolve().parents[1] / 'bot.py'
+    bot_py = Path(__file__).resolve().parents[1] / 'bot' / '_impl.py'
     thread_env_line, numerical_line = _first_lineno_of_numerical_or_thread_env(
         bot_py.read_text()
     )
     assert thread_env_line is not None, (
-        "bot.py must `import _thread_env` (sets OMP_NUM_THREADS=1 etc.) "
+        "bot/_impl.py must `import _thread_env` (sets OMP_NUM_THREADS=1 etc.) "
         "before any numerical lib (numpy/scipy/sklearn/pandas/torch). "
         "Line not found."
     )
     assert numerical_line is not None, (
-        "bot.py is expected to import a numerical lib. If this changed, "
+        "bot/_impl.py is expected to import a numerical lib. If this changed, "
         "the contract is moot — but verify other consumers still need it."
     )
     assert thread_env_line < numerical_line, (
@@ -941,7 +941,7 @@ def _reset_async_pool_state():
 def test_annotate_async_returns_none_no_calibrated_prob():
     """R-p7-deploy-r8 + Round-1#10: the async enqueue MUST return None.
     The sync version returned a calibrated final_prob that overrode raw;
-    if a future regression returns a value, bot.py would mis-trade because
+    if a future regression returns a value, bot/_impl.py would mis-trade because
     Edit 4 no longer captures or uses the return value (v1 is shadow-only).
     Pin: signature has no `-> Optional[float]` return annotation OR returns
     None unconditionally."""
@@ -960,7 +960,7 @@ def test_annotate_async_returns_none_no_calibrated_prob():
                 isinstance(node.value, ast.Constant) and node.value.value is None
             ), (
                 "annotate_evaluation_async_enqueue returned a non-None value at "
-                f"line {node.lineno}: v1 is shadow-only by spec; bot.py does "
+                f"line {node.lineno}: v1 is shadow-only by spec; bot/_impl.py does "
                 "not capture or use the return value, so a future regression "
                 "would silently change trading behavior."
             )
@@ -1115,7 +1115,7 @@ def test_thread_env_is_zero_deps_no_numerical_imports():
 # Companion to CALMLP_ENABLED. CALMLP_ENABLED=0 disables ALL cal_mlp;
 # CALMLP_BUNDLE_DIR pins a specific bundle directory so v2→v1 rollback
 # doesn't require disabling cal_mlp entirely. <ASSET> placeholder is
-# substituted with self.asset (uppercase by bot.py callers' convention)
+# substituted with self.asset (uppercase by bot/_impl.py callers' convention)
 # at lookup time so one env var rolls back all 4 assets at once.
 # Spec: kb/decisions/v2-cal-mlp-deploy-runbook-may03.md (Per-version kill-switch)
 #       kb/decisions/calmlp-bundle-dir-per-asset-may06.md (Phase 1a per-asset).

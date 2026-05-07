@@ -1,6 +1,6 @@
 """Phase H-2 integration regression scaffold — BEGIN IMMEDIATE lock-wait pattern.
 
-Status: SKIPPED until bot.py H-2 integration commits land.
+Status: SKIPPED until bot/_impl.py H-2 integration commits land.
 
 Purpose: once the operator wires `bot_state_snapshot_json` into
 `StateManager.insert_evaluated_opportunity`, the insert site MUST measure
@@ -20,15 +20,15 @@ Why this regression matters: v2 calibrator training pins on `lock_wait_ms`
 as a feature. If the operator (or a future refactor) measures lock contention
 via a different pattern (e.g. timing the full INSERT, timing post-commit
 checkpoint), the distribution shifts under v2 and feature joins become
-apples-to-oranges. This test enforces the pattern at the bot.py source
+apples-to-oranges. This test enforces the pattern at the bot/_impl.py source
 level via grep, so a drift triggers on the next test run rather than
 silently corrupting training data.
 
 Activation procedure (once integration ships):
   1. Remove the @pytest.mark.skip decorator below.
-  2. Run the test — it greps bot.py for `BEGIN IMMEDIATE` adjacent to
+  2. Run the test — it greps bot/_impl.py for `BEGIN IMMEDIATE` adjacent to
      `perf_counter()` in the insert path.
-  3. If it fails, the integration commit broke the pattern — fix bot.py.
+  3. If it fails, the integration commit broke the pattern — fix bot/_impl.py.
 
 Until removed, this test is a NO-OP scaffold (skipped, not failed).
 """
@@ -42,11 +42,11 @@ import pytest
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BOT_PY_PATH = os.path.join(PROJECT_ROOT, "bot.py")
+BOT_PY_PATH = os.path.join(PROJECT_ROOT, "bot/_impl.py")
 
 
 def test_insert_site_uses_begin_immediate_for_lock_wait():
-    """Grep bot.py's insert path for BEGIN IMMEDIATE adjacent to perf_counter.
+    """Grep bot/_impl.py's insert path for BEGIN IMMEDIATE adjacent to perf_counter.
 
     Once the operator wires the H-2 snapshot into
     `StateManager.insert_evaluated_opportunity`, the insert site MUST
@@ -55,7 +55,7 @@ def test_insert_site_uses_begin_immediate_for_lock_wait():
     immediately after the lock is granted.
 
     This regression test:
-      1. Reads bot.py.
+      1. Reads bot/_impl.py.
       2. Locates the insert_evaluated_opportunity body (heuristic: find
          the def + scan a window of ~400 lines after).
       3. Asserts that within that window, `BEGIN IMMEDIATE` appears
@@ -67,7 +67,7 @@ def test_insert_site_uses_begin_immediate_for_lock_wait():
 
     # Locate insert_evaluated_opportunity.
     m = re.search(r"def\s+insert_evaluated_opportunity\b", src)
-    assert m, "insert_evaluated_opportunity not found in bot.py"
+    assert m, "insert_evaluated_opportunity not found in bot/_impl.py"
     body_start = m.start()
     # Bumped from 20_000 → 40_000 chars to cover the full function body.
     # The function is ~700 lines (huge VALUES tuple + ON CONFLICT clause)

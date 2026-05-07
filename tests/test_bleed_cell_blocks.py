@@ -6,7 +6,7 @@ Two cell families bleeding heavily over the last 7d post-WS-fix:
   2. SOL × TAKER_NOW × 85-89¢ × 121-300s STC
      → -$182/7d → -$782/30d projected
 
-Mirrors the prior-art `HIGH_PRICE_STC_BLOCK_*` pattern at bot.py:280-300:
+Mirrors the prior-art `HIGH_PRICE_STC_BLOCK_*` pattern at bot/_impl.py:280-300:
   - env-flag controlled, default OFF
   - cell predicate + strategy-aware predicate
   - blocked candidates STILL get an evaluated_opportunity row written
@@ -211,7 +211,7 @@ def test_sol_taker_bleed_predicate_does_not_block_outside_cell():
 
 def test_bot_py_scan_calls_tm98_bleed_predicate():
     """The block must be wired in scan(); otherwise the env flag is dead."""
-    bot_py = REPO / 'bot.py'
+    bot_py = REPO / 'bot/_impl.py'
     src = bot_py.read_text()
     assert 'should_block_tm98_highprice_bleed_candidate' in src, (
         "scan() must invoke should_block_tm98_highprice_bleed_candidate"
@@ -219,7 +219,7 @@ def test_bot_py_scan_calls_tm98_bleed_predicate():
 
 
 def test_bot_py_scan_calls_sol_taker_bleed_predicate():
-    bot_py = REPO / 'bot.py'
+    bot_py = REPO / 'bot/_impl.py'
     src = bot_py.read_text()
     assert 'should_block_sol_taker_lowprice_bleed_candidate' in src
 
@@ -234,7 +234,7 @@ def test_blocked_candidates_get_evaluated_opportunity_row():
 
     AST-style: search for both filter_stage strings in proximity to
     insert_evaluated_opportunity."""
-    bot_py = REPO / 'bot.py'
+    bot_py = REPO / 'bot/_impl.py'
     src = bot_py.read_text()
     # The TM98 filter_stage tag must appear in an insert_evaluated_opportunity
     # call. Search for the pattern: block iter writes a shadow row.
@@ -275,7 +275,7 @@ def test_blocked_candidates_get_evaluated_opportunity_row():
 
 
 # ---------------------------------------------------------------------------
-# Bleeder-string drift validator (mirror HPSB pattern at bot.py:1423+).
+# Bleeder-string drift validator (mirror HPSB pattern at bot/_impl.py:1423+).
 # Catches strategy-name renames that would silently no-op the gate.
 # ---------------------------------------------------------------------------
 
@@ -289,7 +289,7 @@ def test_bot_py_tm_strategy_fstring_format_matches_block_strategies():
 
     Lock the f-string format as a source invariant — if the rename happens,
     this test fails loudly."""
-    bot_py = REPO / 'bot.py'
+    bot_py = REPO / 'bot/_impl.py'
     src = bot_py.read_text()
     # The f-string template must appear (single OR double quote)
     has_template = (
@@ -394,9 +394,9 @@ def test_bot_py_calengine_accepts_bleed_block_stages():
     cell tags, the engines silently stop receiving observations from
     the cells we just gated.
 
-    AST source-grep: bot.py 15M CalEngine `_stages` tuple must
+    AST source-grep: bot/_impl.py 15M CalEngine `_stages` tuple must
     reference all 3 BLOCK_FILTER_STAGE constants."""
-    bot_py = REPO / 'bot.py'
+    bot_py = REPO / 'bot/_impl.py'
     src = bot_py.read_text()
     # Locate the 15M CalEngine `_stages` declaration.
     import re
@@ -410,7 +410,7 @@ def test_bot_py_calengine_accepts_bleed_block_stages():
             r'_stages\s*=\s*\([^)]*"candidate"[^)]*\)\s*if\s*_pt\s*==\s*"15m"',
             src,
         )
-    assert block_match, "15M CalEngine _stages declaration not found in bot.py"
+    assert block_match, "15M CalEngine _stages declaration not found in bot/_impl.py"
     stages_block = block_match.group(0)
     assert 'HIGH_PRICE_STC_BLOCK_FILTER_STAGE' in stages_block, (
         "CalEngine 15M _stages must include HIGH_PRICE_STC_BLOCK_FILTER_STAGE — "
@@ -437,7 +437,7 @@ def test_filter_stage_value_consistency_across_files():
     correctness vs. cutover distinction.
 
     Lockstep-required (this test enforces — runtime correctness depends
-    on these matching bot.py constants):
+    on these matching bot/_impl.py constants):
       - fifteenm_shadow.py (per-asset temperature recalibration training set)
       - scripts/backtest.py (expansion-signal universe for counterfactual)
       - scripts/generate_whitepaper_stats.py (Brier/calibration sample)
@@ -448,9 +448,9 @@ def test_filter_stage_value_consistency_across_files():
       - dashboard_snapshot.py, analyst.py, auditor.py, researcher.py
       - .claude/skills/status/SKILL.md
 
-    If anyone renames a constant's value, bot.py keeps working (uses
+    If anyone renames a constant's value, bot/_impl.py keeps working (uses
     constant) but the 3 lockstep sites would silently break — they'd
-    still look for the OLD value while bot.py writes rows under the
+    still look for the OLD value while bot/_impl.py writes rows under the
     new value. Comments/docstrings containing the value strings count
     as matches (acceptable: a comment documenting why the value is
     referenced still proves the file authors knew about the dependency).
@@ -476,7 +476,7 @@ def test_filter_stage_value_consistency_across_files():
                 f"{const_value!r} (value of bot.{const_name}). "
                 f"If the constant value changed, this site needs updating "
                 f"in lockstep — otherwise the file silently filters on the "
-                f"old value while bot.py writes rows under the new value."
+                f"old value while bot/_impl.py writes rows under the new value."
             )
 
 
@@ -505,17 +505,17 @@ def test_fifteenm_shadow_temperature_query_includes_bleed_stages():
 def test_bleed_block_strategies_have_runtime_validator():
     """If 'terminal_momentum_98' is renamed in scan() without updating the
     BLEED_BLOCK_STRATEGIES frozenset, the gate silently no-ops. Boot-time
-    validator catches the drift, mirroring the HPSB validator at bot.py:1423.
+    validator catches the drift, mirroring the HPSB validator at bot/_impl.py:1423.
     """
-    bot_py = REPO / 'bot.py'
+    bot_py = REPO / 'bot/_impl.py'
     src = bot_py.read_text()
     # A validator function must exist for the new gates.
     assert '_validate_bleed_block_bleeder_strings' in src or \
            '_validate_tm98_bleed_block' in src or \
            '_validate_bleed_cell_strategies' in src, (
         "Need a startup validator that asserts bleed-block strategy "
-        "strings actually appear in bot.py source (catches rename drift). "
-        "Mirror the HPSB validator pattern at bot.py:1423."
+        "strings actually appear in bot/_impl.py source (catches rename drift). "
+        "Mirror the HPSB validator pattern at bot/_impl.py:1423."
     )
 
 
@@ -526,7 +526,7 @@ def test_bleed_block_strategies_have_runtime_validator():
 def test_binance_feed_has_enable_flag():
     """BinanceFeed should be gated by env flag; default OFF on US-VPS
     deploys (HTTP 451 geoblock). Currently spamming reconnect every ~70s."""
-    bot_py = REPO / 'bot.py'
+    bot_py = REPO / 'bot/_impl.py'
     src = bot_py.read_text()
     assert 'BINANCE_FEED_ENABLED' in src, (
         "Add BINANCE_FEED_ENABLED env flag (default OFF) so VPS "
@@ -565,7 +565,7 @@ def test_binance_feed_start_respects_flag():
     """The feed's start() (or the call site that invokes it) must check
     BINANCE_FEED_ENABLED before launching the asyncio task. Otherwise
     the flag is dead code."""
-    bot_py = REPO / 'bot.py'
+    bot_py = REPO / 'bot/_impl.py'
     src = bot_py.read_text()
     # The check should appear within ~30 lines of either:
     #   - BinanceFeed instantiation, OR
@@ -579,5 +579,5 @@ def test_binance_feed_start_respects_flag():
     ))
     assert has_gating, (
         "BINANCE_FEED_ENABLED must gate BinanceFeed instantiation/start() "
-        "in bot.py boot path."
+        "in bot/_impl.py boot path."
     )

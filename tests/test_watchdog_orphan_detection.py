@@ -46,7 +46,7 @@ def test_watchdog_check_orphan_db_holders_returns_no_offenders_clean(
     )
     monkeypatch.setattr(
         watchdog, "_get_pid_cmdline",
-        lambda pid: "venv/bin/python3 bot.py" if pid == 12345 else "watchdog.py",
+        lambda pid: "venv/bin/python3 -m bot" if pid == 12345 else "watchdog.py",
     )
 
     msg = watchdog.check_orphan_db_holders(str(db))
@@ -93,7 +93,7 @@ def test_watchdog_check_orphan_db_holders_skips_legitimate_processes(
     db.touch()
 
     legit_pids = {
-        2001: "venv/bin/python3 bot.py",
+        2001: "venv/bin/python3 -m bot",
         2002: "venv/bin/python3 watchdog.py",
         2003: "venv/bin/python3 auditor.py",
         2004: "venv/bin/python3 scripts/audit_cron.py --db state.db",

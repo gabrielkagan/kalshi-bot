@@ -6,7 +6,7 @@
 # Exit non-zero = at least one gate failed; do NOT merge.
 #
 # Gates (in order; each must exit 0 to proceed):
-#   1. ast.parse on bot.py + cal_mlp modules — catches syntax errors
+#   1. ast.parse on bot/_impl.py + cal_mlp modules — catches syntax errors
 #   2. pytest tests/test_cal_mlp_invariants.py — 33 regression tests
 #   3. pytest tests/ -m "not fragile" — full ~2046-test suite
 #   4. python3 scripts/cal_mlp/smoke_check.py — 6 end-to-end synthetic checks
@@ -45,8 +45,8 @@ run_gate() {
 }
 
 # Gate 1: syntax check
-run_gate "ast.parse bot.py" \
-    python3 -c "import ast; ast.parse(open('bot.py').read())"
+run_gate "ast.parse bot/_impl.py" \
+    python3 -c "import ast; ast.parse(open('bot/_impl.py').read())"
 
 run_gate "ast.parse cal_mlp modules" \
     python3 -c "

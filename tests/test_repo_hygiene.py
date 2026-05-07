@@ -183,13 +183,13 @@ def _parse_layout_class_table():
 
 
 def _parse_bot_class_starts():
-    """Return {class_name: start_line} for top-level classes in bot.py.
+    """Return {class_name: start_line} for top-level classes in bot/_impl.py.
 
     Skips indented class defs (nested classes) — the layout doc only
     catalogues the top-level public classes.
     """
     starts = {}
-    bot_py = REPO_ROOT / "bot.py"
+    bot_py = REPO_ROOT / "bot" / "_impl.py"
     for i, line in enumerate(bot_py.read_text().splitlines(), start=1):
         m = re.match(r"^class ([A-Za-z_][A-Za-z0-9_]*)", line)
         if m:
@@ -197,8 +197,8 @@ def _parse_bot_class_starts():
     return starts
 
 
-def test_bot_layout_class_lines_match_bot_py():
-    """Every class line range in bot_layout.md must point at the actual class def in bot.py."""
+def test_bot_layout_class_lines_match_bot_impl():
+    """Every class line range in bot_layout.md must point at the actual class def in bot/_impl.py."""
     layout_pairs = _parse_layout_class_table()
     assert layout_pairs, (
         "agent_docs/bot_layout.md has no parseable class table. "
@@ -209,29 +209,29 @@ def test_bot_layout_class_lines_match_bot_py():
     for layout_line, cls in layout_pairs:
         actual = bot_starts.get(cls)
         if actual is None:
-            drift.append(f"  {cls}: in bot_layout.md but not in bot.py")
+            drift.append(f"  {cls}: in bot_layout.md but not in bot/_impl.py")
             continue
         if abs(actual - layout_line) > 5:
             drift.append(
-                f"  {cls}: bot_layout says line {layout_line}, bot.py has it at {actual}"
+                f"  {cls}: bot_layout says line {layout_line}, bot/_impl.py has it at {actual}"
             )
     assert not drift, (
-        "agent_docs/bot_layout.md class line ranges drifted from bot.py. "
+        "agent_docs/bot_layout.md class line ranges drifted from bot/_impl.py. "
         "Regenerate per the doc's pinned regen command. Drift:\n"
         + "\n".join(drift)
     )
 
 
-def test_bot_layout_total_lines_close_to_bot_py():
-    """If bot_layout.md cites a total bot.py line count, it must be within 200 of actual."""
+def test_bot_layout_total_lines_close_to_bot_impl():
+    """If bot_layout.md cites a total bot/_impl.py line count, it must be within 200 of actual."""
     layout = (REPO_ROOT / "agent_docs" / "bot_layout.md").read_text()
-    actual = sum(1 for _ in (REPO_ROOT / "bot.py").read_text().splitlines())
+    actual = sum(1 for _ in (REPO_ROOT / "bot" / "_impl.py").read_text().splitlines())
     matches = re.findall(r"\*?\*?(\d{1,3}[,]?\d{3,})\s*lines\*?\*?", layout)
     if not matches:
         return  # No total cited; nothing to check.
     cited = max(int(m.replace(",", "")) for m in matches)
     assert abs(cited - actual) < 200, (
-        f"bot_layout.md cites ~{cited} lines for bot.py; actual is {actual}. "
+        f"bot_layout.md cites ~{cited} lines for bot/_impl.py; actual is {actual}. "
         f"Difference {abs(cited - actual)} > 200-line tolerance. Regenerate the doc."
     )
 

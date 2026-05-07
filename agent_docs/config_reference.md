@@ -1,6 +1,6 @@
 # Config Reference
 
-All values mirror constants in `bot.py`. `market_config.py` asserts they match at startup.
+All values mirror constants in `bot/_impl.py`. `market_config.py` asserts they match at startup.
 On change, run `make doc-drift` (alias for `python3 scripts/doc_drift_check.py`) and update this file in the same commit.
 
 ## Global / 15M
@@ -203,9 +203,9 @@ To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (
 | `GLOBAL_MIN_ENTRY_PRICE` | 75 | `features.py` | Floor when `--include-sub-floor` is set. Per-asset floors (88/90/86/92) used otherwise. |
 | `INCLUDE_SUB_FLOOR` (env) | 1 | `scripts/cal_mlp/run_pipeline.sh` | Default ON. Pulls 75¢-MIN_ENTRY-1¢ shadow rows into v2/v3 training. |
 | `RAW_PROB_CLIP_EPS` | 1e-6 | `features.py` | Logit clipping for the skip term. |
-| `SPOT_BUFFER_PERSIST_PATH` | `state/spot_buffer.json` | `bot.py` | 30-min spot price buffer persisted to disk every 30s. |
-| `SPOT_BUFFER_PERSIST_INTERVAL_S` | 30 | `bot.py` | Flush cadence. Async via `asyncio.to_thread` so disk I/O doesn't block WS event loop. |
-| `PRICE_BUFFER_SIZE` | 1800 | `bot.py` | 30 min @ 1s sampling. |
+| `SPOT_BUFFER_PERSIST_PATH` | `state/spot_buffer.json` | `bot/_impl.py` | 30-min spot price buffer persisted to disk every 30s. |
+| `SPOT_BUFFER_PERSIST_INTERVAL_S` | 30 | `bot/_impl.py` | Flush cadence. Async via `asyncio.to_thread` so disk I/O doesn't block WS event loop. |
+| `PRICE_BUFFER_SIZE` | 1800 | `bot/_impl.py` | 30 min @ 1s sampling. |
 
 ## External market data poller
 

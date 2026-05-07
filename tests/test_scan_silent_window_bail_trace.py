@@ -30,7 +30,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
 
 
 def _find_scan_method() -> ast.FunctionDef:
@@ -41,7 +41,7 @@ def _find_scan_method() -> ast.FunctionDef:
             for node in cls.body:
                 if isinstance(node, ast.FunctionDef) and node.name == "scan":
                     return node
-    raise AssertionError("OpportunityScanner.scan not found in bot.py")
+    raise AssertionError("OpportunityScanner.scan not found in bot/_impl.py")
 
 
 def _insert_evaluated_calls_in(node: ast.AST) -> list:

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Extract trading config constants from bot.py via AST parsing.
+"""Extract trading config constants from bot/_impl.py via AST parsing.
 
 Outputs JSON that can feed into doc templates, ensuring docs always
-reflect the actual code. No imports of bot.py — pure static analysis.
+reflect the actual code. No imports of bot/_impl.py — pure static analysis.
 
 Also parses weather_engine.py and sports_data.py for cross-file data.
 
@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.join(SCRIPT_DIR, "..")
-BOT_PATH = os.path.join(REPO_DIR, "bot.py")
+BOT_PATH = os.path.join(REPO_DIR, "bot/_impl.py")
 WEATHER_PATH = os.path.join(REPO_DIR, "weather_engine.py")
 SPORTS_PATH = os.path.join(REPO_DIR, "sports_data.py")
 
@@ -103,7 +103,7 @@ TRACKED_CONSTANTS = {
 
 
 def extract_constants(source: str) -> dict:
-    """Parse bot.py AST and extract module-level constant assignments."""
+    """Parse bot/_impl.py AST and extract module-level constant assignments."""
     tree = ast.parse(source)
     constants = {}
 
@@ -217,7 +217,7 @@ def extract_compound_constants(source: str) -> dict:
 
 
 def extract_exchange_feeds(source: str) -> list:
-    """Extract exchange feed class names from bot.py (CoinbaseFeed, etc.)."""
+    """Extract exchange feed class names from bot/_impl.py (CoinbaseFeed, etc.)."""
     tree = ast.parse(source)
     feeds = []
     for node in ast.walk(tree):
@@ -320,7 +320,7 @@ def diff_configs(current: dict, previous_path: str) -> list:
 
 def main():
     if not os.path.exists(BOT_PATH):
-        print(json.dumps({"error": f"bot.py not found at {BOT_PATH}"}))
+        print(json.dumps({"error": f"bot/_impl.py not found at {BOT_PATH}"}))
         sys.exit(1)
 
     with open(BOT_PATH) as f:
@@ -346,7 +346,7 @@ def main():
         "_bot_path": os.path.abspath(BOT_PATH),
     }
 
-    # Merge cross-file data into top-level (not under constants — these aren't bot.py constants)
+    # Merge cross-file data into top-level (not under constants — these aren't bot/_impl.py constants)
     if weather_data:
         output["_weather"] = weather_data
     if sports_data:

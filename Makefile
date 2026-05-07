@@ -18,7 +18,7 @@
 # CWD guard — Make resolves recipe paths against `$(CURDIR)`, not the
 # Makefile's location. A contributor who `cd tests/ && make test` would
 # otherwise get either "No rule to make target" or, worse, a recipe
-# that looks up `bot.py` / `scripts/` relative to the wrong dir and
+# that looks up `bot/_impl.py` / `scripts/` relative to the wrong dir and
 # silently misbehaves. Fail loudly at parse time with a clear remedy.
 ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
@@ -48,7 +48,7 @@ help:
 	@echo "  make install       pip install -e .[dev]  (brings in pytest + ruff + tomli)"
 	@echo "  make test          full suite, blocking subset (matches CI: -m 'not fragile')"
 	@echo "  make test-fast     dev-tooling invariant tests (~1s)"
-	@echo "  make ast-check     syntax-check bot.py (CLAUDE.md sacred-file rule)"
+	@echo "  make ast-check     syntax-check bot/_impl.py (CLAUDE.md sacred-file rule)"
 	@echo "  make lint          ruff check ."
 	@echo "  make doc-drift     scripts/doc_drift_check.py"
 	@echo "  make deploy-check  scripts/cal_mlp/deploy_check.sh (full pre-deploy aggregator)"
@@ -71,37 +71,17 @@ test:
 test-fast:
 	$(PYTHON) -m pytest tests/test_pyproject.py tests/test_repo_hygiene.py tests/test_makefile.py tests/test_agents_md_symlink.py tests/test_claude_md_size.py tests/test_no_root_test_files.py
 
-# bot.py is sacred per CLAUDE.md. Syntax-check before any push that
-# touches it. Mirrors deploy_check.sh gate 1.
-#
-# Sprint-2 hand-off note: this recipe and the help-banner line above
-# both hardcode the literal `bot.py`. When Bit 2.1 creates
-# `bot/__init__.py` (and Bit 1.1's
-# `test_bot_module_and_bot_package_dont_collide` forces `bot.py` to
-# be deleted in the SAME commit), update BOTH this recipe AND the
-# help-banner description to point at the new entry — likely
-# `import bot` plus a recursive parse of `bot/*.py`.
-#
-# What the tests catch (and don't):
-#   - `test_ast_check_targets_bot_py` pins the literal "bot.py" + "ast.parse"
-#     in this recipe. It fails ONLY when the recipe text is rewritten to
-#     no longer contain those literals — useful as a forward-direction
-#     guard against an accidental edit, but it does NOT verify that
-#     `bot.py` exists on disk.
-#   - `test_help_lists_all_targets` only verifies the target NAME
-#     (`make ast-check`) appears in the help banner; it does NOT pin
-#     the description text "syntax-check bot.py".
-# So if Bit 2.1 deletes `bot.py` from disk but leaves this recipe
-# untouched, no test fires — `make ast-check` would raise
-# `FileNotFoundError` at runtime only. Run `make ast-check` manually
-# in the Bit 2.1 commit before pushing.
+# bot/_impl.py is sacred per CLAUDE.md (formerly bot.py — Bit 2.1a
+# renamed bot.py → bot/_impl.py + added bot/__main__.py shim and
+# bot/__init__.py writable lazy proxy). Syntax-check before any push
+# that touches it. Mirrors deploy_check.sh gate 1.
 ast-check:
-	$(PYTHON) -c "import ast; ast.parse(open('bot.py').read())"
+	$(PYTHON) -c "import ast; ast.parse(open('bot/_impl.py').read())"
 
 # Per Bit 1.1, ruff config is lenient (E+F only). `ruff check .`
 # reports ~1069 errors as of Bit 1.1 ship (the count drifts as the repo
 # evolves) and `--fix` is a no-op (`fixable=[]` in pyproject) so this
-# target cannot silently mutate bot.py.
+# target cannot silently mutate bot/_impl.py.
 lint:
 	$(RUFF) check .
 
@@ -109,8 +89,8 @@ doc-drift:
 	$(PYTHON) scripts/doc_drift_check.py
 
 # scripts/cal_mlp/deploy_check.sh is the canonical pre-deploy aggregator
-# (gates: ast.parse bot.py + cal_mlp modules, cal_mlp invariants, full
-# pytest suite, smoke_check). Don't duplicate gates here — single
+# (gates: ast.parse bot/_impl.py + cal_mlp modules, cal_mlp invariants,
+# full pytest suite, smoke_check). Don't duplicate gates here — single
 # source of truth.
 deploy-check:
 	bash scripts/cal_mlp/deploy_check.sh

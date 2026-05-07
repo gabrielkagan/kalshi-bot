@@ -239,7 +239,7 @@ class TestScannerWiringInPlace(_TempState):
         """Extract the source of OpportunityScanner.scan() — restricts the
         grep to the scanner's tick body, not random matches in fifteenm
         shadows or comments elsewhere in bot.py."""
-        import bot as bot_mod
+        import bot._impl as bot_mod
         src = open(bot_mod.__file__).read()
         start = src.find("def scan(")
         self.assertGreater(start, 0, "OpportunityScanner.scan() not found")
@@ -277,7 +277,7 @@ class TestScannerWiringInPlace(_TempState):
         not gated by 'if _ob_levels is not None'. Without this guard fix,
         a global ob_data outage means eviction never runs and stale entries
         accumulate across the entire cache."""
-        import bot as bot_mod
+        import bot._impl as bot_mod
         src = open(bot_mod.__file__).read()
         # Find the scanner's eviction call
         idx_evict = src.find("self._state._evict_stale_ob_cache()")

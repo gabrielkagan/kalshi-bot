@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check rendered docs for stale config values.
 
-Compares key numbers in rendered docs against config.json extracted from bot.py
+Compares key numbers in rendered docs against config.json extracted from bot/_impl.py
 and against hardcoded cross-file checks (sports, weather, etc.).
 Returns exit code 1 if any values are stale. Designed to run in CI or locally.
 
@@ -95,8 +95,8 @@ def get_sports_config():
 
 
 def get_exchange_feeds_from_bot():
-    """Extract exchange feed class names directly from bot.py source."""
-    bot_path = os.path.join(REPO_DIR, "bot.py")
+    """Extract exchange feed class names directly from bot/_impl.py source."""
+    bot_path = os.path.join(REPO_DIR, "bot/_impl.py")
     if not os.path.exists(bot_path):
         return []
     with open(bot_path) as f:
@@ -105,7 +105,7 @@ def get_exchange_feeds_from_bot():
 
 
 def check_config_values(path, config):
-    """Check that key config values in docs match bot.py config."""
+    """Check that key config values in docs match bot/_impl.py config."""
     if not os.path.exists(path) or not config:
         return []
     with open(path) as f:
@@ -131,7 +131,7 @@ def check_config_values(path, config):
                 if int(mention) != expected_pct and int(mention) in range(50, 100):
                     issues.append(
                         f"Stale DRAWDOWN_HALF: found {mention}% near 'half' in doc, "
-                        f"bot.py has {expected_pct}%"
+                        f"bot/_impl.py has {expected_pct}%"
                     )
 
         if dd_quarter is not None:
@@ -141,7 +141,7 @@ def check_config_values(path, config):
                 if int(mention) != expected_pct and int(mention) in range(50, 100):
                     issues.append(
                         f"Stale DRAWDOWN_QUARTER: found {mention}% near 'quarter' in doc, "
-                        f"bot.py has {expected_pct}%"
+                        f"bot/_impl.py has {expected_pct}%"
                     )
 
         if dd_halt is not None:
@@ -151,7 +151,7 @@ def check_config_values(path, config):
                 if int(mention) != expected_pct and int(mention) in range(50, 100):
                     issues.append(
                         f"Stale DRAWDOWN_HALT: found {mention}% near 'halt' in doc, "
-                        f"bot.py has {expected_pct}%"
+                        f"bot/_impl.py has {expected_pct}%"
                     )
 
     # --- Market blend (core crypto, not weather/SPX) ---
@@ -163,7 +163,7 @@ def check_config_values(path, config):
             if re.search(blend_pattern, content, re.IGNORECASE):
                 issues.append(
                     f"Stale MARKET_BLEND: found 50/50 in doc, "
-                    f"bot.py has {model_pct}/{int(blend_w * 100)}"
+                    f"bot/_impl.py has {model_pct}/{int(blend_w * 100)}"
                 )
 
     # --- Sizing tiers ---
@@ -182,7 +182,7 @@ def check_config_values(path, config):
         if edge_tiers and len(edge_tiers) != actual_count:
             issues.append(
                 f"Stale SIZING_TIER count: doc has {len(edge_tiers)} tiers, "
-                f"bot.py has {actual_count}"
+                f"bot/_impl.py has {actual_count}"
             )
 
     # --- MIN_ENTRY_PRICE ---
@@ -194,7 +194,7 @@ def check_config_values(path, config):
             if int(found_price) != min_price and int(found_price) in range(80, 99):
                 issues.append(
                     f"Stale MIN_ENTRY_PRICE: found {found_price}--99c in doc, "
-                    f"bot.py has {min_price}"
+                    f"bot/_impl.py has {min_price}"
                 )
 
     # --- MAKER_ONLY_THRESHOLD ---
@@ -218,7 +218,7 @@ def check_config_values(path, config):
             if int(mention) != int(direct_taker):
                 issues.append(
                     f"Stale DIRECT_TAKER_THRESHOLD: found '{mention}s' in doc, "
-                    f"bot.py has {int(direct_taker)}s"
+                    f"bot/_impl.py has {int(direct_taker)}s"
                 )
 
     # --- Escalation wait times ---
@@ -233,7 +233,7 @@ def check_config_values(path, config):
             if int(mention) != int(esc_long):
                 issues.append(
                     f"Stale ESCALATION_WAIT_LONG: found '{mention}s' in doc, "
-                    f"bot.py has {int(esc_long)}s"
+                    f"bot/_impl.py has {int(esc_long)}s"
                 )
 
     # --- Dynamic cap schedule values ---
@@ -251,7 +251,7 @@ def check_config_values(path, config):
                     if m != cap_pct and abs(float(m) - cap_val * 100) > 0.2:
                         issues.append(
                             f"Stale DYNAMIC_CAP at >{stc_threshold}s: found {m}% in doc, "
-                            f"bot.py has {cap_pct}%"
+                            f"bot/_impl.py has {cap_pct}%"
                         )
 
     # --- CalibrationEngine sample thresholds ---
@@ -271,7 +271,7 @@ def check_config_values(path, config):
                 if int(mention) != int(cal_val):
                     issues.append(
                         f"Stale {cal_key}: found '{mention} samples' near {label} in doc, "
-                        f"bot.py has {int(cal_val)}"
+                        f"bot/_impl.py has {int(cal_val)}"
                     )
 
     return issues
@@ -350,11 +350,11 @@ def check_cross_file_values(path):
 
         if not has_coinbase:
             if re.search(r'\bCoinbase\b', content):
-                issues.append("Doc mentions Coinbase but no CoinbaseFeed class found in bot.py")
+                issues.append("Doc mentions Coinbase but no CoinbaseFeed class found in bot/_impl.py")
         if not has_cross:
             for ex in ["Binance", "Kraken", "Bybit"]:
                 if re.search(rf'\b{ex}\b', content, re.IGNORECASE):
-                    issues.append(f"Doc mentions {ex} but no CrossExchangeFeed class found in bot.py")
+                    issues.append(f"Doc mentions {ex} but no CrossExchangeFeed class found in bot/_impl.py")
 
     return issues
 

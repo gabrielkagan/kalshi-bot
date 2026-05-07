@@ -56,8 +56,8 @@ def main():
     print("Doc generation pipeline")
     print("=" * 40)
 
-    # Step 1: Extract config from bot.py
-    print("\n1. Extracting config from bot.py...")
+    # Step 1: Extract config from bot/_impl.py
+    print("\n1. Extracting config from bot/_impl.py...")
     result = subprocess.run(
         [sys.executable, EXTRACT_CONFIG],
         capture_output=True, text=True,

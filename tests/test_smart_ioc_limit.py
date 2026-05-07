@@ -39,7 +39,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
 
 
 def _ob(no_levels):
@@ -442,7 +442,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
             self.assertIn(
                 f'"{short_form}"', src,
                 f"Short-form DC strategy string {short_form!r} not "
-                f"found in bot.py — refactor risk: the dict's keys "
+                f"found in bot/_impl.py — refactor risk: the dict's keys "
                 f"won't match what candidate.get('strategy') returns.")
 
     def test_addons_in_aggressive_bucket(self):
@@ -596,7 +596,7 @@ class TestSubmitTakerWiring(unittest.TestCase):
         self.assertIn(
             "STRATEGY_LIMIT_BUMP_RESERVE_CENTS", src,
             "STRATEGY_LIMIT_BUMP_RESERVE_CENTS must be referenced "
-            "in bot.py — _submit_taker should look it up to get "
+            "in bot/_impl.py — _submit_taker should look it up to get "
             "the per-strategy reserve.")
         # _submit_taker function must reference the constant.
         import ast

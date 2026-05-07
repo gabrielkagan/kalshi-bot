@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
+BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
 DASH_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dashboard_snapshot.py")
 
 def _read_bot():
@@ -483,17 +483,17 @@ class TestDecidedContractShadowVariants(unittest.TestCase):
         for stage in ("dc_shadow_t1b_93c", "dc_shadow_t2_z25", "dc_shadow_t2_90c",
                        "dc_shadow_t2_90c_xrp", "dc_shadow_t2_z2", "dc_shadow_no_side",
                        "dc_t2_z2_phase1_shadow"):
-            self.assertIn(stage, self.source, f"Shadow stage {stage} not found in bot.py")
+            self.assertIn(stage, self.source, f"Shadow stage {stage} not found in bot/_impl.py")
 
     @pytest.mark.fragile
     def test_shadow_variants_in_scan(self):
-        """All 7 shadow variants must have insert calls somewhere in bot.py."""
+        """All 7 shadow variants must have insert calls somewhere in bot/_impl.py."""
         # Shadow variant inserts are spread across scan() — verify each stage
-        # appears as a string literal in bot.py (in insert calls or constants)
+        # appears as a string literal in bot/_impl.py (in insert calls or constants)
         for stage in ("dc_shadow_t1b_93c", "dc_shadow_t2_z25", "dc_shadow_t2_90c",
                        "dc_shadow_t2_90c_xrp", "dc_shadow_t2_z2", "dc_shadow_no_side",
                        "dc_t2_z2_phase1_shadow"):
-            self.assertIn(f'"{stage}"', self.source, f"Shadow stage {stage} not found in bot.py")
+            self.assertIn(f'"{stage}"', self.source, f"Shadow stage {stage} not found in bot/_impl.py")
 
     def test_shadow_t1b_93c_gate(self):
         """dc_shadow_t1b_93c: -5 < z ≤ -4 AND 93c ≤ price < 95c."""
@@ -722,7 +722,10 @@ class TestT2Z2Phase1ShadowContract(unittest.TestCase):
         """DECIDED_T2_Z2_ENABLED env var must default to '0' — Phase 1 does NOT enable live."""
         import os
         import importlib
-        import bot as bot_module
+        # Reload bot._impl directly: the bot/__init__.py proxy doesn't re-execute
+        # bot/_impl.py on importlib.reload(bot), so reloading the proxy alone
+        # would no-op the env-var re-read. Bit 2.1a structural change.
+        import bot._impl as bot_module
         # Ensure no stray env var; reload clean
         env_bak = os.environ.pop("DECIDED_T2_Z2_ENABLED", None)
         try:

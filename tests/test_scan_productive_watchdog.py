@@ -305,7 +305,7 @@ class TestScanHeartbeatWiring(unittest.TestCase):
 
     def test_scan_updates_heartbeat_for_15m_windows(self):
         import ast
-        with open(bot.__file__) as f:
+        with open(bot._impl.__file__) as f:
             tree = ast.parse(f.read())
         scan_fn = None
         for cls in ast.walk(tree):
@@ -342,7 +342,7 @@ class TestSlowTickInstrumentation(unittest.TestCase):
     clock_drift / event-loop stall pattern documented in PM Fix 5."""
 
     def test_scan_contains_slow_tick_log(self):
-        with open(bot.__file__) as f:
+        with open(bot._impl.__file__) as f:
             src = f.read()
         self.assertIn("SLOW_SCAN_TICK", src,
                       "scan() must emit a SLOW_SCAN_TICK warning when "
@@ -358,7 +358,7 @@ class TestScanWiring(unittest.TestCase):
         import ast
         bot_py = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "bot.py")
+            "bot/_impl.py")
         with open(bot_py) as f:
             tree = ast.parse(f.read())
         scan = None

@@ -8,7 +8,7 @@
 - One test: `python3 -m pytest tests/test_<name>.py::test_func -x`
 
 ## Conventions
-- One test file per concern. Mirror the bot.py class/function being tested.
+- One test file per concern. Mirror the bot/_impl.py class/function being tested.
 - Real DB, not mocks — integration tests must hit a real sqlite3 file (use `tmp_path`).
 - For sizing/Kelly assertions, use the actual `OrderExecutor` paths, never reimplement Kelly inline.
 - Regression tests after bug fixes: name `test_<bug_keyword>_regression` and reference the commit/incident in a one-line docstring.
