@@ -128,14 +128,14 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 175,173 |
-| Observation period | 2026-02-22 to 2026-05-04 |
-| Filter pass rate | 3.9\% (6,836 of 175,173) |
-| Top rejection reason | Insufficient Edge (53,842) |
-| Settled trades | 3,437 (3,188 W / 247 L / 2 BE) |
-| Win rate | 92.8\% |
+| Markets evaluated | 181,875 |
+| Observation period | 2026-02-22 to 2026-05-07 |
+| Filter pass rate | 3.9\% (7,168 of 181,875) |
+| Top rejection reason | Insufficient Edge (55,556) |
+| Settled trades | 3,611 (3,344 W / 265 L / 2 BE) |
+| Win rate | 92.6\% |
 
-*Last updated: 2026-05-04T21:21:03Z*
+*Last updated: 2026-05-07T00:56:32Z*
 
 ## Live vs Observation
 
@@ -254,18 +254,3 @@ The bot writes JSONL journals for every stage of its decision-making pipeline:
 ### Dashboard (Supabase)
 
 When `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are set, `supabase_sync.py` pushes a state snapshot every 10 seconds to the `dashboard_state` table: balance, active positions, recent trades, win/loss record, current volatility readings, order flow signals, and session stats. The dashboard is a static HTML page hosted on GitHub Pages, reading from Supabase Realtime.
-
-## Repository conventions
-
-The repo carries several conventions for AI coding agents (Claude Code, Cursor, Aider, GitHub Copilot Workspace, etc.). The agent guide is split across these surfaces, listed roughly in increasing depth:
-
-- **`CLAUDE.md`** (root, ≤80 lines) --- project summary, top critical rules (one-liners), interaction rules, anti-patterns, skill routing table. Loaded automatically on every interaction.
-- **`AGENTS.md`** --- symlink to `CLAUDE.md` (cross-platform agent convention). Same content; the link lets non-Claude tools find the same guide.
-- **Package-level guides** that auto-load when working in-dir:
-  - `tests/CLAUDE.md` --- pytest layout, naming, regression-test conventions.
-  - `scripts/CLAUDE.md` --- audit/research script conventions: regime filtering, Kelly-sized PnL, Wilson CI, gross-vs-net `pnl_cents`.
-  - **Runtime implementation rules** for `bot.py` and engines (torch threading, cal_mlp four-site lock-step, SQLite WAL pragmas, etc.) are staged today at `agent_docs/bot-claude-md-draft.md`; Sprint 2 Bit 2.2 promotes them into the `bot/` package's runtime CLAUDE.md (which will then auto-load alongside the others).
-- **`agent_docs/`** --- deep specs that agents pull on demand: `current_state.md`, `config_reference.md`, `db_schema.md`, `bot_layout.md`, `calibration_pipeline.md`.
-- **`kb/`** and **`kb-research/`** --- design decisions, postmortems, strategy specs, findings. **Local-only by convention**; pre-rule legacy entries are tracked, but don't `git add` net-new files (these directories are not enforced by `.gitignore` — the rule is documented here and in `CLAUDE.md`).
-
-The repo is undergoing planned modularization (`kb/decisions/repo-modularization-plan-may05.md`). Agents working here should prefer skills (`/status`, `/deploy`, `/investigate`, `/audit`, etc.) over ad-hoc workflows; the routing table at the bottom of `CLAUDE.md` is canonical.
