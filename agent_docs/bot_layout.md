@@ -77,7 +77,8 @@ Generated 2026-05-05 from `grep -nE '^class ' bot.py`.
 
 Live trading process:
 - `bot.py` — main bot, all trading logic (28,166 lines)
-- `start.sh` — systemd entrypoint (venv + .env + bot.py)
+- `ops/kalshi-bot.service` — systemd unit, source of truth (installed via `ops/install.sh`); see `ops/CLAUDE.md`.
+- `start.sh` — wrapper invoked by `ops/kalshi-bot.service` (venv + .env + bot.py)
 - `scripts/cal_mlp/_thread_env.py` — sets OMP/MKL/OpenBLAS thread caps. bot.py inserts `scripts/cal_mlp/` into sys.path at line 11 then imports `_thread_env` at line 12, BEFORE numpy on line 34. Order is load-bearing per CLAUDE.md and AST-asserted by `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_py`.
 
 Engines (separate threads/processes):

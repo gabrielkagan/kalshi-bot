@@ -11,7 +11,7 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 - `agent_docs/calibration_pipeline.md` — calibration, hourly three-layer, three-commit rule.
 - `kb/_index.md` — design decisions, postmortems, strategy specs (read for any deep "why" question).
 - `kb-research/_index.md` — compiled research findings.
-- Package-level guides auto-load when working in-dir: `tests/CLAUDE.md`, `scripts/CLAUDE.md` (and `bot/CLAUDE.md` once Sprint 2 Bit 2.2 ships).
+- Package-level guides auto-load when working in-dir: `tests/CLAUDE.md`, `scripts/CLAUDE.md`, `ops/CLAUDE.md` (and `bot/CLAUDE.md` once Sprint 2 Bit 2.2 ships).
 
 ## Interaction rules
 
@@ -23,7 +23,7 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 
 Each one-liner fires here; rationale + history live in `kb/failures/` postmortems.
 
-- **bot.py is sacred.** systemd → `start.sh` → `bot.py`. Don't rename or split.
+- **bot.py is sacred.** systemd → `ops/kalshi-bot.service` → `start.sh` → `bot.py`. Source of truth = `ops/`. Don't rename or split.
 - Never commit `.env` or `*.jsonl` (gitignored). KB files (`kb/`, `kb-research/`) are local-only by convention — don't `git add` new files there (existing tracked entries are pre-rule legacy).
 - Syntax-check before commit: `make ast-check` (alias for `python3 -c "import ast; ast.parse(open('bot.py').read())"`).
 - Pushing to main auto-deploys. Always verify the VPS pulled the new commit hash.

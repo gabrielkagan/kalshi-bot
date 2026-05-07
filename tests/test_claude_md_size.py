@@ -36,6 +36,7 @@ Pins the Bit 1.4 contract:
 - `make test-fast` recipe invokes this file (symmetry with
   `tests/test_agents_md_symlink.py` from Bit 1.3 — fast-tier pin).
 """
+import os
 import re
 from pathlib import Path
 
@@ -77,8 +78,8 @@ def test_claude_md_within_line_cap():
     assert n <= MAX_LINES, (
         f"CLAUDE.md is {n} lines (limit: {MAX_LINES}). Push detail to "
         f"agent_docs/, kb/_index.md, or package-level CLAUDE.md "
-        f"(`bot/CLAUDE.md`, `tests/CLAUDE.md`, `scripts/CLAUDE.md`) "
-        f"rather than expanding root. Plan reference: "
+        f"(`bot/CLAUDE.md`, `tests/CLAUDE.md`, `scripts/CLAUDE.md`, "
+        f"`ops/CLAUDE.md`) rather than expanding root. Plan reference: "
         f"kb/decisions/repo-modularization-plan-may05.md line 1331."
     )
 
@@ -167,6 +168,157 @@ def test_bot_py_sacred_rule_present():
         "(`- **bot.py is sacred.**`). This rule is load-bearing: it "
         "blocks the recurring temptation to refactor bot.py into "
         "modules outside the Sprint 2+ plan."
+    )
+
+
+# Bit 2.0.5.1 of repo modularization plan
+# (kb/decisions/repo-modularization-plan-may05.md, plan line 1459).
+# After the Bit 2.1a systemd-mismatch incident
+# (kb/failures/bit-2.1a-systemd-mismatch-may06.md), CLAUDE.md's
+# documented startup chain became load-bearing prose with no
+# enforcement. This pin closes that gap: the chain string must appear
+# in CLAUDE.md so a future prune that quietly drops or rewords it
+# breaks the test instead of silently drifting away from production.
+#
+# The chain reads `systemd -> ops/kalshi-bot.service -> start.sh ->
+# bot.py` (in `->` arrow form here for source readability; CLAUDE.md
+# itself uses the unicode arrow). Each segment in CLAUDE.md is
+# wrapped in backticks (matching the existing code-reference
+# convention); the test pins the literal form including backticks.
+#
+# Sprint progression — when this test must update:
+#   - Bit 2.1a re-attempt (after Sprint 2.0.5 GO/NO-GO): the chain
+#     extends to `systemd -> ops/kalshi-bot.service -> start.sh ->
+#     python -m bot -> bot/__main__.py -> bot/_impl.py`. Update
+#     SYSTEMD_CHAIN_LITERAL in the same atomic commit that edits
+#     CLAUDE.md and start.sh — otherwise CI fails on the test
+#     mismatch and forces the deliberate decision.
+SYSTEMD_CHAIN_LITERAL = (
+    "systemd → `ops/kalshi-bot.service` → `start.sh` → `bot.py`"
+)
+
+
+def test_systemd_chain_documented_in_claude_md():
+    """The startup chain `systemd -> ops/kalshi-bot.service -> start.sh
+    -> bot.py` must appear literally in CLAUDE.md.
+
+    This pin exists because the Bit 2.1a incident proved that an
+    unenforced architectural claim in CLAUDE.md is a future incident.
+    Pre-Bit-2.0.5.1 CLAUDE.md said `systemd -> start.sh -> bot.py`
+    but the on-VPS unit invoked `python3 bot.py` directly, bypassing
+    start.sh entirely. The mismatch went undetected through 14+3
+    adversarial review rounds because no test backed the claim.
+
+    Bit 2.0.5.1 ships a tracked `ops/kalshi-bot.service` whose
+    ExecStart calls `start.sh`; once the operator runs
+    `bash ops/install.sh` on the VPS, the on-VPS unit matches the
+    documented chain. Bit 2.0.5.2 then adds CI drift detection that
+    diffs the on-VPS unit against `ops/kalshi-bot.service`. This test
+    is the doc-side complement: it pins the chain string in CLAUDE.md
+    so the documented chain cannot drift away from the unit-tracked
+    chain without one of the two checks firing.
+
+    Failure mode this catches: a future agent prunes the chain
+    segment for brevity, or rewords the arrows, or replaces the
+    backticks with quotes. Any such edit fails this test, forcing the
+    author to either reconsider or update SYSTEMD_CHAIN_LITERAL
+    deliberately. The latter case is expected at Bit 2.1a re-attempt
+    (chain extends to include `python -m bot -> bot/__main__.py ->
+    bot/_impl.py`).
+    """
+    text = CLAUDE_MD.read_text()
+    assert SYSTEMD_CHAIN_LITERAL in text, (
+        f"CLAUDE.md is missing the documented startup chain literal "
+        f"{SYSTEMD_CHAIN_LITERAL!r}. This chain is load-bearing per "
+        f"the Bit 2.1a postmortem "
+        f"(kb/failures/bit-2.1a-systemd-mismatch-may06.md): the "
+        f"on-VPS systemd unit must invoke this exact chain, and "
+        f"CLAUDE.md must document it so adversarial reviewers and "
+        f"future agents have an on-load reference. If you intend to "
+        f"extend the chain (e.g., post-Bit-2.1a `python -m bot -> "
+        f"bot/__main__.py -> bot/_impl.py`), update "
+        f"SYSTEMD_CHAIN_LITERAL in this test in the SAME commit that "
+        f"edits CLAUDE.md."
+    )
+
+    # Lesson of Bit 2.1a NOT yet internalized = pinning prose with
+    # prose. The chain string is a doc-side claim; without on-disk
+    # enforcement, a future "tidy" that deletes the ops/ tree while
+    # leaving CLAUDE.md untouched silently passes. Pin the underlying
+    # files so the test fails LOUDLY in that case (R1 review #3).
+    ops_unit = REPO_ROOT / "ops" / "kalshi-bot.service"
+    assert ops_unit.exists(), (
+        f"CLAUDE.md documents `ops/kalshi-bot.service` as the systemd "
+        f"unit source of truth, but the file does not exist at "
+        f"{ops_unit}. Either restore the file or — if Bit 2.0.5.1 has "
+        f"been deliberately reverted — also revert the chain edit in "
+        f"CLAUDE.md and update SYSTEMD_CHAIN_LITERAL in this test."
+    )
+    ops_install = REPO_ROOT / "ops" / "install.sh"
+    assert ops_install.exists(), (
+        f"`ops/install.sh` does not exist at {ops_install}. The chain "
+        f"in CLAUDE.md is meaningless without the install script that "
+        f"makes the on-VPS unit match `ops/kalshi-bot.service`."
+    )
+    assert os.access(ops_install, os.X_OK), (
+        f"{ops_install} is not executable. Fix with: chmod +x "
+        f"{ops_install}. Without the +x bit, `bash ops/install.sh` "
+        f"still works (bash interprets it directly), but operators "
+        f"following `./ops/install.sh` muscle-memory will hit a "
+        f"permission error."
+    )
+    # CLAUDE.md line 14 (package-level-guides bullet) lists
+    # `ops/CLAUDE.md` alongside tests/ + scripts/. Pin its existence
+    # too so a future delete that leaves the CLAUDE.md mention behind
+    # fails the test (R2 review #3).
+    ops_claude = REPO_ROOT / "ops" / "CLAUDE.md"
+    assert ops_claude.exists(), (
+        f"CLAUDE.md lists `ops/CLAUDE.md` as an in-dir auto-loaded "
+        f"package guide, but the file does not exist at {ops_claude}. "
+        f"Either restore the file or remove the `ops/CLAUDE.md` "
+        f"mention from CLAUDE.md's package-level-guides bullet."
+    )
+
+
+# Bit 2.0.5.1 R2 review #5. start.sh becomes load-bearing once the
+# on-VPS systemd unit's ExecStart points at it (rather than directly
+# at python3 bot.py). Without `set -e`, a silent venv-activate failure
+# would fall back to system python3 with missing dependencies — exactly
+# the kind of "documentation-claim-without-enforcement" smell that
+# Bit 2.1a's incident reinforced. Pin the line here so a future "tidy"
+# of start.sh fails the test instead of silently regressing.
+START_SH = REPO_ROOT / "start.sh"
+
+
+def test_start_sh_has_set_e_for_load_bearing_invocation():
+    """start.sh must contain `set -eo pipefail` (or stricter).
+
+    Once the on-VPS systemd unit's ExecStart points at start.sh
+    (Bit 2.0.5.1 ships the unit; operator activates via `bash
+    ops/install.sh`), start.sh is load-bearing for production startup.
+    A silent failure in `source venv/bin/activate` (corrupt venv,
+    missing file, partial pip install) without `set -e` falls through
+    to `exec python3 bot.py` resolving to system python3 — which
+    typically lacks lightgbm/scipy/scikit-learn and crashes bot.py
+    at import. That confusing failure mode is what `set -e` prevents.
+
+    The shebang must be `/bin/bash` (not `/bin/sh`) because `set -o
+    pipefail` is bash-specific. This test pins both invariants.
+    """
+    text = START_SH.read_text()
+    first_line = text.splitlines()[0] if text else ""
+    assert first_line == "#!/bin/bash", (
+        f"start.sh must start with `#!/bin/bash` (not {first_line!r}). "
+        f"`set -o pipefail` is bash-specific; switching to /bin/sh "
+        f"would silently break the safety net."
+    )
+    assert "set -eo pipefail" in text or "set -euo pipefail" in text, (
+        f"start.sh must contain `set -eo pipefail` (or `set -euo "
+        f"pipefail`). Without it, a silent venv-activate failure "
+        f"falls back to system python3 — exactly the smell Bit "
+        f"2.0.5.1 was designed to close. See "
+        f"kb/failures/bit-2.1a-systemd-mismatch-may06.md for the "
+        f"incident class this guards against."
     )
 
 

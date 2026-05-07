@@ -1,0 +1,18 @@
+[Unit]
+Description=Kalshi Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/home/botuser/kalshi-bot-repo
+EnvironmentFile=/home/botuser/kalshi-bot-repo/.env
+ExecStart=/home/botuser/kalshi-bot-repo/start.sh
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

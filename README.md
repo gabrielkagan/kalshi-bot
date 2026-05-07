@@ -228,7 +228,8 @@ circuit_breaker.py             -- per-asset trading halt logic
 dashboard_snapshot.py          -- builds dashboard state snapshots for Supabase
 supabase_sync.py               -- pushes snapshots to Supabase Realtime every 10s
 watchdog.py                    -- process health monitoring
-start.sh                       -- systemd entrypoint (venv + .env + bot.py)
+ops/kalshi-bot.service         -- systemd unit, source of truth (installed via ops/install.sh)
+start.sh                       -- wrapper invoked by ops/kalshi-bot.service (venv + .env + bot.py)
 requirements.txt               -- Python dependencies
 .env.example                   -- credential template
 .github/workflows/deploy.yml   -- auto-deploy on push to main
