@@ -48,6 +48,23 @@ jobs:
             # blasts through any dirty tree.
             git fetch origin main
             git checkout main
+            # Pre-deploy: verify on-VPS systemd unit matches ops/kalshi-bot.service
+            # at the deploy commit. If drift, abort BEFORE reset --hard so VPS
+            # stays on the prior commit. Bit 2.0.5.2 of repo modularization plan
+            # (kb/decisions/repo-modularization-plan-may05.md). Compares against
+            # `git show ${{ github.sha }}:...` (the deploy-commit file) rather
+            # than working-tree, which is still the PRIOR commit's content here
+            # (git checkout main doesn't advance HEAD before reset --hard).
+            # Filter `^# /(etc|run|usr/lib)/` strips systemd-cat path headers
+            # from /etc, /run, /usr/lib drop-in dirs (allowlist — broader
+            # `^# /` would also strip body comments matching `# /opt/...`,
+            # creating a false-negative drift match per R2 m1).
+            ON_VPS_UNIT=$(systemctl cat kalshi-bot 2>/dev/null) \
+              || { echo "FAIL: kalshi-bot.service not installed on VPS. Recovery (ssh -t to VPS): cd ~/kalshi-bot-repo && git fetch origin main && git reset --hard origin/main && bash ops/install.sh"; exit 1; }
+            REPO_UNIT=$(git show ${{ github.sha }}:ops/kalshi-bot.service) \
+              || { echo "FAIL: cannot read ops/kalshi-bot.service @ commit ${{ github.sha }} (file missing OR repo state corrupted — see git error above). R3-m1: stderr intentionally not redirected so the actual git failure surfaces."; exit 1; }
+            diff <(echo "$ON_VPS_UNIT" | grep -E -v '^# /(etc|run|usr/lib)/') <(echo "$REPO_UNIT" | grep -E -v '^# /(etc|run|usr/lib)/') \
+              || { echo "FAIL: on-VPS systemd unit differs from ops/kalshi-bot.service @ ${{ github.sha }}. Recovery (ssh -t to VPS): cd ~/kalshi-bot-repo && git fetch origin main && git reset --hard origin/main && bash ops/install.sh, then re-trigger this deploy. NOTE: bare 'bash ops/install.sh' without the fetch+reset would re-install the PRIOR commit's unit and the next deploy would loop on the same drift FAIL."; exit 1; }
             git reset --hard ${{ github.sha }}
             python3 -c "import ast; ast.parse(open('bot.py').read()); print('SYNTAX OK')"
             sudo systemctl restart kalshi-bot
