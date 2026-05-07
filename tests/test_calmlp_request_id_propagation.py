@@ -56,9 +56,9 @@ CAL_MLP_FIELDS = {
 
 
 def _load_bot_ast():
-    bot_path = os.path.join(PROJECT_ROOT, "bot/_impl.py")
+    bot_path = os.path.join(PROJECT_ROOT, "bot.py")
     with open(bot_path) as f:
-        return ast.parse(f.read(), filename="bot/_impl.py")
+        return ast.parse(f.read(), filename="bot.py")
 
 
 def _stage_value(call: ast.Call) -> str | None:
@@ -87,7 +87,7 @@ def _stage_value(call: ast.Call) -> str | None:
 
 
 # Map known constant NAMES (used positionally) to their literal stage strings.
-# Keep in sync with bot/_impl.py.
+# Keep in sync with bot.py.
 CONSTANT_NAME_TO_STAGE = {
     "TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE": "TM98_97_98C_2_5MIN_BLEED",
     "SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE": "SOL_TAKER_85_89C_2_5MIN_BLEED",
@@ -151,7 +151,7 @@ def _collect_endpoint_inserts():
 def test_every_trade_endpoint_insert_propagates_cal_mlp_request_id():
     sites = _collect_endpoint_inserts()
     assert sites, (
-        "No trade-endpoint insert_evaluated_opportunity sites found in bot/_impl.py — "
+        "No trade-endpoint insert_evaluated_opportunity sites found in bot.py — "
         "the AST scanner is broken or all sites were renamed"
     )
     missing = []
@@ -161,14 +161,14 @@ def test_every_trade_endpoint_insert_propagates_cal_mlp_request_id():
     assert not missing, (
         "These trade-endpoint insert_evaluated_opportunity sites drop "
         "cal_mlp_request_id (post-hoc processor will never annotate the rows):\n"
-        + "\n".join(f"  bot/_impl.py:{ln}  filter_stage={st}" for ln, st in missing)
+        + "\n".join(f"  bot.py:{ln}  filter_stage={st}" for ln, st in missing)
         + "\n\nFix: add `cal_mlp_request_id=<source>.get('cal_mlp_request_id'),` "
           "(plus the other cal_mlp_* fields) or splat **_shadow_diag in the call."
     )
 
 
 def test_endpoint_stage_set_matches_known_stages():
-    """Sanity: if someone adds a new trade-endpoint stage in bot/_impl.py without
+    """Sanity: if someone adds a new trade-endpoint stage in bot.py without
     extending TRADE_ENDPOINT_STAGES, the propagation guarantee is silently
     lost. This isn't fully detectable from AST alone; we lock the constant
     names referenced here and expect the human to add new entries when
@@ -176,7 +176,7 @@ def test_endpoint_stage_set_matches_known_stages():
 
     If this test fails because the bleed-cell constants were renamed,
     update CONSTANT_NAME_TO_STAGE + TRADE_ENDPOINT_STAGES together."""
-    bot_path = os.path.join(PROJECT_ROOT, "bot/_impl.py")
+    bot_path = os.path.join(PROJECT_ROOT, "bot.py")
     with open(bot_path) as f:
         src = f.read()
     assert 'TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE = "TM98_97_98C_2_5MIN_BLEED"' in src

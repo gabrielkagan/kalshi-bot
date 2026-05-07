@@ -5,9 +5,9 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 ## Reference docs (read on demand)
 
 - `agent_docs/current_state.md` — what's live, what's shadow, what's disabled. Refresh-target.
-- `agent_docs/config_reference.md` — every constant in `bot/_impl.py` with data justifications.
+- `agent_docs/config_reference.md` — every constant in `bot.py` with data justifications.
 - `agent_docs/db_schema.md` — `state.db` schema for all tables.
-- `agent_docs/bot_layout.md` — bot/_impl.py line ranges + project file map.
+- `agent_docs/bot_layout.md` — bot.py line ranges + project file map.
 - `agent_docs/calibration_pipeline.md` — calibration, hourly three-layer, three-commit rule.
 - `kb/_index.md` — design decisions, postmortems, strategy specs (read for any deep "why" question).
 - `kb-research/_index.md` — compiled research findings.
@@ -23,13 +23,13 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 
 Each one-liner fires here; rationale + history live in `kb/failures/` postmortems.
 
-- **bot/_impl.py is sacred.** systemd → `start.sh` → `python -m bot` → `bot/__main__.py` → `bot/_impl.py`. The body lives at `bot/_impl.py`; `bot/__init__.py` is a writable lazy proxy that keeps `import bot` consumers working. Don't rename or split.
+- **bot.py is sacred.** systemd → `start.sh` → `bot.py`. Don't rename or split.
 - Never commit `.env` or `*.jsonl` (gitignored). KB files (`kb/`, `kb-research/`) are local-only by convention — don't `git add` new files there (existing tracked entries are pre-rule legacy).
-- Syntax-check before commit: `make ast-check` (alias for `python3 -c "import ast; ast.parse(open('bot/_impl.py').read())"`).
+- Syntax-check before commit: `make ast-check` (alias for `python3 -c "import ast; ast.parse(open('bot.py').read())"`).
 - Pushing to main auto-deploys. Always verify the VPS pulled the new commit hash.
 - Data-driven changes only. No config tuning without backing data.
 - After signature changes: grep all call sites. `ast.parse` won't catch unbound names.
-- After constant changes in `bot/_impl.py`: grep across the repo, especially `market_config.py` (asserts at startup → crash loop on mismatch).
+- After constant changes in `bot.py`: grep across the repo, especially `market_config.py` (asserts at startup → crash loop on mismatch).
 - Performance analysis filters to current config regime. Pre-regime data is misleading.
 - After deploy: verify expected DB rows are being created (e.g., `stc_shadow` when STC 300-600s, `weather_observation` when weather is on). "Service running, no errors" is not enough.
 - Investigate before explaining. Look at actual data, not assumptions about it.
@@ -38,11 +38,11 @@ Each one-liner fires here; rationale + history live in `kb/failures/` postmortem
 - Sim PnL and counterfactuals use actual Kelly sizing. Never flat 1-contract.
 - Dashboard changes: `dashboard_snapshot.py` and `dashboard/index.html` (gh-pages) ship in the same commit per `kb/decisions/dashboard-overhaul-plan.md`.
 - Doc drift: when changing config values, update `README.md` / `whitepaper.md` / `whitepaper_investor.md` / `CLAUDE.md` / `agent_docs/config_reference.md` in the same commit. Run `make doc-drift` (alias for `python3 scripts/doc_drift_check.py`).
-- **bot/_impl.py implementation rules** (torch threading + `_thread_env` import ordering, `cal_mlp` four-site lock-step, cell-block `filter_stage` string literals, SQLite WAL pragmas + ≤50-row commit batches, `_shadow_diag` schema chain, engine→CalEngine one-commit wiring, `discover_active_windows()`/`product_type` cross-checks, shadow-strategy add workflow): see `agent_docs/bot-claude-md-draft.md`. Sprint 2 Bit 2.2 promotes this draft to `bot/CLAUDE.md`, after which it auto-loads when working inside `bot/`.
+- **bot.py implementation rules** (torch threading + `_thread_env` import ordering, `cal_mlp` four-site lock-step, cell-block `filter_stage` string literals, SQLite WAL pragmas + ≤50-row commit batches, `_shadow_diag` schema chain, engine→CalEngine one-commit wiring, `discover_active_windows()`/`product_type` cross-checks, shadow-strategy add workflow): see `agent_docs/bot-claude-md-draft.md`. Sprint 2 Bit 2.2 promotes this draft to `bot/CLAUDE.md`, after which it auto-loads when working inside `bot/`.
 
 ## Anti-patterns
 
-- Don't refactor `bot/_impl.py` into multiple files outside the modularization plan (`kb/decisions/repo-modularization-plan-may05.md`). Engines (spx/weather/sports/analyst) run as separate threads/processes — that's the only acceptable split outside the plan.
+- Don't refactor `bot.py` into multiple files. Engines (spx/weather/sports/analyst) run as separate threads/processes — that's the only acceptable split.
 - Don't add async. Synchronous + threading for WS feeds is the design.
 - Don't switch from SQLite. Single-writer + local-to-VPS latency is the right choice.
 - Don't switch from JSONL journals. Append-only, zero-overhead, daily cron rotation.

@@ -1,7 +1,7 @@
 """Phase D (Shadow Coverage Expansion): cal_mlp_request_id on shadow rows.
 
 Background:
-  Pre-Phase-D, `_calmlp_annotate_async` at bot/_impl.py was called ONCE per
+  Pre-Phase-D, `_calmlp_annotate_async` at bot.py was called ONCE per
   scan-loop iteration AFTER the per-asset floor check + after several
   shadow-stage inserts/queue snapshots had already fired. Two consequences:
 
@@ -36,7 +36,7 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-BOT_PATH = os.path.join(PROJECT_ROOT, "bot/_impl.py")
+BOT_PATH = os.path.join(PROJECT_ROOT, "bot.py")
 
 
 def _read_bot():
@@ -48,7 +48,7 @@ class TestPhaseDStripPatternsRemoved:
     """Post-Phase-D, only TWO `_shadow_diag.items() if not k.startswith('cal_mlp_')`
     strip patterns are legitimate:
 
-    1. TM96 cal_mlp gate (around bot/_impl.py:12920): computes its own
+    1. TM96 cal_mlp gate (around bot.py:12920): computes its own
        `_tm96_diag_clean` and splats `_shadow_diag` MINUS cal_mlp_* keys
        to avoid double-stamping the per-gate prediction.
 
@@ -105,7 +105,7 @@ class TestPhaseDIterationReset:
         src = _read_bot()
         # Locate the scan for-loop.
         loop_match = re.search(r'for mkt in window\["markets"\]:', src)
-        assert loop_match, "scan for-loop not found in bot/_impl.py"
+        assert loop_match, "scan for-loop not found in bot.py"
         loop_start = loop_match.end()
         # Take a generous slice to cover the iteration prologue (200 lines
         # is enough; raw_prob_pre is set within ~200 lines of loop start).
@@ -289,7 +289,7 @@ class TestPhaseDAnnotateRuntimeIsolation:
         assert "cal_mlp_request_id" not in diag, (
             f"Cross-ticker uuid leak: iter-2 row carries iter-1's "
             f"uuid {diag.get('cal_mlp_request_id')!r}. The pop-at-top-"
-            f"of-iter at bot/_impl.py around line 11272 must clear cal_mlp_*."
+            f"of-iter at bot.py around line 11272 must clear cal_mlp_*."
         )
 
 

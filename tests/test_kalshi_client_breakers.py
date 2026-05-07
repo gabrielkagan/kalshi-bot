@@ -48,7 +48,7 @@ class TestKalshiClientBreakerImports(unittest.TestCase):
     KalshiClient methods."""
 
     def test_bot_imports_registry(self):
-        with open(bot._impl.__file__) as f:
+        with open(bot.__file__) as f:
             src = f.read()
         self.assertIn(
             "from circuit_breaker import", src,
@@ -210,7 +210,7 @@ class TestKalshiClientWritesAreNotWrapped(unittest.TestCase):
     A7: cover all 3 writes via parametrized AST check."""
 
     def _assert_method_not_wrapped(self, method_name):
-        with open(bot._impl.__file__) as f:
+        with open(bot.__file__) as f:
             src = f.read()
         i = src.index(f"def {method_name}")
         j = src.index("\n    def ", i + 1)

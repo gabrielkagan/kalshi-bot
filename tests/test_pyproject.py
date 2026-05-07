@@ -475,35 +475,29 @@ def test_extend_exclude_actually_excludes():
 
 
 def test_bot_module_and_bot_package_dont_collide():
-    """Sprint-2 guard: never let legacy `bot.py` (file) and `bot/` (package) coexist.
+    """Sprint-2 guard: never let `bot.py` (file) and `bot/` (package) coexist.
 
     Python resolves `import bot` ambiguously when both exist (regular package
-    > module > namespace package). Sprint 1 shipped legacy `bot.py` at root;
-    Sprint 2 Bit 2.1a renamed it to `bot/_impl.py` and created `bot/__init__.py`
-    + `bot/__main__.py`. Post-Bit-2.1a, legacy `bot.py` MUST stay absent —
-    if a future commit re-introduces `bot.py` at root alongside the `bot/`
-    package, this test fires. The legacy filename is the load-bearing
-    coordinate to check (NOT `bot/_impl.py`, which IS the package body and
-    legitimately coexists with `bot/__init__.py`).
+    > module > namespace package). Sprint 1 ships `bot.py` only; Sprint 2
+    (Bit 2.1) creates `bot/__init__.py`. The Bit 2.1 commit MUST delete
+    `bot.py` (or rename it) in the same commit so this assertion stays green.
 
-    Test holds across the Sprint 1 → Sprint 2 transition: pre-2.1a, no `bot/`
-    package exists so the AND is False; post-2.1a, no `bot.py` exists so the
-    AND is False.
+    Test holds across the Sprint 1 → Sprint 2 transition without modification.
     """
     bot_py = REPO_ROOT / "bot.py"
     bot_dir = REPO_ROOT / "bot"
     # Catches both regular packages (bot/__init__.py) AND namespace packages
     # (bot/ with submodules but no __init__.py). Either form coexisting with
-    # legacy `bot.py` creates an ambiguous import.
+    # bot.py creates an ambiguous import.
     bot_dir_has_python = bot_dir.is_dir() and any(
         p.suffix == ".py" for p in bot_dir.rglob("*.py")
     )
     assert not (bot_py.exists() and bot_dir_has_python), (
-        "BOTH legacy `bot.py` and a `bot/` package directory with Python content "
+        "BOTH `bot.py` and a `bot/` package directory with Python content "
         "exist at the repo root. Python's import resolver picks one "
         "ambiguously based on sys.path order — production at risk. "
-        "Bit 2.1a renamed `bot.py` to `bot/_impl.py`; if `bot.py` came back, "
-        "either delete it or rename one of them."
+        "Sprint 2 (Bit 2.1) should delete `bot.py` in the same commit it "
+        "creates the `bot/` package, or rename one of them."
     )
 
 

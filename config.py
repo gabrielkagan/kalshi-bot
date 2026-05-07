@@ -1,10 +1,10 @@
 """Shared constants for kalshi-bot.
 
-Extracted from bot/_impl.py so that models.py and tests can import constants
-without pulling in bot/_impl.py's full dependency tree (requests, websockets,
+Extracted from bot.py so that models.py and tests can import constants
+without pulling in bot.py's full dependency tree (requests, websockets,
 cryptography, etc.).
 
-bot/_impl.py does `from config import *` so runtime behavior is unchanged.
+bot.py does `from config import *` so runtime behavior is unchanged.
 """
 
 import json

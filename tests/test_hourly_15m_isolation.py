@@ -22,11 +22,7 @@ class TestHourlyConstants:
         """HOURLY_LIVE_ENABLED defaults to False without env var."""
         env = os.environ.pop("HOURLY_LIVE_ENABLED", None)
         try:
-            # Reload bot._impl directly: the bot/__init__.py proxy doesn't
-            # re-execute bot/_impl.py on importlib.reload(bot), so reloading
-            # the proxy alone would no-op the env-var re-read. Bit 2.1a
-            # structural change (mirrors test_decided_contract.py:728).
-            import bot._impl as _b
+            import bot as _b
             importlib.reload(_b)
             assert _b.HOURLY_LIVE_ENABLED is False
             assert _b.HOURLY_OBSERVATION_ONLY is True

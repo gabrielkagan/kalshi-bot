@@ -1,4 +1,4 @@
-"""Phase H-2 STEP 2: bot/_impl.py integration tests for snapshot computation.
+"""Phase H-2 STEP 2: bot.py integration tests for snapshot computation.
 
 STEP 1 shipped schema + plumbing (column defaults NULL).
 STEP 2 (this commit) wires the actual snapshot computation:
@@ -10,7 +10,7 @@ STEP 2 (this commit) wires the actual snapshot computation:
 - MainLoop adds `_scan_iter` counter (init + increment) and
   `_open_positions_count_cache` (populated in `_compute_bot_state_features`).
 
-These tests are AST-style on bot/_impl.py + a runtime test on the StateManager
+These tests are AST-style on bot.py + a runtime test on the StateManager
 provider mechanism (using a tmp DB).
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ import bot_state_snapshot  # noqa: E402
 
 @pytest.fixture(scope="module")
 def bot_py_source() -> str:
-    return (ROOT / "bot/_impl.py").read_text()
+    return (ROOT / "bot.py").read_text()
 
 
 # ── Helper module location ───────────────────────────────────────────────
@@ -40,10 +40,10 @@ def bot_py_source() -> str:
 
 def test_helper_module_at_repo_root():
     """Step-2 moves the helper from scripts/ to repo root (matches H-3a
-    pattern). bot/_impl.py imports it as a top-level module without sys.path
+    pattern). bot.py imports it as a top-level module without sys.path
     mods. Verify the file lives at the expected location."""
     assert (ROOT / "bot_state_snapshot.py").exists(), (
-        "bot_state_snapshot.py must live at repo root for bot/_impl.py imports"
+        "bot_state_snapshot.py must live at repo root for bot.py imports"
     )
     # Old location should not exist (the move is the fix; if both exist,
     # tests pick up the wrong copy).
@@ -246,7 +246,7 @@ def test_main_loop_caches_open_positions_count(bot_py_source):
 def test_provider_runtime_smoke(tmp_path):
     """Runtime smoke test: a fake StateManager with the provider hooked
     up writes the JSON returned by the provider into the column.
-    Validates the contract without booting all of bot/_impl.py."""
+    Validates the contract without booting all of bot.py."""
     db = tmp_path / "state.db"
     conn = sqlite3.connect(db)
     conn.execute("""
@@ -311,9 +311,9 @@ def test_h2_integration_lock_wait_pattern_test_is_active():
     src = (ROOT / "tests" / "test_h2_integration_lock_wait_pattern.py").read_text()
     # The test must NOT have an unconditional @pytest.mark.skip on the
     # regression. Allow @pytest.mark.skipif with a False condition — but
-    # plain `@pytest.mark.skip(reason="Enables when bot/_impl.py H-2 ...")` is
+    # plain `@pytest.mark.skip(reason="Enables when bot.py H-2 ...")` is
     # the deactivated marker we need to remove.
-    assert '@pytest.mark.skip(reason="Enables when bot/_impl.py H-2' not in src, (
+    assert '@pytest.mark.skip(reason="Enables when bot.py H-2' not in src, (
         "tests/test_h2_integration_lock_wait_pattern.py still has the "
         "step-1 skip decorator. Step 2 must remove it so the regression "
         "actively guards the BEGIN IMMEDIATE pattern."

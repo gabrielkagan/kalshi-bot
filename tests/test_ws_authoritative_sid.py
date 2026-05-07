@@ -35,7 +35,7 @@ from unittest.mock import AsyncMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 
 
 def _make_feed():

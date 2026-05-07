@@ -16,15 +16,15 @@ We have 9 standalone test files (~6,700 lines) covering EGARCH, HAR, ghost fills
 
 ### 1. Config & Wiring Consistency Tests (`test_config_consistency.py`)
 
-**Failure mode:** MarketTypeConfig drifts from bot/_impl.py constants → crash loop on VPS startup.
-**Past incident:** Multiple — any time a constant was changed in bot/_impl.py but not market_config.py.
+**Failure mode:** MarketTypeConfig drifts from bot.py constants → crash loop on VPS startup.
+**Past incident:** Multiple — any time a constant was changed in bot.py but not market_config.py.
 
 **Tests to write:**
 
-- **Config-to-constant parity**: Import bot/_impl.py and market_config.py, assert every field in every `MarketTypeConfig` matches its corresponding bot/_impl.py constant. This duplicates what `validate_market_configs()` does at runtime, but catches it *before deploy* in CI.
+- **Config-to-constant parity**: Import bot.py and market_config.py, assert every field in every `MarketTypeConfig` matches its corresponding bot.py constant. This duplicates what `validate_market_configs()` does at runtime, but catches it *before deploy* in CI.
 - **Config completeness**: Every product type in `MARKET_CONFIGS` has all required fields (no `None` where a number is expected).
 - **MIN_EDGE_BY_PRICE monotonicity**: Assert the edge schedule is non-decreasing as price increases. A typo inverting two values silently weakens the edge filter.
-- **Observation mode flags**: Assert that observation-only product types have `observation_only=True` in their config and vice versa. Catches the scenario where you flip a bot/_impl.py constant but forget market_config.py.
+- **Observation mode flags**: Assert that observation-only product types have `observation_only=True` in their config and vice versa. Catches the scenario where you flip a bot.py constant but forget market_config.py.
 
 **Why this is #1:** Config mismatches cause immediate crash loops that block the entire bot. Highest blast radius, easiest to test.
 
@@ -47,12 +47,12 @@ We have 9 standalone test files (~6,700 lines) covering EGARCH, HAR, ghost fills
 
 ### 3. Cross-File Call-Site Integrity Tests (`test_call_sites.py`)
 
-**Failure mode:** Function signature changed in bot/_impl.py but callers in other files (analyst.py, dashboard_snapshot.py, spx_engine.py, etc.) still use old signature → `TypeError` at runtime.
+**Failure mode:** Function signature changed in bot.py but callers in other files (analyst.py, dashboard_snapshot.py, spx_engine.py, etc.) still use old signature → `TypeError` at runtime.
 **Past incident:** CLAUDE.md rule about grepping all call sites after signature changes.
 
 **Tests to write:**
 
-- **Public API smoke imports**: Import every module that imports from bot/_impl.py. Verify no `ImportError` or `AttributeError`. This catches renamed/removed functions.
+- **Public API smoke imports**: Import every module that imports from bot.py. Verify no `ImportError` or `AttributeError`. This catches renamed/removed functions.
 - **Cross-module function call arity**: For key functions (`insert_rejection`, `insert_evaluated_opportunity`, `calculate_fee`, `calculate_maker_fee`, `get_market_config`), find all call sites across all `.py` files via AST parsing. Verify each call passes the correct number of positional args and only uses valid keyword arg names. This is the static version of "grep ALL call sites."
 - **CalEngine pipeline triple-ship**: When any engine file (spx_engine.py, weather_engine.py, sports_engine.py) has an `INSERT` that includes `raw_prob`, verify that (a) the corresponding CalEngine is routed in `_resolve_cal_engine`, and (b) the audit script checks for that engine's observations. Catches the "three things must ship together" rule.
 
@@ -92,7 +92,7 @@ We have 9 standalone test files (~6,700 lines) covering EGARCH, HAR, ghost fills
 
 ### 6. Snapshot / Contract Tests (`test_contracts.py`)
 
-**Failure mode:** Dashboard, Supabase sync, or analyst.py expect a specific data shape that bot/_impl.py silently changes.
+**Failure mode:** Dashboard, Supabase sync, or analyst.py expect a specific data shape that bot.py silently changes.
 
 **Tests to write:**
 
@@ -108,7 +108,7 @@ We have 9 standalone test files (~6,700 lines) covering EGARCH, HAR, ghost fills
 
 **Expand with a test for every CLAUDE.md "Learned" annotation:**
 
-- **MarketTypeConfig mismatch** (crash loop): Change one bot/_impl.py constant, call `validate_market_configs()`, assert it raises.
+- **MarketTypeConfig mismatch** (crash loop): Change one bot.py constant, call `validate_market_configs()`, assert it raises.
 - **Dead STC shadow gate** (98c954d, Mar 1): Create a window with `product_type='15m'`, assert the STC shadow gate still triggers correctly (not silently bypassed).
 - **NULL raw_prob** (Mar 4): Assert that every engine's INSERT statement includes `raw_prob` as a non-NULL column.
 - **Missing busy_timeout** (Mar 2): Assert every `sqlite3.connect()` sets busy_timeout.
@@ -140,7 +140,7 @@ jobs:
           pip install pytest hypothesis
           pip install -r requirements.txt
       - name: Syntax check
-        run: python3 -c "import ast; ast.parse(open('bot/_impl.py').read())"
+        run: python3 -c "import ast; ast.parse(open('bot.py').read())"
       - name: Run tests
         run: pytest tests/ test_*.py -v --tb=short -x
 ```
@@ -156,7 +156,7 @@ Create `conftest.py` at project root with:
 - **`mock_kalshi_client`**: Patched KalshiClient that returns canned orderbook/fill responses.
 - **`sample_price_buffer`**: Pre-filled price array for volatility model tests.
 
-This eliminates the "inline copy of bot/_impl.py classes" pattern that causes tests to drift from reality.
+This eliminates the "inline copy of bot.py classes" pattern that causes tests to drift from reality.
 
 ### C. Pytest config — `[tool.pytest.ini_options]` in `pyproject.toml`
 

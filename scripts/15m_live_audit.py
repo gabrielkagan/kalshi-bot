@@ -102,7 +102,7 @@ EVAL_15M_FILTER = ("AND (product_type IS NULL OR product_type NOT IN "
 
 def detect_regime_start(conn: sqlite3.Connection) -> str:
     """Auto-detect regime start by finding the last git commit that changed
-    actual 15M live trading constants in bot/_impl.py.
+    actual 15M live trading constants in bot.py.
 
     Checks git diff of each commit for changes to known constant names.
     Falls back to 2026-02-28 if git is unavailable."""
@@ -121,11 +121,10 @@ def detect_regime_start(conn: sqlite3.Connection) -> str:
     repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     try:
-        # Get recent bot/_impl.py-changing commit hashes (include legacy
-        # `bot.py` path so the regime window spans the Bit 2.1a rename).
+        # Get recent bot.py-changing commit hashes
         result = subprocess.run(
             ["git", "log", "--format=%H %aI", "--since=180 days ago",
-             "--", "bot.py", "bot/_impl.py"],
+             "--", "bot.py"],
             capture_output=True, text=True, timeout=10, cwd=repo_dir,
         )
         if result.returncode != 0:
@@ -141,7 +140,7 @@ def detect_regime_start(conn: sqlite3.Connection) -> str:
             # Check if this commit's diff touches any regime constant
             diff_result = subprocess.run(
                 ["git", "diff", f"{commit_hash}^..{commit_hash}",
-                 "--", "bot.py", "bot/_impl.py"],
+                 "--", "bot.py"],
                 capture_output=True, text=True, timeout=10, cwd=repo_dir,
             )
             if diff_result.returncode != 0:

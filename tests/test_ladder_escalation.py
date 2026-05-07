@@ -44,7 +44,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 
 
 def _make_executor():
@@ -888,7 +888,7 @@ class TestOrderbookShapeRobustness(unittest.TestCase):
 
     def test_wrapped_orderbook_response_works(self):
         """Production schema: {'orderbook': {'yes': [...], 'no': [...]}}.
-        Gate 8 must unwrap (mirror prod pattern at bot/_impl.py:15841)."""
+        Gate 8 must unwrap (mirror prod pattern at bot.py:15841)."""
         self.ex._client.get_orderbook.return_value = {
             "orderbook": {
                 "yes": [[99, 200], [100, 1]],
@@ -916,7 +916,7 @@ class TestOrderbookShapeRobustness(unittest.TestCase):
         self.assertTrue(
             result.get("escalated"),
             "FP-format must convert to yes=[[99, 48], [100, 1]] and "
-            "proceed. Mirrors prod unwrap at bot/_impl.py:15810-15812 + "
+            "proceed. Mirrors prod unwrap at bot.py:15810-15812 + "
             "16419-16421.")
 
     def test_unwrapped_orderbook_response_works(self):

@@ -44,7 +44,7 @@ from bot import OpportunityScanner
 
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 
 
 class TestIsSevereDrift(unittest.TestCase):
@@ -124,7 +124,7 @@ class TestDriftProbeWiring(unittest.TestCase):
                             and node.name == method_name):
                         return node
         raise AssertionError(
-            f"{cls_name}.{method_name} not found in bot/_impl.py")
+            f"{cls_name}.{method_name} not found in bot.py")
 
     def test_drift_probe_calls_is_severe_drift(self):
         probe = self._find_method("OpportunityScanner", "_drift_probe_tick")

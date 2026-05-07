@@ -5,12 +5,12 @@ Data backing:
   PF 2.02, +$9.74, max DD $1.57. LAS within band: -$1.19 on 8 trades, 25% WR.
 
 Mirrors the bleed-cell pattern at tests/test_bleed_cell_blocks.py: module-level
-predicate function tested directly, plus AST/regex checks that bot/_impl.py wires the
+predicate function tested directly, plus AST/regex checks that bot.py wires the
 predicate and the new sizing constant into the live-candidate gate.
 
 Per CLAUDE.md: data collection unaffected. Excluded LAS still flows through the
 shadow logging paths (this change only short-circuits the LIVE candidate
-creation branch at bot/_impl.py:17633).
+creation branch at bot.py:17633).
 """
 from pathlib import Path
 import re
@@ -142,7 +142,7 @@ def test_predicate_accepts_custom_exclusion_set():
 # ---------------------------------------------------------------------------
 
 def _read_bot_source():
-    return (REPO / "bot/_impl.py").read_text()
+    return (REPO / "bot.py").read_text()
 
 
 def test_source_replaces_position_size_1_with_constant_in_weather_no_live():

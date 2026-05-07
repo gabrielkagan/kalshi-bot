@@ -45,7 +45,7 @@ Investigate an anomaly, unexpected trade, dashboard alert, or suspected bug. Ans
 
    d. **Check bot config is correct on VPS** (not local — configs may have drifted):
    ```bash
-   ssh botuser@45.55.181.30 "cd ~/kalshi-bot-repo && grep -n 'OBSERVATION_MODE\|MIN_ENTRY_PRICE\|MAX_ENTRY_PRICE\|STC_SHADOW_THRESHOLD' bot/_impl.py | head -10"
+   ssh botuser@45.55.181.30 "cd ~/kalshi-bot-repo && grep -n 'OBSERVATION_MODE\|MIN_ENTRY_PRICE\|MAX_ENTRY_PRICE\|STC_SHADOW_THRESHOLD' bot.py | head -10"
    ```
 
 3. **Present findings immediately** — data first, not speculation:

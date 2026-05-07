@@ -121,7 +121,7 @@ def fisher_exact_2x2(a: int, b: int, c: int, d: int) -> float:
 
 def detect_regime_start(conn: sqlite3.Connection) -> str:
     """Auto-detect regime start by finding the last git commit that changed
-    hourly trading constants in bot/_impl.py.
+    hourly trading constants in bot.py.
 
     Falls back to 2026-02-28 if git is unavailable."""
     import subprocess
@@ -142,7 +142,7 @@ def detect_regime_start(conn: sqlite3.Connection) -> str:
     try:
         result = subprocess.run(
             ["git", "log", "--format=%H %aI", "--since=180 days ago",
-             "--", "bot.py", "bot/_impl.py"],
+             "--", "bot.py"],
             capture_output=True, text=True, timeout=10, cwd=repo_dir,
         )
         if result.returncode != 0:
@@ -156,7 +156,7 @@ def detect_regime_start(conn: sqlite3.Connection) -> str:
 
             diff_result = subprocess.run(
                 ["git", "diff", f"{commit_hash}^..{commit_hash}",
-                 "--", "bot.py", "bot/_impl.py"],
+                 "--", "bot.py"],
                 capture_output=True, text=True, timeout=10, cwd=repo_dir,
             )
             if diff_result.returncode != 0:
@@ -2043,7 +2043,7 @@ def validation_plan(conn: sqlite3.Connection) -> None:
     if _r_temp < 90:
         print(f"  Status: OPEN — {_r_temp:.0f}% coverage last 48h (n={_rt})")
         print("  Deploy: Add hourly_pre_temp_prob + hourly_applied_temp_t to insert call sites")
-        print("  Verify: grep hourly_pre_temp_prob bot/_impl.py | wc -l  (should be ~12+)")
+        print("  Verify: grep hourly_pre_temp_prob bot.py | wc -l  (should be ~12+)")
     else:
         print(f"  Status: RESOLVED — {_r_temp:.0f}% coverage last 48h (n={_rt})")
     print("  No monitoring needed — it's a correctness fix")

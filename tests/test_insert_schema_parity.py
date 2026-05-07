@@ -15,7 +15,7 @@ Both were invisible for ~7 days each because no test asserted the
 invariant. This module enforces three contracts:
 
     A. Canonical INSERT covers schema.
-       bot/_impl.py's primary INSERT INTO evaluated_opportunities must list
+       bot.py's primary INSERT INTO evaluated_opportunities must list
        every column the schema defines (minus AUTOINCREMENT `id`).
        Catches calibration_confidence-class bugs.
 
@@ -51,12 +51,12 @@ TIER_5_COLUMNS = frozenset({
 
 # Files permitted to write directly to evaluated_opportunities without
 # routing through StateManager.insert_evaluated_opportunity.
-ALLOWED_RAW_INSERTERS = {"bot/_impl.py", "sports_engine.py"}
+ALLOWED_RAW_INSERTERS = {"bot.py", "sports_engine.py"}
 
 # Columns that are intentionally NULL at INSERT time and populated by a
 # later UPDATE statement. Adding to this allowlist is an explicit
 # declaration that the column is UPDATE-populated; new columns are
-# required to be INSERT-populated unless listed here. Search bot/_impl.py for
+# required to be INSERT-populated unless listed here. Search bot.py for
 # `UPDATE evaluated_opportunities` to verify a column belongs here.
 EVAL_OPP_UPDATE_POPULATED = frozenset({
     "counterfactual_pnl",     # SettlementTracker on settle
@@ -67,7 +67,7 @@ EVAL_OPP_UPDATE_POPULATED = frozenset({
 
 # Production files scanned for INSERT statements.
 PRODUCTION_FILES = [
-    "bot/_impl.py",
+    "bot.py",
     "analyst.py",
     "auditor.py",
     "capital_allocator.py",
@@ -139,7 +139,7 @@ def live_schema():
 
 
 class TestCanonicalInsertCoversSchema:
-    """bot/_impl.py's INSERT INTO evaluated_opportunities must cover every
+    """bot.py's INSERT INTO evaluated_opportunities must cover every
     schema column except `id` (AUTOINCREMENT).
 
     This is the bug-pattern that let calibration_confidence stay 100%
@@ -152,11 +152,11 @@ class TestCanonicalInsertCoversSchema:
     ):
         schema_cols = live_schema["evaluated_opportunities"]
 
-        bot_path = os.path.join(PROJECT_ROOT, "bot/_impl.py")
+        bot_path = os.path.join(PROJECT_ROOT, "bot.py")
         with open(bot_path) as f:
             source = f.read()
 
-        # The canonical INSERT in bot/_impl.py is the one inside
+        # The canonical INSERT in bot.py is the one inside
         # StateManager.insert_evaluated_opportunity. It's distinguished
         # by being a plain `INSERT INTO evaluated_opportunities` (not
         # `INSERT OR REPLACE`) and by being the longest column list —
@@ -169,7 +169,7 @@ class TestCanonicalInsertCoversSchema:
                 best_cols = cols
 
         assert best_cols is not None, (
-            "No INSERT INTO evaluated_opportunities found in bot/_impl.py — "
+            "No INSERT INTO evaluated_opportunities found in bot.py — "
             "canonical path has been removed or renamed."
         )
 
@@ -178,7 +178,7 @@ class TestCanonicalInsertCoversSchema:
         missing = required - insert_cols
 
         assert not missing, (
-            f"bot/_impl.py canonical INSERT INTO evaluated_opportunities is "
+            f"bot.py canonical INSERT INTO evaluated_opportunities is "
             f"missing {len(missing)} schema column(s): {sorted(missing)}. "
             f"These columns exist in the schema but the INSERT does not "
             f"populate them — every row will have NULL for these columns. "

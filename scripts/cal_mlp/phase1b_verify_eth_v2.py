@@ -95,10 +95,7 @@ logger = logging.getLogger("phase1b_verify")
 def _project_root() -> Path:
     """Discover repo root.
     Precedence: KALSHI_PROJECT_ROOT env var (must exist + be a dir),
-    else walk up from this file looking for pyproject.toml + market_config.py.
-    Marker switched from bot.py to pyproject.toml in Bit 2.1a (canonical
-    Python project-root convention; future-proof against further
-    entrypoint renames).
+    else walk up from this file looking for bot.py + market_config.py.
     """
     override = os.environ.get("KALSHI_PROJECT_ROOT", "").strip()
     if override:
@@ -108,9 +105,9 @@ def _project_root() -> Path:
         raise RuntimeError(f"KALSHI_PROJECT_ROOT set but not a directory: {override}")
     here = Path(__file__).resolve()
     for ancestor in [here, *here.parents]:
-        if (ancestor / "pyproject.toml").exists() and (ancestor / "market_config.py").exists():
+        if (ancestor / "bot.py").exists() and (ancestor / "market_config.py").exists():
             return ancestor
-    raise RuntimeError("could not locate project root (no pyproject.toml + market_config.py found)")
+    raise RuntimeError("could not locate project root (no bot.py + market_config.py found)")
 
 
 def _sha256_file(path: Path) -> str:

@@ -10,7 +10,7 @@ Pins the Bit 1.2 contract:
 - Recipe lines are tab-indented (Make's "missing separator" error is
   opaque; an editor-on-save expand-tab silently breaks the file).
 - `test` matches CI's blocking filter (`-m "not fragile"`).
-- `ast-check` covers `bot/_impl.py` (CLAUDE.md sacred-file rule).
+- `ast-check` covers `bot.py` (CLAUDE.md sacred-file rule).
 - `deploy-check` and `doc-drift` route through existing scripts (no
   reinvention).
 - `make -n <target>` parses cleanly for every target.
@@ -277,13 +277,13 @@ def test_makefile_ci_symmetry_via_pyproject_addopts():
         )
 
 
-def test_ast_check_targets_bot_impl():
+def test_ast_check_targets_bot_py():
     recipe = _recipe_for("ast-check")
     assert "ast.parse" in recipe, (
         "ast-check recipe must call `ast.parse(...)` to syntax-check."
     )
-    assert "bot/_impl.py" in recipe, (
-        "ast-check recipe must target bot/_impl.py per CLAUDE.md sacred-file rule."
+    assert "bot.py" in recipe, (
+        "ast-check recipe must target bot.py per CLAUDE.md sacred-file rule."
     )
 
 
@@ -359,7 +359,7 @@ def test_test_fast_invokes_invariant_tests():
 
 def test_cwd_guard_fires_when_invoked_outside_repo_root():
     """Operator-facing footgun: `cd subdir/ && make test` would
-    silently look up `bot/_impl.py` and `scripts/` against the wrong dir.
+    silently look up `bot.py` and `scripts/` against the wrong dir.
     The Makefile's `ifeq ($(wildcard pyproject.toml),)` guard fails
     fast at parse time with a clear message. This test pins that
     behavior so a future Bit can't remove the guard silently.
@@ -401,7 +401,7 @@ def test_dry_run_each_target_clean():
     failures (dangling backslash, undefined `$(VAR)` in a recipe, bad
     `$(shell ...)` form). DOES NOT catch recipe-content errors — Make
     doesn't shell-eval the printed commands, so a typo'd script path
-    or a missing dot in `bot/_impl.py` would not trip this test. Existence
+    or a missing dot in `bot.py` would not trip this test. Existence
     checks for referenced files live in dedicated tests.
     """
     make = shutil.which("make")

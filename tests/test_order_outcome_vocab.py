@@ -1,6 +1,6 @@
 """Regression tests for `order_outcome` vocabulary drift (2026-05-04).
 
-Before fix: 3 maker-cancel sites in bot/_impl.py wrote `outcome = "partial_fill"`
+Before fix: 3 maker-cancel sites in bot.py wrote `outcome = "partial_fill"`
 inconsistent with 4 DC IOC retry sites using `order_outcome="partial_filled"`.
 Production DB confirmed both string values for the same logical concept.
 
@@ -29,7 +29,7 @@ ALLOWED_OUTCOMES = {
 }
 
 
-BOT_PY = pathlib.Path(__file__).resolve().parents[1] / "bot/_impl.py"
+BOT_PY = pathlib.Path(__file__).resolve().parents[1] / "bot.py"
 
 
 def _enclosing_function_id_map(tree):
@@ -50,10 +50,10 @@ def _enclosing_function_id_map(tree):
 
 def _collect_order_outcome_literals():
     """Return list of (lineno, literal_value) for every `order_outcome=`
-    kwarg in bot/_impl.py — direct Constant args AND via local variable named
+    kwarg in bot.py — direct Constant args AND via local variable named
     `outcome`/`_outcome` whose RHS is a Constant or IfExp[Constant, Constant].
 
-    NOT covered (acceptable today; bot/_impl.py never uses these patterns for
+    NOT covered (acceptable today; bot.py never uses these patterns for
     order_outcome — would need an explicit extension if it ever does):
       - `ast.AnnAssign` (type-annotated assigns: `outcome: str = "..."`)
       - `ast.AugAssign` / walrus `outcome := "..."`
@@ -106,11 +106,11 @@ def _collect_order_outcome_literals():
 
 def test_order_outcome_literals_in_allowed_set():
     literals = _collect_order_outcome_literals()
-    assert literals, "Expected at least one order_outcome= literal in bot/_impl.py"
+    assert literals, "Expected at least one order_outcome= literal in bot.py"
     bad = [(ln, lit) for ln, lit in literals if lit not in ALLOWED_OUTCOMES]
     assert not bad, (
         "Disallowed order_outcome literals found:\n"
-        + "\n".join(f"  bot/_impl.py:{ln}: {lit!r}" for ln, lit in bad)
+        + "\n".join(f"  bot.py:{ln}: {lit!r}" for ln, lit in bad)
         + f"\nAllowed: {sorted(ALLOWED_OUTCOMES)}"
     )
 
@@ -127,7 +127,7 @@ def test_no_partial_fill_as_order_outcome():
     assert not bad, (
         "Found 'partial_fill' as order_outcome literal — should be "
         "'partial_filled' (vocab drift regression):\n"
-        + "\n".join(f"  bot/_impl.py:{ln}" for ln, _ in bad)
+        + "\n".join(f"  bot.py:{ln}" for ln, _ in bad)
     )
 
 

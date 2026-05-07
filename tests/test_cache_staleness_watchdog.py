@@ -40,7 +40,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 
 
 class TestActiveWindowsStalenessConstant(unittest.TestCase):
@@ -52,7 +52,7 @@ class TestActiveWindowsStalenessConstant(unittest.TestCase):
             src = f.read()
         self.assertIn(
             "ACTIVE_WINDOWS_STALENESS_BUDGET_S", src,
-            "bot/_impl.py must define ACTIVE_WINDOWS_STALENESS_BUDGET_S "
+            "bot.py must define ACTIVE_WINDOWS_STALENESS_BUDGET_S "
             "as a module-level constant for the cache staleness "
             "watchdog (step #5).")
 

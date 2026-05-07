@@ -128,14 +128,14 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 181,875 |
-| Observation period | 2026-02-22 to 2026-05-07 |
-| Filter pass rate | 3.9\% (7,168 of 181,875) |
-| Top rejection reason | Insufficient Edge (55,556) |
-| Settled trades | 3,611 (3,344 W / 265 L / 2 BE) |
-| Win rate | 92.6\% |
+| Markets evaluated | 175,173 |
+| Observation period | 2026-02-22 to 2026-05-04 |
+| Filter pass rate | 3.9\% (6,836 of 175,173) |
+| Top rejection reason | Insufficient Edge (53,842) |
+| Settled trades | 3,437 (3,188 W / 247 L / 2 BE) |
+| Win rate | 92.8\% |
 
-*Last updated: 2026-05-07T00:49:43Z*
+*Last updated: 2026-05-04T21:21:03Z*
 
 ## Live vs Observation
 
@@ -188,10 +188,10 @@ Optional:
 
 ```bash
 source .env
-python3 -m bot
+python3 bot.py
 ```
 
-Set `OBSERVATION_MODE = True` in `bot/_impl.py` to log everything but place no orders.
+Set `OBSERVATION_MODE = True` in `bot.py` to log everything but place no orders.
 
 ## Deployment
 
@@ -199,7 +199,7 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 
 1. SSH into VPS as `botuser`
 2. `git pull origin main`
-3. Syntax-check `bot/_impl.py` (`python3 -c "import ast; ast.parse(...)"`)
+3. Syntax-check `bot.py` (`python3 -c "import ast; ast.parse(...)"`)
 4. `sudo systemctl restart kalshi-bot`
 
 ## Kalshi API Notes
@@ -213,13 +213,11 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot/_impl.py                   -- core bot logic (~28,157 lines, never rename)
-bot/__main__.py                -- runtime entrypoint shim (`python -m bot`)
-bot/__init__.py                -- writable lazy proxy that keeps `import bot` consumers working
+bot.py                         -- core bot logic (~28,166 lines, never rename)
 config.py                      -- centralized SIZING_TIERS / DRAWDOWN_* / MIN_EDGE_BY_PRICE
 models.py                      -- EGARCH / Mincer-Zarnowitz / PositionSizer / fee math
 analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)
-market_config.py               -- centralized MarketTypeConfig (validates against bot/_impl.py at startup)
+market_config.py               -- centralized MarketTypeConfig (validates against bot.py at startup)
 fifteenm_shadow.py             -- 15M shadow engine (recalibrated EGARCH + LightGBM research)
 spx_engine.py                  -- S&P 500 intraday engine (EGARCH + VIX, observation mode)
 weather_engine.py              -- weather temperature engine (NWP ensemble, NO-side live + observation)
@@ -230,7 +228,7 @@ circuit_breaker.py             -- per-asset trading halt logic
 dashboard_snapshot.py          -- builds dashboard state snapshots for Supabase
 supabase_sync.py               -- pushes snapshots to Supabase Realtime every 10s
 watchdog.py                    -- process health monitoring
-start.sh                       -- systemd entrypoint (venv + .env + `python -m bot`)
+start.sh                       -- systemd entrypoint (venv + .env + bot.py)
 requirements.txt               -- Python dependencies
 .env.example                   -- credential template
 .github/workflows/deploy.yml   -- auto-deploy on push to main
@@ -256,3 +254,18 @@ The bot writes JSONL journals for every stage of its decision-making pipeline:
 ### Dashboard (Supabase)
 
 When `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are set, `supabase_sync.py` pushes a state snapshot every 10 seconds to the `dashboard_state` table: balance, active positions, recent trades, win/loss record, current volatility readings, order flow signals, and session stats. The dashboard is a static HTML page hosted on GitHub Pages, reading from Supabase Realtime.
+
+## Repository conventions
+
+The repo carries several conventions for AI coding agents (Claude Code, Cursor, Aider, GitHub Copilot Workspace, etc.). The agent guide is split across these surfaces, listed roughly in increasing depth:
+
+- **`CLAUDE.md`** (root, ≤80 lines) --- project summary, top critical rules (one-liners), interaction rules, anti-patterns, skill routing table. Loaded automatically on every interaction.
+- **`AGENTS.md`** --- symlink to `CLAUDE.md` (cross-platform agent convention). Same content; the link lets non-Claude tools find the same guide.
+- **Package-level guides** that auto-load when working in-dir:
+  - `tests/CLAUDE.md` --- pytest layout, naming, regression-test conventions.
+  - `scripts/CLAUDE.md` --- audit/research script conventions: regime filtering, Kelly-sized PnL, Wilson CI, gross-vs-net `pnl_cents`.
+  - **Runtime implementation rules** for `bot.py` and engines (torch threading, cal_mlp four-site lock-step, SQLite WAL pragmas, etc.) are staged today at `agent_docs/bot-claude-md-draft.md`; Sprint 2 Bit 2.2 promotes them into the `bot/` package's runtime CLAUDE.md (which will then auto-load alongside the others).
+- **`agent_docs/`** --- deep specs that agents pull on demand: `current_state.md`, `config_reference.md`, `db_schema.md`, `bot_layout.md`, `calibration_pipeline.md`.
+- **`kb/`** and **`kb-research/`** --- design decisions, postmortems, strategy specs, findings. **Local-only by convention**; pre-rule legacy entries are tracked, but don't `git add` net-new files (these directories are not enforced by `.gitignore` — the rule is documented here and in `CLAUDE.md`).
+
+The repo is undergoing planned modularization (`kb/decisions/repo-modularization-plan-may05.md`). Agents working here should prefer skills (`/status`, `/deploy`, `/investigate`, `/audit`, etc.) over ad-hoc workflows; the routing table at the bottom of `CLAUDE.md` is canonical.

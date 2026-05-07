@@ -43,7 +43,7 @@ Compile a self-contained research data package for the external researcher/analy
 
    Format as CSV sections with headers.
 
-4. **Extract relevant code architecture from bot/_impl.py**:
+4. **Extract relevant code architecture from bot.py**:
    - All constants for the target system (with line numbers)
    - The scan loop section that handles this product_type
    - Key functions: probability computation, edge calculation, sizing
@@ -123,12 +123,12 @@ prob_bucket,count,predicted_avg,actual_wr,gap_pp
 [Key code snippets with line numbers, showing exactly how probabilities
 are computed, how edge is calculated, how filters work]
 
-### Probability computation (bot/_impl.py:5300-5340)
+### Probability computation (bot.py:5300-5340)
 ```python
 [actual code]
 ```
 
-### Edge filter (bot/_impl.py:7200-7240)
+### Edge filter (bot.py:7200-7240)
 ```python
 [actual code]
 ```
@@ -168,6 +168,6 @@ are computed, how edge is calculated, how filters work]
 | Raw data query returns >10,000 rows | Include all rows — the researcher needs complete data. But note the row count in the header so they know the scale. |
 | A column the researcher needs is mostly NULL | Include it anyway with a note: "Column X is 45% NULL — see Data Health section for context." The researcher needs to know about data quality issues. |
 | Config history is unclear from git log | Ask the user to confirm key regime change dates. Don't guess — wrong regime boundaries corrupt the analysis. |
-| Researcher will need code that's in an engine file (not bot/_impl.py) | Include snippets from the relevant engine file (spx_engine.py, weather_engine.py, etc.) with file paths and line numbers. |
+| Researcher will need code that's in an engine file (not bot.py) | Include snippets from the relevant engine file (spx_engine.py, weather_engine.py, etc.) with file paths and line numbers. |
 | Package file exceeds 50KB | This is fine — research packages are meant to be comprehensive. Only trim if >200KB, in which case truncate the raw data to the most recent 2000 rows and note the truncation. |
 | User asks to package a system with very little data (< 20 settled) | Compile it anyway but add a prominent warning: "WARNING: Only N settled observations. Any analysis will have wide confidence intervals. Consider waiting for more data before commissioning research." |

@@ -2,7 +2,7 @@
 
 `OpportunityScanner._drift_probe_tick()` had `time.sleep(2.0)` in
 the main scan() path to wait between REST_1 and REST_2 of the
-stability probe (bot/_impl.py line 14267). When WS_DRIFT_AUTO_FLAG fires
+stability probe (bot.py line 14267). When WS_DRIFT_AUTO_FLAG fires
 (every minute), this 2s sleep blocks the main loop. Combined with
 the rest of the periodic-task sweep (market discovery, ESPN fetch,
 weather refresh, settlement scan) it cascades into 6-10s
@@ -33,7 +33,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 
 
 def _find_drift_probe_tick() -> ast.FunctionDef:
@@ -47,7 +47,7 @@ def _find_drift_probe_tick() -> ast.FunctionDef:
                         and node.name == "_drift_probe_tick"):
                     return node
     raise AssertionError(
-        "OpportunityScanner._drift_probe_tick not found in bot/_impl.py")
+        "OpportunityScanner._drift_probe_tick not found in bot.py")
 
 
 class TestDriftProbeIsNonBlocking(unittest.TestCase):

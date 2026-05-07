@@ -17,7 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models.py")
 
 
@@ -37,7 +37,7 @@ class TestStrategyToGroup(unittest.TestCase):
     def test_function_exists_in_models(self):
         source = _read_models()
         self.assertIn("def strategy_to_group", source,
-                       "strategy_to_group must be defined in models.py, not bot/_impl.py")
+                       "strategy_to_group must be defined in models.py, not bot.py")
 
     def test_none_maps_to_main(self):
         from models import strategy_to_group
@@ -86,12 +86,12 @@ class TestStackingConstants(unittest.TestCase):
 
     def test_max_ticker_risk_exists(self):
         m = re.search(r'^MAX_TICKER_RISK\s*=\s*([^\s#]+)', self.source, re.MULTILINE)
-        self.assertIsNotNone(m, "MAX_TICKER_RISK must be defined in bot/_impl.py")
+        self.assertIsNotNone(m, "MAX_TICKER_RISK must be defined in bot.py")
         self.assertAlmostEqual(float(m.group(1)), 0.25)
 
     def test_max_window_risk_exists(self):
         m = re.search(r'^MAX_WINDOW_RISK\s*=\s*([^\s#]+)', self.source, re.MULTILINE)
-        self.assertIsNotNone(m, "MAX_WINDOW_RISK must be defined in bot/_impl.py")
+        self.assertIsNotNone(m, "MAX_WINDOW_RISK must be defined in bot.py")
         self.assertAlmostEqual(float(m.group(1)), 0.30)
 
 

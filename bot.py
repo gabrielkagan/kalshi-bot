@@ -8,7 +8,7 @@
 # CLAUDE.md "Critical rules". AST regression in test_cal_mlp_invariants.py.
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts', 'cal_mlp'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts', 'cal_mlp'))
 import _thread_env  # noqa: F401, E402 — side-effect: sets OMP_NUM_THREADS=1 before numpy below
 import re
 import time
@@ -1461,7 +1461,7 @@ def _validate_high_price_stc_block_bleeder_strings():
         logging.error(
             "HPSB_BLEEDER_STRINGS_MISSING: %s — gate will silently no-op for these. "
             "Update HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES or restore the strategy "
-            "string in bot/_impl.py. See kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md",
+            "string in bot.py. See kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md",
             _missing)
     return _missing
 
@@ -11575,7 +11575,7 @@ class OpportunityScanner:
                     "WHERE product_type='weather' AND side='no'"
                 ).fetchone()[0]
                 if _wx_no_pnl < WEATHER_NO_KILL_THRESHOLD:
-                    import bot._impl as _self_module
+                    import bot as _self_module
                     _self_module.WEATHER_NO_SIDE_LIVE = False
                     logging.error(
                         "WEATHER_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
@@ -11595,7 +11595,7 @@ class OpportunityScanner:
                     "WHERE product_type='hourly' AND side='no'"
                 ).fetchone()[0]
                 if _hno_pnl < HOURLY_NO_KILL_THRESHOLD:
-                    import bot._impl as _self_module
+                    import bot as _self_module
                     _self_module.HOURLY_NO_SIDE_LIVE = False
                     logging.error(
                         "HOURLY_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
@@ -11615,7 +11615,7 @@ class OpportunityScanner:
                     "WHERE strategy='bracket_no'"
                 ).fetchone()[0]
                 if _bn_pnl < BRACKET_NO_KILL_THRESHOLD:
-                    import bot._impl as _self_module
+                    import bot as _self_module
                     _self_module.BRACKET_NO_ENABLED = False
                     logging.error(
                         "BRACKET_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
@@ -26355,7 +26355,7 @@ class MainLoop:
                 logging.warning(
                     "Market observations snapshotter not started — "
                     "kalshi_feed missing get_all_orderbooks_snapshot method "
-                    "(WS client API drift; review bot/_impl.py vs "
+                    "(WS client API drift; review bot.py vs "
                     "market_observations_snapshotter.py contract)"
                 )
         except Exception as e:
@@ -28152,6 +28152,15 @@ class MainLoop:
 # ═════════════════════════════════════════════════════════════════════════════
 #  Entrypoint
 # ═════════════════════════════════════════════════════════════════════════════
-# Body lives here at bot/_impl.py post-Bit-2.1a. Runtime entrypoint is
-# bot/__main__.py (invoked via `python -m bot`); see bot/__init__.py for
-# the writable lazy proxy that keeps `import bot` consumers working.
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stderr)],
+    force=True,
+)
+
+if __name__ == "__main__":
+    bot = MainLoop()
+    bot.run()

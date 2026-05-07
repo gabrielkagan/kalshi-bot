@@ -64,7 +64,7 @@ class TestDeadCapSymbolsRemoved(unittest.TestCase):
         # taken. We can't easily exercise __init__ without the full
         # client/state setup, so we grep the source instead — same
         # intent as a structural test.
-        with open(bot._impl.__file__) as f:
+        with open(bot.__file__) as f:
             src = f.read()
         self.assertNotIn(
             "_active_taker_count", src,

@@ -431,12 +431,12 @@ class TestHighPriceStcGateSite_AstGuards(unittest.TestCase):
 
     Adversarial review A7: helper unit tests don't catch wiring bugs (wrong indent,
     missing continue, wrong condition order). These guards check the gate site
-    structural invariants by parsing bot/_impl.py.
+    structural invariants by parsing bot.py.
     """
 
     @classmethod
     def setUpClass(cls):
-        bot_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+        bot_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
         with open(bot_path) as f:
             cls.bot_source = f.read()
 
@@ -477,20 +477,20 @@ class TestHighPriceStcGateSite_AstGuards(unittest.TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestBleederStringIntegrityCheck(unittest.TestCase):
-    """Guards against silent gate breakage from strategy renames in bot/_impl.py.
+    """Guards against silent gate breakage from strategy renames in bot.py.
 
     Adversarial review A1: BLEEDER_STRATEGIES is duck-typed against
     candidate.strategy. If decided_t2_z2 gets renamed in scan() without updating
-    the constant, the gate silently no-ops. The startup validator greps bot/_impl.py
+    the constant, the gate silently no-ops. The startup validator greps bot.py
     source and logs HPSB_BLEEDER_STRINGS_MISSING if any bleeder is unreferenced.
     """
 
     def test_no_bleeders_missing_at_startup(self):
         """At repo HEAD, every bleeder in BLEEDER_STRATEGIES must exist as a
-        string literal somewhere in bot/_impl.py. If not, a strategy was renamed and
+        string literal somewhere in bot.py. If not, a strategy was renamed and
         the gate is silently broken."""
         self.assertEqual([], _HPSB_MISSING_BLEEDERS,
-                         "Bleeder strategy strings missing from bot/_impl.py source — "
+                         "Bleeder strategy strings missing from bot.py source — "
                          "gate will silently no-op for these. See HPSB_BLEEDER_STRINGS_MISSING "
                          "log line. Either restore the strategy string assignment OR "
                          "update HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES.")
@@ -515,7 +515,7 @@ class TestBleederValidatorQuoteStyles(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        bot_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+        bot_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
         with open(bot_path) as f:
             cls.bot_source = f.read()
 
@@ -540,12 +540,12 @@ class TestSideConventionInvariant(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        bot_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+        bot_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
         with open(bot_path) as f:
             cls.bot_source = f.read()
 
     def test_no_side_explicitly_tagged_in_source(self):
-        """At least one `"side": "no"` must appear in bot/_impl.py (NO-side scan path)."""
+        """At least one `"side": "no"` must appear in bot.py (NO-side scan path)."""
         self.assertIn('"side": "no"', self.bot_source,
                       "NO-side path missing — gate's default-yes assumption no longer safe")
 

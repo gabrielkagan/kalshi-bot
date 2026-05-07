@@ -16,18 +16,18 @@ Push to main and verify the bot is running correctly on VPS after auto-deploy.
 
 1. **Syntax check**:
    ```bash
-   python3 -c "import ast; ast.parse(open('bot/_impl.py').read())"
+   python3 -c "import ast; ast.parse(open('bot.py').read())"
    ```
 
 2. **Verify critical trading constants unchanged** (unless the change IS a constant change):
    ```bash
-   grep -n "^OBSERVATION_MODE\|^MAX_SECONDS_BEFORE_CLOSE\|^MIN_ENTRY_PRICE\|^MAX_ENTRY_PRICE\|^HOURLY_OBSERVATION_ONLY\|^SPX_HOURLY_OBSERVATION_ONLY\|^WEATHER_OBSERVATION_ONLY" bot/_impl.py
+   grep -n "^OBSERVATION_MODE\|^MAX_SECONDS_BEFORE_CLOSE\|^MIN_ENTRY_PRICE\|^MAX_ENTRY_PRICE\|^HOURLY_OBSERVATION_ONLY\|^SPX_HOURLY_OBSERVATION_ONLY\|^WEATHER_OBSERVATION_ONLY" bot.py
    ```
    Expected: OBSERVATION_MODE=False, MIN_ENTRY_PRICE=80, MAX_ENTRY_PRICE=99, MAX_SECONDS_BEFORE_CLOSE=900, all observation modes True.
 
-3. **If any constant changed in bot/_impl.py**: grep the constant name across ALL files, especially `market_config.py`. Mismatch = crash loop on VPS.
+3. **If any constant changed in bot.py**: grep the constant name across ALL files, especially `market_config.py`. Mismatch = crash loop on VPS.
    ```bash
-   grep -rn "CONSTANT_NAME" bot/_impl.py market_config.py dashboard_snapshot.py
+   grep -rn "CONSTANT_NAME" bot.py market_config.py dashboard_snapshot.py
    ```
 
 4. **If any function signature changed**: grep all call sites and verify callers pass new params.
@@ -154,7 +154,7 @@ Bot is trading correctly but something ancillary is broken. No need to stop the 
 | GitHub Actions deploy fails | Check: `gh run list --limit 1`. Show the failure reason. The VPS still has the old code — no damage done. Fix and re-push. |
 | VPS unreachable after push | Code was pushed but can't verify. Wait 2 minutes, retry SSH. If still unreachable, check DigitalOcean console. The deploy script on VPS will auto-pull on next boot. |
 | Commit hash doesn't match after 60s | Deploy script may have failed. SSH in and check: `cd ~/kalshi-bot-repo && git status && git log --oneline -1`. May need manual `git pull`. |
-| Bot starts but shows `validate_market_configs` assertion error | A constant was changed in bot/_impl.py but not in market_config.py. This is a Severity 1 crash loop — follow rollback procedure immediately. |
+| Bot starts but shows `validate_market_configs` assertion error | A constant was changed in bot.py but not in market_config.py. This is a Severity 1 crash loop — follow rollback procedure immediately. |
 | Tests pass locally but bot crashes on VPS | Likely a missing dependency or environment difference. Check the error in logs. Common: missing pip package in venv, different Python version, missing .env variable. |
 
 ## IMPORTANT

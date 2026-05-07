@@ -15,7 +15,7 @@
 > the inline topic list in the root breadcrumb keeps the rules
 > discoverable for any agent that reads only `CLAUDE.md`.
 
-These rules apply to `bot/_impl.py` and the engine modules
+These rules apply to `bot.py` and the engine modules
 (`spx_engine.py`, `weather_engine.py`, `sports_engine.py`,
 `fifteenm_shadow.py`, `analyst.py`). The first seven sections
 (Threading, cal_mlp four-site, Cell-block, SQLite, `_shadow_diag`,
@@ -26,16 +26,16 @@ runtime, not when running audits or working in `tests/` /
 reach beyond `bot/` and is duplicated as a one-liner in
 `scripts/CLAUDE.md`. The trailing **Workflows** section includes
 prose long-forms of cross-cutting skills (`/investigate`, `/audit`,
-`/deploy`) that route through bot/_impl.py state; the canonical surface
+`/deploy`) that route through bot.py state; the canonical surface
 for those is the matching skill, and this section is a backup
 readable here for agents working inside `bot/`.
 
 ## Threading + numerical libraries (sacred ordering)
 
-- **Don't import torch directly in `bot/_impl.py`.** `cal_mlp` is the
+- **Don't import torch directly in `bot.py`.** `cal_mlp` is the
   single torch entry point via `scripts/cal_mlp/integration.py`,
   which constrains threads at module-import time.
-- **`import _thread_env` must remain the FIRST import in `bot/_impl.py`.**
+- **`import _thread_env` must remain the FIRST import in `bot.py`.**
   numpy/scipy C extensions cache OpenBLAS thread count at load time,
   so `OMP_NUM_THREADS=1` has to be in `os.environ` before they
   import. Direct `import torch` or any reorder defeats the
@@ -43,7 +43,7 @@ readable here for agents working inside `bot/`.
   loop ballooned to 7.75s, 0 candidates in 5 min) →
   `kb/failures/cal-mlp-torch-thread-contention-apr29.md`. AST
   regression:
-  `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_impl`.
+  `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_py`.
 
 ## cal_mlp feature transforms (four-site lock-step)
 
@@ -133,7 +133,7 @@ assignments: grep every `window.get("product_type")` in `scan()`. The
 two sides must stay in sync — a new product_type that scan() doesn't
 know about silently drops the window.
 
-## Workflows (bot/_impl.py changes)
+## Workflows (bot.py changes)
 
 ### Add a shadow strategy
 1. Shadow flag constant (e.g. `NEW_FEATURE_SHADOW = True`).
@@ -161,7 +161,7 @@ know about silently drops the window.
 
 ### Deploy a change (the long form behind /deploy)
 1. Make the edit.
-2. Syntax-check `bot/_impl.py` (`make ast-check`).
+2. Syntax-check `bot.py` (`make ast-check`).
 3. Grep call sites if signatures changed; grep constants across files.
 4. Present a change summary — wait for approval.
 5. `git add` + `commit` + `push` (triggers auto-deploy).

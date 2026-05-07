@@ -1,9 +1,9 @@
-"""Pure-math model classes extracted from bot/_impl.py.
+"""Pure-math model classes extracted from bot.py.
 
 These classes have zero side effects (no API calls, no DB, no websockets).
 They depend only on config.py constants and standard library + scipy.
 
-bot/_impl.py imports these via `from models import ...` so runtime behavior
+bot.py imports these via `from models import ...` so runtime behavior
 is unchanged.
 """
 

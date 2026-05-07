@@ -36,7 +36,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 
 
 def _find_tracker_tick() -> ast.FunctionDef:
@@ -52,7 +52,7 @@ def _find_tracker_tick() -> ast.FunctionDef:
                         and node.name == "tick"):
                     return node
     raise AssertionError(
-        "SettlementTracker.tick not found in bot/_impl.py")
+        "SettlementTracker.tick not found in bot.py")
 
 
 class TestTrackerTickIsThreaded(unittest.TestCase):

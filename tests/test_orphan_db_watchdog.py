@@ -70,7 +70,7 @@ def test_orphan_watchdog_detects_non_bot_pid_holding_db(monkeypatch, tmp_path):
         bot, "_get_pid_cmdline",
         lambda pid: (
             "venv/bin/python3 scripts/cryptocompare_news_backfill.py "
-            "--db state.db" if pid == orphan_pid else "python3 -m bot"
+            "--db state.db" if pid == orphan_pid else "bot.py"
         ),
     )
     # C-9 fix: liveness probe expects the orphan PID to be alive.
@@ -307,7 +307,7 @@ def test_orphan_watchdog_invoked_on_main_loop_startup():
     EARLY in startup (before the 7-day soak begins on each new bot
     process). Verified via AST scan to avoid spinning up a real bot."""
     import ast
-    bot_py = (PROJECT_ROOT / "bot/_impl.py").read_text()
+    bot_py = (PROJECT_ROOT / "bot.py").read_text()
     tree = ast.parse(bot_py)
 
     main_loop_cls = None

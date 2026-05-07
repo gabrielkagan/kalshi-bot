@@ -3,9 +3,9 @@
 Make every silent-continue in scan() observable. Three known smoking guns
 caused recurring 15M scan-silence outages over Apr 24-25:
 
-  - bot/_impl.py:8793  `if not prob_result.tradeable:` non-z_score reason
-  - bot/_impl.py:9512  `if not prob_with_market.tradeable:` non-z_score reason
-  - bot/_impl.py:8832  `low_probability` for 15M (JSONL only, no DB row)
+  - bot.py:8793  `if not prob_result.tradeable:` non-z_score reason
+  - bot.py:9512  `if not prob_with_market.tradeable:` non-z_score reason
+  - bot.py:8832  `low_probability` for 15M (JSONL only, no DB row)
 
 Each path silently continues with no `insert_rejection` row, leaving
 the scan-productive watchdog blind (it only counts DB rows). Apr 24
@@ -36,7 +36,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 
 
 def _scan_fn():
@@ -279,7 +279,7 @@ class TestRejectionReasonsTaxonomyExpanded(unittest.TestCase):
             or "invalid_inputs" in src
             or 'rejection_reason=reason' in src.replace('\n', ''),
             "Expected at least one new descriptive rejection reason "
-            "in bot/_impl.py corresponding to the previously-silent paths. "
+            "in bot.py corresponding to the previously-silent paths. "
             "Suggested values: 'low_probability', 'tradeable_false', "
             "'invalid_inputs'. The existing 'z_score'/'refusing'/"
             "'no_orderbook'/'no_best_ask' reasons are not enough — "
@@ -290,9 +290,9 @@ class TestRejectionReasonsTaxonomyExpanded(unittest.TestCase):
 class TestRound1AdditionalSilentPaths(unittest.TestCase):
     """Round 1 review surfaced 3 more silent continues missed by the
     initial fix:
-      - bot/_impl.py:8639  `if threshold is None: continue`
-      - bot/_impl.py:8689  hourly/spx/weather NBBO out-of-range
-      - bot/_impl.py:8711  weather `_wx_prob is None`
+      - bot.py:8639  `if threshold is None: continue`
+      - bot.py:8689  hourly/spx/weather NBBO out-of-range
+      - bot.py:8711  weather `_wx_prob is None`
 
     All three now write `insert_rejection`. Pin the new reason
     strings so a future revert-to-silent shows up in tests."""

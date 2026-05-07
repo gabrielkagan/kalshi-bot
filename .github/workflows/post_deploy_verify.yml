@@ -102,7 +102,7 @@ jobs:
             # soak period — escalate to --strict-all after known-green.
             echo "[5/5] Running postdeploy_verify.py..."
             cd ~/kalshi-bot-repo
-            venv/bin/python3 scripts/postdeploy_verify.py --db state.db --env .env --bot-py bot/_impl.py
+            venv/bin/python3 scripts/postdeploy_verify.py --db state.db --env .env --bot-py bot.py
             echo "  OK: postdeploy_verify completed"
 
             echo ""

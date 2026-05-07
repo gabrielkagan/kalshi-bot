@@ -32,7 +32,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 
 
 def _make_executor():
@@ -60,7 +60,7 @@ class TestConstantDefined(unittest.TestCase):
             src = f.read()
         self.assertIn(
             "IOC_DRIFT_CHECK_REST_WINDOW_S", src,
-            "bot/_impl.py must define IOC_DRIFT_CHECK_REST_WINDOW_S as a "
+            "bot.py must define IOC_DRIFT_CHECK_REST_WINDOW_S as a "
             "module-level constant for the rolling-window REST "
             "depth smoothing on the IOC drift check.")
 

@@ -1,6 +1,6 @@
 """Cross-File Call-Site Integrity Tests.
 
-Failure mode: Function signature changed in bot/_impl.py but callers in other files still
+Failure mode: Function signature changed in bot.py but callers in other files still
 use old signature -> TypeError at runtime.
 Past incident: CLAUDE.md rule about grepping all call sites after signature changes.
 
@@ -20,7 +20,7 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-# Files that import from bot/_impl.py and must be checked for call-site correctness
+# Files that import from bot.py and must be checked for call-site correctness
 BOT_IMPORTERS = [
     "market_config.py",
     "dashboard_snapshot.py",
@@ -36,7 +36,7 @@ ENGINE_FILES = [
 
 
 class TestPublicAPIImports:
-    """Modules that import from bot/_impl.py can do so without errors."""
+    """Modules that import from bot.py can do so without errors."""
 
     def test_market_config_imports(self):
         """market_config.py can import from bot without errors."""
@@ -46,7 +46,7 @@ class TestPublicAPIImports:
         assert hasattr(market_config, "validate_market_configs")
 
     def test_bot_exports_key_functions(self):
-        """bot/_impl.py exports all functions that other modules depend on."""
+        """bot.py exports all functions that other modules depend on."""
         import bot
         required_attrs = [
             "StateManager",
@@ -61,10 +61,10 @@ class TestPublicAPIImports:
             "get_min_edge",
         ]
         for attr in required_attrs:
-            assert hasattr(bot, attr), f"bot/_impl.py missing expected export: {attr}"
+            assert hasattr(bot, attr), f"bot.py missing expected export: {attr}"
 
     def test_bot_exports_hourly_constants(self):
-        """bot/_impl.py exports all hourly constants that market_config.py validates against."""
+        """bot.py exports all hourly constants that market_config.py validates against."""
         import bot
         hourly_constants = [
             "HOURLY_OBSERVATION_ONLY",
@@ -83,10 +83,10 @@ class TestPublicAPIImports:
             "HOURLY_MAX_WINDOW_RISK",
         ]
         for const in hourly_constants:
-            assert hasattr(bot, const), f"bot/_impl.py missing hourly constant: {const}"
+            assert hasattr(bot, const), f"bot.py missing hourly constant: {const}"
 
     def test_bot_exports_spx_constants(self):
-        """bot/_impl.py exports all SPX constants that market_config.py validates against."""
+        """bot.py exports all SPX constants that market_config.py validates against."""
         import bot
         spx_constants = [
             "SPX_HOURLY_OBSERVATION_ONLY",
@@ -104,10 +104,10 @@ class TestPublicAPIImports:
             "SPX_HOURLY_MAX_WINDOW_RISK",
         ]
         for const in spx_constants:
-            assert hasattr(bot, const), f"bot/_impl.py missing SPX constant: {const}"
+            assert hasattr(bot, const), f"bot.py missing SPX constant: {const}"
 
     def test_bot_exports_weather_constants(self):
-        """bot/_impl.py exports all weather constants that market_config.py validates against."""
+        """bot.py exports all weather constants that market_config.py validates against."""
         import bot
         weather_constants = [
             "WEATHER_OBSERVATION_ONLY",
@@ -120,7 +120,7 @@ class TestPublicAPIImports:
             "WEATHER_MARKET_BLEND_W",
         ]
         for const in weather_constants:
-            assert hasattr(bot, const), f"bot/_impl.py missing weather constant: {const}"
+            assert hasattr(bot, const), f"bot.py missing weather constant: {const}"
 
     def test_bot_exports_sports_constant(self):
         import bot
@@ -179,9 +179,9 @@ class TestEvaluatedOpportunitiesTierContract:
     """
 
     # Files permitted to issue their own INSERT statements against
-    # evaluated_opportunities. bot/_impl.py is the StateManager home, so its raw
+    # evaluated_opportunities. bot.py is the StateManager home, so its raw
     # INSERT is the canonical auto-populating one.
-    ALLOWED_RAW_INSERTERS = {"bot/_impl.py", "sports_engine.py"}
+    ALLOWED_RAW_INSERTERS = {"bot.py", "sports_engine.py"}
 
     # Proxy for "all Tier 4 columns" — if this one appears in the INSERT
     # column list, the author at least noticed the contract exists. The
@@ -227,7 +227,7 @@ class TestEvaluatedOpportunitiesTierContract:
             with open(fpath) as f:
                 source = f.read()
             if not self.INSERT_PATTERN.search(source):
-                continue  # e.g., bot/_impl.py could change, not required
+                continue  # e.g., bot.py could change, not required
             assert self.REQUIRED_TIER_4_COLUMN in source, (
                 f"{fname} has a raw INSERT INTO evaluated_opportunities but "
                 f"does not reference {self.REQUIRED_TIER_4_COLUMN} — Tier 4 "
@@ -272,9 +272,9 @@ class TestNoBareShadowVariables:
     """
 
     def test_shadow_engine_calls_use_dict_lookups(self):
-        """In bot/_impl.py, shadow engine calls should use vol_est.get() or _shadow_diag[],
+        """In bot.py, shadow engine calls should use vol_est.get() or _shadow_diag[],
         not bare variable names that might not exist as locals."""
-        bot_path = os.path.join(PROJECT_ROOT, "bot/_impl.py")
+        bot_path = os.path.join(PROJECT_ROOT, "bot.py")
         with open(bot_path) as f:
             source = f.read()
 
@@ -288,7 +288,7 @@ class TestNoBareShadowVariables:
 
 
 class TestDashboardSnapshotImports:
-    """dashboard_snapshot.py dynamic imports must reference valid bot/_impl.py attributes."""
+    """dashboard_snapshot.py dynamic imports must reference valid bot.py attributes."""
 
     def test_dashboard_snapshot_syntax(self):
         """dashboard_snapshot.py parses without errors."""

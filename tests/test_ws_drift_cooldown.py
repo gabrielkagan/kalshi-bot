@@ -192,7 +192,7 @@ class TestGetOrderbookCachedWithFlag(unittest.TestCase):
 
 
 class TestScanSilentBailFlagsDriftedTicker(unittest.TestCase):
-    """Regression: the scan silent-bail paths (bot/_impl.py ~8438 `no_orderbook`
+    """Regression: the scan silent-bail paths (bot.py ~8438 `no_orderbook`
     and ~8487 `no_best_ask`) must call `self.flag_ticker_drifted(ticker)`
     before falling into the insert_rejection + continue block.
     Without this wiring, the cooldown dict stays empty and the bypass
@@ -202,7 +202,7 @@ class TestScanSilentBailFlagsDriftedTicker(unittest.TestCase):
         import ast
         bot_py = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "bot/_impl.py")
+            "bot.py")
         with open(bot_py) as f:
             tree = ast.parse(f.read())
         scan = None

@@ -22,7 +22,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 
 
 def _find_tick_method() -> ast.FunctionDef:
@@ -34,7 +34,7 @@ def _find_tick_method() -> ast.FunctionDef:
                 if (isinstance(node, ast.FunctionDef)
                         and node.name == "_tick"):
                     return node
-    raise AssertionError("_tick() method not found in bot/_impl.py")
+    raise AssertionError("_tick() method not found in bot.py")
 
 
 class TestTickHasTimingInstrumentation(unittest.TestCase):

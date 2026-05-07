@@ -21,7 +21,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 
 
 def _read_bot():
@@ -87,8 +87,8 @@ class TestTMConstants(unittest.TestCase):
         """Lower prices (wider margin) should produce more contracts."""
         import importlib, sys
         # Import the function
-        spec = importlib.util.spec_from_file_location("bot._impl", "bot/_impl.py")
-        # Can't import bot/_impl.py directly (side effects), so verify via constants
+        spec = importlib.util.spec_from_file_location("bot", "bot.py")
+        # Can't import bot.py directly (side effects), so verify via constants
         base = _extract_constant(self.source, "TM_BASE_CONTRACTS")
         # At 96c (margin=4) vs 99c (margin=1), base sizing should be 4:1
         self.assertEqual(base, 100, "TM_BASE_CONTRACTS should be 100")

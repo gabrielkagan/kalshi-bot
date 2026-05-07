@@ -188,7 +188,7 @@ class TestIOCSubmitDiagnosticWiring(unittest.TestCase):
         """`_submit_taker` must reference `_compute_ladder_diag`
         (we use it for the IOC_SUBMIT_LADDER_DIAG log)."""
         import ast
-        with open(bot._impl.__file__) as f:
+        with open(bot.__file__) as f:
             tree = ast.parse(f.read())
         for cls in ast.walk(tree):
             if (isinstance(cls, ast.ClassDef)

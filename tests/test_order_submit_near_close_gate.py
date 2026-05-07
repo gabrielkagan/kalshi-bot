@@ -220,7 +220,7 @@ class TestConstantExists(unittest.TestCase):
         operator can disable the gate by setting MIN_ORDER_SUBMIT_STC_S=0
         on the VPS without a redeploy. Pin the env-override pattern in
         source so it survives refactors."""
-        with open(bot._impl.__file__, "r") as f:
+        with open(bot.__file__, "r") as f:
             src = f.read()
         self.assertIn(
             'os.environ.get("MIN_ORDER_SUBMIT_STC_S"', src,

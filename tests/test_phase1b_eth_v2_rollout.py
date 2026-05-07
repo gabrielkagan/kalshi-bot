@@ -311,9 +311,7 @@ def test_verifier_cli_fails_on_missing_bundle(tmp_path, monkeypatch):
     verifier exits non-zero. Uses KALSHI_PROJECT_ROOT to pin the root
     deterministically (no upward filesystem walk that could hit the real
     repo on shared CI)."""
-    # Bit 2.1a: phase1b_verify_eth_v2.py marker switched from bot.py
-    # → pyproject.toml. Write a syntactically-valid TOML stub here.
-    (tmp_path / "pyproject.toml").write_text('[tool]\nname = "fake"\n')
+    (tmp_path / "bot.py").write_text("# fake bot.py for project_root discovery\n")
     (tmp_path / "market_config.py").write_text(
         "from dataclasses import dataclass\n"
         "@dataclass\n"
@@ -508,8 +506,7 @@ def test_project_root_resolves_through_symlink(tmp_path):
     verifier discovers the same project_root regardless of whether it
     was invoked via a direct path or a symlink. Important if the
     operator ever places the verifier behind a symlinked alias on VPS."""
-    # Bit 2.1a: marker is pyproject.toml (not bot.py).
-    (tmp_path / "pyproject.toml").write_text('[tool]\nname = "fake"\n')
+    (tmp_path / "bot.py").write_text("# fake")
     (tmp_path / "market_config.py").write_text(
         "from dataclasses import dataclass\n"
         "@dataclass\n"

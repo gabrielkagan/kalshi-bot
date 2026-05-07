@@ -188,7 +188,7 @@ def test_prob_breakeven_gap_uses_calibrated_not_raw_prob():
     from calibrated_prob (post-CalEngine), NOT raw_prob.
 
     Training: extract_data.py reads `prob_breakeven_gap` from the DB column
-    populated via bot/_impl.py:1513 `compute_derived_features(calibrated_prob=...)`.
+    populated via bot.py:1513 `compute_derived_features(calibrated_prob=...)`.
     Therefore serving paths must match the same formula or the model is
     served features in a different distribution than training.
 
@@ -215,7 +215,7 @@ def test_prob_breakeven_gap_uses_calibrated_not_raw_prob():
     assert abs(actual - expected_cb_based) < 1e-9, (
         f"prob_breakeven_gap={actual} should match calibrated-based "
         f"({expected_cb_based}), got raw-based ({expected_raw_based})? "
-        f"Train/serve skew regression — see bot/_impl.py:1513 + integration.py:1196."
+        f"Train/serve skew regression — see bot.py:1513 + integration.py:1196."
     )
 
 
@@ -256,9 +256,9 @@ def test_bot_py_passes_same_prob_value_to_gate_and_evaluation_insert():
     AST scan: find both call expressions, extract the `calibrated_prob=`
     keyword argument value, assert they're textually identical.
     """
-    bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
+    bot_py = Path(__file__).resolve().parents[1] / 'bot.py'
     if not bot_py.exists():
-        pytest.skip('bot/_impl.py not present')
+        pytest.skip('bot.py not present')
     src = bot_py.read_text()
 
     # The TM-96 should_block_tm96 call: must pass calibrated_prob=<X>
@@ -274,7 +274,7 @@ def test_bot_py_passes_same_prob_value_to_gate_and_evaluation_insert():
     # Skip the 'from integration import' line if encountered first.
     while gate_start != -1 and 'import' in src[max(0, gate_start - 80):gate_start]:
         gate_start = src.find('should_block_tm96(', gate_start + 1)
-    assert gate_start != -1, "should_block_tm96 call site not found in bot/_impl.py"
+    assert gate_start != -1, "should_block_tm96 call site not found in bot.py"
     call_window = src[gate_start:gate_start + 1500]
     cb_match = re.search(
         r'calibrated_prob\s*=\s*([a-zA-Z_][\w\.]*)',
@@ -398,13 +398,13 @@ def test_should_block_tm96_uses_calibrated_not_raw_prob():
 
 
 def test_bot_py_compute_derived_uses_calibrated_prob():
-    """compute_derived_features in bot/_impl.py:1472+ MUST compute breakeven_gap
+    """compute_derived_features in bot.py:1472+ MUST compute breakeven_gap
     from calibrated_prob. This is the source of truth — any drift here
     silently corrupts every prob_breakeven_gap row in evaluated_opportunities,
     invalidating the training data for v2/v3.
     """
     import re
-    bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
+    bot_py = Path(__file__).resolve().parents[1] / 'bot.py'
     src = bot_py.read_text()
     # Find the compute_derived_features body around the gap formula.
     # Must compute as: gap = calibrated_prob - (market_price_cents / 100.0)
@@ -412,7 +412,7 @@ def test_bot_py_compute_derived_uses_calibrated_prob():
         r'def\s+compute_derived_features\b.*?return\s*\{',
         src, flags=re.DOTALL,
     )
-    assert m, "compute_derived_features not found in bot/_impl.py"
+    assert m, "compute_derived_features not found in bot.py"
     body = m.group(0)
     assert 'gap = calibrated_prob - (market_price_cents / 100.0)' in body, (
         "compute_derived_features must use the canonical formula "
@@ -422,17 +422,17 @@ def test_bot_py_compute_derived_uses_calibrated_prob():
 
 
 def test_bot_py_tm96_intercept_calls_gate():
-    """AST-style regression: bot/_impl.py's TM-96 intercept block must call
+    """AST-style regression: bot.py's TM-96 intercept block must call
     `should_block_tm96` (or equivalent gate function name). If the gate
     isn't wired at the decision point, env-flag has no effect."""
-    bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
+    bot_py = Path(__file__).resolve().parents[1] / 'bot.py'
     if not bot_py.exists():
-        pytest.skip('bot/_impl.py not present')
+        pytest.skip('bot.py not present')
     src = bot_py.read_text()
     # The intercept block sets `_tm_intercepted = True` then computes size.
     # Gate must be invoked between intercept-true and append.
     assert 'should_block_tm96' in src or 'tm96_should_block' in src, (
-        "bot/_impl.py TM-96 intercept must call cal_mlp gate function "
+        "bot.py TM-96 intercept must call cal_mlp gate function "
         "`should_block_tm96` (or `tm96_should_block`)"
     )
 
@@ -446,20 +446,20 @@ def test_tm96_gate_blocked_trade_initialized_at_outer_scope():
     site at the `if _tm96_gate_blocked_trade: continue` line with the
     local UNBOUND → UnboundLocalError → scan iteration crash.
 
-    Inspects bot/_impl.py source to verify the init line is at the same column
+    Inspects bot.py source to verify the init line is at the same column
     as `_tm_intercepted = False` and appears BEFORE the
     `if (TERMINAL_MOMENTUM_ENABLED` guard.
     """
-    bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
+    bot_py = Path(__file__).resolve().parents[1] / 'bot.py'
     if not bot_py.exists():
-        pytest.skip('bot/_impl.py not present')
+        pytest.skip('bot.py not present')
     src = bot_py.read_text()
     # Find both lines and capture leading whitespace.
     import re
     intercept_match = re.search(r'^([ \t]*)_tm_intercepted = False[ ]*(?:#.*)?$', src, re.MULTILINE)
     gate_match = re.search(r'^([ \t]*)_tm96_gate_blocked_trade = False[ ]*(?:#.*)?$', src, re.MULTILINE)
-    assert intercept_match, "`_tm_intercepted = False` not found in bot/_impl.py"
-    assert gate_match, "`_tm96_gate_blocked_trade = False` not found in bot/_impl.py"
+    assert intercept_match, "`_tm_intercepted = False` not found in bot.py"
+    assert gate_match, "`_tm96_gate_blocked_trade = False` not found in bot.py"
     assert intercept_match.group(1) == gate_match.group(1), (
         f"_tm96_gate_blocked_trade init at column {len(gate_match.group(1))} "
         f"must match _tm_intercepted column {len(intercept_match.group(1))} "
@@ -476,11 +476,11 @@ def test_bot_py_has_tm96_gate_env_flag():
     """The gate must be env-flag controlled so an operator can flip it
     off in <30s if cal_mlp starts over-blocking. Default OFF (shadow-only)
     until validated."""
-    bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
+    bot_py = Path(__file__).resolve().parents[1] / 'bot.py'
     if not bot_py.exists():
-        pytest.skip('bot/_impl.py not present')
+        pytest.skip('bot.py not present')
     src = bot_py.read_text()
     assert 'TM96_CALMLP_GATE_ENABLED' in src, (
-        "Define `TM96_CALMLP_GATE_ENABLED` env-controlled flag in bot/_impl.py "
+        "Define `TM96_CALMLP_GATE_ENABLED` env-controlled flag in bot.py "
         "for safe rollback."
     )

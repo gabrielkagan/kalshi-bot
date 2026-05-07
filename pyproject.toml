@@ -88,7 +88,7 @@ addopts = ["-v", "--tb=short", "--ignore=venv"]
 
 [tool.ruff]
 target-version = "py39"
-# Don't fight existing line lengths in bot/_impl.py / dashboards. Sprint 1 is
+# Don't fight existing line lengths in bot.py / dashboards. Sprint 1 is
 # "ruff runs and reports", not "ruff is clean".
 line-length = 120
 # Patterns are unanchored — they match a directory of that name at any
@@ -118,7 +118,7 @@ select = ["E", "F"]
 ignore = []
 # Sprint 1 spec: "don't fix yet". Empty fixable list neutralizes
 # `ruff check . --fix` so a contributor (or IDE-on-save) can't silently
-# mutate bot/_impl.py, which is sacred per CLAUDE.md. Future sprints can flip
+# mutate bot.py, which is sacred per CLAUDE.md. Future sprints can flip
 # this once targeted cleanup is in scope.
 fixable = []
 

@@ -93,8 +93,8 @@ def _make_scanner_with_eval_age(
     # deterministically. 30 min uptime is past the 15-min floor.
     s._silence_alert_process_start_ts = _t.time() - (uptime_minutes * 60)
     # Heartbeat: simulates `_scan_15m_iter_heartbeat_ts` set by scan()
-    # in the per-window loop body (~bot/_impl.py:9909). Initialized to 0.0
-    # in `OpportunityScanner.__init__` (~bot/_impl.py:9087). Default 0.0
+    # in the per-window loop body (~bot.py:9909). Initialized to 0.0
+    # in `OpportunityScanner.__init__` (~bot.py:9087). Default 0.0
     # here matches "scan body has not iterated a 15M window since
     # process start." Tests that need a fresh heartbeat set it
     # explicitly.
@@ -388,7 +388,7 @@ class TestSilent15MAlertSilentBailDetection(unittest.TestCase):
 
     def test_threshold_unparsable_flood_still_alerts(self):
         """`threshold_unparsable` is a third silent-bail reason
-        (bot/_impl.py:9997). It indicates the scanner couldn't parse the
+        (bot.py:9997). It indicates the scanner couldn't parse the
         strike from the ticker — bail-shaped, not healthy. If Kalshi
         renames the ticker format, all 4 active 15M tickers hit this
         before dedup caps each one (`_eval_opp_seen`); 3 rows is the
@@ -814,7 +814,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
         """Adversarial round-2 C9: warn-flag must reset after a
         successful query. Without this, a transient failure followed
         by recovery leaves the flag stuck → next failure not logged.
-        Mirrors count query's reset-on-success at bot/_impl.py:18494-18496.
+        Mirrors count query's reset-on-success at bot.py:18494-18496.
         """
         s = _make_scanner_with_eval_age(
             age_minutes=30, rejection_age_minutes=2,
@@ -1443,7 +1443,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
     def test_partition_invariant_holds_at_runtime(self):
         """Adversarial round-4 C4: the partition + disjointness
         invariants moved from class-body assertions (which would
-        crash bot/_impl.py at import on a developer mistake → systemd
+        crash bot.py at import on a developer mistake → systemd
         backoff loop with no Telegram) to test-only enforcement.
         This test owns the contract.
 
@@ -1527,7 +1527,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
 
 
 class TestBailReasonConstantContract(unittest.TestCase):
-    """AST-walk audit of bot/_impl.py: enumerate every literal-string
+    """AST-walk audit of bot.py: enumerate every literal-string
     rejection_reason passed to `insert_rejection(...)`, classify each
     as bail or healthy, and require every literal to be classified.
 
@@ -1535,9 +1535,9 @@ class TestBailReasonConstantContract(unittest.TestCase):
     "constant equals hardcoded duplicate" test was theater (R3 [A2]).
     This walks the source.
 
-    Maintenance: when adding a new literal rejection_reason in bot/_impl.py,
+    Maintenance: when adding a new literal rejection_reason in bot.py,
     add it to either KNOWN_BAIL_REASONS (and to
-    `_BAIL_REJECTION_REASONS` in bot/_impl.py — same commit) or
+    `_BAIL_REJECTION_REASONS` in bot.py — same commit) or
     KNOWN_HEALTHY_REASONS in this test. Dynamic-variable reasons
     (e.g., `reason = prob_result.get("reason")`) are skipped because
     AST cannot resolve their string values; those go through the
@@ -1545,7 +1545,7 @@ class TestBailReasonConstantContract(unittest.TestCase):
     appropriate (probability-engine refusals are healthy).
 
     RENAME procedure (e.g., `no_orderbook` → `nbbo_unavailable`):
-    update _BAIL_REJECTION_REASONS in bot/_impl.py, KNOWN_BAIL_REASONS in
+    update _BAIL_REJECTION_REASONS in bot.py, KNOWN_BAIL_REASONS in
     this test, and the call-site string ALL in the same commit. The
     `unused_known` assertion below catches the partially-applied case.
 
@@ -1568,7 +1568,7 @@ class TestBailReasonConstantContract(unittest.TestCase):
     }
 
     def test_bail_constant_matches_curated_set(self):
-        """`_BAIL_REJECTION_REASONS` in bot/_impl.py must equal this test's
+        """`_BAIL_REJECTION_REASONS` in bot.py must equal this test's
         KNOWN_BAIL_REASONS. Update both in the same commit."""
         actual = set(bot.OpportunityScanner._BAIL_REJECTION_REASONS)
         self.assertEqual(
@@ -1576,23 +1576,23 @@ class TestBailReasonConstantContract(unittest.TestCase):
             "_BAIL_REJECTION_REASONS drifted from KNOWN_BAIL_REASONS")
 
     def test_every_literal_reason_in_bot_is_classified(self):
-        """Walk every `insert_rejection(...)` call site in bot/_impl.py,
+        """Walk every `insert_rejection(...)` call site in bot.py,
         extract literal-string reason args (positional 4th or kwarg
         'reason'), and assert each is in KNOWN_BAIL_REASONS ∪
         KNOWN_HEALTHY_REASONS.
 
-        SCOPE — bot/_impl.py only: the silence watchdog filters
+        SCOPE — bot.py only: the silence watchdog filters
         `WHERE ticker LIKE 'KX%15M%'`, and 15M-tickered rejection
-        writes live exclusively in `bot/_impl.py`'s `OpportunityScanner.scan()`.
+        writes live exclusively in `bot.py`'s `OpportunityScanner.scan()`.
         Other engines (weather_engine.py, sports_engine.py, etc.)
         write their own product_type rows under different ticker
         namespaces (KXBTCD-…, KXHIGHNY-…), which the watchdog
         ignores. If a future engine ever writes 'KX*15M%' rejections
-        from outside bot/_impl.py, extend this audit to walk those files
+        from outside bot.py, extend this audit to walk those files
         as well. (R8 audit-scope clarification.)
         """
         bot_path = os.path.join(
-            os.path.dirname(__file__), "..", "bot/_impl.py")
+            os.path.dirname(__file__), "..", "bot.py")
         with open(bot_path) as f:
             tree = ast.parse(f.read())
         literals = set()
@@ -1639,10 +1639,10 @@ class TestBailReasonConstantContract(unittest.TestCase):
         unclassified = literals - known
         self.assertEqual(
             unclassified, set(),
-            f"Unclassified literal rejection_reason values in bot/_impl.py: "
+            f"Unclassified literal rejection_reason values in bot.py: "
             f"{sorted(unclassified)}. Add each to either "
             f"KNOWN_BAIL_REASONS (and to _BAIL_REJECTION_REASONS in "
-            f"bot/_impl.py — same commit) or KNOWN_HEALTHY_REASONS in this "
+            f"bot.py — same commit) or KNOWN_HEALTHY_REASONS in this "
             f"test. Bail = scanner could not produce a probability "
             f"(WS cache drift, no orderbook, unparsable strike). "
             f"Healthy = scanner computed a probability and chose to "
@@ -1655,7 +1655,7 @@ class TestBailReasonConstantContract(unittest.TestCase):
             f"KNOWN reasons not found in any insert_rejection() call "
             f"site: {sorted(unused_known)}. If a reason was removed "
             f"or renamed, drop it from this test (and from "
-            f"_BAIL_REJECTION_REASONS in bot/_impl.py if bail). Stale "
+            f"_BAIL_REJECTION_REASONS in bot.py if bail). Stale "
             f"entries hide drift.")
 
 
@@ -2135,7 +2135,7 @@ class TestSilent15MAlertBailFlood(unittest.TestCase):
 class TestBailReasonsConstantNonEmpty(unittest.TestCase):
     """R3 [A3]: an empty `_BAIL_REJECTION_REASONS` produces SQL
     `NOT IN ()` syntax error → except → silent watchdog disable.
-    The class-scope assert in bot/_impl.py must catch this at module
+    The class-scope assert in bot.py must catch this at module
     import time. Verify the import doesn't break under normal
     conditions."""
 
@@ -2149,7 +2149,7 @@ class TestSilent15MAlertHeartbeatGate(unittest.TestCase):
     after the rapid-resub loop fix shipped, the SILENT_15M alert
     STILL fired at 09:40 UTC despite scan being healthy. Root cause:
     once each (ticker, low_probability_15m) was written at 09:30:45,
-    the `_eval_opp_seen` dedup at bot/_impl.py:10274 suppressed all
+    the `_eval_opp_seen` dedup at bot.py:10274 suppressed all
     subsequent writes. Scan body kept iterating new 0545 windows but
     produced ZERO DB rows for 9.5 min. The DB-only silence watchdog
     saw stale primary timestamps and fired SILENT — exactly the
@@ -2269,7 +2269,7 @@ class TestHeartbeatSetterContract(unittest.TestCase):
 
     def test_heartbeat_setter_exists_in_scan_method(self):
         bot_path = os.path.join(
-            os.path.dirname(__file__), "..", "bot/_impl.py")
+            os.path.dirname(__file__), "..", "bot.py")
         with open(bot_path) as f:
             tree = ast.parse(f.read())
         # Qualify by parent class — `def scan` may exist in multiple
@@ -2289,7 +2289,7 @@ class TestHeartbeatSetterContract(unittest.TestCase):
                 break
         self.assertIsNotNone(
             scan_func,
-            "Could not locate OpportunityScanner.scan in bot/_impl.py")
+            "Could not locate OpportunityScanner.scan in bot.py")
         # Walk scan body for assignments to
         # _scan_15m_iter_heartbeat_ts.
         found = False

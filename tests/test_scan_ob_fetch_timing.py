@@ -9,7 +9,7 @@ synchronous REST orderbook fetch via `_get_orderbook_cached(ticker)`
 on a Kalshi REST timeout/retry path.
 
 This commit adds `SCAN_OB_FETCH_SLOW` timing around the main
-orderbook fetch site (bot/_impl.py ~8547) inside the per-window loop.
+orderbook fetch site (bot.py ~8547) inside the per-window loop.
 Threshold 500ms — well above normal cache hit (<1ms) or healthy
 REST (~200ms), but flags any retry or hung-call behavior.
 
@@ -34,7 +34,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot.py")
 
 
 class TestScanOBFetchTiming(unittest.TestCase):

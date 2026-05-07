@@ -59,7 +59,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 # Module lives at repo root (matches spx_engine, weather_engine pattern
-# — bot/_impl.py imports as a top-level module).
+# — bot.py imports as a top-level module).
 sys.path.insert(0, str(ROOT))
 
 import market_observations_snapshotter as mod  # noqa: E402
@@ -353,7 +353,7 @@ def test_snapshot_excludes_inactive_tickers(tmp_path):
 
 
 def test_snapshot_observation_time_iso8601_with_microseconds(tmp_path):
-    """observation_time must use the same format as bot/_impl.py timestamps
+    """observation_time must use the same format as bot.py timestamps
     ('%Y-%m-%dT%H:%M:%S.%fZ') for lexical comparison consistency."""
     db = tmp_path / "state.db"
     conn = _make_db(db)
@@ -567,7 +567,7 @@ def test_active_tickers_provider_returning_empty_list_is_ok(tmp_path):
 
 
 def test_active_tickers_provider_raising_is_handled(tmp_path):
-    """If active_tickers_provider raises (e.g., bot/_impl.py race during
+    """If active_tickers_provider raises (e.g., bot.py race during
     discovery), the tick must record an error and skip. Not crash."""
     db = tmp_path / "state.db"
     conn = _make_db(db)
@@ -861,7 +861,7 @@ def test_ws_ob_with_malformed_levels_is_resilient(tmp_path):
 
 
 def test_dict_shaped_levels_supported(tmp_path):
-    """Round-2 #2: levels in dict shape (legacy schema fallback bot/_impl.py
+    """Round-2 #2: levels in dict shape (legacy schema fallback bot.py
     supports) must be parsed, not silently NULL'd."""
     db = tmp_path / "state.db"
     conn = _make_db(db)
@@ -916,8 +916,8 @@ def test_negative_retention_days_clamped_to_zero(tmp_path):
 
 def test_ensure_schema_not_called_from_run():
     """Round-2 #6: AST regression. `_run` must NOT call `ensure_schema()`
-    — schema bootstrap belongs in bot/_impl.py main thread, not in the daemon
-    thread. A future refactor that moves it back races the bot/_impl.py ALTER
+    — schema bootstrap belongs in bot.py main thread, not in the daemon
+    thread. A future refactor that moves it back races the bot.py ALTER
     TABLE migrations at startup."""
     import ast
     src = (ROOT / "market_observations_snapshotter.py").read_text()
@@ -939,7 +939,7 @@ def test_ensure_schema_not_called_from_run():
             )
             assert name != "ensure_schema", (
                 "_run calls ensure_schema — schema bootstrap must be in "
-                "bot/_impl.py main thread to avoid racing ALTER TABLE migrations"
+                "bot.py main thread to avoid racing ALTER TABLE migrations"
             )
 
 
@@ -950,7 +950,7 @@ def test_get_all_orderbooks_snapshot_method_exists_in_bot_py():
     drops or renames it, this test surfaces the regression at CI time
     rather than at production deploy."""
     import ast
-    src = (ROOT / "bot/_impl.py").read_text()
+    src = (ROOT / "bot.py").read_text()
     tree = ast.parse(src)
 
     found = False
@@ -966,6 +966,6 @@ def test_get_all_orderbooks_snapshot_method_exists_in_bot_py():
             )
             break
     assert found, (
-        "bot/_impl.py KalshiWebsocketClient is missing get_all_orderbooks_snapshot "
+        "bot.py KalshiWebsocketClient is missing get_all_orderbooks_snapshot "
         "— H-3a snapshotter requires this deep-copy method"
     )
