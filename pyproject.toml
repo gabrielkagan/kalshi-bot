@@ -1,6 +1,7 @@
 # Bit 1.1 of repo modularization plan (kb/decisions/repo-modularization-plan-may05.md).
-# Sprint 1: tooling only — no installable Python code yet. Real `bot/` package
-# lands in Sprint 2 (Bit 2.1); until then this is a metadata-only install.
+# Sprint 1 shipped this file as tooling-only metadata (py-modules+packages
+# explicit-empty). Sprint 2 Bit 2.1a renamed bot.py → bot/_impl.py and 2.1b
+# made the bot/ package installable via [tool.setuptools.packages.find] below.
 
 [build-system]
 requires = ["setuptools>=64", "wheel"]
@@ -46,26 +47,28 @@ ml = [
     "pyarrow",
 ]
 
-[tool.setuptools]
-# Sprint 1 invariant: no installable code. Both lists explicit-empty so
-# setuptools' flat-layout auto-discovery doesn't sweep in tests/, scripts/,
-# kb/, models/, etc. AS PACKAGES (top_level.txt stays empty). They may
-# still land in an sdist's SOURCES.txt as data files; that's fine for
-# Sprint 1 — what matters is that no Python module is importable from a
-# wheel. Sprint 2 (Bit 2.1) creates `bot/` and flips this.
-# Guarded by tests/test_pyproject.py::test_pyproject_no_installable_code_yet.
+# Scope setuptools' flat-layout discovery to the bot/ package only.
+# Without `include`, setuptools >=64 walks the repo root and finds 9 sibling
+# top-level Python-identifier directories besides bot/ (agent_docs/, analysis/,
+# data/, kb/, models/, ops/, reports/, research/, templates/ — none have
+# __init__.py but PEP 420 namespace discovery treats them as packages anyway;
+# scripts/, tests/, build/, dist/, venv/ etc. are filtered by setuptools'
+# curated _EXCLUDE list). With multiple top-level candidates, setuptools
+# aborts `pip install -e .` with PackageDiscoveryError("Multiple top-level
+# packages discovered in a flat-layout"). The Bit 1.1 hand-off note's claim
+# that flat-layout discovery "picks up bot/ correctly" only held in a
+# pristine bot-only repo; this repo has many sibling dirs.
 #
-# Sprint-2 hand-off note: Bit 2.1 must NOT leave both `bot.py` (file) and
-# `bot/` (package) coexisting at the repo root — Python resolves them
-# ambiguously based on sys.path order. Either delete `bot.py` in the same
-# commit that creates `bot/__init__.py`, or rename one of them.
-# Sprint-2 migration recipe: delete this whole [tool.setuptools] block —
-# setuptools' default flat-layout discovery picks up `bot/` correctly.
-# Then update `tests/test_pyproject.py::test_pyproject_no_installable_code_yet`
-# to assert `packages == ["bot"]` (or just delete the test as the canary
-# has done its job).
-py-modules = []
-packages = []
+# `include = ["bot", "bot.*"]`: fnmatch-matches the parent package + every
+# subpackage (Bit 2.1b stubs + Sprint 3+ additions). Both patterns are
+# needed — `bot.*` requires a literal dot, so it doesn't match the bare `bot`.
+# `namespaces = false`: defense-in-depth — gates discovery on __init__.py
+# existence so a future include-pattern broadening can't silently sweep in
+# a PEP 420 namespace dir.
+# Pinned by tests/test_pyproject.py::test_pyproject_packages_find_scoped_to_bot.
+[tool.setuptools.packages.find]
+include = ["bot", "bot.*"]
+namespaces = false
 
 [tool.pytest.ini_options]
 # Ported verbatim from the deleted pytest.ini. Pytest prefers pytest.ini over

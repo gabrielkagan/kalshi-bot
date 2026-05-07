@@ -8,11 +8,14 @@ These tests pin the Bit 1.1 contract:
 - Pytest config from the deleted pytest.ini was faithfully ported.
 - Ruff config selects pycodestyle (E) and pyflakes (F) per the lenient spec.
 - Python version pin is compatible with the VPS interpreter (3.9).
-- Sprint 1 invariant: NO installable Python code yet
-  (py-modules and packages are both empty). Sprint 2 ships the `bot/` package
-  and flips this — these tests are the canary that prevents an accidental
-  early flip.
 - pytest.ini is gone (single source of truth = pyproject.toml).
+
+Sprint-1 canary `test_pyproject_no_installable_code_yet` was retired in Bit
+2.1b. Its replacement is `test_pyproject_packages_find_scoped_to_bot` —
+flat-layout discovery on this repo discovers ~10 top-level Python-identifier
+dirs (kb/, data/, models/, agent_docs/, …) and aborts `pip install -e .`
+unless `[tool.setuptools.packages.find]` is scoped to `bot*`. The collision
+invariant lives in `test_bot_module_and_bot_package_dont_collide` below.
 """
 import os
 import re
@@ -297,29 +300,49 @@ def test_pyproject_ruff_perfile_ignores_post_bit_1_5():
     )
 
 
-def test_pyproject_no_installable_code_yet():
-    """Sprint 1 invariant: pyproject installs no Python modules.
+def test_pyproject_packages_find_scoped_to_bot():
+    """Bit 2.1b replacement for the retired Sprint-1 canary.
 
-    The `bot/` package is created in Sprint 2 (Bit 2.1). Until then, this file
-    is a metadata-only install; py-modules and packages must both be explicitly
-    empty so setuptools' flat-layout auto-discovery doesn't sweep in tests/,
-    scripts/, kb/, etc.
+    Without scoping, setuptools >=64 flat-layout discovery sees the repo's
+    9 sibling top-level Python-identifier dirs (agent_docs/, analysis/,
+    data/, kb/, models/, ops/, reports/, research/, templates/) alongside
+    bot/ and aborts `pip install -e .` with PackageDiscoveryError("Multiple
+    top-level packages discovered in a flat-layout: ..."). The `make install`
+    target (Makefile:57) — the documented dev-onboarding path — would
+    explode on a fresh dev box.
 
-    When Sprint 2 ships, update this test (or delete it) — it's the canary
-    that catches an accidental early flip.
+    Pin the scoping so a future contributor doesn't drop the constraint and
+    re-introduce the explosion. include=["bot", "bot.*"] matches the parent
+    package and all subpackages (Sprint 2 Bit 2.1b stubs + Sprint 3+
+    additions); both patterns are needed because `bot.*` requires a literal
+    dot and doesn't match bare `bot`. namespaces=false provides
+    defense-in-depth against future include-pattern broadening that might
+    sweep in a PEP 420 namespace dir lacking __init__.py.
     """
     data = _load()
-    assert "setuptools" in data.get("tool", {}), (
-        "[tool.setuptools] table missing — without it, setuptools' flat-layout "
-        "auto-discovery sweeps in tests/, scripts/, kb/, models/, etc., "
-        "shipping unintended code. Sprint 1 must explicitly disable discovery."
+    find_cfg = (
+        data.get("tool", {})
+        .get("setuptools", {})
+        .get("packages", {})
+        .get("find", {})
     )
-    setuptools_cfg = data["tool"]["setuptools"]
-    assert setuptools_cfg.get("py-modules") == [], (
-        "[tool.setuptools].py-modules must be an explicit empty list in Sprint 1."
+    assert find_cfg, (
+        "[tool.setuptools.packages.find] missing — flat-layout discovery "
+        "will explode with PackageDiscoveryError on this multi-top-level repo. "
+        "Add: include=[\"bot\", \"bot.*\"], namespaces=false."
     )
-    assert setuptools_cfg.get("packages") == [], (
-        "[tool.setuptools].packages must be an explicit empty list in Sprint 1."
+    include = find_cfg.get("include") or []
+    assert "bot" in include, (
+        f"include={include!r} must contain 'bot' (the package itself)."
+    )
+    assert "bot.*" in include, (
+        f"include={include!r} must contain 'bot.*' (subpackages — "
+        f"bot.scanner, bot.clients, etc.)."
+    )
+    assert find_cfg.get("namespaces") is False, (
+        f"namespaces must be False so PEP 420 namespace dirs (e.g., kb/, "
+        f"data/, agent_docs/ — none have __init__.py) cannot sneak into "
+        f"the build. Got: {find_cfg.get('namespaces')!r}."
     )
 
 
