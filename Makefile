@@ -69,7 +69,7 @@ test:
 # usages today; running an explicit file list is more honest than
 # `-m smoke` collecting nothing.
 test-fast:
-	$(PYTHON) -m pytest tests/test_pyproject.py tests/test_repo_hygiene.py tests/test_makefile.py tests/test_agents_md_symlink.py tests/test_claude_md_size.py tests/test_no_root_test_files.py tests/test_ops_systemd_unit_matches_repo.py
+	$(PYTHON) -m pytest tests/test_pyproject.py tests/test_repo_hygiene.py tests/test_makefile.py tests/test_agents_md_symlink.py tests/test_claude_md_size.py tests/test_no_root_test_files.py tests/test_ops_systemd_unit_matches_repo.py tests/test_post_deploy_scan_gate.py
 
 # bot.py is sacred per CLAUDE.md. Syntax-check before any push that
 # touches it. Mirrors deploy_check.sh gate 1.

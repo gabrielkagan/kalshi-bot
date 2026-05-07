@@ -36,7 +36,7 @@ jobs:
             echo "=== Post-Deploy Verification ==="
 
             # 1. Service is active
-            echo "[1/5] Checking service status..."
+            echo "[1/6] Checking service status..."
             if ! systemctl is-active --quiet kalshi-bot; then
               echo "FAIL: kalshi-bot service is not active"
               exit 1
@@ -49,7 +49,7 @@ jobs:
             # pushes a [skip ci] commit during our 90s sleep) and produces
             # spurious "VPS != remote" failures. The trigger SHA is fixed for
             # the lifetime of this workflow.
-            echo "[2/5] Checking commit hash..."
+            echo "[2/6] Checking commit hash..."
             if [ -z "${EXPECTED_SHA:-}" ]; then
               echo "FAIL: EXPECTED_SHA is empty (workflow_run payload issue)"
               exit 1
@@ -74,7 +74,7 @@ jobs:
             #   (commit ea51c41 / kb/failures/scan-loop-stall-window-rotation-
             #   2026-04-26.md). Each event emits 2 lines (WS_RAW_IN raw frame +
             #   WS_ERROR_FRAME warning); both match `Unknown subscription ID`.
-            echo "[3/5] Checking recent logs for errors..."
+            echo "[3/6] Checking recent logs for errors..."
             ERROR_PATTERN="error|traceback|exception"
             BENIGN_PATTERN="API error.*events.*400|Unknown subscription ID"
             ERROR_COUNT=$(journalctl -u kalshi-bot --since "2 minutes ago" --no-pager 2>/dev/null \
@@ -89,7 +89,7 @@ jobs:
             echo "  OK: $ERROR_COUNT non-benign error lines (threshold: 2)"
 
             # 4. Run audit_cron to verify metrics computation
-            echo "[4/5] Running audit_cron.py..."
+            echo "[4/6] Running audit_cron.py..."
             cd ~/kalshi-bot-repo
             venv/bin/python3 scripts/audit_cron.py --db state.db 2>&1 | tail -10
             echo "  OK: audit_cron completed"
@@ -100,10 +100,35 @@ jobs:
             # dead gate 98c954d). 15M scan liveness is strict (fails
             # deploy); other kill-switch checks are warnings for the first
             # soak period — escalate to --strict-all after known-green.
-            echo "[5/5] Running postdeploy_verify.py..."
+            echo "[5/6] Running postdeploy_verify.py..."
             cd ~/kalshi-bot-repo
             venv/bin/python3 scripts/postdeploy_verify.py --db state.db --env .env --bot-py bot.py
             echo "  OK: postdeploy_verify completed"
+
+            # 6. Bot reached init AND is not in a crash loop. Smell 3 from
+            # Bit 2.1a postmortem (kb/failures/bit-2.1a-systemd-mismatch-may06.md):
+            # systemctl is-active reports "activating" during a crash loop
+            # (not "failed"), so steps 1-5 don't catch a bot that starts,
+            # dies, restarts, dies, ... — exactly what Bit 2.1a hit. The
+            # cal_mlp integration writes one row UNCONDITIONALLY at startup
+            # to bot_startup_log (`scripts/cal_mlp/integration.py:457`),
+            # so 0 rows in a 5-min window after the deploy proves the bot
+            # crashed before init completed; ≥3 rows in 5 min proves a
+            # post-init crash loop. Threshold logic + SQL semantics live
+            # in `scripts/post_deploy_scan_gate.py` (mirrors the
+            # postdeploy_verify.py / audit_cron.py separate-script
+            # convention; the VPS doesn't have a `sqlite3` CLI
+            # installed so we use Python's stdlib sqlite3 module).
+            # Empirical: 92 historical pairs over last 8d, max 2 events
+            # in any 5-min window — ≥3 has zero false-positives. Catalog
+            # gaps + market quietude + WS reconnects do NOT cause
+            # restarts and do NOT write extra rows. Spec correction at
+            # kb/decisions/bit-2.0.5.3-spec-correction-may07.md (2-pivot
+            # journey across 3 candidate signals: evaluated_opportunities
+            # → market_observations_continuous → bot_startup_log).
+            echo "[6/6] Verifying bot startup pattern (no crash loop, deploy reached init)..."
+            cd ~/kalshi-bot-repo
+            venv/bin/python3 scripts/post_deploy_scan_gate.py --db state.db --window-seconds 300 --max-events 2
 
             echo ""
             echo "=== All post-deploy checks passed ==="
