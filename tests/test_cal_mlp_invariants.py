@@ -880,11 +880,20 @@ def _first_lineno_of_numerical_or_thread_env(bot_py_text: str):
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
+                # Form 1: `import bot._thread_env`
                 if alias.name == 'bot._thread_env' and thread_env_line is None:
                     thread_env_line = node.lineno
                 if _is_numerical(alias.name) and numerical_line is None:
                     numerical_line = node.lineno
         elif isinstance(node, ast.ImportFrom):
+            # Form 2 (Bit 4.2 #4 fix): `from bot import _thread_env` → node.module
+            # = 'bot', alias.name = '_thread_env'. Without this branch the
+            # regression would silently miss the from-import form.
+            if node.module == 'bot' and thread_env_line is None:
+                for alias in node.names:
+                    if alias.name == '_thread_env':
+                        thread_env_line = node.lineno
+                        break
             # `from scipy.stats import t` → node.module = 'scipy.stats'
             if _is_numerical(node.module) and numerical_line is None:
                 numerical_line = node.lineno
@@ -916,6 +925,44 @@ def test_thread_env_imported_before_numerical_libs_in_bot_impl():
         f"lib at line {numerical_line}. Numerical libs must come AFTER "
         "bot._thread_env so OMP_NUM_THREADS=1 is read by OpenBLAS at C-ext "
         "load. Production-incident regression."
+    )
+
+
+def test_first_lineno_detects_thread_env_via_import_from():
+    """Bit 4.2 #4 fix: regression-protect the ImportFrom branch.
+
+    The pre-fix walker only saw `import bot._thread_env`. If someone refactors
+    to `from bot import _thread_env`, the original code returned
+    thread_env_line=None and the production-incident test would either fail
+    on the `is not None` assertion (visible regression — fine) OR pass
+    spuriously if the refactor also moves bot._thread_env import below the
+    numerical-lib import (silent regression — bad). Pin both forms here.
+    """
+    src_import_form = "import bot._thread_env\nimport numpy\n"
+    src_from_form = "from bot import _thread_env\nimport numpy\n"
+    src_multi_form = "from bot import foo, _thread_env\nimport numpy\n"
+    src_neither = "import os\nimport numpy\n"
+
+    te_a, num_a = _first_lineno_of_numerical_or_thread_env(src_import_form)
+    assert te_a == 1 and num_a == 2, f"`import` form: got te={te_a}, num={num_a}"
+
+    te_b, num_b = _first_lineno_of_numerical_or_thread_env(src_from_form)
+    assert te_b == 1 and num_b == 2, (
+        f"`from bot import _thread_env` form must be detected at line 1, "
+        f"got te={te_b}, num={num_b}"
+    )
+
+    te_d, num_d = _first_lineno_of_numerical_or_thread_env(src_multi_form)
+    assert te_d == 1 and num_d == 2, (
+        f"`from bot import foo, _thread_env` (multi-name alias list) must be "
+        f"detected at line 1; if a future refactor breaks the `for alias in "
+        f"node.names` loop (e.g. only checks node.names[0]), this case "
+        f"surfaces it. got te={te_d}, num={num_d}"
+    )
+
+    te_c, num_c = _first_lineno_of_numerical_or_thread_env(src_neither)
+    assert te_c is None and num_c == 2, (
+        f"no thread_env import → te=None expected, got te={te_c}, num={num_c}"
     )
 
 

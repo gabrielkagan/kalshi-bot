@@ -98,6 +98,7 @@ from bot.helpers.breakers import (  # noqa: F401 — underscore-prefixed; star-i
 )
 
 from bot.logger import Logger  # noqa: F401 — Bit 4.1 leaf extraction; re-export so MainLoop construction + type annotations on OpportunityScanner/OrderExecutor/SettlementTracker resolve
+from bot.notifier import TelegramNotifier  # noqa: F401 — Bit 4.2 leaf extraction; re-export so the runtime construction in MainLoop.__init__ (search "self.telegram = TelegramNotifier") resolves. The Optional["TelegramNotifier"] forward-ref on _TELEGRAM has no in-tree get_type_hints consumer, so the import is justified solely by that construction.
 
 
 
@@ -363,7 +364,8 @@ def _append_raw_api_journal(entry: Dict) -> None:
 
 # Vestigial post-Bit-3.0.5: registry-membership validator can't fail with a
 # FileNotFoundError (no filesystem read). Kept as None for the HPSB_GATE_STATE
-# log consumer ("validator_unavailable=no" output, see ~line 26243).
+# log consumer ("validator_unavailable=no" output at MainLoop.__init__,
+# search "HPSB_GATE_STATE:" for the current line).
 _HPSB_VALIDATOR_UNAVAILABLE_REASON: Optional[str] = None
 
 
@@ -732,38 +734,6 @@ class KalshiClient:
             params["event_ticker"] = event_ticker
         return self._request("GET", f"{API_PATH_PREFIX}/portfolio/positions",
                              params=params)
-
-
-class TelegramNotifier:
-    """Fire-and-forget Telegram alerts via Bot API."""
-
-    def __init__(self, bot_token: str, chat_id: str):
-        self._url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        self._chat_id = chat_id
-        self.enabled = bool(bot_token and chat_id)
-        self._dedup: Dict[str, float] = {}
-
-    def send(self, message: str, silent: bool = False, dedup_key: Optional[str] = None):
-        if not self.enabled:
-            return
-        if dedup_key:
-            now = time.time()
-            if dedup_key in self._dedup and now - self._dedup[dedup_key] < 60:
-                return
-            self._dedup[dedup_key] = now
-        text = message[:4096]
-        threading.Thread(target=self._post, args=(text, silent), daemon=True).start()
-
-    def _post(self, text: str, silent: bool):
-        try:
-            requests.post(self._url, json={
-                "chat_id": self._chat_id,
-                "text": text,
-                "parse_mode": "Markdown",
-                "disable_notification": silent,
-            }, timeout=5)
-        except Exception as e:
-            logging.warning(f"Telegram send failed: {e}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

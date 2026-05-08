@@ -506,7 +506,7 @@ class TestBleederStringIntegrityCheck(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Side fail-closed semantics (adversarial review A3)
+#  Validator implementation contract (Bit 3.0.5: registry-membership, no source-grep)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestBleederValidatorImplementation(unittest.TestCase):

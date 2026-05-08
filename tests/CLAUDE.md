@@ -1,6 +1,9 @@
 # Tests
 
-3,368 tests. Pytest. `conftest.py` at repo root.
+3,361 tests collected (post-Bit-4.2). Pytest. `conftest.py` at repo root.
+Verify exact count with `python3 -m pytest tests/ --collect-only -q | tail -1`;
+this header drifts as bits ship and is only refreshed when an extraction touches
+`tests/CLAUDE.md` directly.
 
 ## Run
 - All: `python3 -m pytest tests/ -x`

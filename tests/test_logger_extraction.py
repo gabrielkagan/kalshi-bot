@@ -246,19 +246,36 @@ def test_no_forbidden_numerical_imports_in_logger():
 
 
 def test_no_circular_bot_impl_import_in_logger():
-    """bot/logger.py must not `from bot._impl import ...` or `import bot._impl`
-    — would create a runtime cycle (bot._impl does `from bot.logger import Logger`).
+    """bot/logger.py must not create a cycle back to bot/_impl.py.
+
+    Three import forms must all be rejected:
+      1. `from bot._impl import ...`
+      2. `import bot._impl` / `import bot._impl as ...`
+      3. `from bot import _impl`  (Bit 4.2 R2 #1 back-port — the original
+         Bit 4.1 version of this guard missed this form)
+
+    bot._impl does `from bot.logger import Logger`, so the cycle would
+    resolve at runtime if any direction back exists.
     """
     path = REPO_ROOT / "bot" / "logger.py"
     tree = ast.parse(path.read_text(), filename=str(path))
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
+            # Form 1: from bot._impl import X
             assert node.module != "bot._impl", (
                 "bot/logger.py: forbidden `from bot._impl import ...` "
                 "would create cycle"
             )
+            # Form 3: from bot import _impl
+            if node.module == "bot":
+                names = [alias.name for alias in node.names]
+                assert "_impl" not in names, (
+                    "bot/logger.py: forbidden `from bot import _impl` "
+                    "would create cycle"
+                )
         if isinstance(node, ast.Import):
             for alias in node.names:
+                # Form 2: import bot._impl
                 assert alias.name != "bot._impl", (
                     "bot/logger.py: forbidden `import bot._impl` "
                     "would create cycle"
