@@ -331,14 +331,12 @@ def test_post_deploy_verify_yml_does_not_pin_bot_impl_only():
     Fix: drop the `--bot-py` flag entirely; rely on the script's new
     multi-path default. This test asserts the workflow does NOT pin the
     flag to bot/_impl.py only.
-    """
-    import yaml
 
+    String-grep only — no PyYAML dependency (CI doesn't have PyYAML;
+    Bit 2.3 R2 lesson on what-works-on-Mac-vs-CI).
+    """
     yml_path = REPO_ROOT / ".github" / "workflows" / "post_deploy_verify.yml"
     text = yml_path.read_text()
-    # Parse YAML for structural verification, also string-grep for the
-    # specific anti-pattern (handles continuations / multi-line steps).
-    yaml.safe_load(text)  # raises if malformed
     assert "--bot-py bot/_impl.py" not in text, (
         f"{yml_path.relative_to(REPO_ROOT)} pins `--bot-py bot/_impl.py` — "
         "this overrides postdeploy_verify.py's multi-path default and "
@@ -355,23 +353,32 @@ def test_whitepaper_yml_paths_filter_includes_constants_py():
     listed `bot/_impl.py` only. After Bit 3.1, constant changes happen
     in bot/constants.py — must be in the paths filter or whitepaper
     silently de-syncs from the live config.
+
+    Regex-only — no PyYAML dependency (CI doesn't have PyYAML;
+    Bit 2.3 R2 lesson). Locates the `paths:` block under `on.push`
+    and asserts `bot/constants.py` appears as a list entry.
     """
-    import yaml
+    import re
 
     yml_path = REPO_ROOT / ".github" / "workflows" / "whitepaper.yml"
-    cfg = yaml.safe_load(yml_path.read_text())
+    text = yml_path.read_text()
 
-    # YAML schema: on.push.paths is a list. PyYAML lowercases booleans
-    # and treats `on:` literally. Older PyYAML may parse `on` as the
-    # boolean True; newer versions keep it as the string 'on'. Handle
-    # both.
-    on_block = cfg.get("on", cfg.get(True))
-    assert on_block is not None, (
-        f"{yml_path.relative_to(REPO_ROOT)}: missing `on:` block "
-        "(YAML schema regression)."
+    # Find the `paths:` block (under `on.push.paths`) and pull its
+    # `- '<entry>'` entries. The block ends at the next less-indented key.
+    # The whitepaper.yml file structure is `on:\n  push:\n    paths:\n
+    # - '...'\n      - '...'`. Extract everything from `paths:` to the
+    # next non-list line.
+    m = re.search(
+        r"^\s*paths:\s*\n((?:\s*-\s*['\"]?[^\n]+['\"]?\n)+)",
+        text,
+        re.MULTILINE,
     )
-    push = on_block.get("push", {})
-    paths = push.get("paths", []) or []
+    assert m, (
+        f"{yml_path.relative_to(REPO_ROOT)}: could not find `paths:` "
+        "block under `on.push`. YAML structure regression."
+    )
+    paths_block = m.group(1)
+    paths = re.findall(r"-\s*['\"]([^'\"]+)['\"]", paths_block)
     assert "bot/constants.py" in paths, (
         f"{yml_path.relative_to(REPO_ROOT)}: `on.push.paths` filter must "
         "include 'bot/constants.py' so whitepaper regen triggers on "
