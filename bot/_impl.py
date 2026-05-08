@@ -25359,15 +25359,20 @@ class MainLoop:
             alerts.append(f"🔒 {self._db_locked_count} locked errors in last 5 min")
         self._db_locked_count = 0  # reset after check
 
-        # 2. WAL file size
+        # 2. WAL file size — alert at 200 MB (cursor-race steady-state is
+        # ~140 MB with the unfixed cursor-race; pre-2026-05-08 threshold of
+        # 100 MB fired every 5 min in nuisance noise without surfacing real
+        # anomalies. 200 MB still leaves comfortable headroom under the
+        # operator-set 250 MB hard restart-trigger. Restoring 100 MB
+        # threshold makes sense after the cursor-race fix lands.
         try:
             db_path = self.state.conn.execute(
                 "PRAGMA database_list").fetchone()[2]
             wal_path = db_path + "-wal"
             if os.path.exists(wal_path):
                 wal_mb = os.path.getsize(wal_path) / (1024 * 1024)
-                if wal_mb > 100:
-                    alerts.append(f"📁 WAL file {wal_mb:.1f} MB (>100 MB)")
+                if wal_mb > 200:
+                    alerts.append(f"📁 WAL file {wal_mb:.1f} MB (>200 MB)")
         except Exception:
             pass
 
