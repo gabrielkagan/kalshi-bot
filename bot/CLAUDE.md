@@ -1,19 +1,4 @@
-# bot/ — implementation rules (DRAFT)
-
-> **Status:** DRAFT staged by Bit 1.4 (May 6 2026, plan
-> `kb/decisions/repo-modularization-plan-may05.md` line 1330) for
-> consumption by Bit 2.2 (`bot/CLAUDE.md`). Until Sprint 2 ships
-> `bot/`, root `CLAUDE.md` carries a one-line breadcrumb pointing at
-> this file. After Bit 2.2, this file is moved (`git mv`) to
-> `bot/CLAUDE.md` and auto-loads when an agent works inside `bot/`.
->
-> **Why `agent_docs/` instead of the `kb/drafts/` path the plan
-> specifies?** `kb/` is local-only by convention; placing the draft
-> there leaves the breadcrumb pointing at a file that doesn't exist
-> on a fresh clone, the VPS, or any non-author dev box.
-> `agent_docs/` is tracked, the handoff to Bit 2.2 still works, and
-> the inline topic list in the root breadcrumb keeps the rules
-> discoverable for any agent that reads only `CLAUDE.md`.
+# bot/ — implementation rules
 
 These rules apply to `bot/_impl.py` and the engine modules
 (`spx_engine.py`, `weather_engine.py`, `sports_engine.py`,
@@ -89,10 +74,6 @@ Confirmed-affected (Apr 30): `scripts/15m_live_audit.py`,
 `dashboard_snapshot.py` (root), `analyst.py`, `auditor.py`,
 `researcher.py`, `.claude/skills/status/SKILL.md` (`/status` skill).
 Decision doc: `kb/decisions/bleed-cell-blocks-2026-04-30.md`.
-
-(This rule has cross-cutting reach beyond `bot/` — when Bit 2.2
-promotes this draft, leave a duplicate in `scripts/CLAUDE.md` or
-add a pointer there too.)
 
 ## SQLite (WAL, pragmas, batch sizes)
 

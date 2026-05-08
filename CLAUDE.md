@@ -11,7 +11,7 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 - `agent_docs/calibration_pipeline.md` — calibration, hourly three-layer, three-commit rule.
 - `kb/_index.md` — design decisions, postmortems, strategy specs (read for any deep "why" question).
 - `kb-research/_index.md` — compiled research findings.
-- Package-level guides auto-load when working in-dir: `tests/CLAUDE.md`, `scripts/CLAUDE.md`, `ops/CLAUDE.md` (and `bot/CLAUDE.md` once Sprint 2 Bit 2.2 ships — Bit 2.1a renamed `bot.py` → `bot/_impl.py`; entrypoint is `bot/__main__.py`).
+- Package-level guides auto-load when working in-dir: `bot/CLAUDE.md`, `tests/CLAUDE.md`, `scripts/CLAUDE.md`, `ops/CLAUDE.md`.
 
 ## Interaction rules
 
@@ -38,7 +38,7 @@ Each one-liner fires here; rationale + history live in `kb/failures/` postmortem
 - Sim PnL and counterfactuals use actual Kelly sizing. Never flat 1-contract.
 - Dashboard changes: `dashboard_snapshot.py` and `dashboard/index.html` (gh-pages) ship in the same commit per `kb/decisions/dashboard-overhaul-plan.md`.
 - Doc drift: when changing config values, update `README.md` / `whitepaper.md` / `whitepaper_investor.md` / `CLAUDE.md` / `agent_docs/config_reference.md` in the same commit. Run `make doc-drift` (alias for `python3 scripts/doc_drift_check.py`).
-- **`bot/_impl.py` implementation rules** (torch threading + `_thread_env` import ordering, `cal_mlp` four-site lock-step, cell-block `filter_stage` string literals, SQLite WAL pragmas + ≤50-row commit batches, `_shadow_diag` schema chain, engine→CalEngine one-commit wiring, `discover_active_windows()`/`product_type` cross-checks, shadow-strategy add workflow): see `agent_docs/bot-claude-md-draft.md`. Sprint 2 Bit 2.2 promotes this draft to `bot/CLAUDE.md`, after which it auto-loads when working inside `bot/`.
+- **`bot/_impl.py` implementation rules** (torch threading + `_thread_env` import ordering, `cal_mlp` four-site lock-step, cell-block `filter_stage` string literals, SQLite WAL pragmas + ≤50-row commit batches, `_shadow_diag` schema chain, engine→CalEngine one-commit wiring, `discover_active_windows()`/`product_type` cross-checks, shadow-strategy add workflow): see `bot/CLAUDE.md`. Auto-loads when working inside `bot/`.
 
 ## Anti-patterns
 
