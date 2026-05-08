@@ -102,7 +102,13 @@ jobs:
             # soak period — escalate to --strict-all after known-green.
             echo "[5/6] Running postdeploy_verify.py..."
             cd ~/kalshi-bot-repo
-            venv/bin/python3 scripts/postdeploy_verify.py --db state.db --env .env --bot-py bot/_impl.py
+            # No --bot-py flag: postdeploy_verify.py defaults to a multi-path
+            # scan over both bot source files per Bit 3.1. Pinning the flag
+            # to either single file would silently skip the 4 gating-flag
+            # checks (WEATHER_NO_SIDE_LIVE etc. live in bot/constants.py
+            # post-extraction). Regression: tests/test_constants_extraction.py
+            # ::test_post_deploy_verify_yml_does_not_pin_bot_impl_only.
+            venv/bin/python3 scripts/postdeploy_verify.py --db state.db --env .env
             echo "  OK: postdeploy_verify completed"
 
             # 6. Bot reached init AND is not in a crash loop. Smell 3 from

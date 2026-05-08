@@ -1,6 +1,6 @@
 # bot/_impl.py Layout
 
-bot/_impl.py is **28,220 lines** as of 2026-05-08 (post-Bit-3.0.5 validator decoupling). Class line ranges below
+bot/_impl.py is **26,999 lines** as of 2026-05-08 (post-Bit-3.1 constants extraction; ~1,200 lines moved to `bot/constants.py`). Class line ranges below
 are auto-verifiable. Repo modularization plan (`kb/decisions/repo-modularization-plan-may05.md`)
 will turn bot/_impl.py into a thin entrypoint shim with logic in a `bot/` package.
 
@@ -34,50 +34,50 @@ verify by reading 5-10 lines around each line number before quoting.
 
 | Lines | Section |
 |---|---|
-| 1–~60 | Header import block (`bot._thread_env` imports BEFORE `numpy` — load-bearing per CLAUDE.md; `scripts/cal_mlp/` is also added to sys.path here for the bare `from integration import` calls later in the file) |
-| ~60–~2150 | Module-level constants AND helpers, interleaved (cell-block bleeder lists, MIN_EDGE/TM_SWEEP tables, validators, `compute_derived_features`, `compute_time_regime_features`, sizing helpers, dollars/fp helpers, cell-block predicates `should_block_*`). Future split: constants → `bot/constants.py` (Bit 3.1); helpers → `bot/helpers/*` (Bit 3.2). The exact split-point lands in Bit 3.1. |
-| ~2150–~2364 | `evaluate_execution_strategy()` + tail helpers. (Future home undecided — likely `bot/helpers/execution.py` since it's diagnostic-only.) |
-| 2387–28220 | Class definitions (see table below). One module-level `def discover_active_windows()` sits in the body region between SettlementTracker's class body and the MainLoop class def at line 26229; it ships with MainLoop in Bit 9.3. |
+| 1–~245 | Header import block (`bot._thread_env` imports BEFORE `numpy` — load-bearing per CLAUDE.md; `scripts/cal_mlp/` is also added to sys.path here for the bare `from integration import` calls later in the file). New `from bot.constants import *` lands at line 240, after `from models import (...)`. |
+| ~245–~1140 | Helpers (cell-block predicates `should_block_*`, `compute_derived_features`, `compute_time_regime_features`, `evaluate_execution_strategy()`, sizing helpers, dollars/fp helpers, `_validate_bleeders_against_runtime_registry`). Pre-Bit-3.1 this region was constants + helpers interleaved across ~5 gap regions; Bit 3.1 cut all 484 module-level UPPER_SNAKE constants to `bot/constants.py`. Helpers stay; future split: helpers → `bot/helpers/*` (Bit 3.2). |
+| 1178–26999 | Class definitions (see table below). One module-level `def discover_active_windows()` sits in the body region between SettlementTracker's class body and the MainLoop class def at line 25008; it ships with MainLoop in Bit 9.3. |
 
 ### Class-body end vs class-range note
 
 The class table below uses *next-class-start − 1* as the range end. So
-`SettlementTracker 25050–26228` includes the inter-class
-`discover_active_windows()` def at line 26144. The class body itself
-ends earlier (around line 26143). The class size column counts those
+`SettlementTracker 23829–25007` includes the inter-class
+`discover_active_windows()` def. The class body itself
+ends earlier. The class size column counts those
 inter-class lines, which is conservative (over-counts by ~80 for
 SettlementTracker).
 
 ## Classes (auto-verifiable)
 
-Generated 2026-05-08 from `grep -nE '^class ' bot/_impl.py` (post-Bit-3.0.5 validator decoupling).
+Generated 2026-05-08 from `grep -nE '^class ' bot/_impl.py` (post-Bit-3.1 constants extraction).
 
 | Lines | Class | Size |
 |---|---|---|
-| 2387–2739 | `KalshiClient` | 353 |
-| 2740–2802 | `Logger` | 63 |
-| 2803–3051 | `TelegramNotifier` | 249 |
-| 3052–5621 | `StateManager` | 2570 |
-| 5622–5955 | `CoinbaseFeed` | 334 |
-| 5956–5967 | `OrderbookSchemaError` | 12 |
-| 5968–7737 | `KalshiFeed` | 1770 |
-| 7738–7818 | `DeribitDVOLFetcher` | 81 |
-| 7819–8146 | `CrossExchangeFeed` | 328 |
-| 8147–8223 | `CoinGlassFetcher` | 77 |
-| 8224–8345 | `OrderFlowEngine` | 122 |
-| 8346–8506 | `KalshiOrderFlowTracker` | 161 |
-| 8507–9466 | `VolatilityEngine` | 960 |
-| 9467–9669 | `ProbabilityEngine` | 203 |
-| 9670–10679 | `CalibrationEngine` | 1010 |
-| 10680–19759 | `OpportunityScanner` | 9080 |
-| 19760–25049 | `OrderExecutor` | 5290 |
-| 25050–26228 | `SettlementTracker` | 1179 |
-| 26229–28220 | `MainLoop` | 1992 |
+| 1178–1530 | `KalshiClient` | 353 |
+| 1531–1593 | `Logger` | 63 |
+| 1594–1842 | `TelegramNotifier` | 249 |
+| 1843–4412 | `StateManager` | 2570 |
+| 4413–4734 | `CoinbaseFeed` | 322 |
+| 4735–4746 | `OrderbookSchemaError` | 12 |
+| 4747–6516 | `KalshiFeed` | 1770 |
+| 6517–6597 | `DeribitDVOLFetcher` | 81 |
+| 6598–6925 | `CrossExchangeFeed` | 328 |
+| 6926–7002 | `CoinGlassFetcher` | 77 |
+| 7003–7124 | `OrderFlowEngine` | 122 |
+| 7125–7285 | `KalshiOrderFlowTracker` | 161 |
+| 7286–8245 | `VolatilityEngine` | 960 |
+| 8246–8448 | `ProbabilityEngine` | 203 |
+| 8449–9458 | `CalibrationEngine` | 1010 |
+| 9459–18538 | `OpportunityScanner` | 9080 |
+| 18539–23828 | `OrderExecutor` | 5290 |
+| 23829–25007 | `SettlementTracker` | 1179 |
+| 25008–26999 | `MainLoop` | 1992 |
 
 ## Project file map (root, 2026-05-05)
 
 Live trading process:
-- `bot/_impl.py` — main bot, all trading logic (28,220 lines post-Bit-3.0.5)
+- `bot/_impl.py` — main bot, all trading logic (26,999 lines post-Bit-3.1)
+- `bot/constants.py` — module-level UPPER_SNAKE constants extracted from `bot/_impl.py` (Bit 3.1, 1,722 lines, 484 constants). Re-exported into `bot/_impl.py` via `from bot.constants import *` near top of file.
 - `ops/kalshi-bot.service` — systemd unit, source of truth (installed via `ops/install.sh`); see `ops/CLAUDE.md`.
 - `start.sh` — wrapper invoked by `ops/kalshi-bot.service` (venv + .env + bot/_impl.py)
 - `bot/_thread_env.py` — sets OMP/MKL/OpenBLAS thread caps. bot/_impl.py imports `bot._thread_env` BEFORE numpy. Order is load-bearing per CLAUDE.md and AST-asserted by `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_impl`. (Pre-Bit-2.3 the file lived at `scripts/cal_mlp/_thread_env.py` and required a sys.path.insert to locate; Bit 2.3 moved it into the `bot/` package and retired the pre-_thread_env hack — though `scripts/cal_mlp/` is still added to sys.path post-_thread_env for `from integration import` calls.)

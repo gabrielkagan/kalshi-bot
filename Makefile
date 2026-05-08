@@ -72,9 +72,12 @@ test-fast:
 	$(PYTHON) -m pytest tests/test_pyproject.py tests/test_repo_hygiene.py tests/test_makefile.py tests/test_agents_md_symlink.py tests/test_claude_md_size.py tests/test_no_root_test_files.py tests/test_ops_systemd_unit_matches_repo.py tests/test_post_deploy_scan_gate.py
 
 # bot/_impl.py is the renamed `bot.py` (sacred per CLAUDE.md). Syntax-check
-# before any push that touches it. Mirrors deploy_check.sh gate 1.
+# before any push that touches it OR bot/constants.py (Bit 3.1: module-level
+# constants live in bot/constants.py post-extraction; a syntax error there
+# crashes bot start the same way an _impl.py error would). Mirrors
+# deploy_check.sh gate 1.
 ast-check:
-	$(PYTHON) -c "import ast; ast.parse(open('bot/_impl.py').read())"
+	$(PYTHON) -c "import ast; ast.parse(open('bot/_impl.py').read()); ast.parse(open('bot/constants.py').read())"
 
 # Per Bit 1.1, ruff config is lenient (E+F only). `ruff check .`
 # reports ~1069 errors as of Bit 1.1 ship (the count drifts as the repo

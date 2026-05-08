@@ -5,7 +5,7 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 ## Reference docs (read on demand)
 
 - `agent_docs/current_state.md` — what's live, what's shadow, what's disabled. Refresh-target.
-- `agent_docs/config_reference.md` — every constant in `bot/_impl.py` with data justifications.
+- `agent_docs/config_reference.md` — every constant in `bot/constants.py` (extracted from `bot/_impl.py` per Bit 3.1; re-exported via `from bot.constants import *`) with data justifications.
 - `agent_docs/db_schema.md` — `state.db` schema for all tables.
 - `agent_docs/bot_layout.md` — bot/_impl.py line ranges + project file map.
 - `agent_docs/calibration_pipeline.md` — calibration, hourly three-layer, three-commit rule.
@@ -29,7 +29,7 @@ Each one-liner fires here; rationale + history live in `kb/failures/` postmortem
 - Pushing to main auto-deploys. Always verify the VPS pulled the new commit hash.
 - Data-driven changes only. No config tuning without backing data.
 - After signature changes: grep all call sites. `ast.parse` won't catch unbound names.
-- After constant changes in `bot/_impl.py`: grep across the repo, especially `market_config.py` (asserts at startup → crash loop on mismatch).
+- After constant changes in `bot/constants.py` (or any remaining underscore-prefixed constants in `bot/_impl.py`): grep across the repo, especially `market_config.py` (asserts at startup → crash loop on mismatch).
 - Performance analysis filters to current config regime. Pre-regime data is misleading.
 - After deploy: verify expected DB rows are being created (e.g., `stc_shadow` when STC 300-600s, `weather_observation` when weather is on). "Service running, no errors" is not enough.
 - Investigate before explaining. Look at actual data, not assumptions about it.

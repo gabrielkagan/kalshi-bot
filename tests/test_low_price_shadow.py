@@ -27,8 +27,20 @@ DASH_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 
 def _read_bot():
+    """Bit 3.1: returns concat of bot/_impl.py + bot/constants.py source.
+    Tests that look for CONSTANT = value definitions (post-extraction
+    they live in bot/constants.py) AND tests that look for class /
+    function / log-string patterns (still in bot/_impl.py) both find
+    their targets in the concatenated source.
+    """
     with open(BOT_PATH) as f:
-        return f.read()
+        impl = f.read()
+    constants_path = os.path.join(os.path.dirname(BOT_PATH), "constants.py")
+    if os.path.exists(constants_path):
+        with open(constants_path) as f:
+            constants = f.read()
+        return impl + "\n" + constants
+    return impl
 
 
 def _read_dash():

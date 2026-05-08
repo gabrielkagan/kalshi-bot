@@ -4,7 +4,9 @@ PEP 562 `__getattr__` alone is insufficient: ~30+ external WRITE sites
 (`unittest.mock.patch("bot.X", ...)` × 94 in test_execution.py + ~25 in
 test_ladder_escalation.py + ~10 elsewhere; `monkeypatch.setattr(bot, X, ...)`;
 direct `bot.X = value`) plus 3 production kill-switch self-mutation sites
-in `bot/_impl.py` (lines 11578/11598/11618). A bare `__getattr__` makes
+in `bot/_impl.py` (search for `_self_module.` — currently
+WEATHER_NO_SIDE_LIVE / HOURLY_NO_SIDE_LIVE / BRACKET_NO_ENABLED
+auto-disable on circuit-breaker trip). A bare `__getattr__` makes
 writes go to `sys.modules['bot'].__dict__` while readers in `bot/_impl.py`
 read `sys.modules['bot._impl'].__dict__` — silent mismatch breaks
 mock.patch'd tests AND kill switches.

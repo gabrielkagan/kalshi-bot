@@ -142,8 +142,8 @@ know about silently drops the window.
 
 ### Deploy a change (the long form behind /deploy)
 1. Make the edit.
-2. Syntax-check `bot/_impl.py` (`make ast-check`).
-3. Grep call sites if signatures changed; grep constants across files.
+2. Syntax-check `bot/_impl.py` + `bot/constants.py` (`make ast-check` covers both post-Bit-3.1).
+3. Grep call sites if signatures changed; grep constants across files (definitions live in `bot/constants.py` post-Bit-3.1, usages in `bot/_impl.py` resolved via `from bot.constants import *`).
 4. Present a change summary — wait for approval.
 5. `git add` + `commit` + `push` (triggers auto-deploy).
 6. Verify VPS pulled the commit hash.

@@ -219,8 +219,14 @@ class TestConstantExists(unittest.TestCase):
         """The constant uses os.environ.get(..., '3.0') — a future
         operator can disable the gate by setting MIN_ORDER_SUBMIT_STC_S=0
         on the VPS without a redeploy. Pin the env-override pattern in
-        source so it survives refactors."""
-        with open(bot._impl.__file__, "r") as f:
+        source so it survives refactors.
+
+        Bit 3.1: MIN_ORDER_SUBMIT_STC_S definition lives in bot/constants.py
+        post-move; the env-getter literal travels with it. Function-body
+        usages still reference the name from bot/_impl.py via star-import.
+        """
+        import bot.constants
+        with open(bot.constants.__file__, "r") as f:
             src = f.read()
         self.assertIn(
             'os.environ.get("MIN_ORDER_SUBMIT_STC_S"', src,

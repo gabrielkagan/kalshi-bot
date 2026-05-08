@@ -176,7 +176,10 @@ def test_endpoint_stage_set_matches_known_stages():
 
     If this test fails because the bleed-cell constants were renamed,
     update CONSTANT_NAME_TO_STAGE + TRADE_ENDPOINT_STAGES together."""
-    bot_path = os.path.join(PROJECT_ROOT, "bot/_impl.py")
+    # Bit 3.1: FILTER_STAGE definitions live in bot/constants.py post-move.
+    # The endpoint INSERT sites that USE these constants stay in bot/_impl.py
+    # (other tests in this file scan _impl.py for those usages).
+    bot_path = os.path.join(PROJECT_ROOT, "bot/constants.py")
     with open(bot_path) as f:
         src = f.read()
     assert 'TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE = "TM98_97_98C_2_5MIN_BLEED"' in src

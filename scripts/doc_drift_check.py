@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Source files to extract facts from
 SOURCE_FILES = [
-    "bot/_impl.py", "config.py", "market_config.py", "models.py",
+    "bot/_impl.py", "bot/constants.py", "config.py", "market_config.py", "models.py",
     "spx_engine.py", "weather_engine.py", "sports_engine.py",
     "fifteenm_shadow.py", "hourly_alt_shadow.py",
     # R-p7-deploy-r11 R5: cal_mlp constants live here. Without this entry,

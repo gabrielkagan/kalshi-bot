@@ -106,31 +106,39 @@ def flag_truthy(value: Optional[str]) -> bool:
 
 # ───────────────── Bot-source flag reader ─────────────────
 
-def read_bot_constants(bot_py: Path) -> dict:
-    """Parse bot/_impl.py for module-level flag assignments. Regex-based rather
-    than import-based to avoid side effects (WebSocket threads etc.)
-    starting on import."""
+def read_bot_constants(bot_py_paths) -> dict:
+    """Parse bot/_impl.py + bot/constants.py for module-level flag
+    assignments. Regex-based rather than import-based to avoid side
+    effects (WebSocket threads etc.) starting on import.
+
+    Accepts either a single Path or a list of Paths. Multi-path scan
+    merges results across files so this gate survives Bit 3.1's
+    constants → bot/constants.py move (and any future re-moves) without
+    requiring same-commit updates here.
+    """
     import re
     flags = {}
-    if not bot_py.exists():
-        return flags
-    src = bot_py.read_text()
-    # KEY = True / False / literal int
+    if isinstance(bot_py_paths, Path):
+        bot_py_paths = [bot_py_paths]
     pattern = re.compile(
         r"^(?P<key>[A-Z][A-Z0-9_]+)\s*=\s*(?P<val>True|False|\d+)\s",
         re.MULTILINE,
     )
-    for m in pattern.finditer(src):
-        key, val = m.group("key"), m.group("val")
-        if val == "True":
-            flags[key] = True
-        elif val == "False":
-            flags[key] = False
-        else:
-            try:
-                flags[key] = int(val)
-            except ValueError:
-                pass
+    for bp in bot_py_paths:
+        if not bp.exists():
+            continue
+        src = bp.read_text()
+        for m in pattern.finditer(src):
+            key, val = m.group("key"), m.group("val")
+            if val == "True":
+                flags[key] = True
+            elif val == "False":
+                flags[key] = False
+            else:
+                try:
+                    flags[key] = int(val)
+                except ValueError:
+                    pass
     return flags
 
 
@@ -388,7 +396,16 @@ def main(argv: List[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--db", default="state.db", help="path to state.db")
     p.add_argument("--env", default=".env", help="path to .env")
-    p.add_argument("--bot-py", default="bot/_impl.py", help="path to bot/_impl.py")
+    # Multi-path scan default: bot/_impl.py + bot/constants.py (per Bit 3.1).
+    # Use action="append" so callers can pass `--bot-py X --bot-py Y`;
+    # default kicks in only when no flag is passed.
+    p.add_argument(
+        "--bot-py",
+        action="append",
+        default=None,
+        help="path to bot source file scanned for flag constants. May be "
+        "repeated. Defaults to bot/_impl.py + bot/constants.py.",
+    )
     p.add_argument("--strict-all", action="store_true",
                    help="treat all warnings as failures")
     p.add_argument("--dry-run", action="store_true",
@@ -397,7 +414,10 @@ def main(argv: List[str]) -> int:
 
     db_path = Path(args.db).resolve()
     env_path = Path(args.env).resolve()
-    bot_path = Path(args.bot_py).resolve()
+    bot_paths = [
+        Path(p).resolve()
+        for p in (args.bot_py or ["bot/_impl.py", "bot/constants.py"])
+    ]
 
     if not args.dry_run and not db_path.exists():
         print(f"FATAL: state.db not found at {db_path}", file=sys.stderr)
@@ -408,7 +428,7 @@ def main(argv: List[str]) -> int:
     for k in ("HOURLY_LIVE_ENABLED", "HOURLY_NO_SIDE_LIVE"):
         if k in os.environ:
             env[k] = os.environ[k]
-    bot_flags = read_bot_constants(bot_path)
+    bot_flags = read_bot_constants(bot_paths)
 
     checks = build_checks(bot_flags, env)
 

@@ -537,8 +537,15 @@ class TestKillSwitchDefault(unittest.TestCase):
         defaults to False. VPS must explicitly opt in via env."""
         # This is testable by the bot module's import-time evaluation
         # AND by reading the source's default literal.
+        # Bit 3.1: LADDER_ESCALATION_ENABLED definition lives in
+        # bot/constants.py post-extraction. Concatenate both sources so
+        # the regex finds the assignment regardless of which file it lives in.
         with open(BOT_PY) as f:
             src = f.read()
+        constants_path = os.path.join(os.path.dirname(BOT_PY), "constants.py")
+        if os.path.exists(constants_path):
+            with open(constants_path) as f:
+                src += "\n" + f.read()
         # Match the env-var default-string literal.
         # We accept either "0" or False — but must NOT default to "1".
         # The pattern in the file is:

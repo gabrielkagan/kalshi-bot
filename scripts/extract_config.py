@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.join(SCRIPT_DIR, "..")
 BOT_PATH = os.path.join(REPO_DIR, "bot/_impl.py")
+CONSTANTS_PATH = os.path.join(REPO_DIR, "bot/constants.py")
 WEATHER_PATH = os.path.join(REPO_DIR, "weather_engine.py")
 SPORTS_PATH = os.path.join(REPO_DIR, "sports_data.py")
 
@@ -324,15 +325,26 @@ def main():
         sys.exit(1)
 
     with open(BOT_PATH) as f:
-        source = f.read()
+        bot_source = f.read()
 
-    line_count = len(source.splitlines())
-    constants = extract_constants(source)
-    compounds = extract_compound_constants(source)
+    # Bit 3.1: module-level constants live in bot/constants.py. Concatenate
+    # both files so extract_constants() / extract_compound_constants()
+    # find every TRACKED_CONSTANTS entry regardless of which file it lives
+    # in. extract_exchange_feeds() (class-scan) keeps its bot_source-only
+    # input — classes don't move.
+    constants_source = ""
+    if os.path.exists(CONSTANTS_PATH):
+        with open(CONSTANTS_PATH) as f:
+            constants_source = f.read()
+    combined_source = bot_source + "\n" + constants_source
+
+    line_count = len(bot_source.splitlines())
+    constants = extract_constants(combined_source)
+    compounds = extract_compound_constants(combined_source)
     constants.update(compounds)
 
-    # Extract exchange feed classes
-    exchange_feeds = extract_exchange_feeds(source)
+    # Extract exchange feed classes (still bot/_impl.py only — classes stay)
+    exchange_feeds = extract_exchange_feeds(bot_source)
 
     # Cross-file extractions
     weather_data = extract_weather_cities()

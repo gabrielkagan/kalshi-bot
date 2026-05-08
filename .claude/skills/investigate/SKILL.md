@@ -43,9 +43,9 @@ Investigate an anomaly, unexpected trade, dashboard alert, or suspected bug. Ans
    - If it's a data gap: check NULL rates on relevant columns
    - If the anomaly description is vague, start broad: query last 10 settled trades, last 10 evaluated opportunities, look for anything unusual
 
-   d. **Check bot config is correct on VPS** (not local — configs may have drifted):
+   d. **Check bot config is correct on VPS** (not local — configs may have drifted). Bit 3.1 moved module-level UPPER_SNAKE constants to `bot/constants.py`:
    ```bash
-   ssh botuser@45.55.181.30 "cd ~/kalshi-bot-repo && grep -n 'OBSERVATION_MODE\|MIN_ENTRY_PRICE\|MAX_ENTRY_PRICE\|STC_SHADOW_THRESHOLD' bot/_impl.py | head -10"
+   ssh botuser@45.55.181.30 "cd ~/kalshi-bot-repo && grep -n 'OBSERVATION_MODE\|MIN_ENTRY_PRICE\|MAX_ENTRY_PRICE\|STC_SHADOW_THRESHOLD' bot/constants.py | head -10"
    ```
 
 3. **Present findings immediately** — data first, not speculation:

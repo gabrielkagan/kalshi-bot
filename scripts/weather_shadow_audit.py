@@ -1095,7 +1095,7 @@ def detect_regime_start() -> str:
     try:
         result = subprocess.run(
             ["git", "log", "--format=%H %aI", "--since=180 days ago",
-             "--", "bot.py", "bot/_impl.py"],
+             "--", "bot.py", "bot/_impl.py", "bot/constants.py"],
             capture_output=True, text=True, timeout=10, cwd=repo_dir,
         )
         if result.returncode != 0:
@@ -1106,7 +1106,7 @@ def detect_regime_start() -> str:
             parts = line.split(" ", 1)
             commit_hash, timestamp = parts[0], parts[1] if len(parts) > 1 else ""
             diff_result = subprocess.run(
-                ["git", "diff", f"{commit_hash}^..{commit_hash}", "--", "bot.py", "bot/_impl.py"],
+                ["git", "diff", f"{commit_hash}^..{commit_hash}", "--", "bot.py", "bot/_impl.py", "bot/constants.py"],
                 capture_output=True, text=True, timeout=10, cwd=repo_dir,
             )
             if diff_result.returncode != 0:

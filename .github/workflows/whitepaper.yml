@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'bot/_impl.py'
+      - 'bot/constants.py'
       - 'whitepaper.md'
       - 'whitepaper_investor.md'
       - 'README.template.md'

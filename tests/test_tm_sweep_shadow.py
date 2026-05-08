@@ -24,8 +24,20 @@ BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 
 
 def _read_bot():
+    """Bit 3.1: returns concat of bot/_impl.py + bot/constants.py source.
+    Tests that look for CONSTANT = value definitions (post-extraction
+    they live in bot/constants.py) AND tests that look for class /
+    function / log-string patterns (still in bot/_impl.py) both find
+    their targets in the concatenated source.
+    """
     with open(BOT_PATH) as f:
-        return f.read()
+        impl = f.read()
+    constants_path = os.path.join(os.path.dirname(BOT_PATH), "constants.py")
+    if os.path.exists(constants_path):
+        with open(constants_path) as f:
+            constants = f.read()
+        return impl + "\n" + constants
+    return impl
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -496,8 +508,10 @@ class TestAdversarialRegressions(unittest.TestCase):
     def test_C9_env_var_kill_switch_and_gate_present(self):
         """Adversarial C9 + A5: the env-var kill switch must exist AND the
         gate must actually wrap the capture call in _execute_tm_taker."""
-        with open(BOT_PATH) as f:
-            source = f.read()
+        # Bit 3.1: TM_SWEEP_SHADOW_ENABLED definition lives in bot/constants.py
+        # post-extraction; the gate (_execute_tm_taker body) stays in
+        # bot/_impl.py. _read_bot() returns concat so both regexes match.
+        source = _read_bot()
         # The constant must be env-var-toggleable.
         self.assertRegex(
             source,
@@ -1340,8 +1354,9 @@ class TestTMSweepLiveAdversarialRound2(unittest.TestCase):
         a swept-but-partial tm_96 IOC has no maker-tail / retry fallback,
         unlike tm_98/99. The constants block must call this out so a
         future maintainer doesn't promote without resolving."""
-        with open(BOT_PATH) as f:
-            source = f.read()
+        # Bit 3.1: TM_LIVE_STRATEGIES assignment lives in bot/constants.py;
+        # use _read_bot() which returns the concatenated source.
+        source = _read_bot()
         # The TM_LIVE_STRATEGIES block must mention tm_96 has no fallback,
         # OR add it to eligibility sets.
         from bot import TM_LIVE_STRATEGIES, MAKER_TAIL_ELIGIBLE_STRATEGIES

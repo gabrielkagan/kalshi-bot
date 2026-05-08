@@ -43,11 +43,11 @@ Compile a self-contained research data package for the external researcher/analy
 
    Format as CSV sections with headers.
 
-4. **Extract relevant code architecture from bot/_impl.py**:
-   - All constants for the target system (with line numbers)
-   - The scan loop section that handles this product_type
-   - Key functions: probability computation, edge calculation, sizing
-   - Filter stages and what triggers each one
+4. **Extract relevant code architecture** (Bit 3.1: constants in `bot/constants.py`, helpers/classes in `bot/_impl.py`):
+   - All constants for the target system from `bot/constants.py` (with line numbers)
+   - The scan loop section that handles this product_type (in `bot/_impl.py`)
+   - Key functions: probability computation, edge calculation, sizing (in `bot/_impl.py`)
+   - Filter stages and what triggers each one (definitions in `bot/constants.py`, usages in `bot/_impl.py`)
    - Show actual code snippets (10-30 lines) for critical decision points
 
 5. **Include current config and regime history**:
@@ -123,12 +123,12 @@ prob_bucket,count,predicted_avg,actual_wr,gap_pp
 [Key code snippets with line numbers, showing exactly how probabilities
 are computed, how edge is calculated, how filters work]
 
-### Probability computation (bot/_impl.py:5300-5340)
+### Probability computation (bot/_impl.py — `ProbabilityEngine` class, ~lines 8246-8448 post-Bit-3.1)
 ```python
 [actual code]
 ```
 
-### Edge filter (bot/_impl.py:7200-7240)
+### Edge filter (bot/_impl.py — `OpportunityScanner` class, ~lines 9459-18538 post-Bit-3.1)
 ```python
 [actual code]
 ```

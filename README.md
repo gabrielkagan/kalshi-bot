@@ -191,7 +191,7 @@ source .env
 python3 -m bot
 ```
 
-Set `OBSERVATION_MODE = True` in `bot/_impl.py` to log everything but place no orders.
+Set `OBSERVATION_MODE = True` in `bot/constants.py` to log everything but place no orders.
 
 ## Deployment
 
@@ -213,11 +213,12 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot/_impl.py                         -- core bot logic (~28,220 lines, never rename)
+bot/_impl.py                         -- core bot logic (~26,999 lines post-Bit-3.1, never rename)
+bot/constants.py                     -- module-level UPPER_SNAKE constants (484 constants; Bit 3.1; re-exported into bot/_impl.py via star-import)
 config.py                      -- centralized SIZING_TIERS / DRAWDOWN_* / MIN_EDGE_BY_PRICE
 models.py                      -- EGARCH / Mincer-Zarnowitz / PositionSizer / fee math
 analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)
-market_config.py               -- centralized MarketTypeConfig (validates against bot/_impl.py at startup)
+market_config.py               -- centralized MarketTypeConfig (validates against bot/constants.py at startup)
 fifteenm_shadow.py             -- 15M shadow engine (recalibrated EGARCH + LightGBM research)
 spx_engine.py                  -- S&P 500 intraday engine (EGARCH + VIX, observation mode)
 weather_engine.py              -- weather temperature engine (NWP ensemble, NO-side live + observation)
