@@ -880,7 +880,7 @@ def _first_lineno_of_numerical_or_thread_env(bot_py_text: str):
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == '_thread_env' and thread_env_line is None:
+                if alias.name == 'bot._thread_env' and thread_env_line is None:
                     thread_env_line = node.lineno
                 if _is_numerical(alias.name) and numerical_line is None:
                     numerical_line = node.lineno
@@ -903,7 +903,7 @@ def test_thread_env_imported_before_numerical_libs_in_bot_impl():
         bot_py.read_text()
     )
     assert thread_env_line is not None, (
-        "bot/_impl.py must `import _thread_env` (sets OMP_NUM_THREADS=1 etc.) "
+        "bot/_impl.py must `import bot._thread_env` (sets OMP_NUM_THREADS=1 etc.) "
         "before any numerical lib (numpy/scipy/sklearn/pandas/torch). "
         "Line not found."
     )
@@ -912,9 +912,9 @@ def test_thread_env_imported_before_numerical_libs_in_bot_impl():
         "the contract is moot — but verify other consumers still need it."
     )
     assert thread_env_line < numerical_line, (
-        f"_thread_env imported at line {thread_env_line}, but numerical "
+        f"bot._thread_env imported at line {thread_env_line}, but numerical "
         f"lib at line {numerical_line}. Numerical libs must come AFTER "
-        "_thread_env so OMP_NUM_THREADS=1 is read by OpenBLAS at C-ext "
+        "bot._thread_env so OMP_NUM_THREADS=1 is read by OpenBLAS at C-ext "
         "load. Production-incident regression."
     )
 
@@ -1065,7 +1065,7 @@ def test_thread_env_is_zero_deps_no_numerical_imports():
     repo_root = str(Path(__file__).resolve().parents[1])
     script = textwrap.dedent(f"""
         import sys, os
-        sys.path.insert(0, {repo_root!r} + '/scripts/cal_mlp')
+        sys.path.insert(0, {repo_root!r})
         # Sanity: env should NOT have OMP set yet.
         assert 'OMP_NUM_THREADS' not in os.environ
         # Sanity: numerical libs should NOT have been imported yet by
@@ -1073,22 +1073,22 @@ def test_thread_env_is_zero_deps_no_numerical_imports():
         for _lib in ('numpy', 'scipy', 'sklearn', 'pandas', 'torch'):
             assert _lib not in sys.modules, (
                 f"unexpected: {{_lib}} loaded by Python init/site; this "
-                f"test cannot validate _thread_env zero-deps contract."
+                f"test cannot validate bot._thread_env zero-deps contract."
             )
         # The actual contract:
-        import _thread_env  # noqa: F401
+        import bot._thread_env  # noqa: F401
         # 1) setdefault fired
         assert os.environ['OMP_NUM_THREADS'] == '1'
         assert os.environ['MKL_NUM_THREADS'] == '1'
         assert os.environ['OPENBLAS_NUM_THREADS'] == '1'
-        # 2) _thread_env is ZERO-DEPS — it must not pull in any numerical
+        # 2) bot._thread_env is ZERO-DEPS — it must not pull in any numerical
         # lib. If it did, OMP=1 would be a no-op since the lib's BLAS
         # backend would have read its env at the prior import.
         for _lib in ('numpy', 'scipy', 'sklearn', 'pandas', 'torch'):
             assert _lib not in sys.modules, (
-                f"_thread_env.py pulled in {{_lib}} — the OMP setdefault "
+                f"bot/_thread_env.py pulled in {{_lib}} — the OMP setdefault "
                 f"is now a no-op for that lib's BLAS backend. Either remove "
-                f"the import from _thread_env, or do the setdefault even "
+                f"the import from bot/_thread_env, or do the setdefault even "
                 f"earlier (e.g., in a sitecustomize.py)."
             )
         print("OK")

@@ -20,7 +20,7 @@ readable here for agents working inside `bot/`.
 - **Don't import torch directly in `bot/_impl.py`.** `cal_mlp` is the
   single torch entry point via `scripts/cal_mlp/integration.py`,
   which constrains threads at module-import time.
-- **`import _thread_env` must remain the FIRST import in `bot/_impl.py`.**
+- **`import bot._thread_env` must remain the FIRST non-stdlib import in `bot/_impl.py`.**
   numpy/scipy C extensions cache OpenBLAS thread count at load time,
   so `OMP_NUM_THREADS=1` has to be in `os.environ` before they
   import. Direct `import torch` or any reorder defeats the

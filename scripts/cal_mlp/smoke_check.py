@@ -52,6 +52,11 @@ def _setup_path() -> None:
     here = Path(__file__).resolve().parent
     if str(here) not in sys.path:
         sys.path.insert(0, str(here))
+    # Repo root must be on sys.path so `import integration` (cal_mlp local)
+    # can transitively `import bot._thread_env` (the bot package) post-Bit-2.3.
+    repo_root = here.parent.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
 
 
 def _check_sha_chain_round_trip() -> int:

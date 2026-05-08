@@ -30,16 +30,21 @@ Master plan: kb/decisions/shadow-coverage-expansion-may01.md.
 
 # Phase G-3 round 2 C6 fix: pin OMP threads BEFORE numpy/scipy/torch
 # load (transitively via cal_mlp.integration). Per CLAUDE.md "Critical
-# rules" + bot.py's same-pattern import. No-op if cal_mlp dir is absent
-# (stamp-only stage skips the ML import).
+# rules" + bot/_impl.py's same-pattern import. No-op if bot package
+# is absent (stamp-only stage skips the ML import).
 import os as _os
 import sys as _sys
-_sys.path.insert(0, _os.path.join(
-    _os.path.dirname(_os.path.abspath(__file__)), "cal_mlp"))
+_REPO = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_sys.path.insert(0, _REPO)
 try:
-    import _thread_env  # noqa: F401
+    import bot._thread_env  # noqa: F401
 except ImportError:
     pass
+# `scripts/cal_mlp/` on sys.path for the deferred `from integration import` and
+# `from post_hoc_processor import` calls inside `main()`. Placed AFTER
+# bot._thread_env so OMP_NUM_THREADS=1 is set before any of those modules
+# transitively load numpy/scipy/torch.
+_sys.path.insert(0, _os.path.join(_REPO, "scripts", "cal_mlp"))
 
 import argparse
 import logging
@@ -233,11 +238,11 @@ def main(argv=None) -> int:
 
         # Drain requires ML deps. Late-import to keep stamp-only usage
         # working on systems without pandas/torch installed.
-        # (sys.path already extended at module top for the _thread_env
-        # import; intentionally NOT re-inserted here so a future
-        # contributor doesn't move the top-of-file block down and defeat
-        # the OMP-thread-pin contract — Phase G-3 round 3 C8 fix.)
-        # Predictor loading mirrors bot.py:5155-5161 — construct one
+        # `from integration import` resolves via the `scripts/cal_mlp/` entry
+        # added to sys.path at the top of this module — placed AFTER
+        # bot._thread_env so OMP_NUM_THREADS=1 is already set when integration
+        # transitively loads numpy/scipy/torch (Phase G-3 round 3 C8 contract).
+        # Predictor loading mirrors bot/_impl.py:5596 — construct one
         # CalMLPPredictor per asset, call .warmup(), drop unloaded.
         # Phase G-3 round 1 C1 fix (was: from integration import warmup
         # — `warmup` is a method, not a module function).

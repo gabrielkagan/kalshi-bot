@@ -115,11 +115,12 @@ _IDENTITY_NO_Z = _build_identity_no_zscore_set()
 # constrained at first `import torch` regardless of who imports it first.
 # ---------------------------------------------------------------------------
 
-# Single source of truth for the OMP/MKL setdefaults: scripts/cal_mlp/_thread_env.py.
-# bot.py imports _thread_env BEFORE numpy at line 1; integration.py imports it
-# here as belt-and-suspenders for tests/scripts that bypass bot.py. Either path
-# guarantees the env vars are set before any C extension that reads them.
-import _thread_env  # noqa: F401 — side-effect import: sets OMP_NUM_THREADS=1 etc.
+# Single source of truth for the OMP/MKL setdefaults: bot/_thread_env.py.
+# bot/_impl.py imports bot._thread_env as its first non-stdlib import (BEFORE numpy);
+# integration.py imports it here as belt-and-suspenders for tests/scripts that bypass
+# bot/_impl.py. Either path guarantees the env vars are set before any C extension that
+# reads them.
+import bot._thread_env  # noqa: F401 — side-effect import: sets OMP_NUM_THREADS=1 etc.
 
 _TORCH_THREADS_INTRA = None       # post-call observed value (or None on failure)
 _TORCH_THREADS_INTEROP = None

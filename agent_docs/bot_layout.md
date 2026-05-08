@@ -34,7 +34,7 @@ verify by reading 5-10 lines around each line number before quoting.
 
 | Lines | Section |
 |---|---|
-| 1–~60 | Header import block (sys.path tweak at line 11 inserts `scripts/cal_mlp/`; `_thread_env` import at line 12 loads BEFORE `numpy` at line 34 — load-bearing per CLAUDE.md) |
+| 1–~60 | Header import block (`bot._thread_env` imports BEFORE `numpy` — load-bearing per CLAUDE.md; `scripts/cal_mlp/` is also added to sys.path here for the bare `from integration import` calls later in the file) |
 | ~60–~2150 | Module-level constants AND helpers, interleaved (cell-block bleeder lists, MIN_EDGE/TM_SWEEP tables, validators, `compute_derived_features`, `compute_time_regime_features`, sizing helpers, dollars/fp helpers, cell-block predicates `should_block_*`). Future split: constants → `bot/constants.py` (Bit 3.1); helpers → `bot/helpers/*` (Bit 3.2). The exact split-point lands in Bit 3.1. |
 | ~2150–~2364 | `evaluate_execution_strategy()` + tail helpers. (Future home undecided — likely `bot/helpers/execution.py` since it's diagnostic-only.) |
 | 2365–28160 | Class definitions (see table below). One module-level `def discover_active_windows()` at line 26084 sits in the body region between SettlementTracker's class body and the MainLoop class def at line 26169; it ships with MainLoop in Bit 9.3. |
@@ -79,7 +79,7 @@ Live trading process:
 - `bot/_impl.py` — main bot, all trading logic (28,160 lines post-Bit-2.1a)
 - `ops/kalshi-bot.service` — systemd unit, source of truth (installed via `ops/install.sh`); see `ops/CLAUDE.md`.
 - `start.sh` — wrapper invoked by `ops/kalshi-bot.service` (venv + .env + bot/_impl.py)
-- `scripts/cal_mlp/_thread_env.py` — sets OMP/MKL/OpenBLAS thread caps. bot/_impl.py inserts `scripts/cal_mlp/` into sys.path at line 11 then imports `_thread_env` at line 12, BEFORE numpy on line 34. Order is load-bearing per CLAUDE.md and AST-asserted by `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_impl`.
+- `bot/_thread_env.py` — sets OMP/MKL/OpenBLAS thread caps. bot/_impl.py imports `bot._thread_env` BEFORE numpy. Order is load-bearing per CLAUDE.md and AST-asserted by `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_impl`. (Pre-Bit-2.3 the file lived at `scripts/cal_mlp/_thread_env.py` and required a sys.path.insert to locate; Bit 2.3 moved it into the `bot/` package and retired the pre-_thread_env hack — though `scripts/cal_mlp/` is still added to sys.path post-_thread_env for `from integration import` calls.)
 
 Engines (separate threads/processes):
 - `spx_engine.py` — SPX hourly (Polygon, EGARCH, RK, VIX)
