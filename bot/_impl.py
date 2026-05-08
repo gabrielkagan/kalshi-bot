@@ -15726,7 +15726,7 @@ class OpportunityScanner:
                             _bn_edge = BRACKET_NO_ASSUMED_PROB - _bn_no_cost / 100.0
                             # Count existing bracket NO positions + candidates this scan
                             _bn_existing = sum(1 for p in self._state.get_open_positions()
-                                               if p.get("side") == "no" and p.get("ticker", "").startswith("KXHIGH"))
+                                               if p.get("side") == "no" and (p.get("ticker") or "").startswith("KXHIGH"))
                             _bn_in_scan = sum(1 for c in candidates if c.get("strategy") == "bracket_no")
                             if _bn_existing + _bn_in_scan < BRACKET_NO_MAX_CONCURRENT:
                                 # Per-ticker dedup: skip if already holding this specific bracket strike
@@ -19682,8 +19682,10 @@ class OpportunityScanner:
         """
         if not event_ticker:
             # Transient race: position/order/window dict surfaced None event_ticker
-            # (see kb/failures/window-timeslot-none.md). Caller checks `if ts:` so
-            # empty string skips this row safely.
+            # (see kb/failures/transient-none-event-ticker-may08.md — same class
+            # as the 2026-05-08 14:44 tick error at OrderExecutor's per-window
+            # cap aggregator). Caller checks `if ts:` so empty string skips
+            # this row safely.
             logging.warning("WINDOW_TIMESLOT_NULL: event_ticker is None/empty")
             return ""
         parts = event_ticker.split("-")
@@ -20056,6 +20058,44 @@ class OrderExecutor:
 
     # ── Public interface ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _existing_window_cost_for_timeslot(positions: List[Dict],
+                                           timeslot: str) -> int:
+        """Sum total_cost_cents across positions whose event_ticker shares
+        `timeslot`. Defends against a transiently-None event_ticker (the
+        race documented at `_window_timeslot`'s `WINDOW_TIMESLOT_NULL`
+        warning and in `kb/failures/transient-none-event-ticker-may08.md`).
+
+        Tick error 2026-05-08 14:44:36 fired here when an inline genexpr
+        chained `.split(...)` directly off `p.get("event_ticker", "")` —
+        `dict.get` returns the value (None) when the key is present, so
+        the default-empty-string never coerced None.
+
+        total_cost_cents is also coerced defensively: schema is INTEGER
+        NOT NULL, but the same race that surfaced None event_ticker can
+        plausibly surface other transiently-None columns. Skip the row
+        rather than TypeError on `total += None`.
+        """
+        total = 0
+        for p in positions:
+            et = p.get("event_ticker")
+            if not et:
+                logging.warning(
+                    "WINDOW_CAP_NULL_EVENT_TICKER: ticker=%s asset=%s "
+                    "side=%s status=%s cost=%s",
+                    p.get("ticker"), p.get("asset"), p.get("side"),
+                    p.get("status"), p.get("total_cost_cents"))
+                continue
+            if et.split("-", 1)[-1] == timeslot:
+                cost = p.get("total_cost_cents")
+                if cost is None:
+                    logging.warning(
+                        "WINDOW_CAP_NULL_TOTAL_COST: ticker=%s event_ticker=%s",
+                        p.get("ticker"), et)
+                    continue
+                total += cost
+        return total
+
     def execute(self, candidate: Dict) -> Optional[Dict]:
         """Always submit maker order. Escalation to taker happens in tick()."""
         # Observation safety belt — should never reach here for obs-only types
@@ -20126,11 +20166,9 @@ class OrderExecutor:
                 # Event tickers: KXBTC15M-26APR021000, KXETH15M-26APR021000 → timeslot=26APR021000
                 _et_parts = _event_ticker.split("-", 1)
                 _timeslot = _et_parts[1] if len(_et_parts) > 1 else _event_ticker
-                _existing_window_cost = sum(
-                    p["total_cost_cents"]
-                    for p in self._state.get_open_positions()
-                    if p.get("event_ticker", "").split("-", 1)[-1] == _timeslot
-                )
+                _existing_window_cost = (
+                    self._existing_window_cost_for_timeslot(
+                        self._state.get_open_positions(), _timeslot))
                 if _existing_window_cost > 0:
                     logging.debug("WINDOW_XASSET: timeslot=%s existing=$%.2f",
                                   _timeslot, _existing_window_cost / 100)
@@ -27737,7 +27775,7 @@ class MainLoop:
                     # 3. STC (parse from event_ticker — deterministic, no _active_windows dependency)
                     _ppo_stc = None
                     try:
-                        _ppo_et = pos.get("event_ticker", "")
+                        _ppo_et = pos.get("event_ticker") or ""
                         _ppo_ts_str = _ppo_et.split("-")[1] if "-" in _ppo_et else ""
                         if len(_ppo_ts_str) >= 11:
                             _ppo_yr = int("20" + _ppo_ts_str[:2])
@@ -27894,7 +27932,7 @@ class MainLoop:
                     _wx_positions = [
                         p for p in self.state.get_open_positions()
                         if p.get("status") == "open"
-                        and p.get("ticker", "").startswith("KXHIGH")
+                        and (p.get("ticker") or "").startswith("KXHIGH")
                     ]
                     if _wx_positions:
                         _wx_ppo_wrote = False
