@@ -65,171 +65,14 @@ from integration import (  # noqa: E402
 )
 
 
-def _extract_tick_error_location(exc) -> str:
-    """Return 'basename.py:LINE:func' for the deepest frame of `exc`'s
-    traceback, or '?' on any failure.
-
-    Used by the run-loop tick error handler so the operator gets a
-    diagnosable Telegram alert without having to chase journalctl.
-    Must never raise — it lives inside the exception handler that
-    keeps the bot from crashing.
-
-    Chained exceptions: prefers `__cause__` (explicit `raise Y from X`)
-    or `__context__` (implicit re-raise) over the wrapper's own
-    traceback so the alert points at the original raise site, not
-    the re-raise. Falls back to the exception's own traceback if
-    no chain is present.
-
-    Implementation walks `tb.tb_next` directly (rather than
-    `traceback.extract_tb`) to avoid loading source line text from
-    disk inside the error handler.
-    """
-    try:
-        if exc is None:
-            return "?"
-        # Resolve to the deepest exception in the chain.
-        origin = exc
-        seen = set()
-        while True:
-            chained = getattr(origin, "__cause__", None) or getattr(
-                origin, "__context__", None)
-            if chained is None or id(chained) in seen:
-                break
-            seen.add(id(origin))
-            origin = chained
-        tb = getattr(origin, "__traceback__", None)
-        if tb is None:
-            return "?"
-        # Walk to the deepest frame.
-        while getattr(tb, "tb_next", None) is not None:
-            tb = tb.tb_next
-        frame = getattr(tb, "tb_frame", None)
-        if frame is None:
-            return "?"
-        code = getattr(frame, "f_code", None)
-        if code is None:
-            return "?"
-        filename = getattr(code, "co_filename", None) or ""
-        funcname = getattr(code, "co_name", None) or "?"
-        lineno = getattr(tb, "tb_lineno", None)
-        fn = os.path.basename(filename) if filename else "?"
-        line_repr = str(lineno) if lineno else "?"
-        return f"{fn}:{line_repr}:{funcname}"
-    except Exception:
-        return "?"
 
 
-def _kalshi_breaker_success(resp) -> bool:
-    """Classifies a `_request()` return value as success/failure for
-    the circuit breaker.
-
-    Failure shapes:
-      - None: HTTP 4xx/5xx, timeout, network error (definitive)
-      - {"error": ...}: explicit Kalshi error wrapper (singular)
-      - {"errors": [...]}: plural, used on validation failures
-
-    Round-4 P1 fix (corrected by R5 A1): empty `{}` is NOT treated
-    as failure. NOTE: `_request()` returns `{}` only on a 200 with
-    literally empty body — Kalshi's actual list endpoints return
-    `{"events": []}` / `{"settlements": []}` for empty results, NOT
-    `{}`. So an empty `{}` is in fact a Kalshi pathology and is a
-    weak degradation signal. We choose to ignore it because (a) it's
-    rare in practice, (b) tripping on it caused false-positive
-    weekend trips during round-4 review, and (c) the breaker has
-    other signals (None on 4xx/5xx) that catch the harder failures.
-    Acknowledged trade-off; flagged for revisit if `{}` becomes
-    common in real traffic.
-
-    Limitation acknowledged: future Kalshi error shapes that aren't
-    `{"error": ...}` or `{"errors": [...]}` (e.g., a hypothetical
-    `{"unauth": true}`) would pass as success. If Kalshi changes
-    response shape, the new error key needs to be added here. See
-    memory/feedback_kalshi_schema_drift for prior incidents of
-    silent rename."""
-    if resp is None:
-        return False
-    if isinstance(resp, dict):
-        if "error" in resp or "errors" in resp:
-            return False
-    return True
 
 
-def _kalshi_series_key(ticker: str, kind: str) -> str:
-    """Derive a per-series breaker key from a market ticker. Round-1 A2
-    + round-2 A3+A4 fixes: bounded cardinality (one breaker per series,
-    not per expiring ticker) and validated input (rejects empty/None).
-
-    KXBTC15M-26APR250000-00, kind="orderbook" → kalshi_orderbook_KXBTC15M.
-    """
-    if not ticker or not isinstance(ticker, str):
-        # Bucket malformed inputs into a single sentinel so they
-        # don't poison the registry with garbage keys. Logged once
-        # via the breaker itself the first time it trips.
-        return f"kalshi_{kind}_unknown"
-    series = ticker.split("-", 1)[0] if "-" in ticker else ticker
-    return f"kalshi_{kind}_{series}"
 
 
-def _kalshi_breaker(method):
-    """Decorator that wraps a KalshiClient REST GET method with a
-    per-key circuit breaker. The decorated method must declare a
-    `_breaker_key_fn` and optional `_breaker_recovery_seconds` /
-    `_breaker_failures_to_open` attributes via the helper
-    `@_breaker_config(...)`. Decorator order matters:
-
-        @_kalshi_breaker        # outer
-        @_breaker_config(...)   # inner — sets attributes
-        def get_foo(self): ...
-
-    Round-3 P2-1+P2-2 fix: validate at decoration time so a missing
-    or wrongly-ordered `@_breaker_config` raises immediately rather
-    than producing a silent AttributeError at first call in
-    production.
-
-    Round-2 A8 refactor: replaces 9 copies of the try/acquire/
-    record_result boilerplate with a single decorator. When the
-    contract changes (e.g., add per-call timeout, distinguish 4xx
-    vs 5xx), only the decorator changes — not 9 call sites."""
-    if not hasattr(method, "_breaker_key_fn"):
-        raise TypeError(
-            f"@_kalshi_breaker on {method.__qualname__}: missing "
-            f"@_breaker_config(...) inner decorator. Decorator order "
-            f"must be `@_kalshi_breaker` (outer) then "
-            f"`@_breaker_config(...)` (inner).")
-    @functools.wraps(method)
-    def wrapper(self, *args, **kwargs):
-        key = method._breaker_key_fn(self, *args, **kwargs)
-        breaker = _BREAKER_REGISTRY.get(
-            key,
-            failures_to_open=getattr(method, "_breaker_failures_to_open", 3),
-            recovery_seconds=getattr(method, "_breaker_recovery_seconds", 300))
-        gen = breaker.acquire()
-        if gen is None:
-            return None
-        try:
-            resp = method(self, *args, **kwargs)
-        except Exception:
-            breaker.record_result(gen, success=False)
-            raise
-        breaker.record_result(gen, success=_kalshi_breaker_success(resp))
-        return resp
-    return wrapper
 
 
-def _breaker_config(key_fn, *, failures_to_open: int = 3,
-                    recovery_seconds: float = 300.0):
-    """Attaches breaker config to a function. Use BEFORE @_kalshi_breaker:
-        @_kalshi_breaker
-        @_breaker_config(key_fn=lambda self, ticker: f"kalshi_orderbook_{ticker.split('-')[0]}",
-                         recovery_seconds=120)
-        def get_orderbook(self, ticker, depth=10): ...
-    """
-    def attach(fn):
-        fn._breaker_key_fn = key_fn
-        fn._breaker_failures_to_open = failures_to_open
-        fn._breaker_recovery_seconds = recovery_seconds
-        return fn
-    return attach
 from models import (  # noqa: F401 — extracted pure-math classes
     EGARCHEstimator, MincerZarnowitzTracker, PositionSizer,
     calculate_fee, calculate_taker_fee, calculate_maker_fee,
@@ -239,6 +82,20 @@ from models import (  # noqa: F401 — extracted pure-math classes
 
 from bot.constants import *  # noqa: F401,F403 — module-level constants extracted per Bit 3.1
 from bot.constants import _CROSS_EXCHANGE_FEEDS_ACTIVE  # noqa: F401 — underscore-prefixed names that star-import skips; explicit re-export so bot._impl namespace contains them too
+
+from bot.helpers import *  # noqa: F401,F403 — feature/sizing/cell-block helpers per Bit 3.2
+from bot.helpers.validators import (  # noqa: F401 — underscore-prefixed; star-import skips them
+    _validate_bleeders_against_runtime_registry,
+    _validate_high_price_stc_block_bleeder_strings,
+    _validate_bleed_block_bleeder_strings,
+)
+from bot.helpers.breakers import (  # noqa: F401 — underscore-prefixed; star-import skips them
+    _extract_tick_error_location,
+    _kalshi_breaker_success,
+    _kalshi_series_key,
+    _kalshi_breaker,
+    _breaker_config,
+)
 
 
 
@@ -376,219 +233,22 @@ def _resolve_cal_engine(product_type: Optional[str],
 
 
 
-def tm_sweep_extract_depths(yes_asks, tiers=TM_SWEEP_CAPTURE_TIERS):
-    """Given a list of [price_cents, qty] yes-ask pairs (post _extract_book_levels),
-    return {tier: total_qty} for each requested tier. Missing tiers → 0.
-    Duplicate tiers in input are summed (defensive)."""
-    out = {t: 0 for t in tiers}
-    if not yes_asks:
-        return out
-    tier_set = set(tiers)
-    for entry in yes_asks:
-        try:
-            price, qty = int(entry[0]), int(entry[1])
-        except (TypeError, ValueError, IndexError):
-            continue
-        if price in tier_set and qty > 0:
-            out[price] += qty
-    return out
-
-
-def tm_sweep_counterfactual_pnl(unfilled, entry_tier, depths, market_result,
-                                sweep_tiers=TM_SWEEP_COUNTERFACTUAL_TIERS):
-    """Counterfactual sweep PnL: what would unfilled remainder have earned if
-    we'd sequentially IOC'd into each sweep_tier strictly above entry_tier?
-
-    Returns (total_pnl_cents, breakdown_legs).
-    breakdown_legs = [{"tier": int, "ct": int, "payoff": int}, ...].
-
-    Win:  payoff = ct * (100 - tier) - taker_fee(ct, tier)
-    Loss: payoff = -(ct * tier + taker_fee(ct, tier))
-    Unrecognized market_result → (0, [])."""
-    if market_result in ("yes", "all_yes"):
-        is_win = True
-    elif market_result in ("no", "all_no"):
-        is_win = False
-    else:
-        return 0, []
-
-    legs = []
-    total = 0
-    remaining = max(0, int(unfilled))
-    for tier in sweep_tiers:
-        if remaining <= 0:
-            break
-        if tier <= entry_tier:
-            continue
-        avail = int(depths.get(tier, 0) or 0)
-        take = min(remaining, avail)
-        if take <= 0:
-            continue
-        fee = calculate_taker_fee(take, tier)
-        if is_win:
-            payoff = take * (100 - tier) - fee
-        else:
-            payoff = -(take * tier + fee)
-        legs.append({"tier": tier, "ct": take, "payoff": payoff})
-        total += payoff
-        remaining -= take
-    return total, legs
-
-
-def tm_compute_contracts(price_cents: int, seconds_to_close: float,
-                         bankroll_cents: int = 100000,
-                         asset: str = "",
-                         buf_pct: Optional[float] = None,
-                         risk_cap_price: Optional[int] = None) -> int:
-    """Margin × STC-aware sizing for terminal momentum.
-
-    Formula: TM_BASE × (100 - price) × stc_multiplier
-    Capped at per-asset risk limit (structural: TM respects same caps as main pipeline).
-    Negative-EV tiers (95c) get minimum sizing until WR proves above breakeven.
-    Thin-buffer cap: when buf_pct < TM_THIN_BUFFER_PCT, cap contracts to
-    TM_THIN_BUFFER_CONTRACT_CAP to bound tail risk (Apr 1-23: all 8 catastrophic
-    TM losses ≥100ct were at sub-0.20% buffer; one ETH loss @ 0.155% buffer = -$178).
-
-    Data (1,056 trades, Apr 1-23 2026, refines earlier n=278):
-    - STC < 180s: safe-zone boost ×1.5
-    - STC 180-240s: danger zone ×0.5
-    - STC 240+: standard ×1.0
-    - Per-asset risk cap via TM_ASSET_RISK_CAPS
-    - buf_pct < 0.20%: cap to TM_THIN_BUFFER_CONTRACT_CAP (=50)
-      (losses avg buf_pct 0.189% vs wins 0.240% — the earlier "buffer doesn't
-       predict" finding held on Apr 1-7 n=278; fails on full April sample.)
-
-    risk_cap_price (adversary A6): when computing max_by_risk, callers may
-    pass the WORST-CASE fill price (e.g. MAX_ENTRY_PRICE=99 when sweeping)
-    so dollars-at-risk respects the actual capital deployed at the highest
-    swept tier, not the scan-time entry price. Defaults to price_cents.
-    """
-    margin = 100 - price_cents
-    if margin <= 0:
-        return TM_MIN_CONTRACTS
-
-    # EV gate: negative-EV tiers get minimum sizing (collect data only)
-    if price_cents in TM_NEGATIVE_EV_TIERS:
-        return TM_MIN_CONTRACTS
-
-    # STC multiplier
-    if seconds_to_close < TM_STC_SAFE_THRESHOLD:
-        stc_mult = TM_STC_SAFE_MULT
-    elif seconds_to_close < TM_STC_DANGER_HI:
-        stc_mult = TM_STC_DANGER_MULT
-    else:
-        stc_mult = TM_STC_NORMAL_MULT
-
-    ct = int(TM_BASE_CONTRACTS * margin * stc_mult)
-
-    # Per-asset risk cap (structural: TM no longer bypasses asset caps)
-    if bankroll_cents > 0:
-        risk_frac = TM_ASSET_RISK_CAPS.get(asset, 0.15)
-        # Use risk_cap_price if provided (sweep-aware sizing), else fall
-        # back to scan-time price. max_by_risk denominator is the WORST-case
-        # fill price so cents-at-risk respect the cap regardless of sweep.
-        # Adversary R3 A1: explicit None check, not truthiness — a future
-        # caller passing 0 should NOT silently fall back to price_cents.
-        _risk_price = risk_cap_price if risk_cap_price is not None else price_cents
-        max_by_risk = int(bankroll_cents * risk_frac / _risk_price)
-        ct = min(ct, max_by_risk)
-
-    # Thin-buffer cap: bounds the fat tail when spot is close to threshold
-    if buf_pct is not None and buf_pct < TM_THIN_BUFFER_PCT:
-        ct = min(ct, TM_THIN_BUFFER_CONTRACT_CAP)
-
-    return max(TM_MIN_CONTRACTS, min(TM_MAX_CONTRACTS, ct))
-
-
-def buffer_sizing_multiplier(spot_buffer_pct: float) -> float:
-    """Return a sizing multiplier based on spot buffer at entry.
-
-    Only called when BUFFER_SIZING_ENABLED = True.
-    Thresholds from PPO analysis (Apr 7, n=63, 2 losses — preliminary):
-    - Fat buffer (>= 0.20%): ×1.25 (high confidence, lean in)
-    - Normal (0.10-0.20%): ×1.0 (baseline)
-    - Thin (0.05-0.10%): ×0.5 (reduce exposure)
-    - Critical (< 0.05%): ×0.25 (minimum — spot barely above threshold)
-    """
-    if spot_buffer_pct >= BUFFER_SIZING_FAT:
-        return 1.25
-    elif spot_buffer_pct >= BUFFER_SIZING_NORMAL:
-        return 1.0
-    elif spot_buffer_pct >= BUFFER_SIZING_CRITICAL:
-        return 0.5
-    else:
-        return 0.25
 
 
 
 
 
 
-def get_min_edge(entry_price_cents: int) -> float:
-    """Return minimum fee-adjusted edge for a given entry price."""
-    for price_floor, min_edge in MIN_EDGE_BY_PRICE:
-        if entry_price_cents >= price_floor:
-            return min_edge
-    return 0.005
 
 
-def should_block_high_price_stc_band(
-    asset: Optional[str],
-    side: Optional[str],
-    entry_price_cents: Optional[int],
-    seconds_to_close: Optional[float],
-    enabled: Optional[bool] = None,
-) -> bool:
-    """Return True if this entry falls in the 96¢ × {SOL,XRP} × 2-5min STC danger CELL.
-
-    PURE CELL PREDICATE — does NOT consider strategy. For the actual gate decision
-    (which exempts profitable strategies inside the cell), use
-    `should_block_high_price_stc_candidate()`.
-
-    See kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md for the data and rationale.
-    """
-    if enabled is None:
-        enabled = HIGH_PRICE_STC_BLOCK_ENABLED
-    if not enabled:
-        return False
-    if asset not in HIGH_PRICE_STC_BLOCK_ASSETS:
-        return False
-    if side != "yes":
-        return False
-    if entry_price_cents != HIGH_PRICE_STC_BLOCK_PRICE_CENTS:
-        return False
-    if seconds_to_close is None:
-        return False
-    if not (HIGH_PRICE_STC_BLOCK_STC_LO_S <= seconds_to_close <= HIGH_PRICE_STC_BLOCK_STC_HI_S):
-        return False
-    return True
 
 
-def should_block_high_price_stc_candidate(
-    asset: Optional[str],
-    side: Optional[str],
-    entry_price_cents: Optional[int],
-    seconds_to_close: Optional[float],
-    strategy: Optional[str],
-    enabled: Optional[bool] = None,
-) -> bool:
-    """Return True if this candidate is in the danger cell AND uses a bleeder strategy.
 
-    Strategy-aware composite of cell predicate + bleeder-strategy check. Wins
-    inside the cell (TM-96, TM-untagged, TAKER_NOW, MAKER_AGGRESSIVE, decided_t1*,
-    weekend_discount, PANIC_CAPTURE) pass through untouched.
 
-    Caller invokes this on each `selected` candidate at end of scan() and drops
-    matches before returning the candidate list.
 
-    See kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md.
-    """
-    if not should_block_high_price_stc_band(
-            asset, side, entry_price_cents, seconds_to_close, enabled=enabled):
-        return False
-    if strategy is None:
-        return False
-    return strategy in HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES
+
+
+
 
 
 # Bit 3.0.5: bleeder validators (HPSB + BLEED_BLOCK) and their boot-time
@@ -602,78 +262,8 @@ def should_block_high_price_stc_candidate(
 
 # ─── New bleed-cell predicates (R-bleed-1) ─────────────────────────────────
 
-def should_block_tm98_highprice_bleed_candidate(
-    asset: Optional[str],
-    side: Optional[str],
-    entry_price_cents: Optional[int],
-    seconds_to_close: Optional[float],
-    strategy: Optional[str],
-    enabled: Optional[bool] = None,
-) -> bool:
-    """Return True iff candidate is in {BTC,ETH,XRP} × TM98 × 97-98¢ × 121-300s.
-
-    Strategy-aware: only fires for terminal_momentum_98 (other strategies in
-    the same price/STC cell aren't catastrophic).
-
-    Default-OFF until operator flips TM98_HIGHPRICE_BLEED_BLOCK_ENABLED=1
-    on the VPS .env.
-    """
-    if enabled is None:
-        enabled = TM98_HIGHPRICE_BLEED_BLOCK_ENABLED
-    if not enabled:
-        return False
-    if asset is None or asset not in TM98_HIGHPRICE_BLEED_BLOCK_ASSETS:
-        return False
-    if side != "yes":
-        return False
-    if entry_price_cents is None:
-        return False
-    if not (TM98_HIGHPRICE_BLEED_BLOCK_PRICE_LO <= entry_price_cents
-            <= TM98_HIGHPRICE_BLEED_BLOCK_PRICE_HI):
-        return False
-    if seconds_to_close is None:
-        return False
-    if not (TM98_HIGHPRICE_BLEED_BLOCK_STC_LO_S <= seconds_to_close
-            <= TM98_HIGHPRICE_BLEED_BLOCK_STC_HI_S):
-        return False
-    if strategy is None or strategy not in TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES:
-        return False
-    return True
 
 
-def should_block_sol_taker_lowprice_bleed_candidate(
-    asset: Optional[str],
-    side: Optional[str],
-    entry_price_cents: Optional[int],
-    seconds_to_close: Optional[float],
-    strategy: Optional[str],
-    enabled: Optional[bool] = None,
-) -> bool:
-    """Return True iff candidate is SOL × TAKER_NOW × 85-89¢ × 121-300s STC.
-
-    Default-OFF until operator flips SOL_TAKER_LOWPRICE_BLEED_BLOCK_ENABLED=1.
-    """
-    if enabled is None:
-        enabled = SOL_TAKER_LOWPRICE_BLEED_BLOCK_ENABLED
-    if not enabled:
-        return False
-    if asset is None or asset not in SOL_TAKER_LOWPRICE_BLEED_BLOCK_ASSETS:
-        return False
-    if side != "yes":
-        return False
-    if entry_price_cents is None:
-        return False
-    if not (SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_LO <= entry_price_cents
-            <= SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_HI):
-        return False
-    if seconds_to_close is None:
-        return False
-    if not (SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_LO_S <= seconds_to_close
-            <= SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_HI_S):
-        return False
-    if strategy is None or strategy not in SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES:
-        return False
-    return True
 
 
 # Bit 3.0.5: _validate_bleed_block_bleeder_strings + _BLEED_BLOCK_MISSING_BLEEDERS
@@ -682,29 +272,6 @@ def should_block_sol_taker_lowprice_bleed_candidate(
 # strategy-registry sources are all in scope.
 
 
-def should_exclude_weather_no_ticker(
-    ticker: Optional[str],
-    excluded_prefixes: Optional[frozenset] = None,
-) -> bool:
-    """Return True iff ticker belongs to an excluded weather-NO city family.
-
-    Excluded cities (default: KXHIGHTLV / Las Vegas) bleed within the 39c+ live
-    band even after the May-2 floor tightening. Predicate gates the live
-    candidate creation in `_process_no_side_shadow`; shadow logging is
-    unaffected so the data trail continues for forward-going analysis.
-
-    Match is `ticker == prefix` or `ticker.startswith(prefix + "-")`. The
-    trailing-dash anchor prevents collisions with hypothetical future Kalshi
-    series that share a prefix substring (e.g. KXHIGHTLVENICE).
-    """
-    if excluded_prefixes is None:
-        excluded_prefixes = WEATHER_NO_EXCLUDED_CITY_PREFIXES
-    if not ticker:
-        return False
-    for _pfx in excluded_prefixes:
-        if ticker == _pfx or ticker.startswith(_pfx + "-"):
-            return True
-    return False
 
 
 # ─── Extended Feature Instrumentation (Tier 4 + Tier 5) ───────────────────
@@ -714,118 +281,8 @@ def should_exclude_weather_no_ticker(
 
 
 
-def compute_time_regime_features(eval_time_iso: Optional[str] = None) -> Dict[str, Optional[int]]:
-    """Compute Tier 4 (time/regime) features for a timestamp.
-
-    Returns dict with: hour_of_day_utc, day_of_week (Sun=0), is_weekend (0/1),
-    minutes_since_us_open (negative if pre-open), is_fomc_day (0/1),
-    is_cpi_day (0/1). Safe for None/malformed inputs.
-    """
-    null_result = {
-        "hour_of_day_utc": None, "day_of_week": None, "is_weekend": None,
-        "minutes_since_us_open": None, "is_fomc_day": None, "is_cpi_day": None,
-    }
-    try:
-        from zoneinfo import ZoneInfo
-    except ImportError:
-        return null_result
-
-    if eval_time_iso is None:
-        now_utc = datetime.datetime.now(timezone.utc)
-    else:
-        # Handle 'Z' suffix (Python ISO parsing needs +00:00)
-        s = eval_time_iso.replace("Z", "+00:00")
-        try:
-            now_utc = datetime.datetime.fromisoformat(s)
-        except (ValueError, TypeError):
-            return null_result
-        if now_utc.tzinfo is None:
-            now_utc = now_utc.replace(tzinfo=timezone.utc)
-
-    try:
-        hour_of_day_utc = now_utc.hour
-        # weekday(): Mon=0..Sun=6. Convert to Sun=0, Mon=1, ..., Sat=6.
-        day_of_week = (now_utc.weekday() + 1) % 7
-        is_weekend = 1 if day_of_week in (0, 6) else 0
-
-        # Minutes since US market open (9:30 AM ET). Handles DST automatically.
-        et = now_utc.astimezone(ZoneInfo("America/New_York"))
-        us_open = et.replace(hour=9, minute=30, second=0, microsecond=0)
-        minutes_since_us_open = int((et - us_open).total_seconds() / 60)
-
-        date_str = now_utc.strftime("%Y-%m-%d")
-        is_fomc_day = 1 if date_str in FOMC_ANNOUNCEMENT_DATES else 0
-        is_cpi_day = 1 if date_str in CPI_RELEASE_DATES else 0
-
-        return {
-            "hour_of_day_utc": hour_of_day_utc,
-            "day_of_week": day_of_week,
-            "is_weekend": is_weekend,
-            "minutes_since_us_open": minutes_since_us_open,
-            "is_fomc_day": is_fomc_day,
-            "is_cpi_day": is_cpi_day,
-        }
-    except Exception:
-        return null_result
 
 
-def compute_derived_features(
-    spot_price: Optional[float] = None,
-    threshold: Optional[float] = None,
-    volatility: Optional[float] = None,
-    seconds_to_close: Optional[float] = None,
-    calibrated_prob: Optional[float] = None,
-    market_price_cents: Optional[int] = None,
-    kelly_contracts: Optional[int] = None,
-    sol_rescue_cap: int = 25,
-    n_recent_cal_trades: Optional[int] = None,
-) -> Dict[str, Optional[float]]:
-    """Compute Tier 5 (derived) features from existing columns.
-
-    - spot_distance_to_strike_sigma: buf_pct / (vol × sqrt(STC/5) × 100).
-      How many σ of remaining-time vol the buffer covers. `volatility` is
-      `blended_rv` — per-5-second stdev of log returns — so STC scales by
-      sqrt(STC/5) not sqrt(STC), matching the sigma_move convention at
-      certainty_score (spot × blended_rv × sqrt(remaining/5)).
-    - prob_breakeven_gap: calibrated_prob − market_price/100. Model's
-      conviction above breakeven.
-    - kelly_vs_cap_ratio: kelly_contracts / SOL_RESCUE_CONTRACT_CAP.
-      Proxy for "how aggressive Kelly wanted to be" on SOL in rescue zone.
-    - calibration_confidence: n_recent_cal_trades / 100 (capped at 1.0).
-      How trained the active CalEngine is.
-
-    All features return None on missing/invalid inputs.
-    """
-    sigma = None
-    if (spot_price is not None and threshold is not None and threshold > 0
-            and volatility is not None and volatility > 0
-            and seconds_to_close is not None and seconds_to_close > 0):
-        buf_pct = (spot_price - threshold) / threshold * 100
-        try:
-            sigma_denom = volatility * math.sqrt(seconds_to_close / 5.0) * 100
-            if sigma_denom > 0:
-                sigma = buf_pct / sigma_denom
-        except (ValueError, ZeroDivisionError):
-            pass
-
-    gap = None
-    if calibrated_prob is not None and market_price_cents is not None:
-        gap = calibrated_prob - (market_price_cents / 100.0)
-
-    ratio = None
-    if kelly_contracts is not None and sol_rescue_cap > 0:
-        ratio = kelly_contracts / sol_rescue_cap
-
-    conf = None
-    if n_recent_cal_trades is not None and n_recent_cal_trades >= 0:
-        conf = min(n_recent_cal_trades / 100.0, 1.0)
-
-    return {
-        "spot_distance_to_strike_sigma": sigma,
-        "prob_breakeven_gap": gap,
-        "kelly_vs_cap_ratio": ratio,
-        "calibration_confidence": conf,
-    }
 
 
 
@@ -877,29 +334,12 @@ def _append_raw_api_journal(entry: Dict) -> None:
 
 # Fee helpers, compute_tv_rk_weights → imported from models.py
 
-# ── FP / Dollar String Helpers ──────────────────────────────────────────────
-def dollars_str_to_cents(s) -> int:
-    """Convert dollar string like '0.8800' to integer cents (88)."""
-    if s is None:
-        return 0
-    return round(float(s) * 100)
 
 
-def cents_to_dollars_str(cents: int) -> str:
-    """Convert integer cents (88) to dollar string '0.8800'."""
-    return f"{cents / 100:.4f}"
 
 
-def fp_str_to_int(s) -> int:
-    """Convert FP string like '5.00' to integer (5)."""
-    if s is None:
-        return 0
-    return int(round(float(s)))
 
 
-def int_to_fp_str(n: int) -> str:
-    """Convert integer (5) to FP string '5.00'."""
-    return f"{n:.2f}"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -926,59 +366,10 @@ _HPSB_VALIDATOR_UNAVAILABLE_REASON: Optional[str] = None
 
 
 
-def _validate_bleeders_against_runtime_registry(bleeder_set, name):
-    """Boot-time check: every string in `bleeder_set` MUST be a member of the
-    live-strategy registry — i.e. a name that some bleeder-relevant subsystem
-    treats as a real `candidate.strategy`. Drift = ERROR log + non-empty
-    return; gate would silently no-op without this check (a bleeder that
-    doesn't match any candidate.strategy is never blocked).
-
-    Registry sources (NOT the full set of strategies in the codebase — names
-    like `weather_no_live`, `hourly_no_live`, `hourly_dc_*` exist at scan
-    sites but are intentionally outside the bleeder-gate scope):
-      - STRATEGY_CLAMP_POLICY keys (sub-limit clamp policy)
-      - MAKER_TAIL_ELIGIBLE_STRATEGIES (post-IOC partial maker-tail)
-      - TM_LIVE_STRATEGIES (frozenset(f"terminal_momentum_{p}" for p in TM_PRICE_SET))
-      - STRATEGY_LIMIT_BUMP_RESERVE_CENTS keys (smart IOC limit picker)
-      - STRATEGY_TAKER_NOW / STRATEGY_MAKER_PATIENT / STRATEGY_MAKER_AGGRESSIVE
-        / STRATEGY_PANIC_CAPTURE — canonical execution-engine names
-        (technically redundant with STRATEGY_CLAMP_POLICY but explicit > implicit).
-        STRATEGY_WAIT is INTENTIONALLY EXCLUDED — it's a no-op signal returned
-        by evaluate_execution_strategy(), never set as candidate.strategy.
-        Including it would let a hypothetical rename `MAKER_PATIENT → WAIT`
-        silently pass the validator.
-      - KNOWN_DC_STRATEGIES (decided-contract names — see comment above)
-    """
-    live = (set(STRATEGY_CLAMP_POLICY.keys())
-            | set(MAKER_TAIL_ELIGIBLE_STRATEGIES)
-            | set(TM_LIVE_STRATEGIES)
-            | set(STRATEGY_LIMIT_BUMP_RESERVE_CENTS.keys())
-            | {STRATEGY_TAKER_NOW, STRATEGY_MAKER_PATIENT,
-               STRATEGY_MAKER_AGGRESSIVE, STRATEGY_PANIC_CAPTURE}
-            | KNOWN_DC_STRATEGIES)
-    missing = sorted(bleeder_set - live)
-    if missing:
-        logging.error(
-            "%s_BLEEDER_UNKNOWN_TO_REGISTRY: %s — gate will silently no-op for "
-            "these. A strategy may have been renamed; update STRATEGY_CLAMP_POLICY, "
-            "MAKER_TAIL_ELIGIBLE_STRATEGIES, TM_LIVE_STRATEGIES, "
-            "STRATEGY_LIMIT_BUMP_RESERVE_CENTS, KNOWN_DC_STRATEGIES, or one of "
-            "the STRATEGY_* string constants to match the new name.",
-            name, missing)
-    return missing
 
 
-def _validate_high_price_stc_block_bleeder_strings():
-    """HPSB bleeder integrity check (Bit 3.0.5: registry-membership)."""
-    return _validate_bleeders_against_runtime_registry(
-        HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES, "HPSB")
 
 
-def _validate_bleed_block_bleeder_strings():
-    """TM98 + SOL_TAKER bleed-block bleeder integrity check (Bit 3.0.5: registry-membership)."""
-    return _validate_bleeders_against_runtime_registry(
-        TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES | SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES,
-        "BLEED_BLOCK")
 
 
 # Boot-time validation — runs after all registry sources are in scope.
@@ -986,190 +377,6 @@ _HPSB_MISSING_BLEEDERS = _validate_high_price_stc_block_bleeder_strings()
 _BLEED_BLOCK_MISSING_BLEEDERS = _validate_bleed_block_bleeder_strings()
 
 
-def evaluate_execution_strategy(market_data: Dict) -> Tuple[str, Dict]:
-    """Intelligent decision engine that evaluates current conditions and
-    returns the optimal execution strategy.
-
-    Args:
-        market_data: Dict with keys:
-            z_score (float): signed z-score from ProbabilityEngine
-            calibrated_prob (float): calibrated win probability
-            spot (float): current spot price
-            threshold (float): strike/threshold price
-            seconds_to_close (float): seconds remaining until close
-            blended_rv (float): blended realized volatility
-            vol_regime (str): "normal" or "elevated"
-            best_yes_ask (int|None): current best ask in cents
-            best_ask_depth (int): contracts at best ask level
-            total_ob_depth (int): total orderbook depth (contracts)
-            convergence_velocity (float): upward ask movement in cents/30s
-            edge (float): calibrated_prob - market_price/100
-            min_entry_price (int): product-type min entry price in cents
-            max_entry_price (int): product-type max entry price in cents
-
-    Returns:
-        (strategy, scores) where strategy is one of STRATEGY_* constants
-        and scores is a diagnostic dict with the component scores.
-    """
-    z = abs(market_data.get("z_score", 0))
-    remaining = market_data.get("seconds_to_close", 999)
-    best_ask = market_data.get("best_yes_ask")
-    ask_depth = market_data.get("best_ask_depth", 999)
-    total_depth = market_data.get("total_ob_depth", 999)
-    velocity = market_data.get("convergence_velocity", 0)
-    _min_price = market_data.get("min_entry_price", MIN_ENTRY_PRICE)
-    _max_price = market_data.get("max_entry_price", MAX_ENTRY_PRICE)
-    vol_regime = market_data.get("vol_regime", "normal")
-    edge = market_data.get("edge", 0)
-    spot = market_data.get("spot", 0)
-    threshold = market_data.get("threshold", 0)
-    blended_rv = market_data.get("blended_rv", 0)
-
-    # ── 1. Outcome Certainty Score (0-10) ─────────────────────────────────
-    # z-score contribution: maps |z| 0→0, 2→3, 3→5, 4→7, 5+→9
-    certainty_z = min(9.0, z * 1.8)
-
-    # Distance from threshold: how far is spot from strike in vol terms?
-    # If spot is far above threshold (for "above" bets), outcome is more certain
-    certainty_distance = 0.0
-    if spot > 0 and blended_rv > 0 and remaining > 0:
-        sigma_move = spot * blended_rv * math.sqrt(remaining / 5.0)
-        if sigma_move > 0:
-            # How many sigma away is threshold? (positive = spot above threshold)
-            dist_sigma = (spot - threshold) / sigma_move
-            # Map: 0σ→0, 1σ→2, 2σ→4, 3σ→6, 4+σ→8
-            certainty_distance = min(8.0, max(0.0, dist_sigma * 2.0))
-
-    # Vol trend: collapsing vol = more certain, spiking = less certain
-    certainty_vol_adj = 0.0
-    if vol_regime == "elevated":
-        certainty_vol_adj = -1.5  # spiking vol = less certain
-
-    certainty_score = min(10.0, max(0.0,
-        0.5 * certainty_z + 0.4 * certainty_distance + 0.1 * 5.0
-        + certainty_vol_adj
-    ))
-
-    # ── 2. Orderbook State Score (0-10) ───────────────────────────────────
-    # Higher score = more urgency to take (thin/converging book)
-    if best_ask is None:
-        # Empty orderbook = extreme signal
-        ob_score = 10.0
-    else:
-        # Depth score: fewer contracts = more urgent to take
-        # 0 contracts → 10, 10 → 5, 50+ → 0
-        depth_score = max(0.0, 10.0 - ask_depth * 0.2)
-
-        # Total book thinness: <20 contracts total = very thin
-        book_thin_score = max(0.0, min(10.0, (50 - total_depth) * 0.25))
-
-        # Price level: higher ask = more converged = more urgent
-        # 85¢→0, 90¢→3, 95¢→7, 99¢→10
-        price_score = max(0.0, min(10.0, (best_ask - 85) * 0.71))
-
-        # Convergence velocity: ask moving up fast
-        velocity_score = min(10.0, max(0.0, velocity * 1.5))
-
-        ob_score = (0.25 * depth_score + 0.20 * book_thin_score
-                    + 0.25 * price_score + 0.30 * velocity_score)
-
-    # ── 3. Urgency Score (0-10) ───────────────────────────────────────────
-    # NOT a hard cutoff — continuous function of time remaining
-    # 240s→1, 180s→2.5, 90s→5.5, 60s→6.8, 30s→8.5, 15s→9.5
-    if remaining <= 0:
-        urgency_time = 10.0
-    elif remaining >= MAX_SECONDS_BEFORE_CLOSE:
-        urgency_time = 1.0
-    else:
-        # Exponential curve: more urgency as time shrinks
-        urgency_time = 10.0 - 9.0 * (remaining / MAX_SECONDS_BEFORE_CLOSE) ** 0.6
-
-    # Combine time urgency with convergence signal
-    urgency_convergence = min(3.0, velocity * 0.5)
-    # Thin book adds urgency
-    urgency_liquidity = 0.0
-    if ask_depth < 10:
-        urgency_liquidity = min(3.0, (10 - ask_depth) * 0.4)
-
-    urgency_score = min(10.0, 0.6 * urgency_time
-                        + 0.2 * urgency_convergence
-                        + 0.2 * urgency_liquidity)
-
-    # ── Composite & Decision ──────────────────────────────────────────────
-    # Weighted composite — certainty matters most
-    composite = (0.45 * certainty_score
-                 + 0.25 * ob_score
-                 + 0.30 * urgency_score)
-
-    scores = {
-        "certainty": round(certainty_score, 2),
-        "certainty_detail": {
-            "z_score": round(z, 4),
-            "distance_from_threshold": round(certainty_distance, 2),
-            "vol_trend": vol_regime,
-            "vol_adj": round(certainty_vol_adj, 2),
-        },
-        "orderbook": round(ob_score, 2),
-        "orderbook_detail": {
-            "depth": ask_depth,
-            "total_depth": total_depth,
-            "price_level": best_ask,
-            "convergence_velocity": round(velocity, 2),
-        },
-        "urgency": round(urgency_score, 2),
-        "urgency_detail": {
-            "time_remaining": round(remaining, 1),
-            "convergence_velocity": round(velocity, 2),
-            "liquidity_trend": round(urgency_liquidity, 2),
-        },
-        "composite": round(composite, 2),
-        "strategy": None,   # filled below
-        "reason": None,      # filled below
-    }
-
-    def _decide(strategy: str, reason: str) -> Tuple[str, Dict]:
-        scores["strategy"] = strategy
-        scores["reason"] = reason
-        return (strategy, scores)
-
-    # ── PANIC_CAPTURE: outcome obvious + book dried up ────────────────────
-    if (certainty_score >= 7.0
-            and (best_ask is None or best_ask > 95 or total_depth < 20)
-            and z >= 3.5):
-        return _decide(STRATEGY_PANIC_CAPTURE,
-                        f"certainty={certainty_score:.1f} z={z:.1f} "
-                        f"depth={total_depth} ask={best_ask}")
-
-    # ── TAKER_NOW: conditions demand immediate execution ──────────────────
-    if best_ask is not None and _min_price <= best_ask <= ESCALATION_MAX_ENTRY:
-        if composite >= 6.5:
-            return _decide(STRATEGY_TAKER_NOW,
-                            f"composite={composite:.1f}>=6.5")
-        if velocity > 5 and _min_price <= best_ask <= _max_price:
-            return _decide(STRATEGY_TAKER_NOW,
-                            f"velocity={velocity:.1f}>5 ask={best_ask}")
-        if certainty_score >= 6.0 and ob_score >= 6.0:
-            return _decide(STRATEGY_TAKER_NOW,
-                            f"certainty={certainty_score:.1f}>=6 "
-                            f"ob={ob_score:.1f}>=6")
-
-    # ── MAKER_AGGRESSIVE: confident but book still has depth ──────────────
-    if composite >= 4.5:
-        return _decide(STRATEGY_MAKER_AGGRESSIVE,
-                        f"composite={composite:.1f}>=4.5")
-    if certainty_score >= 5.0 and urgency_score >= 5.0:
-        return _decide(STRATEGY_MAKER_AGGRESSIVE,
-                        f"certainty={certainty_score:.1f}>=5 "
-                        f"urgency={urgency_score:.1f}>=5")
-
-    # ── MAKER_PATIENT: normal conditions ──────────────────────────────────
-    if edge > 0 and best_ask is not None and _min_price <= best_ask <= _max_price:
-        return _decide(STRATEGY_MAKER_PATIENT,
-                        f"edge={edge:.4f}>0 ask={best_ask}")
-
-    # ── WAIT: not confident enough ────────────────────────────────────────
-    return _decide(STRATEGY_WAIT,
-                    f"composite={composite:.1f} edge={edge:.4f}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

@@ -524,9 +524,18 @@ class TestBleederValidatorImplementation(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        bot_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
-        with open(bot_path) as f:
-            cls.bot_source = f.read()
+        # Bit 3.2: validators moved to bot/helpers/validators.py. Concat both
+        # so the `def _validate_*` source-greps below resolve regardless of
+        # which file the def now lives in.
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        parts = []
+        with open(os.path.join(repo_root, "bot/_impl.py")) as f:
+            parts.append(f.read())
+        validators_path = os.path.join(repo_root, "bot/helpers/validators.py")
+        if os.path.exists(validators_path):
+            with open(validators_path) as f:
+                parts.append(f.read())
+        cls.bot_source = "\n".join(parts)
 
     def test_validator_does_not_source_grep(self):
         """Shared validator helper body must not contain `open(__file__` or

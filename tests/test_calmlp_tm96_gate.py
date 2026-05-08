@@ -398,22 +398,18 @@ def test_should_block_tm96_uses_calibrated_not_raw_prob():
 
 
 def test_bot_py_compute_derived_uses_calibrated_prob():
-    """compute_derived_features in bot/_impl.py:1472+ MUST compute breakeven_gap
-    from calibrated_prob. This is the source of truth — any drift here
-    silently corrupts every prob_breakeven_gap row in evaluated_opportunities,
-    invalidating the training data for v2/v3.
+    """compute_derived_features MUST compute breakeven_gap from calibrated_prob.
+    This is the source of truth — any drift here silently corrupts every
+    prob_breakeven_gap row in evaluated_opportunities, invalidating the
+    training data for v2/v3.
+
+    Bit 3.2: function moved to bot/helpers/derived_features.py. Use
+    inspect.getsource so this assertion is file-location-independent
+    (survives any future relocations of the helper).
     """
-    import re
-    bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
-    src = bot_py.read_text()
-    # Find the compute_derived_features body around the gap formula.
-    # Must compute as: gap = calibrated_prob - (market_price_cents / 100.0)
-    m = re.search(
-        r'def\s+compute_derived_features\b.*?return\s*\{',
-        src, flags=re.DOTALL,
-    )
-    assert m, "compute_derived_features not found in bot/_impl.py"
-    body = m.group(0)
+    import inspect
+    from bot._impl import compute_derived_features
+    body = inspect.getsource(compute_derived_features)
     assert 'gap = calibrated_prob - (market_price_cents / 100.0)' in body, (
         "compute_derived_features must use the canonical formula "
         "`calibrated_prob - market_price_cents/100.0`. Train/serve skew "

@@ -25,20 +25,26 @@ BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 
 
 def _read_bot():
-    """Bit 3.1: returns concat of bot/_impl.py + bot/constants.py source.
-    Tests that look for CONSTANT = value definitions (post-extraction
-    they live in bot/constants.py) AND tests that look for class /
-    function / log-string patterns (still in bot/_impl.py) both find
-    their targets in the concatenated source.
+    """Bit 3.1+3.2: returns concat of bot/_impl.py + bot/constants.py +
+    bot/helpers/*.py source. Tests that look for CONSTANT = value definitions
+    (post-Bit-3.1 in bot/constants.py), helper-function bodies (post-Bit-3.2
+    in bot/helpers/*.py), or class / scan-site / log-string patterns (still in
+    bot/_impl.py) all find their targets in the concatenated source.
     """
+    parts = []
     with open(BOT_PATH) as f:
-        impl = f.read()
+        parts.append(f.read())
     constants_path = os.path.join(os.path.dirname(BOT_PATH), "constants.py")
     if os.path.exists(constants_path):
         with open(constants_path) as f:
-            constants = f.read()
-        return impl + "\n" + constants
-    return impl
+            parts.append(f.read())
+    helpers_dir = os.path.join(os.path.dirname(BOT_PATH), "helpers")
+    if os.path.isdir(helpers_dir):
+        for fname in sorted(os.listdir(helpers_dir)):
+            if fname.endswith(".py"):
+                with open(os.path.join(helpers_dir, fname)) as f:
+                    parts.append(f.read())
+    return "\n".join(parts)
 
 
 def _extract_constant(source, name):
