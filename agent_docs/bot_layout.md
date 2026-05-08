@@ -1,6 +1,6 @@
 # bot/_impl.py Layout
 
-bot/_impl.py is **28,160 lines** as of 2026-05-07 (Bit 2.1a rename). Class line ranges below
+bot/_impl.py is **28,203 lines** as of 2026-05-08 (transient-None fix `324921b`). Class line ranges below
 are auto-verifiable. Repo modularization plan (`kb/decisions/repo-modularization-plan-may05.md`)
 will turn bot/_impl.py into a thin entrypoint shim with logic in a `bot/` package.
 
@@ -37,7 +37,7 @@ verify by reading 5-10 lines around each line number before quoting.
 | 1–~60 | Header import block (`bot._thread_env` imports BEFORE `numpy` — load-bearing per CLAUDE.md; `scripts/cal_mlp/` is also added to sys.path here for the bare `from integration import` calls later in the file) |
 | ~60–~2150 | Module-level constants AND helpers, interleaved (cell-block bleeder lists, MIN_EDGE/TM_SWEEP tables, validators, `compute_derived_features`, `compute_time_regime_features`, sizing helpers, dollars/fp helpers, cell-block predicates `should_block_*`). Future split: constants → `bot/constants.py` (Bit 3.1); helpers → `bot/helpers/*` (Bit 3.2). The exact split-point lands in Bit 3.1. |
 | ~2150–~2364 | `evaluate_execution_strategy()` + tail helpers. (Future home undecided — likely `bot/helpers/execution.py` since it's diagnostic-only.) |
-| 2365–28160 | Class definitions (see table below). One module-level `def discover_active_windows()` at line 26084 sits in the body region between SettlementTracker's class body and the MainLoop class def at line 26169; it ships with MainLoop in Bit 9.3. |
+| 2370–28203 | Class definitions (see table below). One module-level `def discover_active_windows()` sits in the body region between SettlementTracker's class body and the MainLoop class def at line 26212; it ships with MainLoop in Bit 9.3. |
 
 ### Class-body end vs class-range note
 
@@ -53,25 +53,25 @@ Generated 2026-05-07 from `grep -nE '^class ' bot/_impl.py` (post-Bit-2.1a renam
 
 | Lines | Class | Size |
 |---|---|---|
-| 2365–2717 | `KalshiClient` | 353 |
-| 2718–2780 | `Logger` | 63 |
-| 2781–3029 | `TelegramNotifier` | 249 |
-| 3030–5599 | `StateManager` | 2570 |
-| 5600–5933 | `CoinbaseFeed` | 334 |
-| 5934–5945 | `OrderbookSchemaError` | 12 |
-| 5946–7715 | `KalshiFeed` | 1770 |
-| 7716–7796 | `DeribitDVOLFetcher` | 81 |
-| 7797–8124 | `CrossExchangeFeed` | 328 |
-| 8125–8201 | `CoinGlassFetcher` | 77 |
-| 8202–8323 | `OrderFlowEngine` | 122 |
-| 8324–8484 | `KalshiOrderFlowTracker` | 161 |
-| 8485–9444 | `VolatilityEngine` | 960 |
-| 9445–9647 | `ProbabilityEngine` | 203 |
-| 9648–10657 | `CalibrationEngine` | 1010 |
-| 10658–19735 | `OpportunityScanner` | 9078 |
-| 19736–24989 | `OrderExecutor` | 5254 |
-| 24990–26168 | `SettlementTracker` | 1179 |
-| 26169–28160 | `MainLoop` | 1992 |
+| 2370–2722 | `KalshiClient` | 353 |
+| 2723–2785 | `Logger` | 63 |
+| 2786–3034 | `TelegramNotifier` | 249 |
+| 3035–5604 | `StateManager` | 2570 |
+| 5605–5938 | `CoinbaseFeed` | 334 |
+| 5939–5950 | `OrderbookSchemaError` | 12 |
+| 5951–7720 | `KalshiFeed` | 1770 |
+| 7721–7801 | `DeribitDVOLFetcher` | 81 |
+| 7802–8129 | `CrossExchangeFeed` | 328 |
+| 8130–8206 | `CoinGlassFetcher` | 77 |
+| 8207–8328 | `OrderFlowEngine` | 122 |
+| 8329–8489 | `KalshiOrderFlowTracker` | 161 |
+| 8490–9449 | `VolatilityEngine` | 960 |
+| 9450–9652 | `ProbabilityEngine` | 203 |
+| 9653–10662 | `CalibrationEngine` | 1010 |
+| 10663–19742 | `OpportunityScanner` | 9080 |
+| 19743–25032 | `OrderExecutor` | 5290 |
+| 25033–26211 | `SettlementTracker` | 1179 |
+| 26212–28203 | `MainLoop` | 1992 |
 
 ## Project file map (root, 2026-05-05)
 
