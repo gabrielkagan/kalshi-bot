@@ -128,14 +128,14 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 185,683 |
+| Markets evaluated | 185,979 |
 | Observation period | 2026-02-22 to 2026-05-08 |
-| Filter pass rate | 4.0\% (7,347 of 185,683) |
-| Top rejection reason | Insufficient Edge (56,488) |
-| Settled trades | 3,708 (3,432 W / 274 L / 2 BE) |
+| Filter pass rate | 4.0\% (7,365 of 185,979) |
+| Top rejection reason | Insufficient Edge (56,554) |
+| Settled trades | 3,721 (3,445 W / 274 L / 2 BE) |
 | Win rate | 92.6\% |
 
-*Last updated: 2026-05-08T17:09:45Z*
+*Last updated: 2026-05-08T18:58:15Z*
 
 ## Live vs Observation
 
@@ -191,7 +191,7 @@ source .env
 python3 -m bot
 ```
 
-Set `OBSERVATION_MODE = True` in `bot/constants.py` to log everything but place no orders.
+Set `OBSERVATION_MODE = True` in `bot/_impl.py` to log everything but place no orders.
 
 ## Deployment
 
@@ -213,12 +213,11 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot/_impl.py                         -- core bot logic (~26,999 lines post-Bit-3.1, never rename)
-bot/constants.py                     -- module-level UPPER_SNAKE constants (484 constants; Bit 3.1; re-exported into bot/_impl.py via star-import)
+bot/_impl.py                         -- core bot logic (~27,000 lines, never rename)
 config.py                      -- centralized SIZING_TIERS / DRAWDOWN_* / MIN_EDGE_BY_PRICE
 models.py                      -- EGARCH / Mincer-Zarnowitz / PositionSizer / fee math
 analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)
-market_config.py               -- centralized MarketTypeConfig (validates against bot/constants.py at startup)
+market_config.py               -- centralized MarketTypeConfig (validates against bot/_impl.py at startup)
 fifteenm_shadow.py             -- 15M shadow engine (recalibrated EGARCH + LightGBM research)
 spx_engine.py                  -- S&P 500 intraday engine (EGARCH + VIX, observation mode)
 weather_engine.py              -- weather temperature engine (NWP ensemble, NO-side live + observation)
