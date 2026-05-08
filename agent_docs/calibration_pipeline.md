@@ -45,7 +45,7 @@ Constant lives in `features.py`. cfg_fp captures `sigma_winsor_abs_cap`. Regress
 ### Train/serve consistency invariants
 
 The three pipelines use the SAME formulas. Any drift = silent training-distribution mismatch.
-- `prob_breakeven_gap = calibrated_prob - market_price/100` (post-CalEngine; bot/_impl.py:1513). Locked by `tests/test_calmlp_tm96_gate.py`.
+- `prob_breakeven_gap = calibrated_prob - market_price/100` (post-CalEngine; `bot/helpers/derived_features.py::compute_derived_features`). Locked by `tests/test_calmlp_tm96_gate.py`.
 - `hour_sin/cos` from INTEGER `dt.hour` (NOT minute-fractional). Locked.
 - `spot_distance_to_strike_sigma` clipped to ±25. Locked.
 
@@ -79,7 +79,7 @@ When wiring any engine to CalEngine pipeline, all three must ship in the SAME co
 2. Settlement code routes to the correct CalEngine
 3. Audit script checks for CalEngine observations
 
-Splitting these creates silent data gaps. (See `kb/failures/sports-raw-prob-null.md`.)
+Splitting these creates silent data gaps.
 
 ### cal_mlp feature transforms (four-site lock-step)
 
