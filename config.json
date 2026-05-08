@@ -209,32 +209,32 @@
     },
     "BALANCE_CACHE_TTL": {
       "value": 10.0,
-      "line": 1759,
+      "line": 1687,
       "description": "Balance cache TTL (seconds)"
     },
     "DIRECT_TAKER_THRESHOLD": {
       "value": 180.0,
-      "line": 1839,
+      "line": 1767,
       "description": "Skip maker and go IOC below this many seconds"
     },
     "MAKER_ONLY_THRESHOLD": {
       "value": 0.0,
-      "line": 1841,
+      "line": 1769,
       "description": "No taker execution below this many seconds"
     },
     "ESCALATION_WAIT_LONG": {
       "value": 15.0,
-      "line": 2085,
+      "line": 2013,
       "description": "Maker wait for long STC"
     },
     "ESCALATION_WAIT_MEDIUM": {
       "value": 7.0,
-      "line": 2088,
+      "line": 2016,
       "description": "Maker wait for medium STC"
     },
     "ESCALATION_WAIT_SHORT": {
       "value": 5.0,
-      "line": 2089,
+      "line": 2017,
       "description": "Maker wait for short STC"
     },
     "HOURLY_EXCLUDED_ASSETS": {
@@ -354,13 +354,13 @@
       "description": "Price-dependent edge schedule"
     }
   },
-  "_bot_lines": 28165,
+  "_bot_lines": 28220,
   "_exchange_feeds": [
     "CoinbaseFeed",
     "CrossExchangeFeed",
     "KalshiFeed"
   ],
-  "_extracted_at": "2026-05-08T13:26:49Z",
+  "_extracted_at": "2026-05-08T17:09:48Z",
   "_bot_path": "/home/runner/work/kalshi-bot/kalshi-bot/bot/_impl.py",
   "_weather": {
     "weather_city_count": 19,
