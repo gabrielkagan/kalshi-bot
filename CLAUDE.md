@@ -11,7 +11,7 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 - `agent_docs/calibration_pipeline.md` — calibration, hourly three-layer, three-commit rule.
 - `kb/_index.md` — design decisions, postmortems, strategy specs (read for any deep "why" question).
 - `kb-research/_index.md` — compiled research findings.
-- Package-level guides auto-load when working in-dir: `bot/CLAUDE.md`, `tests/CLAUDE.md`, `scripts/CLAUDE.md`, `ops/CLAUDE.md`.
+- Package-level guides auto-load when working in-dir: `bot/CLAUDE.md`, `tests/CLAUDE.md`, `scripts/CLAUDE.md`, `ops/CLAUDE.md`, `kb/CLAUDE.md`.
 
 ## Interaction rules
 

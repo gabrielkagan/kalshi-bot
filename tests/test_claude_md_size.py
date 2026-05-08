@@ -79,7 +79,8 @@ def test_claude_md_within_line_cap():
         f"CLAUDE.md is {n} lines (limit: {MAX_LINES}). Push detail to "
         f"agent_docs/, kb/_index.md, or package-level CLAUDE.md "
         f"(`bot/CLAUDE.md`, `tests/CLAUDE.md`, `scripts/CLAUDE.md`, "
-        f"`ops/CLAUDE.md`) rather than expanding root. Plan reference: "
+        f"`ops/CLAUDE.md`, `kb/CLAUDE.md`) rather than expanding root. "
+        f"Plan reference: "
         f"kb/decisions/repo-modularization-plan-may05.md line 1331."
     )
 
