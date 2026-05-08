@@ -275,8 +275,10 @@ def test_blocked_candidates_get_evaluated_opportunity_row():
 
 
 # ---------------------------------------------------------------------------
-# Bleeder-string drift validator (mirror HPSB pattern at bot/_impl.py:1423+).
-# Catches strategy-name renames that would silently no-op the gate.
+# Bleeder-string drift validator (Bit 3.0.5: shared registry-membership helper
+# `_validate_bleeders_against_runtime_registry` post the STRATEGY_PANIC_CAPTURE
+# constants block in bot/_impl.py). Catches strategy-name renames that would
+# silently no-op the gate.
 # ---------------------------------------------------------------------------
 
 def test_bot_py_tm_strategy_fstring_format_matches_block_strategies():
@@ -504,8 +506,11 @@ def test_fifteenm_shadow_temperature_query_includes_bleed_stages():
 
 def test_bleed_block_strategies_have_runtime_validator():
     """If 'terminal_momentum_98' is renamed in scan() without updating the
-    BLEED_BLOCK_STRATEGIES frozenset, the gate silently no-ops. Boot-time
-    validator catches the drift, mirroring the HPSB validator at bot/_impl.py:1423.
+    BLEED_BLOCK_STRATEGIES frozenset, the gate silently no-ops. Bit 3.0.5:
+    boot-time validator delegates to the shared registry-membership helper
+    `_validate_bleeders_against_runtime_registry` (see bot/_impl.py post the
+    `STRATEGY_PANIC_CAPTURE` constants block). Full invariant coverage in
+    tests/test_strategy_drift.py.
     """
     bot_py = REPO / 'bot/_impl.py'
     src = bot_py.read_text()
@@ -514,9 +519,21 @@ def test_bleed_block_strategies_have_runtime_validator():
            '_validate_tm98_bleed_block' in src or \
            '_validate_bleed_cell_strategies' in src, (
         "Need a startup validator that asserts bleed-block strategy "
-        "strings actually appear in bot/_impl.py source (catches rename drift). "
-        "Mirror the HPSB validator pattern at bot/_impl.py:1423."
+        "strings reach scan() as candidate.strategy values (catches rename drift). "
+        "Bit 3.0.5: shared helper `_validate_bleeders_against_runtime_registry`."
     )
+
+
+def test_bleed_block_validator_callable():
+    """Re-invoke `_validate_bleed_block_bleeder_strings()` at runtime,
+    separate from the boot-time binding `_BLEED_BLOCK_MISSING_BLEEDERS`.
+    Symmetric to HPSB's `test_validator_callable` in
+    tests/test_high_price_stc_band_gate.py — catches a regression that
+    breaks the wrapper after module load (e.g., monkey-patching, import-
+    order issues, future refactor that swallows exceptions silently)."""
+    bot = _import_bot()
+    result = bot._validate_bleed_block_bleeder_strings()
+    assert result == [], result
 
 
 # ---------------------------------------------------------------------------

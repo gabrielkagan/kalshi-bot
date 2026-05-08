@@ -481,19 +481,23 @@ class TestBleederStringIntegrityCheck(unittest.TestCase):
 
     Adversarial review A1: BLEEDER_STRATEGIES is duck-typed against
     candidate.strategy. If decided_t2_z2 gets renamed in scan() without updating
-    the constant, the gate silently no-ops. The startup validator greps bot/_impl.py
-    source and logs HPSB_BLEEDER_STRINGS_MISSING if any bleeder is unreferenced.
+    the constant, the gate silently no-ops. Bit 3.0.5: the boot-time validator
+    asserts each bleeder is a member of the live-strategy registry
+    (STRATEGY_CLAMP_POLICY / MAKER_TAIL_* / TM_LIVE_STRATEGIES /
+    STRATEGY_LIMIT_BUMP_* / STRATEGY_* constants / KNOWN_DC_STRATEGIES) and
+    logs HPSB_BLEEDER_UNKNOWN_TO_REGISTRY if any bleeder is unknown.
     """
 
     def test_no_bleeders_missing_at_startup(self):
-        """At repo HEAD, every bleeder in BLEEDER_STRATEGIES must exist as a
-        string literal somewhere in bot/_impl.py. If not, a strategy was renamed and
-        the gate is silently broken."""
+        """At repo HEAD, every bleeder in HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES
+        must be a member of the live-strategy registry. If not, a strategy was
+        renamed and the gate is silently broken."""
         self.assertEqual([], _HPSB_MISSING_BLEEDERS,
-                         "Bleeder strategy strings missing from bot/_impl.py source — "
-                         "gate will silently no-op for these. See HPSB_BLEEDER_STRINGS_MISSING "
-                         "log line. Either restore the strategy string assignment OR "
-                         "update HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES.")
+                         "Bleeder strategy strings unknown to runtime registry — "
+                         "gate will silently no-op for these. See HPSB_BLEEDER_UNKNOWN_TO_REGISTRY "
+                         "log line. Either update one of the registry sources "
+                         "(STRATEGY_CLAMP_POLICY / KNOWN_DC_STRATEGIES / etc.) "
+                         "OR update HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES.")
 
     def test_validator_callable(self):
         """Re-running the validator must produce the same result as module load."""
@@ -505,12 +509,17 @@ class TestBleederStringIntegrityCheck(unittest.TestCase):
 #  Side fail-closed semantics (adversarial review A3)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestBleederValidatorQuoteStyles(unittest.TestCase):
-    """Validator must count both single- and double-quoted strategy strings.
+class TestBleederValidatorImplementation(unittest.TestCase):
+    """Bit 3.0.5: validators MUST NOT source-grep bot/_impl.py.
 
-    Adversarial review round 3: original validator only counted double-quoted,
-    so a single-quoted assignment (`strategy='decided_t2_z2'`) would false-alert.
-    Test explicitly verifies both styles are recognized.
+    The pre-Bit-3.0.5 `count >= 2` heuristic was a false-positive engine —
+    `MAKER_PATIENT`, `terminal_momentum_98`, and `TAKER_NOW` passed without
+    any scan-site usage because their decl-site appearances summed to >= 2.
+    The new shared helper uses runtime-registry membership; this class pins
+    the negative contract (no source-grep) for both HPSB and BLEED_BLOCK
+    wrappers.
+
+    Full registry-membership invariants live in tests/test_strategy_drift.py.
     """
 
     @classmethod
@@ -519,16 +528,45 @@ class TestBleederValidatorQuoteStyles(unittest.TestCase):
         with open(bot_path) as f:
             cls.bot_source = f.read()
 
-    def test_validator_counts_both_quote_styles(self):
-        """Validator source must reference both `f'\"{...}\"'` and `f\"'{...}'\"` patterns."""
-        # Find the validator function body
+    def test_validator_does_not_source_grep(self):
+        """Shared validator helper body must not contain `open(__file__` or
+        `.count(`. Catches reverts to the pre-Bit-3.0.5 heuristic."""
+        idx = self.bot_source.find("def _validate_bleeders_against_runtime_registry")
+        self.assertGreater(idx, 0,
+            "_validate_bleeders_against_runtime_registry must exist post-Bit-3.0.5")
+        body = self.bot_source[idx:idx + 2500]
+        self.assertNotIn("open(__file__", body,
+            "Validator regressed to source-introspection (open(__file__) in body)")
+        self.assertNotIn(".count(", body,
+            "Validator regressed to source-text count heuristic (.count() in body)")
+
+    def test_hpsb_wrapper_delegates_to_shared_helper(self):
+        """`_validate_high_price_stc_block_bleeder_strings` must be a thin
+        wrapper around the shared registry-membership helper. If a future
+        refactor reverts the wrapper to inline source-grep logic, this fails."""
         idx = self.bot_source.find("def _validate_high_price_stc_block_bleeder_strings")
         self.assertGreater(idx, 0)
-        body = self.bot_source[idx:idx + 2500]
-        self.assertIn('count(f\'"{_bleeder}"\')', body,
-                      "Validator must count double-quoted bleeder strings")
-        self.assertIn("count(f\"'{_bleeder}'\")", body,
-                      "Validator must count single-quoted bleeder strings")
+        body = self.bot_source[idx:idx + 600]
+        self.assertIn("_validate_bleeders_against_runtime_registry", body,
+            "HPSB validator must delegate to the shared helper post-Bit-3.0.5")
+        self.assertIn("HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES", body,
+            "HPSB validator must pass HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES")
+
+    def test_bleed_block_wrapper_delegates_to_shared_helper(self):
+        """Symmetric to HPSB: `_validate_bleed_block_bleeder_strings` must
+        also be a thin wrapper around the shared registry-membership helper.
+        Asymmetric coverage between HPSB and BLEED_BLOCK wrappers would let
+        a partial revert (inline source-grep on BLEED_BLOCK only) ship
+        without catching the regression."""
+        idx = self.bot_source.find("def _validate_bleed_block_bleeder_strings")
+        self.assertGreater(idx, 0)
+        body = self.bot_source[idx:idx + 600]
+        self.assertIn("_validate_bleeders_against_runtime_registry", body,
+            "BLEED_BLOCK validator must delegate to the shared helper post-Bit-3.0.5")
+        self.assertIn("TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES", body,
+            "BLEED_BLOCK validator must pass TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES")
+        self.assertIn("SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES", body,
+            "BLEED_BLOCK validator must pass SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES")
 
 
 class TestSideConventionInvariant(unittest.TestCase):

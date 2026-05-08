@@ -1424,56 +1424,13 @@ def should_block_high_price_stc_candidate(
     return strategy in HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES
 
 
-_HPSB_VALIDATOR_UNAVAILABLE_REASON: Optional[str] = None
-
-
-def _validate_high_price_stc_block_bleeder_strings():
-    """Startup integrity check: every bleeder strategy string must appear in bot/_impl.py
-    source AT LEAST ONCE outside the BLEEDER_STRATEGIES declaration itself.
-
-    Guards adversarial review A1: if a strategy is renamed (e.g. decided_t2_z2 →
-    decided_t2_z_neg_2) without updating BLEEDER_STRATEGIES, the gate silently no-ops.
-    Self-introspecting the source catches the drift at boot.
-
-    Counts BOTH single- and double-quoted occurrences (codebase mixes quote styles).
-
-    Returns list of missing bleeder strings (empty = healthy). Logs a loud ERROR if
-    any are missing. Logs a separate WARNING `HPSB_VALIDATOR_UNAVAILABLE` if the
-    self-introspection fails (filesystem edge case) so a clean run is distinguishable
-    from a non-running validator.
-    """
-    global _HPSB_VALIDATOR_UNAVAILABLE_REASON
-    try:
-        with open(__file__, "r") as _src:
-            _source = _src.read()
-    except Exception as _exc:
-        _HPSB_VALIDATOR_UNAVAILABLE_REASON = f"{type(_exc).__name__}: {_exc}"
-        logging.warning(
-            "HPSB_VALIDATOR_UNAVAILABLE: bleeder string drift check skipped (%s) — "
-            "rename detection is OFFLINE; gate health depends on convention only.",
-            _HPSB_VALIDATOR_UNAVAILABLE_REASON)
-        return []  # don't crash boot, but signal loudly that the check did not run
-    _missing = []
-    for _bleeder in HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES:
-        # Count BOTH quote styles. Healthy state: ≥2 total occurrences (the
-        # BLEEDER_STRATEGIES declaration uses double-quotes; an assignment site
-        # may use either quote style).
-        _dquoted = _source.count(f'"{_bleeder}"')
-        _squoted = _source.count(f"'{_bleeder}'")
-        if _dquoted + _squoted < 2:
-            _missing.append(_bleeder)
-    if _missing:
-        logging.error(
-            "HPSB_BLEEDER_STRINGS_MISSING: %s — gate will silently no-op for these. "
-            "Update HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES or restore the strategy "
-            "string in bot/_impl.py. See kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md",
-            _missing)
-    return _missing
-
-
-# Run validator at module load — emits HPSB_BLEEDER_STRINGS_MISSING ERROR log if drift,
-# OR HPSB_VALIDATOR_UNAVAILABLE WARNING if self-introspection failed.
-_HPSB_MISSING_BLEEDERS = _validate_high_price_stc_block_bleeder_strings()
+# Bit 3.0.5: bleeder validators (HPSB + BLEED_BLOCK) and their boot-time
+# bindings (_HPSB_MISSING_BLEEDERS, _BLEED_BLOCK_MISSING_BLEEDERS) live AFTER
+# the strategy-registry sources (STRATEGY_CLAMP_POLICY, MAKER_TAIL_*,
+# TM_LIVE_*, STRATEGY_LIMIT_BUMP_*, STRATEGY_* string constants,
+# KNOWN_DC_STRATEGIES) are all in scope — see "Bleeder validators
+# (Bit 3.0.5)" section below the Strategy constants block.
+# kb/decisions/bit-3.0.5-validator-decoupling.md.
 
 
 # ─── New bleed-cell predicates (R-bleed-1) ─────────────────────────────────
@@ -1552,39 +1509,10 @@ def should_block_sol_taker_lowprice_bleed_candidate(
     return True
 
 
-def _validate_bleed_block_bleeder_strings():
-    """Mirror of HPSB validator — catches strategy-name renames that would
-    silently no-op the new bleed-cell gates. Self-introspects bot/_impl.py source
-    and asserts every bleeder string in TM98_*_STRATEGIES and
-    SOL_TAKER_*_STRATEGIES appears at least twice (declaration + at least
-    one usage site). Drift = ERROR log at boot."""
-    try:
-        with open(__file__, "r") as _src:
-            _source = _src.read()
-    except Exception as _exc:
-        logging.warning(
-            "BLEED_BLOCK_VALIDATOR_UNAVAILABLE: bleeder string drift check "
-            "skipped (%s) — rename detection OFFLINE.",
-            f"{type(_exc).__name__}: {_exc}")
-        return []
-    _missing = []
-    _all_bleeders = (TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES
-                     | SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES)
-    for _bleeder in _all_bleeders:
-        _dquoted = _source.count(f'"{_bleeder}"')
-        _squoted = _source.count(f"'{_bleeder}'")
-        if _dquoted + _squoted < 2:
-            _missing.append(_bleeder)
-    if _missing:
-        logging.error(
-            "BLEED_BLOCK_BLEEDER_STRINGS_MISSING: %s — gate silently no-ops. "
-            "Update TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES / "
-            "SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES or restore source.",
-            _missing)
-    return _missing
-
-
-_BLEED_BLOCK_MISSING_BLEEDERS = _validate_bleed_block_bleeder_strings()
+# Bit 3.0.5: _validate_bleed_block_bleeder_strings + _BLEED_BLOCK_MISSING_BLEEDERS
+# moved alongside HPSB validator to the "Bleeder validators (Bit 3.0.5)" section
+# below the Strategy constants block (after STRATEGY_PANIC_CAPTURE), where the
+# strategy-registry sources are all in scope.
 
 
 def should_exclude_weather_no_ticker(
@@ -2175,6 +2103,95 @@ STRATEGY_MAKER_PATIENT = "MAKER_PATIENT"
 STRATEGY_MAKER_AGGRESSIVE = "MAKER_AGGRESSIVE"
 STRATEGY_TAKER_NOW = "TAKER_NOW"
 STRATEGY_PANIC_CAPTURE = "PANIC_CAPTURE"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Bleeder validators (Bit 3.0.5 — registry-membership)
+# ═════════════════════════════════════════════════════════════════════════════
+# Pre-Bit-3.0.5 these validators self-grepped bot/_impl.py source and required
+# >= 2 occurrences of each bleeder string. Three strategies passed for the
+# wrong reasons: scan-site usages of MAKER_PATIENT / TAKER_NOW route through
+# STRATEGY_* symbol bindings (not literals); terminal_momentum_98 is
+# f-string-built at runtime so no literal scan-site emission exists. Bit 3.0.5
+# replaces the heuristic with runtime-registry membership.
+# RCA + decision: kb/decisions/bit-3.0.5-validator-decoupling.md.
+
+# Vestigial post-Bit-3.0.5: registry-membership validator can't fail with a
+# FileNotFoundError (no filesystem read). Kept as None for the HPSB_GATE_STATE
+# log consumer ("validator_unavailable=no" output, see ~line 26243).
+_HPSB_VALIDATOR_UNAVAILABLE_REASON: Optional[str] = None
+
+# Decided-contract strategy names recognized by scan() (literal usages at
+# bot/_impl.py:~14614 (_dc_strat mapping), ~16477 + ~20494 (tuple membership
+# checks)). `decided_t2_z2` is INTENTIONALLY OMITTED from
+# STRATEGY_LIMIT_BUMP_RESERVE_CENTS (T2_Z2 was shadowed Apr 1 2026 with no
+# aggressive reserve grant); without this set the registry has a hole that
+# false-positives the HPSB invariant for `decided_t2_z2`.
+KNOWN_DC_STRATEGIES = frozenset({
+    "decided_t1", "decided_t1b",
+    "decided_t2", "decided_t2_z2", "decided_t2_z25",
+    "hourly_dc",
+})
+
+
+def _validate_bleeders_against_runtime_registry(bleeder_set, name):
+    """Boot-time check: every string in `bleeder_set` MUST be a member of the
+    live-strategy registry — i.e. a name that some bleeder-relevant subsystem
+    treats as a real `candidate.strategy`. Drift = ERROR log + non-empty
+    return; gate would silently no-op without this check (a bleeder that
+    doesn't match any candidate.strategy is never blocked).
+
+    Registry sources (NOT the full set of strategies in the codebase — names
+    like `weather_no_live`, `hourly_no_live`, `hourly_dc_*` exist at scan
+    sites but are intentionally outside the bleeder-gate scope):
+      - STRATEGY_CLAMP_POLICY keys (sub-limit clamp policy)
+      - MAKER_TAIL_ELIGIBLE_STRATEGIES (post-IOC partial maker-tail)
+      - TM_LIVE_STRATEGIES (frozenset(f"terminal_momentum_{p}" for p in TM_PRICE_SET))
+      - STRATEGY_LIMIT_BUMP_RESERVE_CENTS keys (smart IOC limit picker)
+      - STRATEGY_TAKER_NOW / STRATEGY_MAKER_PATIENT / STRATEGY_MAKER_AGGRESSIVE
+        / STRATEGY_PANIC_CAPTURE — canonical execution-engine names
+        (technically redundant with STRATEGY_CLAMP_POLICY but explicit > implicit).
+        STRATEGY_WAIT is INTENTIONALLY EXCLUDED — it's a no-op signal returned
+        by evaluate_execution_strategy(), never set as candidate.strategy.
+        Including it would let a hypothetical rename `MAKER_PATIENT → WAIT`
+        silently pass the validator.
+      - KNOWN_DC_STRATEGIES (decided-contract names — see comment above)
+    """
+    live = (set(STRATEGY_CLAMP_POLICY.keys())
+            | set(MAKER_TAIL_ELIGIBLE_STRATEGIES)
+            | set(TM_LIVE_STRATEGIES)
+            | set(STRATEGY_LIMIT_BUMP_RESERVE_CENTS.keys())
+            | {STRATEGY_TAKER_NOW, STRATEGY_MAKER_PATIENT,
+               STRATEGY_MAKER_AGGRESSIVE, STRATEGY_PANIC_CAPTURE}
+            | KNOWN_DC_STRATEGIES)
+    missing = sorted(bleeder_set - live)
+    if missing:
+        logging.error(
+            "%s_BLEEDER_UNKNOWN_TO_REGISTRY: %s — gate will silently no-op for "
+            "these. A strategy may have been renamed; update STRATEGY_CLAMP_POLICY, "
+            "MAKER_TAIL_ELIGIBLE_STRATEGIES, TM_LIVE_STRATEGIES, "
+            "STRATEGY_LIMIT_BUMP_RESERVE_CENTS, KNOWN_DC_STRATEGIES, or one of "
+            "the STRATEGY_* string constants to match the new name.",
+            name, missing)
+    return missing
+
+
+def _validate_high_price_stc_block_bleeder_strings():
+    """HPSB bleeder integrity check (Bit 3.0.5: registry-membership)."""
+    return _validate_bleeders_against_runtime_registry(
+        HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES, "HPSB")
+
+
+def _validate_bleed_block_bleeder_strings():
+    """TM98 + SOL_TAKER bleed-block bleeder integrity check (Bit 3.0.5: registry-membership)."""
+    return _validate_bleeders_against_runtime_registry(
+        TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES | SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES,
+        "BLEED_BLOCK")
+
+
+# Boot-time validation — runs after all registry sources are in scope.
+_HPSB_MISSING_BLEEDERS = _validate_high_price_stc_block_bleeder_strings()
+_BLEED_BLOCK_MISSING_BLEEDERS = _validate_bleed_block_bleeder_strings()
 
 
 def evaluate_execution_strategy(market_data: Dict) -> Tuple[str, Dict]:
