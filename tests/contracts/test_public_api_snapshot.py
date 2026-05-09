@@ -44,9 +44,12 @@ DIFF_MAX_CHARS = 12000  # raised from 6k to surface more context on real diffs
 # If the live snapshot has wildly more entries than the committed one, OR
 # if any key contains a slash, the most likely cause is a griffe version
 # skew (1.0 emits slash-paths and ~5.2k entries; 1.14 emits dot-paths and
-# ~3.7k entries — same source). Surface this hint instead of dumping a
-# 19k-line confusing diff.
-ENTRY_COUNT_SKEW_THRESHOLD = 100
+# ~3.7k entries — same source: a ~1,500-entry delta). Routine extraction
+# Bits could plausibly add/remove 200-500 entries (a class with ~20
+# methods + a sibling extraction). Set the threshold high enough to
+# avoid false-positive hints on real diffs; slash-path detection
+# remains a hard signal regardless of count.
+ENTRY_COUNT_SKEW_THRESHOLD = 1000
 
 
 def _format_diff(expected: dict, actual: dict) -> str:

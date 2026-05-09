@@ -75,25 +75,14 @@ PACKAGE_NAME = "bot"
 # `bot._impl.OrderFlowEngine` both match.
 SKIPPED_SUBMODULES = ("bot._impl", "bot._thread_env")
 
-# These public top-level CLASSES are still resident in bot/_impl.py as of
-# Sprint 6 in progress. Until extraction completes, they're load-bearing
-# public surface (called from bot/__main__.py, mocked in ~94 test sites).
-# The snapshot pins their signatures here even though we skip the rest
-# of bot._impl.
-#
-# When a class extracts (e.g. Bit 6.3 moves CalibrationEngine to
-# bot/engines/calibration.py), remove it from this list — it'll then
-# show up under its new canonical path via the main static walk.
-IMPL_CANONICAL_CLASSES = (
-    "MainLoop",
-    "OpportunityScanner",
-    "OrderExecutor",
-    "StateManager",
-    "CalibrationEngine",
-    "OrderFlowEngine",
-    "KalshiOrderFlowTracker",
-    "SettlementTracker",
-)
+# Layer 2 (canonical _impl classes) is auto-derived from
+# ``griffe.load("bot._impl").classes`` rather than a hardcoded allowlist.
+# Rationale: a hardcoded list creates a "drift laundering" loophole —
+# extracting CalibrationEngine but forgetting to update the list would
+# leave a MISSING sentinel that ``make api-snapshot-regen`` silently
+# commits, masking the regression. Auto-derive is self-maintaining:
+# extracted classes disappear naturally; new public classes appear
+# automatically. (R2-M1 fix.)
 
 
 def _is_in_skipped(path: str | None) -> bool:
@@ -231,24 +220,31 @@ def _walk(module: Any, qualname: str, out: dict[str, Any]) -> None:
 
 
 def _walk_impl_canonical_classes(out: dict[str, Any]) -> None:
-    """Capture signatures for the load-bearing classes still in bot/_impl.py.
+    """Capture signatures for every locally-defined public class in bot/_impl.py.
 
     These are NOT covered by ``_walk`` (which skips bot._impl) but ARE the
-    public surface today — Bit-6.3+ extractions will move them out one by
-    one, and IMPL_CANONICAL_CLASSES tracks the moving boundary.
+    public surface today. Auto-derived from griffe's parse so the list is
+    self-maintaining: extracted classes (Bit 6.3+ moves) naturally
+    disappear; new classes added to _impl naturally appear.
+
+    Uses ``impl.classes`` (locally defined) rather than ``impl.members``
+    (which would include aliased imports like ``from bot.engines import
+    VolatilityEngine``).
     """
     impl = griffe.load("bot._impl")
     classes: dict[str, Any] = {}
-    for name in IMPL_CANONICAL_CLASSES:
-        member = impl.members.get(name)
-        if member is None:
-            classes[name] = {"kind": "MISSING — class no longer in bot._impl"}
+    for name, cls in sorted(impl.classes.items()):
+        if not _is_public_name(name):
             continue
-        target = _resolve(member)
-        if target is None or not target.is_class:
-            classes[name] = {"kind": f"unexpected: {type(member).__name__}"}
+        # Filter out aliased re-export shims: when an extraction Bit moves
+        # a class out of _impl.py and adds ``from bot.engines.foo import X``
+        # as backward-compat, griffe surfaces it in impl.classes with
+        # is_alias=True. We only want classes still LOCALLY defined here.
+        # Already-extracted classes (Logger, KalshiClient, VolatilityEngine,
+        # etc.) appear in Layer 1 under their canonical paths.
+        if getattr(cls, "is_alias", False):
             continue
-        classes[name] = _signature_class(target)
+        classes[name] = _signature_class(cls)
     out["__impl_canonical_classes__"] = classes
 
 
