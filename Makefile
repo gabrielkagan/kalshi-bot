@@ -45,10 +45,19 @@ RUFF := $(shell command -v ruff 2>/dev/null || echo venv/bin/ruff)
 # Pillar 2 (import-linter) ships a `lint-imports` console script via
 # `pip install import-linter`. Same PATH-vs-fallback pattern as RUFF —
 # CI's install puts it on PATH directly; macOS `pip install --user`
-# (the dev-box default) drops it under `~/Library/Python/3.x/bin`,
+# (the dev-box default) drops it under `~/Library/Python/<X.Y>/bin`,
 # which is on PATH only if the user has set it up. Fall back rather
 # than break `make test-contract` on a fresh clone.
-LINT_IMPORTS := $(shell command -v lint-imports 2>/dev/null || echo $(HOME)/Library/Python/3.9/bin/lint-imports)
+#
+# Python version is detected at parse time so the fallback path tracks
+# whichever interpreter `python3` resolves to (3.9 on the dev box
+# today; trivially upgradable). A hard-coded `3.9` would silently break
+# on any future Python upgrade. The `2>/dev/null` swallows the
+# (unlikely) missing-python3 case so parse doesn't fail; the fallback
+# becomes literally `~/Library/Python//bin/lint-imports` which fails
+# loudly with a clear path on first invocation.
+PYTHON_USER_SITE_VER := $(shell python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null)
+LINT_IMPORTS := $(shell command -v lint-imports 2>/dev/null || echo $(HOME)/Library/Python/$(PYTHON_USER_SITE_VER)/bin/lint-imports)
 
 # Pillar 5 of testing-foundation-sprint (ticket 86b9ve11y): tier the
 # pytest suite so agent edit loops can target the fast tiers, and CI
@@ -144,22 +153,38 @@ test:
 
 # Tier 1: unit. Pure-Python invariants (pyproject parsing, Makefile
 # parsing, repo hygiene). Sub-second. Run on every save.
+#
+# `-m "not fragile"` is defensive: no fragile-marked tests live in
+# UNIT_FILES today, but the marker is the cross-cutting "informational"
+# signal in this repo (`pyproject.toml [tool.pytest.ini_options].markers`),
+# and a future addition of a fragile-marked test to a unit file
+# shouldn't silently start blocking deploys. Symmetric with the
+# contract / equivalence / integration recipes below — every blocking
+# tier excludes fragile.
 test-unit:
-	$(PYTHON) -m pytest $(UNIT_FILES)
+	$(PYTHON) -m pytest -m "not fragile" $(UNIT_FILES)
 
 # Tier 2: contract. Two parts:
 #   1. Pytest suite — public_api snapshot, AST guards, extraction tests.
 #   2. import-linter CLI — layering contracts (`.importlinter`).
 # Both must pass; pytest first because it's the louder failure.
+#
+# `-m "not fragile"` matters here: tests/test_decided_contract.py
+# (in CONTRACT_FILES) ships 7 @pytest.mark.fragile tests. Without this
+# filter, a fragile-test flake would block deploys via deploy.yml's
+# blocking contract step (R1 C1 fix).
 test-contract:
-	$(PYTHON) -m pytest $(CONTRACT_FILES)
+	$(PYTHON) -m pytest -m "not fragile" $(CONTRACT_FILES)
 	$(LINT_IMPORTS)
 
 # Tier 3: equivalence. Pillar 3 numeric snapshots (volatility +
 # probability engines). ~3s actual; <30s budget gives Bit 6.3+
 # headroom for the calibrator oracle.
+#
+# `-m "not fragile"` is defensive (no fragile tests under
+# tests/equivalence/ today; same reasoning as test-unit).
 test-equivalence:
-	$(PYTHON) -m pytest tests/equivalence/
+	$(PYTHON) -m pytest -m "not fragile" tests/equivalence/
 
 # Tier 4: integration. Everything else. Mirrors the historical
 # `make test` semantics minus the tiers above.

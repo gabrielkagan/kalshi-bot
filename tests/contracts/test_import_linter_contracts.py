@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import configparser
 import os
+import re
 import shutil
 import site
 import subprocess
@@ -307,6 +308,36 @@ def _step_index_by_name(steps: list[str], name_substring: str) -> int:
     return -1
 
 
+def _makefile_test_contract_invokes_lint_imports() -> bool:
+    """Verify the `test-contract` Makefile recipe invokes lint-imports.
+
+    R1 M2 follow-up: when `_step_index_running_lint_imports` accepts
+    the Pillar 5 indirection (workflow step says `run: make test-contract`),
+    we need a second anchor — the recipe itself — to be sure
+    lint-imports actually executes. A future Makefile edit that
+    drops `$(LINT_IMPORTS)` from `test-contract` would otherwise
+    silently weaken the Pillar 2 contract while this test stays green.
+
+    Folds backslash-continuations so a multi-line `test-contract`
+    recipe parses correctly. Looks for `LINT_IMPORTS` (the Make
+    variable) OR `lint-imports` (direct CLI invocation) anywhere in
+    the recipe body.
+    """
+    makefile = REPO_ROOT / "Makefile"
+    if not makefile.exists():
+        return False
+    folded = re.sub(r"\\\n", " ", makefile.read_text())
+    m = re.search(
+        r"^test-contract:[^\n]*\n((?:\t.*\n?)+)",
+        folded,
+        re.M,
+    )
+    if not m:
+        return False
+    recipe = m.group(1)
+    return "LINT_IMPORTS" in recipe or "lint-imports" in recipe
+
+
 def _step_index_running_lint_imports(steps: list[str]) -> int:
     """Return the index of the first step whose body invokes lint-imports.
 
@@ -322,14 +353,22 @@ def _step_index_running_lint_imports(steps: list[str]) -> int:
     Detection is content-based, not name-based:
       (a) `run: lint-imports` — direct invocation (Pillar 2 shape).
       (b) `run: make test-contract` — Pillar 5 indirection where
-          the Make recipe terminates with `$(LINT_IMPORTS)`.
+          the Make recipe terminates with `$(LINT_IMPORTS)`. The
+          accept-this-shape branch ALSO requires the Makefile recipe
+          to actually invoke lint-imports (R1 M2 fix) — without
+          that double-anchor, a future Makefile edit could drop
+          `$(LINT_IMPORTS)` while this test stays green.
     """
     for i, block in enumerate(steps):
         body = block.split("\n", 1)[1] if "\n" in block else ""
         if "run: lint-imports" in block or "run: lint-imports" in body:
             return i
         if "run: make test-contract" in block or "run: make test-contract" in body:
-            return i
+            if _makefile_test_contract_invokes_lint_imports():
+                return i
+            # Fall through — the workflow delegates to a Make recipe
+            # that no longer runs lint-imports. Treat as "not present"
+            # so the assertion below fires with a clear message.
     return -1
 
 
