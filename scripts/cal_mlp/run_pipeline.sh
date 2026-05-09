@@ -91,13 +91,49 @@ fi
 CUTOFF_END="${CUTOFF_END:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 LOG="scripts/cal_mlp/run_pipeline_$(date -u +%Y%m%dT%H%M%SZ).log"
 
-# Smoke-check first — abort if env or invariants are wrong.
+# Smoke-check first — abort if env or invariants are wrong, BEFORE we
+# spend ~30s creating a forever-retained snapshot.
 echo "[$(date -u +%H:%M:%S)] running smoke_check.py" | tee "$LOG"
 if ! python3 scripts/cal_mlp/smoke_check.py 2>&1 | tee -a "$LOG"; then
     echo "[$(date -u +%H:%M:%S)] FAIL: smoke_check failed; aborting before training" | tee -a "$LOG"
     exit 2
 fi
 echo "[$(date -u +%H:%M:%S)] smoke_check passed; proceeding with pipeline" | tee -a "$LOG"
+
+# A.7 (Sprint A Bit 7, ticket 86b9vejrj) — immutable training snapshot.
+# Default: take ONE snapshot of state.db; pin all 4 asset extracts to its
+# sha256. Maximizes intra-run reproducibility (BTC/ETH/SOL/XRP pin the
+# same DB-byte hash). Override SNAPSHOT_DISABLE=1 to skip (legacy mode;
+# bundles record null for snapshot fields, retraining non-deterministic).
+SNAPSHOT_DISABLE="${SNAPSHOT_DISABLE:-0}"
+declare -a SNAPSHOT_FLAGS=()
+if [ "$SNAPSHOT_DISABLE" = "0" ]; then
+    echo "[$(date -u +%H:%M:%S)] taking immutable state.db snapshot for pipeline run" | tee -a "$LOG"
+    SNAPSHOT_OUT_FILE="$LOG.snapshot.json"
+    trap 'rm -f "$SNAPSHOT_OUT_FILE"' EXIT
+    if ! python3 -m scripts.cal_mlp.snapshot_state_db take > "$SNAPSHOT_OUT_FILE" 2>>"$LOG"; then
+        echo "[$(date -u +%H:%M:%S)] FAIL: snapshot take failed; aborting" | tee -a "$LOG"
+        cat "$SNAPSHOT_OUT_FILE" 2>/dev/null | tee -a "$LOG"
+        exit 3
+    fi
+    cat "$SNAPSHOT_OUT_FILE" | tee -a "$LOG"
+    SNAPSHOT_SHA=$(python3 -c "
+import json, sys, re
+raw = open('$SNAPSHOT_OUT_FILE').read()
+m = re.search(r'\{[^{}]*\"sha256\"[^{}]*\}', raw, re.DOTALL)
+if not m:
+    sys.exit(1)
+print(json.loads(m.group())['sha256'])
+" 2>/dev/null || true)
+    if [ -z "$SNAPSHOT_SHA" ] || [ "${#SNAPSHOT_SHA}" -ne 64 ]; then
+        echo "[$(date -u +%H:%M:%S)] FAIL: could not parse 64-hex snapshot sha256 from take output; aborting" | tee -a "$LOG"
+        exit 3
+    fi
+    echo "[$(date -u +%H:%M:%S)] snapshot sha256=$SNAPSHOT_SHA (sha8=${SNAPSHOT_SHA:0:8}); pinning all 4 extracts to it" | tee -a "$LOG"
+    SNAPSHOT_FLAGS=(--snapshot-sha256 "$SNAPSHOT_SHA")
+else
+    echo "[$(date -u +%H:%M:%S)] WARNING: SNAPSHOT_DISABLE=1; bundles will NOT be byte-reproducible" | tee -a "$LOG"
+fi
 
 declare -a SUCCEEDED FAILED
 for ASSET in "${ASSETS[@]}"; do
@@ -108,7 +144,7 @@ for ASSET in "${ASSETS[@]}"; do
     echo "[$(date -u +%H:%M:%S)] $ASSET extract: INCLUDE_SUB_FLOOR=$INCLUDE_SUB_FLOOR (flag=\"$SUB_FLOOR_FLAG\")" | tee -a "$LOG"
     if ! python3 scripts/cal_mlp/extract_data.py --asset "$ASSET" \
             --cutoff-end "$CUTOFF_END" $SUB_FLOOR_FLAG \
-            --provenance-filter "$PROVENANCE_FILTER" 2>&1 | tee -a "$LOG"; then
+            --provenance-filter "$PROVENANCE_FILTER" "${SNAPSHOT_FLAGS[@]}" 2>&1 | tee -a "$LOG"; then
         echo "[$(date -u +%H:%M:%S)] FAIL $ASSET — extract" | tee -a "$LOG"
         FAILED+=("$ASSET (extract)")
         continue

@@ -42,6 +42,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).parent))
+# A.7 (86b9vejrj): import path for shared snapshot helper at scripts/_state_db_snapshot.py.
+# Module-top sys.path so the lazy import inside run() can never miss.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import features  # noqa: E402  (R3-H1: import the module so mutations to
                   # features.SIGMA_WINSOR_ABS_CAP are observed at call time;
@@ -155,6 +158,26 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--n-train-min', type=int, default=2000)
     ap.add_argument('--quiet', action='store_true')
     ap.add_argument('--verbose', action='store_true')
+    # A.7 (Sprint A Bit 7, ticket 86b9vejrj) — immutable snapshot binding.
+    # If --snapshot-sha256 is given, the extract reads from the
+    # decompressed snapshot at data/cal_mlp/_snapshots/<sha8>/state.db.*
+    # instead of --db. If --auto-snapshot is given without --snapshot-sha256,
+    # the extract takes a fresh snapshot of --db first. Without either flag,
+    # the extract reads --db directly (legacy behavior; bundle records null
+    # for the snapshot fields).
+    snap_grp = ap.add_mutually_exclusive_group()
+    snap_grp.add_argument(
+        '--snapshot-sha256', default=None,
+        help='SHA-256 hex of an existing snapshot in --snap-root; A.7',
+    )
+    snap_grp.add_argument(
+        '--auto-snapshot', action='store_true',
+        help='Take a fresh snapshot of --db before extracting; A.7',
+    )
+    ap.add_argument(
+        '--snap-root', type=str, default=None,
+        help='Snapshot root (default: data/cal_mlp/_snapshots); A.7',
+    )
     return ap.parse_args()
 
 
@@ -627,6 +650,83 @@ def fsync_directory(path: Path) -> None:
         os.close(fd)
 
 
+_HEX = set('0123456789abcdef')
+
+
+def _resolve_db_and_snapshot_meta(args: argparse.Namespace, project_root: Path) -> tuple[str, dict]:
+    """A.7: resolve the DB path the extract should read from + snapshot metadata.
+
+    Returns (db_path, snapshot_meta_for_bundle). snapshot_meta has 4 keys
+    (all None on legacy runs without --snapshot-sha256/--auto-snapshot):
+        state_db_snapshot_sha256
+        state_db_snapshot_path                  (relative to project_root, or
+                                                 absolute when --snap-root is
+                                                 outside project_root)
+        state_db_snapshot_size_bytes_uncompressed
+        state_db_snapshot_compression           ('zstd' | 'gzip' | null)
+    """
+    import snapshot_state_db as _snap_cli  # resolved by module-top sys.path
+
+    snap_root = Path(args.snap_root) if args.snap_root else (
+        project_root / 'data' / 'cal_mlp' / '_snapshots'
+    )
+
+    meta_for_bundle: dict = {
+        'state_db_snapshot_sha256': None,
+        'state_db_snapshot_path': None,
+        'state_db_snapshot_size_bytes_uncompressed': None,
+        'state_db_snapshot_compression': None,
+    }
+
+    if args.auto_snapshot:
+        sha = _snap_cli.take(src=Path(args.db), snap_root=snap_root)
+    elif args.snapshot_sha256:
+        sha = args.snapshot_sha256
+        if not (isinstance(sha, str) and len(sha) == 64 and all(c in _HEX for c in sha)):
+            raise SystemExit(
+                f"--snapshot-sha256 must be 64 lowercase hex chars; got {sha!r}"
+            )
+    else:
+        return args.db, meta_for_bundle
+
+    sha8_dir = snap_root / sha[:8]
+    meta_path = sha8_dir / 'snapshot_meta.json'
+    if not meta_path.exists():
+        raise Phase2DBError(
+            f"snapshot {sha[:8]} not found in {snap_root}. "
+            f"Either take a fresh snapshot with `python -m scripts.cal_mlp.snapshot_state_db take` "
+            f"and pass its sha256, or use --auto-snapshot to take and extract in one step."
+        )
+    snap_meta = json.loads(meta_path.read_text())
+    if snap_meta.get('sha256') != sha:
+        raise Phase2DBError(
+            f"snapshot_meta.json sha256 mismatch in {sha8_dir}: "
+            f"expected {sha}, got {snap_meta.get('sha256')}"
+        )
+
+    scratch_dir = snap_root / '_scratch'
+    decompressed = _snap_cli.decompress_for_extract(snap_root, sha, scratch_dir)
+
+    compressed_file = _snap_cli.snapshot_path_for(snap_root, sha)
+    if compressed_file is None:
+        raise Phase2DBError(
+            f"snapshot compressed file missing for sha={sha[:8]} under {snap_root}"
+        )
+    try:
+        rel_path = str(compressed_file.relative_to(project_root))
+    except ValueError:
+        # --snap-root is outside project_root; record absolute path.
+        rel_path = str(compressed_file.resolve())
+
+    meta_for_bundle.update({
+        'state_db_snapshot_sha256': sha,
+        'state_db_snapshot_path': rel_path,
+        'state_db_snapshot_size_bytes_uncompressed': int(snap_meta.get('size_bytes_uncompressed', 0)),
+        'state_db_snapshot_compression': snap_meta.get('compression'),
+    })
+    return str(decompressed), meta_for_bundle
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -657,8 +757,13 @@ def run(args: argparse.Namespace) -> dict:
         )
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # A.7: bind the extract to a hashed snapshot of state.db. Without
+    # --snapshot-sha256 / --auto-snapshot, falls through to reading args.db
+    # directly (legacy; bundle records null for snapshot fields).
+    db_path, snapshot_meta_for_bundle = _resolve_db_and_snapshot_meta(args, project_root)
+
     with acquire_extract_lock(out_dir, asset):
-        conn = _open_ro_conn(args.db)
+        conn = _open_ro_conn(db_path)
         # R1#C14: pre-bind data_version_at_close so an early DB error
         # doesn't cause UnboundLocalError when audit JSON is built.
         data_version_at_open: int = 0
@@ -669,7 +774,16 @@ def run(args: argparse.Namespace) -> dict:
             except sqlite3.OperationalError as e:
                 raise Phase2DBError(f"PRAGMA data_version failed: {e}") from e
             data_version_at_close = data_version_at_open  # default if pull fails
-            _check_schema(conn, args.db)
+            _check_schema(conn, db_path)
+            # A.7: pin the schema we read from so re-extract-from-snapshot
+            # surfaces drift loudly. Only meaningful when a snapshot is bound
+            # — on legacy runs (live state.db) the schema can change between
+            # extract and re-extract, so the recorded sha would be a false
+            # invariant. Use null for legacy runs.
+            schema_cols_sha = None
+            if snapshot_meta_for_bundle['state_db_snapshot_sha256'] is not None:
+                from _state_db_snapshot import schema_columns_sha256 as _schema_sha
+                schema_cols_sha = _schema_sha(Path(db_path), 'evaluated_opportunities')
             logging.info("[extract] pulling rows for asset=%s ...", asset)
             kept, drops, source_total = pull_and_classify(
                 conn, asset, cutoff_end, asset_floor,
@@ -920,6 +1034,13 @@ def run(args: argparse.Namespace) -> dict:
                 'extract_data_py_sha256': hashlib.sha256(
                     Path(__file__).read_bytes()
                 ).hexdigest(),
+                # A.7: pin the source DB bytes + schema. NULL on legacy runs
+                # without --snapshot-sha256/--auto-snapshot.
+                'state_db_snapshot_sha256': snapshot_meta_for_bundle['state_db_snapshot_sha256'],
+                'state_db_snapshot_path': snapshot_meta_for_bundle['state_db_snapshot_path'],
+                'state_db_snapshot_size_bytes_uncompressed': snapshot_meta_for_bundle['state_db_snapshot_size_bytes_uncompressed'],
+                'state_db_snapshot_compression': snapshot_meta_for_bundle['state_db_snapshot_compression'],
+                'state_db_schema_columns_sha256': schema_cols_sha,
             }
             bundle_tmp, bundle_sha = atomic_write_json(bundle_payload, bundle_path)
             # Bundle is renamed LAST in the loop below
