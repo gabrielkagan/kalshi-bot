@@ -102,7 +102,7 @@ from bot.notifier import TelegramNotifier  # noqa: F401 — Bit 4.2 leaf extract
 from bot.kalshi_client import KalshiClient  # noqa: F401 — Bit 4.3 leaf extraction; re-export so MainLoop construction (search "self.client = KalshiClient") + type annotations on reconcile_with_api/_reconcile_positions/_reconcile_orders/OpportunityScanner/OrderExecutor/SettlementTracker/discover_active_windows resolve via bot._impl namespace.
 from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher  # noqa: F401 — Bit 4.4 leaf extraction; re-export so MainLoop construction (search "self.dvol_fetcher = DeribitDVOLFetcher" and "self.coinglass = CoinGlassFetcher") + the Optional[DeribitDVOLFetcher] type annotation on VolatilityEngine.__init__ resolve via bot._impl namespace.
 from bot.feeds import CoinbaseFeed, OrderbookSchemaError, CrossExchangeFeed  # noqa: F401 — Bit 4.5a leaf extraction; re-export so MainLoop construction (search "self.feed = CoinbaseFeed" and "self.cross_feed = CrossExchangeFeed") + the `feed: CoinbaseFeed` type annotations on VolatilityEngine.__init__ and OpportunityScanner.__init__ + the OrderbookSchemaError raises inside the still-in-bot/_impl.py KalshiFeed class resolve via bot._impl namespace.
-from bot.db_writer_registry import tracked_write, snapshot_active  # ops: db-locked RCA instrumentation 2026-05-08 — track every write across all 8 sqlite3 connections so the failure-path log can identify which OTHER writer was holding the writer lock at db-locked failure time.
+from bot.db_writer_registry import tracked_write, snapshot_active, recent_writes  # ops: db-locked RCA instrumentation 2026-05-08 — track every write across all 8 sqlite3 connections so the failure-path log can identify which OTHER writer was holding the writer lock at db-locked failure time. recent_writes() captures the JUST-FINISHED holder (FAST-fail path: BEGIN IMMEDIATE returns SQLITE_BUSY in <1ms when intra-process lock-holder releases right before our retry).
 
 
 
@@ -2676,6 +2676,19 @@ class StateManager:
                 ]
             except Exception:
                 _diag_active = ["<snapshot_failed>"]
+            try:
+                # FAST-fail RCA (2026-05-09): snapshot_active() shows [] when
+                # BEGIN IMMEDIATE returns SQLITE_BUSY in <1ms (intra-process
+                # holder released JUST before). recent_writes(2.0) captures
+                # the lock-holder via the ring buffer of last-finished writes.
+                _now = time.time()
+                _diag_recent = [
+                    f"{name}/{kind}/{th}"
+                    f"@{(_now - finished_ts) * 1000:.0f}ms_ago/{dur:.1f}ms"
+                    for (name, kind, dur, finished_ts, th) in recent_writes(2.0)
+                ]
+            except Exception:
+                _diag_recent = ["<recent_failed>"]
             _diag_be_dur = (
                 f"{_be_duration_ms:.1f}" if _be_duration_ms is not None else "?"
             )
@@ -2685,7 +2698,8 @@ class StateManager:
                 f"begin_immediate_duration_ms={_diag_be_dur} "
                 f"thread={_diag_thread!r} "
                 f"in_tx={_diag_in_tx!s} "
-                f"active_writers={_diag_active!r}",
+                f"active_writers={_diag_active!r} "
+                f"recent_writes={_diag_recent!r}",
                 exc_info=True,
             )
 

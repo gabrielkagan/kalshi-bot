@@ -222,6 +222,91 @@ def test_snapshot_active_returns_list_of_tuples():
         r.unregister_write(token)
 
 
+# ─── 6.5. Recent-writes ring buffer (intra-process culprit RCA) ────────────
+
+
+def test_recent_writes_api_exists():
+    """`recent_writes(window_s)` returns writes that finished within the
+    last `window_s` seconds. Used by StateManager's failure-path log to
+    identify the lock-holder that JUST released. The lock-holder typically
+    finishes in milliseconds before our BEGIN IMMEDIATE returns SQLITE_BUSY,
+    so `snapshot_active()` shows [] but `recent_writes(5.0)` reveals it."""
+    import bot.db_writer_registry as r
+    assert hasattr(r, "recent_writes")
+
+
+def test_recent_writes_includes_just_finished_writer():
+    """A write that just unregistered should appear in recent_writes()
+    with elapsed_since_finished close to zero."""
+    import bot.db_writer_registry as r
+    import time as t
+
+    with r.tracked_write("recent_test", "kind"):
+        t.sleep(0.001)
+
+    recent = r.recent_writes(window_s=1.0)
+    names = [name for (name, _kind, _dur, _finished_ts, _th) in recent]
+    assert "recent_test" in names, (
+        f"recent_writes() missing the just-finished entry. recent={recent!r}"
+    )
+
+
+def test_recent_writes_excludes_old_entries():
+    """Writes that finished outside the window must be excluded so the
+    failure log isn't flooded with stale entries."""
+    import bot.db_writer_registry as r
+    import time as t
+
+    with r.tracked_write("old_test", "kind"):
+        pass
+
+    # Wait past the window
+    t.sleep(0.05)
+
+    recent = r.recent_writes(window_s=0.01)  # 10ms window
+    names = [name for (name, _kind, _dur, _finished_ts, _th) in recent]
+    assert "old_test" not in names, (
+        f"recent_writes(window_s=0.01) should exclude write finished 50ms ago. recent={recent!r}"
+    )
+
+
+def test_recent_writes_returns_tuple_shape():
+    """Each entry: (name, kind, duration_ms, finished_ts, thread_name).
+    Consumed by StateManager's failure-path formatter."""
+    import bot.db_writer_registry as r
+
+    with r.tracked_write("shape2_test", "kind_a"):
+        pass
+
+    recent = r.recent_writes(window_s=1.0)
+    assert recent
+    for entry in recent:
+        assert isinstance(entry, tuple)
+        assert len(entry) == 5
+        name, kind, dur, finished_ts, thread = entry
+        assert isinstance(name, str)
+        assert isinstance(kind, str)
+        assert isinstance(dur, float)
+        assert isinstance(finished_ts, float)
+        assert isinstance(thread, str)
+
+
+def test_recent_writes_ring_buffer_bounded():
+    """Ring buffer must be bounded (deque maxlen) so a long-running
+    process doesn't accumulate unbounded entries. Test by adding many
+    writes and asserting len <= maxlen."""
+    import bot.db_writer_registry as r
+
+    for i in range(100):
+        with r.tracked_write(f"buf_test_{i}", "kind"):
+            pass
+
+    recent = r.recent_writes(window_s=999999.0)  # very wide window
+    assert len(recent) <= 50, (
+        f"recent_writes ring buffer not bounded: {len(recent)} entries"
+    )
+
+
 # ─── 7. AST: instrumented modules reference the registry ───────────────────
 
 
@@ -292,4 +377,18 @@ def test_state_manager_failure_log_includes_writer_snapshot():
     assert "snapshot_active" in body_src or "active_writers=" in body_src, (
         "insert_evaluated_opportunity failure log must include "
         "snapshot_active() output via 'active_writers=' field."
+    )
+
+
+def test_state_manager_failure_log_includes_recent_writes():
+    """When insert_evaluated_opportunity hits the FAST-fail path
+    (begin_immediate_duration_ms ~0.1ms), the lock-holder typically
+    released JUST before our BEGIN IMMEDIATE returned SQLITE_BUSY —
+    so snapshot_active() returns []. recent_writes() captures writes
+    that finished within the last few seconds, which (per RCA) contains
+    the intra-process lock-holder."""
+    bot_impl = (ROOT / "bot" / "_impl.py").read_text()
+    assert "recent_writes" in bot_impl, (
+        "insert_evaluated_opportunity failure log must include "
+        "recent_writes(window_s=...) output via 'recent_writes=' field."
     )

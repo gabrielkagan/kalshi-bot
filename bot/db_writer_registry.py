@@ -38,8 +38,9 @@ import itertools
 import logging
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager
-from typing import Dict, List, Tuple
+from typing import Deque, Dict, List, Tuple
 
 # Process-global state. Module-level — singleton pattern.
 _lock = threading.Lock()
@@ -47,6 +48,25 @@ _active_writers: Dict[str, Tuple[float, str, str]] = {}
 # token (str) -> (started_ts, sql_kind, thread_name)
 
 _token_counter = itertools.count()
+
+# Ring buffer of recently-finished writes for intra-process culprit RCA.
+# After Bit 4.5a + writer-tracking instrumentation deployed, observed db-locked
+# hits showed `active_writers=[]` and `begin_immediate_duration_ms=0.1` —
+# meaning BEGIN IMMEDIATE failed in 100µs (NOT busy_timeout-driven). The
+# lock-holder is another connection in the SAME process that releases
+# its lock JUST before our BEGIN IMMEDIATE returns SQLITE_BUSY (SQLite
+# fails immediately for intra-process lock contention to avoid deadlock,
+# bypassing busy_handler retry). snapshot_active() at the moment of
+# failure shows [] because the lock-holder already finished.
+#
+# The ring buffer tracks the last N finished writes so the failure-path
+# log can include "what finished JUST before the BUSY return" — that's
+# the intra-process culprit.
+#
+# maxlen=50: covers ~5 seconds at peak write rate (~10 writes/sec). Bounded
+# memory regardless of process uptime.
+_recent_writes: Deque[Tuple[float, str, str, float, str]] = deque(maxlen=50)
+# entries: (finished_ts, name, sql_kind, duration_ms, thread_name)
 
 
 def register_write(name: str, sql_kind: str = "?") -> str:
@@ -69,19 +89,47 @@ def register_write(name: str, sql_kind: str = "?") -> str:
 def unregister_write(token: str, success: bool = True) -> None:
     """Mark a previously-registered write as complete and emit the
     per-write log line. Silent no-op if `token` is unknown (defensive
-    so error-path callers don't double-fail)."""
+    so error-path callers don't double-fail). Also appends to the
+    `_recent_writes` ring buffer for intra-process culprit RCA."""
     with _lock:
         entry = _active_writers.pop(token, None)
     if entry is None:
         return
     started, sql_kind, thread = entry
-    duration_ms = (time.time() - started) * 1000.0
+    finished_ts = time.time()
+    duration_ms = (finished_ts - started) * 1000.0
     name = token.split("#", 1)[0]
     status = "ok" if success else "fail"
+    # Append to ring buffer (lock briefly so concurrent recent_writes()
+    # callers don't see a half-modified deque).
+    with _lock:
+        _recent_writes.append((finished_ts, name, sql_kind, duration_ms, thread))
     logging.info(
         "WRITER_ACTIVE name=%r kind=%r thread=%r duration_ms=%.1f status=%s",
         name, sql_kind, thread, duration_ms, status,
     )
+
+
+def recent_writes(window_s: float = 5.0) -> List[Tuple[str, str, float, float, str]]:
+    """Return writes that finished within the last `window_s` seconds as
+    a list of (name, sql_kind, duration_ms, finished_ts, thread_name)
+    tuples. Used by `StateManager.insert_evaluated_opportunity`'s
+    failure-path log to identify the intra-process lock-holder that JUST
+    released — the FAST-fail mechanism (begin_immediate_duration_ms ~0.1ms)
+    means snapshot_active() shows [] but recent_writes() captures the
+    holder.
+
+    Returns entries ordered oldest-first within the window.
+    """
+    cutoff = time.time() - window_s
+    with _lock:
+        snap = list(_recent_writes)
+    # Filter and reshape: drop finished_ts from leading position
+    out: List[Tuple[str, str, float, float, str]] = []
+    for finished_ts, name, kind, dur, thread in snap:
+        if finished_ts >= cutoff:
+            out.append((name, kind, dur, finished_ts, thread))
+    return out
 
 
 def snapshot_active() -> List[Tuple[str, float, str, str]]:
