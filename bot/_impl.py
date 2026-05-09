@@ -2338,13 +2338,21 @@ class StateManager:
         # thread contention. v2 training should treat NULL as "unmeasured".
         _lock_wait_ms: Optional[float] = None
         _began_explicitly: bool = False
+        # RCA instrumentation (2026-05-09): capture BEGIN IMMEDIATE error
+        # message so the failure-path warning log can distinguish
+        # "cannot start a transaction within a transaction" (broken-stale-tx
+        # cascade) from "database is locked" (busy_timeout-driven contention).
+        # Bit 4.4 deploy alert showed 7 errors in 1 second, inconsistent with
+        # busy_timeout=30000 — this captures the actual mechanism for the
+        # next post-deploy alert.
+        _be_err_repr: Optional[str] = None
         _t0_lock = time.perf_counter()
         try:
             self.conn.execute("BEGIN IMMEDIATE")
             _lock_wait_ms = (time.perf_counter() - _t0_lock) * 1000.0
             _began_explicitly = True
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as _be_err:
+            _be_err_repr = f"{type(_be_err).__name__}: {_be_err}"
 
         # Phase H-2: patch lock_wait_ms into the pre-computed snapshot
         # and serialize. Done INSIDE the lock but it's just a dict write
@@ -2645,7 +2653,18 @@ class StateManager:
                 self.conn.rollback()
             except Exception:
                 pass
-            logging.warning(f"insert_evaluated_opportunity failed: {e}", exc_info=True)
+            # RCA instrumentation (2026-05-09): structured failure context.
+            # See `_be_err_repr` capture above + tests/test_db_locked_instrumentation.py.
+            _diag_thread = threading.current_thread().name
+            _diag_in_tx = getattr(self.conn, "in_transaction", "?")
+            _diag_begin = "OK" if _began_explicitly else _be_err_repr
+            logging.warning(
+                f"insert_evaluated_opportunity failed: {e} "
+                f"begin_immediate={_diag_begin!r} "
+                f"thread={_diag_thread!r} "
+                f"in_tx={_diag_in_tx!s}",
+                exc_info=True,
+            )
 
     def update_evaluated_opportunity_order(self, ticker: str,
                                             order_id: Optional[str] = None,
@@ -14999,7 +15018,17 @@ class OpportunityScanner:
                          datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
                     self._state.conn.commit()
                 except Exception:
-                    logging.warning("low_price_shadow_signals insert failed", exc_info=True)
+                    # RCA instrumentation (2026-05-09): match the diag fields
+                    # from StateManager.insert_evaluated_opportunity so a
+                    # post-deploy contention cluster across both sites lines
+                    # up cleanly in the journal.
+                    _diag_thread = threading.current_thread().name
+                    _diag_in_tx = getattr(self._state.conn, "in_transaction", "?")
+                    logging.warning(
+                        f"low_price_shadow_signals insert failed "
+                        f"thread={_diag_thread!r} in_tx={_diag_in_tx!s}",
+                        exc_info=True,
+                    )
         except Exception:
             logging.warning("low_price_shadow processing error", exc_info=True)
 

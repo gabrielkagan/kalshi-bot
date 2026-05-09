@@ -1,6 +1,6 @@
 # bot/_impl.py Layout
 
-bot/_impl.py is **25,628 lines** as of 2026-05-08 (post-Bit-4.4 fetchers extraction; Bit 3.1 moved ~1,200 lines of constants to `bot/constants.py`, Bit 3.2 moved ~790 lines of helpers to `bot/helpers/*`, Bit 4.1 moved 65 lines of Logger to `bot/logger.py`, Bit 4.2 moved 30 lines of TelegramNotifier to `bot/notifier.py`, Bit 4.3 moved 348 lines of KalshiClient to `bot/kalshi_client.py`, Bit 4.4 moved 141 lines of DeribitDVOLFetcher + CoinGlassFetcher to `bot/fetchers/*`). Class line ranges below
+bot/_impl.py is **25,657 lines** as of 2026-05-09 (post-Bit-4.4 fetchers extraction + db-locked diagnostic instrumentation; Bit 3.1 moved ~1,200 lines of constants to `bot/constants.py`, Bit 3.2 moved ~790 lines of helpers to `bot/helpers/*`, Bit 4.1 moved 65 lines of Logger to `bot/logger.py`, Bit 4.2 moved 30 lines of TelegramNotifier to `bot/notifier.py`, Bit 4.3 moved 348 lines of KalshiClient to `bot/kalshi_client.py`, Bit 4.4 moved 141 lines of DeribitDVOLFetcher + CoinGlassFetcher to `bot/fetchers/*`). Class line ranges below
 are auto-verifiable. Repo modularization plan (`kb/decisions/repo-modularization-plan-may05.md`)
 will turn bot/_impl.py into a thin entrypoint shim with logic in a `bot/` package.
 
@@ -36,7 +36,7 @@ verify by reading 5-10 lines around each line number before quoting.
 |---|---|
 | 1–~110 | Header import block (`bot._thread_env` imports BEFORE `numpy` — load-bearing per CLAUDE.md; `scripts/cal_mlp/` is also added to sys.path here for the bare `from integration import` calls later in the file). `from bot.constants import *` (Bit 3.1) at ~83; `from bot.helpers import *` + explicit underscore re-exports for `bot.helpers.validators` and `bot.helpers.breakers` (Bit 3.2) immediately after. `from bot.logger import Logger` (Bit 4.1), `from bot.notifier import TelegramNotifier` (Bit 4.2), `from bot.kalshi_client import KalshiClient` (Bit 4.3), and `from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher` (Bit 4.4) follow at ~100–~103. Verify with `grep -n "^from bot\." bot/_impl.py`. |
 | ~125–~608 | Residual helpers + runtime-state singletons that stay in `bot/_impl.py` (`_swallow_persist_exception`, `_derive_subtype`/`_derive_asset_filter`/`_resolve_cal_engine` — deferred to Sprint 6 with `CalibrationEngine` because they read `_CAL_REGISTRY` module-level mutable state — `_append_raw_api_journal`, `_HPSB_VALIDATOR_UNAVAILABLE_REASON`, `_HPSB_MISSING_BLEEDERS = ...` / `_BLEED_BLOCK_MISSING_BLEEDERS = ...` boot-time invocations of the validators that themselves moved to `bot/helpers/validators.py`, plus the orphan-DB watchdog Layer-3 helpers `_run_lsof_for_db`/`_get_pid_cmdline`/`_alert_orphan_db_holder`/`detect_orphan_db_holders`). |
-| 609–25628 | Class definitions (see table below). One module-level `def discover_active_windows()` sits in the body region between SettlementTracker's class body and the MainLoop class def; it ships with MainLoop in Bit 9.3. |
+| 609–25657 | Class definitions (see table below). One module-level `def discover_active_windows()` sits in the body region between SettlementTracker's class body and the MainLoop class def; it ships with MainLoop in Bit 9.3. |
 
 ### Class-body end vs class-range note
 
@@ -64,25 +64,25 @@ Generated 2026-05-08 from `grep -nE '^class ' bot/_impl.py` (post-Bit-4.4 fetche
 
 | Lines | Class | Size |
 |---|---|---|
-| 609–3178 | `StateManager` | 2570 |
-| 3179–3500 | `CoinbaseFeed` | 322 |
-| 3501–3512 | `OrderbookSchemaError` | 12 |
-| 3513–5290 | `KalshiFeed` | 1778 |
-| 5291–5626 | `CrossExchangeFeed` | 336 |
-| 5627–5748 | `OrderFlowEngine` | 122 |
-| 5749–5909 | `KalshiOrderFlowTracker` | 161 |
-| 5910–6869 | `VolatilityEngine` | 960 |
-| 6870–7072 | `ProbabilityEngine` | 203 |
-| 7073–8082 | `CalibrationEngine` | 1010 |
-| 8083–17162 | `OpportunityScanner` | 9080 |
-| 17163–22452 | `OrderExecutor` | 5290 |
-| 22453–23631 | `SettlementTracker` | 1179 |
-| 23632–25628 | `MainLoop` | 1997 |
+| 609–3197 | `StateManager` | 2589 |
+| 3198–3519 | `CoinbaseFeed` | 322 |
+| 3520–3531 | `OrderbookSchemaError` | 12 |
+| 3532–5309 | `KalshiFeed` | 1778 |
+| 5310–5645 | `CrossExchangeFeed` | 336 |
+| 5646–5767 | `OrderFlowEngine` | 122 |
+| 5768–5928 | `KalshiOrderFlowTracker` | 161 |
+| 5929–6888 | `VolatilityEngine` | 960 |
+| 6889–7091 | `ProbabilityEngine` | 203 |
+| 7092–8101 | `CalibrationEngine` | 1010 |
+| 8102–17191 | `OpportunityScanner` | 9090 |
+| 17192–22481 | `OrderExecutor` | 5290 |
+| 22482–23660 | `SettlementTracker` | 1179 |
+| 23661–25657 | `MainLoop` | 1997 |
 
 ## Project file map (root, 2026-05-05)
 
 Live trading process:
-- `bot/_impl.py` — main bot, all trading logic (25,628 lines post-Bit-4.4)
+- `bot/_impl.py` — main bot, all trading logic (25,657 lines post-Bit-4.4 + db-locked instrumentation)
 - `bot/constants.py` — module-level UPPER_SNAKE constants extracted from `bot/_impl.py` (Bit 3.1, 1,722 lines, 484 constants). Re-exported into `bot/_impl.py` via `from bot.constants import *` near top of file.
 - `bot/helpers/` — feature/sizing/cell-block helpers extracted from `bot/_impl.py` (Bit 3.2, ~790 lines, 25 functions across 9 submodules: `time_features`, `derived_features`, `tm_sweep`, `sizing`, `cell_blocks`, `strings`, `strategy`, `validators`, `breakers`). Re-exported into `bot/_impl.py` via `from bot.helpers import *` plus explicit underscore re-exports for `validators` (3) and `breakers` (5) — star-import skips underscored names.
 - `bot/logger.py` — `Logger` class (structured JSONL logging with fill dedup) extracted from `bot/_impl.py` (Bit 4.1, ~90 lines, stdlib + `bot.constants` only). Re-exported into `bot/_impl.py` via `from bot.logger import Logger` so `MainLoop.__init__` instantiation + type annotations on `OpportunityScanner`/`OrderExecutor`/`SettlementTracker` resolve.
@@ -122,7 +122,7 @@ Config:
 
 Operator scripts: `scripts/` (~80 files; subdir reorg pending Phase HH)
 
-Tests: `tests/` (3,483 collected post-Bit-4.4; verify with `pytest tests/ --collect-only -q | tail -1`. Unit/integration/regression split pending Phase JJ)
+Tests: `tests/` (3,488 collected post-Bit-4.4 + db-locked instrumentation; verify with `pytest tests/ --collect-only -q | tail -1`. Unit/integration/regression split pending Phase JJ)
 
 KB (local-only, never committed): `kb/`, `kb-research/`
 
