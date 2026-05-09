@@ -542,9 +542,13 @@ def test_bleed_block_validator_callable():
 
 def test_binance_feed_has_enable_flag():
     """BinanceFeed should be gated by env flag; default OFF on US-VPS
-    deploys (HTTP 451 geoblock). Currently spamming reconnect every ~70s."""
-    bot_py = REPO / 'bot/_impl.py'
-    src = bot_py.read_text()
+    deploys (HTTP 451 geoblock). Currently spamming reconnect every ~70s.
+
+    Bit 4.5a (2026-05-08): CrossExchangeFeed moved to bot/feeds/cross_exchange.py.
+    The flag is consumed there now, not in bot/_impl.py.
+    """
+    cross_py = REPO / 'bot/feeds/cross_exchange.py'
+    src = cross_py.read_text()
     assert 'BINANCE_FEED_ENABLED' in src, (
         "Add BINANCE_FEED_ENABLED env flag (default OFF) so VPS "
         "doesn't reconnect-loop a geoblocked endpoint."
@@ -581,20 +585,25 @@ def test_binance_feed_default_disabled():
 def test_binance_feed_start_respects_flag():
     """The feed's start() (or the call site that invokes it) must check
     BINANCE_FEED_ENABLED before launching the asyncio task. Otherwise
-    the flag is dead code."""
-    bot_py = REPO / 'bot/_impl.py'
-    src = bot_py.read_text()
-    # The check should appear within ~30 lines of either:
-    #   - BinanceFeed instantiation, OR
-    #   - .start() call on a Binance-related variable
+    the flag is dead code.
+
+    Bit 4.5a (2026-05-08): CrossExchangeFeed (which hosts the Binance
+    asyncio task) moved to bot/feeds/cross_exchange.py — the flag check
+    lives there now.
+    """
+    cross_py = REPO / 'bot/feeds/cross_exchange.py'
+    src = cross_py.read_text()
+    # The check should appear near either:
+    #   - BinanceFeed instantiation (legacy name), OR
+    #   - the binance task addition / call site
     has_gating = bool(re.search(
-        r'BINANCE_FEED_ENABLED.*?(BinanceFeed|binance_feed|_binance|\.start\(\))',
+        r'BINANCE_FEED_ENABLED.*?(BinanceFeed|binance|_binance|\.start\(\))',
         src, re.DOTALL,
     )) or bool(re.search(
-        r'(BinanceFeed|binance_feed|_binance).*?BINANCE_FEED_ENABLED',
+        r'(BinanceFeed|binance|_binance).*?BINANCE_FEED_ENABLED',
         src, re.DOTALL,
     ))
     assert has_gating, (
-        "BINANCE_FEED_ENABLED must gate BinanceFeed instantiation/start() "
-        "in bot/_impl.py boot path."
+        "BINANCE_FEED_ENABLED must gate the Binance asyncio task in "
+        "bot/feeds/cross_exchange.py."
     )
