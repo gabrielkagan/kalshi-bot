@@ -223,6 +223,47 @@ def test_runtime_warning_includes_begin_immediate_error_message(caplog):
     assert "in_tx=" in msg, f"warning must include in_tx=; got: {msg!r}"
 
 
+def test_begin_immediate_duration_captured_on_failure(caplog):
+    """When BEGIN IMMEDIATE raises OperationalError, the failure-path warning
+    log must include `begin_immediate_duration_ms=...` so the operator can
+    distinguish:
+      - 30000ms = busy_timeout-driven (some other writer held the lock)
+      - <100ms  = fast-fail (different mechanism — SQLITE_LOCKED, conn-state, etc.)
+
+    This pivots Bit 4.4-followup RCA: prior diag captured the BEGIN IMMEDIATE
+    error message but not its duration. The 03:33:07 hit on prod (PID 1613244)
+    showed the wrapped INSERT failed in 0.3ms, suggesting the BEGIN IMMEDIATE
+    also fast-failed — but we couldn't prove it without this duration field.
+    """
+    caplog.set_level(logging.WARNING)
+    sm = _make_state_manager_with_mocked_conn()
+
+    def _execute_side_effect(sql, *args, **kwargs):
+        if sql == "BEGIN IMMEDIATE":
+            raise sqlite3.OperationalError("database is locked")
+        if "INSERT INTO evaluated_opportunities" in sql:
+            raise sqlite3.OperationalError("database is locked")
+        return MagicMock()
+
+    sm.conn.execute.side_effect = _execute_side_effect
+
+    with _no_raise():
+        _call_insert_with_minimal_args(sm)
+
+    warnings = [
+        r for r in caplog.records
+        if "insert_evaluated_opportunity failed" in r.getMessage()
+    ]
+    assert warnings, (
+        f"no insert_evaluated_opportunity-failed warning captured. "
+        f"records: {[r.getMessage() for r in caplog.records]}"
+    )
+    msg = warnings[0].getMessage()
+    assert "begin_immediate_duration_ms=" in msg, (
+        f"warning must include begin_immediate_duration_ms= field; got: {msg!r}"
+    )
+
+
 def test_runtime_warning_marks_begin_immediate_ok_when_succeeds(caplog):
     """When BEGIN IMMEDIATE succeeds and INSERT fails, the warning log
     must show begin_immediate=OK (not a stale error message)."""

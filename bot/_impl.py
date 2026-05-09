@@ -2343,13 +2343,21 @@ class StateManager:
         # Bit 4.4 deploy alert showed 7 errors in 1 second, inconsistent with
         # busy_timeout=30000 — this captures the actual mechanism for the
         # next post-deploy alert.
+        # 2026-05-08 followup: also capture begin_immediate_duration_ms even
+        # on failure. The 03:33:07 prod hit's wrapped INSERT failed in 0.3ms
+        # but we couldn't prove the BEGIN IMMEDIATE wait was sub-second
+        # (= fast-fail) vs 30000ms (= busy_timeout). This duration field
+        # answers definitively.
         _be_err_repr: Optional[str] = None
+        _be_duration_ms: Optional[float] = None
         _t0_lock = time.perf_counter()
         try:
             self.conn.execute("BEGIN IMMEDIATE")
             _lock_wait_ms = (time.perf_counter() - _t0_lock) * 1000.0
+            _be_duration_ms = _lock_wait_ms
             _began_explicitly = True
         except sqlite3.OperationalError as _be_err:
+            _be_duration_ms = (time.perf_counter() - _t0_lock) * 1000.0
             _be_err_repr = f"{type(_be_err).__name__}: {_be_err}"
 
         # Phase H-2: patch lock_wait_ms into the pre-computed snapshot
@@ -2668,9 +2676,13 @@ class StateManager:
                 ]
             except Exception:
                 _diag_active = ["<snapshot_failed>"]
+            _diag_be_dur = (
+                f"{_be_duration_ms:.1f}" if _be_duration_ms is not None else "?"
+            )
             logging.warning(
                 f"insert_evaluated_opportunity failed: {e} "
                 f"begin_immediate={_diag_begin!r} "
+                f"begin_immediate_duration_ms={_diag_be_dur} "
                 f"thread={_diag_thread!r} "
                 f"in_tx={_diag_in_tx!s} "
                 f"active_writers={_diag_active!r}",
