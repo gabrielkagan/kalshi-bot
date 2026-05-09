@@ -16,8 +16,8 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: |
-          pip install pytest
           pip install -r requirements.txt
+          pip install -e '.[dev]'
       - name: Syntax check
         run: python3 -c "import ast; ast.parse(open('bot/_impl.py').read()); ast.parse(open('bot/constants.py').read())"
       - name: Run blocking tests

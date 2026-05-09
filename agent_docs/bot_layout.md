@@ -26,6 +26,25 @@ for idx, (start, name) in enumerate(classes):
 "
 ```
 
+## Public API surface (separate concern)
+
+The class line ranges below describe `bot/_impl.py`'s **internal layout**.
+For the **public API contract** of the `bot` package — every public class,
+function, attribute, signature, and re-export reachable under `bot.*` — the
+source of truth is `tests/contracts/public_api.json` (Pillar 1 of the
+testing-foundation-sprint, ticket 86b9ve0xt). Regenerate with
+`make api-snapshot-regen` after intentional surface changes; CI gates on
+zero-diff via `tests/contracts/test_public_api_snapshot.py`. The snapshot
+deliberately skips `bot._impl` and `bot._thread_env` (implementation detail);
+symbols re-exported via `bot/__init__.py` still appear under `bot.<name>`
+as alias entries with their resolved signatures, so a lost re-export
+surfaces as a removed snapshot entry.
+
+The two artifacts are orthogonal: this layout doc tracks *where* code
+lives in `bot/_impl.py` (line ranges shift on every extraction);
+`public_api.json` tracks *what* the public surface is (re-exports keep
+it stable across extractions).
+
 ## Top-level structure (approximate)
 
 bot/_impl.py interleaves imports, residual helpers, classes, and a tail

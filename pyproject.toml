@@ -38,6 +38,12 @@ dev = [
     # Pin floor + cap < 1 to track the 0.x release line until ruff stabilizes.
     "ruff>=0.6,<1",
     "tomli; python_version < '3.11'",
+    # Pillar 1 of the testing-foundation-sprint: griffe powers the public-API
+    # contract snapshot at tests/contracts/public_api.json (consumed by
+    # tests/contracts/test_public_api_snapshot.py). Replaces per-Bit AST
+    # source-grep tests that broke on every extraction (L38/L40/L41).
+    # Pin floor at 1.0 (stable API); cap <2 to track the 1.x line.
+    "griffe>=1.0,<2",
 ]
 # ML extras used by cal_mlp + analysis paths. Not required for the live bot
 # loop, so kept optional.

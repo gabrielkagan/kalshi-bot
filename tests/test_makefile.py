@@ -37,7 +37,7 @@ REQUIRED_TARGETS = (
 # Targets we ship beyond the Bit 1.2 spec ("optional" only in the
 # spec-conformance sense — they're shipped and must be exercised by the
 # .PHONY / dry-run / help-listing invariants exactly like REQUIRED_TARGETS).
-OPTIONAL_TARGETS = ("install",)
+OPTIONAL_TARGETS = ("install", "api-snapshot-regen")
 ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS
 
 
