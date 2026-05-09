@@ -42,24 +42,27 @@ MIN_SETTLED_FOR_EDGE_DISCOVERY = 500
 MIN_SETTLED_FOR_PARAM_OPTIMIZER = 500
 
 # Current bot config (for param optimizer context)
-# !! Keep in sync with bot/_impl.py — last verified 2026-05-07 (Bit 2.1a rename) !!
+# !! Keep in sync with the `bot` package — last verified 2026-05-08 (Bit 4.2.5.1 sweep) !!
+# Source of truth lives in bot/constants.py (Bit 3.1) and bot/_impl.py (remaining
+# constants), all surfaced via `import bot; bot.<NAME>` (lazy proxy in bot/__init__.py).
+# Pinned by tests/test_analyst_current_config_sync.py (AST-based; fails on drift).
 CURRENT_CONFIG = {
-    "MIN_ENTRY_PRICE": 80,
-    "BTC_MIN_ENTRY_PRICE": 89,
-    "ETH_MIN_ENTRY_PRICE": 75,
+    "MIN_ENTRY_PRICE": 75,
+    "BTC_MIN_ENTRY_PRICE": 88,
+    "ETH_MIN_ENTRY_PRICE": 90,
     "XRP_MIN_ENTRY_PRICE": 92,
     "XRP_15M_SHADOW": False,
     "MAX_ENTRY_PRICE": 99,
-    "MIN_EDGE_BY_PRICE": "80c→0.25%, 89c→0.25%, 91c→0.35%, 93c→0.9%, 95c→0.75%, 97c→1.0%",
+    "MIN_EDGE_BY_PRICE": "97c→1.0%, 95c→0.75%, 93c→0.5%, 91c→0.2%, 89c→0.25%, default→0.25%",
     "MARKET_BLEND_W": 0.40,
     "MAX_RISK_PER_TRADE": 0.25,
     "MAX_SECONDS_BEFORE_CLOSE": 900,
     "STC_SHADOW_THRESHOLD": 600,
-    "XRP_MAX_RISK_PER_TRADE": 0.12,
-    "BTC_MAX_RISK_PER_TRADE": 0.12,
+    "XRP_MAX_RISK_PER_TRADE": 0.15,
+    "BTC_MAX_RISK_PER_TRADE": 0.15,
     "SOL_MIN_EDGE": 0.010,
     "MAKER_ONLY_THRESHOLD": 0.0,
-    "SIZING_TIERS": "[(0.04,0.25),(0.025,0.20),(0.018,0.15),(0.012,0.10),(0.007,0.05)]",
+    "SIZING_TIERS": "[(0.04,0.25),(0.025,0.2),(0.018,0.15),(0.012,0.1),(0.009,0.07),(0.007,0.05),(0.005,0.03),(0.0025,0.02)]",
     "DRAWDOWN_HALF_THRESHOLD": 0.85,
     "DRAWDOWN_QUARTER_THRESHOLD": 0.75,
     "DRAWDOWN_HALT_THRESHOLD": 0.65,
@@ -222,11 +225,13 @@ def _open_db(db_path: str) -> sqlite3.Connection:
 
 
 def _price_bucket(price_cents: Optional[int]) -> str:
-    """Bucket a price in cents into a label."""
+    """Bucket a price in cents into a label. Lower-bucket floor tracks
+    CURRENT_CONFIG["MIN_ENTRY_PRICE"] so the label stays correct as the bot
+    floor moves (was 80, now 75 for ETH 75c+ live tier)."""
     if price_cents is None:
         return "unknown"
     if price_cents < 85:
-        return "80-84"
+        return f"{CURRENT_CONFIG['MIN_ENTRY_PRICE']}-84"
     if price_cents < 90:
         return "85-89"
     if price_cents < 95:
@@ -369,7 +374,12 @@ def compute_edge_stats(rows: List[sqlite3.Row]) -> dict:
         if won and stage not in ("candidate", "observation_trade"):
             s["missed_winners"] += 1
             # Counterfactual profit: (100 - price) - maker_fee for 1 contract
-            if price is not None and 80 <= price <= 99:
+            if (
+                price is not None
+                and CURRENT_CONFIG["MIN_ENTRY_PRICE"]
+                <= price
+                <= CURRENT_CONFIG["MAX_ENTRY_PRICE"]
+            ):
                 profit = (100 - price) - calculate_maker_fee(1, price)
                 s["missed_profit_cents"] += profit
 
@@ -389,14 +399,15 @@ def compute_edge_stats(rows: List[sqlite3.Row]) -> dict:
     total_missed = sum(s["missed_profit_cents"] for s in stages.values())
 
     # Counterfactual: what if edge thresholds were halved?
-    # Current price-dependent: 87c→0.7%, 89c→0.9%, 91c→1.2%, 93c→1.8%, 95c→2.5%, 97c→4.0%
-    _EDGE_SCHEDULE = [(97, 0.040), (95, 0.025), (93, 0.018), (91, 0.012), (89, 0.009), (87, 0.007)]
+    # Current price-dependent: 97c→1.0%, 95c→0.75%, 93c→0.5%, 91c→0.2%, 89c→0.25%, <89c→0.25%
+    # Mirrors bot.MIN_EDGE_BY_PRICE; pinned by tests/test_analyst_current_config_sync.py.
+    _EDGE_SCHEDULE = [(97, 0.01), (95, 0.0075), (93, 0.005), (91, 0.002), (89, 0.0025), (0, 0.0025)]
 
     def _get_min_edge(price_cents):
         for threshold, edge in _EDGE_SCHEDULE:
             if price_cents >= threshold:
                 return edge
-        return 0.007
+        return 0.0025
 
     edge_counterfactual = {"description": "edge thresholds halved"}
     recaptured = 0
@@ -408,7 +419,11 @@ def compute_edge_stats(rows: List[sqlite3.Row]) -> dict:
             continue
         fee_edge = row["fee_adjusted_edge"]
         price = row["market_price"]
-        if fee_edge is not None and price is not None and 80 <= price <= 99:
+        if (
+            fee_edge is not None
+            and price is not None
+            and CURRENT_CONFIG["MIN_ENTRY_PRICE"] <= price <= CURRENT_CONFIG["MAX_ENTRY_PRICE"]
+        ):
             half_threshold = _get_min_edge(price) / 2.0
             if fee_edge >= half_threshold:
                 if row["market_result"] == "yes":
@@ -694,7 +709,7 @@ All statistics are pre-computed — do NOT calculate anything yourself.
 
 Focus on:
 - Filter stages with high false rejection rates AND material missed profit
-- Edge counterfactual: are the price-dependent edge thresholds (0.7%-4.0%) optimal?
+- Edge counterfactual: are the price-dependent edge thresholds (0.2%-1.0%) optimal?
 - Whether price_out_of_range rejections are actually blocking winners at specific price levels
 
 Rules:
@@ -1204,7 +1219,7 @@ class Analyst:
             )
             if ec:
                 sections.append(
-                    f"\nEdge counterfactual (0.9% → 0.5%): net {ec.get('net_cents', '?')}c"
+                    f"\nEdge counterfactual (thresholds halved): net {ec.get('net_cents', '?')}c"
                 )
         else:
             sections.append(
