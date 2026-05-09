@@ -26,6 +26,42 @@ for idx, (start, name) in enumerate(classes):
 "
 ```
 
+## Public API surface (separate concern)
+
+The class line ranges below describe `bot/_impl.py`'s **internal layout**.
+For the **public API contract** of the `bot` package, the source of truth is
+`tests/contracts/public_api.json` (Pillar 1 of the testing-foundation-sprint,
+ticket 86b9ve0xt). Regenerate with `make api-snapshot-regen` after
+intentional surface changes; CI gates on zero-diff via
+`tests/contracts/test_public_api_snapshot.py`.
+
+The snapshot has three layers:
+
+1. **Static walk of public submodules under `bot.*`** — every public name
+   in `bot.engines.*`, `bot.feeds.*`, `bot.fetchers.*`, `bot.helpers.*`,
+   `bot.constants`, `bot.kalshi_client`, `bot.logger`, `bot.notifier`,
+   etc., with full signatures (parameters + returns + class methods).
+   `bot._impl` and `bot._thread_env` are excluded from this walk — their
+   contents are covered by Layers 2 and 3.
+
+2. **Static walk of locally-defined public classes inside `bot/_impl.py`** —
+   `MainLoop`, `OpportunityScanner`, `OrderExecutor`, `StateManager`,
+   `CalibrationEngine`, etc. (whatever's resident in `_impl.py` today;
+   the list is auto-derived, not hardcoded, so extractions naturally
+   move classes out of this layer and into Layer 1). Full class signatures.
+
+3. **Runtime proxy probe** — imports `bot` at runtime, enumerates every
+   public name accessible via `getattr(bot, name)` (the `_BotProxy`
+   forwards attribute access to `bot._impl`, including `from config
+   import *` and `from bot.constants import *` resolutions). Captures
+   what static analysis cannot see: a removed star-import or lost
+   re-export drops names from this list and surfaces as a snapshot diff.
+
+This layout doc and the snapshot are orthogonal: this doc tracks *where*
+code lives in `bot/_impl.py` (line ranges shift on every extraction);
+`public_api.json` tracks *what* the public surface is (the 3-layer
+structure keeps it stable across extractions).
+
 ## Top-level structure (approximate)
 
 bot/_impl.py interleaves imports, residual helpers, classes, and a tail

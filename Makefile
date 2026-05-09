@@ -24,7 +24,7 @@ ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
 endif
 
-.PHONY: help install test test-fast ast-check lint doc-drift deploy-check
+.PHONY: help install test test-fast ast-check lint doc-drift deploy-check api-snapshot-regen
 
 # Override at invocation time if needed: `make PYTHON=python3.11 test`.
 # NOTE: CI runs Python 3.11 (.github/workflows/test.yml), local default
@@ -52,6 +52,7 @@ help:
 	@echo "  make lint          ruff check ."
 	@echo "  make doc-drift     scripts/doc_drift_check.py"
 	@echo "  make deploy-check  scripts/cal_mlp/deploy_check.sh (full pre-deploy aggregator)"
+	@echo "  make api-snapshot-regen  regenerate tests/contracts/public_api.json (Pillar 1)"
 
 install:
 	$(PYTHON) -m pip install -e '.[dev]'
@@ -95,3 +96,11 @@ doc-drift:
 # source of truth.
 deploy-check:
 	bash scripts/cal_mlp/deploy_check.sh
+
+# Pillar 1 of testing-foundation-sprint: regenerate the public API
+# contract snapshot after an intentional surface change. Consumed by
+# tests/contracts/test_public_api_snapshot.py. See parent ticket
+# 86b9ve0wa. Requires griffe (in dev extras) — `make install` first if
+# not already installed.
+api-snapshot-regen:
+	$(PYTHON) scripts/dump_public_api.py

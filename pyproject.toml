@@ -38,6 +38,19 @@ dev = [
     # Pin floor + cap < 1 to track the 0.x release line until ruff stabilizes.
     "ruff>=0.6,<1",
     "tomli; python_version < '3.11'",
+    # Pillar 1 of the testing-foundation-sprint: griffe powers the public-API
+    # contract snapshot at tests/contracts/public_api.json (consumed by
+    # tests/contracts/test_public_api_snapshot.py). Adds a structural gate
+    # for the bot.* public surface; complements (does not replace) the
+    # per-Bit AST source-grep tests in test_*_extraction.py (which check
+    # _impl.py source content + runtime identity that griffe can't see).
+    #
+    # PINNED TIGHTLY: griffe's serialization changed substantially between
+    # 1.0 (slash-separated paths, ~5,200 entries) and 1.14 (dot-separated
+    # paths, ~3,700 entries). The same source produces wildly different
+    # snapshots across the 1.x range. Pin to a single minor (1.14.x) so
+    # the snapshot is stable; bump deliberately when a new minor ships.
+    "griffe>=1.14,<1.15",
 ]
 # ML extras used by cal_mlp + analysis paths. Not required for the live bot
 # loop, so kept optional.
