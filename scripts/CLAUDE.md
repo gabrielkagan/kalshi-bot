@@ -15,5 +15,11 @@ Audit, research, and one-off analysis scripts. Read-only against `state.db` unle
 - `15m_live_audit.py`, `hourly_alpha_research.py`, etc. — per-system
 - `doc_drift_check.py` — runs before commits that change config values
 
+## Backup scripts (Phase 0a — state.db S3 backup)
+- `state_db_s3_backup.py` — `sqlite3.Connection.backup()` → zstd → `rclone copyto s3prod:bucket/daily/...`. Invoked nightly by `kalshi-state-db-backup.timer` (06:00 UTC). NEVER call directly with rsync semantics — see the docstring + `kb/decisions/auto-research-phase-0a-plan-may09.md` RCA.
+- `state_db_restore.py` — verify-only mode (weekly automated check, integrity + row-count parity ±5%) OR `--to PATH` for manual incident recovery. Refuses to overwrite live `state.db` without `--allow-overwrite-live`.
+- `setup_state_db_backup_timer.sh` — installer for both timers (mirrors `setup_h4_cron.sh` pattern). Re-runnable.
+- `STATE_DB_BACKUP_SETUP.md` — operator runbook for one-time bucket + IAM + lifecycle (steps 1–6). Run once per VPS lifecycle.
+
 ## DB connections
 Any new `sqlite3.connect()` here must include both `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout=10000`. The bot, `supabase_sync`, sports, analyst all share `state.db`.

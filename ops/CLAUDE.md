@@ -28,6 +28,21 @@ Any edit triggers the deploy.yml drift check on the next push to `main`. Realist
 
 The on-VPS bot continues running on the prior commit's code throughout the abort window — **no downtime**.
 
+## state.db backup + restore (Phase 0a)
+
+`state.db` is backed up nightly at 06:00 UTC to S3 via two systemd timers installed by `scripts/setup_state_db_backup_timer.sh`:
+
+- `kalshi-state-db-backup.{service,timer}` — daily 06:00 UTC. Uses `sqlite3.Connection.backup()` (NOT rsync — a literal rsync of a hot WAL DB tears pages; see `kb/decisions/auto-research-phase-0a-plan-may09.md` RCA). Snapshot → zstd compress → `rclone copyto s3prod:bucket/daily/state-db-YYYY-MM-DD.db.zst`. Wrapped in `h4_run_with_alert.py` for Telegram failure alerts.
+- `kalshi-state-db-restore-verify.{service,timer}` — Sunday 07:00 UTC. Pulls latest snapshot, runs `PRAGMA integrity_check`, compares row counts vs live (±5% tolerance). Telegram alert on divergence — closes the silent-corruption-stays-invisible-until-we-need-it case.
+
+Bucket is configured server-side with lifecycle: Standard → Glacier IR (30d) → Deep Archive (90d). **Snapshots never expire.** Cost ~$0.30/mo at year 5.
+
+IAM is paranoid: VPS writer creds have `s3:PutObject` only (no Delete/Get/List), so a compromised VPS cannot ransomware backups. Restore creds are read-only and live on the dev Mac in `~/.aws/credentials` profile `kalshi-state-db-restore`.
+
+One-time bucket + IAM + lifecycle setup is operator-only — see `scripts/STATE_DB_BACKUP_SETUP.md` for the full runbook. After that, `bash scripts/setup_state_db_backup_timer.sh` on the VPS handles everything (timers, rclone config, sentinel-upload probe). Re-runnable; idempotent.
+
+**Drift-check note:** these timers live at `/etc/systemd/system/kalshi-state-db-*.{service,timer}` — outside `kalshi-bot.service`'s drift-check scope. Re-running `setup_state_db_backup_timer.sh` is the source-of-truth operation for them.
+
 ## Files
 - `kalshi-bot.service` — systemd unit, source of truth
 - `install.sh` — one-time install + reload
