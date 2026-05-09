@@ -100,6 +100,7 @@ from bot.helpers.breakers import (  # noqa: F401 — underscore-prefixed; star-i
 from bot.logger import Logger  # noqa: F401 — Bit 4.1 leaf extraction; re-export so MainLoop construction + type annotations on OpportunityScanner/OrderExecutor/SettlementTracker resolve
 from bot.notifier import TelegramNotifier  # noqa: F401 — Bit 4.2 leaf extraction; re-export so the runtime construction in MainLoop.__init__ (search "self.telegram = TelegramNotifier") resolves. The Optional["TelegramNotifier"] forward-ref on _TELEGRAM has no in-tree get_type_hints consumer, so the import is justified solely by that construction.
 from bot.kalshi_client import KalshiClient  # noqa: F401 — Bit 4.3 leaf extraction; re-export so MainLoop construction (search "self.client = KalshiClient") + type annotations on reconcile_with_api/_reconcile_positions/_reconcile_orders/OpportunityScanner/OrderExecutor/SettlementTracker/discover_active_windows resolve via bot._impl namespace.
+from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher  # noqa: F401 — Bit 4.4 leaf extraction; re-export so MainLoop construction (search "self.dvol_fetcher = DeribitDVOLFetcher" and "self.coinglass = CoinGlassFetcher") + the Optional[DeribitDVOLFetcher] type annotation on VolatilityEngine.__init__ resolve via bot._impl namespace.
 
 
 
@@ -5279,81 +5280,8 @@ class KalshiFeed:
 #  DeribitDVOLFetcher
 # ═════════════════════════════════════════════════════════════════════════════
 
-class DeribitDVOLFetcher:
-    """Daemon thread that fetches Deribit DVOL index for BTC/ETH."""
-
-    def __init__(self):
-        self._cache: Dict[str, Tuple[float, float]] = {}   # asset → (dvol_5s, fetch_time)
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._hourly_dvol: Dict[str, deque] = {
-            a: deque(maxlen=DVOL_HOURLY_AVG_MAXLEN) for a in DERIBIT_DVOL_CURRENCIES
-        }
-
-    def start(self):
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def get_dvol(self, asset: str) -> Optional[float]:
-        """Return cached DVOL in per-5-second scale, or None if stale/missing."""
-        with self._lock:
-            entry = self._cache.get(asset)
-        if entry is None:
-            return None
-        dvol_5s, fetch_time = entry
-        if time.time() - fetch_time > DVOL_CACHE_TTL:
-            return None
-        return dvol_5s
-
-    def get_dvol_hourly_avg(self, asset: str) -> Optional[float]:
-        """Return 1h rolling average of DVOL (per-5s scale), or None if insufficient data."""
-        with self._lock:
-            buf = self._hourly_dvol.get(asset)
-            if buf is None or len(buf) < DVOL_HOURLY_AVG_MIN:
-                return None
-            return sum(buf) / len(buf)
-
-    def _run(self):
-        while not self._stop.is_set():
-            for currency_key, currency in DERIBIT_DVOL_CURRENCIES.items():
-                try:
-                    dvol = self._fetch_latest_dvol(currency)
-                    if dvol is not None:
-                        dvol_5s = dvol * DVOL_ANNUALIZED_TO_5S
-                        with self._lock:
-                            self._cache[currency_key] = (dvol_5s, time.time())
-                            self._hourly_dvol[currency_key].append(dvol_5s)
-                except Exception:
-                    logging.debug(f"DVOL fetch failed for {currency}", exc_info=True)
-            self._stop.wait(timeout=DVOL_FETCH_INTERVAL)
-
-    def _fetch_latest_dvol(self, currency: str) -> Optional[float]:
-        """Fetch latest DVOL from Deribit. Returns annualized vol as decimal (0.57 = 57%)."""
-        now_ms = int(time.time() * 1000)
-        one_hour_ago_ms = now_ms - 3600 * 1000
-        params = {
-            "currency": currency,
-            "start_timestamp": one_hour_ago_ms,
-            "end_timestamp": now_ms,
-            "resolution": 1,
-        }
-        resp = requests.get(DERIBIT_DVOL_URL, params=params, timeout=DVOL_REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-        result = data.get("result", {})
-        candles = result.get("data", [])
-        if not candles:
-            return None
-        # Each candle: [timestamp, open, high, low, close]
-        last_candle = candles[-1]
-        close_dvol = last_candle[4]   # close value
-        return close_dvol / 100.0     # percentage → decimal
+# DeribitDVOLFetcher → bot/fetchers/deribit.py (Bit 4.4, 2026-05-08).
+# Re-imported above via `from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher`.
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -5688,77 +5616,8 @@ class CrossExchangeFeed:
 #  CoinGlassFetcher
 # ═════════════════════════════════════════════════════════════════════════════
 
-class CoinGlassFetcher:
-    """Daemon thread that fetches funding rates from CoinGlass API."""
-
-    def __init__(self):
-        self._api_key = os.environ.get("COINGLASS_API_KEY", "")
-        self._cache: Dict[str, Dict] = {}  # asset -> {"funding_rate": float, "fetch_time": float}
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-
-    def start(self):
-        if not self._api_key:
-            logging.info("COINGLASS_API_KEY not set — CoinGlass funding rates disabled")
-            return
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def get_funding_rate(self, asset: str) -> Optional[float]:
-        """Return cached average funding rate, or None if stale/missing."""
-        with self._lock:
-            entry = self._cache.get(asset)
-        if entry is None:
-            return None
-        if time.time() - entry["fetch_time"] > COINGLASS_CACHE_TTL:
-            return None
-        return entry["funding_rate"]
-
-    def _run(self):
-        while not self._stop.is_set():
-            for asset, symbol in COINGLASS_SYMBOLS.items():
-                try:
-                    rate = self._fetch_funding(symbol)
-                    if rate is not None:
-                        with self._lock:
-                            self._cache[asset] = {
-                                "funding_rate": rate,
-                                "fetch_time": time.time(),
-                            }
-                except Exception:
-                    logging.debug(f"CoinGlass fetch failed for {symbol}", exc_info=True)
-            self._stop.wait(timeout=COINGLASS_FETCH_INTERVAL)
-
-    def _fetch_funding(self, symbol: str) -> Optional[float]:
-        """Fetch current funding rates from CoinGlass, return average across exchanges."""
-        url = f"{COINGLASS_API_URL}/futures/funding/current"
-        headers = {"CG-API-KEY": self._api_key}
-        resp = requests.get(
-            url, params={"symbol": symbol}, headers=headers,
-            timeout=COINGLASS_REQUEST_TIMEOUT,
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        data_list = body.get("data", [])
-        if not data_list:
-            return None
-        rates = []
-        for entry in data_list:
-            rate = entry.get("rate")
-            if rate is not None:
-                try:
-                    rates.append(float(rate))
-                except (ValueError, TypeError):
-                    pass
-        if not rates:
-            return None
-        return sum(rates) / len(rates)
+# CoinGlassFetcher → bot/fetchers/coinglass.py (Bit 4.4, 2026-05-08).
+# Re-imported above via `from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher`.
 
 
 # ═════════════════════════════════════════════════════════════════════════════
