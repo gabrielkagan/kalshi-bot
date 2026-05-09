@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f .claude/hooks/tdd_guard.py ]; then python3 .claude/hooks/tdd_guard.py; elif [ -n \"${CLAUDE_PROJECT_DIR:-}\" ] && [ -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/tdd_guard.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/tdd_guard.py\"; else exit 0; fi"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",

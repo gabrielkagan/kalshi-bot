@@ -70,6 +70,7 @@ When a user request fits a skill, prefer the skill over ad-hoc work.
 | NO-side data | `/no-side` |
 | Weekend/overnight discount status | `/weekend-discount` |
 | Compile data for external researcher | `/research-package` |
+| Scaffold a failing TDD test before bot/ extraction | `/test-writer` |
 | KB health check | `/kb-lint` |
 | KB capture session findings | `/kb-ingest` |
 | KB structural maintenance | `/kb-evolve` |
