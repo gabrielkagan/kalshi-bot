@@ -50,8 +50,39 @@ TIER_5_COLUMNS = frozenset({
 })
 
 # Files permitted to write directly to evaluated_opportunities without
-# routing through StateManager.insert_evaluated_opportunity.
+# routing through StateManager.insert_evaluated_opportunity. The
+# canonical definition lives in tests/test_call_sites.py:184; this set
+# is duplicated here to avoid a cross-test-module import. The
+# `test_allowed_raw_inserters_set_matches_canonical` test below pins
+# both copies in lock-step — Round-3 adversarial MAJOR-1 fix for the
+# silent-bypass class where a future raw inserter is added to one set
+# but not the other and slips past the data_provenance contract.
 ALLOWED_RAW_INSERTERS = {"bot/_impl.py", "sports_engine.py"}
+
+
+def test_allowed_raw_inserters_set_matches_canonical():
+    """Lock-step pin: the local ALLOWED_RAW_INSERTERS must equal the
+    canonical set in tests/test_call_sites.py. If they drift, a future
+    raw inserter added to test_call_sites.py won't be checked by
+    TestRawInserterTierCoverage or TestRawInserterDataProvenance, which
+    is the exact failure mode this bit's writer fix was filed to
+    prevent. See kb/decisions/sprint-a-bit-2-shipped-may09.md round-3
+    MAJOR-1 fix.
+    """
+    from tests.test_call_sites import (
+        TestEvaluatedOpportunitiesTierContract as _Canonical,
+    )
+    canonical = set(_Canonical.ALLOWED_RAW_INSERTERS)
+    assert canonical == ALLOWED_RAW_INSERTERS, (
+        f"ALLOWED_RAW_INSERTERS drift detected:\n"
+        f"  tests/test_call_sites.py:184 → {sorted(canonical)}\n"
+        f"  tests/test_insert_schema_parity.py:54 → "
+        f"{sorted(ALLOWED_RAW_INSERTERS)}\n"
+        f"Update both copies in lock-step. The local copy in "
+        f"test_insert_schema_parity.py drives "
+        f"RAW_INSERTERS_FOR_PROVENANCE which gates the data_provenance "
+        f"contract tests."
+    )
 
 # Columns that are intentionally NULL at INSERT time and populated by a
 # later UPDATE statement. Adding to this allowlist is an explicit
@@ -269,3 +300,135 @@ class TestRawInserterTierCoverage:
             "must hand-populate Tier 4 + Tier 5 in every raw INSERT. "
             "See kb/concepts/contract-testing.md."
         )
+
+
+# Files in ALLOWED_RAW_INSERTERS that the data_provenance contract
+# tests should iterate over. bot/_impl.py is the canonical writer using
+# `INSERT … ON CONFLICT … DO UPDATE … COALESCE` (preserves prior
+# provenance) and is enforced by TestCanonicalInsertCoversSchema +
+# StateManager's default param at bot/_impl.py:2119, NOT by these tests.
+# Round-2 M2.1: parametrize so any future raw-inserter file added to
+# ALLOWED_RAW_INSERTERS automatically inherits the contract.
+RAW_INSERTERS_FOR_PROVENANCE = sorted(ALLOWED_RAW_INSERTERS - {"bot/_impl.py"})
+
+
+class TestRawInserterDataProvenance:
+    """Sprint A.2 — every raw INSERT in ALLOWED_RAW_INSERTERS that writes
+    to evaluated_opportunities must include `data_provenance` in its
+    column list AND pass the literal `'live_ws'` value (matching the
+    `StateManager.insert_evaluated_opportunity` default in bot/_impl.py).
+
+    Bug history: sports_engine.py:_insert_evaluated_opportunity bypasses
+    StateManager via its own DB connection (cross-thread safety), and
+    its raw INSERT column list omitted `data_provenance` from G-6 ship
+    (2026-05-02) onward. Result: every sports row through 2026-05-09
+    was written with NULL data_provenance — 1,183 rows on live VPS.
+    The G-6 stamp script (`scripts/stamp_data_provenance.py`) is 15m-
+    scoped, so it never fixes sports rows; only the writer can.
+
+    See kb/decisions/sprint-a-bit-2-rca-may09.md for full RCA.
+    """
+
+    @pytest.mark.parametrize("fname", RAW_INSERTERS_FOR_PROVENANCE)
+    def test_raw_inserts_carry_data_provenance(self, fname):
+        fpath = os.path.join(PROJECT_ROOT, fname)
+        if not os.path.exists(fpath):
+            pytest.skip(f"{fname} not present")
+        with open(fpath) as f:
+            source = f.read()
+
+        inserts = [
+            (cols, offset) for t, cols, offset in _extract_insert_columns(source)
+            if t == "evaluated_opportunities"
+        ]
+        assert inserts, (
+            f"{fname} is in ALLOWED_RAW_INSERTERS but has no "
+            f"INSERT INTO evaluated_opportunities — allowlist is stale "
+            f"(remove from ALLOWED_RAW_INSERTERS in tests/test_call_sites.py)."
+        )
+
+        failures = []
+        for cols, offset in inserts:
+            line = source.count("\n", 0, offset) + 1
+            if "data_provenance" not in cols:
+                failures.append(
+                    f"{fname}:{line} INSERT missing data_provenance column"
+                )
+
+        assert not failures, (
+            "\n".join(failures) +
+            f"\n{fname} raw INSERTs bypass "
+            "StateManager.insert_evaluated_opportunity's default "
+            "(`data_provenance='live_ws'`), so every column it writes "
+            "must be hand-populated. Adding the column to the column "
+            "list is necessary; the value passed must be 'live_ws' to "
+            "match StateManager's default. Pin enforced by "
+            "test_raw_inserts_pass_live_ws_value below. "
+            "See kb/decisions/sprint-a-bit-2-rca-may09.md."
+        )
+
+    @pytest.mark.parametrize("fname", RAW_INSERTERS_FOR_PROVENANCE)
+    def test_raw_inserts_pass_live_ws_value(self, fname):
+        """The column-list pin above is necessary but not sufficient —
+        a future drift could add the column but pass `None` or a
+        wrong-vocab string. This guard asserts the literal `'live_ws'`
+        appears in each INSERT's *python parameters tuple* (not the
+        surrounding comments or SQL).
+
+        Round-1 adversarial M2 fix: a window-based check would pass if
+        a comment containing `'live_ws'` lived nearby (e.g., the very
+        comment we added documenting the value). This implementation
+        anchors on `conn.execute(\"\"\"…\"\"\", (…))` and scans only the
+        captured python params group — a future maintainer who removes
+        `'live_ws'` from VALUES while leaving the comment will fail.
+
+        Round-2 adversarial M2.2 fix: the regex now accepts the broader
+        `INSERT [OR <RESOLUTION>] INTO` family (covers OR REPLACE, OR
+        IGNORE, plain INSERT, and the migration target form `INSERT …
+        ON CONFLICT … DO UPDATE …`). A future migration to ON CONFLICT
+        per the M1 comment block at sports_engine.py won't silently
+        retire the value-pin — the regex will keep matching.
+        """
+        fpath = os.path.join(PROJECT_ROOT, fname)
+        if not os.path.exists(fpath):
+            pytest.skip(f"{fname} not present")
+        with open(fpath) as f:
+            source = f.read()
+
+        # Match `conn.execute("""…INSERT [OR <RESOLUTION>] INTO
+        # evaluated_opportunities…""", (<python_tuple>))`. Anchoring on
+        # `"""\s*,\s*\(` ensures the captured group is exactly the
+        # python params tuple — comments above the call cannot leak in.
+        # Accept any conflict-resolution clause (OR REPLACE, OR IGNORE,
+        # bare INSERT, or no clause at all — ON CONFLICT lives after
+        # the column list and doesn't affect this anchor).
+        block_re = re.compile(
+            r'conn\.execute\(\s*"""\s*'
+            r'INSERT(?:\s+OR\s+\w+)?\s+INTO\s+evaluated_opportunities'
+            r'.*?"""\s*,\s*\((?P<params>.*?)\)\s*\)',
+            re.DOTALL | re.IGNORECASE,
+        )
+        matches = list(block_re.finditer(source))
+        assert matches, (
+            f"{fname}: no INSERT INTO evaluated_opportunities "
+            f"conn.execute(...) blocks found via the params-tuple regex. "
+            f"If the call shape changed (refactored to a helper, or the "
+            f"SQL is no longer in a triple-quoted string), update this "
+            f"test to match — but DO NOT drop the data_provenance value "
+            f"pin. See kb/decisions/sprint-a-bit-2-shipped-may09.md."
+        )
+
+        failures = []
+        for m in matches:
+            params = m.group("params")
+            line = source.count("\n", 0, m.start()) + 1
+            if "'live_ws'" not in params and '"live_ws"' not in params:
+                failures.append(
+                    f"{fname}:{line} INSERT params tuple does not "
+                    f"contain literal 'live_ws' for data_provenance. "
+                    f"If the column was added but value is wrong, the "
+                    f"row writes a NULL or wrong-vocab provenance — "
+                    f"breaks `extract_data.py --provenance-filter` "
+                    f"semantics."
+                )
+        assert not failures, "\n".join(failures)
