@@ -1,9 +1,24 @@
 # Kalshi Bot Knowledge Base
 
-Last updated: 2026-04-18 | Articles: 63 | Status: Evolved
+Last updated: 2026-05-08 | Articles: 56 active + 6 archived (curated) | Status: Reconciled
 
 ## Usage
 Read this index first before answering any deep question about the bot. Identify relevant articles, read those, then respond. After significant sessions, update articles and this index.
+
+## Curation policy
+
+`_index.md` is a **curated** subset, not an auto-generated listing. Per
+`kb/CLAUDE.md`, `kb/` is **local-only by convention** — the 56 entries
+here are pre-rule-legacy files that remain tracked in git as agent-guide
+infrastructure. New session notes (`kb/decisions/`, `kb/findings/`,
+`kb/failures/` since the convention took effect) are local-only and
+intentionally not indexed; reach them via filesystem search or the
+`kb/decisions/session-resume-*.md` chain.
+
+A regression test (`tests/test_kb_index_links_resolve.py`) asserts every
+`[[…]]` reference here resolves to a file on disk. Adding a new entry
+requires the file to exist; the policy decision (commit-vs-local) is the
+maintainer's call.
 
 ---
 
@@ -35,21 +50,16 @@ Read this index first before answering any deep question about the bot. Identify
 - [[concepts/addon-strategies.md]] - Addon strategies: confirmation addon (live) and dip addon (killed, 55.2% WR).
 - [[concepts/shadow-expansion-variants.md]] - Shadow expansion: 6 DC variants, low-price sim, overnight LP, promotion criteria.
 
-## Strategies (6)
+## Strategies (5)
 - [[strategies/terminal-momentum.md]] - TM: 96/98/99c (95c/97c killed Apr 9), 61-300s STC, margin x STC sizing, stacking.
 - [[strategies/lpne.md]] - LPNE: BTC 80-87c near-expiry (STC<=120s), intercepts at price floor. 97.6% WR on 42 obs, 50ct fixed.
 - [[strategies/bracket-no.md]] - Weather bracket NO: buy NO when YES 88-96c, 91.7% NO settlement rate.
 - [[strategies/overnight-discount.md]] - Overnight/weekend edge discount: 0.6x multiplier, overnight 89c+ / weekend 90c+ live gates.
 - [[strategies/hourly-markets.md]] - Hourly sub-60c: BTC+ETH only, fixed 25ct, T=1.45, taker-only.
-- [[strategies/weather-no-live.md]] - Weather NO live: buy NO at <=40c, STC>=16h, assumed 0.70 prob, taker IOC. First trade Apr 12.
 
-## Failures (19)
+## Failures (14)
 - [[failures/dashboard-drift.md]] - Dashboard messy, stale, partial: 412-trade sync lag, spx_harrv 400s, 20 DEAD keys, 8 GHOST panels, 3 duplicate families. Plan A→B chosen.
 - [[failures/sync-watermark-clock-drift.md]] - settled_at watermark + 13.6s clock drift → 412-trade gap over 5 days. Fixed via rowid watermark.
-- [[failures/sol-thin-buffer-late-entry.md]] - Apr 17 SOL -$77.08 thin-buffer late-entry loss; 3 mitigations (buffer gate, cal_pipeline T sweep, sizing damper) all failed backtest. Accepted as residual variance.
-- [[failures/weather-no-side-flip.md]] - Weather/hourly NO-side taker fills recorded as side='yes' at 100-no_price (Apr 12-15). 7 flipped rows, ~$3.60 attribution swing. Fixed commit 32fd78a.
-- [[failures/apr13-threshold-corruption.md]] - Kalshi API returned malformed floor_strike for 35 min on Apr 13 -> -$53 realized loss. Sanity gate shipped Apr 15.
-- [[failures/weather-no-candidate-never-fires.md]] - Weather NO live candidate nested inside broken model-edge gate -> 0 trades Apr 4-11. Fixed Apr 11.
 - [[failures/hwm-bugs.md]] - Five HWM/drawdown scaler variants. Recurring bug family (Mar 25-30).
 - [[failures/blr-calibrator.md]] - Broken BLR outputting ~95% constant. Discovery March 25.
 - [[failures/polygon-403.md]] - Polygon.io 403 errors: zero SPX evaluations, Finnhub fallback.
@@ -60,14 +70,11 @@ Read this index first before answering any deep question about the bot. Identify
 - [[failures/ioc-subfloor-fill.md]] - IOC sub-floor fills via phantom top-of-book. Recurring (~4 severe/50d). Updated Apr 15.
 - [[failures/supabase-sync-silent-failure.md]] - SELECT * sent ~30 unknown columns to Supabase -> weeks of eval/rejection data lost silently.
 - [[failures/pnl-reporting-bugs.md]] - Fee overcounting ($120), revenue inflation ($20), stacking double-revenue ($13). Fixed Apr 6.
-- [[failures/apr12-session-bugs.md]] - Apr 12 triple bug: sports 31-day outage (code map), hourly side-column analysis error, WAL hot retry loop.
 - [[failures/settlement-watermark-race.md]] - Watermark skips failed settlements -> stuck positions, inflated PnL, stale orders. Fixed Apr 7.
 - [[failures/ppo-monitor-bugs.md]] - Three PPO bugs: STC timezone, deprecated API fields, WS stale threshold. 0% orderbook data. Fixed Apr 7.
 
-## Decisions (13)
+## Decisions (11)
 - [[decisions/dashboard-overhaul-plan.md]] - Dashboard overhaul: Option A (surgical, 1wk) → Option B (v2 contract + parallel HTML, 2-3wk). Option C (SPA) deferred. Six-agent swarm audit.
-- [[decisions/apr15-controls-verified.md]] - Apr 15 IOC sub-floor + threshold sanity gate verified effective: systematic large-loss cluster stopped, 206 15M trades / 97.6% WR / +$120 in 56h post-deploy.
-- [[decisions/hourly-no-asymmetric-exclusion.md]] - YES/NO exclusion asymmetry: HOURLY_NO_EXCLUDED_ASSETS=set() — all 4 assets eligible on NO-side, SOL strongest at +17.8pp model edge (Apr 15).
 - [[decisions/blr-removal.md]] - Disabled BLR calibrator via feature flag (Mar 29, 2026).
 - [[decisions/sol-edge-floor.md]] - SOL_MIN_EDGE=1.0%: <1.0% = 82% WR vs >=1.0% = 94.2% WR.
 - [[decisions/xrp-promotion.md]] - XRP promoted to live at 92c+ floor (41W/2L, 95.3% WR).
@@ -79,11 +86,13 @@ Read this index first before answering any deep question about the bot. Identify
 - [[decisions/config-models-extraction.md]] - Extracted config.py and models.py from bot.py (Mar 21).
 - [[decisions/stc-extended-zone.md]] - 300-600s re-enabled with per-asset higher floors (BTC 93c, ETH 90c, SOL 95c, XRP 92c). 98.8% WR on n=83.
 
-## Archived (6)
-Articles moved to `kb/_archive/` — retained for historical context, not actively maintained.
-- tm-97c-promotion.md — Decision reversed Apr 9 (97c removed from TM_PRICE_SET, negative EV).
-- t2-z2-losses.md — Merged into decisions/t2-z2-shadowed.md.
-- sol-maker-adverse-selection.md — Merged into decisions/sol-taker-first.md.
-- dedup-tuple-crash.md — Resolved Mar 7, trivial fix, guarded by regression test.
-- shadow-callsite-variable.md — Resolved Mar 7, generic Python lesson, pattern documented in weather-no-candidate article.
-- openclaw-deferred.md — Deferred indefinitely, no active relevance.
+## Conceptually archived (6)
+Superseded or merged decisions kept in their active dirs for historical
+reference — not actively maintained. Files remain in `kb/decisions/` and
+`kb/failures/` (no `kb/_archive/` dir exists).
+- [[decisions/tm-97c-promotion.md]] — Decision reversed Apr 9 (97c removed from TM_PRICE_SET, negative EV).
+- [[failures/t2-z2-losses.md]] — Merged into decisions/t2-z2-shadowed.md.
+- [[failures/sol-maker-adverse-selection.md]] — Merged into decisions/sol-taker-first.md.
+- [[failures/dedup-tuple-crash.md]] — Resolved Mar 7, trivial fix, guarded by regression test.
+- [[failures/shadow-callsite-variable.md]] — Resolved Mar 7, generic Python lesson.
+- [[decisions/openclaw-deferred.md]] — Deferred indefinitely, no active relevance.
