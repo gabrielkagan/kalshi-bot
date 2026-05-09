@@ -356,6 +356,77 @@ def test_pytest_ini_removed():
     )
 
 
+def test_pyproject_mutmut_targets_engines():
+    """Pin Pillar 5 [tool.mutmut].paths_to_mutate to the extracted engines.
+
+    Without this, a future edit could retarget mutmut without anyone
+    noticing — e.g., to bot/_impl.py (5,000+ LOC; would turn the 1-2h
+    baseline into >24h) or to bot/helpers/ (the closeout doc would
+    silently lie about which surface was graded).
+
+    Pillar 5 (ticket 86b9ve11y) initial scope: ONLY the engines that
+    have an equivalence harness (Pillar 3). Helpers + _impl are out
+    of scope until extraction is further along — see
+    `kb/decisions/testing-foundation-pillar-5-shipped-may09.md` if you
+    need to rationale-check this set before bumping.
+    """
+    data = _load()
+    mut = data.get("tool", {}).get("mutmut", {})
+    paths = mut.get("paths_to_mutate")
+    assert paths is not None, (
+        "[tool.mutmut].paths_to_mutate missing. Pillar 5 (86b9ve11y) "
+        "ships this config; if it's gone, either the section was "
+        "deleted or the key was renamed — both cases break "
+        "`make test-mutmut`."
+    )
+    # Tolerate either the TOML list form (preferred — no whitespace
+    # fragility) or the legacy comma-separated string form (mutmut
+    # 2.5.1 accepts both per `mutmut/__main__.py:328`). String form
+    # has a known footgun: `split_paths` does NOT strip whitespace,
+    # so `"a.py, b.py"` silently drops `b.py`.
+    if isinstance(paths, str):
+        targets = {p.strip() for p in paths.split(",") if p.strip()}
+        # If string form is in use, defensively confirm none of the
+        # entries will be dropped by mutmut's no-strip behavior.
+        raw_split = paths.split(",")
+        for entry in raw_split:
+            assert entry == entry.strip(), (
+                f"[tool.mutmut].paths_to_mutate entry {entry!r} has "
+                f"leading/trailing whitespace. mutmut 2.5.1's "
+                f"split_paths does not strip — this entry would be "
+                f"silently dropped at runtime. Use the TOML list form "
+                f"(`paths_to_mutate = [\"a.py\", \"b.py\"]`) to "
+                f"sidestep the fragility entirely."
+            )
+    else:
+        targets = set(paths)
+
+    expected = {
+        "bot/engines/volatility.py",
+        "bot/engines/probability.py",
+    }
+    assert targets == expected, (
+        f"[tool.mutmut].paths_to_mutate = {sorted(targets)}; expected "
+        f"{sorted(expected)}. Pillar 5 (86b9ve11y) initial scope is "
+        f"the equivalence-harnessed engines only. Adding bot/_impl.py "
+        f"or bot/helpers/* expands the runtime by orders of magnitude "
+        f"and breaks the closeout doc's `mutmut-baseline-may09.md` "
+        f"surface claim. If you mean to expand: ship a new findings "
+        f"doc + bump this assertion in the same commit."
+    )
+
+    # Sanity: every targeted file must exist on disk. mutmut's
+    # split_paths filters non-existent paths silently — this catches
+    # a renamed or deleted target before mutmut treats it as "no
+    # mutants here, baseline is trivially perfect".
+    for target in targets:
+        assert (REPO_ROOT / target).is_file(), (
+            f"[tool.mutmut].paths_to_mutate references {target!r} but "
+            f"the file does not exist. mutmut would silently drop it; "
+            f"the baseline run would over-report coverage."
+        )
+
+
 def test_extend_exclude_actually_excludes():
     """Verify each `extend-exclude` entry is functional, not just declarative.
 

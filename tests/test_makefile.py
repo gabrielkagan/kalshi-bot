@@ -224,9 +224,9 @@ def test_test_target_chains_tiered_targets():
     tier's failure aborts the next via Make's default fail-on-nonzero.
     The CI symmetry that Bit 1.2 pinned (filter alignment with
     .github/workflows/test.yml) now holds at the tier level — see
-    `test_test_integration_matches_ci_filter` for the integration-tier
-    pin and `test_pillar_5_workflow_calls_tier_targets` for CI's
-    parallel obligation.
+    `test_test_integration_matches_ci_blocking_filter` for the
+    integration-tier pin and `test_pillar_5_workflow_calls_tier_targets`
+    for CI's parallel obligation.
     """
     recipe = _recipe_for("test")
     for tier in ("test-unit", "test-contract", "test-equivalence", "test-integration"):
@@ -596,13 +596,81 @@ def test_test_mutmut_invokes_mutmut_run():
     execute the mutation baseline.
 
     Per ticket 86b9ve11y AC: targets bot/engines/{volatility,probability}.py;
-    that's pinned in pyproject [tool.mutmut].paths_to_mutate, not the
-    Makefile recipe. The Makefile's job is just to surface the entrypoint.
+    that's pinned in pyproject [tool.mutmut].paths_to_mutate (asserted by
+    `tests/test_pyproject.py::test_pyproject_mutmut_targets_engines`),
+    not the Makefile recipe. The Makefile's job is just to surface the
+    entrypoint.
     """
     recipe = _recipe_for("test-mutmut")
     assert "mutmut run" in recipe or "mutmut\trun" in recipe, (
         f"test-mutmut recipe must invoke `mutmut run`. Recipe was: {recipe!r}"
     )
+
+
+@pytest.mark.parametrize(
+    "wf_name,blocking_integration",
+    [("test.yml", False), ("deploy.yml", True)],
+)
+def test_pillar_5_workflow_calls_tier_targets(wf_name, blocking_integration):
+    """Both CI workflows must invoke each Pillar 5 tier target.
+
+    R2 followup: closes the symmetry gap between the Makefile
+    (single-source-of-truth for tier definitions) and the CI workflows
+    (which call into the Makefile). Without this, a future workflow
+    edit could silently drop a tier (e.g., remove `make test-equivalence`
+    on a perceived "redundant" cleanup) and the suite would no longer
+    gate that tier in CI even though `make test` still does locally.
+
+    Per ticket 86b9ve11y AC: blocking = unit + contract + equivalence;
+    integration = informational on test.yml, BLOCKING on deploy.yml
+    (deploys are the higher-stakes gate). The `blocking_integration`
+    parameter encodes this asymmetry — for test.yml the integration
+    step must include `continue-on-error: true`; for deploy.yml it
+    must NOT.
+    """
+    wf_path = REPO_ROOT / ".github" / "workflows" / wf_name
+    assert wf_path.exists(), f"{wf_name} missing at expected path."
+    text = wf_path.read_text()
+    # Each tier must appear as `run: make test-<tier>` somewhere in
+    # the workflow body. Use re.M to anchor at line-start; tolerate
+    # leading whitespace (YAML steps are indented).
+    for tier in ("test-unit", "test-contract", "test-equivalence", "test-integration"):
+        assert re.search(rf"run:\s*make\s+{re.escape(tier)}\b", text), (
+            f"{wf_name} missing `run: make {tier}` step. Pillar 5 "
+            f"requires CI to invoke each tier target so the local "
+            f"`make test` orchestration matches the CI gate behavior."
+        )
+    # Asymmetric integration policy. Find the integration step block
+    # and inspect its `continue-on-error` setting. Step block ends at
+    # the next `- name:` line OR end of file.
+    integration_match = re.search(
+        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n\s*- name:|\Z)",
+        text,
+    )
+    assert integration_match, (
+        f"{wf_name} has no `Integration tier` step block. Pillar 5 "
+        f"explicit step naming required for the asymmetric "
+        f"informational/blocking policy."
+    )
+    block = integration_match.group(1)
+    has_continue_on_error = bool(
+        re.search(r"^\s*continue-on-error:\s*true", block, re.M)
+    )
+    if blocking_integration:
+        assert not has_continue_on_error, (
+            f"{wf_name}'s Integration tier step has "
+            f"`continue-on-error: true` but Pillar 5 spec says the "
+            f"deploy gate is BLOCKING — a regression would silently "
+            f"deploy. Remove the continue-on-error line."
+        )
+    else:
+        assert has_continue_on_error, (
+            f"{wf_name}'s Integration tier step is missing "
+            f"`continue-on-error: true`. Pillar 5 spec says the PR "
+            f"gate is INFORMATIONAL for integration so flaky integration "
+            f"tests don't block every PR. Either add the line or "
+            f"document the spec change."
+        )
 
 
 def test_cwd_guard_fires_when_invoked_outside_repo_root():

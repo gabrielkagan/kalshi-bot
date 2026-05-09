@@ -187,8 +187,14 @@ addopts = ["-v", "--tb=short", "--ignore=venv"]
 # (a) adding `# pragma: no mutate` inline (touches bot/engines/
 # probability.py — coordinate with Bit 6.3) or (b) using
 # `dict_synonyms` / a regex-based skip in this section.
+# `paths_to_mutate` is a TOML list rather than a comma-separated string:
+# mutmut 2.5.1's `split_paths` (mutmut/__main__.py:320) filters with
+# `Path(p).exists()` and does NOT strip whitespace, so a cosmetic edit
+# to the string form (e.g., "a.py, b.py" with one space) silently drops
+# the second entry. The list form sidesteps the whitespace fragility
+# entirely. Pinned by `tests/test_pyproject.py::test_pyproject_mutmut_targets_engines`.
 [tool.mutmut]
-paths_to_mutate = "bot/engines/volatility.py,bot/engines/probability.py"
+paths_to_mutate = ["bot/engines/volatility.py", "bot/engines/probability.py"]
 runner = "python3 -m pytest -x tests/equivalence/test_volatility_engine.py tests/equivalence/test_probability_engine.py"
 
 [tool.ruff]
