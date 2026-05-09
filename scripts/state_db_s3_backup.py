@@ -159,9 +159,15 @@ def snapshot_sqlite(
     # Apply the same WAL pragmas the bot uses on its connections — defensive,
     # since the source connection here is read-only-by-API but a runaway
     # caller could still race the bot for the writer lock without these.
+    # Also satisfies tests/test_regression.py::TestBusyTimeout::test_all_sqlite_connects_have_busy_timeout
+    # (PM-001: every sqlite3.connect on this codebase MUST set busy_timeout).
     src_conn.execute("PRAGMA busy_timeout=10000")
     try:
         dst_conn = sqlite3.connect(str(dst))
+        # dst is a brand-new file (no contention possible), but the
+        # repo-wide PM-001 regression check is mechanical — set the
+        # pragma defensively so the contract holds at every connect site.
+        dst_conn.execute("PRAGMA busy_timeout=10000")
         try:
             src_conn.backup(
                 dst_conn,
