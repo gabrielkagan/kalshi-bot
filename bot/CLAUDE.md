@@ -142,8 +142,8 @@ know about silently drops the window.
 
 ### Deploy a change (the long form behind /deploy)
 1. Make the edit.
-2. Syntax-check `bot/_impl.py` + `bot/constants.py` (`make ast-check`); for changes to `bot/helpers/*.py`, `bot/logger.py`, or `bot/notifier.py`, the full pytest suite covers transitively (no per-file ast-check target as of Sprint 4).
-3. Grep call sites if signatures changed. Constants live in `bot/constants.py` (Bit 3.1, re-exported via `from bot.constants import *`); helpers live in `bot/helpers/*.py` (Bit 3.2, re-exported via `from bot.helpers import *` plus explicit underscore re-exports for `validators` and `breakers`); `Logger` lives in `bot/logger.py` (Bit 4.1, re-imported via `from bot.logger import Logger`); `TelegramNotifier` lives in `bot/notifier.py` (Bit 4.2, re-imported via `from bot.notifier import TelegramNotifier`).
+2. Syntax-check `bot/_impl.py` + `bot/constants.py` (`make ast-check`); for changes to `bot/helpers/*.py`, `bot/logger.py`, `bot/notifier.py`, or `bot/kalshi_client.py`, the full pytest suite covers transitively (no per-file ast-check target as of Sprint 4).
+3. Grep call sites if signatures changed. Constants live in `bot/constants.py` (Bit 3.1, re-exported via `from bot.constants import *`); helpers live in `bot/helpers/*.py` (Bit 3.2, re-exported via `from bot.helpers import *` plus explicit underscore re-exports for `validators` and `breakers`); `Logger` lives in `bot/logger.py` (Bit 4.1, re-imported via `from bot.logger import Logger`); `TelegramNotifier` lives in `bot/notifier.py` (Bit 4.2, re-imported via `from bot.notifier import TelegramNotifier`); `KalshiClient` lives in `bot/kalshi_client.py` (Bit 4.3, re-imported via `from bot.kalshi_client import KalshiClient`).
 4. Present a change summary — wait for approval.
 5. `git add` + `commit` + `push` (triggers auto-deploy).
 6. Verify VPS pulled the commit hash.

@@ -210,7 +210,10 @@ class TestKalshiClientWritesAreNotWrapped(unittest.TestCase):
     A7: cover all 3 writes via parametrized AST check."""
 
     def _assert_method_not_wrapped(self, method_name):
-        with open(bot._impl.__file__) as f:
+        # Bit 4.3 (2026-05-08): KalshiClient extracted to bot/kalshi_client.py.
+        # The write-method bodies live there now, not in bot/_impl.py.
+        import bot.kalshi_client
+        with open(bot.kalshi_client.__file__) as f:
             src = f.read()
         i = src.index(f"def {method_name}")
         j = src.index("\n    def ", i + 1)
