@@ -24,6 +24,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import requests
 
+from bot.db_writer_registry import tracked_write  # ops: db-locked RCA instrumentation 2026-05-08
+
 from sports_data import (
     BINARY_ENTRY_CRITERIA,
     BINARY_LR_TABLE,
@@ -917,6 +919,7 @@ class PlattCalibrator:
 
         # Persist params for dashboard snapshot
         try:
+          with tracked_write("sports_engine", "platt_params_persist"):  # ops: db-locked RCA 2026-05-08
             conn.execute(
                 "INSERT OR REPLACE INTO sports_platt_params "
                 "(id, a, b, n_train, h1_brier, h2_brier_raw, h2_brier_cal, "

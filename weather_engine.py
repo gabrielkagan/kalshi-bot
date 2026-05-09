@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+from bot.db_writer_registry import tracked_write  # ops: db-locked RCA instrumentation 2026-05-08
+
 # Ensemble cache file — persists _last_ensemble across bot restarts so a cold
 # start doesn't leave us fully dark while Open-Meteo 429-throttles the first
 # fetch cycle. Weather changes slowly (poll interval is 15 min), so stale-by-
@@ -668,6 +670,7 @@ class WeatherProbabilityModel:
         if not self._db_path:
             return
         try:
+          with tracked_write("weather_engine", f"save_bias_{city_code}"):  # ops: db-locked RCA 2026-05-08
             conn = sqlite3.connect(self._db_path)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=10000")

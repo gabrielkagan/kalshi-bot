@@ -1,6 +1,6 @@
 # bot/_impl.py Layout
 
-bot/_impl.py is **25,011 lines** as of 2026-05-08 (post-Bit-4.5a small-feeds extraction; Bit 3.1 moved ~1,200 lines of constants to `bot/constants.py`, Bit 3.2 moved ~790 lines of helpers to `bot/helpers/*`, Bit 4.1 moved 65 lines of Logger to `bot/logger.py`, Bit 4.2 moved 30 lines of TelegramNotifier to `bot/notifier.py`, Bit 4.3 moved 348 lines of KalshiClient to `bot/kalshi_client.py`, Bit 4.4 moved 141 lines of DeribitDVOLFetcher + CoinGlassFetcher to `bot/fetchers/*`, Bit 4.5a moved ~660 lines of CoinbaseFeed + OrderbookSchemaError + CrossExchangeFeed to `bot/feeds/*`). Class line ranges below
+bot/_impl.py is **25,026 lines** as of 2026-05-08 (post-Bit-4.5a small-feeds extraction + writer-tracking instrumentation for db-locked RCA; Bit 3.1 moved ~1,200 lines of constants to `bot/constants.py`, Bit 3.2 moved ~790 lines of helpers to `bot/helpers/*`, Bit 4.1 moved 65 lines of Logger to `bot/logger.py`, Bit 4.2 moved 30 lines of TelegramNotifier to `bot/notifier.py`, Bit 4.3 moved 348 lines of KalshiClient to `bot/kalshi_client.py`, Bit 4.4 moved 141 lines of DeribitDVOLFetcher + CoinGlassFetcher to `bot/fetchers/*`, Bit 4.5a moved ~660 lines of CoinbaseFeed + OrderbookSchemaError + CrossExchangeFeed to `bot/feeds/*`). Class line ranges below
 are auto-verifiable. Repo modularization plan (`kb/decisions/repo-modularization-plan-may05.md`)
 will turn bot/_impl.py into a thin entrypoint shim with logic in a `bot/` package.
 
@@ -36,7 +36,7 @@ verify by reading 5-10 lines around each line number before quoting.
 |---|---|
 | 1–~110 | Header import block (`bot._thread_env` imports BEFORE `numpy` — load-bearing per CLAUDE.md; `scripts/cal_mlp/` is also added to sys.path here for the bare `from integration import` calls later in the file). `from bot.constants import *` (Bit 3.1) at ~83; `from bot.helpers import *` + explicit underscore re-exports for `bot.helpers.validators` and `bot.helpers.breakers` (Bit 3.2) immediately after. `from bot.logger import Logger` (Bit 4.1), `from bot.notifier import TelegramNotifier` (Bit 4.2), `from bot.kalshi_client import KalshiClient` (Bit 4.3), `from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher` (Bit 4.4), and `from bot.feeds import CoinbaseFeed, OrderbookSchemaError, CrossExchangeFeed` (Bit 4.5a) follow at ~100–~104. Verify with `grep -n "^from bot\." bot/_impl.py`. |
 | ~125–~605 | Residual helpers + runtime-state singletons that stay in `bot/_impl.py` (`_derive_subtype`/`_derive_asset_filter`/`_resolve_cal_engine` — deferred to Sprint 6 with `CalibrationEngine` because they read `_CAL_REGISTRY` module-level mutable state — `_append_raw_api_journal`, `_HPSB_VALIDATOR_UNAVAILABLE_REASON`, `_HPSB_MISSING_BLEEDERS = ...` / `_BLEED_BLOCK_MISSING_BLEEDERS = ...` boot-time invocations of the validators that themselves moved to `bot/helpers/validators.py`, plus the orphan-DB watchdog Layer-3 helpers `_run_lsof_for_db`/`_get_pid_cmdline`/`_alert_orphan_db_holder`/`detect_orphan_db_holders`). `_swallow_persist_exception` moved to `bot/feeds/coinbase.py` in Bit 4.5a alongside its sole consumer. |
-| 606–25011 | Class definitions (see table below). One module-level `def discover_active_windows()` sits in the body region between SettlementTracker's class body and the MainLoop class def; it ships with MainLoop in Bit 9.3. |
+| 607–25026 | Class definitions (see table below). One module-level `def discover_active_windows()` sits in the body region between SettlementTracker's class body and the MainLoop class def; it ships with MainLoop in Bit 9.3. |
 
 ### Class-body end vs class-range note
 
@@ -66,22 +66,22 @@ Generated 2026-05-08 from `grep -nE '^class ' bot/_impl.py` (post-Bit-4.5a small
 
 | Lines | Class | Size |
 |---|---|---|
-| 606–3209 | `StateManager` | 2604 |
-| 3210–4999 | `KalshiFeed` | 1790 |
-| 5000–5121 | `OrderFlowEngine` | 122 |
-| 5122–5282 | `KalshiOrderFlowTracker` | 161 |
-| 5283–6242 | `VolatilityEngine` | 960 |
-| 6243–6445 | `ProbabilityEngine` | 203 |
-| 6446–7455 | `CalibrationEngine` | 1010 |
-| 7456–16545 | `OpportunityScanner` | 9090 |
-| 16546–21835 | `OrderExecutor` | 5290 |
-| 21836–23014 | `SettlementTracker` | 1179 |
-| 23015–25011 | `MainLoop` | 1997 |
+| 607–3223 | `StateManager` | 2617 |
+| 3224–5013 | `KalshiFeed` | 1790 |
+| 5014–5135 | `OrderFlowEngine` | 122 |
+| 5136–5296 | `KalshiOrderFlowTracker` | 161 |
+| 5297–6256 | `VolatilityEngine` | 960 |
+| 6257–6459 | `ProbabilityEngine` | 203 |
+| 6460–7469 | `CalibrationEngine` | 1010 |
+| 7470–16560 | `OpportunityScanner` | 9091 |
+| 16561–21850 | `OrderExecutor` | 5290 |
+| 21851–23029 | `SettlementTracker` | 1179 |
+| 23030–25026 | `MainLoop` | 1997 |
 
 ## Project file map (root, 2026-05-05)
 
 Live trading process:
-- `bot/_impl.py` — main bot, all trading logic (25,011 lines post-Bit-4.5a small-feeds extraction)
+- `bot/_impl.py` — main bot, all trading logic (25,026 lines post-Bit-4.5a + writer-tracking instrumentation)
 - `bot/constants.py` — module-level UPPER_SNAKE constants extracted from `bot/_impl.py` (Bit 3.1, 1,722 lines, 484 constants). Re-exported into `bot/_impl.py` via `from bot.constants import *` near top of file.
 - `bot/helpers/` — feature/sizing/cell-block helpers extracted from `bot/_impl.py` (Bit 3.2, ~790 lines, 25 functions across 9 submodules: `time_features`, `derived_features`, `tm_sweep`, `sizing`, `cell_blocks`, `strings`, `strategy`, `validators`, `breakers`). Re-exported into `bot/_impl.py` via `from bot.helpers import *` plus explicit underscore re-exports for `validators` (3) and `breakers` (5) — star-import skips underscored names.
 - `bot/logger.py` — `Logger` class (structured JSONL logging with fill dedup) extracted from `bot/_impl.py` (Bit 4.1, ~90 lines, stdlib + `bot.constants` only). Re-exported into `bot/_impl.py` via `from bot.logger import Logger` so `MainLoop.__init__` instantiation + type annotations on `OpportunityScanner`/`OrderExecutor`/`SettlementTracker` resolve.

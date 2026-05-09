@@ -29,6 +29,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from bot.db_writer_registry import tracked_write  # ops: db-locked RCA instrumentation 2026-05-08
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 # Master switch
@@ -1002,40 +1004,44 @@ class SPXHARRVShadowEngine:
                 (ticker,)
             ).fetchall()
 
-            for row in rows:
-                sig_id = row["id"]
-                contracts = row["shadow_contracts"] or 0
-                price = row["market_price"] or 0
-                no_ct_raw = row["no_contracts"] or 0
+            # ops: db-locked RCA 2026-05-08 — wrap the per-row UPDATE loop +
+            # final commit. If `rows` is large this holds the writer lock for
+            # the duration; the registry surfaces it on contention.
+            with tracked_write("spx_harrv_shadow", f"settle_signals_n={len(rows)}"):
+                for row in rows:
+                    sig_id = row["id"]
+                    contracts = row["shadow_contracts"] or 0
+                    price = row["market_price"] or 0
+                    no_ct_raw = row["no_contracts"] or 0
 
-                # YES-side PnL: use actual contracts if gated, otherwise 1-contract counterfactual
-                ct = contracts if contracts > 0 else 1
-                if market_result in ("yes", "all_yes"):
-                    pnl = ct * (100 - price)
-                elif market_result in ("no", "all_no"):
-                    pnl = -(ct * price)
-                else:
-                    pnl = 0
+                    # YES-side PnL: use actual contracts if gated, otherwise 1-contract counterfactual
+                    ct = contracts if contracts > 0 else 1
+                    if market_result in ("yes", "all_yes"):
+                        pnl = ct * (100 - price)
+                    elif market_result in ("no", "all_no"):
+                        pnl = -(ct * price)
+                    else:
+                        pnl = 0
 
-                # NO-side PnL: use stored NO ask if available, fallback for old data
-                no_price = row["no_price"] if row["no_price"] else (100 - price)
-                no_ct = no_ct_raw if no_ct_raw > 0 else 1
-                if market_result in ("no", "all_no"):
-                    # NO wins: profit = (100 - no_price) per contract
-                    no_pnl = no_ct * (100 - no_price)
-                elif market_result in ("yes", "all_yes"):
-                    # NO loses: loss = no_price per contract
-                    no_pnl = -(no_ct * no_price)
-                else:
-                    no_pnl = 0
+                    # NO-side PnL: use stored NO ask if available, fallback for old data
+                    no_price = row["no_price"] if row["no_price"] else (100 - price)
+                    no_ct = no_ct_raw if no_ct_raw > 0 else 1
+                    if market_result in ("no", "all_no"):
+                        # NO wins: profit = (100 - no_price) per contract
+                        no_pnl = no_ct * (100 - no_price)
+                    elif market_result in ("yes", "all_yes"):
+                        # NO loses: loss = no_price per contract
+                        no_pnl = -(no_ct * no_price)
+                    else:
+                        no_pnl = 0
 
-                self._db_conn.execute(
-                    "UPDATE spx_harrv_shadow_signals SET status='settled', "
-                    "market_result=?, shadow_pnl_cents=?, no_pnl_cents=?, settled_time=? WHERE id=?",
-                    (market_result, pnl, no_pnl, now, sig_id)
-                )
+                    self._db_conn.execute(
+                        "UPDATE spx_harrv_shadow_signals SET status='settled', "
+                        "market_result=?, shadow_pnl_cents=?, no_pnl_cents=?, settled_time=? WHERE id=?",
+                        (market_result, pnl, no_pnl, now, sig_id)
+                    )
 
-            self._db_conn.commit()
+                self._db_conn.commit()
         except Exception as e:
             try:
                 self._db_conn.rollback()

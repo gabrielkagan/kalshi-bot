@@ -43,6 +43,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
+from bot.db_writer_registry import tracked_write  # ops: db-locked RCA instrumentation 2026-05-08
+
 logger = logging.getLogger(__name__)
 
 # Cache freshness threshold. Beyond this, source label is 'ws_cache_stale'
@@ -512,8 +514,9 @@ class MarketObservationsSnapshotter:
         )
         for start in range(0, len(rows), BATCH_SIZE):
             batch = rows[start:start + BATCH_SIZE]
-            conn.executemany(sql, batch)
-            conn.commit()
+            with tracked_write("market_obs_snapshotter", f"executemany_batch_{len(batch)}"):  # ops: db-locked RCA 2026-05-08
+                conn.executemany(sql, batch)
+                conn.commit()
             self.metrics["rows_written"] += len(batch)
 
     # ── Retention ──────────────────────────────────────────────────────

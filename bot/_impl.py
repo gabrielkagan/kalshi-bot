@@ -102,6 +102,7 @@ from bot.notifier import TelegramNotifier  # noqa: F401 — Bit 4.2 leaf extract
 from bot.kalshi_client import KalshiClient  # noqa: F401 — Bit 4.3 leaf extraction; re-export so MainLoop construction (search "self.client = KalshiClient") + type annotations on reconcile_with_api/_reconcile_positions/_reconcile_orders/OpportunityScanner/OrderExecutor/SettlementTracker/discover_active_windows resolve via bot._impl namespace.
 from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher  # noqa: F401 — Bit 4.4 leaf extraction; re-export so MainLoop construction (search "self.dvol_fetcher = DeribitDVOLFetcher" and "self.coinglass = CoinGlassFetcher") + the Optional[DeribitDVOLFetcher] type annotation on VolatilityEngine.__init__ resolve via bot._impl namespace.
 from bot.feeds import CoinbaseFeed, OrderbookSchemaError, CrossExchangeFeed  # noqa: F401 — Bit 4.5a leaf extraction; re-export so MainLoop construction (search "self.feed = CoinbaseFeed" and "self.cross_feed = CrossExchangeFeed") + the `feed: CoinbaseFeed` type annotations on VolatilityEngine.__init__ and OpportunityScanner.__init__ + the OrderbookSchemaError raises inside the still-in-bot/_impl.py KalshiFeed class resolve via bot._impl namespace.
+from bot.db_writer_registry import tracked_write, snapshot_active  # ops: db-locked RCA instrumentation 2026-05-08 — track every write across all 8 sqlite3 connections so the failure-path log can identify which OTHER writer was holding the writer lock at db-locked failure time.
 
 
 
@@ -2369,6 +2370,7 @@ class StateManager:
                 bot_state_snapshot_json = None
 
         try:
+          with tracked_write("state_manager", "insert_evaluated_opportunity"):
             self.conn.execute("""
                 INSERT INTO evaluated_opportunities
                     (ticker, event_ticker, asset, filter_stage, rejection_reason,
@@ -2652,14 +2654,26 @@ class StateManager:
                 pass
             # RCA instrumentation (2026-05-09): structured failure context.
             # See `_be_err_repr` capture above + tests/test_db_locked_instrumentation.py.
+            # 2026-05-08 follow-up: includes active_writers=... snapshot from
+            # bot.db_writer_registry so the operator can see which OTHER
+            # connection was holding the writer lock when this insert failed.
             _diag_thread = threading.current_thread().name
             _diag_in_tx = getattr(self.conn, "in_transaction", "?")
             _diag_begin = "OK" if _began_explicitly else _be_err_repr
+            try:
+                _diag_active = [
+                    f"{tok.split('#', 1)[0]}/{kind}/{th}"
+                    f"@{(time.time() - started) * 1000:.0f}ms"
+                    for (tok, started, kind, th) in snapshot_active()
+                ]
+            except Exception:
+                _diag_active = ["<snapshot_failed>"]
             logging.warning(
                 f"insert_evaluated_opportunity failed: {e} "
                 f"begin_immediate={_diag_begin!r} "
                 f"thread={_diag_thread!r} "
-                f"in_tx={_diag_in_tx!s}",
+                f"in_tx={_diag_in_tx!s} "
+                f"active_writers={_diag_active!r}",
                 exc_info=True,
             )
 
@@ -14352,6 +14366,7 @@ class OpportunityScanner:
 
                 # ── Insert to dedicated table (for correlation & dual-sizing analysis) ──
                 try:
+                  with tracked_write("opportunity_scanner", "low_price_shadow_signals_insert"):
                     self._state.conn.execute(
                         "INSERT INTO low_price_shadow_signals "
                         "(ticker, event_ticker, asset, window_id, market_price, "

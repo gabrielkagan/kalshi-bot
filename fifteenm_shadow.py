@@ -38,6 +38,8 @@ import sqlite3
 import time
 from typing import Dict, List, Optional, Tuple
 
+from bot.db_writer_registry import tracked_write  # ops: db-locked RCA instrumentation 2026-05-08
+
 DB_PATH = os.environ.get("BOT_DB_PATH", "state.db")
 FIFTEENM_SHADOW_ENABLED = True
 
@@ -1217,6 +1219,10 @@ class FifteenMShadowEngine:
         self._ensure_db()
         now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
+          # ops: db-locked RCA instrumentation 2026-05-08 — track this write
+          # so the StateManager failure-path snapshot can identify it as the
+          # lock-holder when contention fires.
+          with tracked_write("fifteenm_shadow", "insert_signal"):
             # Build NO-side values (may be None if not provided)
             _no_a1 = no_a1 or {}
             _no_a2 = no_a2 or {}
@@ -1415,22 +1421,23 @@ class FifteenMShadowEngine:
             else:
                 a4_pnl = 0
 
-            self._db_conn.execute(
-                "UPDATE fifteenm_shadow_signals SET status='settled', market_result=?, "
-                "live_pnl_cents=?, a1_pnl_cents=?, a2_pnl_cents=?, market_only_pnl_cents=?, "
-                "no_live_pnl_cents=?, no_a1_pnl_cents=?, no_a2_pnl_cents=?, no_market_only_pnl_cents=?, "
-                "a3_pnl_gate10_cents=?, a3_pnl_gate20_cents=?, a3_pnl_gate30_cents=?, "
-                "no_a3_pnl_gate10_cents=?, no_a3_pnl_gate20_cents=?, no_a3_pnl_gate30_cents=?, "
-                "a4_pnl_cents=?, "
-                "settled_time=? WHERE ticker = ? AND status = 'pending'",
-                (market_result, live_pnl, a1_pnl, a2_pnl, mkt_pnl,
-                 no_live_pnl, no_a1_pnl, no_a2_pnl, no_mkt_pnl,
-                 a3_pnl_g10, a3_pnl_g20, a3_pnl_g30,
-                 no_a3_pnl_g10, no_a3_pnl_g20, no_a3_pnl_g30,
-                 a4_pnl,
-                 now, ticker)
-            )
-            self._db_conn.commit()
+            with tracked_write("fifteenm_shadow", "settle_signals"):  # ops: db-locked RCA 2026-05-08
+                self._db_conn.execute(
+                    "UPDATE fifteenm_shadow_signals SET status='settled', market_result=?, "
+                    "live_pnl_cents=?, a1_pnl_cents=?, a2_pnl_cents=?, market_only_pnl_cents=?, "
+                    "no_live_pnl_cents=?, no_a1_pnl_cents=?, no_a2_pnl_cents=?, no_market_only_pnl_cents=?, "
+                    "a3_pnl_gate10_cents=?, a3_pnl_gate20_cents=?, a3_pnl_gate30_cents=?, "
+                    "no_a3_pnl_gate10_cents=?, no_a3_pnl_gate20_cents=?, no_a3_pnl_gate30_cents=?, "
+                    "a4_pnl_cents=?, "
+                    "settled_time=? WHERE ticker = ? AND status = 'pending'",
+                    (market_result, live_pnl, a1_pnl, a2_pnl, mkt_pnl,
+                     no_live_pnl, no_a1_pnl, no_a2_pnl, no_mkt_pnl,
+                     a3_pnl_g10, a3_pnl_g20, a3_pnl_g30,
+                     no_a3_pnl_g10, no_a3_pnl_g20, no_a3_pnl_g30,
+                     a4_pnl,
+                     now, ticker)
+                )
+                self._db_conn.commit()
         except Exception:
             logging.debug("fifteenm_shadow settle failed for %s", ticker, exc_info=True)
 
