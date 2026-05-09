@@ -2152,6 +2152,15 @@ class SportsEngine:
                 sol_rescue_cap=SOL_RESCUE_CONTRACT_CAP,
                 n_recent_cal_trades=_n_cal_obs,
             )
+            # Sprint A.2: data_provenance must mirror StateManager default
+            # ('live_ws') because this raw INSERT bypasses the StateManager
+            # path. NOTE: INSERT OR REPLACE deletes-then-inserts, so it
+            # clobbers any prior data_provenance value (unlike bot/_impl.py's
+            # ON CONFLICT … DO UPDATE … COALESCE pattern at line ~2601).
+            # If a future H-4-style backfill ever stamps sports rows with a
+            # source-attribution value, this writer must be migrated to the
+            # ON CONFLICT pattern first or the next sports tick will overwrite
+            # it. See kb/decisions/sprint-a-bit-2-shipped-may09.md.
             conn.execute("""
                 INSERT OR REPLACE INTO evaluated_opportunities
                     (ticker, event_ticker, asset, filter_stage, rejection_reason,
@@ -2163,9 +2172,10 @@ class SportsEngine:
                      hour_of_day_utc, day_of_week, is_weekend,
                      minutes_since_us_open, is_fomc_day, is_cpi_day,
                      spot_distance_to_strike_sigma, prob_breakeven_gap,
-                     kelly_vs_cap_ratio, calibration_confidence)
+                     kelly_vs_cap_ratio, calibration_confidence,
+                     data_provenance)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                        ?,?,?,?,?,?,?,?,?,?)
+                        ?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, league_cfg.display_name,
                   signal.filter_stage, signal.rejection_reason, now,
                   _db_price,
@@ -2184,7 +2194,8 @@ class SportsEngine:
                   _t4["hour_of_day_utc"], _t4["day_of_week"], _t4["is_weekend"],
                   _t4["minutes_since_us_open"], _t4["is_fomc_day"], _t4["is_cpi_day"],
                   _t5["spot_distance_to_strike_sigma"], _t5["prob_breakeven_gap"],
-                  _t5["kelly_vs_cap_ratio"], _t5["calibration_confidence"]))
+                  _t5["kelly_vs_cap_ratio"], _t5["calibration_confidence"],
+                  'live_ws'))
             conn.commit()
         except Exception:
             try:
@@ -2214,6 +2225,7 @@ class SportsEngine:
                         n_recent_cal_trades=_n_cal_obs,
                     )
                     conn = self._get_db_conn()
+                    # Sprint A.2: data_provenance mirrors YES-side block.
                     conn.execute("""
                         INSERT OR REPLACE INTO evaluated_opportunities
                             (ticker, event_ticker, asset, filter_stage, rejection_reason,
@@ -2225,9 +2237,10 @@ class SportsEngine:
                              hour_of_day_utc, day_of_week, is_weekend,
                              minutes_since_us_open, is_fomc_day, is_cpi_day,
                              spot_distance_to_strike_sigma, prob_breakeven_gap,
-                             kelly_vs_cap_ratio, calibration_confidence)
+                             kelly_vs_cap_ratio, calibration_confidence,
+                             data_provenance)
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                                ?,?,?,?,?,?,?,?,?,?)
+                                ?,?,?,?,?,?,?,?,?,?,?)
                     """, (ticker, event_ticker, league_cfg.display_name,
                           _no_stage, None, now,
                           _no_price,
@@ -2245,7 +2258,8 @@ class SportsEngine:
                           _t4["hour_of_day_utc"], _t4["day_of_week"], _t4["is_weekend"],
                           _t4["minutes_since_us_open"], _t4["is_fomc_day"], _t4["is_cpi_day"],
                           _t5_no["spot_distance_to_strike_sigma"], _t5_no["prob_breakeven_gap"],
-                          _t5_no["kelly_vs_cap_ratio"], _t5_no["calibration_confidence"]))
+                          _t5_no["kelly_vs_cap_ratio"], _t5_no["calibration_confidence"],
+                          'live_ws'))
                     conn.commit()
         except Exception:
             try:
