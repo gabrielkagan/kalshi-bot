@@ -15,13 +15,18 @@ What this captures (three layers):
    public name with its full signature (parameters + returns for functions,
    bases + public methods for classes, annotation for attributes).
 
-2. **Static walk of top-level public CLASSES inside ``bot/_impl.py``**
-   (``MainLoop``, ``OpportunityScanner``, ``OrderExecutor``, ``StateManager``,
-   ``CalibrationEngine``, ``OrderFlowEngine``, ``KalshiOrderFlowTracker``,
-   ``SettlementTracker``, ``KalshiClient``, ``Logger``, etc. — the canonical,
-   load-bearing classes still resident in the legacy monolith). The rest of
-   ``bot/_impl.py`` (constants, helpers, residual functions) is skipped to
-   keep the snapshot focused.
+2. **Static walk of locally-defined public classes inside ``bot/_impl.py``** —
+   auto-derived from ``griffe.load("bot._impl").classes`` filtered to
+   ``is_alias=False``. Today: ``MainLoop``, ``OpportunityScanner``,
+   ``OrderExecutor``, ``StateManager``, ``CalibrationEngine``, ``OrderFlowEngine``,
+   ``KalshiOrderFlowTracker``, ``SettlementTracker`` (the load-bearing classes
+   still resident in the legacy monolith). Already-extracted classes
+   (``KalshiClient``, ``Logger``, ``TelegramNotifier``, ``VolatilityEngine``,
+   ``ProbabilityEngine``, the fetchers, the feeds) have ``is_alias=True``
+   re-export shims in _impl.py and are filtered out — they appear under
+   their canonical paths in Layer 1. Auto-derive is self-maintaining:
+   extracted classes naturally drop out of Layer 2; new classes added to
+   ``_impl.py`` naturally appear.
 
 3. **Runtime proxy probe** — imports ``bot`` and ``bot._impl`` at runtime,
    enumerates every public name accessible via ``getattr(bot, name)`` (the
@@ -160,21 +165,6 @@ def _resolve(member: Any) -> Any | None:
         return member.final_target
     except (griffe.AliasResolutionError, griffe.CyclicAliasError):
         return None
-
-
-def _is_external_alias(member: Any, target: Any) -> bool:
-    """Alias whose target lives outside the bot.* namespace.
-
-    These are stdlib / third-party re-imports (e.g. ``import requests`` in
-    bot/notifier.py creates an alias ``bot.notifier.requests`` → ``requests``).
-    They're implementation detail, not public contract — filtering them
-    drops ~170 noise entries and prevents internal-import refactors from
-    triggering snapshot regeneration.
-    """
-    if not getattr(member, "is_alias", False):
-        return False
-    target_path = getattr(target, "path", None) or str(getattr(member, "target_path", ""))
-    return not target_path.startswith("bot.") and target_path != "bot"
 
 
 def _walk(module: Any, qualname: str, out: dict[str, Any]) -> None:
