@@ -63,13 +63,44 @@ dev = [
     # the v2.x release line; bump deliberately when v3 ships and the
     # ignore_imports / forbidden contract syntax has been reverified.
     "import-linter>=2.5,<3",
+    # Pillar 3 of the testing-foundation-sprint: equivalence harness for
+    # bot/engines/ extractions. Three deps:
+    #   * hypothesis powers property-based tests with hand-written
+    #     strategies (engine inputs are tightly bounded; polyfactory
+    #     would generate impossible inputs without heavy filtering).
+    #   * pytest-regressions provides num_regression for numeric
+    #     snapshots with built-in tolerance + NaN handling. Chosen over
+    #     syrupy (which is heavier and overkill for primarily-numeric
+    #     engine outputs).
+    #   * pyarrow reads tests/fixtures/engine_inputs.parquet. Already
+    #     listed under [ml] for cal_mlp paths; duplicated here so the
+    #     equivalence suite installs without the full ml extra.
+    #
+    # Same pinning discipline as griffe/import-linter: floor at the
+    # version that landed when the Pillar shipped, cap below the next
+    # major. Snapshot stability + property-test reproducibility across
+    # the entire pin range is what's load-bearing here.
+    "hypothesis>=6.100,<7",
+    "pytest-regressions>=2.5,<3",
+    "pyarrow>=14,<22",
+    # pytest-regressions.num_regression requires pandas at call time
+    # (DataFrame is the on-disk snapshot format). Listed here even
+    # though pandas is also under [ml] — dev installs without ml
+    # would otherwise crash the equivalence suite at fixture-call
+    # time with a ModuleNotFoundError chain that's two layers deep.
+    "pandas>=2,<3",
 ]
 # ML extras used by cal_mlp + analysis paths. Not required for the live bot
 # loop, so kept optional.
 ml = [
     "torch",
-    "pandas",
-    "pyarrow",
+    # pandas + pyarrow pinned to the same major-range bands as `[dev]`
+    # (Pillar 3) so a user installing only `[ml]` doesn't end up on a
+    # different pandas/pyarrow than the equivalence suite was tested
+    # against — silent skew between extras is a drift class we don't
+    # need.
+    "pandas>=2,<3",
+    "pyarrow>=14,<22",
 ]
 
 # Scope setuptools' flat-layout discovery to the bot/ package only.

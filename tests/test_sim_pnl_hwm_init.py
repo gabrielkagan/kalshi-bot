@@ -26,7 +26,15 @@ import pytest
 # time when the dep is missing rather than crashing pytest. Sibling
 # test files (test_sim_pnl_gate_prob_source.py etc.) already follow
 # this pattern.
+#
+# Both pandas AND torch must skip-on-missing — Pillar 3 added
+# pandas to [dev], so the pandas skip alone no longer covers CI:
+# scripts/cal_mlp/* (imported via REPO sys.path below) imports torch,
+# which is in [ml] only; without torch, this file's tests now collect
+# successfully (pandas present) and crash at fixture time on the torch
+# import. Skip on either missing dep restores pre-Pillar-3 behavior.
 pd = pytest.importorskip("pandas")
+pytest.importorskip("torch")
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts" / "cal_mlp"))

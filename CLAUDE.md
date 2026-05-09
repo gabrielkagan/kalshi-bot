@@ -35,6 +35,7 @@ Each one-liner fires here; rationale + history live in `kb/failures/` postmortem
 - Investigate before explaining. Look at actual data, not assumptions about it.
 - Verify schema before querying: `PRAGMA table_info()` and `SELECT DISTINCT`.
 - After bug fixes: root-cause it, write a regression test, draft a postmortem in `kb/failures/`. Never just fix and move on.
+- **Equivalence snapshots are never auto-regenerated.** `tests/equivalence/` (Pillar 3) pins engine outputs against a 1000-row corpus. If a snapshot fails, **investigate the divergence** — never run `pytest --force-regen` autonomously. Regen is a human-with-diff-review operation; see `tests/equivalence/REGEN.md`.
 - Sim PnL and counterfactuals use actual Kelly sizing. Never flat 1-contract.
 - Dashboard changes: `dashboard_snapshot.py` and `dashboard/index.html` (gh-pages) ship in the same commit per `kb/decisions/dashboard-overhaul-plan.md`.
 - Doc drift: when changing config values, update `README.md` / `whitepaper.md` / `whitepaper_investor.md` / `CLAUDE.md` / `agent_docs/config_reference.md` in the same commit. Run `make doc-drift` (alias for `python3 scripts/doc_drift_check.py`).

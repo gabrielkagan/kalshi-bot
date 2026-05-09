@@ -49,3 +49,29 @@ DOC_DRIFT_REPORT.txt
 # is killed mid-test, leak risk is real. This pattern guarantees stray probes
 # never end up in a `git add -A` commit.
 **/_ruff_exclude_probe_*.py
+
+# Pillar 3 (testing-foundation-sprint): hypothesis property-test cache
+# (.hypothesis/constants etc. — per-machine state, not deterministic).
+.hypothesis/
+
+# iCloud Drive sync conflict copies — anything inside this repo's tree
+# that lives under iCloud will spawn `* 2.py`, `* 2.md`, `* 2/` siblings
+# whenever two machines edit concurrently. They are NEVER intentional;
+# pytest collection picks them up and double-runs every test, snapshot
+# regen races on whichever-was-cached-first, and the merge commit
+# carries dozens of duplicates. Match the literal " 2" suffix only —
+# narrow enough to not catch legitimate filenames that happen to contain
+# spaces or the digit "2".
+**/*\ 2.py
+**/*\ 2.md
+**/*\ 2.csv
+**/*\ 2.yml
+**/*\ 2.yaml
+**/*\ 2.json
+**/*\ 2.txt
+**/*\ 2.parquet
+**/*\ 2.sql
+**/*\ 2.toml
+**/*\ 2.lock
+**/*\ 2.sh
+**/*\ 2/

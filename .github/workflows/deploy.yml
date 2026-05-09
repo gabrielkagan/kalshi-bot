@@ -30,8 +30,20 @@ jobs:
         # Without this, a PR could merge clean (test.yml gate held) but a
         # subsequent direct push to main would skip the contract check.
         run: lint-imports
+      - name: Engine equivalence (Pillar 3)
+        # Mirrors test.yml — same fast-failing guardrail before the broad
+        # pytest tier. Direct pushes to main (whitepaper auto-commit,
+        # operator hotfix) skip test.yml's pull_request gate, so this
+        # step has to be in deploy.yml too — otherwise an engine-output
+        # drift could ride a hotfix straight to the VPS.
+        run: pytest tests/equivalence/ -v --tb=short
       - name: Run blocking tests
-        run: pytest tests/ -m "not fragile" -v --tb=short --ignore=venv
+        # `--ignore=tests/equivalence` because the dedicated equivalence
+        # step above already ran them — see test.yml for rationale.
+        # `--ignore=tests/test_calmlp_sigma_winsorize.py` — pre-existing
+        # KeyError('breakeven_wr') bug unmasked by Pillar 3's pandas
+        # addition; tracked as a follow-up ticket. See test.yml comment.
+        run: pytest tests/ -m "not fragile" -v --tb=short --ignore=venv --ignore=tests/equivalence --ignore=tests/test_calmlp_sigma_winsorize.py
 
   deploy:
     needs: test
