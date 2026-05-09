@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import configparser
 import os
+import re
 import shutil
 import site
 import subprocess
@@ -307,29 +308,114 @@ def _step_index_by_name(steps: list[str], name_substring: str) -> int:
     return -1
 
 
+def _makefile_test_contract_invokes_lint_imports() -> bool:
+    """Verify the `test-contract` Makefile recipe invokes lint-imports.
+
+    R1 M2 follow-up: when `_step_index_running_lint_imports` accepts
+    the Pillar 5 indirection (workflow step says `run: make test-contract`),
+    we need a second anchor — the recipe itself — to be sure
+    lint-imports actually executes. A future Makefile edit that
+    drops `$(LINT_IMPORTS)` from `test-contract` would otherwise
+    silently weaken the Pillar 2 contract while this test stays green.
+
+    Folds backslash-continuations so a multi-line `test-contract`
+    recipe parses correctly. Looks for `LINT_IMPORTS` (the Make
+    variable) OR `lint-imports` (direct CLI invocation) anywhere in
+    the recipe body.
+    """
+    makefile = REPO_ROOT / "Makefile"
+    if not makefile.exists():
+        return False
+    folded = re.sub(r"\\\n", " ", makefile.read_text())
+    m = re.search(
+        r"^test-contract:[^\n]*\n((?:\t.*\n?)+)",
+        folded,
+        re.M,
+    )
+    if not m:
+        return False
+    recipe = m.group(1)
+    return "LINT_IMPORTS" in recipe or "lint-imports" in recipe
+
+
+def _step_index_running_lint_imports(steps: list[str]) -> int:
+    """Return the index of the first step whose body invokes lint-imports.
+
+    Pillar 2 originally shipped a dedicated `- name: Import-linter`
+    step with `run: lint-imports`. Pillar 5 (86b9ve11y) folded the
+    gate into the contract tier — the workflow now has a step
+    `- name: Contract tier ...` whose `run: make test-contract`
+    invokes lint-imports as the second half of the recipe (see
+    `Makefile::test-contract`). Both shapes are valid for the
+    Pillar 2 invariant ("layering violations are gated in CI before
+    the broad pytest"); this helper detects either.
+
+    Detection is content-based, not name-based:
+      (a) `run: lint-imports` — direct invocation (Pillar 2 shape).
+      (b) `run: make test-contract` — Pillar 5 indirection where
+          the Make recipe terminates with `$(LINT_IMPORTS)`. The
+          accept-this-shape branch ALSO requires the Makefile recipe
+          to actually invoke lint-imports (R1 M2 fix) — without
+          that double-anchor, a future Makefile edit could drop
+          `$(LINT_IMPORTS)` while this test stays green.
+    """
+    for i, block in enumerate(steps):
+        body = block.split("\n", 1)[1] if "\n" in block else ""
+        if "run: lint-imports" in block or "run: lint-imports" in body:
+            return i
+        if "run: make test-contract" in block or "run: make test-contract" in body:
+            if _makefile_test_contract_invokes_lint_imports():
+                return i
+            # Fall through — the workflow delegates to a Make recipe
+            # that no longer runs lint-imports. Treat as "not present"
+            # so the assertion below fires with a clear message.
+    return -1
+
+
+def _step_index_running_broad_pytest(steps: list[str]) -> int:
+    """Return the index of the broad-pytest step.
+
+    Pillar 2 shipped `- name: Run blocking tests` with `pytest tests/`.
+    Pillar 5 (86b9ve11y) split the historical broad-pytest into four
+    tiers — the broad tier is now `make test-integration` (the catch-all
+    that runs after unit + contract + equivalence). Detect either
+    shape by content rather than step name.
+    """
+    for i, block in enumerate(steps):
+        body = block.split("\n", 1)[1] if "\n" in block else ""
+        text = block + "\n" + body
+        if "make test-integration" in text:
+            return i
+        if 'pytest tests/ -m "not fragile"' in text:
+            return i
+    return -1
+
+
 @pytest.mark.parametrize(
     "wf_path",
     [TEST_YML_PATH, DEPLOY_YML_PATH],
     ids=["test.yml", "deploy.yml"],
 )
-def test_lint_imports_step_in_workflow(wf_path: Path):
+def test_lint_imports_invoked_in_workflow(wf_path: Path):
     """Both workflows must invoke ``lint-imports`` in the blocking tier.
+
+    Pillar 2 originally shipped a dedicated `Import-linter` step;
+    Pillar 5 (86b9ve11y) folded the gate into the contract tier so
+    the workflow no longer has a standalone lint-imports step. Either
+    shape satisfies the Pillar 2 invariant — the helper detects both.
 
     Without the deploy.yml mirror, a direct push to main could ship a
     layering violation that test.yml would have caught on a PR.
     """
     steps = _split_steps(wf_path.read_text())
-    idx = _step_index_by_name(steps, "Import-linter")
+    idx = _step_index_running_lint_imports(steps)
     assert idx >= 0, (
-        f"{wf_path.name} missing the `Import-linter contracts` step. "
-        f"Pillar 2 wires the gate into both test.yml + deploy.yml; "
-        f"dropping it from either path opens a contract-bypass route."
-    )
-    # The step body must include `run: lint-imports` — the name alone
-    # isn't proof of execution.
-    assert "run: lint-imports" in steps[idx], (
-        f"{wf_path.name}: Import-linter step body missing "
-        f"`run: lint-imports`. Step name alone doesn't execute the gate."
+        f"{wf_path.name} has no step that invokes lint-imports — neither "
+        f"directly (`run: lint-imports`) nor via the Pillar 5 contract "
+        f"tier (`run: make test-contract`, where the Make recipe ends "
+        f"with $(LINT_IMPORTS)). Pillar 2 wires the gate into both "
+        f"test.yml + deploy.yml; dropping it from either path opens a "
+        f"contract-bypass route."
     )
 
 
@@ -338,23 +424,31 @@ def test_lint_imports_step_in_workflow(wf_path: Path):
     [TEST_YML_PATH, DEPLOY_YML_PATH],
     ids=["test.yml", "deploy.yml"],
 )
-def test_lint_imports_runs_before_pytest(wf_path: Path):
-    """``lint-imports`` must precede the pytest step.
+def test_lint_imports_runs_before_broad_pytest(wf_path: Path):
+    """``lint-imports`` must precede the broad-pytest step.
 
     Layering check is ~0.5s vs pytest collection at ~2s+; failing fast
     on contract violations is the point.
 
-    Step-block-aware (R1 M2 fix) — robust to YAML comments mentioning
-    `pytest` or `lint-imports` outside their actual step blocks.
+    Pillar 5 (86b9ve11y) renamed the broad step from "Run blocking
+    tests" (single pytest invocation) to "Integration tier"
+    (make test-integration). The ordering invariant is unchanged: the
+    contract gate runs before the catch-all integration tier.
     """
     steps = _split_steps(wf_path.read_text())
-    lint_idx = _step_index_by_name(steps, "Import-linter")
-    pytest_idx = _step_index_by_name(steps, "Run blocking tests")
-    assert lint_idx >= 0, f"{wf_path.name}: missing Import-linter step"
-    assert pytest_idx >= 0, f"{wf_path.name}: missing 'Run blocking tests' step"
-    assert lint_idx < pytest_idx, (
-        f"{wf_path.name}: Import-linter step (idx {lint_idx}) must "
-        f"precede the 'Run blocking tests' step (idx {pytest_idx}). "
+    lint_idx = _step_index_running_lint_imports(steps)
+    integration_idx = _step_index_running_broad_pytest(steps)
+    assert lint_idx >= 0, (
+        f"{wf_path.name}: missing lint-imports invocation (direct or "
+        f"via make test-contract)."
+    )
+    assert integration_idx >= 0, (
+        f"{wf_path.name}: missing broad-pytest step (make test-integration "
+        f"or the legacy `pytest tests/ -m \"not fragile\"`)."
+    )
+    assert lint_idx < integration_idx, (
+        f"{wf_path.name}: lint-imports invocation (step idx {lint_idx}) "
+        f"must precede the integration tier (step idx {integration_idx}). "
         f"Fail-fast on layering violations is the design intent."
     )
 

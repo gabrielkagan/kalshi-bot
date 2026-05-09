@@ -171,32 +171,46 @@ def test_pre_deploy_check_in_deploy_yml():
     )
 
 
-def test_test_fast_recipe_invokes_systemd_unit_test():
-    """make test-fast must run this test file.
+def test_test_unit_tier_invokes_systemd_unit_test():
+    """make test-unit (Pillar 5 rename of test-fast) must run this test file.
 
     Mirrors Bit 1.3 / 1.4 / 1.5 cadence: every dev-tooling invariant
     test self-pins into the fast tier so a future Makefile edit can't
-    silently drop it (R1 M4: tests/test_makefile.py's recipe-list
-    assertion only pins the original trio, not new additions).
+    silently drop it.
+
+    Pillar 5 (86b9ve11y) renamed test-fast → test-unit and moved the
+    file list into a `UNIT_FILES` Make variable. The file may appear
+    in any of: test-unit recipe, test-fast recipe (legacy alias), or
+    UNIT_FILES variable body — accept all three forms.
     """
     makefile = REPO_ROOT / "Makefile"
     assert makefile.exists(), "Makefile missing at repo root."
-    # Fold backslash-continuations so a future multi-line test-fast
-    # recipe doesn't drop our entry from the parser's view.
     text = re.sub(r"\\\n", " ", makefile.read_text())
-    # R3 m2: tolerate optional blank lines between target and recipe
-    # (GNU Make accepts `target:\n\n\trecipe`; a stricter regex would
-    # false-fail on a future cosmetic Makefile edit).
-    m = re.search(
-        r"^test-fast:[^\n]*\n(?:[ \t]*\n)*((?:[ \t]+[^\n]*\n?)+)",
+    fragments = []
+    for target in ("test-unit", "test-fast"):
+        m = re.search(
+            rf"^{target}:[^\n]*\n(?:[ \t]*\n)*((?:[ \t]+[^\n]*\n?)+)",
+            text,
+            re.M,
+        )
+        if m:
+            fragments.append(m.group(1))
+    var_match = re.search(
+        r"^UNIT_FILES\s*[:?]?=\s*([^\n]+)$",
         text,
         re.M,
     )
-    assert m, "test-fast: recipe missing from Makefile."
-    recipe = m.group(1)
-    assert "test_ops_systemd_unit_matches_repo.py" in recipe, (
-        "Makefile `test-fast` recipe doesn't invoke "
+    if var_match:
+        fragments.append(var_match.group(1))
+    assert fragments, (
+        "Makefile has neither a `test-unit:` nor a `test-fast:` target "
+        "with a recipe body, and no `UNIT_FILES` variable."
+    )
+    combined = "\n".join(fragments)
+    assert "test_ops_systemd_unit_matches_repo.py" in combined, (
+        "Unit tier (test-unit/test-fast/UNIT_FILES) doesn't invoke "
         "tests/test_ops_systemd_unit_matches_repo.py. Per Bits 1.3-1.5 "
-        "cadence, every dev-tooling invariant test self-pins into "
-        "test-fast so a future edit can't silently drop it."
+        "cadence, every dev-tooling invariant test self-pins into the "
+        "unit tier so a future edit can't silently drop it. Combined "
+        f"surface: {combined!r}"
     )

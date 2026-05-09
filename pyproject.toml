@@ -89,6 +89,25 @@ dev = [
     # would otherwise crash the equivalence suite at fixture-call
     # time with a ModuleNotFoundError chain that's two layers deep.
     "pandas>=2,<3",
+    # Pillar 5 of the testing-foundation-sprint: tiered suite + testmon
+    # incremental runs + mutmut mutation-survival baseline.
+    #
+    # pytest-testmon: skips tests unaffected by a code change. Backs
+    # `make test-affected` (≈sub-second when nothing relevant moved).
+    # Pinned to 2.x — 1.x had a different cache layout (.testmondata
+    # vs .testmon).
+    "pytest-testmon>=2.1,<3",
+    # pytest-clarity: improves assert-failure diff rendering. Loaded
+    # automatically when installed (no addopts entry needed). Pinned
+    # to 1.x — stable for years, the v2 milestone hasn't shipped yet
+    # so a `<2` cap is the next bump-trigger.
+    "pytest-clarity>=1,<2",
+    # mutmut: mutation-testing harness. Pillar 5 runs a one-time
+    # baseline against bot/engines/{volatility,probability}.py to
+    # grade the equivalence harness's effectiveness. Pinned to 2.x —
+    # 3.x is a rewrite with a different config schema and runner
+    # contract; stay on 2.x until the 3.x ergonomics settle.
+    "mutmut>=2.4,<3",
 ]
 # ML extras used by cal_mlp + analysis paths. Not required for the live bot
 # loop, so kept optional.
@@ -144,6 +163,46 @@ markers = [
 # string on whitespace, so a future flag value with a space would silently
 # misroute.
 addopts = ["-v", "--tb=short", "--ignore=venv"]
+
+# Pillar 5: mutmut configuration. One-time baseline run against the
+# extracted engines (Bits 6.1+6.2) to grade the equivalence harness
+# (Pillar 3) — every surviving mutant is a hole in the test suite.
+#
+# `paths_to_mutate` is intentionally narrow. bot/_impl.py is huge,
+# slow to mutate, and the equivalence harness doesn't pin it directly;
+# revisit once more of _impl is extracted into typed engines. Helpers
+# (bot/helpers/) are leaf utilities and can fold in later.
+#
+# `runner` points at the equivalence suite — that's the sole consumer
+# of these engines' public surface in Pillar 3. Using -x for fail-fast
+# keeps each mutant cycle fast (~3s for the equivalence pass × ~hundreds
+# of mutants = ~1-2h on Mac).
+#
+# The two late-binding `from bot import _impl as _bot_impl` shims
+# inside `ProbabilityEngine.compute()` and `counterfactual_prob()`
+# (Bit 6.2 — see `kb/decisions/bit-6.2-shipped-may09.md` for why
+# the imports are inside method bodies rather than at module top)
+# are NOT excluded here: mutmut 2.x's AST walker skips `import_name`
+# and `import_from` nodes by design — there's no operator/literal/
+# comparison to flip on an import statement, so no mutants are
+# generated. The invariant is "method-body import statements".
+# Specific line numbers and mutmut source-file refs are intentionally
+# omitted because Bit 6.3 (CalibrationEngine extraction) and any
+# future mutmut bump would shift them.
+#
+# If a future mutmut version starts mutating imports, revisit by
+# either (a) adding `# pragma: no mutate` inline (touches
+# bot/engines/probability.py) or (b) adding a regex-based skip in
+# this section.
+# `paths_to_mutate` is a TOML list rather than a comma-separated string:
+# mutmut 2.5.1's `split_paths` (mutmut/__main__.py:320) filters with
+# `Path(p).exists()` and does NOT strip whitespace, so a cosmetic edit
+# to the string form (e.g., "a.py, b.py" with one space) silently drops
+# the second entry. The list form sidesteps the whitespace fragility
+# entirely. Pinned by `tests/test_pyproject.py::test_pyproject_mutmut_targets_engines`.
+[tool.mutmut]
+paths_to_mutate = ["bot/engines/volatility.py", "bot/engines/probability.py"]
+runner = "python3 -m pytest -x tests/equivalence/test_volatility_engine.py tests/equivalence/test_probability_engine.py"
 
 [tool.ruff]
 target-version = "py39"

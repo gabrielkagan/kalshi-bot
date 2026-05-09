@@ -37,7 +37,22 @@ REQUIRED_TARGETS = (
 # Targets we ship beyond the Bit 1.2 spec ("optional" only in the
 # spec-conformance sense — they're shipped and must be exercised by the
 # .PHONY / dry-run / help-listing invariants exactly like REQUIRED_TARGETS).
-OPTIONAL_TARGETS = ("install", "api-snapshot-regen")
+#
+# Pillar 5 (ticket 86b9ve11y) added the tiered-suite + testmon +
+# mutmut targets. They're listed here so the existing .PHONY /
+# dry-run / help-listing invariants exercise them uniformly with the
+# Bit 1.2 set; tier-specific contracts (e.g., test-affected uses
+# testmon) live in dedicated Pillar 5 tests below.
+PILLAR_5_TARGETS = (
+    "test-unit",
+    "test-contract",
+    "test-equivalence",
+    "test-integration",
+    "test-affected",
+    "test-changed",
+    "test-mutmut",
+)
+OPTIONAL_TARGETS = ("install", "api-snapshot-regen") + PILLAR_5_TARGETS
 ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS
 
 
@@ -200,52 +215,88 @@ def _recipe_for(target: str) -> str:
     return m.group(1)
 
 
-def test_test_target_matches_ci_blocking_filter():
-    """`make test` must use the same -m filter as CI blocking step.
+def test_test_target_chains_tiered_targets():
+    """`make test` must orchestrate the four Pillar 5 tiers in order.
 
-    .github/workflows/test.yml blocks on `pytest tests/ -m "not fragile"`.
-    Drift between local `make test` and CI means a green local build
-    can still fail CI.
+    Pillar 5 (86b9ve11y) split the historical one-shot `pytest tests/`
+    into four tiers (unit < contract < equivalence < integration). The
+    `test:` recipe now chains them via `$(MAKE) test-<tier>` so each
+    tier's failure aborts the next via Make's default fail-on-nonzero.
+    The CI symmetry that Bit 1.2 pinned (filter alignment with
+    .github/workflows/test.yml) now holds at the tier level — see
+    `test_test_integration_matches_ci_blocking_filter` for the
+    integration-tier pin and `test_pillar_5_workflow_calls_tier_targets`
+    for CI's parallel obligation.
     """
     recipe = _recipe_for("test")
-    assert "pytest" in recipe, "`make test` recipe must invoke pytest."
+    for tier in ("test-unit", "test-contract", "test-equivalence", "test-integration"):
+        assert tier in recipe, (
+            f"`make test` recipe missing `{tier}` invocation. Pillar 5 "
+            f"requires all four tiers to chain in order. Recipe was: {recipe!r}"
+        )
+    # Ordering matters — fail-fast on the cheapest tier first. Match the
+    # tier names in the order they should appear; if any pair is
+    # transposed, the find-then-find-after pattern will catch it.
+    cursor = 0
+    for tier in ("test-unit", "test-contract", "test-equivalence", "test-integration"):
+        idx = recipe.find(tier, cursor)
+        assert idx >= 0, (
+            f"`make test` chains tiers out of order — {tier!r} not found "
+            f"after position {cursor}. Order should be unit → contract → "
+            f"equivalence → integration so the cheapest tier fails fastest."
+        )
+        cursor = idx + len(tier)
+
+
+def test_test_integration_matches_ci_blocking_filter():
+    """test-integration must use the same -m filter as CI's broad pytest step.
+
+    With Pillar 5, the historical `pytest tests/ -m "not fragile"` lives
+    in test-integration (the catch-all tier). CI's broad pytest step in
+    .github/workflows/test.yml + deploy.yml mirrors this — drift breaks
+    the local-CI symmetry the Bit 1.2 contract guarded.
+    """
+    recipe = _recipe_for("test-integration")
+    assert "pytest" in recipe, "`make test-integration` recipe must invoke pytest."
     assert "tests/" in recipe or "tests " in recipe, (
-        "`make test` recipe must target tests/ (CI does)."
+        "`make test-integration` recipe must target tests/ (CI does)."
     )
     assert '-m "not fragile"' in recipe or "-m 'not fragile'" in recipe, (
-        f"`make test` recipe missing `-m \"not fragile\"`. CI blocking step "
-        f"in .github/workflows/test.yml uses this filter; drift breaks the "
-        f"local-CI symmetry. Recipe was: {recipe!r}"
+        f"`make test-integration` recipe missing `-m \"not fragile\"`. "
+        f"CI's broad pytest step in .github/workflows/test.yml uses this "
+        f"filter; drift breaks the local-CI symmetry. Recipe was: {recipe!r}"
     )
 
 
 def test_makefile_ci_symmetry_via_pyproject_addopts():
     """Guards the Makefile<->CI exit-code symmetry contract.
 
-    `make test` runs `pytest tests/ -m "not fragile"` (no other flags).
-    CI runs `pytest tests/ -m "not fragile" -v --tb=short --ignore=venv`.
-    They produce equivalent exit codes today only because pyproject's
-    `[tool.pytest.ini_options].addopts` injects `--ignore=venv` into
-    `make test` automatically — if pyproject drops it, `make test`
-    starts collecting the venv (if any) and may fail while CI passes.
+    Pillar 5 (86b9ve11y) split the historical one-shot pytest
+    invocation across four tier targets (test-unit, test-contract,
+    test-equivalence, test-integration). None of the tier recipes
+    pass `--ignore=venv` explicitly — they all rely on pyproject's
+    `[tool.pytest.ini_options].addopts` to inject it.
+
+    CI runs `pytest tests/ -m "not fragile" -v --tb=short --ignore=venv`
+    in the broad integration step. The four tier recipes produce
+    equivalent exit codes only because `--ignore=venv` is injected
+    via addopts — if pyproject drops it, every tier (including
+    test-affected's testmon run) may start collecting the venv (if
+    any) and surface false failures while CI passes.
 
     Scope is deliberately narrow vs `tests/test_pyproject.py::test_pyproject_pytest_config_ported_from_pytest_ini`
     (which asserts ALL three CI-explicit flags are in addopts as a
-    Bit 1.1 invariant). This test is the Bit 1.2 contract: ONLY
-    `--ignore=venv` affects exit-code divergence; `-v` and
+    Bit 1.1 invariant). This test is the Bit 1.2 + Pillar 5 contract:
+    ONLY `--ignore=venv` affects exit-code divergence; `-v` and
     `--tb=short` are output-formatting flags that diverge legibly
-    without breaking `make test`'s green/red status. Keeping the
-    scope tight here prevents this test from blocking a future
-    legitimate addopts edit (e.g., dropping `-v` for less-noisy CI
-    runs) — the Bit 1.1 test would catch that anyway, and this
-    test stays focused on the symmetry-of-correctness invariant.
+    without breaking the tier targets' green/red status.
 
     Sibling-pair note: `testpaths = ['.']` in pyproject means a future
-    edit that drops the explicit `tests/` arg from the `make test`
-    recipe would silently expand collection to the whole repo
-    (snapshot DBs, scripts/, etc.) — `test_test_target_matches_ci_blocking_filter`
-    is the dedicated guard that pins the recipe's `tests/` arg, so the
-    pair (this test + that test) together enforce CI symmetry.
+    edit that drops the explicit `tests/` arg from any tier recipe
+    would silently expand collection to the whole repo (snapshot DBs,
+    scripts/, etc.) — `test_test_integration_matches_ci_blocking_filter`
+    pins the integration tier's `tests/` arg, so the pair (this test +
+    that test) together enforce CI symmetry.
     """
     if not MAKEFILE.exists():
         pytest.skip("Makefile missing; covered by test_makefile_exists.")
@@ -340,20 +391,291 @@ def test_doc_drift_routes_through_existing_script():
     )
 
 
-def test_test_fast_invokes_invariant_tests():
-    """test-fast must run dev-tooling invariant suites (sub-second).
+def _unit_tier_file_list() -> str:
+    """Return the concatenation of test-unit's recipe body + UNIT_FILES
+    variable body, so substring checks for specific test files work
+    regardless of whether the file is hardcoded in the recipe or moved
+    out into the Make variable.
 
-    Curated explicit list rather than `-m smoke` because the smoke
-    marker has zero usages today (`grep -rn '@pytest.mark.smoke' tests/`).
+    Pillar 5 (86b9ve11y) introduced the UNIT_FILES variable so the
+    integration tier's `--ignore=...` list could be auto-derived (single
+    source of truth). The trade-off: a recipe like `pytest $(UNIT_FILES)`
+    no longer mentions specific test files inline, so substring checks
+    that target the recipe body alone would false-fail. Sibling tests in
+    test_agents_md_symlink.py / test_claude_md_size.py / etc. use the
+    same `combined = recipe + var-body` pattern.
     """
-    recipe = _recipe_for("test-fast")
-    assert "pytest" in recipe, "test-fast must invoke pytest."
+    text = _content()
+    folded = _content_logical_lines()
+    recipe_match = re.search(
+        r"^test-unit:[^\n]*\n((?:\t.*\n?)+)",
+        folded,
+        re.M,
+    )
+    recipe = recipe_match.group(1) if recipe_match else ""
+    # UNIT_FILES variable definition. May span multiple physical lines
+    # via `\\\n` continuation; folded form puts it on one line.
+    var_match = re.search(
+        r"^UNIT_FILES\s*[:?]?=\s*([^\n]+)$",
+        folded,
+        re.M,
+    )
+    var_body = var_match.group(1) if var_match else ""
+    return recipe + "\n" + var_body
+
+
+def test_test_unit_invokes_invariant_tests():
+    """test-unit must run dev-tooling invariant suites (sub-second).
+
+    Pillar 5 (86b9ve11y) renamed the curated invariant tier from
+    `test-fast` to `test-unit` to fit the four-tier scheme
+    (unit/contract/equivalence/integration). The Bit 1.2 trio
+    (test_pyproject.py, test_repo_hygiene.py, test_makefile.py) is
+    still the load-bearing sub-second invariant — keep them in this
+    tier as the hygiene-of-hygiene canary.
+
+    The trio may live inline in the recipe OR in the UNIT_FILES
+    variable that the recipe references; both forms are valid.
+    """
+    recipe = _recipe_for("test-unit")
+    assert "pytest" in recipe, "test-unit must invoke pytest."
+    combined = _unit_tier_file_list()
     # At least the meta-invariant trio should be in the list.
     for fragment in ("test_pyproject.py", "test_repo_hygiene.py", "test_makefile.py"):
+        assert fragment in combined, (
+            f"test-unit recipe + UNIT_FILES variable missing {fragment!r}. "
+            f"The dev-tooling invariant suite is the trio that catches "
+            f"packaging/Makefile/hygiene regressions. Pillar 5 expects "
+            f"this trio under the unit tier (Bit 1.2 had it under test-fast; "
+            f"test-fast is now a backward-compat alias for test-unit)."
+        )
+
+
+def test_test_fast_aliases_test_unit():
+    """test-fast preserves Bit 1.2 muscle memory by aliasing test-unit.
+
+    Pillar 5 (86b9ve11y) split the test suite into four tiers; the Bit
+    1.2 `test-fast` target's role (curated invariant set) maps cleanly
+    onto the new `test-unit` tier. Rather than break every doc / hook
+    that calls `make test-fast`, keep the name as a prerequisite-only
+    alias whose recipe is empty.
+
+    Two valid shapes pass this test:
+      (a) `test-fast: test-unit` with no recipe (current shape)
+      (b) `test-fast:` with a recipe that mirrors test-unit's content
+    """
+    text = _content()
+    # Shape (a): prereq-only alias — `test-fast: test-unit` with the
+    # next non-blank line either being a non-indented declaration
+    # (target / variable / blank) or end-of-file. Detect by matching
+    # the dependency list.
+    m = re.search(r"^test-fast:\s*([^\n]*)$", text, re.M)
+    assert m, "test-fast target missing."
+    deps = m.group(1).strip().split()
+    if "test-unit" in deps:
+        return  # Shape (a) — alias via prereq.
+    # Shape (b): inline recipe. Fall through to the trio assertion.
+    recipe = _recipe_for("test-fast")
+    for fragment in ("test_pyproject.py", "test_repo_hygiene.py", "test_makefile.py"):
         assert fragment in recipe, (
-            f"test-fast recipe missing {fragment!r}. The dev-tooling "
-            f"invariant suite is the trio that catches packaging/Makefile/"
-            f"hygiene regressions."
+            f"test-fast is neither aliased to test-unit nor inlines the "
+            f"invariant trio. Pillar 5 expects either shape; got "
+            f"deps={deps!r}, recipe={recipe!r}."
+        )
+
+
+def test_test_contract_invokes_pytest_and_lint_imports():
+    """test-contract must run the contract-tier pytest selection AND the
+    Pillar 2 import-linter CLI.
+
+    The contract tier's two halves:
+      1. Pytest suite — public_api snapshot (Pillar 1), AST guards,
+         extraction tests under tests/contracts/ + top-level test_*.py.
+      2. Pillar 2 layering contracts via `lint-imports` (or the
+         `$(LINT_IMPORTS)` Make-variable resolution form for macOS
+         user-site installs).
+    """
+    recipe = _recipe_for("test-contract")
+    assert "pytest" in recipe, "test-contract recipe must invoke pytest."
+    assert "$(CONTRACT_FILES)" in recipe or "tests/contracts" in recipe, (
+        f"test-contract recipe must select the contract-tier pytest "
+        f"files (via $(CONTRACT_FILES) or explicit tests/contracts path). "
+        f"Recipe was: {recipe!r}"
+    )
+    # `lint-imports` direct OR via $(LINT_IMPORTS) variable indirection
+    # (the macOS user-site fallback).
+    assert "lint-imports" in recipe or "LINT_IMPORTS" in recipe, (
+        f"test-contract recipe must invoke lint-imports (Pillar 2). "
+        f"Recipe was: {recipe!r}"
+    )
+
+
+def test_test_equivalence_invokes_pytest_on_equivalence_dir():
+    """test-equivalence must run pytest against tests/equivalence/.
+
+    Pillar 3 (86b9ve0zu) ships the equivalence harness; Pillar 5
+    promotes it to its own tier so CI can gate it ahead of the
+    broader integration suite.
+    """
+    recipe = _recipe_for("test-equivalence")
+    assert "pytest" in recipe, "test-equivalence recipe must invoke pytest."
+    assert "tests/equivalence" in recipe, (
+        f"test-equivalence recipe must target tests/equivalence/. "
+        f"Recipe was: {recipe!r}"
+    )
+
+
+def test_test_integration_ignores_other_tiers():
+    """test-integration must NOT re-run tests already covered by
+    earlier tiers — that's the whole point of tiering.
+
+    The recipe should ignore tests/equivalence (Pillar 3) at minimum;
+    the unit + contract file lists are referenced via INTEGRATION_IGNORES
+    (or equivalent) so adding a file to a tier auto-removes it from
+    integration.
+    """
+    recipe = _recipe_for("test-integration")
+    assert "tests/equivalence" in recipe or "INTEGRATION_IGNORES" in recipe, (
+        f"test-integration recipe doesn't ignore tests/equivalence. "
+        f"Either pass `--ignore=tests/equivalence` directly or include it "
+        f"in $(INTEGRATION_IGNORES). Recipe was: {recipe!r}"
+    )
+    # If using a Make variable, sanity-check it resolves to the unit +
+    # contract file lists. Substring check is sufficient — the integrity
+    # of the variable expansion is exercised by `make -n test-integration`
+    # in test_dry_run_each_target_clean.
+    if "INTEGRATION_IGNORES" in recipe:
+        text = _content_logical_lines()
+        m = re.search(r"^INTEGRATION_IGNORES\s*[:?]?=\s*(.+?)(?=^[A-Za-z_.])", text, re.M | re.S)
+        assert m, "$(INTEGRATION_IGNORES) referenced but not defined."
+        ignores_body = m.group(1)
+        for must_ignore in ("UNIT_FILES", "CONTRACT_FILES", "tests/equivalence"):
+            assert must_ignore in ignores_body, (
+                f"$(INTEGRATION_IGNORES) doesn't include {must_ignore!r}. "
+                f"Body was: {ignores_body!r}"
+            )
+
+
+def test_test_affected_uses_testmon():
+    """test-affected must invoke testmon for incremental selection.
+
+    Pillar 5's testmon-driven incremental tier — the agent loop
+    optimization. `--testmon` is the pytest-testmon plugin flag.
+    """
+    recipe = _recipe_for("test-affected")
+    assert "--testmon" in recipe, (
+        f"test-affected recipe must pass `--testmon` to pytest. "
+        f"Recipe was: {recipe!r}"
+    )
+
+
+def test_test_changed_aliases_test_affected():
+    """test-changed is the user-facing name for test-affected (Pillar 5
+    remote-control spec) — both should resolve to the same testmon
+    invocation.
+
+    Either shape is valid:
+      (a) `test-changed: test-affected` (prereq alias, no recipe)
+      (b) `test-changed:` with a recipe that also passes --testmon
+    """
+    text = _content()
+    m = re.search(r"^test-changed:\s*([^\n]*)$", text, re.M)
+    assert m, "test-changed target missing."
+    deps = m.group(1).strip().split()
+    if "test-affected" in deps:
+        return  # Shape (a).
+    recipe = _recipe_for("test-changed")
+    assert "--testmon" in recipe, (
+        f"test-changed is neither aliased to test-affected nor passes "
+        f"--testmon directly. deps={deps!r}, recipe={recipe!r}."
+    )
+
+
+def test_test_mutmut_invokes_mutmut_run():
+    """test-mutmut must invoke `mutmut run` to read [tool.mutmut] and
+    execute the mutation baseline.
+
+    Per ticket 86b9ve11y AC: targets bot/engines/{volatility,probability}.py;
+    that's pinned in pyproject [tool.mutmut].paths_to_mutate (asserted by
+    `tests/test_pyproject.py::test_pyproject_mutmut_targets_engines`),
+    not the Makefile recipe. The Makefile's job is just to surface the
+    entrypoint.
+    """
+    recipe = _recipe_for("test-mutmut")
+    assert "mutmut run" in recipe or "mutmut\trun" in recipe, (
+        f"test-mutmut recipe must invoke `mutmut run`. Recipe was: {recipe!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "wf_name,blocking_integration",
+    [("test.yml", False), ("deploy.yml", True)],
+)
+def test_pillar_5_workflow_calls_tier_targets(wf_name, blocking_integration):
+    """Both CI workflows must invoke each Pillar 5 tier target.
+
+    R2 followup: closes the symmetry gap between the Makefile
+    (single-source-of-truth for tier definitions) and the CI workflows
+    (which call into the Makefile). Without this, a future workflow
+    edit could silently drop a tier (e.g., remove `make test-equivalence`
+    on a perceived "redundant" cleanup) and the suite would no longer
+    gate that tier in CI even though `make test` still does locally.
+
+    Per ticket 86b9ve11y AC: blocking = unit + contract + equivalence;
+    integration = informational on test.yml, BLOCKING on deploy.yml
+    (deploys are the higher-stakes gate). The `blocking_integration`
+    parameter encodes this asymmetry — for test.yml the integration
+    step must include `continue-on-error: true`; for deploy.yml it
+    must NOT.
+    """
+    wf_path = REPO_ROOT / ".github" / "workflows" / wf_name
+    assert wf_path.exists(), f"{wf_name} missing at expected path."
+    text = wf_path.read_text()
+    # Each tier must appear as `run: make test-<tier>` somewhere in
+    # the workflow body. The trailing `(?![\w-])` (negative lookahead
+    # for word-or-hyphen) is load-bearing: `\b` would treat the
+    # letter→hyphen boundary as a word boundary, so a typo like
+    # `run: make test-unit-extra` would falsely satisfy the
+    # `test-unit\b` pattern while NOT actually invoking the tier
+    # (R3 MAJOR fix). The negative lookahead requires the match end
+    # at a non-identifier character — whitespace, end-of-line, or
+    # punctuation.
+    for tier in ("test-unit", "test-contract", "test-equivalence", "test-integration"):
+        assert re.search(rf"run:\s*make\s+{re.escape(tier)}(?![\w-])", text), (
+            f"{wf_name} missing `run: make {tier}` step. Pillar 5 "
+            f"requires CI to invoke each tier target so the local "
+            f"`make test` orchestration matches the CI gate behavior."
+        )
+    # Asymmetric integration policy. Find the integration step block
+    # and inspect its `continue-on-error` setting. Step block ends at
+    # the next `- name:` line OR end of file.
+    integration_match = re.search(
+        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n\s*- name:|\Z)",
+        text,
+    )
+    assert integration_match, (
+        f"{wf_name} has no `Integration tier` step block. Pillar 5 "
+        f"explicit step naming required for the asymmetric "
+        f"informational/blocking policy."
+    )
+    block = integration_match.group(1)
+    has_continue_on_error = bool(
+        re.search(r"^\s*continue-on-error:\s*true", block, re.M)
+    )
+    if blocking_integration:
+        assert not has_continue_on_error, (
+            f"{wf_name}'s Integration tier step has "
+            f"`continue-on-error: true` but Pillar 5 spec says the "
+            f"deploy gate is BLOCKING — a regression would silently "
+            f"deploy. Remove the continue-on-error line."
+        )
+    else:
+        assert has_continue_on_error, (
+            f"{wf_name}'s Integration tier step is missing "
+            f"`continue-on-error: true`. Pillar 5 spec says the PR "
+            f"gate is INFORMATIONAL for integration so flaky integration "
+            f"tests don't block every PR. Either add the line or "
+            f"document the spec change."
         )
 
 
