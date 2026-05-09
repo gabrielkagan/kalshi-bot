@@ -1,0 +1,270 @@
+{
+  "bootstrap_method": "server-side stratified SQL via kalshi-vps MCP. Per-stratum LCG hash on (id*1103515245+12345+42)%2^31, ROW_NUMBER over (asset,product_type,vol_regime), rn<=40 LIMIT 1000 ORDER BY rn. Future regens use scripts/sample_engine_inputs.py against state.db (different sampler \u2014 first regen will produce a non-zero diff; review distributions, not byte-equality).",
+  "days_window": 30,
+  "n_rows": 1000,
+  "seed": 42,
+  "select_cols": [
+    "asset",
+    "product_type",
+    "vol_regime",
+    "spot_price",
+    "threshold",
+    "volatility",
+    "market_price",
+    "seconds_to_close",
+    "raw_prob",
+    "calibrated_prob",
+    "calibration_method",
+    "z_score",
+    "evaluation_time"
+  ],
+  "source_db_basename": "state.db",
+  "strata": [
+    {
+      "asset": "ATL_TEMP",
+      "n": 26,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "AUS_TEMP",
+      "n": 26,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "BOS_TEMP",
+      "n": 26,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "BTC",
+      "n": 26,
+      "product_type": "15m",
+      "vol_regime": "elevated"
+    },
+    {
+      "asset": "BTC",
+      "n": 26,
+      "product_type": "15m",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "BTC",
+      "n": 26,
+      "product_type": "15m",
+      "vol_regime": "unknown"
+    },
+    {
+      "asset": "BTC",
+      "n": 26,
+      "product_type": "hourly",
+      "vol_regime": "elevated"
+    },
+    {
+      "asset": "BTC",
+      "n": 26,
+      "product_type": "hourly",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "CHI_TEMP",
+      "n": 26,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "DAL_TEMP",
+      "n": 26,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "DCA_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "DEN_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "ETH",
+      "n": 25,
+      "product_type": "15m",
+      "vol_regime": "elevated"
+    },
+    {
+      "asset": "ETH",
+      "n": 25,
+      "product_type": "15m",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "ETH",
+      "n": 25,
+      "product_type": "15m",
+      "vol_regime": "unknown"
+    },
+    {
+      "asset": "ETH",
+      "n": 25,
+      "product_type": "hourly",
+      "vol_regime": "elevated"
+    },
+    {
+      "asset": "ETH",
+      "n": 25,
+      "product_type": "hourly",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "HOU_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "LAS_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "LAX_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "MIA_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "MIN_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "MSY_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "NYC_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "OKC_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "PHI_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "PHX_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "SEA_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "SFO_TEMP",
+      "n": 25,
+      "product_type": "weather",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "SOL",
+      "n": 25,
+      "product_type": "15m",
+      "vol_regime": "elevated"
+    },
+    {
+      "asset": "SOL",
+      "n": 25,
+      "product_type": "15m",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "SOL",
+      "n": 25,
+      "product_type": "15m",
+      "vol_regime": "unknown"
+    },
+    {
+      "asset": "SOL",
+      "n": 25,
+      "product_type": "hourly",
+      "vol_regime": "elevated"
+    },
+    {
+      "asset": "SOL",
+      "n": 25,
+      "product_type": "hourly",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "SPX",
+      "n": 25,
+      "product_type": "spx_hourly",
+      "vol_regime": "high"
+    },
+    {
+      "asset": "XRP",
+      "n": 25,
+      "product_type": "15m",
+      "vol_regime": "elevated"
+    },
+    {
+      "asset": "XRP",
+      "n": 25,
+      "product_type": "15m",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "XRP",
+      "n": 25,
+      "product_type": "15m",
+      "vol_regime": "unknown"
+    },
+    {
+      "asset": "XRP",
+      "n": 25,
+      "product_type": "hourly",
+      "vol_regime": "normal"
+    },
+    {
+      "asset": "XRP",
+      "n": 13,
+      "product_type": "hourly",
+      "vol_regime": "elevated"
+    },
+    {
+      "asset": "SPX",
+      "n": 2,
+      "product_type": "spx_hourly",
+      "vol_regime": "normal"
+    }
+  ]
+}
