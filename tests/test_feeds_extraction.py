@@ -475,9 +475,10 @@ def test_volatility_engine_still_annotates_coinbase_feed():
     (L33 carry-forward from Bit 4.4). Pin which class hosts it so a
     future class-rename / parameter-rename trips the suite. Without
     this, the breadcrumb in `bot/_impl.py:104` referencing
-    VolatilityEngine could rot silently."""
-    bot_impl = REPO_ROOT / "bot" / "_impl.py"
-    src = bot_impl.read_text()
+    VolatilityEngine could rot silently. Post-Bit-6.1 the class lives in
+    bot/engines/volatility.py — AST walk retargeted per L38."""
+    target_path = REPO_ROOT / "bot" / "engines" / "volatility.py"
+    src = target_path.read_text()
     tree = ast.parse(src)
     vol_engine = next(
         (
@@ -487,7 +488,10 @@ def test_volatility_engine_still_annotates_coinbase_feed():
         ),
         None,
     )
-    assert vol_engine is not None, "VolatilityEngine ClassDef missing"
+    assert vol_engine is not None, (
+        "VolatilityEngine ClassDef missing from bot/engines/volatility.py "
+        "(post-Bit-6.1 location)."
+    )
     init = next(
         (
             n

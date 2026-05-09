@@ -371,8 +371,10 @@ def test_deribit_annotation_consumer_is_volatility_engine():
     for `Bit 4.4 leaf extraction` in bot/_impl.py), this trips so the
     comment doesn't rot.
     """
-    bot_impl = REPO_ROOT / "bot" / "_impl.py"
-    src = bot_impl.read_text()
+    # VolatilityEngine moved to bot/engines/volatility.py per Bit 6.1
+    # (2026-05-09). Retarget the AST walk per L38 (Bit 4.5b).
+    target_path = REPO_ROOT / "bot" / "engines" / "volatility.py"
+    src = target_path.read_text()
     tree = ast.parse(src)
 
     # Find the VolatilityEngine class
@@ -384,7 +386,10 @@ def test_deribit_annotation_consumer_is_volatility_engine():
         ),
         None,
     )
-    assert vol_engine is not None, "VolatilityEngine ClassDef missing from bot/_impl.py."
+    assert vol_engine is not None, (
+        "VolatilityEngine ClassDef missing from bot/engines/volatility.py "
+        "(post-Bit-6.1 location)."
+    )
 
     # Find its __init__
     init = next(
