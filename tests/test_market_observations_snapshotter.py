@@ -944,13 +944,18 @@ def test_ensure_schema_not_called_from_run():
 
 
 def test_get_all_orderbooks_snapshot_method_exists_in_bot_py():
-    """Round-2 #10: AST regression. `KalshiWebsocketClient` must define
+    """Round-2 #10: AST regression. `KalshiFeed` must define
     `get_all_orderbooks_snapshot` (the deep-copy method the snapshotter
     relies on for cross-thread iteration safety). If a future refactor
     drops or renames it, this test surfaces the regression at CI time
-    rather than at production deploy."""
+    rather than at production deploy.
+
+    Bit 4.5b (2026-05-09): `KalshiFeed` moved from `bot/_impl.py` to
+    `bot/feeds/kalshi.py`; this AST walk follows the class to its new
+    home.
+    """
     import ast
-    src = (ROOT / "bot/_impl.py").read_text()
+    src = (ROOT / "bot/feeds/kalshi.py").read_text()
     tree = ast.parse(src)
 
     found = False
@@ -966,6 +971,6 @@ def test_get_all_orderbooks_snapshot_method_exists_in_bot_py():
             )
             break
     assert found, (
-        "bot/_impl.py KalshiWebsocketClient is missing get_all_orderbooks_snapshot "
+        "bot/feeds/kalshi.py KalshiFeed is missing get_all_orderbooks_snapshot "
         "— H-3a snapshotter requires this deep-copy method"
     )

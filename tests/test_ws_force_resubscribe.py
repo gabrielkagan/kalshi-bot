@@ -41,6 +41,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+# Bit 4.5b (2026-05-09): KalshiFeed moved from bot/_impl.py to
+# bot/feeds/kalshi.py. AST walks for KalshiFeed-class content use the
+# new path; walks for OpportunityScanner/MainLoop content stay on BOT_PY.
+KALSHI_FEED_PY = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "bot/feeds/kalshi.py")
 
 
 def _make_feed():
@@ -342,7 +348,7 @@ class TestR1A4UnsubBeforeSubOrdering(unittest.TestCase):
         """Walk _process_pending_subs body and verify the for-loop
         iterating `unsubs` appears textually BEFORE the for-loop
         iterating `subs`."""
-        with open(BOT_PY) as f:
+        with open(KALSHI_FEED_PY) as f:
             tree = ast.parse(f.read())
         target = None
         for cls in ast.walk(tree):
@@ -774,7 +780,7 @@ class TestR2P15ResetDisableOnReconnect(unittest.TestCase):
     bug — fresh session = fresh sids = let primary re-prove."""
 
     def test_ast_reconnect_resets_disable_state(self):
-        with open(BOT_PY) as fh:
+        with open(KALSHI_FEED_PY) as fh:
             src = fh.read()
         # The reset must happen inside _ws_loop after
         # `self._connected = True`. We verify the lines exist
@@ -923,7 +929,7 @@ class TestR3P0AAndR4F1SessionCleanup(unittest.TestCase):
     invoked from both branches."""
 
     def test_ast_cleanup_helper_exists_and_clears_orderbooks(self):
-        with open(BOT_PY) as fh:
+        with open(KALSHI_FEED_PY) as fh:
             src = fh.read()
         tree = ast.parse(src)
         target = None
@@ -955,7 +961,7 @@ class TestR3P0AAndR4F1SessionCleanup(unittest.TestCase):
         """R4 / F1: cleanup must fire BEFORE the backoff sleep,
         otherwise during the up-to-60s wait, is_connected returns
         True and stale cache from the prior session is served."""
-        with open(BOT_PY) as fh:
+        with open(KALSHI_FEED_PY) as fh:
             src = fh.read()
         tree = ast.parse(src)
         target = None
@@ -1002,7 +1008,7 @@ class TestR3P0AAndR4F1SessionCleanup(unittest.TestCase):
         """Graceful-close path (async-with normal exit) must also
         clear cache. Either via `else:` clause on the try, or
         equivalent placement after the try."""
-        with open(BOT_PY) as fh:
+        with open(KALSHI_FEED_PY) as fh:
             src = fh.read()
         tree = ast.parse(src)
         target = None
@@ -1037,7 +1043,7 @@ class TestR3P1ABReconnectClearsPhase2Dicts(unittest.TestCase):
     and old recovery deadlines fire spurious warnings."""
 
     def test_ast_reconnect_block_clears_pending_dicts(self):
-        with open(BOT_PY) as fh:
+        with open(KALSHI_FEED_PY) as fh:
             src = fh.read()
         tree = ast.parse(src)
         target = None
@@ -1072,7 +1078,7 @@ class TestR3P1CSendFailurePopsPending(unittest.TestCase):
     disable for non-Kalshi-contract reasons."""
 
     def test_ast_snap_req_send_failure_pops_pending(self):
-        with open(BOT_PY) as fh:
+        with open(KALSHI_FEED_PY) as fh:
             src = fh.read()
         tree = ast.parse(src)
         target = None

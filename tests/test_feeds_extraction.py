@@ -1,24 +1,31 @@
-"""Bit 4.5a — CoinbaseFeed + OrderbookSchemaError + CrossExchangeFeed extracted
-from bot/_impl.py to bot/feeds/{coinbase,orderbook_schema,cross_exchange}.py
-via the bot/feeds/__init__.py subpackage. The `_swallow_persist_exception`
-helper moves alongside CoinbaseFeed (its sole consumer).
+"""Bit 4.5a + 4.5b — feed classes extracted from bot/_impl.py to bot/feeds/.
+
+Bit 4.5a (2026-05-08, ee918e7):
+  CoinbaseFeed → bot/feeds/coinbase.py
+  OrderbookSchemaError → bot/feeds/orderbook_schema.py
+  CrossExchangeFeed → bot/feeds/cross_exchange.py
+
+Bit 4.5b (2026-05-09):
+  KalshiFeed → bot/feeds/kalshi.py
+  (largest leaf in Sprint 4; ~1,790 lines; uses sibling
+  ``bot.feeds.orderbook_schema.OrderbookSchemaError``).
 
 Locks the contract between bot/_impl.py (which does
-`from bot.feeds import CoinbaseFeed, OrderbookSchemaError, CrossExchangeFeed`
-after the bot.fetchers import) and the new bot/feeds/ subpackage. Mirrors
+`from bot.feeds import CoinbaseFeed, CrossExchangeFeed, KalshiFeed, OrderbookSchemaError`
+after the bot.fetchers import) and the bot/feeds/ subpackage. Mirrors
 tests/test_fetchers_extraction.py (Bit 4.4) and
 tests/test_kalshi_client_extraction.py (Bit 4.3).
 
-Bit 4.5a specifics:
-- 3 classes spanning ~660 lines moved (CoinbaseFeed 322L + OrderbookSchemaError
-  12L + CrossExchangeFeed 328L = ~662L gross, plus 7L for `_swallow_persist_exception`).
-- OrderbookSchemaError is consumed by KalshiFeed which STAYS in bot/_impl.py
-  until Bit 4.5b. The re-import ensures KalshiFeed's `raise OrderbookSchemaError(...)`
-  sites continue to resolve.
+Class-specific notes:
+- `_swallow_persist_exception` helper moved alongside CoinbaseFeed (its sole
+  consumer) in Bit 4.5a.
+- OrderbookSchemaError raise/except sites live inside KalshiFeed; post-Bit-4.5b
+  the import is sibling-local
+  (`from bot.feeds.orderbook_schema import OrderbookSchemaError`).
 - CrossExchangeFeed has a `coinbase_feed: CoinbaseFeed` constructor type hint —
   cross-submodule dep, requires explicit import in cross_exchange.py.
-- VolatilityEngine.__init__ has `feed: CoinbaseFeed` annotation (not extracted
-  in this bit) — must continue resolving via the bot._impl re-import.
+- VolatilityEngine.__init__ has `feed: CoinbaseFeed` annotation (not extracted)
+  — must continue resolving via the bot._impl re-import.
 
 L33 (Bit 4.4): wrong-class attribution in extraction breadcrumbs is a recurring
 drift class. Pin consumer-class identity with positive + negative regression
@@ -58,6 +65,10 @@ def test_cross_exchange_module_exists():
     assert (REPO_ROOT / "bot" / "feeds" / "cross_exchange.py").is_file()
 
 
+def test_kalshi_module_exists():
+    assert (REPO_ROOT / "bot" / "feeds" / "kalshi.py").is_file()
+
+
 def test_subpackage_imports():
     importlib.import_module("bot.feeds")
 
@@ -67,6 +78,7 @@ def test_subpackage_exports_all_classes():
     assert hasattr(bot.feeds, "CoinbaseFeed")
     assert hasattr(bot.feeds, "OrderbookSchemaError")
     assert hasattr(bot.feeds, "CrossExchangeFeed")
+    assert hasattr(bot.feeds, "KalshiFeed")
 
 
 # ─── 2. Identity preservation across re-export chain ────────────────────────
@@ -93,16 +105,25 @@ def test_cross_exchange_identity_through_bot_impl():
     assert b.CrossExchangeFeed is bf.CrossExchangeFeed is bfx.CrossExchangeFeed
 
 
-def test_all_three_identity_through_bot_proxy():
-    """All 3 names resolve through `bot.X` -> `bot._BotProxy` -> `bot._impl.X`
+def test_kalshi_identity_through_bot_impl():
+    import bot._impl as b
+    import bot.feeds as bf
+    import bot.feeds.kalshi as bfk
+    assert b.KalshiFeed is bf.KalshiFeed is bfk.KalshiFeed
+
+
+def test_all_four_identity_through_bot_proxy():
+    """All 4 names resolve through `bot.X` -> `bot._BotProxy` -> `bot._impl.X`
     -> the re-imported reference. Multiple production code paths use this
     chain (MainLoop construction, KalshiFeed's OrderbookSchemaError raises)."""
     import bot
     import bot.feeds.coinbase as bfc
     import bot.feeds.cross_exchange as bfx
+    import bot.feeds.kalshi as bfk
     import bot.feeds.orderbook_schema as bfo
     assert bot.CoinbaseFeed is bfc.CoinbaseFeed
     assert bot.CrossExchangeFeed is bfx.CrossExchangeFeed
+    assert bot.KalshiFeed is bfk.KalshiFeed
     assert bot.OrderbookSchemaError is bfo.OrderbookSchemaError
 
 
@@ -110,12 +131,15 @@ def test_all_three_identity_through_bot_proxy():
 
 
 @pytest.mark.parametrize(
-    "class_name", ["CoinbaseFeed", "OrderbookSchemaError", "CrossExchangeFeed"]
+    "class_name",
+    ["CoinbaseFeed", "OrderbookSchemaError", "CrossExchangeFeed", "KalshiFeed"],
 )
 def test_class_not_defined_in_bot_impl(class_name):
     """Future drift guard: catches "I'll just add it back to _impl.py".
 
-    Mirrors test_fetchers_extraction.py (Bit 4.4).
+    Mirrors test_fetchers_extraction.py (Bit 4.4). Bit 4.5b adds KalshiFeed
+    to the parametrize list; the re-import chain in bot/_impl.py is the only
+    place the name should resolve from.
     """
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
@@ -126,8 +150,8 @@ def test_class_not_defined_in_bot_impl(class_name):
     assert classdefs == [], (
         f"{class_name} ClassDef found at module scope in bot/_impl.py "
         f"(line {classdefs[0].lineno if classdefs else '?'}). The class was "
-        f"extracted to bot/feeds/ in Bit 4.5a — re-introducing it breaks "
-        f"the import chain and identity preservation."
+        f"extracted to bot/feeds/ in Bit 4.5a/4.5b — re-introducing it "
+        f"breaks the import chain and identity preservation."
     )
 
 
@@ -161,13 +185,18 @@ def test_bot_impl_imports_feeds_subpackage():
         if isinstance(node, ast.ImportFrom) and node.module == "bot.feeds":
             for alias in node.names:
                 imported.add(alias.name)
-    expected = {"CoinbaseFeed", "OrderbookSchemaError", "CrossExchangeFeed"}
+    expected = {
+        "CoinbaseFeed",
+        "CrossExchangeFeed",
+        "KalshiFeed",
+        "OrderbookSchemaError",
+    }
     missing = expected - imported
     assert not missing, (
         f"bot/_impl.py is missing feeds re-imports: {sorted(missing)}. "
-        f"Without them, MainLoop construction + KalshiFeed's raise "
-        f"OrderbookSchemaError sites + VolatilityEngine.__init__ + "
-        f"OpportunityScanner type annotations all break."
+        f"Without them, MainLoop construction (kalshi_feed/feed/cross_feed) "
+        f"+ VolatilityEngine.__init__ + OpportunityScanner type "
+        f"annotations all break."
     )
 
 
@@ -270,7 +299,8 @@ def test_orderbook_schema_error_is_exception_subclass():
 
 
 @pytest.mark.parametrize(
-    "submodule", ["coinbase", "cross_exchange", "orderbook_schema", "__init__"]
+    "submodule",
+    ["coinbase", "cross_exchange", "kalshi", "orderbook_schema", "__init__"],
 )
 def test_no_forbidden_numerical_imports(submodule):
     """No numpy/scipy/torch/sklearn/pandas in feed modules. Bit 4.1/4.2/4.3/4.4
@@ -297,7 +327,8 @@ def test_no_forbidden_numerical_imports(submodule):
 
 
 @pytest.mark.parametrize(
-    "submodule", ["coinbase", "cross_exchange", "orderbook_schema", "__init__"]
+    "submodule",
+    ["coinbase", "cross_exchange", "kalshi", "orderbook_schema", "__init__"],
 )
 def test_no_circular_bot_impl_import(submodule):
     """Submodules MUST NOT import from bot._impl. Three forms checked
@@ -423,14 +454,16 @@ def test_orderbook_schema_error_can_be_raised_and_caught():
 
 def test_subpackage_init_re_exports_match_submodule_classes():
     """bot.feeds exports the same class objects as the submodules.
-    A future maintainer might add a fourth class and forget to wire
+    A future maintainer might add another class and forget to wire
     the __init__.py re-export."""
     import bot.feeds
     import bot.feeds.coinbase
     import bot.feeds.cross_exchange
+    import bot.feeds.kalshi
     import bot.feeds.orderbook_schema
     assert bot.feeds.CoinbaseFeed is bot.feeds.coinbase.CoinbaseFeed
     assert bot.feeds.CrossExchangeFeed is bot.feeds.cross_exchange.CrossExchangeFeed
+    assert bot.feeds.KalshiFeed is bot.feeds.kalshi.KalshiFeed
     assert bot.feeds.OrderbookSchemaError is bot.feeds.orderbook_schema.OrderbookSchemaError
 
 
@@ -504,12 +537,12 @@ def test_opportunity_scanner_still_annotates_coinbase_feed():
 
 
 def test_kalshi_feed_still_uses_orderbook_schema_error():
-    """KalshiFeed (still in bot/_impl.py per Bit 4.5a scope) raises
+    """KalshiFeed (now bot/feeds/kalshi.py per Bit 4.5b) raises
     OrderbookSchemaError in multiple sites. Pin that the symbol is still
-    referenced — guards the re-import line in bot/_impl.py against
-    "this is unused, can we delete it?" mistakes during Bit 4.5b."""
-    bot_impl = REPO_ROOT / "bot" / "_impl.py"
-    src = bot_impl.read_text()
+    referenced — guards the sibling import + the bot/_impl.py re-import
+    line against "this is unused, can we delete it?" mistakes."""
+    kalshi_src_path = REPO_ROOT / "bot" / "feeds" / "kalshi.py"
+    src = kalshi_src_path.read_text()
     tree = ast.parse(src)
     kfeed = next(
         (
@@ -519,10 +552,103 @@ def test_kalshi_feed_still_uses_orderbook_schema_error():
         ),
         None,
     )
-    assert kfeed is not None, "KalshiFeed ClassDef missing"
+    assert kfeed is not None, "KalshiFeed ClassDef missing in bot/feeds/kalshi.py"
     kfeed_src = ast.get_source_segment(src, kfeed) or ""
     assert "OrderbookSchemaError" in kfeed_src, (
         "KalshiFeed no longer references OrderbookSchemaError. If "
         "intentional, also drop the OrderbookSchemaError name from the "
-        "`from bot.feeds import` line in bot/_impl.py."
+        "`from bot.feeds.orderbook_schema import OrderbookSchemaError` line "
+        "in bot/feeds/kalshi.py and the `from bot.feeds import` line in "
+        "bot/_impl.py."
     )
+
+
+def test_kalshi_feed_imports_orderbook_schema_from_sibling():
+    """Bit 4.5b: KalshiFeed must import OrderbookSchemaError from the sibling
+    submodule (`bot.feeds.orderbook_schema`), NOT from `bot._impl` — the
+    latter would be a circular import. Mirrors
+    `test_cross_exchange_imports_coinbase_from_sibling`.
+    """
+    src = (REPO_ROOT / "bot" / "feeds" / "kalshi.py").read_text()
+    tree = ast.parse(src)
+    found = False
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.ImportFrom)
+                and node.module == "bot.feeds.orderbook_schema"):
+            for alias in node.names:
+                if alias.name == "OrderbookSchemaError":
+                    found = True
+                    break
+    assert found, (
+        "bot/feeds/kalshi.py must explicitly "
+        "`from bot.feeds.orderbook_schema import OrderbookSchemaError` so "
+        "the raise/except sites resolve without going through bot._impl "
+        "(which would create a circular import)."
+    )
+
+
+KALSHI_FEED_CONSTANTS = (
+    "KALSHI_WS_URL",
+    "WS_FORCE_RESUB_COOLDOWN_S",
+    "WS_FORCE_RESUB_RECOVERY_TIMEOUT_S",
+    "WS_GET_SNAPSHOT_DISABLE_AFTER",
+    "WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S",
+    "WS_RAW_LOG_DURATION_S",
+    "WS_RAW_LOG_MAX_PER_SESSION",
+    "WS_RAW_LOG_TRUNCATE",
+    "WS_SILENCE_GRACE_SECONDS",
+    "WS_SILENCE_TIMEOUT_SECONDS",
+    "WS_SNAPSHOT_REQUEST_TIMEOUT_S",
+    "WS_UNSUBSCRIBE_BLACKLIST_S",
+    "WS_WATCHDOG_CHECK_INTERVAL",
+)
+
+
+@pytest.mark.parametrize("name", KALSHI_FEED_CONSTANTS)
+def test_kalshi_feed_constants_resolve_from_bot_constants(name):
+    """All KalshiFeed WS tunables live in bot.constants per Bit 3.1.
+    The kalshi module imports them explicitly (the `import *` shortcut
+    is not used so a bot.constants rename trips the suite immediately)."""
+    import bot.constants
+    import bot.feeds.kalshi as bfk
+    assert getattr(bfk, name) is getattr(bot.constants, name), (
+        f"bot.feeds.kalshi.{name} drifted from bot.constants.{name}."
+    )
+
+
+KALSHI_FEED_METHODS = (
+    "__init__", "start", "stop",
+    "subscribe_ticker", "unsubscribe_ticker",
+    "force_resubscribe", "_sweep_unsubscribe_blacklist",
+    "_check_snapshot_timeouts",
+    "get_subscribed_tickers", "get_subscribed_count", "get_cached_ob_count",
+    "get_orderbook", "get_all_orderbooks", "get_all_orderbooks_snapshot",
+    "pop_fills",
+    "_cleanup_session_state",
+    "_create_ws_headers",
+    "_run_thread", "_ws_loop",
+    "_send_ob_subscribe", "_send_ob_unsubscribe", "_send_ob_get_snapshot",
+    "_process_pending_subs",
+    "_handle_subscribe_ack",
+    "_should_log_raw_in", "_raw_log_budget_ok",
+    "_log_raw_out", "_log_raw_in",
+    "_handle_message", "_handle_fill",
+    "_handle_ob_snapshot", "_handle_ob_delta",
+    "_apply_fp_delta", "_apply_legacy_delta",
+    "_normalize_fp_levels", "_level_price", "_level_qty",
+)
+
+
+@pytest.mark.parametrize("method", KALSHI_FEED_METHODS)
+def test_kalshi_feed_method_present(method):
+    from bot.feeds.kalshi import KalshiFeed
+    assert callable(getattr(KalshiFeed, method, None))
+
+
+def test_kalshi_feed_is_connected_is_property():
+    """`is_connected` is a `@property`, not a callable. Pin its shape so a
+    refactor to a method (or vice versa) trips the suite — KalshiFeed
+    consumers (MainLoop / OpportunityScanner watchdog) read it as
+    `feed.is_connected`, not `feed.is_connected()`."""
+    from bot.feeds.kalshi import KalshiFeed
+    assert isinstance(KalshiFeed.is_connected, property)
