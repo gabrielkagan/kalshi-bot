@@ -2340,25 +2340,49 @@ class StateManager:
         # message so the failure-path warning log can distinguish
         # "cannot start a transaction within a transaction" (broken-stale-tx
         # cascade) from "database is locked" (busy_timeout-driven contention).
-        # Bit 4.4 deploy alert showed 7 errors in 1 second, inconsistent with
-        # busy_timeout=30000 — this captures the actual mechanism for the
-        # next post-deploy alert.
-        # 2026-05-08 followup: also capture begin_immediate_duration_ms even
-        # on failure. The 03:33:07 prod hit's wrapped INSERT failed in 0.3ms
-        # but we couldn't prove the BEGIN IMMEDIATE wait was sub-second
-        # (= fast-fail) vs 30000ms (= busy_timeout). This duration field
-        # answers definitively.
+        # 2026-05-09 followup: capture begin_immediate_duration_ms even on
+        # failure (sub-millisecond = fast-fail, NOT busy_timeout-driven).
+        # 2026-05-09 RCA-resolution: confirmed FAST-fail mechanism. SQLite
+        # returns SQLITE_BUSY immediately for INTRA-process lock contention
+        # (busy_handler bypassed to avoid deadlock). recent_writes() ring
+        # buffer identified `market_obs_snapshotter` as the culprit (its
+        # 4-row executemany periodically takes 7-8 SECONDS — likely WAL
+        # checkpoint or fsync stall). This retry loop catches the row when
+        # the holder finishes between our attempts.
         _be_err_repr: Optional[str] = None
         _be_duration_ms: Optional[float] = None
+        _be_retries: int = 0
         _t0_lock = time.perf_counter()
-        try:
-            self.conn.execute("BEGIN IMMEDIATE")
-            _lock_wait_ms = (time.perf_counter() - _t0_lock) * 1000.0
-            _be_duration_ms = _lock_wait_ms
-            _began_explicitly = True
-        except sqlite3.OperationalError as _be_err:
-            _be_duration_ms = (time.perf_counter() - _t0_lock) * 1000.0
-            _be_err_repr = f"{type(_be_err).__name__}: {_be_err}"
+        # Retry-on-busy loop: 3 attempts with 25-75ms jittered backoff.
+        # Worst-case latency: ~225ms per call (kept under SCAN_BODY_SLOW
+        # 1.5s budget even if multiple inserts contend in same scan tick).
+        # Adversarial review (2026-05-09 R1): reduced from 5×50-200ms
+        # because cumulative MainThread blocking risked scan-loop overrun
+        # — the same failure mode as cal-mlp-torch-thread-contention-apr29.
+        # Only retry on transient "is locked"/"is busy"; "cannot start a
+        # transaction within a transaction" is Python-side stale-tx and
+        # not transient — sleep won't help.
+        for _attempt in range(3):
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                _lock_wait_ms = (time.perf_counter() - _t0_lock) * 1000.0
+                _be_duration_ms = _lock_wait_ms
+                _began_explicitly = True
+                _be_retries = _attempt
+                break
+            except sqlite3.OperationalError as _be_err:
+                _be_duration_ms = (time.perf_counter() - _t0_lock) * 1000.0
+                _be_err_repr = f"{type(_be_err).__name__}: {_be_err}"
+                _be_retries = _attempt + 1
+                _err_msg = str(_be_err).lower()
+                _is_transient = ("locked" in _err_msg) or ("busy" in _err_msg)
+                if not _is_transient:
+                    # Stale-tx case ("cannot start a transaction within a
+                    # transaction") — retry won't help. Fall through.
+                    break
+                if _attempt < 2:
+                    # Jittered backoff: 25-75ms uniform random.
+                    time.sleep(0.025 + random.random() * 0.050)
 
         # Phase H-2: patch lock_wait_ms into the pre-computed snapshot
         # and serialize. Done INSIDE the lock but it's just a dict write
@@ -2696,6 +2720,7 @@ class StateManager:
                 f"insert_evaluated_opportunity failed: {e} "
                 f"begin_immediate={_diag_begin!r} "
                 f"begin_immediate_duration_ms={_diag_be_dur} "
+                f"begin_immediate_retries={_be_retries} "
                 f"thread={_diag_thread!r} "
                 f"in_tx={_diag_in_tx!s} "
                 f"active_writers={_diag_active!r} "

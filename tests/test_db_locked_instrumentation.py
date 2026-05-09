@@ -264,6 +264,157 @@ def test_begin_immediate_duration_captured_on_failure(caplog):
     )
 
 
+def test_begin_immediate_retries_on_busy_then_succeeds(caplog):
+    """Per RCA (2026-05-09): SQLite returns SQLITE_BUSY immediately for
+    intra-process lock contention (busy_handler bypassed). We retry
+    explicitly with jittered backoff. If retry succeeds (e.g., the
+    market_obs_snapshotter holder finishes its 7s tx between attempt 1
+    and attempt 2), the row is captured.
+
+    Test mocks BEGIN IMMEDIATE: 1st call raises, 2nd call succeeds. Verify
+    no warning fires (insert succeeded).
+    """
+    caplog.set_level(logging.WARNING)
+    sm = _make_state_manager_with_mocked_conn()
+
+    call_count = {"begin": 0}
+
+    def _execute_side_effect(sql, *args, **kwargs):
+        if sql == "BEGIN IMMEDIATE":
+            call_count["begin"] += 1
+            if call_count["begin"] == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return MagicMock()  # 2nd attempt succeeds
+        if "INSERT INTO evaluated_opportunities" in sql:
+            return MagicMock()
+        if sql == "COMMIT":
+            return MagicMock()
+        return MagicMock()
+
+    sm.conn.execute.side_effect = _execute_side_effect
+
+    with _no_raise():
+        _call_insert_with_minimal_args(sm)
+
+    # 1st BEGIN IMMEDIATE failed, 2nd succeeded → no failure warning
+    failure_warnings = [
+        r for r in caplog.records
+        if "insert_evaluated_opportunity failed" in r.getMessage()
+    ]
+    assert not failure_warnings, (
+        f"BEGIN IMMEDIATE retry should have succeeded; got failure warning: "
+        f"{[r.getMessage() for r in failure_warnings]}"
+    )
+    # And BEGIN IMMEDIATE was called at least twice
+    assert call_count["begin"] >= 2
+
+
+def test_begin_immediate_gives_up_after_max_retries(caplog):
+    """If BEGIN IMMEDIATE fails repeatedly, we give up after a bounded
+    number of retries (3) and log the failure. The retry count must be
+    bounded so the scan loop doesn't hang on persistent contention.
+
+    Adversarial review reduced from 5x50-200ms to 3x25-75ms (worst case
+    ~225ms vs 1000ms) to keep MainThread blocking under SCAN_BODY_SLOW
+    1.5s budget when multiple inserts contend in the same tick.
+    """
+    caplog.set_level(logging.WARNING)
+    sm = _make_state_manager_with_mocked_conn()
+
+    call_count = {"begin": 0}
+
+    def _execute_side_effect(sql, *args, **kwargs):
+        if sql == "BEGIN IMMEDIATE":
+            call_count["begin"] += 1
+            raise sqlite3.OperationalError("database is locked")
+        if "INSERT INTO evaluated_opportunities" in sql:
+            raise sqlite3.OperationalError("database is locked")
+        return MagicMock()
+
+    sm.conn.execute.side_effect = _execute_side_effect
+
+    with _no_raise():
+        _call_insert_with_minimal_args(sm)
+
+    # Should have retried up to the bound (3 attempts)
+    assert 2 <= call_count["begin"] <= 5, (
+        f"BEGIN IMMEDIATE should retry ~3x but bounded; got {call_count['begin']} attempts"
+    )
+
+    # Failure warning fired since all retries exhausted
+    failure_warnings = [
+        r for r in caplog.records
+        if "insert_evaluated_opportunity failed" in r.getMessage()
+    ]
+    assert failure_warnings
+
+
+def test_stale_tx_error_does_not_retry(caplog):
+    """When BEGIN IMMEDIATE raises 'cannot start a transaction within a
+    transaction' (Python-side stale-tx, NOT transient lock contention),
+    retries are pointless — sleep won't clear the conn's tx state. The
+    loop must short-circuit on the first such failure to avoid wasting
+    ~225ms of dead MainThread sleep.
+
+    Adversarial review (2026-05-09 R1): identified this case in
+    production logs (see test_runtime_warning_includes_begin_immediate_error_message).
+    """
+    caplog.set_level(logging.WARNING)
+    sm = _make_state_manager_with_mocked_conn()
+
+    call_count = {"begin": 0}
+
+    def _execute_side_effect(sql, *args, **kwargs):
+        if sql == "BEGIN IMMEDIATE":
+            call_count["begin"] += 1
+            raise sqlite3.OperationalError(
+                "cannot start a transaction within a transaction"
+            )
+        if "INSERT INTO evaluated_opportunities" in sql:
+            raise sqlite3.OperationalError("database is locked")
+        return MagicMock()
+
+    sm.conn.execute.side_effect = _execute_side_effect
+
+    with _no_raise():
+        _call_insert_with_minimal_args(sm)
+
+    # Stale-tx error → no retries (loop breaks on first failure)
+    assert call_count["begin"] == 1, (
+        f"stale-tx error should NOT retry; got {call_count['begin']} attempts"
+    )
+
+
+def test_failure_log_includes_retry_count(caplog):
+    """The failure warning must include `begin_immediate_retries=N` so the
+    operator can distinguish single-shot fast-fails from exhausted retry
+    loops in the journal."""
+    caplog.set_level(logging.WARNING)
+    sm = _make_state_manager_with_mocked_conn()
+
+    def _execute_side_effect(sql, *args, **kwargs):
+        if sql == "BEGIN IMMEDIATE":
+            raise sqlite3.OperationalError("database is locked")
+        if "INSERT INTO evaluated_opportunities" in sql:
+            raise sqlite3.OperationalError("database is locked")
+        return MagicMock()
+
+    sm.conn.execute.side_effect = _execute_side_effect
+
+    with _no_raise():
+        _call_insert_with_minimal_args(sm)
+
+    warnings = [
+        r for r in caplog.records
+        if "insert_evaluated_opportunity failed" in r.getMessage()
+    ]
+    assert warnings
+    msg = warnings[0].getMessage()
+    assert "begin_immediate_retries=" in msg, (
+        f"warning must include begin_immediate_retries=N field; got: {msg!r}"
+    )
+
+
 def test_runtime_warning_marks_begin_immediate_ok_when_succeeds(caplog):
     """When BEGIN IMMEDIATE succeeds and INSERT fails, the warning log
     must show begin_immediate=OK (not a stale error message)."""

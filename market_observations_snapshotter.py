@@ -515,8 +515,23 @@ class MarketObservationsSnapshotter:
         for start in range(0, len(rows), BATCH_SIZE):
             batch = rows[start:start + BATCH_SIZE]
             with tracked_write("market_obs_snapshotter", f"executemany_batch_{len(batch)}"):  # ops: db-locked RCA 2026-05-08
+                # ops: db-locked RCA 2026-05-09 — separate executemany vs
+                # commit timing. The 7-8s slow writes observed periodically
+                # are almost certainly in commit (WAL checkpoint or fsync
+                # stall), not the executemany itself. This breakdown
+                # confirms the root cause for a future targeted fix.
+                _t_em = time.perf_counter()
                 conn.executemany(sql, batch)
+                _t_em_done = time.perf_counter()
                 conn.commit()
+                _t_commit_done = time.perf_counter()
+                _em_ms = (_t_em_done - _t_em) * 1000.0
+                _commit_ms = (_t_commit_done - _t_em_done) * 1000.0
+                if _em_ms > 100.0 or _commit_ms > 100.0:
+                    logger.info(
+                        "SLOW_BATCH_BREAKDOWN executemany_ms=%.1f commit_ms=%.1f rows=%d",
+                        _em_ms, _commit_ms, len(batch),
+                    )
             self.metrics["rows_written"] += len(batch)
 
     # ── Retention ──────────────────────────────────────────────────────
