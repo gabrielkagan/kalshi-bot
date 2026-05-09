@@ -178,15 +178,22 @@ addopts = ["-v", "--tb=short", "--ignore=venv"]
 # keeps each mutant cycle fast (~3s for the equivalence pass × ~hundreds
 # of mutants = ~1-2h on Mac).
 #
-# Late-binding import statements (`from bot import _impl as _bot_impl`)
-# at probability.py:165 + :286 are NOT excluded here: mutmut 2.5.1's
-# AST walker explicitly skips `import_name` and `import_from` nodes
-# (verified at `mutmut/__init__.py:595` in the installed package), so
-# no pragma is needed. Defense-in-depth note for a future mutmut bump:
-# if a new version starts mutating imports, revisit by either
-# (a) adding `# pragma: no mutate` inline (touches bot/engines/
-# probability.py — coordinate with Bit 6.3) or (b) using
-# `dict_synonyms` / a regex-based skip in this section.
+# The two late-binding `from bot import _impl as _bot_impl` shims
+# inside `ProbabilityEngine.compute()` and `counterfactual_prob()`
+# (Bit 6.2 — see `kb/decisions/bit-6.2-shipped-may09.md` for why
+# the imports are inside method bodies rather than at module top)
+# are NOT excluded here: mutmut 2.x's AST walker skips `import_name`
+# and `import_from` nodes by design — there's no operator/literal/
+# comparison to flip on an import statement, so no mutants are
+# generated. The invariant is "method-body import statements".
+# Specific line numbers and mutmut source-file refs are intentionally
+# omitted because Bit 6.3 (CalibrationEngine extraction) and any
+# future mutmut bump would shift them.
+#
+# If a future mutmut version starts mutating imports, revisit by
+# either (a) adding `# pragma: no mutate` inline (touches
+# bot/engines/probability.py) or (b) adding a regex-based skip in
+# this section.
 # `paths_to_mutate` is a TOML list rather than a comma-separated string:
 # mutmut 2.5.1's `split_paths` (mutmut/__main__.py:320) filters with
 # `Path(p).exists()` and does NOT strip whitespace, so a cosmetic edit

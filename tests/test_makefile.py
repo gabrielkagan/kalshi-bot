@@ -632,10 +632,16 @@ def test_pillar_5_workflow_calls_tier_targets(wf_name, blocking_integration):
     assert wf_path.exists(), f"{wf_name} missing at expected path."
     text = wf_path.read_text()
     # Each tier must appear as `run: make test-<tier>` somewhere in
-    # the workflow body. Use re.M to anchor at line-start; tolerate
-    # leading whitespace (YAML steps are indented).
+    # the workflow body. The trailing `(?![\w-])` (negative lookahead
+    # for word-or-hyphen) is load-bearing: `\b` would treat the
+    # letter→hyphen boundary as a word boundary, so a typo like
+    # `run: make test-unit-extra` would falsely satisfy the
+    # `test-unit\b` pattern while NOT actually invoking the tier
+    # (R3 MAJOR fix). The negative lookahead requires the match end
+    # at a non-identifier character — whitespace, end-of-line, or
+    # punctuation.
     for tier in ("test-unit", "test-contract", "test-equivalence", "test-integration"):
-        assert re.search(rf"run:\s*make\s+{re.escape(tier)}\b", text), (
+        assert re.search(rf"run:\s*make\s+{re.escape(tier)}(?![\w-])", text), (
             f"{wf_name} missing `run: make {tier}` step. Pillar 5 "
             f"requires CI to invoke each tier target so the local "
             f"`make test` orchestration matches the CI gate behavior."
