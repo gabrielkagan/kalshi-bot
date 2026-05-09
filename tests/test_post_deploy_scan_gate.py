@@ -205,25 +205,45 @@ def test_workflow_threshold_rationale_documented():
     )
 
 
-def test_test_fast_recipe_invokes_scan_gate_test():
-    """make test-fast must run this test file.
+def test_test_unit_tier_invokes_scan_gate_test():
+    """make test-unit (Pillar 5 rename of test-fast) must run this test file.
 
     Mirrors Bit 1.3 / 1.4 / 1.5 / 2.0.5.2 cadence: every dev-tooling
     invariant test self-pins into the fast tier.
+
+    Pillar 5 (86b9ve11y) renamed test-fast → test-unit and moved the
+    file list into a `UNIT_FILES` Make variable. The file may appear
+    in any of: test-unit recipe, test-fast recipe (legacy alias), or
+    UNIT_FILES variable body — accept all three forms.
     """
     makefile = REPO_ROOT / "Makefile"
     assert makefile.exists(), "Makefile missing at repo root."
     text = re.sub(r"\\\n", " ", makefile.read_text())
-    m = re.search(
-        r"^test-fast:[^\n]*\n((?:\t[^\n]*\n)+)",
+    fragments = []
+    for target in ("test-unit", "test-fast"):
+        m = re.search(
+            rf"^{target}:[^\n]*\n((?:\t[^\n]*\n)+)",
+            text,
+            re.M,
+        )
+        if m:
+            fragments.append(m.group(1))
+    var_match = re.search(
+        r"^UNIT_FILES\s*[:?]?=\s*([^\n]+)$",
         text,
         re.M,
     )
-    assert m, "test-fast: recipe missing from Makefile."
-    recipe = m.group(1)
-    assert "test_post_deploy_scan_gate.py" in recipe, (
-        "Makefile `test-fast` recipe doesn't invoke "
-        "tests/test_post_deploy_scan_gate.py."
+    if var_match:
+        fragments.append(var_match.group(1))
+    assert fragments, (
+        "Makefile has neither a `test-unit:` nor a `test-fast:` target "
+        "with a recipe body, and no `UNIT_FILES` variable."
+    )
+    combined = "\n".join(fragments)
+    assert "test_post_deploy_scan_gate.py" in combined, (
+        f"Unit tier (test-unit/test-fast/UNIT_FILES) doesn't invoke "
+        f"tests/test_post_deploy_scan_gate.py. Combined surface: "
+        f"{combined!r}"
     )
 
 

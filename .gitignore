@@ -54,6 +54,19 @@ DOC_DRIFT_REPORT.txt
 # (.hypothesis/constants etc. — per-machine state, not deterministic).
 .hypothesis/
 
+# Pillar 5 (testing-foundation-sprint): pytest-testmon cache + mutmut
+# artifacts. All per-machine state, not deterministic across runs.
+#   * `.testmondata` — testmon's per-test code-fingerprint database.
+#     Without this gitignore, agents would commit it after every save
+#     and CI would race-write it. Per-machine.
+#   * `mutants/` — mutmut's per-mutant working dir (one subdir per
+#     mutant; deleted between runs). Hundreds of MB during a baseline.
+#   * `.mutmut-cache/` — mutmut 2.x results cache (used to skip
+#     already-run mutants on incremental invocations).
+.testmondata
+/mutants/
+.mutmut-cache/
+
 # iCloud Drive sync conflict copies — anything inside this repo's tree
 # that lives under iCloud will spawn `* 2.py`, `* 2.md`, `* 2/` siblings
 # whenever two machines edit concurrently. They are NEVER intentional;

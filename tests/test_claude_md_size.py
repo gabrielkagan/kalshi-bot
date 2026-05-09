@@ -624,32 +624,48 @@ def test_cross_file_draft_references_resolve(rel_path: str):
         )
 
 
-def test_test_fast_recipe_invokes_claude_md_size_test():
-    """`make test-fast` must run `tests/test_claude_md_size.py`.
+def test_test_unit_tier_invokes_claude_md_size_test():
+    """`make test-unit` (Pillar 5 rename of test-fast) must run
+    `tests/test_claude_md_size.py`.
 
     Symmetric with
-    `tests/test_agents_md_symlink.py::test_test_fast_recipe_invokes_agents_md_test`
-    (the same pin pattern Bit 1.3 introduced). Bit 1.4's invariants
-    (line cap, structural sections, breadcrumb pointers) belong in
-    the dev-tooling fast-tier alongside the other invariant suites.
-    A future Makefile edit that drops this file from the recipe goes
-    silent — the broader `make test` would still cover it, but the
-    fast-tier guarantee Bit 1.4 contributes is unpinned. Pinning the
-    contract here means that drop fails this very test.
+    `tests/test_agents_md_symlink.py::test_test_unit_tier_invokes_agents_md_test`
+    (the same pin pattern Bit 1.3 introduced; Pillar 5 evolved both).
+    Bit 1.4's invariants (line cap, structural sections, breadcrumb
+    pointers) belong in the dev-tooling fast-tier alongside the other
+    invariant suites.
+
+    Pillar 5 (86b9ve11y) renamed test-fast → test-unit and moved the
+    file list into a `UNIT_FILES` Make variable. The file may appear
+    in any of: test-unit recipe, test-fast recipe (legacy alias), or
+    UNIT_FILES variable body — accept all three forms.
     """
     text = MAKEFILE.read_text()
     folded = re.sub(r"\\\n", " ", text)
-    recipe_match = re.search(
-        r"^test-fast:[^\n]*\n((?:\t.*\n?)+)",
+    fragments = []
+    for target in ("test-unit", "test-fast"):
+        m = re.search(
+            rf"^{target}:[^\n]*\n((?:\t.*\n?)+)",
+            folded,
+            re.MULTILINE,
+        )
+        if m:
+            fragments.append(m.group(1))
+    var_match = re.search(
+        r"^UNIT_FILES\s*[:?]?=\s*([^\n]+)$",
         folded,
         re.MULTILINE,
     )
-    assert recipe_match is not None, (
-        "Makefile is missing a `test-fast:` target. This is the Bit 1.2 "
-        "contract — likely an unrelated regression; check tests/test_makefile.py."
+    if var_match:
+        fragments.append(var_match.group(1))
+    assert fragments, (
+        "Makefile has neither a `test-unit:` nor a `test-fast:` target "
+        "with a recipe body, and no `UNIT_FILES` variable. Likely an "
+        "unrelated regression — check tests/test_makefile.py."
     )
-    recipe = recipe_match.group(1)
-    assert "tests/test_claude_md_size.py" in recipe, (
-        f"`make test-fast` recipe must invoke tests/test_claude_md_size.py "
-        f"(Bit 1.4). Current recipe: {recipe!r}"
+    combined = "\n".join(fragments)
+    assert "tests/test_claude_md_size.py" in combined, (
+        f"Unit tier (test-unit/test-fast/UNIT_FILES) doesn't invoke "
+        f"tests/test_claude_md_size.py (Bit 1.4). Combined surface: "
+        f"{combined!r}"
     )

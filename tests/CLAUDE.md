@@ -6,9 +6,48 @@ this header drifts as bits ship and is only refreshed when an extraction touches
 `tests/CLAUDE.md` directly.
 
 ## Run
+
+### Tiered (Pillar 5 — preferred for the agent loop)
+
+`make test-<tier>` is single-source-of-truth in the Makefile; CI mirrors
+the same targets in `.github/workflows/test.yml` + `deploy.yml`.
+
+| Tier | Budget | Contents | When to run |
+|---|---|---|---|
+| `make test-unit` | <10s (sub-sec actual) | Pure-Python invariants: pyproject parsing, Makefile parsing, repo hygiene. No DB, no network. | Every save (or every edit, via `test-affected`). |
+| `make test-contract` | <5s ticket / ~12s actual on Mac | Pillar 1 public_api snapshot + Pillar 2 import-linter + AST guards (extraction tests, call_sites, db_signatures, config_consistency, order_outcome_vocab). | After any change to `bot/`, `pyproject.toml`, or `.importlinter`. |
+| `make test-equivalence` | <30s (~3s actual) | Pillar 3 numeric snapshots + property tests for `bot/engines/{volatility,probability}.py`. Frozen calibration via `tests/equivalence/conftest.py`. | After any change to `bot/engines/`, `bot/constants.py`, or anything that flows into engine inputs. |
+| `make test-integration` | <2min (~50s actual) | Everything else under `tests/` (the broad behavioral suite). | Before opening a PR. |
+| `make test` | ~3min (sum of above) | All four tiers in order, fail-fast on the cheapest. | Before pushing to main. |
+
+### Incremental (testmon)
+
+| Target | Behavior | When to run |
+|---|---|---|
+| `make test-affected` | testmon-driven: re-runs only tests whose code dependencies changed since the last run. ~5s typical after seeding. | Tight inner loop — every edit. |
+| `make test-changed` | Alias for `test-affected` (Pillar 5 remote-control name preference). | Same as above. |
+
+`.testmondata` (the per-test fingerprint cache) is per-machine,
+gitignored. The first invocation seeds it via a full pass and is slow;
+subsequent invocations are fast.
+
+**Don't** run testmon against `tests/equivalence/` — testmon's "skip
+unchanged" semantics conflict with snapshot regen-detection. Equivalence
+runs in its own tier.
+
+### Individual files (debugging)
+
 - All: `python3 -m pytest tests/ -x`
 - One file: `python3 -m pytest tests/test_<name>.py -x`
 - One test: `python3 -m pytest tests/test_<name>.py::test_func -x`
+
+### Mutation testing (Pillar 5 — one-time baseline)
+
+`make test-mutmut` runs mutmut against `bot/engines/{volatility,probability}.py`
+to grade the equivalence harness. Long-running (~1-2h on Mac); usually
+launched in the background. Output goes to `mutants/` (gitignored). The
+baseline tally lives in `kb/findings/mutmut-baseline-<date>.md`. Per
+ticket 86b9ve11y AC: re-run is human-driven, not part of the agent loop.
 
 ## Conventions
 - One test file per concern. Mirror the bot/_impl.py class/function being tested.

@@ -24,7 +24,7 @@ ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
 endif
 
-.PHONY: help install test test-fast ast-check lint doc-drift deploy-check api-snapshot-regen
+.PHONY: help install test test-unit test-contract test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen
 
 # Override at invocation time if needed: `make PYTHON=python3.11 test`.
 # NOTE: CI runs Python 3.11 (.github/workflows/test.yml), local default
@@ -42,35 +42,163 @@ PYTHON ?= python3
 # requirements.txt install — CI doesn't bring in ruff/tomli).
 RUFF := $(shell command -v ruff 2>/dev/null || echo venv/bin/ruff)
 
+# Pillar 2 (import-linter) ships a `lint-imports` console script via
+# `pip install import-linter`. Same PATH-vs-fallback pattern as RUFF —
+# CI's install puts it on PATH directly; macOS `pip install --user`
+# (the dev-box default) drops it under `~/Library/Python/3.x/bin`,
+# which is on PATH only if the user has set it up. Fall back rather
+# than break `make test-contract` on a fresh clone.
+LINT_IMPORTS := $(shell command -v lint-imports 2>/dev/null || echo $(HOME)/Library/Python/3.9/bin/lint-imports)
+
+# Pillar 5 of testing-foundation-sprint (ticket 86b9ve11y): tier the
+# pytest suite so agent edit loops can target the fast tiers, and CI
+# can gate blocking-vs-informational by tier.
+#
+# Tier classification (path-based, no marker rewrites needed):
+#   * unit         — pure-Python invariant tests, no DB/network. <10s.
+#   * contract     — structural gates: public_api snapshot, import-linter,
+#                    AST guards, extraction tests. <5s.
+#   * equivalence  — Pillar 3 numeric snapshots + property tests. <30s.
+#   * integration  — current full suite minus the above. <2min.
+#
+# UNIT_FILES + CONTRACT_FILES are enumerated so test-integration's
+# ignore-list is the exact complement (single source of truth — adding
+# a file to a tier auto-removes it from integration). Update both lists
+# AND tests/CLAUDE.md when the classification grows.
+UNIT_FILES := \
+	tests/test_pyproject.py \
+	tests/test_repo_hygiene.py \
+	tests/test_makefile.py \
+	tests/test_agents_md_symlink.py \
+	tests/test_claude_md_size.py \
+	tests/test_no_root_test_files.py \
+	tests/test_ops_systemd_unit_matches_repo.py \
+	tests/test_post_deploy_scan_gate.py \
+	tests/test_tdd_guard_hook.py
+
+# `tests/contracts` is a directory — passing a dir to pytest collects
+# the whole subtree (Pillar 1 + Pillar 2 + future contract tests) so
+# new entries land in the contract tier automatically.
+CONTRACT_FILES := \
+	tests/contracts \
+	tests/test_call_sites.py \
+	tests/test_config_consistency.py \
+	tests/test_constants_extraction.py \
+	tests/test_db_signatures.py \
+	tests/test_decided_contract.py \
+	tests/test_engines_extraction.py \
+	tests/test_feeds_extraction.py \
+	tests/test_fetchers_extraction.py \
+	tests/test_helpers_extraction.py \
+	tests/test_kalshi_client_extraction.py \
+	tests/test_logger_extraction.py \
+	tests/test_notifier_extraction.py \
+	tests/test_order_outcome_vocab.py
+
+# Integration ignores = unit + contract + equivalence + the
+# Pillar-3-unmasked breakeven_wr fixture bug (tracked separately as
+# 86b9vfn5r — remove that ignore when the fixture lands).
+INTEGRATION_IGNORES := \
+	$(addprefix --ignore=,$(UNIT_FILES) $(CONTRACT_FILES)) \
+	--ignore=tests/equivalence \
+	--ignore=tests/test_calmlp_sigma_winsorize.py
+
 help:
-	@echo "Kalshi-bot dev targets (Bit 1.2 of modularization plan)"
+	@echo "Kalshi-bot dev targets (Pillar 5 tiered suite — 86b9ve11y)"
 	@echo
-	@echo "  make install       pip install -e .[dev]  (brings in pytest + ruff + tomli)"
-	@echo "  make test          full suite, blocking subset (matches CI: -m 'not fragile')"
-	@echo "  make test-fast     dev-tooling invariant tests (~1s)"
-	@echo "  make ast-check     syntax-check bot/_impl.py (CLAUDE.md sacred-file rule)"
-	@echo "  make lint          ruff check ."
-	@echo "  make doc-drift     scripts/doc_drift_check.py"
-	@echo "  make deploy-check  scripts/cal_mlp/deploy_check.sh (full pre-deploy aggregator)"
-	@echo "  make api-snapshot-regen  regenerate tests/contracts/public_api.json (Pillar 1)"
+	@echo "Tiered tests (run in this order, each ~10x prior):"
+	@echo "  make test-unit        pure invariants, no DB/network    (<10s)"
+	@echo "  make test-contract    public_api + import-linter + AST  (<5s)"
+	@echo "  make test-equivalence Pillar 3 engine snapshots         (<30s)"
+	@echo "  make test-integration full suite minus the above        (<2min)"
+	@echo "  make test             all tiers, fail-fast              (<3min)"
+	@echo
+	@echo "Incremental:"
+	@echo "  make test-affected    testmon-driven, only changed-touch (<5s typical)"
+	@echo "  make test-changed     alias for test-affected"
+	@echo "  make test-fast        alias for test-unit (legacy name)"
+	@echo
+	@echo "Mutation testing (one-time baseline; ~1-2h on Mac):"
+	@echo "  make test-mutmut      mutmut run on bot/engines/{volatility,probability}.py"
+	@echo
+	@echo "Other:"
+	@echo "  make install              pip install -e .[dev]"
+	@echo "  make ast-check            syntax-check bot/_impl.py + bot/constants.py"
+	@echo "  make lint                 ruff check ."
+	@echo "  make doc-drift            scripts/doc_drift_check.py"
+	@echo "  make deploy-check         pre-deploy aggregator"
+	@echo "  make api-snapshot-regen   regenerate Pillar 1 public_api.json"
 
 install:
 	$(PYTHON) -m pip install -e '.[dev]'
 
-# Mirrors .github/workflows/test.yml blocking step. The `fragile` marker
-# is how informational tests opt out of CI gating per pyproject.toml —
-# keep this filter symmetric with CI so a green local `make test`
-# doesn't surprise a red CI run.
+# Pillar 5: the canonical entrypoint. Each tier's failure aborts the
+# next via Make's default "fail on nonzero" (no `-` prefix anywhere).
+# Mirrors CI structure in .github/workflows/test.yml — keep them in
+# lockstep so a green local `make test` doesn't surprise a red CI run.
 test:
-	$(PYTHON) -m pytest tests/ -m "not fragile"
+	$(MAKE) test-unit
+	$(MAKE) test-contract
+	$(MAKE) test-equivalence
+	$(MAKE) test-integration
 
-# Curated list of dev-tooling invariant tests (sub-second). Catches the
-# common "I broke pyproject / Makefile / repo hygiene" class. The
-# `smoke` marker exists in pyproject but has zero @pytest.mark.smoke
-# usages today; running an explicit file list is more honest than
-# `-m smoke` collecting nothing.
-test-fast:
-	$(PYTHON) -m pytest tests/test_pyproject.py tests/test_repo_hygiene.py tests/test_makefile.py tests/test_agents_md_symlink.py tests/test_claude_md_size.py tests/test_no_root_test_files.py tests/test_ops_systemd_unit_matches_repo.py tests/test_post_deploy_scan_gate.py tests/test_tdd_guard_hook.py
+# Tier 1: unit. Pure-Python invariants (pyproject parsing, Makefile
+# parsing, repo hygiene). Sub-second. Run on every save.
+test-unit:
+	$(PYTHON) -m pytest $(UNIT_FILES)
+
+# Tier 2: contract. Two parts:
+#   1. Pytest suite — public_api snapshot, AST guards, extraction tests.
+#   2. import-linter CLI — layering contracts (`.importlinter`).
+# Both must pass; pytest first because it's the louder failure.
+test-contract:
+	$(PYTHON) -m pytest $(CONTRACT_FILES)
+	$(LINT_IMPORTS)
+
+# Tier 3: equivalence. Pillar 3 numeric snapshots (volatility +
+# probability engines). ~3s actual; <30s budget gives Bit 6.3+
+# headroom for the calibrator oracle.
+test-equivalence:
+	$(PYTHON) -m pytest tests/equivalence/
+
+# Tier 4: integration. Everything else. Mirrors the historical
+# `make test` semantics minus the tiers above.
+test-integration:
+	$(PYTHON) -m pytest tests/ -m "not fragile" $(INTEGRATION_IGNORES)
+
+# testmon-driven incremental run. First invocation seeds .testmondata
+# with a full pass (slow); subsequent invocations re-run only tests
+# touching code that changed since. Cache lives in `.testmondata`
+# (gitignored — per-machine state).
+#
+# `--ignore=tests/equivalence` because Pillar-3 snapshot regen-detection
+# clashes with testmon's "skip unchanged" semantics (a snapshot YAML
+# diff is real signal that testmon would silently skip if no .py file
+# in the equivalence dir changed). Equivalence stays in its own tier
+# and runs as a dedicated CI step.
+test-affected:
+	$(PYTHON) -m pytest --testmon -m "not fragile" --ignore=tests/equivalence --ignore=tests/test_calmlp_sigma_winsorize.py
+
+# Alias for the user's preferred name (per Pillar 5 remote-control
+# spec). Both names hit the same recipe so either docs / muscle memory
+# work.
+test-changed: test-affected
+
+# Legacy alias — Bit 1.2 shipped `test-fast` as the curated 8-file
+# dev-tooling invariant set (== UNIT_FILES); Pillar 4 added
+# tests/test_tdd_guard_hook.py to the unit tier (folded into
+# UNIT_FILES on rebase). Kept as `test-unit` alias so existing
+# scripts / docs / hooks that call `make test-fast` don't break.
+test-fast: test-unit
+
+# Pillar 5: one-time mutation-survival baseline. Reads [tool.mutmut]
+# from pyproject.toml. Long-running (~1-2h on Mac); typically launched
+# in the background:
+#   make test-mutmut > /tmp/mutmut.log 2>&1 &
+# Output goes to `mutants/` (gitignored). Surface the tally to
+# kb/findings/mutmut-baseline-mayDD.md per ticket AC.
+test-mutmut:
+	mutmut run
 
 # bot/_impl.py is the renamed `bot.py` (sacred per CLAUDE.md). Syntax-check
 # before any push that touches it OR bot/constants.py (Bit 3.1: module-level

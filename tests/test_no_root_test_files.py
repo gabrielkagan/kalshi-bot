@@ -87,8 +87,9 @@ def test_relocated_scratchpads_present():
     )
 
 
-def test_test_fast_recipe_invokes_no_root_test_files_test():
-    """`make test-fast` must run `tests/test_no_root_test_files.py`.
+def test_test_unit_tier_invokes_no_root_test_files_test():
+    """`make test-unit` (Pillar 5 rename of test-fast) must run
+    `tests/test_no_root_test_files.py`.
 
     Same pin pattern Bit 1.3 / Bit 1.4 introduced for their invariant
     files. Without this, a future Makefile edit could silently drop
@@ -96,31 +97,40 @@ def test_test_fast_recipe_invokes_no_root_test_files_test():
     would still cover it, but the sub-second feedback loop would lose
     a real-world drift catch.
 
-    Brittleness note: the regex matches the literal recipe text, which
-    works only while the recipe is a single inline `pytest <files...>`
-    line. If a future Bit refactors `test-fast` to use a Make variable
-    (e.g. `TEST_FAST_FILES = ...; pytest $(TEST_FAST_FILES)`), the
-    literal substring check below fails even when behavior is
-    preserved. Update this assertion to either expand variables (read
-    `make -n test-fast`) or split-and-search both the variable defn
-    and the recipe.
+    Pillar 5 (86b9ve11y) followed the brittleness note's recommended
+    second option (split-and-search both the variable defn and the
+    recipe) by renaming test-fast → test-unit and moving the file list
+    into a `UNIT_FILES` Make variable. The file may appear in any of:
+    test-unit recipe, test-fast recipe (legacy alias), or UNIT_FILES
+    variable body — accept all three forms.
     """
     makefile = pathlib.Path(PROJECT_ROOT) / "Makefile"
     text = makefile.read_text()
     folded = re.sub(r"\\\n", " ", text)
-    recipe_match = re.search(
-        r"^test-fast:[^\n]*\n((?:\t.*\n?)+)",
+    fragments = []
+    for target in ("test-unit", "test-fast"):
+        m = re.search(
+            rf"^{target}:[^\n]*\n((?:\t.*\n?)+)",
+            folded,
+            re.MULTILINE,
+        )
+        if m:
+            fragments.append(m.group(1))
+    var_match = re.search(
+        r"^UNIT_FILES\s*[:?]?=\s*([^\n]+)$",
         folded,
         re.MULTILINE,
     )
-    assert recipe_match is not None, (
-        "Makefile is missing a `test-fast:` target. This is the Bit 1.2 "
-        "contract — likely an unrelated regression; check "
-        "tests/test_makefile.py."
+    if var_match:
+        fragments.append(var_match.group(1))
+    assert fragments, (
+        "Makefile has neither a `test-unit:` nor a `test-fast:` target "
+        "with a recipe body, and no `UNIT_FILES` variable. Likely an "
+        "unrelated regression — check tests/test_makefile.py."
     )
-    recipe = recipe_match.group(1)
-    assert "tests/test_no_root_test_files.py" in recipe, (
-        f"`make test-fast` recipe must invoke "
-        f"tests/test_no_root_test_files.py (Bit 1.5). Current recipe: "
-        f"{recipe!r}"
+    combined = "\n".join(fragments)
+    assert "tests/test_no_root_test_files.py" in combined, (
+        f"Unit tier (test-unit/test-fast/UNIT_FILES) doesn't invoke "
+        f"tests/test_no_root_test_files.py (Bit 1.5). Combined surface: "
+        f"{combined!r}"
     )
