@@ -128,14 +128,14 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 186,401 |
-| Observation period | 2026-02-22 to 2026-05-08 |
-| Filter pass rate | 4.0\% (7,387 of 186,401) |
-| Top rejection reason | Insufficient Edge (56,647) |
-| Settled trades | 3,731 (3,455 W / 274 L / 2 BE) |
+| Markets evaluated | 186,620 |
+| Observation period | 2026-02-22 to 2026-05-09 |
+| Filter pass rate | 4.0\% (7,405 of 186,620) |
+| Top rejection reason | Insufficient Edge (56,692) |
+| Settled trades | 3,740 (3,464 W / 274 L / 2 BE) |
 | Win rate | 92.6\% |
 
-*Last updated: 2026-05-08T23:19:40Z*
+*Last updated: 2026-05-09T01:13:08Z*
 
 ## Live vs Observation
 
@@ -202,16 +202,6 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 3. Syntax-check `bot/_impl.py` (`python3 -c "import ast; ast.parse(...)"`)
 4. `sudo systemctl restart kalshi-bot`
 
-## Repository conventions
-
-- **`CLAUDE.md`** — canonical agent-facing project guide: critical rules, skill routing, pointers into `agent_docs/` and `kb/`. Read first when working in this repo with any AI coding agent.
-- **`AGENTS.md`** — symlink to `CLAUDE.md` (Bit 1.3, 2026-05-06). Tools that look for `AGENTS.md` (Cursor, Aider, GitHub Copilot Workspace, etc.) get the same content; one file to edit.
-- **`agent_docs/`** — auto-loaded reference docs read on demand: `current_state.md`, `config_reference.md`, `db_schema.md`, `bot_layout.md`, `calibration_pipeline.md`.
-- **Package-level `CLAUDE.md` files** — `bot/CLAUDE.md`, `tests/CLAUDE.md`, `scripts/CLAUDE.md`, `ops/CLAUDE.md`, `kb/CLAUDE.md` auto-load when working inside the package.
-- **`kb/` (knowledge base)** — local-only by convention (see `kb/CLAUDE.md`). Pre-rule-legacy entries are tracked in git as agent-guide infrastructure (curated index at `kb/_index.md`); new session notes live locally only and intentionally aren't indexed. `kb-research/` is the analytical-research counterpart with the same local-only rule.
-- **Pre-commit gates** — `make ast-check` (syntax-checks `bot/_impl.py` + `bot/constants.py`), `make doc-drift` (`scripts/doc_drift_check.py` cross-checks numerics in README/whitepaper/CLAUDE.md against the codebase), `make test-fast` (sub-2s gate suite).
-- **Never commit** — `.env`, `*.jsonl` journals, runtime state files (`*.json`, `state.db*`, `egarch_state.json`, `rk_state.json`, etc.). All gitignored.
-
 ## Kalshi API Notes
 
 - **Auth**: RSA-PSS signature --- the signing path must include the `/trade-api/v2` prefix
@@ -223,16 +213,10 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot/__main__.py                -- runtime entrypoint (`python -m bot`); delegates to bot/_impl.py
-bot/_impl.py                   -- main runtime body (~26,117 lines, never rename)
-bot/_thread_env.py             -- torch threading + numpy import-order shim (loaded first)
-bot/constants.py               -- 484 module-level constants extracted from bot/_impl.py (Bit 3.1)
-bot/logger.py                  -- Logger class (Bit 4.1)
-bot/notifier.py                -- TelegramNotifier (Bit 4.2)
-bot/helpers/                   -- 9 feature/breaker/strategy submodules extracted in Bit 3.2
-config.py                      -- shared scalar constants (SIZING_TIERS, DRAWDOWN_*) imported by models.py + tests
+bot/_impl.py                         -- core bot logic (~25,769 lines, never rename)
+config.py                      -- centralized SIZING_TIERS / DRAWDOWN_* / MIN_EDGE_BY_PRICE
 models.py                      -- EGARCH / Mincer-Zarnowitz / PositionSizer / fee math
-analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts) — standalone, does not import bot/_impl.py
+analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)
 market_config.py               -- centralized MarketTypeConfig (validates against bot/_impl.py at startup)
 fifteenm_shadow.py             -- 15M shadow engine (recalibrated EGARCH + LightGBM research)
 spx_engine.py                  -- S&P 500 intraday engine (EGARCH + VIX, observation mode)
@@ -245,7 +229,7 @@ dashboard_snapshot.py          -- builds dashboard state snapshots for Supabase
 supabase_sync.py               -- pushes snapshots to Supabase Realtime every 10s
 watchdog.py                    -- process health monitoring
 ops/kalshi-bot.service         -- systemd unit, source of truth (installed via ops/install.sh)
-start.sh                       -- wrapper invoked by ops/kalshi-bot.service (venv + .env + python -m bot)
+start.sh                       -- wrapper invoked by ops/kalshi-bot.service (venv + .env + bot/_impl.py)
 requirements.txt               -- Python dependencies
 .env.example                   -- credential template
 .github/workflows/deploy.yml   -- auto-deploy on push to main
