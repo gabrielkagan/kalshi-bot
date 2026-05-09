@@ -39,7 +39,11 @@ from pathlib import Path
 
 import requests
 import websockets
-from scipy.stats import t as student_t, norminvgauss
+# scipy.stats import (student_t, norminvgauss) was the sole consumer of scipy in
+# bot/_impl.py — used only by ProbabilityEngine for Student-t/NIG CDF. Both names
+# moved to bot/engines/probability.py in Bit 6.2; removed here as dead-import
+# cleanup. Adding scipy back here would re-import scipy.stats in the
+# bot/_thread_env-pinned chain (see kb/failures/cal-mlp-torch-thread-contention-apr29.md).
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 
@@ -102,7 +106,7 @@ from bot.notifier import TelegramNotifier  # noqa: F401 — Bit 4.2 leaf extract
 from bot.kalshi_client import KalshiClient  # noqa: F401 — Bit 4.3 leaf extraction; re-export so MainLoop construction (search "self.client = KalshiClient") + type annotations on reconcile_with_api/_reconcile_positions/_reconcile_orders/OpportunityScanner/OrderExecutor/SettlementTracker/discover_active_windows resolve via bot._impl namespace.
 from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher  # noqa: F401 — Bit 4.4 leaf extraction; re-export so MainLoop construction (search "self.dvol_fetcher = DeribitDVOLFetcher" and "self.coinglass = CoinGlassFetcher") + the Optional[DeribitDVOLFetcher] type annotation on VolatilityEngine.__init__ (now in bot/engines/volatility.py per Bit 6.1) resolve via bot._impl namespace.
 from bot.feeds import CoinbaseFeed, CrossExchangeFeed, KalshiFeed, OrderbookSchemaError  # noqa: F401 — Bit 4.5a + 4.5b leaf extraction; re-export so MainLoop construction (search "self.feed = CoinbaseFeed", "self.cross_feed = CrossExchangeFeed", and "self.kalshi_feed = KalshiFeed") + the `feed: CoinbaseFeed` type annotations on VolatilityEngine.__init__ (now in bot/engines/volatility.py per Bit 6.1) and OpportunityScanner.__init__ + the OrderbookSchemaError raises inside KalshiFeed (now sibling-imported from bot.feeds.orderbook_schema) all resolve via bot._impl namespace.
-from bot.engines import VolatilityEngine  # noqa: F401 — Bit 6.1 leaf extraction; re-export so MainLoop construction (search "self.vol = VolatilityEngine") + the `vol: VolatilityEngine` type annotation on OpportunityScanner.__init__ + the static-method calls in tests/test_vol_engine.py (`from bot import VolatilityEngine`) all resolve via bot._impl namespace. The Optional['EGARCHEstimator'] / Optional['MincerZarnowitzTracker'] forward-refs on VolatilityEngine.__init__ remain string-quoted because both classes still live in models.py.
+from bot.engines import VolatilityEngine, ProbabilityEngine  # noqa: F401 — Bit 6.1 + 6.2 leaf extractions; re-export so MainLoop construction (search "self.vol = VolatilityEngine") + the `vol: VolatilityEngine` type annotation on OpportunityScanner.__init__ + the 19 bare-name `ProbabilityEngine.X(...)` call sites (scan-loop edge computation, counterfactual probability, dynamic cap lookup) + the static-method calls in tests/test_vol_engine.py and tests/test_probability_engine.py (`from bot import VolatilityEngine, ProbabilityEngine`) all resolve via bot._impl namespace. The Optional['EGARCHEstimator'] / Optional['MincerZarnowitzTracker'] forward-refs on VolatilityEngine.__init__ remain string-quoted because both classes still live in models.py. ProbabilityEngine deviates from byte-for-byte: it uses `from bot import _impl as _bot_impl` late-binding inside compute()/counterfactual_prob() to access the mutable _CALIBRATION_ENGINE singleton and the _resolve_cal_engine function (both defined in this file BELOW this re-export line — top-level import would ImportError or capture stale None).
 from bot.db_writer_registry import tracked_write, snapshot_active, recent_writes  # ops: db-locked RCA instrumentation 2026-05-08 — track every write across all 8 sqlite3 connections so the failure-path log can identify which OTHER writer was holding the writer lock at db-locked failure time. recent_writes() captures the JUST-FINISHED holder (FAST-fail path: BEGIN IMMEDIATE returns SQLITE_BUSY in <1ms when intra-process lock-holder releases right before our retry).
 
 
@@ -3574,218 +3578,32 @@ class KalshiOrderFlowTracker:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  VolatilityEngine → bot/engines/volatility.py (Bit 6.1, 2026-05-09)
+#  VolatilityEngine + ProbabilityEngine — extracted to bot/engines/
 # ═════════════════════════════════════════════════════════════════════════════
-# Re-imported via `from bot.engines import VolatilityEngine` at the top of this
-# file (search anchor: "from bot.engines import VolatilityEngine"). The class
-# body (~960 lines) moved verbatim — Realized Kernel + DVOL blend + adaptive
-# jump detector + EGARCH variance-space blend. ProbabilityEngine and
-# CalibrationEngine remain inline below until Bits 6.2 / 6.3.
-
+# VolatilityEngine + ProbabilityEngine — extracted from this file.
+#
+# VolatilityEngine → bot/engines/volatility.py (Bit 6.1, 2026-05-09).
+#   ~960-line byte-for-byte move. Realized Kernel + DVOL blend +
+#   adaptive jump detector + EGARCH variance-space blend.
+# ProbabilityEngine → bot/engines/probability.py (Bit 6.2, 2026-05-09).
+#   ~197-line move with deliberate semantic deviation: compute() and
+#   counterfactual_prob() use `from bot import _impl as _bot_impl`
+#   late-binding to access this module's _CALIBRATION_ENGINE (mutable
+#   module-level singleton, defined at line ~168) and
+#   _resolve_cal_engine (function, defined at line ~212). A top-level
+#   import in probability.py would ImportError because the
+#   `from bot.engines import VolatilityEngine, ProbabilityEngine`
+#   re-export at line ~109 of THIS file fires before lines 168/212
+#   execute. The closeout doc records this deviation.
+# Both classes are re-imported via the
+# `from bot.engines import VolatilityEngine, ProbabilityEngine` at the
+# top of this file (search anchor:
+# "from bot.engines import VolatilityEngine, ProbabilityEngine").
+# CalibrationEngine remains inline below until Bit 6.3.
 
 # EGARCHEstimator, MincerZarnowitzTracker, PositionSizer, _student_t_e_abs_z,
 # _compute_qlike, fee helpers, compute_tv_rk_weights → imported from models.py
 # ═════════════════════════════════════════════════════════════════════════════
-#  ProbabilityEngine
-# ═════════════════════════════════════════════════════════════════════════════
-
-class ProbabilityEngine:
-    """Compute win probability from spot price, strike, time, and volatility.
-
-    Supports per-asset distribution selection via dist_config.json:
-    - Student-t CDF with configurable df per asset (default df=4)
-    - NIG (Normal Inverse Gaussian) CDF with fitted parameters
-    Falls back to Student-t(df=4) if no config file is present.
-    """
-
-    @staticmethod
-    def _cdf_complement(z_score: float, asset: Optional[str] = None) -> float:
-        """Compute 1 - CDF(z_score) using per-asset distribution config."""
-        cfg = DIST_CONFIG.get(asset) if asset else None
-        if cfg is None:
-            return 1.0 - student_t.cdf(z_score, df=STUDENT_T_DF)
-
-        if cfg.get("distribution") == "nig" and "nig_a" in cfg:
-            val = 1.0 - norminvgauss.cdf(
-                z_score, cfg["nig_a"], cfg["nig_b"],
-                loc=cfg.get("nig_loc", 0.0),
-                scale=cfg.get("nig_scale", 1.0),
-            )
-            return max(0.0, min(1.0, val))  # clamp float rounding
-        return 1.0 - student_t.cdf(z_score, df=cfg.get("student_t_df", STUDENT_T_DF))
-
-    @staticmethod
-    def compute(spot: float, threshold: float, seconds_remaining: float,
-                blended_rv: float,
-                market_price_cents: Optional[int] = None,
-                asset: Optional[str] = None,
-                product_type: Optional[str] = None) -> Dict:
-        """
-        Compute calibrated win probability for a "price stays above threshold" bet.
-
-        Args:
-            spot: current price (e.g. 68500.0 for BTC)
-            threshold: strike/threshold price the market resolves against
-            seconds_remaining: seconds until market close
-            blended_rv: blended realized vol (per-5-second log return scale)
-            market_price_cents: current Kalshi YES price in cents (for sanity check)
-
-        Returns dict with: z_score, raw_prob, calibrated_prob, tradeable, reason
-        """
-        result: Dict = {
-            "z_score": None,
-            "raw_prob": None,
-            "calibrated_prob": None,
-            "calibration_method": None,
-            "tradeable": False,
-            "reason": "",
-        }
-
-        # ── Guard: need valid inputs ─────────────────────────────────────
-        if spot <= 0 or seconds_remaining <= 0 or blended_rv <= 0:
-            result["reason"] = "invalid inputs (spot/time/vol <= 0)"
-            return result
-
-        # ── Annualize vol and compute z-score ────────────────────────────
-        # blended_rv is std dev of 5-second log returns.
-        # σ_annual = blended_rv × sqrt(seconds_per_year / 5)
-        # σ_annual × sqrt(t_years) = blended_rv × sqrt(t_seconds / 5)
-        # Denominator for z: spot × blended_rv × sqrt(t_seconds / 5)
-        sigma_move = spot * blended_rv * math.sqrt(seconds_remaining / 5.0)
-
-        if sigma_move <= 0:
-            result["reason"] = "sigma_move is zero"
-            return result
-
-        z_score = (threshold - spot) / sigma_move
-        result["z_score"] = round(z_score, 4)
-
-        # ── Raw probability via configurable distribution CDF ────────────
-        # P(price stays above threshold) = P(move > threshold - spot)
-        # = P(Z > z_score) = 1 - CDF(z_score)
-        raw_prob = ProbabilityEngine._cdf_complement(z_score, asset)
-        result["raw_prob"] = round(raw_prob, 6)
-
-        # ── Calibration: adaptive (if trained) or fixed β=0.85 ──────────
-        dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
-        _cal_cfg2 = get_market_config(product_type)
-        _reg_engine = _resolve_cal_engine(product_type, asset, require_enabled=True)
-        if _reg_engine is not None and _reg_engine.is_learned_method_active():
-            calibrated_prob = _reg_engine.calibrate(raw_prob, cap=dynamic_cap,
-                                                     seconds_to_close=seconds_remaining)
-            result["calibration_method"] = f"{product_type}_{_reg_engine.active_method}"
-            # Shadow: what passthrough + temperature would have produced
-            _pt_shadow = min(raw_prob, dynamic_cap)
-            _temp_cfg = _cal_cfg2.temperature_t if _cal_cfg2.temperature_enabled else None
-            if _temp_cfg and _temp_cfg != 1.0:
-                _sp = max(0.001, min(0.999, _pt_shadow))
-                _sz = math.log(_sp / (1.0 - _sp))
-                _pt_shadow = 1.0 / (1.0 + math.exp(-_sz / _temp_cfg))
-            result["shadow_cal_prob"] = round(_pt_shadow, 6)
-            result["shadow_cal_temperature"] = _temp_cfg
-        elif _cal_cfg2.cal_eligible and _CALIBRATION_ENGINE is not None:
-            if FIFTEEN_M_CALIBRATION_ENABLED and _CALIBRATION_ENGINE.is_learned_method_active():
-                calibrated_prob = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap,
-                                                               seconds_to_close=seconds_remaining)
-                result["calibration_method"] = _CALIBRATION_ENGINE.active_method
-            else:
-                calibrated_prob = min(raw_prob, dynamic_cap)
-                result["calibration_method"] = "passthrough"
-                # Diagnostic: log what BLR would have produced (remove after validation)
-                _blr_would = _CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap,
-                                                           seconds_to_close=seconds_remaining)
-                if abs(_blr_would - calibrated_prob) > 0.02:
-                    logging.info(
-                        "BLR_BYPASS: raw=%.4f passthrough=%.4f blr_would=%.4f delta=%.3f",
-                        raw_prob, calibrated_prob, _blr_would, _blr_would - calibrated_prob)
-        elif not _cal_cfg2.cal_eligible:
-            calibrated_prob = min(raw_prob, dynamic_cap)
-            result["calibration_method"] = "passthrough"
-        else:
-            calibrated_prob = ProbabilityEngine._calibrate(raw_prob, cap=dynamic_cap)
-            result["calibration_method"] = "fixed_beta"
-        # ── Clamped BLR: prevent extreme inflation in low raw_prob zone ──
-        # BLR extrapolates badly when raw_prob < 0.70 (training data is 85c+).
-        # Clamp cal_prob to max raw_prob + 5pp, with linear transition 70-85%.
-        # Does NOT affect shadow CalEngine, CalEngine retraining, or high-raw signals.
-        _cal_clamp_delta = calibrated_prob - raw_prob
-        if raw_prob < 0.70 and _cal_clamp_delta > 0.05:
-            _original_cal = calibrated_prob
-            calibrated_prob = min(calibrated_prob, raw_prob + 0.05)
-            logging.info(
-                "CAL_CLAMP: raw=%.3f blr=%.3f clamped=%.3f delta=%.3f",
-                raw_prob, _original_cal, calibrated_prob,
-                _original_cal - calibrated_prob)
-        elif raw_prob < 0.85 and _cal_clamp_delta > 0.05:
-            _alpha = (raw_prob - 0.70) / 0.15
-            _clamped = min(calibrated_prob, raw_prob + 0.05)
-            _original_cal = calibrated_prob
-            calibrated_prob = _alpha * calibrated_prob + (1.0 - _alpha) * _clamped
-            if abs(calibrated_prob - _original_cal) > 0.005:
-                logging.info(
-                    "CAL_CLAMP_BLEND: raw=%.3f blr=%.3f clamped=%.3f alpha=%.2f delta=%.3f",
-                    raw_prob, _original_cal, calibrated_prob, _alpha,
-                    _original_cal - calibrated_prob)
-
-        result["calibrated_prob"] = round(calibrated_prob, 6)
-
-        # ── Sanity: model vs market discrepancy ──────────────────────────
-        if market_price_cents is not None:
-            if calibrated_prob > DISCREPANCY_PROB and market_price_cents < DISCREPANCY_PRICE:
-                result["reason"] = (
-                    f"model says {calibrated_prob:.1%} but market is "
-                    f"{market_price_cents}¢ (< {DISCREPANCY_PRICE}¢) — refusing"
-                )
-                logging.warning(f"ProbabilityEngine: {result['reason']}")
-                return result
-
-        # ── All checks passed ────────────────────────────────────────────
-        result["tradeable"] = True
-        result["reason"] = "ok"
-        return result
-
-    @staticmethod
-    def counterfactual_prob(spot: float, threshold: float, seconds_remaining: float,
-                            alt_blended_rv: float, asset: Optional[str] = None,
-                            product_type: Optional[str] = None) -> Optional[float]:
-        """Compute calibrated_prob for a counterfactual blended_rv. Lightweight — no logging."""
-        if spot <= 0 or seconds_remaining <= 0 or alt_blended_rv <= 0:
-            return None
-        sigma_move = spot * alt_blended_rv * math.sqrt(seconds_remaining / 5.0)
-        if sigma_move <= 0:
-            return None
-        z = (threshold - spot) / sigma_move
-        raw = ProbabilityEngine._cdf_complement(z, asset)
-        cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
-        if _CALIBRATION_ENGINE is not None:
-            return round(_CALIBRATION_ENGINE.calibrate(raw, cap=cap,
-                                                       seconds_to_close=seconds_remaining), 6)
-        return round(ProbabilityEngine._calibrate(raw, cap=cap), 6)
-
-    @staticmethod
-    def _dynamic_cap(seconds_remaining: float, product_type: str = None) -> float:
-        """Return probability cap based on time to close."""
-        schedule = (HOURLY_DYNAMIC_CAP_SCHEDULE
-                    if product_type in ("hourly", "spx_hourly", "weather")
-                    else DYNAMIC_CAP_SCHEDULE)
-        for threshold_secs, cap in schedule:
-            if seconds_remaining > threshold_secs:
-                return cap
-        return schedule[-1][1]  # smallest TTC bracket
-
-    @staticmethod
-    def _calibrate(raw_prob: float, cap: float = MAX_EFFECTIVE_PROB) -> float:
-        """Apply logistic compression then hard cap.
-
-        Maps raw_prob through: logit → scale by BETA_SLOPE → inverse logit → cap.
-        This pulls extreme probabilities toward 0.5 and caps at 93%.
-        """
-        # Clamp to avoid log(0) in logit
-        p = max(0.001, min(0.999, raw_prob))
-        logit = math.log(p / (1.0 - p))
-        scaled_logit = BETA_SLOPE * logit
-        compressed = 1.0 / (1.0 + math.exp(-scaled_logit))
-        return min(compressed, cap)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

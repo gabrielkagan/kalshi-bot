@@ -147,9 +147,22 @@ class TestCdfComplement(unittest.TestCase):
         result = self.PE._cdf_complement(z)
         self.assertAlmostEqual(result, t_complement, places=10)
 
-    @patch("bot.DIST_CONFIG", {"BTC": {"distribution": "student_t", "student_t_df": 6}})
+    @patch("bot.engines.probability.DIST_CONFIG",
+           {"BTC": {"distribution": "student_t", "student_t_df": 6}})
     def test_per_asset_df(self):
-        """Per-asset config overrides default df."""
+        """Per-asset config overrides default df.
+
+        Patches ``bot.engines.probability.DIST_CONFIG`` directly because
+        ``ProbabilityEngine._cdf_complement`` lives in
+        ``bot/engines/probability.py`` post-Bit-6.2 and reads its own
+        module-local binding (`from config import DIST_CONFIG` at the
+        top of the file). Patching `bot.DIST_CONFIG` (which routes
+        through `_BotProxy.__setattr__` to `bot._impl.DIST_CONFIG`)
+        no longer reaches the probability module's namespace because
+        the extraction created a separate module-level binding.
+        Pre-Bit-6.2 the patch worked transitively via
+        `bot/_impl.py:47 from config import *`.
+        """
         from scipy.stats import t as student_t
         z = 2.0
         expected = 1.0 - student_t.cdf(z, df=6)
