@@ -51,6 +51,18 @@ dev = [
     # snapshots across the 1.x range. Pin to a single minor (1.14.x) so
     # the snapshot is stable; bump deliberately when a new minor ships.
     "griffe>=1.14,<1.15",
+    # Pillar 2 of the testing-foundation-sprint: import-linter declares
+    # layering contracts in `.importlinter` and the `lint-imports` CLI
+    # fails on violation. The contract surface (engines/fetchers/feeds/
+    # helpers boundaries + the documented Bit 6.2 ignore_imports carve-out
+    # for the probability.py late-binding) is wired into CI as a blocking
+    # gate alongside pytest in test.yml + deploy.yml.
+    #
+    # Pin floor at 2.5 (the version that landed on PyPI when Pillar 2
+    # shipped — same self-test discipline as griffe). Cap < 3 to track
+    # the v2.x release line; bump deliberately when v3 ships and the
+    # ignore_imports / forbidden contract syntax has been reverified.
+    "import-linter>=2.5,<3",
 ]
 # ML extras used by cal_mlp + analysis paths. Not required for the live bot
 # loop, so kept optional.

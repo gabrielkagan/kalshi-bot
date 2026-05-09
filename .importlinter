@@ -1,0 +1,118 @@
+# Pillar 2 of the testing-foundation-sprint (parent ticket 86b9ve0wa,
+# this Bit 86b9ve0yt). Declares structural import-layer contracts that
+# import-linter enforces in CI via the `lint-imports` step in
+# .github/workflows/test.yml + deploy.yml. Contracts intentionally
+# reflect REALITY on current main, not aspirations — running
+# `lint-imports` from the repo root must pass on the commit that
+# ships this file.
+#
+# Each contract uses the `forbidden` type (source_modules cannot reach
+# forbidden_modules in the import graph). grimp resolves the package
+# tree from `root_package = bot` below.
+#
+# AC item "No module imports `from bot._impl import *`" is enforced
+# separately by tests/test_no_impl_star_import.py — import-linter sees
+# star imports as regular imports of the source module, indistinguishable
+# from `import bot._impl` for graph purposes, so the wildcard ban needs
+# AST-level detection.
+
+[importlinter]
+root_package = bot
+
+# ---------------------------------------------------------------------------
+# Contract 1 — engines must not import bot._impl
+# ---------------------------------------------------------------------------
+# Sprint 6 (Bits 6.1 + 6.2) extracted VolatilityEngine and ProbabilityEngine
+# into bot/engines/. The intent is that engines depend DOWN on
+# bot.{constants, helpers, feeds, fetchers} but never UP into bot._impl
+# (which would re-create the circular load that the extractions resolved).
+#
+# Bit 6.2 carve-out: bot/engines/probability.py uses a late-binding
+# `from bot import _impl as _bot_impl` inside compute() and
+# counterfactual_prob() method bodies (probability.py:165, :286) to access
+# the mutable `_CALIBRATION_ENGINE` singleton and `_resolve_cal_engine`
+# function. Both are defined in bot/_impl.py BELOW the line-109 engines
+# re-export, so a top-level `from bot._impl import _CALIBRATION_ENGINE`
+# would either ImportError at module load or capture a stale `None`.
+# This is documented architectural debt — see
+# kb/decisions/testing-foundation-pillar-2-shipped-may09.md for the
+# refactor-to-injection followup ticket.
+[importlinter:contract:engines-no-impl]
+name = bot.engines.* must not import bot._impl (Bit 6.2 carve-out for probability.compute + counterfactual_prob)
+type = forbidden
+source_modules =
+    bot.engines
+forbidden_modules =
+    bot._impl
+ignore_imports =
+    bot.engines.probability -> bot._impl
+
+# ---------------------------------------------------------------------------
+# Contract 2 — fetchers must not import engines
+# ---------------------------------------------------------------------------
+# Bit 4.4 extracted DeribitDVOLFetcher + CoinGlassFetcher to bot/fetchers/.
+# Engines (Sprint 6) consume fetcher output — the dependency arrow is
+# engines → fetchers, never the reverse. A fetcher reaching into engines
+# would invert the layering and re-introduce a load cycle.
+[importlinter:contract:fetchers-no-engines]
+name = bot.fetchers.* must not import bot.engines.*
+type = forbidden
+source_modules =
+    bot.fetchers
+forbidden_modules =
+    bot.engines
+
+# ---------------------------------------------------------------------------
+# Contract 3 — feeds must not import engines
+# ---------------------------------------------------------------------------
+# Bit 4.5a + 4.5b extracted CoinbaseFeed/CrossExchangeFeed/KalshiFeed to
+# bot/feeds/. Same direction rule as fetchers: engines consume feed output.
+# Sibling intra-package imports inside bot/feeds/ (e.g., cross_exchange
+# importing CoinbaseFeed, kalshi importing OrderbookSchemaError) are
+# allowed because forbidden_modules does not list bot.feeds.
+[importlinter:contract:feeds-no-engines]
+name = bot.feeds.* must not import bot.engines.*
+type = forbidden
+source_modules =
+    bot.feeds
+forbidden_modules =
+    bot.engines
+
+# ---------------------------------------------------------------------------
+# Contract 4 — helpers leaf rule
+# ---------------------------------------------------------------------------
+# Bit 3.2 extracted bot/helpers/ as the leaf-most subpackage: helpers
+# depend ONLY on bot.constants (and external stdlib/third-party deps).
+# Helpers may also re-export sibling helpers via
+# `from bot.helpers.<sub> import *` inside bot/helpers/__init__.py
+# (intra-package, not flagged because forbidden_modules does not list
+# bot.helpers).
+#
+# IMPORTANT — implementation note: import-linter's `forbidden` contract
+# is enumerate-the-deny-list, NOT enforce-the-allow-list. Anything not
+# explicitly listed in forbidden_modules below is implicitly allowed.
+# To prevent silent drift (Sprint 7+ ships a new top-level bot/ module
+# someone forgets to append here, and helpers gain a back-edge to it),
+# tests/contracts/test_import_linter_contracts.py::test_helpers_leaf_
+# forbidden_modules_covers_all_bot_top_level walks bot/ at test time
+# and asserts every top-level module/subpackage besides bot.helpers
+# (the source) and bot.constants (the only allowed leaf dep) is listed
+# below. New top-level bot/ entries fail the regression test until
+# appended here in the same Bit that creates them.
+[importlinter:contract:helpers-leaf]
+name = bot.helpers.* may not import sibling subpackages or bot._impl (leaf rule)
+type = forbidden
+source_modules =
+    bot.helpers
+forbidden_modules =
+    bot._impl
+    bot._thread_env
+    bot.engines
+    bot.feeds
+    bot.fetchers
+    bot.scanner
+    bot.clients
+    bot.kalshi_client
+    bot.logger
+    bot.notifier
+    bot.db_writer_registry
