@@ -286,9 +286,11 @@ def test_calibrate_monotone():
 
 def test_counterfactual_prob_corpus_numeric(num_regression, probability_corpus):
     """Pin numeric outputs of ``counterfactual_prob`` across the
-    corpus. The method shares the late-binding pattern with
-    ``compute()`` (reads ``_bot_impl._CALIBRATION_ENGINE`` at call
-    time), so a refactor of that pattern would silently drift
+    corpus. The method shares the calibration-singleton access pattern
+    with ``compute()`` (post-Bit-6.3 path-B: reads
+    ``_cal_state._CALIBRATION_ENGINE`` via the top-level
+    ``from bot.engines import calibration as _cal_state`` alias),
+    so a refactor of that pattern would silently drift
     ``counterfactual_prob`` if ``compute()`` were the only pinned
     surface. The counterfactual uses an *alternative* blended_rv —
     we synthesize one as 1.5× the row's actual ``volatility`` so the

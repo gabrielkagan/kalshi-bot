@@ -186,24 +186,37 @@ Tolerance widening hides drift. Don't.
   ProbabilityEngine `compute()` outputs for sports are not
   pinned numerically — only the no-crash invariant is.
 
-## Calibration-engine isolation
+## Calibration-engine isolation (post-Bit-6.3 path-B)
 
-`tests/equivalence/conftest.py::isolate_calibration_singletons` patches
-`bot._impl._CALIBRATION_ENGINE` to `None` and
-`bot._impl._resolve_cal_engine` to a stub that returns `None`. This
-forces `ProbabilityEngine.compute()` into the deterministic
-passthrough/fixed-beta cascade — the calibration engine's mutable
-state would otherwise couple the snapshot to whatever calibrator
-shipped at snapshot time.
+`tests/equivalence/conftest.py::isolate_calibration_singletons` (autouse)
+patches `bot.engines.calibration._CALIBRATION_ENGINE` to `None` and
+`bot.engines.calibration._resolve_cal_engine` to a stub that returns
+`None`. This forces `ProbabilityEngine.compute()` into the
+deterministic passthrough/fixed-beta cascade by default — the
+calibration engine's mutable state would otherwise couple the
+snapshot to whatever calibrator shipped at snapshot time.
 
-**Bit 6.3 owners:** when `CalibrationEngine` is extracted to
-`bot/engines/calibration.py`, this fixture must be extended to inject
-a *deterministic frozen* calibrator that exercises the
-learned-method branch. The extraction PR ships:
-1. The new fixture (frozen oracle)
-2. Updated snapshots (one regen pass)
-3. The KB decision doc explaining the new oracle's seed / state
+**Patch targets** track Bit 6.3 path-B (2026-05-10): the singleton +
+resolver were relocated from `bot/_impl.py` to
+`bot/engines/calibration.py` alongside the class, and the
+`.importlinter` `bot.engines.probability -> bot._impl` carve-out was
+removed. Both `bot/_impl.py` and `bot/engines/probability.py` now
+read the singleton via the same module alias
+(`from bot.engines import calibration as _cal_state`), so a single
+patch on `bot.engines.calibration.X` propagates to every consumer.
 
-Pillar 3 deliberately does NOT pre-decide between subprocess
-git-checkout vs vendored-snapshot oracle; that's a Bit 6.3 author
-call.
+**Opt-in oracle for learned-method branches** —
+`tests/equivalence/conftest.py::install_frozen_cal_engine` stacks on
+top of the autouse fixture with a `CalibrationEngine` instance loaded
+from a hand-crafted Platt state dict (`_FROZEN_CAL_STATE`,
+deterministic `A=BETA_SLOPE, B=0, _platt_trained=True`). Tests that
+request this fixture exercise the learned-method outcomes 1+2 of the
+cascade rather than the autouse outcome-4/5 default. **Vendored-
+snapshot flavor was chosen over subprocess-git-checkout** for
+determinism + speed: the state dict is constructed from primitives
+in conftest, written to `tmp_path` per test, and loaded via
+`CalibrationEngine(state_path=...)` — no SHA pin, no trained-model
+file in `tests/fixtures/`. The Bit 6.3 closeout doc records the rationale
+and the KB note on regenerating the state dict if the persistence schema
+evolves (filename pattern `kb/decisions/bit-6.3-shipped-may<DD>.md`,
+authored at ship time — local-only per `kb/CLAUDE.md`).

@@ -15,8 +15,12 @@ Solution: `types.ModuleType` subclass with both `__getattr__` AND
 `__setattr__` proxying. `bot.X = value` writes through to `bot._impl.X`.
 
 Underscored names are proxied too — no `__all__` filtering — so consumers
-of `bot._BREAKER_REGISTRY`, `bot._TELEGRAM`, `bot._CALIBRATION_ENGINE`,
-etc. work without per-caller updates.
+of `bot._BREAKER_REGISTRY`, `bot._TELEGRAM`, etc. work without per-caller
+updates. Note: `_CALIBRATION_ENGINE`, `_CAL_REGISTRY`, and the
+`_resolve_cal_engine` / `_derive_subtype` / `_derive_asset_filter` helpers
+live in `bot.engines.calibration` post-Bit-6.3 path-B (2026-05-10), NOT in
+`bot._impl` — reach them via `bot.engines.calibration.X` directly, not via
+the `bot.X` proxy.
 
 Caching the `bot._impl` module reference is safe: the module object itself
 is stable; mutations land on its `__dict__` which `getattr`/`setattr`

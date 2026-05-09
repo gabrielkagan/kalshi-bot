@@ -22,30 +22,35 @@ root_package = bot
 # ---------------------------------------------------------------------------
 # Contract 1 — engines must not import bot._impl
 # ---------------------------------------------------------------------------
-# Sprint 6 (Bits 6.1 + 6.2) extracted VolatilityEngine and ProbabilityEngine
-# into bot/engines/. The intent is that engines depend DOWN on
-# bot.{constants, helpers, feeds, fetchers} but never UP into bot._impl
-# (which would re-create the circular load that the extractions resolved).
+# Sprint 6 (Bits 6.1 + 6.2 + 6.3) extracted VolatilityEngine,
+# ProbabilityEngine, and CalibrationEngine into bot/engines/. The intent
+# is that engines depend DOWN on bot.{constants, helpers, feeds, fetchers}
+# but never UP into bot._impl (which would re-create the circular load
+# that the extractions resolved).
 #
-# Bit 6.2 carve-out: bot/engines/probability.py uses a late-binding
-# `from bot import _impl as _bot_impl` inside compute() and
-# counterfactual_prob() method bodies (probability.py:165, :286) to access
-# the mutable `_CALIBRATION_ENGINE` singleton and `_resolve_cal_engine`
-# function. Both are defined in bot/_impl.py BELOW the line-109 engines
-# re-export, so a top-level `from bot._impl import _CALIBRATION_ENGINE`
-# would either ImportError at module load or capture a stale `None`.
-# This is documented architectural debt — see
-# kb/decisions/testing-foundation-pillar-2-shipped-may09.md for the
-# refactor-to-injection followup ticket.
+# Bit 6.2 originally introduced a carve-out
+# (`ignore_imports = bot.engines.probability -> bot._impl`) because
+# probability.py used a late-binding `from bot import _impl as _bot_impl`
+# pattern to access the mutable `_CALIBRATION_ENGINE` singleton and
+# `_resolve_cal_engine` function (both defined in bot/_impl.py below the
+# line-109 engines re-export — top-level import would have ImportErrored
+# or captured a stale `None`).
+#
+# Bit 6.3 path-B (2026-05-10) RELOCATED `_CALIBRATION_ENGINE` +
+# `_CAL_REGISTRY` + `_derive_subtype` + `_derive_asset_filter` +
+# `_resolve_cal_engine` from bot/_impl.py to bot/engines/calibration.py
+# (where the class itself was already moving). Both bot/_impl.py and
+# bot/engines/probability.py now reach them via top-level
+# `from bot.engines import calibration as _cal_state` plus
+# `_cal_state.X` attribute access. The late-binding is gone; the
+# carve-out below is gone with it.
 [importlinter:contract:engines-no-impl]
-name = bot.engines.* must not import bot._impl (Bit 6.2 carve-out for probability.compute + counterfactual_prob)
+name = bot.engines.* must not import bot._impl (Bit 6.3 path-B lifted the Bit 6.2 carve-out)
 type = forbidden
 source_modules =
     bot.engines
 forbidden_modules =
     bot._impl
-ignore_imports =
-    bot.engines.probability -> bot._impl
 
 # ---------------------------------------------------------------------------
 # Contract 2 — fetchers must not import engines

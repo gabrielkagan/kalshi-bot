@@ -604,254 +604,6 @@
     "validate_market_configs"
   ],
   "__impl_canonical_classes__": {
-    "CalibrationEngine": {
-      "bases": [],
-      "kind": "class",
-      "members": {
-        "__init__": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": "CALIBRATION_STATE_PATH",
-              "kind": "positional or keyword",
-              "name": "state_path"
-            },
-            {
-              "annotation": "str",
-              "default": "'CalibrationEngine'",
-              "kind": "positional or keyword",
-              "name": "label"
-            },
-            {
-              "annotation": "Optional[tuple]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "accepted_stages"
-            }
-          ],
-          "returns": null
-        },
-        "active_method": {
-          "annotation": "str",
-          "kind": "attribute"
-        },
-        "add_observation": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "raw_prob"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "outcome"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "filter_stage"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "seconds_to_close"
-            }
-          ],
-          "returns": null
-        },
-        "backtest_adaptive_vs_fixed": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": "dict"
-        },
-        "calibrate": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "raw_prob"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "cap"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "seconds_to_close"
-            }
-          ],
-          "returns": "float"
-        },
-        "get_diagnostics": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": "dict"
-        },
-        "get_empirical_bucket_stats": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": "Dict[str, dict]"
-        },
-        "is_learned_method_active": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": "bool"
-        },
-        "load_training_data_from_db": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "StateManager",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "state"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "product_type_include"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "asset_filter"
-            }
-          ],
-          "returns": null
-        },
-        "maybe_retrain": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": "bool"
-        },
-        "rolling_brier_score": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": "float"
-        },
-        "shadow_calibration_pipeline": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "raw_prob"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "best_ask"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "seconds_remaining"
-            },
-            {
-              "annotation": "float",
-              "default": "0.0",
-              "kind": "positional or keyword",
-              "name": "ofa_adjustment"
-            }
-          ],
-          "returns": "Optional[Dict]"
-        },
-        "state_path": {
-          "annotation": null,
-          "kind": "attribute"
-        }
-      }
-    },
     "KalshiOrderFlowTracker": {
       "bases": [],
       "kind": "class",
@@ -5581,6 +5333,254 @@
   "bot.engines": {
     "kind": "module"
   },
+  "bot.engines.CalibrationEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "CALIBRATION_STATE_PATH",
+            "kind": "positional or keyword",
+            "name": "state_path"
+          },
+          {
+            "annotation": "str",
+            "default": "'CalibrationEngine'",
+            "kind": "positional or keyword",
+            "name": "label"
+          },
+          {
+            "annotation": "Optional[tuple]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "accepted_stages"
+          }
+        ],
+        "returns": null
+      },
+      "active_method": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "add_observation": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "raw_prob"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "outcome"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "filter_stage"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          }
+        ],
+        "returns": null
+      },
+      "backtest_adaptive_vs_fixed": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "dict"
+      },
+      "calibrate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "raw_prob"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "cap"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          }
+        ],
+        "returns": "float"
+      },
+      "get_diagnostics": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "dict"
+      },
+      "get_empirical_bucket_stats": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict[str, dict]"
+      },
+      "is_learned_method_active": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "bool"
+      },
+      "load_training_data_from_db": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "StateManager",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "state"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "product_type_include"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "asset_filter"
+          }
+        ],
+        "returns": null
+      },
+      "maybe_retrain": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "bool"
+      },
+      "rolling_brier_score": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "float"
+      },
+      "shadow_calibration_pipeline": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "raw_prob"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_remaining"
+          },
+          {
+            "annotation": "float",
+            "default": "0.0",
+            "kind": "positional or keyword",
+            "name": "ofa_adjustment"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "state_path": {
+        "annotation": null,
+        "kind": "attribute"
+      }
+    }
+  },
   "bot.engines.ProbabilityEngine": {
     "bases": [],
     "kind": "class",
@@ -5762,6 +5762,297 @@
         "returns": "Optional[Dict]"
       }
     }
+  },
+  "bot.engines.calibration": {
+    "kind": "module"
+  },
+  "bot.engines.calibration.CALIBRATION_BRIER_WINDOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.calibration.CALIBRATION_MIN_SAMPLES_BETA": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.calibration.CALIBRATION_MIN_SAMPLES_BLR": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.calibration.CALIBRATION_MIN_SAMPLES_PLATT": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.calibration.CALIBRATION_RETRAIN_INTERVAL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.calibration.CALIBRATION_STATE_PATH": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.calibration.CalibrationEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "CALIBRATION_STATE_PATH",
+            "kind": "positional or keyword",
+            "name": "state_path"
+          },
+          {
+            "annotation": "str",
+            "default": "'CalibrationEngine'",
+            "kind": "positional or keyword",
+            "name": "label"
+          },
+          {
+            "annotation": "Optional[tuple]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "accepted_stages"
+          }
+        ],
+        "returns": null
+      },
+      "active_method": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "add_observation": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "raw_prob"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "outcome"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "filter_stage"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          }
+        ],
+        "returns": null
+      },
+      "backtest_adaptive_vs_fixed": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "dict"
+      },
+      "calibrate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "raw_prob"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "cap"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          }
+        ],
+        "returns": "float"
+      },
+      "get_diagnostics": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "dict"
+      },
+      "get_empirical_bucket_stats": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict[str, dict]"
+      },
+      "is_learned_method_active": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "bool"
+      },
+      "load_training_data_from_db": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "StateManager",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "state"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "product_type_include"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "asset_filter"
+          }
+        ],
+        "returns": null
+      },
+      "maybe_retrain": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "bool"
+      },
+      "rolling_brier_score": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "float"
+      },
+      "shadow_calibration_pipeline": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "raw_prob"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_remaining"
+          },
+          {
+            "annotation": "float",
+            "default": "0.0",
+            "kind": "positional or keyword",
+            "name": "ofa_adjustment"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "state_path": {
+        "annotation": null,
+        "kind": "attribute"
+      }
+    }
+  },
+  "bot.engines.calibration.MARKET_BLEND_W": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.calibration.MIN_EDGE_PCT": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.calibration.SHADOW_BLEND_W": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.calibration.SHADOW_CAL_PIPELINE": {
+    "annotation": null,
+    "kind": "attribute"
   },
   "bot.engines.probability": {
     "kind": "module"

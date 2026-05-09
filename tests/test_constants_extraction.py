@@ -232,13 +232,15 @@ def test_bot_impl_has_no_module_level_uppercase_assignments():
 
     Underscore-prefixed names are EXCLUDED by `startswith("_")` —
     `_FOO.isupper()` is True (Python ignores non-cased chars), so the
-    underscore check has to be explicit. The 7 underscore-prefixed
+    underscore check has to be explicit. The underscore-prefixed
     UPPER_SNAKE names that legitimately stay in bot/_impl.py are
-    runtime-mutated state (`_CALIBRATION_ENGINE`, `_CAL_REGISTRY`,
-    `_TELEGRAM`, validator outputs `_HPSB_*`/`_BLEED_*`,
-    `_HPSB_VALIDATOR_UNAVAILABLE_REASON`) or co-located helpers
-    (`_ORPHAN_DB_WATCHDOG_PATTERNS`, just above
-    detect_orphan_db_holders).
+    runtime-mutated state (`_TELEGRAM`, validator outputs
+    `_HPSB_MISSING_BLEEDERS` / `_BLEED_BLOCK_MISSING_BLEEDERS`,
+    `_HPSB_VALIDATOR_UNAVAILABLE_REASON`) plus the `_ORPHAN_DB_WATCHDOG_PATTERNS`
+    co-located helper just above `detect_orphan_db_holders` (5 names
+    post-Bit-6.3 path-B). `_CALIBRATION_ENGINE` and `_CAL_REGISTRY`
+    were relocated to `bot/engines/calibration.py` in Bit 6.3 path-B
+    (2026-05-10); this list previously named them.
     """
     src = (REPO_ROOT / "bot" / "_impl.py").read_text()
     tree = ast.parse(src)
