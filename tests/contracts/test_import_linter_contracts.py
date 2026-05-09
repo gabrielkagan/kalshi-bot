@@ -6,17 +6,22 @@ disable it:
 1. ``import-linter`` is in ``[project.optional-dependencies].dev`` —
    the dev extras install path used by both CI workflows.
 2. ``.importlinter`` exists at the repo root with the four contracts
-   the Bit shipped (engines / fetchers / feeds / helpers boundaries)
-   plus the documented ``ignore_imports`` carve-out for the Bit 6.2
-   late-binding in ``bot/engines/probability.py``.
+   the Bit shipped (engines / fetchers / feeds / helpers boundaries).
+   **Bit 6.3 path-B (2026-05-10)** lifted the ``ignore_imports``
+   carve-out for the Bit 6.2 late-binding in
+   ``bot/engines/probability.py`` by relocating the
+   ``_CALIBRATION_ENGINE`` singleton + ``_resolve_cal_engine`` helper
+   from ``bot/_impl.py`` to ``bot/engines/calibration.py``.
 3. The ``lint-imports`` step is wired into ``.github/workflows/test.yml``
    AND ``.github/workflows/deploy.yml`` BEFORE the pytest step so a
    layering violation fails fast.
 4. ``lint-imports`` exits 0 on the current tree (the contracts must
    reflect reality, not aspirations).
-5. Removing the ``ignore_imports`` carve-out causes ``lint-imports`` to
-   fail — proves the engines→_impl gate is real and the carve-out is
-   load-bearing.
+5. **Post-Bit-6.3**: removing/restoring the historical carve-out
+   string from ``.importlinter`` is a no-op for the linter (no edge
+   matches anymore). The negative-smoke test now asserts the carve-out
+   is GONE and that ``lint-imports`` passes without it — guards
+   against accidental re-introduction of the engines→_impl import.
 6. The ``helpers-leaf`` contract's ``forbidden_modules`` list covers
    every top-level ``bot/`` module (besides ``bot.helpers`` itself and
    the allowed leaf dep ``bot.constants``). Closes the
@@ -202,13 +207,19 @@ def test_importlinter_declares_expected_contract(contract_id: str):
     )
 
 
-def test_importlinter_engines_carve_out_for_bit_6_2():
-    """The Bit 6.2 late-binding carve-out is documented as
-    ``ignore_imports`` of the engines-no-impl contract — NOT just as a
-    comment somewhere in the file.
+def test_importlinter_engines_no_impl_has_no_carve_out_post_bit_6_3():
+    """The Bit 6.2 late-binding carve-out
+    (``bot.engines.probability -> bot._impl``) was lifted by Bit 6.3
+    path-B (2026-05-10). The relocation moved
+    ``_CALIBRATION_ENGINE`` + ``_CAL_REGISTRY`` + ``_resolve_cal_engine``
+    from ``bot/_impl.py`` to ``bot/engines/calibration.py``;
+    probability.py now reaches them via top-level
+    ``from bot.engines import calibration as _cal_state``.
 
-    Path (a) of the ticket Open Question — ship now with carve-out +
-    rationale, file a separate ticket for path (b) refactor.
+    This test asserts the carve-out is ABSENT and the contract has no
+    ``ignore_imports`` directive — locking the path-B refactor against
+    a future "restore the carve-out" rollback that would silently
+    re-introduce the engines→_impl edge.
 
     Configparser-level check (not a substring scan) so a future edit
     that comments-out / moves the carve-out string but leaves the
@@ -218,14 +229,20 @@ def test_importlinter_engines_carve_out_for_bit_6_2():
     section = "importlinter:contract:engines-no-impl"
     assert cp.has_section(section), "engines-no-impl contract missing"
     ignore_imports = _multiline_values(cp, section, "ignore_imports")
-    assert "bot.engines.probability -> bot._impl" in ignore_imports, (
-        "ignore_imports for the Bit 6.2 late-binding pattern is "
-        "missing from the [importlinter:contract:engines-no-impl] "
-        "section's ignore_imports key.\n"
-        "Either restore it (with KB-doc rationale) or remove the "
-        "late-binding from bot/engines/probability.py and lift "
-        "_CALIBRATION_ENGINE / _resolve_cal_engine into an injected "
-        "dependency (path (b) refactor)."
+    assert "bot.engines.probability -> bot._impl" not in ignore_imports, (
+        "Bit 6.2 carve-out `bot.engines.probability -> bot._impl` "
+        "reappeared in [importlinter:contract:engines-no-impl] "
+        "ignore_imports — Bit 6.3 path-B should have lifted it. "
+        "Either an unrelated late-binding has been re-introduced (then "
+        "investigate WHY and amend the contract with KB rationale) or a "
+        "rebase/merge re-pulled the old contract — drop the line and "
+        "verify lint-imports + the equivalence harness still pass."
+    )
+    assert not ignore_imports, (
+        f"engines-no-impl contract has ignore_imports entries: "
+        f"{ignore_imports}. Path-B refactor expected zero. If a new "
+        f"carve-out is genuinely needed, add it explicitly here AND "
+        f"document the rationale in a KB doc."
     )
 
 
@@ -527,47 +544,86 @@ def test_lint_imports_passes_on_current_tree():
     )
 
 
-def test_lint_imports_fails_when_carve_out_removed(tmp_path: Path):
-    """Negative smoke: removing the ignore_imports for probability.py
-    must cause ``lint-imports`` to FAIL.
+def test_lint_imports_fails_when_engines_to_impl_edge_re_introduced(
+    tmp_path: Path,
+):
+    """Negative smoke: simulating a regression that re-adds an
+    ``engines → _impl`` import edge must cause ``lint-imports`` to
+    FAIL. Proves the engines-no-impl contract is genuinely enforced
+    and not silently bypassed by some misconfigured directive.
 
-    Proves both that (a) the engines→_impl contract is real, and (b)
-    the carve-out is the only thing keeping main green — i.e., the
-    carve-out is load-bearing, not decorative. If a future refactor
-    lifts the late-binding (path (b) of the ticket), the carve-out
-    can be removed AND this test should be updated to expect lint-
-    imports to pass without it.
+    **Bit 6.3 path-B inversion**: pre-Bit-6.3 this test mutated
+    ``.importlinter`` to remove the Bit 6.2 ``ignore_imports``
+    carve-out and asserted the linter then failed (proving the
+    carve-out was load-bearing). Path-B lifted the late-binding so
+    the carve-out is gone; instead, this test mutates
+    ``bot/engines/probability.py`` to add a literal
+    ``import bot._impl`` at module top + a reference inside
+    ``compute()`` (so grimp records the edge), copies the rest of
+    the project tree into ``tmp_path`` to keep ``.importlinter``'s
+    relative paths working, and asserts ``lint-imports`` exits
+    non-zero with the contract reporting BROKEN.
+
+    The fixture-tree mutation pattern (vs the previous
+    ``--config <mutated>``) is required because grimp resolves the
+    target package from the cwd at lint-time; mutating just the
+    config doesn't move the code.
     """
     cmd = _require_lint_imports()
-    src = IMPORTLINTER_PATH.read_text()
-    assert "bot.engines.probability -> bot._impl" in src, (
-        "Carve-out missing — separate test test_importlinter_engines_"
-        "carve_out_for_bit_6_2 should already have flagged this."
+
+    # The companion test (test_importlinter_engines_no_impl_has_no_
+    # carve_out_post_bit_6_3) covers the precondition that the
+    # carve-out is absent. Don't repeat it here — substring-matching
+    # the raw .importlinter text is fragile (the doc block may
+    # mention the historical edge string). This regression test
+    # injects a real import edge and verifies the linter catches it,
+    # which is independent of whether the carve-out string appears
+    # in a comment.
+
+    # Set up an isolated copy of the project so we can mutate
+    # bot/engines/probability.py without dirtying the real tree.
+    fixture_root = tmp_path / "project"
+    # Copy only what import-linter needs to resolve the graph: the
+    # bot/ package and the .importlinter file. Skipping VCS state and
+    # large unrelated dirs keeps the copy cheap.
+    shutil.copytree(REPO_ROOT / "bot", fixture_root / "bot")
+    shutil.copy(IMPORTLINTER_PATH, fixture_root / ".importlinter")
+
+    # Inject a real engines→_impl import edge into probability.py so
+    # grimp records it. We add a top-level `import bot._impl` AND a
+    # reference at module scope (the import alone is enough for grimp
+    # but the reference makes the failure observable to humans).
+    probability_path = fixture_root / "bot" / "engines" / "probability.py"
+    src = probability_path.read_text()
+    mutated = (
+        "import bot._impl  # path-B regression smoke: forbidden edge\n"
+        "_REGRESSION_PROBE = bot._impl  # noqa\n\n"
+        + src
     )
-    mutated_config = tmp_path / "importlinter_no_carveout"
-    mutated = src.replace(
-        "ignore_imports =\n    bot.engines.probability -> bot._impl\n",
-        "",
-    )
-    # Defense-in-depth: if the replace was a no-op (string drift), the
-    # mutated file would still pass and the test would silently false-
-    # green. Pin the mutation actually changed something.
-    assert mutated != src, (
-        "Mutation no-op — carve-out string format drifted. Update the "
-        "replace target in this test in lock-step with .importlinter."
-    )
-    mutated_config.write_text(mutated)
+    assert mutated != src, "mutation no-op — regression-probe insertion failed"
+    probability_path.write_text(mutated)
+
     result = subprocess.run(
-        [*cmd, "--config", str(mutated_config), "--no-cache"],
-        cwd=REPO_ROOT,
+        cmd,
+        cwd=fixture_root,
         capture_output=True,
         text=True,
         timeout=120,
     )
     assert result.returncode != 0, (
-        "lint-imports passed without the ignore_imports carve-out — "
-        "either the contract is no longer enforcing engines→_impl, "
-        "or the late-binding has been refactored away (in which case "
-        "delete the carve-out from .importlinter AND update this "
-        "test).\nstdout:\n" + result.stdout
+        "lint-imports passed despite a fresh `import bot._impl` at the "
+        "top of bot/engines/probability.py — the engines→_impl "
+        "contract is no longer enforced. Either the contract was "
+        "loosened (check .importlinter) or a new ignore_imports edge "
+        "was added that subsumes this one. Investigate before merging.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    # Defense-in-depth: confirm the failure mentions the expected
+    # contract / edge so we know it failed for the RIGHT reason.
+    combined = result.stdout + result.stderr
+    assert "engines-no-impl" in combined or "bot._impl" in combined, (
+        "lint-imports failed but neither the contract id "
+        "`engines-no-impl` nor the forbidden module `bot._impl` "
+        "appears in the output — failure may be unrelated.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )

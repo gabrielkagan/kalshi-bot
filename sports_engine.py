@@ -2115,9 +2115,11 @@ class SportsEngine:
         from bot import (
             compute_time_regime_features,
             compute_derived_features,
-            _resolve_cal_engine,
             SOL_RESCUE_CONTRACT_CAP,
         )
+        # _resolve_cal_engine relocated from bot/_impl.py to
+        # bot/engines/calibration.py in Bit 6.3 path-B (2026-05-10).
+        from bot.engines.calibration import _resolve_cal_engine
         # Hoisted out of YES-side try so NO-side block can reuse them even if
         # the YES-side INSERT raised.
         now = datetime.datetime.now(datetime.timezone.utc).strftime(

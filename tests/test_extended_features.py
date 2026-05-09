@@ -258,12 +258,14 @@ class TestCalibrationConfidenceIntegration(unittest.TestCase):
         return bot.StateManager(db_path=tmp.name)
 
     def test_populates_from_15m_cal_engine(self):
-        import bot
-        saved = bot._CALIBRATION_ENGINE
+        # Bit 6.3 path-B: _CALIBRATION_ENGINE relocated from bot/_impl.py
+        # to bot/engines/calibration.py. Mutate via the new module.
+        import bot.engines.calibration as _cal_state
+        saved = _cal_state._CALIBRATION_ENGINE
         try:
             mock = MagicMock()
             mock._observations = list(range(50))  # 50 observations
-            bot._CALIBRATION_ENGINE = mock
+            _cal_state._CALIBRATION_ENGINE = mock
             sm = self._fresh_state_manager()
             sm.insert_evaluated_opportunity(
                 ticker="KXTEST-1", event_ticker="KXTEST",
@@ -277,15 +279,15 @@ class TestCalibrationConfidenceIntegration(unittest.TestCase):
             self.assertIsNotNone(row["calibration_confidence"])
             self.assertAlmostEqual(row["calibration_confidence"], 0.5, places=6)
         finally:
-            bot._CALIBRATION_ENGINE = saved
+            _cal_state._CALIBRATION_ENGINE = saved
 
     def test_caps_at_1_when_engine_has_many_observations(self):
-        import bot
-        saved = bot._CALIBRATION_ENGINE
+        import bot.engines.calibration as _cal_state
+        saved = _cal_state._CALIBRATION_ENGINE
         try:
             mock = MagicMock()
             mock._observations = list(range(500))
-            bot._CALIBRATION_ENGINE = mock
+            _cal_state._CALIBRATION_ENGINE = mock
             sm = self._fresh_state_manager()
             sm.insert_evaluated_opportunity(
                 ticker="KXTEST-CAP", event_ticker="KXTEST",
@@ -297,13 +299,13 @@ class TestCalibrationConfidenceIntegration(unittest.TestCase):
             ).fetchone()
             self.assertEqual(row["calibration_confidence"], 1.0)
         finally:
-            bot._CALIBRATION_ENGINE = saved
+            _cal_state._CALIBRATION_ENGINE = saved
 
     def test_none_when_no_15m_engine_registered(self):
-        import bot
-        saved = bot._CALIBRATION_ENGINE
+        import bot.engines.calibration as _cal_state
+        saved = _cal_state._CALIBRATION_ENGINE
         try:
-            bot._CALIBRATION_ENGINE = None
+            _cal_state._CALIBRATION_ENGINE = None
             sm = self._fresh_state_manager()
             sm.insert_evaluated_opportunity(
                 ticker="KXTEST-NOENG", event_ticker="KXTEST",
@@ -315,7 +317,7 @@ class TestCalibrationConfidenceIntegration(unittest.TestCase):
             ).fetchone()
             self.assertIsNone(row["calibration_confidence"])
         finally:
-            bot._CALIBRATION_ENGINE = saved
+            _cal_state._CALIBRATION_ENGINE = saved
 
 
 class TestSportsInsertTierCoverage(unittest.TestCase):

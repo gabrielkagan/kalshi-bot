@@ -2,8 +2,9 @@
 
 Extracted from bot/_impl.py in Sprint 6 Bit 6.2 (2026-05-09). Second leaf
 in the Sprint 6 ``bot/engines/`` subpackage; sibling of
-``bot.engines.volatility.VolatilityEngine`` (Bit 6.1) and the still-inline
-``CalibrationEngine`` (Bit 6.3 — pending). The class is a pure
+``bot.engines.volatility.VolatilityEngine`` (Bit 6.1) and
+``bot.engines.calibration.CalibrationEngine`` (Bit 6.3, 2026-05-10 —
+class + path-B singleton/helper relocation). The class is a pure
 @staticmethod surface — there is no instance state and no constructor —
 so the move is a byte-for-byte transplant of the 5 static methods
 (``_cdf_complement``, ``compute``, ``counterfactual_prob``,
@@ -60,21 +61,24 @@ class-body load time and so MUST resolve at module import) +
 ``cal_eligible`` / ``cal_engine_enabled`` / ``temperature_*`` /
 ``cal_subtypes`` per product type).
 
-Does NOT directly import ``bot._impl`` at module load (would create a
-circular import — ``_impl`` re-exports this class via
-``from bot.engines import ProbabilityEngine`` at line ~109, BEFORE
-``_CALIBRATION_ENGINE`` (defined at ``_impl:168``) and
-``_resolve_cal_engine`` (defined at ``_impl:212``). Instead, the two
-runtime references inside ``compute()`` and ``counterfactual_prob()``
-are resolved via late-binding ``from bot import _impl as _bot_impl``
-inside each method body. This is a deliberate semantic departure from
-the byte-for-byte pattern used in Bit 6.1 — the original code uses
-bare-name lookup against module globals, but ``_CALIBRATION_ENGINE``
-is a MUTABLE module-level singleton (reassigned in
-``MainLoop.__init__``) so capturing it once at import time would
-freeze a stale ``None`` reference. The late-binding pattern (a) avoids
-the partial-module ImportError at load time and (b) always resolves
-the current value of the singleton.
+Reaches the mutable ``_CALIBRATION_ENGINE`` singleton and
+``_resolve_cal_engine`` resolver via top-level
+``from bot.engines import calibration as _cal_state`` plus
+``_cal_state.X`` attribute access. This is the **Bit 6.3 path-B
+refactor (2026-05-10)** — Bit 6.2 originally used a late-binding
+``from bot import _impl as _bot_impl`` pattern inside ``compute()``
+and ``counterfactual_prob()`` because both names lived in
+``bot/_impl.py`` BELOW the line-109 engines re-export, so a top-level
+``from bot._impl import ...`` would have ImportErrored at load time
+or captured a stale ``None``. Bit 6.3 relocated the singleton +
+resolver to ``bot/engines/calibration.py`` (a leaf module that does
+NOT import ``bot._impl``), eliminating the circularity and lifting
+the late-binding. Module-attribute access on ``_cal_state`` preserves
+the mutable-singleton freshness guarantee — every read sees the
+current value because we go through the module reference. The
+``.importlinter`` ``bot.engines.probability -> bot._impl``
+``ignore_imports`` carve-out shipped in Pillar 2 was removed in the
+same Bit 6.3 commit.
 
 Construction site: none. ``ProbabilityEngine`` is a class with only
 ``@staticmethod`` methods; there is no instance and no
@@ -111,6 +115,8 @@ from config import (
     STUDENT_T_DF,
 )
 from market_config import get_market_config
+
+from bot.engines import calibration as _cal_state  # Bit 6.3 path-B: alias for _CALIBRATION_ENGINE / _CAL_REGISTRY / _resolve_cal_engine which all live in bot/engines/calibration.py post-Bit-6.3. Module-attribute access via this alias preserves mutable-singleton freshness — see module docstring.
 
 
 class ProbabilityEngine:
@@ -156,14 +162,6 @@ class ProbabilityEngine:
 
         Returns dict with: z_score, raw_prob, calibrated_prob, tradeable, reason
         """
-        # Late-binding: _CALIBRATION_ENGINE is a MUTABLE module-level singleton in
-        # bot/_impl.py (reassigned in MainLoop.__init__) and _resolve_cal_engine
-        # is defined at bot/_impl.py:212 — both AFTER the line-109
-        # `from bot.engines import ProbabilityEngine` re-export. A top-level
-        # `from bot._impl import ...` would either ImportError at load time or
-        # capture a stale None. Resolved at call time instead.
-        from bot import _impl as _bot_impl
-
         result: Dict = {
             "z_score": None,
             "raw_prob": None,
@@ -201,7 +199,7 @@ class ProbabilityEngine:
         # ── Calibration: adaptive (if trained) or fixed β=0.85 ──────────
         dynamic_cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
         _cal_cfg2 = get_market_config(product_type)
-        _reg_engine = _bot_impl._resolve_cal_engine(product_type, asset, require_enabled=True)
+        _reg_engine = _cal_state._resolve_cal_engine(product_type, asset, require_enabled=True)
         if _reg_engine is not None and _reg_engine.is_learned_method_active():
             calibrated_prob = _reg_engine.calibrate(raw_prob, cap=dynamic_cap,
                                                      seconds_to_close=seconds_remaining)
@@ -215,16 +213,16 @@ class ProbabilityEngine:
                 _pt_shadow = 1.0 / (1.0 + math.exp(-_sz / _temp_cfg))
             result["shadow_cal_prob"] = round(_pt_shadow, 6)
             result["shadow_cal_temperature"] = _temp_cfg
-        elif _cal_cfg2.cal_eligible and _bot_impl._CALIBRATION_ENGINE is not None:
-            if FIFTEEN_M_CALIBRATION_ENABLED and _bot_impl._CALIBRATION_ENGINE.is_learned_method_active():
-                calibrated_prob = _bot_impl._CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap,
+        elif _cal_cfg2.cal_eligible and _cal_state._CALIBRATION_ENGINE is not None:
+            if FIFTEEN_M_CALIBRATION_ENABLED and _cal_state._CALIBRATION_ENGINE.is_learned_method_active():
+                calibrated_prob = _cal_state._CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap,
                                                                seconds_to_close=seconds_remaining)
-                result["calibration_method"] = _bot_impl._CALIBRATION_ENGINE.active_method
+                result["calibration_method"] = _cal_state._CALIBRATION_ENGINE.active_method
             else:
                 calibrated_prob = min(raw_prob, dynamic_cap)
                 result["calibration_method"] = "passthrough"
                 # Diagnostic: log what BLR would have produced (remove after validation)
-                _blr_would = _bot_impl._CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap,
+                _blr_would = _cal_state._CALIBRATION_ENGINE.calibrate(raw_prob, cap=dynamic_cap,
                                                            seconds_to_close=seconds_remaining)
                 if abs(_blr_would - calibrated_prob) > 0.02:
                     logging.info(
@@ -281,10 +279,6 @@ class ProbabilityEngine:
                             alt_blended_rv: float, asset: Optional[str] = None,
                             product_type: Optional[str] = None) -> Optional[float]:
         """Compute calibrated_prob for a counterfactual blended_rv. Lightweight — no logging."""
-        # Late-binding: _CALIBRATION_ENGINE is a mutable module-level singleton
-        # in bot/_impl.py — see compute() docstring above.
-        from bot import _impl as _bot_impl
-
         if spot <= 0 or seconds_remaining <= 0 or alt_blended_rv <= 0:
             return None
         sigma_move = spot * alt_blended_rv * math.sqrt(seconds_remaining / 5.0)
@@ -293,8 +287,8 @@ class ProbabilityEngine:
         z = (threshold - spot) / sigma_move
         raw = ProbabilityEngine._cdf_complement(z, asset)
         cap = ProbabilityEngine._dynamic_cap(seconds_remaining, product_type=product_type)
-        if _bot_impl._CALIBRATION_ENGINE is not None:
-            return round(_bot_impl._CALIBRATION_ENGINE.calibrate(raw, cap=cap,
+        if _cal_state._CALIBRATION_ENGINE is not None:
+            return round(_cal_state._CALIBRATION_ENGINE.calibrate(raw, cap=cap,
                                                        seconds_to_close=seconds_remaining), 6)
         return round(ProbabilityEngine._calibrate(raw, cap=cap), 6)
 

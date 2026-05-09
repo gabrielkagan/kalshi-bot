@@ -1,6 +1,6 @@
 # Tests
 
-3,744 tests collected (post-Bit-6.1). Pytest. `conftest.py` at repo root.
+~4,190 tests collected (post-Bit-6.3 path-B; varies ~5 with hypothesis parameterization). Pytest. `conftest.py` at repo root.
 Verify exact count with `python3 -m pytest tests/ --collect-only -q | tail -1`;
 this header drifts as bits ship and is only refreshed when an extraction touches
 `tests/CLAUDE.md` directly.
@@ -101,10 +101,15 @@ gate — that's how stale-deploy incidents start.
   **Do not** run `pytest --force-regen` autonomously — regen is a
   human-with-diff-review operation. If a snapshot fails, investigate
   the divergence first; the snapshot is the contract.
-- `conftest.py::isolate_calibration_singletons` patches
-  `_CALIBRATION_ENGINE` to None so `ProbabilityEngine.compute()` takes
-  the deterministic passthrough/fixed-beta cascade. Bit 6.3 (CalibrationEngine
-  extraction) owns extending this to inject a frozen learned-method oracle.
+- `conftest.py::isolate_calibration_singletons` (autouse) patches
+  `bot.engines.calibration._CALIBRATION_ENGINE` to None so
+  `ProbabilityEngine.compute()` takes the deterministic
+  passthrough/fixed-beta cascade. Bit 6.3 path-B extended this with
+  the opt-in `install_frozen_cal_engine` fixture (vendored-snapshot
+  flavor — hand-crafted Platt state) for tests that need to exercise
+  the learned-method branches of the cascade. See
+  `tests/equivalence/REGEN.md` § "Calibration-engine isolation
+  (post-Bit-6.3 path-B)" for the full pattern.
 - Full runbook: `tests/equivalence/REGEN.md`.
 
 ## TDD-with-hook (Pillar 4)

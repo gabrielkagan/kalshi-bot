@@ -37,6 +37,9 @@ from bot import (
     compute_derived_features,
 )
 import bot
+# Bit 6.3 path-B: _resolve_cal_engine relocated from bot/_impl.py to
+# bot/engines/calibration.py. Test patches target the new module.
+import bot.engines.calibration as _cal_state
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -183,7 +186,7 @@ class TestCalibrationConfidencePerProduct(unittest.TestCase):
         return StateManager(db_path=tmp.name)
 
     def _with_mock_get_cal_engine(self, product_type, n_obs):
-        """Patch bot._resolve_cal_engine to return a mock for the given product."""
+        """Patch _cal_state._resolve_cal_engine to return a mock for the given product."""
         mock_engine = MagicMock()
         mock_engine._observations = list(range(n_obs))
 
@@ -194,8 +197,8 @@ class TestCalibrationConfidencePerProduct(unittest.TestCase):
         return _patched
 
     def test_hourly_populates_calibration_confidence(self):
-        original = bot._resolve_cal_engine
-        bot._resolve_cal_engine = self._with_mock_get_cal_engine("hourly", n_obs=50)
+        original = _cal_state._resolve_cal_engine
+        _cal_state._resolve_cal_engine = self._with_mock_get_cal_engine("hourly", n_obs=50)
         try:
             sm = self._fresh_state_manager()
             sm.insert_evaluated_opportunity(
@@ -210,11 +213,11 @@ class TestCalibrationConfidencePerProduct(unittest.TestCase):
             self.assertIsNotNone(row["calibration_confidence"])
             self.assertAlmostEqual(row["calibration_confidence"], 0.5, places=6)
         finally:
-            bot._resolve_cal_engine = original
+            _cal_state._resolve_cal_engine = original
 
     def test_weather_populates_calibration_confidence(self):
-        original = bot._resolve_cal_engine
-        bot._resolve_cal_engine = self._with_mock_get_cal_engine("weather", n_obs=25)
+        original = _cal_state._resolve_cal_engine
+        _cal_state._resolve_cal_engine = self._with_mock_get_cal_engine("weather", n_obs=25)
         try:
             sm = self._fresh_state_manager()
             sm.insert_evaluated_opportunity(
@@ -229,14 +232,14 @@ class TestCalibrationConfidencePerProduct(unittest.TestCase):
             self.assertIsNotNone(row["calibration_confidence"])
             self.assertAlmostEqual(row["calibration_confidence"], 0.25, places=6)
         finally:
-            bot._resolve_cal_engine = original
+            _cal_state._resolve_cal_engine = original
 
     def test_missing_per_product_engine_yields_null(self):
         """When _get_cal_engine returns None, calibration_confidence is None.
         Confirms the failure mode, doesn't mask it.
         """
-        original = bot._resolve_cal_engine
-        bot._resolve_cal_engine = lambda pt, asset, require_enabled=False: None
+        original = _cal_state._resolve_cal_engine
+        _cal_state._resolve_cal_engine = lambda pt, asset, require_enabled=False: None
         try:
             sm = self._fresh_state_manager()
             sm.insert_evaluated_opportunity(
@@ -250,7 +253,7 @@ class TestCalibrationConfidencePerProduct(unittest.TestCase):
             ).fetchone()
             self.assertIsNone(row["calibration_confidence"])
         finally:
-            bot._resolve_cal_engine = original
+            _cal_state._resolve_cal_engine = original
 
 
 # ─────────────────────────────────────────────────────────────────────────────
