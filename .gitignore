@@ -79,6 +79,14 @@ DOC_DRIFT_REPORT.txt
 .testmondata
 /mutants/
 .mutmut-cache/
+# Ticket 86b9vgh1a — Pillar 5 lock sentinel. scripts/_mutmut_lock.py
+# opens this file with O_CREAT to anchor an fcntl.flock(LOCK_EX|LOCK_NB)
+# guard so concurrent `make test-mutmut` / `test-equivalence` /
+# `test-integration` invocations fail-fast (instead of racing on
+# mutmut's in-place mutation of bot/engines/). Anchored to repo root
+# only via leading `/` (per /data/, /state/ rationale above) — a
+# nested test fixture's `.mutmut.lock` won't be silently ignored.
+/.mutmut.lock
 
 # iCloud Drive sync conflict copies — anything inside this repo's tree
 # that lives under iCloud will spawn `* 2.py`, `* 2.md`, `* 2/` siblings

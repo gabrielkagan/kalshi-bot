@@ -32,13 +32,22 @@ jobs:
         # Pure-Python invariants: pyproject parsing, Makefile parsing,
         # repo hygiene. <10s budget; sub-second on Linux.
         run: make test-unit
-      - name: Contract tier (Pillar 5; folds in Pillars 1+2)
-        # Pillar 1 public_api snapshot + Pillar 2 import-linter contracts
-        # + AST guards (test_*_extraction.py family + call_sites /
-        # db_signatures / config_consistency / order_outcome_vocab).
-        # Make recipe runs the pytest selection THEN lint-imports, so
-        # both halves are gated in one step.
-        run: make test-contract
+      # Contract tier split into two distinct CI steps (ticket
+      # 86b9vgh3t). Pre-split, `make test-contract` chained pytest
+      # then lint-imports in one Make recipe — a red `Contract tier`
+      # step left the operator guessing which half failed.
+      # Post-split, the step names map unambiguously to one half:
+      #   * `Contract tier — pytest`        — public_api snapshot,
+      #     AST guards (test_*_extraction.py family + call_sites /
+      #     db_signatures / config_consistency / order_outcome_vocab).
+      #   * `Contract tier — import-linter` — Pillar 2 layering
+      #     contracts (.importlinter).
+      # Both must pass for the tier to gate green; pytest-half runs
+      # first because it's the louder failure (more lines of output).
+      - name: Contract tier — pytest
+        run: make test-contract-pytest
+      - name: Contract tier — import-linter
+        run: make test-contract-lint
       - name: Equivalence tier (Pillar 3)
         # Numeric snapshots + property tests for bot/engines/{volatility,
         # probability}.py. Kept as its own non-testmon-cached step

@@ -24,7 +24,7 @@ ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
 endif
 
-.PHONY: help install install-hooks test test-unit test-contract test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen
+.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen
 
 # Override at invocation time if needed: `make PYTHON=python3.11 test`.
 # NOTE: CI runs Python 3.11 (.github/workflows/test.yml), local default
@@ -111,6 +111,29 @@ INTEGRATION_IGNORES := \
 	$(addprefix --ignore=,$(UNIT_FILES) $(CONTRACT_FILES)) \
 	--ignore=tests/equivalence \
 	--ignore=tests/test_calmlp_sigma_winsorize.py
+
+# Ticket 86b9vgh1a — cross-platform exclusive-lock guard.
+#
+# `make test-mutmut` mutates bot/engines/{volatility,probability}.py
+# in-place during the ~1-2h baseline. Concurrent `make test-equivalence`
+# or `make test-integration` reading those files mid-flight will see
+# mutated source and surface false failures — a real bug class, not
+# theoretical (the prior advice was a tests/CLAUDE.md prose warning,
+# which is honor-system).
+#
+# Linux ships `flock(1)` in /usr/bin; macOS (the dev box) does NOT.
+# A `flock --nonblock --exclusive ...` recipe would silently no-op
+# on darwin. The fcntl module is in Python's stdlib on both platforms,
+# so a tiny Python wrapper closes the cross-platform gap with no new
+# native dependencies. See scripts/_mutmut_lock.py for the
+# fcntl.flock(LOCK_EX | LOCK_NB) implementation + behavior contract.
+#
+# Lockfile lives at the repo root (gitignored — `.mutmut.lock` entry
+# in .gitignore). The wrapper opens it with O_CREAT so the file
+# appears on first invocation; fcntl locks the FD, not the path, so
+# the lockfile contents are irrelevant.
+MUTMUT_LOCK := .mutmut.lock
+MUTMUT_GUARD := $(PYTHON) scripts/_mutmut_lock.py acquire $(MUTMUT_LOCK) --
 
 help:
 	@echo "Kalshi-bot dev targets (Pillar 5 tiered suite — 86b9ve11y)"
@@ -213,18 +236,38 @@ test:
 test-unit:
 	$(PYTHON) -m pytest -m "not fragile" $(UNIT_FILES)
 
-# Tier 2: contract. Two parts:
-#   1. Pytest suite — public_api snapshot, AST guards, extraction tests.
-#   2. import-linter CLI — layering contracts (`.importlinter`).
-# Both must pass; pytest first because it's the louder failure.
+# Tier 2: contract. Two parts, each in its own target (ticket
+# 86b9vgh3t) so CI can surface them as distinct steps. Pre-split,
+# both halves lived in one recipe — a red contract step left the
+# operator guessing which half broke. After 86b9vgh3t, CI's
+# `Contract tier — pytest` step runs `make test-contract-pytest`
+# and `Contract tier — import-linter` runs `make test-contract-lint`,
+# so a red status maps unambiguously to one half.
 #
-# `-m "not fragile"` matters here: tests/test_decided_contract.py
-# (in CONTRACT_FILES) ships 7 @pytest.mark.fragile tests. Without this
-# filter, a fragile-test flake would block deploys via deploy.yml's
-# blocking contract step (R1 C1 fix).
-test-contract:
+#   1. test-contract-pytest — public_api snapshot, AST guards,
+#      extraction tests.
+#   2. test-contract-lint   — Pillar 2 layering contracts via
+#      `lint-imports` (.importlinter).
+#
+# `make test-contract` remains the orchestrator that runs both via
+# $(MAKE) so each sub-target's failure aborts the next via Make's
+# default fail-on-nonzero. Pytest first because it's the louder
+# failure (more lines of output to read).
+#
+# `-m "not fragile"` matters in test-contract-pytest:
+# tests/test_decided_contract.py (in CONTRACT_FILES) ships 7
+# @pytest.mark.fragile tests. Without this filter, a fragile-test
+# flake would block deploys via deploy.yml's blocking contract step
+# (R1 C1 fix, preserved across the split).
+test-contract-pytest:
 	$(PYTHON) -m pytest -m "not fragile" $(CONTRACT_FILES)
+
+test-contract-lint:
 	$(LINT_IMPORTS)
+
+test-contract:
+	$(MAKE) test-contract-pytest
+	$(MAKE) test-contract-lint
 
 # Tier 3: equivalence. Pillar 3 numeric snapshots (volatility +
 # probability engines). ~3s actual; <30s budget gives Bit 6.3+
@@ -232,13 +275,22 @@ test-contract:
 #
 # `-m "not fragile"` is defensive (no fragile tests under
 # tests/equivalence/ today; same reasoning as test-unit).
+#
+# Ticket 86b9vgh1a — guarded by $(MUTMUT_GUARD) to fail-fast if a
+# `make test-mutmut` is already running. Pre-guard, a parallel
+# mutmut would mutate bot/engines/ mid-run and silently corrupt the
+# numeric-snapshot comparison.
 test-equivalence:
-	$(PYTHON) -m pytest -m "not fragile" tests/equivalence/
+	$(MUTMUT_GUARD) $(PYTHON) -m pytest -m "not fragile" tests/equivalence/
 
 # Tier 4: integration. Everything else. Mirrors the historical
 # `make test` semantics minus the tiers above.
+#
+# Ticket 86b9vgh1a — same guard as test-equivalence: parallel
+# mutmut would corrupt the broad integration run via in-place
+# mutation of bot/engines/.
 test-integration:
-	$(PYTHON) -m pytest tests/ -m "not fragile" $(INTEGRATION_IGNORES)
+	$(MUTMUT_GUARD) $(PYTHON) -m pytest tests/ -m "not fragile" $(INTEGRATION_IGNORES)
 
 # testmon-driven incremental run. First invocation seeds .testmondata
 # with a full pass (slow); subsequent invocations re-run only tests
@@ -271,8 +323,14 @@ test-fast: test-unit
 #   make test-mutmut > /tmp/mutmut.log 2>&1 &
 # Output goes to `mutants/` (gitignored). Surface the tally to
 # kb/findings/mutmut-baseline-mayDD.md per ticket AC.
+#
+# Ticket 86b9vgh1a — guarded by $(MUTMUT_GUARD). The guard ALSO
+# fires here (not just on the reader tiers): if an operator typos a
+# second `make test-mutmut` while the first is still running, both
+# would race on the in-place mutation of bot/engines/ — the same
+# corruption mode, just author-vs-author instead of author-vs-reader.
 test-mutmut:
-	mutmut run
+	$(MUTMUT_GUARD) mutmut run
 
 # bot/_impl.py is the renamed `bot.py` (sacred per CLAUDE.md). Syntax-check
 # before any push that touches it OR bot/constants.py (Bit 3.1: module-level

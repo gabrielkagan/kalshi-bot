@@ -46,6 +46,8 @@ REQUIRED_TARGETS = (
 PILLAR_5_TARGETS = (
     "test-unit",
     "test-contract",
+    "test-contract-pytest",
+    "test-contract-lint",
     "test-equivalence",
     "test-integration",
     "test-affected",
@@ -485,8 +487,8 @@ def test_test_fast_aliases_test_unit():
 
 
 def test_test_contract_invokes_pytest_and_lint_imports():
-    """test-contract must run the contract-tier pytest selection AND the
-    Pillar 2 import-linter CLI.
+    """test-contract must gate both the contract-tier pytest selection
+    AND the Pillar 2 import-linter CLI.
 
     The contract tier's two halves:
       1. Pytest suite — public_api snapshot (Pillar 1), AST guards,
@@ -494,8 +496,45 @@ def test_test_contract_invokes_pytest_and_lint_imports():
       2. Pillar 2 layering contracts via `lint-imports` (or the
          `$(LINT_IMPORTS)` Make-variable resolution form for macOS
          user-site installs).
+
+    Two valid shapes pass this test:
+      (a) Monolithic: `test-contract` recipe directly invokes both
+          pytest and lint-imports (pre-86b9vgh3t shape).
+      (b) Split (post-86b9vgh3t): `test-contract` orchestrates
+          `test-contract-pytest` (recipe contains pytest + $(CONTRACT_FILES))
+          and `test-contract-lint` (recipe contains lint-imports /
+          $(LINT_IMPORTS)). The orchestrator chains both via `$(MAKE)`
+          so a failure in either half aborts the next via Make's
+          fail-on-nonzero. CI splits these into two distinct steps so
+          a red status unambiguously points at one half (see
+          test_pillar_5_workflow_calls_contract_split).
     """
     recipe = _recipe_for("test-contract")
+    # Detect shape: split has `$(MAKE) test-contract-pytest` chaining.
+    if "test-contract-pytest" in recipe:
+        # Shape (b) — split. Validate both child recipes carry the
+        # load-bearing invocations.
+        assert "test-contract-lint" in recipe, (
+            "Split test-contract orchestrator references "
+            "test-contract-pytest but not test-contract-lint. Both "
+            "halves must chain for the tier to gate completely."
+        )
+        pytest_recipe = _recipe_for("test-contract-pytest")
+        assert "pytest" in pytest_recipe, (
+            f"test-contract-pytest recipe must invoke pytest. "
+            f"Recipe was: {pytest_recipe!r}"
+        )
+        assert "$(CONTRACT_FILES)" in pytest_recipe or "tests/contracts" in pytest_recipe, (
+            f"test-contract-pytest recipe must select the contract-tier "
+            f"pytest files. Recipe was: {pytest_recipe!r}"
+        )
+        lint_recipe = _recipe_for("test-contract-lint")
+        assert "lint-imports" in lint_recipe or "LINT_IMPORTS" in lint_recipe, (
+            f"test-contract-lint recipe must invoke lint-imports. "
+            f"Recipe was: {lint_recipe!r}"
+        )
+        return
+    # Shape (a) — monolithic.
     assert "pytest" in recipe, "test-contract recipe must invoke pytest."
     assert "$(CONTRACT_FILES)" in recipe or "tests/contracts" in recipe, (
         f"test-contract recipe must select the contract-tier pytest "
@@ -507,6 +546,97 @@ def test_test_contract_invokes_pytest_and_lint_imports():
     assert "lint-imports" in recipe or "LINT_IMPORTS" in recipe, (
         f"test-contract recipe must invoke lint-imports (Pillar 2). "
         f"Recipe was: {recipe!r}"
+    )
+
+
+def test_test_contract_pytest_and_lint_split_targets_exist():
+    """Ticket 86b9vgh3t: split CI contract step into pytest + lint halves.
+
+    The two halves were originally chained inside a single
+    `test-contract` recipe; this conflated CI failure attribution
+    (operator couldn't tell pytest vs lint-imports failure at a glance).
+    After 86b9vgh3t, the Makefile ships THREE targets:
+      * test-contract-pytest — pytest -m "not fragile" $(CONTRACT_FILES)
+      * test-contract-lint   — $(LINT_IMPORTS)
+      * test-contract        — orchestrator that chains both via $(MAKE)
+
+    CI workflows wire `Contract tier — pytest` and `Contract tier —
+    import-linter` as separate steps so red status points at the
+    failing half.
+    """
+    text = _content()
+    for tgt, must_contain in (
+        ("test-contract-pytest", ("pytest", "$(CONTRACT_FILES)")),
+        ("test-contract-lint", ("lint-imports",)),  # OR LINT_IMPORTS
+    ):
+        assert re.search(rf"^{re.escape(tgt)}:(?!=)", text, re.M), (
+            f"Missing Makefile target {tgt!r} (ticket 86b9vgh3t — split "
+            f"contract step). Expected the recipe to wrap "
+            f"{' / '.join(must_contain)!r}."
+        )
+        recipe = _recipe_for(tgt)
+        if tgt == "test-contract-lint":
+            assert "lint-imports" in recipe or "LINT_IMPORTS" in recipe, (
+                f"{tgt} recipe doesn't invoke lint-imports. Recipe: {recipe!r}"
+            )
+        else:
+            for token in must_contain:
+                assert token in recipe, (
+                    f"{tgt} recipe missing {token!r}. Recipe: {recipe!r}"
+                )
+    # Orchestrator must chain both via $(MAKE) so each failure aborts
+    # the next (Make's default fail-on-nonzero). Inline `$(LINT_IMPORTS)`
+    # in the same recipe would re-monolithize.
+    orchestrator = _recipe_for("test-contract")
+    assert "test-contract-pytest" in orchestrator, (
+        "test-contract orchestrator must chain test-contract-pytest. "
+        f"Recipe was: {orchestrator!r}"
+    )
+    assert "test-contract-lint" in orchestrator, (
+        "test-contract orchestrator must chain test-contract-lint. "
+        f"Recipe was: {orchestrator!r}"
+    )
+
+
+@pytest.mark.parametrize("wf_name", ["test.yml", "deploy.yml"])
+def test_pillar_5_workflow_calls_contract_split(wf_name):
+    """Ticket 86b9vgh3t: both CI workflows must surface the contract
+    split as TWO distinct steps so a red check unambiguously identifies
+    pytest-half vs import-linter-half.
+
+    Expected steps (names match the strings the operator sees in the
+    GitHub Actions UI):
+      * `Contract tier — pytest` running `make test-contract-pytest`
+      * `Contract tier — import-linter` running `make test-contract-lint`
+
+    The em-dash (U+2014) is the canonical separator used by sibling
+    tier step names ("Unit tier (Pillar 5)" vs "Contract tier —
+    pytest") — accept either em-dash or ASCII `-` for resilience.
+    """
+    wf_path = REPO_ROOT / ".github" / "workflows" / wf_name
+    assert wf_path.exists(), f"{wf_name} missing at expected path."
+    text = wf_path.read_text()
+    # Pytest half — name + run line within the same step block.
+    # Use a small "name then run" window match so a typo'd `run` on
+    # an unrelated step can't false-pass.
+    pytest_step = re.search(
+        r"- name:\s*Contract tier[^\n]*pytest[^\n]*\n(?:[^\n]*\n){0,6}?\s*run:\s*make\s+test-contract-pytest(?![\w-])",
+        text,
+    )
+    assert pytest_step, (
+        f"{wf_name} missing `Contract tier — pytest` step with "
+        f"`run: make test-contract-pytest`. Ticket 86b9vgh3t requires "
+        f"two distinct contract steps so red status unambiguously "
+        f"points at pytest-half vs import-linter-half."
+    )
+    lint_step = re.search(
+        r"- name:\s*Contract tier[^\n]*(?:import-linter|lint)[^\n]*\n(?:[^\n]*\n){0,6}?\s*run:\s*make\s+test-contract-lint(?![\w-])",
+        text,
+    )
+    assert lint_step, (
+        f"{wf_name} missing `Contract tier — import-linter` step with "
+        f"`run: make test-contract-lint`. Ticket 86b9vgh3t requires "
+        f"the lint half to live in its own CI step."
     )
 
 
@@ -640,17 +770,64 @@ def test_pillar_5_workflow_calls_tier_targets(wf_name, blocking_integration):
     # (R3 MAJOR fix). The negative lookahead requires the match end
     # at a non-identifier character — whitespace, end-of-line, or
     # punctuation.
+    #
+    # Ticket 86b9vgh3t: `test-contract` is satisfied by EITHER the
+    # orchestrator (`run: make test-contract`) OR the split halves
+    # (`run: make test-contract-pytest` AND `run: make
+    # test-contract-lint`). CI uses the split form so red status
+    # unambiguously identifies the failing half; either form
+    # preserves the local `make test` orchestration symmetry.
     for tier in ("test-unit", "test-contract", "test-equivalence", "test-integration"):
-        assert re.search(rf"run:\s*make\s+{re.escape(tier)}(?![\w-])", text), (
+        direct = re.search(rf"run:\s*make\s+{re.escape(tier)}(?![\w-])", text)
+        if direct:
+            continue
+        # Fall-through only legal for `test-contract` (split form).
+        if tier == "test-contract":
+            pytest_half = re.search(r"run:\s*make\s+test-contract-pytest(?![\w-])", text)
+            lint_half = re.search(r"run:\s*make\s+test-contract-lint(?![\w-])", text)
+            if pytest_half and lint_half:
+                continue
+            assert False, (
+                f"{wf_name} missing `run: make test-contract` step AND "
+                f"neither the test-contract-pytest+test-contract-lint "
+                f"split pair is present. Ticket 86b9vgh3t allows either "
+                f"the orchestrator OR the split halves; CI must invoke "
+                f"one of those shapes."
+            )
+        assert False, (
             f"{wf_name} missing `run: make {tier}` step. Pillar 5 "
             f"requires CI to invoke each tier target so the local "
             f"`make test` orchestration matches the CI gate behavior."
         )
     # Asymmetric integration policy. Find the integration step block
     # and inspect its `continue-on-error` setting. Step block ends at
-    # the next `- name:` line OR end of file.
+    # the next `- name:` line at THE SAME INDENT LEVEL, the next
+    # job-level `<word>:` declaration (e.g. `deploy:` in deploy.yml),
+    # OR end of file. Ticket 86b9vggzr: the prior `\n\s*- name:`
+    # boundary was too loose — in deploy.yml the next `- name:` is in
+    # the SEPARATE `deploy:` job, so the integration-step capture
+    # bled across the job boundary. A `continue-on-error: true`
+    # placed on the deploy: job (not on the integration step) would
+    # then falsely satisfy the PR-gate-informational assertion.
+    #
+    # Boundaries (any one ends the block):
+    #   * `\n      - name:`  — next step at the same step indent
+    #     (steps under `jobs.<job>.steps:` are at 6 spaces in this
+    #     repo's workflow style: 2 for `jobs:`, 2 for `<job>:`, 2 for
+    #     `steps:`).
+    #   * `\n  [\w-]+:`      — next job-level key (2-space indent).
+    #     R1 fu (86b9vgh3t R1): hyphens in job names are valid GitHub
+    #     Actions syntax (`lint-and-test:`, `deploy-vps:`,
+    #     `build-and-push:`). The prior `\w+` was `[A-Za-z0-9_]` which
+    #     does NOT match hyphens — a hyphenated sibling job would slip
+    #     past the boundary and the regex would bleed into it, picking
+    #     up a misplaced `continue-on-error: true` and false-passing
+    #     the blocking-integration assertion. `[\w-]+` adds hyphen
+    #     explicitly; captures `deploy:`, `lint-and-test:`,
+    #     `deploy-vps:`, any future sibling job (hyphenated or not).
+    #   * `\Z`               — end of file.
     integration_match = re.search(
-        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n\s*- name:|\Z)",
+        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n      - name:|\n  [\w-]+:|\Z)",
         text,
     )
     assert integration_match, (
@@ -677,6 +854,177 @@ def test_pillar_5_workflow_calls_tier_targets(wf_name, blocking_integration):
             f"tests don't block every PR. Either add the line or "
             f"document the spec change."
         )
+
+
+def test_integration_step_regex_rejects_cross_job_continue_on_error():
+    """Ticket 86b9vggzr: regression — `continue-on-error: true` placed
+    on the deploy: JOB (sibling to test: job) must NOT false-pass as
+    if it applied to the integration STEP inside the test: job.
+
+    Before the fix, the boundary `(?=\\n\\s*- name:|\\Z)` would scan
+    forward from the integration step in test: through the YAML
+    document to find the next `- name:` line. In deploy.yml that next
+    `- name:` is `- name: Deploy to VPS` inside the `deploy:` job —
+    so the captured "integration step block" actually included
+    everything in between: the rest of the test: job's steps, the
+    blank line, AND any top-level keys placed on the deploy: job
+    (continue-on-error, environment, env, etc.).
+
+    The fix narrows the boundary to:
+      * `\\n      - name:` (next step at same indent), OR
+      * `\\n  [\\w-]+:` (next job-level declaration at 2-space indent), OR
+      * `\\Z` (EOF).
+
+    R1 follow-up (86b9vgh3t R1): the boundary character class was
+    widened from `\\w+` to `[\\w-]+` to cover hyphenated GitHub Actions
+    job names (`lint-and-test`, `deploy-vps`, `build-and-push`). The
+    earlier `\\w+` is `[A-Za-z0-9_]`, which does NOT match hyphens — a
+    hyphenated sibling job would slip past the boundary and the
+    regex would bleed into it. See
+    `test_integration_step_regex_rejects_cross_job_continue_on_error_hyphenated_job`
+    below for the witness.
+
+    This regression test builds a synthetic deploy.yml-shaped string
+    with the integration step CORRECTLY blocking (no continue-on-error
+    inside) but a misplaced `continue-on-error: true` on the deploy:
+    job. The tightened boundary must stop the capture at `deploy:`,
+    so `has_continue_on_error` for the integration block is False,
+    so the blocking-integration assertion succeeds. The loose boundary
+    would extend past deploy: and pick up its continue-on-error,
+    flipping the assertion to false-pass-as-informational on a
+    blocking workflow.
+    """
+    # Synthetic workflow text that mirrors deploy.yml's two-job
+    # layout. The integration step has NO continue-on-error (the
+    # blocking-deploy contract). The misplaced flag is on `deploy:`.
+    synthetic = (
+        "name: Deploy to VPS\n"
+        "jobs:\n"
+        "  test:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: Integration tier (Pillar 5 — BLOCKING on deploy)\n"
+        "        run: make test-integration\n"
+        "\n"
+        "  deploy:\n"
+        "    needs: test\n"
+        "    continue-on-error: true  # MISPLACED — applies to job, not step\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: Deploy to VPS\n"
+        "        run: echo deploy\n"
+    )
+    # Tightened regex (must match the production regex in
+    # test_pillar_5_workflow_calls_tier_targets).
+    integration_match = re.search(
+        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n      - name:|\n  [\w-]+:|\Z)",
+        synthetic,
+    )
+    assert integration_match, "Tightened regex failed to match the integration step at all."
+    block = integration_match.group(1)
+    # The block MUST NOT contain `continue-on-error: true` (it lives on
+    # the deploy: job, two indent levels out and AFTER the boundary).
+    assert "continue-on-error" not in block, (
+        f"Integration-step regex bled across job boundary into deploy: — "
+        f"captured `continue-on-error` that lives on a sibling job. This "
+        f"is the 86b9vggzr false-pass that the tightened boundary "
+        f"prevents. Block was: {block!r}"
+    )
+    # And the loose regex (pre-fix) DOES exhibit the bug — keep this
+    # half of the test as a forward-locked witness that the fix is
+    # load-bearing. If a future change reverts the boundary, this
+    # assertion is what alerts. Without it, a silent revert to the
+    # loose pattern would leave only the positive half passing.
+    loose_match = re.search(
+        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n\s*- name:|\Z)",
+        synthetic,
+    )
+    assert loose_match, "Sanity: loose regex should still match."
+    loose_block = loose_match.group(1)
+    assert "continue-on-error" in loose_block, (
+        "Loose regex no longer exhibits the cross-job bleed — synthetic "
+        "fixture has drifted away from the bug shape it was meant to "
+        "demonstrate. If the loose pattern was retired entirely, this "
+        "assertion is the canary; refresh the synthetic to a current "
+        "false-pass shape OR delete this half of the test."
+    )
+
+
+def test_integration_step_regex_rejects_cross_job_continue_on_error_hyphenated_job():
+    """Ticket 86b9vgh3t R1: regression — hyphenated sibling job names
+    (`lint-and-test`, `deploy-vps`, `build-and-push`) must NOT slip
+    past the job-boundary regex.
+
+    Before this R1 fix, the boundary character class was `\\w+` which
+    is `[A-Za-z0-9_]` — does NOT match hyphens. A real-world workflow
+    with a hyphenated sibling job (very common in GitHub Actions) would
+    bleed past `\\n  lint-and-test:` because `\\w+` stops at the first
+    `-`. The regex would then extend past the job boundary and pick
+    up a misplaced `continue-on-error: true` on the sibling job,
+    false-passing the blocking-integration assertion on a real
+    blocking workflow.
+
+    The R1 fix widens the boundary to `[\\w-]+` so hyphens are part of
+    the valid job-name run. This synthetic mirrors a plausible
+    deploy.yml shape where the sibling job uses a hyphenated name.
+    """
+    # Synthetic with a hyphenated sibling job. Integration step in
+    # `test:` has NO continue-on-error (blocking contract). Misplaced
+    # flag is on `lint-and-test:` — same shape as the deploy.yml-job
+    # attack, but with a hyphenated name that the pre-fix `\w+` would
+    # have failed to terminate on.
+    synthetic_hyphenated = (
+        "name: CI\n"
+        "jobs:\n"
+        "  test:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: Integration tier (Pillar 5 — BLOCKING)\n"
+        "        run: make test-integration\n"
+        "\n"
+        "  lint-and-test:\n"
+        "    continue-on-error: true  # MISPLACED — applies to hyphenated job, not step\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: Run lint\n"
+        "        run: make lint\n"
+    )
+    # Tightened regex (must match production regex in
+    # test_pillar_5_workflow_calls_tier_targets).
+    fixed_match = re.search(
+        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n      - name:|\n  [\w-]+:|\Z)",
+        synthetic_hyphenated,
+    )
+    assert fixed_match, "Tightened regex failed to match the integration step at all."
+    fixed_block = fixed_match.group(1)
+    # The block MUST NOT contain `continue-on-error: true` — boundary
+    # correctly stops at `\n  lint-and-test:` (now that `[\w-]+`
+    # accepts the hyphen).
+    assert "continue-on-error" not in fixed_block, (
+        f"Integration-step regex bled across job boundary into "
+        f"hyphenated sibling `lint-and-test:` — captured "
+        f"`continue-on-error` that lives on a sibling job. R1 86b9vgh3t "
+        f"widened the boundary char class from `\\w+` to `[\\w-]+` to "
+        f"prevent this; if this assertion fires, the boundary has been "
+        f"reverted. Block was: {fixed_block!r}"
+    )
+    # And the pre-fix `\w+` boundary DOES exhibit the bug on this
+    # hyphenated synthetic — forward-locked witness that the
+    # `[\w-]+` fix is load-bearing.
+    pre_fix_match = re.search(
+        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n      - name:|\n  \w+:|\Z)",
+        synthetic_hyphenated,
+    )
+    assert pre_fix_match, "Sanity: pre-fix regex should still match."
+    pre_fix_block = pre_fix_match.group(1)
+    assert "continue-on-error" in pre_fix_block, (
+        "Pre-fix `\\w+` regex no longer exhibits the hyphenated-sibling "
+        "bleed — synthetic fixture has drifted away from the bug shape "
+        "it was meant to demonstrate. If the pre-fix pattern was "
+        "retired entirely, this assertion is the canary; refresh the "
+        "synthetic to a current false-pass shape OR delete this half "
+        "of the test."
+    )
 
 
 def test_cwd_guard_fires_when_invoked_outside_repo_root():
@@ -802,12 +1150,21 @@ def test_help_lists_all_targets():
     naive `tgt in help_body` check false-passes for `tgt='test'` because
     the help body always contains `'make test-fast'` and `'tests'` —
     so a renamed `test:` target with no help line would slip through.
+
+    Special-cased: test-contract-pytest + test-contract-lint are
+    PLUMBING targets surfaced via the `test-contract` orchestrator —
+    operators invoke `make test-contract` and CI splits the two halves
+    into distinct steps; neither plumbing target needs a top-level help
+    line. test-fast is a back-compat alias and is also exempted.
     """
     text = _content()
     m = re.search(r"^help:[^\n]*\n((?:[ \t]+[^\n]*\n?)+)", text, re.M)
     assert m, "help: recipe not found."
     help_body = m.group(1)
+    PLUMBING = {"test-contract-pytest", "test-contract-lint"}
     for tgt in ALL_TARGETS:
+        if tgt in PLUMBING:
+            continue
         # `make <tgt>` followed by whitespace/end-of-line. Hyphens are
         # not regex word-boundary chars on the right side, so we match
         # whitespace explicitly.
@@ -815,3 +1172,177 @@ def test_help_lists_all_targets():
             f"help: recipe doesn't mention `make {tgt}`. A contributor "
             f"running `make` would not discover this target."
         )
+
+
+# ----- Ticket 86b9vgh1a: cross-platform flock-style guard for mutmut -----
+
+MUTMUT_LOCK_SCRIPT = REPO_ROOT / "scripts" / "_mutmut_lock.py"
+
+
+def test_mutmut_lock_wrapper_script_exists():
+    """Ticket 86b9vgh1a: cross-platform mutmut lock wrapper.
+
+    Linux ships `flock(1)` in /usr/bin; macOS does NOT. The dev box
+    is macOS, so a Linux-only `flock --nonblock --exclusive` recipe
+    would silently no-op (or error opaquely) when an operator runs
+    `make test-mutmut` locally. Solution: a Python wrapper using
+    `fcntl.flock` — which is in Python's stdlib on both darwin and
+    Linux — guards the same coordination primitive.
+    """
+    assert MUTMUT_LOCK_SCRIPT.exists(), (
+        f"Missing {MUTMUT_LOCK_SCRIPT.relative_to(REPO_ROOT)!s}. "
+        f"Ticket 86b9vgh1a requires a fcntl-based wrapper to gate "
+        f"`make test-mutmut` / test-equivalence / test-integration "
+        f"against concurrent invocation that would race against "
+        f"mutmut's in-place mutations of bot/engines/."
+    )
+
+
+def test_mutmut_lock_wrapper_uses_fcntl():
+    """The wrapper must use fcntl.flock (cross-platform stdlib) — not
+    a wrapper around the Linux-only `flock(1)` binary.
+
+    Substring check: the script body must `import fcntl` and call
+    `fcntl.flock(...)` with LOCK_EX (exclusive) + LOCK_NB (non-block).
+    """
+    body = MUTMUT_LOCK_SCRIPT.read_text()
+    assert "import fcntl" in body or "from fcntl" in body, (
+        f"{MUTMUT_LOCK_SCRIPT.name} must import fcntl. Body had no "
+        f"`import fcntl` line — wrapper would not work on macOS if it "
+        f"shells out to flock(1)."
+    )
+    assert "fcntl.flock" in body, (
+        f"{MUTMUT_LOCK_SCRIPT.name} must call fcntl.flock(...). "
+        f"Body had no such call."
+    )
+    # LOCK_EX (exclusive) + LOCK_NB (non-block). Non-block is critical:
+    # without it, contending invocations BLOCK indefinitely, which
+    # masks the bug rather than fails loudly.
+    assert "LOCK_EX" in body, (
+        f"{MUTMUT_LOCK_SCRIPT.name} must use fcntl.LOCK_EX (exclusive). "
+        f"Without exclusivity, two mutmut runs could acquire the lock "
+        f"simultaneously."
+    )
+    assert "LOCK_NB" in body, (
+        f"{MUTMUT_LOCK_SCRIPT.name} must use fcntl.LOCK_NB (non-block) "
+        f"so a contended invocation FAILS FAST rather than blocking "
+        f"silently. Blocking would mask the concurrency bug."
+    )
+
+
+def test_mutmut_lock_recipes_guard_long_running_tiers():
+    """Ticket 86b9vgh1a: test-mutmut + test-equivalence + test-integration
+    Makefile recipes must invoke the lock wrapper.
+
+    These are the three recipes that either mutate
+    bot/engines/{volatility,probability}.py in-place (test-mutmut) or
+    read those files during a test run (test-equivalence,
+    test-integration). Without the guard, a background `make
+    test-mutmut` clobbers an in-progress equivalence/integration run.
+
+    Variable-resolution aware: the recipe may invoke the script
+    directly (`python scripts/_mutmut_lock.py ...`) OR via a Make
+    variable (`$(MUTMUT_GUARD) ...`) whose body expands to the same
+    script invocation. Both shapes are valid.
+    """
+    text = _content()
+    for tgt in ("test-mutmut", "test-equivalence", "test-integration"):
+        recipe = _recipe_for(tgt)
+        if "_mutmut_lock.py" in recipe:
+            continue
+        # Variable-resolution path: find `$(VAR)` refs in the recipe
+        # and check if any resolves to a value containing
+        # `_mutmut_lock.py`.
+        var_refs = re.findall(r"\$\(([A-Za-z_][A-Za-z0-9_]*)\)", recipe)
+        resolved = False
+        for var in var_refs:
+            m = re.search(rf"^{re.escape(var)}\s*[:?]?=\s*(.+)$", text, re.M)
+            if m and "_mutmut_lock.py" in m.group(1):
+                resolved = True
+                break
+        assert resolved, (
+            f"{tgt} recipe does not invoke scripts/_mutmut_lock.py "
+            f"directly or via a Make variable that resolves to it. "
+            f"Ticket 86b9vgh1a requires all three long-running tier "
+            f"recipes to acquire the lock so concurrent invocations "
+            f"fail-fast rather than corrupting each other. Recipe was: "
+            f"{recipe!r}"
+        )
+
+
+def test_mutmut_lock_contention_fails_fast_not_blocks():
+    """Functional regression: two concurrent invocations of the lock
+    wrapper must NOT both succeed; the contender must exit non-zero
+    with a clear stderr message.
+
+    Spawn two subprocess.Popen wrappers around `_mutmut_lock.py`. The
+    first runs a 2-second `sleep` (holds the lock); the second tries
+    to acquire and run `true` (would succeed if the lock weren't held).
+
+    Expected:
+      * Holder exits 0 (sleep completes).
+      * Contender exits NON-ZERO and stderr mentions "lock" / "busy" /
+        "contention" (operator-readable signal).
+    """
+    if not MUTMUT_LOCK_SCRIPT.exists():
+        pytest.skip("Lock wrapper not yet implemented.")
+    python = shutil.which("python3") or shutil.which("python")
+    if python is None:
+        pytest.skip("No python interpreter on PATH.")
+    with tempfile.TemporaryDirectory() as td:
+        lock_path = Path(td) / "test.lock"
+        # Holder: 2s sleep. Use `sh -c sleep 2` so the wrapper has a
+        # real subprocess to exec into (mirrors mutmut run shape).
+        holder = subprocess.Popen(
+            [python, str(MUTMUT_LOCK_SCRIPT), "acquire", str(lock_path), "--", "sh", "-c", "sleep 2"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        # Give the holder ~200ms to acquire before contender attempts.
+        # Polling for the lockfile to exist would be more deterministic
+        # but fcntl-style flock holds the kernel-level lock on the FD
+        # without necessarily creating a separate sentinel file, so a
+        # short fixed wait is the pragmatic choice for this regression.
+        import time as _time
+        _time.sleep(0.3)
+        contender = subprocess.run(
+            [python, str(MUTMUT_LOCK_SCRIPT), "acquire", str(lock_path), "--", "true"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        holder_stdout, holder_stderr = holder.communicate(timeout=10)
+    assert holder.returncode == 0, (
+        f"Holder invocation failed unexpectedly. exit={holder.returncode}, "
+        f"stdout={holder_stdout!r}, stderr={holder_stderr!r}"
+    )
+    assert contender.returncode != 0, (
+        f"Contender acquired lock while holder was active — exit 0. "
+        f"fcntl.flock with LOCK_NB should reject concurrent acquisition. "
+        f"stdout={contender.stdout!r}, stderr={contender.stderr!r}"
+    )
+    # Stderr message must mention something operator-actionable.
+    combined = (contender.stdout + contender.stderr).lower()
+    assert any(token in combined for token in ("lock", "busy", "contention", "another")), (
+        f"Contender error message is unhelpful — operator can't tell "
+        f"this is a lock contention. stderr={contender.stderr!r}"
+    )
+
+
+def test_gitignore_covers_mutmut_lock_file():
+    """Ticket 86b9vgh1a: the .mutmut.lock sentinel must be gitignored.
+
+    fcntl.flock locks an FD, not a path — but the wrapper still creates
+    a sentinel file at the lock path so the FD can be opened. A stray
+    `.mutmut.lock` in `git status` is noise (and on macOS, iCloud Drive
+    spawns `.mutmut 2.lock` conflict copies of any unignored lockfile).
+    """
+    gitignore = (REPO_ROOT / ".gitignore").read_text()
+    # Accept any pattern that ends in `.mutmut.lock` — bare filename,
+    # leading `/`, leading `**/`. The existing `.claude/scheduled_tasks*.lock`
+    # entry is for a DIFFERENT lockfile and does NOT cover this one.
+    assert re.search(r"(^|/|\*)\.mutmut\.lock\b", gitignore, re.M), (
+        f".gitignore doesn't cover `.mutmut.lock`. Ticket 86b9vgh1a "
+        f"requires it so the lockfile sentinel doesn't show up in "
+        f"`git status` after a `make test-mutmut` invocation."
+    )

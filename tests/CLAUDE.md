@@ -49,11 +49,19 @@ launched in the background. Output goes to `mutants/` (gitignored). The
 baseline tally lives in `kb/findings/mutmut-baseline-<date>.md`. Per
 ticket 86b9ve11y AC: re-run is human-driven, not part of the agent loop.
 
-**Don't run `make test-mutmut` in parallel with the test tiers.** Mutmut
-mutates the engine files in-place between runs; `make test-integration`
-or `make test-equivalence` running concurrently will see the mutated
-source and surface false failures. Either run mutmut alone, or run it
-in a separate worktree.
+**Concurrency guard (ticket 86b9vgh1a).** `make test-mutmut`,
+`make test-equivalence`, and `make test-integration` all acquire an
+exclusive `fcntl.flock(LOCK_EX | LOCK_NB)` on `.mutmut.lock` (repo
+root, gitignored) via `scripts/_mutmut_lock.py` before they run. If
+one is already active, the contender exits non-zero with a clear
+"another mutmut/tier-test invocation holds the lock" error to
+stderr. This replaces the prior honor-system "don't run in parallel"
+warning — mutmut's in-place mutation of `bot/engines/` would
+otherwise corrupt a parallel reader's source view. The wrapper uses
+Python's stdlib `fcntl` (not `flock(1)`, which is Linux-only) so the
+guard works identically on darwin and Linux. To debug a stuck lock:
+`lsof .mutmut.lock` shows the holder PID; the lockfile also contains
+the holder PID as a body (advisory).
 
 ### Deploy failed at integration tier (operator runbook)
 
