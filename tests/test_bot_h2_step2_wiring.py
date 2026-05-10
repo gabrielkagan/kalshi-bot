@@ -32,7 +32,15 @@ import bot_state_snapshot  # noqa: E402
 
 @pytest.fixture(scope="module")
 def bot_py_source() -> str:
-    return (ROOT / "bot/_impl.py").read_text()
+    """Bit 7.1 retarget (2026-05-10): StateManager (incl. set_bot_state_provider
+    and the insert_evaluated_opportunity timing wiring this test pins) moved
+    to bot/state.py. Concat both so any non-StateManager pattern from
+    bot/_impl.py also resolves."""
+    return (
+        (ROOT / "bot/_impl.py").read_text()
+        + "\n"
+        + (ROOT / "bot/state.py").read_text()
+    )
 
 
 # ── Helper module location ───────────────────────────────────────────────

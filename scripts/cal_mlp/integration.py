@@ -375,13 +375,46 @@ def _verify_wal(conn) -> None:
         )
 
 
-def parity_assert(bot_globals: dict, conn) -> str:
-    """Cross-check vendored cal_mlp constants against bot.py globals.
-    bot_globals: caller passes vars() / globals() of the bot module.
-    Raises CalMLPParityError on drift; logs sentinel row to bot_startup_log.
+def parity_assert(conn) -> tuple:
+    """Cross-check vendored cal_mlp constants against bot.constants + config.
+
+    Bit 7.1 path-A++ (2026-05-10): refactored to drop the `bot_globals` param.
+    Constants are imported directly from `bot.constants` and `config` inside
+    the function body — no caller-passed globals dict, no laundered-namespace
+    coupling. Cross-call state (rowid for sizing_parity_assert's UPDATE) is
+    returned as a tuple instead of mutating the caller's namespace.
+
+    Returns: (status: 'passed'|'failed', rowid: int)
+    Raises: CalMLPParityError on drift; logs sentinel row to bot_startup_log.
 
     R-p7-r2#C1: invokes _verify_wal(conn) FIRST per CLAUDE.md anti-deadlock
     rule — any sqlite write must run on a WAL+busy_timeout connection."""
+    # Function-scoped imports per Bit 7.1 path-A++ (lifts the bot_globals
+    # parameter dependency). Ordering: bot.constants first (most names),
+    # config second (drawdown thresholds + sizing tiers + MAX_RISK_PER_TRADE).
+    from bot.constants import (
+        BTC_MIN_ENTRY_PRICE, ETH_MIN_ENTRY_PRICE, SOL_MIN_ENTRY_PRICE, XRP_MIN_ENTRY_PRICE,
+        MIN_ENTRY_PRICE,
+        BTC_MAX_RISK_PER_TRADE, ETH_MAX_RISK_PER_TRADE, SOL_MAX_RISK_PER_TRADE, XRP_MAX_RISK_PER_TRADE,
+        MIN_EDGE_BY_PRICE,
+        WEEKEND_EDGE_DISCOUNT, WEEKEND_EDGE_FLOOR, OVERNIGHT_EDGE_DISCOUNT,
+        STC_SIZING_SCALER_KNEE, STC_SIZING_SCALER_ENABLED,
+        STC_EXTENDED_BTC_MIN_PRICE, STC_EXTENDED_ETH_MIN_PRICE,
+        STC_EXTENDED_SOL_MIN_PRICE, STC_EXTENDED_XRP_MIN_PRICE,
+        STC_EXTENDED_BUFFER_RESCUE,
+        HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES,
+    )
+    from config import (
+        SIZING_TIERS, MAX_RISK_PER_TRADE,
+        DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD, DRAWDOWN_HALT_THRESHOLD,
+    )
+    # DRAWDOWN_HALT_FLOOR is in NEITHER bot.constants nor config.py at the
+    # time of Bit 7.1 ship. The literal 0.10 mirrors the pre-refactor
+    # `bot_globals.get('DRAWDOWN_HALT_FLOOR', 0.10)` fallback semantics.
+    # (Operator may promote DRAWDOWN_HALT_FLOOR=0.10 to config.py in a
+    # future bit; this fallback then becomes a no-op redundancy.)
+    DRAWDOWN_HALT_FLOOR = 0.10
+
     _verify_wal(conn)
     cmc = _import_cal_mlp_constants()
 
@@ -392,61 +425,51 @@ def parity_assert(bot_globals: dict, conn) -> str:
         if expected != actual:
             failures.append(f"{label}: bot={expected!r} cal_mlp={actual!r}")
 
-    g = bot_globals  # shorthand
-
-    # Asset floors (bot.py:219-225)
+    # Asset floors (bot.constants origin)
     _check("ASSET_FLOORS",
-           {'BTC': g['BTC_MIN_ENTRY_PRICE'], 'ETH': g['ETH_MIN_ENTRY_PRICE'],
-            'SOL': g['SOL_MIN_ENTRY_PRICE'], 'XRP': g['XRP_MIN_ENTRY_PRICE']},
+           {'BTC': BTC_MIN_ENTRY_PRICE, 'ETH': ETH_MIN_ENTRY_PRICE,
+            'SOL': SOL_MIN_ENTRY_PRICE, 'XRP': XRP_MIN_ENTRY_PRICE},
            cmc['ASSET_FLOORS'])
-    _check("GLOBAL_MIN_ENTRY_PRICE", g['MIN_ENTRY_PRICE'], cmc['GLOBAL_MIN_ENTRY_PRICE'])
+    _check("GLOBAL_MIN_ENTRY_PRICE", MIN_ENTRY_PRICE, cmc['GLOBAL_MIN_ENTRY_PRICE'])
 
     # Sizing
-    _check("SIZING_TIERS", g['SIZING_TIERS'], cmc['SIZING_TIERS'])
+    _check("SIZING_TIERS", SIZING_TIERS, cmc['SIZING_TIERS'])
     _check("ASSET_MAX_RISK_PER_TRADE",
-           {'BTC': g['BTC_MAX_RISK_PER_TRADE'], 'ETH': g['ETH_MAX_RISK_PER_TRADE'],
-            'SOL': g['SOL_MAX_RISK_PER_TRADE'], 'XRP': g['XRP_MAX_RISK_PER_TRADE']},
+           {'BTC': BTC_MAX_RISK_PER_TRADE, 'ETH': ETH_MAX_RISK_PER_TRADE,
+            'SOL': SOL_MAX_RISK_PER_TRADE, 'XRP': XRP_MAX_RISK_PER_TRADE},
            cmc['ASSET_MAX_RISK_PER_TRADE'])
-    _check("MAX_RISK_PER_TRADE", g['MAX_RISK_PER_TRADE'], cmc['MAX_RISK_PER_TRADE'])
-    _check("DRAWDOWN_HALF_THRESHOLD", g['DRAWDOWN_HALF_THRESHOLD'], cmc['DRAWDOWN_HALF_THRESHOLD'])
-    _check("DRAWDOWN_QUARTER_THRESHOLD", g['DRAWDOWN_QUARTER_THRESHOLD'], cmc['DRAWDOWN_QUARTER_THRESHOLD'])
-    _check("DRAWDOWN_HALT_THRESHOLD", g['DRAWDOWN_HALT_THRESHOLD'], cmc['DRAWDOWN_HALT_THRESHOLD'])
-    # R-p7-r4-cross-phase-v2#M1: explicit check for DRAWDOWN_HALT_FLOOR.
-    # bot.py may not expose this constant (it's hardcoded inside
-    # models.PositionSizer._drawdown_scaler); g.get() with the same fallback
-    # impl uses, so a "constant mismatch" message surfaces here instead of
-    # surfacing ONLY via sizing_parity_assert vec 4 (which is correct but less
-    # specific). Operator may optionally promote DRAWDOWN_HALT_FLOOR=0.10 to
-    # config.py to make this assertion exact rather than fallback-equal.
-    _check("DRAWDOWN_HALT_FLOOR",
-           g.get('DRAWDOWN_HALT_FLOOR', 0.10), cmc['DRAWDOWN_HALT_FLOOR'])
+    _check("MAX_RISK_PER_TRADE", MAX_RISK_PER_TRADE, cmc['MAX_RISK_PER_TRADE'])
+    _check("DRAWDOWN_HALF_THRESHOLD", DRAWDOWN_HALF_THRESHOLD, cmc['DRAWDOWN_HALF_THRESHOLD'])
+    _check("DRAWDOWN_QUARTER_THRESHOLD", DRAWDOWN_QUARTER_THRESHOLD, cmc['DRAWDOWN_QUARTER_THRESHOLD'])
+    _check("DRAWDOWN_HALT_THRESHOLD", DRAWDOWN_HALT_THRESHOLD, cmc['DRAWDOWN_HALT_THRESHOLD'])
+    _check("DRAWDOWN_HALT_FLOOR", DRAWDOWN_HALT_FLOOR, cmc['DRAWDOWN_HALT_FLOOR'])
 
     # Edge schedule
     _check("MIN_EDGE_BY_PRICE",
-           [tuple(x) for x in g['MIN_EDGE_BY_PRICE']],
+           [tuple(x) for x in MIN_EDGE_BY_PRICE],
            [tuple(x) for x in cmc['MIN_EDGE_BY_PRICE_SCHEDULE']])
 
     # Discounts
-    _check("WEEKEND_EDGE_DISCOUNT", g['WEEKEND_EDGE_DISCOUNT'], cmc['WEEKEND_EDGE_DISCOUNT'])
-    _check("WEEKEND_EDGE_FLOOR", g['WEEKEND_EDGE_FLOOR'], cmc['WEEKEND_EDGE_FLOOR'])
-    _check("OVERNIGHT_EDGE_DISCOUNT", g['OVERNIGHT_EDGE_DISCOUNT'], cmc['OVERNIGHT_EDGE_DISCOUNT'])
+    _check("WEEKEND_EDGE_DISCOUNT", WEEKEND_EDGE_DISCOUNT, cmc['WEEKEND_EDGE_DISCOUNT'])
+    _check("WEEKEND_EDGE_FLOOR", WEEKEND_EDGE_FLOOR, cmc['WEEKEND_EDGE_FLOOR'])
+    _check("OVERNIGHT_EDGE_DISCOUNT", OVERNIGHT_EDGE_DISCOUNT, cmc['OVERNIGHT_EDGE_DISCOUNT'])
 
     # STC scaler (R-p7-r3#M2: bool also drives sizing parity)
-    _check("STC_SIZING_SCALER_KNEE", g['STC_SIZING_SCALER_KNEE'], cmc['STC_SIZING_SCALER_KNEE'])
+    _check("STC_SIZING_SCALER_KNEE", STC_SIZING_SCALER_KNEE, cmc['STC_SIZING_SCALER_KNEE'])
     _check("STC_SIZING_SCALER_ENABLED",
-           g['STC_SIZING_SCALER_ENABLED'], cmc['STC_SIZING_SCALER_ENABLED'])
+           STC_SIZING_SCALER_ENABLED, cmc['STC_SIZING_SCALER_ENABLED'])
 
     # STC_EXTENDED
     _check("STC_EXTENDED_PER_ASSET_FLOOR",
-           {'BTC': g['STC_EXTENDED_BTC_MIN_PRICE'], 'ETH': g['STC_EXTENDED_ETH_MIN_PRICE'],
-            'SOL': g['STC_EXTENDED_SOL_MIN_PRICE'], 'XRP': g['STC_EXTENDED_XRP_MIN_PRICE']},
+           {'BTC': STC_EXTENDED_BTC_MIN_PRICE, 'ETH': STC_EXTENDED_ETH_MIN_PRICE,
+            'SOL': STC_EXTENDED_SOL_MIN_PRICE, 'XRP': STC_EXTENDED_XRP_MIN_PRICE},
            cmc['STC_EXTENDED_PER_ASSET_FLOOR'])
     _check("STC_EXTENDED_BUFFER_RESCUE",
-           g['STC_EXTENDED_BUFFER_RESCUE'], cmc['STC_EXTENDED_BUFFER_RESCUE'])
+           STC_EXTENDED_BUFFER_RESCUE, cmc['STC_EXTENDED_BUFFER_RESCUE'])
 
     # HIGH_PRICE_STC_BLOCK
     _check("HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES",
-           g['HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES'],
+           HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES,
            cmc['HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES'])
 
     ts = datetime.now(timezone.utc).isoformat()
@@ -458,32 +481,32 @@ def parity_assert(bot_globals: dict, conn) -> str:
         "INSERT INTO bot_startup_log (parity_check_status, ts, pid) VALUES (?, ?, ?)",
         ('failed' if failures else 'passed', ts, pid),
     )
-    bot_globals['_calmlp_startup_log_rowid'] = cur.lastrowid
+    rowid = cur.lastrowid
     conn.commit()
     if failures:
         raise CalMLPParityError("CALMLP_PARITY FAIL:\n  " + "\n  ".join(failures))
     # R-p7-r3#M5: log the actual count instead of a hardcoded literal so the
     # log line tracks _check() additions/removals.
     logger.info("[CALMLP_PARITY] %d constants verified", _check_count[0])
-    return 'passed'
+    return ('passed', rowid)
 
 
-def sizing_parity_assert(bot_globals: dict, conn) -> str:
+def sizing_parity_assert(conn, *, rowid: int, compute_for_15m_main_path) -> str:
     """8-vector sizing parity (Phase 7 R1#C4).
 
+    Bit 7.1 path-A++ (2026-05-10): refactored to take `rowid` and
+    `compute_for_15m_main_path` as explicit keyword-only parameters, dropping
+    the `bot_globals` dict. Caller (StateManager.__init__ in bot/state.py)
+    captures the rowid from parity_assert's return tuple and passes it here
+    along with the compute_for_15m_main_path callable from bot._impl.
+
     R-p7-r2#C1: WAL pre-check (CLAUDE.md anti-deadlock).
-    R-p7-r2#H1: requires parity_assert to have run first; no fallback INSERT
-    so the test-plan query (`ORDER BY id DESC LIMIT 1`) is guaranteed to
-    return a single row with both columns populated."""
+    R-p7-r2#H1: requires parity_assert to have run first to seed the
+    bot_startup_log row that this function UPDATEs. Path-A++ enforces this
+    contract at the signature level (rowid is required keyword-only)
+    rather than via a runtime check on a globals dict."""
     _verify_wal(conn)
     from sizing import compute_size  # R-p7-r2#M1: module-level sys.path
-
-    g = bot_globals
-    bot_compute = g.get('compute_for_15m_main_path')
-    if bot_compute is None:
-        raise CalMLPParityError(
-            "compute_for_15m_main_path not defined in bot.py — Phase 7 amendment required"
-        )
 
     test_vectors = [
         # (edge_frac, balance, price, cur_bal, hwm, stc, asset, expected)
@@ -502,21 +525,13 @@ def sizing_parity_assert(bot_globals: dict, conn) -> str:
         edge, bal, price, cur_bal, hwm, stc, asset, expected = vec
         cm_result = compute_size(edge, bal, price, cur_bal, hwm,
                                    seconds_to_close=stc, asset=asset)
-        bot_result = bot_compute(edge, bal, price, cur_bal, hwm, stc, asset)
+        bot_result = compute_for_15m_main_path(edge, bal, price, cur_bal, hwm, stc, asset)
         if cm_result.contract_count != bot_result['contracts']:
             failures.append(f"vec={vec}: cal_mlp={cm_result.contract_count} bot={bot_result['contracts']}")
         if expected is not None and cm_result.contract_count != expected:
             failures.append(f"vec={vec}: cal_mlp={cm_result.contract_count} expected={expected}")
 
     # R-p7-impl#C11: UPDATE the same row parity_assert created.
-    # R-p7-r2#H1: hard fail if parity_assert wasn't called first. No fallback
-    # INSERT — that would split the audit row, breaking the test-plan query.
-    rowid = bot_globals.get('_calmlp_startup_log_rowid')
-    if rowid is None:
-        raise CalMLPParityError(
-            "sizing_parity_assert called before parity_assert; "
-            "deploy contract requires parity_assert first to seed bot_startup_log row"
-        )
     status = 'failed' if failures else 'passed'
     conn.execute(
         "UPDATE bot_startup_log SET sizing_parity_status = ? WHERE id = ?",

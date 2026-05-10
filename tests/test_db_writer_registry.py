@@ -361,9 +361,11 @@ def test_writer_module_uses_tracked_write(module_path):
 def test_state_manager_failure_log_includes_writer_snapshot():
     """When insert_evaluated_opportunity fails with database-is-locked,
     the warning log must include `active_writers=...` from
-    snapshot_active(). This is the symptom-to-cause bridge."""
-    bot_impl = (ROOT / "bot" / "_impl.py").read_text()
-    tree = ast.parse(bot_impl)
+    snapshot_active(). This is the symptom-to-cause bridge.
+
+    Bit 7.1 retarget (2026-05-10): StateManager moved to bot/state.py."""
+    state_src = (ROOT / "bot" / "state.py").read_text()
+    tree = ast.parse(state_src)
     func = next(
         (
             n for n in ast.walk(tree)
@@ -373,7 +375,7 @@ def test_state_manager_failure_log_includes_writer_snapshot():
         None,
     )
     assert func is not None, "insert_evaluated_opportunity definition missing"
-    body_src = ast.get_source_segment(bot_impl, func) or ""
+    body_src = ast.get_source_segment(state_src, func) or ""
     assert "snapshot_active" in body_src or "active_writers=" in body_src, (
         "insert_evaluated_opportunity failure log must include "
         "snapshot_active() output via 'active_writers=' field."

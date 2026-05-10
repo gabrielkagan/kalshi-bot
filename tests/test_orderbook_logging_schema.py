@@ -225,8 +225,10 @@ class TestTableInsideCreateTables(_TempDB):
     own PRAGMAs per CLAUDE.md (analyst.py / sports_engine.py contention bugs)."""
 
     def test_create_table_lives_in_create_tables(self):
-        import bot._impl as bot_mod
-        src = open(bot_mod.__file__).read()
+        # Bit 7.1 retarget (2026-05-10): StateManager._create_tables moved to
+        # bot/state.py.
+        import bot.state as state_mod
+        src = open(state_mod.__file__).read()
         idx_create_tables = src.find("def _create_tables")
         idx_create_olc = src.find(
             "CREATE TABLE IF NOT EXISTS order_lifecycle_snapshots", idx_create_tables)
@@ -236,7 +238,7 @@ class TestTableInsideCreateTables(_TempDB):
         # to this table. Phase 4 wiring will need to share self.conn.
         for line_no, line in enumerate(src.splitlines(), 1):
             if "order_lifecycle_snapshots" in line and "sqlite3.connect" in line:
-                self.fail(f"bot/_impl.py:{line_no} opens a separate sqlite3 connection "
+                self.fail(f"bot/state.py:{line_no} opens a separate sqlite3 connection "
                           f"to order_lifecycle_snapshots — must use self.conn")
 
 

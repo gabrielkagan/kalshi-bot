@@ -54,7 +54,18 @@ sys.path.insert(0, str(ROOT))
 
 @pytest.fixture(scope="module")
 def bot_impl_source() -> str:
-    return (ROOT / "bot" / "_impl.py").read_text()
+    """Bit 7.1 retarget (2026-05-10): StateManager (incl.
+    insert_evaluated_opportunity) moved to bot/state.py while OpportunityScanner
+    (incl. low_price_shadow_signals warning site) stays in bot/_impl.py. The
+    fixture concats both so tests find their target regardless of which file
+    owns it post-extraction. The fixture name stays for backward compat with
+    the L40-pattern AST/regex guards. AST-walks find class/method nodes from
+    either file; regex/string searches find markers across the concat."""
+    return (
+        (ROOT / "bot" / "_impl.py").read_text()
+        + "\n"
+        + (ROOT / "bot" / "state.py").read_text()
+    )
 
 
 # ─── 1. AST: BEGIN IMMEDIATE except captures the error message ──────────────
