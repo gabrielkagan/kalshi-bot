@@ -309,3 +309,227 @@ def test_counterfactual_prob_corpus_numeric(num_regression, probability_corpus):
     arr = np.asarray(counterfactuals, dtype=np.float64)
     num_regression.check({"counterfactual_prob": arr},
                          default_tolerance={"rtol": 1e-9, "atol": 0.0})
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  CALIBRATED CASCADE SNAPSHOTS (Pillar 5 follow-up, 86b9vgxxz)
+# ─────────────────────────────────────────────────────────────────────
+# The default autouse fixture (``isolate_calibration_singletons``) pins
+# the calibrator to None, so the snapshots above exercise only outcomes
+# 4 + 5 of the ``ProbabilityEngine.compute()`` cascade (passthrough +
+# fixed_beta). The mutmut baseline against ``bot/engines/probability.py``
+# left the calibrated-tail mutants (range ~1228-1318 — every branch under
+# the ``_reg_engine is not None`` and ``_CALIBRATION_ENGINE is not None``
+# elif's, including the CAL_CLAMP / CAL_CLAMP_BLEND / DISCREPANCY tails)
+# unkilled because no test ran code through them.
+#
+# These tests opt-in to the ``install_frozen_cal_engine`` and
+# ``install_legacy_only_cal_engine`` fixtures from conftest.py to wire a
+# deterministic Platt(A=0.85, B=0.0, trained=True) oracle into the
+# cascade, then pin numeric + categorical outputs. The frozen-state
+# choice (state file hand-crafted, loaded via the ordinary
+# ``CalibrationEngine(state_path=...)`` ctor) makes the snapshot
+# reproducible across machines and across calibration retrains in
+# production: the snapshot binds to the FROZEN state dict, not to the
+# live ``calibration_state.json`` on the VPS.
+#
+# Snapshot regen rule still applies — if these fail, investigate the
+# divergence; never run ``pytest --force-regen`` autonomously.
+
+# Numeric fields snapshotted under the frozen oracle. ``shadow_cal_prob``
+# / ``shadow_cal_temperature`` populate only on outcome-1 rows (registry
+# learned-method), so they live in the oracle test, not the default one.
+_NUMERIC_FIELDS_ORACLE = (
+    "z_score",
+    "raw_prob",
+    "calibrated_prob",
+    "shadow_cal_prob",
+    "shadow_cal_temperature",
+)
+
+
+def test_probability_engine_compute_corpus_numeric_with_oracle(
+        num_regression, probability_corpus, install_frozen_cal_engine):
+    """Pin numeric outputs of ``compute()`` across the 1000-row corpus
+    with the frozen Platt oracle installed in both the registry and the
+    legacy slot. Every row hits outcome 1 of the cascade because the
+    patched ``_resolve_cal_engine`` returns the frozen engine regardless
+    of ``product_type`` / ``cal_engine_enabled``.
+
+    Coverage delta vs the default-fixture snapshot: exercises the
+    ``_reg_engine.calibrate(...)`` call site, the shadow temperature
+    branch, the CAL_CLAMP / CAL_CLAMP_BLEND post-hoc clamps (raw_prob <
+    0.85 + delta > 0.05), and the DISCREPANCY check (when calibrated >
+    0.93 and market < 70¢). The frozen engine's
+    ``_apply_uncertainty_shrinkage`` is deterministic because no
+    observations are loaded (``n < 50`` → ``u = 0.05``).
+    """
+    columns: Dict[str, List[float]] = {f: [] for f in _NUMERIC_FIELDS_ORACLE}
+
+    for row in probability_corpus:
+        result = ProbabilityEngine.compute(
+            spot=row["spot_price"],
+            threshold=row["threshold"],
+            seconds_remaining=row["seconds_to_close"],
+            blended_rv=row["volatility"],
+            market_price_cents=row["market_price"],
+            asset=row["asset"],
+            product_type=row["product_type"],
+        )
+        for f in _NUMERIC_FIELDS_ORACLE:
+            columns[f].append(_to_nan(result.get(f)))
+
+    arrays = {k: np.asarray(v, dtype=np.float64) for k, v in columns.items()}
+    # Same tolerance rationale as the default-fixture snapshot — see
+    # ``test_probability_engine_compute_corpus_numeric``.
+    num_regression.check(arrays, default_tolerance={"rtol": 1e-9, "atol": 0.0})
+
+
+def test_probability_engine_compute_corpus_categorical_with_oracle(
+        data_regression, probability_corpus, install_frozen_cal_engine):
+    """Pin categorical outputs (``calibration_method``, ``tradeable``,
+    ``reason``) with the frozen oracle installed. The
+    ``calibration_method`` distribution should be entirely of the form
+    ``"{product_type}_platt"`` (set by the outcome-1 branch:
+    ``f"{product_type}_{_reg_engine.active_method}"``), with
+    DISCREPANCY-flagged rows surfacing in the ``reason_first_token``
+    bucket as ``"model"``."""
+    from collections import Counter
+
+    methods: Counter = Counter()
+    tradeable: Counter = Counter()
+    reasons: Counter = Counter()
+
+    for row in probability_corpus:
+        result = ProbabilityEngine.compute(
+            spot=row["spot_price"],
+            threshold=row["threshold"],
+            seconds_remaining=row["seconds_to_close"],
+            blended_rv=row["volatility"],
+            market_price_cents=row["market_price"],
+            asset=row["asset"],
+            product_type=row["product_type"],
+        )
+        methods[result.get("calibration_method") or "<none>"] += 1
+        tradeable[bool(result.get("tradeable"))] += 1
+        reason = result.get("reason") or ""
+        bucket = reason.split(" ", 1)[0] if reason else "<empty>"
+        reasons[bucket] += 1
+
+    data_regression.check({
+        "calibration_method": dict(sorted(methods.items())),
+        "tradeable": {str(k): v for k, v in sorted(tradeable.items())},
+        "reason_first_token": dict(sorted(reasons.items())),
+    })
+
+
+def test_probability_engine_compute_corpus_numeric_legacy_only(
+        num_regression, probability_corpus, install_legacy_only_cal_engine):
+    """Pin numeric outputs of ``compute()`` with the frozen Platt oracle
+    wired into the LEGACY ``_CALIBRATION_ENGINE`` slot only —
+    ``_resolve_cal_engine`` stays at the autouse-null stub.
+
+    Coverage delta: forces the cascade past outcome 1 into the
+    ``elif _cal_cfg2.cal_eligible and _cal_state._CALIBRATION_ENGINE is
+    not None`` branch (outcome 2 — the legacy 15M code path). Rows with
+    ``cal_eligible=True`` (15M) get the frozen-Platt calibration;
+    ``cal_eligible=False`` rows (hourly / spx_hourly / weather / sports)
+    fall through to outcome 4 (passthrough).
+
+    ``shadow_cal_prob`` is intentionally NOT included here — that field
+    is populated only inside outcome 1, so under this fixture every row
+    has it as None. Adding it would flood the snapshot with NaN."""
+    columns: Dict[str, List[float]] = {f: [] for f in _NUMERIC_FIELDS}
+
+    for row in probability_corpus:
+        result = ProbabilityEngine.compute(
+            spot=row["spot_price"],
+            threshold=row["threshold"],
+            seconds_remaining=row["seconds_to_close"],
+            blended_rv=row["volatility"],
+            market_price_cents=row["market_price"],
+            asset=row["asset"],
+            product_type=row["product_type"],
+        )
+        for f in _NUMERIC_FIELDS:
+            columns[f].append(_to_nan(result.get(f)))
+
+    arrays = {k: np.asarray(v, dtype=np.float64) for k, v in columns.items()}
+    num_regression.check(arrays, default_tolerance={"rtol": 1e-9, "atol": 0.0})
+
+
+def test_counterfactual_prob_corpus_numeric_with_oracle(
+        num_regression, probability_corpus, install_legacy_only_cal_engine):
+    """Pin ``counterfactual_prob`` outputs across the corpus with the
+    frozen Platt oracle installed in the legacy slot. Unlike
+    ``compute()``, ``counterfactual_prob`` always reads
+    ``_cal_state._CALIBRATION_ENGINE`` directly (no resolver branch), so
+    the legacy-only fixture is sufficient — outcome 1 is unreachable
+    here by design. Pinning this surface guards against silent drift in
+    the calibrated-counterfactual code path that the default-fixture
+    counterfactual snapshot can't reach."""
+    counterfactuals: List[float] = []
+    for row in probability_corpus:
+        val = ProbabilityEngine.counterfactual_prob(
+            spot=row["spot_price"],
+            threshold=row["threshold"],
+            seconds_remaining=row["seconds_to_close"],
+            alt_blended_rv=row["volatility"] * 1.5,
+            asset=row["asset"],
+            product_type=row["product_type"],
+        )
+        counterfactuals.append(_to_nan(val))
+    arr = np.asarray(counterfactuals, dtype=np.float64)
+    num_regression.check({"counterfactual_prob": arr},
+                         default_tolerance={"rtol": 1e-9, "atol": 0.0})
+
+
+def test_probability_engine_blr_bypass_branch_smoke(
+        probability_corpus, monkeypatch, frozen_cal_engine):
+    """Smoke test outcome 3 (BLR_BYPASS diagnostic branch).
+
+    This branch fires when ``_cal_cfg2.cal_eligible`` AND
+    ``_CALIBRATION_ENGINE is not None`` AND
+    ``FIFTEEN_M_CALIBRATION_ENABLED`` AND the engine's learned method is
+    NOT active. The branch logs a divergence diagnostic and returns the
+    passthrough cap value. We force this by monkeypatching
+    ``is_learned_method_active`` to return False on the frozen engine.
+
+    No snapshot — this test asserts only that the branch executes
+    without raising on every cal_eligible row in the corpus and that
+    the returned ``calibration_method`` is ``"passthrough"``. The branch
+    body is invariant-checked rather than numerically pinned because the
+    diagnostic ``_blr_would`` recomputation has no observable output
+    beyond a log line."""
+    import bot.engines.calibration as _cal_state
+
+    # Force learned-method-inactive on the legacy slot. The original
+    # is_learned_method_active reads multiple attributes; monkeypatching
+    # the method itself is the surgical move.
+    monkeypatch.setattr(
+        frozen_cal_engine, "is_learned_method_active", lambda: False,
+    )
+    monkeypatch.setattr(_cal_state, "_CALIBRATION_ENGINE", frozen_cal_engine, raising=True)
+    # _resolve_cal_engine stays at the autouse-null stub.
+
+    cal_eligible_methods = []
+    for row in probability_corpus:
+        if row["product_type"] != "15m":
+            continue
+        result = ProbabilityEngine.compute(
+            spot=row["spot_price"],
+            threshold=row["threshold"],
+            seconds_remaining=row["seconds_to_close"],
+            blended_rv=row["volatility"],
+            market_price_cents=row["market_price"],
+            asset=row["asset"],
+            product_type=row["product_type"],
+        )
+        cal_eligible_methods.append(result.get("calibration_method"))
+
+    assert cal_eligible_methods, "no 15m rows in corpus — fixture sanity broken"
+    # Every 15m row routed through outcome 3 must show passthrough.
+    assert all(m == "passthrough" for m in cal_eligible_methods), (
+        f"outcome 3 should produce passthrough; got distribution: "
+        f"{set(cal_eligible_methods)}"
+    )

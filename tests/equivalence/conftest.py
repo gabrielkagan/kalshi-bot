@@ -217,8 +217,12 @@ def install_frozen_cal_engine(frozen_cal_engine, monkeypatch):
     """Stack on top of ``isolate_calibration_singletons`` (autouse)
     to inject the frozen Platt calibrator into both legacy
     (``_CALIBRATION_ENGINE``) and registry (``_resolve_cal_engine``)
-    code paths. Tests using this fixture exercise outcomes 1 + 2
-    (learned-method) of the ProbabilityEngine cascade.
+    code paths. Tests using this fixture exercise outcome 1
+    (registry learned-method) of the ProbabilityEngine cascade for
+    every row, because the patched ``_resolve_cal_engine`` returns the
+    frozen engine regardless of ``product_type`` / ``cal_engine_enabled``.
+    The ``elif`` branches (outcomes 2/3) are short-circuited under this
+    fixture; for outcome-2 coverage see ``install_legacy_only_cal_engine``.
 
     Returns the engine so the test can introspect / make assertions
     against the same instance that production code receives."""
@@ -389,3 +393,35 @@ def _isolate_rk_sidecar_files(tmp_path, monkeypatch):
         _vol_mod, "JUMP_ADAPTIVE_STATE_PATH", str(jump_path), raising=True,
     )
     yield
+
+
+@pytest.fixture
+def install_legacy_only_cal_engine(frozen_cal_engine, monkeypatch):
+    """Variant of ``install_frozen_cal_engine`` that wires the frozen
+    calibrator into the LEGACY ``_CALIBRATION_ENGINE`` singleton only
+    — ``_resolve_cal_engine`` stays nulled by
+    ``isolate_calibration_singletons`` (returns None).
+
+    Exercises outcomes 2 + 3 of the ProbabilityEngine cascade:
+    - rows with ``cal_eligible=True`` (15M) hit outcome 2 when
+      ``FIFTEEN_M_CALIBRATION_ENABLED`` is true AND the engine is
+      learned-method-active → ``_CALIBRATION_ENGINE.calibrate(...)``.
+    - rows with ``cal_eligible=False`` (hourly/spx_hourly/weather/sports)
+      hit outcome 4 (passthrough) — the ``elif not cal_eligible`` branch
+      shadows outcome 3, so to exercise outcome 3 (BLR_BYPASS path) the
+      frozen engine's ``_platt_trained`` would have to be False; we
+      cover that with a dedicated test that monkeypatches
+      ``is_learned_method_active`` instead of building a second state file.
+
+    ``counterfactual_prob`` reads ``_CALIBRATION_ENGINE`` directly (not
+    via the resolver), so this fixture is the load-bearing one for
+    pinning calibrated counterfactuals — see
+    ``test_counterfactual_prob_corpus_numeric_legacy_only``."""
+    import bot.engines.calibration as _cal_state
+
+    monkeypatch.setattr(
+        _cal_state, "_CALIBRATION_ENGINE", frozen_cal_engine, raising=True,
+    )
+    # _resolve_cal_engine stays at the autouse-installed lambda (returns None),
+    # forcing the cascade past outcome 1 into the legacy elif.
+    return frozen_cal_engine

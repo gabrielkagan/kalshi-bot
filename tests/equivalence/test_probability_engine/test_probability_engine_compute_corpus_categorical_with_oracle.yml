@@ -1,0 +1,11 @@
+calibration_method:
+  15m_platt: 303
+  hourly_platt: 190
+  spx_hourly_platt: 27
+  weather_platt: 480
+reason_first_token:
+  model: 4
+  ok: 996
+tradeable:
+  'False': 4
+  'True': 996
