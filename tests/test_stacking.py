@@ -22,20 +22,25 @@ MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 
 
 def _read_bot():
-    """Bit 3.1: returns concat of bot/_impl.py + bot/constants.py source.
-    Tests that look for CONSTANT = value definitions (post-extraction
-    they live in bot/constants.py) AND tests that look for class /
-    function / log-string patterns (still in bot/_impl.py) both find
-    their targets in the concatenated source.
+    """Bit 3.1 (+7.1): returns concat of bot/_impl.py + bot/constants.py +
+    bot/state.py source. Tests that look for CONSTANT = value definitions
+    (in bot/constants.py post-Bit-3.1) AND tests that look for StateManager
+    method bodies / INSERT statements (in bot/state.py post-Bit-7.1) AND
+    tests that look for OpportunityScanner / scan-loop patterns (still in
+    bot/_impl.py) all find their targets in the concatenated source.
     """
     with open(BOT_PATH) as f:
         impl = f.read()
+    parts = [impl]
     constants_path = os.path.join(os.path.dirname(BOT_PATH), "constants.py")
     if os.path.exists(constants_path):
         with open(constants_path) as f:
-            constants = f.read()
-        return impl + "\n" + constants
-    return impl
+            parts.append(f.read())
+    state_path = os.path.join(os.path.dirname(BOT_PATH), "state.py")
+    if os.path.exists(state_path):
+        with open(state_path) as f:
+            parts.append(f.read())
+    return "\n".join(parts)
 
 
 def _read_models():

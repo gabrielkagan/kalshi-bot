@@ -2,6 +2,10 @@
 
 `state.db` — SQLite, WAL mode, busy_timeout=10000ms. Run `PRAGMA table_info(<table>)` to verify against current code.
 
+**Source of truth (post-Bit-7.1, 2026-05-10):** all `CREATE TABLE` and `ALTER TABLE` statements live in `bot/state.py::StateManager._create_tables`. Pre-Bit-7.1 they were in `bot/_impl.py:559-3165` (the StateManager class body); Sprint 7 extracted the class verbatim with the `_create_tables` schema invariant (zero column deltas — `tests/test_state_extraction.py::test_schema_zero_delta_per_table` is the regression seal across all 17 tables). When schema changes ship, edit `bot/state.py::StateManager._create_tables` AND this doc in the same commit.
+
+This doc is sister Bit 7.2 (ClickUp `86b9vda5u`); refreshed in lock-step with Bit 7.1 per `kb/decisions/bit-7.1-plan-may10.md`.
+
 ## settled_trades
 
 | Column | Type | Notes |

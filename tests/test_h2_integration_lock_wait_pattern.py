@@ -42,7 +42,9 @@ import pytest
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BOT_PY_PATH = os.path.join(PROJECT_ROOT, "bot/_impl.py")
+# Bit 7.1 retarget (2026-05-10): StateManager (incl. insert_evaluated_opportunity)
+# moved to bot/state.py. The variable name stays for backward compat.
+BOT_PY_PATH = os.path.join(PROJECT_ROOT, "bot/state.py")
 
 
 def test_insert_site_uses_begin_immediate_for_lock_wait():

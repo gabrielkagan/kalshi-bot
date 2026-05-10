@@ -1,6 +1,6 @@
 # Tests
 
-~4,190 tests collected (post-Bit-6.3 path-B; varies ~5 with hypothesis parameterization). Pytest. `conftest.py` at repo root.
+~4,460 tests collected (post-Bit-7.1 path-A++; varies ~5 with hypothesis parameterization). Pytest. `conftest.py` at repo root.
 Verify exact count with `python3 -m pytest tests/ --collect-only -q | tail -1`;
 this header drifts as bits ship and is only refreshed when an extraction touches
 `tests/CLAUDE.md` directly.

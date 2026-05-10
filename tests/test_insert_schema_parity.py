@@ -183,7 +183,9 @@ class TestCanonicalInsertCoversSchema:
     ):
         schema_cols = live_schema["evaluated_opportunities"]
 
-        bot_path = os.path.join(PROJECT_ROOT, "bot/_impl.py")
+        # Bit 7.1 retarget (2026-05-10): StateManager (incl. the canonical
+        # insert_evaluated_opportunity INSERT) moved to bot/state.py.
+        bot_path = os.path.join(PROJECT_ROOT, "bot/state.py")
         with open(bot_path) as f:
             source = f.read()
 

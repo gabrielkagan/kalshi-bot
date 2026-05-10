@@ -24,11 +24,13 @@ BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 
 
 def _read_bot():
-    """Bit 3.1+3.2: returns concat of bot/_impl.py + bot/constants.py +
-    bot/helpers/*.py source. Tests that look for CONSTANT = value definitions
-    (post-Bit-3.1 in bot/constants.py), helper-function bodies (post-Bit-3.2
-    in bot/helpers/*.py), or class / scan-site / log-string patterns (still in
-    bot/_impl.py) all find their targets in the concatenated source.
+    """Bit 3.1+3.2 (+7.1): returns concat of bot/_impl.py + bot/constants.py +
+    bot/helpers/*.py + bot/state.py source. Tests that look for CONSTANT = value
+    definitions (post-Bit-3.1 in bot/constants.py), helper-function bodies
+    (post-Bit-3.2 in bot/helpers/*.py), StateManager methods + tm_sweep_shadow
+    DDL (post-Bit-7.1 in bot/state.py), or class / scan-site / log-string
+    patterns (still in bot/_impl.py) all find their targets in the
+    concatenated source.
     """
     parts = []
     with open(BOT_PATH) as f:
@@ -43,6 +45,10 @@ def _read_bot():
             if fname.endswith(".py"):
                 with open(os.path.join(helpers_dir, fname)) as f:
                     parts.append(f.read())
+    state_path = os.path.join(os.path.dirname(BOT_PATH), "state.py")
+    if os.path.exists(state_path):
+        with open(state_path) as f:
+            parts.append(f.read())
     return "\n".join(parts)
 
 
@@ -1048,9 +1054,11 @@ class TestWith97AdversarialRegressions(unittest.TestCase):
         """Adversary A4: if ALTER silently fails the column is missing and
         every downstream write fails with 'no such column'. The migration
         path must verify the column exists post-ALTER and surface failure
-        loud (raise) rather than the current silent log.warning."""
-        with open(BOT_PATH) as f:
-            source = f.read()
+        loud (raise) rather than the current silent log.warning.
+
+        Bit 7.1 retarget (2026-05-10): _create_tables moved to bot/state.py;
+        use _read_bot() concat to find it regardless of file."""
+        source = _read_bot()
         # Slice _create_tables function.
         start = source.find("def _create_tables")
         end = source.find("\n    def ", start + 10)
@@ -1701,9 +1709,11 @@ class TestTMSweepDirectBumpAdversarialRound3(unittest.TestCase):
         was active at IOC SUBMIT time, NOT that a fill happened. Rows with
         `direct_bump_applied=1` + `filled_count=0` mean IOC was submitted
         with limit=99 but no liquidity (or place_order returned None).
-        Docstring on the insert helper kwarg must surface this semantic."""
-        with open(BOT_PATH) as f:
-            source = f.read()
+        Docstring on the insert helper kwarg must surface this semantic.
+
+        Bit 7.1 retarget (2026-05-10): insert_tm_sweep_shadow_row moved to
+        bot/state.py; use _read_bot() concat to find it regardless of file."""
+        source = _read_bot()
         # Find the insert_tm_sweep_shadow_row signature/docstring.
         idx = source.find("def insert_tm_sweep_shadow_row")
         self.assertGreater(idx, 0)

@@ -22,6 +22,19 @@ live in `bot.engines.calibration` post-Bit-6.3 path-B (2026-05-10), NOT in
 `bot._impl` — reach them via `bot.engines.calibration.X` directly, not via
 the `bot.X` proxy.
 
+Also note: `StateManager` lives in `bot.state` post-Bit-7.1 (2026-05-10),
+NOT in `bot._impl`. Reach it via `bot.StateManager` (proxy chain:
+`bot.X` → `bot._impl.X` → `bot.state.X` via the line-109 re-export
+`from bot.state import StateManager`) or `bot.state.StateManager`
+(direct). The `_get_compute_for_15m_main_path()` helper inside
+`bot/state.py` late-binds `bot._impl.compute_for_15m_main_path`
+(the closure bound at `compute_for_15m_main_path = make_compute_for_15m_main_path(globals())` near the top of bot/_impl.py) to feed the
+`scripts/cal_mlp/integration.py::sizing_parity_assert` call inside
+StateManager.__init__ — single-name access discipline (NOT a
+whole-namespace `bot._impl.__dict__` proxy) per the Bit 7.1 path-A++
+refactor that dropped `bot_globals` from `parity_assert` and
+`sizing_parity_assert` signatures.
+
 Caching the `bot._impl` module reference is safe: the module object itself
 is stable; mutations land on its `__dict__` which `getattr`/`setattr`
 re-resolve on every call.

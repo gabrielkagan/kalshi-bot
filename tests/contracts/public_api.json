@@ -1215,2104 +1215,6 @@
           "returns": null
         }
       }
-    },
-    "StateManager": {
-      "bases": [],
-      "kind": "class",
-      "members": {
-        "__init__": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": "DB_PATH",
-              "kind": "positional or keyword",
-              "name": "db_path"
-            }
-          ],
-          "returns": null
-        },
-        "backfill_tm_sweep_with_97": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": "int"
-        },
-        "cleanup_expired_resting_orders": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": null
-        },
-        "close": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": null
-        },
-        "confirm_order_submitted": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "client_order_id"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "order_id"
-            }
-          ],
-          "returns": null
-        },
-        "conn": {
-          "annotation": null,
-          "kind": "attribute"
-        },
-        "get_open_positions": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "asset"
-            }
-          ],
-          "returns": "List[Dict]"
-        },
-        "get_pending_sol_pathc_shadows": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": null
-        },
-        "get_resting_orders": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "ticker"
-            }
-          ],
-          "returns": "List[Dict]"
-        },
-        "get_unsettled_evaluated_opportunities": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": "List[Dict]"
-        },
-        "get_unsettled_positions": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": "List[Dict]"
-        },
-        "get_unsettled_rejections": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": "List[Dict]"
-        },
-        "insert_bot_order": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "client_order_id"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "event_ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "asset"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "side"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "count"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "price_cents"
-            },
-            {
-              "annotation": "bool",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "is_taker"
-            }
-          ],
-          "returns": null
-        },
-        "insert_evaluated_opportunity": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "event_ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "asset"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "filter_stage"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "rejection_reason"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "spot_price"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "threshold"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "volatility"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "market_price"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "seconds_to_close"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "calibrated_prob"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "edge"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "ofa_adjustment"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "strategy"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "position_size"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "kelly_f"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "z_score"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "vol_regime"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "calibrated_prob_raw"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "breakeven_wr"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "expected_value"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "drawdown_scaler"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "ask_depth"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "best_ask_source"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "ofa_confidence"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "raw_prob"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "calibration_method"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "old_system_prob"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "fee_adjusted_edge"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "egarch_sigma"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "egarch_blend_sigma"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "egarch_blend_weight"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "mz_r_squared"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "shadow_tv_blend_rv"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "mz_shadow_sigmoid_w"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "mz_baseline_qlike"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "mz_qlike"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "counterfactual"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "shadow_cal_prob"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "shadow_cal_fee_edge"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "shadow_cal_temperature"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "product_type"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "oft_prob_adjustment"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "oft_imbalance_ratio"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "oft_n_snapshots"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "wx_ensemble_mean"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "wx_ensemble_std"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "wx_bias_correction"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "wx_n_members"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "wx_market_type"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "wx_actual_high_temp"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "wx_no_side_edge"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "wx_hrrr_temp"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "wx_corrected_mean"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_pre_temp_prob"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_applied_temp_t"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_shadow_temp_2_0"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_shadow_temp_1_0"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_shadow_temp_2_5"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_shadow_blend_50"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_shadow_temp_1_75"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_shadow_temp_3_0"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_shadow_blend_20"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_shadow_blend_30"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_shadow_blend_60"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hourly_post_temp_prob"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "available_balance_cents"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "order_id"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "order_submitted_at"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "order_outcome"
-            },
-            {
-              "annotation": "str",
-              "default": "'yes'",
-              "kind": "positional or keyword",
-              "name": "side"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "no_ask_cents"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "yes_bid_cents"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "minutes_above_strike"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "window_max_buf_pct"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "window_min_buf_pct"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "recent_crossings_5m"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "spot_at_window_open"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "spot_momentum_60s_bps"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "spot_momentum_5m_bps"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "spot_realized_range_15m_bps"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "btc_spot_change_30m_bps"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "btc_spot_change_5m_bps"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "btc_realized_vol_15m"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "sol_btc_relative_return_30m_bps"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "hour_of_day_utc"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "day_of_week"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "is_weekend"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "minutes_since_us_open"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "is_fomc_day"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "is_cpi_day"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "spot_distance_to_strike_sigma"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "prob_breakeven_gap"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "kelly_vs_cap_ratio"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "calibration_confidence"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "active_positions_same_asset"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "recent_bot_pnl_30m_cents"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "current_drawdown_pct"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "recent_ioc_fill_success_rate_1h"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "yes_spread_cents"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "bid_depth"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "spot_coinbase_kraken_gap_bps"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "kalshi_flow_imbalance_level"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "kalshi_flow_depth_velocity"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "kalshi_flow_depth_drain"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "orderbook_levels_json"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "cal_mlp_p_mean"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "cal_mlp_p_std"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "cal_mlp_final_lo"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "cal_mlp_final_hi"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "cal_mlp_train_id"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "cal_mlp_skipped_reason"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "cal_mlp_request_id"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "n_open_positions"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "recent_n_outcome_streak"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "time_since_last_fill_s"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "maker_price_cents"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "maker_depth_at_post"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "maker_would_fill_within_30s"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "next_blocking_gate"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "final_spot_price"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "knockout_time_relative"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "max_excursion_from_strike"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "time_above_strike_seconds"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "time_below_strike_seconds"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "btc_spot_at_decision"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "eth_spot_at_decision"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "sol_spot_at_decision"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "xrp_spot_at_decision"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "okx_funding_rate_at_decision"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "deribit_funding_rate_at_decision"
-            },
-            {
-              "annotation": "str",
-              "default": "'live_ws'",
-              "kind": "positional or keyword",
-              "name": "data_provenance"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "bot_state_snapshot_json"
-            }
-          ],
-          "returns": null
-        },
-        "insert_order_lifecycle_snapshot": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "order_id"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "event_type"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "orderbook_levels_json"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "source"
-            }
-          ],
-          "returns": "None"
-        },
-        "insert_rejection": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "event_ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "asset"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "rejection_reason"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "z_score"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "spot_price"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "threshold"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "volatility"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "market_price"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "seconds_to_close"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "calibrated_prob"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "raw_prob"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "egarch_sigma"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "egarch_blend_sigma"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "egarch_blend_weight"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "mz_r_squared"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "shadow_tv_blend_rv"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "mz_shadow_sigmoid_w"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "mz_baseline_qlike"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "mz_qlike"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "counterfactual"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "product_type"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "oft_prob_adjustment"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "oft_imbalance_ratio"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "oft_n_snapshots"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "no_ask_cents"
-            }
-          ],
-          "returns": null
-        },
-        "insert_sol_pathc_shadow": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "evaluation_time"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "live_ask"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "live_depth"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "live_edge"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "live_stc"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "live_contracts"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "live_entry_price"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "live_cal_prob"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "pathc_maker_price"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "pathc_maker_offset"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "pathc_depth_at_maker"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "position_size"
-            }
-          ],
-          "returns": null
-        },
-        "insert_tm_sweep_shadow_row": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "keyword-only",
-              "name": "ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "keyword-only",
-              "name": "event_ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "keyword-only",
-              "name": "asset"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "keyword-only",
-              "name": "entry_time"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "keyword-only",
-              "name": "entry_price_cents"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "keyword-only",
-              "name": "requested_count"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "keyword-only",
-              "name": "filled_count"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "keyword-only",
-              "name": "unfilled_count"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "depth_at_entry_pre_fill"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "depth_96c_pre"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "depth_97c_pre"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "depth_98c_pre"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "depth_99c_pre"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "depth_96c_post"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "depth_97c_post"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "depth_98c_post"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "depth_99c_post"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "seconds_to_close"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "calibrated_prob"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "buf_pct"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "best_ask_source"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "keyword-only",
-              "name": "direct_bump_applied"
-            }
-          ],
-          "returns": "None"
-        },
-        "mark_evaluated_opportunity_settled": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "opp_id"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "market_result"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "counterfactual_pnl"
-            },
-            {
-              "annotation": "bool",
-              "default": "True",
-              "kind": "positional or keyword",
-              "name": "commit"
-            }
-          ],
-          "returns": null
-        },
-        "mark_order_status": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "order_id"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "status"
-            }
-          ],
-          "returns": null
-        },
-        "mark_rejection_settled": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "market_result"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "counterfactual"
-            }
-          ],
-          "returns": null
-        },
-        "reconcile_with_api": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "KalshiClient",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "client"
-            }
-          ],
-          "returns": null
-        },
-        "record_position_from_fill": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "event_ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "asset"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "side"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "count"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "price_cents"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "strategy"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "seconds_to_close"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "fill_latency"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "vol_regime"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "calibrated_prob"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "edge"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "kelly_f"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "is_taker"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "fill_source"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "execution_method"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "escalation_type"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "maker_price_cents"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "maker_wait_seconds"
-            }
-          ],
-          "returns": null
-        },
-        "record_settlement": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "Dict",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "settlement"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "revenue_override"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "pnl_override"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "fee_override"
-            },
-            {
-              "annotation": "Optional[Dict]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "pos"
-            }
-          ],
-          "returns": null
-        },
-        "set_bot_state_provider": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "provider"
-            }
-          ],
-          "returns": "None"
-        },
-        "settle_sol_pathc_shadow": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "market_result"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "live_pnl"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "pathc_maker_pnl"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "pathc_maker_contracts"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "pathc_esc_pnl"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "pathc_esc_contracts"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "pathc_best_pnl"
-            }
-          ],
-          "returns": null
-        },
-        "update_egarch_params": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "asset"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "omega"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "alpha"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "gamma"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "beta"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "last_log_variance"
-            },
-            {
-              "annotation": "Optional[float]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "mle_loglik"
-            },
-            {
-              "annotation": "bool",
-              "default": "False",
-              "kind": "positional or keyword",
-              "name": "mle_converged"
-            }
-          ],
-          "returns": null
-        },
-        "update_evaluated_opportunity_order": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "order_id"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "order_submitted_at"
-            },
-            {
-              "annotation": "Optional[str]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "order_outcome"
-            },
-            {
-              "annotation": "Optional[int]",
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "taker_ask_at_submit"
-            }
-          ],
-          "returns": null
-        },
-        "update_garch_params": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "asset"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "omega"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "alpha"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "beta"
-            },
-            {
-              "annotation": "float",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "last_variance"
-            }
-          ],
-          "returns": null
-        },
-        "update_sol_pathc_observation": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "obs_time"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "obs_elapsed"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "obs_best_ask"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "obs_depth"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "obs_maker_would_fill"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "obs_maker_price_touched"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "pathc_esc_ask"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "pathc_esc_depth"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "pathc_esc_edge"
-            }
-          ],
-          "returns": null
-        },
-        "update_sol_pathc_touch": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            }
-          ],
-          "returns": null
-        },
-        "update_tm_sweep_shadow_on_settlement": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "market_result"
-            }
-          ],
-          "returns": "None"
-        }
-      }
     }
   },
   "bot": {
@@ -21412,5 +19314,2731 @@
   },
   "bot.scanner": {
     "kind": "module"
+  },
+  "bot.state": {
+    "kind": "module"
+  },
+  "bot.state.DB_PATH": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.state.KalshiClient": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "api_key"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "private_key_path"
+          }
+        ],
+        "returns": null
+      },
+      "amend_order": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "order_id"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "side"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "action"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "count"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "yes_price"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "no_price"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "api_key": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "cancel_order": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "order_id"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_balance": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_events": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "series_ticker"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "status"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional or keyword",
+            "name": "with_nested_markets"
+          },
+          {
+            "annotation": "int",
+            "default": "100",
+            "kind": "positional or keyword",
+            "name": "limit"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_fills": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "min_ts"
+          },
+          {
+            "annotation": "int",
+            "default": "200",
+            "kind": "positional or keyword",
+            "name": "limit"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_market": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_markets": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "series_ticker"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "status"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "min_close_ts"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "max_close_ts"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cursor"
+          },
+          {
+            "annotation": "int",
+            "default": "200",
+            "kind": "positional or keyword",
+            "name": "limit"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_orderbook": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "int",
+            "default": "10",
+            "kind": "positional or keyword",
+            "name": "depth"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_orders": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "status"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_positions": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_queue_position": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "order_id"
+          }
+        ],
+        "returns": "Optional[int]"
+      },
+      "get_settlements": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "min_ts"
+          },
+          {
+            "annotation": "int",
+            "default": "200",
+            "kind": "positional or keyword",
+            "name": "limit"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "place_order": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "side"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "action"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "count"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "yes_price"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "no_price"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "client_order_id"
+          },
+          {
+            "annotation": "Optional[bool]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "post_only"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "time_in_force"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "private_key": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "session": {
+        "annotation": null,
+        "kind": "attribute"
+      }
+    }
+  },
+  "bot.state.OB_CACHE_EVICT_AGE_SECONDS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.state.OB_CACHE_FRESHNESS_SECONDS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.state.SOL_RESCUE_CONTRACT_CAP": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.state.STACKING_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.state.StateManager": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "DB_PATH",
+            "kind": "positional or keyword",
+            "name": "db_path"
+          }
+        ],
+        "returns": null
+      },
+      "backfill_tm_sweep_with_97": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "int"
+      },
+      "cleanup_expired_resting_orders": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "close": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "confirm_order_submitted": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "client_order_id"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "order_id"
+          }
+        ],
+        "returns": null
+      },
+      "conn": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "get_open_positions": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "List[Dict]"
+      },
+      "get_pending_sol_pathc_shadows": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "get_resting_orders": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "ticker"
+          }
+        ],
+        "returns": "List[Dict]"
+      },
+      "get_unsettled_evaluated_opportunities": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "List[Dict]"
+      },
+      "get_unsettled_positions": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "List[Dict]"
+      },
+      "get_unsettled_rejections": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "List[Dict]"
+      },
+      "insert_bot_order": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "client_order_id"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "side"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "count"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price_cents"
+          },
+          {
+            "annotation": "bool",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "is_taker"
+          }
+        ],
+        "returns": null
+      },
+      "insert_evaluated_opportunity": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "filter_stage"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "rejection_reason"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "volatility"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "calibrated_prob"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "edge"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "ofa_adjustment"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "strategy"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "position_size"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kelly_f"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "z_score"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "vol_regime"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "calibrated_prob_raw"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "breakeven_wr"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "expected_value"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "drawdown_scaler"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "ask_depth"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "best_ask_source"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "ofa_confidence"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "raw_prob"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "calibration_method"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "old_system_prob"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "fee_adjusted_edge"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_sigma"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_blend_sigma"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_blend_weight"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "mz_r_squared"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "shadow_tv_blend_rv"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "mz_shadow_sigmoid_w"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "mz_baseline_qlike"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "mz_qlike"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "counterfactual"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "shadow_cal_prob"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "shadow_cal_fee_edge"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "shadow_cal_temperature"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "product_type"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "oft_prob_adjustment"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "oft_imbalance_ratio"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "oft_n_snapshots"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "wx_ensemble_mean"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "wx_ensemble_std"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "wx_bias_correction"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "wx_n_members"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "wx_market_type"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "wx_actual_high_temp"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "wx_no_side_edge"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "wx_hrrr_temp"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "wx_corrected_mean"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_pre_temp_prob"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_applied_temp_t"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_shadow_temp_2_0"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_shadow_temp_1_0"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_shadow_temp_2_5"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_shadow_blend_50"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_shadow_temp_1_75"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_shadow_temp_3_0"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_shadow_blend_20"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_shadow_blend_30"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_shadow_blend_60"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hourly_post_temp_prob"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "available_balance_cents"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "order_id"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "order_submitted_at"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "order_outcome"
+          },
+          {
+            "annotation": "str",
+            "default": "'yes'",
+            "kind": "positional or keyword",
+            "name": "side"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "no_ask_cents"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "yes_bid_cents"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "minutes_above_strike"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "window_max_buf_pct"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "window_min_buf_pct"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "recent_crossings_5m"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "spot_at_window_open"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "spot_momentum_60s_bps"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "spot_momentum_5m_bps"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "spot_realized_range_15m_bps"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "btc_spot_change_30m_bps"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "btc_spot_change_5m_bps"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "btc_realized_vol_15m"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "sol_btc_relative_return_30m_bps"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hour_of_day_utc"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "day_of_week"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "is_weekend"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "minutes_since_us_open"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "is_fomc_day"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "is_cpi_day"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "spot_distance_to_strike_sigma"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "prob_breakeven_gap"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kelly_vs_cap_ratio"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "calibration_confidence"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "active_positions_same_asset"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "recent_bot_pnl_30m_cents"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "current_drawdown_pct"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "recent_ioc_fill_success_rate_1h"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "yes_spread_cents"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "bid_depth"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "spot_coinbase_kraken_gap_bps"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kalshi_flow_imbalance_level"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kalshi_flow_depth_velocity"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kalshi_flow_depth_drain"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "orderbook_levels_json"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cal_mlp_p_mean"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cal_mlp_p_std"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cal_mlp_final_lo"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cal_mlp_final_hi"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cal_mlp_train_id"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cal_mlp_skipped_reason"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cal_mlp_request_id"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "n_open_positions"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "recent_n_outcome_streak"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "time_since_last_fill_s"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "maker_price_cents"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "maker_depth_at_post"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "maker_would_fill_within_30s"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "next_blocking_gate"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "final_spot_price"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "knockout_time_relative"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "max_excursion_from_strike"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "time_above_strike_seconds"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "time_below_strike_seconds"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "btc_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "eth_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "sol_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "xrp_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "okx_funding_rate_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "deribit_funding_rate_at_decision"
+          },
+          {
+            "annotation": "str",
+            "default": "'live_ws'",
+            "kind": "positional or keyword",
+            "name": "data_provenance"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "bot_state_snapshot_json"
+          }
+        ],
+        "returns": null
+      },
+      "insert_order_lifecycle_snapshot": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "order_id"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_type"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "orderbook_levels_json"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "source"
+          }
+        ],
+        "returns": "None"
+      },
+      "insert_rejection": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "rejection_reason"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "z_score"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "volatility"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "calibrated_prob"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "raw_prob"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_sigma"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_blend_sigma"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_blend_weight"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "mz_r_squared"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "shadow_tv_blend_rv"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "mz_shadow_sigmoid_w"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "mz_baseline_qlike"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "mz_qlike"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "counterfactual"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "product_type"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "oft_prob_adjustment"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "oft_imbalance_ratio"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "oft_n_snapshots"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "no_ask_cents"
+          }
+        ],
+        "returns": null
+      },
+      "insert_sol_pathc_shadow": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "evaluation_time"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_ask"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_depth"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_edge"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_stc"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_contracts"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_entry_price"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_cal_prob"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pathc_maker_price"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pathc_maker_offset"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pathc_depth_at_maker"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "position_size"
+          }
+        ],
+        "returns": null
+      },
+      "insert_tm_sweep_shadow_row": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "keyword-only",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "keyword-only",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "keyword-only",
+            "name": "asset"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "keyword-only",
+            "name": "entry_time"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "keyword-only",
+            "name": "entry_price_cents"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "keyword-only",
+            "name": "requested_count"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "keyword-only",
+            "name": "filled_count"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "keyword-only",
+            "name": "unfilled_count"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "depth_at_entry_pre_fill"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "depth_96c_pre"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "depth_97c_pre"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "depth_98c_pre"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "depth_99c_pre"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "depth_96c_post"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "depth_97c_post"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "depth_98c_post"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "depth_99c_post"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "calibrated_prob"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "buf_pct"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "best_ask_source"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "keyword-only",
+            "name": "direct_bump_applied"
+          }
+        ],
+        "returns": "None"
+      },
+      "mark_evaluated_opportunity_settled": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "opp_id"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "market_result"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "counterfactual_pnl"
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "positional or keyword",
+            "name": "commit"
+          }
+        ],
+        "returns": null
+      },
+      "mark_order_status": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "order_id"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "status"
+          }
+        ],
+        "returns": null
+      },
+      "mark_rejection_settled": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "market_result"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "counterfactual"
+          }
+        ],
+        "returns": null
+      },
+      "reconcile_with_api": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "KalshiClient",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "client"
+          }
+        ],
+        "returns": null
+      },
+      "record_position_from_fill": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "side"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "count"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price_cents"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "strategy"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "fill_latency"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "vol_regime"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "calibrated_prob"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "edge"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kelly_f"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "is_taker"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "fill_source"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "execution_method"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "escalation_type"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "maker_price_cents"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "maker_wait_seconds"
+          }
+        ],
+        "returns": null
+      },
+      "record_settlement": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Dict",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "settlement"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "revenue_override"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "pnl_override"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "fee_override"
+          },
+          {
+            "annotation": "Optional[Dict]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "pos"
+          }
+        ],
+        "returns": null
+      },
+      "set_bot_state_provider": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "provider"
+          }
+        ],
+        "returns": "None"
+      },
+      "settle_sol_pathc_shadow": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_result"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_pnl"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pathc_maker_pnl"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pathc_maker_contracts"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pathc_esc_pnl"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pathc_esc_contracts"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pathc_best_pnl"
+          }
+        ],
+        "returns": null
+      },
+      "update_egarch_params": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "omega"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "alpha"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "gamma"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "beta"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "last_log_variance"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "mle_loglik"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional or keyword",
+            "name": "mle_converged"
+          }
+        ],
+        "returns": null
+      },
+      "update_evaluated_opportunity_order": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "order_id"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "order_submitted_at"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "order_outcome"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "taker_ask_at_submit"
+          }
+        ],
+        "returns": null
+      },
+      "update_garch_params": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "omega"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "alpha"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "beta"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "last_variance"
+          }
+        ],
+        "returns": null
+      },
+      "update_sol_pathc_observation": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "obs_time"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "obs_elapsed"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "obs_best_ask"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "obs_depth"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "obs_maker_would_fill"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "obs_maker_price_touched"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pathc_esc_ask"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pathc_esc_depth"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pathc_esc_edge"
+          }
+        ],
+        "returns": null
+      },
+      "update_sol_pathc_touch": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          }
+        ],
+        "returns": null
+      },
+      "update_tm_sweep_shadow_on_settlement": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_result"
+          }
+        ],
+        "returns": "None"
+      }
+    }
+  },
+  "bot.state.compute_derived_features": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Optional[float]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "spot_price"
+      },
+      {
+        "annotation": "Optional[float]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "threshold"
+      },
+      {
+        "annotation": "Optional[float]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "volatility"
+      },
+      {
+        "annotation": "Optional[float]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "seconds_to_close"
+      },
+      {
+        "annotation": "Optional[float]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "calibrated_prob"
+      },
+      {
+        "annotation": "Optional[int]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "market_price_cents"
+      },
+      {
+        "annotation": "Optional[int]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "kelly_contracts"
+      },
+      {
+        "annotation": "int",
+        "default": "25",
+        "kind": "positional or keyword",
+        "name": "sol_rescue_cap"
+      },
+      {
+        "annotation": "Optional[int]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "n_recent_cal_trades"
+      }
+    ],
+    "returns": "Dict[str, Optional[float]]"
+  },
+  "bot.state.compute_time_regime_features": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Optional[str]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "eval_time_iso"
+      }
+    ],
+    "returns": "Dict[str, Optional[int]]"
+  },
+  "bot.state.dollars_str_to_cents": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": null,
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "s"
+      }
+    ],
+    "returns": "int"
+  },
+  "bot.state.fp_str_to_int": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": null,
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "s"
+      }
+    ],
+    "returns": "int"
+  },
+  "bot.state.recent_writes": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "float",
+        "default": "5.0",
+        "kind": "positional or keyword",
+        "name": "window_s"
+      }
+    ],
+    "returns": "List[Tuple[str, str, float, float, str]]"
+  },
+  "bot.state.snapshot_active": {
+    "kind": "function",
+    "parameters": [],
+    "returns": "List[Tuple[str, float, str, str]]"
+  },
+  "bot.state.tm_sweep_counterfactual_pnl": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": null,
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "unfilled"
+      },
+      {
+        "annotation": null,
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "entry_tier"
+      },
+      {
+        "annotation": null,
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "depths"
+      },
+      {
+        "annotation": null,
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "market_result"
+      },
+      {
+        "annotation": null,
+        "default": "TM_SWEEP_COUNTERFACTUAL_TIERS",
+        "kind": "positional or keyword",
+        "name": "sweep_tiers"
+      }
+    ],
+    "returns": null
+  },
+  "bot.state.tracked_write": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "name"
+      },
+      {
+        "annotation": "str",
+        "default": "'?'",
+        "kind": "positional or keyword",
+        "name": "sql_kind"
+      }
+    ],
+    "returns": null
   }
 }
