@@ -24,14 +24,31 @@ Therefore the design contract is:
     (b) Part B: we're on a protected branch (currently just `main`)
         and `git merge-base --is-ancestor origin/<branch> HEAD` returns
         false — i.e. local has diverged from origin. Refuse with a
-        clear rebase/pull suggestion.
+        clear rebase/pull suggestion. Part B is SKIPPED entirely while
+        git is mid-merge / cherry-pick / revert / rebase (otherwise we
+        would refuse the very merge-resolution commit we just told the
+        user to make — R1 C1).
     (c) --self-test mode: an explicit operator-run health check that
         DELIBERATELY exits nonzero on a broken install, because it's
         not on the commit-time path.
+    (d) Chained hook (`.git/hooks/pre-commit.local`) refuses. If the
+        operator preserved a prior hook via `make install-hooks`, that
+        hook runs first and its nonzero exit propagates directly. R1 M2.
+
+Hook chaining (`pre-commit.local`)
+---------------------------------
+Before Part A/B, we look for `.git/hooks/pre-commit.local` (resolved
+via `git rev-parse --git-path hooks` so worktrees Just Work). If
+present, we exec it with the same argv and propagate its exit code.
+This preserves the operator's pre-existing pre-commit hook (e.g. the
+historic ast-check shell hook that lived on the main checkout before
+P5.3). If `.local` is missing the executable bit or otherwise fails
+to exec, we fail-open with a warning and proceed — a broken .local
+must not permanently block commits.
 
 Stdlib only. No bot.* / scripts.cal_mlp / numpy imports.
 
-Spec source: ClickUp 86b9vgx9w.
+Spec source: ClickUp 86b9vgx9w (+ R1 review).
 """
 from __future__ import annotations
 
@@ -52,12 +69,29 @@ PROTECTED_BRANCHES = frozenset({"main"})
 #: exist solely to let hermetic tests exercise the fail-open code paths.
 _ENV_FORCE_IMPORT_FAIL = "KALSHI_PSC_HOOK_FORCE_IMPORT_FAIL"
 _ENV_FORCE_EXCEPTION = "KALSHI_PSC_HOOK_FORCE_EXCEPTION"
+#: Test-only override for the `git fetch` timeout (seconds). When unset,
+#: defaults to FETCH_TIMEOUT_S below. Tests use this to simulate a hanging
+#: fetch without an actual slow network.
+_ENV_FETCH_TIMEOUT_OVERRIDE = "KALSHI_PSC_HOOK_FETCH_TIMEOUT_S"
+#: Test hook: when set, `_git(["fetch", ...])` raises TimeoutExpired
+#: synthetically to exercise the fail-open path without requiring real
+#: network simulation. Off in production.
+_ENV_FORCE_FETCH_TIMEOUT = "KALSHI_PSC_HOOK_FORCE_FETCH_TIMEOUT"
 
 #: Env var carrying the current Claude session id. P5.1's SessionLock
-#: writes this into the lockfile metadata as `claude_session_marker`.
-#: When the hook sees a lockfile whose `claude_session_marker` matches
-#: this env var, it treats the lock as held-by-self → allow.
-_ENV_SESSION_ID = "KALSHI_SESSION_ID"
+#: reads `CLAUDE_SESSION_ID` exclusively (see `SessionLock.__init__`);
+#: it does NOT read `KALSHI_SESSION_ID`. Self-check therefore matches
+#: lockfile `claude_session_marker` against `CLAUDE_SESSION_ID` only.
+_ENV_SESSION_ID = "CLAUDE_SESSION_ID"
+
+#: Default timeout for the `git fetch origin --quiet` call in Part B.
+#: A slow VPN / flaky Wi-Fi / origin temporarily unreachable but not
+#: failing fast would otherwise block every commit-to-main for minutes.
+#: 15s is the sweet spot — long enough to tolerate a typical TCP retry,
+#: short enough that a user blocks ≤15s on a hung fetch. All other git
+#: invocations in the hook are local and fast; only the fetch needs a
+#: timeout.
+FETCH_TIMEOUT_S: float = 15.0
 
 
 # --------------------------------------------------------------------------
@@ -109,8 +143,30 @@ def _import_session_lock():
         return None
 
 
-def _git(args: list[str], *, cwd: str | None = None) -> tuple[int, str, str]:
-    """Run a git command; return (returncode, stdout, stderr). Never raises."""
+def _git(
+    args: list[str], *, cwd: str | None = None, timeout: float | None = None
+) -> tuple[int, str, str]:
+    """Run a git command; return (returncode, stdout, stderr). Never raises.
+
+    R1 M1 — `timeout` kwarg. Callers pass a timeout (in seconds) when the
+    invocation could hang. On TimeoutExpired we return rc=124 (the
+    GNU-timeout convention) so the caller can distinguish a hung command
+    from a real git failure (rc=1, etc.) and fail-open with the right
+    diagnostic. Local git invocations (rev-parse, diff --cached, etc.)
+    are fast and pass timeout=None.
+
+    Test-only env hook `KALSHI_PSC_HOOK_FORCE_FETCH_TIMEOUT=1` makes the
+    subprocess raise `TimeoutExpired` synthetically when invoked on a
+    `fetch` subcommand; this exercises the fail-open path without
+    requiring a real network simulation.
+    """
+    # Synthetic timeout for tests — only on `fetch` invocations.
+    if (
+        os.environ.get(_ENV_FORCE_FETCH_TIMEOUT)
+        and args
+        and args[0] == "fetch"
+    ):
+        return 124, "", f"git fetch timed out after {timeout}s (forced)"
     try:
         proc = subprocess.run(
             ["git", *args],
@@ -118,10 +174,47 @@ def _git(args: list[str], *, cwd: str | None = None) -> tuple[int, str, str]:
             check=False,
             capture_output=True,
             text=True,
+            timeout=timeout,
         )
         return proc.returncode, proc.stdout, proc.stderr
     except (FileNotFoundError, OSError) as e:
         return 127, "", f"git invocation failed: {e!r}"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"git {args[0] if args else '<no-args>'} timed out after {timeout}s"
+
+
+def _is_mid_operation() -> bool:
+    """True if the working tree is in mid-merge / cherry-pick / revert / rebase.
+
+    R1 C1 — without this check the hook would refuse a merge-resolution
+    commit on `main`: `git fetch && git merge origin/main` produces a
+    merge in progress, `git merge-base --is-ancestor origin/main HEAD`
+    returns rc=1 (HEAD is still the pre-merge local commit), and the
+    hook refuses the very commit it just told the user to make. Skip
+    Part B entirely while git is mid-operation.
+
+    Uses `git rev-parse --git-path <name>` to resolve sentinel paths
+    correctly in worktrees (where `.git` is a FILE, not a directory).
+    Returns False on any error — fail-open into "not mid-op".
+    """
+    sentinels = (
+        "MERGE_HEAD",       # mid-merge
+        "CHERRY_PICK_HEAD", # mid-cherry-pick
+        "REVERT_HEAD",      # mid-revert
+        "rebase-merge",     # interactive rebase in progress (dir)
+        "rebase-apply",     # non-interactive rebase in progress (dir)
+    )
+    for s in sentinels:
+        rc, out, _err = _git(["rev-parse", "--git-path", s])
+        if rc != 0:
+            continue
+        try:
+            p = Path(out.strip())
+            if p.exists():
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def _staged_files() -> list[str]:
@@ -218,13 +311,18 @@ def _check_part_a(session_lock_mod, my_session_id: str) -> tuple[bool, str]:
         except Exception as e:  # noqa: BLE001
             _warn(f"is_stale check failed for {path!r} ({e!r}); skipping")
             continue
-        # Self-check: if claude_session_marker matches our env, OR
-        # session_id matches our env's KALSHI_SESSION_ID, it's our lock.
+        # R1 M3 — Self-check goes through `claude_session_marker` ONLY.
+        # P5.1's `SessionLock._session_id` is `uuid.uuid4().hex` (per-
+        # instance UUID, never read from env), so `holder_session_id ==
+        # my_session_id` could never match in production. The previous
+        # `holder_session_id == my_session_id` branch was dead code.
+        # The lockfile's `claude_session_marker` is initialized from
+        # `CLAUDE_SESSION_ID` (SessionLock.__init__ line ~529), and the
+        # hook reads `CLAUDE_SESSION_ID` exclusively (no KALSHI_SESSION_ID
+        # fallback). Both ends now use the same env var — self-detection
+        # is reliable.
         holder_marker = meta.get("claude_session_marker") or ""
-        holder_session_id = meta.get("session_id") or ""
-        if my_session_id and (
-            holder_marker == my_session_id or holder_session_id == my_session_id
-        ):
+        if my_session_id and holder_marker == my_session_id:
             continue  # held by self → allow
         held_by_others.append((path, meta))
 
@@ -247,8 +345,15 @@ def _check_part_a(session_lock_mod, my_session_id: str) -> tuple[bool, str]:
     lines.append(
         "Another session is editing this file. Wait for them to finish, or coordinate via ClickUp."
     )
+    # R1 m1 — pull STALE_THRESHOLD_S from session_lock_mod so docs don't
+    # drift if the constant is retuned in P5.1. Fall back to "stale-
+    # threshold" prose if the constant is missing for any reason.
+    stale_s = getattr(session_lock_mod, "STALE_THRESHOLD_S", None)
+    stale_phrase = (
+        f">{int(stale_s)}s old" if isinstance(stale_s, (int, float)) else "past the stale threshold"
+    )
     lines.append(
-        "If you believe the lock is dead, the holder's heartbeat must be >180s old; "
+        f"If you believe the lock is dead, the holder's heartbeat must be {stale_phrase}; "
         "the next P5.1 acquire by anyone will reclaim it automatically."
     )
     lines.append("To bypass (USE WITH CAUTION): `git commit --no-verify`")
@@ -269,14 +374,41 @@ def _check_part_b(branch: str) -> tuple[bool, str]:
     if branch not in PROTECTED_BRANCHES:
         return True, ""  # not protected; skip Part B entirely
 
+    # R1 C1 — Skip Part B entirely while git is mid-merge/cherry-pick/
+    # revert/rebase. Otherwise the hook would refuse the merge-resolution
+    # commit that resolves the very divergence it complained about.
+    if _is_mid_operation():
+        _warn(
+            "git is mid-operation (merge/rebase/cherry-pick/revert); "
+            "skipping Part B origin-divergence check"
+        )
+        return True, ""
+
     # Check that origin remote exists at all; if not, fail-open.
     rc, _out, _err = _git(["remote", "get-url", "origin"])
     if rc != 0:
         _warn(f"no origin remote configured; skipping Part B fetch check on {branch}")
         return True, ""
 
-    # Fetch quietly. On failure (offline, auth issue, etc), fail-open.
-    rc, _out, err = _git(["fetch", "origin", "--quiet"])
+    # R1 M1 — Fetch with a timeout. A slow VPN / flaky Wi-Fi / origin
+    # unreachable-but-not-failing-fast would otherwise block every
+    # commit-to-main for minutes. Test-only override
+    # `KALSHI_PSC_HOOK_FETCH_TIMEOUT_S` lets hermetic tests shorten the
+    # wait. On TimeoutExpired the _git wrapper returns rc=124.
+    try:
+        timeout_s = float(
+            os.environ.get(_ENV_FETCH_TIMEOUT_OVERRIDE) or FETCH_TIMEOUT_S
+        )
+    except (TypeError, ValueError):
+        timeout_s = FETCH_TIMEOUT_S
+    rc, _out, err = _git(["fetch", "origin", "--quiet"], timeout=timeout_s)
+    if rc == 124:
+        _warn(
+            f"git fetch timed out after {timeout_s}s; skipping origin-divergence "
+            f"check (fail-open). Recommend manually running "
+            f"`git fetch && git push` before pushing to origin/{branch}."
+        )
+        return True, ""
     if rc != 0:
         _warn(
             f"git fetch failed (rc={rc}); skipping origin-divergence check. "
@@ -386,19 +518,91 @@ def _self_test() -> int:
 # --------------------------------------------------------------------------
 
 
-def _main_inner() -> int:
+def _run_chained_local_hook(argv: list[str]) -> int | None:
+    """R1 M2 — invoke `.git/hooks/pre-commit.local` first if present.
+
+    Returning value:
+      * None  — no chained hook present; caller proceeds to Part A/B.
+      * 0     — chained hook passed; caller proceeds to Part A/B.
+      * non-0 — chained hook refused the commit; main() propagates this
+                exit code directly. NB: the chained hook is responsible
+                for emitting its own stderr; the P5.3 hook does not
+                paraphrase or rewrap it.
+
+    Rationale: the main checkout historically had a 488-byte
+    `.git/hooks/pre-commit` doing `python3 -c "import ast; ast.parse(...)"`
+    syntax-checking. Installing P5.3 on top of that would lose the
+    ast-check (CLAUDE.md states "Syntax-check before commit: make
+    ast-check"). Chaining preserves whatever was there.
+
+    Operator workflow:
+      1. `make install-hooks` detects an existing non-symlink hook.
+      2. Renames it to `.git/hooks/pre-commit.local`.
+      3. Symlinks P5.3 as `.git/hooks/pre-commit`.
+      4. P5.3 invokes `.local` first via this helper.
+
+    Fail-open contract: if exec fails (.local missing executable bit,
+    file gone between stat and exec, etc.) we warn and proceed to
+    Part A/B. A broken .local hook MUST NOT permanently block all
+    commits — fix-forward semantics are preserved (the user can
+    `chmod +x` or remove the .local hook and retry).
+
+    Uses `git rev-parse --git-path hooks` so worktree resolution is
+    consistent with the Makefile install target.
+    """
+    rc, out, _err = _git(["rev-parse", "--git-path", "hooks"])
+    if rc != 0:
+        # Couldn't resolve; fall through to "no chained hook".
+        return None
+    hooks_dir = Path(out.strip())
+    local_hook = hooks_dir / "pre-commit.local"
+    try:
+        if not local_hook.exists():
+            return None
+    except OSError as e:
+        _warn(f"could not stat chained pre-commit.local hook ({e!r}); skipping")
+        return None
+    # Found a chained hook. Pass through the same argv (git commit hooks
+    # currently accept no args, but be safe).
+    try:
+        proc = subprocess.run(
+            [str(local_hook), *argv[1:]],
+            check=False,
+        )
+        return int(proc.returncode)
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        # Exec failure — fail-OPEN: warn and proceed. A broken .local
+        # hook shouldn't permanently block all commits.
+        _warn(
+            f"chained pre-commit.local invocation failed ({e!r}); "
+            "proceeding to Part A/B (fail-open). Fix the .local hook or "
+            "remove it to silence this warning."
+        )
+        return None
+
+
+def _main_inner(argv: list[str] | None = None) -> int:
     """The hook body. Wrapped by main() in a top-level try/except.
 
     Returns the exit code. 0=allow, 1=refuse (with stderr message
     already emitted).
     """
+    argv = argv if argv is not None else sys.argv
     if os.environ.get(_ENV_FORCE_EXCEPTION):
         raise RuntimeError("test-forced exception (KALSHI_PSC_HOOK_FORCE_EXCEPTION)")
 
-    # Resolve our session id once (env-driven).
-    my_session_id = os.environ.get(_ENV_SESSION_ID) or os.environ.get(
-        "CLAUDE_SESSION_ID", ""
-    )
+    # R1 M2 — chained .local hook first (e.g. preserved ast-check from
+    # the prior pre-P5.3 install). If it refuses, propagate its rc
+    # directly without running Part A/B.
+    chained_rc = _run_chained_local_hook(argv)
+    if chained_rc is not None and chained_rc != 0:
+        return chained_rc
+
+    # Resolve our session id once (env-driven). R1 M3 — `CLAUDE_SESSION_ID`
+    # is the single canonical source; P5.1's SessionLock writes it into
+    # `claude_session_marker` and the hook matches against that same env
+    # var. KALSHI_SESSION_ID is NOT consulted (P5.1 doesn't write it).
+    my_session_id = os.environ.get(_ENV_SESSION_ID, "")
 
     # Part A — lock check.
     mod = _import_session_lock()
@@ -433,7 +637,7 @@ def main(argv: list[str]) -> int:
     # Top-level guard: ANY uncaught exception in the hook body → fail-open
     # with stderr warning, never block the commit on internal hook error.
     try:
-        return _main_inner()
+        return _main_inner(argv)
     except SystemExit:
         # Honor explicit sys.exit() from inner code (currently unused, but
         # defensive against future contributors).

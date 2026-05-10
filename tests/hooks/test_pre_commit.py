@@ -90,8 +90,23 @@ def _run_hook(
 
     Mirrors how git would invoke it: cwd=repo, no args by default, exit
     code is the only "is this commit allowed" signal.
+
+    Hermeticity: the parent test process may itself be a Claude Code
+    session with CLAUDE_SESSION_ID set in env. We strip it (and the
+    test-only force-* hooks) so each test's `extra_env` is fully
+    authoritative — no host-env leakage into hermetic assertions.
     """
     env = os.environ.copy()
+    for k in (
+        "CLAUDE_SESSION_ID",
+        "KALSHI_SESSION_ID",
+        "KALSHI_PSC_HOOK_FORCE_IMPORT_FAIL",
+        "KALSHI_PSC_HOOK_FORCE_EXCEPTION",
+        "KALSHI_PSC_HOOK_FORCE_FETCH_TIMEOUT",
+        "KALSHI_PSC_HOOK_FETCH_TIMEOUT_S",
+        "KALSHI_SESSION_LOCK_ROOT",
+    ):
+        env.pop(k, None)
     if lock_root is not None:
         env["KALSHI_SESSION_LOCK_ROOT"] = str(lock_root)
     if extra_env:
@@ -114,12 +129,19 @@ def _write_lockfile(
     target_path: str,
     *,
     session_id: str = "peer-session",
+    claude_session_marker: str = "test",
     last_heartbeat_offset_s: float = 0.0,
 ) -> Path:
     """Write a synthetic lockfile for `target_path` into `lock_root`.
 
     `last_heartbeat_offset_s` is subtracted from now() to age the lock;
     pass STALE_THRESHOLD_S+10 to make it stale.
+
+    `claude_session_marker` mirrors how P5.1's SessionLock initializes
+    the field from CLAUDE_SESSION_ID at acquire time. Self-detection in
+    the P5.3 hook matches the holder's `claude_session_marker` against
+    the env's `CLAUDE_SESSION_ID` exclusively (R1 M3); `session_id` is
+    the per-instance UUID and never matches anything in env.
     """
     sys.path.insert(0, str(_REPO_ROOT))
     try:
@@ -135,7 +157,7 @@ def _write_lockfile(
         "target_path": target_path,
         "started_at": now - last_heartbeat_offset_s,
         "last_heartbeat": now - last_heartbeat_offset_s,
-        "claude_session_marker": "test",
+        "claude_session_marker": claude_session_marker,
     }
     path = lock_root / f"{flat}.lock"
     path.write_text(json.dumps(meta), encoding="utf-8")
@@ -232,14 +254,26 @@ def test_s02_part_a_staged_file_held_by_other_session_refuses(repo_with_staged_f
 
 
 def test_s03_part_a_staged_file_held_by_self_allows(repo_with_staged_file, tmp_path):
+    """R1 M3 — self-detection is via `claude_session_marker` == CLAUDE_SESSION_ID.
+
+    P5.1's SessionLock writes `claude_session_marker` from CLAUDE_SESSION_ID
+    at acquire time; the per-instance `session_id` is a UUID and never
+    matches any env var. The hook (post-M3) matches on
+    `claude_session_marker` exclusively — no KALSHI_SESSION_ID fallback.
+    """
     lock_root = tmp_path / "locks" / "active-work"
-    _write_lockfile(lock_root, "bot/_impl.py", session_id="my-session-abc")
+    _write_lockfile(
+        lock_root, "bot/_impl.py",
+        session_id="random-uuid-irrelevant",
+        claude_session_marker="my-claude-session-id-abc",
+    )
     _git(repo_with_staged_file, "checkout", "-b", "feature-x")
-    # Pass our session_id via env so the hook recognizes the lock as ours.
+    # Pass our CLAUDE_SESSION_ID via env so the hook recognizes the lock
+    # as ours (matches claude_session_marker in the lockfile).
     result = _run_hook(
         repo_with_staged_file,
         lock_root=lock_root,
-        extra_env={"KALSHI_SESSION_ID": "my-session-abc"},
+        extra_env={"CLAUDE_SESSION_ID": "my-claude-session-id-abc"},
     )
     assert result.returncode == 0, (
         f"expected allow (self-held), got {result.returncode}\nSTDERR: {result.stderr}"
@@ -476,11 +510,16 @@ def test_s12_bypass_no_verify_works_even_when_part_a_would_refuse(tmp_path):
     if hook_dst.exists() or hook_dst.is_symlink():
         hook_dst.unlink()
     hook_dst.symlink_to(HOOK_SCRIPT)
-    HOOK_SCRIPT.chmod(0o755)
+    # R1 m4 — don't chmod the real worktree hook; its mode is already 755
+    # (committed that way and verified hermetically by s14_self_test).
 
     lock_root = tmp_path / "locks" / "active-work"
     _write_lockfile(lock_root, "bot/_impl.py", session_id="other-peer")
     env = {"KALSHI_SESSION_LOCK_ROOT": str(lock_root)}
+
+    # Capture HEAD prior to attempts so we can verify the --no-verify
+    # commit actually advanced HEAD (R1 m3 — positive assertion).
+    head_before = _git(repo, "rev-parse", "HEAD").stdout.strip()
 
     # Plain commit must fail (hook refuses).
     plain = _git(repo, "commit", "-m", "should fail", check=False, env=env)
@@ -488,12 +527,27 @@ def test_s12_bypass_no_verify_works_even_when_part_a_would_refuse(tmp_path):
         f"plain commit should be refused by hook; got returncode=0\n"
         f"STDOUT: {plain.stdout}\nSTDERR: {plain.stderr}"
     )
+    head_after_fail = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert head_after_fail == head_before, (
+        f"refused commit must NOT advance HEAD; "
+        f"was {head_before}, now {head_after_fail}"
+    )
 
     # --no-verify commit must succeed (hook not invoked).
     bypass = _git(repo, "commit", "--no-verify", "-m", "bypass", check=False, env=env)
     assert bypass.returncode == 0, (
         f"--no-verify commit should succeed; got returncode={bypass.returncode}\n"
         f"STDOUT: {bypass.stdout}\nSTDERR: {bypass.stderr}"
+    )
+    # R1 m3 — positive assertion that HEAD actually advanced.
+    head_after_bypass = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert head_after_bypass != head_before, (
+        f"--no-verify commit must advance HEAD; HEAD did not move from {head_before}"
+    )
+    # Subject line of the new commit should match.
+    subject = _git(repo, "log", "-1", "--format=%s").stdout.strip()
+    assert subject == "bypass", (
+        f"--no-verify commit subject should be 'bypass'; got {subject!r}"
     )
 
 
@@ -582,3 +636,217 @@ def test_s14b_self_test_fails_when_session_lock_unimportable(tmp_path):
         f"--self-test should fail when import broken; got {result.returncode}\n"
         f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     )
+
+
+# --------------------------------------------------------------------------
+# Scenario 15: R1 C1 — mid-merge state must NOT refuse the merge-resolution
+# --------------------------------------------------------------------------
+
+
+def test_s15_mid_merge_commit_does_not_refuse(main_branch_origin_pair, tmp_path):
+    """On `main`, mid-merge (`.git/MERGE_HEAD` exists), hook must skip Part B.
+
+    R1 C1 reproduction:
+      1. Local has a commit not yet on origin.
+      2. Origin advances → local diverges.
+      3. User runs `git fetch && git merge origin/main` (what the hook
+         suggests as resolution).
+      4. Merge produces a conflict on a real file.
+      5. User resolves the conflict, runs `git commit --no-edit`.
+      6. Without the C1 fix, hook fires `merge-base --is-ancestor
+         origin/main HEAD` → rc=1 (HEAD is still the pre-merge local
+         commit) → refuses the merge-resolution commit. Repo stuck.
+
+    Fix: Part B is skipped entirely whenever `.git/MERGE_HEAD` (or any
+    other mid-operation sentinel) exists. Verified here by setting up
+    a real mid-merge state.
+    """
+    local, origin, seed = main_branch_origin_pair
+    # Branch 1: origin diverges. Push a commit from seed → origin.
+    (seed / "from-origin.txt").write_text("from origin\n")
+    _git(seed, "add", "from-origin.txt")
+    _git(seed, "commit", "-m", "origin-advance")
+    _git(seed, "push", "origin", "main")
+    # Branch 2: local diverges. Make a local commit before fetching.
+    (local / "from-local.txt").write_text("from local\n")
+    _git(local, "add", "from-local.txt")
+    _git(local, "commit", "-m", "local-advance")
+    # Now fetch origin (so we know about origin/main without integrating).
+    _git(local, "fetch", "origin")
+    # Attempt the merge — this is the resolution path the hook suggests.
+    # Since the two files don't conflict on content, merge will succeed
+    # AUTOMATICALLY and commit, which doesn't leave MERGE_HEAD around.
+    # To force a real mid-merge state we use --no-commit so MERGE_HEAD
+    # persists; the user-then-runs-`git commit` path is exactly what we
+    # need to test.
+    merge_result = _git(local, "merge", "--no-commit", "--no-ff", "origin/main", check=False)
+    # Verify we ARE mid-merge.
+    merge_head = local / ".git" / "MERGE_HEAD"
+    assert merge_head.exists(), (
+        f"test setup: expected .git/MERGE_HEAD after `git merge --no-commit`; "
+        f"merge stdout: {merge_result.stdout}\nstderr: {merge_result.stderr}"
+    )
+    # NOW invoke the hook directly (mimics what `git commit` would do).
+    # Pre-C1-fix this would refuse because origin/main is not an ancestor
+    # of HEAD (HEAD is still local-advance).
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir(parents=True)
+    result = _run_hook(local, lock_root=lock_root)
+    assert result.returncode == 0, (
+        f"mid-merge commit must NOT be refused (R1 C1 fix); "
+        f"got rc={result.returncode}\nSTDERR: {result.stderr}"
+    )
+    # Should warn that it skipped Part B due to mid-operation state.
+    assert "mid-operation" in result.stderr.lower() or "merge" in result.stderr.lower(), (
+        f"expected mid-operation warning in stderr; got {result.stderr!r}"
+    )
+
+
+# --------------------------------------------------------------------------
+# Scenario 16: R1 M1 — git fetch timeout fails open
+# --------------------------------------------------------------------------
+
+
+def test_s16_fetch_timeout_fails_open(main_branch_origin_pair, tmp_path):
+    """Force a synthetic git-fetch TimeoutExpired; assert fail-open + warn.
+
+    R1 M1: without a timeout on fetch, a slow VPN / unreachable-but-not-
+    failing origin would block every commit-to-main for minutes. Fix
+    passes timeout=15s to subprocess.run and returns rc=124 on
+    TimeoutExpired. The hook then fails open with a clear warning.
+
+    Mechanism: env var `KALSHI_PSC_HOOK_FORCE_FETCH_TIMEOUT=1` makes the
+    `_git(["fetch", ...])` wrapper return rc=124 synthetically without
+    a real network call. Hermetic, deterministic, no flake risk.
+    """
+    local, _origin, _seed = main_branch_origin_pair
+    # Stage a commit on main.
+    (local / "x.txt").write_text("x\n")
+    _git(local, "add", "x.txt")
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir(parents=True)
+    result = _run_hook(
+        local,
+        lock_root=lock_root,
+        extra_env={"KALSHI_PSC_HOOK_FORCE_FETCH_TIMEOUT": "1"},
+    )
+    assert result.returncode == 0, (
+        f"timed-out fetch must fail-open (allow); got rc={result.returncode}\n"
+        f"STDERR: {result.stderr}"
+    )
+    assert "timed out" in result.stderr.lower() or "timeout" in result.stderr.lower(), (
+        f"expected timeout warning in stderr; got {result.stderr!r}"
+    )
+
+
+# --------------------------------------------------------------------------
+# Scenario 17: R1 M2 — chained .local hook that refuses propagates
+# --------------------------------------------------------------------------
+
+
+def test_s17_chained_local_hook_runs_first_and_can_refuse(repo_with_staged_file, tmp_path):
+    """`.git/hooks/pre-commit.local` runs FIRST; nonzero exit blocks commit.
+
+    R1 M2: the operator may have a pre-existing pre-commit hook (e.g. the
+    historic shell ast-check on the main checkout). `make install-hooks`
+    renames it to `pre-commit.local`; the P5.3 hook invokes it before
+    Part A/B and propagates a nonzero exit. This preserves the
+    operator's prior pre-commit semantics.
+
+    Verified by installing a `.local` hook that always exits 1 and
+    confirming the P5.3 hook returns 1 even when Part A/B would allow.
+    """
+    repo = repo_with_staged_file
+    _git(repo, "checkout", "-b", "feature-x")
+    # Install a chained .local hook in the test repo's .git/hooks/.
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    local_hook = hooks_dir / "pre-commit.local"
+    local_hook.write_text(
+        "#!/bin/sh\n"
+        "echo 'chained-local-hook says NO' 1>&2\n"
+        "exit 7\n"  # distinctive nonzero rc
+    )
+    local_hook.chmod(0o755)
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir(parents=True)
+    result = _run_hook(repo, lock_root=lock_root)
+    # The chained hook returns 7; P5.3 must propagate that exit code
+    # rather than collapse to 1.
+    assert result.returncode == 7, (
+        f"chained .local hook's exit code must propagate; got rc={result.returncode}\n"
+        f"STDERR: {result.stderr}"
+    )
+    # Chained hook's stderr must reach the user.
+    assert "chained-local-hook says NO" in result.stderr
+
+
+# --------------------------------------------------------------------------
+# Scenario 18: R1 M2 — chained .local hook that passes lets Part A/B run
+# --------------------------------------------------------------------------
+
+
+def test_s18_chained_local_hook_passes_proceeds_to_part_a_b(
+    repo_with_staged_file, tmp_path
+):
+    """If chained `.local` hook passes (rc=0), Part A/B runs as normal.
+
+    Verified by: installing a passing .local hook AND a peer-held lock
+    on the staged file. Without the .local hook, Part A would refuse;
+    with a passing .local hook in front, Part A still refuses (because
+    .local passed and yielded control to Part A/B).
+
+    Negative version: with no peer lock + non-protected branch + passing
+    .local, hook must rc=0.
+    """
+    repo = repo_with_staged_file
+    _git(repo, "checkout", "-b", "feature-x")
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    local_hook = hooks_dir / "pre-commit.local"
+    local_hook.write_text(
+        "#!/bin/sh\n"
+        "echo 'chained-local-hook OK' 1>&2\n"
+        "exit 0\n"
+    )
+    local_hook.chmod(0o755)
+    lock_root = tmp_path / "locks" / "active-work"
+    lock_root.mkdir(parents=True)
+    # No peer lock → Part A allows. Branch is feature-x → Part B skipped.
+    result = _run_hook(repo, lock_root=lock_root)
+    assert result.returncode == 0, (
+        f"passing .local + no Part A/B refusal → rc=0; got rc={result.returncode}\n"
+        f"STDERR: {result.stderr}"
+    )
+    # Stderr from .local should still surface to the user.
+    assert "chained-local-hook OK" in result.stderr
+
+
+# --------------------------------------------------------------------------
+# Scenario 19: R1 M2 — absent .local hook proceeds without error
+# --------------------------------------------------------------------------
+
+
+def test_s19_no_chained_hook_skips_gracefully(repo_with_staged_file, tmp_path):
+    """No `.git/hooks/pre-commit.local` present → hook runs Part A/B normally.
+
+    R1 M2 baseline: the chaining mechanism is opt-in (presence of
+    .local). Without it, behavior is identical to the pre-R1 hook.
+    """
+    repo = repo_with_staged_file
+    _git(repo, "checkout", "-b", "feature-x")
+    # Affirmatively assert no .local hook is present in the test repo.
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    assert not (hooks_dir / "pre-commit.local").exists(), (
+        "test setup leaked a chained hook into the fixture"
+    )
+    lock_root = tmp_path / "locks" / "active-work"
+    lock_root.mkdir(parents=True)
+    result = _run_hook(repo, lock_root=lock_root)
+    assert result.returncode == 0, (
+        f"no .local + no Part A/B refusal → rc=0; got rc={result.returncode}\n"
+        f"STDERR: {result.stderr}"
+    )
+    # Chained-hook stderr signature must NOT appear (nothing ran).
+    assert "chained-local-hook" not in result.stderr

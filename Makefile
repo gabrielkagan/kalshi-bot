@@ -144,8 +144,14 @@ install:
 
 # Sprint PSC Bit P5.3 — install the parallel-session-coordination
 # pre-commit hook. Idempotent: rerunning replaces the existing symlink.
-# Refuses to clobber a NON-symlink (operator may have a hand-written
-# hook they care about).
+#
+# R1 M2 — Hook chaining. If an EXISTING non-symlink pre-commit hook is
+# present (e.g. the historic 488-byte ast-check shell hook on the main
+# checkout), it is preserved by renaming to `pre-commit.local` before
+# installing the P5.3 symlink. The P5.3 hook then invokes
+# `pre-commit.local` first; nonzero exit from .local propagates
+# directly. This avoids regressing the operator's prior workflow when
+# P5.3 ships.
 #
 # Worktree note: git stores hooks at $(git rev-parse --git-common-dir)/hooks,
 # i.e. the MAIN checkout's `.git/hooks/` is shared across all worktrees.
@@ -161,15 +167,27 @@ install-hooks:
 	fi; \
 	mkdir -p "$$hooks_dir"; \
 	dst="$$hooks_dir/pre-commit"; \
+	chained="$$hooks_dir/pre-commit.local"; \
 	if [ -e "$$dst" ] && [ ! -L "$$dst" ]; then \
-		echo "ERROR: $$dst exists and is NOT a symlink."; \
-		echo "Move your existing hook aside (e.g. $$dst.bak) and rerun."; \
-		exit 1; \
+		if [ -e "$$chained" ]; then \
+			echo "ERROR: $$dst is a non-symlink AND $$chained already exists."; \
+			echo "Refusing to clobber either. Resolve manually:"; \
+			echo "  - if $$chained is yours, move it aside"; \
+			echo "  - if $$dst is what you want chained, mv it onto $$chained"; \
+			exit 1; \
+		fi; \
+		echo "Existing non-symlink pre-commit hook detected at $$dst."; \
+		echo "Preserving as $$chained (will be invoked by P5.3 hook before Part A/B)."; \
+		mv "$$dst" "$$chained"; \
+		chmod +x "$$chained"; \
 	fi; \
 	src=$$(pwd)/scripts/git_hooks/pre-commit; \
 	chmod +x "$$src"; \
 	ln -sf "$$src" "$$dst"; \
 	echo "Installed $$src as $$dst"; \
+	if [ -e "$$chained" ]; then \
+		echo "Chained pre-commit.local: $$chained"; \
+	fi; \
 	echo "Verify with: scripts/git_hooks/pre-commit --self-test"
 
 # Pillar 5: the canonical entrypoint. Each tier's failure aborts the
