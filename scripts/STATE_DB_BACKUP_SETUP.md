@@ -454,19 +454,53 @@ tail -f ~/Library/Logs/kalshi-state-db-backup-heartbeat.out.log
 
 ### 11.4 Crontab alternative (if you prefer cron over launchd)
 
+**Important — crontab does NOT expand shell variables.** Unlike a
+login shell, crontab inherits only cron's own environment (typically
+just `PATH`, `LOGNAME`, `HOME`, `SHELL`). `$YOUR_TOKEN`, `$YOUR_CHAT`,
+`$BUCKET`, and `$HOME` are NOT substituted at crontab-load time. You
+MUST hand-substitute the literal values before pasting into
+`crontab -e`, OR generate the line with `sed` first.
+
+Run this snippet locally to print a ready-to-paste line (substitutes
+`$BUCKET`, `$YOUR_TOKEN`, `$YOUR_CHAT`, `$HOME` with their current
+shell values):
+
 ```bash
-# crontab -e — add this line:
-0 */6 * * * AWS_PROFILE=kalshi-state-db-restore \
-    TELEGRAM_BOT_TOKEN=$YOUR_TOKEN \
-    TELEGRAM_CHAT_ID=$YOUR_CHAT \
-    /usr/bin/python3 $HOME/Documents/kalshi-bot/scripts/state_db_backup_heartbeat.py \
-    --bucket $BUCKET \
-    >> $HOME/Library/Logs/kalshi-state-db-backup-heartbeat.out.log 2>&1
+# Set these once, then run the sed pipeline below:
+export YOUR_TOKEN=...  # Telegram bot token
+export YOUR_CHAT=...   # Telegram chat ID
+# $BUCKET should already be set from §1; if not: source ~/kalshi-state-db-backup.env
+
+cat <<'TEMPLATE' | sed \
+    -e "s|@BUCKET@|$BUCKET|g" \
+    -e "s|@TOKEN@|$YOUR_TOKEN|g" \
+    -e "s|@CHAT@|$YOUR_CHAT|g" \
+    -e "s|@HOME@|$HOME|g"
+0 */6 * * * AWS_PROFILE=kalshi-state-db-restore TELEGRAM_BOT_TOKEN=@TOKEN@ TELEGRAM_CHAT_ID=@CHAT@ /usr/bin/python3 @HOME@/Documents/kalshi-bot/scripts/state_db_backup_heartbeat.py --bucket @BUCKET@ >> @HOME@/Library/Logs/kalshi-state-db-backup-heartbeat.out.log 2>&1
+TEMPLATE
+
+# Copy the printed line, run `crontab -e`, paste, save.
 ```
+
+Note on cadence: the launchd plist uses `StartInterval=21600` (every
+21600 seconds = 6 hours from load-time / last-run); cron's
+`0 */6 * * *` runs at wall-clock 00:00 / 06:00 / 12:00 / 18:00 of the
+crontab-process timezone. The two are approximately equivalent (both
+fire 4×/day) but NOT identical — if the operator switches between
+them, the first invocation under the new scheduler may be up to 6h
+later than the last invocation under the old one. Not load-bearing
+(36h staleness threshold has 12h slack), but worth knowing during
+the cutover.
 
 launchd is the more idiomatic choice on macOS (survives reboot,
 respects sleep/wake), but cron works equivalently if you already
 have other cron jobs and want to keep them together.
+
+**Caveat for both schedulers:** crontab inherits cron's environment
+only (typically `PATH=/usr/bin:/bin`), NOT your interactive shell's
+environment. If `python3` is at a non-standard path (homebrew, pyenv),
+hard-code the full path in the crontab line. Verify with `which
+python3` in your interactive shell vs `env -i /usr/bin/which python3`.
 
 ### 11.5 Trade-offs of the Mac-side choice
 

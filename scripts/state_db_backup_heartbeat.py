@@ -122,6 +122,11 @@ class HeartbeatResult:
       - 'stale'        latest snapshot age > max_age_hours
       - 'empty'        no keys under the daily/ prefix
       - 'unparseable'  latest key doesn't match daily/state-db-* pattern
+      - 'error'        S3 call itself raised (creds expired, network down,
+                       bucket missing, DNS broken, etc.) — heartbeat-INFRA
+                       failure, distinct from backup-staleness. See R1
+                       finding C1 (ticket 86b9vgjxw) for the failure-modes
+                       enumeration.
     """
     status: str
     key: Optional[str]
@@ -280,19 +285,60 @@ def run_heartbeat(
       1 — stale (latest snapshot too old)
       2 — empty (no snapshots under prefix)
       3 — unparseable (latest key doesn't match pattern)
+      4 — error (S3 call raised — creds expired / network down / bucket
+          missing / DNS broken / permission denied / etc.). Distinct from
+          1–3 because the failure is in the heartbeat infrastructure, NOT
+          the backup chain. Triage: AWS creds + Mac network + bucket
+          existence, NOT the VPS systemd timer. See R1 finding C1 (ticket
+          86b9vgjxw).
 
     Side effects: prints status to stdout; on non-zero, fires
     `send_telegram_alert`. Alert failures are non-fatal (env var
     missing OR network error) — the return code still reflects the
     snapshot health.
+
+    R1 C1 fix: `check_latest_snapshot` is wrapped in a broad
+    `try/except Exception` because boto3 raises a family of exceptions
+    (`botocore.exceptions.NoCredentialsError`, `ClientError` with
+    `ExpiredToken` / `NoSuchBucket` / `AccessDenied`,
+    `EndpointConnectionError`, `socket.gaierror`, ...) that all share
+    the same operator-actionable triage: "the heartbeat itself can't
+    talk to S3". Catching `Exception` keeps the script decoupled from
+    botocore (no `botocore` import) — the test suite uses generic
+    `Exception` subclasses to simulate each failure mode.
     """
-    result = check_latest_snapshot(
-        s3_client=s3_client,
-        bucket=bucket,
-        prefix=prefix,
-        max_age_hours=max_age_hours,
-        now=now,
-    )
+    try:
+        result = check_latest_snapshot(
+            s3_client=s3_client,
+            bucket=bucket,
+            prefix=prefix,
+            max_age_hours=max_age_hours,
+            now=now,
+        )
+    except Exception as exc:  # noqa: BLE001 — heartbeat-infra catch-all by design
+        exc_class = type(exc).__name__
+        # Module-qualified class (e.g. botocore.exceptions.NoCredentialsError)
+        # is more useful than the bare name when triaging unknown wrappers.
+        exc_module = getattr(type(exc), "__module__", "?")
+        exc_repr = f"{exc_module}.{exc_class}" if exc_module not in ("builtins", "?") else exc_class
+        message = (
+            f"state.db backup HEARTBEAT-INFRA ERROR: the heartbeat could "
+            f"not reach S3. The backup chain on the VPS may still be "
+            f"healthy — this alert is about the heartbeat itself.\n\n"
+            f"Exception: {exc_repr}: {exc}\n\n"
+            f"Triage on the Mac (NOT the VPS):\n"
+            f"  - AWS creds: `aws s3 ls s3://{bucket}/ --profile kalshi-state-db-restore`\n"
+            f"  - Network: `curl -s https://s3.amazonaws.com/ -o /dev/null -w '%{{http_code}}\\n'`\n"
+            f"  - Bucket exists: `aws s3api head-bucket --bucket {bucket} --profile kalshi-state-db-restore`\n"
+            f"  - LaunchAgent logs: `~/Library/Logs/kalshi-state-db-backup-heartbeat.err.log`\n"
+            f"Bucket: {bucket}"
+        )
+        print(
+            f"backup_heartbeat: status=error exc={exc_repr} bucket={bucket!r}",
+            file=sys.stderr,
+        )
+        send_telegram_alert(f"*state.db backup heartbeat*\n\n{message}")
+        return 4
 
     # Always print the result line for the cron log.
     print(
@@ -360,8 +406,34 @@ def main(argv=None) -> int:
         )
         return 65  # EX_DATAERR — config problem, not the bot's
 
-    session = boto3.Session(profile_name=args.aws_profile, region_name=args.region)
-    s3_client = session.client("s3")
+    # R1 C1 fix: boto3.Session / .client construction can raise even
+    # before any S3 call is issued (e.g., botocore.exceptions.ProfileNotFound
+    # when AWS_PROFILE doesn't exist in ~/.aws/credentials). Wrap so the
+    # operator gets a Telegram alert + rc=4 instead of a silent LaunchAgent
+    # crash with a traceback only in ~/Library/Logs/.
+    try:
+        session = boto3.Session(profile_name=args.aws_profile, region_name=args.region)
+        s3_client = session.client("s3")
+    except Exception as exc:  # noqa: BLE001 — heartbeat-infra catch-all by design
+        exc_class = type(exc).__name__
+        exc_module = getattr(type(exc), "__module__", "?")
+        exc_repr = f"{exc_module}.{exc_class}" if exc_module not in ("builtins", "?") else exc_class
+        message = (
+            f"state.db backup HEARTBEAT-INFRA ERROR: could not construct "
+            f"boto3 session/client. The backup chain on the VPS may still "
+            f"be healthy — this alert is about the heartbeat itself.\n\n"
+            f"Exception: {exc_repr}: {exc}\n\n"
+            f"Triage on the Mac (NOT the VPS):\n"
+            f"  - Verify AWS profile exists: `aws configure list --profile {args.aws_profile}`\n"
+            f"  - Verify region: {args.region}\n"
+            f"  - LaunchAgent logs: `~/Library/Logs/kalshi-state-db-backup-heartbeat.err.log`"
+        )
+        print(
+            f"backup_heartbeat: status=error exc={exc_repr} (session-construct)",
+            file=sys.stderr,
+        )
+        send_telegram_alert(f"*state.db backup heartbeat*\n\n{message}")
+        return 4
 
     return run_heartbeat(
         s3_client=s3_client,

@@ -384,6 +384,135 @@ class TestMain:
         assert rc != 0
         assert len(alerts) == 1
 
+    # ── R1 C1: S3 exception handling ────────────────────────────────
+
+    def test_main_s3_credentials_error_fires_infra_alert(self, heartbeat_module, monkeypatch):
+        """R1 C1: simulate creds expired / missing.
+
+        Pre-fix: list_objects_v2 raises NoCredentialsError → propagates
+        out of run_heartbeat → LaunchAgent silently dies, only the
+        traceback in ~/Library/Logs/...err.log. Operator never paged.
+
+        Post-fix: caught + alerted + rc=4. Message prefix MUST identify
+        this as a heartbeat-INFRA error so the operator triages AWS
+        creds (Mac) rather than the VPS systemd timer.
+        """
+        s3 = MagicMock()
+
+        # Use generic Exception subclasses to avoid coupling tests to
+        # botocore (the production code catches Exception, so any
+        # subclass exercises the same path). NoCredentialsError shape:
+        class _FakeNoCredentialsError(Exception):
+            """Stand-in for botocore.exceptions.NoCredentialsError."""
+
+        s3.list_objects_v2.side_effect = _FakeNoCredentialsError(
+            "Unable to locate credentials"
+        )
+
+        alerts = []
+        monkeypatch.setattr(
+            heartbeat_module, "send_telegram_alert",
+            lambda msg: alerts.append(msg) or True,
+        )
+
+        rc = heartbeat_module.run_heartbeat(
+            s3_client=s3,
+            bucket="kalshi-test",
+            now=datetime(2026, 5, 10, 6, 0, tzinfo=timezone.utc),
+        )
+        # rc=4 specifically — distinct from 1/2/3 (which map to
+        # backup-staleness modes). 4 means heartbeat-infra failure.
+        assert rc == 4, f"expected rc=4 (heartbeat-infra), got {rc}"
+        assert len(alerts) == 1, f"expected 1 alert, got {len(alerts)}"
+        msg = alerts[0]
+        # The message MUST identify the failure class so the operator
+        # knows where to triage (Mac AWS creds vs VPS systemd).
+        assert "HEARTBEAT-INFRA" in msg or "heartbeat-infra" in msg.lower()
+        # The exception class name MUST appear (so operator knows it's
+        # a creds problem, not a network problem).
+        assert "FakeNoCredentialsError" in msg or "NoCredentialsError" in msg
+        # The exception message (the value) MUST appear so operator
+        # doesn't have to ssh into the LaunchAgent log.
+        assert "Unable to locate credentials" in msg
+        # Bucket name MUST appear so multi-environment operators know
+        # which heartbeat fired.
+        assert "kalshi-test" in msg
+
+    def test_main_s3_endpoint_connection_error_fires_infra_alert(
+        self, heartbeat_module, monkeypatch,
+    ):
+        """R1 C1: simulate transient network outage (Mac WiFi dropped,
+        DNS resolver hung, S3 region down). The heartbeat must still
+        fire a paging alert with rc=4 — the operator decides whether
+        to retry or escalate.
+
+        Distinct test from the credentials case because the operator
+        triage is different (network vs creds), and we want the
+        regression to flag BOTH paths if a future refactor narrows the
+        catch clause.
+        """
+        s3 = MagicMock()
+
+        class _FakeEndpointConnectionError(Exception):
+            """Stand-in for botocore.exceptions.EndpointConnectionError."""
+
+        s3.list_objects_v2.side_effect = _FakeEndpointConnectionError(
+            'Could not connect to the endpoint URL: "https://s3.amazonaws.com/"'
+        )
+
+        alerts = []
+        monkeypatch.setattr(
+            heartbeat_module, "send_telegram_alert",
+            lambda msg: alerts.append(msg) or True,
+        )
+
+        rc = heartbeat_module.run_heartbeat(
+            s3_client=s3,
+            bucket="kalshi-test",
+            now=datetime(2026, 5, 10, 6, 0, tzinfo=timezone.utc),
+        )
+        assert rc == 4
+        assert len(alerts) == 1
+        msg = alerts[0]
+        assert "HEARTBEAT-INFRA" in msg or "heartbeat-infra" in msg.lower()
+        assert "EndpointConnectionError" in msg or "FakeEndpointConnectionError" in msg
+        assert "Could not connect to the endpoint" in msg
+
+    def test_main_s3_generic_exception_does_not_crash(
+        self, heartbeat_module, monkeypatch,
+    ):
+        """R1 C1: catch-all backstop. ANY exception out of
+        list_objects_v2 must result in rc=4 + an alert, never a
+        propagating exception. This is the contract that closes the
+        silent-LaunchAgent-crash failure mode.
+
+        Generic Exception, not a botocore subclass, to verify the
+        catch is broad enough (matches the implementation's `except
+        Exception` clause).
+        """
+        s3 = MagicMock()
+        s3.list_objects_v2.side_effect = RuntimeError("anything at all")
+
+        alerts = []
+        monkeypatch.setattr(
+            heartbeat_module, "send_telegram_alert",
+            lambda msg: alerts.append(msg) or True,
+        )
+
+        # MUST NOT raise.
+        rc = heartbeat_module.run_heartbeat(
+            s3_client=s3,
+            bucket="kalshi-test",
+            now=datetime(2026, 5, 10, 6, 0, tzinfo=timezone.utc),
+        )
+        assert rc == 4
+        assert len(alerts) == 1
+        assert "anything at all" in alerts[0]
+        # Sanity: the heartbeat-infra prefix is consistent across all
+        # three C1 tests so the operator's Telegram filter rule
+        # (e.g., starred messages matching "HEARTBEAT-INFRA") works.
+        assert "HEARTBEAT-INFRA" in alerts[0]
+
     def test_main_does_not_depend_on_backup_module(self, heartbeat_module):
         """Decoupling constraint per ticket: 'Heartbeat must NOT depend
         on the backup timer being healthy (decoupled — only depends on
