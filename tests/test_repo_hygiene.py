@@ -198,13 +198,23 @@ def _parse_bot_class_starts():
 
 
 def test_bot_layout_class_lines_match_bot_impl():
-    """Every class line range in bot_layout.md must point at the actual class def in bot/_impl.py."""
+    """Every class line range in bot_layout.md must point at the actual class def in bot/_impl.py.
+
+    Post-Bit-9.3.5 (2026-05-10), bot/_impl.py is class-free — Sprint 9 closed.
+    Both the layout doc's class table and `grep -nE '^class ' bot/_impl.py`
+    return empty; the equality is the new ground truth. If a future Bit
+    re-adds a class to bot/_impl.py, the layout doc must enumerate it; if a
+    future Bit deletes bot/_impl.py entirely (Bit 9.3-ii), this test naturally
+    passes the empty-equals-empty branch.
+    """
     layout_pairs = _parse_layout_class_table()
-    assert layout_pairs, (
-        "agent_docs/bot_layout.md has no parseable class table. "
-        "Regenerate per the doc's pinned regen command."
-    )
     bot_starts = _parse_bot_class_starts()
+    if not bot_starts and not layout_pairs:
+        return  # Bit 9.3.5 endpoint: bot/_impl.py class-free, layout doc agrees
+    assert layout_pairs, (
+        "agent_docs/bot_layout.md has no parseable class table but bot/_impl.py "
+        f"still has classes: {sorted(bot_starts)}. Regenerate the class table."
+    )
     drift = []
     for layout_line, cls in layout_pairs:
         actual = bot_starts.get(cls)

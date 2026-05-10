@@ -10,7 +10,7 @@ references. FIVE consumers reach it via `import bot.notifier as
 _telegram_state` plus `_telegram_state._TELEGRAM` module-attribute
 access (Bit 9.3 atomic update — `bot/main_loop.py` ADDS as the new
 MainLoop-host consumer; `bot/_impl.py` STAYS in the list for the
-orphan-DB Layer-3 helper `_alert_orphan_db_holder` at bot/_impl.py:430,
+orphan-DB Layer-3 helper `_alert_orphan_db_holder` at bot/_impl.py:431,
 which is the ONLY remaining `_telegram_state._TELEGRAM` site in
 bot/_impl.py post-MainLoop-extraction):
   - `bot/_impl.py` — for the orphan-DB Layer-3 watchdog helpers

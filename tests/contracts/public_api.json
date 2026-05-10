@@ -612,164 +612,7 @@
     "tracked_write",
     "validate_market_configs"
   ],
-  "__impl_canonical_classes__": {
-    "KalshiOrderFlowTracker": {
-      "bases": [],
-      "kind": "class",
-      "members": {
-        "__init__": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": null
-        },
-        "cleanup_stale": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "Set[str]",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "active_tickers"
-            }
-          ],
-          "returns": null
-        },
-        "get_signals": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            }
-          ],
-          "returns": "Optional[Dict]"
-        },
-        "get_tracked_count": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            }
-          ],
-          "returns": "int"
-        },
-        "record_snapshot": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ticker"
-            },
-            {
-              "annotation": "Dict",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "ob_data"
-            },
-            {
-              "annotation": "int",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "best_ask"
-            }
-          ],
-          "returns": null
-        }
-      }
-    },
-    "OrderFlowEngine": {
-      "bases": [],
-      "kind": "class",
-      "members": {
-        "__init__": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "cross_feed"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "coinglass"
-            },
-            {
-              "annotation": null,
-              "default": "None",
-              "kind": "positional or keyword",
-              "name": "kalshi_oft"
-            }
-          ],
-          "returns": null
-        },
-        "get_signals": {
-          "kind": "function",
-          "parameters": [
-            {
-              "annotation": null,
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "self"
-            },
-            {
-              "annotation": "str",
-              "default": null,
-              "kind": "positional or keyword",
-              "name": "asset"
-            },
-            {
-              "annotation": null,
-              "default": "{}",
-              "kind": "variadic keyword",
-              "name": "kwargs"
-            }
-          ],
-          "returns": "Dict"
-        }
-      }
-    }
-  },
+  "__impl_canonical_classes__": {},
   "bot": {
     "kind": "module"
   },
@@ -23837,6 +23680,102 @@
       }
     }
   },
+  "bot.main_loop.KalshiOrderFlowTracker": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "cleanup_stale": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Set[str]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "active_tickers"
+          }
+        ],
+        "returns": null
+      },
+      "get_signals": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_tracked_count": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "int"
+      },
+      "record_snapshot": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "Dict",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ob_data"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
   "bot.main_loop.Logger": {
     "bases": [],
     "kind": "class",
@@ -24414,6 +24353,66 @@
           }
         ],
         "returns": "Optional[Dict]"
+      }
+    }
+  },
+  "bot.main_loop.OrderFlowEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cross_feed"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "coinglass"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kalshi_oft"
+          }
+        ],
+        "returns": null
+      },
+      "get_signals": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": null,
+            "default": "{}",
+            "kind": "variadic keyword",
+            "name": "kwargs"
+          }
+        ],
+        "returns": "Dict"
       }
     }
   },
@@ -26980,6 +26979,249 @@
       }
     }
   },
+  "bot.order_flow": {
+    "kind": "module"
+  },
+  "bot.order_flow.CROSS_EXCHANGE_CONSENSUS_MIN": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.FUNDING_RATE_ELEVATED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.FUNDING_RATE_EXTREME": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.KALSHI_OFT_BUFFER_SIZE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.KALSHI_OFT_DEPTH_DRAIN_PCT": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.KALSHI_OFT_IMBALANCE_STRONG": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.KALSHI_OFT_IMBALANCE_WEAK": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.KALSHI_OFT_LOG_INTERVAL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.KALSHI_OFT_MIN_SNAPSHOTS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.KALSHI_OFT_SHADOW_MODE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.KALSHI_OFT_STALE_SECONDS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.KalshiOrderFlowTracker": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "cleanup_stale": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Set[str]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "active_tickers"
+          }
+        ],
+        "returns": null
+      },
+      "get_signals": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_tracked_count": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "int"
+      },
+      "record_snapshot": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "Dict",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ob_data"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.order_flow.OFA_CONSENSUS_BOOST": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.OFA_CONSENSUS_REDUCE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.OFA_ELEVATED_FUNDING_REDUCE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.OFA_EXTREME_FUNDING_REDUCE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.OFA_KALSHI_CONVERGENCE_BOOST": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.OFA_KALSHI_DEPTH_DRAIN_BOOST": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.OFA_KALSHI_IMBALANCE_BOOST": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.OFA_KALSHI_IMBALANCE_REDUCE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.OFA_LEAD_BOOST": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.OFA_MAX_ADJUSTMENT": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.order_flow.OrderFlowEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cross_feed"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "coinglass"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kalshi_oft"
+          }
+        ],
+        "returns": null
+      },
+      "get_signals": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": null,
+            "default": "{}",
+            "kind": "variadic keyword",
+            "name": "kwargs"
+          }
+        ],
+        "returns": "Dict"
+      }
+    }
+  },
   "bot.scanner": {
     "kind": "module"
   },
@@ -27893,6 +28135,102 @@
       }
     }
   },
+  "bot.scanner.KalshiOrderFlowTracker": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "cleanup_stale": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Set[str]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "active_tickers"
+          }
+        ],
+        "returns": null
+      },
+      "get_signals": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_tracked_count": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "int"
+      },
+      "record_snapshot": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "Dict",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ob_data"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
   "bot.scanner.LOSS_COOLDOWN_ENABLED": {
     "annotation": null,
     "kind": "attribute"
@@ -28492,6 +28830,66 @@
           }
         ],
         "returns": "Optional[Dict]"
+      }
+    }
+  },
+  "bot.scanner.OrderFlowEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cross_feed"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "coinglass"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kalshi_oft"
+          }
+        ],
+        "returns": null
+      },
+      "get_signals": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": null,
+            "default": "{}",
+            "kind": "variadic keyword",
+            "name": "kwargs"
+          }
+        ],
+        "returns": "Dict"
       }
     }
   },

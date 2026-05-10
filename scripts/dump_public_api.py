@@ -17,16 +17,20 @@ What this captures (three layers):
 
 2. **Static walk of locally-defined public classes inside ``bot/_impl.py``** —
    auto-derived from ``griffe.load("bot._impl").classes`` filtered to
-   ``is_alias=False``. Today: ``MainLoop``, ``OpportunityScanner``,
-   ``OrderExecutor``, ``StateManager``, ``CalibrationEngine``, ``OrderFlowEngine``,
-   ``KalshiOrderFlowTracker``, ``SettlementTracker`` (the load-bearing classes
-   still resident in the legacy monolith). Already-extracted classes
-   (``KalshiClient``, ``Logger``, ``TelegramNotifier``, ``VolatilityEngine``,
-   ``ProbabilityEngine``, the fetchers, the feeds) have ``is_alias=True``
-   re-export shims in _impl.py and are filtered out — they appear under
-   their canonical paths in Layer 1. Auto-derive is self-maintaining:
+   ``is_alias=False``. Post-Bit-9.3.5 (2026-05-10), this list is EMPTY —
+   Sprint 9 closing sister leaf moved the final two classes
+   (``OrderFlowEngine`` + ``KalshiOrderFlowTracker``) to ``bot/order_flow.py``,
+   joining all prior extractions (``MainLoop`` → bot.main_loop in Bit 9.3,
+   ``SettlementTracker`` → bot.settlement in Bit 9.2, ``OrderExecutor`` →
+   bot.executor in Bit 9.1, ``OpportunityScanner`` → bot.scanner in Bit 8.1,
+   ``StateManager`` → bot.state in Bit 7.1, ``CalibrationEngine`` →
+   bot.engines.calibration in Bit 6.3, ``ProbabilityEngine`` → bot.engines.probability
+   in Bit 6.2, ``VolatilityEngine`` → bot.engines.volatility in Bit 6.1,
+   plus all Sprint 4 leaf classes). All re-exports back into bot._impl
+   have ``is_alias=True`` and are filtered out — they appear under their
+   canonical paths in Layer 1. Auto-derive is self-maintaining:
    extracted classes naturally drop out of Layer 2; new classes added to
-   ``_impl.py`` naturally appear.
+   ``_impl.py`` (none anticipated post-Sprint-9) would naturally appear.
 
 3. **Runtime proxy probe** — imports ``bot`` and ``bot._impl`` at runtime,
    enumerates every public name accessible via ``getattr(bot, name)`` (the

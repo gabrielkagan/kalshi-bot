@@ -105,18 +105,19 @@ from bot.helpers.breakers import (  # noqa: F401 — underscore-prefixed; star-i
 
 from bot.logger import Logger  # noqa: F401 — Bit 4.1 leaf extraction; re-export so MainLoop construction + type annotations on OpportunityScanner/OrderExecutor/SettlementTracker resolve
 from bot.notifier import TelegramNotifier  # noqa: F401 — Bit 4.2 leaf extraction; re-export so the runtime construction in MainLoop.__init__ resolves.
-import bot.notifier as _telegram_state  # Bit 8.1 path-A++ (2026-05-10) + Bit 9.3 atomic narrative update (2026-05-10): alias for `_telegram_state._TELEGRAM` module-attribute access. The singleton lives in bot/notifier.py alongside TelegramNotifier. **Post-Bit-9.3, the only remaining `_telegram_state._TELEGRAM` consumer block in bot/_impl.py is the orphan-DB watchdog helpers** (`_alert_orphan_db_holder` + the `detect_orphan_db_holders` lsof-not-found Telegram alert branch — search anchor: `def _alert_orphan_db_holder` and `def detect_orphan_db_holders`) — MainLoop reads MOVED with the class extraction to bot/main_loop.py. The module-attribute access pattern preserves mutation freshness across all five consumers post-Bit-9.3 (this module for `_alert_orphan_db_holder` + bot/main_loop.py for MainLoop reads + the singleton WRITE in `__init__` + bot/scanner/__init__.py + bot/executor.py + bot/settlement.py — verify counts with `grep -c '_telegram_state\._TELEGRAM' bot/_impl.py bot/main_loop.py bot/scanner/__init__.py bot/executor.py bot/settlement.py`). Mirrors the Bit 6.3 path-B `_cal_state` pattern. NOTE: explicit `import bot.notifier as ...` (NOT `from bot import notifier as ...`) — the latter form goes through `_BotProxy.__getattr__` and triggers a partial-module ImportError of bot._impl from inside bot.scanner during its load.
+import bot.notifier as _telegram_state  # Bit 8.1 path-A++ (2026-05-10) + Bit 9.3 atomic narrative update (2026-05-10): alias for `_telegram_state._TELEGRAM` module-attribute access. The singleton lives in bot/notifier.py alongside TelegramNotifier. **Post-Bit-9.3, the only remaining `_telegram_state._TELEGRAM` consumer block in bot/_impl.py is the orphan-DB watchdog helpers** (`_alert_orphan_db_holder` at bot/_impl.py:431 + the `detect_orphan_db_holders` lsof-not-found Telegram alert branch — search anchor: `def _alert_orphan_db_holder` and `def detect_orphan_db_holders`) — MainLoop reads MOVED with the class extraction to bot/main_loop.py. The module-attribute access pattern preserves mutation freshness across all five consumers post-Bit-9.3 (this module for `_alert_orphan_db_holder` + bot/main_loop.py for MainLoop reads + the singleton WRITE in `__init__` + bot/scanner/__init__.py + bot/executor.py + bot/settlement.py — verify counts with `grep -c '_telegram_state\._TELEGRAM' bot/_impl.py bot/main_loop.py bot/scanner/__init__.py bot/executor.py bot/settlement.py`). Mirrors the Bit 6.3 path-B `_cal_state` pattern. NOTE: explicit `import bot.notifier as ...` (NOT `from bot import notifier as ...`) — the latter form goes through `_BotProxy.__getattr__` and triggers a partial-module ImportError of bot._impl from inside bot.scanner during its load.
 from bot.kalshi_client import KalshiClient  # noqa: F401 — Bit 4.3 leaf extraction; re-export so MainLoop construction (search "self.client = KalshiClient") + type annotations on reconcile_with_api/_reconcile_positions/_reconcile_orders/OpportunityScanner/OrderExecutor/SettlementTracker/discover_active_windows resolve via bot._impl namespace.
 from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher  # noqa: F401 — Bit 4.4 leaf extraction; re-export so MainLoop construction (search "self.dvol_fetcher = DeribitDVOLFetcher" and "self.coinglass = CoinGlassFetcher") + the Optional[DeribitDVOLFetcher] type annotation on VolatilityEngine.__init__ (now in bot/engines/volatility.py per Bit 6.1) resolve via bot._impl namespace.
 from bot.feeds import CoinbaseFeed, CrossExchangeFeed, KalshiFeed, OrderbookSchemaError  # noqa: F401 — Bit 4.5a + 4.5b leaf extraction; re-export so MainLoop construction (search "self.feed = CoinbaseFeed", "self.cross_feed = CrossExchangeFeed", and "self.kalshi_feed = KalshiFeed") + the `feed: CoinbaseFeed` type annotations on VolatilityEngine.__init__ (now in bot/engines/volatility.py per Bit 6.1) and OpportunityScanner.__init__ + the OrderbookSchemaError raises inside KalshiFeed (now sibling-imported from bot.feeds.orderbook_schema) all resolve via bot._impl namespace.
 from bot.engines import VolatilityEngine, ProbabilityEngine, CalibrationEngine  # noqa: F401 — Bit 6.1 + 6.2 + 6.3 leaf extractions; re-export so MainLoop construction (search "self.vol = VolatilityEngine" and "self.calibration = CalibrationEngine()") + the `vol: VolatilityEngine` type annotation on OpportunityScanner.__init__ + the bare-name `ProbabilityEngine.X(...)` call sites (scan-loop edge computation, counterfactual probability, dynamic cap lookup) + the bare-name `CalibrationEngine(...)` construction sites in MainLoop.__init__ + the static-method calls in tests/test_vol_engine.py / tests/test_probability_engine.py / tests/test_calibration_engine.py (`from bot import VolatilityEngine, ProbabilityEngine, CalibrationEngine`) all resolve via bot._impl namespace. The Optional['EGARCHEstimator'] / Optional['MincerZarnowitzTracker'] forward-refs on VolatilityEngine.__init__ remain string-quoted because both classes still live in models.py. **Bit 6.3 path-B refactor (2026-05-10)**: the `_cal_state._CALIBRATION_ENGINE` singleton + `_cal_state._CAL_REGISTRY` dict + `_cal_state._derive_subtype`/`_cal_state._derive_asset_filter`/`_cal_state._resolve_cal_engine` helpers all moved to `bot/engines/calibration.py` alongside the class. Both this module and `bot/engines/probability.py` reach them via `_cal_state.X` (see the `from bot.engines import calibration as _cal_state` alias below). The path-B move lifted the previous Bit 6.2 late-binding `from bot import _impl as _bot_impl` pattern inside ProbabilityEngine — top-level imports work because `bot.engines.calibration` is a leaf (does NOT import bot._impl). Removes the `.importlinter` `bot.engines.probability -> bot._impl` carve-out shipped in Pillar 2.
 from bot.engines import calibration as _cal_state  # Bit 6.3 path-B: alias for _cal_state._CALIBRATION_ENGINE / _cal_state._CAL_REGISTRY / _cal_state._derive_subtype / _cal_state._derive_asset_filter / _cal_state._resolve_cal_engine which all live in bot/engines/calibration.py post-Bit-6.3. Module-attribute access pattern (e.g., `_cal_state._CALIBRATION_ENGINE = self.calibration`) preserves singleton mutation semantics — every reader through this alias sees writes immediately because we go through the module reference, not a captured-by-value binding.
 from bot.state import StateManager  # noqa: F401 — Bit 7.1 leaf extraction (2026-05-10); re-export so MainLoop construction (`self.state = StateManager()`) + 3 consumer-class type annotations (`OpportunityScanner.__init__`, `OrderExecutor.__init__`, `SettlementTracker.__init__`: `state: StateManager`) + ~50 test instantiation sites (`bot.StateManager(...)` via _BotProxy → bot._impl.StateManager → bot.state.StateManager) all resolve. **Path-A++ deviation note**: bot/state.py introduces a `_get_compute_for_15m_main_path()` single-name late-binding helper (returns `bot._impl.compute_for_15m_main_path` bound at line 350 below). Sister Bit 7.1 also refactored `parity_assert` and `sizing_parity_assert` in scripts/cal_mlp/integration.py to drop their `bot_globals` parameter and import constants directly — the previous `globals()` smell at the StateManager.__init__ call sites is fixed in-Bit per the modularization strategic goal of reducing code smells. Sister Bit 7.2 ships in lock-step with this commit (agent_docs/db_schema.md refresh).
-from bot.scanner import OpportunityScanner  # noqa: F401 — Bit 8.1 leaf extraction (2026-05-10, path-A++); re-export so MainLoop construction (`self.scanner = OpportunityScanner(..., main_loop=self)`) + ~13 consumer call sites (12 OrderExecutor static-method calls + 1 MainLoop static-method call referencing `OpportunityScanner._best_yes_ask_cents` / `_convert_orderbook_fp`) + ~30 test instantiation sites (`bot.OpportunityScanner(...)` via _BotProxy → bot._impl.OpportunityScanner → bot.scanner.OpportunityScanner) all resolve. **Path-A++ deviation note (post-Bit-9.1, 2026-05-10)**: (1) the `_get_order_executor()` late-binding helper in bot/scanner/__init__.py was RETIRED in Bit 9.1 atomically with the OrderExecutor extraction (see line-116 `from bot.executor import OrderExecutor` re-export below) — bot/scanner now uses a top-level `from bot.executor import OrderExecutor` directly; the `scanner-no-impl-toplevel` `.importlinter` contract dropped in the same commit (net contracts: 6 → 5); (2) the `Optional["OrderFlowEngine"]` and `Optional["KalshiOrderFlowTracker"]` quoted forward-refs in `__init__` signature for the 2 sister-class type annotations stay quoted (cycle avoidance — both classes still in this file; search anchors: ``class OrderFlowEngine:`` and ``class KalshiOrderFlowTracker:``). Sister Bit 8.1 ALSO relocated the `_TELEGRAM` module-level singleton from this file to `bot/notifier.py` (path-A++ relocation), reached via `_telegram_state._TELEGRAM` module-attribute access (parallel to Bit 6.3 path-B `_cal_state._CALIBRATION_ENGINE` pattern; preserves mutation freshness across consumers). Sprint 8 closed at Bit 8.2 (`bot/scanner/CLAUDE.md`).
+from bot.scanner import OpportunityScanner  # noqa: F401 — Bit 8.1 leaf extraction (2026-05-10, path-A++); re-export so MainLoop construction (`self.scanner = OpportunityScanner(..., main_loop=self)`) + ~13 consumer call sites (12 OrderExecutor static-method calls + 1 MainLoop static-method call referencing `OpportunityScanner._best_yes_ask_cents` / `_convert_orderbook_fp`) + ~30 test instantiation sites (`bot.OpportunityScanner(...)` via _BotProxy → bot._impl.OpportunityScanner → bot.scanner.OpportunityScanner) all resolve. **Path-A++ deviation note (post-Bit-9.1, 2026-05-10)**: (1) the `_get_order_executor()` late-binding helper in bot/scanner/__init__.py was RETIRED in Bit 9.1 atomically with the OrderExecutor extraction (see line-116 `from bot.executor import OrderExecutor` re-export below) — bot/scanner now uses a top-level `from bot.executor import OrderExecutor` directly; the `scanner-no-impl-toplevel` `.importlinter` contract dropped in the same commit (net contracts: 6 → 5); (2) the `Optional[OrderFlowEngine]` and `Optional[KalshiOrderFlowTracker]` annotations in `__init__` signature are UNQUOTED post-Bit-9.3.5 (2026-05-10) — both classes live in `bot/order_flow.py` post-extraction; bot/scanner has a top-level `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker` that resolves cleanly because bot/order_flow.py is a clean leaf (stdlib + bot.constants only) with zero bot.scanner edges. Sister Bit 8.1 ALSO relocated the `_TELEGRAM` module-level singleton from this file to `bot/notifier.py` (path-A++ relocation), reached via `_telegram_state._TELEGRAM` module-attribute access (parallel to Bit 6.3 path-B `_cal_state._CALIBRATION_ENGINE` pattern; preserves mutation freshness across consumers). Sprint 8 closed at Bit 8.2 (`bot/scanner/CLAUDE.md`).
 from bot.executor import OrderExecutor  # noqa: F401 — Bit 9.1 leaf extraction (2026-05-10, path-A++); re-export so MainLoop construction (`self.executor = OrderExecutor(self.client, self.state, self.logger, main_loop=self, kalshi_feed=self.kalshi_feed)`) + ~12 test instantiation sites (`bot.OrderExecutor(...)` via _BotProxy → bot._impl.OrderExecutor → bot.executor.OrderExecutor) all resolve. **Path-A++ deviations**: (1) `_append_raw_api_journal` relocated to bot/helpers/raw_api_journal.py (the L81 alias-import at line ~282 RETIRED in Bit 9.2 atomically with the SettlementTracker extraction — zero callers remain in bot/_impl.py); (2) 4 latent `OpportunityScanner._best_ask_depth(...)` AttributeErrors fixed (closes ticket 86b9vn9r5; `_best_ask_depth` is a staticmethod on OrderExecutor itself). Sister cleanup atomic in this Bit: `_get_order_executor()` helper retired from bot/scanner/__init__.py + `scanner-no-impl-toplevel` `.importlinter` contract dropped (net contracts: 6 → 5).
 from bot.settlement import SettlementTracker, discover_active_windows  # noqa: F401 — Bit 9.2 leaf extraction (2026-05-10, path-A++); re-export so MainLoop construction (search anchor: `self.tracker = SettlementTracker(`) + the single MainLoop call site (search anchor: `discover_active_windows(self.client)`) resolve via bot._impl namespace. **Path-A++ deviation**: the 2 SettlementTracker call sites that read the L81-aliased underscore-prefix name now use the public `append_raw_api_journal` directly (matches bot/executor.py:98 convention); the L81 alias-import at line ~282 RETIRED atomically (zero callers remain). Bundled atomic cleanup: bot/notifier.py docstring 3→4 consumers; bot/__init__.py extended; bot/CLAUDE.md Deploy step 3 catalog gains SettlementTracker paragraph; tests/test_state_extraction.py quadruple-walk extension (BOT_PY + SCANNER_PY + EXECUTOR_PY + SETTLEMENT_PY); test_low_price_shadow.py + test_stacking.py + test_tm_sweep_shadow.py + test_regression.py _read_bot()/_paths helpers extended to concat bot/settlement.py; test_tracker_tick_threaded.py BOT_PY → SETTLEMENT_PY; test_order_outcome_vocab.py SCANNED_PATHS extended; tests/test_executor_extraction.py L81 positive pin flipped to negative; agent_docs/bot_layout.md class table loses the `~1010–~2179 SettlementTracker 1179` row; discover_active_windows narrative flips from Bit 9.3 to Bit 9.2 across all parallel sites. Bundled bug fix (ticket 86b9vppn3): pre-existing UnboundLocalError 'best_ask' in OpportunityScanner.scan() low_probability_15m insert_rejection branch (predates Bit 8.1 per git blame) — initialize best_ask=None at iteration start.
 from bot.db_writer_registry import tracked_write, snapshot_active, recent_writes  # ops: db-locked RCA instrumentation 2026-05-08 — track every write across all 8 sqlite3 connections so the failure-path log can identify which OTHER writer was holding the writer lock at db-locked failure time. recent_writes() captures the JUST-FINISHED holder (FAST-fail path: BEGIN IMMEDIATE returns SQLITE_BUSY in <1ms when intra-process lock-holder releases right before our retry).
 from bot.main_loop import MainLoop  # noqa: F401 — Bit 9.3 leaf extraction (2026-05-10); re-export so bot/__main__.py `from bot._impl import MainLoop` continues to resolve at 9.3-i; bot/__main__.py swap to direct `from bot.main_loop import MainLoop` deferred to Bit 9.3-ii per master plan.
+from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker  # noqa: F401 — Bit 9.3.5 leaf extraction (2026-05-10); re-export so the proxy chain (bot.X → bot._impl.X → bot.order_flow.X) stays stable. Clean leaf — bot/order_flow.py imports only stdlib + bot.constants (zero bot._impl edge, zero _telegram_state, zero _cal_state). Sprint 9 closes here.
 
 
 
@@ -652,286 +653,17 @@ from integration import (  # noqa: E402
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  OrderFlowEngine
+#  OrderFlowEngine + KalshiOrderFlowTracker → bot/order_flow.py (Bit 9.3.5, 2026-05-10)
 # ═════════════════════════════════════════════════════════════════════════════
-
-class OrderFlowEngine:
-    """Aggregates cross-exchange and derivatives signals into a probability adjustment."""
-
-    def __init__(self, cross_feed=None, coinglass=None, kalshi_oft=None):
-        self._cross = cross_feed
-        self._coinglass = coinglass
-        self._kalshi_oft = kalshi_oft
-
-    def get_signals(self, asset: str, **kwargs) -> Dict:
-        """Compute order flow adjustment for the given asset.
-
-        Returns:
-            {
-                "prob_adjustment": float,
-                "confidence": "high"|"moderate"|"low"|"none",
-                "signals": {
-                    "cross_exchange": {...lead_lag dict...},
-                    "funding": {"rate": float|None, "level": str},
-                },
-                "adjustments_applied": [str, ...],
-            }
-        """
-        adjustments: List[Tuple[str, float]] = []
-        cross_exchange = {}
-        funding_info = {"rate": None, "level": "unknown"}
-
-        # 1. Cross-exchange consensus
-        if self._cross is not None:
-            try:
-                lead_lag = self._cross.get_lead_lag(asset)
-                cross_exchange = lead_lag
-                direction = lead_lag.get("consensus_direction", "none")
-                above = lead_lag.get("exchanges_above", 0)
-                below = lead_lag.get("exchanges_below", 0)
-
-                if direction == "above" and above >= CROSS_EXCHANGE_CONSENSUS_MIN:
-                    adjustments.append((
-                        f"consensus_above_{above}ex",
-                        OFA_CONSENSUS_BOOST,
-                    ))
-                elif direction == "below" and below >= CROSS_EXCHANGE_CONSENSUS_MIN:
-                    adjustments.append((
-                        f"consensus_below_{below}ex",
-                        OFA_CONSENSUS_REDUCE,
-                    ))
-                elif direction == "mixed":
-                    # Weaker signal: at least one exchange leads
-                    if above > below:
-                        adjustments.append(("lead_above_mixed", OFA_LEAD_BOOST))
-                    elif below > above:
-                        adjustments.append(("lead_below_mixed", -OFA_LEAD_BOOST))
-            except Exception:
-                logging.debug("CrossExchangeFeed.get_lead_lag failed", exc_info=True)
-
-        # 2. Funding rate
-        if self._coinglass is not None:
-            try:
-                rate = self._coinglass.get_funding_rate(asset)
-                if rate is not None:
-                    abs_rate = abs(rate)
-                    if abs_rate >= FUNDING_RATE_EXTREME:
-                        funding_info = {"rate": rate, "level": "extreme"}
-                        adjustments.append((
-                            f"extreme_funding_{rate:+.6f}",
-                            OFA_EXTREME_FUNDING_REDUCE,
-                        ))
-                    elif abs_rate >= FUNDING_RATE_ELEVATED:
-                        funding_info = {"rate": rate, "level": "elevated"}
-                        adjustments.append((
-                            f"elevated_funding_{rate:+.6f}",
-                            OFA_ELEVATED_FUNDING_REDUCE,
-                        ))
-                    else:
-                        funding_info = {"rate": rate, "level": "normal"}
-                else:
-                    funding_info = {"rate": None, "level": "unknown"}
-            except Exception:
-                logging.debug("CoinGlassFetcher.get_funding_rate failed", exc_info=True)
-
-        # 3. Kalshi orderbook flow
-        kalshi_flow = {}
-        if self._kalshi_oft is not None:
-            try:
-                ticker = kwargs.get("ticker")
-                if ticker:
-                    koft = self._kalshi_oft.get_signals(ticker)
-                    if koft is not None:
-                        kalshi_flow = koft
-                        if not KALSHI_OFT_SHADOW_MODE and koft["prob_adjustment"] != 0:
-                            adjustments.append(("kalshi_oft", koft["prob_adjustment"]))
-            except Exception:
-                logging.debug("KalshiOFT.get_signals failed", exc_info=True)
-
-        # 4. Sum and clamp
-        total = sum(v for _, v in adjustments)
-        total = max(-OFA_MAX_ADJUSTMENT, min(OFA_MAX_ADJUSTMENT, total))
-
-        # 5. Confidence
-        abs_total = abs(total)
-        if abs_total >= 0.015:
-            confidence = "high"
-        elif abs_total >= 0.005:
-            confidence = "moderate"
-        elif abs_total > 0:
-            confidence = "low"
-        else:
-            confidence = "none"
-
-        return {
-            "prob_adjustment": total,
-            "confidence": confidence,
-            "signals": {
-                "cross_exchange": cross_exchange,
-                "funding": funding_info,
-                "kalshi_orderbook": kalshi_flow,
-            },
-            "adjustments_applied": [
-                f"{name}: {val:+.3f}" for name, val in adjustments
-            ],
-        }
-
-
-class KalshiOrderFlowTracker:
-    """Tracks Kalshi orderbook snapshots over time for flow signals.
-
-    Records full depth-5 snapshots from the scanner's existing orderbook
-    fetches (no additional API calls). Computes:
-    - Bid/ask imbalance ratio (YES depth vs total)
-    - Depth velocity (total depth change rate)
-    - Spread dynamics (bid-ask spread trend)
-    - Ask convergence velocity (cents/sec)
-    """
-
-    def __init__(self):
-        self._snapshots: Dict[str, deque] = {}
-        self._last_seen: Dict[str, float] = {}
-        self._last_log: Dict[str, float] = {}
-
-    def record_snapshot(self, ticker: str, ob_data: Dict, best_ask: int):
-        """Record orderbook snapshot. Called from scanner after each OB fetch.
-
-        ob_data format: {"no": [[price_cents, qty], ...], "yes": [[price_cents, qty], ...]}
-        """
-        now = time.time()
-        if ticker not in self._snapshots:
-            self._snapshots[ticker] = deque(maxlen=KALSHI_OFT_BUFFER_SIZE)
-
-        # Sum depth per side
-        yes_total_qty = 0
-        no_total_qty = 0
-        best_yes_bid_price = 0
-
-        for entry in (ob_data.get("yes") or []):
-            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                price, qty = int(entry[0]), int(entry[1])
-                yes_total_qty += qty
-                if price > best_yes_bid_price:
-                    best_yes_bid_price = price
-
-        for entry in (ob_data.get("no") or []):
-            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                no_total_qty += int(entry[1])
-
-        spread = (best_ask - best_yes_bid_price) if best_yes_bid_price > 0 else 99
-
-        self._snapshots[ticker].append({
-            "ts": now,
-            "best_ask": best_ask,
-            "best_yes_bid": best_yes_bid_price,
-            "yes_total_qty": yes_total_qty,
-            "no_total_qty": no_total_qty,
-            "total_depth": yes_total_qty + no_total_qty,
-            "spread": spread,
-        })
-        self._last_seen[ticker] = now
-
-    def get_signals(self, ticker: str) -> Optional[Dict]:
-        """Compute order flow signals from snapshot history. Returns None if insufficient data."""
-        snaps = self._snapshots.get(ticker)
-        if not snaps or len(snaps) < KALSHI_OFT_MIN_SNAPSHOTS:
-            return None
-
-        snap_list = list(snaps)
-        latest = snap_list[-1]
-        earliest = snap_list[0]
-        time_span = latest["ts"] - earliest["ts"]
-        if time_span <= 0:
-            return None
-
-        # 1. Imbalance: YES bids / total depth
-        total_qty = latest["yes_total_qty"] + latest["no_total_qty"]
-        imbalance = latest["yes_total_qty"] / total_qty if total_qty > 0 else 0.5
-
-        if imbalance >= KALSHI_OFT_IMBALANCE_STRONG:
-            imbalance_level = "strong_buy"
-        elif imbalance <= KALSHI_OFT_IMBALANCE_WEAK:
-            imbalance_level = "strong_sell"
-        else:
-            imbalance_level = "neutral"
-
-        # 2. Depth velocity
-        depth_velocity = (latest["total_depth"] - earliest["total_depth"]) / time_span
-        depth_pct_change = ((latest["total_depth"] - earliest["total_depth"])
-                           / earliest["total_depth"]) if earliest["total_depth"] > 0 else 0.0
-        depth_drain = depth_pct_change < KALSHI_OFT_DEPTH_DRAIN_PCT
-
-        # 3. Spread trend
-        spread_trend = (latest["spread"] - earliest["spread"]) / time_span
-
-        # 4. Ask velocity
-        ask_velocity = (latest["best_ask"] - earliest["best_ask"]) / time_span
-
-        # 5. Prob adjustment (shadow or live)
-        adjustments = []
-        if imbalance_level == "strong_buy":
-            adjustments.append(("kalshi_imbalance_buy", OFA_KALSHI_IMBALANCE_BOOST))
-        elif imbalance_level == "strong_sell":
-            adjustments.append(("kalshi_imbalance_sell", OFA_KALSHI_IMBALANCE_REDUCE))
-        if depth_drain and ask_velocity > 0:
-            adjustments.append(("kalshi_depth_drain", OFA_KALSHI_DEPTH_DRAIN_BOOST))
-        if ask_velocity > 0.5:
-            adjustments.append(("kalshi_convergence", OFA_KALSHI_CONVERGENCE_BOOST))
-
-        total_adj = max(-0.02, min(0.02, sum(v for _, v in adjustments)))
-
-        # Confidence
-        n_snaps = len(snap_list)
-        if n_snaps >= 30 and total_qty >= 20:
-            confidence = "high"
-        elif n_snaps >= 15 or total_qty >= 10:
-            confidence = "moderate"
-        else:
-            confidence = "low"
-
-        result = {
-            "imbalance_ratio": round(imbalance, 4),
-            "imbalance_level": imbalance_level,
-            "depth_velocity": round(depth_velocity, 2),
-            "depth_drain": depth_drain,
-            "depth_pct_change": round(depth_pct_change, 4),
-            "spread_current": latest["spread"],
-            "spread_trend": round(spread_trend, 4),
-            "ask_velocity": round(ask_velocity, 4),
-            "prob_adjustment": round(total_adj, 6),
-            "adjustments_applied": [f"{n}: {v:+.3f}" for n, v in adjustments],
-            "n_snapshots": n_snaps,
-            "confidence": confidence,
-        }
-
-        # Periodic per-ticker diagnostic logging
-        now = time.time()
-        last_log = self._last_log.get(ticker, 0.0)
-        if now - last_log >= KALSHI_OFT_LOG_INTERVAL:
-            self._last_log[ticker] = now
-            adj_str = ", ".join(f"{n}: {v:+.3f}" for n, v in adjustments) if adjustments else "none"
-            logging.info(
-                "KalshiOFT %s: imbal=%.3f (%s) depth_vel=%.1f depth_pct=%.1f%% "
-                "spread=%d trend=%.3f ask_vel=%.3f adj=%.4f [%s] snaps=%d conf=%s shadow=%s",
-                ticker, imbalance, imbalance_level, depth_velocity,
-                depth_pct_change * 100, latest["spread"], spread_trend,
-                ask_velocity, total_adj, adj_str, n_snaps, confidence,
-                KALSHI_OFT_SHADOW_MODE,
-            )
-
-        return result
-
-    def cleanup_stale(self, active_tickers: Set[str]):
-        """Evict tickers no longer in active windows."""
-        now = time.time()
-        stale = [t for t, ts in self._last_seen.items()
-                 if now - ts > KALSHI_OFT_STALE_SECONDS or t not in active_tickers]
-        for t in stale:
-            self._snapshots.pop(t, None)
-            self._last_seen.pop(t, None)
-
-    def get_tracked_count(self) -> int:
-        return len(self._snapshots)
+# Sprint 9 closing sister leaf. Both classes extracted verbatim from
+# bot/_impl.py:658-934 to bot/order_flow.py. Re-imported above via
+# `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker`
+# (search anchor at the line-120 re-export block). Clean leaf — no
+# carve-out, no late-binding; bot/order_flow.py imports only stdlib +
+# bot.constants. Sister cleanup: bot/main_loop.py late-binding block
+# shrunk from 4 names to 2 (HPSB only); bot/scanner/__init__.py
+# Optional["OrderFlowEngine"] / Optional["KalshiOrderFlowTracker"]
+# forward-refs UNQUOTED. Sprint 9 closes here.
 
 
 # ═════════════════════════════════════════════════════════════════════════════

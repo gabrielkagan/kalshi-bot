@@ -419,8 +419,10 @@ def test_no_orderflowengine_dvol_fetcher_annotation():
     incorrectly cite OrderFlowEngine as the consumer would silently
     succeed without this guard.
     """
-    bot_impl = REPO_ROOT / "bot" / "_impl.py"
-    src = bot_impl.read_text()
+    # OrderFlowEngine moved to bot/order_flow.py per Bit 9.3.5
+    # (2026-05-10). Retarget the AST walk per L38.
+    order_flow = REPO_ROOT / "bot" / "order_flow.py"
+    src = order_flow.read_text()
     tree = ast.parse(src)
 
     of_engine = next(
@@ -431,7 +433,10 @@ def test_no_orderflowengine_dvol_fetcher_annotation():
         ),
         None,
     )
-    assert of_engine is not None, "OrderFlowEngine ClassDef missing."
+    assert of_engine is not None, (
+        "OrderFlowEngine ClassDef missing from bot/order_flow.py "
+        "(post-Bit-9.3.5 location)."
+    )
     init = next(
         (
             n

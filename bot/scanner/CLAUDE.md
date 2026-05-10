@@ -93,12 +93,14 @@ before any scanner method runs. Full enumeration locked by
   the executor side via a `_get_opportunity_scanner()` method-body
   helper inside `bot/executor.py` (NOT scanner; scanner stays clean).
 
-## Forward-refs: `Optional["OrderFlowEngine"]` / `Optional["KalshiOrderFlowTracker"]`
+## Annotations: `Optional[OrderFlowEngine]` / `Optional[KalshiOrderFlowTracker]`
 
-Both classes still live in `bot/_impl.py` (search anchors: `class OrderFlowEngine:` and `class KalshiOrderFlowTracker:`). The
-scanner `__init__` signature uses string forward-refs to avoid
-cycle-loading at the line-115 re-export firing time; do not
-unquote until those classes also extract.
+Both classes live in `bot/order_flow.py` post-Bit-9.3.5 (2026-05-10).
+The annotations in `OpportunityScanner.__init__` are UNQUOTED — scanner
+has a top-level `from bot.order_flow import OrderFlowEngine,
+KalshiOrderFlowTracker` (search anchor: `from bot.order_flow import`).
+This is safe because bot/order_flow.py is a clean leaf (stdlib +
+bot.constants only) with zero bot.scanner edges.
 
 ## `_best_ask_depth` lives on OrderExecutor, NEVER on scanner
 

@@ -9,7 +9,7 @@ to relocate the `_TELEGRAM` module-level singleton to bot/notifier.py
 (where it logically belongs since Bit 4.2). The laundered-namespace
 coupling smell is fixed in-Bit per the modularization strategic goal.
 All five of bot/_impl.py (for the `_alert_orphan_db_holder` orphan-DB
-Layer-3 helper at bot/_impl.py:430 post-Bit-9.3), bot/main_loop.py
+Layer-3 helper at bot/_impl.py:431 post-Bit-9.3), bot/main_loop.py
 (MainLoop reads + the singleton WRITE post-Bit-9.3 — `_telegram_state._TELEGRAM
 = self.telegram` in `MainLoop.__init__`), bot/scanner/__init__.py (this
 module), bot/executor.py (Bit 9.1, 2026-05-10), and bot/settlement.py
@@ -312,6 +312,7 @@ from bot.db_writer_registry import tracked_write
 
 
 from bot.executor import OrderExecutor  # Bit 9.1 (2026-05-10): direct top-level import — replaces the `_get_order_executor()` late-binding helper retired here. Works because bot.executor breaks the cycle from its side via a `_get_opportunity_scanner()` method-body helper (bot.executor has NO top-level bot.scanner import). The `scanner-no-impl-toplevel` `.importlinter` contract dropped in the same atomic commit (net contracts: 6 → 5).
+from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker  # Bit 9.3.5 (2026-05-10): direct top-level import unquotes the Optional["OrderFlowEngine"] / Optional["KalshiOrderFlowTracker"] forward-refs below. Safe — bot.order_flow has zero bot.scanner edges (clean leaf, stdlib + bot.constants only).
 
 
 class OpportunityScanner:
@@ -324,16 +325,14 @@ class OpportunityScanner:
     def __init__(self, client: KalshiClient, state: StateManager,
                  feed: CoinbaseFeed, vol: VolatilityEngine, logger: Logger,
                  sizer: PositionSizer,
-                 # OrderFlowEngine + KalshiOrderFlowTracker are quoted forward-refs
-                 # because they still live in bot/_impl.py (search anchors:
-                 # ``class OrderFlowEngine:`` / ``class KalshiOrderFlowTracker:``);
-                 # importing them here would create a load-order cycle (bot._impl
-                 # imports bot.scanner during its own load via the line-115 re-export
-                 # — search anchor: ``from bot.scanner import OpportunityScanner`` —
-                 # at which point those classes haven't been bound yet). Mirrors
-                 # the Bit 7.1 `state: "StateManager"` quoted forward-ref pattern.
-                 order_flow: Optional["OrderFlowEngine"] = None,
-                 kalshi_oft: Optional["KalshiOrderFlowTracker"] = None,
+                 # Bit 9.3.5 (2026-05-10): both classes live in bot/order_flow.py
+                 # post-extraction. The annotations are UNQUOTED post-Bit-9.3.5 —
+                 # bot.order_flow is a clean leaf (stdlib + bot.constants only)
+                 # and has zero bot.scanner edges, so the top-level
+                 # `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker`
+                 # above resolves cleanly at scanner load time.
+                 order_flow: Optional[OrderFlowEngine] = None,
+                 kalshi_oft: Optional[KalshiOrderFlowTracker] = None,
                  kalshi_feed=None, main_loop=None):
         self._client = client
         self._state = state

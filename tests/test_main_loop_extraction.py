@@ -22,19 +22,22 @@ Path-A (METHOD-BODY late-binding for ALL bot._impl access):
   ImportError because bot/_impl.py at line ~119 re-exports
   `from bot.main_loop import MainLoop` — triggering bot.main_loop's
   load BEFORE bot/_impl.py reaches line 334+ (where _HPSB_MISSING_BLEEDERS
-  is bound) or line 654+ (where OrderFlowEngine is defined). Neither
-  Plan-agent path A nor Plan-agent path A++ accounted for this; the
-  correct path is method-body late-binding INSIDE __init__ + startup,
-  matching the bot.executor _get_opportunity_scanner() shape.
+  is bound). Neither Plan-agent path A nor Plan-agent path A++ accounted
+  for this; the correct path is method-body late-binding INSIDE
+  __init__ + startup, matching the bot.executor
+  _get_opportunity_scanner() shape.
 
-  Method-body late-bound names:
+  Method-body late-bound names (post-Bit-9.3.5):
     Inside MainLoop.__init__:
       - _HPSB_MISSING_BLEEDERS (1 read at gate-state log line)
       - _HPSB_VALIDATOR_UNAVAILABLE_REASON (1 read at gate-state log line)
-      - OrderFlowEngine (1 construction; REMOVE BIT 9.3.5)
-      - KalshiOrderFlowTracker (1 construction; REMOVE BIT 9.3.5)
     Inside MainLoop.startup:
       - detect_orphan_db_holders (1 call site)
+
+  Bit 9.3.5 (2026-05-10) collapsed the prior OrderFlowEngine +
+  KalshiOrderFlowTracker entries to a top-level
+  `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker`
+  at bot/main_loop.py module scope (bot/order_flow.py is a clean leaf).
 
   No new .importlinter carve-out needed — bot/main_loop.py has no
   top-level bot._impl edge in the import graph. Net contracts stays at 5.
@@ -191,11 +194,14 @@ MAIN_LOOP_MODELS_NAMES = (
 # These names exist as module-level state/functions in bot/_impl.py and MUST
 # be late-bound INSIDE method bodies (NOT top-level import) to avoid the
 # partial-module ImportError chain documented in test_no_top_level_bot_impl_import_in_main_loop.
+# Bit 9.3.5 (2026-05-10) collapsed the OFE+KOFT entries to a top-level
+# `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker` —
+# bot/order_flow.py is a clean leaf (stdlib + bot.constants only) so the
+# top-level edge is safe. Only the HPSB pair remains late-bound (both are
+# module-level state bound BELOW the line-119 re-export point in bot/_impl.py).
 MAIN_LOOP_BOT_IMPL_INIT_LATE_BOUND = (
     "_HPSB_MISSING_BLEEDERS",
     "_HPSB_VALIDATOR_UNAVAILABLE_REASON",
-    "OrderFlowEngine",            # REMOVE BIT 9.3.5 when bot/order_flow.py extracts
-    "KalshiOrderFlowTracker",     # REMOVE BIT 9.3.5 when bot/order_flow.py extracts
 )
 
 MAIN_LOOP_BOT_IMPL_STARTUP_LATE_BOUND = (
@@ -316,11 +322,13 @@ def test_no_top_level_bot_impl_import_in_main_loop():
 
     Top-level would partial-module ImportError because bot/_impl.py at line ~119
     re-exports `from bot.main_loop import MainLoop` BEFORE bot/_impl.py finishes
-    binding the names at lines 334+ (_HPSB_MISSING_BLEEDERS) and lines 654+
-    (OrderFlowEngine, KalshiOrderFlowTracker). All bot._impl access must be
-    method-body late-binding inside __init__ + startup. No `.importlinter`
-    carve-out is needed because there's no top-level edge — net contracts stays
-    at 5 (mirrors Bit 9.2's clean leaf).
+    binding the residual names at lines 334+ (_HPSB_MISSING_BLEEDERS / _HPSB_VALIDATOR_UNAVAILABLE_REASON
+    boot-time validator state). All bot._impl access must be method-body
+    late-binding inside __init__ + startup. No `.importlinter` carve-out is
+    needed because there's no top-level edge — net contracts stays at 5
+    (mirrors Bit 9.2's clean leaf). Bit 9.3.5 (2026-05-10) collapsed the prior
+    OrderFlowEngine + KalshiOrderFlowTracker late-binding entries to top-level
+    `from bot.order_flow import` (clean leaf — no partial-module risk).
     """
     tree = _main_loop_tree()
     for node in ast.iter_child_nodes(tree):
@@ -612,7 +620,7 @@ def test_main_loop_uses_cal_state_alias():
 def test_notifier_docstring_enumerates_five_consumers_post_bit_9_3():
     """Bit 9.3 atomic: the consumer enumeration goes 4 → 5. bot/_impl.py STAYS
     in the list (for the orphan-DB Layer-3 helper `_alert_orphan_db_holder`
-    at bot/_impl.py:430 which reads `_telegram_state._TELEGRAM`); bot/main_loop.py
+    at bot/_impl.py:431 which reads `_telegram_state._TELEGRAM`); bot/main_loop.py
     is ADDED as the new consumer for MainLoop reads + the singleton WRITE.
 
     Five consumers post-Bit-9.3:

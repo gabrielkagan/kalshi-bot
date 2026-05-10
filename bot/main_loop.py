@@ -22,21 +22,24 @@ re-exports `from bot.main_loop import MainLoop` BEFORE bot/_impl.py reaches:
   - line ~338: `_HPSB_VALIDATOR_UNAVAILABLE_REASON: Optional[str] = None`
   - line ~349: `_HPSB_MISSING_BLEEDERS = _validate_high_price_stc_block_bleeder_strings()`
   - line ~464: `def detect_orphan_db_holders(...)`
-  - line ~658: `class OrderFlowEngine:`
-  - line ~780: `class KalshiOrderFlowTracker:`
 
 Method-body imports at the top of __init__ + startup defer the lookup to
 runtime, when bot._impl is fully loaded. Mirrors the bot/executor.py
 `_get_opportunity_scanner()` shape from Bit 9.1.
 
-Late-bound names per method:
+Late-bound names per method (post-Bit-9.3.5):
   __init__:
     - `_HPSB_MISSING_BLEEDERS` (1 read at gate-state log line)
     - `_HPSB_VALIDATOR_UNAVAILABLE_REASON` (1 read at gate-state log line)
-    - `OrderFlowEngine` (1 construction; REMOVE BIT 9.3.5)
-    - `KalshiOrderFlowTracker` (1 construction; REMOVE BIT 9.3.5)
   startup:
     - `detect_orphan_db_holders` (1 call site)
+
+Bit 9.3.5 (2026-05-10) collapsed the prior `OrderFlowEngine` +
+`KalshiOrderFlowTracker` late-binding entries to a top-level
+`from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker`.
+bot/order_flow.py is a clean leaf (stdlib + bot.constants only) so the
+top-level edge is safe — no partial-module ImportError risk and no new
+`.importlinter` carve-out needed.
 
 NO new `.importlinter` carve-out — bot/main_loop.py has no top-level bot._impl
 edge in the import graph. Net contracts stays at 5 (mirrors Bit 9.2 clean leaf).
@@ -47,7 +50,7 @@ edge in the import graph. Net contracts stays at 5 (mirrors Bit 9.2 clean leaf).
     at __init__ `_telegram_state._TELEGRAM = self.telegram`). Canonical alias
     form `import bot.notifier as _telegram_state` per L84. The post-Bit-9.3
     consumer count is FIVE (bot/_impl.py STAYS for the orphan-DB
-    `_alert_orphan_db_holder` helper at bot/_impl.py:430; this module ADDS
+    `_alert_orphan_db_holder` helper at bot/_impl.py:431; this module ADDS
     as the new MainLoop-host consumer).
   - `_cal_state._CALIBRATION_ENGINE` / `._CAL_REGISTRY` / `._resolve_cal_engine`
     (Bit 6.3 path-B; mutated at __init__ + read at the cal-registry assertion).
@@ -60,14 +63,17 @@ edge in the import graph. Net contracts stays at 5 (mirrors Bit 9.2 clean leaf).
   here but the numerical libs themselves never enter this module's top-level.
   Locked by `tests/test_main_loop_extraction.py::test_main_loop_no_forbidden_numerical_imports`.
 
-## OFE + KOFT residency (USER Option-B decision)
+## Bit 9.3.5 marker collapse (SHIPPED 2026-05-10)
 
-`OrderFlowEngine` (122 LOC) + `KalshiOrderFlowTracker` (243 LOC) STAY in
-bot/_impl.py post-Bit-9.3 per USER decision via AskUserQuestion. Sister
-Bit 9.3.5 will extract them to `bot/order_flow.py` — at which point the two
-`# REMOVE BIT 9.3.5` markers in MainLoop.__init__'s late-binding block
-collapse to a top-level `from bot.order_flow import OrderFlowEngine,
-KalshiOrderFlowTracker`. bot/_impl.py is truly DELETED at Bit 9.3.5 ship.
+`OrderFlowEngine` (122 LOC) + `KalshiOrderFlowTracker` (240 LOC) extracted
+to `bot/order_flow.py` per Sprint 9 Bit 9.3.5. The two `# REMOVE BIT 9.3.5`
+markers in MainLoop.__init__'s late-binding block (pre-9.3.5 form) have
+collapsed to a top-level `from bot.order_flow import OrderFlowEngine,
+KalshiOrderFlowTracker` at module scope. Sister cleanup: bot/scanner
+forward-refs for these classes UNQUOTED in the same commit. bot/_impl.py
+class-list is now empty (only re-exports + boot-time bindings + orphan-DB
+watchdog block + module-level helpers remain; final deletion deferred to
+Bit 9.3-ii after bot/__main__.py swap).
 
 ## Sister cleanup atomic in same commit
 
@@ -175,6 +181,7 @@ from bot.fetchers.deribit import DeribitDVOLFetcher
 
 # Sprint 8 + 9 big-class peers
 from bot.executor import OrderExecutor
+from bot.order_flow import KalshiOrderFlowTracker, OrderFlowEngine  # Bit 9.3.5 — clean-leaf; replaces __init__ late-binding markers
 from bot.scanner import OpportunityScanner
 from bot.settlement import SettlementTracker, discover_active_windows
 
@@ -209,16 +216,16 @@ class MainLoop:
         # Top-level `from bot._impl import X` would partial-module ImportError
         # because bot/_impl.py at line ~119 re-exports
         # `from bot.main_loop import MainLoop` BEFORE binding _HPSB_*
-        # (line ~349) and OFE/KOFT (line ~658). Late-binding here defers
-        # the lookup to __init__ runtime when bot._impl is fully loaded.
-        # OFE+KOFT also late-bound per USER Option-B decision; the two
-        # `# REMOVE BIT 9.3.5` markers below collapse to a top-level
-        # `from bot.order_flow import ...` when Bit 9.3.5 ships.
+        # (line ~349). Late-binding here defers the lookup to __init__
+        # runtime when bot._impl is fully loaded. Bit 9.3.5 (2026-05-10)
+        # collapsed the OFE+KOFT entries to a top-level
+        # `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker`
+        # at module scope — only the HPSB pair remains late-bound here
+        # because both are module-level state bound below the line-119
+        # re-export point in bot/_impl.py.
         from bot._impl import (
             _HPSB_MISSING_BLEEDERS,
             _HPSB_VALIDATOR_UNAVAILABLE_REASON,
-            OrderFlowEngine,            # REMOVE BIT 9.3.5
-            KalshiOrderFlowTracker,     # REMOVE BIT 9.3.5
         )
 
         api_key = os.environ.get("KALSHI_API_KEY") or os.environ.get("KALSHI_API_KEY_ID", "")

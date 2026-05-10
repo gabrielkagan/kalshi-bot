@@ -103,22 +103,34 @@ in `bot.main_loop` post-extraction, NOT in `bot._impl`. Reach via
 via the re-export `from bot.main_loop import MainLoop` near line 119 of
 bot/_impl.py) or `bot.main_loop.MainLoop` (direct). bot/__main__.py at
 9.3-i still imports from bot._impl (via the proxy); the swap to
-`from bot.main_loop import MainLoop` is deferred to Bit 9.3-ii after
-≥7d soak per master plan two-step atomic discipline. **Path-A**:
-bot/main_loop.py uses METHOD-BODY late-binding for ALL bot._impl
-access — top-level imports would partial-module ImportError (bot/_impl.py
-re-exports MainLoop BEFORE binding `_HPSB_MISSING_BLEEDERS` at line 334+
-or `OrderFlowEngine` at line 654+). Late-binding inside `MainLoop.__init__`
-covers 4 names (`_HPSB_MISSING_BLEEDERS`, `_HPSB_VALIDATOR_UNAVAILABLE_REASON`,
-`OrderFlowEngine`, `KalshiOrderFlowTracker`); `MainLoop.startup` covers 1
-(`detect_orphan_db_holders`). The two `# REMOVE BIT 9.3.5` markers on
-OFE+KOFT collapse when sister Bit 9.3.5 extracts those classes to
-`bot/order_flow.py` and bot/_impl.py is finally deleted. NO new
-`.importlinter` carve-out — bot/main_loop.py has zero top-level bot._impl
-edge in the import graph; net contracts stays at 5 (mirrors Bit 9.2 leaf).
-The `_telegram_state._TELEGRAM` consumer enumeration grows from 4 to 5:
-bot/_impl.py STAYS (for `_alert_orphan_db_holder` orphan-DB helper),
-bot/main_loop.py ADDS (MainLoop reads + WRITE).
+`from bot.main_loop import MainLoop` is deferred to Bit 9.3-ii per
+master plan two-step atomic discipline. **Path-A**: bot/main_loop.py
+uses METHOD-BODY late-binding for the residual bot._impl names that
+are bound BELOW the line-119 re-export point. Post-Bit-9.3.5, the
+late-binding block inside `MainLoop.__init__` is just 2 names
+(`_HPSB_MISSING_BLEEDERS`, `_HPSB_VALIDATOR_UNAVAILABLE_REASON`);
+`MainLoop.startup` covers 1 (`detect_orphan_db_holders`). NO
+`.importlinter` carve-out — bot/main_loop.py has zero top-level
+bot._impl edge in the import graph; net contracts stays at 5 (mirrors
+Bit 9.2 leaf). The `_telegram_state._TELEGRAM` consumer enumeration
+grew from 4 to 5: bot/_impl.py STAYS (for `_alert_orphan_db_holder`
+orphan-DB helper), bot/main_loop.py ADDS (MainLoop reads + WRITE).
+
+Bit 9.3.5 (clean leaf, 2026-05-10): `OrderFlowEngine` (122 LOC) +
+`KalshiOrderFlowTracker` (240 LOC) live in `bot.order_flow`
+post-extraction. Reach via `bot.OrderFlowEngine` /
+`bot.KalshiOrderFlowTracker` (proxy chain) or `bot.order_flow.X`
+(direct). The two `# REMOVE BIT 9.3.5` markers in MainLoop's
+late-binding block collapsed to a top-level `from bot.order_flow import
+OrderFlowEngine, KalshiOrderFlowTracker` in bot/main_loop.py. Sister
+cleanup atomic in the same commit: bot/scanner/__init__.py forward-refs
+for both classes UNQUOTED (was `Optional["OrderFlowEngine"]`; now
+`Optional[OrderFlowEngine]` after a new top-level import). bot/_impl.py
+is now class-free; final deletion deferred to Bit 9.3-ii after the
+bot/__main__.py swap. The 5-consumer `_telegram_state._TELEGRAM`
+enumeration is UNCHANGED — OFE+KOFT do not emit Telegram alerts.
+.importlinter `helpers-leaf` `forbidden_modules` extended with
+`bot.order_flow`; net contracts stays at 5. Sprint 9 closes here.
 
 Caching the `bot._impl` module reference is safe: the module object itself
 is stable; mutations land on its `__dict__` which `getattr`/`setattr`
