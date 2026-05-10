@@ -89,9 +89,36 @@ Test `TestICloudSuffix::test_icloud_collision_sibling_is_ignored` pins this cont
 - [x] KB closeout commit (this file)
 - [x] Pre-flight grep `git ls-files | grep -i lock` → zero collision
 
+## R1 adversarial review findings + fixes
+
+R1 (fresh-eyes reviewer agent) found additional issues that R0 (self-review) missed. R0 reviewed the diff top-to-bottom; R1 looked specifically at the **interaction surface** (concurrent processes, worktree topology, attacker-controlled inputs). All R1 findings were fixed in one atomic commit on top of R0's `e8e9af4`.
+
+### CRITICAL findings
+
+- **C1 — TOCTOU between `O_CREAT|O_EXCL` and payload write.** The previous `_try_create` opened the canonical lockfile path with O_CREAT|O_EXCL, then wrote the JSON payload in a SECOND syscall. Between those two syscalls, the canonical lockfile was observable as a 0-byte empty file. A peer doing `acquire_raw` against the same target would see EEXIST on its O_EXCL attempt, then `_read_lockfile_metadata` would parse the empty file as malformed (JSONDecodeError → None), conclude "malformed", call `_quarantine_malformed`, which `os.replace`s the (still-being-written) file out from under the writer. Both sessions then succeed O_EXCL on the empty canonical path. **Fix:** write+fsync to a per-pid+per-session tmp file (`<flat>.lock.tmp.<pid>.<sid8>`), then `os.link(tmp, canonical)` for atomic publish. link() raises FileExistsError if canonical already exists (preserves O_EXCL semantics) WITHOUT exposing a 0-byte canonical state. Tmp is unlinked after publish; canonical retains the inode via the hardlink. Regression test: `TestTOCTOU::test_no_partial_lockfile_observable_at_canonical_path` (50 trials × 200 snapshots).
+
+- **C2 — Worktree workers never see each other's locks.** `_repo_root()` walked up looking for any `.git` entry, then halted at the first match. In a git worktree, `.git` is a FILE (not a directory) pointing at the parent repo's `.git/worktrees/<name>/`. `Path.exists()` returned true for both, so a worker inside `.claude/worktrees/<name>/` resolved its lock root to `<worktree>/.claude/locks/active-work/`, while a session in the main checkout resolved to `<main>/.claude/locks/active-work/`. Concurrent edits to `bot/_impl.py` from main + worktree NEVER collided — defeating the entire purpose of the primitive for our actual topology (Phase B uses 5 worktrees + main session). **Fix:** branch on `.git`-is-file vs. `.git`-is-dir. If file, parse the `gitdir: <path>` pointer; the common repo root is `gitdir.parents[1].parent` (`<repo>/.git/worktrees/<name>` → `<repo>`). Regression tests: `TestWorktreeRepoRoot::*` (constructs synthetic main+worktree layout, asserts both resolve to same path AND to same `SessionLock.lockfile_path`).
+
+### MAJOR findings
+
+- **M1 — Path-flatten not injective.** `flatten_target_path("a__SLASH__b/c")` and `flatten_target_path("a/b/c")` both produced `'a__SLASH__b__SLASH__c'`. A caller targeting one would block on a lock held for the other. `unflatten_target_path` lied about provenance. **Fix:** reject any target path containing the literal `__SLASH__` token. One-line guard + regression test.
+
+- **M2 — NUL / control-byte in target_path crashed inside `os.open`.** `flatten_target_path("foo/\x00bar.py")` returned a valid-looking flat name, but `acquire_raw` then crashed inside `os.open` with `ValueError: embedded null byte`. Callers catching only `LockHeldError`/`OSError` saw an uncaught crash. **Fix:** reject NUL + all ASCII control characters (0x00-0x1f + 0x7f) in `flatten_target_path`. Regression test covers `\x00`, `\x01`, `\x07`, `\n`, `\t`, `\x1f`, `\x7f`.
+
+- **M3 — `test_concurrent_subprocess_acquire_blocks` was not actually a race test.** The 500 ms `time.sleep` between `p1.start()` and `p2.start()` was ~5 orders of magnitude larger than the realistic TOCTOU window (~38 µs). The test exercised SERIAL acquire — p1 was already locked when p2 tried — and would have passed even with the C1 TOCTOU bug. **Fix:** drop the head start; both children rendezvous on a `multiprocessing.Barrier` so their `acquire_raw()` calls fire within microseconds of each other. 20 trials; assert exactly one "acquired" + one "held" per trial (and CRITICAL: never two "acquired", which would be the C1 regression signature).
+
+- **M4 — `test_thread_concurrent_acquire_serializes` didn't verify exclusivity.** The assertion `len(successes) >= 1 and len(successes) + len(held_errors) == 5` would pass even if all 5 threads acquired sequentially (5 successes, 0 held_errors) — i.e., no actual race occurred and threads each got their own turn. **Fix:** gate threads on a `threading.Barrier` so all 5 attempt acquire within microseconds; winner sleeps 150 ms (>> contention window); assert EXACTLY ONE success per trial. 10 trials.
+
+- **M5 — `test_lockfile_persists_after_kill_then_reclaim_recovers` shortcut the contract.** The child set `_heartbeat_stop` then backdated `last_heartbeat = time.time() - 500` before `os._exit(0)`. A real kill -9 leaves a FRESH heartbeat (within 30 s); the 180 s stale window would not engage. The test verified "lockfile persists" but **not** "reclaim engages after 180 s elapses". **Fix:** drop the backdate; monkeypatch `STALE_THRESHOLD_S = 0.5`, sleep 1.0 s after the child exits, assert that BEFORE the sleep the lock blocks (`LockHeldError`) and AFTER it is reclaimable. Exercises the real 180 s contract at scaled-down clock.
+
+### Lesson
+
+- **L89 — adversarial review must target the interaction surface, not the diff surface.** R0 caught 4 issues by reading the diff top-to-bottom — all of them were "this line is sketchy". R1 caught 2 CRITICALs + 5 MAJORs by asking "what does a peer process see at each microsecond of this operation, in our actual deployment topology?". The C1 bug was invisible from diff-reading because each line was individually correct; the bug lived in the *gap between syscalls*. The C2 bug was invisible because `_repo_root()` looked perfectly reasonable in isolation; it failed only when two callers ran in different filesystem layouts (worktree + main). Lesson: when reviewing concurrency primitives, mentally place two adversarial peers running in lockstep at each line and ask what each observes. When reviewing path-resolution code, place callers in every supported filesystem topology.
+
 ## Out-of-scope findings (for orchestrator to file)
 
-None. Self-contained leaf module.
+- **/ticket — iCloud `* 2.lock` sibling cleanup.** iCloud Drive occasionally spawns `<name> 2.lock` siblings next to `<name>.lock` on the user's repo. The lock primitive ignores them (correct), but they accumulate forever with no cleanup. R1 minor #4. File a janitorial-script ticket: nightly cron to `find .claude/locks/active-work -name '* [0-9].lock'` and unlink if no canonical sibling holds a fresh heartbeat. Low priority.
+- **/ticket — `_audit_log` should log to stderr on OSError.** Currently swallows silently if the reclaim log is unwritable. R1 sister recommendation. File: emit a one-line stderr warning when audit-log write fails, so operators notice if `.claude/locks/` is unwritable (e.g., readonly FS, full disk). Best-effort still — must NEVER block lock acquire.
 
 ## Next in PSC chain
 

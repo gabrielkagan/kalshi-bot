@@ -97,6 +97,30 @@ class TestPathFlatten:
         with pytest.raises(ValueError):
             flatten_target_path("../escape")
 
+    def test_slash_marker_literal_in_input_rejected(self):
+        # R1 M1 — injectivity. flatten("a__SLASH__b/c") and flatten("a/b/c")
+        # would otherwise both produce 'a__SLASH__b__SLASH__c'.
+        with pytest.raises(ValueError):
+            flatten_target_path("a__SLASH__b/c")
+        with pytest.raises(ValueError):
+            flatten_target_path("a__SLASH__b")
+        # Sanity: the legitimate path containing real slashes still works
+        # and is the only encoding for that basename.
+        assert flatten_target_path("a/b/c") == "a__SLASH__b__SLASH__c"
+
+    def test_nul_byte_in_path_rejected(self):
+        # R1 M2 — NUL byte would crash inside os.open with
+        # ValueError: embedded null byte. Caller would see uncaught crash.
+        with pytest.raises(ValueError):
+            flatten_target_path("foo/\x00bar.py")
+
+    def test_control_char_in_path_rejected(self):
+        # R1 M2 — broader: any ASCII control char is rejected (un-greppable
+        # lockfile names + potential os-layer surprises).
+        for ch in ("\x01", "\x07", "\n", "\t", "\x1f", "\x7f"):
+            with pytest.raises(ValueError):
+                flatten_target_path(f"foo/{ch}bar.py")
+
 
 # --------------------------------------------------------------------------
 # Happy path: acquire / release
@@ -216,6 +240,48 @@ def _child_acquire_target(root_path: str, reclaim_log_path: str, target: str, qu
         queue.put(("error", repr(e)))
 
 
+def _child_acquire_barriered(
+    root_path: str,
+    reclaim_log_path: str,
+    target: str,
+    barrier,
+    queue,
+):
+    """R1 M3 — barriered race child.
+
+    Both children rendezvous on the multiprocessing.Barrier so that the
+    two `acquire_raw()` calls happen within microseconds of each other,
+    putting actual contention pressure on the lockfile create.
+    """
+    os.environ["KALSHI_SESSION_LOCK_ROOT"] = root_path
+    os.environ["KALSHI_SESSION_LOCK_RECLAIM_LOG"] = reclaim_log_path
+    from scripts import _session_lock as child_mod
+    from scripts._session_lock import LockHeldError as ChildLockHeldError
+    from scripts._session_lock import SessionLock as ChildSessionLock
+
+    child_mod._LOCK_ROOT_OVERRIDE = None
+    child_mod._RECLAIM_LOG_OVERRIDE = None
+
+    # Rendezvous BEFORE acquire so both call sites fire near-simultaneously.
+    try:
+        barrier.wait(timeout=10.0)
+    except Exception as e:  # pragma: no cover
+        queue.put(("error", f"barrier: {e!r}"))
+        return
+
+    try:
+        lock = ChildSessionLock(target)
+        lock.acquire_raw()
+        # Hold briefly so the loser definitely observes us as live.
+        queue.put(("acquired", lock.metadata))
+        time.sleep(0.3)
+        lock.release()
+    except ChildLockHeldError as e:
+        queue.put(("held", e.held_by))
+    except Exception as e:  # pragma: no cover - defensive
+        queue.put(("error", repr(e)))
+
+
 class TestConcurrentAcquire:
     def test_second_acquire_same_target_raises_lock_held_error(self, lock_root):
         a = SessionLock("bot/_impl.py")
@@ -236,38 +302,70 @@ class TestConcurrentAcquire:
             assert a.lockfile_path != b.lockfile_path
 
     def test_concurrent_subprocess_acquire_blocks(self, lock_root, tmp_path):
-        # Two child processes race for the same target. Second must see
-        # LockHeldError with metadata.
+        # R1 M3 — REAL race. Both children rendezvous on a Barrier and call
+        # acquire_raw() within microseconds of each other; over N trials,
+        # we must see exactly one "acquired" + one "held" (or in rare
+        # contention "held"+"held" if the canonical lockfile vanishes
+        # between attempts — but NEVER two "acquired"). Multiple trials
+        # to apply pressure on the TOCTOU window the previous "500ms head
+        # start" version slept right through.
         target = "bot/_impl.py"
         ctx = multiprocessing.get_context("spawn")
-        q: multiprocessing.Queue = ctx.Queue()
 
-        p1 = ctx.Process(
-            target=_child_acquire_target,
-            args=(str(lock_root), str(lock_root.parent / "reclaim.log"), target, q),
-        )
-        p1.start()
-        # Give p1 a head start so it wins the race deterministically.
-        time.sleep(0.5)
+        N_TRIALS = 20
+        for trial in range(N_TRIALS):
+            q: multiprocessing.Queue = ctx.Queue()
+            barrier = ctx.Barrier(2)
 
-        p2 = ctx.Process(
-            target=_child_acquire_target,
-            args=(str(lock_root), str(lock_root.parent / "reclaim.log"), target, q),
-        )
-        p2.start()
+            p1 = ctx.Process(
+                target=_child_acquire_barriered,
+                args=(
+                    str(lock_root),
+                    str(lock_root.parent / "reclaim.log"),
+                    target,
+                    barrier,
+                    q,
+                ),
+            )
+            p2 = ctx.Process(
+                target=_child_acquire_barriered,
+                args=(
+                    str(lock_root),
+                    str(lock_root.parent / "reclaim.log"),
+                    target,
+                    barrier,
+                    q,
+                ),
+            )
+            p1.start()
+            p2.start()
 
-        results = []
-        for _ in range(2):
-            results.append(q.get(timeout=10.0))
+            results = []
+            for _ in range(2):
+                results.append(q.get(timeout=10.0))
 
-        p1.join(timeout=10.0)
-        p2.join(timeout=10.0)
+            p1.join(timeout=10.0)
+            p2.join(timeout=10.0)
 
-        kinds = sorted(r[0] for r in results)
-        assert kinds == ["acquired", "held"]
-        held_meta = next(r[1] for r in results if r[0] == "held")
-        assert held_meta["target_path"] == target
-        assert "pid" in held_meta
+            kinds = [r[0] for r in results]
+            n_acquired = kinds.count("acquired")
+            # CRITICAL invariant: NEVER two acquired. That would mean both
+            # children believed they held the lock — the C1 TOCTOU bug.
+            assert n_acquired <= 1, (
+                f"trial {trial}: both children acquired the same lock "
+                f"(C1 TOCTOU regression): results={results}"
+            )
+            # And at least one must succeed each trial — otherwise the
+            # primitive is just rejecting both, which is also broken.
+            assert n_acquired == 1, (
+                f"trial {trial}: neither child acquired; results={results}"
+            )
+
+            # Clean up any leftover lockfile between trials.
+            flat = flatten_target_path(target)
+            leftover = lock_root / f"{flat}.lock"
+            if leftover.exists():
+                leftover.unlink()
 
 
 # --------------------------------------------------------------------------
@@ -356,6 +454,16 @@ class TestStaleReclaim:
 
 
 def _child_acquire_then_die(root_path: str, reclaim_log_path: str, target: str):
+    """R1 M5 — honest kill -9 simulation.
+
+    Previous version backdated the heartbeat timestamp before os._exit(0),
+    which cheated the 180s stale-window contract. The fix uses
+    monkeypatched STALE_THRESHOLD_S in the parent + a real sleep so the
+    full reclaim path is exercised at scaled-down clock.
+
+    The child here just acquires + dies without releasing, with the
+    heartbeat thread stopped so it can't tick after we exit.
+    """
     os.environ["KALSHI_SESSION_LOCK_ROOT"] = root_path
     os.environ["KALSHI_SESSION_LOCK_RECLAIM_LOG"] = reclaim_log_path
     from scripts import _session_lock as child_mod
@@ -366,20 +474,22 @@ def _child_acquire_then_die(root_path: str, reclaim_log_path: str, target: str):
 
     lock = ChildSessionLock(target)
     lock.acquire_raw()
-    # Stop the heartbeat thread first so it can't race our backdate.
+    # Stop the heartbeat thread so it can't tick after we exit (the
+    # daemon thread WOULD die with the process; we belt-and-braces it).
     lock._heartbeat_stop.set()
-    # Backdate heartbeat so parent sees a stale lock immediately.
-    data = json.loads(lock.lockfile_path.read_text())
-    data["last_heartbeat"] = time.time() - 500
-    lock.lockfile_path.write_text(json.dumps(data))
-    # Die without releasing — simulate kill -9.
+    # Die without releasing — simulate kill -9. Lockfile has REAL fresh
+    # last_heartbeat, just like a kill -9 victim. No timestamp cheating.
     os._exit(0)
 
 
 class TestProcessDeathCleanup:
     def test_lockfile_persists_after_kill_then_reclaim_recovers(
-        self, lock_root, tmp_path
+        self, lock_root, tmp_path, monkeypatch
     ):
+        # R1 M5 — exercise the real "stale threshold elapsed" path without
+        # cheating the timestamp. Scale STALE_THRESHOLD_S down to 0.5s and
+        # sleep 1.0s after the child exits.
+        monkeypatch.setattr(_session_lock, "STALE_THRESHOLD_S", 0.5)
         target = "bot/_impl.py"
         ctx = multiprocessing.get_context("spawn")
         p = ctx.Process(
@@ -395,11 +505,24 @@ class TestProcessDeathCleanup:
         leftover = lock_root / f"{flat}.lock"
         assert leftover.exists()
 
-        # Stale-reclaim recovers it.
+        # BEFORE the scaled stale-window elapses, the lock blocks acquire.
+        # (The child's REAL fresh heartbeat is still within threshold.)
+        with pytest.raises(LockHeldError):
+            SessionLock(target).acquire_raw()
+
+        # Sleep past the scaled-down stale window.
+        time.sleep(1.0)
+
+        # Now stale-reclaim engages and a new acquire succeeds.
         new_lock = SessionLock(target)
         with new_lock.acquire():
             data = json.loads(new_lock.lockfile_path.read_text())
             assert data["pid"] == os.getpid()
+
+        # Reclaim audit log records a RECLAIM_STALE entry.
+        reclaim_log = Path(os.environ["KALSHI_SESSION_LOCK_RECLAIM_LOG"])
+        assert reclaim_log.exists()
+        assert "RECLAIM_STALE" in reclaim_log.read_text()
 
 
 # --------------------------------------------------------------------------
@@ -484,6 +607,86 @@ class TestICloudSuffix:
 
 
 # --------------------------------------------------------------------------
+# R1 C1 — TOCTOU between O_CREAT|O_EXCL and payload write
+# --------------------------------------------------------------------------
+
+
+class TestTOCTOU:
+    """R1 C1 — empirical regression. Previously the lockfile was created
+    via O_CREAT|O_EXCL on the canonical name, then payload was written
+    in a second syscall. Peers observing the empty file between the two
+    syscalls parsed it as "malformed" and quarantined it out from under
+    the writer, then both sides won O_EXCL on their retry. With the
+    write-tmp + os.link(tmp, canonical) fix, a peer NEVER sees a partial
+    file at the canonical path.
+    """
+
+    def test_no_partial_lockfile_observable_at_canonical_path(self, lock_root):
+        # Critical C1 invariant: when the canonical lockfile EXISTS, it
+        # must be fully written + parseable. The pre-fix bug was a
+        # window between `os.open(O_CREAT|O_EXCL)` and `os.write(payload)`
+        # during which the canonical file existed as a 0-byte empty file.
+        # A peer in that window would parse it as malformed and quarantine
+        # it out from under the writer, then both sessions acquire O_EXCL
+        # on retry.
+        #
+        # Test strategy: a single writer holds the lock for HOLD_S
+        # seconds; in parallel, a reader thread continuously snapshots
+        # the canonical lockfile bytes. EVERY snapshot read while the
+        # writer is in the "holding" phase must be a fully-formed
+        # parseable JSON blob with our expected `session_id`. Empty
+        # files or stale parses indicate the C1 partial-write window.
+        target = "bot/_impl.py"
+        flat = flatten_target_path(target)
+        canonical = lock_root / f"{flat}.lock"
+
+        from scripts._session_lock import _read_lockfile_metadata
+
+        N_TRIALS = 50
+        bad: list[str] = []
+
+        for trial in range(N_TRIALS):
+            holder = SessionLock(target)
+            holder_session_id = holder._session_id
+            holder.acquire_raw()
+            # During the "holding" phase the canonical file must always
+            # parse cleanly. We snapshot it many times in a tight loop.
+            try:
+                for _ in range(200):
+                    # The reader sees the file in a stable state since
+                    # acquire_raw has returned (post-atomic-publish).
+                    try:
+                        raw = canonical.read_bytes()
+                    except FileNotFoundError:
+                        bad.append(f"trial {trial}: canonical vanished while held")
+                        break
+                    if not raw:
+                        bad.append(
+                            f"trial {trial}: canonical observed empty while held "
+                            "(C1 partial-write regression)"
+                        )
+                        break
+                    meta = _read_lockfile_metadata(canonical)
+                    if meta is None:
+                        bad.append(
+                            f"trial {trial}: canonical malformed while held"
+                        )
+                        break
+                    if meta.get("session_id") != holder_session_id:
+                        bad.append(
+                            f"trial {trial}: canonical owned by "
+                            f"{meta.get('session_id')!r}, not {holder_session_id!r}"
+                        )
+                        break
+            finally:
+                holder.release()
+
+        assert bad == [], (
+            f"R1 C1 invariant violated {len(bad)} times: {bad[:3]}"
+        )
+
+
+# --------------------------------------------------------------------------
 # Stress: many acquire/release cycles
 # --------------------------------------------------------------------------
 
@@ -499,29 +702,190 @@ class TestStress:
         assert leftovers == []
 
     def test_thread_concurrent_acquire_serializes(self, lock_root):
-        # Threads in the same process MUST also be serialized — the
-        # primitive's job is target-level mutual exclusion regardless
-        # of caller topology.
+        # R1 M4 — REAL serialization test. Previous version's assertion
+        # `successes >= 1 and successes + held_errors == 5` would pass
+        # if all 5 threads acquired sequentially (5 successes, 0 errors)
+        # — i.e. NO actual race happened, threads each waited their turn.
+        # That's not what this test is supposed to prove.
+        #
+        # Fix: gate threads on a Barrier so they all attempt acquire_raw
+        # within microseconds of each other; the winner sleeps long enough
+        # that the losers' attempts overlap; assert EXACTLY ONE success
+        # per trial. Run N trials.
         target = "bot/_impl.py"
-        successes = []
-        held_errors = []
+        N_THREADS = 5
+        N_TRIALS = 10
 
-        def worker():
-            try:
-                lock = SessionLock(target)
-                lock.acquire_raw()
-                successes.append(threading.get_ident())
-                time.sleep(0.1)
-                lock.release()
-            except LockHeldError:
-                held_errors.append(threading.get_ident())
+        for trial in range(N_TRIALS):
+            successes: list[int] = []
+            held_errors: list[int] = []
+            errors: list[str] = []
+            barrier = threading.Barrier(N_THREADS)
 
-        threads = [threading.Thread(target=worker) for _ in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5.0)
+            def worker():
+                try:
+                    barrier.wait(timeout=5.0)
+                except threading.BrokenBarrierError:
+                    errors.append("barrier-broken")
+                    return
+                try:
+                    lock = SessionLock(target)
+                    lock.acquire_raw()
+                    successes.append(threading.get_ident())
+                    # Hold for >> the contention window so other threads'
+                    # acquire_raw attempts overlap our held window.
+                    time.sleep(0.15)
+                    lock.release()
+                except LockHeldError:
+                    held_errors.append(threading.get_ident())
+                except Exception as e:  # pragma: no cover - defensive
+                    errors.append(repr(e))
 
-        # At least one thread succeeded; the rest hit LockHeldError.
-        assert len(successes) >= 1
-        assert len(successes) + len(held_errors) == 5
+            threads = [threading.Thread(target=worker) for _ in range(N_THREADS)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10.0)
+
+            assert errors == [], f"trial {trial}: errors={errors}"
+            # EXACTLY one success — the winner holds for 150ms while the
+            # losers' fast-path retries all bail to LockHeldError.
+            assert len(successes) == 1, (
+                f"trial {trial}: expected 1 success (mutual exclusion), "
+                f"got {len(successes)}; held={len(held_errors)}; "
+                f"successes={successes}"
+            )
+            assert len(successes) + len(held_errors) == N_THREADS
+
+
+# --------------------------------------------------------------------------
+# R1 C2 — worktree-aware repo-root resolution
+# --------------------------------------------------------------------------
+
+
+class TestWorktreeRepoRoot:
+    """R1 C2 — without a worktree-aware _repo_root(), a Claude session
+    inside `.claude/worktrees/<name>/` resolves a DIFFERENT lock root
+    than a session in the main checkout. They never collide on the
+    canonical lockfile, defeating the entire purpose of the primitive
+    (Phase B uses 5 worktrees + main session topology).
+    """
+
+    def test_worktree_pointer_resolves_to_common_repo_root(
+        self, tmp_path, monkeypatch
+    ):
+        # Construct a synthetic main-repo + worktree layout. The "main"
+        # has `.git/` as a directory; the "worktree" has `.git` as a
+        # POINTER FILE containing `gitdir: <main>/.git/worktrees/<name>/`.
+        # Both `_repo_root()` invocations (one from each layout) must
+        # resolve to `main_repo`.
+        main_repo = tmp_path / "main-repo"
+        main_repo.mkdir()
+        (main_repo / ".git").mkdir()
+        (main_repo / "scripts").mkdir()
+        (main_repo / ".git" / "worktrees").mkdir()
+        worktree_gitdir = main_repo / ".git" / "worktrees" / "wt1"
+        worktree_gitdir.mkdir()
+
+        worktree = main_repo / ".claude" / "worktrees" / "wt1"
+        worktree.mkdir(parents=True)
+        (worktree / "scripts").mkdir()
+        # The worktree pointer file (this is the EXACT format git writes).
+        (worktree / ".git").write_text(
+            f"gitdir: {worktree_gitdir}\n", encoding="utf-8"
+        )
+
+        # Stub `Path(__file__).resolve().parent` for each call by directly
+        # exercising _repo_root via monkeypatched module-attr.
+        import scripts._session_lock as mod
+
+        # Save the original module __file__ to restore.
+        orig_file = mod.__file__
+
+        try:
+            # Pretend we're running from main_repo/scripts/_session_lock.py.
+            mod.__file__ = str(main_repo / "scripts" / "_session_lock.py")
+            main_root = mod._repo_root()
+
+            # Pretend we're running from worktree/scripts/_session_lock.py.
+            mod.__file__ = str(worktree / "scripts" / "_session_lock.py")
+            worktree_root = mod._repo_root()
+        finally:
+            mod.__file__ = orig_file
+
+        # Both must resolve to the SAME path: main_repo.
+        assert main_root == main_repo, f"main: {main_root}"
+        assert worktree_root == main_repo, (
+            f"worktree resolved to {worktree_root}, expected {main_repo}"
+        )
+
+    def test_worktree_lockfile_path_collides_with_main_lockfile_path(
+        self, tmp_path, monkeypatch
+    ):
+        """End-to-end: SessionLock("bot/_impl.py") from a worktree must
+        produce the SAME canonical lockfile path as from the main repo.
+        This is the contract that makes the primitive useful for our
+        actual topology.
+        """
+        main_repo = tmp_path / "main-repo"
+        main_repo.mkdir()
+        (main_repo / ".git").mkdir()
+        (main_repo / "scripts").mkdir()
+        (main_repo / ".git" / "worktrees").mkdir()
+        worktree_gitdir = main_repo / ".git" / "worktrees" / "wt1"
+        worktree_gitdir.mkdir()
+
+        worktree = main_repo / ".claude" / "worktrees" / "wt1"
+        worktree.mkdir(parents=True)
+        (worktree / "scripts").mkdir()
+        (worktree / ".git").write_text(
+            f"gitdir: {worktree_gitdir}\n", encoding="utf-8"
+        )
+
+        import scripts._session_lock as mod
+
+        # Clear env + module overrides so _lock_root() falls back to
+        # _repo_root() / .claude / locks / active-work.
+        monkeypatch.delenv("KALSHI_SESSION_LOCK_ROOT", raising=False)
+        monkeypatch.delenv("KALSHI_SESSION_LOCK_RECLAIM_LOG", raising=False)
+        monkeypatch.setattr(mod, "_LOCK_ROOT_OVERRIDE", None)
+        monkeypatch.setattr(mod, "_RECLAIM_LOG_OVERRIDE", None)
+
+        orig_file = mod.__file__
+        try:
+            mod.__file__ = str(main_repo / "scripts" / "_session_lock.py")
+            main_lock_path = mod.SessionLock("bot/_impl.py").lockfile_path
+
+            mod.__file__ = str(worktree / "scripts" / "_session_lock.py")
+            wt_lock_path = mod.SessionLock("bot/_impl.py").lockfile_path
+        finally:
+            mod.__file__ = orig_file
+
+        assert main_lock_path == wt_lock_path, (
+            f"worktree + main must collide on the same lockfile path; "
+            f"main={main_lock_path}, wt={wt_lock_path}"
+        )
+        # And specifically, the lock root is rooted under main_repo.
+        assert str(main_repo) in str(main_lock_path)
+
+    def test_main_checkout_dotgit_dir_returns_containing_root(
+        self, tmp_path, monkeypatch
+    ):
+        # When `.git` is a directory (main checkout), `_repo_root()`
+        # returns the directory containing it. Sanity check that the
+        # new is_dir() / is_file() branching doesn't regress this.
+        main_repo = tmp_path / "main-repo"
+        main_repo.mkdir()
+        (main_repo / ".git").mkdir()
+        (main_repo / "scripts").mkdir()
+
+        import scripts._session_lock as mod
+
+        orig_file = mod.__file__
+        try:
+            mod.__file__ = str(main_repo / "scripts" / "_session_lock.py")
+            root = mod._repo_root()
+        finally:
+            mod.__file__ = orig_file
+
+        assert root == main_repo

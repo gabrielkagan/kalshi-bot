@@ -95,14 +95,57 @@ _RECLAIM_LOG_OVERRIDE: Optional[Path] = None
 
 
 def _repo_root() -> Path:
-    """Best-effort repo root: walk up from this file looking for `.git`.
+    """Best-effort *common* repo root, worktree-aware.
 
-    Falls back to the parent of the `scripts/` dir if `.git` is absent
-    (e.g. extracted tarball, CI).
+    Two Claude sessions — one on the main checkout, one inside
+    `.claude/worktrees/<name>/` — must resolve to the SAME lock root,
+    otherwise their lockfiles never collide and the primitive is useless
+    for our actual topology (parent orchestrator + per-Bit worktree
+    workers; see `kb/decisions/parallel-session-coordination-may09.md`).
+
+    Algorithm:
+      1. Walk up looking for any `.git` entry.
+      2. If `.git` is a **file** (worktree pointer), parse its first
+         line — `gitdir: <path-to-.git/worktrees/<name>/>` — and resolve
+         the common git-dir as that path's parent's parent
+         (`<repo>/.git/worktrees/<name>/` → `<repo>`).
+      3. If `.git` is a **directory**, that's the main checkout —
+         return the dir containing it.
+      4. Fall back to the parent of the `scripts/` dir if `.git` is
+         absent (e.g. extracted tarball, CI). R1 minor #1 (out of scope).
     """
     here = Path(__file__).resolve().parent
     for cand in (here, *here.parents):
-        if (cand / ".git").exists():
+        git_entry = cand / ".git"
+        if not git_entry.exists():
+            continue
+        if git_entry.is_dir():
+            # Main checkout. cand is the repo root.
+            return cand
+        if git_entry.is_file():
+            # Worktree pointer file. First line: "gitdir: <absolute-path>".
+            # That path is `<main-repo>/.git/worktrees/<worktree-name>/`,
+            # whose parent.parent is the main checkout root.
+            try:
+                first_line = git_entry.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()[0]
+            except (OSError, IndexError):
+                # Unreadable / empty — fall through to walk-up fallback.
+                return cand
+            if first_line.startswith("gitdir:"):
+                gitdir_str = first_line[len("gitdir:"):].strip()
+                gitdir = Path(gitdir_str)
+                # `<repo>/.git/worktrees/<name>` → parents[1] = `<repo>/.git`,
+                # parents[2] = `<repo>`. Use parents[2] for the common root.
+                # Guard against unexpected gitdir layout: if parents[2] does
+                # not exist, fall back to cand.
+                try:
+                    common_root = gitdir.parents[1].parent
+                except IndexError:
+                    return cand
+                if common_root.exists():
+                    return common_root
             return cand
     return here.parent
 
@@ -135,11 +178,33 @@ def flatten_target_path(target_path: str) -> str:
 
     Refuses absolute paths, traversal (`..`), and empty components — those
     inputs would either escape the lock dir or produce ambiguous round-trips.
+
+    Refuses inputs that already contain the literal `__SLASH__` token, since
+    `flatten("a__SLASH__b/c")` and `flatten("a/b/c")` would otherwise collide
+    on the same basename (R1 M1 — injectivity).
+
+    Refuses NUL bytes and other ASCII control chars, which would crash inside
+    `os.open` with `ValueError: embedded null byte` (R1 M2).
     """
     if not target_path:
         raise ValueError("target_path must be non-empty")
     if target_path.startswith("/"):
         raise ValueError(f"absolute paths not allowed: {target_path!r}")
+    # Reject NUL + other ASCII control characters (0x00-0x1f + 0x7f) — they
+    # either crash os.open or render the lockfile name un-greppable.
+    for ch in target_path:
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            raise ValueError(
+                f"control character {ord(ch):#04x} not allowed in target_path: "
+                f"{target_path!r}"
+            )
+    # Reject literal __SLASH__ in the input — would collide with the encoded
+    # form of a sibling path containing a real "/" at the same position.
+    if _SLASH_MARKER in target_path:
+        raise ValueError(
+            f"target_path contains reserved slash-marker token "
+            f"{_SLASH_MARKER!r}: {target_path!r}"
+        )
     parts = target_path.split("/")
     if any(p == "" for p in parts):
         raise ValueError(f"empty path component in {target_path!r}")
@@ -352,37 +417,104 @@ class SessionLock:
         }
 
     def _try_create(self) -> bool:
-        """Attempt one O_CREAT|O_EXCL create. Returns True on success.
+        """Attempt one atomic-write lockfile create. Returns True on success.
 
-        On EEXIST returns False (caller decides whether to inspect for
-        stale/malformed and retry).
+        On lockfile-already-exists returns False (caller decides whether to
+        inspect for stale/malformed and retry).
+
+        R1 C1 — TOCTOU fix
+        ------------------
+        Previously this used O_CREAT|O_EXCL on the canonical lockfile name,
+        wrote+fsync'd, then closed. The window between `os.open` succeeding
+        and `os.write` completing left the lockfile observable as a 0-byte
+        empty file. A peer doing `acquire_raw` against the same target
+        could in that window:
+
+          1. See EEXIST on its own O_EXCL attempt.
+          2. `_read_lockfile_metadata` → JSONDecodeError on empty file → None.
+          3. Conclude "malformed", call `_quarantine_malformed`, which
+             `os.replace`s the (still-being-written) file out from under us.
+          4. Retry O_EXCL — now succeeds (file is gone) — and BOTH sessions
+             think they hold the lock.
+
+        Fix: write+fsync to a per-pid+per-session tmp file in the same
+        directory, then `os.rename` (POSIX-atomic) the tmp file onto the
+        canonical lockfile name. Atomicity properties:
+
+          * Peers see no file at the canonical path (acquire wins) OR see
+            a fully-written, parseable lockfile (acquire blocks cleanly).
+          * Never see a 0-byte/partial canonical lockfile.
+          * `os.rename` to an existing destination on POSIX is documented
+            as atomic-and-overwriting; we want overwrite to FAIL, so we
+            link()+unlink() instead — `os.link(tmp, canonical)` raises
+            FileExistsError if canonical exists; the tmp is then unlinked.
+            This matches the O_CREAT|O_EXCL semantics on the canonical
+            name without the partial-write window.
+
+        Mirrors the `_tick_heartbeat` tmp+rename pattern, but the rename
+        target must NOT pre-exist on creation (whereas heartbeat OVERWRITES
+        intentionally). Hence link/unlink, not rename.
         """
         path = self.lockfile_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        # Tmp name includes pid + session_id[:8] so concurrent creators
+        # don't collide on the same tmp file.
+        tmp = path.with_name(
+            f"{path.name}.tmp.{os.getpid()}.{self._session_id[:8]}"
+        )
+        meta = self._build_metadata()
+        payload = json.dumps(meta).encode("utf-8")
         try:
-            fd = os.open(str(path), flags, 0o600)
-        except FileExistsError:
-            return False
-        except OSError as e:
-            if e.errno == errno.EEXIST:
-                return False
-            raise
-        try:
-            meta = self._build_metadata()
-            payload = json.dumps(meta).encode("utf-8")
-            os.write(fd, payload)
-            # fsync so the write is durable before another process can
-            # observe an empty lockfile (which would parse as malformed
-            # and trigger spurious quarantine).
+            # O_CREAT|O_EXCL on the *tmp* path: harmless if a prior
+            # interrupted attempt left a stale tmp behind (unlink + retry).
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
             try:
-                os.fsync(fd)
-            except OSError:
-                pass
+                fd = os.open(str(tmp), flags, 0o600)
+            except FileExistsError:
+                # Stale tmp from a previous crashed attempt by this same
+                # (pid, session_id) prefix. Unlink + one retry.
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+                fd = os.open(str(tmp), flags, 0o600)
+            try:
+                os.write(fd, payload)
+                try:
+                    os.fsync(fd)
+                except OSError:
+                    pass
+            finally:
+                os.close(fd)
+            # Atomic publish: link tmp → canonical. link() fails with
+            # FileExistsError if canonical already exists, giving us the
+            # O_EXCL semantics WITHOUT the partial-write race.
+            try:
+                os.link(str(tmp), str(path))
+            except FileExistsError:
+                return False
+            except OSError as e:
+                if e.errno == errno.EEXIST:
+                    return False
+                raise
+            finally:
+                # tmp is now hardlinked to canonical (or link failed).
+                # Either way, drop the tmp name; canonical retains the
+                # inode via the hardlink. If link failed, this is just
+                # cleanup of the failed-publish tmp.
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
             self.metadata = meta
-        finally:
-            os.close(fd)
-        return True
+            return True
+        except OSError:
+            # Best-effort cleanup of tmp on unexpected error.
+            try:
+                tmp.unlink()
+            except (FileNotFoundError, OSError):
+                pass
+            raise
 
     def acquire_raw(self) -> "SessionLock":
         """Acquire without context-manager wrapping. Caller MUST `release()`.
