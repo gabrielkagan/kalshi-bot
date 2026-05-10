@@ -37,6 +37,9 @@ def _read_bot_and_scanner():
     scanner_p = REPO / 'bot' / 'scanner' / '__init__.py'
     if scanner_p.exists():
         src += '\n' + scanner_p.read_text()
+    executor_p = REPO / 'bot' / 'executor.py'  # Bit 9.1 L38
+    if executor_p.exists():
+        src += '\n' + executor_p.read_text()
     return src
 
 
@@ -302,8 +305,15 @@ def test_bot_py_tm_strategy_fstring_format_matches_block_strategies():
 
     Lock the f-string format as a source invariant — if the rename happens,
     this test fails loudly."""
-    bot_py = REPO / 'bot/_impl.py'
-    src = bot_py.read_text()
+    # Bit 9.1 (2026-05-10): scan() lives in bot/scanner/__init__.py (Bit 8.1) —
+    # f"terminal_momentum_{...}" template is there. Read all three for safety.
+    src = (REPO / 'bot/_impl.py').read_text()
+    _scanner = REPO / 'bot' / 'scanner' / '__init__.py'
+    if _scanner.is_file():
+        src += '\n' + _scanner.read_text()
+    _executor = REPO / 'bot' / 'executor.py'
+    if _executor.is_file():
+        src += '\n' + _executor.read_text()
     # The f-string template must appear (single OR double quote)
     has_template = (
         'f"terminal_momentum_{' in src
@@ -409,8 +419,15 @@ def test_bot_py_calengine_accepts_bleed_block_stages():
 
     AST source-grep: bot/_impl.py 15M CalEngine `_stages` tuple must
     reference all 3 BLOCK_FILTER_STAGE constants."""
-    bot_py = REPO / 'bot/_impl.py'
-    src = bot_py.read_text()
+    # Bit 9.1 (2026-05-10): scan() lives in bot/scanner/__init__.py (Bit 8.1) —
+    # f"terminal_momentum_{...}" template is there. Read all three for safety.
+    src = (REPO / 'bot/_impl.py').read_text()
+    _scanner = REPO / 'bot' / 'scanner' / '__init__.py'
+    if _scanner.is_file():
+        src += '\n' + _scanner.read_text()
+    _executor = REPO / 'bot' / 'executor.py'
+    if _executor.is_file():
+        src += '\n' + _executor.read_text()
     # Locate the 15M CalEngine `_stages` declaration.
     import re
     block_match = re.search(
@@ -523,8 +540,15 @@ def test_bleed_block_strategies_have_runtime_validator():
     `STRATEGY_PANIC_CAPTURE` constants block). Full invariant coverage in
     tests/test_strategy_drift.py.
     """
-    bot_py = REPO / 'bot/_impl.py'
-    src = bot_py.read_text()
+    # Bit 9.1 (2026-05-10): scan() lives in bot/scanner/__init__.py (Bit 8.1) —
+    # f"terminal_momentum_{...}" template is there. Read all three for safety.
+    src = (REPO / 'bot/_impl.py').read_text()
+    _scanner = REPO / 'bot' / 'scanner' / '__init__.py'
+    if _scanner.is_file():
+        src += '\n' + _scanner.read_text()
+    _executor = REPO / 'bot' / 'executor.py'
+    if _executor.is_file():
+        src += '\n' + _executor.read_text()
     # A validator function must exist for the new gates.
     assert '_validate_bleed_block_bleeder_strings' in src or \
            '_validate_tm98_bleed_block' in src or \

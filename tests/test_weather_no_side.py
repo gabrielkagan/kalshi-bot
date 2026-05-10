@@ -271,8 +271,8 @@ class TestNoSideRepriceMaker(unittest.TestCase):
 class TestNoSideObservationGate(unittest.TestCase):
     """Verify observation gate behavior for weather YES vs NO side."""
 
-    @patch.object(bot, "WEATHER_NO_SIDE_LIVE", True)
-    @patch.object(bot, "OBSERVATION_MODE", False)
+    @patch.object(bot.executor, "WEATHER_NO_SIDE_LIVE", True)
+    @patch.object(bot.executor, "OBSERVATION_MODE", False)
     def test_weather_no_side_bypasses_observation_gate(self):
         """Weather NO-side candidates pass through when WEATHER_NO_SIDE_LIVE=True."""
         ex = _make_executor()
@@ -284,8 +284,8 @@ class TestNoSideObservationGate(unittest.TestCase):
         # Should proceed to order submission (not blocked by observation gate)
         ex._client.place_order.assert_called_once()
 
-    @patch.object(bot, "WEATHER_NO_SIDE_LIVE", True)
-    @patch.object(bot, "OBSERVATION_MODE", False)
+    @patch.object(bot.executor, "WEATHER_NO_SIDE_LIVE", True)
+    @patch.object(bot.executor, "OBSERVATION_MODE", False)
     def test_weather_yes_side_blocked_by_observation_gate(self):
         """Weather YES-side must remain blocked even when WEATHER_NO_SIDE_LIVE=True."""
         ex = _make_executor()
@@ -296,8 +296,8 @@ class TestNoSideObservationGate(unittest.TestCase):
         self.assertIsNone(result)
         ex._client.place_order.assert_not_called()
 
-    @patch.object(bot, "WEATHER_NO_SIDE_LIVE", False)
-    @patch.object(bot, "OBSERVATION_MODE", False)
+    @patch.object(bot.executor, "WEATHER_NO_SIDE_LIVE", False)
+    @patch.object(bot.executor, "OBSERVATION_MODE", False)
     def test_weather_no_side_blocked_when_kill_switch_off(self):
         """WEATHER_NO_SIDE_LIVE=False blocks NO-side execution."""
         ex = _make_executor()
@@ -308,7 +308,7 @@ class TestNoSideObservationGate(unittest.TestCase):
         self.assertIsNone(result)
         ex._client.place_order.assert_not_called()
 
-    @patch.object(bot, "OBSERVATION_MODE", False)
+    @patch.object(bot.executor, "OBSERVATION_MODE", False)
     def test_crypto_yes_side_unaffected(self):
         """Existing crypto 15M trading (side='yes') is completely unaffected."""
         ex = _make_executor()
@@ -321,7 +321,7 @@ class TestNoSideObservationGate(unittest.TestCase):
         self.assertEqual(call_kwargs["side"], "yes")
         self.assertIn("yes_price", call_kwargs)
 
-    @patch.object(bot, "OBSERVATION_MODE", False)
+    @patch.object(bot.executor, "OBSERVATION_MODE", False)
     def test_crypto_no_side_key_defaults_yes(self):
         """Crypto candidates without 'side' key default to YES behavior."""
         ex = _make_executor()

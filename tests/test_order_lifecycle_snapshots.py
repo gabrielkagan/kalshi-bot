@@ -189,7 +189,8 @@ class TestExecutorWiringInPlace(_TempState):
     have zero rows in production (per kb/failures/feedback_verify_new_features.md)."""
 
     def _executor_src(self):
-        import bot._impl as bot_mod
+        # Bit 9.1 (2026-05-10): OrderExecutor moved to bot/executor.py
+        import bot.executor as bot_mod
         src = open(bot_mod.__file__).read()
         # Bound the search to OrderExecutor class
         start = src.find("class OrderExecutor")

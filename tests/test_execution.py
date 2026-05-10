@@ -110,8 +110,8 @@ class TestMakerFirstExecution(unittest.TestCase):
         }
         candidate = _make_candidate(best_yes_ask=92, seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
@@ -128,8 +128,8 @@ class TestMakerFirstExecution(unittest.TestCase):
         }
         candidate = _make_candidate(best_yes_ask=92, seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
@@ -152,9 +152,9 @@ class TestMakerFirstExecution(unittest.TestCase):
             asset="SOL", ticker="KXSOL15M-26MAR091200-S100",
         )
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg, \
-             patch("bot.SOL_TAKER_FIRST", False):
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg, \
+             patch("bot.executor.SOL_TAKER_FIRST", False):
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=75)
             ex.execute(candidate)
 
@@ -170,8 +170,8 @@ class TestMakerFirstExecution(unittest.TestCase):
         # best_yes_ask=81, offset=2 → maker price=79 < MIN_ENTRY_PRICE=80
         candidate = _make_candidate(best_yes_ask=81, seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=80)
             ex.execute(candidate)
 
@@ -196,9 +196,9 @@ class TestMakerFirstExecution(unittest.TestCase):
             asset="SOL", ticker="KXSOL15M-26APR221500-00",
         )
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg, \
-             patch("bot.SOL_TAKER_FIRST", False):
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg, \
+             patch("bot.executor.SOL_TAKER_FIRST", False):
             # Global floor 75 mirrors production; the ONLY thing saving us here is the
             # per-asset SOL branch in _submit_maker.
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=75)
@@ -215,8 +215,8 @@ class TestMakerFirstExecution(unittest.TestCase):
             {"order": {"order_id": "ord-123"}})[1]
         candidate = _make_candidate(best_yes_ask=92, seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
@@ -231,8 +231,8 @@ class TestMakerFirstExecution(unittest.TestCase):
         }
         candidate = _make_candidate(seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
@@ -246,8 +246,8 @@ class TestMakerFirstExecution(unittest.TestCase):
         ex._active_orders["BTC"] = {"order_id": "existing"}
         candidate = _make_candidate(asset="BTC", seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 
@@ -260,8 +260,8 @@ class TestMakerFirstExecution(unittest.TestCase):
         ex._client.place_order.return_value = None  # API failure
         candidate = _make_candidate(best_yes_ask=92, seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
@@ -279,8 +279,8 @@ class TestObservationModeSafety(unittest.TestCase):
         ex = _make_executor()
         candidate = _make_candidate(product_type="hourly")
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=True, product_type="hourly")
             result = ex.execute(candidate)
 
@@ -292,8 +292,8 @@ class TestObservationModeSafety(unittest.TestCase):
         ex = _make_executor()
         candidate = _make_candidate(seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", True), \
-             patch("bot.get_market_config") as mock_cfg, \
+        with patch("bot.executor.OBSERVATION_MODE", True), \
+             patch("bot.executor.get_market_config") as mock_cfg, \
              patch("bot.notifier._TELEGRAM", None):
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
@@ -327,10 +327,10 @@ class TestDirectTakerPath(unittest.TestCase):
             position_size=5,
         )
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg, \
-             patch("bot.time") as mock_time, \
-             patch("bot.fp_str_to_int", return_value=5):
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg, \
+             patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=5):
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()  # Don't actually sleep
@@ -364,10 +364,10 @@ class TestDirectTakerPath(unittest.TestCase):
             position_size=5,
         )
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg, \
-             patch("bot.time") as mock_time, \
-             patch("bot.fp_str_to_int", return_value=0):
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg, \
+             patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0):
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
@@ -387,8 +387,8 @@ class TestDirectTakerPath(unittest.TestCase):
             position_size=5,
         )
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 
@@ -420,11 +420,11 @@ class TestSOLTakerOverride(unittest.TestCase):
             position_size=5,
         )
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg, \
-             patch("bot.time") as mock_time, \
-             patch("bot.SOL_TAKER_FIRST", True), \
-             patch("bot.fp_str_to_int", return_value=5):
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg, \
+             patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.SOL_TAKER_FIRST", True), \
+             patch("bot.executor.fp_str_to_int", return_value=5):
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
@@ -449,9 +449,9 @@ class TestSOLTakerOverride(unittest.TestCase):
             best_yes_ask=92,
         )
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg, \
-             patch("bot.SOL_TAKER_FIRST", False):
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg, \
+             patch("bot.executor.SOL_TAKER_FIRST", False):
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
@@ -487,8 +487,8 @@ class TestIOCBehavior(unittest.TestCase):
         ]
         candidate = _make_candidate()
 
-        with patch("bot.time") as mock_time, \
-             patch("bot.fp_str_to_int", return_value=5):
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=5):
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
             result = ex._submit_taker(candidate)
@@ -511,8 +511,8 @@ class TestIOCBehavior(unittest.TestCase):
         ex._client.get_positions.return_value = {"market_positions": []}
         candidate = _make_candidate()
 
-        with patch("bot.time") as mock_time, \
-             patch("bot.fp_str_to_int", return_value=0):
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0):
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
             result = ex._submit_taker(candidate)
@@ -578,7 +578,7 @@ class TestIOCSubFloorDefense(unittest.TestCase):
             ob_snapshot={"ask_depth": 50},
         )
 
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=5):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=5):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -603,7 +603,7 @@ class TestIOCSubFloorDefense(unittest.TestCase):
             ob_snapshot={"ask_depth": 3},
         )
 
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=3):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=3):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -629,7 +629,7 @@ class TestIOCSubFloorDefense(unittest.TestCase):
             ob_snapshot={"ask_depth": 0},  # NBBO source doesn't have real depth
         )
 
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=6):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=6):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -650,7 +650,7 @@ class TestIOCSubFloorDefense(unittest.TestCase):
         ]}
         cand = _make_candidate(position_size=5)  # no best_ask_source
 
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=5):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=5):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -721,7 +721,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 1, "best_ask": 99},
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=100):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=100):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -751,7 +751,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 1, "best_ask": 90},
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=100):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=100):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -797,7 +797,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 1, "best_ask": 95},
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=1):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -818,7 +818,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 2, "best_ask": 92},
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=2):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=2):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -857,7 +857,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 5, "best_ask": 92},
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=50):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -877,7 +877,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 2, "best_ask": 91},
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=40):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=40):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -898,7 +898,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="market_nbbo",
             ob_snapshot={"ask_depth": 0},
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=100):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=100):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -921,7 +921,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 500, "best_ask": 98},  # deep top
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=50):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -969,7 +969,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 765, "best_ask": 96},  # cache claims deep
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=10):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=10):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -1002,7 +1002,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 765, "best_ask": 96},  # cache claims deep
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=1):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -1027,7 +1027,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 1, "best_ask": 99},  # cache thin — skip REST
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=1):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=1):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -1056,7 +1056,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 500, "best_ask": 98},  # cache deep, matches REST
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=50):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -1086,7 +1086,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 100, "best_ask": 90},  # cache wrong
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=5):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=5):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -1111,7 +1111,7 @@ class TestStrategyClampPolicy(unittest.TestCase):
             best_ask_source="orderbook",
             ob_snapshot={"ask_depth": 500, "best_ask": 96},
         )
-        with patch("bot.time") as mt, patch("bot.fp_str_to_int", return_value=50):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=50):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -1138,8 +1138,8 @@ class TestGhostFillProtection(unittest.TestCase):
         ex._client.get_fills.return_value = {"fills": []}
         candidate = _make_candidate()
 
-        with patch("bot.time") as mock_time, \
-             patch("bot.fp_str_to_int", return_value=5):  # fill_count=5
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=5):  # fill_count=5
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
             result = ex._submit_taker(candidate)
@@ -1169,8 +1169,8 @@ class TestGhostFillProtection(unittest.TestCase):
         ex._client.get_positions.return_value = {"market_positions": []}
         candidate = _make_candidate()
 
-        with patch("bot.time") as mock_time, \
-             patch("bot.fp_str_to_int", return_value=0):  # fill_count=0
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0):  # fill_count=0
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
             result = ex._submit_taker(candidate)
@@ -1204,9 +1204,9 @@ class TestGhostFillProtection(unittest.TestCase):
         }
         candidate = _make_candidate()
 
-        with patch("bot.time") as mock_time, \
-             patch("bot.fp_str_to_int", return_value=0), \
-             patch("bot.dollars_str_to_cents", return_value=460):
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0), \
+             patch("bot.executor.dollars_str_to_cents", return_value=460):
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
             result = ex._submit_taker(candidate)
@@ -1228,8 +1228,8 @@ class TestPostOnlyRejectionTiers(unittest.TestCase):
         }
         candidate = _make_candidate(seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
@@ -1250,8 +1250,8 @@ class TestPostOnlyRejectionTiers(unittest.TestCase):
         }
         candidate = _make_candidate(seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
@@ -1285,10 +1285,10 @@ class TestPostOnlyRejectionTiers(unittest.TestCase):
             position_size=5,
         )
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg, \
-             patch("bot.time") as mock_time, \
-             patch("bot.fp_str_to_int", return_value=5):
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg, \
+             patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=5):
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
@@ -1412,8 +1412,8 @@ class TestMakerToTakerEscalation(unittest.TestCase):
         }
         ex._active_orders["BTC"] = order
 
-        with patch("bot.time") as mock_time, \
-             patch("bot.fp_str_to_int", return_value=5):
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=5):
             mock_time.time.return_value = time.time()
             mock_time.sleep = MagicMock()
             # Use a reasonable ask
@@ -1605,8 +1605,8 @@ class TestCooldownAndDedup(unittest.TestCase):
         ex._recent_taker_tickers[ticker] = time.time()  # just now
         candidate = _make_candidate(seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 
@@ -1623,8 +1623,8 @@ class TestCooldownAndDedup(unittest.TestCase):
         }
         candidate = _make_candidate(seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 
@@ -1637,8 +1637,8 @@ class TestCooldownAndDedup(unittest.TestCase):
         ex._escalating_assets.add("BTC")
         candidate = _make_candidate(asset="BTC", seconds_to_close=400)
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 
@@ -1681,8 +1681,8 @@ class TestEdgeCases(unittest.TestCase):
             calibrated_prob=0.96,
         )
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 
@@ -1703,8 +1703,8 @@ class TestEdgeCases(unittest.TestCase):
             seconds_to_close=400,
         )
 
-        with patch("bot.OBSERVATION_MODE", False), \
-             patch("bot.get_market_config") as mock_cfg:
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             ex.execute(candidate)
 

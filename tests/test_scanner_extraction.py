@@ -691,51 +691,20 @@ def test_scanner_no_top_level_bot_impl_import():
                 )
 
 
-def test_scanner_has_get_order_executor_helper():
-    """bot/scanner/__init__.py defines `_get_order_executor()` late-binding helper."""
-    src = _read_scanner_source()
-    assert re.search(r"^def _get_order_executor\(\)", src, re.MULTILINE), (
-        "bot/scanner missing `def _get_order_executor()` late-binding helper"
-    )
-
-
-def test_scanner_uses_get_order_executor_at_call_sites():
-    """bot/scanner/__init__.py rewrites all OrderExecutor.X bare-name calls to _get_order_executor().X."""
-    src = _read_scanner_source()
-    # Negative pin: NO bare-name `OrderExecutor.` references inside class body.
-    # (The only OrderExecutor mention should be inside `_get_order_executor()` body
-    # as `_bot_impl.OrderExecutor`.)
-    bare_name_refs = re.findall(r"(?<![._])OrderExecutor\.", src)
-    assert len(bare_name_refs) == 0, (
-        f"bot/scanner has {len(bare_name_refs)} bare-name `OrderExecutor.` refs — must use `_get_order_executor()`"
-    )
-    # Positive pin: `_get_order_executor()` appears at the expected number of call sites
-    # (the original 34 OrderExecutor.X calls from the pre-extraction grep).
-    helper_calls = re.findall(r"_get_order_executor\(\)", src)
-    # Body has 34 call sites + 1 def line = 35 hits total. The def line itself
-    # contains `def _get_order_executor()` not `_get_order_executor()` directly,
-    # so the regex above only counts the call sites.
-    assert len(helper_calls) >= 30, (
-        f"expected >=30 _get_order_executor() call sites, got {len(helper_calls)}"
-    )
-
-
-def test_get_order_executor_returns_bot_impl_orderexecutor():
-    """Behavioral: _get_order_executor() returns bot._impl.OrderExecutor."""
-    import bot._impl
-    import bot.scanner
-    helper = bot.scanner._get_order_executor
-    assert helper() is bot._impl.OrderExecutor
-
-
-def test_importlinter_scanner_no_impl_toplevel_contract():
-    """`.importlinter` includes a `scanner-no-impl-toplevel` contract (parallel to Bit 7.1 fu1's state-no-impl-toplevel)."""
-    if not IMPORTLINTER_INI.is_file():
-        pytest.skip(".importlinter not present (Pillar 2 not configured)")
-    src = IMPORTLINTER_INI.read_text()
-    assert "scanner-no-impl-toplevel" in src or "bot.scanner" in src and "forbidden_modules" in src, (
-        ".importlinter missing `scanner-no-impl-toplevel` (or equivalent bot.scanner forbidden contract)"
-    )
+# NOTE: 4 Bit-8.1 tests RETIRED in Sprint 9 Bit 9.1 (2026-05-10):
+#   - test_scanner_has_get_order_executor_helper
+#   - test_scanner_uses_get_order_executor_at_call_sites
+#   - test_get_order_executor_returns_bot_impl_orderexecutor
+#   - test_importlinter_scanner_no_impl_toplevel_contract
+# These pinned the existence of the `_get_order_executor()` late-binding helper
+# and the `scanner-no-impl-toplevel` `.importlinter` contract, both of which
+# Bit 9.1's cleanup contract retired atomically. The replacement contract is in
+# tests/test_executor_extraction.py:
+#   - test_scanner_no_longer_has_get_order_executor_helper (negative pin)
+#   - test_scanner_imports_order_executor_at_top
+#   - test_scanner_no_call_sites_to_get_order_executor (negative pin via AST)
+#   - test_scanner_no_impl_toplevel_contract_removed
+#   - test_scanner_no_impl_toplevel_dropped_from_expected_contracts
 
 
 # ============================================== CRITICAL #5: _cal_state alias

@@ -8,16 +8,18 @@ Path-A++ extraction (NOT byte-for-byte): in-Bit refactor of bot/_impl.py
 to relocate the `_TELEGRAM` module-level singleton to bot/notifier.py
 (where it logically belongs since Bit 4.2). The laundered-namespace
 coupling smell is fixed in-Bit per the modularization strategic goal.
-Both this module and bot/_impl.py reach `_TELEGRAM` via the
+All three of bot/_impl.py, bot/scanner/__init__.py (this module), and
+bot/executor.py (Bit 9.1, 2026-05-10) reach `_TELEGRAM` via the
 `_telegram_state` module-attribute access pattern (mirrors Bit 6.3 path-B
 `_cal_state._CALIBRATION_ENGINE`); writes by `MainLoop.__init__` propagate
 to all readers without alias-import freshness loss.
 
-Cross-class coupling (preserved via late-binding helpers, until Sprint 9
-extracts the relevant classes):
-- `_get_order_executor()` returns bot._impl.OrderExecutor for the 34
-  static-method call sites in scan() (Sprint 9 Bit 9.1 will resolve via
-  `from bot.executor import OrderExecutor`)
+Cross-class coupling (post-Sprint-9-Bit-9.1):
+- OrderExecutor lives in bot.executor (Bit 9.1, 2026-05-10) — direct
+  top-level import; the previous `_get_order_executor()` late-binding
+  helper retired in this Bit and the `scanner-no-impl-toplevel`
+  `.importlinter` contract dropped in the same atomic commit (net
+  contracts: 6 → 5).
 
 Mutable-singleton coupling (preserved via aliased module-attribute access):
 - `_cal_state._CALIBRATION_ENGINE` / `_cal_state._resolve_cal_engine`
@@ -303,23 +305,7 @@ import bot.notifier as _telegram_state  # Bit 8.1 path-A++ alias — explicit su
 from bot.db_writer_registry import tracked_write
 
 
-def _get_order_executor():
-    """Late-binding helper for OrderExecutor cross-class calls (34 sites in scan).
-
-    Returns bot._impl.OrderExecutor. Late-bound because bot._impl imports
-    bot.scanner during its own load (the line-115 re-export — search
-    anchor: ``from bot.scanner import OpportunityScanner``), but the
-    OrderExecutor binding doesn't exist until line 994 of bot/_impl.py
-    (post-Bit-8.1 layout — search anchor: ``class OrderExecutor:``).
-    Scanner method calls always happen at MainLoop runtime, well after
-    bot._impl finishes loading.
-
-    Sprint 9 Bit 9.1 extracts OrderExecutor to bot/executor.py; this helper
-    becomes redundant and the call sites can swap to direct
-    `from bot.executor import OrderExecutor`. Filed as Bit-8.1 follow-up.
-    """
-    import bot._impl as _bot_impl
-    return _bot_impl.OrderExecutor
+from bot.executor import OrderExecutor  # Bit 9.1 (2026-05-10): direct top-level import — replaces the `_get_order_executor()` late-binding helper retired here. Works because bot.executor breaks the cycle from its side via a `_get_opportunity_scanner()` method-body helper (bot.executor has NO top-level bot.scanner import). The `scanner-no-impl-toplevel` `.importlinter` contract dropped in the same atomic commit (net contracts: 6 → 5).
 
 
 class OpportunityScanner:
@@ -333,8 +319,8 @@ class OpportunityScanner:
                  feed: CoinbaseFeed, vol: VolatilityEngine, logger: Logger,
                  sizer: PositionSizer,
                  # OrderFlowEngine + KalshiOrderFlowTracker are quoted forward-refs
-                 # because they still live in bot/_impl.py (lines 656 + 778; search
-                 # anchors: ``class OrderFlowEngine:`` / ``class KalshiOrderFlowTracker:``);
+                 # because they still live in bot/_impl.py (search anchors:
+                 # ``class OrderFlowEngine:`` / ``class KalshiOrderFlowTracker:``);
                  # importing them here would create a load-order cycle (bot._impl
                  # imports bot.scanner during its own load via the line-115 re-export
                  # — search anchor: ``from bot.scanner import OpportunityScanner`` —
@@ -2281,13 +2267,13 @@ class OpportunityScanner:
                     pass
 
                 # Compute orderbook depth early (used in logging + strategy)
-                ask_depth = _get_order_executor()._best_ask_depth(ob_data)
-                total_depth = _get_order_executor()._total_ob_depth(ob_data)
+                ask_depth = OrderExecutor._best_ask_depth(ob_data)
+                total_depth = OrderExecutor._total_ob_depth(ob_data)
                 # Extract YES bid for buy-low-sell-higher and exit-price analysis.
                 # Stored in StateManager._scan_bid_cache so all insert_evaluated_opportunity
                 # calls within this scan tick automatically pick it up — no need to thread
                 # the value through 50+ call sites.
-                yes_bid_cents = _get_order_executor()._best_yes_bid(ob_data) if ob_data else None
+                yes_bid_cents = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
                 if yes_bid_cents is not None:
                     self._state._scan_bid_cache[ticker] = yes_bid_cents
                 # Per-level orderbook ladder snapshot (top 10 each side).
@@ -2295,7 +2281,7 @@ class OpportunityScanner:
                 # can enforce a freshness gate when auto-filling — stale
                 # entries write NULL instead of a misleading old ladder.
                 # None if ob_data missing this tick.
-                _ob_levels = _get_order_executor()._extract_book_levels(ob_data)
+                _ob_levels = OrderExecutor._extract_book_levels(ob_data)
                 if _ob_levels is not None:
                     self._state._scan_ob_cache[ticker] = (
                         time.monotonic(), _ob_levels)
@@ -2311,7 +2297,7 @@ class OpportunityScanner:
                 if (_pt == "hourly"
                         and self._ml and getattr(self._ml, "hourly_alt_shadow", None)):
                     try:
-                        _mm_bid = _get_order_executor()._best_yes_bid(ob_data) if ob_data else None
+                        _mm_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
                         self._ml.hourly_alt_shadow.check_mm_fills(
                             ticker, best_ask, _mm_bid or 0)
                     except Exception:
@@ -2329,7 +2315,7 @@ class OpportunityScanner:
                 # insert_evaluated_opportunity calls within this tick auto-fill.
                 # See kb/concepts/feature-engineering-phase1.md.
                 try:
-                    _bid_depth = (_get_order_executor()._best_yes_bid_depth(ob_data)
+                    _bid_depth = (OrderExecutor._best_yes_bid_depth(ob_data)
                                   if ob_data else None)
                     _spread = ((best_ask - yes_bid_cents)
                                if (best_ask is not None and yes_bid_cents is not None)
@@ -2388,7 +2374,7 @@ class OpportunityScanner:
                         and self._ml and getattr(self._ml, "fifteenm_shadow", None)
                         and best_ask is not None and cal_prob is not None):
                     try:
-                        _15m_pre_bid = _get_order_executor()._best_yes_bid(ob_data) if ob_data else None
+                        _15m_pre_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
                         _15m_pre_edge = cal_prob - best_ask / 100.0
                         _15m_pre_fee = calculate_fee(
                             1, best_ask, is_taker=True,
@@ -2706,10 +2692,10 @@ class OpportunityScanner:
                                             "best_ask": best_ask,
                                             "ask_depth": ask_depth,
                                             "total_depth": total_depth,
-                                            "best_bid": _get_order_executor()._best_yes_bid(ob_data) if ob_data else None,
-                                            "bid_depth": _get_order_executor()._best_yes_bid_depth(ob_data) if ob_data else 0,
-                                            "spread": (best_ask - _get_order_executor()._best_yes_bid(ob_data))
-                                                      if ob_data and _get_order_executor()._best_yes_bid(ob_data) is not None else None,
+                                            "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                                            "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                                            "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                                      if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
                                         },
                                         "calibrated_prob_raw": round(cal_prob, 6),
                                         "ofa_adjustment": 0.0,
@@ -3485,10 +3471,10 @@ class OpportunityScanner:
                                                 "best_ask": best_ask,
                                                 "ask_depth": ask_depth,
                                                 "total_depth": total_depth,
-                                                "best_bid": _get_order_executor()._best_yes_bid(ob_data) if ob_data else None,
-                                                "bid_depth": _get_order_executor()._best_yes_bid_depth(ob_data) if ob_data else 0,
-                                                "spread": (best_ask - _get_order_executor()._best_yes_bid(ob_data))
-                                                          if ob_data and _get_order_executor()._best_yes_bid(ob_data) is not None else None,
+                                                "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                                                "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                                                "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                                          if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
                                             },
                                             "calibrated_prob_raw": round(calibrated_prob_raw, 6),
                                             "ofa_adjustment": round(ofa_adjustment, 6),
@@ -3876,10 +3862,10 @@ class OpportunityScanner:
                                         "best_ask": best_ask,
                                         "ask_depth": ask_depth,
                                         "total_depth": total_depth,
-                                        "best_bid": _get_order_executor()._best_yes_bid(ob_data) if ob_data else None,
-                                        "bid_depth": _get_order_executor()._best_yes_bid_depth(ob_data) if ob_data else 0,
-                                        "spread": (best_ask - _get_order_executor()._best_yes_bid(ob_data))
-                                                  if ob_data and _get_order_executor()._best_yes_bid(ob_data) is not None else None,
+                                        "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                                        "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                                        "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                                  if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
                                     },
                                     "calibrated_prob_raw": round(calibrated_prob_raw, 6),
                                     "ofa_adjustment": round(ofa_adjustment, 6),
@@ -4037,10 +4023,10 @@ class OpportunityScanner:
                                         "best_ask": best_ask,
                                         "ask_depth": ask_depth,
                                         "total_depth": total_depth,
-                                        "best_bid": _get_order_executor()._best_yes_bid(ob_data) if ob_data else None,
-                                        "bid_depth": _get_order_executor()._best_yes_bid_depth(ob_data) if ob_data else 0,
-                                        "spread": (best_ask - _get_order_executor()._best_yes_bid(ob_data))
-                                                  if ob_data and _get_order_executor()._best_yes_bid(ob_data) is not None else None,
+                                        "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                                        "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                                        "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                                  if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
                                     },
                                     "calibrated_prob_raw": round(calibrated_prob_raw, 6),
                                     "est_fee_1c": est_fee_1c,
@@ -4301,10 +4287,10 @@ class OpportunityScanner:
                                             "best_ask": best_ask,
                                             "ask_depth": ask_depth,
                                             "total_depth": total_depth,
-                                            "best_bid": _get_order_executor()._best_yes_bid(ob_data) if ob_data else None,
-                                            "bid_depth": _get_order_executor()._best_yes_bid_depth(ob_data) if ob_data else 0,
-                                            "spread": (best_ask - _get_order_executor()._best_yes_bid(ob_data))
-                                                      if ob_data and _get_order_executor()._best_yes_bid(ob_data) is not None else None,
+                                            "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                                            "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                                            "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                                      if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
                                         },
                                         "calibrated_prob_raw": round(calibrated_prob_raw, 6),
                                         "ofa_adjustment": round(ofa_adjustment, 6),
@@ -5703,7 +5689,7 @@ class OpportunityScanner:
                     if (_obs_pt == "hourly"
                             and self._ml and getattr(self._ml, "hourly_alt_shadow", None)):
                         try:
-                            _alt_bid = _get_order_executor()._best_yes_bid(ob_data) if ob_data else None
+                            _alt_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
                             _alt_no_ask_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
                             _alt_no_ask = (dollars_str_to_cents(_alt_no_ask_raw) if isinstance(_alt_no_ask_raw, str)
                                            else int(_alt_no_ask_raw)) if _alt_no_ask_raw is not None else None
@@ -5725,7 +5711,7 @@ class OpportunityScanner:
                     if (_obs_pt == "spx_hourly"
                             and self._ml and getattr(self._ml, "spx_harrv_shadow", None)):
                         try:
-                            _harv_bid = _get_order_executor()._best_yes_bid(ob_data) if ob_data else None
+                            _harv_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
                             _harv_no_ask_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
                             _harv_no_ask = (dollars_str_to_cents(_harv_no_ask_raw) if isinstance(_harv_no_ask_raw, str)
                                             else int(_harv_no_ask_raw)) if _harv_no_ask_raw is not None else None
@@ -5749,7 +5735,7 @@ class OpportunityScanner:
                 if (window.get("product_type") in (None, "15m")
                         and self._ml and getattr(self._ml, "fifteenm_shadow", None)):
                     try:
-                        _15m_bid = _get_order_executor()._best_yes_bid(ob_data) if ob_data else None
+                        _15m_bid = OrderExecutor._best_yes_bid(ob_data) if ob_data else None
                         _15m_no_ask_raw = mkt.get("no_ask_dollars") or mkt.get("no_ask")
                         _15m_no_ask = (dollars_str_to_cents(_15m_no_ask_raw) if isinstance(_15m_no_ask_raw, str)
                                        else int(_15m_no_ask_raw)) if _15m_no_ask_raw is not None else None
@@ -6018,10 +6004,10 @@ class OpportunityScanner:
                         "best_ask": best_ask,
                         "ask_depth": ask_depth,
                         "total_depth": total_depth,
-                        "best_bid": _get_order_executor()._best_yes_bid(ob_data) if ob_data else None,
-                        "bid_depth": _get_order_executor()._best_yes_bid_depth(ob_data) if ob_data else 0,
-                        "spread": (best_ask - _get_order_executor()._best_yes_bid(ob_data))
-                                  if ob_data and _get_order_executor()._best_yes_bid(ob_data) is not None else None,
+                        "best_bid": OrderExecutor._best_yes_bid(ob_data) if ob_data else None,
+                        "bid_depth": OrderExecutor._best_yes_bid_depth(ob_data) if ob_data else 0,
+                        "spread": (best_ask - OrderExecutor._best_yes_bid(ob_data))
+                                  if ob_data and OrderExecutor._best_yes_bid(ob_data) is not None else None,
                     },
                     "calibrated_prob_raw": round(calibrated_prob_raw, 6),
                     "ofa_adjustment": round(ofa_adjustment, 6),

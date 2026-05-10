@@ -44,7 +44,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/executor.py")  # Bit 9.1 (2026-05-10): retargeted to bot/executor.py — OrderExecutor extracted from bot/_impl.py
 
 
 def _make_executor():
@@ -179,7 +179,7 @@ class TestPerStrategyMaxPrice(unittest.TestCase):
     def setUp(self):
         # LADDER_ESCALATION_ENABLED defaults to OFF (codebase pattern).
         # Tests in this class assert behavior when ENABLED — patch ON.
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -234,7 +234,7 @@ class TestEscalationGates(unittest.TestCase):
     def setUp(self):
         # LADDER_ESCALATION_ENABLED defaults to OFF (codebase pattern).
         # Tests in this class assert behavior when ENABLED — patch ON.
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -273,7 +273,7 @@ class TestEscalationGates(unittest.TestCase):
 
     def test_kill_switch_disables_escalation(self):
         cand = _candidate(strategy="terminal_momentum_98", price=98)
-        with patch("bot.LADDER_ESCALATION_ENABLED", False):
+        with patch("bot.executor.LADDER_ESCALATION_ENABLED", False):
             result = self.ex._maybe_ladder_escalate(
                 candidate=cand, original_limit=98, remaining=41,
                 ioc_filled=9)
@@ -296,7 +296,7 @@ class TestRecursionGuard(unittest.TestCase):
     def setUp(self):
         # LADDER_ESCALATION_ENABLED defaults to OFF (codebase pattern).
         # Tests in this class assert behavior when ENABLED — patch ON.
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -331,7 +331,7 @@ class TestMakerTailCoexistence(unittest.TestCase):
     def setUp(self):
         # LADDER_ESCALATION_ENABLED defaults to OFF (codebase pattern).
         # Tests in this class assert behavior when ENABLED — patch ON.
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -382,7 +382,7 @@ class TestTelemetry(unittest.TestCase):
     def setUp(self):
         # LADDER_ESCALATION_ENABLED defaults to OFF (codebase pattern).
         # Tests in this class assert behavior when ENABLED — patch ON.
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -438,7 +438,7 @@ class TestRetryPlumbing(unittest.TestCase):
     def setUp(self):
         # LADDER_ESCALATION_ENABLED defaults to OFF (codebase pattern).
         # Tests in this class assert behavior when ENABLED — patch ON.
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -580,7 +580,7 @@ class TestRetryObSnapshotFreshness(unittest.TestCase):
     def setUp(self):
         # LADDER_ESCALATION_ENABLED defaults to OFF (codebase pattern).
         # Tests in this class assert behavior when ENABLED — patch ON.
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -634,7 +634,7 @@ class TestRetryRiskCapRecheck(unittest.TestCase):
     def setUp(self):
         # LADDER_ESCALATION_ENABLED defaults to OFF (codebase pattern).
         # Tests in this class assert behavior when ENABLED — patch ON.
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -695,7 +695,7 @@ class TestPhantomAbortOnRetry(unittest.TestCase):
     bypass."""
 
     def setUp(self):
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -734,7 +734,7 @@ class TestRetryCounterNotDoubleCount(unittest.TestCase):
     exclusion pattern."""
 
     def setUp(self):
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
 
@@ -770,7 +770,7 @@ class TestTickerCapBoundary(unittest.TestCase):
     """A21 — strengthen the ticker cap test with precise boundary."""
 
     def setUp(self):
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -833,7 +833,7 @@ class TestCounterIncrements(unittest.TestCase):
     invisibly past TestTelemetry's hasattr check."""
 
     def setUp(self):
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -856,7 +856,7 @@ class TestCounterIncrements(unittest.TestCase):
         counter — counter measures attempts that go through, not
         every call to the helper."""
         cand = _candidate(strategy="terminal_momentum_98", price=98)
-        with patch("bot.LADDER_ESCALATION_ENABLED", False):
+        with patch("bot.executor.LADDER_ESCALATION_ENABLED", False):
             self.ex._maybe_ladder_escalate(
                 candidate=cand, original_limit=98, remaining=48,
                 ioc_filled=2)
@@ -879,7 +879,7 @@ class TestOrderbookShapeRobustness(unittest.TestCase):
     REST keys; dump raw responses before 4th debug commit'."""
 
     def setUp(self):
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()
@@ -1022,7 +1022,7 @@ class TestCounterSkipPaths(unittest.TestCase):
     any of the gate skip paths. Otherwise dashboards overcount."""
 
     def setUp(self):
-        self._enabled_patch = patch("bot.LADDER_ESCALATION_ENABLED", True)
+        self._enabled_patch = patch("bot.executor.LADDER_ESCALATION_ENABLED", True)
         self._enabled_patch.start()
         self.addCleanup(self._enabled_patch.stop)
         self.ex = _make_executor()

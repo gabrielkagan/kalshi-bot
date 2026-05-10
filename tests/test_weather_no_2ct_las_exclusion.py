@@ -242,8 +242,8 @@ def test_execute_2ct_weather_no_routes_count_2_to_place_order():
     """An incoming candidate with position_size=2 must place an order with count=2."""
     bot = _import_bot()
     from unittest.mock import patch
-    with patch.object(bot, "WEATHER_NO_SIDE_LIVE", True), \
-         patch.object(bot, "OBSERVATION_MODE", False):
+    with patch.object(bot.executor, "WEATHER_NO_SIDE_LIVE", True), \
+         patch.object(bot.executor, "OBSERVATION_MODE", False):
         ex = _make_executor(bot)
         candidate = _make_weather_no_2ct_candidate()
         ex._client.place_order.return_value = {

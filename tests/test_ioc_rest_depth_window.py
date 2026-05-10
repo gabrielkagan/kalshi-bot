@@ -32,7 +32,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/executor.py")  # Bit 9.1 (2026-05-10): retargeted to bot/executor.py — OrderExecutor extracted from bot/_impl.py
 
 
 def _make_executor():
@@ -653,8 +653,7 @@ class TestPhantomAbortEndToEnd(unittest.TestCase):
             "seconds_to_close": 30.0,
             "side": "yes",
         }
-        with patch("bot.time") as mt, patch(
-                "bot.fp_str_to_int", return_value=0):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=0):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()
@@ -838,8 +837,7 @@ class TestColdStartCatastrophicDrift(unittest.TestCase):
             "order": {"order_id": "ABC", "remaining_count": 50,
                       "fill_count": 0}}
         client.get_positions.return_value = {"market_positions": []}
-        with patch("bot.time") as mt, patch(
-                "bot.fp_str_to_int", return_value=0):
+        with patch("bot.executor.time") as mt, patch("bot.executor.fp_str_to_int", return_value=0):
             mt.time.return_value = 1000.0
             mt.monotonic.return_value = 1000.0
             mt.sleep = MagicMock()

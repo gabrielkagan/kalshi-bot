@@ -186,9 +186,14 @@ class TestIOCSubmitDiagnosticWiring(unittest.TestCase):
 
     def test_submit_taker_calls_compute_ladder_diag(self):
         """`_submit_taker` must reference `_compute_ladder_diag`
-        (we use it for the IOC_SUBMIT_LADDER_DIAG log)."""
+        (we use it for the IOC_SUBMIT_LADDER_DIAG log).
+
+        Bit 9.1 (2026-05-10): retargeted to bot.executor.__file__ — OrderExecutor
+        moved out of bot/_impl.py.
+        """
         import ast
-        with open(bot._impl.__file__) as f:
+        import bot.executor
+        with open(bot.executor.__file__) as f:
             tree = ast.parse(f.read())
         for cls in ast.walk(tree):
             if (isinstance(cls, ast.ClassDef)
@@ -227,7 +232,7 @@ class TestIOCSubmitDiagnosticWiring(unittest.TestCase):
                             "the same log line (R-review [A5]: "
                             "needed for single-grep correlation).")
                         return
-        self.fail("OrderExecutor._submit_taker not found in bot/_impl.py")
+        self.fail("OrderExecutor._submit_taker not found in bot/executor.py")
 
 
 if __name__ == "__main__":

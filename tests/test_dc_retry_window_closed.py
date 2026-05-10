@@ -331,7 +331,7 @@ class TestDcRetryLogsDropDiagnostic(unittest.TestCase):
             attempt=2,
             total_filled=0,
         ))
-        with patch.object(bot, "logging") as mock_log, \
+        with patch.object(bot.executor, "logging") as mock_log, \
                 patch.object(e, "_submit_taker") as mock_submit, \
                 patch.object(e, "_dc_get_ask_with_depth") as mock_ask:
             mock_ask.return_value = (99, 0, "market_nbbo")

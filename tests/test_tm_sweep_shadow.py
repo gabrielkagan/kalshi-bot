@@ -40,6 +40,12 @@ def _read_bot():
     if os.path.isfile(_scanner_path):
         with open(_scanner_path) as _f:
             parts.append(_f.read())
+    # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py.
+    # Append its source so audits that grep for OrderExecutor content survive the move.
+    _executor_path = os.path.join(os.path.dirname(BOT_PATH), "executor.py") if "BOT_PATH" in globals() else os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot", "executor.py")
+    if os.path.isfile(_executor_path):
+        with open(_executor_path) as _f:
+            parts.append(_f.read())
     constants_path = os.path.join(os.path.dirname(BOT_PATH), "constants.py")
     if os.path.exists(constants_path):
         with open(constants_path) as f:
@@ -515,9 +521,12 @@ class TestAdversarialRegressions(unittest.TestCase):
         """Adversarial C4 + A2: filled_count from _submit_taker may be None
         (error sentinel), 0 (zero-fill), or a negative sentinel from a future
         error path. The coercion must clamp all to a non-negative int.
-        `or 0` alone catches None/0 but lets negatives through."""
-        with open(BOT_PATH) as f:
-            source = f.read()
+        `or 0` alone catches None/0 but lets negatives through.
+
+        Bit 9.1 (2026-05-10): _execute_tm_taker is in OrderExecutor (now in
+        bot/executor.py). Use _read_bot() which concats both files.
+        """
+        source = _read_bot()
         start = source.find("def _execute_tm_taker")
         end = source.find("\n    def ", start + 10)
         body = source[start:end]

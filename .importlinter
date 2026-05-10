@@ -113,6 +113,7 @@ forbidden_modules =
     bot._impl
     bot._thread_env
     bot.engines
+    bot.executor
     bot.feeds
     bot.fetchers
     bot.scanner
@@ -177,52 +178,18 @@ ignore_imports =
     bot.state -> bot._impl
 
 # ---------------------------------------------------------------------------
-# Contract 6 — bot.scanner must not have a top-level import of bot._impl
+# Contract 6 (RETIRED Bit 9.1, 2026-05-10) — `scanner-no-impl-toplevel`
 # ---------------------------------------------------------------------------
-# Bit 8.1 (path-A++, 2026-05-10) extracted OpportunityScanner from bot/_impl.py
-# to bot/scanner/__init__.py. The class body has 34 bare-name `OrderExecutor.X`
-# call sites (load-bearing — `_best_yes_bid` is read at ~25 sites for shadow_diag
-# rows). OrderExecutor still lives in bot/_impl.py and extracts in Sprint 9 Bit 9.1.
+# Sprint 9 Bit 9.1 extracted OrderExecutor from bot/_impl.py to bot/executor.py.
+# bot/scanner/__init__.py now uses a top-level `from bot.executor import
+# OrderExecutor` directly — the `_get_order_executor()` late-binding helper
+# retired in the same atomic commit, and this `scanner-no-impl-toplevel`
+# contract block dropped with it. Net contract count: 6 → 5.
 #
-# Top-level `from bot._impl import OrderExecutor` at the head of bot/scanner
-# would partial-module read at the bot/_impl.py:115 re-export firing time
-# (OrderExecutor is defined at bot/_impl.py:994 — search anchor:
-# ``class OrderExecutor:`` — AFTER the re-export line).
-# bot/scanner uses a method-body late-binding helper `_get_order_executor()`
-# (search anchor: `def _get_order_executor` in bot/scanner/__init__.py) that
-# does `import bot._impl as _bot_impl; return _bot_impl.OrderExecutor` —
-# parallel to bot/state.py's `_get_compute_for_15m_main_path()` from Bit 7.1.
+# Path-A++ relocation of `_append_raw_api_journal` to bot/helpers/raw_api_journal.py
+# in the same Bit means no `executor-no-impl-toplevel` carve-out is needed
+# either — bot/executor.py has zero references into bot._impl.
 #
-# Same three-layer anti-regression seal as state-no-impl-toplevel:
-#   1. tests/test_scanner_extraction.py::test_scanner_no_top_level_bot_impl_import
-#      — AST pin at the extraction-test layer
-#   2. tests/contracts/test_import_linter_contracts.py::
-#      test_scanner_no_toplevel_bot_impl_import_at_contract_layer (peer pin —
-#      will be added in same Bit 8.1 commit OR a follow-up Bit 8.x)
-#   3. The configparser-removes-the-ignore-imports lint-imports test (will be
-#      added with the peer pin)
-#
-# The carve-out lifts when Sprint 9 Bit 9.1 extracts OrderExecutor to
-# bot/executor.py — at that point bot/scanner can do top-level
-# `from bot.executor import OrderExecutor` and `_get_order_executor()`
-# becomes redundant. Bit 8.1 closeout
-# (kb/decisions/bit-8.1-shipped-may10.md § Code-smell follow-ups) tracks
-# the helper-removal as a Sprint-9 follow-up.
-[importlinter:contract:scanner-no-impl-toplevel]
-name = bot.scanner must not have a top-level import of bot._impl (method-body late-binding allowed)
-type = forbidden
-source_modules =
-    bot.scanner
-forbidden_modules =
-    bot._impl
-ignore_imports =
-    bot.scanner -> bot._impl
-    # Transitive bot.scanner -> bot.state -> bot._impl: bot.scanner imports
-    # `from bot.state import StateManager` at runtime (used as the
-    # `state: StateManager` annotation on __init__, NOT TYPE_CHECKING-guarded),
-    # and bot.state has its own method-body `import bot._impl` for
-    # `_get_compute_for_15m_main_path()`.
-    # grimp's reachability check sees the transitive path and would surface
-    # the violation; ignore the bot.state -> bot._impl edge here so the
-    # scanner contract enforces only its OWN top-level constraint.
-    bot.state -> bot._impl
+# Bit 8.1 fu1 (commit 5bfc116-shape) peer-pin tests in
+# tests/contracts/test_import_linter_contracts.py also dropped in the same
+# Bit-9.1 commit, with `scanner-no-impl-toplevel` removed from EXPECTED_CONTRACTS.

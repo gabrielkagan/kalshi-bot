@@ -14,18 +14,20 @@ resolve through the proxy chain.
 The scanner is the most cross-coupled class in the codebase — three
 distinct access patterns coexist, each load-bearing:
 
-### 1. `_get_order_executor()` late-binding (until Sprint 9 Bit 9.1)
+### 1. `OrderExecutor` direct top-level import (Bit 9.1, 2026-05-10)
 
-The 34 `OrderExecutor.X(...)` static-method call sites in `scan()` go
-through the module-top helper `_get_order_executor()` which does
-`import bot._impl as _bot_impl; return _bot_impl.OrderExecutor`.
+The 34 `OrderExecutor.X(...)` static-method call sites in `scan()` use
+the top-level `from bot.executor import OrderExecutor` import directly.
+The previous `_get_order_executor()` late-binding helper retired in
+Sprint 9 Bit 9.1 atomically with the OrderExecutor extraction; the
+`scanner-no-impl-toplevel` `.importlinter` contract dropped in the same
+commit (net contracts: 6 → 5).
 
-**Don't** rewrite to bare `OrderExecutor.X(...)` — there is no
-top-level `OrderExecutor` symbol in `bot/scanner/__init__.py` and the
-forbidden contract `scanner-no-impl-toplevel` (`.importlinter`)
-prevents adding one. Sprint 9 Bit 9.1 will retire the helper when
-`OrderExecutor` extracts to `bot/executor.py`; until then the helper
-is the contract.
+The cycle break (bot.executor ↔ bot.scanner) is now from the executor
+side via a `_get_opportunity_scanner()` method-body helper inside
+`bot/executor.py` — the 7 `OpportunityScanner.X(...)` staticmethod call
+sites in OrderExecutor body go through it. The asymmetry keeps scanner's
+top-level import clean.
 
 ### 2. `_telegram_state._TELEGRAM` module-attribute access (path-A++ from Bit 8.1)
 
@@ -68,40 +70,39 @@ before any scanner method runs. Full enumeration locked by
   the scanner transitively through `models.PositionSizer` etc., but
   the scanner module body itself MUST NOT import them. Locked by
   `tests/test_scanner_extraction.py::test_scanner_no_forbidden_numerical_imports`.
-- **No `bot._impl` at module top.** Forbidden by the
-  `scanner-no-impl-toplevel` contract in `.importlinter`. Two
-  `ignore_imports` edges allow-list this:
-  1. `bot.scanner -> bot._impl` — the `_get_order_executor()`
-     helper's function body.
-  2. `bot.state -> bot._impl` — transitive: scanner imports
-     `from bot.state import StateManager` at runtime (it's used as
-     the `state: StateManager` annotation on `__init__`, not a
-     `TYPE_CHECKING`-guarded typing-only import), and `bot.state`
-     has its own method-body `import bot._impl` for
-     `_get_compute_for_15m_main_path()` (Bit 7.1 fu1). Without
-     this second edge, grimp's reachability check would surface
-     the transitive path and the contract would fail.
-  Bit 7.1 fu1 commit `5bfc116` is the precedent shape for the
-  contract's peer-pin tests.
+- **No `bot._impl` at module top.** Post-Bit-9.1 (2026-05-10), scanner
+  has zero top-level `bot._impl` imports — the `_get_order_executor()`
+  late-binding helper retired and the `scanner-no-impl-toplevel`
+  `.importlinter` contract dropped atomically with the OrderExecutor
+  extraction (net contracts: 6 → 5). The transitive
+  `bot.scanner → bot.state → bot._impl` edge (StateManager's
+  method-body `_get_compute_for_15m_main_path()` per Bit 7.1 fu1)
+  remains carved-out by `state-no-impl-toplevel`'s own
+  `ignore_imports` line. The retirement is documented in
+  `.importlinter` Contract 6 comment block + `bot/CLAUDE.md`
+  "Deploy a change" step 3 catalog. The bot.executor ↔ bot.scanner
+  cycle that this Bit's path-A++ retirement created is broken from
+  the executor side via a `_get_opportunity_scanner()` method-body
+  helper inside `bot/executor.py` (NOT scanner; scanner stays clean).
 
 ## Forward-refs: `Optional["OrderFlowEngine"]` / `Optional["KalshiOrderFlowTracker"]`
 
-Both classes still live in `bot/_impl.py` (lines 656 + 778). The
+Both classes still live in `bot/_impl.py` (search anchors: `class OrderFlowEngine:` and `class KalshiOrderFlowTracker:`). The
 scanner `__init__` signature uses string forward-refs to avoid
 cycle-loading at the line-115 re-export firing time; do not
 unquote until those classes also extract.
 
 ## `_best_ask_depth` lives on OrderExecutor, NEVER on scanner
 
-Four `OrderExecutor.X(...)` call sites in `bot/_impl.py` reference
-`OpportunityScanner._best_ask_depth(...)`, but `_best_ask_depth` does
-NOT exist on scanner — it lives on `OrderExecutor`. The four calls
-are a latent `AttributeError` tracked as ticket `86b9vn9r5`. **Don't
-"fix"** by adding `_best_ask_depth` here; the right fix is updating
-the call sites to reference `self._best_ask_depth` (when called from
-within OrderExecutor) or whichever live owner is appropriate post-
-Sprint-9 Bit 9.1. Locked by
-`tests/test_scanner_extraction.py::test_opportunity_scanner_does_not_define_best_ask_depth`.
+`_best_ask_depth` is a staticmethod on `OrderExecutor` (in
+`bot/executor.py` post-Bit-9.1), NOT on `OpportunityScanner`. The 4
+latent AttributeError sites in OrderExecutor body that incorrectly
+called `OpportunityScanner._best_ask_depth(...)` were FIXED in Bit 9.1
+(rewritten to `OrderExecutor._best_ask_depth(...)`); ticket
+`86b9vn9r5` closed. **Don't "fix"** by adding `_best_ask_depth` here;
+the staticmethod's home is OrderExecutor. Locked by
+`tests/test_scanner_extraction.py::test_opportunity_scanner_does_not_define_best_ask_depth`
++ `tests/test_executor_extraction.py::test_best_ask_depth_lives_on_executor_not_scanner`.
 
 ## `filter_stage` string literals (cell-block discipline)
 

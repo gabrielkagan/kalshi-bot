@@ -39,6 +39,11 @@ def _read_bot():
     if os.path.isfile(_scanner_path):
         with open(_scanner_path) as _f:
             impl += "\n" + _f.read()
+    # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py.
+    _executor_path = os.path.join(os.path.dirname(BOT_PATH), "executor.py")
+    if os.path.isfile(_executor_path):
+        with open(_executor_path) as _f:
+            impl += "\n" + _f.read()
     constants_path = os.path.join(os.path.dirname(BOT_PATH), "constants.py")
     if os.path.exists(constants_path):
         with open(constants_path) as f:

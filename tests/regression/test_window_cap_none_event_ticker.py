@@ -38,8 +38,16 @@ BOT_PATH = os.path.join(
 
 
 def _read_bot():
+    """Bit 9.1 (2026-05-10): includes bot/executor.py — OrderExecutor extracted."""
+    import os
+    parts = []
     with open(BOT_PATH) as f:
-        return f.read()
+        parts.append(f.read())
+    _executor_path = os.path.join(os.path.dirname(BOT_PATH), "executor.py")
+    if os.path.isfile(_executor_path):
+        with open(_executor_path) as f:
+            parts.append(f.read())
+    return "\n".join(parts)
 
 
 # ── AST/source-level guards ──────────────────────────────────────────────

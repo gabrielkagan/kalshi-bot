@@ -56,9 +56,18 @@ CAL_MLP_FIELDS = {
 
 
 def _load_bot_ast():
+    # Bit 9.1 (2026-05-10): include bot/executor.py for OrderExecutor content
+
     bot_path = os.path.join(PROJECT_ROOT, "bot/_impl.py")
+
+    executor_path = os.path.join(PROJECT_ROOT, "bot/executor.py")
+    sources = []
     with open(bot_path) as f:
-        return ast.parse(f.read(), filename="bot/_impl.py")
+        sources.append(f.read())
+    if os.path.isfile(executor_path):
+        with open(executor_path) as f:
+            sources.append(f.read())
+    return ast.parse("\n".join(sources), filename="bot/_impl.py+executor.py")
 
 
 def _stage_value(call: ast.Call) -> str | None:

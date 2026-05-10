@@ -59,11 +59,28 @@ access — preserves mutation freshness across consumers (parallel to
 the Bit 6.3 path-B `_cal_state._CALIBRATION_ENGINE` pattern). Tests
 using `patch.object(bot, "_TELEGRAM", ...)` were retargeted to
 `patch.object(bot.notifier, "_TELEGRAM", ...)` in the same atomic
-commit. The `_get_order_executor()` helper inside
-`bot/scanner/__init__.py` late-binds `bot._impl.OrderExecutor` for the
-34 static-method call sites in `scan()` — Sprint 9 Bit 9.1 will resolve
-this when OrderExecutor extracts to `bot/executor.py`. Sprint 8 closes
-here.
+commit.
+
+Bit 9.1 (path-A++, 2026-05-10): `OrderExecutor` lives in `bot.executor`
+post-extraction, NOT in `bot._impl`. Reach via `bot.OrderExecutor` (proxy
+chain: `bot.X` → `bot._impl.X` → `bot.executor.X` via the line-116ish
+re-export `from bot.executor import OrderExecutor`) or `bot.executor.OrderExecutor`
+(direct). The cleanup contract retired the `_get_order_executor()`
+helper from `bot/scanner/__init__.py` — scanner now uses top-level
+`from bot.executor import OrderExecutor` directly. The
+`scanner-no-impl-toplevel` `.importlinter` contract dropped (net
+contracts: 6 → 5). bot/executor.py uses a `_get_opportunity_scanner()`
+method-body helper to break the symmetric bot.executor ↔ bot.scanner
+cycle (the 7 OpportunityScanner staticmethod call sites in OrderExecutor
+go through it; a future Sprint 10 sibling-reorg Bit may relocate those
+2 staticmethods to `bot/helpers/orderbook.py` to eliminate the helper
+entirely). `_append_raw_api_journal` relocated path-A++ to
+`bot/helpers/raw_api_journal.py` (3 callers — 1 in OrderExecutor + 2 in
+SettlementTracker — eliminates the late-binding need that would have
+required new `.importlinter` carve-outs in both Bit 9.1 and Bit 9.2).
+4 latent `OpportunityScanner._best_ask_depth(...)` AttributeError sites
+in OrderExecutor body fixed (closes ticket 86b9vn9r5). Sprint 9 Bit 9.1
+ships here.
 
 Caching the `bot._impl` module reference is safe: the module object itself
 is stable; mutations land on its `__dict__` which `getattr`/`setattr`

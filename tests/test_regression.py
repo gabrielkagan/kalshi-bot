@@ -34,6 +34,11 @@ def _read_bot_and_scanner():
     if os.path.isfile(scanner_path):
         with open(scanner_path) as _f:
             src += "\n" + _f.read()
+    # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py.
+    executor_path = os.path.join(PROJECT_ROOT, "bot", "executor.py")
+    if os.path.isfile(executor_path):
+        with open(executor_path) as _f:
+            src += "\n" + _f.read()
     return src
 
 
@@ -703,9 +708,16 @@ class TestIOCTimeInForce:
         Note: 'ioc' in journal log dicts is fine — only API call sites matter.
         The actual API call uses time_in_force= keyword arg (not dict key).
         """
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            content = f.read()
+        # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        content = ""
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    content += f.read() + "\n"
         # The actual Kalshi API call uses keyword arg: time_in_force="..."
         # Journal log dicts use "time_in_force": "ioc" which is OK
         # Check that create_order calls use correct string
@@ -754,9 +766,16 @@ class TestEscalationTypeCompleteness:
 
     def test_escalation_types_in_codebase(self):
         """Verify all execution path labels exist in bot/_impl.py."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            content = f.read()
+        # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        content = ""
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    content += f.read() + "\n"
         required_types = ["direct_taker", "post_only_taker", "sol_taker_override"]
         for etype in required_types:
             assert f'"{etype}"' in content or f"'{etype}'" in content, (
@@ -1020,7 +1039,12 @@ class TestSubmitTakerReturnValue:
         """The return statement in the total_filled > 0 branch must return
         order_info, not fill. `fill` is the while-loop variable and is always
         None/falsy after the loop breaks."""
-        source = open(os.path.join(PROJECT_ROOT, "bot/_impl.py")).read()
+        # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py
+        sources = []
+        for _p in [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]:
+            if os.path.isfile(_p):
+                sources.append(open(_p).read())
+        source = "\n".join(sources)
         tree = ast.parse(source)
 
         found_func = False
@@ -1451,9 +1475,16 @@ class TestShadowCallsiteVariables:
         silently swallow real errors like NameError, making the shadow engine
         appear to work when it's actually dead code.
         """
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            lines = f.readlines()
+        # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py — read both for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        lines = []
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    lines.extend(f.readlines())
         for i, line in enumerate(lines):
             if "fifteenm_shadow" in line and "logging.debug" in line:
                 # Allow debug in non-except contexts
@@ -2185,9 +2216,16 @@ class TestNBBOFallbackGates:
 
     def test_nbbo_fallback_method_exists(self):
         """OrderExecutor must have _nbbo_fallback_price method."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            content = f.read()
+        # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        content = ""
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    content += f.read() + "\n"
         assert "def _nbbo_fallback_price(" in content
 
     @pytest.mark.fragile
@@ -2197,9 +2235,16 @@ class TestNBBOFallbackGates:
         Main execute paths use _nbbo_fallback_price directly.
         DC/TM/bracket paths use _dc_get_ask_with_depth (which calls _nbbo_fallback_price internally).
         """
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            content = f.read()
+        # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        content = ""
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    content += f.read() + "\n"
         lines = content.split("\n")
         no_asks_blocks = [i for i, line in enumerate(lines)
                           if "ORDER_SUPPRESSED no_asks" in line]
@@ -2230,9 +2275,16 @@ class TestNBBOFallbackGates:
     @pytest.mark.fragile
     def test_real_book_path_unaffected(self):
         """When _get_addon_best_ask succeeds, NBBO fallback is not called."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            content = f.read()
+        # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        content = ""
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    content += f.read() + "\n"
         # _nbbo_fallback_price should only appear inside "is None" guards or
         # inside _dc_get_ask_with_depth (cascading fallback after orderbook attempt).
         lines = content.split("\n")
@@ -2251,9 +2303,16 @@ class TestNBBOFallbackGates:
 
     def test_session_counters_exist(self):
         """Session counters for NBBO fallback must be initialized."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            content = f.read()
+        # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        content = ""
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    content += f.read() + "\n"
         assert "_session_nbbo_fallback_attempts" in content
         assert "_session_nbbo_fallback_blocked" in content
 
@@ -2271,9 +2330,16 @@ class TestDCRoutingPriority:
 
     def test_dc_check_before_sol_taker_first(self):
         """DC taker override must appear BEFORE SOL taker-first in execute()."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            content = f.read()
+        # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        content = ""
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    content += f.read() + "\n"
         dc_pos = content.find('Decided contract taker override')
         sol_pos = content.find('SOL taker-first override')
         assert dc_pos > 0, "DC taker override comment not found"
@@ -2284,18 +2350,32 @@ class TestDCRoutingPriority:
 
     def test_dc_check_before_direct_taker(self):
         """DC taker override must appear BEFORE direct taker <180s."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            content = f.read()
+        # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        content = ""
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    content += f.read() + "\n"
         dc_pos = content.find('Decided contract taker override')
         dt_pos = content.find('Direct taker for <180s')
         assert dc_pos < dt_pos, "DC taker override must appear BEFORE direct taker"
 
     def test_dc_strategies_include_z2_z25(self):
         """DC strategy check must include z2 and z25 variants."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            content = f.read()
+        # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        content = ""
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    content += f.read() + "\n"
         # Find the DC strategy condition
         import re
         match = re.search(r'_dc_strategy\s+in\s+\(([^)]+)\)', content)
@@ -2307,9 +2387,16 @@ class TestDCRoutingPriority:
     @pytest.mark.fragile
     def test_dc_uses_permissive_edge_threshold(self):
         """DC path must use -0.01 edge threshold, not MIN_EDGE_PCT."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            lines = f.readlines()
+        # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py — read both for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        lines = []
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    lines.extend(f.readlines())
         # The -0.01 threshold is now inside _execute_dc_taker method
         in_dc_method = False
         found_threshold = False
@@ -2327,9 +2414,16 @@ class TestDCRoutingPriority:
         """A SOL candidate with DC strategy must NOT reach SOL taker-first path.
 
         The DC check returns via _execute_dc_taker before SOL taker-first is reached."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            lines = f.readlines()
+        # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py — read both for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        lines = []
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    lines.extend(f.readlines())
         # Verify DC block has 'return self._execute_dc_taker' before SOL block
         in_dc_block = False
         dc_returns = False
@@ -2344,9 +2438,16 @@ class TestDCRoutingPriority:
 
     def test_no_duplicate_dc_block(self):
         """DC taker override should appear exactly once."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            content = f.read()
+        # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        content = ""
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    content += f.read() + "\n"
         count = content.count('Decided contract taker override')
         assert count == 1, f"DC taker override appears {count} times, expected 1"
 
@@ -2434,9 +2535,16 @@ class TestSettlementLossCountCheck:
     def test_loss_side_check_runs_before_pnl_loop(self):
         """Cross-check must correct aggregate_count BEFORE the per-position
         PnL loop; otherwise the correction never reaches settled_trades."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            lines = f.readlines()
+        # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py — read both for source-level audits
+
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py")]
+
+        lines = []
+
+        for _p in _paths:
+            if os.path.isfile(_p):
+                with open(_p) as f:
+                    lines.extend(f.readlines())
         loss_check_line = None
         pnl_loop_line = None
         in_process_settlement = False

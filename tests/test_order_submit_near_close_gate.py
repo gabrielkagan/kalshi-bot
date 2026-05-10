@@ -154,7 +154,7 @@ class TestSubmitTakerSkipsNearClose(unittest.TestCase):
         # Mock the dependencies _submit_taker reaches into.
         e._ml.scanner._get_orderbook_cached = MagicMock(
             return_value=({"yes": [], "no": []}, "orderbook"))
-        with patch.object(bot, "calculate_taker_fee", return_value=2):
+        with patch.object(bot.executor, "calculate_taker_fee", return_value=2):
             try:
                 e._submit_taker(c)
             except Exception:
