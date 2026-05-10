@@ -35,6 +35,19 @@ DOC_DRIFT_REPORT.txt
 # creates conflict copies (`scheduled_tasks 2.lock` etc.). Never commit.
 .claude/scheduled_tasks*.lock
 
+# Sprint PSC Bit P5.1 — parallel-Claude-session lock primitive artifacts.
+# `_session_lock.SessionLock` writes per-target lockfiles + tmp + quarantine
+# sidecars + a reclaim audit log under .claude/locks/. All carry per-machine
+# PIDs / session_ids / wall-clock heartbeats — pure runtime state, never
+# meant for the repo. A `git add -A` or over-eager `git add .claude/` would
+# otherwise commit machine-specific PIDs (self-defeating for a coordination
+# primitive). Keep `.gitkeep` tracked so the dir survives a fresh clone.
+# Leading `/` anchors to repo root (per /data/, /state/ rationale above).
+/.claude/locks/active-work/*.lock
+/.claude/locks/active-work/*.tmp.*
+/.claude/locks/active-work/*.quarantine
+/.claude/locks/reclaim.log
+
 # Bit 1.1 (Sprint 1 modularization): tooling artifacts.
 # `.ruff_cache/` is created by `ruff check`; `*.egg-info/` and `build/` by
 # `pip install -e .`. All transient, machine-local — never commit.
