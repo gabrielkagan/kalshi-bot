@@ -502,25 +502,30 @@ def test_state_no_top_level_bot_impl_import():
                 )
 
 
-# ----------------------------------------------------------- make_compute_for_15m_main_path stays
+# ----------------------------------------------------------- make_compute_for_15m_main_path no-arg signature (Bit 7.1 fu / Smell 4)
 
 
-def test_make_compute_for_15m_main_path_signature_unchanged():
-    """make_compute_for_15m_main_path is OUT of scope for Bit 7.1 path-A++
-    refactor (Smell 4 in the plan doc — Sprint 8 candidate). Its
-    `bot_globals: dict` parameter is deliberately preserved here so a
-    future maintainer doesn't accidentally rope it into Bit 7.1's atomic
-    commit. When Smell 4 is filed and shipped, this test should be
-    UPDATED, not deleted."""
+def test_make_compute_for_15m_main_path_signature_no_args():
+    """Smell 4 (Bit 7.1 follow-up) drops the `bot_globals: dict` parameter
+    from `make_compute_for_15m_main_path`. The closure now imports its
+    11 dependent names from `bot.constants` + `config` inside the function
+    body (mirroring Bit 7.1 path-A++ `parity_assert`/`sizing_parity_assert`),
+    plus a literal `DRAWDOWN_HALT_FLOOR = 0.10` fallback for the one name
+    not in either source.
+
+    Pinning the new no-arg signature locks the laundered-namespace
+    coupling shut: a future regression that re-introduces a
+    `bot_globals: dict` parameter would fail this test."""
     sys.path.insert(0, str(REPO_ROOT / "scripts" / "cal_mlp"))
     import integration
 
     sig = inspect.signature(integration.make_compute_for_15m_main_path)
     params = list(sig.parameters)
-    assert params == ["bot_globals"], (
-        f"make_compute_for_15m_main_path.signature = {sig}; Bit 7.1 path-A++ "
-        f"deliberately preserves the bot_globals param (Smell 4 — separate "
-        f"ticket). Got params={params!r}."
+    assert params == [], (
+        f"make_compute_for_15m_main_path.signature = {sig}; Smell 4 "
+        f"refactor requires zero parameters. The closure must import "
+        f"its dependent names directly inside the function body — not "
+        f"accept a globals dict from the caller. Got params={params!r}."
     )
 
 

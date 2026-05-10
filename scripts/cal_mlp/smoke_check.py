@@ -170,24 +170,17 @@ def _check_normstats_round_trip() -> int:
 
 
 def _check_sizing_parity() -> int:
-    """8 parity vectors: cal_mlp/sizing.compute_size vs integration mirror."""
+    """8 parity vectors: cal_mlp/sizing.compute_size vs integration mirror.
+
+    Smell 4 refactor (ticket 86b9vhccw): make_compute_for_15m_main_path
+    now imports its dependent names directly from bot.constants + config
+    inside the function body — no caller-passed dict. Cross-source equality
+    (cal_mlp.sizing values match bot.constants/config values) is enforced
+    by parity_assert at boot."""
     import sizing
     import integration
 
-    bot_globals = {
-        'SIZING_TIERS': sizing.SIZING_TIERS,
-        'BTC_MAX_RISK_PER_TRADE': sizing.ASSET_MAX_RISK_PER_TRADE['BTC'],
-        'ETH_MAX_RISK_PER_TRADE': sizing.ASSET_MAX_RISK_PER_TRADE['ETH'],
-        'SOL_MAX_RISK_PER_TRADE': sizing.ASSET_MAX_RISK_PER_TRADE['SOL'],
-        'XRP_MAX_RISK_PER_TRADE': sizing.ASSET_MAX_RISK_PER_TRADE['XRP'],
-        'MAX_RISK_PER_TRADE': sizing.MAX_RISK_PER_TRADE,
-        'DRAWDOWN_HALF_THRESHOLD': sizing.DRAWDOWN_HALF_THRESHOLD,
-        'DRAWDOWN_QUARTER_THRESHOLD': sizing.DRAWDOWN_QUARTER_THRESHOLD,
-        'DRAWDOWN_HALT_THRESHOLD': sizing.DRAWDOWN_HALT_THRESHOLD,
-        'STC_SIZING_SCALER_KNEE': sizing.STC_SIZING_SCALER_KNEE,
-        'STC_SIZING_SCALER_ENABLED': sizing.STC_SIZING_SCALER_ENABLED,
-    }
-    bot_compute = integration.make_compute_for_15m_main_path(bot_globals)
+    bot_compute = integration.make_compute_for_15m_main_path()
     test_vectors = [
         (0.04,    100000, 95, 100000, 100000,  60,  'BTC',  None),
         (0.025,   100000, 90,  80000, 100000, 300, 'ETH',  None),

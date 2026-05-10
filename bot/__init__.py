@@ -28,12 +28,16 @@ NOT in `bot._impl`. Reach it via `bot.StateManager` (proxy chain:
 `from bot.state import StateManager`) or `bot.state.StateManager`
 (direct). The `_get_compute_for_15m_main_path()` helper inside
 `bot/state.py` late-binds `bot._impl.compute_for_15m_main_path`
-(the closure bound at `compute_for_15m_main_path = make_compute_for_15m_main_path(globals())` near the top of bot/_impl.py) to feed the
+(the closure bound at `compute_for_15m_main_path = make_compute_for_15m_main_path()` near the top of bot/_impl.py) to feed the
 `scripts/cal_mlp/integration.py::sizing_parity_assert` call inside
 StateManager.__init__ — single-name access discipline (NOT a
 whole-namespace `bot._impl.__dict__` proxy) per the Bit 7.1 path-A++
 refactor that dropped `bot_globals` from `parity_assert` and
-`sizing_parity_assert` signatures.
+`sizing_parity_assert` signatures. **Bit 7.1 fu (Smell 4, ticket 86b9vhccw,
+2026-05-10)**: `make_compute_for_15m_main_path` itself was subsequently
+refactored to drop `bot_globals: dict` — the closure now imports its 11
+dependent names directly from `bot.constants` + `config` inside the
+function body (mirrors path-A++).
 
 Caching the `bot._impl` module reference is safe: the module object itself
 is stable; mutations land on its `__dict__` which `getattr`/`setattr`
