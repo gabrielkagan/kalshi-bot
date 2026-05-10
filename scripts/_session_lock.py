@@ -136,6 +136,20 @@ def _repo_root() -> Path:
             if first_line.startswith("gitdir:"):
                 gitdir_str = first_line[len("gitdir:"):].strip()
                 gitdir = Path(gitdir_str)
+                # R2 M7 — git 2.48+ supports
+                # `git config --global worktree.useRelativePaths true`, which
+                # makes `git worktree add` write a RELATIVE gitdir (e.g.
+                # `gitdir: ../../.git/worktrees/wt1`). Per git-worktree(1):
+                # "if gitdir is a relative path, it is relative to the
+                # location of the worktree's .git file." Without resolving
+                # against `git_entry.parent`, `Path('../../..').exists()`
+                # silently succeeds against CWD (returning whatever happens
+                # to live two levels above CWD), which produces a wrong-
+                # but-existent lock-root — exactly the silent-divergence
+                # bug C2 was meant to fix. Resolve here so the rest of the
+                # logic works on the canonical absolute path.
+                if not gitdir.is_absolute():
+                    gitdir = (git_entry.parent / gitdir).resolve()
                 # `<repo>/.git/worktrees/<name>` → parents[1] = `<repo>/.git`,
                 # parents[2] = `<repo>`. Use parents[2] for the common root.
                 # Guard against unexpected gitdir layout: if parents[2] does

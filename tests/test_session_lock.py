@@ -889,3 +889,138 @@ class TestWorktreeRepoRoot:
             mod.__file__ = orig_file
 
         assert root == main_repo
+
+    def test_relative_gitdir_pointer_resolves_to_common_repo_root(
+        self, tmp_path, monkeypatch
+    ):
+        """R2 M7 — git 2.48+ supports
+        `git config --global worktree.useRelativePaths true`, which makes
+        `git worktree add` write `gitdir: ../../.git/worktrees/<name>`
+        (relative, not absolute). Per git-worktree(1): "if gitdir is a
+        relative path, it is relative to the location of the worktree's
+        .git file."
+
+        Pre-fix bug: `Path('../../.git/worktrees/wt1').parents[1].parent`
+        = `Path('../..')`, then `.exists()` happens to succeed against
+        CWD (returning whatever lives two levels above CWD), silently
+        producing a WRONG-but-existent lock-root. Main session and
+        worktree session resolve to DIFFERENT lock roots → never collide
+        → exactly the C2 bug rebadged.
+
+        Fix: resolve relative gitdir against `git_entry.parent` (the
+        worktree's .git file's directory) — per the documented git
+        contract. Both layouts then resolve to the same canonical
+        `main_repo`.
+        """
+        main_repo = tmp_path / "main-repo"
+        main_repo.mkdir()
+        (main_repo / ".git").mkdir()
+        (main_repo / "scripts").mkdir()
+        (main_repo / ".git" / "worktrees").mkdir()
+        worktree_gitdir = main_repo / ".git" / "worktrees" / "wt1"
+        worktree_gitdir.mkdir()
+
+        worktree = main_repo / ".claude" / "worktrees" / "wt1"
+        worktree.mkdir(parents=True)
+        (worktree / "scripts").mkdir()
+
+        # Compute the RELATIVE pointer the way git 2.48+ writes it:
+        # relative-from the worktree's .git file's parent directory
+        # (which is `worktree/`) to the main repo's gitdir-worktree
+        # subdir.
+        # Worktree lives at `<main>/.claude/worktrees/wt1`; its `.git`
+        # file's parent dir is `worktree/` (a sibling of `scripts/`).
+        # Climbing back to `<main>` takes 3 `..` (out of wt1, out of
+        # worktrees, out of .claude), then descending into the gitdir.
+        rel = Path("../../../.git/worktrees/wt1")
+        # Sanity: confirm `worktree/<rel>` actually points at
+        # worktree_gitdir on disk.
+        assert (worktree / rel).resolve() == worktree_gitdir.resolve()
+
+        # Write the pointer file with the RELATIVE form.
+        (worktree / ".git").write_text(
+            f"gitdir: {rel}\n", encoding="utf-8"
+        )
+
+        import scripts._session_lock as mod
+
+        orig_file = mod.__file__
+        try:
+            mod.__file__ = str(main_repo / "scripts" / "_session_lock.py")
+            main_root = mod._repo_root()
+
+            mod.__file__ = str(worktree / "scripts" / "_session_lock.py")
+            worktree_root = mod._repo_root()
+        finally:
+            mod.__file__ = orig_file
+
+        # Both must resolve to the SAME canonical path. The .resolve()
+        # is necessary because _repo_root() now calls it for the
+        # relative branch; the absolute branch (main) returns un-resolved
+        # but in this synthetic layout main_repo == main_repo.resolve()
+        # (tmp_path is already absolute & resolved on macOS/Linux).
+        assert main_root.resolve() == main_repo.resolve()
+        assert worktree_root.resolve() == main_repo.resolve(), (
+            f"relative-gitdir worktree resolved to {worktree_root}, "
+            f"expected {main_repo} — M7 regression."
+        )
+
+    def test_relative_gitdir_lockfile_path_collides_with_main(
+        self, tmp_path, monkeypatch
+    ):
+        """R2 M7 end-to-end — with a relative gitdir pointer (git 2.48+
+        `worktree.useRelativePaths=true`), the worktree's
+        `SessionLock("bot/_impl.py").lockfile_path` must match the
+        main-checkout one. This is the contract that makes the primitive
+        useful in deployments that opt into relative worktree paths.
+        """
+        main_repo = tmp_path / "main-repo"
+        main_repo.mkdir()
+        (main_repo / ".git").mkdir()
+        (main_repo / "scripts").mkdir()
+        (main_repo / ".git" / "worktrees").mkdir()
+        worktree_gitdir = main_repo / ".git" / "worktrees" / "wt1"
+        worktree_gitdir.mkdir()
+
+        worktree = main_repo / ".claude" / "worktrees" / "wt1"
+        worktree.mkdir(parents=True)
+        (worktree / "scripts").mkdir()
+        # See sister test's rel-path comment — 3 `..` to climb out of
+        # `.claude/worktrees/wt1` back to main_repo.
+        (worktree / ".git").write_text(
+            "gitdir: ../../../.git/worktrees/wt1\n", encoding="utf-8"
+        )
+
+        import scripts._session_lock as mod
+
+        # Clear env + module overrides so _lock_root() falls back to
+        # _repo_root() / .claude / locks / active-work.
+        monkeypatch.delenv("KALSHI_SESSION_LOCK_ROOT", raising=False)
+        monkeypatch.delenv("KALSHI_SESSION_LOCK_RECLAIM_LOG", raising=False)
+        monkeypatch.setattr(mod, "_LOCK_ROOT_OVERRIDE", None)
+        monkeypatch.setattr(mod, "_RECLAIM_LOG_OVERRIDE", None)
+
+        orig_file = mod.__file__
+        try:
+            mod.__file__ = str(main_repo / "scripts" / "_session_lock.py")
+            main_lock_path = mod.SessionLock("bot/_impl.py").lockfile_path
+
+            mod.__file__ = str(worktree / "scripts" / "_session_lock.py")
+            wt_lock_path = mod.SessionLock("bot/_impl.py").lockfile_path
+        finally:
+            mod.__file__ = orig_file
+
+        # Both lock paths must resolve to the same canonical path on
+        # disk. Different absolute representations of the same path
+        # (one via main, one via worktree-relative + resolve) would
+        # still create the same lockfile inode, but we want exact
+        # equality so the in-memory `.lockfile_path == .lockfile_path`
+        # check used by sister hooks (P5.2/P5.3) never spuriously
+        # reports a divergence.
+        assert main_lock_path.resolve() == wt_lock_path.resolve(), (
+            f"relative-gitdir worktree + main must collide on the same "
+            f"lockfile path; main={main_lock_path}, wt={wt_lock_path}"
+        )
+        # And the lock root is rooted under main_repo, not under the
+        # worktree's filesystem subtree.
+        assert str(main_repo.resolve()) in str(main_lock_path.resolve())
