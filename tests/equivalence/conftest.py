@@ -234,3 +234,158 @@ def install_frozen_cal_engine(frozen_cal_engine, monkeypatch):
         raising=True,
     )
     return frozen_cal_engine
+
+
+# ── VolatilityEngine instance-method coverage (Pillar 5 fu — 86b9vgxyf) ──
+# Cluster A of the mutmut survivor map in bot/engines/volatility.py
+# (~lines 118-300, the `__init__` + stateful instance-method surface)
+# was dark in the original Pillar 3 harness — only the six pure
+# `@staticmethod` math kernels (_parzen_kernel, _estimate_noise_variance,
+# _realized_quarticity, _optimal_rk_bandwidth, _realized_kernel,
+# _bipower_variation) had coverage. Mutations of `_adaptive_jump_test`,
+# `_adaptive_decay_multiplier`, `_estimate_beta`, the history-trim
+# invariants, and the per-asset deque defaults in `__init__` all
+# survived because no test ever constructed a VolatilityEngine
+# instance — building one needs a `CoinbaseFeed` + an `Optional[
+# DeribitDVOLFetcher]`, both of which open network/threading
+# resources in production.
+#
+# The two stubs below are deliberately minimal — they implement only
+# the surface the `VolatilityEngine` constructor + the instance methods
+# the equivalence harness exercises actually touch. The full feed /
+# fetcher behaviour (websocket reconnect, deribit polling) is out of
+# scope for math-equivalence testing.
+
+
+class _StubCoinbaseFeed:
+    """Minimal stand-in for ``bot.feeds.coinbase.CoinbaseFeed``.
+
+    The only surface ``VolatilityEngine`` reaches from its ctor is
+    nothing (the feed is stashed unread); the ``update()`` method
+    later calls ``feed.get_buffer(asset)``. Returning an empty list
+    is enough for instance-method tests that don't invoke
+    ``update()`` — and tests that DO can seed ``self._buffers[asset]``
+    explicitly. ``is_connected`` is included so a future test that
+    asserts the engine doesn't crash on a disconnected feed can use
+    the same stub.
+    """
+
+    def __init__(self, buffers=None):
+        # Maps asset → list[(ts, price)] tuples. Empty by default so
+        # an unseeded buffer trips the ``len(buf) < VOL_RETURN_INTERVAL
+        # + 1`` early-return in ``update()`` (the math-equivalence
+        # default — instance-method tests bypass ``update()`` and
+        # call the smaller methods directly).
+        self._buffers = dict(buffers) if buffers else {}
+        self.is_connected = True
+
+    def get_buffer(self, asset):
+        return list(self._buffers.get(asset, []))
+
+
+class _StubDeribitDVOLFetcher:
+    """Minimal stand-in for ``bot.fetchers.deribit.DeribitDVOLFetcher``.
+
+    ``VolatilityEngine`` accepts an ``Optional[DeribitDVOLFetcher]`` —
+    most instance-method tests pass ``None`` to skip the DVOL path
+    entirely. The stub is provided for the small set of tests that
+    want to exercise ``_get_implied_vol`` (single-asset lookup) +
+    ``_get_implied_vol_hourly`` (1h rolling avg) deterministically.
+
+    ``_hourly_dvol`` is a dict-of-list (NOT deque) because the
+    production code only reads ``len(buf)`` / iterates / takes
+    ``max`` + ``min`` over it — list satisfies all three.
+    """
+
+    def __init__(self, dvol=None, dvol_hourly=None):
+        # asset → dvol (per-5s scale), or None for "no quote".
+        self._dvol = dict(dvol) if dvol else {}
+        # asset → hourly average (per-5s scale). Separately settable
+        # because production code reads it via a different method.
+        self._dvol_hourly = dict(dvol_hourly) if dvol_hourly else {}
+        # Production code reaches into ``_hourly_dvol`` for sample
+        # count + min/max — provide a 1-element list per asset so the
+        # spread-logging branch in ``_compute`` doesn't trip on a
+        # missing buffer.
+        self._hourly_dvol = {a: [v] for a, v in self._dvol_hourly.items()}
+
+    def get_dvol(self, asset):
+        return self._dvol.get(asset)
+
+    def get_dvol_hourly_avg(self, asset):
+        return self._dvol_hourly.get(asset)
+
+
+@pytest.fixture
+def volatility_engine_with_stubs():
+    """Construct a ``VolatilityEngine`` with deterministic stub feeds.
+
+    Cluster A of the mutmut survivor map (instance-method surface in
+    ``bot/engines/volatility.py``) was dark before this fixture
+    existed. Instance-method tests that import this fixture exercise:
+
+    - ``__init__`` per-asset deque defaults (one ``deque(maxlen=...)``
+      per asset in ``ASSETS``)
+    - ``_record_jump_event`` / ``_record_adaptive_jump_event``
+      history-trim semantics
+    - ``_adaptive_subsample_return`` tick-counter modular arithmetic
+    - ``_adaptive_jump_test`` EWMA + percentile threshold dispatch
+    - ``_adaptive_decay_multiplier`` exponential-decay accumulator
+    - ``_estimate_beta`` cov/var ratio + clamping
+
+    Session-scoped is intentionally NOT used here — the engine
+    mutates ``self._returns`` + ``self._adaptive_*`` buffers on every
+    method call, and a session-shared instance would leak state
+    between tests. Per-test construction is cheap (the ctor is
+    pure-Python dict/deque allocation; no IO unless ``rk_state.json``
+    or ``jump_adaptive_state.json`` exists in the cwd).
+
+    The fixture deliberately uses ``None`` for the DVOL fetcher — the
+    DVOL-blending path is reached via ``_compute()`` which is
+    parquet-corpus territory (out of scope for this fixture). Tests
+    that need DVOL can construct ``_StubDeribitDVOLFetcher`` directly.
+
+    Sidecar state files (``rk_state.json``,
+    ``jump_adaptive_state.json``) are flushed to a tmp directory via
+    monkeypatch so a stray file in the working tree can't poison the
+    test — see the ``_isolate_rk_sidecar_files`` autouse fixture below.
+    """
+    from bot.engines.volatility import VolatilityEngine
+
+    feed = _StubCoinbaseFeed()
+    return VolatilityEngine(feed, dvol_fetcher=None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_rk_sidecar_files(tmp_path, monkeypatch):
+    """Redirect the two JSON sidecars VolatilityEngine reads at ctor
+    time (``rk_state.json`` + ``jump_adaptive_state.json``) to a
+    per-test ``tmp_path``.
+
+    Why autouse: ``VolatilityEngine.__init__`` calls
+    ``self._load_rk_state()`` + ``self._load_adaptive_state()``
+    unconditionally; if a stale ``rk_state.json`` exists in the cwd,
+    every instance-method test sees pre-loaded buffers, making
+    invariants like "freshly constructed engine has empty
+    ``_returns[asset]``" fragile across machines / CI runs.
+
+    The static-method tests above don't construct an instance, so the
+    autouse is a no-op for them (no engine = no sidecar read). The
+    fixture is safe to stack with the existing
+    ``isolate_calibration_singletons`` autouse — they patch disjoint
+    namespaces.
+    """
+    rk_path = tmp_path / "rk_state.json"
+    jump_path = tmp_path / "jump_adaptive_state.json"
+    # RK_STATE_PATH is a class attribute on VolatilityEngine
+    # (search anchor: ``RK_STATE_PATH = "rk_state.json"``); the
+    # adaptive sidecar path is sourced from bot.constants.
+    import bot.engines.volatility as _vol_mod
+
+    monkeypatch.setattr(
+        _vol_mod.VolatilityEngine, "RK_STATE_PATH", str(rk_path), raising=True,
+    )
+    monkeypatch.setattr(
+        _vol_mod, "JUMP_ADAPTIVE_STATE_PATH", str(jump_path), raising=True,
+    )
+    yield
