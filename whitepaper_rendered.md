@@ -762,7 +762,7 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 3,833 (3,549W / 282L / 2 breakeven) |
+| **Settled trades** | 3,834 (3,549W / 283L / 2 breakeven) |
 | **Win rate** | 92.6\% |
 | **Assets** | BTC (88¢+, LPNE 80–87¢), ETH (90¢+ main, 75–79¢ capped sub-tier), SOL (86¢+, taker-first), XRP (92¢+) |
 
@@ -770,7 +770,7 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 
 | Strategy group | n | W / L | Win rate |
 |---|---|---|---|
-| 15M main (Kelly-sized) | 1,585 | 1,438 W / 147 L | 90.7\% |
+| 15M main (Kelly-sized) | 1,586 | 1,438 W / 148 L | 90.7\% |
 | Decided contracts | 233 | 225 W / 8 L | 96.6\% |
 | Weekend discount | 169 | 159 W / 10 L | 94.1\% |
 | Overnight discount | 90 | 87 W / 3 L | 96.7\% |
@@ -782,10 +782,10 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 
 The bot exposes two Brier scores:
 
-- **Brier (all live candidates)** — measures the **model's** calibration on every opportunity that passed the live-candidate filter, whether or not it filled: 0.0407 overall, 0.0291 on 15M, 0.3946 on weather (side-aware: NO-side rows use $1-p_{raw}$ as the model's probability of the bot's bet winning).
-- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0578 overall (3,635 samples), 0.0436 on 15M.
+- **Brier (all live candidates)** — measures the **model's** calibration on every opportunity that passed the live-candidate filter, whether or not it filled: 0.0411 overall, 0.0294 on 15M, 0.3946 on weather (side-aware: NO-side rows use $1-p_{raw}$ as the model's probability of the bot's bet winning).
+- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0580 overall (3,636 samples), 0.0438 on 15M.
 
-A small number of settled trades (3,833 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
+A small number of settled trades (3,834 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
 
 ### Regime Slices
 
@@ -793,14 +793,14 @@ Two regime cutoffs are pinned to actual deploy commit timestamps:
 
 | Slice | Settled | Wins | Win rate | Brier (model) |
 |---|---|---|---|---|
-| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 2,011 | 1,847 | 91.8\% | 0.0409 |
-| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 1,063 | 964 | 90.7\% | 0.0304 |
+| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 2,012 | 1,847 | 91.8\% | 0.0414 |
+| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 1,064 | 964 | 90.6\% | 0.0314 |
 
 The post-Apr-23 slice is the cleanest "current regime" view: WS orderbook depth is now decoded correctly, loss-burst cooldown is shipped, weather NO has been live for 12 days, and XRP has been live at 92¢+ for ~5 days.
 
 ### Shadow / Hypothetical PnL
 
-Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates) is computed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`, totalling 174,953 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
+Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates) is computed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`, totalling 175,004 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
 
 ## Markets
 
@@ -871,7 +871,7 @@ Append-only journal files provide a complete audit trail:
 | `rejection_journal.jsonl` | Settlement outcomes for rejected opportunities |
 | `fill_model_journal.jsonl` | Maker order lifecycle data for ML fill prediction |
 
-**Journal rotation**: A daily cron job (4 AM UTC) runs `rotate_journals.sh` using a copytruncate pattern — journals are compressed to `journal_archives/` with gzip and 30-day retention. The bot uses open/close per write, so rotation is safe without process interruption.
+**Journal rotation**: A daily cron job (4 AM UTC) runs `rotate_journals.sh` using a copytruncate pattern — journals are compressed to `journal_archives/` with zstd and 90-day retention. The bot uses open/close per write, so rotation is safe without process interruption.
 
 ## Supabase Real-Time Dashboard
 
@@ -942,4 +942,4 @@ Promoted features (driving live behavior):
 
 ---
 
-*Last updated: 2026-05-10T20:13:07Z*
+*Last updated: 2026-05-10T20:57:08Z*
