@@ -272,6 +272,7 @@ def verify_only(
     tolerance_abs: int,
     algorithm: str,
     key_override: Optional[str] = None,
+    now: Optional[datetime] = None,
 ) -> int:
     """Returns 0 on pass, non-zero on fail (caller exits with this).
 
@@ -292,7 +293,7 @@ def verify_only(
     # heartbeat-alerter (B-M3). Skip if --key was passed explicitly
     # (operator restoring an old version on purpose).
     if key_override is None:
-        age = snapshot_age_hours(key)
+        age = snapshot_age_hours(key, now=now)
         if age is not None and age > DEFAULT_MAX_SNAPSHOT_AGE_HOURS:
             print(
                 f"state_db_restore: FAIL latest snapshot {key!r} is "

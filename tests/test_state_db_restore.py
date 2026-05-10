@@ -11,8 +11,15 @@ from __future__ import annotations
 
 import sqlite3
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
+
+# Bit 9.1 fu (2026-05-10): anchor verify_only's stale-check to the populated_store
+# fixture's latest snapshot date (2026-05-09) so wall-clock crossing the 36h
+# DEFAULT_MAX_SNAPSHOT_AGE_HOURS threshold doesn't break the time-independent
+# behavioral tests below. The TestStaleSnapshotDetection class deliberately omits
+# this and uses datetime.now() monkeypatching to assert the stale-check fires.
+FROZEN_VERIFY_NOW = datetime(2026, 5, 9, 12, 0, tzinfo=timezone.utc)
 
 import pytest
 
@@ -194,6 +201,7 @@ class TestVerifyOnly:
             baseline_from_live=None,
             tolerance_pct=0.05, tolerance_abs=50,
             algorithm="zstd",
+        now=FROZEN_VERIFY_NOW,
         )
         assert rc == 0
 
@@ -210,6 +218,7 @@ class TestVerifyOnly:
             baseline_from_live=baseline,
             tolerance_pct=0.05, tolerance_abs=50,
             algorithm="zstd",
+        now=FROZEN_VERIFY_NOW,
         )
         assert rc == 0
 
@@ -226,6 +235,7 @@ class TestVerifyOnly:
             baseline_from_live=baseline,
             tolerance_pct=0.05, tolerance_abs=50,
             algorithm="zstd",
+        now=FROZEN_VERIFY_NOW,
         )
         assert rc == 3
 
@@ -248,6 +258,7 @@ class TestVerifyOnly:
                 baseline_from_live=None,
                 tolerance_pct=0.05, tolerance_abs=50,
                 algorithm="zstd",
+            now=FROZEN_VERIFY_NOW,
             )
 
 
@@ -450,6 +461,7 @@ class TestSchemaDrift:
             baseline_from_live=live,
             tolerance_pct=0.05, tolerance_abs=50,
             algorithm="zstd",
+        now=FROZEN_VERIFY_NOW,
         )
         assert rc == 6
 
@@ -596,6 +608,7 @@ class TestSummaryAggregates:
             baseline_from_live=live,
             tolerance_pct=0.05, tolerance_abs=50,
             algorithm="zstd",
+        now=FROZEN_VERIFY_NOW,
         )
         # Row counts will pass (70 == 70). Aggregate must fail (3).
         assert rc == 3
