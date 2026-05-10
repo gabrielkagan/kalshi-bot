@@ -61,6 +61,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 IMPORTLINTER_PATH = REPO_ROOT / ".importlinter"
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 STATE_PY = REPO_ROOT / "bot" / "state.py"
+SCANNER_PY = REPO_ROOT / "bot" / "scanner" / "__init__.py"
 TEST_YML_PATH = REPO_ROOT / ".github" / "workflows" / "test.yml"
 DEPLOY_YML_PATH = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 
@@ -70,6 +71,7 @@ EXPECTED_CONTRACTS = (
     "feeds-no-engines",
     "helpers-leaf",
     "state-no-impl-toplevel",
+    "scanner-no-impl-toplevel",
 )
 
 # bot.constants is the only allowed internal dep for the helpers leaf.
@@ -415,6 +417,139 @@ def test_state_no_toplevel_bot_impl_import_at_contract_layer():
                     "bot/state.py has top-level `import bot._impl` — "
                     "forbidden by Pillar 2 contract `state-no-impl-toplevel`. "
                     "Only method-body late-binding is allowed."
+                )
+
+
+# ─── 2.6. scanner-no-impl-toplevel pins (Bit 8.1 fu1, ticket 86b9vnu45) ──────
+
+
+def test_scanner_late_binding_is_inside_helper_function():
+    """Positive: bot/scanner/__init__.py reaches bot._impl ONLY via a
+    method-body import inside ``_get_order_executor()``.
+
+    Bit 8.1 (af8fda6, 2026-05-10) extracted OpportunityScanner via
+    path-A++. The single-name late-binding helper sidesteps the load-
+    order cycle (bot._impl re-exports bot.scanner — search anchor:
+    ``from bot.scanner import OpportunityScanner`` — and OrderExecutor
+    is bound below that re-export at line 994 of bot/_impl.py). The
+    import-linter contract ``scanner-no-impl-toplevel`` documents the
+    ``bot.scanner -> bot._impl`` edge as an explicit carve-out; this
+    AST pin asserts the carve-out is used the way the contract
+    describes (method-body inside the helper), not at module top-level.
+
+    Three layers because:
+      1. import-linter sees the edge in the grimp graph (handled by the
+         scanner-no-impl-toplevel contract + its ignore_imports carve-out).
+      2. AST walk confirms the import lives inside the helper (this test).
+      3. AST walk in tests/test_scanner_extraction.py
+         (extraction-test layer) confirms NO top-level import. Both
+         pins must hold.
+
+    Sprint 9 Bit 9.1 will retire the helper when OrderExecutor extracts
+    to bot/executor.py — at that point this test should be deleted in
+    the same commit, alongside dropping the contract's
+    ``bot.scanner -> bot._impl`` ignore-line.
+    """
+    src = SCANNER_PY.read_text()
+    tree = ast.parse(src)
+    helper_fn = next(
+        (
+            node
+            for node in ast.iter_child_nodes(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_get_order_executor"
+        ),
+        None,
+    )
+    assert helper_fn is not None, (
+        "bot/scanner/__init__.py is missing `def _get_order_executor()` — "
+        "the path-A++ single-name late-binding helper. See "
+        "kb/decisions/bit-8.1-shipped-may10.md for context."
+    )
+    found = False
+    for node in ast.walk(helper_fn):
+        if isinstance(node, ast.Import) and any(
+            alias.name == "bot._impl" for alias in node.names
+        ):
+            # Matches `import bot._impl` and `import bot._impl as X`.
+            found = True
+            break
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "bot._impl":
+                # Matches `from bot._impl import X`.
+                found = True
+                break
+            if node.module == "bot" and any(
+                alias.name == "_impl" for alias in node.names
+            ):
+                # Matches `from bot import _impl` (and `... as X`).
+                # Restricted to the `_impl` name so that a refactor
+                # importing a DIFFERENT bot name from inside the helper
+                # (e.g., `from bot import constants`) — which would not
+                # late-bind bot._impl — does not silently keep this test
+                # green. Mirrors the Bit 7.1 fu1 R3-tightening for the
+                # state-helper test.
+                found = True
+                break
+    assert found, (
+        "bot/scanner/__init__.py::_get_order_executor() does not perform a "
+        "method-body import that names `bot._impl` (`import bot._impl`, "
+        "`from bot._impl import X`, or `from bot import _impl`). The "
+        "late-binding it provides is the only legitimate way for "
+        "bot/scanner/__init__.py to reach `OrderExecutor` (which is bound "
+        "at line 994 of bot/_impl.py — search anchor: "
+        "`class OrderExecutor:` — well below the re-export of bot.scanner "
+        "at line 115 of bot/_impl.py — search anchor: "
+        "`from bot.scanner import OpportunityScanner`). Reverting the "
+        "helper would re-introduce the load-order cycle that path-A++ fixed."
+    )
+
+
+def test_scanner_no_toplevel_bot_impl_import_at_contract_layer():
+    """Negative (peer to ``test_scanner_extraction.py``):
+    bot/scanner/__init__.py has NO top-level ``import bot._impl`` or
+    ``from bot._impl import ...``.
+
+    Pillar 2's import-linter sees both top-level and method-body imports
+    as the same grimp edge — the ``scanner-no-impl-toplevel`` contract's
+    ``ignore_imports = bot.scanner -> bot._impl`` carve-out covers the
+    helper's method-body import but would also silently mask a future
+    regression that hoists the import to module top-level. This AST-level
+    pin closes that gap by walking module-level statements directly.
+
+    Redundant with the parallel pin in tests/test_scanner_extraction.py
+    — both seals are intentional. The extraction-test pin lives next to
+    the OpportunityScanner method/constants pins; this one lives next
+    to the import-linter contract that pairs with it. Same invariant,
+    two anchors. Mirrors the Bit 7.1 fu1 ``state-no-impl-toplevel``
+    pattern.
+    """
+    src = SCANNER_PY.read_text()
+    tree = ast.parse(src)
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ImportFrom):
+            assert node.module != "bot._impl", (
+                f"bot/scanner/__init__.py has top-level "
+                f"`from bot._impl import {[a.name for a in node.names]}` — "
+                f"forbidden by Pillar 2 contract `scanner-no-impl-toplevel`. "
+                f"Only method-body late-binding inside "
+                f"_get_order_executor() is allowed."
+            )
+            if node.module == "bot":
+                for alias in node.names:
+                    assert alias.name != "_impl", (
+                        "bot/scanner/__init__.py has top-level "
+                        "`from bot import _impl` — forbidden by Pillar 2 "
+                        "contract `scanner-no-impl-toplevel`. Only "
+                        "method-body late-binding is allowed."
+                    )
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name != "bot._impl", (
+                    "bot/scanner/__init__.py has top-level "
+                    "`import bot._impl` — forbidden by Pillar 2 contract "
+                    "`scanner-no-impl-toplevel`. Only method-body "
+                    "late-binding is allowed."
                 )
 
 
@@ -825,5 +960,103 @@ def test_lint_imports_fails_when_state_carve_out_removed(tmp_path: Path):
         "`state-no-impl-toplevel` nor the forbidden module `bot._impl` "
         "appears in the output — failure may be unrelated to the "
         "carve-out removal.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
+def test_lint_imports_fails_when_scanner_carve_out_removed(tmp_path: Path):
+    """Negative smoke: removing the ``bot.scanner -> bot._impl`` entry from
+    the ``scanner-no-impl-toplevel`` contract's ``ignore_imports`` MUST
+    cause lint-imports to fail — proving that carve-out is load-bearing
+    for the method-body late-binding inside ``_get_order_executor()`` in
+    bot/scanner/__init__.py (Bit 8.1; search anchor:
+    ``def _get_order_executor``).
+
+    Mirrors the ``test_lint_imports_fails_when_state_carve_out_removed``
+    pattern (Bit 7.1 fu1). The scanner carve-out, like the state one,
+    cannot be lifted via path-B because the load-order cycle
+    (bot._impl re-exports bot.scanner — search anchor:
+    ``from bot.scanner import OpportunityScanner`` — and OrderExecutor
+    is bound below that re-export at line 994 of bot/_impl.py) makes a
+    top-level import structurally impossible until OrderExecutor itself
+    extracts (Sprint 9 Bit 9.1). Until that ships, this test locks the
+    configuration against an accidental removal of the ignore line.
+
+    Mutation strategy: parse ``.importlinter`` with configparser, drop
+    ONLY the ``bot.scanner -> bot._impl`` line from the contract's
+    ignore_imports value (preserving the transitive
+    ``bot.state -> bot._impl`` edge). This isolates the assertion to
+    "the scanner carve-out is load-bearing" — without preserving the
+    state edge, lint-imports could fail for either reason and the
+    test would not pinpoint the scanner contract.
+
+    Cleanup at Sprint 9 Bit 9.1: when OrderExecutor extracts and the
+    ``_get_order_executor()`` helper is retired, drop this test in
+    the same commit alongside dropping the ``bot.scanner -> bot._impl``
+    line from .importlinter.
+    """
+    cmd = _require_lint_imports()
+
+    fixture_root = tmp_path / "project"
+    shutil.copytree(REPO_ROOT / "bot", fixture_root / "bot")
+    shutil.copy(IMPORTLINTER_PATH, fixture_root / ".importlinter")
+
+    cp = configparser.RawConfigParser()
+    parsed = cp.read(fixture_root / ".importlinter")
+    assert parsed, "test setup error: copied .importlinter is unreadable"
+    section = "importlinter:contract:scanner-no-impl-toplevel"
+    assert cp.has_section(section), (
+        "test setup error: scanner-no-impl-toplevel contract missing from "
+        "the copied .importlinter — the contract under test isn't in place."
+    )
+    raw = cp.get(section, "ignore_imports", fallback="")
+    assert raw, (
+        "test setup error: scanner-no-impl-toplevel contract has empty "
+        "ignore_imports — the carve-out this test guards is already absent. "
+        "If the carve-out was deliberately lifted (e.g., Sprint 9 Bit 9.1 "
+        "shipped and OrderExecutor extracted), drop this test in the same "
+        "commit."
+    )
+    # Drop ONLY the scanner edge; preserve the transitive state edge so
+    # the failure pinpoints the scanner carve-out (not state's).
+    SCANNER_EDGE = "bot.scanner -> bot._impl"
+    lines = raw.splitlines()
+    pruned = [
+        line for line in lines if line.strip() != SCANNER_EDGE
+    ]
+    assert len(pruned) < len(lines), (
+        "test setup error: ignore_imports did not contain the expected "
+        f"`{SCANNER_EDGE}` line — the carve-out under test is missing. "
+        f"Raw value:\n{raw}"
+    )
+    cp.set(section, "ignore_imports", "\n".join(pruned))
+    with open(fixture_root / ".importlinter", "w") as fh:
+        cp.write(fh)
+
+    result = subprocess.run(
+        cmd,
+        cwd=fixture_root,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode != 0, (
+        "lint-imports passed with the `bot.scanner -> bot._impl` carve-out "
+        "removed from scanner-no-impl-toplevel.ignore_imports — the edge "
+        "from the method-body late-binding in _get_order_executor() was "
+        "not caught. Either the helper no longer imports bot._impl (load-"
+        "order cycle resolved? KB closeout doc must record it) or another "
+        "ignore_imports line subsumes this edge. Investigate before "
+        "merging.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    combined = result.stdout + result.stderr
+    assert "scanner-no-impl-toplevel" in combined or "bot.scanner" in combined, (
+        "lint-imports failed but neither the contract id "
+        "`scanner-no-impl-toplevel` nor the source module `bot.scanner` "
+        "appears in the output — failure may be unrelated to the "
+        "carve-out removal (e.g., the transitive bot.state -> bot._impl "
+        "edge fired instead, which would indicate the test isolation "
+        "failed).\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
