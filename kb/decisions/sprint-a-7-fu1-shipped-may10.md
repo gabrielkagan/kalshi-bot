@@ -22,13 +22,13 @@ The honest call is to file the finding, leave both consumers intact, and update 
 - A.7 (`scripts/cal_mlp/snapshot_state_db.py` + `scripts/_state_db_snapshot.py`) shipped first, May 9, 21:14Z. Designed for **dev-Mac extract-time** snapshots:
   - Content-addressed by SHA-256 (return-value contract).
   - WAL→DELETE journal-mode flip so the snapshot opens cleanly read-only without -wal/-shm sidecars (required for `extract_data.py` repeat-opens).
-  - Python-native compression (`zstandard` if importable, else stdlib `gzip`). Dev-Mac has `zstandard` in dev extras.
+  - Python-native compression (`zstandard` if importable, else stdlib `gzip`). `zstandard` is not in pyproject (neither main nor `[dev]`); dev-Mac sessions pip-install it ad-hoc when needed.
   - Single-shot `src.backup(dst)` — pages=-1 default. Acceptable because the source state.db on dev-Mac during extract is QUIESCENT (no live bot writes).
 
-- Phase 0a (`scripts/state_db_s3_backup.py`) shipped same day, 21:23Z, 9 minutes later. Designed for **VPS nightly cron** against the LIVE state.db:
+- Phase 0a (`scripts/state_db_s3_backup.py`) shipped same day, 21:23Z, ~8 minutes later (8 minutes 20 seconds). Designed for **VPS nightly cron** against the LIVE state.db:
   - No SHA-256 in the bot-facing surface (S3 ETag is the integrity contract; SHA-256 verification lives in `state_db_restore.py` weekly verify path).
   - NO journal-mode flip — the snapshot is uploaded immediately, never reopened locally.
-  - **Subprocess `zstd -19`** because the VPS has no `zstandard` Python module (`pip install zstandard` was a deliberate avoid; see Phase 0a docstring §"WHY NOT rsync" — Python `[dev]` ownership belongs to parallel Pillar 4/5 sessions and we did not want to drag a new runtime dep onto the VPS for a cron script).
+  - **Subprocess `zstd -19`** because Phase 0a chose subprocess `zstd` to avoid adding a Python-module runtime dep (`zstandard` is not in pyproject at all — neither main deps nor `[dev]`; pip-installed ad-hoc on dev-Mac sessions that need it). See Phase 0a docstring §"WHY NOT rsync" for the design rationale; the VPS cron script intentionally stays on the subprocess CLI binary.
   - **Yielding-pages batched `src.backup(dst_conn, pages=100, sleep=0.050)`** — A-C1 finding pin. `pages=-1` (the stdlib default the helper uses) holds the SQLite write lock for the full 30-60s of the 447 MB live DB copy, breaching the bot's 10s busy_timeout and locking writers out. The yielding constants are TESTED by `test_backup_uses_yielding_pages_constants` and `test_writer_makes_progress_during_snapshot`.
 
 ### What the helper would have to absorb to be drop-in
@@ -73,7 +73,7 @@ tests/test_state_db_snapshot.py ....s.................                   [100%]
 ======================== 61 passed, 2 skipped in 0.71s =========================
 ```
 
-The 2 skips are zstd-conditional (no `zstandard` Python module on dev-Mac running this session — which is itself the Phase 0a constraint in microcosm).
+Of the 2 skips, 1 is zstd-conditional (`test_compression_round_trip_zstd` — no `zstandard` Python module on the dev-Mac running this session, which is itself the Phase 0a constraint in microcosm). The other (`test_lock_path_default_not_under_tmp`) is the `/var/lock` writability skip on Mac dev hosts.
 
 ## Signature mismatches surfaced (per ticket instructions: "surface, don't fix")
 
@@ -82,6 +82,23 @@ Three cross-consumer surfaces would need helper-side widening to unify:
 1. **`take_snapshot` → `snapshot_sqlite`:** helper needs `pages_per_step`/`sleep_between_steps_s` for VPS-live-DB use. A.7's extract-time use does not need them. Adding them as optional kwargs is technically additive, but it mutates the helper's invariant ("single-shot online backup with mandatory journal-mode flip") into a parameterized state machine.
 2. **`compress` → `compress`:** subprocess-vs-Python algorithm dispatch is a runtime-environment branch, not a signature branch. The helper would need a `use_subprocess: bool` or env-detection codepath. Either is a meaningful surface expansion.
 3. **`decompress` → `decompress`:** same runtime-environment problem. `state_db_restore.py` (NOT in scope for this ticket) consumes `state_db_s3_backup.decompress` for the weekly verify path on the VPS; switching it to `_snap.decompress` would import `zstandard` on a host where it isn't installed.
+
+### Bonus divergence surfaced post-R1: a THIRD `integrity_check` impl
+
+R2 review caught that the worker's R1 analysis missed a third divergent implementation. `scripts/state_db_restore.py:117` defines its own `integrity_check(db_path: Path) -> List[str]` that:
+
+- Uses `PRAGMA integrity_check(0)` (the `(0)` arg = **unlimited** error count, vs. the stdlib default `PRAGMA integrity_check` which truncates at 100 — round-1 finding A-M2 from the Phase 0a ship pass)
+- Adds `PRAGMA foreign_key_check` on top (the helper's `bool`-returning impl does NOT do FK checking)
+- Returns `List[str]` of issue strings (vs. the helper's `bool`, vs. Phase 0a's pragma-driven branch)
+
+So there are now **three** divergent `integrity_check` callsites across the snapshot/backup/restore surface:
+| Site | Signature | Behavior |
+|---|---|---|
+| `scripts/_state_db_snapshot.py` (helper) | `() -> bool` | default `PRAGMA integrity_check`, 100-error cap, no FK check |
+| `scripts/state_db_s3_backup.py` (Phase 0a) | inline pragma | default `PRAGMA integrity_check`, 100-error cap, no FK check |
+| `scripts/state_db_restore.py:117` (verify path) | `(Path) -> List[str]` | `PRAGMA integrity_check(0)` unlimited + `foreign_key_check` |
+
+This **strengthens** the FINDING-ONLY conclusion: an honest unification has to reconcile three different intent levels (bool sanity-probe vs. cap-truncated pragma vs. unlimited+FK detailed audit), not two. The naive "swap to helper" patch would silently weaken the weekly verify path's error-detection from unlimited+FK to cap-100+no-FK.
 
 If a future refactor wants to address this honestly, the right move is probably:
 - Promote `_state_db_snapshot.py` from a stdlib-only helper to a **two-layer module**: a low-level core (`_backup_pages_yielding(src, dst, *, pages_per_step, sleep_s, force, flip_journal_mode)`) plus thin wrappers `take_snapshot()` (A.7 defaults — single-shot + flip) and `snapshot_sqlite()` (Phase 0a defaults — yielding + no flip). Both consumers import their wrapper.
@@ -99,14 +116,14 @@ The shared helper's module docstring (`scripts/_state_db_snapshot.py:9-15`) says
 >
 > Do not change a function signature without updating both consumers atomically.
 
-The above statement is still correct for the A.7 consumer (`scripts/cal_mlp/snapshot_state_db.py`). It is **misleading** for Phase 0a — Phase 0a is NOT a consumer of the helper at all. Future helper edits do not need to consider Phase 0a. The coordination contract should be amended to: "Single consumer: scripts/cal_mlp/snapshot_state_db.py. Phase 0a (scripts/state_db_s3_backup.py) intentionally maintains its own primitives — see kb/decisions/sprint-a-7-fu1-shipped-may10.md."
+The above statement is still correct for the A.7 consumer (`scripts/cal_mlp/snapshot_state_db.py`). It is **misleading** for Phase 0a — Phase 0a is NOT a consumer of the helper at all. Future helper edits do not need to consider Phase 0a. The coordination contract should be amended to: "Single consumer: scripts/cal_mlp/snapshot_state_db.py. Phase 0a (scripts/state_db_s3_backup.py) intentionally maintains its own primitives, and `scripts/state_db_restore.py` is a sibling-not-consumer that diverges further (its own `integrity_check(0)` + `foreign_key_check` impl at line 117) — see kb/decisions/sprint-a-7-fu1-shipped-may10.md."
 
 This amendment is OUT OF SCOPE for the current ticket (would touch `_state_db_snapshot.py`, which is on the untouchable list for this worker). Filing a follow-up: **A.7-fu1.1** to amend the helper's coordination-contract docstring.
 
-## Lessons (additive to L74-L78 from session-resume-may09-from-pillar-5-merged)
+## Lessons (additive to L74-L78 from session-resume-may09-from-pillar-5-merged; collision-checked against PSC P5.1 which took L87-L90)
 
-- **L87 — Name overlap is not behavior overlap.** Two functions can have identical names + similar signatures and still solve materially different problems if their runtime environments differ (dev-Mac extract-time vs VPS-live-cron). Read both call sites end-to-end before assuming deduplication is XS.
-- **L88 — "Inlined duplicate" claims need a pre-refactor read.** The ticket assumed Phase 0a inlined what the helper extracted. It did not; the two were authored independently against different constraints. The pre-refactor read takes 10 minutes and prevents committing a regression.
+- **L91 — Name overlap is not behavior overlap.** Two functions can have identical names + similar signatures and still solve materially different problems if their runtime environments differ (dev-Mac extract-time vs VPS-live-cron). Read both call sites end-to-end before assuming deduplication is XS.
+- **L92 — "Inlined duplicate" claims need a pre-refactor read.** The ticket assumed Phase 0a inlined what the helper extracted. It did not; the two were authored independently against different constraints. The pre-refactor read takes 10 minutes and prevents committing a regression.
 
 ## Files touched
 
@@ -119,7 +136,7 @@ Zero LOC delta in `scripts/`. Zero LOC delta in `tests/`.
 (To be created via `/ticket` after this commit:)
 
 - **A.7-fu1.1** — Amend `scripts/_state_db_snapshot.py` module docstring lines 9-15 to drop the Phase 0a coordination-contract claim. XS, doc-only. Agent-eligible.
-- **A.7-fu1.2 (SPIKE)** — Evaluate the two-layer split (`_backup_pages_yielding` core + thin wrappers) to genuinely deduplicate the two snapshot codepaths. M, requires VPS-runtime-environment test infrastructure. Not agent-eligible (needs human-in-loop because it touches Phase 0a's load-bearing production-safety constants).
+- **A.7-fu1.2 (SPIKE)** — Evaluate the two-layer split (`_backup_pages_yielding` core + thin wrappers) to genuinely deduplicate the snapshot codepaths. **Scope must also cover** (a) the three divergent `integrity_check` callsites — helper `bool`, Phase 0a inline, and `state_db_restore.py:117` `List[str]` with unlimited+FK — and decide a canonical signature without weakening the weekly verify path; (b) extracting compression into a separate `_compression.py` with runtime-environment-aware dispatch (subprocess on VPS, Python module on dev-Mac), tested under both regimes; (c) auditing whether the `_ro_uri` read-only-open helper (currently duplicated across consumers) can be shared. M effort, requires VPS-runtime-environment test infrastructure. Not agent-eligible (needs human-in-loop because it touches Phase 0a's load-bearing production-safety constants).
 
 ## Verification chain
 
