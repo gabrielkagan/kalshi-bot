@@ -186,7 +186,8 @@ ignore_imports =
 #
 # Top-level `from bot._impl import OrderExecutor` at the head of bot/scanner
 # would partial-module read at the bot/_impl.py:115 re-export firing time
-# (OrderExecutor is defined at bot/_impl.py:~10071, AFTER the re-export line).
+# (OrderExecutor is defined at bot/_impl.py:994 — search anchor:
+# ``class OrderExecutor:`` — AFTER the re-export line).
 # bot/scanner uses a method-body late-binding helper `_get_order_executor()`
 # (search anchor: `def _get_order_executor` in bot/scanner/__init__.py) that
 # does `import bot._impl as _bot_impl; return _bot_impl.OrderExecutor` —
@@ -217,8 +218,10 @@ forbidden_modules =
 ignore_imports =
     bot.scanner -> bot._impl
     # Transitive bot.scanner -> bot.state -> bot._impl: bot.scanner imports
-    # `from bot.state import StateManager` (type ann), and bot.state has its
-    # own method-body `import bot._impl` for `_get_compute_for_15m_main_path()`.
+    # `from bot.state import StateManager` at runtime (used as the
+    # `state: StateManager` annotation on __init__, NOT TYPE_CHECKING-guarded),
+    # and bot.state has its own method-body `import bot._impl` for
+    # `_get_compute_for_15m_main_path()`.
     # grimp's reachability check sees the transitive path and would surface
     # the violation; ignore the bot.state -> bot._impl edge here so the
     # scanner contract enforces only its OWN top-level constraint.

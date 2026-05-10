@@ -307,8 +307,10 @@ def _get_order_executor():
     """Late-binding helper for OrderExecutor cross-class calls (34 sites in scan).
 
     Returns bot._impl.OrderExecutor. Late-bound because bot._impl imports
-    bot.scanner during its own load (the line-114-ish re-export), but the
-    OrderExecutor binding doesn't exist until line ~10071 of bot/_impl.py.
+    bot.scanner during its own load (the line-115 re-export — search
+    anchor: ``from bot.scanner import OpportunityScanner``), but the
+    OrderExecutor binding doesn't exist until line 994 of bot/_impl.py
+    (post-Bit-8.1 layout — search anchor: ``class OrderExecutor:``).
     Scanner method calls always happen at MainLoop runtime, well after
     bot._impl finishes loading.
 
@@ -331,9 +333,11 @@ class OpportunityScanner:
                  feed: CoinbaseFeed, vol: VolatilityEngine, logger: Logger,
                  sizer: PositionSizer,
                  # OrderFlowEngine + KalshiOrderFlowTracker are quoted forward-refs
-                 # because they still live in bot/_impl.py (lines 652 + 774);
+                 # because they still live in bot/_impl.py (lines 656 + 778; search
+                 # anchors: ``class OrderFlowEngine:`` / ``class KalshiOrderFlowTracker:``);
                  # importing them here would create a load-order cycle (bot._impl
-                 # imports bot.scanner during its own load via the line-114 re-export,
+                 # imports bot.scanner during its own load via the line-115 re-export
+                 # — search anchor: ``from bot.scanner import OpportunityScanner`` —
                  # at which point those classes haven't been bound yet). Mirrors
                  # the Bit 7.1 `state: "StateManager"` quoted forward-ref pattern.
                  order_flow: Optional["OrderFlowEngine"] = None,
