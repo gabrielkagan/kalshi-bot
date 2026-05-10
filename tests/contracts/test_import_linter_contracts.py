@@ -305,8 +305,10 @@ def test_state_late_binding_is_inside_helper_function():
 
     Bit 7.1 (790214f, 2026-05-10) extracted StateManager via path-A++.
     The single-name late-binding helper sidesteps the load-order cycle
-    (bot._impl re-exports bot.state at line ~109; compute_for_15m_main_path
-    is bound below that line). The import-linter contract
+    (bot._impl re-exports bot.state — search anchor:
+    ``from bot.state import StateManager`` — and
+    ``compute_for_15m_main_path`` is bound below that re-export via
+    ``make_compute_for_15m_main_path(globals())``). The import-linter contract
     ``state-no-impl-toplevel`` documents the ``bot.state -> bot._impl``
     edge as an explicit carve-out; this AST pin asserts the carve-out is
     used the way the contract describes (method-body inside the helper),
@@ -341,20 +343,34 @@ def test_state_late_binding_is_inside_helper_function():
         if isinstance(node, ast.Import) and any(
             alias.name == "bot._impl" for alias in node.names
         ):
+            # Matches `import bot._impl` and `import bot._impl as X`.
             found = True
             break
-        if isinstance(node, ast.ImportFrom) and node.module in ("bot._impl", "bot"):
-            # `from bot import _impl` is also legitimate late-binding.
-            found = True
-            break
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "bot._impl":
+                # Matches `from bot._impl import X`.
+                found = True
+                break
+            if node.module == "bot" and any(
+                alias.name == "_impl" for alias in node.names
+            ):
+                # Matches `from bot import _impl` (and `... as X`).
+                # Restricted to the `_impl` name so that a refactor
+                # importing a DIFFERENT bot name from inside the helper
+                # (e.g., `from bot import constants`) — which would not
+                # late-bind bot._impl — does not silently keep this test
+                # green.
+                found = True
+                break
     assert found, (
         "bot/state.py::_get_compute_for_15m_main_path() does not perform a "
-        "method-body `import bot._impl` (or `from bot import _impl`). The "
+        "method-body import that names `bot._impl` (`import bot._impl`, "
+        "`from bot._impl import X`, or `from bot import _impl`). The "
         "late-binding it provides is the only legitimate way for bot/state.py "
         "to reach `compute_for_15m_main_path` (which is bound below the "
-        "line-109 re-export of bot.state inside bot/_impl.py). Reverting "
-        "the helper would re-introduce the load-order cycle that path-A++ "
-        "fixed."
+        "line-~109 re-export of bot.state inside bot/_impl.py — search "
+        "anchor: `from bot.state import StateManager`). Reverting the helper "
+        "would re-introduce the load-order cycle that path-A++ fixed."
     )
 
 
@@ -743,13 +759,15 @@ def test_lint_imports_fails_when_state_carve_out_removed(tmp_path: Path):
     the ``state-no-impl-toplevel`` contract's ``ignore_imports`` MUST
     cause lint-imports to fail — proving the carve-out is load-bearing
     for the method-body late-binding inside
-    ``_get_compute_for_15m_main_path()`` (bot/state.py:127, Bit 7.1).
+    ``_get_compute_for_15m_main_path()`` in bot/state.py (Bit 7.1; search
+    anchor: ``def _get_compute_for_15m_main_path``).
 
     Mirrors the pre-Bit-6.3 ``test_lint_imports_fails_when_carve_out_removed``
     pattern (since lifted by path-B for engines). The state carve-out
     cannot be lifted the same way: the load-order cycle (bot._impl
-    re-exports bot.state at line ~109; ``compute_for_15m_main_path`` is
-    bound below that line via ``make_compute_for_15m_main_path(globals())``)
+    re-exports bot.state — search anchor: ``from bot.state import
+    StateManager`` — and ``compute_for_15m_main_path`` is bound below
+    that re-export via ``make_compute_for_15m_main_path(globals())``)
     makes a top-level import structurally impossible. The carve-out is
     permanent until that cycle is structurally redesigned, so this test
     locks the configuration against an accidental removal of the ignore

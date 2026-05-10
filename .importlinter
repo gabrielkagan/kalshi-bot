@@ -128,25 +128,34 @@ forbidden_modules =
 # ---------------------------------------------------------------------------
 # Bit 7.1 (790214f, 2026-05-10) extracted StateManager from bot/_impl.py to
 # bot/state.py via path-A++. The two `globals()` call sites inside
-# StateManager.__init__ pre-extraction (bot/_impl.py:615-616) resolved to
-# bot._impl's namespace, laundered via `from config import *` line 47 +
-# `from bot.constants import *` line 83 + `from bot.helpers import *`
-# line 84. Path-A++ refactored parity_assert / sizing_parity_assert in
+# StateManager.__init__ pre-extraction resolved to bot._impl's namespace,
+# laundered via `from config import *` + `from bot.constants import *` +
+# `from bot.helpers import *` at the top of bot/_impl.py. Path-A++
+# refactored parity_assert / sizing_parity_assert in
 # scripts/cal_mlp/integration.py to drop the bot_globals param; bot/state.py
 # uses a single-name method-body late-binding helper
-# `_get_compute_for_15m_main_path()` to reach
-# `bot._impl.compute_for_15m_main_path` (bound below the line ~109 re-export
-# of bot.state inside bot/_impl.py — a top-level import would either
-# ImportError on the partial module or capture the closure stale).
+# `_get_compute_for_15m_main_path()` (search anchor:
+# `def _get_compute_for_15m_main_path` in bot/state.py) to reach
+# `bot._impl.compute_for_15m_main_path` (bound below the bot.state
+# re-export inside bot/_impl.py — search anchor:
+# `from bot.state import StateManager`). A top-level import would either
+# ImportError on the partial module or capture the closure stale.
 #
 # import-linter's grimp graph does NOT distinguish module-level from
 # function-body imports. The `ignore_imports` directive below removes the
 # `bot.state -> bot._impl` edge entirely from the graph; the contract
 # alone cannot prevent a regression to top-level import. The actual
-# anti-regression seal lives at the AST layer in
-# tests/test_state_extraction.py::test_state_no_top_level_bot_impl_import
-# AND tests/contracts/test_import_linter_contracts.py::
-# test_state_no_toplevel_bot_impl_import_at_contract_layer (peer pin).
+# anti-regression seal is three-layer:
+#   1. tests/test_state_extraction.py::test_state_no_top_level_bot_impl_import
+#      — original Bit 7.1 AST pin at the extraction-test layer
+#   2. tests/contracts/test_import_linter_contracts.py::
+#      test_state_no_toplevel_bot_impl_import_at_contract_layer
+#      — peer AST pin at the contract-test layer
+#   3. tests/contracts/test_import_linter_contracts.py::
+#      test_lint_imports_fails_when_state_carve_out_removed
+#      — load-bearing test that mutates this file (configparser-removes
+#      the ignore_imports line) and asserts lint-imports fails; locks
+#      the carve-out config against accidental removal
 # This contract block makes the carve-out auditable in `.importlinter`
 # itself — a future maintainer scanning the file sees that the
 # bot.state → bot._impl edge is "managed" rather than "missing".
