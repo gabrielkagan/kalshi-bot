@@ -222,7 +222,12 @@ def install_frozen_cal_engine(frozen_cal_engine, monkeypatch):
     every row, because the patched ``_resolve_cal_engine`` returns the
     frozen engine regardless of ``product_type`` / ``cal_engine_enabled``.
     The ``elif`` branches (outcomes 2/3) are short-circuited under this
-    fixture; for outcome-2 coverage see ``install_legacy_only_cal_engine``.
+    fixture; for outcome-2 coverage see ``install_legacy_15m_cal_engine``
+    (the sister fixture that flips ``FIFTEEN_M_CALIBRATION_ENABLED`` so
+    the cascade reaches the legacy 15M ``_CALIBRATION_ENGINE.calibrate``
+    body; ``install_legacy_only_cal_engine`` actually exercises
+    outcomes 3 + 4 under the default constant — R1 corrected the
+    pre-R1 claim that pointed here).
 
     Returns the engine so the test can introspect / make assertions
     against the same instance that production code receives."""
