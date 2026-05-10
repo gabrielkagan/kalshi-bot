@@ -205,9 +205,9 @@ class EGARCHEstimator:
             except OSError:
                 fsize = 0.0
             logging.info(
-                "EGARCH buffer saved: BTC=%d ETH=%d SOL=%d XRP=%d (file_size=%.1fKB)",
-                len(self._returns["BTC"]), len(self._returns["ETH"]),
-                len(self._returns["SOL"]), len(self._returns["XRP"]), fsize)
+                "EGARCH buffer saved: %s (file_size=%.1fKB)",
+                ", ".join(f"{a}={len(self._returns[a])}" for a in ASSETS),
+                fsize)
 
     def seed_variance(self, asset: str, rk_5min_sq: float):
         """First-time init: set log_var from realized kernel variance."""
@@ -690,8 +690,8 @@ class EGARCHEstimator:
             ret_counts = {a: len(self._returns[a]) for a in ASSETS}
             if any(ret_counts.values()):
                 logging.info(
-                    "EGARCH returns restored: BTC=%d ETH=%d SOL=%d XRP=%d",
-                    ret_counts["BTC"], ret_counts["ETH"], ret_counts["SOL"], ret_counts["XRP"])
+                    "EGARCH returns restored: %s",
+                    ", ".join(f"{a}={ret_counts[a]}" for a in ASSETS))
             # Warm-start: replay last N returns through recursive_update to rebuild
             # sigma from actual return history. Without this, sigma drops to ~50% of
             # steady state after restart because the first new live returns are small.

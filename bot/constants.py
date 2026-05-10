@@ -24,6 +24,8 @@ SERIES_TICKERS = {
     "ETH": "KXETH15M",
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
+    "HYPE": "KXHYPE15M",      # T1 (2026-05-10): shadow observation
+    "DOGE": "KXDOGE15M",      # T1 (2026-05-10): shadow observation
 }
 
 MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for ETH 75-79c; SOL uses this, BTC/XRP overridden below)
@@ -55,6 +57,17 @@ SOL_HIGH_EDGE_SHADOW = 0.05     # SOL edge ceiling shadow: log evaluations with 
 SOL_LOW_ENTRY_STC_GATE = True    # Block SOL ≤85c at STC≥300s (data: 78.3% WR -$289, vs <300s 100% WR +$228)
 
 XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/2L 95.3% WR at >=92c)
+
+# T1 onboarding (2026-05-10, ticket 86b9vecw9): HYPE + DOGE 15M shadow observation.
+# These flags MUST remain True until T4 promotion (per-asset MIN_ENTRY_PRICE +
+# MAX_RISK_PER_TRADE constants wired into the elif chains AND NBBO_FALLBACK_GATES
+# entries from observed spread distribution). Without those constants the elif
+# chains fall to scaffolded defaults → live orders without per-asset sizing.
+# Wired into the XRP_15M_SHADOW gate pattern in bot/scanner/__init__.py
+# (YES-side ~:5867 and NO-side ~:7610). Lock-step test:
+# tests/test_doge_hype_onboarding_t1.py::TestAtomicActivationSafety.
+HYPE_15M_SHADOW = True            # HYPE 15M shadow observation — T1 onboarding
+DOGE_15M_SHADOW = True            # DOGE 15M shadow observation — T1 onboarding
 
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 
@@ -234,6 +247,8 @@ HOURLY_SERIES_TICKERS = {
     "ETH": "KXETHD",
     "SOL": "KXSOLD",
     "XRP": "KXXRPD",
+    "HYPE": "KXHYPED",        # T1 (2026-05-10): shadow via HOURLY_EXCLUDED_ASSETS
+    "DOGE": "KXDOGED",        # T1 (2026-05-10): shadow via HOURLY_EXCLUDED_ASSETS
 }
 
 HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800  # 30 min before close
@@ -319,7 +334,7 @@ HOURLY_MIN_STC_ENTRY = 600             # 10 min minimum (5-10m zone is 56.5% WR 
 
 HOURLY_MAX_STC_ENTRY = 1800            # 30 min maximum (25-30m is the sweet spot at 69.4% WR)
 
-HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP"}  # YES-side: BTC+ETH only — XRP 42.9% WR (toxic), SOL marginal
+HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE"}  # YES-side: BTC+ETH only — XRP/SOL data-driven; HYPE/DOGE T1 shadow until T4 promotion
 
 # NO-side asymmetry (Apr 15 data, model-flagged hourly candidates in 40-54c range):
 #   BTC NO: 51.5% WR @ 47.1c avg (+3.9pp vs BE, model adds +7.3pp, n=1041)
@@ -330,7 +345,7 @@ HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP"}  # YES-side: BTC+ETH only — XRP 42.9% 
 # (XRP 42.2% YES WR) is precisely the asymmetry that creates NO-side edge. Structural
 # thesis: crypto long bias overprices YES → NO underpriced. -$20 kill switch bounds
 # downside. Revisit per-asset if fills produce divergent live PnL.
-HOURLY_NO_EXCLUDED_ASSETS = set()     # Empty — all 4 assets eligible on NO-side per data above.
+HOURLY_NO_EXCLUDED_ASSETS = {"HYPE", "DOGE"}  # NO-side safety belt: HYPE/DOGE excluded until T4. Existing BTC/ETH/SOL/XRP unblocked per data above.
 
 HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time window (ENB ~1.3)
 
@@ -678,6 +693,8 @@ COINBASE_PRODUCTS = {
     "ETH": "ETH-USD",
     "SOL": "SOL-USD",
     "XRP": "XRP-USD",
+    "HYPE": "HYPE-USD",       # T1 (2026-05-10): shadow observation (verified live + online on Coinbase Exchange)
+    "DOGE": "DOGE-USD",       # T1 (2026-05-10): shadow observation (verified live + online on Coinbase Exchange)
 }
 
 PRICE_BUFFER_SIZE = 1800          # 30 minutes of 1-second snapshots (extended Apr 19 for Phase 2 features)

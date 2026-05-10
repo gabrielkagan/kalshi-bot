@@ -149,18 +149,20 @@ def test_load_handles_corrupt_file(tmp_path: Path):
 
 def test_load_handles_unknown_asset_in_persist_file(tmp_path: Path):
     """A persist file with an asset not in current ASSETS must not crash.
-    The unknown asset's data is silently dropped."""
+    The unknown asset's data is silently dropped.
+    T1 (2026-05-10): switched from 'DOGE' to 'OLDASSET' — DOGE is now in
+    ASSETS for shadow observation."""
     bot = _import_bot()
     persist_path = tmp_path / 'unknown.json'
     now = time.time()
     persist_path.write_text(json.dumps({
         'BTC': [[now - 60, 75000.0]],
-        'DOGE': [[now - 60, 0.42]],   # not in ASSETS
+        'OLDASSET': [[now - 60, 0.42]],   # not in ASSETS — placeholder for a deprecated asset
     }))
     feed = bot.CoinbaseFeed(persist_path=str(persist_path))
     btc = list(feed._buffers['BTC'])
     assert len(btc) == 1
-    assert 'DOGE' not in feed._buffers
+    assert 'OLDASSET' not in feed._buffers
 
 
 def test_persist_serialization_roundtrip_full_buffer(tmp_path: Path):

@@ -682,8 +682,9 @@ class TestPerWindowFilters(unittest.TestCase):
         self.assertLess(60, HOURLY_MIN_STC_ENTRY)
 
     def test_asset_exclusion_btc_eth_only(self):
-        """HOURLY_EXCLUDED_ASSETS contains SOL and XRP (BTC+ETH only)."""
-        self.assertEqual(HOURLY_EXCLUDED_ASSETS, {"SOL", "XRP"})
+        """HOURLY_EXCLUDED_ASSETS contains SOL and XRP (BTC+ETH live hourly).
+        T1 (2026-05-10): HYPE/DOGE added for shadow observation until T4."""
+        self.assertEqual(HOURLY_EXCLUDED_ASSETS, {"SOL", "XRP", "HYPE", "DOGE"})
 
 
 class TestHourlyNoSideAssetGate(unittest.TestCase):
@@ -702,9 +703,10 @@ class TestHourlyNoSideAssetGate(unittest.TestCase):
         self.assertIsInstance(HOURLY_NO_EXCLUDED_ASSETS, set)
 
     def test_no_excluded_default_empty(self):
-        """Default: all 4 assets eligible on NO-side."""
+        """Original 4 assets eligible on NO-side. T1 (2026-05-10):
+        HYPE/DOGE added as NO-side safety belt during shadow until T4."""
         from bot import HOURLY_NO_EXCLUDED_ASSETS
-        self.assertEqual(HOURLY_NO_EXCLUDED_ASSETS, set())
+        self.assertEqual(HOURLY_NO_EXCLUDED_ASSETS, {"HYPE", "DOGE"})
 
     def test_yes_no_are_separate_constants(self):
         """YES and NO exclusion lists must not share state."""

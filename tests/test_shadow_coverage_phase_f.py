@@ -37,8 +37,9 @@ sys.path.insert(0, PROJECT_ROOT)
 
 
 class TestPhaseFCrossAssetSpotSnapshot:
-    """All 4 cross-asset spots are populated at decision tick when the
-    primary feed has live prices."""
+    """All cross-asset spots are populated at decision tick when the
+    primary feed has live prices.
+    T1 (2026-05-10): expanded to 6 assets (added HYPE/DOGE shadow observation)."""
 
     def test_compute_cross_asset_spot_returns_all_four(self):
         import bot
@@ -49,6 +50,7 @@ class TestPhaseFCrossAssetSpotSnapshot:
                 self._prices = {
                     "BTC": 67400.0, "ETH": 3210.5,
                     "SOL": 142.7, "XRP": 2.51,
+                    "HYPE": 43.01, "DOGE": 0.11,
                 }
             def get_all_prices(self):
                 return dict(self._prices)
@@ -65,6 +67,8 @@ class TestPhaseFCrossAssetSpotSnapshot:
             "eth_spot_at_decision": 3210.5,
             "sol_spot_at_decision": 142.7,
             "xrp_spot_at_decision": 2.51,
+            "hype_spot_at_decision": 43.01,
+            "doge_spot_at_decision": 0.11,
         }
 
     def test_compute_cross_asset_spot_handles_missing_feed_data(self):

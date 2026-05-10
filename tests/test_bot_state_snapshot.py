@@ -173,13 +173,13 @@ def test_snapshot_no_unbounded_growth():
     )
     snap = compute_bot_state_snapshot(bot)
 
-    # api_error_counts: at most 4 keys (one per canonical asset).
-    assert len(snap["api_error_counts"]) <= 4
-    # ws_cache_age_ms: at most 4 keys.
-    assert len(snap["ws_cache_age_ms"]) <= 4
-    # active_cooldowns: at most 4 entries (filters non-asset strings out).
-    assert len(snap["active_cooldowns"]) <= 4
-    assert set(snap["active_cooldowns"]).issubset({"BTC", "ETH", "SOL", "XRP"})
+    # api_error_counts: at most len(ASSETS) keys (one per canonical asset).
+    # T1 (2026-05-10): ASSETS now 6 (added HYPE/DOGE for shadow observation).
+    from config import ASSETS
+    assert len(snap["api_error_counts"]) <= len(ASSETS)
+    assert len(snap["ws_cache_age_ms"]) <= len(ASSETS)
+    assert len(snap["active_cooldowns"]) <= len(ASSETS)
+    assert set(snap["active_cooldowns"]).issubset(set(ASSETS))
 
 
 def test_snapshot_handles_nan_inf():

@@ -137,7 +137,7 @@ Beyond the live 15M engine, the platform spans four adjacent verticals: S&P 500 
 | **KalshiFeed** | WebSocket connection for real-time fills and orderbook delta streaming |
 | **Logger** | Structured JSONL logging across multiple journals with fill deduplication |
 | **StateManager** | SQLite-backed persistent state (WAL mode for crash resilience, `busy_timeout=10000`); tracks positions, orders, fills, settlements, and order lifecycle |
-| **CoinbaseFeed** | Real-time WebSocket feed for BTC, ETH, SOL, XRP with 300-point price buffer (5 minutes at 1-second intervals); EGARCH uses a separate 10,800-point return buffer (15 hours at 5-second intervals) |
+| **CoinbaseFeed** | Real-time WebSocket feed for BTC, ETH, SOL, XRP (live trading) and HYPE, DOGE (shadow observation, T1 2026-05-10) with 300-point price buffer (5 minutes at 1-second intervals); EGARCH uses a separate 10,800-point return buffer (15 hours at 5-second intervals) |
 | **DeribitDVOLFetcher** | Daemon thread fetching implied volatility (DVOL) index for BTC and ETH every 60 seconds |
 | **CrossExchangeFeed** | WebSocket feeds from Kraken, Bybit, and Binance for cross-exchange lead-lag detection (Binance geo-blocked on VPS) |
 | **KalshiOrderFlowTracker** | Shadow-mode Kalshi-native orderbook imbalance, depth velocity, and spread convergence signals |
@@ -161,7 +161,7 @@ Beyond the live 15M engine, the platform spans four adjacent verticals: S&P 500 
 
 | Source | Data | Transport | Frequency |
 |---|---|---|---|
-| Coinbase | Spot prices (BTC, ETH, SOL, XRP) | WebSocket | Real-time (1s snapshots, 300-point buffer = 5min) |
+| Coinbase | Spot prices (BTC, ETH, SOL, XRP live; HYPE, DOGE shadow) | WebSocket | Real-time (1s snapshots, 300-point buffer = 5min) |
 | Kraken | Spot prices (cross-exchange) | WebSocket | Real-time |
 | Deribit | Implied volatility (DVOL) for BTC/ETH | REST API | 60 seconds |
 | Polygon.io | SPX spot price | REST API | 1s polling (NYSE RTH) |

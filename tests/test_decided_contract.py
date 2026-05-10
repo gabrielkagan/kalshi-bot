@@ -446,7 +446,9 @@ class TestDecidedContractCodeIntegrity(unittest.TestCase):
     def test_observation_mode_blocks_live(self):
         """OBSERVATION_MODE must block DC live trades."""
         live_section_start = self.source.find("# ── Live overlay: queue as candidate if tier enabled")
-        live_section = self.source[live_section_start:live_section_start + 800]
+        # T1 (2026-05-10): widened from 800 to 1500 to accommodate the new
+        # HYPE/DOGE shadow-flag guard added before _dc_live_enabled.
+        live_section = self.source[live_section_start:live_section_start + 1500]
         self.assertIn("not OBSERVATION_MODE", live_section)
 
     def test_dc_window_risk_initialized(self):

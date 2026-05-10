@@ -293,7 +293,7 @@ Below 180 seconds before settlement, the system switches to **direct taker execu
 | **Status** | Live trading since February 22, 2026 |
 | **Settled trades** | {{LIVE_SETTLED}} ({{LIVE_WINS}}W / {{LIVE_LOSSES}}L / {{LIVE_BREAKEVENS}} BE) |
 | **Win rate** | {{LIVE_WR}} |
-| **Assets** | BTC, ETH, SOL, XRP |
+| **Assets** | BTC, ETH, SOL, XRP (live); HYPE, DOGE (shadow observation, T1 2026-05-10) |
 | **Entry prices** | 75–99¢ (per-asset: BTC 88¢+, ETH 90¢+ main tier with 75–79¢ capped sub-tier, SOL 86¢+, XRP 92¢+; overlays extend lower in the final minutes) |
 
 ---

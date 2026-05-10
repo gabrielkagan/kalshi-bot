@@ -14,7 +14,7 @@ import os
 from typing import Dict
 
 # ─── Assets ──────────────────────────────────────────────────────────────────
-ASSETS = ["BTC", "ETH", "SOL", "XRP"]
+ASSETS = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"]
 
 # Module-scoped logger. Using `logging.info(...)` directly at module-load time
 # auto-triggers `logging.basicConfig()` when no handler is configured yet,

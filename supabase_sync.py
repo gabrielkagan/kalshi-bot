@@ -19,7 +19,7 @@ from typing import Dict, Any, Optional
 
 import requests
 
-ASSETS = ["BTC", "ETH", "SOL", "XRP"]
+ASSETS = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"]
 KILL_SWITCH_FILE = os.path.join(os.path.dirname(__file__) or ".", ".supabase_kill_switch")
 
 # Sync intervals
@@ -324,7 +324,9 @@ class SupabaseSyncer:
         for sym, name, ticker in (("BTC", "Bitcoin", "KXBTC15M"),
                                    ("ETH", "Ethereum", "KXETH15M"),
                                    ("SOL", "Solana", "KXSOL15M"),
-                                   ("XRP", "Ripple", "KXXRP15M")):
+                                   ("XRP", "Ripple", "KXXRP15M"),
+                                   ("HYPE", "Hyperliquid", "KXHYPE15M"),
+                                   ("DOGE", "Dogecoin", "KXDOGE15M")):
             rows.append({"symbol": sym, "name": name, "series_ticker": ticker})
         if self._post("assets", rows):
             logging.info("Supabase assets: registered %d symbols", len(rows))

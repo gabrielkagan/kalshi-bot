@@ -107,6 +107,7 @@
     "DISCREPANCY_PROB",
     "DIST_CONFIG",
     "DIST_CONFIG_PATH",
+    "DOGE_15M_SHADOW",
     "DRAWDOWN_HALF_THRESHOLD",
     "DRAWDOWN_HALT_THRESHOLD",
     "DRAWDOWN_QUARTER_THRESHOLD",
@@ -217,6 +218,7 @@
     "HOURLY_TEMPERATURE_ENABLED",
     "HOURLY_TEMPERATURE_T",
     "HWM_LOOKBACK_SECONDS",
+    "HYPE_15M_SHADOW",
     "INITIAL_DEPOSIT_CENTS",
     "IOC_DRIFT_CHECK_COLD_START_RATIO",
     "IOC_DRIFT_CHECK_DIVERGENCE_RATIO",
@@ -998,6 +1000,10 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.constants.DOGE_15M_SHADOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.constants.DVOL_CACHE_TTL": {
     "annotation": null,
     "kind": "attribute"
@@ -1299,6 +1305,10 @@
     "kind": "attribute"
   },
   "bot.constants.HOURLY_TEMPERATURE_T": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.constants.HYPE_15M_SHADOW": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -9227,6 +9237,10 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.helpers.DOGE_15M_SHADOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.helpers.DVOL_CACHE_TTL": {
     "annotation": null,
     "kind": "attribute"
@@ -9532,6 +9546,10 @@
     "kind": "attribute"
   },
   "bot.helpers.HOURLY_TEMPERATURE_T": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.HYPE_15M_SHADOW": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -11229,6 +11247,10 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.helpers.cell_blocks.DOGE_15M_SHADOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.helpers.cell_blocks.DVOL_CACHE_TTL": {
     "annotation": null,
     "kind": "attribute"
@@ -11530,6 +11552,10 @@
     "kind": "attribute"
   },
   "bot.helpers.cell_blocks.HOURLY_TEMPERATURE_T": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.cell_blocks.HYPE_15M_SHADOW": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -13882,6 +13908,10 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.helpers.sizing.DOGE_15M_SHADOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.helpers.sizing.DVOL_CACHE_TTL": {
     "annotation": null,
     "kind": "attribute"
@@ -14183,6 +14213,10 @@
     "kind": "attribute"
   },
   "bot.helpers.sizing.HOURLY_TEMPERATURE_T": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.sizing.HYPE_15M_SHADOW": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -15877,6 +15911,10 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.helpers.strategy.DOGE_15M_SHADOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.helpers.strategy.DVOL_CACHE_TTL": {
     "annotation": null,
     "kind": "attribute"
@@ -16178,6 +16216,10 @@
     "kind": "attribute"
   },
   "bot.helpers.strategy.HOURLY_TEMPERATURE_T": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.strategy.HYPE_15M_SHADOW": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -17980,6 +18022,10 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.helpers.tm_sweep.DOGE_15M_SHADOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.helpers.tm_sweep.DVOL_CACHE_TTL": {
     "annotation": null,
     "kind": "attribute"
@@ -18281,6 +18327,10 @@
     "kind": "attribute"
   },
   "bot.helpers.tm_sweep.HOURLY_TEMPERATURE_T": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.tm_sweep.HYPE_15M_SHADOW": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -20101,6 +20151,10 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.helpers.validators.DOGE_15M_SHADOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.helpers.validators.DVOL_CACHE_TTL": {
     "annotation": null,
     "kind": "attribute"
@@ -20402,6 +20456,10 @@
     "kind": "attribute"
   },
   "bot.helpers.validators.HOURLY_TEMPERATURE_T": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.validators.HYPE_15M_SHADOW": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -27521,6 +27579,10 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.scanner.DOGE_15M_SHADOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.scanner.ENDGAME_BLEND_PRICE": {
     "annotation": null,
     "kind": "attribute"
@@ -27690,6 +27752,10 @@
     "kind": "attribute"
   },
   "bot.scanner.HOURLY_TEMPERATURE_T": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.scanner.HYPE_15M_SHADOW": {
     "annotation": null,
     "kind": "attribute"
   },

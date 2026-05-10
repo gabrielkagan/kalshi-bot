@@ -892,11 +892,13 @@ class StateManager:
             self.conn.execute(
                 "UPDATE settled_trades SET product_type='15m' WHERE product_type IS NULL "
                 "AND (ticker LIKE 'KXBTC15M%' OR ticker LIKE 'KXETH15M%' "
-                "OR ticker LIKE 'KXSOL15M%' OR ticker LIKE 'KXXRP15M%')")
+                "OR ticker LIKE 'KXSOL15M%' OR ticker LIKE 'KXXRP15M%' "
+                "OR ticker LIKE 'KXHYPE15M%' OR ticker LIKE 'KXDOGE15M%')")
             self.conn.execute(
                 "UPDATE settled_trades SET product_type='hourly' WHERE product_type IS NULL "
                 "AND (ticker LIKE 'KXBTCD%' OR ticker LIKE 'KXETHD%' "
-                "OR ticker LIKE 'KXSOLD%' OR ticker LIKE 'KXXRPD%')")
+                "OR ticker LIKE 'KXSOLD%' OR ticker LIKE 'KXXRPD%' "
+                "OR ticker LIKE 'KXHYPED%' OR ticker LIKE 'KXDOGED%')")
             self.conn.execute(
                 "UPDATE settled_trades SET product_type='spx_hourly' WHERE product_type IS NULL "
                 "AND ticker LIKE 'KXSPX%'")
@@ -914,11 +916,13 @@ class StateManager:
             self.conn.execute(
                 "UPDATE evaluated_opportunities SET product_type='15m' WHERE product_type IS NULL "
                 "AND (ticker LIKE 'KXBTC15M%' OR ticker LIKE 'KXETH15M%' "
-                "OR ticker LIKE 'KXSOL15M%' OR ticker LIKE 'KXXRP15M%')")
+                "OR ticker LIKE 'KXSOL15M%' OR ticker LIKE 'KXXRP15M%' "
+                "OR ticker LIKE 'KXHYPE15M%' OR ticker LIKE 'KXDOGE15M%')")
             self.conn.execute(
                 "UPDATE evaluated_opportunities SET product_type='hourly' WHERE product_type IS NULL "
                 "AND (ticker LIKE 'KXBTCD%' OR ticker LIKE 'KXETHD%' "
-                "OR ticker LIKE 'KXSOLD%' OR ticker LIKE 'KXXRPD%')")
+                "OR ticker LIKE 'KXSOLD%' OR ticker LIKE 'KXXRPD%' "
+                "OR ticker LIKE 'KXHYPED%' OR ticker LIKE 'KXDOGED%')")
             self.conn.execute(
                 "UPDATE evaluated_opportunities SET product_type='spx_hourly' WHERE product_type IS NULL "
                 "AND ticker LIKE 'KXSPX%'")
@@ -1308,9 +1312,9 @@ class StateManager:
 
         # Derive product_type from ticker prefix
         product_type = None
-        if any(ticker.startswith(p) for p in ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M")):
+        if any(ticker.startswith(p) for p in ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXHYPE15M", "KXDOGE15M")):
             product_type = "15m"
-        elif any(ticker.startswith(p) for p in ("KXBTCD", "KXETHD", "KXSOLD", "KXXRPD")):
+        elif any(ticker.startswith(p) for p in ("KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXHYPED", "KXDOGED")):
             product_type = "hourly"
         elif ticker.startswith("KXSPX"):
             product_type = "spx_hourly"

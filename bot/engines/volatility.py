@@ -176,10 +176,9 @@ class VolatilityEngine:
                         self._returns[asset].append(r)
                     loaded += 1
             age = time.time() - state.get("saved_at", 0)
-            logging.info("RK state loaded: %d assets restored, age=%.0fs (BTC=%d ETH=%d SOL=%d XRP=%d returns)",
+            logging.info("RK state loaded: %d assets restored, age=%.0fs (%s returns)",
                          loaded, age,
-                         len(self._returns["BTC"]), len(self._returns["ETH"]),
-                         len(self._returns["SOL"]), len(self._returns["XRP"]))
+                         ", ".join(f"{a}={len(self._returns[a])}" for a in ASSETS))
         except Exception as e:
             logging.warning("RK state load failed: %s (starting cold)", e)
 
@@ -451,11 +450,8 @@ class VolatilityEngine:
             os.replace(tmp_path, JUMP_ADAPTIVE_STATE_PATH)
             file_size = os.path.getsize(JUMP_ADAPTIVE_STATE_PATH) / 1024.0
             logging.info(
-                "Adaptive jump state saved: BTC=%d ETH=%d SOL=%d XRP=%d obs (file_size=%.1fKB)",
-                len(self._adaptive_returns_15s["BTC"]),
-                len(self._adaptive_returns_15s["ETH"]),
-                len(self._adaptive_returns_15s["SOL"]),
-                len(self._adaptive_returns_15s["XRP"]),
+                "Adaptive jump state saved: %s obs (file_size=%.1fKB)",
+                ", ".join(f"{a}={len(self._adaptive_returns_15s[a])}" for a in ASSETS),
                 file_size)
         except Exception as e:
             logging.warning("Failed to save adaptive jump state: %s", e)
@@ -506,11 +502,8 @@ class VolatilityEngine:
             except Exception as e:
                 logging.warning("Adaptive jump state load failed for %s: %s (starting fresh)", asset, e)
         logging.info(
-            "Adaptive jump state restored: BTC=%d ETH=%d SOL=%d XRP=%d obs, ewma_age=%.0fs",
-            len(self._adaptive_returns_15s["BTC"]),
-            len(self._adaptive_returns_15s["ETH"]),
-            len(self._adaptive_returns_15s["SOL"]),
-            len(self._adaptive_returns_15s["XRP"]),
+            "Adaptive jump state restored: %s obs, ewma_age=%.0fs",
+            ", ".join(f"{a}={len(self._adaptive_returns_15s[a])}" for a in ASSETS),
             time.time() - saved_at if saved_at else 0)
 
     # ── Kernel & statistical methods ─────────────────────────────────────

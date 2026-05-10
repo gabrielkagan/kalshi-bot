@@ -1,6 +1,6 @@
 # Kalshi Crypto Trading Bot
 
-Automated trading platform for Kalshi prediction markets. The core engine trades 15-minute cryptocurrency contracts (BTC, ETH, SOL, XRP) live, with several adjacent strategies layered on top: decided contracts, late-window momentum, weekend/overnight discounts, and a near-expiry low-price entry. Adjacent products (S&P 500 intraday, daily weather temperature across 19 US cities, and live sports outcomes across 28 leagues) run in observation or 1-contract verification mode while their CalEngines train.
+Automated trading platform for Kalshi prediction markets. The core engine trades 15-minute cryptocurrency contracts (BTC, ETH, SOL, XRP) live; HYPE and DOGE collect shadow observation data en route to live (T1 onboarded 2026-05-10). Several adjacent strategies layered on top: decided contracts, late-window momentum, weekend/overnight discounts, and a near-expiry low-price entry. Adjacent products (S&P 500 intraday, daily weather temperature across 19 US cities, and live sports outcomes across 28 leagues) run in observation or 1-contract verification mode while their CalEngines train.
 
 ## How It Works
 

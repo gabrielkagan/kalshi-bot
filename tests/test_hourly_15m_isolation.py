@@ -80,7 +80,8 @@ class TestMarketConfigSync:
         assert cfg.max_entry_price == 59
         assert cfg.min_stc_entry == 600
         assert cfg.max_stc_entry == 1800
-        assert cfg.excluded_assets == frozenset({"SOL", "XRP"})
+        # T1 (2026-05-10): HYPE/DOGE added for shadow observation until T4.
+        assert cfg.excluded_assets == frozenset({"SOL", "XRP", "HYPE", "DOGE"})
 
     def test_validate_market_configs_passes(self):
         """Full validation against bot/_impl.py constants."""

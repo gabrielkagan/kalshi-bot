@@ -368,6 +368,8 @@ def pipeline_audit(conn: sqlite3.Connection, since: str) -> None:
             WHEN ticker LIKE 'KXETHD%%' THEN 'KXETHD'
             WHEN ticker LIKE 'KXSOLD%%' THEN 'KXSOLD'
             WHEN ticker LIKE 'KXXRPD%%' THEN 'KXXRPD'
+            WHEN ticker LIKE 'KXHYPED%%' THEN 'KXHYPED'
+            WHEN ticker LIKE 'KXDOGED%%' THEN 'KXDOGED'
             ELSE 'OTHER'
           END AS series,
           COUNT(*) AS n,

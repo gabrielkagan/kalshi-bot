@@ -980,14 +980,19 @@ def test_scanner_preserves_cell_block_constant_references(name, expected_literal
 
 
 def test_scanner_filter_stage_count_preserved():
-    """filter_stage mention count matches pre-extraction snapshot (38 mentions in scanner body)."""
+    """filter_stage mention count tracks against scanner-body baseline.
+
+    Pre-extraction snapshot: 38 mentions. T1 (2026-05-10, ticket 86b9vecw9) added
+    NO-side shadow elif branches for HYPE/DOGE (no_side_hype_shadow,
+    no_side_doge_shadow analogues to the existing no_side_xrp_shadow).
+    Current baseline: 41."""
     src = _read_scanner_source()
     count = src.count("filter_stage")
-    # Pre-extraction grep returned 38 mentions inside scanner body; allow ±2 drift
-    # for test-formatting changes (e.g., breadcrumb comments). The exact contract is
-    # that the cell-block routing is preserved, locked by the parametrize above.
-    assert 36 <= count <= 40, (
-        f"filter_stage count drift: expected 36-40, got {count}"
+    # T1 baseline 41; allow ±2 drift for test-formatting changes. The exact
+    # contract is that cell-block routing is preserved, locked by the
+    # parametrize above.
+    assert 39 <= count <= 43, (
+        f"filter_stage count drift: expected 39-43, got {count}"
     )
 
 

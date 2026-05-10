@@ -2163,27 +2163,20 @@ class MainLoop:
         if hasattr(self, 'egarch_estimator'):
             self.egarch_estimator._save_state()
             logging.info(
-                "EGARCH buffer saved on shutdown: BTC=%d ETH=%d SOL=%d XRP=%d",
-                len(self.egarch_estimator._returns["BTC"]),
-                len(self.egarch_estimator._returns["ETH"]),
-                len(self.egarch_estimator._returns["SOL"]),
-                len(self.egarch_estimator._returns["XRP"]))
+                "EGARCH buffer saved on shutdown: %s",
+                ", ".join(f"{a}={len(self.egarch_estimator._returns[a])}" for a in ASSETS))
         if hasattr(self, 'mz_tracker'):
             self.mz_tracker.save_state()
             logging.info("MZ tracker state saved on shutdown")
         if hasattr(self, 'vol'):
             self.vol.save_rk_state()
             logging.info(
-                "RK state saved on shutdown: BTC=%d ETH=%d SOL=%d XRP=%d returns",
-                len(self.vol._returns["BTC"]), len(self.vol._returns["ETH"]),
-                len(self.vol._returns["SOL"]), len(self.vol._returns["XRP"]))
+                "RK state saved on shutdown: %s returns",
+                ", ".join(f"{a}={len(self.vol._returns[a])}" for a in ASSETS))
             self.vol._save_adaptive_state()
             logging.info(
-                "Adaptive jump state saved on shutdown: BTC=%d ETH=%d SOL=%d XRP=%d obs",
-                len(self.vol._adaptive_returns_15s["BTC"]),
-                len(self.vol._adaptive_returns_15s["ETH"]),
-                len(self.vol._adaptive_returns_15s["SOL"]),
-                len(self.vol._adaptive_returns_15s["XRP"]))
+                "Adaptive jump state saved on shutdown: %s obs",
+                ", ".join(f"{a}={len(self.vol._adaptive_returns_15s[a])}" for a in ASSETS))
         if hasattr(self, 'kalshi_feed') and self.kalshi_feed:
             self.kalshi_feed.stop()
         # Stop H-3a snapshotter — it holds its OWN sqlite connection

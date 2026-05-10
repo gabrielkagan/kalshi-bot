@@ -2,12 +2,13 @@
 
 > Update like a dashboard, not a doc. Re-state the date on every change.
 
-**Last updated:** 2026-04-26
+**Last updated:** 2026-05-10
 
 ## Live trading
 
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
 - **15M live assets:** BTC (88c+), ETH (75c+, 50-contract cap sub-80c), SOL (86c+, taker-first), XRP (92c+)
+- **15M shadow assets:** HYPE (`HYPE_15M_SHADOW=True`, onboarded T1 2026-05-10), DOGE (`DOGE_15M_SHADOW=True`, onboarded T1 2026-05-10). Hourly for both in `HOURLY_EXCLUDED_ASSETS` + `HOURLY_NO_EXCLUDED_ASSETS` until T4. Path: T1 (shadow) → T1.5 (external feeds) → T2 (post-deploy verify) → T3 (cal_mlp training when ~2k settled rows) → T4 (promote).
 - **XRP_15M_SHADOW = False** — XRP promoted to live at 92c+ (data: 41W/2L, 95.3% WR)
 - **SOL_TAKER_FIRST = True** — bypasses maker, direct IOC at all STC
 - **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c). All @ 20% fixed sizing. **T2-Z2 SHADOWED** (97a365f Apr 1, -$313 on 47 trades). Canonical: `kb/concepts/dc-strategy.md`
@@ -53,8 +54,8 @@
 - **Orderbook:** YES and NO are SEPARATE; YES + NO prices do NOT always sum to 100
 - **All orders are limit orders** (no market orders)
 - **Tier:** Advanced (30 reads/sec, 30 writes/sec)
-- **Series (15M):** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M
-- **Series (hourly):** KXBTCD, KXETHD, KXSOLD, KXXRPD
+- **Series (15M):** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M, KXHYPE15M (shadow), KXDOGE15M (shadow)
+- **Series (hourly):** KXBTCD, KXETHD, KXSOLD, KXXRPD, KXHYPED (shadow), KXDOGED (shadow)
 - **Series (weather, 19 cities):** KXHIGHNY, KXHIGHCHI, KXHIGHMIA, KXHIGHDEN, KXHIGHLAX, KXHIGHAUS, KXHIGHTATL, KXHIGHTSFO, KXHIGHTDAL, KXHIGHTPHX, KXHIGHPHIL, KXHIGHTMIN, KXHIGHTSEA, KXHIGHTHOU, KXHIGHTBOS, KXHIGHTLV, KXHIGHTOKC, KXHIGHTDC, KXHIGHTNOLA
 
 ## Fees

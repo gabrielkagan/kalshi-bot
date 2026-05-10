@@ -1,6 +1,6 @@
 # Kalshi Crypto Trading Bot
 
-Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below windows on BTC, ETH, SOL, XRP. Hourly markets and weather/sports/SPX scan in observation mode.
+Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below windows on BTC, ETH, SOL, XRP live; HYPE and DOGE in shadow observation (T1 2026-05-10). Hourly markets and weather/sports/SPX scan in observation mode.
 
 ## Reference docs (read on demand)
 

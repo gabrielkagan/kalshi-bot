@@ -270,22 +270,22 @@ class TestTMSizing(unittest.TestCase):
 
     def test_scan_time_uses_compute_fn(self):
         """TM candidate must derive size from tm_compute_contracts."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:16000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
         self.assertIn("tm_compute_contracts(", tm_block)
 
     def test_scan_time_sets_position_size(self):
         """TM candidate must use _tm_size for position_size."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:16000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
         self.assertIn('"position_size": _tm_size', tm_block)
 
     def test_kelly_zero_in_candidate(self):
         """TM candidate must set kelly_f=0.0."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:16000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
         self.assertIn('"kelly_f": 0.0', tm_block)
 
     def test_drawdown_scaler_one_in_candidate(self):
         """TM candidate must set drawdown_scaler=1.0 (not affected by drawdown)."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:16000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
         self.assertIn('"drawdown_scaler": 1.0', tm_block)
 
     def test_execution_time_re_derives_count(self):
@@ -407,7 +407,7 @@ class TestTMThinBufferCap(unittest.TestCase):
         """The scan-time call to tm_compute_contracts must pass buf_pct=_tm_buf_pct.
         Check is component-based (not exact string) so multi-line call formatting
         from later changes (e.g. risk_cap_price added Apr 28) doesn't false-fail."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:16000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
         # Find a tm_compute_contracts call and verify positional args + buf_pct.
         self.assertIn("tm_compute_contracts(", tm_block,
                       "scan must call tm_compute_contracts")
