@@ -193,6 +193,20 @@ python3 -m bot
 
 Set `OBSERVATION_MODE = True` in `bot/_impl.py` to log everything but place no orders.
 
+### Install git hooks (once per clone)
+
+```bash
+make install-hooks
+scripts/git_hooks/pre-commit --self-test
+```
+
+Installs the Sprint PSC P5.3 pre-commit hook (parallel-session
+coordination). The hook is **fail-open by design** — any unexpected
+condition allows the commit with a stderr warning; it only refuses when
+(a) another Claude session holds a P5.1 lockfile on a staged file, or
+(b) you're committing to `main` and local has diverged from `origin/main`.
+Bypass any time with `git commit --no-verify`.
+
 ## Deployment
 
 Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `main` auto-deploys via GitHub Actions:

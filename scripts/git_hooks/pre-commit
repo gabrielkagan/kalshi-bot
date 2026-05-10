@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+"""Sprint PSC Bit P5.3: git pre-commit hook (lock + main-fetch divergence).
+
+LOAD-BEARING HOOK. Read this docstring before changing anything.
+================================================================
+
+This hook runs on EVERY `git commit` (unless `--no-verify` is used).
+A nonzero exit blocks the commit. A bug here can halt all development
+on the repo, including the parallel Sprint 9 session in another
+worktree. Recovery from a buggy hook requires `git commit --no-verify`
+to even land the fix.
+
+Therefore the design contract is:
+
+  **Fail-open everywhere.** Any unexpected condition — missing lock
+  dir, _session_lock import failure, lock-check exception, git fetch
+  failure, ANY exception in the hook body — MUST allow the commit
+  with a one-line stderr warning. A broken hook that allows everything
+  is acceptable; a broken hook that blocks everything is catastrophic.
+
+  The ONLY cases where we exit nonzero are:
+    (a) Part A: a peer session (live, non-stale) holds the lockfile
+        for a file we have staged. Refuse with held-by metadata.
+    (b) Part B: we're on a protected branch (currently just `main`)
+        and `git merge-base --is-ancestor origin/<branch> HEAD` returns
+        false — i.e. local has diverged from origin. Refuse with a
+        clear rebase/pull suggestion.
+    (c) --self-test mode: an explicit operator-run health check that
+        DELIBERATELY exits nonzero on a broken install, because it's
+        not on the commit-time path.
+
+Stdlib only. No bot.* / scripts.cal_mlp / numpy imports.
+
+Spec source: ClickUp 86b9vgx9w.
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# --------------------------------------------------------------------------
+# Constants
+# --------------------------------------------------------------------------
+
+#: Branches where Part B (origin-divergence check) is active. v1: just main.
+#: Most commits land on feature branches and skip Part B entirely.
+PROTECTED_BRANCHES = frozenset({"main"})
+
+#: Test hooks honored by env var. NEVER set these in production; they
+#: exist solely to let hermetic tests exercise the fail-open code paths.
+_ENV_FORCE_IMPORT_FAIL = "KALSHI_PSC_HOOK_FORCE_IMPORT_FAIL"
+_ENV_FORCE_EXCEPTION = "KALSHI_PSC_HOOK_FORCE_EXCEPTION"
+
+#: Env var carrying the current Claude session id. P5.1's SessionLock
+#: writes this into the lockfile metadata as `claude_session_marker`.
+#: When the hook sees a lockfile whose `claude_session_marker` matches
+#: this env var, it treats the lock as held-by-self → allow.
+_ENV_SESSION_ID = "KALSHI_SESSION_ID"
+
+
+# --------------------------------------------------------------------------
+# Helpers — all fully exception-bounded.
+# --------------------------------------------------------------------------
+
+
+def _warn(msg: str) -> None:
+    """One-line stderr warning. Never raises."""
+    try:
+        sys.stderr.write(f"[pre-commit P5.3 WARN] {msg}\n")
+    except Exception:  # pragma: no cover — stderr write failure is terminal
+        pass
+
+
+def _refuse(msg: str) -> None:
+    """Multi-line stderr refusal preamble. Caller exits 1 after."""
+    try:
+        sys.stderr.write(f"[pre-commit P5.3 REFUSE] {msg}\n")
+    except Exception:  # pragma: no cover
+        pass
+
+
+def _import_session_lock():
+    """Try to import scripts._session_lock. Returns module or None.
+
+    Honors the test-hook env var KALSHI_PSC_HOOK_FORCE_IMPORT_FAIL.
+    Walks up from this script's location to find the repo root, since
+    cwd at hook-invocation time is the git repo (which may or may not
+    be the kalshi-bot repo if symlinks are weird).
+    """
+    if os.environ.get(_ENV_FORCE_IMPORT_FAIL):
+        _warn(
+            "scripts._session_lock import forced-failed via "
+            f"{_ENV_FORCE_IMPORT_FAIL}; skipping lock check (fail-open)"
+        )
+        return None
+    try:
+        # scripts/git_hooks/pre-commit → parents[2] = repo root, which
+        # contains the `scripts/` package dir.
+        repo_root = Path(__file__).resolve().parents[2]
+        scripts_parent = str(repo_root)
+        if scripts_parent not in sys.path:
+            sys.path.insert(0, scripts_parent)
+        from scripts import _session_lock  # type: ignore[import-not-found]
+        return _session_lock
+    except Exception as e:  # noqa: BLE001 — fail-open
+        _warn(f"could not import scripts._session_lock ({e!r}); skipping lock check")
+        return None
+
+
+def _git(args: list[str], *, cwd: str | None = None) -> tuple[int, str, str]:
+    """Run a git command; return (returncode, stdout, stderr). Never raises."""
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return proc.returncode, proc.stdout, proc.stderr
+    except (FileNotFoundError, OSError) as e:
+        return 127, "", f"git invocation failed: {e!r}"
+
+
+def _staged_files() -> list[str]:
+    """Return list of staged file paths (relative to repo root).
+
+    `git diff --cached --name-only` is the canonical way to list staged
+    paths in a pre-commit hook. On error, return [].
+    """
+    rc, out, err = _git(["diff", "--cached", "--name-only", "--diff-filter=ACMRT"])
+    if rc != 0:
+        _warn(f"git diff --cached failed (rc={rc}); {err.strip()}")
+        return []
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def _current_branch() -> str | None:
+    """Return current branch name, or None if detached/error."""
+    rc, out, _ = _git(["rev-parse", "--abbrev-ref", "HEAD"])
+    if rc != 0:
+        return None
+    name = out.strip()
+    if name == "HEAD" or not name:
+        return None
+    return name
+
+
+# --------------------------------------------------------------------------
+# Part A — Lock enforcement
+# --------------------------------------------------------------------------
+
+
+def _check_part_a(session_lock_mod, my_session_id: str) -> tuple[bool, str]:
+    """Check staged files against the lock dir.
+
+    Returns (allow, msg). `allow=False` means commit must be refused.
+    msg is the refusal-or-warn text for stderr.
+
+    Fail-open contract: any error → allow + warn. The only refusal path
+    is "lockfile exists, parses, is not stale, is held by a DIFFERENT
+    session_id".
+    """
+    if session_lock_mod is None:
+        return True, ""  # import already warned
+
+    staged = _staged_files()
+    if not staged:
+        return True, ""  # nothing staged; nothing to check
+
+    try:
+        lock_root = session_lock_mod._lock_root()
+    except Exception as e:  # noqa: BLE001
+        _warn(f"could not resolve lock root ({e!r}); skipping lock check")
+        return True, ""
+
+    if not Path(lock_root).exists():
+        _warn(
+            f"lock dir does not exist ({lock_root}); skipping lock check "
+            f"(fail-open — run `make install-hooks` setup or initialize "
+            f".claude/locks/active-work/ first)"
+        )
+        return True, ""
+
+    flatten = getattr(session_lock_mod, "flatten_target_path", None)
+    read_meta = getattr(session_lock_mod, "_read_lockfile_metadata", None)
+    is_stale_fn = getattr(session_lock_mod, "is_stale", None)
+    if not (flatten and read_meta and is_stale_fn):
+        _warn("scripts._session_lock missing expected helpers; skipping lock check")
+        return True, ""
+
+    held_by_others: list[tuple[str, dict]] = []
+    for path in staged:
+        try:
+            flat = flatten(path)
+        except Exception:
+            # Path can't be flattened (traversal, control chars, etc).
+            # Skip — staging a path with traversal is a different problem
+            # than ours.
+            continue
+        lockfile = Path(lock_root) / f"{flat}.lock"
+        if not lockfile.exists():
+            continue
+        try:
+            meta = read_meta(lockfile)
+        except Exception as e:  # noqa: BLE001
+            _warn(f"lock metadata read failed for {path!r} ({e!r}); skipping")
+            continue
+        if meta is None:
+            # Malformed → leave it alone; P5.1's quarantine path handles
+            # those on real acquire. Don't block the commit on garbage.
+            continue
+        try:
+            if is_stale_fn(lockfile):
+                continue  # stale → treat as not-held
+        except Exception as e:  # noqa: BLE001
+            _warn(f"is_stale check failed for {path!r} ({e!r}); skipping")
+            continue
+        # Self-check: if claude_session_marker matches our env, OR
+        # session_id matches our env's KALSHI_SESSION_ID, it's our lock.
+        holder_marker = meta.get("claude_session_marker") or ""
+        holder_session_id = meta.get("session_id") or ""
+        if my_session_id and (
+            holder_marker == my_session_id or holder_session_id == my_session_id
+        ):
+            continue  # held by self → allow
+        held_by_others.append((path, meta))
+
+    if not held_by_others:
+        return True, ""
+
+    # Refuse with held-by metadata for every offending file.
+    lines = [
+        "Commit refused: one or more staged files are locked by another Claude session.",
+        "",
+    ]
+    for path, meta in held_by_others:
+        lines.append(
+            f"  {path}: held by session={meta.get('session_id')!r} "
+            f"pid={meta.get('pid')} "
+            f"started_at={meta.get('started_at')} "
+            f"last_heartbeat={meta.get('last_heartbeat')}"
+        )
+    lines.append("")
+    lines.append(
+        "Another session is editing this file. Wait for them to finish, or coordinate via ClickUp."
+    )
+    lines.append(
+        "If you believe the lock is dead, the holder's heartbeat must be >180s old; "
+        "the next P5.1 acquire by anyone will reclaim it automatically."
+    )
+    lines.append("To bypass (USE WITH CAUTION): `git commit --no-verify`")
+    return False, "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Part B — Origin-divergence check
+# --------------------------------------------------------------------------
+
+
+def _check_part_b(branch: str) -> tuple[bool, str]:
+    """If on a protected branch, refuse when local diverged from origin/<branch>.
+
+    Returns (allow, msg). Fail-open everywhere except the one explicit
+    "local is behind origin" case.
+    """
+    if branch not in PROTECTED_BRANCHES:
+        return True, ""  # not protected; skip Part B entirely
+
+    # Check that origin remote exists at all; if not, fail-open.
+    rc, _out, _err = _git(["remote", "get-url", "origin"])
+    if rc != 0:
+        _warn(f"no origin remote configured; skipping Part B fetch check on {branch}")
+        return True, ""
+
+    # Fetch quietly. On failure (offline, auth issue, etc), fail-open.
+    rc, _out, err = _git(["fetch", "origin", "--quiet"])
+    if rc != 0:
+        _warn(
+            f"git fetch failed (rc={rc}); skipping origin-divergence check. "
+            f"Recommend `git fetch && git rebase origin/{branch}` before push. "
+            f"stderr: {err.strip()[:200]}"
+        )
+        return True, ""
+
+    # If origin/<branch> doesn't exist yet (first push), fail-open silently.
+    rc, _out, _err = _git(["rev-parse", "--verify", f"origin/{branch}"])
+    if rc != 0:
+        return True, ""
+
+    # The key check: is `origin/<branch>` an ancestor of HEAD?
+    # If yes → we have all of origin's commits → safe to commit/push.
+    # If no  → we're missing commits; rebase first.
+    rc, _out, _err = _git(
+        ["merge-base", "--is-ancestor", f"origin/{branch}", "HEAD"]
+    )
+    if rc == 0:
+        return True, ""  # ahead or equal — allow
+    if rc != 1:
+        # Any other rc indicates an unexpected error (not the documented
+        # "not an ancestor" exit code of 1). Fail-open with warning.
+        _warn(
+            f"git merge-base returned rc={rc}; skipping origin-divergence check"
+        )
+        return True, ""
+
+    # rc == 1: NOT an ancestor → local has diverged.
+    lines = [
+        f"Commit refused: local `{branch}` has diverged from `origin/{branch}`.",
+        "",
+        "Another session (or push) advanced origin while you were working.",
+        "Rebase or merge before committing/pushing to avoid clobbering their work:",
+        "",
+        f"    git fetch origin && git rebase origin/{branch}",
+        "",
+        f"Or merge: `git fetch origin && git merge origin/{branch}`.",
+        "To bypass (USE WITH CAUTION): `git commit --no-verify`",
+    ]
+    return False, "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Self-test mode
+# --------------------------------------------------------------------------
+
+
+def _self_test() -> int:
+    """Operator-facing health check. Exit 0 on success, 1 on any problem.
+
+    Distinct from the commit-time path: here we WANT a nonzero exit on
+    a broken install so the operator sees the problem and fixes it.
+    """
+    print("P5.3 pre-commit hook self-test: running...")
+
+    # Check 1: this script is readable + has the expected shebang.
+    here = Path(__file__).resolve()
+    if not here.exists():
+        print(f"FAIL: hook script not at expected path: {here}", file=sys.stderr)
+        return 1
+
+    # Check 2: _session_lock imports cleanly.
+    mod = _import_session_lock()
+    if mod is None:
+        print(
+            "FAIL: scripts._session_lock could not be imported. "
+            "Check that the worktree contains scripts/_session_lock.py.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Check 3: lock root is accessible (or fail-open path is what would fire).
+    try:
+        lock_root = mod._lock_root()
+    except Exception as e:  # noqa: BLE001
+        print(f"FAIL: _lock_root() raised: {e!r}", file=sys.stderr)
+        return 1
+    lock_root_p = Path(lock_root)
+    if not lock_root_p.exists():
+        print(
+            f"WARN: lock dir does not exist yet at {lock_root_p}; "
+            "the hook would fail-open in this state. "
+            "Create it with `mkdir -p .claude/locks/active-work` or run "
+            "scripts._session_lock once to initialize."
+        )
+        # Lock dir missing is fail-open at commit time, but for the operator
+        # self-test it's worth noting. Still pass.
+
+    # Check 4: each required helper is callable.
+    for name in ("flatten_target_path", "_read_lockfile_metadata", "is_stale", "_lock_root"):
+        if not callable(getattr(mod, name, None)):
+            print(
+                f"FAIL: scripts._session_lock.{name} is not callable. "
+                "P5.1 may have been modified incompatibly.",
+                file=sys.stderr,
+            )
+            return 1
+
+    print("P5.3 pre-commit hook self-test: OK")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Main — the OUTER try/except is the load-bearing fail-open guarantee.
+# --------------------------------------------------------------------------
+
+
+def _main_inner() -> int:
+    """The hook body. Wrapped by main() in a top-level try/except.
+
+    Returns the exit code. 0=allow, 1=refuse (with stderr message
+    already emitted).
+    """
+    if os.environ.get(_ENV_FORCE_EXCEPTION):
+        raise RuntimeError("test-forced exception (KALSHI_PSC_HOOK_FORCE_EXCEPTION)")
+
+    # Resolve our session id once (env-driven).
+    my_session_id = os.environ.get(_ENV_SESSION_ID) or os.environ.get(
+        "CLAUDE_SESSION_ID", ""
+    )
+
+    # Part A — lock check.
+    mod = _import_session_lock()
+    allow_a, msg_a = _check_part_a(mod, my_session_id)
+    if not allow_a:
+        _refuse(msg_a)
+        return 1
+
+    # Part B — origin-divergence check (only on protected branches).
+    branch = _current_branch()
+    if branch is None:
+        # Detached HEAD or error. Allow with brief note.
+        _warn("could not determine current branch; skipping Part B")
+        return 0
+
+    allow_b, msg_b = _check_part_b(branch)
+    if not allow_b:
+        _refuse(msg_b)
+        return 1
+
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) > 1 and argv[1] == "--self-test":
+        try:
+            return _self_test()
+        except Exception as e:  # noqa: BLE001
+            print(f"FAIL: --self-test raised: {e!r}", file=sys.stderr)
+            return 1
+
+    # Top-level guard: ANY uncaught exception in the hook body → fail-open
+    # with stderr warning, never block the commit on internal hook error.
+    try:
+        return _main_inner()
+    except SystemExit:
+        # Honor explicit sys.exit() from inner code (currently unused, but
+        # defensive against future contributors).
+        raise
+    except BaseException as e:  # noqa: BLE001 — catch-all by design
+        # KeyboardInterrupt etc — we still want fail-open. A Ctrl-C during
+        # commit shouldn't permanently fail the commit; let git decide.
+        _warn(
+            f"unexpected exception in hook body ({type(e).__name__}: {e!r}); "
+            "fail-open — allowing commit. Investigate and fix the hook."
+        )
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
