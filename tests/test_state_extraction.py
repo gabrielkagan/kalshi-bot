@@ -64,7 +64,13 @@ BOT_PY = REPO_ROOT / "bot" / "_impl.py"
 STATE_PY = REPO_ROOT / "bot" / "state.py"
 CALIBRATION_PY = REPO_ROOT / "bot" / "engines" / "calibration.py"
 INTEGRATION_PY = REPO_ROOT / "scripts" / "cal_mlp" / "integration.py"
-SCHEMA_BASELINE_PATH = Path("/tmp/bit-7.1/schema-pre-move.txt")
+# Bit 7.1 fu1 (deploy fix): the schema baseline lives in tests/fixtures/ so CI
+# runners (which have a fresh /tmp) can find it. Pre-deploy it was at
+# /tmp/bit-7.1/schema-pre-move.txt — that path is preserved as a fallback
+# for any local dev runs that pre-date the fixture move.
+_FIXTURE_BASELINE = Path(__file__).resolve().parent / "fixtures" / "state_db_schema_baseline.txt"
+_LEGACY_TMP_BASELINE = Path("/tmp/bit-7.1/schema-pre-move.txt")
+SCHEMA_BASELINE_PATH = _FIXTURE_BASELINE if _FIXTURE_BASELINE.exists() else _LEGACY_TMP_BASELINE
 
 
 # ------------------------------------------------------------------ Constants
