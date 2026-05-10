@@ -346,9 +346,13 @@ _BLEED_BLOCK_MISSING_BLEEDERS = _validate_bleed_block_bleeder_strings()
 
 # Phase 7 Edit 2: static reimplementation of 15M main-path sizing for parity-assert.
 # DO NOT use in production trading — only consumed by sizing_parity_assert at startup.
-# Closes over bot/_impl.py globals so SIZING_TIERS / DRAWDOWN_* / per-asset risk caps /
-# STC scaler / DRAWDOWN_HALT_FLOOR fallback are read lazily.
-compute_for_15m_main_path = make_compute_for_15m_main_path(globals())
+# Bit 7.1 fu (Smell 4, ticket 86b9vhccw): make_compute_for_15m_main_path() now imports
+# its dependent names directly from bot.constants + config inside the function body
+# (mirrors Bit 7.1 path-A++ parity_assert / sizing_parity_assert). The previous
+# `make_compute_for_15m_main_path(globals())` closure-over-bot._impl-namespace pattern
+# is gone; SIZING_TIERS / DRAWDOWN_* / per-asset risk caps / STC scaler / DRAWDOWN_HALT_FLOOR
+# literal fallback all resolve at call-time via direct imports.
+compute_for_15m_main_path = make_compute_for_15m_main_path()
 
 
 # ── Orphan-DB watchdog (Layer 3 of orphan prevention) ─────────────────
@@ -564,10 +568,11 @@ def detect_orphan_db_holders(
 # scripts/cal_mlp/integration.py `parity_assert(conn) -> tuple[str, int]` and
 # `sizing_parity_assert(conn, *, rowid, compute_for_15m_main_path)` for the
 # new explicit signatures. The `_get_compute_for_15m_main_path()` single-name
-# late-binding helper inside bot/state.py preserves the closure created at
-# `compute_for_15m_main_path = make_compute_for_15m_main_path(globals())`
-# below at line ~350. Sister Bit 7.2 (agent_docs/db_schema.md) shipped in
-# the same atomic commit. Sprint 7 closes here.
+# late-binding helper inside bot/state.py wraps the closure created at
+# `compute_for_15m_main_path = make_compute_for_15m_main_path()` (Bit 7.1 fu /
+# Smell 4, ticket 86b9vhccw, dropped the `globals()` arg + closes over
+# function-scoped imports instead). Sister Bit 7.2 (agent_docs/db_schema.md)
+# shipped in the same atomic commit as Bit 7.1. Sprint 7 closes here.
 
 
 # ═════════════════════════════════════════════════════════════════════════════

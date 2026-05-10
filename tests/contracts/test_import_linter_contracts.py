@@ -308,7 +308,7 @@ def test_state_late_binding_is_inside_helper_function():
     (bot._impl re-exports bot.state — search anchor:
     ``from bot.state import StateManager`` — and
     ``compute_for_15m_main_path`` is bound below that re-export via
-    ``make_compute_for_15m_main_path(globals())``). The import-linter contract
+    ``make_compute_for_15m_main_path()``). The import-linter contract
     ``state-no-impl-toplevel`` documents the ``bot.state -> bot._impl``
     edge as an explicit carve-out; this AST pin asserts the carve-out is
     used the way the contract describes (method-body inside the helper),
@@ -767,7 +767,7 @@ def test_lint_imports_fails_when_state_carve_out_removed(tmp_path: Path):
     cannot be lifted the same way: the load-order cycle (bot._impl
     re-exports bot.state — search anchor: ``from bot.state import
     StateManager`` — and ``compute_for_15m_main_path`` is bound below
-    that re-export via ``make_compute_for_15m_main_path(globals())``)
+    that re-export via ``make_compute_for_15m_main_path()``)
     makes a top-level import structurally impossible. The carve-out is
     permanent until that cycle is structurally redesigned, so this test
     locks the configuration against an accidental removal of the ignore

@@ -21,17 +21,21 @@ in-Bit to drop their `bot_globals` parameter:
   - `sizing_parity_assert(conn, *, rowid, compute_for_15m_main_path) -> str` —
     explicit keyword-only deps. Caller passes the rowid from parity_assert's
     return tuple and the `compute_for_15m_main_path` callable.
-  - `make_compute_for_15m_main_path(bot_globals)` — DELIBERATELY UNCHANGED
-    (Smell 4 in the plan doc, Sprint 8 candidate).
+  - `make_compute_for_15m_main_path()` — Bit 7.1 fu (Smell 4, ticket
+    86b9vhccw, 2026-05-10): dropped `bot_globals: dict` parameter. The
+    closure now imports its 11 dependent names directly from
+    `bot.constants` + `config` inside the function body, plus a literal
+    `DRAWDOWN_HALT_FLOOR = 0.10` fallback (mirrors path-A++ pattern).
 
 The only `bot._impl` dependency this module has is the `_get_compute_for_15m_main_path()`
 late-binding helper below — a SINGLE named function, not a whole-namespace
 proxy. The helper is necessary because `compute_for_15m_main_path` is bound
-at bot/_impl.py (search anchor: `compute_for_15m_main_path = make_compute_for_15m_main_path(globals())`) via `make_compute_for_15m_main_path(globals())`, AFTER
-the line-109 re-export that imports this module. Method-body late-binding
-sidesteps the load-order cycle (bot._impl imports bot.state during its own
-load, but StateManager() instantiation happens at MainLoop runtime, well
-after bot._impl finishes loading).
+at bot/_impl.py (search anchor: `compute_for_15m_main_path = make_compute_for_15m_main_path`)
+AFTER the bot.state re-export inside bot/_impl.py (search anchor:
+`from bot.state import StateManager`). Method-body late-binding sidesteps
+the load-order cycle (bot._impl imports bot.state during its own load, but
+StateManager() instantiation happens at MainLoop runtime, well after
+bot._impl finishes loading).
 
 Sister Bit 7.2 (`agent_docs/db_schema.md` refresh) ships in the same atomic
 commit — the schema doc's source-of-truth for the 17 tables is now
@@ -127,31 +131,36 @@ from models import calculate_fee, strategy_to_group
 def _get_compute_for_15m_main_path():
     """Late-binding helper for the `compute_for_15m_main_path` callable.
 
-    Returns `bot._impl.compute_for_15m_main_path`, which is bound at
-    `bot/_impl.py (search anchor: `compute_for_15m_main_path = make_compute_for_15m_main_path(globals())`)` via `compute_for_15m_main_path = make_compute_for_15m_main_path(globals())`.
+    Returns `bot._impl.compute_for_15m_main_path`, which is bound inside
+    bot/_impl.py via `compute_for_15m_main_path = make_compute_for_15m_main_path()`
+    (search anchor: `compute_for_15m_main_path = make_compute_for_15m_main_path`).
 
     Late-bound for two reasons:
-      1. **Load-order cycle avoidance.** bot._impl imports bot.state at line ~109
-         during its own module-level execution, but `compute_for_15m_main_path`
-         isn't bound until well below line 109 of bot._impl (search anchor:
-         `compute_for_15m_main_path = make_compute_for_15m_main_path`). A top-level `import bot._impl`
-         here would resolve to a half-loaded module (partial-module ImportError
-         or stale-None binding for the not-yet-defined name).
+      1. **Load-order cycle avoidance.** bot._impl imports bot.state during
+         its own module-level execution (search anchor:
+         `from bot.state import StateManager`), but
+         `compute_for_15m_main_path` isn't bound until further down in
+         bot._impl. A top-level `import bot._impl` here would resolve to a
+         half-loaded module (partial-module ImportError or stale-None
+         binding for the not-yet-defined name).
       2. **Single-name access discipline.** Path-A++ replaced Bit 7.1's original
          `_bot_impl_globals()` wrapper (which proxied the entire bot._impl
          namespace) with this narrower helper. Only ONE name flows from
          bot._impl into this module's runtime path — the closure produced by
-         `make_compute_for_15m_main_path(bot_globals)`.
+         `make_compute_for_15m_main_path()`.
 
     StateManager() construction always happens at MainLoop runtime, well
     after bot._impl finishes loading, so the lookup is safe inside method
     bodies.
 
-    NOTE: `make_compute_for_15m_main_path` itself is a closure over bot._impl
-    globals — that's a separate code smell (Smell 4 in
-    kb/decisions/bit-7.1-plan-may10.md, Sprint 8 candidate). This helper
-    preserves the closure as-is for Bit 7.1; the smell-fix lives in a
-    separate ticket.
+    Bit 7.1 fu (Smell 4, ticket 86b9vhccw, 2026-05-10):
+    `make_compute_for_15m_main_path` was refactored to drop its
+    `bot_globals: dict` parameter — the function now imports its 11
+    dependent names directly from `bot.constants` + `config` inside its
+    own body (mirroring Bit 7.1 path-A++ `parity_assert` /
+    `sizing_parity_assert`). The closure no longer captures the bot._impl
+    namespace; this helper is unchanged because the load-order cycle
+    (reason 1 above) still requires late-binding.
     """
     import bot._impl as _bot_impl
     return _bot_impl.compute_for_15m_main_path

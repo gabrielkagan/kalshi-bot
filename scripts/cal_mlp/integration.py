@@ -548,22 +548,59 @@ def sizing_parity_assert(conn, *, rowid: int, compute_for_15m_main_path) -> str:
 # bot.py addition: compute_for_15m_main_path (mirrors cal_mlp/sizing.py)
 # ---------------------------------------------------------------------------
 
-def make_compute_for_15m_main_path(bot_globals: dict):
+def make_compute_for_15m_main_path():
     """Returns a function that re-implements the 15M MAIN-path sizing math
-    using bot.py globals. Phase 7 inserts this into bot.py via:
+    using values from `bot.constants` + `config`. Inserted into bot._impl
+    via:
 
-        from cal_mlp.integration import make_compute_for_15m_main_path
-        compute_for_15m_main_path = make_compute_for_15m_main_path(globals())
+        from integration import make_compute_for_15m_main_path
+        compute_for_15m_main_path = make_compute_for_15m_main_path()
 
-    The static-method-style function is used by sizing_parity_assert at startup."""
-    g = bot_globals
+    The returned `compute` callable is used by `sizing_parity_assert` at
+    startup (StateManager.__init__).
+
+    Smell 4 refactor (Bit 7.1 follow-up, ticket 86b9vhca0 closeout +
+    86b9vhccw): dropped the `bot_globals: dict` parameter. Pre-refactor,
+    the closure read 11 names lazily via `g['NAME']` from a caller-passed
+    dict (typically `globals()` of bot._impl). All 11 names are immutable
+    at runtime per the bot/__init__.py proxy docstring (only
+    WEATHER_NO_SIDE_LIVE / HOURLY_NO_SIDE_LIVE / BRACKET_NO_ENABLED
+    mutate, none of which are in this set), so capture-once-at-import-time
+    via direct imports preserves semantics. Mirrors Bit 7.1 path-A++
+    `parity_assert` / `sizing_parity_assert` (which dropped their
+    `bot_globals` params for the same reason).
+
+    `parity_assert` separately enforces that these `bot.constants` /
+    `config` values match cal_mlp's vendored constants — drift here would
+    fail boot at the StateManager.__init__ parity gate."""
+    # Function-scoped imports: resolved when make_compute_for_15m_main_path()
+    # is called from bot/_impl.py (well after both modules are loaded). Same
+    # pattern as parity_assert/sizing_parity_assert above.
+    from bot.constants import (
+        BTC_MAX_RISK_PER_TRADE, ETH_MAX_RISK_PER_TRADE,
+        SOL_MAX_RISK_PER_TRADE, XRP_MAX_RISK_PER_TRADE,
+        STC_SIZING_SCALER_KNEE, STC_SIZING_SCALER_ENABLED,
+    )
+    from config import (
+        SIZING_TIERS, MAX_RISK_PER_TRADE,
+        DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD, DRAWDOWN_HALT_THRESHOLD,
+    )
+    # DRAWDOWN_HALT_FLOOR is in NEITHER bot.constants nor config.py. The
+    # literal 0.10 mirrors the pre-refactor `bot_globals.get('DRAWDOWN_HALT_FLOOR',
+    # 0.10)` fallback semantics AND the matching literal inside
+    # `parity_assert` (above). If an operator promotes DRAWDOWN_HALT_FLOOR
+    # to config.py in a future bit, this literal becomes a redundancy to
+    # remove (parity_assert's _check on this name will start failing if
+    # the literal drifts from the promoted config value).
+    DRAWDOWN_HALT_FLOOR = 0.10
+
     asset_caps = {
-        'BTC': g['BTC_MAX_RISK_PER_TRADE'], 'ETH': g['ETH_MAX_RISK_PER_TRADE'],
-        'SOL': g['SOL_MAX_RISK_PER_TRADE'], 'XRP': g['XRP_MAX_RISK_PER_TRADE'],
+        'BTC': BTC_MAX_RISK_PER_TRADE, 'ETH': ETH_MAX_RISK_PER_TRADE,
+        'SOL': SOL_MAX_RISK_PER_TRADE, 'XRP': XRP_MAX_RISK_PER_TRADE,
     }
 
     def _bot_lookup_tier(fee_adj_edge_frac: float):
-        for i, (floor, risk) in enumerate(g['SIZING_TIERS']):
+        for i, (floor, risk) in enumerate(SIZING_TIERS):
             if fee_adj_edge_frac >= floor:
                 return (i, risk)
         return (-1, 0.0)
@@ -572,18 +609,11 @@ def make_compute_for_15m_main_path(bot_globals: dict):
         if hwm_cents <= 0:
             return 1.0
         ratio = current_balance_cents / hwm_cents
-        if ratio < g['DRAWDOWN_HALT_THRESHOLD']:
-            # R-p7-spec-r1#C1: bot.py hardcodes 0.10 inside
-            # models.PositionSizer._drawdown_scaler; config.py exposes
-            # DRAWDOWN_HALT_THRESHOLD but NOT DRAWDOWN_HALT_FLOOR. Falling
-            # back to the same literal keeps the parity vector reachable
-            # without requiring a config.py edit at deploy time. If the
-            # operator lands the suggested config.py edit, the bot global
-            # takes precedence automatically.
-            return g.get('DRAWDOWN_HALT_FLOOR', 0.10)
-        if ratio < g['DRAWDOWN_QUARTER_THRESHOLD']:
+        if ratio < DRAWDOWN_HALT_THRESHOLD:
+            return DRAWDOWN_HALT_FLOOR
+        if ratio < DRAWDOWN_QUARTER_THRESHOLD:
             return 0.25
-        if ratio < g['DRAWDOWN_HALF_THRESHOLD']:
+        if ratio < DRAWDOWN_HALF_THRESHOLD:
             return 0.50
         return 1.0
 
@@ -594,15 +624,15 @@ def make_compute_for_15m_main_path(bot_globals: dict):
         if tier_idx < 0:
             return {'contracts': 0}
         drawdown = _bot_drawdown_scaler(current_balance_cents, hwm_cents)
-        asset_cap = asset_caps.get(asset, g['MAX_RISK_PER_TRADE'])
-        effective_risk = min(risk_fraction * drawdown, g['MAX_RISK_PER_TRADE'], asset_cap)
+        asset_cap = asset_caps.get(asset, MAX_RISK_PER_TRADE)
+        effective_risk = min(risk_fraction * drawdown, MAX_RISK_PER_TRADE, asset_cap)
         risk_cents = int(available_balance_cents * effective_risk)
         notional_cents = max(1, risk_cents)
         contracts = max(0, notional_cents // max(1, entry_price_cents))
-        if (g['STC_SIZING_SCALER_ENABLED']
-                and seconds_to_close > g['STC_SIZING_SCALER_KNEE']
+        if (STC_SIZING_SCALER_ENABLED
+                and seconds_to_close > STC_SIZING_SCALER_KNEE
                 and contracts > 0):
-            contracts = max(1, int(contracts * (g['STC_SIZING_SCALER_KNEE'] / seconds_to_close)))
+            contracts = max(1, int(contracts * (STC_SIZING_SCALER_KNEE / seconds_to_close)))
         return {'contracts': contracts}
 
     return compute

@@ -192,26 +192,17 @@ def test_sha_chain_uses_only_deploy_fold_members():
 def test_sizing_parity_vectors_match_integration_mirror():
     """R-p7-r3#M2 + R-p7-spec-r1#C1: cal_mlp/sizing.compute_size and
     integration.make_compute_for_15m_main_path MUST agree on every parity
-    vector. Drift here is the deploy boot-blocker pattern."""
+    vector. Drift here is the deploy boot-blocker pattern.
+
+    Smell 4 refactor (ticket 86b9vhccw): `make_compute_for_15m_main_path`
+    now takes no args; its dependent names come from `bot.constants` +
+    `config` directly. Cross-source equality (cal_mlp.sizing values match
+    bot.constants/config values) is enforced by `parity_assert` at boot —
+    so this test asserts the consequence (sizing-vector parity) using
+    real values, no synthetic bot_globals dict needed."""
     import sizing
-    # Synthetic bot_globals for the integration mirror — match cal_mlp's
-    # constants so the parity_assert vectors all pass.
-    bot_globals = {
-        'SIZING_TIERS': sizing.SIZING_TIERS,
-        'BTC_MAX_RISK_PER_TRADE': sizing.ASSET_MAX_RISK_PER_TRADE['BTC'],
-        'ETH_MAX_RISK_PER_TRADE': sizing.ASSET_MAX_RISK_PER_TRADE['ETH'],
-        'SOL_MAX_RISK_PER_TRADE': sizing.ASSET_MAX_RISK_PER_TRADE['SOL'],
-        'XRP_MAX_RISK_PER_TRADE': sizing.ASSET_MAX_RISK_PER_TRADE['XRP'],
-        'MAX_RISK_PER_TRADE': sizing.MAX_RISK_PER_TRADE,
-        'DRAWDOWN_HALF_THRESHOLD': sizing.DRAWDOWN_HALF_THRESHOLD,
-        'DRAWDOWN_QUARTER_THRESHOLD': sizing.DRAWDOWN_QUARTER_THRESHOLD,
-        'DRAWDOWN_HALT_THRESHOLD': sizing.DRAWDOWN_HALT_THRESHOLD,
-        # DRAWDOWN_HALT_FLOOR not exposed by bot/_impl.py — mirror falls back to 0.10.
-        'STC_SIZING_SCALER_KNEE': sizing.STC_SIZING_SCALER_KNEE,
-        'STC_SIZING_SCALER_ENABLED': sizing.STC_SIZING_SCALER_ENABLED,
-    }
     import integration
-    bot_compute = integration.make_compute_for_15m_main_path(bot_globals)
+    bot_compute = integration.make_compute_for_15m_main_path()
 
     # The 8 parity vectors from integration.sizing_parity_assert.
     test_vectors = [
@@ -238,30 +229,28 @@ def test_sizing_parity_vectors_match_integration_mirror():
             )
 
 
-def test_drawdown_halt_floor_fallback_matches_literal():
+def test_drawdown_halt_floor_literal_matches_expected():
     """R-p7-spec-r1#C1: bot/_impl.py hardcodes DRAWDOWN_HALT_FLOOR=0.10 inline
-    inside models.PositionSizer. integration.py uses g.get(..., 0.10) so
-    parity vec 4 (XRP halt path) is reachable without a config.py edit."""
+    inside models.PositionSizer; the make_compute_for_15m_main_path closure
+    mirrors that literal so the XRP halt path (parity vec 4) is reachable
+    without a config.py edit.
+
+    Smell 4 refactor (ticket 86b9vhccw): pre-refactor, the closure used
+    `g.get('DRAWDOWN_HALT_FLOOR', 0.10)` to fall back to 0.10 when the
+    caller-passed dict omitted the key. Post-refactor, the function body
+    declares `DRAWDOWN_HALT_FLOOR = 0.10` directly (mirroring
+    parity_assert's literal). This test pins the literal value: a
+    regression that changes 0.10 to a different constant would fail
+    here — and would also fail parity_assert._check on DRAWDOWN_HALT_FLOOR
+    at boot."""
     import integration
-    # Build bot_globals WITHOUT DRAWDOWN_HALT_FLOOR — the realistic case.
-    import sizing
-    bot_globals = {
-        'SIZING_TIERS': sizing.SIZING_TIERS,
-        'BTC_MAX_RISK_PER_TRADE': 0.15, 'ETH_MAX_RISK_PER_TRADE': 0.20,
-        'SOL_MAX_RISK_PER_TRADE': 0.15, 'XRP_MAX_RISK_PER_TRADE': 0.15,
-        'MAX_RISK_PER_TRADE': 0.25,
-        'DRAWDOWN_HALF_THRESHOLD': 0.85,
-        'DRAWDOWN_QUARTER_THRESHOLD': 0.75,
-        'DRAWDOWN_HALT_THRESHOLD': 0.65,
-        # Intentionally absent: 'DRAWDOWN_HALT_FLOOR'
-        'STC_SIZING_SCALER_KNEE': 300,
-        'STC_SIZING_SCALER_ENABLED': True,
-    }
-    bot_compute = integration.make_compute_for_15m_main_path(bot_globals)
-    # Vec 4: XRP, ratio=0.6 < 0.65 → halt path → drawdown=0.10 → contracts > 0
+    bot_compute = integration.make_compute_for_15m_main_path()
+    # Vec 4: XRP, ratio=0.6 < 0.65 (config.DRAWDOWN_HALT_THRESHOLD) → halt path
+    # → drawdown = literal 0.10 → contracts > 0.
     r = bot_compute(0.04, 100000, 95, 60000, 100000, 60, 'XRP')
-    # Literal 0.10 floor: risk = 0.25 * 0.10 = 0.025; cap to 0.15 (XRP) → 0.025
-    # Notional = 100000 * 0.025 = 2500; contracts = 2500 // 95 = 26
+    # Literal 0.10 floor: risk = MAX_RISK_PER_TRADE (0.25) * 0.10 = 0.025;
+    # cap to XRP_MAX_RISK_PER_TRADE (0.15) → 0.025.
+    # Notional = 100000 * 0.025 = 2500; contracts = 2500 // 95 = 26.
     assert r['contracts'] == 26, f"expected 26, got {r['contracts']}"
 
 
