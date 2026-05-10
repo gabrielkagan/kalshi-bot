@@ -342,10 +342,13 @@ class TestSlowTickInstrumentation(unittest.TestCase):
     clock_drift / event-loop stall pattern documented in PM Fix 5."""
 
     def test_scan_contains_slow_tick_log(self):
-        with open(bot._impl.__file__) as f:
+        # Bit 9.3 retarget (2026-05-10): MainLoop._tick (which emits the
+        # SLOW_SCAN_TICK warning) moved to bot/main_loop.py.
+        import bot.main_loop
+        with open(bot.main_loop.__file__) as f:
             src = f.read()
         self.assertIn("SLOW_SCAN_TICK", src,
-                      "scan() must emit a SLOW_SCAN_TICK warning when "
+                      "MainLoop._tick must emit a SLOW_SCAN_TICK warning when "
                       "tick-to-tick gap > 2s — see PM Fix 5 (event-loop "
                       "stall diagnostic).")
 

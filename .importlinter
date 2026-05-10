@@ -116,6 +116,7 @@ forbidden_modules =
     bot.executor
     bot.feeds
     bot.fetchers
+    bot.main_loop
     bot.scanner
     bot.clients
     bot.kalshi_client

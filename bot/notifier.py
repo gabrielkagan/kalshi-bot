@@ -6,10 +6,19 @@ Constructed exactly once in `MainLoop.__init__` at runtime.
 
 Bit 8.1 path-A++ (2026-05-10): the module-level singleton `_TELEGRAM`
 relocated from `bot/_impl.py` to here, alongside the class it
-references. FOUR consumers reach it via `import bot.notifier as
+references. FIVE consumers reach it via `import bot.notifier as
 _telegram_state` plus `_telegram_state._TELEGRAM` module-attribute
-access (4th added in Bit 9.2 with the SettlementTracker extraction):
-  - `bot/_impl.py` (search anchor: `import bot.notifier as _telegram_state`) — for MainLoop reads only post-Bit-9.2
+access (Bit 9.3 atomic update — `bot/main_loop.py` ADDS as the new
+MainLoop-host consumer; `bot/_impl.py` STAYS in the list for the
+orphan-DB Layer-3 helper `_alert_orphan_db_holder` at bot/_impl.py:430,
+which is the ONLY remaining `_telegram_state._TELEGRAM` site in
+bot/_impl.py post-MainLoop-extraction):
+  - `bot/_impl.py` — for the orphan-DB Layer-3 watchdog helpers
+    (`_alert_orphan_db_holder` + the `detect_orphan_db_holders`
+    lsof-not-found Telegram alert branch; transitively called from
+    `MainLoop.startup()` in bot/main_loop.py via
+    `detect_orphan_db_holders(DB_PATH)`)
+  - `bot/main_loop.py` (search anchor: `import bot.notifier as _telegram_state`) — for MainLoop reads (Bit 9.3, 2026-05-10) + the singleton WRITE at `MainLoop.__init__` (`_telegram_state._TELEGRAM = self.telegram`)
   - `bot/scanner/__init__.py` (search anchor: ``import bot.notifier as _telegram_state``) — for OpportunityScanner reads
   - `bot/executor.py` (Bit 9.1, 2026-05-10) — for OrderExecutor reads
     (19 read sites in the class body)
@@ -20,9 +29,9 @@ The module-attribute access pattern (parallel to the Bit 6.3 path-B
 across consumers because every reader goes through the module reference,
 NOT a captured-by-value binding. The plain `from bot.notifier import
 _TELEGRAM` form would NOT propagate runtime mutation — `MainLoop.__init__`
-writes via `_telegram_state._TELEGRAM = self.telegram` (drops the
-previous `global _TELEGRAM` declaration) and readers in all four
-consumer modules see the rebinding immediately via the
+(now in `bot/main_loop.py`) writes via `_telegram_state._TELEGRAM = self.telegram`
+(drops the previous module-level `global` rebind declaration) and readers
+in all five consumer modules see the rebinding immediately via the
 module-attribute lookup. The relocation closes a laundered-namespace
 coupling that would have forced ~86 `@patch("bot._TELEGRAM", ...)`
 patch-target retargets to either `bot.scanner._TELEGRAM` (path-A
@@ -69,8 +78,10 @@ class TelegramNotifier:
             logging.warning(f"Telegram send failed: {e}")
 
 
-# Module-level singleton — populated by MainLoop.__init__ at runtime.
+# Module-level singleton — populated by MainLoop.__init__ at runtime
+# (MainLoop now lives in bot/main_loop.py post-Bit-9.3, 2026-05-10).
 # Relocated from bot/_impl.py per Bit 8.1 path-A++ (2026-05-10).
 # Reach via `bot.notifier._TELEGRAM` (or alias-import in bot/_impl.py +
-# bot/scanner/__init__.py) to preserve mutation freshness.
+# bot/main_loop.py + bot/scanner/__init__.py + bot/executor.py +
+# bot/settlement.py — 5 consumers post-Bit-9.3) to preserve mutation freshness.
 _TELEGRAM: Optional["TelegramNotifier"] = None

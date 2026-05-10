@@ -312,13 +312,17 @@ def test_three_consumer_sites_still_reference_predictor_cache():
 
     Bit 8.1 (2026-05-10): OpportunityScanner extracted to
     bot/scanner/__init__.py. The two scanner consumer sites
-    (annotate-kwargs path + async-enqueue path) moved with the class;
-    the MainLoop `predictors=_calmlp_predictors` kwarg stays in
-    bot/_impl.py. Walk both files."""
+    (annotate-kwargs path + async-enqueue path) moved with the class.
+    Bit 9.3 (2026-05-10): MainLoop extracted to bot/main_loop.py; the
+    `predictors=_calmlp_predictors` kwarg moved with MainLoop. Walk
+    all three files."""
     src = BOT_PY.read_text()
     scanner_init = REPO_ROOT / "bot" / "scanner" / "__init__.py"
     if scanner_init.exists():
         src += "\n" + scanner_init.read_text()
+    main_loop_py = REPO_ROOT / "bot" / "main_loop.py"
+    if main_loop_py.exists():
+        src += "\n" + main_loop_py.read_text()
     # Three known consumption shapes:
     #   1. predictor=_calmlp_predictors.get(asset)            (annotate kwargs path)
     #   2. predictor=_calmlp_predictors.get(asset)            (async-enqueue path)

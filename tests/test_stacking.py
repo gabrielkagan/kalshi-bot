@@ -65,6 +65,12 @@ def _read_bot():
     if os.path.isfile(_settlement_path):
         with open(_settlement_path) as _f:
             parts.append(_f.read())
+    # Bit 9.3 (2026-05-10): MainLoop extracted to bot/main_loop.py.
+    # Append its source so audits that grep for MainLoop content survive the move.
+    _main_loop_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot", "main_loop.py")
+    if os.path.isfile(_main_loop_path):
+        with open(_main_loop_path) as _f:
+            parts.append(_f.read())
     return "\n".join(parts)
 
 

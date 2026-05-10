@@ -8,11 +8,14 @@ Path-A++ extraction (NOT byte-for-byte): in-Bit refactor of bot/_impl.py
 to relocate the `_TELEGRAM` module-level singleton to bot/notifier.py
 (where it logically belongs since Bit 4.2). The laundered-namespace
 coupling smell is fixed in-Bit per the modularization strategic goal.
-All four of bot/_impl.py (MainLoop reads only post-Bit-9.2),
-bot/scanner/__init__.py (this module), bot/executor.py (Bit 9.1,
-2026-05-10), and bot/settlement.py (Bit 9.2, 2026-05-10) reach `_TELEGRAM`
-via the `_telegram_state` module-attribute access pattern (mirrors Bit 6.3
-path-B `_cal_state._CALIBRATION_ENGINE`); writes by `MainLoop.__init__`
+All five of bot/_impl.py (for the `_alert_orphan_db_holder` orphan-DB
+Layer-3 helper at bot/_impl.py:430 post-Bit-9.3), bot/main_loop.py
+(MainLoop reads + the singleton WRITE post-Bit-9.3 — `_telegram_state._TELEGRAM
+= self.telegram` in `MainLoop.__init__`), bot/scanner/__init__.py (this
+module), bot/executor.py (Bit 9.1, 2026-05-10), and bot/settlement.py
+(Bit 9.2, 2026-05-10) reach `_TELEGRAM` via the `_telegram_state`
+module-attribute access pattern (mirrors Bit 6.3 path-B
+`_cal_state._CALIBRATION_ENGINE`); writes by `MainLoop.__init__`
 propagate to all readers without alias-import freshness loss.
 
 Cross-class coupling (post-Sprint-9-Bit-9.1):

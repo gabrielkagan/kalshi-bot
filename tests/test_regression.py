@@ -44,6 +44,11 @@ def _read_bot_and_scanner():
     if os.path.isfile(settlement_path):
         with open(settlement_path) as _f:
             src += "\n" + _f.read()
+    # Bit 9.3 (2026-05-10): MainLoop extracted to bot/main_loop.py.
+    main_loop_path = os.path.join(PROJECT_ROOT, "bot", "main_loop.py")
+    if os.path.isfile(main_loop_path):
+        with open(main_loop_path) as _f:
+            src += "\n" + _f.read()
     return src
 
 
@@ -715,7 +720,7 @@ class TestIOCTimeInForce:
         """
         # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         content = ""
 
@@ -773,7 +778,7 @@ class TestEscalationTypeCompleteness:
         """Verify all execution path labels exist in bot/_impl.py."""
         # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         content = ""
 
@@ -1482,7 +1487,7 @@ class TestShadowCallsiteVariables:
         """
         # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py — read both for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         lines = []
 
@@ -2223,7 +2228,7 @@ class TestNBBOFallbackGates:
         """OrderExecutor must have _nbbo_fallback_price method."""
         # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         content = ""
 
@@ -2242,7 +2247,7 @@ class TestNBBOFallbackGates:
         """
         # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         content = ""
 
@@ -2282,7 +2287,7 @@ class TestNBBOFallbackGates:
         """When _get_addon_best_ask succeeds, NBBO fallback is not called."""
         # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         content = ""
 
@@ -2310,7 +2315,7 @@ class TestNBBOFallbackGates:
         """Session counters for NBBO fallback must be initialized."""
         # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         content = ""
 
@@ -2337,7 +2342,7 @@ class TestDCRoutingPriority:
         """DC taker override must appear BEFORE SOL taker-first in execute()."""
         # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         content = ""
 
@@ -2357,7 +2362,7 @@ class TestDCRoutingPriority:
         """DC taker override must appear BEFORE direct taker <180s."""
         # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         content = ""
 
@@ -2373,7 +2378,7 @@ class TestDCRoutingPriority:
         """DC strategy check must include z2 and z25 variants."""
         # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         content = ""
 
@@ -2394,7 +2399,7 @@ class TestDCRoutingPriority:
         """DC path must use -0.01 edge threshold, not MIN_EDGE_PCT."""
         # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py — read both for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         lines = []
 
@@ -2421,7 +2426,7 @@ class TestDCRoutingPriority:
         The DC check returns via _execute_dc_taker before SOL taker-first is reached."""
         # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py — read both for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         lines = []
 
@@ -2445,7 +2450,7 @@ class TestDCRoutingPriority:
         """DC taker override should appear exactly once."""
         # Bit 9.1 L38: read both bot/_impl.py + bot/executor.py for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         content = ""
 
@@ -2543,7 +2548,7 @@ class TestSettlementLossCountCheck:
         PnL loop; otherwise the correction never reaches settled_trades."""
         # Bit 9.1 (2026-05-10): OrderExecutor extracted to bot/executor.py — read both for source-level audits
 
-        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py")]
+        _paths = [os.path.join(PROJECT_ROOT, "bot/_impl.py"), os.path.join(PROJECT_ROOT, "bot/executor.py"), os.path.join(PROJECT_ROOT, "bot/settlement.py"), os.path.join(PROJECT_ROOT, "bot/main_loop.py")]
 
         lines = []
 

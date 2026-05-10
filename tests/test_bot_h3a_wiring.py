@@ -93,7 +93,10 @@ def test_extract_active_15m_tickers_preserves_order():
 
 @pytest.fixture(scope="module")
 def bot_py_source() -> str:
-    return (ROOT / "bot/_impl.py").read_text()
+    """Bit 9.3 retarget (2026-05-10): MarketObservationsSnapshotter wiring lives
+    inside MainLoop.__init__ which moved to bot/main_loop.py. This fixture
+    now reads bot/main_loop.py instead of bot/_impl.py."""
+    return (ROOT / "bot/main_loop.py").read_text()
 
 
 @pytest.fixture(scope="module")

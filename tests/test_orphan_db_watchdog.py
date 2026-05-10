@@ -305,9 +305,16 @@ def test_orphan_watchdog_handles_lsof_failure_gracefully(
 def test_orphan_watchdog_invoked_on_main_loop_startup():
     """Regression: MainLoop.startup() must call detect_orphan_db_holders
     EARLY in startup (before the 7-day soak begins on each new bot
-    process). Verified via AST scan to avoid spinning up a real bot."""
+    process). Verified via AST scan to avoid spinning up a real bot.
+
+    Bit 9.3 (2026-05-10): MainLoop class moved to bot/main_loop.py;
+    `detect_orphan_db_holders` stays in bot/_impl.py (orphan-DB Layer-3
+    helpers are not relocating). MainLoop.startup() reaches
+    `detect_orphan_db_holders` via method-body late-binding
+    `from bot._impl import detect_orphan_db_holders` (per Path-A
+    architecture; see bot/main_loop.py module docstring)."""
     import ast
-    bot_py = (PROJECT_ROOT / "bot/_impl.py").read_text()
+    bot_py = (PROJECT_ROOT / "bot/main_loop.py").read_text()
     tree = ast.parse(bot_py)
 
     main_loop_cls = None
@@ -315,7 +322,7 @@ def test_orphan_watchdog_invoked_on_main_loop_startup():
         if isinstance(node, ast.ClassDef) and node.name == "MainLoop":
             main_loop_cls = node
             break
-    assert main_loop_cls is not None, "MainLoop class not found"
+    assert main_loop_cls is not None, "MainLoop class not found in bot/main_loop.py"
 
     startup_fn = None
     for node in main_loop_cls.body:

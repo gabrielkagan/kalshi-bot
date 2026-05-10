@@ -483,11 +483,17 @@ def test_sol_bleed_v2_filter_stage_value_consistency_across_files():
 def test_sol_bleed_v2_calengine_accepts_filter_stage():
     """The 15M CalEngine `_stages` tuple must include the new filter_stage —
     otherwise blocked rows are excluded from per-asset CalEngine training.
-    Mirrors R-bleed-1 R9-H1."""
+    Mirrors R-bleed-1 R9-H1.
+
+    Bit 9.3 (2026-05-10): MainLoop.__init__ (where the 15M CalEngine `_stages`
+    tuple is constructed) lives in bot/main_loop.py. Walk all three for safety."""
     src = (REPO / 'bot/_impl.py').read_text()
     _scanner = REPO / 'bot' / 'scanner' / '__init__.py'
     if _scanner.is_file():
         src += '\n' + _scanner.read_text()
+    _main_loop = REPO / 'bot' / 'main_loop.py'
+    if _main_loop.is_file():
+        src += '\n' + _main_loop.read_text()
     block_match = re.search(
         r'_stages\s*=\s*\(\s*\(\s*"candidate"[\s\S]+?\)\s*if\s*_pt\s*==\s*"15m"',
         src,
@@ -633,6 +639,9 @@ def test_bot_py_tm_strategy_fstring_format_matches_block_strategies():
     _executor = REPO / 'bot' / 'executor.py'
     if _executor.is_file():
         src += '\n' + _executor.read_text()
+    _main_loop = REPO / 'bot' / 'main_loop.py'  # Bit 9.3 (2026-05-10): MainLoop extracted; CalEngine _stages tuple lives here.
+    if _main_loop.is_file():
+        src += '\n' + _main_loop.read_text()
     # The f-string template must appear (single OR double quote)
     has_template = (
         'f"terminal_momentum_{' in src
@@ -747,6 +756,9 @@ def test_bot_py_calengine_accepts_bleed_block_stages():
     _executor = REPO / 'bot' / 'executor.py'
     if _executor.is_file():
         src += '\n' + _executor.read_text()
+    _main_loop = REPO / 'bot' / 'main_loop.py'  # Bit 9.3 (2026-05-10): MainLoop extracted; CalEngine _stages tuple lives here.
+    if _main_loop.is_file():
+        src += '\n' + _main_loop.read_text()
     # Locate the 15M CalEngine `_stages` declaration.
     import re
     block_match = re.search(
@@ -868,6 +880,9 @@ def test_bleed_block_strategies_have_runtime_validator():
     _executor = REPO / 'bot' / 'executor.py'
     if _executor.is_file():
         src += '\n' + _executor.read_text()
+    _main_loop = REPO / 'bot' / 'main_loop.py'  # Bit 9.3 (2026-05-10): MainLoop extracted; CalEngine _stages tuple lives here.
+    if _main_loop.is_file():
+        src += '\n' + _main_loop.read_text()
     # A validator function must exist for the new gates.
     assert '_validate_bleed_block_bleeder_strings' in src or \
            '_validate_tm98_bleed_block' in src or \

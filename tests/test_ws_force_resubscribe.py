@@ -40,7 +40,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/main_loop.py")
 # Bit 8.1 (2026-05-10): OpportunityScanner moved from bot/_impl.py to
 # bot/scanner/__init__.py. Walks for MainLoop content stay on BOT_PY;
 # walks for OpportunityScanner content use SCANNER_PY instead.

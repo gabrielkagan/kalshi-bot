@@ -554,13 +554,13 @@ SCANNER_PY = REPO_ROOT / "bot" / "scanner" / "__init__.py"
 
 def _consumer_classdef(class_name):
     """Find a ClassDef by name, searching bot/_impl.py + bot/scanner/__init__.py
-    + bot/executor.py + bot/settlement.py (Scanner moved out per Bit 8.1;
-    OrderExecutor moved out per Bit 9.1; SettlementTracker moved out per
-    Bit 9.2; MainLoop → bot/main_loop.py per Bit 9.3 — extend this tuple
-    as each Bit ships)."""
+    + bot/executor.py + bot/settlement.py + bot/main_loop.py (Scanner moved
+    out per Bit 8.1; OrderExecutor per Bit 9.1; SettlementTracker per Bit 9.2;
+    MainLoop per Bit 9.3 — quintuple-walk as of 2026-05-10)."""
     EXECUTOR_PY = REPO_ROOT / "bot" / "executor.py"
     SETTLEMENT_PY = REPO_ROOT / "bot" / "settlement.py"
-    for path in (BOT_PY, SCANNER_PY, EXECUTOR_PY, SETTLEMENT_PY):
+    MAIN_LOOP_PY = REPO_ROOT / "bot" / "main_loop.py"
+    for path in (BOT_PY, SCANNER_PY, EXECUTOR_PY, SETTLEMENT_PY, MAIN_LOOP_PY):
         if not path.is_file():
             continue
         tree = ast.parse(path.read_text())
@@ -595,13 +595,16 @@ def test_only_three_consumers_annotate_state_manager():
 
     Bit 9.1 (2026-05-10) extended walk to bot/executor.py — OrderExecutor moved
     out of bot/_impl.py. Bit 9.2 (2026-05-10) extended walk to bot/settlement.py
-    — SettlementTracker moved out. Bit 9.3 will move MainLoop → bot/main_loop.py;
-    extend the walk in lock-step (note: MainLoop does NOT annotate state, so
-    Bit 9.3 may not require a walk extension here)."""
+    — SettlementTracker moved out. Bit 9.3 (2026-05-10) extended walk to
+    bot/main_loop.py — MainLoop moved out. (Note: MainLoop does NOT annotate
+    state, so the walk extension is L86/L90 contagion-seal hygiene rather
+    than load-bearing — but if a future maintainer adds a state-annotated
+    method to MainLoop, this walk surfaces it.)"""
     EXECUTOR_PY = REPO_ROOT / "bot" / "executor.py"
     SETTLEMENT_PY = REPO_ROOT / "bot" / "settlement.py"
+    MAIN_LOOP_PY = REPO_ROOT / "bot" / "main_loop.py"
     matches = []
-    for path in (BOT_PY, SCANNER_PY, EXECUTOR_PY, SETTLEMENT_PY):
+    for path in (BOT_PY, SCANNER_PY, EXECUTOR_PY, SETTLEMENT_PY, MAIN_LOOP_PY):
         if not path.is_file():
             continue
         tree = ast.parse(path.read_text())
