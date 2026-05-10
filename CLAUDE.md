@@ -18,6 +18,16 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 - **Answer first, plan later.** For investigations (loss, alert, anomaly), give numbers first. No plan mode, no code exploration before answering.
 - **Don't re-plan finalized plans.** Continuing from a prior session = start implementing.
 - **Don't deploy without explicit confirmation.** Always present the change summary; wait for approval before `git push`.
+- **Followups → ClickUp, always.** Any emergent issue outside the current task scope (bug, cleanup, idea, deferred item) files a ticket via `/ticket`. Never bury followups in KB bullets, end-of-turn prose, "deferred items" sections, or `# TODO` comments without a ticket ID. Default to over-filing — triage later.
+
+## Extraction-bit discipline (Sprint 4-9 + any HIGH-risk Bit)
+
+State all three verbatim atop every extraction plan doc:
+1. **RCA** every CRITICAL/MAJOR finding before patching — root cause, don't symptom-suppress.
+2. **TDD-first**: edit `tests/` before `bot/` per the Pillar 4 hook. Use `/test-writer` to scaffold the failing regression test.
+3. **Adversarial review** to 2 consecutive zero-CRITICAL/MAJOR rounds (some Bits need 8). Never ship after 1 zero round.
+
+Full pre-flight + lessons L32-L80 in `kb/concepts/extraction-pre-flight-checklist.md`.
 
 ## Critical rules
 
