@@ -173,6 +173,46 @@ SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE = "SOL_TAKER_85_89C_2_5MIN_BLEED"
 
 SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES = frozenset({"TAKER_NOW"})
 
+# Cell 3: SOL_BLEED_V2 — supersedes SOL_TAKER_LOWPRICE (May 10, 2026)
+#   SOL × {TAKER_NOW, MAKER_PATIENT} × 88-93¢ × 121-300s STC
+#
+# RCA (kb/findings/sol-bleed-v2-rca-may10.md): the v1 SOL_TAKER_LOWPRICE
+# gate is netting -$102/30d (40 blocks counterfactual +$102 — productive
+# cell) AND missed three catastrophic May-6→May-10 losses totalling -$338.
+# Two defects in the v1 gate: (a) strategy filter `{TAKER_NOW}` is too
+# narrow because bot/executor.py force-routes EVERY SOL candidate through
+# `sol_taker_override` regardless of scan-time strategy label — MAKER_PATIENT
+# becomes taker at execution, slipping past the v1 strategy filter;
+# (b) price band 85-89¢ is too low for the post-v2 (May 5 cross-asset
+# deploy) regime — the bleed cell drifted up to 90-92¢ where a single
+# -$176 today (5/10 KXSOL101615 MAKER_PATIENT 89→90¢ STC 299.8s) and
+# -$128 yesterday (5/9 KXSOL091145 TAKER_NOW 92¢ STC 292.5s) settled NO.
+#
+# Strategy filter `{TAKER_NOW, MAKER_PATIENT}` is intentionally tight:
+# MAKER_AGGRESSIVE was +$106 pre-v2 (n=14) in the same 88-93¢ × 2-5min cell;
+# weekend_discount/overnight_discount/decided_t1/t2 are all net positive.
+# Blocking those would kill productive trades and net-cost us money.
+#
+# Default OFF — operator flips on VPS post-ship. The v1 gate
+# (SOL_TAKER_LOWPRICE_BLEED_BLOCK_ENABLED) is intentionally left in
+# place for rollback; ops will flip its env to 0 on deploy.
+SOL_BLEED_V2_BLOCK_ENABLED = os.environ.get(
+    "SOL_BLEED_V2_BLOCK_ENABLED", "0") == "1"
+
+SOL_BLEED_V2_BLOCK_ASSETS = frozenset({"SOL"})
+
+SOL_BLEED_V2_BLOCK_PRICE_LO = 88
+
+SOL_BLEED_V2_BLOCK_PRICE_HI = 93
+
+SOL_BLEED_V2_BLOCK_STC_LO_S = 121
+
+SOL_BLEED_V2_BLOCK_STC_HI_S = 300
+
+SOL_BLEED_V2_BLOCK_FILTER_STAGE = "SOL_BLEED_V2_88_93C_2_5MIN"
+
+SOL_BLEED_V2_BLOCK_STRATEGIES = frozenset({"TAKER_NOW", "MAKER_PATIENT"})
+
 # ─── Binance feed kill-switch ──────────────────────────────────────────────
 # US-VPS deploys are geoblocked from Binance.com WebSocket (HTTP 451). The
 # feed reconnects every ~70s in a tight loop forever, adding event-loop noise

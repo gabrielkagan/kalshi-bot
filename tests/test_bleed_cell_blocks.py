@@ -222,6 +222,325 @@ def test_sol_taker_bleed_predicate_does_not_block_outside_cell():
 
 
 # ---------------------------------------------------------------------------
+# SOL BLEED V2: 88-93¢ × {TAKER_NOW, MAKER_PATIENT} bleed cell (May 10, 2026).
+#
+# Replaces the v1 SOL_TAKER_LOWPRICE_BLEED_BLOCK gate which:
+#   - was net -$102/30d (counterfactual: 40 blocks, 36W/4L; killed wins net)
+#   - missed three -$338 catastrophic trades May 6-10:
+#       5/10 KXSOL101615 MAKER_PATIENT 89→90¢ STC 299.8s → -$176.39
+#       5/9  KXSOL091145 TAKER_NOW    92¢   STC 292.5s → -$127.88
+#       5/9  KXSOL082215 weekend_discount 93¢ STC 361.5s → -$34.35  ← above STC band, productive cohort
+#
+# RCA (kb/findings/sol-bleed-v2-rca-may10.md): scan-time strategy label
+# is checked, but bot/executor.py force-routes EVERY SOL candidate through
+# `sol_taker_override` regardless of label. The v1 gate's `{TAKER_NOW}`
+# strategy filter therefore misses MAKER_PATIENT (which becomes taker at
+# execution). Cell also drifted up post-v2 (May 5 cross-asset deploy):
+# SOL × 90-92¢ × 2-5min flipped from +$257 (pre-v2 30d) to -$210 (post-v2 5d).
+#
+# Surgical fix: block SOL × 88-93¢ × 121-300s × {TAKER_NOW, MAKER_PATIENT}.
+# MAKER_AGGRESSIVE (+$106 pre-v2 in same cell), weekend_discount (+$24),
+# overnight_discount, decided_t1/t2 are productive — DO NOT block.
+# ---------------------------------------------------------------------------
+
+
+def test_sol_bleed_v2_constants_exist():
+    """New constants must be present with correct defaults."""
+    bot = _import_bot()
+    assert hasattr(bot, 'SOL_BLEED_V2_BLOCK_ENABLED')
+    assert hasattr(bot, 'SOL_BLEED_V2_BLOCK_ASSETS')
+    assert hasattr(bot, 'SOL_BLEED_V2_BLOCK_PRICE_LO')
+    assert hasattr(bot, 'SOL_BLEED_V2_BLOCK_PRICE_HI')
+    assert hasattr(bot, 'SOL_BLEED_V2_BLOCK_STC_LO_S')
+    assert hasattr(bot, 'SOL_BLEED_V2_BLOCK_STC_HI_S')
+    assert hasattr(bot, 'SOL_BLEED_V2_BLOCK_FILTER_STAGE')
+    assert hasattr(bot, 'SOL_BLEED_V2_BLOCK_STRATEGIES')
+    # Defaults reflect the data:
+    assert bot.SOL_BLEED_V2_BLOCK_ASSETS == frozenset({'SOL'})
+    assert bot.SOL_BLEED_V2_BLOCK_PRICE_LO == 88
+    assert bot.SOL_BLEED_V2_BLOCK_PRICE_HI == 93
+    assert bot.SOL_BLEED_V2_BLOCK_STC_LO_S == 121
+    assert bot.SOL_BLEED_V2_BLOCK_STC_HI_S == 300
+    assert bot.SOL_BLEED_V2_BLOCK_STRATEGIES == frozenset({'TAKER_NOW', 'MAKER_PATIENT'})
+    assert bot.SOL_BLEED_V2_BLOCK_FILTER_STAGE == 'SOL_BLEED_V2_88_93C_2_5MIN'
+    # Default disabled — must be flipped on VPS via env var.
+    assert bot.SOL_BLEED_V2_BLOCK_ENABLED is False
+
+
+def test_sol_bleed_v2_predicate_returns_false_when_disabled():
+    """Default-OFF: the predicate returns False even on a perfect-match cell."""
+    bot = _import_bot()
+    blocked = bot.should_block_sol_bleed_v2_candidate(
+        asset='SOL', side='yes', entry_price_cents=90,
+        seconds_to_close=200.0, strategy='MAKER_PATIENT',
+        enabled=False,
+    )
+    assert blocked is False
+
+
+def test_sol_bleed_v2_predicate_blocks_in_cell():
+    """Block fires for SOL × {TAKER_NOW, MAKER_PATIENT} × 88-93¢ × 121-300s STC."""
+    bot = _import_bot()
+    for strategy in ('TAKER_NOW', 'MAKER_PATIENT'):
+        for price in (88, 89, 90, 91, 92, 93):
+            for stc in (121.0, 200.0, 299.8, 300.0):
+                assert bot.should_block_sol_bleed_v2_candidate(
+                    asset='SOL', side='yes', entry_price_cents=price,
+                    seconds_to_close=stc, strategy=strategy,
+                    enabled=True,
+                ) is True, f"Should block SOL/{price}c/{stc}s/{strategy}"
+
+
+def test_sol_bleed_v2_predicate_does_not_block_outside_cell():
+    """Boundary cases: wrong asset, price out of band, STC out of band, NO-side."""
+    bot = _import_bot()
+    # Wrong asset (BTC/ETH/XRP)
+    for asset in ('BTC', 'ETH', 'XRP'):
+        assert bot.should_block_sol_bleed_v2_candidate(
+            asset=asset, side='yes', entry_price_cents=90,
+            seconds_to_close=200.0, strategy='MAKER_PATIENT',
+            enabled=True,
+        ) is False
+    # 87¢ excluded (below cell)
+    assert bot.should_block_sol_bleed_v2_candidate(
+        asset='SOL', side='yes', entry_price_cents=87,
+        seconds_to_close=200.0, strategy='MAKER_PATIENT', enabled=True,
+    ) is False
+    # 94¢ excluded (above cell)
+    assert bot.should_block_sol_bleed_v2_candidate(
+        asset='SOL', side='yes', entry_price_cents=94,
+        seconds_to_close=200.0, strategy='MAKER_PATIENT', enabled=True,
+    ) is False
+    # STC < 121s excluded (sub-2min trades have a different bleed shape)
+    assert bot.should_block_sol_bleed_v2_candidate(
+        asset='SOL', side='yes', entry_price_cents=90,
+        seconds_to_close=120.0, strategy='MAKER_PATIENT', enabled=True,
+    ) is False
+    # STC > 300s excluded (5/9 KXSOL082215 weekend_discount 93¢ × 361.5s — productive cohort)
+    assert bot.should_block_sol_bleed_v2_candidate(
+        asset='SOL', side='yes', entry_price_cents=93,
+        seconds_to_close=361.5, strategy='MAKER_PATIENT', enabled=True,
+    ) is False
+    # NO-side excluded (this gate is YES-side per scan flow)
+    assert bot.should_block_sol_bleed_v2_candidate(
+        asset='SOL', side='no', entry_price_cents=90,
+        seconds_to_close=200.0, strategy='MAKER_PATIENT', enabled=True,
+    ) is False
+
+
+def test_sol_bleed_v2_predicate_does_not_block_productive_strategies():
+    """The strategy filter is the heart of the surgical fix.
+    MAKER_AGGRESSIVE was +$106 pre-v2 (n=14, 14W/0L) in the same cell;
+    weekend_discount/overnight_discount/decided_t1/t2 were all net positive.
+    Blocking these would kill productive trades and net-cost us money."""
+    bot = _import_bot()
+    for strategy in (
+        'MAKER_AGGRESSIVE',
+        'weekend_discount',
+        'overnight_discount',
+        'decided_t1',
+        'decided_t1b',
+        'decided_t2',
+        'decided_t2_z2',
+        'decided_t2_z25',
+        'CONFIRMATION_ADDON',
+        'PANIC_CAPTURE',
+        'terminal_momentum_98',
+        'terminal_momentum_99',
+        'low_price_near_expiry',
+        'bracket_no',
+        'hourly_dc',
+    ):
+        assert bot.should_block_sol_bleed_v2_candidate(
+            asset='SOL', side='yes', entry_price_cents=90,
+            seconds_to_close=200.0, strategy=strategy, enabled=True,
+        ) is False, f"Should NOT block productive strategy {strategy!r} — verify cell scope"
+
+
+def test_sol_bleed_v2_predicate_handles_none_inputs():
+    """Defensive: None inputs (missing scan fields) → don't block."""
+    bot = _import_bot()
+    for kwargs in (
+        dict(asset=None, side='yes', entry_price_cents=90, seconds_to_close=200.0,
+             strategy='MAKER_PATIENT', enabled=True),
+        dict(asset='SOL', side='yes', entry_price_cents=None, seconds_to_close=200.0,
+             strategy='MAKER_PATIENT', enabled=True),
+        dict(asset='SOL', side='yes', entry_price_cents=90, seconds_to_close=None,
+             strategy='MAKER_PATIENT', enabled=True),
+        dict(asset='SOL', side='yes', entry_price_cents=90, seconds_to_close=200.0,
+             strategy=None, enabled=True),
+    ):
+        assert bot.should_block_sol_bleed_v2_candidate(**kwargs) is False, (
+            f"None input should not block: {kwargs}"
+        )
+
+
+# Named-trade replays (the three losses that motivated this gate)
+
+def test_sol_bleed_v2_blocks_may10_KXSOL101615_loss():
+    """5/10 20:15 KXSOL15M-26MAY101615-15 — MAKER_PATIENT 89¢ entry / 90¢ fill,
+    STC 299.8s → settled NO, -$176.39. Worst single SOL loss in 14d."""
+    bot = _import_bot()
+    # Block at scanner candidate moment (89¢ MAKER_PATIENT, STC 299.8s)
+    assert bot.should_block_sol_bleed_v2_candidate(
+        asset='SOL', side='yes', entry_price_cents=89,
+        seconds_to_close=299.8, strategy='MAKER_PATIENT', enabled=True,
+    ) is True
+    # Also block at fill price (90¢ — covers the 1¢ slip during execution)
+    assert bot.should_block_sol_bleed_v2_candidate(
+        asset='SOL', side='yes', entry_price_cents=90,
+        seconds_to_close=299.8, strategy='MAKER_PATIENT', enabled=True,
+    ) is True
+
+
+def test_sol_bleed_v2_blocks_may9_KXSOL091145_loss():
+    """5/9 15:45 KXSOL15M-26MAY091145-45 — TAKER_NOW 92¢, STC 292.5s →
+    settled NO, -$127.88. Strategy was already TAKER, demonstrates that
+    even before the executor's sol_taker_override, this cell bleeds."""
+    bot = _import_bot()
+    assert bot.should_block_sol_bleed_v2_candidate(
+        asset='SOL', side='yes', entry_price_cents=92,
+        seconds_to_close=292.5, strategy='TAKER_NOW', enabled=True,
+    ) is True
+
+
+def test_sol_bleed_v2_does_not_block_may9_KXSOL082215_weekend_discount():
+    """5/9 02:15 KXSOL15M-26MAY082215-15 — weekend_discount 93¢, STC 361.5s →
+    settled NO, -$34.35. INTENTIONALLY NOT BLOCKED:
+      - weekend_discount strategy is productive cohort-wide (+$24 NET pre-v2)
+      - STC 361.5s is above the 300s upper bound (different bleed shape)
+    This is a regression-proof against over-widening the gate."""
+    bot = _import_bot()
+    # Both axes exclude — strategy AND STC
+    assert bot.should_block_sol_bleed_v2_candidate(
+        asset='SOL', side='yes', entry_price_cents=93,
+        seconds_to_close=361.5, strategy='weekend_discount', enabled=True,
+    ) is False
+
+
+# AST: scan() must call the new predicate AND insert evaluated_opportunity row
+
+def test_bot_py_scan_calls_sol_bleed_v2_predicate():
+    """The block must be wired in scan(); otherwise the env flag is dead."""
+    src = _read_bot_and_scanner()
+    assert 'should_block_sol_bleed_v2_candidate' in src, (
+        "scan() must invoke should_block_sol_bleed_v2_candidate"
+    )
+
+
+def test_sol_bleed_v2_filter_stage_used_for_evaluated_opportunity():
+    """When the new gate fires, scan() must write a row with the
+    SOL_BLEED_V2_BLOCK_FILTER_STAGE tag — preserving v2/v3 training data
+    and keeping the per-asset CalEngine fed with the bleed-cell signal.
+    """
+    src = _read_bot_and_scanner()
+    assert 'SOL_BLEED_V2_BLOCK_FILTER_STAGE' in src
+    constant_lines = [
+        i for i, line in enumerate(src.splitlines())
+        if 'SOL_BLEED_V2_BLOCK_FILTER_STAGE' in line
+        and 'BLOCK_FILTER_STAGE = ' not in line
+    ]
+    assert constant_lines, (
+        "SOL_BLEED_V2_BLOCK_FILTER_STAGE declared but never used — block is dead code"
+    )
+    any_in_proximity = False
+    for line_num in constant_lines:
+        context = '\n'.join(src.splitlines()[max(0, line_num - 5):line_num + 80])
+        if 'insert_evaluated_opportunity' in context:
+            any_in_proximity = True
+            break
+    assert any_in_proximity, (
+        "SOL_BLEED_V2_BLOCK_FILTER_STAGE must appear near insert_evaluated_opportunity "
+        "(so blocked rows preserve v2/v3 training data + cal_mlp annotations)"
+    )
+
+
+def test_sol_bleed_v2_filter_stage_value_consistency_across_files():
+    """Lockstep: the new filter_stage string value must appear in the
+    three lockstep-required sites (fifteenm_shadow + scripts/backtest +
+    scripts/generate_whitepaper_stats) so blocked rows continue to flow
+    into per-asset T grid-search, expansion-signal universe, and
+    Brier/calibration sample.
+    """
+    bot = _import_bot()
+    target_files = (
+        REPO / 'fifteenm_shadow.py',
+        REPO / 'scripts' / 'backtest.py',
+        REPO / 'scripts' / 'generate_whitepaper_stats.py',
+    )
+    stage_value = bot.SOL_BLEED_V2_BLOCK_FILTER_STAGE
+    for fpath in target_files:
+        if not fpath.exists():
+            continue
+        src = fpath.read_text()
+        assert stage_value in src, (
+            f"{fpath.relative_to(REPO)} must contain string literal "
+            f"{stage_value!r} — otherwise blocked SOL_BLEED_V2 rows are silently "
+            f"excluded from this site's downstream rollup."
+        )
+
+
+def test_sol_bleed_v2_calengine_accepts_filter_stage():
+    """The 15M CalEngine `_stages` tuple must include the new filter_stage —
+    otherwise blocked rows are excluded from per-asset CalEngine training.
+    Mirrors R-bleed-1 R9-H1."""
+    src = (REPO / 'bot/_impl.py').read_text()
+    _scanner = REPO / 'bot' / 'scanner' / '__init__.py'
+    if _scanner.is_file():
+        src += '\n' + _scanner.read_text()
+    block_match = re.search(
+        r'_stages\s*=\s*\(\s*\(\s*"candidate"[\s\S]+?\)\s*if\s*_pt\s*==\s*"15m"',
+        src,
+    )
+    if not block_match:
+        block_match = re.search(
+            r'_stages\s*=\s*\([^)]*"candidate"[^)]*\)\s*if\s*_pt\s*==\s*"15m"',
+            src,
+        )
+    assert block_match, "15M CalEngine _stages declaration not found"
+    stages_block = block_match.group(0)
+    assert 'SOL_BLEED_V2_BLOCK_FILTER_STAGE' in stages_block, (
+        "CalEngine 15M _stages must include SOL_BLEED_V2_BLOCK_FILTER_STAGE — "
+        "blocked SOL_BLEED_V2 rows would be excluded from training otherwise."
+    )
+
+
+def test_sol_bleed_v2_strategies_match_runtime_registry():
+    """R1-H2 + R3-H3: assert at RUNTIME that the SOL_BLEED_V2 bleeder
+    strategy strings match what the runtime registry declares. If
+    `MAKER_PATIENT` or `TAKER_NOW` is renamed without updating the
+    BLOCK_STRATEGIES frozenset, the gate silently no-ops.
+
+    Symmetric to test_taker_now_constant_value_matches_block_strategies
+    above — extends the runtime-membership check to the new gate's
+    strategy set."""
+    bot = _import_bot()
+    assert bot.STRATEGY_TAKER_NOW in bot.SOL_BLEED_V2_BLOCK_STRATEGIES, (
+        f"STRATEGY_TAKER_NOW={bot.STRATEGY_TAKER_NOW!r} must be in "
+        f"SOL_BLEED_V2_BLOCK_STRATEGIES={bot.SOL_BLEED_V2_BLOCK_STRATEGIES!r}. "
+        f"If renamed, update the BLOCK_STRATEGIES frozenset to match."
+    )
+    assert bot.STRATEGY_MAKER_PATIENT in bot.SOL_BLEED_V2_BLOCK_STRATEGIES, (
+        f"STRATEGY_MAKER_PATIENT={bot.STRATEGY_MAKER_PATIENT!r} must be in "
+        f"SOL_BLEED_V2_BLOCK_STRATEGIES={bot.SOL_BLEED_V2_BLOCK_STRATEGIES!r}. "
+        f"If renamed, update the BLOCK_STRATEGIES frozenset to match."
+    )
+
+
+def test_fifteenm_shadow_temperature_query_includes_sol_bleed_v2_stage():
+    """fifteenm_shadow.py temperature recalibration uses a hardcoded
+    filter_stage IN list. Without the new tag, per-asset T grid-search
+    post-activation loses the high-signal SOL_BLEED_V2 predictions."""
+    shadow_path = REPO / 'fifteenm_shadow.py'
+    src = shadow_path.read_text()
+    assert 'SOL_BLEED_V2_88_93C_2_5MIN' in src, (
+        "fifteenm_shadow.py temperature query must include "
+        "'SOL_BLEED_V2_88_93C_2_5MIN' filter_stage — otherwise the per-asset T "
+        "grid-search loses bleed-cell observations post-activation."
+    )
+
+
+# ---------------------------------------------------------------------------
 # AST: scan() must call both predicates AND insert an evaluated_opportunity
 # row when blocking (preserving v2/v3 training data).
 # ---------------------------------------------------------------------------

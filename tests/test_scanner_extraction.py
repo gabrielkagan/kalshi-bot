@@ -112,6 +112,7 @@ SCANNER_HELPERS = (
     "evaluate_execution_strategy",
     "get_min_edge",
     "should_block_high_price_stc_candidate",
+    "should_block_sol_bleed_v2_candidate",
     "should_block_sol_taker_lowprice_bleed_candidate",
     "should_block_tm98_highprice_bleed_candidate",
     "should_exclude_weather_no_ticker",
@@ -266,6 +267,7 @@ SCANNER_BOT_CONSTANTS = (
     "SOL_MAX_RISK_PER_TRADE",
     "SOL_MIN_EDGE",
     "SOL_MIN_ENTRY_PRICE",
+    "SOL_BLEED_V2_BLOCK_FILTER_STAGE",
     "SOL_RESCUE_CONTRACT_CAP",
     "SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE",
     "SPORTS_ENABLED",
@@ -950,6 +952,7 @@ CELL_BLOCK_CONSTANT_NAMES = (
     ("HIGH_PRICE_STC_BLOCK_FILTER_STAGE", "96C_SOL_XRP_STC_DANGER_BAND"),
     ("TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE", "TM98_97_98C_2_5MIN_BLEED"),
     ("SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE", "SOL_TAKER_85_89C_2_5MIN_BLEED"),
+    ("SOL_BLEED_V2_BLOCK_FILTER_STAGE", "SOL_BLEED_V2_88_93C_2_5MIN"),
 )
 
 

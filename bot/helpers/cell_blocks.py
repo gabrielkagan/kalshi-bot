@@ -136,6 +136,51 @@ def should_block_sol_taker_lowprice_bleed_candidate(
     return True
 
 
+def should_block_sol_bleed_v2_candidate(
+    asset: Optional[str],
+    side: Optional[str],
+    entry_price_cents: Optional[int],
+    seconds_to_close: Optional[float],
+    strategy: Optional[str],
+    enabled: Optional[bool] = None,
+) -> bool:
+    """Return True iff candidate is SOL × {TAKER_NOW, MAKER_PATIENT} × 88-93¢ × 121-300s STC.
+
+    Supersedes `should_block_sol_taker_lowprice_bleed_candidate` (May 10, 2026).
+    The v1 gate's strategy filter `{TAKER_NOW}` and price band 85-89¢ both
+    miss the actual post-v2 bleed cell; this gate widens both axes.
+
+    Strategy-aware: only fires for {TAKER_NOW, MAKER_PATIENT} — leaves
+    MAKER_AGGRESSIVE / weekend_discount / overnight_discount / decided_t1/t2
+    productive cohorts untouched in the same price/STC band. See
+    `kb/findings/sol-bleed-v2-rca-may10.md` for the RCA + cohort math.
+
+    Default-OFF until operator flips SOL_BLEED_V2_BLOCK_ENABLED=1
+    on the VPS .env.
+    """
+    if enabled is None:
+        enabled = SOL_BLEED_V2_BLOCK_ENABLED
+    if not enabled:
+        return False
+    if asset is None or asset not in SOL_BLEED_V2_BLOCK_ASSETS:
+        return False
+    if side != "yes":
+        return False
+    if entry_price_cents is None:
+        return False
+    if not (SOL_BLEED_V2_BLOCK_PRICE_LO <= entry_price_cents
+            <= SOL_BLEED_V2_BLOCK_PRICE_HI):
+        return False
+    if seconds_to_close is None:
+        return False
+    if not (SOL_BLEED_V2_BLOCK_STC_LO_S <= seconds_to_close
+            <= SOL_BLEED_V2_BLOCK_STC_HI_S):
+        return False
+    if strategy is None or strategy not in SOL_BLEED_V2_BLOCK_STRATEGIES:
+        return False
+    return True
+
+
 def should_exclude_weather_no_ticker(
     ticker: Optional[str],
     excluded_prefixes: Optional[frozenset] = None,

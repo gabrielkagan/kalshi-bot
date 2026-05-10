@@ -410,6 +410,14 @@
     "SHADOW_CAL_PIPELINE",
     "SHADOW_TEMP_SCALE",
     "SIZING_TIERS",
+    "SOL_BLEED_V2_BLOCK_ASSETS",
+    "SOL_BLEED_V2_BLOCK_ENABLED",
+    "SOL_BLEED_V2_BLOCK_FILTER_STAGE",
+    "SOL_BLEED_V2_BLOCK_PRICE_HI",
+    "SOL_BLEED_V2_BLOCK_PRICE_LO",
+    "SOL_BLEED_V2_BLOCK_STC_HI_S",
+    "SOL_BLEED_V2_BLOCK_STC_LO_S",
+    "SOL_BLEED_V2_BLOCK_STRATEGIES",
     "SOL_DC_RISK_TIERS",
     "SOL_EMPTY_BOOK_MAKER_MIN_PRICE",
     "SOL_EMPTY_BOOK_MIN_STC",
@@ -591,6 +599,7 @@
     "recent_writes",
     "should_block_high_price_stc_band",
     "should_block_high_price_stc_candidate",
+    "should_block_sol_bleed_v2_candidate",
     "should_block_sol_taker_lowprice_bleed_candidate",
     "should_block_tm98_highprice_bleed_candidate",
     "should_exclude_weather_no_ticker",
@@ -2253,6 +2262,38 @@
     "kind": "attribute"
   },
   "bot.constants.SHADOW_TEMP_SCALE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.constants.SOL_BLEED_V2_BLOCK_ASSETS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.constants.SOL_BLEED_V2_BLOCK_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.constants.SOL_BLEED_V2_BLOCK_FILTER_STAGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.constants.SOL_BLEED_V2_BLOCK_PRICE_HI": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.constants.SOL_BLEED_V2_BLOCK_PRICE_LO": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.constants.SOL_BLEED_V2_BLOCK_STC_HI_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.constants.SOL_BLEED_V2_BLOCK_STC_LO_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.constants.SOL_BLEED_V2_BLOCK_STRATEGIES": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -10465,6 +10506,38 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.helpers.SOL_BLEED_V2_BLOCK_ASSETS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.SOL_BLEED_V2_BLOCK_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.SOL_BLEED_V2_BLOCK_FILTER_STAGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.SOL_BLEED_V2_BLOCK_PRICE_HI": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.SOL_BLEED_V2_BLOCK_PRICE_LO": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.SOL_BLEED_V2_BLOCK_STC_HI_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.SOL_BLEED_V2_BLOCK_STC_LO_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.SOL_BLEED_V2_BLOCK_STRATEGIES": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.helpers.SOL_DC_RISK_TIERS": {
     "annotation": null,
     "kind": "attribute"
@@ -12423,6 +12496,38 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.helpers.cell_blocks.SOL_BLEED_V2_BLOCK_ASSETS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.cell_blocks.SOL_BLEED_V2_BLOCK_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.cell_blocks.SOL_BLEED_V2_BLOCK_FILTER_STAGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.cell_blocks.SOL_BLEED_V2_BLOCK_PRICE_HI": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.cell_blocks.SOL_BLEED_V2_BLOCK_PRICE_LO": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.cell_blocks.SOL_BLEED_V2_BLOCK_STC_HI_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.cell_blocks.SOL_BLEED_V2_BLOCK_STC_LO_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.cell_blocks.SOL_BLEED_V2_BLOCK_STRATEGIES": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.helpers.cell_blocks.SOL_DC_RISK_TIERS": {
     "annotation": null,
     "kind": "attribute"
@@ -13105,6 +13210,48 @@
     ],
     "returns": "bool"
   },
+  "bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Optional[str]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "asset"
+      },
+      {
+        "annotation": "Optional[str]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "side"
+      },
+      {
+        "annotation": "Optional[int]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "entry_price_cents"
+      },
+      {
+        "annotation": "Optional[float]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "seconds_to_close"
+      },
+      {
+        "annotation": "Optional[str]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "strategy"
+      },
+      {
+        "annotation": "Optional[bool]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "enabled"
+      }
+    ],
+    "returns": "bool"
+  },
   "bot.helpers.cell_blocks.should_block_sol_taker_lowprice_bleed_candidate": {
     "kind": "function",
     "parameters": [
@@ -13482,6 +13629,48 @@
     "returns": "bool"
   },
   "bot.helpers.should_block_high_price_stc_candidate": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Optional[str]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "asset"
+      },
+      {
+        "annotation": "Optional[str]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "side"
+      },
+      {
+        "annotation": "Optional[int]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "entry_price_cents"
+      },
+      {
+        "annotation": "Optional[float]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "seconds_to_close"
+      },
+      {
+        "annotation": "Optional[str]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "strategy"
+      },
+      {
+        "annotation": "Optional[bool]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "enabled"
+      }
+    ],
+    "returns": "bool"
+  },
+  "bot.helpers.should_block_sol_bleed_v2_candidate": {
     "kind": "function",
     "parameters": [
       {
@@ -14957,6 +15146,38 @@
     "kind": "attribute"
   },
   "bot.helpers.sizing.SHADOW_TEMP_SCALE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.sizing.SOL_BLEED_V2_BLOCK_ASSETS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.sizing.SOL_BLEED_V2_BLOCK_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.sizing.SOL_BLEED_V2_BLOCK_FILTER_STAGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.sizing.SOL_BLEED_V2_BLOCK_PRICE_HI": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.sizing.SOL_BLEED_V2_BLOCK_PRICE_LO": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.sizing.SOL_BLEED_V2_BLOCK_STC_HI_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.sizing.SOL_BLEED_V2_BLOCK_STC_LO_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.sizing.SOL_BLEED_V2_BLOCK_STRATEGIES": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -16920,6 +17141,38 @@
     "kind": "attribute"
   },
   "bot.helpers.strategy.SHADOW_TEMP_SCALE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.strategy.SOL_BLEED_V2_BLOCK_ASSETS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.strategy.SOL_BLEED_V2_BLOCK_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.strategy.SOL_BLEED_V2_BLOCK_FILTER_STAGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.strategy.SOL_BLEED_V2_BLOCK_PRICE_HI": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.strategy.SOL_BLEED_V2_BLOCK_PRICE_LO": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.strategy.SOL_BLEED_V2_BLOCK_STC_HI_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.strategy.SOL_BLEED_V2_BLOCK_STC_LO_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.strategy.SOL_BLEED_V2_BLOCK_STRATEGIES": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -18991,6 +19244,38 @@
     "kind": "attribute"
   },
   "bot.helpers.tm_sweep.SHADOW_TEMP_SCALE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.tm_sweep.SOL_BLEED_V2_BLOCK_ASSETS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.tm_sweep.SOL_BLEED_V2_BLOCK_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.tm_sweep.SOL_BLEED_V2_BLOCK_FILTER_STAGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.tm_sweep.SOL_BLEED_V2_BLOCK_PRICE_HI": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.tm_sweep.SOL_BLEED_V2_BLOCK_PRICE_LO": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.tm_sweep.SOL_BLEED_V2_BLOCK_STC_HI_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.tm_sweep.SOL_BLEED_V2_BLOCK_STC_LO_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.tm_sweep.SOL_BLEED_V2_BLOCK_STRATEGIES": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -21080,6 +21365,38 @@
     "kind": "attribute"
   },
   "bot.helpers.validators.SHADOW_TEMP_SCALE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.validators.SOL_BLEED_V2_BLOCK_ASSETS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.validators.SOL_BLEED_V2_BLOCK_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.validators.SOL_BLEED_V2_BLOCK_FILTER_STAGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.validators.SOL_BLEED_V2_BLOCK_PRICE_HI": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.validators.SOL_BLEED_V2_BLOCK_PRICE_LO": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.validators.SOL_BLEED_V2_BLOCK_STC_HI_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.validators.SOL_BLEED_V2_BLOCK_STC_LO_S": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.helpers.validators.SOL_BLEED_V2_BLOCK_STRATEGIES": {
     "annotation": null,
     "kind": "attribute"
   },
@@ -24081,6 +24398,10 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.scanner.SOL_BLEED_V2_BLOCK_FILTER_STAGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.scanner.SOL_DC_RISK_TIERS": {
     "annotation": null,
     "kind": "attribute"
@@ -26570,6 +26891,48 @@
     "returns": "float"
   },
   "bot.scanner.should_block_high_price_stc_candidate": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Optional[str]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "asset"
+      },
+      {
+        "annotation": "Optional[str]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "side"
+      },
+      {
+        "annotation": "Optional[int]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "entry_price_cents"
+      },
+      {
+        "annotation": "Optional[float]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "seconds_to_close"
+      },
+      {
+        "annotation": "Optional[str]",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "strategy"
+      },
+      {
+        "annotation": "Optional[bool]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "enabled"
+      }
+    ],
+    "returns": "bool"
+  },
+  "bot.scanner.should_block_sol_bleed_v2_candidate": {
     "kind": "function",
     "parameters": [
       {
