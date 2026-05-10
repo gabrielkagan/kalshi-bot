@@ -44,6 +44,7 @@ HARD_REJECT_STAGES = frozenset({
 KNOWN_BLOCK_STAGES = frozenset({
     "TM98_97_98C_2_5MIN_BLEED",
     "SOL_TAKER_85_89C_2_5MIN_BLEED",
+    "SOL_BLEED_V2_88_93C_2_5MIN",
     "96C_SOL_XRP_STC_DANGER_BAND",
     "tm96_calmlp_gate_blocked",
 })

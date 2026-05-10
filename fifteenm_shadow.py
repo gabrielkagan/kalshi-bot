@@ -176,7 +176,8 @@ class RecalibratedEGARCHApproach:
                     "  'stc_shadow_xrp', 'stc_shadow_no_xrp', 'stc_shadow_promoted', "
                     "  '96C_SOL_XRP_STC_DANGER_BAND', "
                     "  'TM98_97_98C_2_5MIN_BLEED', "
-                    "  'SOL_TAKER_85_89C_2_5MIN_BLEED') "
+                    "  'SOL_TAKER_85_89C_2_5MIN_BLEED', "
+                    "  'SOL_BLEED_V2_88_93C_2_5MIN') "
                     "AND calibrated_prob IS NOT NULL AND market_result IS NOT NULL",
                     (asset,)
                 ).fetchall()

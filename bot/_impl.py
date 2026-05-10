@@ -1070,7 +1070,8 @@ class MainLoop:
                     ("candidate", "observation_trade",
                      HIGH_PRICE_STC_BLOCK_FILTER_STAGE,
                      TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE,
-                     SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE)
+                     SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE,
+                     SOL_BLEED_V2_BLOCK_FILTER_STAGE)
                     if _pt == "15m" else None
                 )
                 for _sub_code, _sub_path in _cfg.cal_subtypes.items():

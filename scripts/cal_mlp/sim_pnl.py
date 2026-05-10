@@ -132,6 +132,7 @@ _PRODUCTION_RUNTIME_BLOCKED_STAGES = frozenset({
     # Cell-blocks shipped 2026-04-30 (not internally modeled by sim_pnl):
     'TM98_97_98C_2_5MIN_BLEED',
     'SOL_TAKER_85_89C_2_5MIN_BLEED',
+    'SOL_BLEED_V2_88_93C_2_5MIN',  # SOL_BLEED_V2 (2026-05-10)
     '96C_SOL_XRP_STC_DANGER_BAND',  # HPSB
     # cal_mlp TM-96 gate (sim_pnl doesn't model the TM-96 cal_mlp path):
     'tm96_calmlp_gate_blocked',

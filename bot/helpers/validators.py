@@ -59,7 +59,9 @@ def _validate_high_price_stc_block_bleeder_strings():
 
 
 def _validate_bleed_block_bleeder_strings():
-    """TM98 + SOL_TAKER bleed-block bleeder integrity check (Bit 3.0.5: registry-membership)."""
+    """TM98 + SOL_TAKER + SOL_BLEED_V2 bleed-block bleeder integrity check (Bit 3.0.5: registry-membership)."""
     return _validate_bleeders_against_runtime_registry(
-        TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES | SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES,
+        TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES
+        | SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES
+        | SOL_BLEED_V2_BLOCK_STRATEGIES,
         "BLEED_BLOCK")

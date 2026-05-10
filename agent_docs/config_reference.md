@@ -52,6 +52,13 @@ On change, run `make doc-drift` (alias for `python3 scripts/doc_drift_check.py`)
 | SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_LO_S | 121 | Lower bound of 2-5min danger zone (inclusive) |
 | SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_HI_S | 300 | Upper bound of 2-5min danger zone (inclusive) |
 | SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES | {TAKER_NOW} | MAKER cohorts not blocked |
+| SOL_BLEED_V2_BLOCK_ENABLED | env-default `0` | Supersedes SOL_TAKER_LOWPRICE; SOL × {TAKER_NOW, MAKER_PATIENT} × 88-93¢ × 121-300s; +$200/30d expected (ticket 86b9vqt3f, May 10) |
+| SOL_BLEED_V2_BLOCK_ASSETS | {SOL} | Same asset scope as v1; SOL is the calibration-pocket asset |
+| SOL_BLEED_V2_BLOCK_PRICE_LO | 88 | Cell drifted up post-v2 (May 5 cross-asset deploy); 85-87¢ remains productive |
+| SOL_BLEED_V2_BLOCK_PRICE_HI | 93 | Recent catastrophic-tail trades extend to 92-93¢; 94+¢ profitable per 30d data |
+| SOL_BLEED_V2_BLOCK_STC_LO_S | 121 | Same 2-5min danger zone; sub-2min has different bleed shape |
+| SOL_BLEED_V2_BLOCK_STC_HI_S | 300 | 5/9 KXSOL082215 weekend_discount @ 361s correctly excluded from gate |
+| SOL_BLEED_V2_BLOCK_STRATEGIES | {TAKER_NOW, MAKER_PATIENT} | bot/executor.py force-routes ALL SOL through `sol_taker_override` regardless of label; widened beyond v1's TAKER_NOW-only filter. MAKER_AGGRESSIVE / weekend_discount / overnight_discount / decided_t1/t2 are productive — NOT blocked |
 | BINANCE_FEED_ENABLED | env-default `0` | US-VPS HTTP-451 geoblocked; CROSS_EXCHANGE_CONSENSUS_MIN auto-lowers to 2 (Kraken+Bybit) when off |
 | STC_SIZING_SCALER_KNEE | 300 | Seconds — start scaling contracts by 300/STC above this |
 | STC_SIZING_SCALER_ENABLED | True | Universal STC scaler: contracts *= 300/STC for 15M at STC>300s |

@@ -41,6 +41,7 @@ TRADE_ENDPOINT_STAGES = {
     "observation_trade",
     "TM98_97_98C_2_5MIN_BLEED",
     "SOL_TAKER_85_89C_2_5MIN_BLEED",
+    "SOL_BLEED_V2_88_93C_2_5MIN",
     "96C_SOL_XRP_STC_DANGER_BAND",  # HPSB — original 96¢ bleed gate
 }
 
@@ -100,6 +101,7 @@ def _stage_value(call: ast.Call) -> str | None:
 CONSTANT_NAME_TO_STAGE = {
     "TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE": "TM98_97_98C_2_5MIN_BLEED",
     "SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE": "SOL_TAKER_85_89C_2_5MIN_BLEED",
+    "SOL_BLEED_V2_BLOCK_FILTER_STAGE": "SOL_BLEED_V2_88_93C_2_5MIN",
     "HIGH_PRICE_STC_BLOCK_FILTER_STAGE": "96C_SOL_XRP_STC_DANGER_BAND",
     "_bleed_stage": "__BLEED_LOOP__",  # dynamic loop-bound; treated as endpoint
 }
@@ -193,6 +195,7 @@ def test_endpoint_stage_set_matches_known_stages():
         src = f.read()
     assert 'TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE = "TM98_97_98C_2_5MIN_BLEED"' in src
     assert 'SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE = "SOL_TAKER_85_89C_2_5MIN_BLEED"' in src
+    assert 'SOL_BLEED_V2_BLOCK_FILTER_STAGE = "SOL_BLEED_V2_88_93C_2_5MIN"' in src
     assert 'HIGH_PRICE_STC_BLOCK_FILTER_STAGE = "96C_SOL_XRP_STC_DANGER_BAND"' in src
 
 

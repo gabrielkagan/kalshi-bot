@@ -216,6 +216,7 @@ from bot.constants import (
     SOL_MAX_RISK_PER_TRADE,
     SOL_MIN_EDGE,
     SOL_MIN_ENTRY_PRICE,
+    SOL_BLEED_V2_BLOCK_FILTER_STAGE,
     SOL_RESCUE_CONTRACT_CAP,
     SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE,
     SPORTS_ENABLED,
@@ -291,6 +292,7 @@ from bot.helpers import (
     evaluate_execution_strategy,
     get_min_edge,
     should_block_high_price_stc_candidate,
+    should_block_sol_bleed_v2_candidate,
     should_block_sol_taker_lowprice_bleed_candidate,
     should_block_tm98_highprice_bleed_candidate,
     should_exclude_weather_no_ticker,
@@ -6499,6 +6501,8 @@ class OpportunityScanner:
              TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE, "TM98_BLEED_DROP"),
             (should_block_sol_taker_lowprice_bleed_candidate,
              SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE, "SOL_TAKER_BLEED_DROP"),
+            (should_block_sol_bleed_v2_candidate,
+             SOL_BLEED_V2_BLOCK_FILTER_STAGE, "SOL_BLEED_V2_DROP"),
         ):
             _bleed_kept: List[Dict] = []
             _bleed_dropped: List[Dict] = []

@@ -559,15 +559,16 @@ def test_script_runs_end_to_end(tmp_path):
 
 
 def test_known_block_stages_match_canonical_set():
-    """AST guard: KNOWN_BLOCK_STAGES must equal the 4 stages in CLAUDE.md.
+    """AST guard: KNOWN_BLOCK_STAGES must equal the canonical bleed-cell set.
 
     If a future PR drops one of these from the constant, this test fails.
-    Round-2 review #1C-2.
+    Round-2 review #1C-2. SOL_BLEED_V2 added 2026-05-10 (ticket 86b9vqt3f).
     """
     import alpha_audit
     expected = {
         "TM98_97_98C_2_5MIN_BLEED",
         "SOL_TAKER_85_89C_2_5MIN_BLEED",
+        "SOL_BLEED_V2_88_93C_2_5MIN",
         "96C_SOL_XRP_STC_DANGER_BAND",
         "tm96_calmlp_gate_blocked",
     }

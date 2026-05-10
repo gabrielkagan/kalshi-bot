@@ -80,6 +80,7 @@ _CANONICAL_BLOCKED_STAGES = {
     'usaft_short_stc',
     'TM98_97_98C_2_5MIN_BLEED',
     'SOL_TAKER_85_89C_2_5MIN_BLEED',
+    'SOL_BLEED_V2_88_93C_2_5MIN',
     '96C_SOL_XRP_STC_DANGER_BAND',  # HPSB (no rows in May-2-6 window; lock anyway)
     'tm96_calmlp_gate_blocked',
 }
@@ -137,6 +138,7 @@ def test_exclude_helper_drops_blocked_stages():
             'silent_loss_cooldown',           # DROP
             'TM98_97_98C_2_5MIN_BLEED',       # DROP
             'SOL_TAKER_85_89C_2_5MIN_BLEED',  # DROP
+            'SOL_BLEED_V2_88_93C_2_5MIN',     # DROP (new SOL_BLEED_V2 gate)
             'tm96_calmlp_gate_blocked',       # DROP
             'zero_sizing',                    # DROP
             'dead_hour_passed',               # DROP
@@ -155,7 +157,7 @@ def test_exclude_helper_drops_blocked_stages():
             'tm_nbbo_buffer_shadow',          # DROP (H7: NBBO gate)
             'low_price_shadow',               # KEEP (shadow path, gate-eligible)
         ],
-        'pnl_marker': list(range(22)),
+        'pnl_marker': list(range(23)),
     })
 
     out = sim_pnl._exclude_production_runtime_blocked(df)
