@@ -24,7 +24,7 @@ ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
 endif
 
-.PHONY: help install test test-unit test-contract test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen
+.PHONY: help install install-hooks test test-unit test-contract test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen
 
 # Override at invocation time if needed: `make PYTHON=python3.11 test`.
 # NOTE: CI runs Python 3.11 (.github/workflows/test.yml), local default
@@ -132,6 +132,7 @@ help:
 	@echo
 	@echo "Other:"
 	@echo "  make install              pip install -e .[dev]"
+	@echo "  make install-hooks        symlink scripts/git_hooks/pre-commit → .git/hooks/ (Sprint PSC P5.3)"
 	@echo "  make ast-check            syntax-check bot/_impl.py + bot/constants.py"
 	@echo "  make lint                 ruff check ."
 	@echo "  make doc-drift            scripts/doc_drift_check.py"
@@ -140,6 +141,54 @@ help:
 
 install:
 	$(PYTHON) -m pip install -e '.[dev]'
+
+# Sprint PSC Bit P5.3 — install the parallel-session-coordination
+# pre-commit hook. Idempotent: rerunning replaces the existing symlink.
+#
+# R1 M2 — Hook chaining. If an EXISTING non-symlink pre-commit hook is
+# present (e.g. the historic 488-byte ast-check shell hook on the main
+# checkout), it is preserved by renaming to `pre-commit.local` before
+# installing the P5.3 symlink. The P5.3 hook then invokes
+# `pre-commit.local` first; nonzero exit from .local propagates
+# directly. This avoids regressing the operator's prior workflow when
+# P5.3 ships.
+#
+# Worktree note: git stores hooks at $(git rev-parse --git-common-dir)/hooks,
+# i.e. the MAIN checkout's `.git/hooks/` is shared across all worktrees.
+# Installing once from any worktree covers every worktree.
+#
+# The hook itself is fail-open by design — see scripts/git_hooks/pre-commit
+# docstring. Worst case (broken hook) it allows commits; never blocks.
+install-hooks:
+	@hooks_dir=$$(git rev-parse --git-path hooks 2>/dev/null); \
+	if [ -z "$$hooks_dir" ]; then \
+		echo "ERROR: not in a git repo. Run from inside the kalshi-bot checkout."; \
+		exit 1; \
+	fi; \
+	mkdir -p "$$hooks_dir"; \
+	dst="$$hooks_dir/pre-commit"; \
+	chained="$$hooks_dir/pre-commit.local"; \
+	if [ -e "$$dst" ] && [ ! -L "$$dst" ]; then \
+		if [ -e "$$chained" ]; then \
+			echo "ERROR: $$dst is a non-symlink AND $$chained already exists."; \
+			echo "Refusing to clobber either. Resolve manually:"; \
+			echo "  - if $$chained is yours, move it aside"; \
+			echo "  - if $$dst is what you want chained, mv it onto $$chained"; \
+			exit 1; \
+		fi; \
+		echo "Existing non-symlink pre-commit hook detected at $$dst."; \
+		echo "Preserving as $$chained (will be invoked by P5.3 hook before Part A/B)."; \
+		mv "$$dst" "$$chained"; \
+		chmod +x "$$chained"; \
+	fi; \
+	src=$$(pwd)/scripts/git_hooks/pre-commit; \
+	chmod +x "$$src"; \
+	ln -sf "$$src" "$$dst"; \
+	echo "Installed $$src as $$dst"; \
+	if [ -e "$$chained" ]; then \
+		echo "Chained pre-commit.local: $$chained"; \
+	fi; \
+	echo "Verify with: scripts/git_hooks/pre-commit --self-test"
 
 # Pillar 5: the canonical entrypoint. Each tier's failure aborts the
 # next via Make's default "fail on nonzero" (no `-` prefix anywhere).
