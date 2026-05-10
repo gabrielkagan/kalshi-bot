@@ -44,7 +44,7 @@ from bot import OpportunityScanner
 
 
 BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot", "scanner", "__init__.py")
 
 
 class TestIsSevereDrift(unittest.TestCase):

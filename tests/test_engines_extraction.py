@@ -314,19 +314,32 @@ def test_volatility_init_keeps_egarch_mz_forward_refs_quoted():
     )
 
 
+# Bit 8.1 (2026-05-10): OpportunityScanner moved to bot/scanner/__init__.py.
+# Walk both files when looking for OpportunityScanner content.
+_SCANNER_PY = REPO_ROOT / "bot" / "scanner" / "__init__.py"
+
+
+def _find_classdef_across_impl_and_scanner(class_name):
+    """Find a ClassDef by name; search bot/_impl.py + bot/scanner/__init__.py."""
+    for path in (BOT_PY, _SCANNER_PY):
+        if not path.is_file():
+            continue
+        src = path.read_text()
+        tree = ast.parse(src)
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                return node, src
+    return None, None
+
+
 def test_opportunity_scanner_still_annotates_vol_volatility_engine():
     """L33 positive pin: OpportunityScanner.__init__ has `vol: VolatilityEngine`
-    annotation — verifies the consumer-class identity. Lives in bot/_impl.py."""
-    src = BOT_PY.read_text()
-    tree = ast.parse(src)
-    scanner = next(
-        (
-            node for node in ast.iter_child_nodes(tree)
-            if isinstance(node, ast.ClassDef) and node.name == "OpportunityScanner"
-        ),
-        None,
+    annotation — verifies the consumer-class identity. Post-Bit-8.1 lives in
+    bot/scanner/__init__.py (was bot/_impl.py pre-extraction)."""
+    scanner, src = _find_classdef_across_impl_and_scanner("OpportunityScanner")
+    assert scanner is not None, (
+        "OpportunityScanner ClassDef missing from both bot/_impl.py and bot/scanner/__init__.py."
     )
-    assert scanner is not None, "OpportunityScanner ClassDef missing from bot/_impl.py."
     init = next(
         (
             n for n in scanner.body
@@ -345,20 +358,23 @@ def test_opportunity_scanner_still_annotates_vol_volatility_engine():
 
 def test_no_other_class_annotates_volatility_engine():
     """Negative pin: only OpportunityScanner.__init__ has a parameter
-    annotated `vol: VolatilityEngine`. Catches wrong-class attribution
-    drift (L33)."""
-    src = BOT_PY.read_text()
-    tree = ast.parse(src)
+    annotated `vol: VolatilityEngine` (across bot/_impl.py + bot/scanner).
+    Catches wrong-class attribution drift (L33)."""
     consumers = []
-    for node in ast.iter_child_nodes(tree):
-        if not isinstance(node, ast.ClassDef):
+    for path in (BOT_PY, _SCANNER_PY):
+        if not path.is_file():
             continue
-        for inner in node.body:
-            if not (isinstance(inner, ast.FunctionDef) and inner.name == "__init__"):
+        src = path.read_text()
+        tree = ast.parse(src)
+        for node in ast.iter_child_nodes(tree):
+            if not isinstance(node, ast.ClassDef):
                 continue
-            init_src = ast.get_source_segment(src, inner) or ""
-            if "VolatilityEngine" in init_src and "vol: VolatilityEngine" in init_src:
-                consumers.append(node.name)
+            for inner in node.body:
+                if not (isinstance(inner, ast.FunctionDef) and inner.name == "__init__"):
+                    continue
+                init_src = ast.get_source_segment(src, inner) or ""
+                if "VolatilityEngine" in init_src and "vol: VolatilityEngine" in init_src:
+                    consumers.append(node.name)
     assert consumers == ["OpportunityScanner"], (
         f"Expected only OpportunityScanner to have a `vol: VolatilityEngine` "
         f"annotation, got: {consumers}. Update the breadcrumb in bot/_impl.py "

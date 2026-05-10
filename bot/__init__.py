@@ -15,12 +15,15 @@ Solution: `types.ModuleType` subclass with both `__getattr__` AND
 `__setattr__` proxying. `bot.X = value` writes through to `bot._impl.X`.
 
 Underscored names are proxied too — no `__all__` filtering — so consumers
-of `bot._BREAKER_REGISTRY`, `bot._TELEGRAM`, etc. work without per-caller
-updates. Note: `_CALIBRATION_ENGINE`, `_CAL_REGISTRY`, and the
-`_resolve_cal_engine` / `_derive_subtype` / `_derive_asset_filter` helpers
-live in `bot.engines.calibration` post-Bit-6.3 path-B (2026-05-10), NOT in
+of `bot._BREAKER_REGISTRY` etc. work without per-caller updates. Note:
+`_CALIBRATION_ENGINE`, `_CAL_REGISTRY`, and the `_resolve_cal_engine` /
+`_derive_subtype` / `_derive_asset_filter` helpers live in
+`bot.engines.calibration` post-Bit-6.3 path-B (2026-05-10), NOT in
 `bot._impl` — reach them via `bot.engines.calibration.X` directly, not via
-the `bot.X` proxy.
+the `bot.X` proxy. Note: `_TELEGRAM` lives in `bot.notifier` post-Bit-8.1
+path-A++ (2026-05-10), NOT in `bot._impl` — `bot._TELEGRAM` no longer
+resolves via the proxy. Reach via `bot.notifier._TELEGRAM` (or via the
+`_telegram_state._TELEGRAM` alias inside bot/_impl.py + bot/scanner/__init__.py).
 
 Also note: `StateManager` lives in `bot.state` post-Bit-7.1 (2026-05-10),
 NOT in `bot._impl`. Reach it via `bot.StateManager` (proxy chain:
@@ -38,6 +41,29 @@ refactor that dropped `bot_globals` from `parity_assert` and
 refactored to drop `bot_globals: dict` — the closure now imports its 11
 dependent names directly from `bot.constants` + `config` inside the
 function body (mirrors path-A++).
+
+Bit 8.1 (path-A++, 2026-05-10): `OpportunityScanner` lives in
+`bot.scanner` post-extraction, NOT in `bot._impl`. Reach via
+`bot.OpportunityScanner` (proxy chain: `bot.X` → `bot._impl.X` →
+`bot.scanner.X` via the line-115 re-export `from bot.scanner import
+OpportunityScanner`) or `bot.scanner.OpportunityScanner` (direct). The
+7 staticmethods (`_compute_maker_counterfactual`, `_parse_threshold`,
+`_parse_weather_market_info`, `_best_yes_ask_cents`, `_is_severe_drift`,
+`_convert_orderbook_fp`, `_window_timeslot`) called from OrderExecutor
+(12 sites) + MainLoop (1 site) all resolve via the re-export. Bit 8.1
+also relocated the `_TELEGRAM` module-level singleton from `bot._impl`
+to `bot.notifier` (alongside the `TelegramNotifier` class). Both
+`bot._impl` and `bot.scanner` reach it via `import bot.notifier as
+_telegram_state` plus `_telegram_state._TELEGRAM` module-attribute
+access — preserves mutation freshness across consumers (parallel to
+the Bit 6.3 path-B `_cal_state._CALIBRATION_ENGINE` pattern). Tests
+using `patch.object(bot, "_TELEGRAM", ...)` were retargeted to
+`patch.object(bot.notifier, "_TELEGRAM", ...)` in the same atomic
+commit. The `_get_order_executor()` helper inside
+`bot/scanner/__init__.py` late-binds `bot._impl.OrderExecutor` for the
+34 static-method call sites in `scan()` — Sprint 9 Bit 9.1 will resolve
+this when OrderExecutor extracts to `bot/executor.py`. Sprint 8 closes
+here.
 
 Caching the `bot._impl` module reference is safe: the module object itself
 is stable; mutations land on its `__dict__` which `getattr`/`setattr`

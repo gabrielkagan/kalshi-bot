@@ -1,17 +1,27 @@
 """Fire-and-forget Telegram alerts via Bot API.
 
 Bit 4.2 (Sprint 4): extracted verbatim from bot/_impl.py. Pure leaf —
-stdlib + `requests` only, no `bot.constants` deps, no helpers, no
-module-level instance, no import-time side effects. Constructed
-exactly once in `MainLoop.__init__` at runtime; the module-level
-singleton `_TELEGRAM` lives in `bot/_impl.py` (instance, not class).
+stdlib + `requests` only, no `bot.constants` deps, no helpers.
+Constructed exactly once in `MainLoop.__init__` at runtime.
 
-Re-imported into bot/_impl.py as `from bot.notifier import TelegramNotifier`
-so the runtime construction at `MainLoop.__init__` resolves. The
-`Optional["TelegramNotifier"]` forward-ref on `_TELEGRAM` is a string
-annotation that no caller currently evaluates (no `typing.get_type_hints`
-consumer in-tree as of Bit 4.2 R2), so the import is justified solely by
-the runtime construction.
+Bit 8.1 path-A++ (2026-05-10): the module-level singleton `_TELEGRAM`
+relocated from `bot/_impl.py` to here, alongside the class it
+references. Both `bot/_impl.py` and `bot/scanner/__init__.py` reach it
+via `import bot.notifier as _telegram_state` plus
+`_telegram_state._TELEGRAM` module-attribute access — the
+module-attribute access pattern (parallel to the Bit 6.3 path-B
+`_cal_state._CALIBRATION_ENGINE` pattern) preserves mutation freshness
+across consumers because every reader goes through the module reference,
+NOT a captured-by-value binding. The plain `from bot.notifier import
+_TELEGRAM` form would NOT propagate runtime mutation — `MainLoop.__init__`
+writes via `_telegram_state._TELEGRAM = self.telegram` (drops the
+previous `global _TELEGRAM` declaration) and readers in BOTH bot/_impl.py
+and bot/scanner/__init__.py see the rebinding immediately via the
+module-attribute lookup. The relocation closes a laundered-namespace
+coupling that would have forced ~86 `@patch("bot._TELEGRAM", ...)`
+patch-target retargets to either `bot.scanner._TELEGRAM` (path-A
+late-binding) or `bot.notifier._TELEGRAM` (path-A++); the latter is
+strictly cleaner because the singleton lives next to its class.
 """
 import logging
 import threading
@@ -51,3 +61,10 @@ class TelegramNotifier:
             }, timeout=5)
         except Exception as e:
             logging.warning(f"Telegram send failed: {e}")
+
+
+# Module-level singleton — populated by MainLoop.__init__ at runtime.
+# Relocated from bot/_impl.py per Bit 8.1 path-A++ (2026-05-10).
+# Reach via `bot.notifier._TELEGRAM` (or alias-import in bot/_impl.py +
+# bot/scanner/__init__.py) to preserve mutation freshness.
+_TELEGRAM: Optional["TelegramNotifier"] = None

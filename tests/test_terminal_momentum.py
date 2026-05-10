@@ -34,6 +34,11 @@ def _read_bot():
     parts = []
     with open(BOT_PATH) as f:
         parts.append(f.read())
+    # Bit 8.1 (2026-05-10): append scanner source to parts too.
+    _scanner_path = os.path.join(os.path.dirname(BOT_PATH), "scanner", "__init__.py")
+    if os.path.isfile(_scanner_path):
+        with open(_scanner_path) as _f:
+            parts.append(_f.read())
     constants_path = os.path.join(os.path.dirname(BOT_PATH), "constants.py")
     if os.path.exists(constants_path):
         with open(constants_path) as f:
@@ -44,6 +49,12 @@ def _read_bot():
             if fname.endswith(".py"):
                 with open(os.path.join(helpers_dir, fname)) as f:
                     parts.append(f.read())
+    # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+    # Append its source so audits that grep for OpportunityScanner content survive the move.
+    _scanner_path = os.path.join(os.path.dirname(BOT_PATH), "scanner", "__init__.py")
+    if os.path.isfile(_scanner_path):
+        with open(_scanner_path) as _f:
+            parts.append(_f.read())
     return "\n".join(parts)
 
 

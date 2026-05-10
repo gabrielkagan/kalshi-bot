@@ -37,11 +37,20 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 BOT_PATH = os.path.join(PROJECT_ROOT, "bot/_impl.py")
+SCANNER_PATH = os.path.join(PROJECT_ROOT, "bot", "scanner", "__init__.py")
 
 
 def _read_bot():
+    """Bit 8.1 (2026-05-10): OpportunityScanner moved to
+    bot/scanner/__init__.py. Phase D's annotate site, scan for-loop,
+    queue-snapshot strip patterns, and `_shadow_diag` reset all live
+    in scanner now. Concat both files so the audit survives the move."""
     with open(BOT_PATH) as f:
-        return f.read()
+        src = f.read()
+    if os.path.isfile(SCANNER_PATH):
+        with open(SCANNER_PATH) as f:
+            src += "\n" + f.read()
+    return src
 
 
 class TestPhaseDStripPatternsRemoved:

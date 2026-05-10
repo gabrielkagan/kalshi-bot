@@ -305,11 +305,20 @@ def test_predictor_init_zero_io_post_relocation():
 
 
 def test_three_consumer_sites_still_reference_predictor_cache():
-    """The 3 consumer sites in bot/_impl.py (2 in OpportunityScanner, 1 in
-    MainLoop) must still reference the bare name `_calmlp_predictors` — the
-    explicit named import in line-59 preserves bare-name resolution. Counted
-    via grep, NOT line numbers (L41 — line numbers drift on every extraction)."""
+    """The 3 consumer sites must still reference the bare name
+    `_calmlp_predictors` — the explicit named import in line-59 preserves
+    bare-name resolution. Counted via grep, NOT line numbers (L41 — line
+    numbers drift on every extraction).
+
+    Bit 8.1 (2026-05-10): OpportunityScanner extracted to
+    bot/scanner/__init__.py. The two scanner consumer sites
+    (annotate-kwargs path + async-enqueue path) moved with the class;
+    the MainLoop `predictors=_calmlp_predictors` kwarg stays in
+    bot/_impl.py. Walk both files."""
     src = BOT_PY.read_text()
+    scanner_init = REPO_ROOT / "bot" / "scanner" / "__init__.py"
+    if scanner_init.exists():
+        src += "\n" + scanner_init.read_text()
     # Three known consumption shapes:
     #   1. predictor=_calmlp_predictors.get(asset)            (annotate kwargs path)
     #   2. predictor=_calmlp_predictors.get(asset)            (async-enqueue path)
@@ -317,12 +326,12 @@ def test_three_consumer_sites_still_reference_predictor_cache():
     get_calls = src.count("_calmlp_predictors.get(")
     kwarg_uses = src.count("predictors=_calmlp_predictors")
     assert get_calls == 2, (
-        f"_calmlp_predictors.get( occurs {get_calls}× in bot/_impl.py; expected 2 "
-        f"(scanner annotate-kwargs path + async-enqueue path). Possible regression "
+        f"_calmlp_predictors.get( occurs {get_calls}× in bot/_impl.py + bot/scanner/__init__.py; "
+        f"expected 2 (scanner annotate-kwargs path + async-enqueue path). Possible regression "
         f"from rewriting consumer sites that the relocation should leave untouched."
     )
     assert kwarg_uses == 1, (
-        f"predictors=_calmlp_predictors occurs {kwarg_uses}× in bot/_impl.py; "
+        f"predictors=_calmlp_predictors occurs {kwarg_uses}× in bot/_impl.py + bot/scanner/__init__.py; "
         f"expected 1 (start_post_hoc_processor MainLoop kwarg). Possible regression."
     )
 

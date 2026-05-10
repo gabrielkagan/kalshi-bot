@@ -147,7 +147,7 @@ class TestCounterBehavior(unittest.TestCase):
         No Telegram fires."""
         s = _make_scanner(uptime_minutes=30.0, wrote_rows_this_tick=0)
         fake_telegram = MagicMock()
-        with patch.object(bot, "_TELEGRAM", fake_telegram):
+        with patch.object(bot.notifier, "_TELEGRAM", fake_telegram):
             for _ in range(3):
                 s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
         fake_telegram.send.assert_not_called()
@@ -168,7 +168,7 @@ class TestAlertFiring(unittest.TestCase):
     def test_threshold_reached_fires_alert(self):
         s = _make_scanner(uptime_minutes=30.0, wrote_rows_this_tick=0)
         fake_telegram = MagicMock()
-        with patch.object(bot, "_TELEGRAM", fake_telegram):
+        with patch.object(bot.notifier, "_TELEGRAM", fake_telegram):
             # 5 consecutive unproductive ticks.
             for _ in range(5):
                 s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
@@ -184,7 +184,7 @@ class TestAlertFiring(unittest.TestCase):
         the threshold is crossed many times in a row."""
         s = _make_scanner(uptime_minutes=30.0, wrote_rows_this_tick=0)
         fake_telegram = MagicMock()
-        with patch.object(bot, "_TELEGRAM", fake_telegram):
+        with patch.object(bot.notifier, "_TELEGRAM", fake_telegram):
             # 10 consecutive unproductive ticks — well past threshold (5).
             for _ in range(10):
                 s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
@@ -200,7 +200,7 @@ class TestAlertFiring(unittest.TestCase):
         """First 4 ticks no alert; 5th tick alerts."""
         s = _make_scanner(uptime_minutes=30.0, wrote_rows_this_tick=0)
         fake_telegram = MagicMock()
-        with patch.object(bot, "_TELEGRAM", fake_telegram):
+        with patch.object(bot.notifier, "_TELEGRAM", fake_telegram):
             for _ in range(4):
                 s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
             self.assertEqual(fake_telegram.send.call_count, 0)
@@ -217,7 +217,7 @@ class TestStartupGrace(unittest.TestCase):
     def test_uptime_below_grace_does_not_alert(self):
         s = _make_scanner(uptime_minutes=2.0, wrote_rows_this_tick=0)
         fake_telegram = MagicMock()
-        with patch.object(bot, "_TELEGRAM", fake_telegram):
+        with patch.object(bot.notifier, "_TELEGRAM", fake_telegram):
             for _ in range(10):
                 s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
         fake_telegram.send.assert_not_called()
@@ -238,7 +238,7 @@ class TestStartupGrace(unittest.TestCase):
         of 5 min must not trigger an alert."""
         s = _make_scanner(uptime_minutes=5.0, wrote_rows_this_tick=0)
         fake_telegram = MagicMock()
-        with patch.object(bot, "_TELEGRAM", fake_telegram):
+        with patch.object(bot.notifier, "_TELEGRAM", fake_telegram):
             for _ in range(10):
                 s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
         fake_telegram.send.assert_not_called()
@@ -246,7 +246,7 @@ class TestStartupGrace(unittest.TestCase):
     def test_uptime_above_grace_alerts_normally(self):
         s = _make_scanner(uptime_minutes=10.0, wrote_rows_this_tick=0)
         fake_telegram = MagicMock()
-        with patch.object(bot, "_TELEGRAM", fake_telegram):
+        with patch.object(bot.notifier, "_TELEGRAM", fake_telegram):
             for _ in range(5):
                 s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
         fake_telegram.send.assert_called()
@@ -282,7 +282,7 @@ class TestHeartbeatProductivity(unittest.TestCase):
         # Heartbeat is OLDER than tick_start_ts (stale).
         s._scan_15m_iter_heartbeat_ts = time.time() - 100
         fake_telegram = MagicMock()
-        with patch.object(bot, "_TELEGRAM", fake_telegram):
+        with patch.object(bot.notifier, "_TELEGRAM", fake_telegram):
             for _ in range(6):
                 s._check_scan_productive_15m(_ACTIVE_15M, _tick_start_ts())
         fake_telegram.send.assert_called()
@@ -305,7 +305,7 @@ class TestScanHeartbeatWiring(unittest.TestCase):
 
     def test_scan_updates_heartbeat_for_15m_windows(self):
         import ast
-        with open(bot._impl.__file__) as f:
+        with open(bot.scanner.__file__) as f:
             tree = ast.parse(f.read())
         scan_fn = None
         for cls in ast.walk(tree):
@@ -358,7 +358,7 @@ class TestScanWiring(unittest.TestCase):
         import ast
         bot_py = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "bot", "_impl.py")
+            "bot", "scanner", "__init__.py")
         with open(bot_py) as f:
             tree = ast.parse(f.read())
         scan = None

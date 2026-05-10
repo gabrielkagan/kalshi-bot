@@ -51,21 +51,31 @@ class TestShadowDiagKeyCoverage:
     """Every _shadow_diag key must be accepted by both insert functions."""
 
     def _get_shadow_diag_keys(self):
-        """Parse bot/_impl.py AST to find all keys in _shadow_diag = {...}."""
-        bot_path = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(bot_path) as f:
-            source = f.read()
+        """Parse bot/_impl.py + bot/scanner/__init__.py AST to find all keys
+        in _shadow_diag = {...}.
 
-        # Find _shadow_diag = { ... } via regex (AST won't easily find dict in function body)
-        pattern = r'_shadow_diag\s*=\s*\{([^}]+)\}'
-        match = re.search(pattern, source)
-        assert match, "_shadow_diag dict not found in bot/_impl.py"
-
-        # Extract keys from the dict literal
-        dict_content = match.group(1)
-        keys = re.findall(r'"(\w+)"', dict_content)
-        assert len(keys) > 0, "_shadow_diag has no keys"
-        return set(keys)
+        Bit 8.1 (2026-05-10): scanner moved out of bot/_impl.py; the
+        _shadow_diag literal lives in bot/scanner/__init__.py post-extraction.
+        Walk both files so the audit survives the move.
+        """
+        for relpath in ("bot/_impl.py", "bot/scanner/__init__.py"):
+            full_path = os.path.join(PROJECT_ROOT, relpath)
+            if not os.path.isfile(full_path):
+                continue
+            with open(full_path) as f:
+                source = f.read()
+            # Find _shadow_diag = { ... } via regex (AST won't easily find dict in function body)
+            pattern = r'_shadow_diag\s*=\s*\{([^}]+)\}'
+            match = re.search(pattern, source)
+            if not match:
+                continue
+            dict_content = match.group(1)
+            keys = re.findall(r'"(\w+)"', dict_content)
+            assert len(keys) > 0, f"_shadow_diag has no keys (found in {relpath})"
+            return set(keys)
+        raise AssertionError(
+            "_shadow_diag dict not found in bot/_impl.py or bot/scanner/__init__.py"
+        )
 
     def _get_function_params(self, func_name):
         """Get the parameter names of a function from bot/_impl.py's StateManager."""

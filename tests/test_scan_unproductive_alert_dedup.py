@@ -109,7 +109,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         """Counts 5..9 inclusive → one Telegram alert at the
         threshold-crossing, none for counts 6..9."""
         s = _make_scanner()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             _drive_unproductive_ticks(s, 9)  # crosses threshold (5), not reconnect (10)
             self.assertEqual(s._scan_15m_unproductive_count, 9)
             self.assertEqual(
@@ -122,7 +122,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         """Counts 5..15 → two alerts: one at threshold, one at
         reconnect threshold (10)."""
         s = _make_scanner()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             _drive_unproductive_ticks(s, 15)
             self.assertEqual(s._scan_15m_unproductive_count, 15)
             self.assertEqual(
@@ -136,7 +136,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         """The Apr 27 incident shape: 128 consecutive unproductive
         ticks → still only 2 Telegrams (entry + reconnect)."""
         s = _make_scanner()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             _drive_unproductive_ticks(s, 128)
             self.assertEqual(s._scan_15m_unproductive_count, 128)
             self.assertEqual(
@@ -149,7 +149,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         """After a burn, a productive tick fires ONE recovery alert
         with the peak count."""
         s = _make_scanner()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             _drive_unproductive_ticks(s, 15)
             entry_count = mock_tele.send.call_count  # 2
             # Simulate a productive tick: bump heartbeat to "now"
@@ -170,7 +170,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         NOT fire spurious recovery messages on every call."""
         s = _make_scanner()
         s._scan_15m_iter_heartbeat_ts = time.time() + 1
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             for _ in range(5):
                 s._check_scan_productive_15m(_ACTIVE_15M, _now_iso())
             mock_tele.send.assert_not_called()
@@ -180,7 +180,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         the threshold (5), recovery must not fire (no alert was
         ever sent for the operator to "recover" from)."""
         s = _make_scanner()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             _drive_unproductive_ticks(s, 3)  # below threshold of 5
             self.assertEqual(mock_tele.send.call_count, 0)
             # Productive tick:
@@ -197,7 +197,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         clean recovery, a SECOND burn must fire fresh alerts (state
         reset, not stale-suppressed)."""
         s = _make_scanner()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             # Burn 1
             _drive_unproductive_ticks(s, 15)
             s._scan_15m_iter_heartbeat_ts = time.time() + 1
@@ -220,7 +220,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         """Operator receives one alert at entry — the message must
         carry the diagnostic info (ticks, windows, uptime, KB ref)."""
         s = _make_scanner()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             _drive_unproductive_ticks(s, 5)
             self.assertEqual(mock_tele.send.call_count, 1)
             msg = mock_tele.send.call_args.args[0]
@@ -238,7 +238,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         self.assertEqual(s._scan_15m_unproductive_count, 12)
         self.assertTrue(s._scan_15m_reconnect_triggered)
         s._scan_15m_iter_heartbeat_ts = time.time() + 1
-        with patch.object(bot, "_TELEGRAM"):
+        with patch.object(bot.notifier, "_TELEGRAM"):
             s._check_scan_productive_15m(_ACTIVE_15M, _now_iso())
         self.assertEqual(s._scan_15m_unproductive_count, 0)
         self.assertFalse(s._scan_15m_reconnect_triggered)
@@ -250,7 +250,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         resumes. Operator must see a fresh entry alert on the second
         burn — the rotation reset must clear the entry flag."""
         s = _make_scanner()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             _drive_unproductive_ticks(s, 6)  # crosses threshold (5)
             self.assertEqual(mock_tele.send.call_count, 1)
             self.assertTrue(s._scan_15m_unproductive_entry_alerted)
@@ -287,7 +287,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
             def send(self, message, silent=False, dedup_key=None):
                 sent.append((message, dedup_key))
 
-        with patch.object(bot, "_TELEGRAM", _ObservingTelegram()):
+        with patch.object(bot.notifier, "_TELEGRAM", _ObservingTelegram()):
             # Burn 1
             _drive_unproductive_ticks(s, 6)
             s._scan_15m_iter_heartbeat_ts = time.time() + 1
@@ -316,7 +316,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         a stuck-period must fire recovery (operator sees closure)
         before resetting state."""
         s = _make_scanner()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             _drive_unproductive_ticks(s, 6)
             self.assertTrue(s._scan_15m_unproductive_entry_alerted)
             entry_count = mock_tele.send.call_count  # 1
@@ -337,7 +337,7 @@ class TestUnproductiveAlertDedup(unittest.TestCase):
         """Pre-warmup uptime (< 7 min): function returns early and
         does NOT increment the counter (regression for existing gate)."""
         s = _make_scanner(uptime_minutes=5.0)  # below the 7-min floor
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             _drive_unproductive_ticks(s, 10)
             self.assertEqual(s._scan_15m_unproductive_count, 0)
             mock_tele.send.assert_not_called()

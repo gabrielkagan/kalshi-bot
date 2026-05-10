@@ -512,9 +512,15 @@ def test_volatility_engine_still_annotates_coinbase_feed():
 
 def test_opportunity_scanner_still_annotates_coinbase_feed():
     """`OpportunityScanner.__init__` has `feed: CoinbaseFeed` annotation
-    per the original code at line 8091 (pre-Bit-4.5a). Pin it."""
+    per the original code at line 8091 (pre-Bit-4.5a). Pin it.
+
+    Bit 8.1 (2026-05-10): OpportunityScanner extracted from bot/_impl.py
+    to bot/scanner/__init__.py — read scanner first; fall back to
+    bot/_impl.py for older branches that haven't merged the extraction."""
+    scanner_init = REPO_ROOT / "bot" / "scanner" / "__init__.py"
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
-    src = bot_impl.read_text()
+    src_path = scanner_init if scanner_init.exists() else bot_impl
+    src = src_path.read_text()
     tree = ast.parse(src)
     scanner = next(
         (
@@ -524,7 +530,9 @@ def test_opportunity_scanner_still_annotates_coinbase_feed():
         ),
         None,
     )
-    assert scanner is not None, "OpportunityScanner ClassDef missing"
+    assert scanner is not None, (
+        f"OpportunityScanner ClassDef missing in {src_path}"
+    )
     init = next(
         (
             n

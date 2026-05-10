@@ -238,13 +238,26 @@ class TestScannerWiringInPlace(_TempState):
     def _scan_method_src(self):
         """Extract the source of OpportunityScanner.scan() — restricts the
         grep to the scanner's tick body, not random matches in fifteenm
-        shadows or comments elsewhere in bot/_impl.py."""
+        shadows or comments elsewhere.
+
+        Bit 8.1 (2026-05-10): OpportunityScanner extracted from bot/_impl.py
+        to bot/scanner/__init__.py. Read whichever module currently hosts
+        `def scan(`; fall back to walking both."""
         import bot._impl as bot_mod
-        src = open(bot_mod.__file__).read()
-        start = src.find("def scan(")
-        self.assertGreater(start, 0, "OpportunityScanner.scan() not found")
-        # Bound the search to ~5K lines (~250KB chars) — scan() is huge but finite
-        return src[start:start + 250_000]
+        impl_src = open(bot_mod.__file__).read()
+        scanner_init = os.path.join(
+            os.path.dirname(bot_mod.__file__), "scanner", "__init__.py")
+        scanner_src = ""
+        if os.path.isfile(scanner_init):
+            scanner_src = open(scanner_init).read()
+        # Prefer the file whose def scan( is actually a class method on
+        # OpportunityScanner (post-Bit-8.1 = scanner). Fallback to impl.
+        for src in (scanner_src, impl_src):
+            start = src.find("def scan(")
+            if start > 0:
+                # Bound the search to ~5K lines (~250KB chars) — scan() is huge but finite
+                return src[start:start + 250_000]
+        self.assertGreater(0, 1, "OpportunityScanner.scan() not found in bot/_impl.py or bot/scanner/__init__.py")
 
     def test_scanner_calls_extract_book_levels(self):
         scan_src = self._scan_method_src()
@@ -276,9 +289,19 @@ class TestScannerWiringInPlace(_TempState):
         """Adversary round 2: eviction must run unconditionally each tick,
         not gated by 'if _ob_levels is not None'. Without this guard fix,
         a global ob_data outage means eviction never runs and stale entries
-        accumulate across the entire cache."""
+        accumulate across the entire cache.
+
+        Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py;
+        the eviction call moved with it. Read whichever module currently
+        contains the call."""
         import bot._impl as bot_mod
-        src = open(bot_mod.__file__).read()
+        scanner_init = os.path.join(
+            os.path.dirname(bot_mod.__file__), "scanner", "__init__.py")
+        src = ""
+        if os.path.isfile(scanner_init):
+            src = open(scanner_init).read()
+        if "self._state._evict_stale_ob_cache()" not in src:
+            src = open(bot_mod.__file__).read()
         # Find the scanner's eviction call
         idx_evict = src.find("self._state._evict_stale_ob_cache()")
         self.assertGreater(idx_evict, 0, "scanner eviction call not found")

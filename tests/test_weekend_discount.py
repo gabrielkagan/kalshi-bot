@@ -32,11 +32,25 @@ def _read_bot():
     """
     with open(BOT_PATH) as f:
         impl = f.read()
+    # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+    # Concat its source so audits that grep for OpportunityScanner
+    # content (filter_stage literals, gate comments, etc.) survive the move.
+    _scanner_path = os.path.join(os.path.dirname(BOT_PATH), "scanner", "__init__.py")
+    if os.path.isfile(_scanner_path):
+        with open(_scanner_path) as _f:
+            impl += "\n" + _f.read()
     constants_path = os.path.join(os.path.dirname(BOT_PATH), "constants.py")
     if os.path.exists(constants_path):
         with open(constants_path) as f:
             constants = f.read()
         return impl + "\n" + constants
+    # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+    # Concat its source so audits that grep for OpportunityScanner
+    # content (filter_stage literals, gate comments, etc.) survive the move.
+    _scanner_path = os.path.join(os.path.dirname(BOT_PATH), "scanner", "__init__.py")
+    if os.path.isfile(_scanner_path):
+        with open(_scanner_path) as _f:
+            impl += "\n" + _f.read()
     return impl
 
 

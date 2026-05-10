@@ -547,6 +547,24 @@ def _walk_class_init_annotations(cls_def: ast.ClassDef) -> List[Tuple[str, str]]
     ]
 
 
+# Bit 8.1 (2026-05-10): OpportunityScanner moved to bot/scanner/__init__.py.
+# Walk both files when looking for consumer-class annotations.
+SCANNER_PY = REPO_ROOT / "bot" / "scanner" / "__init__.py"
+
+
+def _consumer_classdef(class_name):
+    """Find a ClassDef by name, searching bot/_impl.py + bot/scanner/__init__.py
+    (the scanner moved out per Bit 8.1)."""
+    for path in (BOT_PY, SCANNER_PY):
+        if not path.is_file():
+            continue
+        tree = ast.parse(path.read_text())
+        for c in ast.iter_child_nodes(tree):
+            if isinstance(c, ast.ClassDef) and c.name == class_name:
+                return c, path
+    return None, None
+
+
 @pytest.mark.parametrize(
     "class_name",
     ["OpportunityScanner", "OrderExecutor", "SettlementTracker"],
@@ -554,33 +572,31 @@ def _walk_class_init_annotations(cls_def: ast.ClassDef) -> List[Tuple[str, str]]
 def test_consumer_class_annotates_state_manager_in_bot_impl(class_name):
     """L33 positive pin: each of the 3 consumer classes' __init__ has the
     `state: StateManager` annotation (bare, not quoted forward ref)."""
-    tree = ast.parse(BOT_PY.read_text())
-    consumer = next(
-        (c for c in ast.iter_child_nodes(tree)
-         if isinstance(c, ast.ClassDef) and c.name == class_name),
-        None,
-    )
-    assert consumer is not None, f"{class_name} missing in bot/_impl.py"
+    consumer, found_in = _consumer_classdef(class_name)
+    assert consumer is not None, f"{class_name} missing from bot/_impl.py + bot/scanner/__init__.py"
     annotations = dict(_walk_class_init_annotations(consumer))
     assert annotations.get("state") == "StateManager", (
-        f"{class_name}.__init__ has `state: {annotations.get('state')!r}`; "
-        f"expected `state: StateManager` (bare). The line-109 re-export "
-        f"makes the unquoted name resolve to bot.state.StateManager."
+        f"{class_name}.__init__ has `state: {annotations.get('state')!r}` "
+        f"(in {found_in}); expected `state: StateManager` (bare). The "
+        f"line-114 re-export makes the unquoted name resolve to bot.state.StateManager."
     )
 
 
 def test_only_three_consumers_annotate_state_manager():
-    """L33 negative pin: exactly 3 module-level classes in bot/_impl.py
-    annotate `state: StateManager`. Catches accidental drift if a new
-    consumer is added without explicit knowledge."""
-    tree = ast.parse(BOT_PY.read_text())
+    """L33 negative pin: exactly 3 module-level classes (across bot/_impl.py +
+    bot/scanner/__init__.py) annotate `state: StateManager`. Catches accidental
+    drift if a new consumer is added without explicit knowledge."""
     matches = []
-    for c in ast.iter_child_nodes(tree):
-        if not isinstance(c, ast.ClassDef):
+    for path in (BOT_PY, SCANNER_PY):
+        if not path.is_file():
             continue
-        annotations = dict(_walk_class_init_annotations(c))
-        if annotations.get("state") == "StateManager":
-            matches.append(c.name)
+        tree = ast.parse(path.read_text())
+        for c in ast.iter_child_nodes(tree):
+            if not isinstance(c, ast.ClassDef):
+                continue
+            annotations = dict(_walk_class_init_annotations(c))
+            if annotations.get("state") == "StateManager":
+                matches.append(c.name)
     assert sorted(matches) == sorted(
         ["OpportunityScanner", "OrderExecutor", "SettlementTracker"]
     ), (

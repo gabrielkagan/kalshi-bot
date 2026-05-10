@@ -436,9 +436,19 @@ class TestHighPriceStcGateSite_AstGuards(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        bot_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+        # Bit 8.1 (2026-05-10): OpportunityScanner extracted to
+        # bot/scanner/__init__.py. The gate site (helper call, comment
+        # marker, enable check, insert_evaluated_opportunity log) moved
+        # with the class. Walk both files.
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        bot_path = os.path.join(repo_root, "bot/_impl.py")
+        scanner_path = os.path.join(repo_root, "bot", "scanner", "__init__.py")
         with open(bot_path) as f:
-            cls.bot_source = f.read()
+            src = f.read()
+        if os.path.isfile(scanner_path):
+            with open(scanner_path) as f:
+                src += "\n" + f.read()
+        cls.bot_source = src
 
     def test_gate_helper_called_in_scan(self):
         """The gate site must call should_block_high_price_stc_candidate."""
@@ -587,9 +597,17 @@ class TestSideConventionInvariant(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        bot_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+        # Bit 8.1 (2026-05-10): OpportunityScanner moved to
+        # bot/scanner/__init__.py — NO-side scan path moved with it.
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        bot_path = os.path.join(repo_root, "bot/_impl.py")
+        scanner_path = os.path.join(repo_root, "bot", "scanner", "__init__.py")
         with open(bot_path) as f:
-            cls.bot_source = f.read()
+            src = f.read()
+        if os.path.isfile(scanner_path):
+            with open(scanner_path) as f:
+                src += "\n" + f.read()
+        cls.bot_source = src
 
     def test_no_side_explicitly_tagged_in_source(self):
         """At least one `"side": "no"` must appear in bot/_impl.py (NO-side scan path)."""

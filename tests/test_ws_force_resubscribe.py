@@ -41,9 +41,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PY = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+# Bit 8.1 (2026-05-10): OpportunityScanner moved from bot/_impl.py to
+# bot/scanner/__init__.py. Walks for MainLoop content stay on BOT_PY;
+# walks for OpportunityScanner content use SCANNER_PY instead.
+SCANNER_PY = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot", "scanner", "__init__.py")
 # Bit 4.5b (2026-05-09): KalshiFeed moved from bot/_impl.py to
 # bot/feeds/kalshi.py. AST walks for KalshiFeed-class content use the
-# new path; walks for OpportunityScanner/MainLoop content stay on BOT_PY.
+# new path; walks for OpportunityScanner content use SCANNER_PY (above);
+# walks for MainLoop content stay on BOT_PY.
 KALSHI_FEED_PY = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "bot/feeds/kalshi.py")
@@ -267,7 +273,7 @@ class TestFlagDriftedTriggersForceResub(unittest.TestCase):
         """AST: walk OpportunityScanner.flag_ticker_drifted; verify
         it calls force_resubscribe on self._kalshi_feed (or
         equivalent)."""
-        with open(BOT_PY) as f:
+        with open(SCANNER_PY) as f:
             tree = ast.parse(f.read())
         target_fn = None
         for cls in ast.walk(tree):
@@ -814,7 +820,7 @@ class TestR2P16DriftDetectorPurgeFalse(unittest.TestCase):
     `no_orderbook` rejection window for every drift firing."""
 
     def test_ast_drift_detector_passes_purge_false(self):
-        with open(BOT_PY) as fh:
+        with open(SCANNER_PY) as fh:
             src = fh.read()
         tree = ast.parse(src)
         target = None

@@ -20,6 +20,20 @@ import bot  # noqa: E402
 
 
 BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+SCANNER_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot", "scanner", "__init__.py")
+
+
+def _read_bot_src():
+    """Bit 8.1 (2026-05-10): OpportunityScanner extracted to
+    bot/scanner/__init__.py. The cooldown gate, _process_no_side_shadow,
+    and weather NO live candidate gate all moved with the class. Walk
+    both files so source-level guards survive the move."""
+    with open(BOT_PATH) as f:
+        src = f.read()
+    if os.path.isfile(SCANNER_PATH):
+        with open(SCANNER_PATH) as f:
+            src += "\n" + f.read()
+    return src
 
 
 class TestLossCooldownConstants(unittest.TestCase):
@@ -39,8 +53,7 @@ class TestLossCooldownConstants(unittest.TestCase):
 
     def test_cooldown_query_is_15m_losses_only(self):
         """The cooldown SQL query must filter to 15M losses only."""
-        with open(BOT_PATH) as f:
-            src = f.read()
+        src = _read_bot_src()
         # Find the cooldown query (uniquely identified by DISTINCT asset + pnl_cents<0)
         self.assertIn("SELECT DISTINCT asset FROM settled_trades", src)
         self.assertIn("product_type='15m'", src)
@@ -55,8 +68,7 @@ class TestLossCooldownConstants(unittest.TestCase):
         `settled_at > datetime('now','-2 hours')` returns TRUE for any same-
         UTC-date loss — silently blocking the asset until UTC midnight.
         """
-        with open(BOT_PATH) as f:
-            src = f.read()
+        src = _read_bot_src()
         self.assertIn("julianday(settled_at)", src,
                       "Cooldown query must use julianday(settled_at) for correct comparison")
         # Ensure the buggy pattern is NOT present in the cooldown query region
@@ -69,8 +81,7 @@ class TestLossCooldownConstants(unittest.TestCase):
 
     def test_cooldown_gate_is_in_scan_loop(self):
         """The cooldown gate must exist in scan() and short-circuit with continue."""
-        with open(BOT_PATH) as f:
-            src = f.read()
+        src = _read_bot_src()
         self.assertIn("asset in self._cooldown_assets", src)
         # Cooldown must only apply to 15M (not hourly/weather/spx)
         self.assertIn('_pt in (None, "15m")', src)
@@ -94,8 +105,7 @@ class TestWeatherNoCandidateInCorrectPath(unittest.TestCase):
 
     def test_weather_no_candidate_lives_in_no_side_processor(self):
         """The live candidate gate must exist inside _process_no_side_shadow()."""
-        with open(BOT_PATH) as f:
-            src = f.read()
+        src = _read_bot_src()
         # Find the function definition
         fn_marker = "def _process_no_side_shadow(self"
         self.assertIn(fn_marker, src)
@@ -123,23 +133,30 @@ class TestWeatherNoCandidateInCorrectPath(unittest.TestCase):
 
         That location is structurally dead for weather because YES evals fail
         insufficient_edge before reaching the observation branch (see bug #2).
-        """
-        with open(BOT_PATH) as f:
-            tree = ast.parse(f.read())
 
-        # Find any `if final_prob >= WEATHER_NO_SHADOW_MIN_YES_PROB ...` block
-        # and assert it contains no weather_no_live candidate logic
-        for node in ast.walk(tree):
-            if isinstance(node, ast.If):
-                test_src = ast.unparse(node.test)
-                if "WEATHER_NO_SHADOW_MIN_YES_PROB" in test_src:
-                    body_src = "\n".join(ast.unparse(s) for s in node.body)
-                    self.assertNotIn(
-                        "weather_no_live", body_src,
-                        "REGRESSION: weather_no_live candidate is back in the YES-side "
-                        "observation branch — this is structurally dead code. Move to "
-                        "_process_no_side_shadow(). See kb/failures/weather-no-candidate-never-fires.md",
-                    )
+        Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py;
+        the YES-side observation gate moved with it. AST-walk both files.
+        """
+        for src_path in (BOT_PATH, SCANNER_PATH):
+            if not os.path.isfile(src_path):
+                continue
+            with open(src_path) as f:
+                tree = ast.parse(f.read())
+
+            # Find any `if final_prob >= WEATHER_NO_SHADOW_MIN_YES_PROB ...` block
+            # and assert it contains no weather_no_live candidate logic
+            for node in ast.walk(tree):
+                if isinstance(node, ast.If):
+                    test_src = ast.unparse(node.test)
+                    if "WEATHER_NO_SHADOW_MIN_YES_PROB" in test_src:
+                        body_src = "\n".join(ast.unparse(s) for s in node.body)
+                        self.assertNotIn(
+                            "weather_no_live", body_src,
+                            f"REGRESSION (in {src_path}): weather_no_live candidate is back "
+                            "in the YES-side observation branch — this is structurally dead code. "
+                            "Move to _process_no_side_shadow(). "
+                            "See kb/failures/weather-no-candidate-never-fires.md",
+                        )
 
     def test_process_no_side_shadow_accepts_candidates_list(self):
         """The function signature must accept candidates list param for live append path."""

@@ -26,6 +26,20 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 
 
+def _read_bot_and_scanner():
+    """Bit 8.1 (2026-05-10): OpportunityScanner extracted from bot/_impl.py
+    to bot/scanner/__init__.py. The bleed-block predicate calls
+    (should_block_tm98_highprice_bleed_candidate /
+    should_block_sol_taker_lowprice_bleed_candidate) and the
+    *_BLOCK_FILTER_STAGE → insert_evaluated_opportunity wiring all
+    moved with the scan() method. Walk both files."""
+    src = (REPO / 'bot/_impl.py').read_text()
+    scanner_p = REPO / 'bot' / 'scanner' / '__init__.py'
+    if scanner_p.exists():
+        src += '\n' + scanner_p.read_text()
+    return src
+
+
 def _import_bot():
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
@@ -211,16 +225,14 @@ def test_sol_taker_bleed_predicate_does_not_block_outside_cell():
 
 def test_bot_py_scan_calls_tm98_bleed_predicate():
     """The block must be wired in scan(); otherwise the env flag is dead."""
-    bot_py = REPO / 'bot/_impl.py'
-    src = bot_py.read_text()
+    src = _read_bot_and_scanner()
     assert 'should_block_tm98_highprice_bleed_candidate' in src, (
         "scan() must invoke should_block_tm98_highprice_bleed_candidate"
     )
 
 
 def test_bot_py_scan_calls_sol_taker_bleed_predicate():
-    bot_py = REPO / 'bot/_impl.py'
-    src = bot_py.read_text()
+    src = _read_bot_and_scanner()
     assert 'should_block_sol_taker_lowprice_bleed_candidate' in src
 
 
@@ -234,8 +246,7 @@ def test_blocked_candidates_get_evaluated_opportunity_row():
 
     AST-style: search for both filter_stage strings in proximity to
     insert_evaluated_opportunity."""
-    bot_py = REPO / 'bot/_impl.py'
-    src = bot_py.read_text()
+    src = _read_bot_and_scanner()
     # The TM98 filter_stage tag must appear in an insert_evaluated_opportunity
     # call. Search for the pattern: block iter writes a shadow row.
     assert 'TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE' in src, (

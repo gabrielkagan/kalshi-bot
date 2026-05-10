@@ -37,7 +37,7 @@ def bot_py_source() -> str:
     to bot/state.py. Concat both so any non-StateManager pattern from
     bot/_impl.py also resolves."""
     return (
-        (ROOT / "bot/_impl.py").read_text()
+        (((ROOT / 'bot/_impl.py').read_text() + '\n' + (ROOT / 'bot/scanner/__init__.py').read_text()))
         + "\n"
         + (ROOT / "bot/state.py").read_text()
     )

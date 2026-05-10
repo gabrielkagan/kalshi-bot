@@ -142,7 +142,14 @@ def test_predicate_accepts_custom_exclusion_set():
 # ---------------------------------------------------------------------------
 
 def _read_bot_source():
-    return (REPO / "bot/_impl.py").read_text()
+    # Bit 8.1 (2026-05-10): the weather_no_live block + WEATHER_NO_CANDIDATE log
+    # moved to bot/scanner/__init__.py with the OpportunityScanner extraction.
+    # Read both files so source walks survive the move.
+    return (
+        (REPO / "bot/_impl.py").read_text()
+        + "\n"
+        + (REPO / "bot/scanner/__init__.py").read_text()
+    )
 
 
 def test_source_replaces_position_size_1_with_constant_in_weather_no_live():

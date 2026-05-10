@@ -202,7 +202,7 @@ class TestScanSilentBailFlagsDriftedTicker(unittest.TestCase):
         import ast
         bot_py = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "bot/_impl.py")
+            "bot/scanner/__init__.py")
         with open(bot_py) as f:
             tree = ast.parse(f.read())
         scan = None

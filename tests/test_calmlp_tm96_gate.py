@@ -31,6 +31,20 @@ if str(_CAL_MLP_DIR) not in sys.path:
     sys.path.insert(0, str(_CAL_MLP_DIR))
 
 
+def _read_bot_and_scanner_src():
+    """Bit 8.1 (2026-05-10): OpportunityScanner extracted from bot/_impl.py
+    to bot/scanner/__init__.py. The TM-96 intercept block (gate call,
+    `_tm_intercepted = False` init, `_tm96_gate_blocked_trade = False`
+    init, `if (TERMINAL_MOMENTUM_ENABLED` guard, `TM96_CALMLP_GATE_ENABLED`
+    env flag read) all moved with the OpportunityScanner. Walk both files."""
+    bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
+    scanner_py = Path(__file__).resolve().parents[1] / 'bot' / 'scanner' / '__init__.py'
+    src = bot_py.read_text() if bot_py.exists() else ''
+    if scanner_py.exists():
+        src += '\n' + scanner_py.read_text()
+    return src
+
+
 def _stub_predictor(p_mean=None, p_std=0.01, final_lo=None, final_hi=None,
                      train_id="test-train", raise_exc=None):
     """Build a predictor stub for testing. predict() returns the configured
@@ -256,10 +270,10 @@ def test_bot_py_passes_same_prob_value_to_gate_and_evaluation_insert():
     AST scan: find both call expressions, extract the `calibrated_prob=`
     keyword argument value, assert they're textually identical.
     """
-    bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
-    if not bot_py.exists():
+    # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+    src = _read_bot_and_scanner_src()
+    if not src:
         pytest.skip('bot/_impl.py not present')
-    src = bot_py.read_text()
 
     # The TM-96 should_block_tm96 call: must pass calibrated_prob=<X>
     # where <X> is the same identifier used elsewhere as the final
@@ -418,18 +432,20 @@ def test_bot_py_compute_derived_uses_calibrated_prob():
 
 
 def test_bot_py_tm96_intercept_calls_gate():
-    """AST-style regression: bot/_impl.py's TM-96 intercept block must call
+    """AST-style regression: the TM-96 intercept block must call
     `should_block_tm96` (or equivalent gate function name). If the gate
-    isn't wired at the decision point, env-flag has no effect."""
-    bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
-    if not bot_py.exists():
+    isn't wired at the decision point, env-flag has no effect.
+
+    Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py."""
+    src = _read_bot_and_scanner_src()
+    if not src:
         pytest.skip('bot/_impl.py not present')
-    src = bot_py.read_text()
     # The intercept block sets `_tm_intercepted = True` then computes size.
     # Gate must be invoked between intercept-true and append.
     assert 'should_block_tm96' in src or 'tm96_should_block' in src, (
-        "bot/_impl.py TM-96 intercept must call cal_mlp gate function "
-        "`should_block_tm96` (or `tm96_should_block`)"
+        "TM-96 intercept must call cal_mlp gate function "
+        "`should_block_tm96` (or `tm96_should_block`) — scanned both "
+        "bot/_impl.py and bot/scanner/__init__.py"
     )
 
 
@@ -445,17 +461,18 @@ def test_tm96_gate_blocked_trade_initialized_at_outer_scope():
     Inspects bot/_impl.py source to verify the init line is at the same column
     as `_tm_intercepted = False` and appears BEFORE the
     `if (TERMINAL_MOMENTUM_ENABLED` guard.
+
+    Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
     """
-    bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
-    if not bot_py.exists():
+    src = _read_bot_and_scanner_src()
+    if not src:
         pytest.skip('bot/_impl.py not present')
-    src = bot_py.read_text()
     # Find both lines and capture leading whitespace.
     import re
     intercept_match = re.search(r'^([ \t]*)_tm_intercepted = False[ ]*(?:#.*)?$', src, re.MULTILINE)
     gate_match = re.search(r'^([ \t]*)_tm96_gate_blocked_trade = False[ ]*(?:#.*)?$', src, re.MULTILINE)
-    assert intercept_match, "`_tm_intercepted = False` not found in bot/_impl.py"
-    assert gate_match, "`_tm96_gate_blocked_trade = False` not found in bot/_impl.py"
+    assert intercept_match, "`_tm_intercepted = False` not found in bot/_impl.py or bot/scanner/__init__.py"
+    assert gate_match, "`_tm96_gate_blocked_trade = False` not found in bot/_impl.py or bot/scanner/__init__.py"
     assert intercept_match.group(1) == gate_match.group(1), (
         f"_tm96_gate_blocked_trade init at column {len(gate_match.group(1))} "
         f"must match _tm_intercepted column {len(intercept_match.group(1))} "
@@ -471,12 +488,13 @@ def test_tm96_gate_blocked_trade_initialized_at_outer_scope():
 def test_bot_py_has_tm96_gate_env_flag():
     """The gate must be env-flag controlled so an operator can flip it
     off in <30s if cal_mlp starts over-blocking. Default OFF (shadow-only)
-    until validated."""
-    bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
-    if not bot_py.exists():
+    until validated.
+
+    Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py."""
+    src = _read_bot_and_scanner_src()
+    if not src:
         pytest.skip('bot/_impl.py not present')
-    src = bot_py.read_text()
     assert 'TM96_CALMLP_GATE_ENABLED' in src, (
         "Define `TM96_CALMLP_GATE_ENABLED` env-controlled flag in bot/_impl.py "
-        "for safe rollback."
+        "or bot/scanner/__init__.py for safe rollback."
     )

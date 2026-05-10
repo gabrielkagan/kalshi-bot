@@ -294,7 +294,7 @@ class TestObservationModeSafety(unittest.TestCase):
 
         with patch("bot.OBSERVATION_MODE", True), \
              patch("bot.get_market_config") as mock_cfg, \
-             patch("bot._TELEGRAM", None):
+             patch("bot.notifier._TELEGRAM", None):
             mock_cfg.return_value = MagicMock(observation_only=False, min_entry_price=86)
             result = ex.execute(candidate)
 

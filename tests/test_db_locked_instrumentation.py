@@ -55,17 +55,24 @@ sys.path.insert(0, str(ROOT))
 @pytest.fixture(scope="module")
 def bot_impl_source() -> str:
     """Bit 7.1 retarget (2026-05-10): StateManager (incl.
-    insert_evaluated_opportunity) moved to bot/state.py while OpportunityScanner
-    (incl. low_price_shadow_signals warning site) stays in bot/_impl.py. The
-    fixture concats both so tests find their target regardless of which file
-    owns it post-extraction. The fixture name stays for backward compat with
-    the L40-pattern AST/regex guards. AST-walks find class/method nodes from
-    either file; regex/string searches find markers across the concat."""
-    return (
-        (ROOT / "bot" / "_impl.py").read_text()
-        + "\n"
-        + (ROOT / "bot" / "state.py").read_text()
-    )
+    insert_evaluated_opportunity) moved to bot/state.py.
+
+    Bit 8.1 retarget (2026-05-10): OpportunityScanner (incl.
+    low_price_shadow_signals warning site) moved to bot/scanner/__init__.py.
+
+    The fixture concats all three files so tests find their target
+    regardless of which module owns it post-extraction. The fixture name
+    stays for backward compat with the L40-pattern AST/regex guards.
+    AST-walks find class/method nodes from any file; regex/string
+    searches find markers across the concat."""
+    parts = [
+        (ROOT / "bot" / "_impl.py").read_text(),
+        (ROOT / "bot" / "state.py").read_text(),
+    ]
+    scanner_p = ROOT / "bot" / "scanner" / "__init__.py"
+    if scanner_p.exists():
+        parts.append(scanner_p.read_text())
+    return "\n".join(parts)
 
 
 # ─── 1. AST: BEGIN IMMEDIATE except captures the error message ──────────────

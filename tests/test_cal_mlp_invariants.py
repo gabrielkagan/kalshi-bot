@@ -544,13 +544,20 @@ def test_integration_all_matches_bot_py_diff_edit_1():
 # ---------------------------------------------------------------------------
 
 def _read_bot_py():
-    """Cached read of bot/_impl.py + bot/state.py concat (Bit 7.1, 2026-05-10:
-    StateManager moved to bot/state.py — `insert_evaluated_opportunity` and
-    other StateManager methods that the AST guards below scan for now live
-    there). The concat lets every existing AST guard find its target without
-    per-test retargeting; tests looking for non-StateManager content (scan-loop
-    sites, Edit 4 hooks in bot/_impl.py proper) are not affected because
-    those names still appear in bot/_impl.py.
+    """Cached read of bot/_impl.py + bot/state.py + bot/scanner/__init__.py
+    concat.
+
+    Bit 7.1 (2026-05-09): StateManager moved to bot/state.py —
+    `insert_evaluated_opportunity` and other StateManager methods that the
+    AST guards below scan for now live there.
+
+    Bit 8.1 (2026-05-10): OpportunityScanner moved to
+    bot/scanner/__init__.py — Edit 4 hook (`_calmlp_annotate_async`),
+    `if _pt == "15m":` gate, queue-snapshot `_shadow_diag.copy()` sites,
+    and the cal_mlp_* prefix-strip comprehensions all moved with the class.
+
+    The concat lets every existing AST guard find its target without
+    per-test retargeting.
     """
     p = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
     if not p.exists():
@@ -559,6 +566,9 @@ def _read_bot_py():
     state_p = Path(__file__).resolve().parents[1] / 'bot/state.py'
     if state_p.exists():
         src = src + '\n' + state_p.read_text()
+    scanner_p = Path(__file__).resolve().parents[1] / 'bot' / 'scanner' / '__init__.py'
+    if scanner_p.exists():
+        src = src + '\n' + scanner_p.read_text()
     return src
 
 

@@ -20,6 +20,23 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 
+def _read_bot_and_scanner():
+    """Bit 8.1 (2026-05-10): OpportunityScanner extracted from bot/_impl.py
+    to bot/scanner/__init__.py. Source-level audits that grep for scanner
+    content (filter_stage literals, gate code, _no_side_queue, V2 helpers,
+    SOL_MIN_EDGE wiring, fifteenm_shadow callsites, etc.) must walk both
+    files to survive the move. Mirrors the precedent in
+    tests/test_15m_silence_alert.py and tests/test_decided_contract.py."""
+    impl_path = os.path.join(PROJECT_ROOT, "bot", "_impl.py")
+    scanner_path = os.path.join(PROJECT_ROOT, "bot", "scanner", "__init__.py")
+    with open(impl_path) as _f:
+        src = _f.read()
+    if os.path.isfile(scanner_path):
+        with open(scanner_path) as _f:
+            src += "\n" + _f.read()
+    return src
+
+
 # ============================================================================
 #  1. Fee Calculation (7fb5a03, 017a2f0)
 #     Bug: Edge filter and sim PnL didn't account for fees correctly.
@@ -939,7 +956,8 @@ class TestInstrumentationIntegrity:
         execution), but DB writes must use _configured_temp_t which preserves
         the configured value for instrumentation.
         """
-        source = open(os.path.join(PROJECT_ROOT, "bot/_impl.py")).read()
+        # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+        source = _read_bot_and_scanner()
 
         # Find all assignments of _configured_temp_t
         config_assigns = [
@@ -1328,7 +1346,8 @@ class TestDedupSetTupleSafety:
 
     def test_no_tuple_destructuring_in_eval_opp_seen(self):
         """Scan bot/_impl.py for any (tk, stage) unpacking of _eval_opp_seen."""
-        source = open(os.path.join(PROJECT_ROOT, "bot/_impl.py")).read()
+        # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+        source = _read_bot_and_scanner()
         # Find any set comprehension or for loop that destructures _eval_opp_seen
         # Pattern: "for tk, stage in self._eval_opp_seen" or similar 2-var unpack
         dangerous_patterns = [
@@ -1345,7 +1364,8 @@ class TestDedupSetTupleSafety:
 
     def test_eval_opp_seen_cleanup_uses_key_index(self):
         """The cleanup comprehension must use key[0], not destructuring."""
-        source = open(os.path.join(PROJECT_ROOT, "bot/_impl.py")).read()
+        # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+        source = _read_bot_and_scanner()
         # Find the cleanup line
         cleanup_match = re.search(
             r'self\._eval_opp_seen\s*=\s*\{[^}]+\}',
@@ -1373,11 +1393,14 @@ class TestShadowCallsiteVariables:
     """All variables at fifteenm_shadow callsites must be defined names."""
 
     def _get_scan_source(self):
-        """Return the source of the scan() method."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            source = f.read()
-        return source
+        """Return the source of the scan() method.
+
+        Bit 8.1 (2026-05-10): OpportunityScanner extracted to
+        bot/scanner/__init__.py — fifteenm_shadow.evaluate_strike call
+        sites moved with the class. Walk both files so this guard
+        survives the move.
+        """
+        return _read_bot_and_scanner()
 
     def test_shadow_callsite_no_bare_egarch_blend_weight(self):
         """egarch_blend_weight must come from _shadow_diag or vol_est, not bare."""
@@ -1457,9 +1480,10 @@ class TestNoSideOrderbookPricing:
     """NO-side pricing must use actual NO ask from market NBBO, never derived from YES prices."""
 
     def _get_bot_source(self):
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            return f.read()
+        # Bit 8.1 (2026-05-10): _no_side_queue + _process_no_side_shadow
+        # + weather NO-side edge moved to bot/scanner/__init__.py with
+        # the OpportunityScanner extraction. Walk both files.
+        return _read_bot_and_scanner()
 
     def test_no_side_queue_passes_no_ask(self):
         """All _no_side_queue.append() calls must include 'no_ask' key."""
@@ -1591,8 +1615,8 @@ class TestV2VariantSafety:
 
     def test_v2_filter_stage_in_calengine_exclusion(self):
         """V2 rows must NOT feed CalEngine (would double-count raw_prob)."""
-        with open(os.path.join(PROJECT_ROOT, "bot/_impl.py")) as f:
-            source = f.read()
+        # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+        source = _read_bot_and_scanner()
         # The CalEngine feed section must exclude _v2 filter stages
         assert 'not filter_stage.endswith("_v2")' in source, (
             "CalEngine settlement feed must exclude _v2 variant rows. "
@@ -1601,8 +1625,8 @@ class TestV2VariantSafety:
 
     def test_v2_dedup_key_is_2tuple(self):
         """V2 dedup key must be a 2-tuple (ticker, 'hourly_observation_v2')."""
-        with open(os.path.join(PROJECT_ROOT, "bot/_impl.py")) as f:
-            source = f.read()
+        # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+        source = _read_bot_and_scanner()
         # The helper method must use the correct dedup key format
         assert '(ticker, "hourly_observation_v2")' in source, (
             "_insert_hourly_v2_variant must use 2-tuple dedup key "
@@ -1611,16 +1635,16 @@ class TestV2VariantSafety:
 
     def test_v2_helper_method_exists(self):
         """_insert_hourly_v2_variant helper must exist on OpportunityScanner."""
-        with open(os.path.join(PROJECT_ROOT, "bot/_impl.py")) as f:
-            source = f.read()
+        # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+        source = _read_bot_and_scanner()
         assert "def _insert_hourly_v2_variant(" in source, (
-            "V2 variant helper method missing from bot/_impl.py"
+            "V2 variant helper method missing from bot/_impl.py or bot/scanner/__init__.py"
         )
 
     def test_v2_called_at_both_gates(self):
         """V2 must be inserted at both insufficient_edge and hourly_observation gates."""
-        with open(os.path.join(PROJECT_ROOT, "bot/_impl.py")) as f:
-            source = f.read()
+        # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+        source = _read_bot_and_scanner()
         call_count = source.count("self._insert_hourly_v2_variant(")
         assert call_count >= 2, (
             f"_insert_hourly_v2_variant called {call_count} times, expected >= 2. "
@@ -1630,8 +1654,8 @@ class TestV2VariantSafety:
 
     def test_v2_uses_shadow_cal_prob(self):
         """V2 must use shadow cal pipeline probability, not live probability."""
-        with open(os.path.join(PROJECT_ROOT, "bot/_impl.py")) as f:
-            source = f.read()
+        # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
+        source = _read_bot_and_scanner()
         # The helper should reference cal_pipeline or old_cal_system
         assert 'calibration_method="shadow_cal_v2"' in source, (
             "V2 variant must tag calibration_method as 'shadow_cal_v2' "
@@ -2096,9 +2120,9 @@ class TestSOLEdgeFloor:
 
     def test_sol_min_edge_in_scan_code(self):
         """Verify SOL edge floor is applied in the scan edge check."""
-        fpath = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(fpath) as f:
-            content = f.read()
+        # Bit 8.1 (2026-05-10): scanner extracted to bot/scanner/__init__.py;
+        # the SOL_MIN_EDGE wiring lives there now. Walk both files.
+        content = _read_bot_and_scanner()
         assert "SOL_MIN_EDGE" in content
         assert 'asset == "SOL"' in content or "asset == 'SOL'" in content
 

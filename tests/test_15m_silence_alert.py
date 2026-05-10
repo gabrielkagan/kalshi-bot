@@ -107,21 +107,21 @@ class TestSilent15MAlert(unittest.TestCase):
     def test_recent_eval_no_alert(self):
         """Last eval 2 min ago → no alert."""
         s = _make_scanner_with_eval_age(age_minutes=2)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
     def test_9_min_age_no_alert(self):
         """Right under the 10-min threshold → no alert."""
         s = _make_scanner_with_eval_age(age_minutes=9)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
     def test_11_min_age_alert_fires(self):
         """Over the 10-min threshold → Telegram alert fires."""
         s = _make_scanner_with_eval_age(age_minutes=11)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
             # Verify dedup key present so repeated calls don't spam
@@ -131,7 +131,7 @@ class TestSilent15MAlert(unittest.TestCase):
     def test_30_min_age_alert_contains_duration(self):
         """Alert message surfaces the silence duration for context."""
         s = _make_scanner_with_eval_age(age_minutes=30)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
             msg = mock_tele.send.call_args.args[0]
@@ -145,7 +145,7 @@ class TestSilent15MAlert(unittest.TestCase):
         s = _make_scanner_with_eval_age(age_minutes=0)
         s._state.conn.execute("DELETE FROM evaluated_opportunities")
         s._state.conn.commit()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
@@ -153,7 +153,7 @@ class TestSilent15MAlert(unittest.TestCase):
         """_TELEGRAM is None (no token configured) → don't crash,
         just log. Alert silently dropped."""
         s = _make_scanner_with_eval_age(age_minutes=30)
-        with patch.object(bot, "_TELEGRAM", None):
+        with patch.object(bot.notifier, "_TELEGRAM", None):
             # Should not raise
             s._check_15m_silence_alert(_ACTIVE_15M)
 
@@ -161,7 +161,7 @@ class TestSilent15MAlert(unittest.TestCase):
         """If Telegram send raises (network blip), the scan loop is
         not affected."""
         s = _make_scanner_with_eval_age(age_minutes=30)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             mock_tele.send.side_effect = RuntimeError("telegram down")
             # Should not raise
             s._check_15m_silence_alert(_ACTIVE_15M)
@@ -189,7 +189,7 @@ class TestSilent15MAlertStartupGuard(unittest.TestCase):
         """Last eval 30 min ago, bot uptime 5 min — don't alert (bot
         hasn't had a chance to run yet)."""
         s = _make_scanner_with_eval_age(age_minutes=30, uptime_minutes=5)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
@@ -197,14 +197,14 @@ class TestSilent15MAlertStartupGuard(unittest.TestCase):
         """Just under the 15-min uptime floor — still no alert even
         with old eval."""
         s = _make_scanner_with_eval_age(age_minutes=30, uptime_minutes=14)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
     def test_alert_fires_at_16_min_uptime(self):
         """Just past the 15-min uptime floor with stale eval → alert."""
         s = _make_scanner_with_eval_age(age_minutes=30, uptime_minutes=16)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
 
@@ -213,7 +213,7 @@ class TestSilent15MAlertStartupGuard(unittest.TestCase):
         real outage from a just-restarted edge case (even though the
         guard should prevent the latter)."""
         s = _make_scanner_with_eval_age(age_minutes=30, uptime_minutes=20)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             self.assertIn("Bot uptime:", msg)
@@ -249,7 +249,7 @@ class TestSilent15MAlertCatalogGap(unittest.TestCase):
         """Silence > threshold but Kalshi has zero 15M windows →
         upstream catalog gap, no Telegram alert."""
         s = _make_scanner_with_eval_age(age_minutes=15)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert([])
             mock_tele.send.assert_not_called()
 
@@ -262,7 +262,7 @@ class TestSilent15MAlertCatalogGap(unittest.TestCase):
             {"product_type": "weather", "asset": "NYC_TEMP"},
             {"product_type": "spx_hourly", "asset": "SPX"},
         ]
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(non_15m)
             mock_tele.send.assert_not_called()
 
@@ -270,7 +270,7 @@ class TestSilent15MAlertCatalogGap(unittest.TestCase):
         """Real silence: 15M window exists but no eval rows → alert."""
         s = _make_scanner_with_eval_age(age_minutes=15)
         active = [{"product_type": "15m", "asset": "BTC"}]
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(active)
             mock_tele.send.assert_called_once()
 
@@ -294,7 +294,7 @@ class TestSilent15MAlertRejectionActivity(unittest.TestCase):
         This is the 2026-04-26 false-positive shape."""
         s = _make_scanner_with_eval_age(
             age_minutes=30, rejection_age_minutes=2)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
@@ -303,7 +303,7 @@ class TestSilent15MAlertRejectionActivity(unittest.TestCase):
         silent → alert."""
         s = _make_scanner_with_eval_age(
             age_minutes=30, rejection_age_minutes=30)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
 
@@ -313,7 +313,7 @@ class TestSilent15MAlertRejectionActivity(unittest.TestCase):
         eval-dominant case)."""
         s = _make_scanner_with_eval_age(
             age_minutes=2, rejection_age_minutes=30)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
@@ -322,7 +322,7 @@ class TestSilent15MAlertRejectionActivity(unittest.TestCase):
         → no alert — rejection still counts as productive scan."""
         s = _make_scanner_with_eval_age(
             age_minutes=30, rejection_age_minutes=9)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
@@ -331,7 +331,7 @@ class TestSilent15MAlertRejectionActivity(unittest.TestCase):
         threshold → alert fires."""
         s = _make_scanner_with_eval_age(
             age_minutes=30, rejection_age_minutes=11)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
 
@@ -361,7 +361,7 @@ class TestSilent15MAlertSilentBailDetection(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="no_orderbook",
             n_rejection_rows=3)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
 
@@ -371,7 +371,7 @@ class TestSilent15MAlertSilentBailDetection(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="no_best_ask",
             n_rejection_rows=3)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
 
@@ -382,7 +382,7 @@ class TestSilent15MAlertSilentBailDetection(unittest.TestCase):
         s = _make_scanner_with_eval_age(
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="low_probability_15m")
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
@@ -398,7 +398,7 @@ class TestSilent15MAlertSilentBailDetection(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="threshold_unparsable",
             n_rejection_rows=4)  # all 4 15M tickers hit
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
 
@@ -412,7 +412,7 @@ class TestSilent15MAlertSilentBailDetection(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="no_orderbook",
             n_rejection_rows=1)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
             # Generic SILENT, not BAIL FLOOD.
@@ -428,7 +428,7 @@ class TestSilent15MAlertSilentBailDetection(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="no_orderbook",
             n_rejection_rows=200)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
 
@@ -484,7 +484,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="threshold_unparsable",
             n_rejection_rows=4)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
             call = mock_tele.send.call_args
@@ -506,7 +506,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="threshold_unparsable",
             n_rejection_rows=4)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             self.assertIn("api.elections.kalshi.com", msg)
@@ -523,7 +523,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="no_orderbook",
             n_rejection_rows=200)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             call = mock_tele.send.call_args
             msg = call.args[0]
@@ -541,7 +541,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="no_best_ask",
             n_rejection_rows=50)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             self.assertIn("BAIL FLOOD", msg)
@@ -559,7 +559,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             n_rejection_rows=4)
         # Add WS-cache rows on top of the threshold_unparsable seed.
         _seed_bail_rows(s._state.conn, "no_orderbook", n=10)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             self.assertIn("BAIL FLOOD", msg)
@@ -671,7 +671,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             rejection_reason="threshold_unparsable",
             n_rejection_rows=4)
         _seed_bail_rows(s._state.conn, "no_orderbook", n=1)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             self.assertIn("THRESHOLD UNPARSABLE", msg)
@@ -688,7 +688,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             rejection_reason="threshold_unparsable",
             n_rejection_rows=4)
         _seed_bail_rows(s._state.conn, "no_orderbook", n=2)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             self.assertIn("BAIL FLOOD", msg)
@@ -714,7 +714,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             rejection_reason="threshold_unparsable",
             n_rejection_rows=4)
         _seed_bail_rows(s._state.conn, "no_orderbook", n=50)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             # Header
@@ -873,7 +873,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             rejection_reason="threshold_unparsable",
             n_rejection_rows=3)
         _seed_bail_rows(s._state.conn, "no_orderbook", n=1)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             self.assertIn("THRESHOLD UNPARSABLE", msg)
@@ -888,7 +888,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             rejection_reason="threshold_unparsable",
             n_rejection_rows=3)
         _seed_bail_rows(s._state.conn, "no_orderbook", n=2)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             self.assertIn("BAIL FLOOD", msg)
@@ -910,7 +910,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="threshold_unparsable",
             n_rejection_rows=4)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             # Pull the SPECIFIC `Affected tickers:` line, not the
@@ -967,7 +967,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
                 | scanner._THRESHOLD_SHAPE_BAIL_REASONS,
                 set(scanner._BAIL_REJECTION_REASONS),
                 "Patched constants must preserve the partition contract")
-            with patch.object(bot, "_TELEGRAM") as mock_tele:
+            with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
                 s._check_15m_silence_alert(_ACTIVE_15M)
                 msg = mock_tele.send.call_args.args[0]
                 # Both bucket members must appear in the header
@@ -1168,7 +1168,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
              patch.object(
                 bot.OpportunityScanner,
                 "_BAIL_REJECTION_REASONS", new_bail_reasons):
-            with patch.object(bot, "_TELEGRAM") as mock_tele:
+            with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
                 s._check_15m_silence_alert(_ACTIVE_15M)
                 msg = mock_tele.send.call_args.args[0]
                 self.assertIn("THRESHOLD UNPARSABLE", msg)
@@ -1219,7 +1219,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
         with patch.object(
                 bot.OpportunityScanner,
                 "_SILENCE_AGE_THRESHOLD_SECONDS", 300):
-            with patch.object(bot, "_TELEGRAM") as mock_tele:
+            with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
                 s._check_15m_silence_alert(_ACTIVE_15M)
                 msg = mock_tele.send.call_args.args[0]
                 probe_line = next(
@@ -1259,7 +1259,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
         with patch.object(
                 bot.OpportunityScanner,
                 "_SILENCE_AGE_THRESHOLD_SECONDS", 599):
-            with patch.object(bot, "_TELEGRAM") as mock_tele:
+            with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
                 s._check_15m_silence_alert(_ACTIVE_15M)
                 msg = mock_tele.send.call_args.args[0]
                 probe_line = next(
@@ -1294,7 +1294,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
                 return getattr(real_conn, name)
 
         s._state.conn = _TickerRaisingConn()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             # Routing still THRESHOLD (breakdown succeeded).
@@ -1321,7 +1321,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="threshold_unparsable",
             n_rejection_rows=4)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             self._assert_markdown_balanced(msg)
@@ -1335,7 +1335,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             age_minutes=30, rejection_age_minutes=2,
             rejection_reason="no_orderbook",
             n_rejection_rows=200)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             self._assert_markdown_balanced(msg)
@@ -1361,7 +1361,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
                 return getattr(real_conn, name)
 
         s._state.conn = _TickerOnlyRaisingConn()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             msg = mock_tele.send.call_args.args[0]
             self._assert_markdown_balanced(msg)
@@ -1509,7 +1509,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
         # Reset breakdown throttle so the alert path actually queries.
         s._silence_bail_breakdown_last_ts = 0.0
 
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
             call = mock_tele.send.call_args
@@ -1591,50 +1591,56 @@ class TestBailReasonConstantContract(unittest.TestCase):
         from outside bot/_impl.py, extend this audit to walk those files
         as well. (R8 audit-scope clarification.)
         """
+        # Bit 8.1 (2026-05-10): OpportunityScanner extracted to bot/scanner/__init__.py.
+        # 15M `insert_rejection()` call sites moved with the class. Walk both
+        # files so the audit survives the move.
         bot_path = os.path.join(
             os.path.dirname(__file__), "..", "bot/_impl.py")
-        with open(bot_path) as f:
-            tree = ast.parse(f.read())
+        scanner_path = os.path.join(
+            os.path.dirname(__file__), "..", "bot/scanner/__init__.py")
         literals = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            # Match `something.insert_rejection(...)`
-            if not (isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "insert_rejection"):
-                continue
-            # 4th positional arg is the reason (after ticker,
-            # event_ticker, asset). Check for literal string only;
-            # dynamic Name/Subscript reasons are skipped.
-            reason_node = None
-            if len(node.args) >= 4:
-                reason_node = node.args[3]
-            for kw in node.keywords:
-                if kw.arg == "reason":
-                    reason_node = kw.value
-            if reason_node is None:
-                continue
-            if (isinstance(reason_node, ast.Constant)
-                    and isinstance(reason_node.value, str)):
-                literals.add(reason_node.value)
-            elif isinstance(reason_node, (ast.Name, ast.Subscript,
-                                          ast.Attribute, ast.Call)):
-                # Dynamic — variable, dict lookup, attr, or function
-                # call (e.g., prob_result.get("reason")). Skipped per
-                # docstring: probability-engine refusals are healthy
-                # by construction.
-                continue
-            else:
-                # f-string or BinOp concatenation would silently bypass
-                # classification. Fail loudly so the author either
-                # converts to a literal or extends the audit.
-                self.fail(
-                    f"insert_rejection() at line {reason_node.lineno} "
-                    f"uses a non-literal, non-variable reason "
-                    f"(AST type: {type(reason_node).__name__}). "
-                    f"Convert to a literal string or extend the audit "
-                    f"to handle this AST shape — silently skipping "
-                    f"would create a classification gap.")
+        for src_path in (bot_path, scanner_path):
+            with open(src_path) as f:
+                tree = ast.parse(f.read())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                # Match `something.insert_rejection(...)`
+                if not (isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "insert_rejection"):
+                    continue
+                # 4th positional arg is the reason (after ticker,
+                # event_ticker, asset). Check for literal string only;
+                # dynamic Name/Subscript reasons are skipped.
+                reason_node = None
+                if len(node.args) >= 4:
+                    reason_node = node.args[3]
+                for kw in node.keywords:
+                    if kw.arg == "reason":
+                        reason_node = kw.value
+                if reason_node is None:
+                    continue
+                if (isinstance(reason_node, ast.Constant)
+                        and isinstance(reason_node.value, str)):
+                    literals.add(reason_node.value)
+                elif isinstance(reason_node, (ast.Name, ast.Subscript,
+                                              ast.Attribute, ast.Call)):
+                    # Dynamic — variable, dict lookup, attr, or function
+                    # call (e.g., prob_result.get("reason")). Skipped per
+                    # docstring: probability-engine refusals are healthy
+                    # by construction.
+                    continue
+                else:
+                    # f-string or BinOp concatenation would silently bypass
+                    # classification. Fail loudly so the author either
+                    # converts to a literal or extends the audit.
+                    self.fail(
+                        f"insert_rejection() at line {reason_node.lineno} "
+                        f"uses a non-literal, non-variable reason "
+                        f"(AST type: {type(reason_node).__name__}). "
+                        f"Convert to a literal string or extend the audit "
+                        f"to handle this AST shape — silently skipping "
+                        f"would create a classification gap.")
         known = self.KNOWN_BAIL_REASONS | self.KNOWN_HEALTHY_REASONS
         unclassified = literals - known
         self.assertEqual(
@@ -1675,8 +1681,8 @@ class TestSilent15MAlertWatchdogFailureObservability(unittest.TestCase):
         # drift where the watchdog SQL would throw.
         s._state.conn.execute("DROP TABLE rejected_opportunities")
         s._state.conn.commit()
-        with patch.object(bot, "_TELEGRAM") as mock_tele, \
-                patch.object(bot, "logging") as mock_log:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele, \
+                patch.object(bot.scanner, "logging") as mock_log:
             s._check_15m_silence_alert(_ACTIVE_15M)
             # Should not alert (we couldn't compute age).
             mock_tele.send.assert_not_called()
@@ -1694,8 +1700,8 @@ class TestSilent15MAlertWatchdogFailureObservability(unittest.TestCase):
         s = _make_scanner_with_eval_age(age_minutes=30)
         s._state.conn.execute("DROP TABLE rejected_opportunities")
         s._state.conn.commit()
-        with patch.object(bot, "_TELEGRAM"), \
-                patch.object(bot, "logging") as mock_log:
+        with patch.object(bot.notifier, "_TELEGRAM"), \
+                patch.object(bot.scanner, "logging") as mock_log:
             s._check_15m_silence_alert(_ACTIVE_15M)
             s._check_15m_silence_alert(_ACTIVE_15M)
             s._check_15m_silence_alert(_ACTIVE_15M)
@@ -1714,8 +1720,8 @@ class TestSilent15MAlertWatchdogFailureObservability(unittest.TestCase):
         s = _make_scanner_with_eval_age(age_minutes=30)
         # Manually set the flag to simulate prior failure.
         s._silence_watchdog_warned_primary = True
-        with patch.object(bot, "_TELEGRAM"), \
-                patch.object(bot, "logging"):
+        with patch.object(bot.notifier, "_TELEGRAM"), \
+                patch.object(bot.scanner, "logging"):
             # Healthy query → flag should reset.
             s._check_15m_silence_alert(_ACTIVE_15M)
         self.assertFalse(s._silence_watchdog_warned_primary)
@@ -1748,8 +1754,8 @@ class TestSilent15MAlertWatchdogFailureObservability(unittest.TestCase):
             # Force a fresh bail query (bypass throttle) by clearing
             # the cached timestamp.
             s._silence_bail_query_last_ts = 0.0
-            with patch.object(bot, "_TELEGRAM"), \
-                    patch.object(bot, "logging"):
+            with patch.object(bot.notifier, "_TELEGRAM"), \
+                    patch.object(bot.scanner, "logging"):
                 s._check_15m_silence_alert(_ACTIVE_15M)
         finally:
             s._state.conn = real_conn
@@ -1806,7 +1812,7 @@ class TestSilent15MAlertBailFlood(unittest.TestCase):
         s._kalshi_feed = MagicMock()
         s._kalshi_feed.is_connected = True
         s._silence_alert_process_start_ts = _t.time() - (30 * 60)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
             # Distinct dedup_key from the standard silence alert so
@@ -1847,7 +1853,7 @@ class TestSilent15MAlertBailFlood(unittest.TestCase):
         s._kalshi_feed = MagicMock()
         s._kalshi_feed.is_connected = True
         s._silence_alert_process_start_ts = _t.time() - (30 * 60)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert([])  # zero windows
             mock_tele.send.assert_not_called()
 
@@ -1858,7 +1864,7 @@ class TestSilent15MAlertBailFlood(unittest.TestCase):
         s = _make_scanner_with_eval_age(age_minutes=30)
         s._state.conn.execute("DELETE FROM evaluated_opportunities")
         s._state.conn.commit()
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
@@ -1876,7 +1882,7 @@ class TestSilent15MAlertBailFlood(unittest.TestCase):
             age_minutes=2, rejection_age_minutes=2,
             rejection_reason="no_orderbook",
             n_rejection_rows=200)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
@@ -1909,7 +1915,7 @@ class TestSilent15MAlertBailFlood(unittest.TestCase):
         s._kalshi_feed = MagicMock()
         s._kalshi_feed.is_connected = True
         s._silence_alert_process_start_ts = _t.time() - (30 * 60)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             # Must not raise NameError or AttributeError.
             try:
                 s._check_15m_silence_alert(_ACTIVE_15M)
@@ -1960,7 +1966,7 @@ class TestSilent15MAlertBailFlood(unittest.TestCase):
         s._kalshi_feed = MagicMock()
         s._kalshi_feed.is_connected = True
         s._silence_alert_process_start_ts = _t.time() - (60 * 60)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             # Bail rows from 30 min ago must NOT trigger BAIL FLOOD.
             # Generic SILENT alert fires on the stale eval.
@@ -2019,7 +2025,7 @@ class TestSilent15MAlertBailFlood(unittest.TestCase):
         s._kalshi_feed = MagicMock()
         s._kalshi_feed.is_connected = True
         s._silence_alert_process_start_ts = _t.time() - (30 * 60)
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
             # The BAIL FLOOD alert (not generic silence) should fire.
@@ -2115,8 +2121,8 @@ class TestSilent15MAlertBailFlood(unittest.TestCase):
         wrapper.execute.side_effect = selective_execute
         s._state.conn = wrapper
         try:
-            with patch.object(bot, "_TELEGRAM"), \
-                    patch.object(bot, "logging") as mock_log:
+            with patch.object(bot.notifier, "_TELEGRAM"), \
+                    patch.object(bot.scanner, "logging") as mock_log:
                 s._check_15m_silence_alert(_ACTIVE_15M)
                 s._check_15m_silence_alert(_ACTIVE_15M)
                 s._check_15m_silence_alert(_ACTIVE_15M)
@@ -2173,7 +2179,7 @@ class TestSilent15MAlertHeartbeatGate(unittest.TestCase):
         # Heartbeat is fresh — scan body is iterating windows
         # every tick.
         s._scan_15m_iter_heartbeat_ts = time.time() - 1.0  # 1s ago
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
@@ -2184,7 +2190,7 @@ class TestSilent15MAlertHeartbeatGate(unittest.TestCase):
         s = _make_scanner_with_eval_age(age_minutes=30)
         # Heartbeat also stale (>10 min).
         s._scan_15m_iter_heartbeat_ts = time.time() - 700.0
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
             call = mock_tele.send.call_args
@@ -2202,7 +2208,7 @@ class TestSilent15MAlertHeartbeatGate(unittest.TestCase):
             rejection_reason="no_orderbook",
             n_rejection_rows=5)
         s._scan_15m_iter_heartbeat_ts = time.time() - 1.0  # fresh
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
             # Must be the BAIL FLOOD diagnostic, not silent.
@@ -2218,7 +2224,7 @@ class TestSilent15MAlertHeartbeatGate(unittest.TestCase):
         microsecond drift between `time.time()` calls."""
         s = _make_scanner_with_eval_age(age_minutes=30)
         s._scan_15m_iter_heartbeat_ts = time.time() - 601.0
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
 
@@ -2227,7 +2233,7 @@ class TestSilent15MAlertHeartbeatGate(unittest.TestCase):
         no alert despite primary 30 min stale."""
         s = _make_scanner_with_eval_age(age_minutes=30)
         s._scan_15m_iter_heartbeat_ts = time.time() - 599.0
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
@@ -2238,7 +2244,7 @@ class TestSilent15MAlertHeartbeatGate(unittest.TestCase):
         could be wrongly suppressed by an unset heartbeat."""
         s = _make_scanner_with_eval_age(age_minutes=30)
         s._scan_15m_iter_heartbeat_ts = 0.0  # never set
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_called_once()
 
@@ -2253,7 +2259,7 @@ class TestSilent15MAlertHeartbeatGate(unittest.TestCase):
             rejection_reason="no_orderbook",
             n_rejection_rows=2)  # below threshold
         s._scan_15m_iter_heartbeat_ts = time.time() - 1.0
-        with patch.object(bot, "_TELEGRAM") as mock_tele:
+        with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
             s._check_15m_silence_alert(_ACTIVE_15M)
             mock_tele.send.assert_not_called()
 
@@ -2269,7 +2275,7 @@ class TestHeartbeatSetterContract(unittest.TestCase):
 
     def test_heartbeat_setter_exists_in_scan_method(self):
         bot_path = os.path.join(
-            os.path.dirname(__file__), "..", "bot/_impl.py")
+            os.path.dirname(__file__), "..", "bot/scanner/__init__.py")
         with open(bot_path) as f:
             tree = ast.parse(f.read())
         # Qualify by parent class — `def scan` may exist in multiple
