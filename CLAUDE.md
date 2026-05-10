@@ -19,15 +19,7 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 - **Don't re-plan finalized plans.** Continuing from a prior session = start implementing.
 - **Don't deploy without explicit confirmation.** Always present the change summary; wait for approval before `git push`.
 - **Followups → ClickUp, always.** Any emergent issue outside the current task scope (bug, cleanup, idea, deferred item) files a ticket via `/ticket`. Never bury followups in KB bullets, end-of-turn prose, "deferred items" sections, or `# TODO` comments without a ticket ID. Default to over-filing — triage later.
-
-## Extraction-bit discipline (Sprint 4-9 + any HIGH-risk Bit)
-
-State all three verbatim atop every extraction plan doc:
-1. **RCA** every CRITICAL/MAJOR finding before patching — root cause, don't symptom-suppress.
-2. **TDD-first**: edit `tests/` before `bot/` per the Pillar 4 hook. Use `/test-writer` to scaffold the failing regression test.
-3. **Adversarial review** to 2 consecutive zero-CRITICAL/MAJOR rounds (some Bits need 8). Never ship after 1 zero round.
-
-Full pre-flight + lessons L32-L80 in `kb/concepts/extraction-pre-flight-checklist.md`.
+- **Extraction-bit discipline (Sprint 4-9 + any HIGH-risk Bit):** state atop every plan doc — (1) RCA every CRITICAL/MAJOR finding before patching; (2) TDD-first via the Pillar 4 hook (`/test-writer` scaffolds the failing regression test); (3) adversarial review to 2 consecutive zero-CRITICAL/MAJOR rounds (some Bits need 8). Lessons L32-L80 + 12-step pre-flight: `kb/concepts/extraction-pre-flight-checklist.md`.
 
 ## Critical rules
 
@@ -85,6 +77,4 @@ When a user request fits a skill, prefer the skill over ad-hoc work.
 | KB capture session findings | `/kb-ingest` |
 | KB structural maintenance | `/kb-evolve` |
 
-**Disambiguation:** Status = quick. Audit = rigorous. Alpha-audit = cross-system funnel. *-alpha = single-system grid search.
-
-**Two-file-mode flag (Bit 1.3, forward-looking):** `AGENTS.md` is a symlink to this file. If Claude-Code-specific content here (skill routing, hook references) grows past what makes sense in a portable file, see `kb/decisions/bit-1.3-agents-md-shipped-may06.md` commitment 2 for the GO/NO-GO trigger to flip to two-file mode.
+**Disambiguation:** Status = quick. Audit = rigorous. Alpha-audit = cross-system funnel. *-alpha = single-system grid search. **Two-file-mode flag** (`AGENTS.md` is a symlink to this file): trigger + GO/NO-GO in `kb/decisions/bit-1.3-agents-md-shipped-may06.md`.

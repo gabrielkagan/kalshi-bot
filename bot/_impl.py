@@ -66,6 +66,8 @@ from integration import (  # noqa: E402
     annotate_evaluation_kwargs as _calmlp_annotate_kwargs,
     annotate_evaluation_async_enqueue as _calmlp_annotate_async,
     stop_post_hoc_processor as _calmlp_drain_pool,
+    _calmlp_predictors,
+    warmup_predictor_cache as _calmlp_warmup_cache,
 )
 
 
@@ -575,29 +577,13 @@ def detect_orphan_db_holders(
 # shipped in the same atomic commit as Bit 7.1. Sprint 7 closes here.
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# ═════════════════════════════════════════════════════════════════════════════
-#  Phase 7 Edit 3b: cal_mlp predictor cache (module-level)
-# ═════════════════════════════════════════════════════════════════════════════
-# Kill-switch contract (R-p7-cleanroom#H2 + R-p7-coldboot#C-S2):
-# Predictor INSTANCES are always constructed (CalMLPPredictor.__init__ is pure
-# attr-set; no IO). .warmup() is gated on CALMLP_ENABLED. This is required so
-# hot-flipping CALMLP_ENABLED=0→1 mid-process actually activates calibration
-# on the first scan tick — without it, an env=0 boot would leave the cache
-# unwarmed forever. The per-call env check in annotate_evaluation_kwargs
-# ensures predict() never runs when env=0.
-_calmlp_predictors = {a: CalMLPPredictor(a) for a in ('BTC', 'ETH', 'SOL', 'XRP')}
-_calmlp_enabled_at_boot = (
-    os.environ.get('CALMLP_ENABLED', '1').strip().lower() in ('1', 'true', 'yes')
-)
+# cal_mlp predictor cache + warmup → scripts/cal_mlp/integration.py
+# (Smell 3 fu, 86b9vhcat, 2026-05-10). Kill-switch contract preserved:
+# predictor INSTANCES always constructed at integration.py module-import time;
+# warmup() gated on CALMLP_ENABLED. Module-scoped logger (NOT bare
+# `logging.info`) — pinned by tests/regression/test_no_basicconfig_in_bot_impl.py.
+_calmlp_enabled_at_boot, _calmlp_warmed = _calmlp_warmup_cache()
 if _calmlp_enabled_at_boot:
-    for _calmlp_p in _calmlp_predictors.values():
-        _calmlp_p.warmup()
-    _calmlp_warmed = sum(1 for p in _calmlp_predictors.values() if p._loaded)
-    # Module-scoped logger (NOT bare `logging.info`) — `logging.info` auto-triggers
-    # `logging.basicConfig()` when root has no handlers, which clobbers pytest's
-    # caplog fixture handlers. Bit 2.1a regression test
-    # `tests/regression/test_no_basicconfig_in_bot_impl.py` pins this contract.
     logging.getLogger(__name__).info(
         "[CALMLP] enabled=1 at boot, predictors_warmed=%d/4", _calmlp_warmed)
 else:

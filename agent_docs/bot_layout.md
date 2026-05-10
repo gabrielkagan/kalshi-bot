@@ -1,6 +1,6 @@
 # bot/_impl.py Layout
 
-bot/_impl.py is **18,533 lines** as of 2026-05-10 (post-Bit-7.1 StateManager extraction to `bot/state.py` (path-A++ — `parity_assert`/`sizing_parity_assert` refactored in-Bit to drop their `bot_globals` parameter per the modularization strategic goal of reducing code smells); post-Bit-6.3 CalibrationEngine extraction + path-B singleton/helper relocation; Bit 3.1 moved ~1,200 lines of constants to `bot/constants.py`, Bit 3.2 moved ~790 lines of helpers to `bot/helpers/*`, Bit 4.1 moved 65 lines of Logger to `bot/logger.py`, Bit 4.2 moved 30 lines of TelegramNotifier to `bot/notifier.py`, Bit 4.3 moved 348 lines of KalshiClient to `bot/kalshi_client.py`, Bit 4.4 moved 141 lines of DeribitDVOLFetcher + CoinGlassFetcher to `bot/fetchers/*`, Bit 4.5a moved ~660 lines of CoinbaseFeed + OrderbookSchemaError + CrossExchangeFeed to `bot/feeds/*`, Bit 4.5b moved ~1,790 lines of KalshiFeed to `bot/feeds/kalshi.py`, Bit 6.1 moved ~960 lines of VolatilityEngine to `bot/engines/volatility.py`, Bit 6.2 moved ~197 lines of ProbabilityEngine to `bot/engines/probability.py`, Bit 6.3 moved ~1,004 lines of CalibrationEngine to `bot/engines/calibration.py` (Sprint 6 closed there), Bit 7.1 moved ~2,607 lines of StateManager to `bot/state.py` — Sprint 7 closes here). Class line ranges below
+bot/_impl.py is **18,524 lines** as of 2026-05-10 (post-Smell-3 fu — `_calmlp_predictors` cache + warmup orchestration relocated to `scripts/cal_mlp/integration.py` per ticket 86b9vhcat, replacing the module-level construction + warmup loop with a thin `warmup_predictor_cache()` callsite that preserves the bot._impl logger namespace for the operator-runbook boot-log grep contract; post-Bit-7.1 StateManager extraction to `bot/state.py` (path-A++ — `parity_assert`/`sizing_parity_assert` refactored in-Bit to drop their `bot_globals` parameter per the modularization strategic goal of reducing code smells); post-Bit-6.3 CalibrationEngine extraction + path-B singleton/helper relocation; Bit 3.1 moved ~1,200 lines of constants to `bot/constants.py`, Bit 3.2 moved ~790 lines of helpers to `bot/helpers/*`, Bit 4.1 moved 65 lines of Logger to `bot/logger.py`, Bit 4.2 moved 30 lines of TelegramNotifier to `bot/notifier.py`, Bit 4.3 moved 348 lines of KalshiClient to `bot/kalshi_client.py`, Bit 4.4 moved 141 lines of DeribitDVOLFetcher + CoinGlassFetcher to `bot/fetchers/*`, Bit 4.5a moved ~660 lines of CoinbaseFeed + OrderbookSchemaError + CrossExchangeFeed to `bot/feeds/*`, Bit 4.5b moved ~1,790 lines of KalshiFeed to `bot/feeds/kalshi.py`, Bit 6.1 moved ~960 lines of VolatilityEngine to `bot/engines/volatility.py`, Bit 6.2 moved ~197 lines of ProbabilityEngine to `bot/engines/probability.py`, Bit 6.3 moved ~1,004 lines of CalibrationEngine to `bot/engines/calibration.py` (Sprint 6 closed there), Bit 7.1 moved ~2,607 lines of StateManager to `bot/state.py` — Sprint 7 closes here). Class line ranges below
 are auto-verifiable. Repo modularization plan (`kb/decisions/repo-modularization-plan-may05.md`)
 will turn bot/_impl.py into a thin entrypoint shim with logic in a `bot/` package.
 
@@ -75,7 +75,7 @@ verify by reading 5-10 lines around each line number before quoting.
 |---|---|
 | 1–~110 | Header import block (`bot._thread_env` imports BEFORE `numpy` — load-bearing per CLAUDE.md; `scripts/cal_mlp/` is also added to sys.path here for the bare `from integration import` calls later in the file). `from bot.constants import *` (Bit 3.1) at ~83; `from bot.helpers import *` + explicit underscore re-exports for `bot.helpers.validators` and `bot.helpers.breakers` (Bit 3.2) immediately after. `from bot.logger import Logger` (Bit 4.1), `from bot.notifier import TelegramNotifier` (Bit 4.2), `from bot.kalshi_client import KalshiClient` (Bit 4.3), `from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher` (Bit 4.4), and `from bot.feeds import CoinbaseFeed, CrossExchangeFeed, KalshiFeed, OrderbookSchemaError` (Bit 4.5a + 4.5b) follow at ~100–~104. Verify with `grep -n "^from bot\." bot/_impl.py`. |
 | ~125–~558 | Residual helpers + runtime-state singletons that stay in `bot/_impl.py` (`_TELEGRAM` singleton; `_append_raw_api_journal`, `_HPSB_VALIDATOR_UNAVAILABLE_REASON`, `_HPSB_MISSING_BLEEDERS = ...` / `_BLEED_BLOCK_MISSING_BLEEDERS = ...` boot-time invocations of the validators that themselves moved to `bot/helpers/validators.py`, plus the orphan-DB watchdog Layer-3 helpers `_run_lsof_for_db`/`_get_pid_cmdline`/`_alert_orphan_db_holder`/`detect_orphan_db_holders`). `_swallow_persist_exception` moved to `bot/feeds/coinbase.py` in Bit 4.5a alongside its sole consumer. **Bit 6.3 path-B (2026-05-10) relocated** `_CALIBRATION_ENGINE` singleton + `_CAL_REGISTRY` dict + `_derive_subtype` + `_derive_asset_filter` + `_resolve_cal_engine` to `bot/engines/calibration.py`; bot/_impl.py reaches them via the `from bot.engines import calibration as _cal_state` alias near the top of the file. |
-| 653–18533 | Class definitions (see table below). One module-level `def discover_active_windows()` sits in the body region between SettlementTracker's class body and the MainLoop class def; it ships with MainLoop in Bit 9.3. |
+| 644–18524 | Class definitions (see table below). One module-level `def discover_active_windows()` sits in the body region between SettlementTracker's class body and the MainLoop class def; it ships with MainLoop in Bit 9.3. |
 
 ### Class-body end vs class-range note
 
@@ -112,21 +112,21 @@ enforce the negative contract for all seven extracted classes.
 
 ## Classes (auto-verifiable)
 
-Generated 2026-05-10 from `grep -nE '^class ' bot/_impl.py` (post-Bit-7.1 StateManager extraction; StateManager now lives in `bot/state.py` — first peer-module leaf at top-level `bot/` and Sprint 7 closeout — alongside the `bot/engines/` subpackage from Sprint 6 + the `bot/feeds/` and `bot/fetchers/` subpackages from Sprint 4).
+Generated 2026-05-10 from `grep -nE '^class ' bot/_impl.py` (post-Smell-3 fu — `_calmlp_predictors` relocation to `scripts/cal_mlp/integration.py` shifted all 6 class start lines up; post-Bit-7.1 StateManager extraction; StateManager now lives in `bot/state.py` — first peer-module leaf at top-level `bot/` and Sprint 7 closeout — alongside the `bot/engines/` subpackage from Sprint 6 + the `bot/feeds/` and `bot/fetchers/` subpackages from Sprint 4).
 
 | Lines | Class | Size |
 |---|---|---|
-| 653–774 | `OrderFlowEngine` | 122 |
-| 775–978 | `KalshiOrderFlowTracker` | 204 |
-| 979–10069 | `OpportunityScanner` | 9091 |
-| 10070–15359 | `OrderExecutor` | 5290 |
-| 15360–16538 | `SettlementTracker` | 1179 |
-| 16539–18533 | `MainLoop` | 1995 |
+| 644–765 | `OrderFlowEngine` | 122 |
+| 766–969 | `KalshiOrderFlowTracker` | 204 |
+| 970–10060 | `OpportunityScanner` | 9091 |
+| 10061–15350 | `OrderExecutor` | 5290 |
+| 15351–16529 | `SettlementTracker` | 1179 |
+| 16530–18524 | `MainLoop` | 1995 |
 
 ## Project file map (root, 2026-05-05)
 
 Live trading process:
-- `bot/_impl.py` — main bot, all trading logic (18,533 lines post-Bit-7.1 StateManager extraction; Sprint 7 closes here)
+- `bot/_impl.py` — main bot, all trading logic (18,524 lines post-Smell-3 fu — `_calmlp_predictors` cache + warmup orchestration relocated to `scripts/cal_mlp/integration.py` per ticket 86b9vhcat; post-Bit-7.1 StateManager extraction; Sprint 7 closes here)
 - `bot/constants.py` — module-level UPPER_SNAKE constants extracted from `bot/_impl.py` (Bit 3.1, 1,722 lines, 484 constants). Re-exported into `bot/_impl.py` via `from bot.constants import *` near top of file.
 - `bot/helpers/` — feature/sizing/cell-block helpers extracted from `bot/_impl.py` (Bit 3.2, ~790 lines, 25 functions across 9 submodules: `time_features`, `derived_features`, `tm_sweep`, `sizing`, `cell_blocks`, `strings`, `strategy`, `validators`, `breakers`). Re-exported into `bot/_impl.py` via `from bot.helpers import *` plus explicit underscore re-exports for `validators` (3) and `breakers` (5) — star-import skips underscored names.
 - `bot/logger.py` — `Logger` class (structured JSONL logging with fill dedup) extracted from `bot/_impl.py` (Bit 4.1, ~90 lines, stdlib + `bot.constants` only). Re-exported into `bot/_impl.py` via `from bot.logger import Logger` so `MainLoop.__init__` instantiation + type annotations on `OpportunityScanner`/`OrderExecutor`/`SettlementTracker` resolve.

@@ -1125,6 +1125,57 @@ class CalMLPPredictor:
 
 
 # ---------------------------------------------------------------------------
+# Predictor cache (relocated from bot/_impl.py per Smell 3 fu, 86b9vhcat,
+# 2026-05-10). Plan: kb/decisions/smell-3-calmlp-predictors-relocation-plan-may10.md.
+#
+# Kill-switch contract (R-p7-cleanroom#H2 + R-p7-coldboot#C-S2):
+# Predictor INSTANCES are always constructed at module-import time below
+# (CalMLPPredictor.__init__ is pure attr-set; no IO — pinned by
+# tests/test_cal_mlp_invariants.py::test_cal_mlp_predictor_init_zero_io).
+# .warmup() is gated on CALMLP_ENABLED. This ordering is required so hot-
+# flipping CALMLP_ENABLED=0→1 mid-process actually activates calibration on
+# the first scan tick — without always-construct, an env=0 boot would leave
+# the cache permanently unwarmed AND missing instances. The per-call
+# CALMLP_ENABLED check inside annotate_evaluation_kwargs and
+# annotate_evaluation_async_enqueue (below) ensures predict() never runs
+# when env=0 even if the cache IS warmed.
+#
+# Pre-Smell-3 this lived in bot/_impl.py:589-606. The cache + warmup
+# orchestration belong with CalMLPPredictor (locality of reference);
+# bot/_impl.py now imports both names and emits the boot log in its own
+# bot._impl logger namespace using the (enabled, warmed_count) tuple this
+# helper returns (M3 — operator-runbook grep contract).
+# ---------------------------------------------------------------------------
+_calmlp_predictors: dict = {a: CalMLPPredictor(a) for a in ('BTC', 'ETH', 'SOL', 'XRP')}
+
+
+def warmup_predictor_cache() -> tuple:
+    """Conditionally warm the predictor cache based on CALMLP_ENABLED env.
+
+    Returns (enabled, warmed_count) — the caller (bot/_impl.py module-load)
+    uses these counters to emit the boot log in the bot._impl logger
+    namespace, preserving the operator-runbook grep contract.
+
+    Reads CALMLP_ENABLED from os.environ at call time (not at module-import
+    time), so an env=0 boot followed by an env=1 mid-process flip is
+    honored on the next call — pin in
+    tests/test_calmlp_predictor_cache_relocation.py::test_hot_env_flip_zero_to_one_honored.
+
+    Idempotent: subsequent calls re-check env and re-iterate.
+    CalMLPPredictor.warmup() short-circuits via the already-loaded guard,
+    so warmed_count settles across calls.
+    """
+    enabled = (
+        os.environ.get('CALMLP_ENABLED', '1').strip().lower() in ('1', 'true', 'yes')
+    )
+    if not enabled:
+        return False, 0
+    for p in _calmlp_predictors.values():
+        p.warmup()
+    return True, sum(1 for p in _calmlp_predictors.values() if p._loaded)
+
+
+# ---------------------------------------------------------------------------
 # R-p7-deploy-r9: post-hoc cal_mlp processor (replaces R-p7-deploy-r8 inline pool)
 #
 # Edit 4 in bot.py reduces to a single uuid stamp on _shadow_diag — zero
@@ -1478,4 +1529,5 @@ __all__ = [
     'migrate_schema', 'parity_assert', 'sizing_parity_assert',
     'make_compute_for_15m_main_path',
     'CalMLPPredictor', 'annotate_evaluation_kwargs',
+    'warmup_predictor_cache',
 ]
