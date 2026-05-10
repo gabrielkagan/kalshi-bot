@@ -393,7 +393,7 @@ Every decision the bot makes is logged across three complementary systems:
 | System | What It Captures |
 |---|---|
 | **SQLite database** | Positions, orders, fills, settlements, every market evaluation with filter stage, full order lifecycle (order_id, submission time, final outcome) |
-| **JSONL journals** | Append-only logs for scans, opportunities, rejections, trades, settlements, and maker fill model training data. Rotated daily with 30-day retention |
+| **JSONL journals** | Append-only logs for scans, opportunities, rejections, trades, settlements, and maker fill model training data. Rotated daily with 90-day retention |
 | **Supabase dashboard** | Real-time web interface (30s sync interval) showing positions, P&L, volatility, orderbooks, execution health, calibration diagnostics, and all shadow system data |
 
 This comprehensive logging enables full after-the-fact analysis of any trade or decision.

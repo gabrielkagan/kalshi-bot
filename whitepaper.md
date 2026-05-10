@@ -871,7 +871,7 @@ Append-only journal files provide a complete audit trail:
 | `rejection_journal.jsonl` | Settlement outcomes for rejected opportunities |
 | `fill_model_journal.jsonl` | Maker order lifecycle data for ML fill prediction |
 
-**Journal rotation**: A daily cron job (4 AM UTC) runs `rotate_journals.sh` using a copytruncate pattern — journals are compressed to `journal_archives/` with gzip and 30-day retention. The bot uses open/close per write, so rotation is safe without process interruption.
+**Journal rotation**: A daily cron job (4 AM UTC) runs `rotate_journals.sh` using a copytruncate pattern — journals are compressed to `journal_archives/` with zstd and 90-day retention. The bot uses open/close per write, so rotation is safe without process interruption.
 
 ## Supabase Real-Time Dashboard
 
