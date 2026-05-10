@@ -120,10 +120,11 @@ The above statement is still correct for the A.7 consumer (`scripts/cal_mlp/snap
 
 This amendment is OUT OF SCOPE for the current ticket (would touch `_state_db_snapshot.py`, which is on the untouchable list for this worker). Filing a follow-up: **A.7-fu1.1** to amend the helper's coordination-contract docstring.
 
-## Lessons (additive to L74-L78 from session-resume-may09-from-pillar-5-merged; collision-checked against PSC P5.1 which took L87-L90)
+## Lessons (additive to L74-L78 from session-resume-may09-from-pillar-5-merged; collision-checked against PSC P5.1 which took L87-L92, incl. R5-added L91/L92)
 
-- **L91 — Name overlap is not behavior overlap.** Two functions can have identical names + similar signatures and still solve materially different problems if their runtime environments differ (dev-Mac extract-time vs VPS-live-cron). Read both call sites end-to-end before assuming deduplication is XS.
-- **L92 — "Inlined duplicate" claims need a pre-refactor read.** The ticket assumed Phase 0a inlined what the helper extracted. It did not; the two were authored independently against different constraints. The pre-refactor read takes 10 minutes and prevents committing a regression.
+- **L93 — Name overlap is not behavior overlap.** Two functions can have identical names + similar signatures and still solve materially different problems if their runtime environments differ (dev-Mac extract-time vs VPS-live-cron). Read both call sites end-to-end before assuming deduplication is XS.
+- **L94 — "Inlined duplicate" claims need a pre-refactor read.** The ticket assumed Phase 0a inlined what the helper extracted. It did not; the two were authored independently against different constraints. The pre-refactor read takes 10 minutes and prevents committing a regression.
+- **L95 — Renumber MUST grep at renumber-time, not recall-based.** When two adversarial rounds in a row find a lesson-number collision (R2 caught L87/L88 vs PSC P5.1's L87-L90 documented range; R3 caught L91/L92 vs PSC P5.1's R5-added L91/L92 not in the original range), the failure mode is the same: trusting a remembered/cited MAX without re-running `grep -rE "^- \*\*L[0-9]+" kb/ | grep -oE "L[0-9]+" | sort -u | sort -V | tail` at the moment of renumber. Parallel sessions on the same lesson space mean MAX changes between read and write. **Protocol:** run the grep immediately before picking new numbers, pick MAX+1..MAX+k, re-run grep after edit to confirm zero duplicates. Same class of bug R2 found, recurring because the protocol wasn't followed in R2's fix — fix shipped here.
 
 ## Files touched
 
