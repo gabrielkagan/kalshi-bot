@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent template for the state.db backup heartbeat alerter.
+  Phase 0a follow-up — ticket 86b9vgjxw.
+
+  This file is a TEMPLATE. The operator must replace REPLACE_* placeholders
+  before installing. See scripts/STATE_DB_BACKUP_SETUP.md §11 for the
+  full install procedure.
+
+  Design choices:
+    - StartInterval = 21600 (6h = 4×/day). Same cadence the original
+      ticket recommended; balances "catch a failed daily within one
+      cycle" against "don't spam S3/Telegram for a working system".
+    - RunAtLoad = true so the first heartbeat fires on Mac boot, not
+      just on the next 6h boundary. Catches the case where the Mac was
+      asleep for >36h and we want to know about staleness immediately.
+    - StandardOut/ErrorPath logged to ~/Library/Logs/ — operator can
+      tail when triaging.
+    - EnvironmentVariables: AWS_PROFILE points at the read-only
+      restore profile (created in STATE_DB_BACKUP_SETUP.md §6). The
+      heartbeat NEVER needs writer creds.
+    - TELEGRAM_BOT_TOKEN + CHAT_ID are env vars; operator pastes the
+      same values they use for the VPS bot. (Mac-side cron does NOT
+      share the VPS .env file — this is an intentional decoupling.)
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.kalshi.state-db-backup-heartbeat</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>REPLACE_REPO_PATH/scripts/state_db_backup_heartbeat.py</string>
+        <string>--bucket</string>
+        <string>REPLACE_BUCKET_NAME</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AWS_PROFILE</key>
+        <string>kalshi-state-db-restore</string>
+        <key>HOME</key>
+        <string>REPLACE_HOME_DIR</string>
+        <key>TELEGRAM_BOT_TOKEN</key>
+        <string>REPLACE_TELEGRAM_BOT_TOKEN</string>
+        <key>TELEGRAM_CHAT_ID</key>
+        <string>REPLACE_TELEGRAM_CHAT_ID</string>
+    </dict>
+
+    <!--
+      Run every 6h. launchd will defer to next wake if Mac is asleep
+      at the scheduled boundary, which is what we want (sleep is not
+      an outage from the operator's perspective).
+    -->
+    <key>StartInterval</key>
+    <integer>21600</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!--
+      Logs go under ~/Library/Logs/ so they survive across login
+      sessions and rotate naturally with macOS log management.
+    -->
+    <key>StandardOutPath</key>
+    <string>REPLACE_HOME_DIR/Library/Logs/kalshi-state-db-backup-heartbeat.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>REPLACE_HOME_DIR/Library/Logs/kalshi-state-db-backup-heartbeat.err.log</string>
+
+    <!--
+      Don't auto-respawn on exit (KeepAlive=false). Heartbeat is
+      one-shot per interval; a respawn loop on persistent failure
+      would spam Telegram.
+    -->
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
