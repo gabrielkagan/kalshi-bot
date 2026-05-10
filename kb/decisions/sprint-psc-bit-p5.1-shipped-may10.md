@@ -246,6 +246,155 @@ adversarial check. Instead it:
   marker?". Pair this with a property test that randomly mixes benign
   and adversarial components and asserts the bijection invariant.
 
+## R5 adversarial review findings + fixes
+
+R5 (fresh-eyes reviewer agent) verified R4 M1's literal+single-component
+guards as REAL_FIX for the demonstrated R4 witnesses (`a__SLASH/b` +
+`a/SLASH__b`), but found that R4's docstring claim — *"covers every
+non-empty proper suffix/prefix of the marker because any longer overlap
+subsumes one of these"* — is mathematically false. The marker
+`__SLASH__` has 8 proper-prefix/suffix overlap classes (k=1..8); R4
+covered only k=2 (`SLASH__` startswith) and k=7 (`__SLASH` endswith).
+R5 demonstrated a surviving collision at k=1 + k=8:
+
+```
+p1 = 'X__SLASH_/_Y'  parts=['X__SLASH_', '_Y']  → 'X__SLASH___SLASH___Y'  (left ends '_'  = M[:1])
+p2 = 'X/_SLASH___Y'  parts=['X', '_SLASH___Y']  → 'X__SLASH___SLASH___Y'  (right starts '_SLASH__' = M[1:])
+                                                  ^^ COLLISION ^^
+```
+
+`unflatten` returns `p2` for both inputs — non-bijective.
+
+### CRITICAL findings
+
+- **C5-1 — Path-flatten injectivity still false at k=8 + k=1 overlap class.**
+  R4's per-component rule (`startswith('SLASH__') or endswith('__SLASH')`)
+  rejected the **k=2 startswith** and **k=7 endswith** classes only, on
+  the false claim that "longer overlap subsumes one of these". The
+  surviving collision uses k=1 left-straddle (`left.endswith('_')`)
+  paired with k=8 right-straddle (`right.startswith('_SLASH__')`).
+  **Fix (corrected algebra):** the correct invariant has TWO independent
+  checks, not one symmetric one:
+  - **Left-straddle (k=1..8):** any non-last component ending with
+    `_SLASH_MARKER[:k]` reconstructs the marker at position
+    `len(comp)-k` of the joined output. There are exactly 8 such
+    classes — enumerate over k.
+  - **Right-straddle (k where marker has self-overlap):** any non-first
+    component starting with `_SLASH_MARKER[len-k:]` reconstructs the
+    marker at position `len(preceding)+k` of the joined output, but
+    ONLY when `M[k:] == M[:len(M)-k]` (the marker overlaps itself). For
+    `__SLASH__` this is exactly `{7, 8}` (computed at module load into
+    `_SLASH_MARKER_SELF_OVERLAP_KS`).
+  This is bijective by construction: any flat string with a
+  non-canonical marker occurrence requires either a left-straddle or a
+  right-straddle at the boundary; both are rejected; therefore on the
+  accepted set, `unflatten` recovers the exact input. Real Kalshi paths
+  (`bot/_impl.py`, `bot/scanner/__init__.py`, `agent_docs/*`, `kb/*`)
+  all pass because their leading-underscore basenames hit M[8:]=`_`
+  (one char) but NOT M[1:]=`_SLASH__` (eight chars) — the right-straddle
+  rule cleanly distinguishes them.
+
+### MAJOR findings
+
+- **M5-1 — Property test pool blind to the surviving collision class.**
+  R4's `test_flatten_unflatten_property_random` pool included 5
+  adversaries that hit k=2 + k=7 only (`SLASH__x`, `y__SLASH`,
+  `z__SLASH__w`, `SLASH__only`, `only__SLASH`) and 2 benign
+  "looks-dangerous-but-fine" cases. It deliberately EXCLUDED components
+  that would hit k=1..6 or k=8, so 20 random trials × 2-4 components
+  had near-zero chance of constructing the k=1+k=8 pair. **Fix:** new
+  pool covers EVERY overlap class — for each k in 1..len(M)-1 the pool
+  includes both a `comp{M[:k]}` (left-straddle witness) and a
+  `{M[k:]}comp` (right-straddle witness) — plus the bare `_`, `__`,
+  `___` adversaries, plus the full leading/trailing marker forms. Trial
+  count raised from 20 to 200 to give the larger pool a chance to
+  exercise every class. Also added **EXHAUSTIVE parametrized enumeration**
+  outside the random sweep (no randomness, no dependence on trial
+  count): `test_left_straddle_class_k_rejected` parametrized over k=1..8
+  + `test_right_straddle_class_k_rejected` parametrized over k=7,8
+  (the self-overlap set) + `test_r5_witness_pair_both_rejected` for the
+  R5 reviewer's explicit witness pair `('X__SLASH_/_Y', 'X/_SLASH___Y')`
+  AND the R4 originals `('a__SLASH/b', 'a/SLASH__b')`. Every overlap
+  class now has at least one parametrized test that fails LOUDLY if
+  someone weakens the rule.
+
+- **m5-1 (minor) — `str.replace` overlap semantics unpinned.** R5 noted
+  that `unflatten_target_path` relies on `str.replace`'s left-to-right
+  non-overlapping scan, which is correct but worth pinning with an
+  explicit unit test that documents the semantics (the existing property
+  test exercises this implicitly via round-trip; the new test makes the
+  invariant primary). **Fix:** new
+  `test_str_replace_overlap_semantics_for_marker` test that asserts
+  `'__SLASH____SLASH__'.replace('__SLASH__', '/') == '//'` (two adjacent
+  markers → two slashes, non-overlapping scan) plus a small round-trip
+  matrix covering the six canonical accepted shapes.
+
+### Tests added in R5
+
+| File | Tests | Purpose |
+|---|---|---|
+| `tests/test_session_lock.py::TestPathFlatten::test_left_straddle_class_k_rejected` | 8 (parametrized k=1..8) | C5-1 left-straddle enumeration — for each k, `A{M[:k]}/{M[k:]}B` must raise. |
+| `tests/test_session_lock.py::TestPathFlatten::test_right_straddle_class_k_rejected` | 2 (parametrized k=7,8) | C5-1 right-straddle enumeration — for each self-overlap k, `safe/{M[len-k:]}rest` must raise. |
+| `tests/test_session_lock.py::TestPathFlatten::test_r5_witness_pair_both_rejected` | 2 (parametrized pairs) | C5-1 explicit witness — both halves of the R5 reviewer's pair AND the R4 originals must raise. Pre-R5: one half of each was accepted. |
+| `tests/test_session_lock.py::TestPathFlatten::test_self_overlap_constant_is_correct_for_current_marker` | 1 | Constant sanity-pin — `_SLASH_MARKER_SELF_OVERLAP_KS` matches a fresh recomputation. Forces regen + manual review if the marker ever changes. |
+| `tests/test_session_lock.py::TestPathFlatten::test_str_replace_overlap_semantics_for_marker` | 1 | m5-1 — pin `str.replace` left-to-right non-overlapping scan + 6 round-trip cases. |
+
+Total post-R5: **69 tests** (61 session_lock + 8 gitignore contract). Triple-rerun
+stability on the concurrency-heavy suite (TestConcurrentAcquire +
+TestTOCTOU + TestStress + TestProcessDeathCleanup + TestStaleReclaim):
+3-of-3 PASS at 11 tests each. Full file: 69/69 PASS in ~11.6s wall.
+
+### Code changes in R5
+
+- `scripts/_session_lock.py`:
+  - Added `_SLASH_MARKER_SELF_OVERLAP_KS` constant (~8 LOC + comment),
+    computed eagerly at module load from `_SLASH_MARKER` (= `(7, 8)`
+    for the current marker).
+  - Replaced the R4 per-component check loop (~10 LOC) with the
+    enumerative left-straddle (k=1..8) + right-straddle (k in
+    self-overlap set) loop (~25 LOC). Error messages now disambiguate
+    which class fired ("marker prefix" vs "marker suffix") for easier
+    forensics.
+  - Module docstring + function docstring updated with the full
+    "Algebra" derivation showing the two straddle cases and why only
+    `{7, 8}` self-overlap at k for `__SLASH__`. Explicitly demonstrates
+    the C5-1 collision pair and explains why pairwise (per-adjacent-pair)
+    checks would NOT suffice — a path like `X/_SLASH___Y` has no
+    `parts[i].endswith(marker[:k])` match for the LEFT side `'X'`, so a
+    naive pairwise-AND check (the first attempt) misses it. The correct
+    invariant is per-component-positional (non-last → left-check;
+    non-first → right-check) over the full overlap set.
+
+- `tests/test_session_lock.py`: pool rewrite + 14 new parametrized
+  tests (8 + 2 + 2 + 1 + 1). R4-era message-regex `"straddles
+  slash-marker"` updated to `"marker (prefix|suffix)"` to match the
+  more-specific R5 error messages while still passing for both flavors.
+
+### Lesson
+
+- **L92 — combinatorial overlap rules require k=1..len(marker)-1
+  enumeration, not "the two extremes are enough" reasoning.** R4 argued
+  by analogy: "`__SLASH` endswith subsumes shorter endings; `SLASH__`
+  startswith subsumes shorter startings; therefore those two checks
+  cover all overlap classes". The analogy was WRONG: subsumption goes
+  the OTHER way — `endswith('__SLASH')` rejects components ending with
+  `__SLASH` but NOT components ending with `_` (the shorter k=1
+  prefix); the k=1 ending is strictly MORE permissive (more matches)
+  than the k=7 ending, not less. The algebra of marker self-overlap
+  also matters: for a marker M to be reconstructible across a join,
+  EITHER `left.endswith(M[:k])` (no constraint on M) OR
+  `right.startswith(M[len-k:])` AND `M[k:] == M[:len-k]` (self-overlap
+  required). The self-overlap set is marker-specific; for `__SLASH__`
+  it's `{7, 8}`, but for an arbitrary marker it could be empty (no
+  right-straddle possible) or larger. **Review lens:** for any
+  string-encoding bijection over a multi-component domain, enumerate
+  k=1..len(separator)-1 and ask FOR EACH k: (a) does there exist a
+  left-side input whose tail is `sep[:k]`? (yes, by construction); (b)
+  does there exist a right-side input whose head reconstructs `sep`
+  when concatenated with `sep[k:]`? (yes iff `sep[k:] == sep[:len-k]`,
+  i.e. self-overlap). Pair with a property test whose pool covers ALL
+  k, plus parametrized enumeration as a vacuity-resistant backstop.
+
 ## Out-of-scope findings (for orchestrator to file)
 
 - **/ticket — iCloud `* 2.lock` sibling cleanup.** iCloud Drive occasionally spawns `<name> 2.lock` siblings next to `<name>.lock` on the user's repo. The lock primitive ignores them (correct), but they accumulate forever with no cleanup. R1 minor #4. File a janitorial-script ticket: nightly cron to `find .claude/locks/active-work -name '* [0-9].lock'` and unlink if no canonical sibling holds a fresh heartbeat. Low priority.
@@ -269,3 +418,4 @@ The session lessons list is currently at L86 / L90 post-R2. New lessons from thi
 - **L89 — adversarial review must target the interaction surface, not the diff surface.** R0 caught 4 issues reading the diff line-by-line — all "this line is sketchy". R1 caught 2 CRITICALs + 5 MAJORs by asking "what does a peer process see at each microsecond, in our actual deployment topology?". The C1 TOCTOU bug was invisible from diff-reading — every line was correct in isolation; the bug lived in the *gap between syscalls*. The C2 worktree bug was invisible because `_repo_root()` looked reasonable; it failed only when two callers ran in different filesystem layouts.
 - **L90 — adversarial review of a coordination primitive must also audit its environment.** R2 found two issues (M6 gitignore, M7 relative-gitdir) that lived entirely OUTSIDE the source file: M6 in `.gitignore`, M7 in the git-worktree pointer contract. Both rendered the primitive incorrect for real deployments. Lesson: when reviewing infrastructure that writes files into a repo, audit (a) the repo's hygiene (gitignore/hooks/CI artifact policy) and (b) the upstream contracts the infrastructure consumes (git-worktree format, filesystem semantics, package conventions).
 - **L91 — "injectivity" claims on string-encoding functions must verify the boundary between components, not just within components.** R1 M1 rejected the contiguous literal marker but left boundary-straddling collisions: `flatten('a__SLASH/b')` and `flatten('a/SLASH__b')` both yield `'a__SLASH__SLASH__b'` because `join` reconstructs the marker across the `/` boundary. R4 M1 closed the gap by also rejecting components that `startswith("SLASH__")` or `endswith("__SLASH")`. The review lens: "for every adversarial pair `(left, right)` of components, does `_SEPARATOR.join([left, right])` reconstruct the encoding marker?" Pair with a property test that mixes benign + adversarial components and asserts round-trip identity for every accepted input.
+- **L92 — combinatorial overlap rules require k=1..len(marker)-1 enumeration, not "the two extremes are enough" reasoning.** R4 argued by analogy that `__SLASH` endswith + `SLASH__` startswith "cover" all marker-prefix/suffix overlap classes. The analogy was false: subsumption goes the OTHER way (shorter prefixes are more permissive, not less). R5 demonstrated a k=1+k=8 surviving collision: `'X__SLASH_/_Y'` (left ends with `M[:1]='_'`) collides with `'X/_SLASH___Y'` (right starts with `M[1:]='_SLASH__'` AND the marker self-overlaps at k=8 since `M[8:]='_'==M[:1]='_'`). Correct fix: enumerate left-straddle k=1..8 AND right-straddle k where the marker has self-overlap (set is marker-specific; for `__SLASH__` it's `{7, 8}`). Review lens: "for each k in 1..len(sep)-1, (a) does there exist a left-side input whose tail is `sep[:k]`? — yes by construction; (b) does there exist a right-side input whose head + `sep[k:]` reconstructs `sep`? — yes iff `sep[k:] == sep[:len(sep)-k]` (self-overlap)." Pair with property test pool that covers EVERY k AND parametrized enumeration as a vacuity-resistant backstop.

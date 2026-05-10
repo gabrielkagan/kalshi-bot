@@ -53,10 +53,23 @@ The `__SLASH__` token was chosen because it cannot appear in a real
 POSIX path (uppercase + double-underscore convention) and survives
 iCloud's filename quirks. Round-trip is preserved by `flatten_target_path`
 + `unflatten_target_path`, which together form a bijection over the
-accepted input space: `flatten` rejects (a) the literal contiguous
-marker, (b) any component starting with `SLASH__`, and (c) any component
-ending with `__SLASH` — eliminating both direct collision and
-boundary-straddling collision (R1 M1 + R4 M1).
+accepted input space. `flatten` rejects:
+  (a) the literal contiguous marker anywhere in the input,
+  (b) any non-LAST component whose tail matches `marker[:k]` for any
+      k in 1..len(marker)-1 (the 8 LEFT-STRADDLE classes — would
+      reconstruct the marker at position `len(comp)-k` of the join),
+  (c) any non-FIRST component whose head matches `marker[len-k:]` for
+      any k in the marker's SELF-OVERLAP set (the RIGHT-STRADDLE
+      classes — would reconstruct the marker at position
+      `len(preceding)+k` of the join). For ``__SLASH__`` the
+      self-overlap set is exactly {7, 8}.
+
+R5 C5-1 demonstrated that the R4-era "reject any component starting
+with `SLASH__` OR ending with `__SLASH`" rule covered only k=2 and k=7
+and missed e.g. the k=1 left-straddle + k=8 right-straddle pair
+`('X__SLASH_/_Y', 'X/_SLASH___Y')` (both flatten to
+`'X__SLASH___SLASH___Y'`). See `flatten_target_path` docstring's
+Algebra section for the proof of correctness.
 """
 from __future__ import annotations
 
@@ -84,6 +97,20 @@ STALE_THRESHOLD_S: float = 180.0
 
 #: Filename token that stands in for "/" in target paths.
 _SLASH_MARKER: str = "__SLASH__"
+
+#: Set of k in 1..len(_SLASH_MARKER)-1 for which the marker overlaps itself
+#: when shifted by k positions, i.e. ``_SLASH_MARKER[k:] == _SLASH_MARKER[:len-k]``.
+#: Required for the right-straddle injectivity guard in `flatten_target_path`:
+#: a non-first component starting with ``_SLASH_MARKER[-k:]`` for any k in
+#: this set would cause a second (non-canonical) marker occurrence to appear
+#: starting at offset k INSIDE the inserted marker (see flatten's docstring
+#: Algebra section). Computed eagerly at module load so the validator is
+#: O(num-self-overlaps) rather than O(marker-len). For ``__SLASH__`` this is
+#: exactly {7, 8}.
+_SLASH_MARKER_SELF_OVERLAP_KS: tuple[int, ...] = tuple(
+    k for k in range(1, len(_SLASH_MARKER))
+    if _SLASH_MARKER[k:] == _SLASH_MARKER[: len(_SLASH_MARKER) - k]
+)
 
 #: Required keys in a well-formed lockfile JSON. Anything missing → malformed.
 _REQUIRED_KEYS = frozenset(
@@ -201,22 +228,54 @@ def flatten_target_path(target_path: str) -> str:
     `flatten("a__SLASH__b/c")` and `flatten("a/b/c")` would otherwise collide
     on the same basename (R1 M1 — injectivity).
 
-    Also refuses inputs where any component ENDS with ``__SLASH`` or STARTS
-    with ``SLASH__`` (R4 M1 — boundary-straddling injectivity). The R1 M1
-    rule only rejected the contiguous literal ``__SLASH__`` token, but two
-    inputs whose components straddle that token across a `/` boundary still
-    collide once joined::
+    Also refuses inputs that would let an extra (non-canonical) marker
+    occurrence appear in the joined output, i.e. boundary-straddling
+    cases. R4 M1 + R5 C5-1.
 
-        flatten('a__SLASH/b')  → 'a__SLASH__SLASH__b'
-        flatten('a/SLASH__b')  → 'a__SLASH__SLASH__b'   # COLLISION
+    Algebra. Let M = ``__SLASH__`` (length 9). After ``M.join(parts)``,
+    M appears canonically at every join position. We must guarantee no
+    OTHER M appears, otherwise `str.replace` (which `unflatten` uses)
+    would re-split at the wrong position and produce a different
+    component list — non-bijection. An extra M can arise in two ways:
 
-    Neither input contains the contiguous token, yet
-    ``_SLASH_MARKER.join(parts)`` reproduces it across the join. Rejecting
-    components that touch the marker boundary closes the gap. The two
-    practical sub-checks (`startswith("SLASH__")` and `endswith("__SLASH")`)
-    cover every non-empty proper suffix/prefix of the marker because any
-    longer overlap subsumes one of these — e.g. ``_SLASH_`` ending matches
-    ``__SLASH`` ending; ``LASH__`` starting matches ``SLASH__`` starting.
+    **Left-straddle.** An extra M starts at position ``len(left) - k``
+    for some k in 1..len(M)-1. The k bytes before the join contribute
+    ``left[-k:]``, and the first 9-k bytes of the inserted marker
+    contribute ``M[:9-k]`` (always M-internal). The candidate equals M
+    iff ``left[-k:] == M[:k]``. So: ANY non-last component ending with
+    ``M[:k]`` for ANY k in 1..len(M)-1 produces a left-straddle. There
+    are exactly len(M)-1 = 8 left-straddle classes.
+
+    **Right-straddle.** An extra M starts at position ``len(left) + k``
+    for some k in 1..len(M)-1. The 9-k bytes inside the inserted marker
+    contribute ``M[k:]``, and the next k bytes are ``right[:k]``. The
+    candidate equals M iff (a) ``M[k:] == M[:9-k]`` (self-overlap of M
+    at offset k) AND (b) ``right[:k] == M[9-k:]``. For M=``__SLASH__``
+    the self-overlap set is exactly {7, 8}:
+
+        k=7: M[7:]='__'      == M[:2]='__'       → right must start with M[2:]='SLASH__'
+        k=8: M[8:]='_'       == M[:1]='_'        → right must start with M[1:]='_SLASH__'
+
+    No other k has self-overlap (k=1..6 fail because M[k:] starts with a
+    non-underscore character while M[:9-k] starts with `_`). So there
+    are exactly 2 right-straddle classes for this marker.
+
+    R4 covered the k=2 left-straddle (`SLASH__` startswith — wrong
+    direction, captured the k=7 right-straddle by coincidence) and the
+    k=7 left-straddle (`__SLASH` endswith). R5 C5-1 used the k=1
+    left-straddle (`'X__SLASH_/_Y'`: left ends with `_`) paired with
+    the k=8 right-straddle (`'X/_SLASH___Y'`: right starts with
+    `_SLASH__`). Both prior reviews missed at least one class. The
+    enumeration below covers all 8 left-straddle classes plus the 2
+    right-straddle classes — 10 checks total per applicable position —
+    and is bijective by construction.
+
+    Real-path note. Pure leading-underscore basenames like ``_impl.py``
+    start with M[8:]='_' (one char) but NOT with M[1:]='_SLASH__' (eight
+    chars), so they are accepted. Likewise ``__init__.py`` starts with
+    M[7:]='__' but NOT with M[2:]='SLASH__'. Real Kalshi paths
+    (``bot/_impl.py``, ``bot/scanner/__init__.py``, ``agent_docs/*``,
+    ``tests/*``, ``kb/decisions/*``) all pass.
 
     Refuses NUL bytes and other ASCII control chars, which would crash inside
     `os.open` with `ValueError: embedded null byte` (R1 M2).
@@ -245,16 +304,52 @@ def flatten_target_path(target_path: str) -> str:
         raise ValueError(f"empty path component in {target_path!r}")
     if any(p in (".", "..") for p in parts):
         raise ValueError(f"traversal not allowed: {target_path!r}")
-    # R4 M1 — reject components whose suffix/prefix would straddle the
-    # _SLASH_MARKER across a `/` boundary in the joined output. Without
-    # this guard, `flatten('a__SLASH/b')` and `flatten('a/SLASH__b')` both
-    # yield `'a__SLASH__SLASH__b'` and unflatten is non-bijective.
-    for comp in parts:
-        if comp.endswith("__SLASH") or comp.startswith("SLASH__"):
-            raise ValueError(
-                f"path component {comp!r} straddles slash-marker boundary "
-                f"in {target_path!r}"
-            )
+    # R4 M1 + R5 C5-1 — reject boundary-straddling inputs that would let
+    # `unflatten` recover a DIFFERENT component list than the one we joined.
+    # Algebra (see docstring): there are exactly 8 left-straddle classes
+    # (k=1..8: component ending with M[:k]) plus 2 right-straddle classes
+    # (k=7,8: component starting with M[k:] where M has self-overlap at k;
+    # i.e. M[7:]==M[:2] and M[8:]==M[:1]). The R4-era code only covered
+    # k=2 (`SLASH__` startswith → equiv. k=7 right-straddle) and k=7
+    # (`__SLASH` endswith → k=7 left-straddle) and missed all the rest.
+    # Specifically R5 C5-1 demonstrated:
+    #     flatten('X__SLASH_/_Y') → 'X__SLASH___SLASH___Y'  (k=1 L-straddle)
+    #     flatten('X/_SLASH___Y') → 'X__SLASH___SLASH___Y'  (k=8 R-straddle)
+    # which both produce the same flat string under R4. The enumeration
+    # below covers every class so unflatten is bijective on the accepted
+    # set.
+    marker_len = len(_SLASH_MARKER)
+    # Right-straddle k values: those where the marker overlaps itself when
+    # shifted by k. Computed at module-import time via the constant below
+    # (_SLASH_MARKER_SELF_OVERLAP_KS); inlined here for locality.
+    self_overlap_ks = _SLASH_MARKER_SELF_OVERLAP_KS
+    for i, comp in enumerate(parts):
+        # Left-straddle: only meaningful if this comp has a following
+        # sibling (otherwise there's no inserted marker to its right).
+        if i < len(parts) - 1:
+            for k in range(1, marker_len):
+                if comp.endswith(_SLASH_MARKER[:k]):
+                    raise ValueError(
+                        f"path component {comp!r} ends with marker prefix "
+                        f"{_SLASH_MARKER[:k]!r} (k={k}); would reconstruct "
+                        f"slash-marker at position {len(comp)-k} of joined "
+                        f"output in {target_path!r}"
+                    )
+        # Right-straddle: only meaningful if this comp has a preceding
+        # sibling AND the marker has self-overlap at the relevant k.
+        if i > 0:
+            for k in self_overlap_ks:
+                # right must start with M[(marker_len-k):], which is the
+                # last k chars of the marker.
+                required_prefix = _SLASH_MARKER[marker_len - k:]
+                if comp.startswith(required_prefix):
+                    raise ValueError(
+                        f"path component {comp!r} starts with marker "
+                        f"suffix {required_prefix!r} (k={k} self-overlap); "
+                        f"would reconstruct slash-marker at position "
+                        f"<len-of-preceding>+{k} of joined output in "
+                        f"{target_path!r}"
+                    )
     return _SLASH_MARKER.join(parts)
 
 

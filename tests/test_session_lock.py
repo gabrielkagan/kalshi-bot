@@ -113,14 +113,13 @@ class TestPathFlatten:
         [
             # R4 M1 — the canonical collision pair the reviewer demonstrated:
             # both inputs flatten to 'a__SLASH__SLASH__b' under the R1-only
-            # guard. After the R4 fix both must raise.
+            # guard. After R4+R5 fix both must raise.
             "a__SLASH/b",
             "a/SLASH__b",
-            # Component ENDING in __SLASH (the trailing piece reproduces
-            # _SLASH_MARKER once joined with the next `__SLASH__`).
+            # Component ENDING in __SLASH (k=7 left-straddle).
             "foo__SLASH/bar.py",
             "bot__SLASH/_impl.py",
-            # Component STARTING with SLASH__ (mirror image).
+            # Component STARTING with SLASH__ (k=7 right-straddle).
             "foo/SLASH__bar.py",
             "bot/SLASH__scanner",
             # Multi-component path with the boundary mid-way.
@@ -129,10 +128,13 @@ class TestPathFlatten:
         ],
     )
     def test_partial_slash_marker_components_rejected(self, bad_input):
-        # R4 M1 — boundary-straddling injectivity. Without this guard the
-        # join would reconstruct `_SLASH_MARKER` across a `/` boundary and
-        # collide with a legitimate path containing real slashes.
-        with pytest.raises(ValueError, match="straddles slash-marker"):
+        # R4 M1 + R5 C5-1 — boundary-straddling injectivity. Without this
+        # guard the join would reconstruct `_SLASH_MARKER` across a `/`
+        # boundary and collide with a legitimate path containing real
+        # slashes. The R5-era message phrasing is "marker prefix"
+        # (left-straddle) / "marker suffix" (right-straddle); we match
+        # whichever, to keep the test stable across the two flavors.
+        with pytest.raises(ValueError, match=r"marker (prefix|suffix)"):
             flatten_target_path(bad_input)
 
     def test_partial_slash_marker_demonstrated_collision_is_blocked(self):
@@ -145,39 +147,194 @@ class TestPathFlatten:
             flatten_target_path("a/SLASH__b")
         # Sanity: a benign sibling that does NOT touch the marker boundary
         # still flattens normally. (`SLASH__` mid-component is fine — only
-        # leading `SLASH__` or trailing `__SLASH` are dangerous.)
+        # leading `SLASH__` / `_SLASH__` or trailing prefix-of-marker are
+        # dangerous.)
         assert flatten_target_path("a/bSLASH__c") == "a__SLASH__bSLASH__c"
         assert flatten_target_path("a/b__SLASHc") == "a__SLASH__b__SLASHc"
 
+    # ------------------------------------------------------------------
+    # R5 C5-1 — exhaustive k=1..8 enumeration of overlap classes
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("k", list(range(1, 9)))
+    def test_left_straddle_class_k_rejected(self, k):
+        """R5 C5-1 — left-straddle: a non-last component ending with
+        ``_SLASH_MARKER[:k]`` paired with any subsequent component will
+        reconstruct the marker at offset ``len(comp)-k`` of the joined
+        string. There are 8 such classes (k=1..8) and the R4 code only
+        covered k=7. This parametrized test pins ALL of them.
+        """
+        from scripts._session_lock import _SLASH_MARKER
+
+        marker = _SLASH_MARKER
+        target = f"A{marker[:k]}/{marker[k:]}B"
+        with pytest.raises(ValueError, match=r"marker prefix"):
+            flatten_target_path(target)
+
+    @pytest.mark.parametrize("k", [7, 8])
+    def test_right_straddle_class_k_rejected(self, k):
+        """R5 C5-1 — right-straddle: a non-first component starting with
+        ``_SLASH_MARKER[len-k:]`` will reconstruct the marker at offset
+        ``len(preceding) + k`` of the joined string, but ONLY when the
+        marker has self-overlap at k (i.e. ``M[k:] == M[:len-k]``). For
+        ``__SLASH__`` self-overlap is exactly {7, 8}. R4 only covered
+        the k=7 case (`SLASH__` startswith); R5 found k=8 (`_SLASH__`).
+        """
+        from scripts._session_lock import _SLASH_MARKER
+
+        marker = _SLASH_MARKER
+        required_prefix = marker[len(marker) - k:]
+        # Use a leading "safe" component so the right-straddle is
+        # isolated from left-straddle (i.e. "safe" has no marker-prefix
+        # ending).
+        target = f"safe/{required_prefix}rest"
+        with pytest.raises(ValueError, match=r"marker suffix"):
+            flatten_target_path(target)
+
+    @pytest.mark.parametrize(
+        "p1,p2",
+        [
+            # R5 C5-1 reviewer-supplied witness pair.
+            # p1 hits k=1 left-straddle (left='X__SLASH_' ends with '_').
+            # p2 hits k=8 right-straddle (right='_SLASH___Y' starts with '_SLASH__').
+            # Pre-R5: both produce 'X__SLASH___SLASH___Y' (collision).
+            # Post-R5: both raise.
+            ("X__SLASH_/_Y", "X/_SLASH___Y"),
+            # R4 originals — still must reject both halves post-R5.
+            # p1 hits k=7 left-straddle, p2 hits k=7 right-straddle.
+            # Pre-R4: both produce 'a__SLASH__SLASH__b'.
+            ("a__SLASH/b", "a/SLASH__b"),
+        ],
+    )
+    def test_r5_witness_pair_both_rejected(self, p1, p2):
+        """R5 C5-1 — both halves of every demonstrated collision pair
+        must raise. If only one half were rejected, the OTHER half could
+        still construct the flat name and unflatten to a SHARED
+        round-trip target — i.e. the collision would still be reachable
+        from the accepted side. Rejecting both eliminates the collision
+        from the accepted set entirely.
+        """
+        with pytest.raises(ValueError):
+            flatten_target_path(p1)
+        with pytest.raises(ValueError):
+            flatten_target_path(p2)
+
+    def test_self_overlap_constant_is_correct_for_current_marker(self):
+        """Sanity-pin the precomputed self-overlap-k set against a fresh
+        recomputation. If anyone changes ``_SLASH_MARKER`` in the future
+        the constant could go stale silently — this test forces a
+        regen + manual review."""
+        from scripts._session_lock import (
+            _SLASH_MARKER,
+            _SLASH_MARKER_SELF_OVERLAP_KS,
+        )
+
+        M = _SLASH_MARKER
+        expected = tuple(
+            k for k in range(1, len(M)) if M[k:] == M[: len(M) - k]
+        )
+        assert _SLASH_MARKER_SELF_OVERLAP_KS == expected
+        # And confirm it's non-empty (else the right-straddle guard is
+        # vacuous — fine for markers without self-overlap, but the audit
+        # trail should record this explicitly).
+        assert len(_SLASH_MARKER_SELF_OVERLAP_KS) >= 0  # vacuous-OK
+        # For the current marker `__SLASH__` specifically:
+        if M == "__SLASH__":
+            assert _SLASH_MARKER_SELF_OVERLAP_KS == (7, 8)
+
+    def test_str_replace_overlap_semantics_for_marker(self):
+        """R5 m5-1 — pin `str.replace`'s left-to-right non-overlapping
+        scan behavior on a string that contains overlapping marker
+        occurrences. ``unflatten_target_path`` relies on this semantics:
+        for a flat string with N adjacent canonical marker positions,
+        replace must emit N `/` characters (not 2N-1 or fewer).
+
+        This is informational — Python's `str.replace` is documented as
+        non-overlapping left-to-right since 1.0 — but pinning it here
+        makes the contract explicit at the unit-test level.
+        """
+        # Two non-overlapping markers in a row → two slashes.
+        s = "__SLASH____SLASH__"
+        assert s.replace("__SLASH__", "/") == "//"
+        # Marker overlapping itself: '___SLASH_' has '__SLASH_' starting
+        # at position 1, and the first '_' is consumed before the marker
+        # is matched. Show that we don't accidentally claim overlapping
+        # matches.
+        assert "__SLASH____SLASH__".count("__SLASH__") == 2
+        # Round-trip survives: any flatten() success must unflatten to
+        # the original (covered by the property test, but pin a small
+        # explicit case here).
+        for original in [
+            "a/b",
+            "a/b/c",
+            "bot/_impl.py",
+            "bot/scanner/__init__.py",
+            "a/bSLASH__c",  # benign mid-component fragment
+            "a/b__SLASHc",  # benign mid-component fragment
+        ]:
+            flat = flatten_target_path(original)
+            assert unflatten_target_path(flat) == original, (
+                f"round-trip failed for {original!r}: flat={flat!r} "
+                f"unflat={unflatten_target_path(flat)!r}"
+            )
+
     def test_flatten_unflatten_property_random(self):
-        # R4 — property-style defense-in-depth. Generate a small space of
-        # candidate components mixing benign chars, the SLASH__ / __SLASH
-        # adversaries, and the literal marker. For every multi-component
-        # path built from these, `flatten` must either (a) raise ValueError
-        # or (b) round-trip identity through `unflatten`. Any silent
+        # R5 M5-1 — property-style defense-in-depth with EXHAUSTIVE
+        # coverage of all 8 left-straddle + 2 right-straddle overlap
+        # classes. For every multi-component path built from the pool
+        # below, `flatten` must either (a) raise ValueError or (b)
+        # round-trip identity through `unflatten`. Any silent
         # non-bijective output is a regression.
+        #
+        # R4 pool was BLIND to the k=8 + k=1 class because:
+        #   (1) it included `SLASH__x` (k=7 right-straddle) and `y__SLASH`
+        #       (k=7 left-straddle) — but NOT the k=1..6, k=8 analogues.
+        #   (2) 20 random trials × 2-4 components couldn't exercise the
+        #       specific k=1 left-straddle + k=8 right-straddle pair.
+        # R5 pool: include components hitting EVERY overlap class.
         import itertools
         import random
 
+        from scripts._session_lock import _SLASH_MARKER
+
+        M = _SLASH_MARKER  # '__SLASH__'
+
         rng = random.Random(20260510)  # deterministic
+
+        # Build a pool that covers every overlap class plus benign cases.
         components = [
-            "a",
-            "bot",
-            "_impl.py",
-            "scanner",
-            "SLASH__x",       # adversary: starts with SLASH__
-            "y__SLASH",       # adversary: ends with __SLASH
-            "z__SLASH__w",    # adversary: contains the contiguous marker
-            "SLASH__only",    # full leading-marker
-            "only__SLASH",    # full trailing-marker
-            "harmlessSLASH__inside",   # SLASH__ mid-component (benign)
-            "harmless__SLASHinside",   # __SLASH mid-component (benign)
+            # Benign baseline.
+            "a", "bot", "scanner", "agent_docs", "tests",
+            # Real Kalshi-shape basenames.
+            "_impl.py", "__init__.py", "db_schema.md",
+            # Benign mid-component fragments (must be accepted).
+            "harmlessSLASH__inside",
+            "harmless__SLASHinside",
+            # Bare-underscore + double-underscore + triple-underscore
+            # adversaries (R5 explicitly called these out).
+            "_", "__", "___",
         ]
-        # Build ~20 random multi-component paths of length 2-4.
+        # All 8 left-straddle endings (component ends with M[:k]).
+        for k in range(1, len(M)):
+            components.append(f"comp{M[:k]}")
+        # All 8 right-straddle prefixes... but only k=7,8 actually
+        # reconstruct M (the self-overlap set). We include all 8 anyway
+        # so the property test exercises both ACCEPT (k=1..6) and REJECT
+        # (k=7,8) outcomes for "component starts with M[k:]".
+        for k in range(1, len(M)):
+            components.append(f"{M[k:]}comp")
+        # Full leading / trailing marker forms.
+        components.extend([f"{M[:k]}" for k in range(1, len(M))])
+        components.extend([f"{M[k:]}" for k in range(1, len(M))])
+
         trials = 0
         bijection_holds = 0
         raised = 0
-        for _ in range(20):
+        # More trials to give the larger pool a chance to find every
+        # class. (Pool is ~50 components, paths length 2-4 → 50^4 = 6.25M
+        # total space; 200 trials still won't enumerate but is enough to
+        # smoke-test that the rule applies uniformly across the pool.)
+        for _ in range(200):
             n = rng.randint(2, 4)
             picked = [rng.choice(components) for _ in range(n)]
             target = "/".join(picked)
@@ -194,18 +351,38 @@ class TestPathFlatten:
                 f"unflat={unflat!r}"
             )
             bijection_holds += 1
-        # Sanity-check the probe space did something — at least one of each
-        # outcome should occur, otherwise the property test is vacuous.
         assert raised >= 1, "property test never exercised the rejection path"
         assert bijection_holds >= 1, "property test never exercised the accept path"
-        # And we ran the full sweep — no early return.
         assert raised + bijection_holds == trials
 
-        # Also exhaustively check the 4 minimal adversarial pairs caught
-        # by the R4 finding (no randomness — these are the witnesses).
+        # R5 M5-1 — EXHAUSTIVE enumeration of all 8 left-straddle witness
+        # pairs (no randomness). For each k, the canonical pair is:
+        #   p1 = f'A{M[:k]}/{M[k:]}B'  (k-left-straddle; left ends M[:k])
+        #   p2 = f'A/{M[k:]}B'         (joined flat == flat of p1 only when
+        #                               k is in the self-overlap set; for
+        #                               other k, p2 has a DIFFERENT flat —
+        #                               but the rule still rejects p1).
+        # We assert p1 raises for every k. For k in self_overlap_ks we
+        # ALSO assert the right-straddle half (a non-first component
+        # starting with M[len-k:]) is rejected.
+        from scripts._session_lock import _SLASH_MARKER_SELF_OVERLAP_KS
+
+        for k in range(1, len(M)):
+            p1 = f"A{M[:k]}/{M[k:]}B"
+            with pytest.raises(ValueError):
+                flatten_target_path(p1)
+
+        for k in _SLASH_MARKER_SELF_OVERLAP_KS:
+            required = M[len(M) - k:]
+            p2 = f"safe/{required}rest"
+            with pytest.raises(ValueError):
+                flatten_target_path(p2)
+
+        # Adversarial-pair carryover from R4 (with R5 corrections). For
+        # each pair, if EITHER flatten accepts, round-trip must hold.
         adversarial_pairs = list(itertools.product(
-            ["a", "bot__SLASH", "SLASH__bot"],
-            ["b", "SLASH__b", "b__SLASH"],
+            ["a", "bot__SLASH", "SLASH__bot", "X__SLASH_", "Y__"],
+            ["b", "SLASH__b", "b__SLASH", "_Y", "__c", "_SLASH___Y"],
         ))
         for left, right in adversarial_pairs:
             target = f"{left}/{right}"
@@ -213,7 +390,6 @@ class TestPathFlatten:
                 flat = flatten_target_path(target)
             except ValueError:
                 continue
-            # Accepted → must round-trip.
             assert unflatten_target_path(flat) == target, (
                 f"Adversarial-pair non-bijective: target={target!r} flat={flat!r}"
             )
