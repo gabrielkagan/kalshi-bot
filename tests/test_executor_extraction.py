@@ -565,15 +565,16 @@ def test_raw_api_journal_relocated_to_bot_helpers():
 
 def test_raw_api_journal_uses_public_name_in_leaf_module():
     """The function in bot/helpers/raw_api_journal.py is named `append_raw_api_journal`
-    (public, no underscore) — clean leaf-module API. The L81 underscore alias is applied
-    at the consumer site (bot/_impl.py for SettlementTracker callers, until Bit 9.2)."""
+    (public, no underscore) — clean leaf-module API. Post-Bit-9.2: both extracted
+    consumer modules (bot/executor.py + bot/settlement.py) import the public name
+    directly; the L81 alias-import in bot/_impl.py is RETIRED (zero callers remain)."""
     src = RAW_API_JOURNAL_PY.read_text()
     assert re.search(r"^def append_raw_api_journal\(", src, re.MULTILINE), (
         "bot/helpers/raw_api_journal.py missing `def append_raw_api_journal(`"
     )
     assert re.search(r"^def _append_raw_api_journal\(", src, re.MULTILINE) is None, (
         "bot/helpers/raw_api_journal.py uses underscore-prefixed name; should be public "
-        "`append_raw_api_journal` (the L81 alias is applied at the bot/_impl.py consumer site)"
+        "`append_raw_api_journal`"
     )
 
 
@@ -594,24 +595,27 @@ def test_executor_imports_append_raw_api_journal_explicitly():
     )
 
 
-def test_bot_impl_uses_l81_alias_import():
-    """bot/_impl.py replaces the local `def _append_raw_api_journal` with an L81 alias-import.
+def test_bot_impl_does_NOT_have_l81_alias_import_post_bit_9_2():
+    """Bit 9.2 atomic cleanup: the L81 alias-import RETIRED from bot/_impl.py
+    (zero callers remain — both historical SettlementTracker callers moved to
+    bot/settlement.py with the class and now use the public name `append_raw_api_journal`).
 
-    Pattern: `from bot.helpers.raw_api_journal import append_raw_api_journal as _append_raw_api_journal`
-
-    Why L81: SettlementTracker callers at bot/_impl.py:6413 + 6655 still reference the
-    underscore-prefixed name; the alias keeps those call sites working byte-identical until
-    Bit 9.2 retires them. Also keeps bot._impl.__dict__ snapshot stable per public_api.json.
+    Pre-Bit-9.2 this test asserted the alias was PRESENT (positive pin). Bit 9.2
+    flipped it to a negative pin in lock-step with the call-site retirement.
+    See tests/test_settlement_extraction.py::test_l81_alias_import_dropped_from_bot_impl
+    for the canonical Bit-9.2 negative pin (this duplicate exists for symmetry
+    with the broader executor_extraction surface).
     """
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Sprint 9 Bit 9.3 final form)")
     src = BOT_PY.read_text()
-    assert re.search(
+    assert not re.search(
         r"from bot\.helpers\.raw_api_journal import append_raw_api_journal as _append_raw_api_journal",
         src,
     ), (
-        "bot/_impl.py missing the L81 alias-import "
-        "`from bot.helpers.raw_api_journal import append_raw_api_journal as _append_raw_api_journal`"
+        "bot/_impl.py STILL has the L81 alias-import "
+        "`from bot.helpers.raw_api_journal import append_raw_api_journal as _append_raw_api_journal` "
+        "— must be retired atomically with Bit 9.2 SettlementTracker extraction (zero callers remain)."
     )
 
 

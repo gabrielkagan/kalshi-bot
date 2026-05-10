@@ -59,6 +59,12 @@ def _read_bot():
     if os.path.isfile(_executor_path):
         with open(_executor_path) as _f:
             parts.append(_f.read())
+    # Bit 9.2 (2026-05-10): SettlementTracker + discover_active_windows extracted to bot/settlement.py.
+    # Append its source so audits that grep for SettlementTracker content survive the move.
+    _settlement_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot", "settlement.py")
+    if os.path.isfile(_settlement_path):
+        with open(_settlement_path) as _f:
+            parts.append(_f.read())
     return "\n".join(parts)
 
 

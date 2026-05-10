@@ -6,20 +6,22 @@ Constructed exactly once in `MainLoop.__init__` at runtime.
 
 Bit 8.1 path-A++ (2026-05-10): the module-level singleton `_TELEGRAM`
 relocated from `bot/_impl.py` to here, alongside the class it
-references. THREE consumers reach it via `import bot.notifier as
+references. FOUR consumers reach it via `import bot.notifier as
 _telegram_state` plus `_telegram_state._TELEGRAM` module-attribute
-access:
-  - `bot/_impl.py` (line 108) — for SettlementTracker + MainLoop reads
+access (4th added in Bit 9.2 with the SettlementTracker extraction):
+  - `bot/_impl.py` (search anchor: `import bot.notifier as _telegram_state`) — for MainLoop reads only post-Bit-9.2
   - `bot/scanner/__init__.py` (search anchor: ``import bot.notifier as _telegram_state``) — for OpportunityScanner reads
   - `bot/executor.py` (Bit 9.1, 2026-05-10) — for OrderExecutor reads
     (19 read sites in the class body)
+  - `bot/settlement.py` (Bit 9.2, 2026-05-10) — for SettlementTracker reads
+    (4 read sites in the class body)
 The module-attribute access pattern (parallel to the Bit 6.3 path-B
 `_cal_state._CALIBRATION_ENGINE` pattern) preserves mutation freshness
 across consumers because every reader goes through the module reference,
 NOT a captured-by-value binding. The plain `from bot.notifier import
 _TELEGRAM` form would NOT propagate runtime mutation — `MainLoop.__init__`
 writes via `_telegram_state._TELEGRAM = self.telegram` (drops the
-previous `global _TELEGRAM` declaration) and readers in all three
+previous `global _TELEGRAM` declaration) and readers in all four
 consumer modules see the rebinding immediately via the
 module-attribute lookup. The relocation closes a laundered-namespace
 coupling that would have forced ~86 `@patch("bot._TELEGRAM", ...)`

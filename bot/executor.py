@@ -37,6 +37,10 @@ Path-A++ relocations applied in this Bit:
     (this module reads via the explicit-import line below using the
     public name `append_raw_api_journal`; no late-binding helper, no
     `executor-no-impl-toplevel` `.importlinter` carve-out.)
+    Bit 9.2 (2026-05-10) RETIRED the parallel L81 alias-import in
+    bot/_impl.py — the SettlementTracker callers moved to bot/settlement.py
+    with the class and now use the public name directly. bot/_impl.py
+    has zero `_append_raw_api_journal` callers post-Bit-9.2.
 
 Bug fix (closes ticket 86b9vn9r5): 4 sites in OrderExecutor body that
 called `OpportunityScanner._best_ask_depth(...)` (latent AttributeError —

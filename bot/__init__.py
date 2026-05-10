@@ -23,7 +23,8 @@ of `bot._BREAKER_REGISTRY` etc. work without per-caller updates. Note:
 the `bot.X` proxy. Note: `_TELEGRAM` lives in `bot.notifier` post-Bit-8.1
 path-A++ (2026-05-10), NOT in `bot._impl` — `bot._TELEGRAM` no longer
 resolves via the proxy. Reach via `bot.notifier._TELEGRAM` (or via the
-`_telegram_state._TELEGRAM` alias inside bot/_impl.py + bot/scanner/__init__.py).
+`_telegram_state._TELEGRAM` alias inside bot/_impl.py + bot/scanner/__init__.py
++ bot/executor.py + bot/settlement.py — 4 consumers post-Bit-9.2).
 
 Also note: `StateManager` lives in `bot.state` post-Bit-7.1 (2026-05-10),
 NOT in `bot._impl`. Reach it via `bot.StateManager` (proxy chain:
@@ -42,8 +43,8 @@ refactored to drop `bot_globals: dict` — the closure now imports its 11
 dependent names directly from `bot.constants` + `config` inside the
 function body (mirrors path-A++).
 
-Bit 8.1 (path-A++, 2026-05-10): `OpportunityScanner` lives in
-`bot.scanner` post-extraction, NOT in `bot._impl`. Reach via
+Bit 8.1 (path-A++, 2026-05-10) — post-Bit-9.2 state: `OpportunityScanner`
+lives in `bot.scanner` post-extraction, NOT in `bot._impl`. Reach via
 `bot.OpportunityScanner` (proxy chain: `bot.X` → `bot._impl.X` →
 `bot.scanner.X` via the line-115 re-export `from bot.scanner import
 OpportunityScanner`) or `bot.scanner.OpportunityScanner` (direct). The
@@ -52,12 +53,14 @@ OpportunityScanner`) or `bot.scanner.OpportunityScanner` (direct). The
 `_convert_orderbook_fp`, `_window_timeslot`) called from OrderExecutor
 (12 sites) + MainLoop (1 site) all resolve via the re-export. Bit 8.1
 also relocated the `_TELEGRAM` module-level singleton from `bot._impl`
-to `bot.notifier` (alongside the `TelegramNotifier` class). Both
-`bot._impl` and `bot.scanner` reach it via `import bot.notifier as
-_telegram_state` plus `_telegram_state._TELEGRAM` module-attribute
-access — preserves mutation freshness across consumers (parallel to
-the Bit 6.3 path-B `_cal_state._CALIBRATION_ENGINE` pattern). Tests
-using `patch.object(bot, "_TELEGRAM", ...)` were retargeted to
+to `bot.notifier` (alongside the `TelegramNotifier` class). All four of
+`bot._impl` (MainLoop reads only post-Bit-9.2), `bot.scanner`,
+`bot.executor` (Bit 9.1, 2026-05-10), and `bot.settlement` (Bit 9.2,
+2026-05-10) reach it via `import bot.notifier as _telegram_state` plus
+`_telegram_state._TELEGRAM` module-attribute access — preserves mutation
+freshness across consumers (parallel to the Bit 6.3 path-B
+`_cal_state._CALIBRATION_ENGINE` pattern). Tests using
+`patch.object(bot, "_TELEGRAM", ...)` were retargeted to
 `patch.object(bot.notifier, "_TELEGRAM", ...)` in the same atomic
 commit.
 
@@ -75,12 +78,32 @@ cycle (the 7 OpportunityScanner staticmethod call sites in OrderExecutor
 go through it; a future Sprint 10 sibling-reorg Bit may relocate those
 2 staticmethods to `bot/helpers/orderbook.py` to eliminate the helper
 entirely). `_append_raw_api_journal` relocated path-A++ to
-`bot/helpers/raw_api_journal.py` (3 callers — 1 in OrderExecutor + 2 in
-SettlementTracker — eliminates the late-binding need that would have
-required new `.importlinter` carve-outs in both Bit 9.1 and Bit 9.2).
-4 latent `OpportunityScanner._best_ask_depth(...)` AttributeError sites
-in OrderExecutor body fixed (closes ticket 86b9vn9r5). Sprint 9 Bit 9.1
-ships here.
+`bot/helpers/raw_api_journal.py`. 4 latent
+`OpportunityScanner._best_ask_depth(...)` AttributeError sites in
+OrderExecutor body fixed (closes ticket 86b9vn9r5).
+
+Bit 9.2 (path-A++, 2026-05-10): `SettlementTracker` lives in
+`bot.settlement` post-extraction, NOT in `bot._impl`. Reach via
+`bot.SettlementTracker` (proxy chain: `bot.X` → `bot._impl.X` →
+`bot.settlement.X` via the re-export `from bot.settlement import
+SettlementTracker, discover_active_windows`) or
+`bot.settlement.SettlementTracker` (direct). `discover_active_windows()`
+also lives in `bot.settlement` (bundled with SettlementTracker per
+master plan Phase Z+AA decision; settlement-adjacent in source layout,
+sole caller is MainLoop._refresh_active_windows). The L81 alias-import
+for `_append_raw_api_journal` in bot/_impl.py:285 RETIRED atomically —
+both historical SettlementTracker callers moved to bot.settlement with
+the public name `append_raw_api_journal`; bot/_impl.py has zero callers
+post-Bit-9.2. The `_telegram_state._TELEGRAM` consumer enumeration
+extends to 4 consumers (bot/_impl.py for MainLoop reads + bot/scanner +
+bot/executor + bot/settlement). No new `.importlinter` carve-out
+needed — clean leaf extraction; net contracts stays at 5. Sprint 9 ⅔
+done after Bit 9.2; Bit 9.3 (MainLoop → bot/main_loop.py) is the last
+documented Sprint 9 leaf. Per master plan, Bit 9.3-ii ultimately deletes
+bot/_impl.py; the residual OrderFlowEngine (~122 LOC) + KalshiOrderFlowTracker
+(~243 LOC) classes still live in bot/_impl.py post-Bit-9.2 and need to
+be relocated either as part of Bit 9.3 or as a Sprint 9 / Sprint 10
+follow-up — surface this scope question when planning Bit 9.3.
 
 Caching the `bot._impl` module reference is safe: the module object itself
 is stable; mutations land on its `__dict__` which `getattr`/`setattr`

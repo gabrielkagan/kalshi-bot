@@ -8,11 +8,12 @@ Path-A++ extraction (NOT byte-for-byte): in-Bit refactor of bot/_impl.py
 to relocate the `_TELEGRAM` module-level singleton to bot/notifier.py
 (where it logically belongs since Bit 4.2). The laundered-namespace
 coupling smell is fixed in-Bit per the modularization strategic goal.
-All three of bot/_impl.py, bot/scanner/__init__.py (this module), and
-bot/executor.py (Bit 9.1, 2026-05-10) reach `_TELEGRAM` via the
-`_telegram_state` module-attribute access pattern (mirrors Bit 6.3 path-B
-`_cal_state._CALIBRATION_ENGINE`); writes by `MainLoop.__init__` propagate
-to all readers without alias-import freshness loss.
+All four of bot/_impl.py (MainLoop reads only post-Bit-9.2),
+bot/scanner/__init__.py (this module), bot/executor.py (Bit 9.1,
+2026-05-10), and bot/settlement.py (Bit 9.2, 2026-05-10) reach `_TELEGRAM`
+via the `_telegram_state` module-attribute access pattern (mirrors Bit 6.3
+path-B `_cal_state._CALIBRATION_ENGINE`); writes by `MainLoop.__init__`
+propagate to all readers without alias-import freshness loss.
 
 Cross-class coupling (post-Sprint-9-Bit-9.1):
 - OrderExecutor lives in bot.executor (Bit 9.1, 2026-05-10) — direct
@@ -1524,6 +1525,18 @@ class OpportunityScanner:
             _window_start = time.perf_counter()
             asset = window["asset"]
             _pt = window.get("product_type")
+
+            # Bit 9.2 ride-along (ticket 86b9vppn3): initialize best_ask
+            # at iteration start so the low_probability_15m insert_rejection
+            # branch (search anchor: `"low_probability_15m"`) doesn't
+            # UnboundLocalError when the cal_prob < min_prob_needed
+            # early-return fires before the orderbook fetch (search anchor:
+            # `best_ask = self._best_yes_ask_cents(ob_data)`) sets best_ask.
+            # Predates Bit 8.1 per git blame — the latent bug shipped April
+            # 2026 in the phase-1/prevention-3 commit that added the
+            # low_probability_15m insert_rejection branch but didn't
+            # initialize best_ask above the early-return.
+            best_ask = None
 
             # Productivity heartbeat — set as soon as scan() reaches a 15M
             # window iteration body. Decoupled from DB writes because dedup

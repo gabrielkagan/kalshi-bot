@@ -33,13 +33,16 @@ top-level import clean.
 
 `_TELEGRAM` is the live `TelegramNotifier` singleton, owned by
 `bot/notifier.py`. Reads here use `_telegram_state._TELEGRAM` after
-`import bot.notifier as _telegram_state` at `bot/scanner/__init__.py:302`.
+`import bot.notifier as _telegram_state` near the top of `bot/scanner/__init__.py`
+(search anchor: `import bot.notifier as _telegram_state`).
 Plain `from bot.notifier import _TELEGRAM` would capture the binding
 by value at import time and silently freeze at `None` when
 `MainLoop.__init__` later mutates the singleton (L83). Likewise
 `from bot import notifier as _telegram_state` triggers
 `_BotProxy.__getattr__` → circular `ImportError` (L84). The
-canonical form is `import bot.notifier as _telegram_state`.
+canonical form is `import bot.notifier as _telegram_state`. Post-Bit-9.2
+this pattern has 4 consumers (bot/_impl.py for MainLoop reads +
+bot/scanner/__init__.py + bot/executor.py + bot/settlement.py).
 
 ### 3. `_cal_state._CALIBRATION_ENGINE` (path-B from Bit 6.3)
 

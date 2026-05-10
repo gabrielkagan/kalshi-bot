@@ -554,11 +554,13 @@ SCANNER_PY = REPO_ROOT / "bot" / "scanner" / "__init__.py"
 
 def _consumer_classdef(class_name):
     """Find a ClassDef by name, searching bot/_impl.py + bot/scanner/__init__.py
-    + bot/executor.py (Scanner moved out per Bit 8.1; OrderExecutor moved out per
-    Bit 9.1; SettlementTracker → bot/settlement.py per Bit 9.2; MainLoop →
-    bot/main_loop.py per Bit 9.3 — extend this tuple as each Bit ships)."""
+    + bot/executor.py + bot/settlement.py (Scanner moved out per Bit 8.1;
+    OrderExecutor moved out per Bit 9.1; SettlementTracker moved out per
+    Bit 9.2; MainLoop → bot/main_loop.py per Bit 9.3 — extend this tuple
+    as each Bit ships)."""
     EXECUTOR_PY = REPO_ROOT / "bot" / "executor.py"
-    for path in (BOT_PY, SCANNER_PY, EXECUTOR_PY):
+    SETTLEMENT_PY = REPO_ROOT / "bot" / "settlement.py"
+    for path in (BOT_PY, SCANNER_PY, EXECUTOR_PY, SETTLEMENT_PY):
         if not path.is_file():
             continue
         tree = ast.parse(path.read_text())
@@ -587,16 +589,19 @@ def test_consumer_class_annotates_state_manager_in_bot_impl(class_name):
 
 def test_only_three_consumers_annotate_state_manager():
     """L33 negative pin: exactly 3 module-level classes (across bot/_impl.py +
-    bot/scanner/__init__.py + bot/executor.py) annotate `state: StateManager`.
-    Catches accidental drift if a new consumer is added without explicit knowledge.
+    bot/scanner/__init__.py + bot/executor.py + bot/settlement.py) annotate
+    `state: StateManager`. Catches accidental drift if a new consumer is
+    added without explicit knowledge.
 
     Bit 9.1 (2026-05-10) extended walk to bot/executor.py — OrderExecutor moved
-    out of bot/_impl.py. Sister Bits will move SettlementTracker (Bit 9.2 →
-    bot/settlement.py) and MainLoop (Bit 9.3 → bot/main_loop.py); extend the
-    walk in lock-step with each."""
+    out of bot/_impl.py. Bit 9.2 (2026-05-10) extended walk to bot/settlement.py
+    — SettlementTracker moved out. Bit 9.3 will move MainLoop → bot/main_loop.py;
+    extend the walk in lock-step (note: MainLoop does NOT annotate state, so
+    Bit 9.3 may not require a walk extension here)."""
     EXECUTOR_PY = REPO_ROOT / "bot" / "executor.py"
+    SETTLEMENT_PY = REPO_ROOT / "bot" / "settlement.py"
     matches = []
-    for path in (BOT_PY, SCANNER_PY, EXECUTOR_PY):
+    for path in (BOT_PY, SCANNER_PY, EXECUTOR_PY, SETTLEMENT_PY):
         if not path.is_file():
             continue
         tree = ast.parse(path.read_text())

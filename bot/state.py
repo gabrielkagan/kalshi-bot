@@ -60,9 +60,10 @@ Forbidden-imports (per tests/test_state_extraction.py::STATE_FORBIDDEN_IMPORTS):
   numpy, scipy, torch, sklearn, pandas — strict ban. StateManager is pure
   stdlib + sqlite3.
 
-The `discover_active_windows()` module-level function (bot/_impl.py:19049-19127
-pre-extraction) DOES NOT MOVE with this Bit — it has zero StateManager refs
-and ships with MainLoop in Bit 9.3.
+The `discover_active_windows()` module-level function did not move with
+StateManager (Bit 7.1). Post-Bit-9.2 (2026-05-10) it lives in
+`bot/settlement.py` (search anchor: `def discover_active_windows`),
+bundled with SettlementTracker per master plan Phase Z+AA bundle decision.
 """
 from __future__ import annotations
 

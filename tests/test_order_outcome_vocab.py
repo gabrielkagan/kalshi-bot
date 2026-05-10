@@ -31,14 +31,16 @@ ALLOWED_OUTCOMES = {
 
 BOT_PY = pathlib.Path(__file__).resolve().parents[1] / "bot/_impl.py"
 EXECUTOR_PY = pathlib.Path(__file__).resolve().parents[1] / "bot/executor.py"
+SETTLEMENT_PY = pathlib.Path(__file__).resolve().parents[1] / "bot/settlement.py"
 # Bit 9.1 (2026-05-10): order_outcome= kwargs originate in OrderExecutor (now in
 # bot/executor.py post-extraction) — primarily the maker-cancel paths from the
-# Bit 4.1 commit `dd3b23e` that this AST guard was originally written for. We
-# walk BOTH bot/_impl.py (residual SettlementTracker + MainLoop sites) AND
-# bot/executor.py to keep the guard's coverage complete. Future Bits 9.2/9.3
-# extracting SettlementTracker / MainLoop will leave only bot/executor.py with
-# the relevant order_outcome= sites.
-SCANNED_PATHS = (BOT_PY, EXECUTOR_PY)
+# Bit 4.1 commit `dd3b23e` that this AST guard was originally written for. Bit 9.2
+# (2026-05-10): SettlementTracker moved to bot/settlement.py — extending walk
+# to that file too. We walk bot/_impl.py (residual MainLoop) + bot/executor.py
+# + bot/settlement.py to keep the guard's coverage complete. Future Bit 9.3
+# extracting MainLoop will leave only the extracted modules with the relevant
+# order_outcome= sites.
+SCANNED_PATHS = (BOT_PY, EXECUTOR_PY, SETTLEMENT_PY)
 
 
 def _enclosing_function_id_map(tree):

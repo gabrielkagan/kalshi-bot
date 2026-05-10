@@ -17,10 +17,15 @@ public name from leaking into `bot._impl.__dict__` via the
 `from bot.helpers import *` star-cascade — preserves
 `tests/contracts/public_api.json` byte-stability per L81.
 
-bot/_impl.py imports the public name with the L81 underscore alias:
-    `from bot.helpers.raw_api_journal import append_raw_api_journal as _append_raw_api_journal`
-which keeps the SettlementTracker callers at lines 6413/6655 working
-byte-identical until Bit 9.2 retires them.
+Post-Bit-9.2 (2026-05-10): both consumer classes now live in extracted
+modules. The 1 OrderExecutor caller is in `bot/executor.py` (search
+anchor: `append_raw_api_journal(`); the 2 SettlementTracker callers
+are in `bot/settlement.py` (same search anchor). Both call sites use
+the public name `append_raw_api_journal` directly — no underscore
+alias. The L81 alias-import in `bot/_impl.py:285` (the Bit 9.1
+transition device that kept SettlementTracker callers byte-identical
+between Bit 9.1 and Bit 9.2) RETIRED atomically with Bit 9.2; bot/_impl.py
+has zero callers post-Bit-9.2.
 """
 import datetime
 import json

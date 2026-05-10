@@ -35,14 +35,15 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BOT_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
+# Bit 9.2 (2026-05-10): SettlementTracker moved from bot/_impl.py to bot/settlement.py.
+SETTLEMENT_PY = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/settlement.py")
 
 
 def _find_tracker_tick() -> ast.FunctionDef:
     """Return the AST node for SettlementTracker.tick (the one with
     the SETTLEMENT_CHECK_SECONDS throttle, NOT OrderExecutor.tick)."""
-    with open(BOT_PY) as f:
+    with open(SETTLEMENT_PY) as f:
         tree = ast.parse(f.read())
     for cls in ast.walk(tree):
         if (isinstance(cls, ast.ClassDef)
@@ -52,7 +53,7 @@ def _find_tracker_tick() -> ast.FunctionDef:
                         and node.name == "tick"):
                     return node
     raise AssertionError(
-        "SettlementTracker.tick not found in bot/_impl.py")
+        "SettlementTracker.tick not found in bot/settlement.py")
 
 
 class TestTrackerTickIsThreaded(unittest.TestCase):
@@ -131,7 +132,7 @@ class TestTrackerTickIsThreaded(unittest.TestCase):
         simultaneously. Without this, a slow worker that takes
         longer than SETTLEMENT_CHECK_SECONDS would spawn duplicate
         threads each cycle."""
-        with open(BOT_PY) as f:
+        with open(SETTLEMENT_PY) as f:
             src = f.read()
         self.assertIn(
             "_worker_running", src,

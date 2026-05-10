@@ -122,6 +122,7 @@ forbidden_modules =
     bot.logger
     bot.notifier
     bot.db_writer_registry
+    bot.settlement
     bot.state
 
 # ---------------------------------------------------------------------------
