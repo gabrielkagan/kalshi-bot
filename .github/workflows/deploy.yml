@@ -32,10 +32,15 @@ jobs:
       # gate let it through.
       - name: Unit tier (Pillar 5)
         run: make test-unit
-      - name: Contract tier (Pillar 5; folds in Pillars 1+2)
-        # Pillar 1 public_api snapshot + Pillar 2 import-linter +
-        # AST guards. Make recipe gates both halves.
-        run: make test-contract
+      # Contract tier split into two distinct CI steps (ticket
+      # 86b9vgh3t). Mirrors test.yml's split — see comments there.
+      # Both halves are BLOCKING on deploy (no continue-on-error) so
+      # a contract regression aborts the VPS push regardless of
+      # which half failed.
+      - name: Contract tier — pytest
+        run: make test-contract-pytest
+      - name: Contract tier — import-linter
+        run: make test-contract-lint
       - name: Equivalence tier (Pillar 3)
         # Same fast-failing guardrail before the broad integration
         # tier. Direct pushes to main (whitepaper auto-commit, operator

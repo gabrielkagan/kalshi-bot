@@ -452,7 +452,8 @@ def _step_index_by_name(steps: list[str], name_substring: str) -> int:
 
 
 def _makefile_test_contract_invokes_lint_imports() -> bool:
-    """Verify the `test-contract` Makefile recipe invokes lint-imports.
+    """Verify the `test-contract` Makefile recipe (or its split halves)
+    invokes lint-imports.
 
     R1 M2 follow-up: when `_step_index_running_lint_imports` accepts
     the Pillar 5 indirection (workflow step says `run: make test-contract`),
@@ -461,10 +462,16 @@ def _makefile_test_contract_invokes_lint_imports() -> bool:
     drops `$(LINT_IMPORTS)` from `test-contract` would otherwise
     silently weaken the Pillar 2 contract while this test stays green.
 
+    Ticket 86b9vgh3t: `test-contract` may be the orchestrator that
+    chains `test-contract-pytest` + `test-contract-lint` via $(MAKE).
+    In that shape the orchestrator recipe contains `test-contract-lint`
+    (not `$(LINT_IMPORTS)` directly); check the split half too.
+
     Folds backslash-continuations so a multi-line `test-contract`
     recipe parses correctly. Looks for `LINT_IMPORTS` (the Make
     variable) OR `lint-imports` (direct CLI invocation) anywhere in
-    the recipe body.
+    the recipe body — either in `test-contract` itself or in the
+    `test-contract-lint` split half it chains.
     """
     makefile = REPO_ROOT / "Makefile"
     if not makefile.exists():
@@ -478,7 +485,21 @@ def _makefile_test_contract_invokes_lint_imports() -> bool:
     if not m:
         return False
     recipe = m.group(1)
-    return "LINT_IMPORTS" in recipe or "lint-imports" in recipe
+    if "LINT_IMPORTS" in recipe or "lint-imports" in recipe:
+        return True
+    # Split-form: orchestrator chains `test-contract-lint`. Walk into
+    # the split half and check it carries the actual invocation.
+    if "test-contract-lint" in recipe:
+        split_m = re.search(
+            r"^test-contract-lint:[^\n]*\n((?:\t.*\n?)+)",
+            folded,
+            re.M,
+        )
+        if not split_m:
+            return False
+        split_recipe = split_m.group(1)
+        return "LINT_IMPORTS" in split_recipe or "lint-imports" in split_recipe
+    return False
 
 
 def _step_index_running_lint_imports(steps: list[str]) -> int:
@@ -489,24 +510,42 @@ def _step_index_running_lint_imports(steps: list[str]) -> int:
     gate into the contract tier — the workflow now has a step
     `- name: Contract tier ...` whose `run: make test-contract`
     invokes lint-imports as the second half of the recipe (see
-    `Makefile::test-contract`). Both shapes are valid for the
-    Pillar 2 invariant ("layering violations are gated in CI before
-    the broad pytest"); this helper detects either.
+    `Makefile::test-contract`). Ticket 86b9vgh3t split the contract
+    tier into TWO distinct CI steps so red status maps unambiguously
+    to one half; the lint half is `run: make test-contract-lint`.
+
+    All three shapes are valid for the Pillar 2 invariant ("layering
+    violations are gated in CI before the broad pytest"); this helper
+    detects any of them.
 
     Detection is content-based, not name-based:
-      (a) `run: lint-imports` — direct invocation (Pillar 2 shape).
-      (b) `run: make test-contract` — Pillar 5 indirection where
+      (a) `run: lint-imports`            — direct invocation
+          (Pillar 2 shape).
+      (b) `run: make test-contract`      — Pillar 5 indirection where
           the Make recipe terminates with `$(LINT_IMPORTS)`. The
           accept-this-shape branch ALSO requires the Makefile recipe
           to actually invoke lint-imports (R1 M2 fix) — without
           that double-anchor, a future Makefile edit could drop
           `$(LINT_IMPORTS)` while this test stays green.
+      (c) `run: make test-contract-lint` — Ticket 86b9vgh3t split.
+          Same double-anchor: also verify the Makefile split-target
+          recipe carries the actual invocation.
     """
     for i, block in enumerate(steps):
         body = block.split("\n", 1)[1] if "\n" in block else ""
-        if "run: lint-imports" in block or "run: lint-imports" in body:
+        text = block + "\n" + body
+        if "run: lint-imports" in text:
             return i
-        if "run: make test-contract" in block or "run: make test-contract" in body:
+        # Split form (ticket 86b9vgh3t) — check FIRST because
+        # `test-contract-lint` is a prefix-superstring of
+        # `test-contract`; a bare `in` check for the orchestrator
+        # form would false-match the split form and fall into the
+        # wrong helper (which would still happen to be true here,
+        # but the explicit ordering keeps intent clear).
+        if "run: make test-contract-lint" in text:
+            if _makefile_test_contract_invokes_lint_imports():
+                return i
+        if "run: make test-contract" in text and "run: make test-contract-lint" not in text:
             if _makefile_test_contract_invokes_lint_imports():
                 return i
             # Fall through — the workflow delegates to a Make recipe
