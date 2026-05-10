@@ -358,11 +358,14 @@ def test_probability_engine_compute_corpus_numeric_with_oracle(
 
     Coverage delta vs the default-fixture snapshot: exercises the
     ``_reg_engine.calibrate(...)`` call site, the shadow temperature
-    branch, the CAL_CLAMP / CAL_CLAMP_BLEND post-hoc clamps (raw_prob <
-    0.85 + delta > 0.05), and the DISCREPANCY check (when calibrated >
-    0.93 and market < 70¢). The frozen engine's
-    ``_apply_uncertainty_shrinkage`` is deterministic because no
-    observations are loaded (``n < 50`` → ``u = 0.05``).
+    branch, the CAL_CLAMP post-hoc clamp (raw_prob < 0.70 + delta >
+    0.05), and the DISCREPANCY check (when calibrated > 0.93 and market
+    < 70¢). The frozen engine's ``_apply_uncertainty_shrinkage`` is
+    deterministic because no observations are loaded (``n < 50`` →
+    ``u = 0.05``). CAL_CLAMP_BLEND (lines 249-258) does NOT fire under
+    this fixture — 0 corpus rows land in the 0.70 ≤ raw_prob < 0.85
+    band with delta > 0.05; tracked as a known blind spot in
+    ``kb/findings/mutmut-baseline-may09.md``.
     """
     columns: Dict[str, List[float]] = {f: [] for f in _NUMERIC_FIELDS_ORACLE}
 
@@ -427,14 +430,26 @@ def test_probability_engine_compute_corpus_numeric_legacy_only(
         num_regression, probability_corpus, install_legacy_only_cal_engine):
     """Pin numeric outputs of ``compute()`` with the frozen Platt oracle
     wired into the LEGACY ``_CALIBRATION_ENGINE`` slot only —
-    ``_resolve_cal_engine`` stays at the autouse-null stub.
+    ``_resolve_cal_engine`` stays at the autouse-null stub AND
+    ``FIFTEEN_M_CALIBRATION_ENABLED`` stays at the production-default
+    False.
 
-    Coverage delta: forces the cascade past outcome 1 into the
-    ``elif _cal_cfg2.cal_eligible and _cal_state._CALIBRATION_ENGINE is
-    not None`` branch (outcome 2 — the legacy 15M code path). Rows with
-    ``cal_eligible=True`` (15M) get the frozen-Platt calibration;
-    ``cal_eligible=False`` rows (hourly / spx_hourly / weather / sports)
-    fall through to outcome 4 (passthrough).
+    **Coverage scope — corrected R1**: forces the cascade past
+    outcome 1 (registry resolver returns None) into the legacy elif at
+    line 216. The ``FIFTEEN_M_CALIBRATION_ENABLED=False`` short-circuit
+    at line 217 then forces 15m rows past outcome 2 (the learned-method
+    body at lines 218-220, structurally unreachable here) into
+    **outcome 3** — passthrough with BLR_BYPASS diagnostic (lines
+    222-230). Non-15m rows (``cal_eligible=False``) fall through to
+    outcome 4 (passthrough at lines 231-233).
+
+    Empirical: under this fixture, 248 of 303 15m rows produce
+    ``calibrated_prob == raw_prob`` exactly, the other 55 produce
+    ``calibrated_prob == min(raw_prob, dynamic_cap)``. None show the
+    frozen-Platt sigmoid signature.
+
+    For actual outcome 2 coverage, see
+    ``test_probability_engine_compute_corpus_numeric_outcome_2`` below.
 
     ``shadow_cal_prob`` is intentionally NOT included here — that field
     is populated only inside outcome 1, so under this fixture every row
@@ -484,33 +499,39 @@ def test_counterfactual_prob_corpus_numeric_with_oracle(
                          default_tolerance={"rtol": 1e-9, "atol": 0.0})
 
 
-def test_probability_engine_blr_bypass_branch_smoke(
+def test_probability_engine_passthrough_confirmation_smoke(
         probability_corpus, monkeypatch, frozen_cal_engine):
-    """Smoke test outcome 3 (BLR_BYPASS diagnostic branch).
+    """Confirm outcome 3 (BLR_BYPASS passthrough) produces the
+    ``"passthrough"`` calibration_method label for every 15m corpus
+    row when the legacy slot holds a calibrator.
 
-    This branch fires when ``_cal_cfg2.cal_eligible`` AND
-    ``_CALIBRATION_ENGINE is not None`` AND
-    ``FIFTEEN_M_CALIBRATION_ENABLED`` AND the engine's learned method is
-    NOT active. The branch logs a divergence diagnostic and returns the
-    passthrough cap value. We force this by monkeypatching
-    ``is_learned_method_active`` to return False on the frozen engine.
+    **Coverage scope — corrected R1**: under
+    ``FIFTEEN_M_CALIBRATION_ENABLED=False`` (the production default,
+    untouched here), the cascade gate at ``probability.py:217``
+    short-circuits to False regardless of
+    ``is_learned_method_active()``. So both
+    learned-method-active=True and learned-method-active=False land in
+    the same outcome-3 (BLR_BYPASS) branch. The previous
+    ``is_learned_method_active → False`` monkeypatch was therefore
+    **redundant** — it's been removed to make the test honest.
 
-    No snapshot — this test asserts only that the branch executes
-    without raising on every cal_eligible row in the corpus and that
-    the returned ``calibration_method`` is ``"passthrough"``. The branch
-    body is invariant-checked rather than numerically pinned because the
-    diagnostic ``_blr_would`` recomputation has no observable output
-    beyond a log line."""
+    What this test still does usefully: asserts the cascade does not
+    raise on every 15m corpus row and that the categorical
+    ``calibration_method`` label is consistent. Distinct from
+    ``test_probability_engine_compute_corpus_numeric_legacy_only`` —
+    that test pins NUMERIC outputs; this one is a categorical
+    smoke-check. (The diagnostic ``_blr_would`` recomputation inside
+    the branch has no observable output beyond a log line, so the
+    branch body itself is invariant-checked rather than numerically
+    pinned.)"""
     import bot.engines.calibration as _cal_state
 
-    # Force learned-method-inactive on the legacy slot. The original
-    # is_learned_method_active reads multiple attributes; monkeypatching
-    # the method itself is the surgical move.
-    monkeypatch.setattr(
-        frozen_cal_engine, "is_learned_method_active", lambda: False,
-    )
     monkeypatch.setattr(_cal_state, "_CALIBRATION_ENGINE", frozen_cal_engine, raising=True)
     # _resolve_cal_engine stays at the autouse-null stub.
+    # FIFTEEN_M_CALIBRATION_ENABLED stays at the production-default False,
+    # which short-circuits the line-217 gate and routes 15m rows to
+    # outcome 3 (passthrough + BLR_BYPASS) — same outcome as if
+    # is_learned_method_active() returned False.
 
     cal_eligible_methods = []
     for row in probability_corpus:
@@ -533,3 +554,51 @@ def test_probability_engine_blr_bypass_branch_smoke(
         f"outcome 3 should produce passthrough; got distribution: "
         f"{set(cal_eligible_methods)}"
     )
+
+
+def test_probability_engine_compute_corpus_numeric_outcome_2(
+        num_regression, probability_corpus, install_legacy_15m_cal_engine):
+    """Pin numeric outputs of ``compute()`` with
+    ``FIFTEEN_M_CALIBRATION_ENABLED`` flipped to True AND the frozen
+    Platt oracle wired into the legacy ``_CALIBRATION_ENGINE`` slot.
+
+    **First test in the harness to actually exercise outcome 2** — the
+    legacy 15M learned-method body at ``probability.py:218-220``:
+
+    ::
+
+        calibrated_prob = _cal_state._CALIBRATION_ENGINE.calibrate(
+            raw_prob, cap=dynamic_cap, seconds_to_close=seconds_remaining)
+        result["calibration_method"] = _cal_state._CALIBRATION_ENGINE.active_method
+
+    Under the production-default ``FIFTEEN_M_CALIBRATION_ENABLED=False``
+    the cascade gate at line 217 short-circuits to False and outcome 2
+    is structurally unreachable. R1 caught this — previous tests
+    claiming outcome-2 coverage actually exercised outcome 3.
+
+    Coverage delta vs ``..._legacy_only``: 15m rows now produce
+    ``calibration_method = "platt"`` (the engine's ``active_method``),
+    NOT ``"passthrough"``, and ``calibrated_prob`` reflects the frozen
+    Platt sigmoid + dynamic_cap clamp + ``_apply_uncertainty_shrinkage``
+    (n=0 observations → ``u=0.05``). Non-15m rows still take outcome 4
+    (passthrough) because ``cal_eligible=False`` for those product_types.
+
+    ``shadow_cal_prob`` is intentionally NOT included — same rationale
+    as ``..._legacy_only`` (populated only inside outcome 1)."""
+    columns: Dict[str, List[float]] = {f: [] for f in _NUMERIC_FIELDS}
+
+    for row in probability_corpus:
+        result = ProbabilityEngine.compute(
+            spot=row["spot_price"],
+            threshold=row["threshold"],
+            seconds_remaining=row["seconds_to_close"],
+            blended_rv=row["volatility"],
+            market_price_cents=row["market_price"],
+            asset=row["asset"],
+            product_type=row["product_type"],
+        )
+        for f in _NUMERIC_FIELDS:
+            columns[f].append(_to_nan(result.get(f)))
+
+    arrays = {k: np.asarray(v, dtype=np.float64) for k, v in columns.items()}
+    num_regression.check(arrays, default_tolerance={"rtol": 1e-9, "atol": 0.0})

@@ -402,26 +402,83 @@ def install_legacy_only_cal_engine(frozen_cal_engine, monkeypatch):
     — ``_resolve_cal_engine`` stays nulled by
     ``isolate_calibration_singletons`` (returns None).
 
-    Exercises outcomes 2 + 3 of the ProbabilityEngine cascade:
-    - rows with ``cal_eligible=True`` (15M) hit outcome 2 when
-      ``FIFTEEN_M_CALIBRATION_ENABLED`` is true AND the engine is
-      learned-method-active → ``_CALIBRATION_ENGINE.calibrate(...)``.
-    - rows with ``cal_eligible=False`` (hourly/spx_hourly/weather/sports)
-      hit outcome 4 (passthrough) — the ``elif not cal_eligible`` branch
-      shadows outcome 3, so to exercise outcome 3 (BLR_BYPASS path) the
-      frozen engine's ``_platt_trained`` would have to be False; we
-      cover that with a dedicated test that monkeypatches
-      ``is_learned_method_active`` instead of building a second state file.
+    **Coverage scope — corrected R1**: with the production constant
+    ``FIFTEEN_M_CALIBRATION_ENABLED = False`` (``bot/constants.py:891``)
+    untouched, the cascade gate at ``probability.py:217`` —
+    ``if FIFTEEN_M_CALIBRATION_ENABLED and ...`` — short-circuits to
+    False for every row, so outcome 2 (the legacy 15M
+    ``_CALIBRATION_ENGINE.calibrate(...)`` body, lines 218-220) is
+    **structurally unreachable** under this fixture. What actually
+    fires is:
+
+    - rows with ``cal_eligible=True`` (15M): outcome 3
+      (passthrough + BLR_BYPASS diagnostic, lines 222-230).
+    - rows with ``cal_eligible=False`` (hourly / spx_hourly / weather /
+      sports): outcome 4 (the ``elif not cal_eligible`` passthrough,
+      lines 231-233).
+
+    Empirical proof: under this fixture across the 303 15m corpus rows,
+    248 produce ``calibrated_prob == raw_prob`` exactly and the other
+    55 differ only by ``dynamic_cap`` clamping
+    (``calibrated_prob = min(raw_prob, dynamic_cap)``). No row shows
+    the frozen-Platt sigmoid signature — outcome 2 is dark.
+
+    To exercise outcome 2 (the legacy 15M learned-method body), use
+    ``install_legacy_15m_cal_engine`` below, which additionally
+    monkeypatches ``FIFTEEN_M_CALIBRATION_ENABLED`` to True.
 
     ``counterfactual_prob`` reads ``_CALIBRATION_ENGINE`` directly (not
-    via the resolver), so this fixture is the load-bearing one for
-    pinning calibrated counterfactuals — see
-    ``test_counterfactual_prob_corpus_numeric_legacy_only``."""
+    via the resolver and not gated on ``FIFTEEN_M_CALIBRATION_ENABLED``),
+    so this fixture IS load-bearing for pinning calibrated
+    counterfactuals — see
+    ``test_counterfactual_prob_corpus_numeric_with_oracle``."""
     import bot.engines.calibration as _cal_state
 
     monkeypatch.setattr(
         _cal_state, "_CALIBRATION_ENGINE", frozen_cal_engine, raising=True,
     )
     # _resolve_cal_engine stays at the autouse-installed lambda (returns None),
-    # forcing the cascade past outcome 1 into the legacy elif.
+    # forcing the cascade past outcome 1 into the legacy elif. The
+    # FIFTEEN_M_CALIBRATION_ENABLED=False short-circuit then forces 15m
+    # rows past outcome 2 into outcome 3 (passthrough + BLR_BYPASS).
+    return frozen_cal_engine
+
+
+@pytest.fixture
+def install_legacy_15m_cal_engine(frozen_cal_engine, monkeypatch):
+    """Sister fixture to ``install_legacy_only_cal_engine`` that
+    additionally flips ``FIFTEEN_M_CALIBRATION_ENABLED`` to True so the
+    cascade gate at ``probability.py:217`` no longer short-circuits.
+
+    Under this fixture, 15m rows reach outcome 2 — the
+    ``_CALIBRATION_ENGINE.calibrate(...)`` body at lines 218-220 — and
+    the frozen Platt oracle (A=0.85, B=0.0, trained=True) actually
+    runs. Non-15m rows still take outcome 4 (passthrough) because
+    ``cal_eligible=False`` for those product_types.
+
+    The monkeypatch targets ``bot.engines.probability`` directly
+    because the cascade reads the constant via a module-local rebinding
+    (``from bot.constants import ... FIFTEEN_M_CALIBRATION_ENABLED``
+    at probability.py:104-109) — patching ``bot.constants`` would not
+    propagate to the already-imported probability module.
+    ``bot.constants`` itself is left untouched so other tests sharing
+    the session module cache don't observe the override.
+
+    Closes the R1 coverage gap: previously
+    ``install_legacy_only_cal_engine`` was advertised as exercising
+    outcome 2 but actually exercised outcome 3 due to the constant
+    short-circuit. This fixture makes outcome 2 reachable for the
+    first time in the equivalence harness."""
+    import bot.engines.calibration as _cal_state
+    import bot.engines.probability as _prob
+
+    monkeypatch.setattr(
+        _cal_state, "_CALIBRATION_ENGINE", frozen_cal_engine, raising=True,
+    )
+    monkeypatch.setattr(
+        _prob, "FIFTEEN_M_CALIBRATION_ENABLED", True, raising=True,
+    )
+    # _resolve_cal_engine stays at the autouse-installed lambda (returns None),
+    # so outcome 1 is skipped and the cascade enters the legacy elif at line
+    # 216, where the gate at 217 now evaluates True for 15m rows.
     return frozen_cal_engine
