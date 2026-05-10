@@ -359,14 +359,10 @@ Re-run `state_db_restore.py` exactly as in §8.
 
 The following are intentionally NOT shipped in Phase 0a:
 
-1. **Heartbeat alerter ("no upload in 36h").** Round-1 finding B-M3:
-   the systemd timer + `h4_run_with_alert.py` wrapper covers exit-code
-   failures, but does NOT detect a totally-silent failure (timer
-   disabled, systemd hung, unit file syntax error rejected). Plan for
-   a follow-up Bit: a daily cron that pings S3 (using read creds on
-   the Mac, OR a separate read-only IAM on the VPS) and Telegram-alerts
-   if the latest `daily/` key is older than 36h. Track via separate
-   ClickUp ticket.
+1. ~~**Heartbeat alerter ("no upload in 36h").**~~ SHIPPED 2026-05-10 as
+   Mac-side launchd job — see §11 below. Ticket: 86b9vgjxw. Closes the
+   B-M3 silent-failure gap. KB:
+   `kb/decisions/phase0a-fu-backup-heartbeat-shipped-may10.md`.
 
 2. **Real-S3 integration test.** Round-1 finding B-M4: the 66 unit
    tests run against `LocalDirStore` and prove the local round-trip is
@@ -374,3 +370,110 @@ The following are intentionally NOT shipped in Phase 0a:
    tests gated on `RCLONE_TEST_REMOTE` env var would catch
    actually-rclone-misconfigured deploys. Defer until the test bucket
    exists; not a blocker for Phase 0a ship.
+
+## 11. Install the backup heartbeat alerter (Mac-side launchd)
+
+Operator-only one-time install. Closes the B-M3 gap: the daily backup
+timer on the VPS could be disabled / hung / unit-file-rejected and
+nobody would notice until the weekly verify runs ~6 days later. This
+heartbeat catches it within 6h.
+
+Architectural choice (option (b)) per ticket 86b9vgjxw: heartbeat
+lives on the dev Mac, not on the VPS, so it survives VPS-down events
+that would otherwise eat the alert. Uses the existing
+`kalshi-state-db-restore` AWS profile (read-only) created in §6 —
+NO new IAM creation needed.
+
+### 11.1 Prerequisites
+
+- §1–§7 done (bucket exists, reader profile on Mac, at least one
+  daily snapshot has uploaded).
+- `boto3` installed in your Mac's Python:
+  ```bash
+  pip3 install --user boto3
+  ```
+- Telegram bot token + chat ID handy (same values used on the VPS).
+
+### 11.2 Smoke-test the script manually
+
+```bash
+cd ~/Documents/kalshi-bot  # or wherever you cloned the repo
+
+# Sanity: dry-run without alerts (no Telegram creds set → skips POST).
+AWS_PROFILE=kalshi-state-db-restore \
+    python3 scripts/state_db_backup_heartbeat.py --bucket "$BUCKET"
+# Expected: `backup_heartbeat: status=ok key=...` and exit code 0.
+
+# Smoke the alert path by passing an absurd threshold:
+AWS_PROFILE=kalshi-state-db-restore \
+TELEGRAM_BOT_TOKEN=$YOUR_TOKEN \
+TELEGRAM_CHAT_ID=$YOUR_CHAT \
+    python3 scripts/state_db_backup_heartbeat.py \
+    --bucket "$BUCKET" --max-age-hours 0
+# Expected: telegram message received, exit code 1.
+```
+
+### 11.3 Install the LaunchAgent
+
+The repo ships a template — substitute the placeholders for your
+local values:
+
+```bash
+REPO_PATH=$(pwd)  # the kalshi-bot repo root
+HOME_DIR=$HOME
+PLIST_DEST=~/Library/LaunchAgents/io.kalshi.state-db-backup-heartbeat.plist
+
+sed \
+    -e "s|REPLACE_REPO_PATH|$REPO_PATH|g" \
+    -e "s|REPLACE_HOME_DIR|$HOME_DIR|g" \
+    -e "s|REPLACE_BUCKET_NAME|$BUCKET|g" \
+    -e "s|REPLACE_TELEGRAM_BOT_TOKEN|$YOUR_TOKEN|g" \
+    -e "s|REPLACE_TELEGRAM_CHAT_ID|$YOUR_CHAT|g" \
+    scripts/io.kalshi.state-db-backup-heartbeat.plist.template \
+    > "$PLIST_DEST"
+
+# Verify the substitutions:
+grep REPLACE_ "$PLIST_DEST" && echo "STILL HAS PLACEHOLDERS — abort" || echo "OK"
+
+# Load it:
+launchctl unload "$PLIST_DEST" 2>/dev/null  # idempotent re-install
+launchctl load "$PLIST_DEST"
+
+# Confirm:
+launchctl list | grep io.kalshi.state-db-backup-heartbeat
+```
+
+`RunAtLoad=true` in the plist means the first heartbeat fires now
+(within a few seconds). Verify a healthy bucket reports OK:
+
+```bash
+tail -f ~/Library/Logs/kalshi-state-db-backup-heartbeat.out.log
+# Expected line:
+# backup_heartbeat: status=ok key='daily/state-db-YYYY-MM-DD.db.zst' age_hours=...
+```
+
+### 11.4 Crontab alternative (if you prefer cron over launchd)
+
+```bash
+# crontab -e — add this line:
+0 */6 * * * AWS_PROFILE=kalshi-state-db-restore \
+    TELEGRAM_BOT_TOKEN=$YOUR_TOKEN \
+    TELEGRAM_CHAT_ID=$YOUR_CHAT \
+    /usr/bin/python3 $HOME/Documents/kalshi-bot/scripts/state_db_backup_heartbeat.py \
+    --bucket $BUCKET \
+    >> $HOME/Library/Logs/kalshi-state-db-backup-heartbeat.out.log 2>&1
+```
+
+launchd is the more idiomatic choice on macOS (survives reboot,
+respects sleep/wake), but cron works equivalently if you already
+have other cron jobs and want to keep them together.
+
+### 11.5 Trade-offs of the Mac-side choice
+
+- The heartbeat doesn't fire while the Mac is asleep / off. launchd
+  schedules the job for the next wake; cron skips missed runs entirely.
+  In practice, an operator away from their Mac for 7+ days has bigger
+  problems than a missed heartbeat — but this is a known gap.
+- If you want VPS-side observability later, file a follow-up ticket
+  for option (a): a separate read-only IAM user on the VPS. That
+  requires AWS console work (not Phase 0a-fu scope).
