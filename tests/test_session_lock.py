@@ -108,6 +108,116 @@ class TestPathFlatten:
         # and is the only encoding for that basename.
         assert flatten_target_path("a/b/c") == "a__SLASH__b__SLASH__c"
 
+    @pytest.mark.parametrize(
+        "bad_input",
+        [
+            # R4 M1 — the canonical collision pair the reviewer demonstrated:
+            # both inputs flatten to 'a__SLASH__SLASH__b' under the R1-only
+            # guard. After the R4 fix both must raise.
+            "a__SLASH/b",
+            "a/SLASH__b",
+            # Component ENDING in __SLASH (the trailing piece reproduces
+            # _SLASH_MARKER once joined with the next `__SLASH__`).
+            "foo__SLASH/bar.py",
+            "bot__SLASH/_impl.py",
+            # Component STARTING with SLASH__ (mirror image).
+            "foo/SLASH__bar.py",
+            "bot/SLASH__scanner",
+            # Multi-component path with the boundary mid-way.
+            "a/b__SLASH/c",
+            "a/b/SLASH__c",
+        ],
+    )
+    def test_partial_slash_marker_components_rejected(self, bad_input):
+        # R4 M1 — boundary-straddling injectivity. Without this guard the
+        # join would reconstruct `_SLASH_MARKER` across a `/` boundary and
+        # collide with a legitimate path containing real slashes.
+        with pytest.raises(ValueError, match="straddles slash-marker"):
+            flatten_target_path(bad_input)
+
+    def test_partial_slash_marker_demonstrated_collision_is_blocked(self):
+        # R4 M1 — explicit collision pair. The R3-era code accepted BOTH
+        # inputs and produced identical flat names; here we assert BOTH
+        # raise (so the collision cannot be silently constructed).
+        with pytest.raises(ValueError):
+            flatten_target_path("a__SLASH/b")
+        with pytest.raises(ValueError):
+            flatten_target_path("a/SLASH__b")
+        # Sanity: a benign sibling that does NOT touch the marker boundary
+        # still flattens normally. (`SLASH__` mid-component is fine — only
+        # leading `SLASH__` or trailing `__SLASH` are dangerous.)
+        assert flatten_target_path("a/bSLASH__c") == "a__SLASH__bSLASH__c"
+        assert flatten_target_path("a/b__SLASHc") == "a__SLASH__b__SLASHc"
+
+    def test_flatten_unflatten_property_random(self):
+        # R4 — property-style defense-in-depth. Generate a small space of
+        # candidate components mixing benign chars, the SLASH__ / __SLASH
+        # adversaries, and the literal marker. For every multi-component
+        # path built from these, `flatten` must either (a) raise ValueError
+        # or (b) round-trip identity through `unflatten`. Any silent
+        # non-bijective output is a regression.
+        import itertools
+        import random
+
+        rng = random.Random(20260510)  # deterministic
+        components = [
+            "a",
+            "bot",
+            "_impl.py",
+            "scanner",
+            "SLASH__x",       # adversary: starts with SLASH__
+            "y__SLASH",       # adversary: ends with __SLASH
+            "z__SLASH__w",    # adversary: contains the contiguous marker
+            "SLASH__only",    # full leading-marker
+            "only__SLASH",    # full trailing-marker
+            "harmlessSLASH__inside",   # SLASH__ mid-component (benign)
+            "harmless__SLASHinside",   # __SLASH mid-component (benign)
+        ]
+        # Build ~20 random multi-component paths of length 2-4.
+        trials = 0
+        bijection_holds = 0
+        raised = 0
+        for _ in range(20):
+            n = rng.randint(2, 4)
+            picked = [rng.choice(components) for _ in range(n)]
+            target = "/".join(picked)
+            trials += 1
+            try:
+                flat = flatten_target_path(target)
+            except ValueError:
+                raised += 1
+                continue
+            unflat = unflatten_target_path(flat)
+            # If flatten accepted it, the round-trip MUST be identity.
+            assert unflat == target, (
+                f"Non-bijective: input={target!r} flat={flat!r} "
+                f"unflat={unflat!r}"
+            )
+            bijection_holds += 1
+        # Sanity-check the probe space did something — at least one of each
+        # outcome should occur, otherwise the property test is vacuous.
+        assert raised >= 1, "property test never exercised the rejection path"
+        assert bijection_holds >= 1, "property test never exercised the accept path"
+        # And we ran the full sweep — no early return.
+        assert raised + bijection_holds == trials
+
+        # Also exhaustively check the 4 minimal adversarial pairs caught
+        # by the R4 finding (no randomness — these are the witnesses).
+        adversarial_pairs = list(itertools.product(
+            ["a", "bot__SLASH", "SLASH__bot"],
+            ["b", "SLASH__b", "b__SLASH"],
+        ))
+        for left, right in adversarial_pairs:
+            target = f"{left}/{right}"
+            try:
+                flat = flatten_target_path(target)
+            except ValueError:
+                continue
+            # Accepted → must round-trip.
+            assert unflatten_target_path(flat) == target, (
+                f"Adversarial-pair non-bijective: target={target!r} flat={flat!r}"
+            )
+
     def test_nul_byte_in_path_rejected(self):
         # R1 M2 — NUL byte would crash inside os.open with
         # ValueError: embedded null byte. Caller would see uncaught crash.

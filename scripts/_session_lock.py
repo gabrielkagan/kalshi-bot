@@ -52,7 +52,11 @@ target_path "bot/scanner/__init__.py"
 The `__SLASH__` token was chosen because it cannot appear in a real
 POSIX path (uppercase + double-underscore convention) and survives
 iCloud's filename quirks. Round-trip is preserved by `flatten_target_path`
-+ `unflatten_target_path`.
++ `unflatten_target_path`, which together form a bijection over the
+accepted input space: `flatten` rejects (a) the literal contiguous
+marker, (b) any component starting with `SLASH__`, and (c) any component
+ending with `__SLASH` — eliminating both direct collision and
+boundary-straddling collision (R1 M1 + R4 M1).
 """
 from __future__ import annotations
 
@@ -197,6 +201,23 @@ def flatten_target_path(target_path: str) -> str:
     `flatten("a__SLASH__b/c")` and `flatten("a/b/c")` would otherwise collide
     on the same basename (R1 M1 — injectivity).
 
+    Also refuses inputs where any component ENDS with ``__SLASH`` or STARTS
+    with ``SLASH__`` (R4 M1 — boundary-straddling injectivity). The R1 M1
+    rule only rejected the contiguous literal ``__SLASH__`` token, but two
+    inputs whose components straddle that token across a `/` boundary still
+    collide once joined::
+
+        flatten('a__SLASH/b')  → 'a__SLASH__SLASH__b'
+        flatten('a/SLASH__b')  → 'a__SLASH__SLASH__b'   # COLLISION
+
+    Neither input contains the contiguous token, yet
+    ``_SLASH_MARKER.join(parts)`` reproduces it across the join. Rejecting
+    components that touch the marker boundary closes the gap. The two
+    practical sub-checks (`startswith("SLASH__")` and `endswith("__SLASH")`)
+    cover every non-empty proper suffix/prefix of the marker because any
+    longer overlap subsumes one of these — e.g. ``_SLASH_`` ending matches
+    ``__SLASH`` ending; ``LASH__`` starting matches ``SLASH__`` starting.
+
     Refuses NUL bytes and other ASCII control chars, which would crash inside
     `os.open` with `ValueError: embedded null byte` (R1 M2).
     """
@@ -224,6 +245,16 @@ def flatten_target_path(target_path: str) -> str:
         raise ValueError(f"empty path component in {target_path!r}")
     if any(p in (".", "..") for p in parts):
         raise ValueError(f"traversal not allowed: {target_path!r}")
+    # R4 M1 — reject components whose suffix/prefix would straddle the
+    # _SLASH_MARKER across a `/` boundary in the joined output. Without
+    # this guard, `flatten('a__SLASH/b')` and `flatten('a/SLASH__b')` both
+    # yield `'a__SLASH__SLASH__b'` and unflatten is non-bijective.
+    for comp in parts:
+        if comp.endswith("__SLASH") or comp.startswith("SLASH__"):
+            raise ValueError(
+                f"path component {comp!r} straddles slash-marker boundary "
+                f"in {target_path!r}"
+            )
     return _SLASH_MARKER.join(parts)
 
 

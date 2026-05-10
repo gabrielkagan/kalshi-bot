@@ -3,10 +3,16 @@
 **Ticket:** ClickUp `86b9vgx5d` (P5.1: Lock infrastructure — O_CREAT|O_EXCL lockfile + heartbeat + stale-reclaim)
 **Date:** 2026-05-10
 **Branch:** `86b9vgx5d-psc-lock-infra` (NOT pushed; reviewer agent gate next)
-**Files:**
-- `scripts/_session_lock.py` (new, 290 LOC, stdlib-only)
-- `tests/test_session_lock.py` (new, 415 LOC, 28 tests)
+**Files (post-R4 HEAD):**
+- `scripts/_session_lock.py` (new, 729 LOC, stdlib-only)
+- `tests/test_session_lock.py` (new, 1136 LOC, 47 tests)
+- `tests/contracts/test_session_lock_gitignore.py` (new, 123 LOC, 8 tests)
+- `.gitignore` (4 patterns added under Sprint PSC Bit P5.1 block)
 - `kb/decisions/sprint-psc-bit-p5.1-shipped-may10.md` (this file)
+
+Round-by-round size growth: R0 ≈ 290 LOC / 28 tests → R1 +TOCTOU + worktree
+fixes + harder concurrency tests → R2 +gitignore contract file + relative-
+gitdir resolution → R4 +partial-marker injectivity guard + property test.
 
 ## RCA — why this primitive
 
@@ -138,6 +144,108 @@ Total post-R2: 47 tests (37 session_lock + 8 gitignore contract + 2 new worktree
 
 - **L90 — adversarial review of a coordination primitive must also audit its environment, not just its code.** R0 looked at the diff. R1 looked at concurrent-process interactions. R2 looked at two environmental boundaries: (a) "what does git's filesystem state look like in deployments newer than this codebase?" caught M7 (git 2.48 useRelativePaths); (b) "what happens to the artifacts this primitive writes if the surrounding repo doesn't expect them?" caught M6 (no gitignore). Both bugs lived entirely outside the source file under review — M6 in `.gitignore`, M7 in the git-pointer contract — but rendered the primitive incorrect for its actual deployment. Lesson: when reviewing infrastructure that writes files into a repo, also review the repo's hygiene (gitignore, hooks, CI artifact policy) AND the upstream contracts the infrastructure consumes (git-worktree format, filesystem semantics).
 
+## R3 adversarial review findings + fixes
+
+R3 (fresh-eyes reviewer agent) verified all R1+R2 fixes as REAL_FIX and ran
+a fresh adversarial pass against the post-R2 module. R3 returned **0
+CRITICAL / 0 MAJOR** with 3 informational minors. No code changes required;
+all minors deferred as low-priority follow-ups (see Out-of-scope section):
+
+- **min1 — KB doc LOC drift.** Earlier "Files modified" header listed
+  R0-era sizes (`_session_lock.py` 290 LOC / `test_session_lock.py` 415
+  LOC / 28 tests) — long stale after R1+R2 churn. Folded into R4 along
+  with the rest of the doc refresh.
+- **min2 — long target_path > 255 char flat name → uncaught `OSError`.**
+  Theoretical (no real path triggers this; kalshi-bot tops out at ~40
+  chars). Defer to follow-up ticket.
+- **min3 — contrived lock-leak edge case.** Requires a sequence of
+  process-level kills + race conditions that is not realistically
+  reproducible in production. Defer.
+
+## R4 adversarial review findings + fixes
+
+R4 (fresh-eyes reviewer agent) verified the R1 M1 (`_SLASH_MARKER` literal-
+in-input rejection) fix as REAL_FIX, but found that the injectivity claim
+in its docstring is **half-true**: the contiguous-substring check closes
+direct collision but leaves boundary-straddling collision open.
+
+### MAJOR findings
+
+- **M1 — Path-flatten injectivity is FALSE for boundary-straddling inputs.**
+  ``flatten_target_path("a__SLASH/b")`` and
+  ``flatten_target_path("a/SLASH__b")`` both produce
+  ``'a__SLASH__SLASH__b'``. Neither input contains the contiguous
+  literal `__SLASH__`, so the R1 M1 guard accepts both — but
+  ``_SLASH_MARKER.join(parts)`` reproduces the marker across the `/`
+  boundary, yielding identical flat names. ``unflatten`` is non-bijective:
+  ``unflatten(flatten("a/b__SLASH/c"))`` returns ``"a/b/SLASH__c"``, not
+  the input. No real kalshi-bot path triggers this today (the bot uses
+  conventional `bot/<asset>/_impl.py`-style names), but the docstring +
+  KB doc both promised injectivity. **Fix:** in addition to rejecting
+  the contiguous marker, also reject any component that
+  ``startswith("SLASH__")`` or ``endswith("__SLASH")``. Those two
+  predicates cover every non-empty proper suffix/prefix of the marker
+  because any longer overlap subsumes one of them (e.g. ``__SLASH``
+  ending matches ``__SLASH`` ending; ``SLASH__`` starting matches
+  ``SLASH__`` starting). One additional check loop in
+  `flatten_target_path` (~5 LOC). Updated the module docstring to
+  describe the full bijection contract.
+
+### Tests added in R4
+
+| File | Tests | Purpose |
+|---|---|---|
+| `tests/test_session_lock.py::TestPathFlatten::test_partial_slash_marker_components_rejected` | 8 (parametrized) | R4 M1 — reject the 8 canonical boundary-straddle inputs: the original collision-pair witness (`a__SLASH/b` + `a/SLASH__b`), plus 6 mirror variants covering both `endswith("__SLASH")` and `startswith("SLASH__")` at different positions. |
+| `tests/test_session_lock.py::TestPathFlatten::test_partial_slash_marker_demonstrated_collision_is_blocked` | 1 | R4 M1 — pin the explicit collision pair from the reviewer's demo + assert benign mid-component `SLASH__` / `__SLASH` substrings still flatten. |
+| `tests/test_session_lock.py::TestPathFlatten::test_flatten_unflatten_property_random` | 1 | R4 defense-in-depth — random property test over 20 multi-component paths drawn from a probe space with mixed benign + adversarial components, asserting every `flatten` output either raises `ValueError` or `unflatten` is identity. Vacuity guards: at least one of each outcome must occur. Also exhaustively covers 9 adversarial pairs from the 3×3 cartesian product of `{benign, ends-with-__SLASH, starts-with-SLASH__}`. |
+
+Total post-R4: 55 tests (47 session_lock + 8 gitignore contract). Triple-rerun
+stability on the concurrency-heavy suite (TestConcurrentAcquire +
+TestTOCTOU + TestStress + TestProcessDeathCleanup): 3-of-3 PASS at 7 tests
+each. Full file: 47/47 PASS in ~11.5s wall.
+
+### Property-test design notes
+
+The property test (`test_flatten_unflatten_property_random`) is deliberately
+NOT hypothesis-based; we don't want to add a hypothesis dependency for one
+adversarial check. Instead it:
+
+1. Deterministic seed (`random.Random(20260510)`) — reproducible across CI.
+2. Probe space mixes 4 benign components, 5 adversarial components, and 2
+   "looks-dangerous-but-benign" components (e.g. `harmlessSLASH__inside`
+   has `SLASH__` MID-component, which is fine — only leading/trailing
+   counts). The benign-but-suspicious cases are the most informative
+   coverage — they prove the rejection is precise, not overbroad.
+3. 20 random multi-component (length 2-4) paths per seed. With this probe
+   space the run yields ~5 accept + ~15 reject — enough exercise of each
+   branch to catch over- or under-rejection regressions.
+4. Vacuity guards: `raised >= 1` and `bijection_holds >= 1`. If a future
+   patch makes flatten too permissive (no rejects) or too strict (no
+   accepts), the test fails LOUDLY rather than silently passing on a
+   degenerate probe space.
+5. Adversarial-pair exhaustion: the 3×3 cartesian product of
+   `{benign, ends-with-__SLASH, starts-with-SLASH__}` is checked
+   separately (no randomness). Each cell is a `(left, right)` pair joined
+   by `/`; for any cell that `flatten` accepts, the round-trip must be
+   identity. This is the minimal generator set for the R4 bug class.
+
+### Lesson
+
+- **L91 — "injectivity" claims on string-encoding functions must verify the
+  boundary between components, not just within components.** R1 M1 closed
+  direct collision (`flatten` of an input containing the literal contiguous
+  marker). R4 M1 caught what R1 missed: even after rejecting the contiguous
+  marker, the `join` operation can RECONSTRUCT the marker across a `/`
+  boundary if one component ends with a proper prefix of the marker and
+  the adjacent component starts with the matching proper suffix. The
+  fix is straightforward (reject components touching the marker boundary),
+  but the bug was invisible from reading the R1 fix in isolation — every
+  individual line of `flatten_target_path` looked correct. The right
+  review lens is: "for every adversarial pair `(left, right)` of
+  components, does `_SLASH_MARKER.join([left, right])` reconstruct the
+  marker?". Pair this with a property test that randomly mixes benign
+  and adversarial components and asserts the bijection invariant.
+
 ## Out-of-scope findings (for orchestrator to file)
 
 - **/ticket — iCloud `* 2.lock` sibling cleanup.** iCloud Drive occasionally spawns `<name> 2.lock` siblings next to `<name>.lock` on the user's repo. The lock primitive ignores them (correct), but they accumulate forever with no cleanup. R1 minor #4. File a janitorial-script ticket: nightly cron to `find .claude/locks/active-work -name '* [0-9].lock'` and unlink if no canonical sibling holds a fresh heartbeat. Low priority.
@@ -154,9 +262,10 @@ P5.6 (`86b9vgxcc`, S/safe) — memory-write hook.
 
 ## Lessons (lockstep with master lesson list)
 
-The session lessons list is currently at L86. New lessons from this Bit:
+The session lessons list is currently at L86 / L90 post-R2. New lessons from this Bit (post-R4):
 
 - **L87 — heartbeat loops should `wait → tick`, not `tick → wait`.** The lockfile is fresh on acquire; an immediate tick wastes I/O AND opens a race window with callers about to manipulate the file before the first interval. Caught by `test_lockfile_persists_after_kill_then_reclaim_recovers` failing on R0; flipped the loop order; R1 GREEN.
 - **L88 — falsy-coalesce on numeric defaults silently corrupts at zero.** `(now or _now())` looks innocuous until a caller passes `now=0.0` for testing-clock purposes and gets the wall-clock back. Always use `now if now is not None else _now()` for numeric optionals. Caught by R0 self-review reading the diff.
 - **L89 — adversarial review must target the interaction surface, not the diff surface.** R0 caught 4 issues reading the diff line-by-line — all "this line is sketchy". R1 caught 2 CRITICALs + 5 MAJORs by asking "what does a peer process see at each microsecond, in our actual deployment topology?". The C1 TOCTOU bug was invisible from diff-reading — every line was correct in isolation; the bug lived in the *gap between syscalls*. The C2 worktree bug was invisible because `_repo_root()` looked reasonable; it failed only when two callers ran in different filesystem layouts.
 - **L90 — adversarial review of a coordination primitive must also audit its environment.** R2 found two issues (M6 gitignore, M7 relative-gitdir) that lived entirely OUTSIDE the source file: M6 in `.gitignore`, M7 in the git-worktree pointer contract. Both rendered the primitive incorrect for real deployments. Lesson: when reviewing infrastructure that writes files into a repo, audit (a) the repo's hygiene (gitignore/hooks/CI artifact policy) and (b) the upstream contracts the infrastructure consumes (git-worktree format, filesystem semantics, package conventions).
+- **L91 — "injectivity" claims on string-encoding functions must verify the boundary between components, not just within components.** R1 M1 rejected the contiguous literal marker but left boundary-straddling collisions: `flatten('a__SLASH/b')` and `flatten('a/SLASH__b')` both yield `'a__SLASH__SLASH__b'` because `join` reconstructs the marker across the `/` boundary. R4 M1 closed the gap by also rejecting components that `startswith("SLASH__")` or `endswith("__SLASH")`. The review lens: "for every adversarial pair `(left, right)` of components, does `_SEPARATOR.join([left, right])` reconstruct the encoding marker?" Pair with a property test that mixes benign + adversarial components and asserts round-trip identity for every accepted input.
