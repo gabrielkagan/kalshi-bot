@@ -2,247 +2,249 @@
   "constants": {
     "OBSERVATION_MODE": {
       "value": false,
-      "line": 1054,
+      "line": 786,
       "description": "Live vs observation mode"
     },
     "MIN_ENTRY_PRICE": {
       "value": 75,
-      "line": 1065,
+      "line": 799,
       "description": "Minimum entry price (cents)"
     },
     "MAX_ENTRY_PRICE": {
       "value": 99,
-      "line": 1067,
+      "line": 801,
       "description": "Maximum entry price (cents)"
     },
     "MIN_SECONDS_BEFORE_CLOSE": {
       "value": 0,
-      "line": 1097,
+      "line": 842,
       "description": "Minimum seconds before close"
     },
     "MAX_SECONDS_BEFORE_CLOSE": {
       "value": 900,
-      "line": 1099,
+      "line": 844,
       "description": "Entry window (seconds before close)"
     },
     "STC_SHADOW_THRESHOLD": {
       "value": 600,
-      "line": 1101,
+      "line": 846,
       "description": "STC shadow threshold (seconds)"
     },
     "HOURLY_OBSERVATION_ONLY": {
       "value": "UnaryOp(op=Not(), operand=Name(id='HOURLY_LIVE_ENABLED', ctx=Load()))",
-      "line": 1266,
+      "line": 1011,
       "description": "Hourly observation-only mode",
       "_raw": true
     },
     "HOURLY_MAX_SECONDS_BEFORE_CLOSE": {
       "value": 1800,
-      "line": 1275,
+      "line": 1022,
       "description": "Hourly entry window (seconds)"
     },
     "HOURLY_MARKET_BLEND_W": {
       "value": 0.4,
-      "line": 1279,
+      "line": 1026,
       "description": "Hourly market blend weight"
     },
     "HOURLY_MIN_ENTRY_PRICE": {
       "value": 50,
-      "line": 1281,
+      "line": 1028,
       "description": "Hourly minimum entry price (cents)"
     },
     "HOURLY_MAX_RISK_PER_TRADE": {
       "value": 0.15,
-      "line": 1285,
+      "line": 1032,
       "description": "Hourly max risk per trade"
     },
     "HOURLY_TEMPERATURE_T": {
       "value": 1.45,
-      "line": 1348,
+      "line": 1095,
       "description": "Hourly temperature scaling factor"
     },
     "HOURLY_MIN_STC_ENTRY": {
       "value": 600,
-      "line": 1354,
+      "line": 1101,
       "description": "Hourly min STC for entry (seconds)"
     },
     "HOURLY_MAX_STC_ENTRY": {
       "value": 1800,
-      "line": 1356,
+      "line": 1103,
       "description": "Hourly max STC for entry (seconds)"
     },
     "HOURLY_MAX_POSITIONS_PER_WINDOW": {
       "value": 2,
-      "line": 1371,
+      "line": 1118,
       "description": "Max positions per hourly window"
     },
     "HOURLY_MAX_WINDOW_RISK": {
       "value": 0.15,
-      "line": 1386,
+      "line": 1133,
       "description": "Max aggregate risk per hourly window"
     },
     "HOURLY_KELLY_FRACTION": {
       "value": 0.25,
-      "line": 1416,
+      "line": 1163,
       "description": "Hourly Kelly fraction"
     },
     "SPX_HOURLY_OBSERVATION_ONLY": {
       "value": true,
-      "line": 1423,
+      "line": 1170,
       "description": "SPX observation-only mode"
     },
     "SPX_HOURLY_MARKET_BLEND_W": {
       "value": 0.0,
-      "line": 1433,
+      "line": 1180,
       "description": "SPX market blend weight"
     },
     "SPX_HOURLY_MAX_POSITIONS_PER_WINDOW": {
       "value": 2,
-      "line": 1445,
+      "line": 1192,
       "description": "Max positions per SPX window"
     },
     "SPX_HOURLY_MAX_WINDOW_RISK": {
       "value": 0.15,
-      "line": 1447,
+      "line": 1194,
       "description": "Max aggregate risk per SPX window"
     },
     "WEATHER_OBSERVATION_ONLY": {
       "value": true,
-      "line": 1454,
+      "line": 1201,
       "description": "Weather observation-only mode"
     },
     "WEATHER_MIN_ENTRY_PRICE": {
       "value": 10,
-      "line": 1456,
+      "line": 1203,
       "description": "Weather minimum entry price (cents)"
     },
     "WEATHER_MAX_RISK_PER_TRADE": {
       "value": 0.1,
-      "line": 1468,
+      "line": 1215,
       "description": "Weather max risk per trade"
     },
     "WEATHER_MARKET_BLEND_W": {
       "value": 0.2,
-      "line": 1472,
+      "line": 1219,
       "description": "Weather market blend weight"
     },
     "PRICE_BUFFER_SIZE": {
       "value": 1800,
-      "line": 1719,
+      "line": 1468,
       "description": "CoinbaseFeed price buffer size (seconds of 1s snapshots)"
     },
     "RK_TV_SHADOW_MODE": {
       "value": false,
-      "line": 1739,
+      "line": 1488,
       "description": "TV RK weights shadow mode"
     },
     "CROSS_EXCHANGE_ENABLED": {
       "value": true,
-      "line": 1818,
+      "line": 1567,
       "description": "Cross-exchange feed enabled"
     },
     "CROSS_EXCHANGE_BUFFER_SIZE": {
       "value": 15,
-      "line": 1833,
+      "line": 1582,
       "description": "Cross-exchange price buffer size"
     },
     "CROSS_EXCHANGE_LEAD_THRESHOLD": {
       "value": 0.002,
-      "line": 1835,
+      "line": 1584,
       "description": "Single-exchange lead threshold"
     },
     "CROSS_EXCHANGE_CONSENSUS_THRESHOLD": {
       "value": 0.003,
-      "line": 1837,
+      "line": 1586,
       "description": "Consensus threshold"
     },
     "CROSS_EXCHANGE_CONSENSUS_MIN": {
       "value": "Name(id='_CROSS_EXCHANGE_FEEDS_ACTIVE', ctx=Load())",
-      "line": 1856,
+      "line": 1605,
       "description": "Minimum exchanges for consensus",
       "_raw": true
     },
     "CROSS_EXCHANGE_STALE_SECONDS": {
       "value": 30.0,
-      "line": 1858,
+      "line": 1607,
       "description": "Cross-exchange stale data timeout"
     },
     "KALSHI_OFT_SHADOW_MODE": {
       "value": true,
-      "line": 1891,
+      "line": 1640,
       "description": "Kalshi OFT shadow mode"
     },
     "CALIBRATION_MIN_SAMPLES_PLATT": {
       "value": 200,
-      "line": 1921,
+      "line": 1670,
       "description": "Min samples for Platt calibration"
     },
     "CALIBRATION_MIN_SAMPLES_BETA": {
       "value": 350,
-      "line": 1923,
+      "line": 1672,
       "description": "Min samples for Beta calibration"
     },
     "CALIBRATION_MIN_SAMPLES_BLR": {
       "value": 50,
-      "line": 1925,
+      "line": 1674,
       "description": "Min samples for BLR calibration"
     },
     "MARKET_BLEND_W": {
       "value": 0.4,
-      "line": 1955,
+      "line": 1704,
       "description": "Market blend weight (0=pure model, 1=pure market)"
     },
     "SHADOW_CAL_PIPELINE": {
       "value": true,
-      "line": 1960,
+      "line": 1709,
       "description": "Cal pipeline shadow mode"
     },
     "Z_SCORE_MAX": {
       "value": 25.0,
-      "line": 1966,
+      "line": 1715,
       "description": "Z-score rejection threshold"
     },
     "MIN_EDGE_PCT": {
       "value": 0.25,
-      "line": 1973,
+      "line": 1722,
       "description": "Flat minimum edge fallback"
     },
     "BALANCE_CACHE_TTL": {
       "value": 10.0,
-      "line": 2348,
+      "line": 2097,
       "description": "Balance cache TTL (seconds)"
     },
     "DIRECT_TAKER_THRESHOLD": {
       "value": 180.0,
-      "line": 2440,
+      "line": 2189,
       "description": "Skip maker and go IOC below this many seconds"
     },
     "MAKER_ONLY_THRESHOLD": {
       "value": 0.0,
-      "line": 2443,
+      "line": 2192,
       "description": "No taker execution below this many seconds"
     },
     "ESCALATION_WAIT_LONG": {
       "value": 15.0,
-      "line": 2679,
+      "line": 2428,
       "description": "Maker wait for long STC"
     },
     "ESCALATION_WAIT_MEDIUM": {
       "value": 7.0,
-      "line": 2684,
+      "line": 2433,
       "description": "Maker wait for medium STC"
     },
     "ESCALATION_WAIT_SHORT": {
       "value": 5.0,
-      "line": 2686,
+      "line": 2435,
       "description": "Maker wait for short STC"
     },
     "HOURLY_EXCLUDED_ASSETS": {
       "value": [
+        "DOGE",
+        "HYPE",
         "SOL",
         "XRP"
       ],
-      "line": 1358,
+      "line": 1105,
       "description": "Assets excluded from hourly trading"
     },
     "CROSS_EXCHANGE_SYMBOLS": {
@@ -268,7 +270,7 @@
           "bybit": "XRPUSDT"
         }
       },
-      "line": 1820,
+      "line": 1569,
       "description": "Cross-exchange symbol mapping"
     },
     "DYNAMIC_CAP_SCHEDULE": {
@@ -294,7 +296,7 @@
           0.995
         ]
       ],
-      "line": 1935,
+      "line": 1684,
       "description": "Dynamic probability cap schedule (STC, cap)"
     },
     "HOURLY_DYNAMIC_CAP_SCHEDULE": {
@@ -320,7 +322,7 @@
           0.999
         ]
       ],
-      "line": 1947,
+      "line": 1696,
       "description": "Hourly dynamic probability cap schedule"
     },
     "MIN_EDGE_BY_PRICE": {
@@ -350,13 +352,13 @@
           0.0025
         ]
       ],
-      "line": 2312,
+      "line": 2061,
       "description": "Price-dependent edge schedule"
     }
   },
-  "_bot_lines": 1035,
+  "_bot_lines": 767,
   "_exchange_feeds": [],
-  "_extracted_at": "2026-05-10T22:32:16Z",
+  "_extracted_at": "2026-05-10T23:50:00Z",
   "_bot_path": "/home/runner/work/kalshi-bot/kalshi-bot/bot/_impl.py",
   "_weather": {
     "weather_city_count": 19,

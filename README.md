@@ -1,6 +1,6 @@
 # Kalshi Crypto Trading Bot
 
-Automated trading platform for Kalshi prediction markets. The core engine trades 15-minute cryptocurrency contracts (BTC, ETH, SOL, XRP) live; HYPE and DOGE collect shadow observation data en route to live (T1 onboarded 2026-05-10). Several adjacent strategies layered on top: decided contracts, late-window momentum, weekend/overnight discounts, and a near-expiry low-price entry. Adjacent products (S&P 500 intraday, daily weather temperature across 19 US cities, and live sports outcomes across 28 leagues) run in observation or 1-contract verification mode while their CalEngines train.
+Automated trading platform for Kalshi prediction markets. The core engine trades 15-minute cryptocurrency contracts (BTC, ETH, SOL, XRP) live, with several adjacent strategies layered on top: decided contracts, late-window momentum, weekend/overnight discounts, and a near-expiry low-price entry. Adjacent products (S&P 500 intraday, daily weather temperature across 19 US cities, and live sports outcomes across 28 leagues) run in observation or 1-contract verification mode while their CalEngines train.
 
 ## How It Works
 
@@ -128,14 +128,14 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 190,496 |
+| Markets evaluated | 190,726 |
 | Observation period | 2026-02-22 to 2026-05-10 |
-| Filter pass rate | 4.0\% (7,614 of 190,496) |
-| Top rejection reason | Insufficient Edge (57,696) |
-| Settled trades | 3,842 (3,557 W / 283 L / 2 BE) |
+| Filter pass rate | 4.0\% (7,627 of 190,726) |
+| Top rejection reason | Insufficient Edge (57,740) |
+| Settled trades | 3,852 (3,566 W / 284 L / 2 BE) |
 | Win rate | 92.6\% |
 
-*Last updated: 2026-05-10T22:32:13Z*
+*Last updated: 2026-05-10T23:49:59Z*
 
 ## Live vs Observation
 
@@ -213,7 +213,7 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot/_impl.py                         -- core bot logic (~1,035 lines, never rename)
+bot/_impl.py                         -- core bot logic (~767 lines, never rename)
 config.py                      -- centralized SIZING_TIERS / DRAWDOWN_* / MIN_EDGE_BY_PRICE
 models.py                      -- EGARCH / Mincer-Zarnowitz / PositionSizer / fee math
 analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)

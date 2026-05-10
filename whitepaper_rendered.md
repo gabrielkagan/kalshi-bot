@@ -137,7 +137,7 @@ Beyond the live 15M engine, the platform spans four adjacent verticals: S&P 500 
 | **KalshiFeed** | WebSocket connection for real-time fills and orderbook delta streaming |
 | **Logger** | Structured JSONL logging across multiple journals with fill deduplication |
 | **StateManager** | SQLite-backed persistent state (WAL mode for crash resilience, `busy_timeout=10000`); tracks positions, orders, fills, settlements, and order lifecycle |
-| **CoinbaseFeed** | Real-time WebSocket feed for BTC, ETH, SOL, XRP with 300-point price buffer (5 minutes at 1-second intervals); EGARCH uses a separate 10,800-point return buffer (15 hours at 5-second intervals) |
+| **CoinbaseFeed** | Real-time WebSocket feed for BTC, ETH, SOL, XRP (live trading) and HYPE, DOGE (shadow observation, T1 2026-05-10) with 300-point price buffer (5 minutes at 1-second intervals); EGARCH uses a separate 10,800-point return buffer (15 hours at 5-second intervals) |
 | **DeribitDVOLFetcher** | Daemon thread fetching implied volatility (DVOL) index for BTC and ETH every 60 seconds |
 | **CrossExchangeFeed** | WebSocket feeds from Kraken, Bybit, and Binance for cross-exchange lead-lag detection (Binance geo-blocked on VPS) |
 | **KalshiOrderFlowTracker** | Shadow-mode Kalshi-native orderbook imbalance, depth velocity, and spread convergence signals |
@@ -161,7 +161,7 @@ Beyond the live 15M engine, the platform spans four adjacent verticals: S&P 500 
 
 | Source | Data | Transport | Frequency |
 |---|---|---|---|
-| Coinbase | Spot prices (BTC, ETH, SOL, XRP) | WebSocket | Real-time (1s snapshots, 300-point buffer = 5min) |
+| Coinbase | Spot prices (BTC, ETH, SOL, XRP live; HYPE, DOGE shadow) | WebSocket | Real-time (1s snapshots, 300-point buffer = 5min) |
 | Kraken | Spot prices (cross-exchange) | WebSocket | Real-time |
 | Deribit | Implied volatility (DVOL) for BTC/ETH | REST API | 60 seconds |
 | Polygon.io | SPX spot price | REST API | 1s polling (NYSE RTH) |
@@ -762,7 +762,7 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 3,842 (3,557W / 283L / 2 breakeven) |
+| **Settled trades** | 3,852 (3,566W / 284L / 2 breakeven) |
 | **Win rate** | 92.6\% |
 | **Assets** | BTC (88¢+, LPNE 80–87¢), ETH (90¢+ main, 75–79¢ capped sub-tier), SOL (86¢+, taker-first), XRP (92¢+) |
 
@@ -770,9 +770,9 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 
 | Strategy group | n | W / L | Win rate |
 |---|---|---|---|
-| 15M main (Kelly-sized) | 1,589 | 1,441 W / 148 L | 90.7\% |
+| 15M main (Kelly-sized) | 1,596 | 1,447 W / 149 L | 90.7\% |
 | Decided contracts | 233 | 225 W / 8 L | 96.6\% |
-| Weekend discount | 173 | 163 W / 10 L | 94.2\% |
+| Weekend discount | 175 | 165 W / 10 L | 94.3\% |
 | Overnight discount | 90 | 87 W / 3 L | 96.7\% |
 | LPNE (BTC 80–87¢ near-expiry) | 5 | 5 W / 0 L | 100.0\% |
 | Weather NO (1-contract verification) | 142 | 54 W / 88 L | 38.0\% |
@@ -783,9 +783,9 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 The bot exposes two Brier scores:
 
 - **Brier (all live candidates)** — measures the **model's** calibration on every opportunity that passed the live-candidate filter, whether or not it filled: 0.0412 overall, 0.0296 on 15M, 0.3946 on weather (side-aware: NO-side rows use $1-p_{raw}$ as the model's probability of the bot's bet winning).
-- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0579 overall (3,644 samples), 0.0437 on 15M.
+- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0580 overall (3,654 samples), 0.0439 on 15M.
 
-A small number of settled trades (3,842 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
+A small number of settled trades (3,852 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
 
 ### Regime Slices
 
@@ -793,14 +793,14 @@ Two regime cutoffs are pinned to actual deploy commit timestamps:
 
 | Slice | Settled | Wins | Win rate | Brier (model) |
 |---|---|---|---|---|
-| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 2,020 | 1,855 | 91.8\% | 0.0416 |
-| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 1,072 | 972 | 90.7\% | 0.0318 |
+| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 2,030 | 1,864 | 91.8\% | 0.0416 |
+| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 1,082 | 981 | 90.7\% | 0.0319 |
 
 The post-Apr-23 slice is the cleanest "current regime" view: WS orderbook depth is now decoded correctly, loss-burst cooldown is shipped, weather NO has been live for 12 days, and XRP has been live at 92¢+ for ~5 days.
 
 ### Shadow / Hypothetical PnL
 
-Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates) is computed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`, totalling 175,196 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
+Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates) is computed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`, totalling 175,390 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
 
 ## Markets
 
@@ -942,4 +942,4 @@ Promoted features (driving live behavior):
 
 ---
 
-*Last updated: 2026-05-10T22:32:13Z*
+*Last updated: 2026-05-10T23:49:59Z*
