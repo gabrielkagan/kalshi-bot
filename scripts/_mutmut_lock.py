@@ -108,7 +108,24 @@ def _acquire(lockfile: str, command: List[str]) -> NoReturn:
     # read/write the file) but matches the kernel-call shape most
     # operators expect to see in `lsof` output if they go debugging
     # a hung lock.
-    fd = os.open(lockfile, os.O_RDWR | os.O_CREAT, 0o644)
+    #
+    # R1 fu (86b9vgh3t R1 m1): wrap the open in a clean error path.
+    # A typo'd lockfile path (e.g., parent dir doesn't exist, or no
+    # write permission) would otherwise crash with a raw Python
+    # traceback — unhelpful for the operator who just wanted to know
+    # the recipe is misconfigured. The Makefile always points at
+    # `.mutmut.lock` in the repo root so this is unreachable in
+    # normal use; this guard exists for hand-invocation typos and
+    # CI sandboxes where /repo is non-writable.
+    try:
+        fd = os.open(lockfile, os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError as exc:
+        sys.stderr.write(
+            f"ERROR: cannot open lockfile {lockfile!r}: {exc}.\n"
+            f"Check that the parent directory exists and is writable. "
+            f"Ticket 86b9vgh1a expects `.mutmut.lock` in the repo root.\n"
+        )
+        sys.exit(_EXIT_USAGE)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:

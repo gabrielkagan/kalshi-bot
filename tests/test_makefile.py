@@ -815,12 +815,19 @@ def test_pillar_5_workflow_calls_tier_targets(wf_name, blocking_integration):
     #     (steps under `jobs.<job>.steps:` are at 6 spaces in this
     #     repo's workflow style: 2 for `jobs:`, 2 for `<job>:`, 2 for
     #     `steps:`).
-    #   * `\n  \w+:`         — next job-level key (2-space indent).
-    #     The `\w+` is loose by design — captures `deploy:`, `lint:`,
-    #     any future sibling job.
+    #   * `\n  [\w-]+:`      — next job-level key (2-space indent).
+    #     R1 fu (86b9vgh3t R1): hyphens in job names are valid GitHub
+    #     Actions syntax (`lint-and-test:`, `deploy-vps:`,
+    #     `build-and-push:`). The prior `\w+` was `[A-Za-z0-9_]` which
+    #     does NOT match hyphens — a hyphenated sibling job would slip
+    #     past the boundary and the regex would bleed into it, picking
+    #     up a misplaced `continue-on-error: true` and false-passing
+    #     the blocking-integration assertion. `[\w-]+` adds hyphen
+    #     explicitly; captures `deploy:`, `lint-and-test:`,
+    #     `deploy-vps:`, any future sibling job (hyphenated or not).
     #   * `\Z`               — end of file.
     integration_match = re.search(
-        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n      - name:|\n  \w+:|\Z)",
+        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n      - name:|\n  [\w-]+:|\Z)",
         text,
     )
     assert integration_match, (
@@ -865,8 +872,17 @@ def test_integration_step_regex_rejects_cross_job_continue_on_error():
 
     The fix narrows the boundary to:
       * `\\n      - name:` (next step at same indent), OR
-      * `\\n  \\w+:` (next job-level declaration at 2-space indent), OR
+      * `\\n  [\\w-]+:` (next job-level declaration at 2-space indent), OR
       * `\\Z` (EOF).
+
+    R1 follow-up (86b9vgh3t R1): the boundary character class was
+    widened from `\\w+` to `[\\w-]+` to cover hyphenated GitHub Actions
+    job names (`lint-and-test`, `deploy-vps`, `build-and-push`). The
+    earlier `\\w+` is `[A-Za-z0-9_]`, which does NOT match hyphens — a
+    hyphenated sibling job would slip past the boundary and the
+    regex would bleed into it. See
+    `test_integration_step_regex_rejects_cross_job_continue_on_error_hyphenated_job`
+    below for the witness.
 
     This regression test builds a synthetic deploy.yml-shaped string
     with the integration step CORRECTLY blocking (no continue-on-error
@@ -901,7 +917,7 @@ def test_integration_step_regex_rejects_cross_job_continue_on_error():
     # Tightened regex (must match the production regex in
     # test_pillar_5_workflow_calls_tier_targets).
     integration_match = re.search(
-        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n      - name:|\n  \w+:|\Z)",
+        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n      - name:|\n  [\w-]+:|\Z)",
         synthetic,
     )
     assert integration_match, "Tightened regex failed to match the integration step at all."
@@ -931,6 +947,83 @@ def test_integration_step_regex_rejects_cross_job_continue_on_error():
         "demonstrate. If the loose pattern was retired entirely, this "
         "assertion is the canary; refresh the synthetic to a current "
         "false-pass shape OR delete this half of the test."
+    )
+
+
+def test_integration_step_regex_rejects_cross_job_continue_on_error_hyphenated_job():
+    """Ticket 86b9vgh3t R1: regression — hyphenated sibling job names
+    (`lint-and-test`, `deploy-vps`, `build-and-push`) must NOT slip
+    past the job-boundary regex.
+
+    Before this R1 fix, the boundary character class was `\\w+` which
+    is `[A-Za-z0-9_]` — does NOT match hyphens. A real-world workflow
+    with a hyphenated sibling job (very common in GitHub Actions) would
+    bleed past `\\n  lint-and-test:` because `\\w+` stops at the first
+    `-`. The regex would then extend past the job boundary and pick
+    up a misplaced `continue-on-error: true` on the sibling job,
+    false-passing the blocking-integration assertion on a real
+    blocking workflow.
+
+    The R1 fix widens the boundary to `[\\w-]+` so hyphens are part of
+    the valid job-name run. This synthetic mirrors a plausible
+    deploy.yml shape where the sibling job uses a hyphenated name.
+    """
+    # Synthetic with a hyphenated sibling job. Integration step in
+    # `test:` has NO continue-on-error (blocking contract). Misplaced
+    # flag is on `lint-and-test:` — same shape as the deploy.yml-job
+    # attack, but with a hyphenated name that the pre-fix `\w+` would
+    # have failed to terminate on.
+    synthetic_hyphenated = (
+        "name: CI\n"
+        "jobs:\n"
+        "  test:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: Integration tier (Pillar 5 — BLOCKING)\n"
+        "        run: make test-integration\n"
+        "\n"
+        "  lint-and-test:\n"
+        "    continue-on-error: true  # MISPLACED — applies to hyphenated job, not step\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: Run lint\n"
+        "        run: make lint\n"
+    )
+    # Tightened regex (must match production regex in
+    # test_pillar_5_workflow_calls_tier_targets).
+    fixed_match = re.search(
+        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n      - name:|\n  [\w-]+:|\Z)",
+        synthetic_hyphenated,
+    )
+    assert fixed_match, "Tightened regex failed to match the integration step at all."
+    fixed_block = fixed_match.group(1)
+    # The block MUST NOT contain `continue-on-error: true` — boundary
+    # correctly stops at `\n  lint-and-test:` (now that `[\w-]+`
+    # accepts the hyphen).
+    assert "continue-on-error" not in fixed_block, (
+        f"Integration-step regex bled across job boundary into "
+        f"hyphenated sibling `lint-and-test:` — captured "
+        f"`continue-on-error` that lives on a sibling job. R1 86b9vgh3t "
+        f"widened the boundary char class from `\\w+` to `[\\w-]+` to "
+        f"prevent this; if this assertion fires, the boundary has been "
+        f"reverted. Block was: {fixed_block!r}"
+    )
+    # And the pre-fix `\w+` boundary DOES exhibit the bug on this
+    # hyphenated synthetic — forward-locked witness that the
+    # `[\w-]+` fix is load-bearing.
+    pre_fix_match = re.search(
+        r"(?ms)- name:[^\n]*Integration tier[^\n]*\n(.*?)(?=\n      - name:|\n  \w+:|\Z)",
+        synthetic_hyphenated,
+    )
+    assert pre_fix_match, "Sanity: pre-fix regex should still match."
+    pre_fix_block = pre_fix_match.group(1)
+    assert "continue-on-error" in pre_fix_block, (
+        "Pre-fix `\\w+` regex no longer exhibits the hyphenated-sibling "
+        "bleed — synthetic fixture has drifted away from the bug shape "
+        "it was meant to demonstrate. If the pre-fix pattern was "
+        "retired entirely, this assertion is the canary; refresh the "
+        "synthetic to a current false-pass shape OR delete this half "
+        "of the test."
     )
 
 
