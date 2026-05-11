@@ -143,98 +143,98 @@
     },
     "CROSS_EXCHANGE_BUFFER_SIZE": {
       "value": 15,
-      "line": 1398,
+      "line": 1405,
       "description": "Cross-exchange price buffer size"
     },
     "CROSS_EXCHANGE_LEAD_THRESHOLD": {
       "value": 0.002,
-      "line": 1400,
+      "line": 1407,
       "description": "Single-exchange lead threshold"
     },
     "CROSS_EXCHANGE_CONSENSUS_THRESHOLD": {
       "value": 0.003,
-      "line": 1402,
+      "line": 1409,
       "description": "Consensus threshold"
     },
     "CROSS_EXCHANGE_CONSENSUS_MIN": {
       "value": "Name(id='_CROSS_EXCHANGE_FEEDS_ACTIVE', ctx=Load())",
-      "line": 1421,
+      "line": 1428,
       "description": "Minimum exchanges for consensus",
       "_raw": true
     },
     "CROSS_EXCHANGE_STALE_SECONDS": {
       "value": 30.0,
-      "line": 1423,
+      "line": 1430,
       "description": "Cross-exchange stale data timeout"
     },
     "KALSHI_OFT_SHADOW_MODE": {
       "value": true,
-      "line": 1456,
+      "line": 1463,
       "description": "Kalshi OFT shadow mode"
     },
     "CALIBRATION_MIN_SAMPLES_PLATT": {
       "value": 200,
-      "line": 1486,
+      "line": 1493,
       "description": "Min samples for Platt calibration"
     },
     "CALIBRATION_MIN_SAMPLES_BETA": {
       "value": 350,
-      "line": 1488,
+      "line": 1495,
       "description": "Min samples for Beta calibration"
     },
     "CALIBRATION_MIN_SAMPLES_BLR": {
       "value": 50,
-      "line": 1490,
+      "line": 1497,
       "description": "Min samples for BLR calibration"
     },
     "MARKET_BLEND_W": {
       "value": 0.4,
-      "line": 1520,
+      "line": 1527,
       "description": "Market blend weight (0=pure model, 1=pure market)"
     },
     "SHADOW_CAL_PIPELINE": {
       "value": true,
-      "line": 1525,
+      "line": 1532,
       "description": "Cal pipeline shadow mode"
     },
     "Z_SCORE_MAX": {
       "value": 25.0,
-      "line": 1531,
+      "line": 1538,
       "description": "Z-score rejection threshold"
     },
     "MIN_EDGE_PCT": {
       "value": 0.25,
-      "line": 1538,
+      "line": 1545,
       "description": "Flat minimum edge fallback"
     },
     "BALANCE_CACHE_TTL": {
       "value": 10.0,
-      "line": 1913,
+      "line": 1920,
       "description": "Balance cache TTL (seconds)"
     },
     "DIRECT_TAKER_THRESHOLD": {
       "value": 180.0,
-      "line": 2005,
+      "line": 2012,
       "description": "Skip maker and go IOC below this many seconds"
     },
     "MAKER_ONLY_THRESHOLD": {
       "value": 0.0,
-      "line": 2008,
+      "line": 2015,
       "description": "No taker execution below this many seconds"
     },
     "ESCALATION_WAIT_LONG": {
       "value": 15.0,
-      "line": 2244,
+      "line": 2251,
       "description": "Maker wait for long STC"
     },
     "ESCALATION_WAIT_MEDIUM": {
       "value": 7.0,
-      "line": 2249,
+      "line": 2256,
       "description": "Maker wait for medium STC"
     },
     "ESCALATION_WAIT_SHORT": {
       "value": 5.0,
-      "line": 2251,
+      "line": 2258,
       "description": "Maker wait for short STC"
     },
     "HOURLY_EXCLUDED_ASSETS": {
@@ -268,6 +268,15 @@
           "binance": "xrpusdt",
           "kraken": "XRP/USD",
           "bybit": "XRPUSDT"
+        },
+        "DOGE": {
+          "binance": "dogeusdt",
+          "kraken": "XDG/USD",
+          "bybit": "DOGEUSDT"
+        },
+        "HYPE": {
+          "kraken": "HYPE/USD",
+          "bybit": "HYPEUSDT"
         }
       },
       "line": 1385,
@@ -296,7 +305,7 @@
           0.995
         ]
       ],
-      "line": 1500,
+      "line": 1507,
       "description": "Dynamic probability cap schedule (STC, cap)"
     },
     "HOURLY_DYNAMIC_CAP_SCHEDULE": {
@@ -322,7 +331,7 @@
           0.999
         ]
       ],
-      "line": 1512,
+      "line": 1519,
       "description": "Hourly dynamic probability cap schedule"
     },
     "MIN_EDGE_BY_PRICE": {
@@ -352,13 +361,13 @@
           0.0025
         ]
       ],
-      "line": 1877,
+      "line": 1884,
       "description": "Price-dependent edge schedule"
     }
   },
   "_bot_lines": 583,
   "_exchange_feeds": [],
-  "_extracted_at": "2026-05-11T00:36:12Z",
+  "_extracted_at": "2026-05-11T00:55:50Z",
   "_bot_path": "/home/runner/work/kalshi-bot/kalshi-bot/bot/_impl.py",
   "_weather": {
     "weather_city_count": 19,
