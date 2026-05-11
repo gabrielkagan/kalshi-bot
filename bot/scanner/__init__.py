@@ -8847,8 +8847,10 @@ class OpportunityScanner:
         # by the same magnitude — small relative to the 600s
         # threshold but worth knowing when debugging.
         #
-        # `_scan_15m_iter_heartbeat_ts` (set at bot/_impl.py:9909 every
-        # 15M window iteration; init=0.0 at bot/_impl.py:9087) decouples
+        # `_scan_15m_iter_heartbeat_ts` (set on MainLoop in bot/main_loop.py
+        # every 15M window iteration; init=0.0 at MainLoop.__init__ —
+        # search anchors: `_scan_15m_iter_heartbeat_ts = time.monotonic()`
+        # and `self._scan_15m_iter_heartbeat_ts = 0.0`) decouples
         # "scan is alive" from "DB rows are appearing" — same fix
         # `c1c2096` applied to the productive (2.5-min) watchdog
         # per kb/failures/scan-tick-stall-cluster-2026-04-25.md.
@@ -9280,7 +9282,8 @@ class OpportunityScanner:
             return
 
         # Kalshi REST returns one of two shapes (same pattern as
-        # _get_orderbook_cached at bot/_impl.py:13538-13546):
+        # _get_orderbook_cached in bot/executor.py — search anchor:
+        # `def _get_orderbook_cached`):
         #   - New FP format: {"orderbook_fp": {"yes_dollars": [[dollar_str,
         #     fp_qty_str], ...], "no_dollars": [...]}}
         #   - Legacy:        {"orderbook": {"yes": [[cents_int, qty_int],
