@@ -1690,6 +1690,40 @@ def test_bit_13_6_onboarding_md_exists():
         )
 
 
+@pytest.mark.parametrize("agent_name,required_sections", [
+    ("rca-investigator",
+     ("## Purpose", "## Invocation", "## Capabilities",
+      "## Tools (declared)", "## Investigation discipline",
+      "## When NOT to dispatch")),
+    ("smoke-runner",
+     ("## Purpose", "## Invocation", "## Capabilities",
+      "## Tools (declared)", "## When NOT to dispatch")),
+    ("kb-archivist",
+     ("## Purpose", "## Invocation", "## Capabilities",
+      "## Tools (declared)", "## Conventions enforced",
+      "## When NOT to dispatch")),
+])
+def test_bit_13_1_rest_agents_exist(agent_name: str, required_sections):
+    """Bit 13.1-rest (2026-05-11) — completes Bit 13.1 with the 3
+    remaining sub-agents (rca-investigator + smoke-runner +
+    kb-archivist). Adv-reviewer + drift-sweeper shipped in earlier
+    Bit-13.1-{narrow,2} commits. Now all 5 codified per master plan
+    §13.1 enumeration."""
+    agent = REPO_ROOT / f".claude/agents/{agent_name}.md"
+    assert agent.is_file(), (
+        f"Bit 13.1-rest agent `.claude/agents/{agent_name}.md` missing."
+    )
+    content = agent.read_text()
+    assert re.search(rf"^---\nname:\s+{re.escape(agent_name)}",
+                     content, re.M), (
+        f"{agent_name}.md missing frontmatter `name: {agent_name}`."
+    )
+    for section in required_sections:
+        assert section in content, (
+            f"{agent_name}.md missing canonical section {section!r}."
+        )
+
+
 def test_bit_13_1_drift_sweeper_agent_exists():
     """Bit 13.1-2 (2026-05-11) — second codified sub-agent.
     drift-sweeper captures the L86 sister-doc drift sweep pattern
