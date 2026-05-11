@@ -128,14 +128,14 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 190,889 |
+| Markets evaluated | 190,933 |
 | Observation period | 2026-02-22 to 2026-05-11 |
-| Filter pass rate | 4.0\% (7,629 of 190,889) |
-| Top rejection reason | Insufficient Edge (57,776) |
+| Filter pass rate | 4.0\% (7,632 of 190,933) |
+| Top rejection reason | Insufficient Edge (57,785) |
 | Settled trades | 3,852 (3,566 W / 284 L / 2 BE) |
 | Win rate | 92.6\% |
 
-*Last updated: 2026-05-11T00:55:48Z*
+*Last updated: 2026-05-11T01:15:20Z*
 
 ## Live vs Observation
 
@@ -222,7 +222,7 @@ fifteenm_shadow.py             -- 15M shadow engine (recalibrated EGARCH + Light
 spx_engine.py                  -- S&P 500 intraday engine (EGARCH + VIX, observation mode)
 weather_engine.py              -- weather temperature engine (NWP ensemble, NO-side live + observation)
 sports_engine.py               -- sports comeback engine (Bayesian LR, observation mode)
-sports_data.py                 -- sports LR tables and league configuration
+bot/engines/sports_data.py     -- sports LR tables and league configuration  (Sprint 10.1a relocation, 2026-05-11)
 capital_allocator.py           -- capital allocation across product types
 circuit_breaker.py             -- per-asset trading halt logic
 dashboard_snapshot.py          -- builds dashboard state snapshots for Supabase
