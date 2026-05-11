@@ -578,6 +578,7 @@
     "XRP_MIN_ENTRY_PRICE",
     "XRP_SHADOW_MIN_PRICE",
     "Z_SCORE_MAX",
+    "best_yes_ask_cents",
     "buffer_sizing_multiplier",
     "calculate_fee",
     "calculate_maker_fee",
@@ -587,6 +588,7 @@
     "compute_for_15m_main_path",
     "compute_time_regime_features",
     "compute_tv_rk_weights",
+    "convert_orderbook_fp",
     "deque",
     "detect_orphan_db_holders",
     "discover_active_windows",
@@ -7281,6 +7283,30 @@
     ],
     "returns": "None"
   },
+  "bot.executor.best_yes_ask_cents": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Dict",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "ob_data"
+      }
+    ],
+    "returns": "Optional[int]"
+  },
+  "bot.executor.convert_orderbook_fp": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Dict",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "ob_fp"
+      }
+    ],
+    "returns": "Dict"
+  },
   "bot.executor.dollars_str_to_cents": {
     "kind": "function",
     "parameters": [
@@ -10849,6 +10875,18 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.helpers.best_yes_ask_cents": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Dict",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "ob_data"
+      }
+    ],
+    "returns": "Optional[int]"
+  },
   "bot.helpers.breakers": {
     "kind": "module"
   },
@@ -13153,6 +13191,18 @@
     ],
     "returns": "Dict[str, Optional[int]]"
   },
+  "bot.helpers.convert_orderbook_fp": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Dict",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "ob_fp"
+      }
+    ],
+    "returns": "Dict"
+  },
   "bot.helpers.datetime": {
     "kind": "unresolved-alias",
     "target_path": "bot.helpers.time_features.datetime"
@@ -13283,6 +13333,33 @@
   "bot.helpers.math": {
     "kind": "unresolved-alias",
     "target_path": "bot.helpers.strategy.math"
+  },
+  "bot.helpers.orderbook": {
+    "kind": "module"
+  },
+  "bot.helpers.orderbook.best_yes_ask_cents": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Dict",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "ob_data"
+      }
+    ],
+    "returns": "Optional[int]"
+  },
+  "bot.helpers.orderbook.convert_orderbook_fp": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Dict",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "ob_fp"
+      }
+    ],
+    "returns": "Dict"
   },
   "bot.helpers.os": {
     "kind": "unresolved-alias",
@@ -31552,6 +31629,18 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.scanner.best_yes_ask_cents": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Dict",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "ob_data"
+      }
+    ],
+    "returns": "Optional[int]"
+  },
   "bot.scanner.buffer_sizing_multiplier": {
     "kind": "function",
     "parameters": [
@@ -31563,6 +31652,18 @@
       }
     ],
     "returns": "float"
+  },
+  "bot.scanner.convert_orderbook_fp": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "Dict",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "ob_fp"
+      }
+    ],
+    "returns": "Dict"
   },
   "bot.scanner.dollars_str_to_cents": {
     "kind": "function",

@@ -294,7 +294,9 @@ from config import (
     SIZING_TIERS,
 )
 from bot.helpers import (
+    best_yes_ask_cents,
     buffer_sizing_multiplier,
+    convert_orderbook_fp,
     dollars_str_to_cents,
     evaluate_execution_strategy,
     get_min_edge,
@@ -7877,35 +7879,13 @@ class OpportunityScanner:
     def _best_yes_ask_cents(ob_data: Dict) -> Optional[int]:
         """Compute best YES ask = 100 - highest NO bid.
 
-        Handles both legacy cents format and floating-point dollar format.
+        Bit 86b9vpp2z (2026-05-11): Path-B wrapper preservation — body
+        relocated to bot/helpers/orderbook.py (so OrderExecutor can drop
+        the `_get_opportunity_scanner()` cycle-break helper); this
+        staticmethod retained as a 1-line delegate to keep the ~20 test
+        sites using `OpportunityScanner._best_yes_ask_cents(...)` working.
         """
-        no_bids = ob_data.get("no", [])
-        if not no_bids:
-            return None
-
-        # Each bid is [price, quantity]. Find highest NO bid price.
-        best_no_bid = None
-        for entry in no_bids:
-            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                price = entry[0]
-            elif isinstance(entry, dict):
-                price = entry.get("price", 0)
-            else:
-                continue
-
-            # Handle FP dollar format (e.g. 0.15) vs cents format (e.g. 15)
-            if isinstance(price, float) and price < 1.0:
-                price_cents = round(price * 100)
-            else:
-                price_cents = int(price)
-
-            if best_no_bid is None or price_cents > best_no_bid:
-                best_no_bid = price_cents
-
-        if best_no_bid is None or best_no_bid <= 0:
-            return None
-
-        return 100 - best_no_bid
+        return best_yes_ask_cents(ob_data)
 
     @staticmethod
     def _is_severe_drift(ws_qty: int, rest_qty: int,
@@ -8083,20 +8063,11 @@ class OpportunityScanner:
     def _convert_orderbook_fp(ob_fp: Dict) -> Dict:
         """Convert orderbook_fp format to internal cents format.
 
-        Input:  {"no_dollars": [["0.1100", "205.00"], ...], "yes_dollars": [...]}
-        Output: {"no": [[11, 205], ...], "yes": [[77, 200], ...]}
+        Bit 86b9vpp2z (2026-05-11): Path-B wrapper preservation — body
+        relocated to bot/helpers/orderbook.py; staticmethod retained as
+        a 1-line delegate (same rationale as `_best_yes_ask_cents` above).
         """
-        result = {}
-        for side in ("yes", "no"):
-            entries = ob_fp.get(f"{side}_dollars") or []
-            converted = []
-            for entry in entries:
-                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                    price_cents = round(float(entry[0]) * 100)
-                    count = int(round(float(entry[1])))
-                    converted.append([price_cents, count])
-            result[side] = converted
-        return result
+        return convert_orderbook_fp(ob_fp)
 
     # Rejection reasons that indicate scan-broken / silent-bail paths.
     # Written by `insert_rejection()` in the bail-shaped branches of

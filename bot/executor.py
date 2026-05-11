@@ -11,26 +11,16 @@ Cross-class coupling preserved via:
     is `import bot.notifier as _telegram_state` (L84) — `from bot import
     notifier as _telegram_state` would trigger _BotProxy.__getattr__ →
     circular ImportError.
-  - `_get_opportunity_scanner()` METHOD-BODY HELPER (NOT top-level
-    `from bot.scanner import OpportunityScanner`) for the 7
-    OpportunityScanner staticmethod call sites in OrderExecutor body
-    (`_convert_orderbook_fp` × 2, `_best_yes_ask_cents` × 5).
-    **Why method-body:** bot.executor and bot.scanner have a SYMMETRIC
-    cycle — each needs the other's class. A top-level `from bot.scanner
-    import OpportunityScanner` here would trigger `IMPORT_FROM 'OpportunityScanner'`
-    → `getattr(bot, 'scanner')` → `_BotProxy.__getattr__('scanner')` → routes
-    to `bot._impl` → which re-imports bot.scanner → which loads bot.executor
-    (partial) → `ImportError: cannot import name OrderExecutor`. Breaking
-    the cycle from the executor side keeps bot/scanner/__init__.py's
-    top-level `from bot.executor import OrderExecutor` clean (which lets
-    the Bit 8.1 fu1 cleanup contract ship: helper retired in scanner +
-    `scanner-no-impl-toplevel` `.importlinter` contract dropped + 3 peer-pin
-    tests dropped + EXPECTED_CONTRACTS shrunk to 5). See
-    `_get_opportunity_scanner()` docstring (search anchor:
-    ``def _get_opportunity_scanner``) for the sole-allowed call form. A
-    future Sprint-10 sibling-reorg Bit may relocate the 2 OpportunityScanner
-    staticmethods to `bot/helpers/orderbook.py` to eliminate this helper
-    entirely (the staticmethods are pure utility with no scanner-instance state).
+  - **Bit 86b9vpp2z (2026-05-11) RETIRED** the `_get_opportunity_scanner()`
+    method-body cycle-break helper. The 10 call sites previously routed
+    through it (`_convert_orderbook_fp` + `_best_yes_ask_cents` accesses
+    on OpportunityScanner) now use direct top-level imports from
+    `bot/helpers/orderbook.py` where the underlying utilities live:
+    `from bot.helpers.orderbook import best_yes_ask_cents, convert_orderbook_fp`
+    near the top of this file. The bot.executor ↔ bot.scanner cycle is
+    now broken structurally (zero back-edges). OpportunityScanner retains
+    the staticmethods as 1-line delegates only so the ~20 test sites using
+    `OpportunityScanner._X(...)` access pattern keep working unchanged.
 
 Path-A++ relocations applied in this Bit:
   - `_append_raw_api_journal` → `bot/helpers/raw_api_journal.py`
@@ -98,6 +88,7 @@ from bot.constants import (
 from bot.helpers.raw_api_journal import append_raw_api_journal  # Bit 9.1 path-A++ relocation — public name in leaf module
 from bot.helpers.strings import dollars_str_to_cents, fp_str_to_int
 from bot.helpers.tm_sweep import tm_compute_contracts, tm_sweep_extract_depths
+from bot.helpers.orderbook import best_yes_ask_cents, convert_orderbook_fp  # Bit 86b9vpp2z (2026-05-11): orderbook utilities relocated from OpportunityScanner staticmethods to bot/helpers/orderbook.py. This direct top-level import RETIRES the `_get_opportunity_scanner()` cycle-break helper that previously existed in this module — OrderExecutor no longer needs a runtime back-edge to bot.scanner just to access the pure-utility orderbook functions.
 from bot.kalshi_client import KalshiClient
 from bot.engines.probability import ProbabilityEngine
 from bot.logger import Logger
@@ -106,29 +97,15 @@ from market_config import get_market_config
 from models import calculate_fee, calculate_taker_fee, strategy_to_group
 
 
-
-
-def _get_opportunity_scanner():
-    """Late-binding helper for OpportunityScanner cross-class calls (cycle break).
-
-    bot.executor ↔ bot.scanner is a structural cycle (both classes call each
-    other's staticmethods at runtime). Breaking the cycle from the bot.executor
-    side keeps bot.scanner's top-level `from bot.executor import OrderExecutor`
-    clean (which lets the Bit 8.1 fu1 cleanup contract ship: helper retired
-    + `scanner-no-impl-toplevel` `.importlinter` contract dropped + 3 peer-pin
-    tests dropped + EXPECTED_CONTRACTS shrunk to 5).
-
-    The 7 call sites in OrderExecutor body access OpportunityScanner staticmethods
-    (`_convert_orderbook_fp` × 2, `_best_yes_ask_cents` × 5) — all pure utility
-    with no scanner-instance state. A future Sprint 10 sibling-reorg Bit may
-    relocate them to `bot/helpers/orderbook.py` to eliminate the helper entirely
-    (filed as follow-up). Until then, this method-body helper is the cycle break.
-
-    Mirrors the shape of the now-retired `_get_order_executor()` helper from
-    bot/scanner/__init__.py (Bit 8.1 path-A++ pattern).
-    """
-    from bot.scanner import OpportunityScanner
-    return OpportunityScanner
+# Bit 86b9vpp2z (2026-05-11) RETIRED `_get_opportunity_scanner()` cycle-break
+# helper. Was: a single-name late-binding helper returning OpportunityScanner
+# so the 7 staticmethod call sites in OrderExecutor body could access
+# `_convert_orderbook_fp` and `_best_yes_ask_cents` without a top-level import.
+# Post-Bit: those two staticmethods are pure module-level functions in
+# bot/helpers/orderbook.py and OrderExecutor imports them directly above. The
+# bot.executor ↔ bot.scanner cycle is now broken structurally (no back-edge);
+# OpportunityScanner retains the staticmethods as 1-line delegates only for
+# the ~20 test sites that use `OpportunityScanner._X(...)` access pattern.
 
 
 class OrderExecutor:
@@ -2025,11 +2002,11 @@ class OrderExecutor:
         # Unwrap response envelope (same as _get_orderbook_cached)
         ob_fp = ob_raw.get("orderbook_fp") if ob_raw else None
         if ob_fp:
-            ob_data = _get_opportunity_scanner()._convert_orderbook_fp(ob_fp)
+            ob_data = convert_orderbook_fp(ob_fp)
         else:
             ob_data = ob_raw.get("orderbook") or ob_raw
 
-        best_ask = _get_opportunity_scanner()._best_yes_ask_cents(ob_data)
+        best_ask = best_yes_ask_cents(ob_data)
         if best_ask is None:
             logging.warning(f"Escalation aborted: no asks on orderbook for {ticker}")
             self._cancel_order(order["asset"], reason)
@@ -2172,7 +2149,7 @@ class OrderExecutor:
                 return None
             ob_fp = ob_resp.get("orderbook_fp")
             if ob_fp and self._ml and hasattr(self._ml, 'scanner'):
-                fresh_ob = self._ml.scanner._convert_orderbook_fp(ob_fp)
+                fresh_ob = convert_orderbook_fp(ob_fp)
             else:
                 fresh_ob = ob_resp.get("orderbook")
             if not fresh_ob:
@@ -2331,7 +2308,7 @@ class OrderExecutor:
             if scanner:
                 ob_data, _ = scanner._get_orderbook_cached(ticker)
                 if ob_data:
-                    price = _get_opportunity_scanner()._best_yes_ask_cents(ob_data)
+                    price = best_yes_ask_cents(ob_data)
                     if price is not None:
                         depth = OrderExecutor._best_ask_depth(ob_data)
                         return price, depth, "orderbook"
@@ -2344,11 +2321,11 @@ class OrderExecutor:
             if ob_resp:
                 ob_fp = ob_resp.get("orderbook_fp")
                 if ob_fp and self._ml and hasattr(self._ml, 'scanner'):
-                    ob_data = self._ml.scanner._convert_orderbook_fp(ob_fp)
+                    ob_data = convert_orderbook_fp(ob_fp)
                 else:
                     ob_data = ob_resp.get("orderbook", ob_resp)
                 if ob_data:
-                    price = _get_opportunity_scanner()._best_yes_ask_cents(ob_data)
+                    price = best_yes_ask_cents(ob_data)
                     if price is not None:
                         depth = OrderExecutor._best_ask_depth(ob_data)
                         return price, depth, "orderbook"
@@ -4066,7 +4043,7 @@ class OrderExecutor:
             # Try FP first (matches prod ordering), then wrapped/unwrapped.
             _ob_fp = _ob_raw.get("orderbook_fp")
             if _ob_fp:
-                _ob = _get_opportunity_scanner()._convert_orderbook_fp(_ob_fp)
+                _ob = convert_orderbook_fp(_ob_fp)
             else:
                 _ob = _ob_raw.get("orderbook", _ob_raw)
             if not isinstance(_ob, dict):
@@ -4883,7 +4860,7 @@ class OrderExecutor:
             if scanner:
                 ob_data, _ = scanner._get_orderbook_cached(ticker)
                 if ob_data:
-                    return _get_opportunity_scanner()._best_yes_ask_cents(ob_data)
+                    return best_yes_ask_cents(ob_data)
         except Exception:
             logging.debug("addon orderbook cache lookup failed", exc_info=True)
 
@@ -4893,11 +4870,11 @@ class OrderExecutor:
             if ob_resp:
                 orderbook_fp = ob_resp.get("orderbook_fp")
                 if orderbook_fp and self._ml and hasattr(self._ml, 'scanner'):
-                    ob_data = self._ml.scanner._convert_orderbook_fp(orderbook_fp)
+                    ob_data = convert_orderbook_fp(orderbook_fp)
                 else:
                     ob_data = ob_resp.get("orderbook", ob_resp)
                 if ob_data:
-                    return _get_opportunity_scanner()._best_yes_ask_cents(ob_data)
+                    return best_yes_ask_cents(ob_data)
         except Exception:
             logging.debug("addon orderbook REST fallback failed", exc_info=True)
         return None
