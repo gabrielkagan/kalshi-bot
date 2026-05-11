@@ -192,15 +192,20 @@ class TestG2BackfillIntegrationWithMockedAPI:
     def test_backfill_skips_already_populated(self, tmp_path):
         from shadow_coverage_backfill import backfill_xasset_spots
         sm = _make_db_with_eval_schema(tmp_path)
-        # Row that ALREADY has btc_spot populated (live row, post-Phase-F).
+        # Row that ALREADY has all 6 cross-asset spots populated (live
+        # row, post-Bit-2). Bit 2 (2026-05-11) widened "already
+        # populated" from "btc IS NOT NULL" to "all 6 IS NOT NULL" —
+        # so a fully-populated row must include hype+doge to be
+        # considered done. R1 adversarial review M1 fix.
         sm.conn.execute(
             "INSERT INTO evaluated_opportunities(ticker, event_ticker, asset, "
             "filter_stage, evaluation_time, product_type, status, "
             "btc_spot_at_decision, eth_spot_at_decision, "
-            "sol_spot_at_decision, xrp_spot_at_decision) "
+            "sol_spot_at_decision, xrp_spot_at_decision, "
+            "hype_spot_at_decision, doge_spot_at_decision) "
             "VALUES ('LIVE', 'E', 'BTC', 'candidate', "
             "'2026-05-02T10:00:00Z', '15m', 'pending', "
-            "99999.0, 99999.0, 99999.0, 99999.0)"
+            "99999.0, 99999.0, 99999.0, 99999.0, 99999.0, 99999.0)"
         )
         sm.conn.commit()
         def _mock_fetch(asset, start_iso, end_iso):

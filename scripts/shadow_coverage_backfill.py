@@ -484,10 +484,11 @@ def lookup_xasset_spots_for_row(
 ) -> Dict[str, Optional[float]]:
     """Resolve cross-asset spots for a given evaluation_time.
 
-    Returns dict with btc/eth/sol/xrp_spot_at_decision keys. If exact
-    minute is missing for an asset, falls back to the nearest minute
-    within ±`fallback_minutes`. Beyond that, returns None for that asset
-    (staler is dishonest for a minute-grade feature)."""
+    Returns dict with one `<asset_lower>_spot_at_decision` key per
+    `COINBASE_PRODUCTS` entry — 6 keys post-T1.5 (btc/eth/sol/xrp/hype/doge).
+    If exact minute is missing for an asset, falls back to the nearest
+    minute within ±`fallback_minutes`. Beyond that, returns None for that
+    asset (staler is dishonest for a minute-grade feature)."""
     try:
         dt = datetime.datetime.fromisoformat(eval_time_iso.replace("Z", "+00:00"))
         epoch_min = int(dt.timestamp()) // 60
@@ -556,10 +557,20 @@ def backfill_xasset_spots(
         sleep_ms = 200
 
     # 1. Discover historical date range.
+    # Bit 2 (2026-05-11, ClickUp 86b9vrjf2): predicate widened from
+    # `btc_spot_at_decision IS NULL` to also catch rows where btc IS
+    # populated but hype/doge IS NULL — the exact cohort that
+    # accumulated since T1 5dca85a, where the producer at
+    # bot/scanner/__init__.py:990 emitted 6 keys but the pre-Bit-2
+    # consumer at bot/state.py:1833-1840 silently dropped hype/doge.
+    # Without this widening the post-Bit-2 backfill runbook would skip
+    # the rows the Bit is designed to fix (R1 adversarial review M1).
     rng = conn.execute(
         "SELECT MIN(evaluation_time), MAX(evaluation_time) "
         "FROM evaluated_opportunities "
-        "WHERE btc_spot_at_decision IS NULL "
+        "WHERE (btc_spot_at_decision IS NULL "
+        "       OR hype_spot_at_decision IS NULL "
+        "       OR doge_spot_at_decision IS NULL) "
         "AND evaluation_time IS NOT NULL"
     ).fetchone()
     if not rng or rng[0] is None:
@@ -618,8 +629,14 @@ def backfill_xasset_spots(
     total = 0
     while True:
         rows = conn.execute(
+            # Bit 2 (2026-05-11): predicate matches the discovery range
+            # widening above — catches the post-T1 cohort where btc was
+            # populated but hype/doge stayed NULL due to the pre-Bit-2
+            # silent-drop bug.
             "SELECT id, evaluation_time FROM evaluated_opportunities "
-            "WHERE id > ? AND btc_spot_at_decision IS NULL "
+            "WHERE id > ? AND (btc_spot_at_decision IS NULL "
+            "                  OR hype_spot_at_decision IS NULL "
+            "                  OR doge_spot_at_decision IS NULL) "
             "AND evaluation_time IS NOT NULL "
             "ORDER BY id LIMIT ?",
             (last_id, batch_size),
@@ -631,10 +648,17 @@ def backfill_xasset_spots(
             conn.execute(
                 "UPDATE evaluated_opportunities SET "
                 "btc_spot_at_decision = ?, eth_spot_at_decision = ?, "
-                "sol_spot_at_decision = ?, xrp_spot_at_decision = ? "
+                "sol_spot_at_decision = ?, xrp_spot_at_decision = ?, "
+                # Bit 2 / T1 cross-asset expansion (2026-05-11): UPDATE
+                # extended to 6 columns. lookup_xasset_spots_for_row
+                # iterates COINBASE_PRODUCTS keys, which already includes
+                # HYPE/DOGE since T1.5 (bf8b9a3, 2026-05-10) — so `spots`
+                # already has the keys, they just weren't being written.
+                "hype_spot_at_decision = ?, doge_spot_at_decision = ? "
                 "WHERE id = ?",
                 (spots["btc_spot_at_decision"], spots["eth_spot_at_decision"],
                  spots["sol_spot_at_decision"], spots["xrp_spot_at_decision"],
+                 spots["hype_spot_at_decision"], spots["doge_spot_at_decision"],
                  r["id"]),
             )
             total += 1

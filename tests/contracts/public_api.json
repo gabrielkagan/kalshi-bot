@@ -7555,6 +7555,18 @@
             "annotation": "Optional[float]",
             "default": "None",
             "kind": "positional or keyword",
+            "name": "hype_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "doge_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
             "name": "okx_funding_rate_at_decision"
           },
           {
@@ -27177,6 +27189,18 @@
             "annotation": "Optional[float]",
             "default": "None",
             "kind": "positional or keyword",
+            "name": "hype_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "doge_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
             "name": "okx_funding_rate_at_decision"
           },
           {
@@ -31727,6 +31751,18 @@
             "annotation": "Optional[float]",
             "default": "None",
             "kind": "positional or keyword",
+            "name": "hype_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "doge_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
             "name": "okx_funding_rate_at_decision"
           },
           {
@@ -35102,6 +35138,18 @@
             "annotation": "Optional[float]",
             "default": "None",
             "kind": "positional or keyword",
+            "name": "hype_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "doge_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
             "name": "okx_funding_rate_at_decision"
           },
           {
@@ -37712,6 +37760,18 @@
             "default": "None",
             "kind": "positional or keyword",
             "name": "xrp_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "hype_spot_at_decision"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "doge_spot_at_decision"
           },
           {
             "annotation": "Optional[float]",

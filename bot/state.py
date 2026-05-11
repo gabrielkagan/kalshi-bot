@@ -801,6 +801,12 @@ class StateManager:
             ("eth_spot_at_decision", "REAL"),
             ("sol_spot_at_decision", "REAL"),
             ("xrp_spot_at_decision", "REAL"),
+            # Bit 2 / T1 cross-asset expansion (2026-05-11). Supabase
+            # migration 019 mirrors these to the remote evaluations table.
+            # Scanner producer at bot/scanner/__init__.py:990 is already
+            # ASSETS-driven (T1 5dca85a) and emits all 6 keys.
+            ("hype_spot_at_decision", "REAL"),
+            ("doge_spot_at_decision", "REAL"),
             ("okx_funding_rate_at_decision", "REAL"),
             ("deribit_funding_rate_at_decision", "REAL"),
             # Phase G-6 (2026-05-02): provenance flag for v2 calibrator
@@ -1673,6 +1679,8 @@ class StateManager:
                                      eth_spot_at_decision: Optional[float] = None,
                                      sol_spot_at_decision: Optional[float] = None,
                                      xrp_spot_at_decision: Optional[float] = None,
+                                     hype_spot_at_decision: Optional[float] = None,
+                                     doge_spot_at_decision: Optional[float] = None,
                                      okx_funding_rate_at_decision: Optional[float] = None,
                                      deribit_funding_rate_at_decision: Optional[float] = None,
                                      # Phase G-6 (2026-05-02): provenance flag.
@@ -1820,7 +1828,9 @@ class StateManager:
                 if recent_n_outcome_streak is None:
                     recent_n_outcome_streak = _ext.get("recent_n_outcome_streak")
                 # Phase F: cross-asset spot snapshot + resolution metadata.
-                # Cross-asset (4): absolute spot levels at decision tick.
+                # Cross-asset (6 post-Bit-2 2026-05-11): absolute spot levels
+                # at decision tick. Bit 2 added hype/doge — see consumer
+                # block below + bot/scanner/__init__.py:990 producer.
                 # Resolution (4 of 5): max_excursion_from_strike +
                 # time_above/below_strike_seconds derived from
                 # _window_states; final_spot_price uses current spot
@@ -1838,6 +1848,14 @@ class StateManager:
                     sol_spot_at_decision = _ext.get("sol_spot_at_decision")
                 if xrp_spot_at_decision is None:
                     xrp_spot_at_decision = _ext.get("xrp_spot_at_decision")
+                # Bit 2 / T1 cross-asset expansion: producer at
+                # bot/scanner/__init__.py:990 is ASSETS-driven and emits
+                # 6 keys. Pre-Bit-2 the hype/doge keys were silently
+                # dropped on the floor here.
+                if hype_spot_at_decision is None:
+                    hype_spot_at_decision = _ext.get("hype_spot_at_decision")
+                if doge_spot_at_decision is None:
+                    doge_spot_at_decision = _ext.get("doge_spot_at_decision")
                 if max_excursion_from_strike is None:
                     max_excursion_from_strike = _ext.get("max_excursion_from_strike")
                 if time_above_strike_seconds is None:
@@ -2032,9 +2050,10 @@ class StateManager:
                      time_above_strike_seconds, time_below_strike_seconds,
                      btc_spot_at_decision, eth_spot_at_decision,
                      sol_spot_at_decision, xrp_spot_at_decision,
+                     hype_spot_at_decision, doge_spot_at_decision,
                      okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
                      data_provenance, bot_state_snapshot_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -2154,6 +2173,8 @@ class StateManager:
                     eth_spot_at_decision=excluded.eth_spot_at_decision,
                     sol_spot_at_decision=excluded.sol_spot_at_decision,
                     xrp_spot_at_decision=excluded.xrp_spot_at_decision,
+                    hype_spot_at_decision=excluded.hype_spot_at_decision,
+                    doge_spot_at_decision=excluded.doge_spot_at_decision,
                     okx_funding_rate_at_decision=excluded.okx_funding_rate_at_decision,
                     deribit_funding_rate_at_decision=excluded.deribit_funding_rate_at_decision,
                     -- Phase G-6: COALESCE so an existing non-default value
@@ -2241,6 +2262,7 @@ class StateManager:
                   time_above_strike_seconds, time_below_strike_seconds,
                   btc_spot_at_decision, eth_spot_at_decision,
                   sol_spot_at_decision, xrp_spot_at_decision,
+                  hype_spot_at_decision, doge_spot_at_decision,
                   okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
                   data_provenance, bot_state_snapshot_json))
             # Phase H-2: explicit COMMIT only if we BEGAN IMMEDIATE explicitly.
