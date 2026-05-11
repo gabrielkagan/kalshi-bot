@@ -155,22 +155,29 @@ def test_required_sections_present():
 
 
 def test_bot_py_sacred_rule_present():
-    """The bot/_impl.py-is-sacred rule must remain in the Critical rules.
+    """The bot/__main__.py-is-the-entrypoint-shim sacred rule must remain
+    in the Critical rules.
 
-    Sacred-file rule per CLAUDE.md and `kb/failures/`. A regression
-    agent that "tidies" by removing the rule line creates a path to
-    accidental refactor of the canonical file. Match the leading
-    bullet so a stray prose mention elsewhere doesn't satisfy the
-    check.
+    Bit 9.4 (2026-05-10) shifted the framing from "bot/_impl.py is the
+    body" (Bit-2.1a-era) to "bot/__main__.py is the entrypoint shim —
+    sacred boundary, no logic. Logic lives in bot/<subpackage>/<module>.py."
+    Post-Bit-9.3-ii, bot/__main__.py imports MainLoop directly from
+    bot.main_loop (NOT from bot._impl); the prior framing is factually
+    wrong and was replaced atomically.
+
+    A regression agent that "tidies" by removing this rule line creates
+    a path to accidental refactor of the canonical entrypoint. Match
+    the leading bullet so a stray prose mention elsewhere doesn't
+    satisfy the check.
     """
     text = CLAUDE_MD.read_text()
-    assert "**`bot/__main__.py` is the runtime entrypoint; `bot/_impl.py` is the body.**" in text, (
-        "CLAUDE.md is missing the canonical entrypoint/body rule "
-        "(`**`bot/__main__.py` is the runtime entrypoint; `bot/_impl.py` "
-        "is the body.**`). This rule is load-bearing post-Bit-2.1a: it "
-        "blocks the recurring temptation to refactor bot/_impl.py into "
-        "modules outside the Sprint 2+ plan, and pins the entrypoint that "
-        "systemd → start.sh → `python -m bot` invokes."
+    assert "**`bot/__main__.py` is the entrypoint shim — sacred boundary, no logic.**" in text, (
+        "CLAUDE.md is missing the canonical Bit-9.4 sacred rule "
+        "(`**`bot/__main__.py` is the entrypoint shim — sacred boundary, "
+        "no logic.**`). This rule is load-bearing post-Bit-9.4: it pins "
+        "the post-Bit-9.3-ii reality that bot/__main__.py imports MainLoop "
+        "directly from bot.main_loop (not via bot._impl), and that logic "
+        "lives in bot/<subpackage>/<module>.py."
     )
 
 
@@ -198,7 +205,7 @@ def test_bot_py_sacred_rule_present():
 #     mismatch and forces the deliberate decision.
 SYSTEMD_CHAIN_LITERAL = (
     "systemd → `ops/kalshi-bot.service` → `start.sh` → `python -m bot` → "
-    "`bot/__main__.py` → `bot/_impl.py`"
+    "`bot/__main__.py` → `bot.main_loop.MainLoop`"
 )
 
 

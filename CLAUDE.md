@@ -25,7 +25,7 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 
 Each one-liner fires here; rationale + history live in `kb/failures/` postmortems.
 
-- **`bot/__main__.py` is the runtime entrypoint; `bot/_impl.py` is the body.** systemd → `ops/kalshi-bot.service` → `start.sh` → `python -m bot` → `bot/__main__.py` → `bot/_impl.py`. Source of truth = `ops/`. Logic moves out per the modularization track (Sprints 3-9); the entrypoint file stays at `bot/__main__.py` for the remainder of the modularization track.
+- **`bot/__main__.py` is the entrypoint shim — sacred boundary, no logic.** Logic lives in `bot/<subpackage>/<module>.py` (e.g., `bot/main_loop.py`, `bot/scanner/__init__.py`, `bot/executor.py`, `bot/settlement.py`, `bot/order_flow.py`, `bot/orphan_db_watchdog.py`, `bot/engines/{volatility,probability,calibration}.py`, `bot/feeds/`, `bot/fetchers/`, `bot/helpers/`, `bot/notifier.py`, `bot/logger.py`, `bot/state.py`, `bot/kalshi_client.py`). Runtime chain: systemd → `ops/kalshi-bot.service` → `start.sh` → `python -m bot` → `bot/__main__.py` → `bot.main_loop.MainLoop` (with `import bot._thread_env` firing FIRST so OMP_NUM_THREADS=1 is set before numpy loads transitively). Source of truth for runtime config = `ops/`. The residual `bot/_impl.py` shim (~582 LOC post-Bit-9.3-ii — re-exports + boot-time bindings + cal_mlp warmup) is scheduled for deletion in Bit 9.3-iii alongside the `_BotProxy` retirement; it is NOT the body and is no longer in the production import chain.
 - Never commit `.env` or `*.jsonl` (gitignored). KB files (`kb/`, `kb-research/`) are local-only by convention — don't `git add` new files there (existing tracked entries are pre-rule legacy).
 - Syntax-check before commit: `make ast-check` (alias for `python3 -c "import ast; ast.parse(open('bot/_impl.py').read())"`).
 - Pushing to main auto-deploys. Always verify the VPS pulled the new commit hash.
@@ -45,7 +45,7 @@ Each one-liner fires here; rationale + history live in `kb/failures/` postmortem
 
 ## Anti-patterns
 
-- Don't refactor `bot/_impl.py` into multiple files outside the planned modularization track. Engines (spx/weather/sports/analyst) run as separate threads/processes — that's the only acceptable split.
+- Don't carve new `bot/<subpackage>/` layers or relocate code across the existing modularization tree outside the planned modularization track (Sprint 4-9 done; Sprint 10 sibling-reorg + Bit 9.3-iii cleanup still pending). Engines (spx/weather/sports/analyst) run as separate threads/processes — that's the only acceptable runtime split. The residual `bot/_impl.py` shim is scheduled for deletion in Bit 9.3-iii; do not add new code to it.
 - Don't add async. Synchronous + threading for WS feeds is the design.
 - Don't switch from SQLite. Single-writer + local-to-VPS latency is the right choice.
 - Don't switch from JSONL journals. Append-only, zero-overhead, daily cron rotation.
