@@ -114,8 +114,14 @@ def test_insert_uses_begin_immediate_timing(bot_py_source):
     # Locate insert_evaluated_opportunity body.
     m_def = bot_py_source.find("def insert_evaluated_opportunity")
     assert m_def >= 0
-    # Search the body (~400-line window).
-    body = bot_py_source[m_def:m_def + 30_000]
+    # Search the body. Widened from 30_000 → 50_000 chars after Bit 2
+    # (2026-05-11 86b9vrjf2) — adding hype/doge to the schema chain
+    # pushed the actual `self.conn.execute("BEGIN IMMEDIATE")` past the
+    # original window, leaving only comment-mentions of BEGIN IMMEDIATE
+    # inside the body slice. The test intent (BEGIN IMMEDIATE statement
+    # adjacent to perf_counter() for accurate lock_wait_ms timing) is
+    # unchanged.
+    body = bot_py_source[m_def:m_def + 50_000]
     assert "BEGIN IMMEDIATE" in body, (
         "Phase H-2 mandates BEGIN IMMEDIATE in insert_evaluated_opportunity "
         "to measure lock_wait_ms. See bot_state_snapshot.py 'lock_wait_ms "
