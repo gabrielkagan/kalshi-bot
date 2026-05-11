@@ -136,8 +136,12 @@ class TestG2BackfillIntegrationWithMockedAPI:
         epoch_sec = int(_dt.datetime(2026, 4, 15, 10, 0, 0,
                                        tzinfo=_dt.timezone.utc).timestamp())
         def _mock_fetch(asset, start_iso, end_iso):
+            # T1.5: COINBASE_PRODUCTS extended to 6 assets — mock must
+            # cover DOGE+HYPE or backfill_xasset_spots will KeyError on
+            # the new asset iteration.
             base = {"BTC": 67432.5, "ETH": 3210.5,
-                    "SOL": 142.7, "XRP": 2.51}[asset]
+                    "SOL": 142.7, "XRP": 2.51,
+                    "DOGE": 0.18, "HYPE": 24.5}[asset]
             return [[epoch_sec, base, base, base, base, 1.0]]
 
         n = backfill_xasset_spots(sm.conn, fetcher=_mock_fetch, batch_size=10)

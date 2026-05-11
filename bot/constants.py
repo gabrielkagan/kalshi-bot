@@ -803,6 +803,13 @@ CROSS_EXCHANGE_SYMBOLS = {
     "ETH": {"binance": "ethusdt", "kraken": "ETH/USD", "bybit": "ETHUSDT"},
     "SOL": {"binance": "solusdt", "kraken": "SOL/USD", "bybit": "SOLUSDT"},
     "XRP": {"binance": "xrpusdt", "kraken": "XRP/USD", "bybit": "XRPUSDT"},
+    "DOGE": {"binance": "dogeusdt", "kraken": "XDG/USD", "bybit": "DOGEUSDT"},
+    # HYPE: only on Binance.US, NOT on Binance.com (the bot connects to
+    # stream.binance.com). The "binance" key is intentionally absent —
+    # CrossExchangeFeed uses v.get("binance") with skip-if-falsy semantics
+    # so the entry resolves to "Kraken + Bybit only" cleanly. Documented
+    # gap per the T1.5 verify-first contract; not a silent NULL.
+    "HYPE": {"kraken": "HYPE/USD", "bybit": "HYPEUSDT"},
 }
 
 BINANCE_WS_URL = "wss://stream.binance.com:9443/stream"
@@ -847,7 +854,7 @@ COINGLASS_CACHE_TTL = 900.0               # stale after 15 min
 
 COINGLASS_REQUEST_TIMEOUT = 10.0
 
-COINGLASS_SYMBOLS = {"BTC": "BTC", "ETH": "ETH", "SOL": "SOL", "XRP": "XRP"}
+COINGLASS_SYMBOLS = {"BTC": "BTC", "ETH": "ETH", "SOL": "SOL", "XRP": "XRP", "DOGE": "DOGE", "HYPE": "HYPE"}
 
 FUNDING_RATE_EXTREME = 0.0005             # 0.05%/8h
 

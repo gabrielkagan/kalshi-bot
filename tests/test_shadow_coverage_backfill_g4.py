@@ -227,10 +227,13 @@ class TestG4BackfillPathMetricsIntegration:
 
         def _mock_fetch(asset, start_iso, end_iso):
             # Phase G-4 round 1 H1: abort fires if ANY asset has zero
-            # candles, so the mock must return non-empty for all 4.
-            # BTC values matter for the assertion; other assets just need
-            # >0 entries so the abort doesn't trip.
-            base = {"BTC": 67500.0, "ETH": 3200.0, "SOL": 140.0, "XRP": 2.5}[asset]
+            # candles, so the mock must return non-empty for all assets
+            # in COINBASE_PRODUCTS.
+            # T1.5: extended to 6 assets — must cover DOGE+HYPE or the
+            # abort trips. BTC values matter for the assertion; other
+            # assets just need >0 entries.
+            base = {"BTC": 67500.0, "ETH": 3200.0, "SOL": 140.0, "XRP": 2.5,
+                    "DOGE": 0.18, "HYPE": 24.5}[asset]
             # Phase G-4 round 2: candle range walks [eval-15..eval-1]
             # (exclusive of eval). Provide candles at i=1..15.
             return [_candle(eval_ts - i * 60, base) for i in range(1, 16)]

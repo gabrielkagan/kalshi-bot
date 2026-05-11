@@ -68,15 +68,22 @@ class CrossExchangeFeed:
         self._connected: Dict[str, bool] = {
             "binance": False, "kraken": False, "bybit": False,
         }
-        # Reverse lookups
+        # Reverse lookups. T1.5 (2026-05-10): per-exchange entries are
+        # optional — when an asset isn't listed on a given exchange (e.g.
+        # HYPE is only on Binance.US, not Binance.com), the key is
+        # ABSENT from the inner dict. Use v.get(...) with skip-if-falsy
+        # so missing keys don't register dead reverse-map entries.
         self._binance_map = {
             v["binance"].upper(): k for k, v in CROSS_EXCHANGE_SYMBOLS.items()
+            if v.get("binance")
         }
         self._kraken_map = {
             v["kraken"]: k for k, v in CROSS_EXCHANGE_SYMBOLS.items()
+            if v.get("kraken")
         }
         self._bybit_map = {
             v["bybit"]: k for k, v in CROSS_EXCHANGE_SYMBOLS.items()
+            if v.get("bybit")
         }
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -198,6 +205,7 @@ class CrossExchangeFeed:
     async def _ws_binance(self):
         streams = "/".join(
             f"{v['binance']}@ticker" for v in CROSS_EXCHANGE_SYMBOLS.values()
+            if v.get("binance")
         )
         url = f"{BINANCE_WS_URL}?streams={streams}"
         backoff = 1.0
@@ -246,7 +254,7 @@ class CrossExchangeFeed:
     # ── Kraken WebSocket ───────────────────────────────────────────────
 
     async def _ws_kraken(self):
-        symbols = [v["kraken"] for v in CROSS_EXCHANGE_SYMBOLS.values()]
+        symbols = [v["kraken"] for v in CROSS_EXCHANGE_SYMBOLS.values() if v.get("kraken")]
         backoff = 1.0
         while not self._stop_event.is_set():
             try:
@@ -298,7 +306,7 @@ class CrossExchangeFeed:
     # ── Bybit WebSocket ────────────────────────────────────────────────
 
     async def _ws_bybit(self):
-        args = [f"tickers.{v['bybit']}" for v in CROSS_EXCHANGE_SYMBOLS.values()]
+        args = [f"tickers.{v['bybit']}" for v in CROSS_EXCHANGE_SYMBOLS.values() if v.get("bybit")]
         backoff = 1.0
         while not self._stop_event.is_set():
             try:

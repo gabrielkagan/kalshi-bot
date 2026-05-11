@@ -378,6 +378,8 @@ COINBASE_PRODUCTS = {
     "ETH": "ETH-USD",
     "SOL": "SOL-USD",
     "XRP": "XRP-USD",
+    "DOGE": "DOGE-USD",
+    "HYPE": "HYPE-USD",
 }
 
 COINBASE_CANDLES_URL = "https://api.exchange.coinbase.com/products/{product_id}/candles"
@@ -912,18 +914,30 @@ def backfill_path_metrics(
 # ── Phase G-5: OKX + Deribit perp funding rate backfill ────────────────
 
 # OKX uses USDT-quoted perps for these assets.
+# T1.5 (2026-05-10, ticket 86b9vre9p): DOGE + HYPE added. Both verified live
+# via /api/v5/public/funding-rate-history. Must stay lock-step with the live
+# poller's FUNDING_SYMBOLS (regression test: TestBackfillOkxFundingInstruments
+# in tests/test_doge_hype_onboarding_t1_5.py) — divergence biases T3 training.
 OKX_FUNDING_INSTRUMENTS = {
     "BTC": "BTC-USDT-SWAP",
     "ETH": "ETH-USDT-SWAP",
     "SOL": "SOL-USDT-SWAP",
     "XRP": "XRP-USDT-SWAP",
+    "DOGE": "DOGE-USDT-SWAP",
+    "HYPE": "HYPE-USDT-SWAP",
 }
-# Deribit uses USD-quoted PERPETUAL for BTC/ETH; SOL/XRP are USDC-quoted.
+# Deribit uses USD-quoted PERPETUAL for BTC/ETH; SOL/XRP/DOGE are USDC-quoted.
+# T1.5: DOGE added (verified live via /public/get_funding_rate_history).
+# HYPE STAYS ABSENT — Deribit does not list a HYPE perpetual (verified via
+# /public/get_instruments?currency=HYPE&kind=future returning empty).
+# Documented gap, not silent NULL. Consumer code uses .get(asset)/iteration
+# so key-absence is safe.
 DERIBIT_FUNDING_INSTRUMENTS = {
     "BTC": "BTC-PERPETUAL",
     "ETH": "ETH-PERPETUAL",
     "SOL": "SOL_USDC-PERPETUAL",
     "XRP": "XRP_USDC-PERPETUAL",
+    "DOGE": "DOGE_USDC-PERPETUAL",
 }
 OKX_FUNDING_URL = "https://www.okx.com/api/v5/public/funding-rate-history"
 DERIBIT_FUNDING_URL = "https://www.deribit.com/api/v2/public/get_funding_rate_history"
