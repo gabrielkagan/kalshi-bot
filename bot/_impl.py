@@ -49,7 +49,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from market_config import get_market_config, get_cal_excluded_types, validate_market_configs, MARKET_CONFIGS
 from config import *  # noqa: F401,F403 — shared constants (single source of truth)
-from circuit_breaker import REGISTRY as _BREAKER_REGISTRY  # circuit breaker for KalshiClient REST GETs
+from bot.infra.circuit_breaker import REGISTRY as _BREAKER_REGISTRY  # circuit breaker for KalshiClient REST GETs (Sprint 10.5a sibling-reorg 2026-05-11)
 
 # Phase 7: cal_mlp integration (single import surface).
 # `from integration import ...` resolves via the `sys.path.insert(...,

@@ -408,5 +408,5 @@ class CircuitBreakerRegistry:
             return dict(self._breakers)
 
 
-# Module-level singleton — `from circuit_breaker import REGISTRY`.
+# Module-level singleton — `from bot.infra.circuit_breaker import REGISTRY` (Sprint 10.5a, 2026-05-11).
 REGISTRY: CircuitBreakerRegistry = CircuitBreakerRegistry()

@@ -8,7 +8,12 @@ import os
 import time
 from typing import Callable
 
-from circuit_breaker import REGISTRY as _BREAKER_REGISTRY
+# Sprint 10.5a (2026-05-11): circuit_breaker relocated to bot/infra/. We can't
+# top-level-import `bot.infra.circuit_breaker` here — that would violate the
+# `helpers-leaf` `.importlinter` contract (bot.helpers.* MUST NOT import sibling
+# subpackages). Late-bound inside `_kalshi_breaker` wrapper instead (lazy
+# import per-call has negligible overhead since `sys.modules` caches after
+# first call; import-linter only inspects module-level imports).
 
 def _extract_tick_error_location(exc) -> str:
     """Return 'basename.py:LINE:func' for the deepest frame of `exc`'s
@@ -143,6 +148,9 @@ def _kalshi_breaker(method):
             f"`@_breaker_config(...)` (inner).")
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
+        # Late-bind to avoid module-level `bot.helpers → bot.infra` edge
+        # (helpers-leaf .importlinter contract violation post-10.5a).
+        from bot.infra.circuit_breaker import REGISTRY as _BREAKER_REGISTRY
         key = method._breaker_key_fn(self, *args, **kwargs)
         breaker = _BREAKER_REGISTRY.get(
             key,

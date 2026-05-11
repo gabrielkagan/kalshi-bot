@@ -43,7 +43,7 @@ PRODUCTION_FILES = [
     "supabase_sync.py",
     "watchdog.py",
     "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
-    "capital_allocator.py",
+    "bot/infra/capital_allocator.py",  # Sprint 10.5a (2026-05-11)
 ]
 
 
@@ -313,7 +313,7 @@ class TestSyntaxCheck:
         "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
         "bot/shadows/hourly_alt_shadow.py",  # Sprint 10.2 (2026-05-11)
         "bot/shadows/spx_harrv_shadow.py",  # Sprint 10.2 (2026-05-11)
-        "capital_allocator.py",
+        "bot/infra/capital_allocator.py",  # Sprint 10.5a (2026-05-11)
     ]
 
     def test_all_critical_files_parse(self):

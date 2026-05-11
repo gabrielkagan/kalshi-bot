@@ -169,7 +169,7 @@ def test_breaker_registry_resolves_at_import():
     (manual breaker wrapping). The new module must import it from
     `circuit_breaker` — not inherit it from bot/_impl.py.
     """
-    import circuit_breaker
+    import bot.infra.circuit_breaker as circuit_breaker  # Sprint 10.5a (2026-05-11)
     import bot.kalshi_client as bkc
     assert bkc._BREAKER_REGISTRY is circuit_breaker.REGISTRY
 

@@ -101,7 +101,7 @@ PRODUCTION_FILES = [
     "bot/_impl.py",
     "analyst.py",
     "auditor.py",
-    "capital_allocator.py",
+    "bot/infra/capital_allocator.py",  # Sprint 10.5a (2026-05-11)
     "dashboard_snapshot.py",
     "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
     "bot/shadows/hourly_alt_shadow.py",  # Sprint 10.2 (2026-05-11)

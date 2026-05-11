@@ -24492,6 +24492,480 @@
     "kind": "unresolved-alias",
     "target_path": "bot.constants.os"
   },
+  "bot.infra": {
+    "kind": "module"
+  },
+  "bot.infra.capital_allocator": {
+    "kind": "module"
+  },
+  "bot.infra.capital_allocator.CORRELATION_STATE_FILE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.infra.capital_allocator.CapitalAllocator": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[set]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "observation_strategies"
+          }
+        ],
+        "returns": null
+      },
+      "get_all_budgets": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "total_balance_cents"
+          },
+          {
+            "annotation": "Optional[Dict[str, int]]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "locked_by_strategy"
+          }
+        ],
+        "returns": "Dict[str, int]"
+      },
+      "get_budget_cents": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "strategy"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "total_balance_cents"
+          },
+          {
+            "annotation": "Optional[Dict[str, int]]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "locked_by_strategy"
+          }
+        ],
+        "returns": "int"
+      },
+      "get_composite_score": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "int"
+      },
+      "get_ewma_correlation": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "get_regime": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "str"
+      },
+      "get_vix": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "update_daily": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "btc_daily_return"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "spx_daily_return"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "vix_level"
+          }
+        ],
+        "returns": null
+      },
+      "update_observation_strategies": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "set",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "obs_set"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.infra.capital_allocator.CorrelationRiskManager": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "get_regime": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "str"
+      },
+      "is_fomc_day": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "bool"
+      },
+      "update_daily": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "btc_return"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "spx_return"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "vix_level"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.infra.capital_allocator.FOMC_DATES_2026": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.infra.capital_allocator.REGIME_BUDGET_CAPS_CENTS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.infra.capital_allocator.STRATEGY_CONFIGS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.infra.circuit_breaker": {
+    "kind": "module"
+  },
+  "bot.infra.circuit_breaker.CircuitBreaker": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "int",
+            "default": "3",
+            "kind": "positional or keyword",
+            "name": "failures_to_open"
+          },
+          {
+            "annotation": "float",
+            "default": "300.0",
+            "kind": "positional or keyword",
+            "name": "recovery_seconds"
+          },
+          {
+            "annotation": "float",
+            "default": "30.0",
+            "kind": "positional or keyword",
+            "name": "probe_timeout_seconds"
+          },
+          {
+            "annotation": "str",
+            "default": "'<unnamed>'",
+            "kind": "positional or keyword",
+            "name": "name"
+          }
+        ],
+        "returns": "None"
+      },
+      "acquire": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Optional[int]"
+      },
+      "call": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Iterator[None]"
+      },
+      "failure_count": {
+        "annotation": "int",
+        "kind": "attribute"
+      },
+      "is_open": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "bool"
+      },
+      "metrics": {
+        "annotation": "Dict[str, int]",
+        "kind": "attribute"
+      },
+      "name": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "record_result": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "generation"
+          },
+          {
+            "annotation": "bool",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "success"
+          }
+        ],
+        "returns": "None"
+      },
+      "state": {
+        "annotation": "str",
+        "kind": "attribute"
+      }
+    }
+  },
+  "bot.infra.circuit_breaker.CircuitBreakerOpen": {
+    "bases": [
+      "Exception"
+    ],
+    "kind": "class",
+    "members": {}
+  },
+  "bot.infra.circuit_breaker.CircuitBreakerRegistry": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "None"
+      },
+      "all_breakers": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict[str, CircuitBreaker]"
+      },
+      "get": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "key"
+          },
+          {
+            "annotation": null,
+            "default": "{}",
+            "kind": "variadic keyword",
+            "name": "kwargs"
+          }
+        ],
+        "returns": "CircuitBreaker"
+      }
+    }
+  },
+  "bot.infra.circuit_breaker.REGISTRY": {
+    "annotation": "CircuitBreakerRegistry",
+    "kind": "attribute"
+  },
+  "bot.infra.circuit_breaker.State": {
+    "bases": [
+      "enum.Enum"
+    ],
+    "kind": "class",
+    "members": {
+      "CLOSED": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "HALF_OPEN": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "OPEN": {
+        "annotation": null,
+        "kind": "attribute"
+      }
+    }
+  },
   "bot.kalshi_client": {
     "kind": "module"
   },

@@ -51,8 +51,8 @@ class TestKalshiClientBreakerImports(unittest.TestCase):
         with open(bot._impl.__file__) as f:
             src = f.read()
         self.assertIn(
-            "from circuit_breaker import", src,
-            "bot/_impl.py must import from circuit_breaker so REGISTRY is "
+            "from bot.infra.circuit_breaker import", src,  # Sprint 10.5a (2026-05-11): circuit_breaker relocated to bot/infra/
+            "bot/_impl.py must import from bot.infra.circuit_breaker so REGISTRY is "
             "available to KalshiClient methods.")
         self.assertIn(
             "REGISTRY", src,
@@ -63,7 +63,7 @@ class TestKalshiClientGetBalanceBreaker(unittest.TestCase):
 
     def setUp(self):
         # Reset the breaker between tests.
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         REGISTRY._breakers.pop("kalshi_balance", None)
 
     def test_get_balance_calls_underlying_request_on_success(self):
@@ -73,7 +73,7 @@ class TestKalshiClientGetBalanceBreaker(unittest.TestCase):
         c._request.assert_called_once()
 
     def test_get_balance_short_circuits_when_open(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         # Trip the breaker to OPEN.
         c._request.return_value = None  # simulate API error
@@ -87,7 +87,7 @@ class TestKalshiClientGetBalanceBreaker(unittest.TestCase):
         c._request.assert_not_called()
 
     def test_get_balance_records_failure_on_none_response(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         c.get_balance()
@@ -101,7 +101,7 @@ class TestKalshiClientGetEventsBreakerPerSeries(unittest.TestCase):
     KXNBAGAME's breaker."""
 
     def setUp(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         for k in list(REGISTRY._breakers.keys()):
             if k.startswith("kalshi_events_"):
                 REGISTRY._breakers.pop(k)
@@ -112,7 +112,7 @@ class TestKalshiClientGetEventsBreakerPerSeries(unittest.TestCase):
         status=active fails) means failures never accumulate. Fix:
         include status in the breaker key so each (series, status)
         pair tracks independently."""
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         # Fail KXFIFAGAME with status=active 3 times → trips that
@@ -136,7 +136,7 @@ class TestKalshiClientGetEventsBreakerPerSeries(unittest.TestCase):
         """The actual production bug: status=open returning success
         should NOT reset the failure counter for status=active. They
         are independent endpoints conceptually."""
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         # Pattern: status=open succeeds, status=active fails — the
         # exact pattern sports_engine produces in production.
@@ -160,7 +160,7 @@ class TestKalshiClientGetEventsBreakerPerSeries(unittest.TestCase):
             "resetting active's counter to 0.")
 
     def test_get_events_open_breaker_short_circuits(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
@@ -173,7 +173,7 @@ class TestKalshiClientGetEventsBreakerPerSeries(unittest.TestCase):
     def test_get_events_no_series_no_status_uses_default_key(self):
         """When both series_ticker and status are None, the breaker
         key uses 'all' / 'any' fallbacks."""
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
@@ -189,13 +189,13 @@ class TestKalshiClientGetEventsBreakerPerSeries(unittest.TestCase):
 class TestKalshiClientGetSettlementsBreaker(unittest.TestCase):
 
     def setUp(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         for k in list(REGISTRY._breakers.keys()):
             if k.startswith("kalshi_settlements_"):
                 REGISTRY._breakers.pop(k)
 
     def test_get_settlements_uses_breaker(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
@@ -238,7 +238,7 @@ class TestKalshiClientSuccessDetection(unittest.TestCase):
     count as failures, not successes."""
 
     def setUp(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         for k in list(REGISTRY._breakers.keys()):
             REGISTRY._breakers.pop(k)
 
@@ -248,7 +248,7 @@ class TestKalshiClientSuccessDetection(unittest.TestCase):
         payloads, and `_request()` may return `{}` on a 200 with
         empty body — we can't disambiguate without per-endpoint
         contract knowledge. Erring on side of NOT tripping."""
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = {}
         c.get_balance()
@@ -259,7 +259,7 @@ class TestKalshiClientSuccessDetection(unittest.TestCase):
 
     def test_error_shaped_response_is_failure(self):
         """200 OK with `{"error": ...}` payload counts as failure."""
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = {"error": "rate_limited"}
         c.get_balance()
@@ -269,7 +269,7 @@ class TestKalshiClientSuccessDetection(unittest.TestCase):
     def test_errors_plural_response_is_failure(self):
         """Round-2 A2 fix: `{"errors": [...]}` (plural, validation
         failures) counts as failure."""
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = {
             "errors": [{"code": "INVALID", "message": "bad"}]}
@@ -279,7 +279,7 @@ class TestKalshiClientSuccessDetection(unittest.TestCase):
 
     def test_real_response_is_success(self):
         """Non-empty dict without 'error' key is success."""
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = {"events": []}  # legit empty list
         c.get_events(series_ticker="KXNBAGAME")
@@ -294,7 +294,7 @@ class TestKalshiClientOrderbookKeyGrouping(unittest.TestCase):
     expire every 15 min."""
 
     def setUp(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         for k in list(REGISTRY._breakers.keys()):
             if k.startswith("kalshi_orderbook_"):
                 REGISTRY._breakers.pop(k)
@@ -302,7 +302,7 @@ class TestKalshiClientOrderbookKeyGrouping(unittest.TestCase):
     def test_orderbook_breakers_group_by_series(self):
         """All BTC 15M tickers must share one breaker (key
         kalshi_orderbook_KXBTC15M), not one per expiring ticker."""
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         # Hit 5 different BTC 15M tickers — should all use the same
@@ -323,7 +323,7 @@ class TestKalshiClientOrderbookKeyGrouping(unittest.TestCase):
     def test_different_series_have_separate_breakers(self):
         """KXBTC15M failures must NOT trip KXETH15M (per-series
         isolation, just like get_events)."""
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
@@ -339,12 +339,12 @@ class TestKalshiClientAdditionalGetsWrapped(unittest.TestCase):
     get_queue_position must also be wrapped."""
 
     def setUp(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         for k in list(REGISTRY._breakers.keys()):
             REGISTRY._breakers.pop(k)
 
     def test_get_markets_wrapped(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
@@ -353,7 +353,7 @@ class TestKalshiClientAdditionalGetsWrapped(unittest.TestCase):
             REGISTRY.get("kalshi_markets_KXNBAGAME").is_open())
 
     def test_get_market_wrapped(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
@@ -363,7 +363,7 @@ class TestKalshiClientAdditionalGetsWrapped(unittest.TestCase):
             REGISTRY.get("kalshi_market_KXBTC15M").is_open())
 
     def test_get_orders_wrapped(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
@@ -371,7 +371,7 @@ class TestKalshiClientAdditionalGetsWrapped(unittest.TestCase):
         self.assertTrue(REGISTRY.get("kalshi_orders").is_open())
 
     def test_get_fills_wrapped(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
@@ -379,7 +379,7 @@ class TestKalshiClientAdditionalGetsWrapped(unittest.TestCase):
         self.assertTrue(REGISTRY.get("kalshi_fills").is_open())
 
     def test_get_queue_position_wrapped(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
@@ -389,7 +389,7 @@ class TestKalshiClientAdditionalGetsWrapped(unittest.TestCase):
 
     def test_get_positions_wrapped(self):
         """Round-2 A1 fix — get_positions was silently unwrapped."""
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         c = _make_client_with_mocked_request()
         c._request.return_value = None
         for _ in range(3):
@@ -463,16 +463,16 @@ class TestCircuitBreakerLogsOnTransition(unittest.TestCase):
     see when a source disabled itself, not just silent failures."""
 
     def setUp(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         for k in list(REGISTRY._breakers.keys()):
             REGISTRY._breakers.pop(k)
 
     def test_logs_circuit_breaker_tripped_on_open(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker
         import logging
         b = CircuitBreaker(failures_to_open=2, recovery_seconds=10,
                            name="test_endpoint")
-        with self.assertLogs("circuit_breaker", level="WARNING") as cm:
+        with self.assertLogs("bot.infra.circuit_breaker", level="WARNING") as cm:  # Sprint 10.5a (2026-05-11): logger namespace moved with the module
             for _ in range(2):
                 gen = b.acquire()
                 b.record_result(gen, success=False)
@@ -481,7 +481,7 @@ class TestCircuitBreakerLogsOnTransition(unittest.TestCase):
         self.assertIn("test_endpoint", msgs)
 
     def test_breaker_name_auto_set_from_registry_key(self):
-        from circuit_breaker import REGISTRY
+        from bot.infra.circuit_breaker import REGISTRY
         b = REGISTRY.get("kalshi_balance",
                          failures_to_open=3, recovery_seconds=10)
         self.assertEqual(b.name, "kalshi_balance")

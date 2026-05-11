@@ -461,7 +461,7 @@ class MainLoop:
         # ── Capital Allocator (conditional) ────────────────────────────────
         self.capital_allocator = None
         try:
-            from capital_allocator import CapitalAllocator
+            from bot.infra.capital_allocator import CapitalAllocator  # Sprint 10.5a sibling-reorg (2026-05-11)
             _obs_strategies = set()
             for _k, _v in MARKET_CONFIGS.items():
                 if _v.observation_only:

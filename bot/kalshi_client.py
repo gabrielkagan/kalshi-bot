@@ -36,7 +36,7 @@ from bot.helpers.breakers import (
     _kalshi_breaker_success,
     _kalshi_series_key,
 )
-from circuit_breaker import REGISTRY as _BREAKER_REGISTRY
+from bot.infra.circuit_breaker import REGISTRY as _BREAKER_REGISTRY  # Sprint 10.5a (2026-05-11)
 
 
 class KalshiClient:

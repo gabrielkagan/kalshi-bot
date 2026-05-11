@@ -36,13 +36,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 class TestCircuitBreakerStateMachine(unittest.TestCase):
 
     def test_starts_closed(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=10)
         self.assertFalse(b.is_open())
         self.assertEqual(b.state, "closed")
 
     def test_opens_after_n_failures(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=10)
         for _ in range(2):
             gen = b.acquire()
@@ -56,7 +56,7 @@ class TestCircuitBreakerStateMachine(unittest.TestCase):
             "Should be open after 3 consecutive failures")
 
     def test_success_in_closed_resets_failure_counter(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=10)
         for _ in range(2):
             gen = b.acquire()
@@ -70,7 +70,7 @@ class TestCircuitBreakerStateMachine(unittest.TestCase):
             "Counter should have reset after success.")
 
     def test_acquire_returns_none_when_open(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=2, recovery_seconds=60)
         gen1 = b.acquire(); b.record_result(gen1, success=False)
         gen2 = b.acquire(); b.record_result(gen2, success=False)
@@ -82,7 +82,7 @@ class TestCircuitBreakerStateMachine(unittest.TestCase):
         """After recovery_seconds, the next acquire() must return a
         token (transitioning to HALF_OPEN). is_open() should reflect
         the half-open state honestly (returns False — calls allowed)."""
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=2, recovery_seconds=0.05)
         gen = b.acquire(); b.record_result(gen, success=False)
         gen = b.acquire(); b.record_result(gen, success=False)
@@ -95,7 +95,7 @@ class TestCircuitBreakerStateMachine(unittest.TestCase):
         self.assertEqual(b.state, "half_open")
 
     def test_half_open_failure_reopens_immediately(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=2, recovery_seconds=0.05)
         for _ in range(2):
             gen = b.acquire(); b.record_result(gen, success=False)
@@ -107,7 +107,7 @@ class TestCircuitBreakerStateMachine(unittest.TestCase):
             "Single failure in HALF_OPEN must reopen.")
 
     def test_half_open_success_closes(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=2, recovery_seconds=0.05)
         for _ in range(2):
             gen = b.acquire(); b.record_result(gen, success=False)
@@ -125,7 +125,7 @@ class TestCircuitBreakerConcurrency(unittest.TestCase):
         """P0-1 regression. After auto-recovery, two threads racing
         to acquire() must NOT both pass through. Exactly one gets a
         token; the other gets None until the probe resolves."""
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=2, recovery_seconds=0.05)
         for _ in range(2):
             gen = b.acquire(); b.record_result(gen, success=False)
@@ -155,7 +155,7 @@ class TestCircuitBreakerConcurrency(unittest.TestCase):
         """P0-2 regression. A successful record_result from an in-
         flight call that started BEFORE a state transition must NOT
         force the breaker closed."""
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=10)
 
         # T1 acquires (gen=g1), then before T1 records, the breaker
@@ -176,7 +176,7 @@ class TestCircuitBreakerConcurrency(unittest.TestCase):
     def test_state_property_does_not_mutate(self):
         """P0-3 regression. Reading `state` must not auto-recover an
         OPEN breaker, even when recovery_seconds has elapsed."""
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=1, recovery_seconds=0.01)
         gen = b.acquire(); b.record_result(gen, success=False)
         time.sleep(0.05)  # recovery period elapsed
@@ -191,7 +191,7 @@ class TestCircuitBreakerConcurrency(unittest.TestCase):
             "P0-3 regression.")
 
     def test_concurrent_acquire_does_not_corrupt_state(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=10000, recovery_seconds=60)
         N = 50
         ITER = 100
@@ -222,7 +222,7 @@ class TestCircuitBreakerConcurrency(unittest.TestCase):
         This is the deliberate trade-off after round-3 review found
         that 'count all failures' semantics led to unbounded growth
         and a counter that contradicted documented semantics."""
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=60)
 
         # 10 threads each acquire in CLOSED (gen=0).
@@ -247,7 +247,7 @@ class TestCircuitBreakerConcurrency(unittest.TestCase):
         (probe failed), failure_count must be 0, not stuck at the
         prior trip value. Otherwise the next CLOSED epoch starts
         with leftover noise."""
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=0.05)
         # Trip OPEN.
         for _ in range(3):
@@ -269,7 +269,7 @@ class TestCircuitBreakerConcurrency(unittest.TestCase):
         """Round-1 P0-2 regression check, restated for v2: a stale
         success from a CLOSED-epoch call must NOT force an OPEN
         breaker back to CLOSED."""
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=60)
         # All 5 acquire in CLOSED gen=0.
         gens = [b.acquire() for _ in range(5)]
@@ -292,7 +292,7 @@ class TestCircuitBreakerConcurrency(unittest.TestCase):
 
         Asserts: no exceptions/corruption + valid state at each
         phase end + at least one OPEN refusal observed."""
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=0.05,
                            probe_timeout_seconds=1.0)
 
@@ -350,7 +350,7 @@ class TestCircuitBreakerLifetimeMetrics(unittest.TestCase):
     `failure_count` resets on transitions; `metrics` is monotonic."""
 
     def test_metrics_count_every_ack_regardless_of_state(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=60)
         # 5 concurrent CLOSED-epoch acquires.
         gens = [b.acquire() for _ in range(5)]
@@ -366,7 +366,7 @@ class TestCircuitBreakerLifetimeMetrics(unittest.TestCase):
             "failure_count is the trip counter; resets on trip.")
 
     def test_metrics_count_refused_calls(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=1, recovery_seconds=60)
         g = b.acquire(); b.record_result(g, success=False)
         # Now OPEN — every acquire returns None and counts as refused.
@@ -381,7 +381,7 @@ class TestCircuitBreakerProbeSlotLeak(unittest.TestCase):
     probe slot, not block recovery for probe_timeout_seconds."""
 
     def test_keyboard_interrupt_in_half_open_releases_probe(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=1, recovery_seconds=0.05,
                            probe_timeout_seconds=30.0)
         g = b.acquire(); b.record_result(g, success=False)
@@ -399,7 +399,7 @@ class TestCircuitBreakerProbeSlotLeak(unittest.TestCase):
             "Round-4 A2 regression.")
 
     def test_system_exit_in_half_open_releases_probe(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=1, recovery_seconds=0.05,
                            probe_timeout_seconds=30.0)
         g = b.acquire(); b.record_result(g, success=False)
@@ -416,14 +416,14 @@ class TestCircuitBreakerTypeContract(unittest.TestCase):
     silently became 1. Reject explicitly."""
 
     def test_failures_to_open_rejects_bool(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         with self.assertRaises(ValueError):
             CircuitBreaker(failures_to_open=True, recovery_seconds=10)
         with self.assertRaises(ValueError):
             CircuitBreaker(failures_to_open=False, recovery_seconds=10)
 
     def test_failures_to_open_rejects_float(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         with self.assertRaises(ValueError):
             CircuitBreaker(failures_to_open=3.0, recovery_seconds=10)
 
@@ -431,7 +431,7 @@ class TestCircuitBreakerTypeContract(unittest.TestCase):
 class TestCircuitBreakerContextManager(unittest.TestCase):
 
     def test_call_records_success_on_normal_exit(self):
-        from circuit_breaker import CircuitBreaker, CircuitBreakerOpen
+        from bot.infra.circuit_breaker import CircuitBreaker, CircuitBreakerOpen  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=10)
         gen = b.acquire(); b.record_result(gen, success=False)
         gen = b.acquire(); b.record_result(gen, success=False)
@@ -444,7 +444,7 @@ class TestCircuitBreakerContextManager(unittest.TestCase):
         self.assertFalse(b.is_open())
 
     def test_call_records_failure_on_exception(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=2, recovery_seconds=10)
         with self.assertRaises(RuntimeError):
             with b.call():
@@ -452,7 +452,7 @@ class TestCircuitBreakerContextManager(unittest.TestCase):
         self.assertEqual(b.failure_count, 1)
 
     def test_call_raises_when_open(self):
-        from circuit_breaker import CircuitBreaker, CircuitBreakerOpen
+        from bot.infra.circuit_breaker import CircuitBreaker, CircuitBreakerOpen  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=1, recovery_seconds=60)
         gen = b.acquire(); b.record_result(gen, success=False)
         with self.assertRaises(CircuitBreakerOpen):
@@ -464,21 +464,21 @@ class TestCircuitBreakerArgValidation(unittest.TestCase):
     """Reject footgun configurations at construction."""
 
     def test_failures_to_open_must_be_positive(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         with self.assertRaises(ValueError):
             CircuitBreaker(failures_to_open=0, recovery_seconds=10)
         with self.assertRaises(ValueError):
             CircuitBreaker(failures_to_open=-1, recovery_seconds=10)
 
     def test_recovery_seconds_must_be_non_negative(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         with self.assertRaises(ValueError):
             CircuitBreaker(failures_to_open=3, recovery_seconds=-1)
 
     def test_probe_timeout_must_be_positive(self):
         """Round-2 P1-2 regression — zero probe_timeout reintroduces
         unlimited parallel probes."""
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         with self.assertRaises(ValueError):
             CircuitBreaker(failures_to_open=3, recovery_seconds=10,
                            probe_timeout_seconds=0)
@@ -489,7 +489,7 @@ class TestCircuitBreakerArgValidation(unittest.TestCase):
     def test_recovery_seconds_rejects_nan_and_inf(self):
         """Round-3 P1-1 regression — NaN/inf would leave the breaker
         stuck OPEN forever because comparisons silently fail."""
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         with self.assertRaises(ValueError):
             CircuitBreaker(failures_to_open=3,
                            recovery_seconds=float("nan"))
@@ -498,7 +498,7 @@ class TestCircuitBreakerArgValidation(unittest.TestCase):
                            recovery_seconds=float("inf"))
 
     def test_probe_timeout_rejects_nan_and_inf(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         with self.assertRaises(ValueError):
             CircuitBreaker(failures_to_open=3, recovery_seconds=10,
                            probe_timeout_seconds=float("nan"))
@@ -512,7 +512,7 @@ class TestCircuitBreakerInterruptHandling(unittest.TestCase):
     or SystemExit during a healthy call would record as a failure."""
 
     def test_keyboard_interrupt_does_not_record_failure(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=10)
         with self.assertRaises(KeyboardInterrupt):
             with b.call():
@@ -522,7 +522,7 @@ class TestCircuitBreakerInterruptHandling(unittest.TestCase):
             "call failure. failure_count must remain 0.")
 
     def test_system_exit_does_not_record_failure(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=10)
         with self.assertRaises(SystemExit):
             with b.call():
@@ -530,7 +530,7 @@ class TestCircuitBreakerInterruptHandling(unittest.TestCase):
         self.assertEqual(b.failure_count, 0)
 
     def test_regular_exception_still_records_failure(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=3, recovery_seconds=10)
         with self.assertRaises(ValueError):
             with b.call():
@@ -543,7 +543,7 @@ class TestCircuitBreakerHalfOpenTimeout(unittest.TestCase):
     must not be permanently blocked from probing again."""
 
     def test_half_open_probe_times_out(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=1, recovery_seconds=0.05,
                            probe_timeout_seconds=0.05)
         gen = b.acquire(); b.record_result(gen, success=False)
@@ -564,21 +564,21 @@ class TestCircuitBreakerHalfOpenTimeout(unittest.TestCase):
 class TestCircuitBreakerRegistry(unittest.TestCase):
 
     def test_returns_same_breaker_for_same_key(self):
-        from circuit_breaker import CircuitBreakerRegistry
+        from bot.infra.circuit_breaker import CircuitBreakerRegistry  # Sprint 10.5a (2026-05-11)
         r = CircuitBreakerRegistry()
         b1 = r.get("kalshi_events_KXNBAGAME")
         b2 = r.get("kalshi_events_KXNBAGAME")
         self.assertIs(b1, b2)
 
     def test_returns_different_breaker_for_different_keys(self):
-        from circuit_breaker import CircuitBreakerRegistry
+        from bot.infra.circuit_breaker import CircuitBreakerRegistry  # Sprint 10.5a (2026-05-11)
         r = CircuitBreakerRegistry()
         b1 = r.get("kalshi_events_KXNBAGAME")
         b2 = r.get("kalshi_events_KXMLBGAME")
         self.assertIsNot(b1, b2)
 
     def test_first_call_uses_provided_kwargs(self):
-        from circuit_breaker import CircuitBreakerRegistry
+        from bot.infra.circuit_breaker import CircuitBreakerRegistry  # Sprint 10.5a (2026-05-11)
         r = CircuitBreakerRegistry()
         b = r.get("test_endpoint",
                   failures_to_open=5, recovery_seconds=600)
@@ -589,7 +589,7 @@ class TestCircuitBreakerRegistry(unittest.TestCase):
         self.assertTrue(b.is_open())
 
     def test_registry_thread_safe(self):
-        from circuit_breaker import CircuitBreakerRegistry
+        from bot.infra.circuit_breaker import CircuitBreakerRegistry  # Sprint 10.5a (2026-05-11)
         r = CircuitBreakerRegistry()
         N = 50
         results = []
@@ -609,14 +609,14 @@ class TestCircuitBreakerRegistry(unittest.TestCase):
 class TestCircuitBreakerObservability(unittest.TestCase):
 
     def test_state_returns_string_label(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=1, recovery_seconds=10)
         self.assertEqual(b.state, "closed")
         gen = b.acquire(); b.record_result(gen, success=False)
         self.assertEqual(b.state, "open")
 
     def test_failure_count_observable(self):
-        from circuit_breaker import CircuitBreaker
+        from bot.infra.circuit_breaker import CircuitBreaker  # Sprint 10.5a (2026-05-11)
         b = CircuitBreaker(failures_to_open=10, recovery_seconds=10)
         self.assertEqual(b.failure_count, 0)
         gen = b.acquire(); b.record_result(gen, success=False)

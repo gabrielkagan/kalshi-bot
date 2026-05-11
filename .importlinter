@@ -117,6 +117,7 @@ forbidden_modules =
     bot.feeds
     bot.fetchers
     bot.main_loop
+    bot.infra
     bot.order_flow
     bot.orphan_db_watchdog
     bot.scanner
@@ -128,6 +129,18 @@ forbidden_modules =
     bot.db_writer_registry
     bot.settlement
     bot.state
+ignore_imports =
+    # Sprint 10.5a (2026-05-11): bot.helpers.breakers reaches the circuit-breaker
+    # REGISTRY singleton via a wrapper-internal lazy import (search anchor in
+    # bot/helpers/breakers.py: `def _kalshi_breaker` → `from bot.infra.circuit_breaker
+    # import REGISTRY`). Pre-10.5a circuit_breaker.py was at repo root (not a
+    # `bot.X` subpackage) so the helpers-leaf rule didn't apply; post-10.5a it
+    # lives at bot.infra.circuit_breaker (sibling). Per Bit 7.1
+    # `state-no-impl-toplevel` precedent: import-linter's `forbidden` contract
+    # doesn't distinguish module-level from method-body imports, so a carve-out
+    # is required. The lazy import is the only edge — verified via AST walk in
+    # tests/test_sprint_10_5a_infra_move.py.
+    bot.helpers.breakers -> bot.infra.circuit_breaker
 
 # ---------------------------------------------------------------------------
 # Contract 5 — bot.state must not have a top-level import of bot._impl
