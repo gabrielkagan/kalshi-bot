@@ -103,7 +103,7 @@ Lightweight pulse check across all systems. Not a full audit — just "is data f
 ## If argument is specific system
 - `15m`: Focus on 15M trades, candidates, shadow variants, NO-side
 - `hourly`: Focus on hourly observations, alt strategies, CalEngine status
-- `no-side`: Run `python3 scripts/no_side_status.py --db /tmp/state.db` for full NO report
+- `no-side`: Run `make no-side` (Bit 11.3 wraps `python3 scripts/no_side_status.py --db /tmp/state.db`) for full NO report
 - `variants`: Focus on fifteenm_shadow_signals progress per approach — show settled count vs promotion threshold
 
 ## Error Handling

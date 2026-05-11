@@ -22,7 +22,8 @@ Run comprehensive alpha research on the 15-minute crypto prediction market tradi
 
 ### Full analysis (all 13 sections)
 ```bash
-python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto 2>&1
+make 15m-alpha 2>&1
+# wraps `python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto` (Bit 11.3)
 ```
 
 ### Single section

@@ -34,7 +34,9 @@ Follow `.claude/skills/references/db-sync.md` to sync the database.
 
 ### 2. Run full opportunity audit
 ```bash
-python3 scripts/alpha_audit.py --db /tmp/state.db --days 14 2>&1
+make alpha-audit 2>&1
+# wraps `python3 scripts/alpha_audit.py --db /tmp/state.db --days 14` (Bit 11.3)
+# For custom lookback: python3 scripts/alpha_audit.py --db /tmp/state.db --days N 2>&1
 ```
 Outputs: filter funnel, rejection analysis by price band, counterfactual PnL, WR by STC/z-score/asset, capital utilization, shadow status, recommendations.
 

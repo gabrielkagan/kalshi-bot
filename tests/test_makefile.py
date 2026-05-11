@@ -1415,6 +1415,69 @@ def test_bit_11_3_targets_point_to_real_scripts(target: str, script: str):
     )
 
 
+# Bit 11.1a (Sprint 11, 2026-05-11) — Skill ↔ Makefile alignment.
+# Pins SKILL.md files that have a clean Bit 11.3 wrapper to actually
+# reference `make X` as the primary invocation. Catches drift in two
+# directions:
+#   1. Someone reverts the SKILL.md back to `python3 scripts/X.py ...`
+#      → the skill loses the agent-ergonomics win.
+#   2. Someone renames a Bit 11.3 target but forgets to update the
+#      SKILL.md → operators copy/paste a dead `make` command.
+# Per Bit 11.1 of `kb/decisions/repo-modularization-plan-may05.md`:
+# "for each .claude/skills/*/SKILL.md, replace hardcoded scripts/X.py
+# with `make X` or repo-relative paths."
+# 6 SKILL.md files / 7 sites total — shadow/SKILL.md is the only file
+# with two retarget sites (`make 15m-audit` + `make hourly-audit`). The
+# parametrize map below uses one entry per file with the most
+# distinctive wrapper per file; `test_bit_11_1a_shadow_has_both_wrappers`
+# pins the shadow-specific second site separately.
+BIT_11_1A_SKILL_WRAPPER_MAP = {
+    ".claude/skills/data-health/SKILL.md": "make data-health",
+    ".claude/skills/alpha-audit/SKILL.md": "make alpha-audit",
+    ".claude/skills/15m-alpha/SKILL.md": "make 15m-alpha",
+    ".claude/skills/no-side/SKILL.md": "make no-side",
+    ".claude/skills/shadow/SKILL.md": "make 15m-audit",
+    ".claude/skills/status/SKILL.md": "make no-side",
+}
+
+
+@pytest.mark.parametrize(
+    "skill_path,wrapper",
+    sorted(BIT_11_1A_SKILL_WRAPPER_MAP.items()),
+)
+def test_bit_11_1a_skills_reference_make_wrapper(skill_path: str, wrapper: str):
+    """Each SKILL.md with a Bit 11.3 wrapper must reference `make X` at
+    least once. Doesn't forbid direct `python3 scripts/X.py` invocations
+    — custom-args invocations stay as direct script calls — but the
+    primary invocation should use the Makefile wrapper."""
+    skill_file = REPO_ROOT / skill_path
+    assert skill_file.exists(), (
+        f"Skill file {skill_path!r} missing — Bit 11.1a alignment can't be "
+        f"checked. Update BIT_11_1A_SKILL_WRAPPER_MAP or restore the file."
+    )
+    content = skill_file.read_text()
+    assert wrapper in content, (
+        f"SKILL.md {skill_path!r} does not reference {wrapper!r}. Bit "
+        f"11.1a (2026-05-11) retargeted the primary invocation to `make X`; "
+        f"a regression here means the operator copy-pastes a dead "
+        f"`python3 scripts/X.py ...` instead of the Makefile wrapper."
+    )
+
+
+def test_bit_11_1a_shadow_has_both_wrappers():
+    """`.claude/skills/shadow/SKILL.md` is the only Bit 11.1a file with
+    two retarget sites — pin both `make 15m-audit` AND `make hourly-audit`
+    (the parametrized test above only checks one wrapper per file)."""
+    skill_file = REPO_ROOT / ".claude/skills/shadow/SKILL.md"
+    content = skill_file.read_text()
+    assert "make 15m-audit" in content, (
+        "shadow/SKILL.md missing `make 15m-audit` reference (Bit 11.1a)."
+    )
+    assert "make hourly-audit" in content, (
+        "shadow/SKILL.md missing `make hourly-audit` reference (Bit 11.1a)."
+    )
+
+
 def test_bit_11_3_targets_use_canonical_db_path():
     """All Bit 11.3 wrappers should use /tmp/state.db (the operator
     convention per .claude/skills/*/SKILL.md; the symlink to the live

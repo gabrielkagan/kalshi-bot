@@ -44,8 +44,8 @@ Comprehensive report across ALL shadow/observation systems — 15M live, hourly,
 3. **Full audit fallback** — Run all 5 audit scripts with `--regime auto`:
 
    ```bash
-   python3 scripts/15m_live_audit.py --db /tmp/state.db --regime auto 2>&1
-   python3 scripts/hourly_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
+   make 15m-audit 2>&1          # wraps `python3 scripts/15m_live_audit.py --db /tmp/state.db --regime auto` (Bit 11.3)
+   make hourly-audit 2>&1       # wraps `python3 scripts/hourly_shadow_audit.py --db /tmp/state.db --regime auto` (Bit 11.3)
    python3 scripts/spx_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
    python3 scripts/weather_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
    python3 scripts/sports_shadow_audit.py --db /tmp/state.db --regime auto 2>&1

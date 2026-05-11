@@ -19,7 +19,8 @@ Comprehensive NO-side shadow data report. Shows data volume, pricing verificatio
 
 2. **Run the status script**:
    ```bash
-   python3 scripts/no_side_status.py --db /tmp/state.db 2>&1
+   make no-side 2>&1
+   # wraps `python3 scripts/no_side_status.py --db /tmp/state.db` (Bit 11.3)
    ```
 
 3. **Present the output** — show the full script output, then add:

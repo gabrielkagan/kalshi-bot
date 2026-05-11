@@ -27,7 +27,8 @@ Check instrumentation quality, data gaps, NULL rates, and shadow coverage across
 
 2. **Run the data health monitor script** (if available):
    ```bash
-   python3 scripts/data_health_monitor.py --db /tmp/state.db --verbose 2>&1
+   make data-health 2>&1
+   # wraps `python3 scripts/data_health_monitor.py --db /tmp/state.db --verbose` (Bit 11.3)
    ```
 
 3. **If script not available, run these queries manually**:
