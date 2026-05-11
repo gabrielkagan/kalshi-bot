@@ -1,11 +1,13 @@
 """CoinbaseFeed — Coinbase WS feed with persistent 30-min snapshot buffer.
 
 Extracted from bot/_impl.py in Sprint 4 Bit 4.5a (2026-05-08). Daemon
-thread that subscribes to Coinbase ticker channel for BTC/ETH/SOL/XRP,
-maintains a 1-second-resolution rolling buffer (PRICE_BUFFER_SIZE), and
-persists the buffer to disk every SPOT_BUFFER_PERSIST_INTERVAL_S so
-30-min momentum features (5m/30m used by cal_mlp) don't go NULL on
-restart.
+thread that subscribes to Coinbase ticker channel for every symbol in
+`config.ASSETS` (BTC, ETH, SOL, XRP, HYPE, DOGE post-T1 2026-05-10 —
+ASSETS is the canonical source; see kb/decisions/asset-onboarding-doge-hype-bit-1-shipped-may10.md
++ bit-1-5-shipped-may10.md). Maintains a 1-second-resolution rolling
+buffer (PRICE_BUFFER_SIZE), and persists the buffer to disk every
+SPOT_BUFFER_PERSIST_INTERVAL_S so 30-min momentum features (5m/30m
+used by cal_mlp) don't go NULL on restart.
 
 The module-level helper ``_swallow_persist_exception`` is the
 done-callback for the off-loop persist task. It moved here from

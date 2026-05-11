@@ -5,9 +5,12 @@ derivatives-market signals into the bot's volatility / probability
 pipeline:
 
 - ``DeribitDVOLFetcher`` — Deribit DVOL implied-volatility index
-  (BTC/ETH only) via REST every ``DVOL_FETCH_INTERVAL`` seconds.
-- ``CoinGlassFetcher`` — CoinGlass funding-rate API
-  (BTC/ETH/SOL/XRP) via authenticated REST every
+  (BTC/ETH only — DOGE has perp coverage but no DVOL index;
+  HYPE not listed on Deribit per T1.5 verification) via REST every
+  ``DVOL_FETCH_INTERVAL`` seconds.
+- ``CoinGlassFetcher`` — CoinGlass funding-rate API for every
+  symbol in ``config.ASSETS`` (BTC/ETH/SOL/XRP/HYPE/DOGE post-T1
+  2026-05-10) via authenticated REST every
   ``COINGLASS_FETCH_INTERVAL`` seconds.
 
 ``bot/_impl.py`` does

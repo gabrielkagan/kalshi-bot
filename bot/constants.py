@@ -839,6 +839,20 @@ CROSS_EXCHANGE_CONSENSUS_THRESHOLD = 0.003  # 0.3% for consensus
 # as the original "any 2 of 3" calibration. OFA_CONSENSUS_BOOST=+2pp is
 # not load-bearing for trading decisions; "fires rarely" is acceptable
 # vs the prior "never fires". Revisit calibration after 30d of N=2 logs.
+#
+# Bit B (2026-05-11, ClickUp 86b9vrr9h): HYPE dev-env asymmetry.
+# Per CROSS_EXCHANGE_SYMBOLS + T1.5 verification (bf8b9a3, 2026-05-10):
+# - BTC/ETH/SOL/XRP/DOGE: present on Binance + Kraken + Bybit (max 3)
+# - HYPE: present on Kraken + Bybit only — Binance.com does NOT list
+#   HYPE (Binance.US only; the bot connects to stream.binance.com)
+# Prod (BINANCE_FEED_ENABLED=0): MIN=2, HYPE reaches consensus normally.
+# Dev (BINANCE_FEED_ENABLED=1): MIN=3, HYPE max-consensus=2 < MIN=3 →
+# consensus branches unreachable for HYPE only; signal silently never
+# fires. Engineers flipping BINANCE_FEED_ENABLED=1 locally for testing
+# should remember this asymmetry. DOGE (Kraken symbol XDG/USD) is on all
+# 3 exchanges so reaches MIN=3. See
+# kb/decisions/asset-onboarding-doge-hype-bit-1-5-shipped-may10.md
+# "Per-exchange optionality" section for the canonical narrative.
 _CROSS_EXCHANGE_FEEDS_ACTIVE = 3 if BINANCE_FEED_ENABLED else 2
 
 CROSS_EXCHANGE_CONSENSUS_MIN = _CROSS_EXCHANGE_FEEDS_ACTIVE

@@ -1,10 +1,11 @@
 """CoinGlassFetcher — CoinGlass funding-rate poller.
 
 Extracted from bot/_impl.py in Sprint 4 Bit 4.4 (2026-05-08). Daemon
-thread that fetches the average funding rate across exchanges from the
-CoinGlass v3 API for BTC/ETH/SOL/XRP every ``COINGLASS_FETCH_INTERVAL``
-seconds (10 min by default — 100 calls/day budget). Cache stales after
-``COINGLASS_CACHE_TTL``.
+thread that fetches the average funding rate across exchanges from
+the CoinGlass v3 API for every symbol in ``config.ASSETS``
+(BTC/ETH/SOL/XRP/HYPE/DOGE post-T1 2026-05-10) every
+``COINGLASS_FETCH_INTERVAL`` seconds (10 min by default — 100
+calls/day budget). Cache stales after ``COINGLASS_CACHE_TTL``.
 
 Disabled when ``COINGLASS_API_KEY`` env var is unset (start() short-circuits
 with a one-line info log).
