@@ -29,7 +29,7 @@ BOT_IMPORTERS = [
 
 # Engine files that may wire into CalEngine pipeline
 ENGINE_FILES = [
-    "spx_engine.py",
+    "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
     "weather_engine.py",
     "sports_engine.py",
 ]

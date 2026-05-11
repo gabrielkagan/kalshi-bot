@@ -3836,6 +3836,653 @@
     ],
     "returns": "float"
   },
+  "bot.engines.spx_engine": {
+    "kind": "module"
+  },
+  "bot.engines.spx_engine.FINNHUB_REST_URL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.FINNHUB_WS_URL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.FOMC_DATES_2026": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.HAS_WEBSOCKETS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.IntradaySeasonalFilter": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "add_return": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "log_return"
+          },
+          {
+            "annotation": "Optional[datetime.datetime]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "ts"
+          }
+        ],
+        "returns": null
+      },
+      "deseasonalize_return": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "log_return"
+          },
+          {
+            "annotation": "Optional[datetime.datetime]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "ts"
+          }
+        ],
+        "returns": "float"
+      },
+      "end_bucket": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "bucket_idx"
+          }
+        ],
+        "returns": null
+      },
+      "get_seasonal_factor": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[datetime.datetime]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "ts"
+          }
+        ],
+        "returns": "float"
+      }
+    }
+  },
+  "bot.engines.spx_engine.MarketHoursGuard": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "is_fomc_day": {
+        "kind": "function",
+        "parameters": [],
+        "returns": "bool"
+      },
+      "is_market_open": {
+        "kind": "function",
+        "parameters": [],
+        "returns": "bool"
+      },
+      "is_within_buffer": {
+        "kind": "function",
+        "parameters": [],
+        "returns": "bool"
+      },
+      "minutes_since_open": {
+        "kind": "function",
+        "parameters": [],
+        "returns": "Optional[int]"
+      }
+    }
+  },
+  "bot.engines.spx_engine.NO_PRICE_CRITICAL_THRESHOLD": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.NO_PRICE_ERROR_THRESHOLD": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.NYSE_HOLIDAYS_2026": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.PRICE_BUFFER_SIZE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.RECONNECT_BASE_DELAY": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.RECONNECT_MAX_DELAY": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.REST_FALLBACK_POLL_INTERVAL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SEASONAL_EWMA_LAMBDA": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SEASONAL_HALF_HOUR_BUCKETS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SPXEGARCHEstimator": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "get_sigma": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "maybe_refit": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "bool"
+      },
+      "recursive_update": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "deseasonalized_return"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "seed_from_vix": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "vix"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.engines.spx_engine.SPXEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "polygon_key"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "finnhub_key"
+          }
+        ],
+        "returns": null
+      },
+      "get_active_windows": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "client"
+          }
+        ],
+        "returns": "List[Dict]"
+      },
+      "get_spot_price": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "'SPX'",
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "get_vix": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "get_vol_estimate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "stc"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "is_market_open": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "bool"
+      },
+      "start": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "stop": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.engines.spx_engine.SPXPriceFeed": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "polygon_key"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "finnhub_key"
+          }
+        ],
+        "returns": null
+      },
+      "get_price": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "'SPX'",
+            "kind": "positional or keyword",
+            "name": "symbol"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "get_returns": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "'SPX'",
+            "kind": "positional or keyword",
+            "name": "symbol"
+          },
+          {
+            "annotation": "int",
+            "default": "60",
+            "kind": "positional or keyword",
+            "name": "n"
+          }
+        ],
+        "returns": "List[float]"
+      },
+      "get_vix": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "is_stale": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "'SPX'",
+            "kind": "positional or keyword",
+            "name": "symbol"
+          }
+        ],
+        "returns": "bool"
+      },
+      "start": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "stop": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "ws_active": {
+        "annotation": "bool",
+        "kind": "attribute"
+      }
+    }
+  },
+  "bot.engines.spx_engine.SPXVolatilityEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "SPXPriceFeed",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price_feed"
+          },
+          {
+            "annotation": "IntradaySeasonalFilter",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seasonal_filter"
+          },
+          {
+            "annotation": "SPXEGARCHEstimator",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "egarch"
+          }
+        ],
+        "returns": null
+      },
+      "update": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      }
+    }
+  },
+  "bot.engines.spx_engine.SPX_ASSET": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SPX_EGARCH_GAMMA_BOUNDS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SPX_EGARCH_MIN_OBSERVATIONS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SPX_EGARCH_REFIT_INTERVAL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SPX_EGARCH_STATE_FILE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SPX_MZ_WINDOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SPX_RK_PARZEN_BANDWIDTH": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SPX_SEASONAL_STATE_FILE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SPX_SERIES_TICKER": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.SPY_TO_SPX_RATIO": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.STALE_PRICE_THRESHOLD": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.VIX_DIVERGENCE_THRESHOLD": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.VIX_POLL_INTERVAL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.WARMUP_MINUTES": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.WS_RATE_LOG_INTERVAL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.spx_engine.WS_SNAPSHOT_INTERVAL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.engines.volatility": {
     "kind": "module"
   },

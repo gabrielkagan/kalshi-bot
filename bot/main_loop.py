@@ -347,7 +347,7 @@ class MainLoop:
         self.spx_engine = None
         if SPX_HOURLY_ENABLED:
             try:
-                from spx_engine import SPXEngine
+                from bot.engines.spx_engine import SPXEngine  # Sprint 10.1b sibling-reorg (2026-05-11)
                 self.spx_engine = SPXEngine(
                     polygon_key=os.environ.get("POLYGON_API_KEY"),
                     finnhub_key=os.environ.get("FINNHUB_API_KEY"),

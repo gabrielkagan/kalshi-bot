@@ -47,14 +47,14 @@ We have 9 standalone test files (~6,700 lines) covering EGARCH, HAR, ghost fills
 
 ### 3. Cross-File Call-Site Integrity Tests (`test_call_sites.py`)
 
-**Failure mode:** Function signature changed in bot/_impl.py but callers in other files (analyst.py, dashboard_snapshot.py, spx_engine.py, etc.) still use old signature → `TypeError` at runtime.
+**Failure mode:** Function signature changed in bot/_impl.py but callers in other files (analyst.py, dashboard_snapshot.py, bot/engines/spx_engine.py, etc.) still use old signature → `TypeError` at runtime.
 **Past incident:** CLAUDE.md rule about grepping all call sites after signature changes.
 
 **Tests to write:**
 
 - **Public API smoke imports**: Import every module that imports from bot/_impl.py. Verify no `ImportError` or `AttributeError`. This catches renamed/removed functions.
 - **Cross-module function call arity**: For key functions (`insert_rejection`, `insert_evaluated_opportunity`, `calculate_fee`, `calculate_maker_fee`, `get_market_config`), find all call sites across all `.py` files via AST parsing. Verify each call passes the correct number of positional args and only uses valid keyword arg names. This is the static version of "grep ALL call sites."
-- **CalEngine pipeline triple-ship**: When any engine file (spx_engine.py, weather_engine.py, sports_engine.py) has an `INSERT` that includes `raw_prob`, verify that (a) the corresponding CalEngine is routed in `_resolve_cal_engine`, and (b) the audit script checks for that engine's observations. Catches the "three things must ship together" rule.
+- **CalEngine pipeline triple-ship**: When any engine file (bot/engines/spx_engine.py, weather_engine.py, sports_engine.py) has an `INSERT` that includes `raw_prob`, verify that (a) the corresponding CalEngine is routed in `_resolve_cal_engine`, and (b) the audit script checks for that engine's observations. Catches the "three things must ship together" rule.
 
 **Why this is #3:** These are the bugs that pass `ast.parse` but blow up at runtime in a specific code path.
 

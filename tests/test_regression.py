@@ -558,8 +558,8 @@ class TestSyntaxCheck:
     """Every Python file must parse without syntax errors."""
 
     CRITICAL_FILES = ["bot/_impl.py", "market_config.py", "dashboard_snapshot.py",
-                      "sports_engine.py", "spx_engine.py", "weather_engine.py",
-                      "fifteenm_shadow.py"]
+                      "sports_engine.py", "bot/engines/spx_engine.py", "weather_engine.py",
+                      "fifteenm_shadow.py"]  # Sprint 10.1b sibling-reorg (2026-05-11): spx_engine relocated
 
     @pytest.mark.parametrize("filename", CRITICAL_FILES)
     def test_file_parses(self, filename):

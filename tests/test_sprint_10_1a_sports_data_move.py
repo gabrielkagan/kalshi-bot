@@ -7,7 +7,7 @@ state, no runtime side effects). Moving it first establishes the
 sibling-reorg shape with the lowest blast radius.
 
 Sub-moves left in Sprint 10.1 after this Bit:
-  - 10.1b: spx_engine.py → bot/engines/spx.py
+  - 10.1b: spx_engine.py → bot/engines/spx_engine.py (filename preserved)
   - 10.1c: weather_engine.py → bot/engines/weather.py
   - 10.1d: sports_engine.py → bot/engines/sports.py (bundles with .1a since
     sports_engine imports from sports_data)

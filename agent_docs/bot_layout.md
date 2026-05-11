@@ -150,7 +150,7 @@ Live trading process:
 - `bot/_thread_env.py` — sets OMP/MKL/OpenBLAS thread caps. bot/_impl.py imports `bot._thread_env` BEFORE numpy. Order is load-bearing per CLAUDE.md and AST-asserted by `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_impl`. (Pre-Bit-2.3 the file lived at `scripts/cal_mlp/_thread_env.py` and required a sys.path.insert to locate; Bit 2.3 moved it into the `bot/` package and retired the pre-_thread_env hack — though `scripts/cal_mlp/` is still added to sys.path post-_thread_env for `from integration import` calls.)
 
 Engines (separate threads/processes):
-- `spx_engine.py` — SPX hourly (Polygon, EGARCH, RK, VIX)
+- `bot/engines/spx_engine.py` — SPX hourly (Polygon, EGARCH, RK, VIX). Relocated from repo root in Sprint 10.1b (2026-05-11).
 - `weather_engine.py` — weather ensemble (Open-Meteo GFS/ECMWF)
 - `sports_engine.py` — sports comeback (ESPN, Bayesian posterior)
 - `bot/engines/sports_data.py` — sports data fetcher (relocated from repo root in Sprint 10.1a, 2026-05-11; first sub-move of the Sprint 10 engines/ sibling-reorg)

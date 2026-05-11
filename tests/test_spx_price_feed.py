@@ -8,8 +8,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-import spx_engine
-from spx_engine import (
+import bot.engines.spx_engine as spx_engine  # Sprint 10.1b sibling-reorg (2026-05-11); alias preserves the `spx_engine.X` access pattern used below
+from bot.engines.spx_engine import (
     SPXPriceFeed,
     SPXVolatilityEngine,
     SPXEGARCHEstimator,
@@ -135,7 +135,7 @@ class TestFinnhubRESTFallback:
         """Successful Finnhub REST fetch returns SPY price * SPY_TO_SPX_RATIO."""
         feed = SPXPriceFeed(finnhub_key="test_key")
         resp = FakeResponse(200, {"c": 560.0})
-        with patch("spx_engine.requests.get", return_value=resp):
+        with patch("bot.engines.spx_engine.requests.get", return_value=resp):
             result = feed._fetch_spx_finnhub()
         assert result == pytest.approx(560.0 * SPY_TO_SPX_RATIO, rel=1e-6)
 
@@ -144,7 +144,7 @@ class TestFinnhubRESTFallback:
         feed = SPXPriceFeed(finnhub_key="test_key")
         assert feed._reconnect_delay == RECONNECT_BASE_DELAY
 
-        with patch("spx_engine.requests.get", return_value=FakeResponse(429)):
+        with patch("bot.engines.spx_engine.requests.get", return_value=FakeResponse(429)):
             with pytest.raises(ConnectionError, match="Finnhub 429"):
                 feed._fetch_spx_finnhub()
 
@@ -154,7 +154,7 @@ class TestFinnhubRESTFallback:
         """Successive 429s should keep doubling the reconnect delay."""
         feed = SPXPriceFeed(finnhub_key="test_key")
         for _ in range(3):
-            with patch("spx_engine.requests.get", return_value=FakeResponse(429)):
+            with patch("bot.engines.spx_engine.requests.get", return_value=FakeResponse(429)):
                 with pytest.raises(ConnectionError):
                     feed._fetch_spx_finnhub()
 
@@ -177,7 +177,7 @@ class TestVIXFetch:
         """Finnhub error response for VIX (free tier) should return None gracefully."""
         feed = SPXPriceFeed(finnhub_key="test_key")
         resp = FakeResponse(200, {"error": "Market data subscription required for CFD indices."})
-        with patch("spx_engine.requests.get", return_value=resp):
+        with patch("bot.engines.spx_engine.requests.get", return_value=resp):
             result = feed._fetch_vix_finnhub()
         assert result is None
 
@@ -185,7 +185,7 @@ class TestVIXFetch:
         """If VIX quote succeeds (paid tier), price should be returned."""
         feed = SPXPriceFeed(finnhub_key="test_key")
         resp = FakeResponse(200, {"c": 20.5, "d": 0.3, "dp": 1.5})
-        with patch("spx_engine.requests.get", return_value=resp):
+        with patch("bot.engines.spx_engine.requests.get", return_value=resp):
             result = feed._fetch_vix_finnhub()
         assert result == 20.5
 
@@ -229,7 +229,7 @@ class TestPollLoop:
         feed._ws_connected = False
 
         if not feed._ws_connected:
-            with patch("spx_engine.requests.get", return_value=FakeResponse(200, {"c": 560.0})):
+            with patch("bot.engines.spx_engine.requests.get", return_value=FakeResponse(200, {"c": 560.0})):
                 result = feed._fetch_spx_finnhub()
             assert result is not None
 

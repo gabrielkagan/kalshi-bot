@@ -37,7 +37,7 @@ PRODUCTION_FILES = [
     "fifteenm_shadow.py",
     "hourly_alt_shadow.py",
     "market_config.py",
-    "spx_engine.py",
+    "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
     "spx_harrv_shadow.py",
     "sports_engine.py",
     "supabase_sync.py",
@@ -307,7 +307,7 @@ class TestSyntaxCheck:
         "dashboard_snapshot.py",
         "analyst.py",
         "supabase_sync.py",
-        "spx_engine.py",
+        "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
         "weather_engine.py",
         "sports_engine.py",
         "fifteenm_shadow.py",

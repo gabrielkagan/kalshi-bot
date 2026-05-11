@@ -1,7 +1,7 @@
 # bot/ — implementation rules
 
 These rules apply to `bot/_impl.py` and the engine modules
-(`spx_engine.py`, `weather_engine.py`, `sports_engine.py`,
+(`bot/engines/spx_engine.py`, `weather_engine.py`, `sports_engine.py`,
 `fifteenm_shadow.py`, `analyst.py`). The first seven sections
 (Threading, cal_mlp four-site, Cell-block, SQLite, `_shadow_diag`,
 Engine→CalEngine, `discover_active_windows()`) are
