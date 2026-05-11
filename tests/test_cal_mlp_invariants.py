@@ -938,6 +938,69 @@ def test_thread_env_imported_before_numerical_libs_in_bot_impl():
     )
 
 
+def test_thread_env_imported_before_numerical_libs_in_bot_boot():
+    """Bit 9.3-iii.a (2026-05-11): bot/boot.py loads numpy/scipy/torch
+    TRANSITIVELY via `from integration import (...)`. A defense-in-depth
+    `__import__("bot._thread_env")` runtime call at the top of bot/boot.py must
+    fire BEFORE the `from integration import` block that triggers the transitive
+    load. Plan-agent C1 finding.
+
+    Production-path chain bot/__main__.py → bot._thread_env → bot.main_loop →
+    bot.boot already fires _thread_env first via bot/__main__.py line 25, but
+    defense-in-depth at top of bot/boot.py covers test-suite imports that bypass
+    bot/__main__.py.
+
+    **Form**: `__import__()` runtime call rather than `import bot._thread_env`
+    statement. The statement form triggers a griffe RecursionError (infinite
+    alias-canonical-path chain) when scripts/dump_public_api.py walks bot/boot.py
+    for the public_api.json snapshot. The runtime form has identical side-effect
+    semantics but bypasses griffe's static expression walker.
+
+    This test asserts the LINE ORDER inside bot/boot.py — bot/boot.py doesn't
+    import numpy directly (transitive via integration), so we pin
+    __import__("bot._thread_env") < `from integration import`.
+    """
+    import ast
+    boot_py = Path(__file__).resolve().parents[1] / 'bot/boot.py'
+    tree = ast.parse(boot_py.read_text())
+    thread_env_line = None
+    integration_line = None
+    for node in ast.walk(tree):
+        # Detect `__import__("bot._thread_env")` runtime call.
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "__import__":
+            if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "bot._thread_env":
+                if thread_env_line is None or node.lineno < thread_env_line:
+                    thread_env_line = node.lineno
+        # Also accept the bare `import bot._thread_env` statement (defensive
+        # in case the griffe limitation is ever lifted).
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "bot._thread_env" and (thread_env_line is None or node.lineno < thread_env_line):
+                    thread_env_line = node.lineno
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "integration" and (integration_line is None or node.lineno < integration_line):
+                integration_line = node.lineno
+            if node.module == "bot" and any(a.name == "_thread_env" for a in node.names):
+                if thread_env_line is None or node.lineno < thread_env_line:
+                    thread_env_line = node.lineno
+    assert thread_env_line is not None, (
+        "bot/boot.py must fire `__import__(\"bot._thread_env\")` (or "
+        "`import bot._thread_env`) as defense-in-depth before the "
+        "`from integration import (...)` block that transitively loads numpy. "
+        "Add it as the first non-stdlib operation."
+    )
+    assert integration_line is not None, (
+        "bot/boot.py is expected to `from integration import ...`. If this "
+        "changed, verify the OMP-before-numpy contract is still needed."
+    )
+    assert thread_env_line < integration_line, (
+        f"bot._thread_env fired at line {thread_env_line}, but "
+        f"`from integration import` at line {integration_line}. The integration "
+        f"import triggers transitive numpy/scipy/torch loads — bot._thread_env "
+        f"must fire FIRST so OMP_NUM_THREADS=1 is read by OpenBLAS at C-ext load."
+    )
+
+
 def test_first_lineno_detects_thread_env_via_import_from():
     """Bit 4.2 #4 fix: regression-protect the ImportFrom branch.
 

@@ -27,15 +27,13 @@ in-Bit to drop their `bot_globals` parameter:
     `bot.constants` + `config` inside the function body, plus a literal
     `DRAWDOWN_HALT_FLOOR = 0.10` fallback (mirrors path-A++ pattern).
 
-The only `bot._impl` dependency this module has is the `_get_compute_for_15m_main_path()`
-late-binding helper below — a SINGLE named function, not a whole-namespace
-proxy. The helper is necessary because `compute_for_15m_main_path` is bound
-at bot/_impl.py (search anchor: `compute_for_15m_main_path = make_compute_for_15m_main_path`)
-AFTER the bot.state re-export inside bot/_impl.py (search anchor:
-`from bot.state import StateManager`). Method-body late-binding sidesteps
-the load-order cycle (bot._impl imports bot.state during its own load, but
-StateManager() instantiation happens at MainLoop runtime, well after
-bot._impl finishes loading).
+Post-Bit-9.3-iii.a (2026-05-11): this module has ZERO bot._impl edges.
+`compute_for_15m_main_path` is top-imported from clean-leaf bot/boot.py
+(relocated there in Bit 9.3-iii.a). The Bit 7.1 `_get_compute_for_15m_main_path()`
+late-binding helper is GONE — no longer needed because bot.boot has zero
+bot.state edges (no load-order cycle to avoid). The .importlinter
+`state-no-impl-toplevel` carve-out + its 3 anti-regression tests were
+retired in the same atomic commit.
 
 Sister Bit 7.2 (`agent_docs/db_schema.md` refresh) ships in the same atomic
 commit — the schema doc's source-of-truth for the 17 tables is now
@@ -128,43 +126,13 @@ from integration import (
 )
 from bot.models import calculate_fee, strategy_to_group
 
-
-def _get_compute_for_15m_main_path():
-    """Late-binding helper for the `compute_for_15m_main_path` callable.
-
-    Returns `bot._impl.compute_for_15m_main_path`, which is bound inside
-    bot/_impl.py via `compute_for_15m_main_path = make_compute_for_15m_main_path()`
-    (search anchor: `compute_for_15m_main_path = make_compute_for_15m_main_path`).
-
-    Late-bound for two reasons:
-      1. **Load-order cycle avoidance.** bot._impl imports bot.state during
-         its own module-level execution (search anchor:
-         `from bot.state import StateManager`), but
-         `compute_for_15m_main_path` isn't bound until further down in
-         bot._impl. A top-level `import bot._impl` here would resolve to a
-         half-loaded module (partial-module ImportError or stale-None
-         binding for the not-yet-defined name).
-      2. **Single-name access discipline.** Path-A++ replaced Bit 7.1's original
-         `_bot_impl_globals()` wrapper (which proxied the entire bot._impl
-         namespace) with this narrower helper. Only ONE name flows from
-         bot._impl into this module's runtime path — the closure produced by
-         `make_compute_for_15m_main_path()`.
-
-    StateManager() construction always happens at MainLoop runtime, well
-    after bot._impl finishes loading, so the lookup is safe inside method
-    bodies.
-
-    Bit 7.1 fu (Smell 4, ticket 86b9vhccw, 2026-05-10):
-    `make_compute_for_15m_main_path` was refactored to drop its
-    `bot_globals: dict` parameter — the function now imports its 11
-    dependent names directly from `bot.constants` + `config` inside its
-    own body (mirroring Bit 7.1 path-A++ `parity_assert` /
-    `sizing_parity_assert`). The closure no longer captures the bot._impl
-    namespace; this helper is unchanged because the load-order cycle
-    (reason 1 above) still requires late-binding.
-    """
-    import bot._impl as _bot_impl
-    return _bot_impl.compute_for_15m_main_path
+# Bit 9.3-iii.a (2026-05-11): `compute_for_15m_main_path` closure relocated from
+# bot/_impl.py to clean-leaf bot/boot.py. The Bit 7.1 `_get_compute_for_15m_main_path()`
+# late-binding helper is GONE — bot.boot has zero bot.state edges, so the load-order
+# cycle (bot._impl → bot.state → bot._impl) that originally required lazy access no
+# longer exists. State now has ZERO bot._impl edges. The .importlinter
+# `state-no-impl-toplevel` carve-out (Bit 7.1) was retired in the same atomic commit.
+from bot.boot import compute_for_15m_main_path
 
 
 class StateManager:
@@ -227,7 +195,7 @@ class StateManager:
             _calmlp_sizing_parity_assert_impl(
                 self.conn,
                 rowid=_calmlp_rowid,
-                compute_for_15m_main_path=_get_compute_for_15m_main_path(),
+                compute_for_15m_main_path=compute_for_15m_main_path,
             )
         except (CalMLPParityError, CalMLPSchemaError) as _calmlp_e:
             logging.error("[CALMLP_PARITY] FATAL: %s", _calmlp_e)

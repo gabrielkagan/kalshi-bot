@@ -81,16 +81,17 @@ before any scanner method runs. Full enumeration locked by
   has zero top-level `bot._impl` imports — the `_get_order_executor()`
   late-binding helper retired and the `scanner-no-impl-toplevel`
   `.importlinter` contract dropped atomically with the OrderExecutor
-  extraction (net contracts: 6 → 5). The transitive
-  `bot.scanner → bot.state → bot._impl` edge (StateManager's
-  method-body `_get_compute_for_15m_main_path()` per Bit 7.1 fu1)
-  remains carved-out by `state-no-impl-toplevel`'s own
-  `ignore_imports` line. The retirement is documented in
-  `.importlinter` Contract 6 comment block + `bot/CLAUDE.md`
-  "Deploy a change" step 3 catalog. The bot.executor ↔ bot.scanner
-  cycle that this Bit's path-A++ retirement created is broken from
-  the executor side via a `_get_opportunity_scanner()` method-body
-  helper inside `bot/executor.py` (NOT scanner; scanner stays clean).
+  extraction (net contracts: 6 → 5). Post-Bit-9.3-iii.a (2026-05-11)
+  the transitive `bot.scanner → bot.state → bot._impl` edge ALSO
+  vanished — bot/state.py now top-imports `compute_for_15m_main_path`
+  from clean-leaf `bot/boot.py` directly, the Bit 7.1 helper retired,
+  and the `state-no-impl-toplevel` carve-out was removed (net contracts
+  7 → 6; `helpers-leaf` was extended with `bot.boot` but remained a
+  single contract — the count change reflects the retired
+  `state-no-impl-toplevel` block). The bot.executor ↔ bot.scanner
+  cycle is still broken from the executor side via a
+  `_get_opportunity_scanner()` method-body helper inside
+  `bot/executor.py` (NOT scanner; scanner stays clean).
 
 ## Annotations: `Optional[OrderFlowEngine]` / `Optional[KalshiOrderFlowTracker]`
 

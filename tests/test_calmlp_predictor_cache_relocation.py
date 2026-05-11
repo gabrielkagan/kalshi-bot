@@ -343,40 +343,36 @@ def test_three_consumer_sites_still_reference_predictor_cache():
 # ─────────────────────────────────────────── logger-namespace preservation (M3)
 
 
-def test_boot_log_emitted_from_bot_impl_namespace(caplog):
-    """M3 contract: the `[CALMLP] enabled=...` boot log MUST emit in the
-    `bot._impl` logger namespace. Operator runbooks grep for this in
-    journalctl; if it moves to the `integration` namespace, soak-watch
-    queries silently false-negative.
+def test_boot_log_emitted_from_bot_boot_namespace(caplog):
+    """M3 contract (updated Bit 9.3-iii.a, 2026-05-11): the `[CALMLP] enabled=...`
+    boot log MUST emit from a bot.* logger namespace (NOT from integration). The
+    namespace shifted from `bot._impl` to `bot.boot` in Bit 9.3-iii.a alongside
+    the cal_mlp warmup relocation. Operator runbooks grep for `[CALMLP] enabled=`
+    in journalctl — the message text is unchanged.
 
-    This is a SOURCE-LEVEL pin (search anchor in bot/_impl.py) rather than a
-    runtime caplog assertion because the log fires once at module-import time
-    of bot/_impl.py — by the time any test runs, the import has already
-    completed and the log is gone from caplog. Asserting at AST/source level
-    catches the regression at edit time."""
-    src = BOT_PY.read_text()
+    SOURCE-LEVEL pin (the log fires once at bot.boot module-import time, before
+    any test runs)."""
+    src = (REPO_ROOT / "bot" / "boot.py").read_text()
     assert "[CALMLP] enabled=1 at boot, predictors_warmed=" in src, (
-        "bot/_impl.py is missing the `[CALMLP] enabled=1 at boot` log line. "
-        "M3 requires the boot log to emit from the bot._impl namespace, not "
+        "bot/boot.py is missing the `[CALMLP] enabled=1 at boot` log line. "
+        "M3 requires the boot log to emit from a bot.* namespace, not "
         "from integration.py."
     )
-    # R2 M4: also pin the env=0 branch so a future consolidation that drops
-    # one of the two log emissions doesn't silently lose channel coverage.
     assert "[CALMLP] enabled=0 at boot" in src, (
-        "bot/_impl.py is missing the `[CALMLP] enabled=0 at boot` log line. "
-        "Both env=0 and env=1 branches must emit from the bot._impl namespace "
-        "so operator runbook greps for `[CALMLP] enabled=` cover both states."
+        "bot/boot.py is missing the `[CALMLP] enabled=0 at boot` log line. "
+        "Both env=0 and env=1 branches must emit so operator runbook greps "
+        "for `[CALMLP] enabled=` cover both states."
     )
-    # The log must be emitted via logging.getLogger(__name__).info(...) — NOT
-    # via integration.<some_logger>.info(...). The Bit 2.1a regression test
-    # `tests/regression/test_no_basicconfig_in_bot_impl.py` separately pins
-    # that bot/_impl.py never calls `logging.basicConfig(...)`, so the
-    # `__name__`-resolved logger here resolves to `bot._impl` (matches the
-    # operator-runbook namespace assumption).
     assert "logging.getLogger(__name__).info(" in src or "_LOGGER.info(" in src, (
-        "bot/_impl.py is missing the module-scoped logger call surrounding "
-        "the `[CALMLP] enabled=...` boot log. M3 contract requires the log "
-        "to be emitted from bot._impl, not integration."
+        "bot/boot.py is missing the module-scoped logger call surrounding "
+        "the `[CALMLP] enabled=...` boot log."
+    )
+
+    # Negative pin: bot/_impl.py should NO LONGER emit the boot log.
+    impl_src = BOT_PY.read_text()
+    assert "[CALMLP] enabled=1 at boot, predictors_warmed=" not in impl_src, (
+        "bot/_impl.py still emits the cal_mlp boot log — Bit 9.3-iii.a relocated "
+        "this to bot/boot.py."
     )
 
     # Negative pin: integration.py must NOT emit the boot log line. If a

@@ -504,24 +504,21 @@ def test_main_loop_init_no_longer_late_binds_koft():
     )
 
 
-def test_main_loop_init_late_binding_block_has_only_hpsb_names():
-    """Bit 9.3.5: the late-binding block in MainLoop.__init__ shrinks from
-    4 names to 2 names — only `_HPSB_MISSING_BLEEDERS` and
-    `_HPSB_VALIDATOR_UNAVAILABLE_REASON` remain (which are module-level state
-    bound below the line-119 re-export in bot/_impl.py, so they MUST stay
-    late-bound per Path-A method-body late-binding)."""
+def test_main_loop_init_has_zero_bot_impl_late_binding_post_9_3_iii_a():
+    """Post-Bit-9.3-iii.a (2026-05-11): the Bit 9.3.5-era 2-name late-binding
+    block (`_HPSB_MISSING_BLEEDERS` + `_HPSB_VALIDATOR_UNAVAILABLE_REASON`)
+    has been ELIMINATED. Both names now live in clean-leaf bot/boot.py and
+    bot/main_loop.py top-imports them. MainLoop.__init__ has zero bot._impl
+    late-bindings."""
     init = _main_loop_method("__init__")
-    late_bound = _imports_inside_method(init)
-    # The block may also contain non-bot._impl imports; we only check
-    # that the bot._impl-routed names are EXACTLY the HPSB pair.
     bot_impl_imports = set()
     for node in ast.walk(init):
         if isinstance(node, ast.ImportFrom) and node.module == "bot._impl":
             for alias in node.names:
                 bot_impl_imports.add(alias.asname or alias.name)
-    expected = {"_HPSB_MISSING_BLEEDERS", "_HPSB_VALIDATOR_UNAVAILABLE_REASON"}
-    assert bot_impl_imports == expected, (
-        f"MainLoop.__init__ late-binding block drift: expected {expected}, got {bot_impl_imports}"
+    assert bot_impl_imports == set(), (
+        f"MainLoop.__init__ still has bot._impl late-binding: {bot_impl_imports}. "
+        f"Bit 9.3-iii.a relocated all 4 boot-time bindings to bot/boot.py."
     )
 
 

@@ -33,9 +33,12 @@ Locks the contract between:
   - bot/_impl.py — does ``from bot.state import StateManager`` at line 109
     and has 3 consumer __init__ annotations (`OpportunityScanner`,
     `OrderExecutor`, `SettlementTracker`: ``state: StateManager``)
-  - bot/state.py — owns the class body + the ``_get_compute_for_15m_main_path()``
-    late-binding helper + the ``from bot.engines import calibration as
-    _cal_state`` alias used in the failure-path SLOW_BATCH_BREAKDOWN logger
+  - bot/state.py — owns the class body + top-imports
+    ``compute_for_15m_main_path`` from clean-leaf ``bot.boot``
+    (Bit 9.3-iii.a, 2026-05-11; the Bit 7.1
+    ``_get_compute_for_15m_main_path()`` late-binding helper retired) +
+    the ``from bot.engines import calibration as _cal_state`` alias used
+    in the failure-path SLOW_BATCH_BREAKDOWN logger
   - bot/engines/calibration.py — keeps ``state: "StateManager"`` as a quoted
     forward-ref in `load_training_data_from_db`'s signature (cycle-avoidance)
   - scripts/cal_mlp/integration.py — refactored signatures: parity_assert(conn)
@@ -420,27 +423,22 @@ def test_parity_assert_drawdown_halt_floor_fallback_preserved():
 # ----------------------------------------------------------- bot/state.py call-site pins (path-A++)
 
 
-def test_state_get_compute_for_15m_main_path_helper_exists():
-    """Path-A++ replaces `_bot_impl_globals()` with `_get_compute_for_15m_main_path()`."""
-    src = STATE_PY.read_text()
-    assert "def _get_compute_for_15m_main_path" in src, (
-        "bot/state.py must define _get_compute_for_15m_main_path() — the "
-        "single-name late-binding helper for sizing_parity_assert. See "
-        "PATH-A++ AMENDMENT in kb/decisions/bit-7.1-plan-may10.md."
-    )
-
-
-def test_state_no_bot_impl_globals_helper():
-    """Path-A++ does NOT use _bot_impl_globals (the broader-scope helper from
-    the original Plan-agent base plan). Helper name must be the narrower
-    _get_compute_for_15m_main_path. (Substring matches in docstrings/comments
-    that explain the deviation are allowed; only an actual `def
-    _bot_impl_globals` would be a regression.)"""
+def test_state_no_late_binding_helper_post_bit_9_3_iii_a():
+    """Bit 9.3-iii.a (2026-05-11) retired both `_get_compute_for_15m_main_path()`
+    AND `_bot_impl_globals()`. The closure `compute_for_15m_main_path` relocated
+    to clean-leaf bot/boot.py, and bot/state.py top-imports it directly — no
+    late-binding needed because bot.boot has zero bot.state edges (no
+    load-order cycle to avoid)."""
     tree = ast.parse(STATE_PY.read_text())
     fn_names = [
         n.name for n in ast.iter_child_nodes(tree)
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
+    assert "_get_compute_for_15m_main_path" not in fn_names, (
+        "bot/state.py still defines _get_compute_for_15m_main_path() — Bit "
+        "9.3-iii.a should have deleted the late-binding helper and use "
+        "top-level `from bot.boot import compute_for_15m_main_path`."
+    )
     assert "_bot_impl_globals" not in fn_names, (
         f"bot/state.py defines `def _bot_impl_globals` — path-A++ requires "
         f"the narrower `_get_compute_for_15m_main_path` instead. The whole-"
@@ -476,16 +474,24 @@ def test_state_init_calls_sizing_parity_assert_with_explicit_kwargs():
     assert pat.search(src), (
         "bot/state.py StateManager.__init__ must call "
         "_calmlp_sizing_parity_assert_impl(self.conn, rowid=..., "
-        "compute_for_15m_main_path=_get_compute_for_15m_main_path()) — "
-        "explicit kwargs per path-A++."
+        "compute_for_15m_main_path=compute_for_15m_main_path) — "
+        "explicit kwargs per path-A++ (post-Bit-9.3-iii.a: the late-binding "
+        "helper was retired; the callable is top-imported from bot.boot)."
     )
 
 
 def test_state_no_top_level_bot_impl_import():
-    """bot/state.py must NOT import bot._impl at top level. The
-    _get_compute_for_15m_main_path helper does a method-body
-    `import bot._impl` to avoid the load-order cycle (bot._impl imports
-    bot.state at line 109 during bot._impl's own module load)."""
+    """bot/state.py must NOT import bot._impl at top level.
+
+    Pre-Bit-9.3-iii.a, the Bit 7.1 ``_get_compute_for_15m_main_path()`` helper
+    was the only bot._impl edge (method-body late-binding to dodge the
+    load-order cycle). Bit 9.3-iii.a (2026-05-11) relocated
+    ``compute_for_15m_main_path`` to clean-leaf ``bot.boot`` — bot/state.py
+    now top-imports the callable directly, has ZERO bot._impl edges at any
+    scope, and the helper is retired. This test stays as the original
+    top-level pin; the stronger ``test_state_has_zero_bot_impl_edges`` in
+    tests/test_bit_9_3_iii_a_boot_relocation.py covers the full zero-edge claim.
+    """
     src = STATE_PY.read_text()
     tree = ast.parse(src)
     for node in ast.iter_child_nodes(tree):

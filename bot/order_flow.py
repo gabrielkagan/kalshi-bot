@@ -21,7 +21,7 @@ zero `_cal_state`, zero `bot._impl`-below-line-119 references, zero
 numpy/scipy/torch. Mirrors Bit 9.2 SettlementTracker shape but smaller
 surface.
 
-## Bit 9.3.5 marker-collapse
+## Bit 9.3.5 marker-collapse + 9.3-iii.a HPSB relocation
 
 Pre-9.3.5, bot/main_loop.py used method-body late-binding to access OFE
 + KOFT inside `MainLoop.__init__`, with two `# REMOVE BIT 9.3.5` markers
@@ -34,11 +34,14 @@ documenting the cleanup contract:
         KalshiOrderFlowTracker,     # REMOVE BIT 9.3.5
     )
 
-Post-9.3.5, the 2 marker lines collapse to a top-level
+Post-9.3.5, the 2 marker lines collapsed to a top-level
 `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker` in
-bot/main_loop.py. The HPSB pair stays late-bound (path-A — they're
-module-level state bound below the line-119 re-export point in
-bot/_impl.py).
+bot/main_loop.py.
+
+Post-Bit-9.3-iii.a (2026-05-11), the remaining HPSB pair was also relocated
+out of bot._impl to clean-leaf `bot/boot.py` and is now top-imported via
+`from bot.boot import _HPSB_MISSING_BLEEDERS, _HPSB_VALIDATOR_UNAVAILABLE_REASON`.
+The bot/main_loop.py `MainLoop.__init__` late-binding block is GONE.
 
 ## Sister cleanup atomic in same commit
 

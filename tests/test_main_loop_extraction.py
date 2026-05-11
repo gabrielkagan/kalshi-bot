@@ -195,14 +195,12 @@ MAIN_LOOP_MODELS_NAMES = (
 # be late-bound INSIDE method bodies (NOT top-level import) to avoid the
 # partial-module ImportError chain documented in test_no_top_level_bot_impl_import_in_main_loop.
 # Bit 9.3.5 (2026-05-10) collapsed the OFE+KOFT entries to a top-level
-# `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker` —
-# bot/order_flow.py is a clean leaf (stdlib + bot.constants only) so the
-# top-level edge is safe. Only the HPSB pair remains late-bound (both are
-# module-level state bound BELOW the line-119 re-export point in bot/_impl.py).
-MAIN_LOOP_BOT_IMPL_INIT_LATE_BOUND = (
-    "_HPSB_MISSING_BLEEDERS",
-    "_HPSB_VALIDATOR_UNAVAILABLE_REASON",
-)
+# `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker`.
+# Bit 9.3-iii.a (2026-05-11) further relocated the HPSB pair to clean-leaf
+# bot/boot.py — bot/main_loop.py now top-imports them via
+# `from bot.boot import _HPSB_MISSING_BLEEDERS, _HPSB_VALIDATOR_UNAVAILABLE_REASON`,
+# and the method-body late-binding block is GONE. Tuple emptied accordingly.
+MAIN_LOOP_BOT_IMPL_INIT_LATE_BOUND: tuple[str, ...] = ()
 
 # Bit 9.3-ii (2026-05-10) retargeted MainLoop.startup's late-binding for
 # `detect_orphan_db_holders` from `bot._impl` to `bot.orphan_db_watchdog` (the
@@ -763,11 +761,13 @@ def test_no_main_loop_no_impl_toplevel_contract_added():
     assert "main_loop-no-impl-toplevel" not in contract_names, (
         "Unexpected `main_loop-no-impl-toplevel` contract added"
     )
-    # Sanity: 7 contracts post-Bit-12.3 (Sprint 12, 2026-05-11): 5 pre-existing
-    # (engines-no-impl, fetchers-no-engines, feeds-no-engines, helpers-leaf,
-    # state-no-impl-toplevel) + 2 new (bot-no-torch, bot-no-pandas).
-    assert len(contracts) == 7, (
-        f"Expected 7 .importlinter contracts post-Bit-12.3; found {len(contracts)}: {contract_names}"
+    # Sanity: 6 contracts post-Bit-9.3-iii.a (2026-05-11). state-no-impl-toplevel
+    # was retired because bot/state.py has zero bot._impl edges post-relocation
+    # of compute_for_15m_main_path to clean-leaf bot/boot.py. Remaining:
+    # engines-no-impl, fetchers-no-engines, feeds-no-engines, helpers-leaf,
+    # bot-no-torch, bot-no-pandas.
+    assert len(contracts) == 6, (
+        f"Expected 6 .importlinter contracts post-Bit-9.3-iii.a; found {len(contracts)}: {contract_names}"
     )
 
 

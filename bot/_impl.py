@@ -111,7 +111,7 @@ from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher  # noqa: F401 — 
 from bot.feeds import CoinbaseFeed, CrossExchangeFeed, KalshiFeed, OrderbookSchemaError  # noqa: F401 — Bit 4.5a + 4.5b leaf extraction; re-export so MainLoop construction (search "self.feed = CoinbaseFeed", "self.cross_feed = CrossExchangeFeed", and "self.kalshi_feed = KalshiFeed") + the `feed: CoinbaseFeed` type annotations on VolatilityEngine.__init__ (now in bot/engines/volatility.py per Bit 6.1) and OpportunityScanner.__init__ + the OrderbookSchemaError raises inside KalshiFeed (now sibling-imported from bot.feeds.orderbook_schema) all resolve via bot._impl namespace.
 from bot.engines import VolatilityEngine, ProbabilityEngine, CalibrationEngine  # noqa: F401 — Bit 6.1 + 6.2 + 6.3 leaf extractions; re-export so MainLoop construction (search "self.vol = VolatilityEngine" and "self.calibration = CalibrationEngine()") + the `vol: VolatilityEngine` type annotation on OpportunityScanner.__init__ + the bare-name `ProbabilityEngine.X(...)` call sites (scan-loop edge computation, counterfactual probability, dynamic cap lookup) + the bare-name `CalibrationEngine(...)` construction sites in MainLoop.__init__ + the static-method calls in tests/test_vol_engine.py / tests/test_probability_engine.py / tests/test_calibration_engine.py (`from bot import VolatilityEngine, ProbabilityEngine, CalibrationEngine`) all resolve via bot._impl namespace. The Optional['EGARCHEstimator'] / Optional['MincerZarnowitzTracker'] forward-refs on VolatilityEngine.__init__ remain string-quoted because both classes still live in models.py. **Bit 6.3 path-B refactor (2026-05-10)**: the `_cal_state._CALIBRATION_ENGINE` singleton + `_cal_state._CAL_REGISTRY` dict + `_cal_state._derive_subtype`/`_cal_state._derive_asset_filter`/`_cal_state._resolve_cal_engine` helpers all moved to `bot/engines/calibration.py` alongside the class. Both this module and `bot/engines/probability.py` reach them via `_cal_state.X` (see the `from bot.engines import calibration as _cal_state` alias below). The path-B move lifted the previous Bit 6.2 late-binding `from bot import _impl as _bot_impl` pattern inside ProbabilityEngine — top-level imports work because `bot.engines.calibration` is a leaf (does NOT import bot._impl). Removes the `.importlinter` `bot.engines.probability -> bot._impl` carve-out shipped in Pillar 2.
 from bot.engines import calibration as _cal_state  # Bit 6.3 path-B: alias for _cal_state._CALIBRATION_ENGINE / _cal_state._CAL_REGISTRY / _cal_state._derive_subtype / _cal_state._derive_asset_filter / _cal_state._resolve_cal_engine which all live in bot/engines/calibration.py post-Bit-6.3. Module-attribute access pattern (e.g., `_cal_state._CALIBRATION_ENGINE = self.calibration`) preserves singleton mutation semantics — every reader through this alias sees writes immediately because we go through the module reference, not a captured-by-value binding.
-from bot.state import StateManager  # noqa: F401 — Bit 7.1 leaf extraction (2026-05-10); re-export so MainLoop construction (`self.state = StateManager()`) + 3 consumer-class type annotations (`OpportunityScanner.__init__`, `OrderExecutor.__init__`, `SettlementTracker.__init__`: `state: StateManager`) + ~50 test instantiation sites (`bot.StateManager(...)` via _BotProxy → bot._impl.StateManager → bot.state.StateManager) all resolve. **Path-A++ deviation note**: bot/state.py introduces a `_get_compute_for_15m_main_path()` single-name late-binding helper (returns `bot._impl.compute_for_15m_main_path` bound at line 350 below). Sister Bit 7.1 also refactored `parity_assert` and `sizing_parity_assert` in scripts/cal_mlp/integration.py to drop their `bot_globals` parameter and import constants directly — the previous `globals()` smell at the StateManager.__init__ call sites is fixed in-Bit per the modularization strategic goal of reducing code smells. Sister Bit 7.2 ships in lock-step with this commit (agent_docs/db_schema.md refresh).
+from bot.state import StateManager  # noqa: F401 — Bit 7.1 leaf extraction (2026-05-10); re-export so MainLoop construction (`self.state = StateManager()`) + 3 consumer-class type annotations (`OpportunityScanner.__init__`, `OrderExecutor.__init__`, `SettlementTracker.__init__`: `state: StateManager`) + ~50 test instantiation sites (`bot.StateManager(...)` via _BotProxy → bot._impl.StateManager → bot.state.StateManager) all resolve. **Path-A++ deviation note (Bit 7.1, historical)**: bot/state.py originally introduced a `_get_compute_for_15m_main_path()` single-name late-binding helper to reach `compute_for_15m_main_path` (closure bound below the bot.state re-export in this file). Sister Bit 7.1 also refactored `parity_assert` and `sizing_parity_assert` in scripts/cal_mlp/integration.py to drop their `bot_globals` parameter and import constants directly — the previous `globals()` smell at the StateManager.__init__ call sites was fixed in-Bit per the modularization strategic goal of reducing code smells. Sister Bit 7.2 shipped in lock-step (agent_docs/db_schema.md refresh). **Post-Bit-9.3-iii.a (2026-05-11)**: `compute_for_15m_main_path` relocated to clean-leaf bot/boot.py and the `_get_compute_for_15m_main_path()` helper RETIRED — bot/state.py now top-imports the callable directly. The .importlinter `state-no-impl-toplevel` carve-out also retired (net contracts 7 → 6).
 from bot.scanner import OpportunityScanner  # noqa: F401 — Bit 8.1 leaf extraction (2026-05-10, path-A++); re-export so MainLoop construction (`self.scanner = OpportunityScanner(..., main_loop=self)`) + ~13 consumer call sites (12 OrderExecutor static-method calls + 1 MainLoop static-method call referencing `OpportunityScanner._best_yes_ask_cents` / `_convert_orderbook_fp`) + ~30 test instantiation sites (`bot.OpportunityScanner(...)` via _BotProxy → bot._impl.OpportunityScanner → bot.scanner.OpportunityScanner) all resolve. **Path-A++ deviation note (post-Bit-9.1, 2026-05-10)**: (1) the `_get_order_executor()` late-binding helper in bot/scanner/__init__.py was RETIRED in Bit 9.1 atomically with the OrderExecutor extraction (see line-116 `from bot.executor import OrderExecutor` re-export below) — bot/scanner now uses a top-level `from bot.executor import OrderExecutor` directly; the `scanner-no-impl-toplevel` `.importlinter` contract dropped in the same commit (net contracts: 6 → 5); (2) the `Optional[OrderFlowEngine]` and `Optional[KalshiOrderFlowTracker]` annotations in `__init__` signature are UNQUOTED post-Bit-9.3.5 (2026-05-10) — both classes live in `bot/order_flow.py` post-extraction; bot/scanner has a top-level `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker` that resolves cleanly because bot/order_flow.py is a clean leaf (stdlib + bot.constants only) with zero bot.scanner edges. Sister Bit 8.1 ALSO relocated the `_TELEGRAM` module-level singleton from this file to `bot/notifier.py` (path-A++ relocation), reached via `_telegram_state._TELEGRAM` module-attribute access (parallel to Bit 6.3 path-B `_cal_state._CALIBRATION_ENGINE` pattern; preserves mutation freshness across consumers). Sprint 8 closed at Bit 8.2 (`bot/scanner/CLAUDE.md`).
 from bot.executor import OrderExecutor  # noqa: F401 — Bit 9.1 leaf extraction (2026-05-10, path-A++); re-export so MainLoop construction (`self.executor = OrderExecutor(self.client, self.state, self.logger, main_loop=self, kalshi_feed=self.kalshi_feed)`) + ~12 test instantiation sites (`bot.OrderExecutor(...)` via _BotProxy → bot._impl.OrderExecutor → bot.executor.OrderExecutor) all resolve. **Path-A++ deviations**: (1) `_append_raw_api_journal` relocated to bot/helpers/raw_api_journal.py (the L81 alias-import at line ~282 RETIRED in Bit 9.2 atomically with the SettlementTracker extraction — zero callers remain in bot/_impl.py); (2) 4 latent `OpportunityScanner._best_ask_depth(...)` AttributeErrors fixed (closes ticket 86b9vn9r5; `_best_ask_depth` is a staticmethod on OrderExecutor itself). Sister cleanup atomic in this Bit: `_get_order_executor()` helper retired from bot/scanner/__init__.py + `scanner-no-impl-toplevel` `.importlinter` contract dropped (net contracts: 6 → 5).
 from bot.settlement import SettlementTracker, discover_active_windows  # noqa: F401 — Bit 9.2 leaf extraction (2026-05-10, path-A++); re-export so MainLoop construction (search anchor: `self.tracker = SettlementTracker(`) + the single MainLoop call site (search anchor: `discover_active_windows(self.client)`) resolve via bot._impl namespace. **Path-A++ deviation**: the 2 SettlementTracker call sites that read the L81-aliased underscore-prefix name now use the public `append_raw_api_journal` directly (matches bot/executor.py:98 convention); the L81 alias-import at line ~282 RETIRED atomically (zero callers remain). Bundled atomic cleanup: bot/notifier.py docstring 3→4 consumers; bot/__init__.py extended; bot/CLAUDE.md Deploy step 3 catalog gains SettlementTracker paragraph; tests/test_state_extraction.py quadruple-walk extension (BOT_PY + SCANNER_PY + EXECUTOR_PY + SETTLEMENT_PY); test_low_price_shadow.py + test_stacking.py + test_tm_sweep_shadow.py + test_regression.py _read_bot()/_paths helpers extended to concat bot/settlement.py; test_tracker_tick_threaded.py BOT_PY → SETTLEMENT_PY; test_order_outcome_vocab.py SCANNED_PATHS extended; tests/test_executor_extraction.py L81 positive pin flipped to negative; agent_docs/bot_layout.md class table loses the `~1010–~2179 SettlementTracker 1179` row; discover_active_windows narrative flips from Bit 9.3 to Bit 9.2 across all parallel sites. Bundled bug fix (ticket 86b9vppn3): pre-existing UnboundLocalError 'best_ask' in OpportunityScanner.scan() low_probability_15m insert_rejection branch (predates Bit 8.1 per git blame) — initialize best_ask=None at iteration start.
@@ -340,11 +340,20 @@ from bot.orphan_db_watchdog import (  # noqa: F401 — Bit 9.3-ii leaf extractio
 # replaces the heuristic with runtime-registry membership.
 # RCA + decision: kb/decisions/bit-3.0.5-validator-decoupling.md.
 
-# Vestigial post-Bit-3.0.5: registry-membership validator can't fail with a
-# FileNotFoundError (no filesystem read). Kept as None for the HPSB_GATE_STATE
-# log consumer ("validator_unavailable=no" output at MainLoop.__init__,
-# search "HPSB_GATE_STATE:" for the current line).
-_HPSB_VALIDATOR_UNAVAILABLE_REASON: Optional[str] = None
+# ─── Boot-time bindings — relocated to bot/boot.py (Bit 9.3-iii.a, 2026-05-11) ─
+# The 4 module-level boot bindings and the cal_mlp warmup boot log were
+# relocated to a NEW clean-leaf module `bot/boot.py` to break the last
+# structural dependency that bot/main_loop.py and bot/state.py had on
+# bot._impl. bot/boot.py imports only stdlib + bot.helpers.validators +
+# scripts/cal_mlp/integration — zero bot._impl edge. The re-export below
+# preserves `tests/contracts/public_api.json` byte-identical until full
+# proxy retirement in Bit 9.3-iii.b/c.
+from bot.boot import (  # noqa: F401
+    _HPSB_VALIDATOR_UNAVAILABLE_REASON,
+    _HPSB_MISSING_BLEEDERS,
+    _BLEED_BLOCK_MISSING_BLEEDERS,
+    compute_for_15m_main_path,
+)
 
 
 
@@ -354,9 +363,7 @@ _HPSB_VALIDATOR_UNAVAILABLE_REASON: Optional[str] = None
 
 
 
-# Boot-time validation — runs after all registry sources are in scope.
-_HPSB_MISSING_BLEEDERS = _validate_high_price_stc_block_bleeder_strings()
-_BLEED_BLOCK_MISSING_BLEEDERS = _validate_bleed_block_bleeder_strings()
+# Boot-time validation now lives in bot/boot.py (Bit 9.3-iii.a) — re-exported above.
 
 
 
@@ -369,15 +376,8 @@ _BLEED_BLOCK_MISSING_BLEEDERS = _validate_bleed_block_bleeder_strings()
 #  StateManager
 # ═════════════════════════════════════════════════════════════════════════════
 
-# Phase 7 Edit 2: static reimplementation of 15M main-path sizing for parity-assert.
-# DO NOT use in production trading — only consumed by sizing_parity_assert at startup.
-# Bit 7.1 fu (Smell 4, ticket 86b9vhccw): make_compute_for_15m_main_path() now imports
-# its dependent names directly from bot.constants + config inside the function body
-# (mirrors Bit 7.1 path-A++ parity_assert / sizing_parity_assert). The previous
-# `make_compute_for_15m_main_path(globals())` closure-over-bot._impl-namespace pattern
-# is gone; SIZING_TIERS / DRAWDOWN_* / per-asset risk caps / STC scaler / DRAWDOWN_HALT_FLOOR
-# literal fallback all resolve at call-time via direct imports.
-compute_for_15m_main_path = make_compute_for_15m_main_path()
+# Phase 7 Edit 2 closure `compute_for_15m_main_path` lives in bot/boot.py
+# (Bit 9.3-iii.a) — re-exported above alongside the HPSB validator bindings.
 
 
 # Orphan-DB Layer-3 watchdog → bot/orphan_db_watchdog.py (Bit 9.3-ii, 2026-05-10).
@@ -400,36 +400,21 @@ compute_for_15m_main_path = make_compute_for_15m_main_path()
 # StateManager.__init__ pre-extraction were refactored in-Bit — see
 # scripts/cal_mlp/integration.py `parity_assert(conn) -> tuple[str, int]` and
 # `sizing_parity_assert(conn, *, rowid, compute_for_15m_main_path)` for the
-# new explicit signatures. The `_get_compute_for_15m_main_path()` single-name
-# late-binding helper inside bot/state.py wraps the closure created at
-# `compute_for_15m_main_path = make_compute_for_15m_main_path()` (Bit 7.1 fu /
-# Smell 4, ticket 86b9vhccw, dropped the `globals()` arg + closes over
-# function-scoped imports instead). Sister Bit 7.2 (agent_docs/db_schema.md)
-# shipped in the same atomic commit as Bit 7.1. Sprint 7 closes here.
+# new explicit signatures (Bit 7.1 fu / Smell 4, ticket 86b9vhccw, also dropped
+# the `globals()` arg from `make_compute_for_15m_main_path`). The original
+# Bit 7.1 `_get_compute_for_15m_main_path()` late-binding helper inside bot/state.py
+# was RETIRED in Bit 9.3-iii.a (2026-05-11) — `compute_for_15m_main_path` relocated
+# to clean-leaf bot/boot.py and bot/state.py top-imports the callable directly.
+# The .importlinter `state-no-impl-toplevel` carve-out retired in the same atomic
+# commit (net contracts 7 → 6). Sister Bit 7.2 (agent_docs/db_schema.md) shipped
+# in the same atomic commit as Bit 7.1. Sprint 7 closes here.
 
 
-# cal_mlp predictor cache + warmup → scripts/cal_mlp/integration.py
-# (Smell 3 fu, 86b9vhcat, 2026-05-10). Kill-switch contract preserved:
-# predictor INSTANCES always constructed at integration.py module-import time;
-# warmup() gated on CALMLP_ENABLED. Module-scoped logger (NOT bare
-# `logging.info`) — pinned by tests/regression/test_no_basicconfig_in_bot_impl.py.
-_calmlp_enabled_at_boot, _calmlp_warmed = _calmlp_warmup_cache()
-if _calmlp_enabled_at_boot:
-    logging.getLogger(__name__).info(
-        "[CALMLP] enabled=1 at boot, predictors_warmed=%d/4", _calmlp_warmed)
-else:
-    logging.getLogger(__name__).info(
-        "[CALMLP] enabled=0 at boot — predictors constructed but not warmed; "
-        "hot env flip to 1 will lazy-load on first scan tick")
-
-# R-p7-deploy-r9: post-hoc processor lifecycle imported here; STARTED later
-# from MainLoop.startup() AFTER StateManager + migrate_schema have run.
-# Round-1#3: starting at module-import time raced StateManager construction;
-# moved to MainLoop.startup() so the cal_mlp_request_id column + partial
-# index exist before the first poll.
-from integration import (  # noqa: E402
-    start_post_hoc_processor as _calmlp_start_posthoc,
-)
+# cal_mlp warmup cache + boot log relocated to bot/boot.py (Bit 9.3-iii.a, 2026-05-11).
+# `_calmlp_start_posthoc` is top-imported directly by bot/main_loop.py (search
+# anchor `start_post_hoc_processor as _calmlp_start_posthoc`) — the previous
+# bot/_impl.py re-import (Plan-agent M1) was shadowed dead weight and is
+# dropped here.
 
 
 # ═════════════════════════════════════════════════════════════════════════════

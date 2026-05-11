@@ -70,7 +70,13 @@ EXPECTED_CONTRACTS = (
     "fetchers-no-engines",
     "feeds-no-engines",
     "helpers-leaf",
-    "state-no-impl-toplevel",
+    # Bit 9.3-iii.a (2026-05-11) RETIRED `state-no-impl-toplevel`. bot/state.py
+    # now has ZERO bot._impl edges — `compute_for_15m_main_path` was relocated
+    # to clean-leaf bot/boot.py, and bot/state.py top-imports it directly.
+    # The carve-out is no longer needed and is REMOVED from .importlinter.
+    # The 3 anti-regression tests in this file (sections 2.5 and 4) were
+    # retired in the same atomic commit; see tests/test_bit_9_3_iii_a_boot_relocation.py
+    # for the replacement claim (stronger: zero bot._impl edges, not just no top-level).
     # Bit 12.3 (Sprint 12, 2026-05-11) — heavyweight numerical libs.
     # CLAUDE.md sacred rule: cal_mlp/integration.py is the SINGLE
     # torch entry point because numpy/scipy/torch C-extensions cache
@@ -323,125 +329,44 @@ def test_helpers_leaf_forbidden_modules_covers_all_bot_top_level():
     )
 
 
-# ─── 2.5. state-no-impl-toplevel pins (Bit 7.1 fu, ticket 86b9vhca0) ─────────
+# ─── 2.5. state-no-impl pins (Bit 9.3-iii.a strengthened claim) ─────────────
+# Bit 7.1 originally pinned a method-body late-binding helper here. Bit 9.3-iii.a
+# (2026-05-11) relocated `compute_for_15m_main_path` to clean-leaf bot/boot.py
+# and bot/state.py now top-imports it — zero bot._impl edges. The original pin
+# (helper exists + helper contains bot._impl late-binding import) is INVERTED:
+# the helper must NOT exist, and bot/state.py must have zero bot._impl
+# references at any scope. See tests/test_bit_9_3_iii_a_boot_relocation.py for
+# the primary contract; the assertion below is the peer-pin at the contract layer.
 
 
-def test_state_late_binding_is_inside_helper_function():
-    """Positive: bot/state.py reaches bot._impl ONLY via a method-body
-    import inside ``_get_compute_for_15m_main_path()``.
+def test_state_has_zero_bot_impl_edges_at_contract_layer():
+    """Negative: bot/state.py has ZERO bot._impl references at ANY scope
+    (top-level OR method-body). Strengthens the Bit 7.1 pin (which only
+    forbade top-level imports) to a complete-elimination claim post-Bit-9.3-iii.a.
 
-    Bit 7.1 (790214f, 2026-05-10) extracted StateManager via path-A++.
-    The single-name late-binding helper sidesteps the load-order cycle
-    (bot._impl re-exports bot.state — search anchor:
-    ``from bot.state import StateManager`` — and
-    ``compute_for_15m_main_path`` is bound below that re-export via
-    ``make_compute_for_15m_main_path()``). The import-linter contract
-    ``state-no-impl-toplevel`` documents the ``bot.state -> bot._impl``
-    edge as an explicit carve-out; this AST pin asserts the carve-out is
-    used the way the contract describes (method-body inside the helper),
-    not at module top-level.
-
-    Three layers because:
-      1. import-linter sees the edge in the grimp graph (handled by the
-         state-no-impl-toplevel contract + its ignore_imports carve-out).
-      2. AST walk confirms the import lives inside the helper (this test).
-      3. AST walk in tests/test_state_extraction.py
-         (``test_state_no_top_level_bot_impl_import``) confirms NO
-         top-level import. Both pins must hold.
+    The Bit 7.1 `state-no-impl-toplevel` carve-out was retired in Bit 9.3-iii.a
+    because `compute_for_15m_main_path` was relocated to clean-leaf bot/boot.py.
+    bot/state.py now top-imports the callable directly — no late-binding helper,
+    no method-body import.
     """
     src = STATE_PY.read_text()
     tree = ast.parse(src)
-    helper_fn = next(
-        (
-            node
-            for node in ast.iter_child_nodes(tree)
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "_get_compute_for_15m_main_path"
-        ),
-        None,
-    )
-    assert helper_fn is not None, (
-        "bot/state.py is missing `def _get_compute_for_15m_main_path()` — "
-        "the path-A++ single-name late-binding helper. See "
-        "kb/decisions/bit-7.1-shipped-may10.md for context."
-    )
-    found = False
-    for node in ast.walk(helper_fn):
-        if isinstance(node, ast.Import) and any(
-            alias.name == "bot._impl" for alias in node.names
-        ):
-            # Matches `import bot._impl` and `import bot._impl as X`.
-            found = True
-            break
-        if isinstance(node, ast.ImportFrom):
-            if node.module == "bot._impl":
-                # Matches `from bot._impl import X`.
-                found = True
-                break
-            if node.module == "bot" and any(
-                alias.name == "_impl" for alias in node.names
-            ):
-                # Matches `from bot import _impl` (and `... as X`).
-                # Restricted to the `_impl` name so that a refactor
-                # importing a DIFFERENT bot name from inside the helper
-                # (e.g., `from bot import constants`) — which would not
-                # late-bind bot._impl — does not silently keep this test
-                # green.
-                found = True
-                break
-    assert found, (
-        "bot/state.py::_get_compute_for_15m_main_path() does not perform a "
-        "method-body import that names `bot._impl` (`import bot._impl`, "
-        "`from bot._impl import X`, or `from bot import _impl`). The "
-        "late-binding it provides is the only legitimate way for bot/state.py "
-        "to reach `compute_for_15m_main_path` (which is bound below the "
-        "line-~109 re-export of bot.state inside bot/_impl.py — search "
-        "anchor: `from bot.state import StateManager`). Reverting the helper "
-        "would re-introduce the load-order cycle that path-A++ fixed."
-    )
-
-
-def test_state_no_toplevel_bot_impl_import_at_contract_layer():
-    """Negative (peer to ``test_state_extraction.py``): bot/state.py has
-    NO top-level ``import bot._impl`` or ``from bot._impl import ...``.
-
-    Pillar 2's import-linter sees both top-level and method-body imports
-    as the same grimp edge — the ``state-no-impl-toplevel`` contract's
-    ``ignore_imports = bot.state -> bot._impl`` carve-out covers the
-    helper's method-body import but would also silently mask a future
-    regression that hoists the import to module top-level. This AST-level
-    pin closes that gap by walking module-level statements directly.
-
-    Redundant with ``test_state_no_top_level_bot_impl_import`` in
-    tests/test_state_extraction.py — both seals are intentional. The
-    extraction-test pin lives next to the StateManager schema/method
-    pins; this one lives next to the import-linter contract that pairs
-    with it. Same invariant, two anchors.
-    """
-    src = STATE_PY.read_text()
-    tree = ast.parse(src)
-    for node in ast.iter_child_nodes(tree):
+    for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             assert node.module != "bot._impl", (
-                f"bot/state.py has top-level "
-                f"`from bot._impl import {[a.name for a in node.names]}` — "
-                f"forbidden by Pillar 2 contract `state-no-impl-toplevel`. "
-                f"Only method-body late-binding inside "
-                f"_get_compute_for_15m_main_path() is allowed."
+                f"bot/state.py:{node.lineno} imports from bot._impl — "
+                f"Bit 9.3-iii.a should have eliminated all such edges. "
+                f"`compute_for_15m_main_path` now lives in clean-leaf bot/boot.py."
             )
             if node.module == "bot":
                 for alias in node.names:
                     assert alias.name != "_impl", (
-                        "bot/state.py has top-level `from bot import _impl` — "
-                        "forbidden by Pillar 2 contract `state-no-impl-toplevel`. "
-                        "Only method-body late-binding is allowed."
+                        f"bot/state.py:{node.lineno} imports `_impl` from `bot`"
                     )
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 assert alias.name != "bot._impl", (
-                    "bot/state.py has top-level `import bot._impl` — "
-                    "forbidden by Pillar 2 contract `state-no-impl-toplevel`. "
-                    "Only method-body late-binding is allowed."
+                    f"bot/state.py:{node.lineno} imports bot._impl"
                 )
 
 
@@ -820,76 +745,10 @@ def test_lint_imports_fails_when_engines_to_impl_edge_re_introduced(
     )
 
 
-def test_lint_imports_fails_when_state_carve_out_removed(tmp_path: Path):
-    """Negative smoke: removing the ``bot.state -> bot._impl`` entry from
-    the ``state-no-impl-toplevel`` contract's ``ignore_imports`` MUST
-    cause lint-imports to fail — proving the carve-out is load-bearing
-    for the method-body late-binding inside
-    ``_get_compute_for_15m_main_path()`` in bot/state.py (Bit 7.1; search
-    anchor: ``def _get_compute_for_15m_main_path``).
-
-    Mirrors the pre-Bit-6.3 ``test_lint_imports_fails_when_carve_out_removed``
-    pattern (since lifted by path-B for engines). The state carve-out
-    cannot be lifted the same way: the load-order cycle (bot._impl
-    re-exports bot.state — search anchor: ``from bot.state import
-    StateManager`` — and ``compute_for_15m_main_path`` is bound below
-    that re-export via ``make_compute_for_15m_main_path()``)
-    makes a top-level import structurally impossible. The carve-out is
-    permanent until that cycle is structurally redesigned, so this test
-    locks the configuration against an accidental removal of the ignore
-    line.
-
-    Mutation strategy: parse ``.importlinter`` with configparser, drop
-    the ``ignore_imports`` key from the state contract section, write
-    back. Comments don't survive the round-trip but the contracts
-    themselves are preserved verbatim — what lint-imports cares about.
-    """
-    cmd = _require_lint_imports()
-
-    fixture_root = tmp_path / "project"
-    shutil.copytree(REPO_ROOT / "bot", fixture_root / "bot")
-    shutil.copy(IMPORTLINTER_PATH, fixture_root / ".importlinter")
-
-    cp = configparser.RawConfigParser()
-    parsed = cp.read(fixture_root / ".importlinter")
-    assert parsed, "test setup error: copied .importlinter is unreadable"
-    section = "importlinter:contract:state-no-impl-toplevel"
-    assert cp.has_section(section), (
-        "test setup error: state-no-impl-toplevel contract missing from "
-        "the copied .importlinter — the contract under test isn't in place."
-    )
-    assert cp.has_option(section, "ignore_imports"), (
-        "test setup error: state-no-impl-toplevel contract has no "
-        "ignore_imports key to remove — the carve-out this test guards "
-        "is already absent. If the carve-out was deliberately lifted "
-        "(load-order cycle redesigned), drop this test in the same commit."
-    )
-    cp.remove_option(section, "ignore_imports")
-    with open(fixture_root / ".importlinter", "w") as fh:
-        cp.write(fh)
-
-    result = subprocess.run(
-        cmd,
-        cwd=fixture_root,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert result.returncode != 0, (
-        "lint-imports passed with the state-no-impl-toplevel ignore_imports "
-        "carve-out removed — the bot.state→bot._impl edge from the "
-        "method-body late-binding in _get_compute_for_15m_main_path() "
-        "was not caught. Either the helper no longer imports bot._impl "
-        "(load-order cycle resolved? KB closeout doc must record it) or "
-        "another ignore_imports line subsumes this edge. Investigate "
-        "before merging.\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    combined = result.stdout + result.stderr
-    assert "state-no-impl-toplevel" in combined or "bot._impl" in combined, (
-        "lint-imports failed but neither the contract id "
-        "`state-no-impl-toplevel` nor the forbidden module `bot._impl` "
-        "appears in the output — failure may be unrelated to the "
-        "carve-out removal.\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+# `test_lint_imports_fails_when_state_carve_out_removed` was RETIRED in
+# Bit 9.3-iii.a (2026-05-11) per the closeout doc § "Code-smell follow-ups":
+# `compute_for_15m_main_path` was relocated to clean-leaf bot/boot.py,
+# eliminating the load-order cycle that originally required the carve-out.
+# Without the carve-out there is nothing to lock; the
+# `test_state_has_zero_bot_impl_edges_at_contract_layer` peer-pin in
+# section 2.5 carries the stronger no-edges claim.

@@ -694,12 +694,14 @@ def test_no_settlement_no_impl_toplevel_contract_added():
         "Unexpected `settlement-no-impl-toplevel` contract added — SettlementTracker is a "
         "clean leaf (no late-binding required); the contract should NOT exist."
     )
-    # Sanity: 7 contracts total post-Bit-12.3 (Sprint 12, 2026-05-11):
-    # engines-no-impl, fetchers-no-engines, feeds-no-engines, helpers-leaf,
-    # state-no-impl-toplevel, bot-no-torch, bot-no-pandas.
-    assert len(contracts) == 7, (
-        f".importlinter has {len(contracts)} contracts; expected 7 "
-        f"post-Bit-12.3. Contracts present: {sorted(contract_names)}"
+    # Sanity: 6 contracts total post-Bit-9.3-iii.a (2026-05-11) — state-no-impl-toplevel
+    # was retired because bot/state.py has zero bot._impl edges post-relocation of
+    # compute_for_15m_main_path to clean-leaf bot/boot.py. Post-Bit-12.3 was 7
+    # (engines-no-impl, fetchers-no-engines, feeds-no-engines, helpers-leaf,
+    # state-no-impl-toplevel, bot-no-torch, bot-no-pandas); now 6.
+    assert len(contracts) == 6, (
+        f".importlinter has {len(contracts)} contracts; expected 6 "
+        f"post-Bit-9.3-iii.a. Contracts present: {sorted(contract_names)}"
     )
 
 

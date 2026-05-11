@@ -620,6 +620,13 @@
   "bot": {
     "kind": "module"
   },
+  "bot.boot": {
+    "kind": "module"
+  },
+  "bot.boot.compute_for_15m_main_path": {
+    "annotation": null,
+    "kind": "attribute"
+  },
   "bot.clients": {
     "kind": "module"
   },
@@ -44107,6 +44114,10 @@
       }
     ],
     "returns": "Dict[str, Optional[float]]"
+  },
+  "bot.state.compute_for_15m_main_path": {
+    "annotation": null,
+    "kind": "attribute"
   },
   "bot.state.compute_time_regime_features": {
     "kind": "function",

@@ -234,23 +234,23 @@ def test_no_circular_bot_impl_imports_in_helpers():
                     )
 
 
-# ─── 8. Boot-time validator runtime bindings stay in bot/_impl.py ───────────
+# ─── 8. Boot-time validator runtime bindings live in bot/boot.py post-9.3-iii.a ─
 
 
-def test_hpsb_validator_binding_in_bot_impl():
-    """`_HPSB_MISSING_BLEEDERS = _validate_high_price_stc_block_bleeder_strings()`
-    is a runtime-state binding (mutable boot-time output). Functions move;
-    bindings stay.
-    """
-    src = (REPO_ROOT / "bot" / "_impl.py").read_text()
+def test_hpsb_validator_binding_in_bot_boot():
+    """Post-Bit-9.3-iii.a (2026-05-11): the boot-time invocation
+    `_HPSB_MISSING_BLEEDERS = _validate_high_price_stc_block_bleeder_strings()`
+    lives in clean-leaf bot/boot.py, not bot/_impl.py. bot/_impl.py re-exports
+    via `from bot.boot import (...)` to preserve the proxy chain."""
+    src = (REPO_ROOT / "bot" / "boot.py").read_text()
     assert (
         "_HPSB_MISSING_BLEEDERS = _validate_high_price_stc_block_bleeder_strings()"
         in src
     )
 
 
-def test_bleed_block_validator_binding_in_bot_impl():
-    src = (REPO_ROOT / "bot" / "_impl.py").read_text()
+def test_bleed_block_validator_binding_in_bot_boot():
+    src = (REPO_ROOT / "bot" / "boot.py").read_text()
     assert (
         "_BLEED_BLOCK_MISSING_BLEEDERS = _validate_bleed_block_bleeder_strings()"
         in src

@@ -120,6 +120,7 @@ source_modules =
 forbidden_modules =
     bot._impl
     bot._thread_env
+    bot.boot
     bot.engines
     bot.executor
     bot.feeds
@@ -158,60 +159,31 @@ ignore_imports =
     bot.helpers.tm_sweep -> bot.models
 
 # ---------------------------------------------------------------------------
-# Contract 5 — bot.state must not have a top-level import of bot._impl
+# Contract 5 (RETIRED Bit 9.3-iii.a, 2026-05-11) — `state-no-impl-toplevel`
 # ---------------------------------------------------------------------------
-# Bit 7.1 (790214f, 2026-05-10) extracted StateManager from bot/_impl.py to
-# bot/state.py via path-A++. The two `globals()` call sites inside
-# StateManager.__init__ pre-extraction resolved to bot._impl's namespace,
-# laundered via `from config import *` + `from bot.constants import *` +
-# `from bot.helpers import *` at the top of bot/_impl.py. Path-A++
-# refactored parity_assert / sizing_parity_assert in
-# scripts/cal_mlp/integration.py to drop the bot_globals param; bot/state.py
-# uses a single-name method-body late-binding helper
-# `_get_compute_for_15m_main_path()` (search anchor:
-# `def _get_compute_for_15m_main_path` in bot/state.py) to reach
-# `bot._impl.compute_for_15m_main_path` (bound below the bot.state
-# re-export inside bot/_impl.py — search anchor:
-# `from bot.state import StateManager`). A top-level import would either
-# ImportError on the partial module or capture the closure stale.
+# Bit 7.1 (790214f, 2026-05-10) introduced this carve-out because
+# bot/state.py needed late-binding access to `bot._impl.compute_for_15m_main_path`
+# via the `_get_compute_for_15m_main_path()` helper. The closure was bound
+# below the bot.state re-export inside bot/_impl.py — a top-level import
+# would have hit partial-module ImportError or captured a stale binding.
 #
-# import-linter's grimp graph does NOT distinguish module-level from
-# function-body imports. The `ignore_imports` directive below removes the
-# `bot.state -> bot._impl` edge entirely from the graph; the contract
-# alone cannot prevent a regression to top-level import. The actual
-# anti-regression seal is three-layer:
-#   1. tests/test_state_extraction.py::test_state_no_top_level_bot_impl_import
-#      — original Bit 7.1 AST pin at the extraction-test layer
-#   2. tests/contracts/test_import_linter_contracts.py::
-#      test_state_no_toplevel_bot_impl_import_at_contract_layer
-#      — peer AST pin at the contract-test layer
-#   3. tests/contracts/test_import_linter_contracts.py::
-#      test_lint_imports_fails_when_state_carve_out_removed
-#      — load-bearing test that mutates this file (configparser-removes
-#      the ignore_imports line) and asserts lint-imports fails; locks
-#      the carve-out config against accidental removal
-# This contract block makes the carve-out auditable in `.importlinter`
-# itself — a future maintainer scanning the file sees that the
-# bot.state → bot._impl edge is "managed" rather than "missing".
+# Bit 9.3-iii.a (2026-05-11) STRUCTURALLY redesigned the load order per the
+# Bit 7.1 closeout § "Code-smell follow-ups": `compute_for_15m_main_path` was
+# relocated to NEW clean-leaf `bot/boot.py` (zero bot.state edges), and
+# bot/state.py now top-imports it directly. The `_get_compute_for_15m_main_path()`
+# helper retired in the same atomic commit. bot/state.py has ZERO bot._impl
+# edges post-9.3-iii.a, so the carve-out is no longer needed and is REMOVED.
 #
-# The carve-out is permanent until the load-order cycle is structurally
-# redesigned (e.g., compute_for_15m_main_path lifted to its own module
-# above the bot.state re-export line). Bit 7.1 closeout
-# (kb/decisions/bit-7.1-shipped-may10.md § Code-smell follow-ups) tracks
-# the wider make_compute_for_15m_main_path closure smell as a Sprint 8
-# candidate; until that lifts the cycle, the carve-out stays.
-[importlinter:contract:state-no-impl-toplevel]
-name = bot.state must not have a top-level import of bot._impl (method-body late-binding allowed)
-type = forbidden
-source_modules =
-    bot.state
-forbidden_modules =
-    bot._impl
-ignore_imports =
-    bot.state -> bot._impl
+# The 3 anti-regression tests (test_state_no_top_level_bot_impl_import,
+# test_state_no_toplevel_bot_impl_import_at_contract_layer,
+# test_lint_imports_fails_when_state_carve_out_removed) were retired in the
+# same atomic commit. test_state_has_zero_bot_impl_edges in
+# tests/test_bit_9_3_iii_a_boot_relocation.py replaces them with the stronger
+# claim: bot.state has zero bot._impl references, not just no top-level import.
 
 # ---------------------------------------------------------------------------
-# Contract 6 — bot.* must not import torch directly
+# Contract 5 (renumbered from 6 post-Bit-9.3-iii.a) — bot.* must not import
+# torch directly
 # ---------------------------------------------------------------------------
 # Per CLAUDE.md sacred rule: "Don't import torch directly in
 # bot/_impl.py. cal_mlp is the single torch entry point via
@@ -240,7 +212,8 @@ forbidden_modules =
     torch
 
 # ---------------------------------------------------------------------------
-# Contract 7 — bot.* must not import pandas directly
+# Contract 6 (renumbered from 7 post-Bit-9.3-iii.a) — bot.* must not import
+# pandas directly
 # ---------------------------------------------------------------------------
 # Same rationale as bot-no-torch: pandas C-extensions also cache
 # OpenBLAS thread count at load time. scripts/cal_mlp/integration.py

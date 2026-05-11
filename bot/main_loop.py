@@ -14,35 +14,22 @@ Largest Sprint 9 leaf by class count (15 instance methods, ~1,999 LOC verbatim
 move). Path-A method-body late-binding keeps the bot._impl edge clean —
 zero new `.importlinter` carve-outs, net contracts stays at 5.
 
-## Path-A architecture (METHOD-BODY late-binding for ALL bot._impl access)
+## Architecture (post-Bit-9.3-iii.a, 2026-05-11)
 
 bot/main_loop.py has ZERO top-level `from bot._impl import` or `import bot._impl`.
-Top-level would partial-module ImportError because bot/_impl.py at line ~119
-re-exports `from bot.main_loop import MainLoop` BEFORE bot/_impl.py reaches:
-  - line ~338: `_HPSB_VALIDATOR_UNAVAILABLE_REASON: Optional[str] = None`
-  - line ~349: `_HPSB_MISSING_BLEEDERS = _validate_high_price_stc_block_bleeder_strings()`
-  - line ~464: `def detect_orphan_db_holders(...)`
+Top-level access into bot._impl-bound state is no longer needed:
 
-Method-body imports at the top of __init__ + startup defer the lookup to
-runtime, when bot._impl is fully loaded. Mirrors the bot/executor.py
-`_get_opportunity_scanner()` shape from Bit 9.1.
+  - `_HPSB_MISSING_BLEEDERS`, `_HPSB_VALIDATOR_UNAVAILABLE_REASON` — top-imported
+    from clean-leaf `bot.boot` (Bit 9.3-iii.a relocation).
+  - `OrderFlowEngine`, `KalshiOrderFlowTracker` — top-imported from clean-leaf
+    `bot.order_flow` (Bit 9.3.5 collapse).
+  - `detect_orphan_db_holders` — method-body late-bound inside `MainLoop.startup`
+    from `bot.orphan_db_watchdog` (Bit 9.3-ii relocation; orthogonal to bot._impl).
 
-Late-bound names per method (post-Bit-9.3.5):
-  __init__:
-    - `_HPSB_MISSING_BLEEDERS` (1 read at gate-state log line)
-    - `_HPSB_VALIDATOR_UNAVAILABLE_REASON` (1 read at gate-state log line)
-  startup:
-    - `detect_orphan_db_holders` (1 call site)
-
-Bit 9.3.5 (2026-05-10) collapsed the prior `OrderFlowEngine` +
-`KalshiOrderFlowTracker` late-binding entries to a top-level
-`from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker`.
-bot/order_flow.py is a clean leaf (stdlib + bot.constants only) so the
-top-level edge is safe — no partial-module ImportError risk and no new
-`.importlinter` carve-out needed.
-
-NO new `.importlinter` carve-out — bot/main_loop.py has no top-level bot._impl
-edge in the import graph. Net contracts stays at 5 (mirrors Bit 9.2 clean leaf).
+NO `.importlinter` carve-out for bot._impl — bot/main_loop.py has no
+bot._impl edge in the import graph. Net contracts stays at 6 (post-Bit-9.3-iii.a
+the `state-no-impl-toplevel` contract retired alongside this relocation;
+helpers-leaf gained `bot.boot`).
 
 ## Cross-class coupling preserved verbatim
 
@@ -102,17 +89,18 @@ Bit 9.3-ii after bot/__main__.py swap).
 from __future__ import annotations
 
 # NOTE — Bit 9.3-ii (2026-05-10): the bot/__main__.py swap is DONE; thread_env
-# fires there as the FIRST import (line 24 of bot/__main__.py, before stdlib
-# `logging` and `sys`). Defense-in-depth `import bot._thread_env` at the TOP of
-# this module DEFERRED to Bit 9.3-iii pending griffe RecursionError investigation
-# (Bit 9.3 R4 MINOR-11 known issue — `scripts/dump_public_api.py`'s griffe
-# expression walker hits stack overflow when bot._thread_env is at the top of
-# bot/main_loop.py). Production path is safe: bot/__main__.py → bot._thread_env
-# → from bot.main_loop import MainLoop → models → numpy. The only risk path is
-# tests that import bot.main_loop directly without going through __main__.py
-# (~3 sites — tests/test_scan_productive_watchdog.py + tests/test_position_obs_orderbook.py +
-# tests/test_main_loop_extraction.py); these run in pytest workers that don't
-# hit the production thread-contention regime. Filed as Bit 9.3-iii followup.
+# fires there as the FIRST import (line 26 of bot/__main__.py, before stdlib
+# `logging` and `sys`). Production path is safe: bot/__main__.py →
+# bot._thread_env → from bot.main_loop import MainLoop → models → numpy.
+# Bit 9.3-iii.a (2026-05-11) demonstrated that the original griffe
+# RecursionError blocker for top-level `import bot._thread_env` inside a
+# bot.* module (Bit 9.3 R4 MINOR-11) can be sidestepped via the
+# `__import__("bot._thread_env")` runtime-call form (search anchor `__import__("bot._thread_env")` in bot/boot.py).
+# Defense-in-depth here in bot/main_loop.py remains OPTIONAL — production
+# already gets the guarantee through bot/__main__.py, and the test-import
+# risk paths (tests that import bot.main_loop directly without going
+# through __main__.py — ~3 sites) run in pytest workers that don't hit the
+# production thread-contention regime.
 
 import datetime
 import json
@@ -203,30 +191,23 @@ from integration import (  # noqa: E402
 )
 
 
-# bot._impl: NO TOP-LEVEL IMPORT. All bot._impl access is METHOD-BODY late-binding
-# inside MainLoop.__init__ + MainLoop.startup. See module docstring "Path-A
-# architecture" section for the partial-module-ImportError rationale.
+# Bit 9.3-iii.a (2026-05-11): HPSB boot-time bindings relocated to bot/boot.py
+# clean leaf — top-imported here (no more method-body late-binding from bot._impl).
+# `detect_orphan_db_holders` remains method-body late-bound inside MainLoop.startup
+# (relocated to bot/orphan_db_watchdog.py in Bit 9.3-ii; the lazy import there is
+# orthogonal to bot._impl partial-module concerns).
+from bot.boot import _HPSB_MISSING_BLEEDERS, _HPSB_VALIDATOR_UNAVAILABLE_REASON
 
 
 class MainLoop:
     """Continuous observation loop. Scans active windows every second."""
 
     def __init__(self):
-        # ─── Bit 9.3 Path-A method-body late-binding ─────────────────────
-        # Top-level `from bot._impl import X` would partial-module ImportError
-        # because bot/_impl.py at line ~119 re-exports
-        # `from bot.main_loop import MainLoop` BEFORE binding _HPSB_*
-        # (line ~349). Late-binding here defers the lookup to __init__
-        # runtime when bot._impl is fully loaded. Bit 9.3.5 (2026-05-10)
-        # collapsed the OFE+KOFT entries to a top-level
-        # `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker`
-        # at module scope — only the HPSB pair remains late-bound here
-        # because both are module-level state bound below the line-119
-        # re-export point in bot/_impl.py.
-        from bot._impl import (
-            _HPSB_MISSING_BLEEDERS,
-            _HPSB_VALIDATOR_UNAVAILABLE_REASON,
-        )
+        # Bit 9.3-iii.a (2026-05-11): HPSB bindings + compute_for_15m_main_path
+        # closure now live in bot/boot.py clean leaf. The Bit 9.3 method-body
+        # late-binding block (was `from bot._impl import (_HPSB_*, ...)`) is
+        # GONE — `_HPSB_MISSING_BLEEDERS` and `_HPSB_VALIDATOR_UNAVAILABLE_REASON`
+        # are top-imported at module scope.
 
         api_key = os.environ.get("KALSHI_API_KEY") or os.environ.get("KALSHI_API_KEY_ID", "")
         private_key_path = os.environ.get("KALSHI_PRIVATE_KEY_PATH", "")

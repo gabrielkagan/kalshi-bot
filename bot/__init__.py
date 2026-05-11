@@ -32,18 +32,14 @@ Also note: `StateManager` lives in `bot.state` post-Bit-7.1 (2026-05-10),
 NOT in `bot._impl`. Reach it via `bot.StateManager` (proxy chain:
 `bot.X` → `bot._impl.X` → `bot.state.X` via the line-109 re-export
 `from bot.state import StateManager`) or `bot.state.StateManager`
-(direct). The `_get_compute_for_15m_main_path()` helper inside
-`bot/state.py` late-binds `bot._impl.compute_for_15m_main_path`
-(the closure bound at `compute_for_15m_main_path = make_compute_for_15m_main_path()` near the top of bot/_impl.py) to feed the
-`scripts/cal_mlp/integration.py::sizing_parity_assert` call inside
-StateManager.__init__ — single-name access discipline (NOT a
-whole-namespace `bot._impl.__dict__` proxy) per the Bit 7.1 path-A++
-refactor that dropped `bot_globals` from `parity_assert` and
-`sizing_parity_assert` signatures. **Bit 7.1 fu (Smell 4, ticket 86b9vhccw,
-2026-05-10)**: `make_compute_for_15m_main_path` itself was subsequently
-refactored to drop `bot_globals: dict` — the closure now imports its 11
-dependent names directly from `bot.constants` + `config` inside the
-function body (mirrors path-A++).
+(direct). Post-Bit-9.3-iii.a (2026-05-11), `compute_for_15m_main_path`
+lives in clean-leaf `bot.boot` (relocated from bot/_impl.py); bot/state.py
+top-imports it directly via `from bot.boot import compute_for_15m_main_path`
+and feeds it to `scripts/cal_mlp/integration.py::sizing_parity_assert`
+inside StateManager.__init__. The Bit 7.1 `_get_compute_for_15m_main_path()`
+late-binding helper retired in the same atomic commit — no longer needed
+because bot.boot has zero bot.state edges (no load-order cycle to avoid).
+The `.importlinter` `state-no-impl-toplevel` carve-out also retired.
 
 Bit 8.1 (path-A++, 2026-05-10) — post-Bit-9.2 state: `OpportunityScanner`
 lives in `bot.scanner` post-extraction, NOT in `bot._impl`. Reach via
@@ -98,23 +94,16 @@ also lives in `bot.settlement`. The L81 alias-import for
 `_append_raw_api_journal` in bot/_impl.py:285 RETIRED atomically.
 
 Bit 9.3 (path-A method-body late-binding, 2026-05-10): `MainLoop` lives
-in `bot.main_loop` post-extraction, NOT in `bot._impl`. Reach via
-`bot.MainLoop` (proxy chain: `bot.X` → `bot._impl.X` → `bot.main_loop.X`
-via the re-export `from bot.main_loop import MainLoop` near line 119 of
-bot/_impl.py) or `bot.main_loop.MainLoop` (direct). bot/__main__.py at
-9.3-i still imports from bot._impl (via the proxy); the swap to
-`from bot.main_loop import MainLoop` is deferred to Bit 9.3-ii per
-master plan two-step atomic discipline. **Path-A**: bot/main_loop.py
-uses METHOD-BODY late-binding for the residual bot._impl names that
-are bound BELOW the line-119 re-export point. Post-Bit-9.3.5, the
-late-binding block inside `MainLoop.__init__` is just 2 names
-(`_HPSB_MISSING_BLEEDERS`, `_HPSB_VALIDATOR_UNAVAILABLE_REASON`);
-`MainLoop.startup` covers 1 (`detect_orphan_db_holders`). NO
-`.importlinter` carve-out — bot/main_loop.py has zero top-level
-bot._impl edge in the import graph; net contracts stays at 5 (mirrors
-Bit 9.2 leaf). The `_telegram_state._TELEGRAM` consumer enumeration
-grew from 4 to 5: bot/_impl.py STAYS (for `_alert_orphan_db_holder`
-orphan-DB helper), bot/main_loop.py ADDS (MainLoop reads + WRITE).
+in `bot.main_loop` post-extraction. Reach via `bot.MainLoop` (proxy chain)
+or `bot.main_loop.MainLoop` (direct). Bit 9.3-ii (2026-05-10) swapped
+bot/__main__.py to direct `from bot.main_loop import MainLoop`. Post-Bit-9.3-iii.a
+(2026-05-11), the HPSB pair (`_HPSB_MISSING_BLEEDERS`,
+`_HPSB_VALIDATOR_UNAVAILABLE_REASON`) was relocated to clean-leaf bot/boot.py
+and bot/main_loop.py top-imports them — the Bit 9.3 method-body late-binding
+block in `MainLoop.__init__` is GONE. `MainLoop.startup` still late-binds
+`detect_orphan_db_holders` from `bot.orphan_db_watchdog` (Bit 9.3-ii
+relocation, orthogonal to bot._impl). NO `.importlinter` carve-out —
+bot/main_loop.py has zero bot._impl edge.
 
 Bit 9.3.5 (clean leaf, 2026-05-10): `OrderFlowEngine` (122 LOC) +
 `KalshiOrderFlowTracker` (240 LOC) live in `bot.order_flow`
@@ -147,11 +136,11 @@ through bot._impl's first non-stdlib import). `.importlinter` `helpers-leaf`
 stays at 5. bot/_impl.py: 767 → ~580 LOC. The `_BotProxy` shim stays
 operational for proxy-resolved reads/writes (used by tests/test_execution.py
 `@patch("bot.X")` × 94 + tests/test_ladder_escalation.py × 16 + production
-kill-switch self-mutation sites). Full _BotProxy retirement + DELETE
-bot/_impl.py deferred to Bit 9.3-iii (Sprint 10 lead). Sprint 9 main-class
-chunk closes here; only bot/__main__.py swap + orphan-DB extraction needed
-for the milestone — HPSB/compute_for_15m_main_path/cal_mlp boot relocations
-deferred to Bit 9.3-iii alongside proxy retirement.
+kill-switch self-mutation sites). Bit 9.3-iii.a (2026-05-11) relocated the
+4 boot-time bindings (`_HPSB_VALIDATOR_UNAVAILABLE_REASON`, `_HPSB_MISSING_BLEEDERS`,
+`_BLEED_BLOCK_MISSING_BLEEDERS`, `compute_for_15m_main_path`) + cal_mlp warmup
+boot log to clean-leaf `bot/boot.py`. Bit 9.3-iii.b (full _BotProxy retirement)
+and Bit 9.3-iii.c (DELETE bot/_impl.py) remain pending.
 
 Caching the `bot._impl` module reference is safe: the module object itself
 is stable; mutations land on its `__dict__` which `getattr`/`setattr`

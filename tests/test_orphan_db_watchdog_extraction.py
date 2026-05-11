@@ -423,14 +423,15 @@ def test_main_loop_startup_late_binding_retargeted_to_orphan_db_watchdog():
     )
 
 
-def test_main_loop_init_late_binding_unchanged_at_9_3_ii():
-    """MainLoop.__init__'s 2-name late-binding block (Bit 9.3.5 form: _HPSB_MISSING_BLEEDERS,
-    _HPSB_VALIDATOR_UNAVAILABLE_REASON) is UNCHANGED at Bit 9.3-ii orphan-DB scope.
+def test_main_loop_init_no_longer_late_binds_hpsb_post_9_3_iii_a():
+    """Post-Bit-9.3-iii.a (2026-05-11) MainLoop.__init__ no longer late-binds
+    _HPSB_MISSING_BLEEDERS / _HPSB_VALIDATOR_UNAVAILABLE_REASON from bot._impl —
+    both names are now top-imported at module scope from clean-leaf bot/boot.py.
 
-    If the HPSB relocation also lands in 9.3-ii (per Plan-agent's full Option A scope),
-    this test inverts to assert the late-binding source flipped from bot._impl to
-    bot.helpers.validators. For the orphan-DB-only subset of 9.3-ii, this test pins
-    the unchanged state."""
+    The Bit 9.3-i path-A method-body late-binding block is GONE; the names are
+    available everywhere in the module via the top-level
+    `from bot.boot import _HPSB_MISSING_BLEEDERS, _HPSB_VALIDATOR_UNAVAILABLE_REASON`.
+    """
     tree = _main_loop_tree()
     mainloop_cls = next(
         n for n in ast.iter_child_nodes(tree)
@@ -440,24 +441,15 @@ def test_main_loop_init_late_binding_unchanged_at_9_3_ii():
         m for m in ast.iter_child_nodes(mainloop_cls)
         if isinstance(m, ast.FunctionDef) and m.name == "__init__"
     )
-    hpsb_late_bound_sources: set[str] = set()
+    # Late-binding of HPSB names inside __init__ should be GONE.
     for node in ast.walk(init_method):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
-                if alias.name in ("_HPSB_MISSING_BLEEDERS", "_HPSB_VALIDATOR_UNAVAILABLE_REASON"):
-                    hpsb_late_bound_sources.add(node.module or "")
-    assert hpsb_late_bound_sources, (
-        "MainLoop.__init__ has no late-binding import for _HPSB_MISSING_BLEEDERS / "
-        "_HPSB_VALIDATOR_UNAVAILABLE_REASON — pattern broken."
-    )
-    # Allowed: still bot._impl (orphan-DB-only Bit 9.3-ii) OR bot.helpers.validators
-    # (full Option A scope Bit 9.3-ii). Anything else fails.
-    allowed = {"bot._impl", "bot.helpers.validators"}
-    bad = hpsb_late_bound_sources - allowed
-    assert not bad, (
-        f"MainLoop.__init__ late-binds HPSB names from unexpected module(s): {bad}. "
-        f"Allowed: {allowed}."
-    )
+                assert alias.name not in ("_HPSB_MISSING_BLEEDERS", "_HPSB_VALIDATOR_UNAVAILABLE_REASON"), (
+                    f"MainLoop.__init__ still has method-body late-binding for "
+                    f"{alias.name} from {node.module!r}. Bit 9.3-iii.a should have "
+                    f"replaced it with a top-level `from bot.boot import ...`."
+                )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
