@@ -57,6 +57,7 @@ from datetime import timezone
 from typing import Dict, List, Optional, Tuple
 
 import bot.notifier as _telegram_state  # Bit 8.1 path-A++ alias — L84 form (explicit submodule import bypasses _BotProxy.__getattr__; the `from bot import notifier as _telegram_state` form would trigger a circular import)
+import bot.constants  # Bit 9.3-iii.c kill-switch fix (2026-05-11): WEATHER_NO_SIDE_LIVE / HOURLY_NO_SIDE_LIVE accessed via module-attribute (`bot.constants.X`) rather than explicit-name imports — preserves mutation freshness so the scanner's auto-kill writes take effect on the next execute() call.
 
 from bot.constants import (
     ADDON_ENABLED, ADDON_MAX_ENTRY_PRICE, ADDON_MIN_PRICE_IMPROVEMENT, ADDON_MIN_SECONDS_SINCE_FILL,
@@ -68,7 +69,7 @@ from bot.constants import (
     DIP_ADDON_SHADOW_MODE, DIP_ADDON_SIZE_FRACTION, DIRECT_TAKER_THRESHOLD, EARLY_ESCALATION_MIN_MOVE,
     ESCALATION_MAX_ENTRY, ESCALATION_WAIT_LONG, ESCALATION_WAIT_MEDIUM, ESCALATION_WAIT_SHORT,
     ETH_MIN_ENTRY_PRICE, FILL_MODEL_JOURNAL, HOURLY_FIXED_CONTRACTS, HOURLY_MAX_ENTRY_PRICE,
-    HOURLY_MIN_EDGE_PCT, HOURLY_NO_FIXED_CONTRACTS, HOURLY_NO_SIDE_LIVE, HOURLY_TAKER_ONLY,
+    HOURLY_MIN_EDGE_PCT, HOURLY_NO_FIXED_CONTRACTS, HOURLY_TAKER_ONLY,
     IOC_DRIFT_CHECK_COLD_START_RATIO, IOC_DRIFT_CHECK_DIVERGENCE_RATIO, IOC_DRIFT_CHECK_ENABLED, IOC_DRIFT_CHECK_MIN_CACHED_DEPTH,
     IOC_DRIFT_CHECK_REST_WINDOW_S, IOC_LIMIT_MAX_BUMP_CENTS, IOC_MIN_COUNT_AFTER_CLAMP, IOC_RETRY_OFFSET,
     IOC_TICKER_COOLDOWN, LADDER_ESCALATION_ELIGIBLE_STRATEGIES, LADDER_ESCALATION_ENABLED, LADDER_ESCALATION_MIN_REMAINDER,
@@ -82,7 +83,7 @@ from bot.constants import (
     SOL_EMPTY_BOOK_MAKER_MIN_PRICE, SOL_EMPTY_BOOK_MIN_STC, SOL_MIN_ENTRY_PRICE, SOL_TAKER_FIRST,
     STACKING_ENABLED, STRATEGY_CLAMP_DEFAULT, STRATEGY_CLAMP_POLICY, STRATEGY_LIMIT_BUMP_DEFAULT_RESERVE,
     STRATEGY_LIMIT_BUMP_RESERVE_CENTS, TAKER_FIRST_ASSETS, TM_LIVE_STRATEGIES, TM_PRICE_SET,
-    TM_SWEEP_CAPTURE_TIERS, TM_SWEEP_LIVE_ENABLED, TM_SWEEP_SHADOW_ENABLED, WEATHER_NO_SIDE_LIVE,
+    TM_SWEEP_CAPTURE_TIERS, TM_SWEEP_LIVE_ENABLED, TM_SWEEP_SHADOW_ENABLED,
     XRP_MIN_ENTRY_PRICE,
 )
 from bot.helpers.raw_api_journal import append_raw_api_journal  # Bit 9.1 path-A++ relocation — public name in leaf module
@@ -475,10 +476,10 @@ class OrderExecutor:
         if _exec_cfg.observation_only:
             _is_weather_no_live = (candidate.get("product_type") == "weather"
                                   and candidate.get("side") == "no"
-                                  and WEATHER_NO_SIDE_LIVE)
+                                  and bot.constants.WEATHER_NO_SIDE_LIVE)
             _is_hourly_no_live = (candidate.get("product_type") == "hourly"
                                  and candidate.get("side") == "no"
-                                 and HOURLY_NO_SIDE_LIVE)
+                                 and bot.constants.HOURLY_NO_SIDE_LIVE)
             if not (_is_weather_no_live or _is_hourly_no_live):
                 logging.error("SAFETY: %s candidate reached execute() — should never happen. Ticker=%s",
                               _exec_cfg.product_type, candidate.get("ticker"))

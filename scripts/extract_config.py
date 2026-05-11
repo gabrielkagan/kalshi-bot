@@ -320,12 +320,15 @@ def diff_configs(current: dict, previous_path: str) -> list:
 
 
 def main():
-    if not os.path.exists(BOT_PATH):
-        print(json.dumps({"error": f"bot/_impl.py not found at {BOT_PATH}"}))
-        sys.exit(1)
-
-    with open(BOT_PATH) as f:
-        bot_source = f.read()
+    # Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED. The tracked-constants
+    # extraction now reads from bot/constants.py (canonical home post-Bit-3.1).
+    # bot_source is empty when bot/_impl.py is absent; the combined-source
+    # concatenation still yields the right answer because bot.constants.py
+    # holds every TRACKED_CONSTANTS entry.
+    bot_source = ""
+    if os.path.exists(BOT_PATH):
+        with open(BOT_PATH) as f:
+            bot_source = f.read()
 
     # Bit 3.1: module-level constants live in bot/constants.py. Concatenate
     # both files so extract_constants() / extract_compound_constants()

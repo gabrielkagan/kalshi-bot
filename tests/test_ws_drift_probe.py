@@ -35,7 +35,6 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.scanner import OpportunityScanner
-import bot._impl  # noqa: F401
 
 
 def _make_scanner_for_drift_probe(

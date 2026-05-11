@@ -26,11 +26,14 @@ Reach public names directly from their canonical submodules:
 | _BREAKER_REGISTRY | `bot.infra.circuit_breaker.REGISTRY` |
 | recent_writes, snapshot_active, tracked_write | `bot.db_writer_registry` |
 
-Bit 9.3-iii.c (pending, ticket 86b9w1jdz) DELETES `bot/_impl.py` outright —
-the residual shim is now load-bearing for nothing in production:
+Bit 9.3-iii.c (shipped 2026-05-11, ticket 86b9w1jdz) DELETED `bot/_impl.py` —
+the residual shim is GONE. Production reaches names via canonical submodules:
 - `bot/__main__.py` uses `from bot.main_loop import MainLoop` directly (Bit 9.3-ii)
 - `bot/state.py` uses `from bot.boot import compute_for_15m_main_path` (Bit 9.3-iii.a)
-- The proxy fall-through that previously made `bot.X → bot._impl.X` resolve is gone (this Bit)
+- The proxy fall-through that previously made `bot.X → bot._impl.X` resolve was retired (Bit 9.3-iii.b)
+- `dashboard_snapshot.py` + `supabase_sync.py` read runtime config via
+  `import bot.runtime_config as _bot_mod` (PEP 562 dual-probe of bot.constants → config;
+  Bit 9.3-iii.c — replaces bot._impl as the getattr target).
 
 The body of this `__init__.py` is intentionally empty — Python's default
 package import semantics auto-create `sys.modules['bot']` as a plain

@@ -385,13 +385,24 @@ def test_makefile_ci_symmetry_via_pyproject_addopts():
         )
 
 
-def test_ast_check_targets_bot_impl():
+def test_ast_check_targets_bot_runtime_files():
+    """Bit 9.3-iii.c (2026-05-11): bot/_impl.py was DELETED. ast-check now
+    targets the runtime-hotspot files: bot/constants.py + bot/main_loop.py +
+    bot/scanner/__init__.py — a syntax error in any of these crashes bot start.
+    """
     recipe = _recipe_for("ast-check")
     assert "ast.parse" in recipe, (
         "ast-check recipe must call `ast.parse(...)` to syntax-check."
     )
-    assert "bot/_impl.py" in recipe, (
-        "ast-check recipe must target bot/_impl.py per CLAUDE.md sacred-file rule."
+    assert "bot/constants.py" in recipe, (
+        "ast-check recipe must target bot/constants.py (canonical home of "
+        "module-level constants per Bit 3.1)."
+    )
+    assert "bot/main_loop.py" in recipe, (
+        "ast-check recipe must target bot/main_loop.py (MainLoop body per Bit 9.3)."
+    )
+    assert "bot/scanner/__init__.py" in recipe, (
+        "ast-check recipe must target bot/scanner/__init__.py (scanner body per Bit 8.1)."
     )
 
 

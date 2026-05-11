@@ -37,6 +37,7 @@ def _make_db_with_eval_schema(tmp_path):
     """Construct a fresh sqlite DB with the production evaluated_opportunities
     schema (via bot.state.StateManager) so backfill SQL exercises real columns."""
     import bot
+    import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
     db_path = str(tmp_path / "test.db")
     sm = bot.state.StateManager(db_path)
     return sm

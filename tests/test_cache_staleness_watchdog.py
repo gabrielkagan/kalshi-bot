@@ -49,8 +49,10 @@ class TestActiveWindowsStalenessConstant(unittest.TestCase):
     budget so it can be tuned without changing logic."""
 
     def test_active_windows_staleness_constant_defined(self):
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn(
             "ACTIVE_WINDOWS_STALENESS_BUDGET_S", src,
             "bot/_impl.py must define ACTIVE_WINDOWS_STALENESS_BUDGET_S "
@@ -66,8 +68,9 @@ class TestRefreshUpdatesTimestamp(unittest.TestCase):
     def test_refresh_method_assigns_active_windows_updated_at(self):
         """AST regression: the body of `_refresh_active_windows`
         must contain `self._active_windows_updated_at = ...`."""
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         for cls in ast.walk(tree):
             if (isinstance(cls, ast.ClassDef)
                     and cls.name == "MainLoop"):
@@ -105,8 +108,10 @@ class TestCacheStalenessCheckAtScanCallSite(unittest.TestCase):
         """Tick must call a method named
         `_active_windows_is_stale` (or equivalent — assert by
         searching for the method invocation)."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn(
             "_active_windows_is_stale", src,
             "MainLoop must define and call "
@@ -117,8 +122,10 @@ class TestCacheStalenessCheckAtScanCallSite(unittest.TestCase):
     def test_tick_logs_cache_stale_warning(self):
         """When the staleness check fails, a CACHE_STALE warning
         must fire so operators see the failure-closed event."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn(
             "CACHE_STALE", src,
             "MainLoop must emit a `CACHE_STALE` warning when the "
@@ -135,6 +142,7 @@ class TestStalenessLogicCorrect(unittest.TestCase):
         # the staleness-check method and the timestamp attribute.
         # This avoids the heavy MainLoop.__init__ dependencies.
         import bot
+        import bot.main_loop  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.main_loop.X access)
         self.ml = bot.main_loop.MainLoop.__new__(bot.main_loop.MainLoop)
         # Provide minimum attributes the check needs.
 
@@ -168,6 +176,7 @@ class TestStalenessBudgetRelationship(unittest.TestCase):
 
     def test_budget_is_multiple_of_refresh_interval(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         ratio = (bot.constants.ACTIVE_WINDOWS_STALENESS_BUDGET_S
                  / bot.constants.MARKET_REFRESH_SECONDS)
         self.assertGreaterEqual(
@@ -184,8 +193,9 @@ class TestStalenessBudgetRelationship(unittest.TestCase):
 
 def _find_tick_func():
     """Helper: return the AST FunctionDef for MainLoop._tick."""
-    with open(BOT_PY) as f:
-        tree = ast.parse(f.read())
+    if os.path.exists(BOT_PY):
+        with open(BOT_PY) as f:
+            tree = ast.parse(f.read())
     for cls in ast.walk(tree):
         if (isinstance(cls, ast.ClassDef)
                 and cls.name == "MainLoop"):
@@ -371,8 +381,9 @@ class TestFailClosedScopeIsScanOnly(unittest.TestCase):
         node. Its body must NOT contain a top-level `return` —
         else the rest of _tick (PPO, weather PPO, etc.) is
         bypassed when the gate trips."""
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         found_check = False
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
@@ -421,8 +432,9 @@ class TestRefreshTimestampOrderedAfterMerges(unittest.TestCase):
         the body of `_refresh_active_windows`. Otherwise a reader
         could observe `updated_at` as fresh while `_active_windows`
         still points at the previous list (or worse, mid-mutation)."""
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
                     or cls.name != "MainLoop"):
@@ -475,8 +487,9 @@ class TestRefreshTimestampOrderedAfterMerges(unittest.TestCase):
         race (concurrent extend on the live list while main thread
         iterates it). Reject if any such call exists in
         `_refresh_active_windows`."""
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
                     or cls.name != "MainLoop"):
@@ -518,8 +531,10 @@ class TestEmptyRefreshLogIsEdgeTriggered(unittest.TestCase):
         `self._empty_refresh_in_progress`) when handling the
         n==0 branch. Without this state attr, the log will fire
         every refresh cycle."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn(
             "_empty_refresh_in_progress", src,
             "Expected an edge-trigger state attribute "
@@ -541,8 +556,9 @@ class TestEmptyRefreshDoesNotBumpTimestamp(unittest.TestCase):
     empty (i.e., guarded by `if n != 0` or equivalent)."""
 
     def test_timestamp_assignment_is_guarded_by_nonempty_check(self):
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
                     or cls.name != "MainLoop"):
@@ -624,8 +640,9 @@ class TestSubscribeShortCircuitOnEmpty(unittest.TestCase):
         must contain an early-return branch guarded by a
         condition mentioning `active_tickers` and the
         authoritative-subscribed-set sentinel."""
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
                     or cls.name != "MainLoop"):
@@ -688,8 +705,9 @@ class TestInitAttrCoverage(unittest.TestCase):
             "_active_windows_updated_at",
             "_empty_refresh_in_progress",
         }
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         found = set()
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
@@ -760,6 +778,7 @@ class TestCacheStaleLogDedup(unittest.TestCase):
 
     def setUp(self):
         import bot
+        import bot.main_loop  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.main_loop.X access)
         self.ml = bot.main_loop.MainLoop.__new__(bot.main_loop.MainLoop)
         self.ml._active_windows_updated_at = 0.0
         self.ml._cache_stale_episode_started_at = 0.0

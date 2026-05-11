@@ -169,12 +169,13 @@ def test_predicate_accepts_custom_exclusion_set():
 def _read_bot_source():
     # Bit 8.1 (2026-05-10): the weather_no_live block + WEATHER_NO_CANDIDATE log
     # moved to bot/scanner/__init__.py with the OpportunityScanner extraction.
-    # Read both files so source walks survive the move.
-    return (
-        (REPO / "bot/_impl.py").read_text()
-        + "\n"
-        + (REPO / "bot/scanner/__init__.py").read_text()
-    )
+    # Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED — read tolerant of absence.
+    parts = []
+    impl = REPO / "bot/_impl.py"
+    if impl.exists():
+        parts.append(impl.read_text())
+    parts.append((REPO / "bot/scanner/__init__.py").read_text())
+    return "\n".join(parts)
 
 
 def test_source_replaces_position_size_1_with_constant_in_weather_no_live():
@@ -267,7 +268,7 @@ def test_execute_2ct_weather_no_routes_count_2_to_place_order():
     """An incoming candidate with position_size=2 must place an order with count=2."""
     bot = _import_bot()
     from unittest.mock import patch
-    with patch.object(bot.executor, "WEATHER_NO_SIDE_LIVE", True), \
+    with patch.object(bot.constants, "WEATHER_NO_SIDE_LIVE", True), \
          patch.object(bot.executor, "OBSERVATION_MODE", False):
         ex = _make_executor(bot)
         candidate = _make_weather_no_2ct_candidate()

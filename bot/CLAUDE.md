@@ -1,8 +1,13 @@
 # bot/ — implementation rules
 
-These rules apply to `bot/_impl.py` and the engine modules
-(`bot/engines/spx_engine.py`, `bot/engines/weather_engine.py`, `bot/engines/sports_engine.py`,
-`bot/shadows/fifteenm_shadow.py`, `analyst.py`). The first seven sections
+These rules apply to the bot runtime — primarily `bot/main_loop.py`,
+`bot/scanner/__init__.py`, `bot/executor.py`, `bot/settlement.py`,
+`bot/state.py`, `bot/order_flow.py`, `bot/boot.py`, `bot/runtime_config.py`,
+and the engine modules (`bot/engines/spx_engine.py`,
+`bot/engines/weather_engine.py`, `bot/engines/sports_engine.py`,
+`bot/shadows/fifteenm_shadow.py`, `analyst.py`). **Bit 9.3-iii.c (2026-05-11)
+DELETED `bot/_impl.py`** — the rules historically attributed to that file
+now apply cross-cutting to the bot/ package. The first seven sections
 (Threading, cal_mlp four-site, Cell-block, SQLite, `_shadow_diag`,
 Engine→CalEngine, `discover_active_windows()`) are
 **implementation-specific** — they only matter when editing the
@@ -11,16 +16,22 @@ runtime, not when running audits or working in `tests/` /
 reach beyond `bot/` and is duplicated as a one-liner in
 `scripts/CLAUDE.md`. The trailing **Workflows** section includes
 prose long-forms of cross-cutting skills (`/investigate`, `/audit`,
-`/deploy`) that route through bot/_impl.py state; the canonical surface
-for those is the matching skill, and this section is a backup
+`/deploy`) that route through the bot package runtime state; the canonical
+surface for those is the matching skill, and this section is a backup
 readable here for agents working inside `bot/`.
 
 ## Threading + numerical libraries (sacred ordering)
 
-- **Don't import torch directly in `bot/_impl.py`.** `cal_mlp` is the
+- **Don't import torch directly anywhere under `bot/`.** `cal_mlp` is the
   single torch entry point via `scripts/cal_mlp/integration.py`,
-  which constrains threads at module-import time.
-- **`import bot._thread_env` must remain the FIRST non-stdlib import in `bot/_impl.py`.**
+  which constrains threads at module-import time. Enforced by the
+  `bot-no-torch` import-linter contract (Bit 12.3).
+- **`import bot._thread_env` must run BEFORE any numerical-library load
+  in the bot package import chain.** The canonical entry is
+  `bot/__main__.py`, which top-imports `bot._thread_env` as the FIRST
+  non-stdlib import before `from bot.main_loop import MainLoop`. The
+  `bot/boot.py` clean-leaf module also defensively `__import__("bot._thread_env")`s
+  before scripts/cal_mlp/integration loads numpy/scipy/torch transitively.
   numpy/scipy C extensions cache OpenBLAS thread count at load time,
   so `OMP_NUM_THREADS=1` has to be in `os.environ` before they
   import. Direct `import torch` or any reorder defeats the
@@ -28,7 +39,7 @@ readable here for agents working inside `bot/`.
   loop ballooned to 7.75s, 0 candidates in 5 min) →
   `kb/failures/cal-mlp-torch-thread-contention-apr29.md`. AST
   regression:
-  `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_impl`.
+  `tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_boot` (the sister `..._in_bot_impl` test self-skips post-Bit-9.3-iii.c since bot/_impl.py was deleted).
 
 ## cal_mlp feature transforms (four-site lock-step)
 
@@ -114,7 +125,7 @@ assignments: grep every `window.get("product_type")` in `scan()`. The
 two sides must stay in sync — a new product_type that scan() doesn't
 know about silently drops the window.
 
-## Workflows (bot/_impl.py changes)
+## Workflows (bot/ runtime changes — historical bot/_impl.py rules now cross-cutting)
 
 ### Add a shadow strategy
 1. Shadow flag constant (e.g. `NEW_FEATURE_SHADOW = True`).
@@ -142,7 +153,7 @@ know about silently drops the window.
 
 ### Deploy a change (the long form behind /deploy)
 1. Make the edit.
-2. Syntax-check `bot/_impl.py` + `bot/constants.py` (`make ast-check`); for changes to `bot/helpers/*.py`, `bot/logger.py`, `bot/notifier.py`, `bot/kalshi_client.py`, `bot/fetchers/*.py`, `bot/feeds/*.py`, or `bot/engines/*.py`, the full pytest suite covers transitively (no per-file ast-check target as of Sprint 6).
+2. Syntax-check the runtime hotspots `bot/constants.py` + `bot/main_loop.py` + `bot/scanner/__init__.py` via `make ast-check` (Bit 9.3-iii.c: bot/_impl.py was DELETED; the ast-check target was retargeted to the canonical submodules — see Makefile `ast-check`). For changes to `bot/helpers/*.py`, `bot/logger.py`, `bot/notifier.py`, `bot/kalshi_client.py`, `bot/fetchers/*.py`, `bot/feeds/*.py`, or `bot/engines/*.py`, the full pytest suite covers transitively (no per-file ast-check target as of Sprint 6).
 3. Grep call sites if signatures changed. Constants live in `bot/constants.py` (Bit 3.1, re-exported via `from bot.constants import *`); helpers live in `bot/helpers/*.py` (Bit 3.2, re-exported via `from bot.helpers import *` plus explicit underscore re-exports for `validators` and `breakers`); `Logger` lives in `bot/logger.py` (Bit 4.1, re-imported via `from bot.logger import Logger`); `TelegramNotifier` lives in `bot/notifier.py` (Bit 4.2, re-imported via `from bot.notifier import TelegramNotifier`); `KalshiClient` lives in `bot/kalshi_client.py` (Bit 4.3, re-imported via `from bot.kalshi_client import KalshiClient`); `DeribitDVOLFetcher` and `CoinGlassFetcher` live in `bot/fetchers/` (Bit 4.4, re-imported via `from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher`); `CoinbaseFeed`, `CrossExchangeFeed`, `KalshiFeed`, and `OrderbookSchemaError` live in `bot/feeds/` (Bit 4.5a + 4.5b, re-imported via `from bot.feeds import CoinbaseFeed, CrossExchangeFeed, KalshiFeed, OrderbookSchemaError`; `KalshiFeed` (`bot/feeds/kalshi.py`) imports `OrderbookSchemaError` directly from sibling `bot/feeds/orderbook_schema.py`); `VolatilityEngine` lives in `bot/engines/volatility.py` (Bit 6.1), `ProbabilityEngine` lives in `bot/engines/probability.py` (Bit 6.2), and `CalibrationEngine` lives in `bot/engines/calibration.py` (Bit 6.3, 2026-05-10) — all three re-imported via `from bot.engines import VolatilityEngine, ProbabilityEngine, CalibrationEngine`. **Bit 6.3 path-B refactor**: in addition to moving the class, Bit 6.3 relocated the calibration runtime state — `_CALIBRATION_ENGINE` singleton + `_CAL_REGISTRY` dict + `_derive_subtype` / `_derive_asset_filter` / `_resolve_cal_engine` helpers — out of `bot/_impl.py` into `bot/engines/calibration.py` alongside the class. Both `bot/_impl.py` and `bot/engines/probability.py` now reach those names via top-level `from bot.engines import calibration as _cal_state` + `_cal_state.X` attribute access — module-attribute access pattern preserves singleton-mutation freshness without late-binding. This lifted the Bit 6.2 late-binding `from bot import _impl as _bot_impl` workaround AND removed the matching `.importlinter` `bot.engines.probability -> bot._impl` ignore_imports carve-out in the same commit. `_TELEGRAM` stays in `bot/_impl.py` (unrelated singleton). `StateManager` lives in `bot/state.py` (Bit 7.1, 2026-05-10) — re-imported via `from bot.state import StateManager`; consumer-class type annotations on `OpportunityScanner.__init__`, `OrderExecutor.__init__`, and `SettlementTracker.__init__` (`state: StateManager`) resolve through the line-109 re-export. **Bit 7.1 path-A++ refactor**: in-Bit refactor of `scripts/cal_mlp/integration.py::parity_assert(conn) -> tuple[str, int]` and `sizing_parity_assert(conn, *, rowid, compute_for_15m_main_path)` dropped their `bot_globals` parameter — the laundered-namespace coupling smell is fixed in-Bit per the modularization strategic goal of reducing code smells. The `_get_compute_for_15m_main_path()` single-name late-binding helper inside `bot/state.py` returns `bot._impl.compute_for_15m_main_path` (the closure created via `make_compute_for_15m_main_path()` — search anchor: `compute_for_15m_main_path = make_compute_for_15m_main_path`). **Bit 7.1 fu (Smell 4, ticket 86b9vhccw, 2026-05-10)**: `make_compute_for_15m_main_path` itself was subsequently refactored to drop its `bot_globals: dict` parameter — the closure now imports its 11 dependent names directly from `bot.constants` + `config` inside the function body (mirrors path-A++ pattern), plus a literal `DRAWDOWN_HALT_FLOOR = 0.10` fallback for the one name not in either source. **Bit 7.1 fu (Smell 3, ticket 86b9vhcat, 2026-05-10)**: the `_calmlp_predictors` cache + `.warmup()` orchestration moved from `bot/_impl.py` module-level (search anchor: removed `_calmlp_predictors = {a: CalMLPPredictor(a) for a in ...}` block) to `scripts/cal_mlp/integration.py` alongside the `CalMLPPredictor` class — locality of reference, parallel to the `_POSTHOC_PROCESSOR` precedent in that module. `bot/_impl.py` imports `_calmlp_predictors` and `warmup_predictor_cache` via the existing `from integration import (...)` block at line 59, then emits the `[CALMLP] enabled=…` boot log in its own logger namespace using the `(enabled, warmed_count)` tuple the helper returns (M3 — preserves the operator-runbook grep contract). The 3 consumer sites in bot/_impl.py (2 in OpportunityScanner, 1 in MainLoop) keep their bare-name `_calmlp_predictors.get(asset)` / `predictors=_calmlp_predictors` references untouched. Kill-switch contract (R-p7-cleanroom#H2 + R-p7-coldboot#C-S2) preserved: predictor INSTANCES always constructed at integration.py module-import time; `.warmup()` gated on `CALMLP_ENABLED`; the per-call env check inside `annotate_evaluation_kwargs` and `annotate_evaluation_async_enqueue` ensures `predict()` never runs when env=0 even if the cache IS warmed. Sister Bit 7.2 (`agent_docs/db_schema.md` refresh) shipped in the same atomic commit as Bit 7.1. **Bit 9.1 (path-A++, 2026-05-10)**: `OrderExecutor` lives in `bot/executor.py` — re-imported via `from bot.executor import OrderExecutor` (line ~116 of bot/_impl.py). The previous `_get_order_executor()` late-binding helper in bot/scanner/__init__.py retired atomically; the `scanner-no-impl-toplevel` `.importlinter` contract dropped (net contracts: 6 → 5). The bot.executor ↔ bot.scanner cycle is broken from the executor side via a `_get_opportunity_scanner()` method-body helper (the 7 OpportunityScanner staticmethod call sites in OrderExecutor body — `_convert_orderbook_fp` × 2, `_best_yes_ask_cents` × 5 — go through it; a future Sprint 10 sibling-reorg Bit may relocate those staticmethods to `bot/helpers/orderbook.py` to eliminate the helper). Path-A++ relocation of `_append_raw_api_journal` to `bot/helpers/raw_api_journal.py` — eliminates late-binding need that would have required new `.importlinter` carve-outs in both Bit 9.1 and Bit 9.2. 4 latent `OpportunityScanner._best_ask_depth(...)` AttributeError sites in OrderExecutor body fixed (closes ticket 86b9vn9r5; `_best_ask_depth` is a staticmethod on OrderExecutor itself).
 
 **Bit 9.2 (path-A++, 2026-05-10)**: `SettlementTracker` lives in `bot/settlement.py` — re-imported via `from bot.settlement import SettlementTracker, discover_active_windows` (line ~117 of bot/_impl.py). The module-level `discover_active_windows()` function ships with SettlementTracker per master plan Phase Z+AA bundle decision. The Bit 9.1 L81 alias-import RETIRED atomically. No new `.importlinter` carve-out needed — SettlementTracker has zero references to names defined below the line-117 re-export point in bot/_impl.py; clean leaf extraction. Bundled bug fix (ticket 86b9vppn3): pre-existing UnboundLocalError 'best_ask' in OpportunityScanner.scan() low_probability_15m insert_rejection branch — initialize best_ask=None at iteration start.

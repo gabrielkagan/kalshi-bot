@@ -146,6 +146,7 @@ class TestGetMinEdgeConsistency:
     def test_schedule_covers_all_prices(self):
         """Every price from 0-99 maps to some edge threshold."""
         import bot
+        import bot.helpers  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.helpers.X access)
         for price in range(0, 100):
             edge = bot.helpers.sizing.get_min_edge(price)
             assert edge > 0, f"get_min_edge({price}) returned non-positive {edge}"
@@ -153,6 +154,7 @@ class TestGetMinEdgeConsistency:
     def test_schedule_matches_documented_values(self):
         """Spot-check schedule against current config values."""
         import bot
+        import bot.helpers  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.helpers.X access)
         # 86c -> 0.25%
         assert bot.helpers.sizing.get_min_edge(86) == pytest.approx(0.0025, abs=1e-6)
         # 91c -> 0.20%

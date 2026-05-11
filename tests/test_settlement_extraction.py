@@ -169,6 +169,8 @@ def _settlement_tree() -> ast.Module:
 
 
 def _bot_impl_tree() -> ast.Module:
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     return ast.parse(BOT_PY.read_text())
 
 
@@ -238,7 +240,7 @@ def test_discover_active_windows_NOT_in_bot_impl_module():
 def test_settlement_module_attr_resolves_via_proxy():
     """Bit 9.2 re-export: bot.settlement.SettlementTracker resolves through the proxy chain."""
     import bot
-    import bot._impl
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.settlement
     assert bot.settlement.SettlementTracker is bot._impl.SettlementTracker, (
         "bot.settlement.SettlementTracker not resolving to bot._impl.SettlementTracker via proxy"
@@ -257,7 +259,7 @@ def test_settlement_module_attr_resolves_via_proxy():
 def test_discover_active_windows_module_attr_resolves_via_proxy():
     """Bit 9.2 re-export: bot.settlement.discover_active_windows resolves through the proxy chain."""
     import bot
-    import bot._impl
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.settlement
     assert bot.settlement.discover_active_windows is bot._impl.discover_active_windows, (
         "bot.settlement.discover_active_windows not resolving via proxy"
@@ -269,7 +271,7 @@ def test_discover_active_windows_module_attr_resolves_via_proxy():
 
 def test_settlement_init_signature_unchanged():
     """SettlementTracker.__init__ signature must be byte-identical (extraction is structural, not behavioral)."""
-    import bot
+    import bot.settlement
     sig = inspect.signature(bot.settlement.SettlementTracker.__init__)
     params = list(sig.parameters.keys())
     assert params == ["self", "client", "state", "logger", "main_loop"], (
@@ -335,7 +337,7 @@ def test_settlement_static_methods_decorated():
 @pytest.mark.parametrize("method_name", SETTLEMENT_INSTANCE_METHODS + SETTLEMENT_STATIC_METHODS)
 def test_settlement_method_present(method_name: str):
     """Every named method survives extraction."""
-    import bot
+    import bot.settlement
     assert hasattr(bot.settlement.SettlementTracker, method_name), (
         f"SettlementTracker.{method_name} missing post-extraction"
     )
@@ -526,6 +528,8 @@ def test_l81_alias_import_dropped_from_bot_impl():
     """Bit 9.2 atomic cleanup: the L81 alias-import line at bot/_impl.py:285 is GONE."""
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Sprint 9 Bit 9.3 final form)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     assert not re.search(
         r"from bot\.helpers\.raw_api_journal import append_raw_api_journal as _append_raw_api_journal",
@@ -542,6 +546,8 @@ def test_no_def_append_raw_api_journal_in_bot_impl():
     (was already the case post-Bit-9.1; this Bit ensures no regression)."""
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Sprint 9 Bit 9.3 final form)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     assert re.search(r"^def _append_raw_api_journal\(", src, re.MULTILINE) is None, (
         "bot/_impl.py has local `def _append_raw_api_journal(...)` — should not exist post-Bit-9.1"
@@ -553,6 +559,8 @@ def test_no_underscore_call_sites_in_bot_impl():
     (formerly inside SettlementTracker) MUST be gone post-extraction."""
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Sprint 9 Bit 9.3 final form)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     underscore_calls = re.findall(r"\b_append_raw_api_journal\s*\(", src)
     assert not underscore_calls, (
@@ -663,6 +671,8 @@ def test_bot_impl_reexports_settlement_tracker():
     """Bit 9.2 re-export pattern: `from bot.settlement import SettlementTracker` in bot/_impl.py."""
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Sprint 9 Bit 9.3 final form)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     assert re.search(
         r"from bot\.settlement import .*SettlementTracker", src
@@ -673,6 +683,8 @@ def test_bot_impl_reexports_discover_active_windows():
     """Bit 9.2 re-export: discover_active_windows accessible via bot._impl re-export."""
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Sprint 9 Bit 9.3 final form)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     assert re.search(
         r"from bot\.settlement import .*discover_active_windows", src
@@ -694,14 +706,14 @@ def test_no_settlement_no_impl_toplevel_contract_added():
         "Unexpected `settlement-no-impl-toplevel` contract added — SettlementTracker is a "
         "clean leaf (no late-binding required); the contract should NOT exist."
     )
-    # Sanity: 6 contracts total post-Bit-9.3-iii.a (2026-05-11) — state-no-impl-toplevel
-    # was retired because bot/state.py has zero bot._impl edges post-relocation of
-    # compute_for_15m_main_path to clean-leaf bot/boot.py. Post-Bit-12.3 was 7
+    # Sanity: 5 contracts total post-Bit-9.3-iii.c (2026-05-11) — engines-no-impl
+    # was retired because bot/_impl.py was DELETED (forbidden_modules list would
+    # be empty, which import-linter rejects as malformed). Post-Bit-9.3-iii.a was 6
     # (engines-no-impl, fetchers-no-engines, feeds-no-engines, helpers-leaf,
-    # state-no-impl-toplevel, bot-no-torch, bot-no-pandas); now 6.
-    assert len(contracts) == 6, (
-        f".importlinter has {len(contracts)} contracts; expected 6 "
-        f"post-Bit-9.3-iii.a. Contracts present: {sorted(contract_names)}"
+    # bot-no-torch, bot-no-pandas); now 5.
+    assert len(contracts) == 5, (
+        f".importlinter has {len(contracts)} contracts; expected 5 "
+        f"post-Bit-9.3-iii.c. Contracts present: {sorted(contract_names)}"
     )
 
 
@@ -713,6 +725,7 @@ def test_settlement_instantiates_via_mocks():
     """Behavioral smoke: SettlementTracker can be constructed with mock dependencies.
     Catches L78 free-var residuals at construction time."""
     import bot
+    import bot.settlement  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.settlement.X access)
     client_mock = MagicMock()
     state_mock = MagicMock()
     logger_mock = MagicMock()
@@ -731,6 +744,7 @@ def test_settlement_instantiates_via_mocks():
 def test_discover_active_windows_callable_via_proxy():
     """Behavioral smoke: discover_active_windows is callable through the bot proxy."""
     import bot
+    import bot.settlement  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.settlement.X access)
     # Just verify it's a callable function with the right signature
     assert callable(bot.settlement.discover_active_windows)
     sig = inspect.signature(bot.settlement.discover_active_windows)

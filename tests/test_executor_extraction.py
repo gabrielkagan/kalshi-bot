@@ -208,6 +208,8 @@ def _executor_tree() -> ast.Module:
 
 
 def _bot_impl_tree() -> ast.Module:
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     return ast.parse(BOT_PY.read_text())
 
 
@@ -251,7 +253,7 @@ def test_executor_module_attr_resolves_via_proxy():
 
 def test_executor_reexported_into_bot_impl():
     """bot._impl.OrderExecutor is bot.executor.OrderExecutor (via line-116ish re-export)."""
-    import bot._impl
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.executor
     assert bot._impl.OrderExecutor is bot.executor.OrderExecutor
 
@@ -522,6 +524,8 @@ def test_no_opportunityscanner_best_ask_depth_calls_in_bot_impl():
     """
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Sprint 9 Bit 9.3 final form)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     tree = ast.parse(BOT_PY.read_text())
     bad = []
     for node in ast.walk(tree):
@@ -608,6 +612,8 @@ def test_bot_impl_does_NOT_have_l81_alias_import_post_bit_9_2():
     """
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Sprint 9 Bit 9.3 final form)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     assert not re.search(
         r"from bot\.helpers\.raw_api_journal import append_raw_api_journal as _append_raw_api_journal",
@@ -623,6 +629,8 @@ def test_no_def_append_raw_api_journal_in_bot_impl():
     """Negative pin: the local `def _append_raw_api_journal` must be removed from bot/_impl.py."""
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Sprint 9 Bit 9.3 final form)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     assert re.search(r"^def _append_raw_api_journal\(", src, re.MULTILINE) is None, (
         "bot/_impl.py still has local `def _append_raw_api_journal(...)` — "
@@ -686,6 +694,8 @@ def test_bot_impl_reexports_order_executor():
     """bot/_impl.py has `from bot.executor import OrderExecutor` re-export."""
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Sprint 9 Bit 9.3 final form)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     assert re.search(r"from bot\.executor import OrderExecutor", src), (
         "bot/_impl.py missing `from bot.executor import OrderExecutor` re-export — "

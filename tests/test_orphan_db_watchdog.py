@@ -44,7 +44,7 @@ import bot.orphan_db_watchdog  # noqa: F401 — registers submodule on bot packa
 # pre-binds the re-exports to the original function objects, restoring proper
 # isolation. See tests/test_orphan_db_watchdog_extraction.py::test_proxy_chain_*
 # for the related identity pins.
-import bot._impl  # noqa: F401 — pre-bind re-exports to original function objects pre-monkeypatch
+import bot.orphan_db_watchdog  # noqa: F401 — pre-bind re-exports to original function objects pre-monkeypatch (Bit 9.3-iii.c: bot._impl deleted; canonical home is bot.orphan_db_watchdog)
 
 
 def test_orphan_watchdog_returns_no_offenders_when_db_is_held_by_self_only(
@@ -53,6 +53,7 @@ def test_orphan_watchdog_returns_no_offenders_when_db_is_held_by_self_only(
     """Healthy startup: only the bot itself holds state.db. The
     watchdog must report zero offenders and NOT send a Telegram alert."""
     import bot
+    import bot.orphan_db_watchdog  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.orphan_db_watchdog.X access)
     db = tmp_path / "state.db"
     db.touch()
 
@@ -78,6 +79,7 @@ def test_orphan_watchdog_detects_non_bot_pid_holding_db(monkeypatch, tmp_path):
     held state.db. The watchdog must detect this distinct PID and
     return it as an offender — without auto-killing."""
     import bot
+    import bot.orphan_db_watchdog  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.orphan_db_watchdog.X access)
     db = tmp_path / "state.db"
     db.touch()
 
@@ -123,6 +125,7 @@ def test_orphan_watchdog_skips_alert_for_legitimate_cron_processes(
     positive-list of orphan-creator scripts only — anything else is
     logged at DEBUG and not alerted."""
     import bot
+    import bot.orphan_db_watchdog  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.orphan_db_watchdog.X access)
     db = tmp_path / "state.db"
     db.touch()
 
@@ -162,6 +165,7 @@ def test_orphan_watchdog_alerts_on_h4_backfill_pattern(monkeypatch, tmp_path):
     cryptocompare_news_backfill, gdelt_backfill, glassnode_backfill.
     Each is a known orphan-creation path."""
     import bot
+    import bot.orphan_db_watchdog  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.orphan_db_watchdog.X access)
     db = tmp_path / "state.db"
     db.touch()
     self_pid = os.getpid()
@@ -203,6 +207,7 @@ def test_orphan_watchdog_skips_alert_when_pid_already_exited(
     Post-fix: skip the alert entirely (the orphan is already dead;
     no need to wake the operator)."""
     import bot
+    import bot.orphan_db_watchdog  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.orphan_db_watchdog.X access)
     db = tmp_path / "state.db"
     db.touch()
     self_pid = os.getpid()
@@ -243,6 +248,7 @@ def test_orphan_watchdog_does_not_kill(monkeypatch, tmp_path):
     launched migrations, debug sessions); the operator triages."""
     import signal as _signal
     import bot
+    import bot.orphan_db_watchdog  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.orphan_db_watchdog.X access)
     db = tmp_path / "state.db"
     db.touch()
 
@@ -274,6 +280,7 @@ def test_orphan_watchdog_alerts_via_telegram(monkeypatch, tmp_path):
     alert that includes the PID and the command line so the operator
     can investigate without journalctl."""
     import bot
+    import bot.orphan_db_watchdog  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.orphan_db_watchdog.X access)
     db = tmp_path / "state.db"
     db.touch()
 
@@ -308,6 +315,7 @@ def test_orphan_watchdog_handles_lsof_failure_gracefully(
     must NOT crash bot startup — log a warning and proceed. Otherwise
     the watchdog itself becomes a startup-blocker."""
     import bot
+    import bot.orphan_db_watchdog  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.orphan_db_watchdog.X access)
     db = tmp_path / "state.db"
     db.touch()
 

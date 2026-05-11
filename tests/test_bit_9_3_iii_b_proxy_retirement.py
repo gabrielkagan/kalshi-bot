@@ -108,7 +108,7 @@ def test_bot_dot_attribute_does_not_fall_through_to_bot_impl():
     Uses a one-shot canary attribute to avoid polluting bot._impl globals.
     """
     import bot
-    import bot._impl
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
 
     canary_name = "_proxy_retirement_canary_attr_9b3"
     canary_value = object()

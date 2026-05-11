@@ -37,8 +37,10 @@ class TestScanSectionTiming(unittest.TestCase):
         for-loop body exceeds 1.5s. Without per-section data we
         can't tell whether scan body slowness is in the loop or in
         post-loop processing."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn(
             "SCAN_LOOP_SLOW", src,
             "scan() must emit SCAN_LOOP_SLOW warning when the "
@@ -49,8 +51,10 @@ class TestScanSectionTiming(unittest.TestCase):
         """scan() must emit `SCAN_POSTLOOP_SLOW` when post-loop
         processing (shadow processors + candidate selection) exceeds
         1.5s. This catches the alternative blocker location."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn(
             "SCAN_POSTLOOP_SLOW", src,
             "scan() must emit SCAN_POSTLOOP_SLOW warning when "

@@ -18,7 +18,7 @@
 # CWD guard — Make resolves recipe paths against `$(CURDIR)`, not the
 # Makefile's location. A contributor who `cd tests/ && make test` would
 # otherwise get either "No rule to make target" or, worse, a recipe
-# that looks up `bot/_impl.py` / `scripts/` relative to the wrong dir and
+# that looks up `bot/constants.py` / `scripts/` relative to the wrong dir and
 # silently misbehaves. Fail loudly at parse time with a clear remedy.
 ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
@@ -156,7 +156,7 @@ help:
 	@echo "Other:"
 	@echo "  make install              pip install -e .[dev]"
 	@echo "  make install-hooks        symlink scripts/git_hooks/pre-commit → .git/hooks/ (Sprint PSC P5.3)"
-	@echo "  make ast-check            syntax-check bot/_impl.py + bot/constants.py"
+	@echo "  make ast-check            syntax-check bot/constants.py + main_loop.py + scanner/"
 	@echo "  make lint                 ruff check ."
 	@echo "  make doc-drift            scripts/doc_drift_check.py"
 	@echo "  make deploy-check         pre-deploy aggregator"
@@ -345,13 +345,13 @@ test-fast: test-unit
 test-mutmut:
 	$(MUTMUT_GUARD) mutmut run
 
-# bot/_impl.py is the renamed `bot.py` (sacred per CLAUDE.md). Syntax-check
-# before any push that touches it OR bot/constants.py (Bit 3.1: module-level
-# constants live in bot/constants.py post-extraction; a syntax error there
-# crashes bot start the same way an _impl.py error would). Mirrors
-# deploy_check.sh gate 1.
+# Bit 9.3-iii.c (2026-05-11): bot/_impl.py was DELETED. Syntax-check before
+# any push that touches the bot/ runtime hotspot files: bot/constants.py
+# (module-level constants — Bit 3.1) + bot/main_loop.py (MainLoop body —
+# Bit 9.3) + bot/scanner/__init__.py (scanner body — Bit 8.1). A syntax
+# error in any of these crashes bot start. Mirrors deploy_check.sh gate 1.
 ast-check:
-	$(PYTHON) -c "import ast; ast.parse(open('bot/_impl.py').read()); ast.parse(open('bot/constants.py').read())"
+	$(PYTHON) -c "import ast; ast.parse(open('bot/constants.py').read()); ast.parse(open('bot/main_loop.py').read()); ast.parse(open('bot/scanner/__init__.py').read())"
 
 # Per Bit 1.1, ruff config is lenient (E+F only). `ruff check .`
 # reports ~1069 errors as of Bit 1.1 ship (the count drifts as the repo
@@ -364,8 +364,10 @@ doc-drift:
 	$(PYTHON) scripts/doc_drift_check.py
 
 # scripts/cal_mlp/deploy_check.sh is the canonical pre-deploy aggregator
-# (gates: ast.parse bot/_impl.py + cal_mlp modules, cal_mlp invariants, full
-# pytest suite, smoke_check). Don't duplicate gates here — single
+# (gates: ast.parse bot/constants.py + bot/main_loop.py + bot/scanner/__init__.py
+# + cal_mlp modules, cal_mlp invariants, full pytest suite, smoke_check —
+# Bit 9.3-iii.c (2026-05-11) deleted bot/_impl.py; the runtime hotspots are
+# now the canonical submodules). Don't duplicate gates here — single
 # source of truth.
 deploy-check:
 	bash scripts/cal_mlp/deploy_check.sh
@@ -445,7 +447,8 @@ no-side:
 # (or wire it into their own `.git/hooks/pre-commit.local`).
 #
 # Order is significant: ast-check is fastest (~0.5s) and the most
-# common failure mode (syntax error in bot/_impl.py or bot/constants.py);
+# common failure mode (syntax error in bot/constants.py / bot/main_loop.py /
+# bot/scanner/__init__.py — the runtime hotspots ast-check scans post-Bit-9.3-iii.c);
 # lint is next (~5s); doc-drift (~2s); test-unit is invariant tests
 # <10s; test-contract is AST + lint-imports <15s on Mac. Fail-fast on
 # the cheapest gate.

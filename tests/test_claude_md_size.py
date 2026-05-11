@@ -41,7 +41,6 @@ import re
 from pathlib import Path
 
 import pytest
-import bot._impl  # noqa: F401
 import bot.main_loop  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -515,10 +514,14 @@ def test_bot_py_implementation_rules_breadcrumb_present():
     ships", and the actual breadcrumb could be deleted silently.
     """
     text = CLAUDE_MD.read_text()
-    assert "**`bot/_impl.py` implementation rules**" in text, (
-        "CLAUDE.md is missing the ``**`bot/_impl.py` implementation rules**`` "
+    # Bit 9.3-iii.c (2026-05-11): bot/_impl.py was DELETED. The "implementation
+    # rules" breadcrumb was renamed to "bot/ implementation rules" to reflect
+    # the cross-cutting scope post-deletion (rules apply to bot/scanner,
+    # bot/executor, bot/main_loop, bot/state, etc.).
+    assert "**`bot/` implementation rules**" in text, (
+        "CLAUDE.md is missing the ``**`bot/` implementation rules**`` "
         "Critical-rules bullet label. This is the load-bearing "
-        "breadcrumb that points operators at the moved bot/_impl.py rules "
+        "breadcrumb that points operators at the bot/ implementation rules "
         "(torch threading, cal_mlp four-site lock-step, cell-block "
         "filter_stage values, SQLite WAL pragmas, etc.). Without "
         "this label at root, citations across the codebase that "

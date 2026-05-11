@@ -273,7 +273,7 @@ class TestNoSideRepriceMaker(unittest.TestCase):
 class TestNoSideObservationGate(unittest.TestCase):
     """Verify observation gate behavior for weather YES vs NO side."""
 
-    @patch.object(bot.executor, "WEATHER_NO_SIDE_LIVE", True)
+    @patch.object(bot.constants, "WEATHER_NO_SIDE_LIVE", True)
     @patch.object(bot.executor, "OBSERVATION_MODE", False)
     def test_weather_no_side_bypasses_observation_gate(self):
         """Weather NO-side candidates pass through when WEATHER_NO_SIDE_LIVE=True."""
@@ -286,7 +286,7 @@ class TestNoSideObservationGate(unittest.TestCase):
         # Should proceed to order submission (not blocked by observation gate)
         ex._client.place_order.assert_called_once()
 
-    @patch.object(bot.executor, "WEATHER_NO_SIDE_LIVE", True)
+    @patch.object(bot.constants, "WEATHER_NO_SIDE_LIVE", True)
     @patch.object(bot.executor, "OBSERVATION_MODE", False)
     def test_weather_yes_side_blocked_by_observation_gate(self):
         """Weather YES-side must remain blocked even when WEATHER_NO_SIDE_LIVE=True."""
@@ -298,7 +298,7 @@ class TestNoSideObservationGate(unittest.TestCase):
         self.assertIsNone(result)
         ex._client.place_order.assert_not_called()
 
-    @patch.object(bot.executor, "WEATHER_NO_SIDE_LIVE", False)
+    @patch.object(bot.constants, "WEATHER_NO_SIDE_LIVE", False)
     @patch.object(bot.executor, "OBSERVATION_MODE", False)
     def test_weather_no_side_blocked_when_kill_switch_off(self):
         """WEATHER_NO_SIDE_LIVE=False blocks NO-side execution."""

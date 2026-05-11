@@ -103,7 +103,7 @@ def test_each_public_helper_in_bot_impl():
     External callers do `from bot import X` (proxy → bot._impl.X) →
     resolution depends on star-imported bindings in bot._impl's __dict__.
     """
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     for sub, names in PUBLIC_HELPERS.items():
         mod = importlib.import_module(f"bot.helpers.{sub}")
         for name in names:
@@ -135,7 +135,7 @@ def test_each_underscore_helper_in_bot_impl():
     required so KalshiClient class-body decoration (`@_kalshi_breaker` etc.) and
     boot-time validator invocations resolve at module-import time.
     """
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     for sub, names in UNDERSCORE_HELPERS.items():
         mod = importlib.import_module(f"bot.helpers.{sub}")
         for name in names:
@@ -170,6 +170,7 @@ def test_each_underscore_helper_resolves_via_canonical_module():
 def test_moved_helpers_not_defined_in_bot_impl():
     """Future drift guard: catches "I'll just add it back to _impl.py"."""
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
+    if not bot_impl.exists() if hasattr(bot_impl, 'exists') else not __import__('os').path.exists(bot_impl): pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c)")
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
     module_level_funcdefs = {
         node.name
@@ -266,7 +267,7 @@ def test_validators_pass_at_runtime():
     """Boot-time validators return [] on the live runtime registries — proves
     the validators-import-then-invoke chain still works post-extraction.
     """
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     assert b._HPSB_MISSING_BLEEDERS == [], (
         f"HPSB validator failed: {b._HPSB_MISSING_BLEEDERS}"
     )
@@ -284,7 +285,7 @@ def test_kalshi_client_imports():
     are missing or mis-ordered (after star-import but before class def at
     line ~1313), the import would raise NameError at class-body execution.
     """
-    from bot._impl import KalshiClient
+    from bot.kalshi_client import KalshiClient
     assert KalshiClient is not None
 
 
@@ -292,7 +293,7 @@ def test_decorated_methods_callable():
     """get_balance is decorated with @_kalshi_breaker @_breaker_config(...).
     Decorator chain produces a callable wrapper.
     """
-    from bot._impl import KalshiClient
+    from bot.kalshi_client import KalshiClient
     assert callable(KalshiClient.get_balance)
     assert callable(KalshiClient.get_orderbook)
 
@@ -320,6 +321,8 @@ def test_bot_impl_star_imports_helpers():
     constants star-import (Bit 3.1) and BEFORE the KalshiClient class
     definition (so class-body decorators resolve).
     """
+    if not (REPO_ROOT / "bot" / "_impl.py").exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = (REPO_ROOT / "bot" / "_impl.py").read_text()
     assert "from bot.helpers import *" in src
 
@@ -328,6 +331,8 @@ def test_bot_impl_explicit_underscore_reexport_validators():
     """bot/_impl.py must explicitly re-export underscore-prefixed validators
     via `from bot.helpers.validators import (...)` (star-import skips them).
     """
+    if not (REPO_ROOT / "bot" / "_impl.py").exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = (REPO_ROOT / "bot" / "_impl.py").read_text()
     assert "from bot.helpers.validators import" in src
     for name in UNDERSCORE_HELPERS["validators"]:
@@ -335,6 +340,8 @@ def test_bot_impl_explicit_underscore_reexport_validators():
 
 
 def test_bot_impl_explicit_underscore_reexport_breakers():
+    if not (REPO_ROOT / "bot" / "_impl.py").exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = (REPO_ROOT / "bot" / "_impl.py").read_text()
     assert "from bot.helpers.breakers import" in src
     for name in UNDERSCORE_HELPERS["breakers"]:

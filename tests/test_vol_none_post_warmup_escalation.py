@@ -34,8 +34,9 @@ BOT_PY = os.path.join(
 
 
 def _find_scan_method() -> ast.FunctionDef:
-    with open(BOT_PY) as f:
-        tree = ast.parse(f.read())
+    if os.path.exists(BOT_PY):
+        with open(BOT_PY) as f:
+            tree = ast.parse(f.read())
     for cls in ast.walk(tree):
         if (isinstance(cls, ast.ClassDef)
                 and cls.name == "OpportunityScanner"):
@@ -52,8 +53,10 @@ class TestVolNonePostWarmupEscalation(unittest.TestCase):
         """`scan()` must emit a `VOL_NONE_POST_WARMUP` log message
         somewhere in its body, so steady-state vol failures escalate
         beyond the silent trace row."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn(
             "VOL_NONE_POST_WARMUP", src,
             "scan() must emit a VOL_NONE_POST_WARMUP warning when "
@@ -67,8 +70,10 @@ class TestVolNonePostWarmupEscalation(unittest.TestCase):
         warmup ticks would spam the warning. The gate compares against
         `_scan_15m_process_start_ts` (already used by the watchdog
         grace) for consistency."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         # Look for the gating pattern: the WARNING string and an
         # uptime comparison must appear within ~10 lines of each other.
         # Cheap structural check: both substrings must exist together

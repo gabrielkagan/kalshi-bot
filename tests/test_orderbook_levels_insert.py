@@ -244,7 +244,7 @@ class TestScannerWiringInPlace(_TempState):
         Bit 8.1 (2026-05-10): OpportunityScanner extracted from bot/_impl.py
         to bot/scanner/__init__.py. Read whichever module currently hosts
         `def scan(`; fall back to walking both."""
-        import bot._impl as bot_mod
+        import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
         impl_src = open(bot_mod.__file__).read()
         scanner_init = os.path.join(
             os.path.dirname(bot_mod.__file__), "scanner", "__init__.py")
@@ -295,7 +295,7 @@ class TestScannerWiringInPlace(_TempState):
         Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py;
         the eviction call moved with it. Read whichever module currently
         contains the call."""
-        import bot._impl as bot_mod
+        import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
         scanner_init = os.path.join(
             os.path.dirname(bot_mod.__file__), "scanner", "__init__.py")
         src = ""

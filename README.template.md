@@ -191,7 +191,7 @@ source .env
 python3 -m bot
 ```
 
-Set `OBSERVATION_MODE = True` in `bot/_impl.py` to log everything but place no orders.
+Set `OBSERVATION_MODE = True` in `bot/constants.py` to log everything but place no orders.
 
 ## Deployment
 
@@ -199,7 +199,7 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 
 1. SSH into VPS as `botuser`
 2. `git pull origin main`
-3. Syntax-check `bot/_impl.py` (`python3 -c "import ast; ast.parse(...)"`)
+3. Syntax-check runtime hotspots via `make ast-check` (scans `bot/constants.py` + `bot/main_loop.py` + `bot/scanner/__init__.py`)
 4. `sudo systemctl restart kalshi-bot`
 
 ## Kalshi API Notes
@@ -213,11 +213,18 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ## Project Structure
 
 ```
-bot/_impl.py                         -- core bot logic (~{{BOT_LINE_COUNT}} lines, never rename)
+bot/main_loop.py               -- MainLoop class body (Bit 9.3, 2026-05-10; core orchestration)
+bot/scanner/__init__.py        -- OpportunityScanner class body (Bit 8.1, 2026-05-10)
+bot/executor.py                -- OrderExecutor class body (Bit 9.1, 2026-05-10)
+bot/state.py                   -- StateManager class body (Bit 7.1, 2026-05-10)
+bot/settlement.py              -- SettlementTracker + discover_active_windows (Bit 9.2)
+bot/constants.py               -- ~120 module-level constants (Bit 3.1)
+bot/runtime_config.py          -- PEP 562 dual-probe of bot.constants → config (Bit 9.3-iii.c)
+bot/boot.py                    -- boot-time bindings + cal_mlp warmup (Bit 9.3-iii.a)
 config.py                      -- centralized SIZING_TIERS / DRAWDOWN_* / MIN_EDGE_BY_PRICE
 bot/models.py                  -- EGARCH / Mincer-Zarnowitz / PositionSizer / fee math  (Sprint 10.5b relocation, 2026-05-11)
 analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)
-market_config.py               -- centralized MarketTypeConfig (validates against bot/_impl.py at startup)
+market_config.py               -- centralized MarketTypeConfig (validates against bot.constants at startup; Bit 9.3-iii.c deleted bot/_impl.py)
 bot/shadows/fifteenm_shadow.py -- 15M shadow engine (recalibrated EGARCH + LightGBM research)  (Sprint 10.2 relocation, 2026-05-11)
 bot/engines/spx_engine.py      -- S&P 500 intraday engine (EGARCH + VIX, observation mode)  (Sprint 10.1b relocation, 2026-05-11)
 bot/engines/weather_engine.py  -- weather temperature engine (NWP ensemble, NO-side live + observation)  (Sprint 10.1c relocation, 2026-05-11)
@@ -229,7 +236,7 @@ dashboard_snapshot.py          -- builds dashboard state snapshots for Supabase
 supabase_sync.py               -- pushes snapshots to Supabase Realtime every 10s
 watchdog.py                    -- process health monitoring
 ops/kalshi-bot.service         -- systemd unit, source of truth (installed via ops/install.sh)
-start.sh                       -- wrapper invoked by ops/kalshi-bot.service (venv + .env + bot/_impl.py)
+start.sh                       -- wrapper invoked by ops/kalshi-bot.service (venv + .env + `python -m bot`)
 requirements.txt               -- Python dependencies
 .env.example                   -- credential template
 .github/workflows/deploy.yml   -- auto-deploy on push to main

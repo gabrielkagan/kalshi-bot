@@ -41,6 +41,7 @@ def _make_main_loop():
     _subscribe_discovery_orderbooks behavior. Mocks kalshi_feed
     and state."""
     import bot
+    import bot.main_loop  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.main_loop.X access)
     ml = bot.main_loop.MainLoop.__new__(bot.main_loop.MainLoop)
     ml._active_windows = []
     ml._discovery_ob_tickers = set()
@@ -140,6 +141,7 @@ class TestHeldPositionsProtected(unittest.TestCase):
         }])
         # Even with PPO DISABLED, held position must be protected.
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         original = bot.constants.POSITION_PRICE_MONITOR_ENABLED
         try:
             bot.constants.POSITION_PRICE_MONITOR_ENABLED = False
@@ -175,8 +177,10 @@ class TestAstUsesAuthoritativeAccessor(unittest.TestCase):
     `get_subscribed_tickers` to compute the cleanup diff."""
 
     def test_subscribe_discovery_uses_get_subscribed_tickers(self):
-        with open(BOT_PY) as fh:
-            src = fh.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as fh:
+                src = fh.read()
         tree = ast.parse(src)
         target = None
         for cls in ast.walk(tree):

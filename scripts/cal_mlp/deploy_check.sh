@@ -6,7 +6,7 @@
 # Exit non-zero = at least one gate failed; do NOT merge.
 #
 # Gates (in order; each must exit 0 to proceed):
-#   1. ast.parse on bot/_impl.py + cal_mlp modules — catches syntax errors
+#   1. ast.parse on bot/constants.py + bot/main_loop.py + bot/scanner/__init__.py + cal_mlp modules — catches syntax errors (Bit 9.3-iii.c: bot/_impl.py was DELETED, runtime hotspots are now the canonical submodules)
 #   2. pytest tests/test_cal_mlp_invariants.py — 33 regression tests
 #   3. pytest tests/ -m "not fragile" — full ~2046-test suite
 #   4. python3 scripts/cal_mlp/smoke_check.py — 6 end-to-end synthetic checks
@@ -44,9 +44,10 @@ run_gate() {
     echo
 }
 
-# Gate 1: syntax check
-run_gate "ast.parse bot/_impl.py" \
-    python3 -c "import ast; ast.parse(open('bot/_impl.py').read())"
+# Gate 1: syntax check (Bit 9.3-iii.c: bot/_impl.py was DELETED — scan the canonical
+# runtime hotspots that the Makefile `ast-check` target uses).
+run_gate "ast.parse bot runtime hotspots" \
+    python3 -c "import ast; ast.parse(open('bot/constants.py').read()); ast.parse(open('bot/main_loop.py').read()); ast.parse(open('bot/scanner/__init__.py').read())"
 
 run_gate "ast.parse cal_mlp modules" \
     python3 -c "

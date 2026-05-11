@@ -63,7 +63,7 @@ def test_kalshi_client_identity_through_bot_impl():
     the type annotations across reconcile_with_api / OpportunityScanner /
     OrderExecutor / SettlementTracker / discover_active_windows.
     """
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.kalshi_client as bkc
     assert b.KalshiClient is bkc.KalshiClient
 
@@ -86,7 +86,7 @@ def test_kalshi_client_three_way_identity_chain():
     Locks the precedent set by Bit 4.1 (Logger) and Bit 4.2 (TelegramNotifier).
     """
     import bot
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.kalshi_client as bkc
     assert bot.kalshi_client.KalshiClient is b.KalshiClient is bkc.KalshiClient
 
@@ -100,6 +100,7 @@ def test_kalshi_client_class_not_defined_in_bot_impl():
     Mirrors test_notifier_class_not_defined_in_bot_impl (Bit 4.2).
     """
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
+    if not bot_impl.exists() if hasattr(bot_impl, 'exists') else not __import__('os').path.exists(bot_impl): pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c)")
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
     classdefs = [
         node for node in ast.iter_child_nodes(tree)
@@ -122,6 +123,7 @@ def test_bot_impl_imports_kalshi_client():
     inside docstrings/comments.
     """
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
+    if not bot_impl.exists() if hasattr(bot_impl, 'exists') else not __import__('os').path.exists(bot_impl): pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c)")
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
     found = False
     for node in ast.iter_child_nodes(tree):

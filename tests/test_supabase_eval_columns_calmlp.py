@@ -76,6 +76,7 @@ def test_eval_columns_subset_of_local_evaluated_opportunities_schema(tmp_path):
     OperationalError at runtime and freeze sync. Uses a fresh StateManager
     DB so the schema reflects the current bot/_impl.py."""
     import bot
+    import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
     db_path = str(tmp_path / "state.db")
     state = bot.state.StateManager(db_path)
     local_cols = {

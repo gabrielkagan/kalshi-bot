@@ -3,9 +3,13 @@ name: Generate Whitepaper PDF
 on:
   push:
     branches: [main]
+    # Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED — paths trigger
+    # watches the canonical runtime hotspots that affect whitepaper content.
     paths:
-      - 'bot/_impl.py'
       - 'bot/constants.py'
+      - 'bot/main_loop.py'
+      - 'bot/scanner/__init__.py'
+      - 'bot/executor.py'
       - 'whitepaper.md'
       - 'whitepaper_investor.md'
       - 'README.template.md'

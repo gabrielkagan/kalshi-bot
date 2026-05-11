@@ -15,7 +15,7 @@ the same targets in `.github/workflows/test.yml` + `deploy.yml`.
 | Tier | Budget | Contents | When to run |
 |---|---|---|---|
 | `make test-unit` | <10s (sub-sec actual) | Pure-Python invariants: pyproject parsing, Makefile parsing, repo hygiene. No DB, no network. | Every save (or every edit, via `test-affected`). |
-| `make test-contract` | <5s budget / ~12s actual on Mac | Pillar 1 public_api snapshot + Pillar 2 import-linter + AST guards (extraction tests, call_sites, db_signatures, config_consistency, order_outcome_vocab). The Mac overshoot is fundamental — AST-walking `bot/_impl.py` is bounded by file size; CI Linux clears the budget. | After any change to `bot/`, `pyproject.toml`, or `.importlinter`. |
+| `make test-contract` | <5s budget / ~12s actual on Mac | Pillar 1 public_api snapshot + Pillar 2 import-linter + AST guards (extraction tests, call_sites, db_signatures, config_consistency, order_outcome_vocab). The Mac overshoot is fundamental — AST-walking the large canonical bot modules (`bot/scanner/__init__.py` ~9.4K LOC, `bot/executor.py` ~5.4K LOC, `bot/main_loop.py` ~2.2K LOC) is bounded by file size; CI Linux clears the budget. Pre-Bit-9.3-iii.c the dominant scan target was bot/_impl.py (now deleted). | After any change to `bot/`, `pyproject.toml`, or `.importlinter`. |
 | `make test-equivalence` | <30s (~3s actual) | Pillar 3 numeric snapshots + property tests for `bot/engines/{volatility,probability}.py`. Frozen calibration via `tests/equivalence/conftest.py`. | After any change to `bot/engines/`, `bot/constants.py`, or anything that flows into engine inputs. |
 | `make test-integration` | <2min (~50s actual) | Everything else under `tests/` (the broad behavioral suite). | Before opening a PR. |
 | `make test` | ~3min (sum of above) | All four tiers in order, fail-fast on the cheapest. | Before pushing to main. |
@@ -94,7 +94,7 @@ Do NOT push directly to main with a `[skip ci]` flag to bypass the
 gate — that's how stale-deploy incidents start.
 
 ## Conventions
-- One test file per concern. Mirror the bot/_impl.py class/function being tested.
+- One test file per concern. Mirror the canonical bot submodule class/function being tested (e.g., `bot/scanner/__init__.py::OpportunityScanner` → `tests/test_scanner_extraction.py` + `tests/test_scan_*`; bot/_impl.py was DELETED in Bit 9.3-iii.c).
 - Real DB, not mocks — integration tests must hit a real sqlite3 file (use `tmp_path`).
 - For sizing/Kelly assertions, use the actual `OrderExecutor` paths, never reimplement Kelly inline.
 - Regression tests after bug fixes: name `test_<bug_keyword>_regression` and reference the commit/incident in a one-line docstring.

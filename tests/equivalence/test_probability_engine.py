@@ -44,7 +44,6 @@ from hypothesis import example, given, settings, strategies as st
 # needs via the residual shim (kept until Bit 9.3-iii.c).
 from bot.engines.probability import ProbabilityEngine
 from config import MAX_EFFECTIVE_PROB
-import bot._impl  # noqa: F401  -- pre-loads star-imports for fixture wiring
 
 
 # ─────────────────────────────────────────────────────────────────────

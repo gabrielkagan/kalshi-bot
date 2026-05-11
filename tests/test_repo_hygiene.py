@@ -187,9 +187,15 @@ def _parse_bot_class_starts():
 
     Skips indented class defs (nested classes) — the layout doc only
     catalogues the top-level public classes.
+
+    Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED — returns empty when
+    the file is absent (matches the existing empty-equals-empty branch in
+    test_bot_layout_class_lines_match_bot_impl).
     """
     starts = {}
     bot_py = REPO_ROOT / "bot/_impl.py"
+    if not bot_py.exists():
+        return starts
     for i, line in enumerate(bot_py.read_text().splitlines(), start=1):
         m = re.match(r"^class ([A-Za-z_][A-Za-z0-9_]*)", line)
         if m:
@@ -233,8 +239,13 @@ def test_bot_layout_class_lines_match_bot_impl():
 
 
 def test_bot_layout_total_lines_close_to_bot_impl():
-    """If bot_layout.md cites a total bot/_impl.py line count, it must be within 200 of actual."""
+    """If bot_layout.md cites a total bot/_impl.py line count, it must be within 200 of actual.
+    Vacuous post-Bit-9.3-iii.c (bot/_impl.py deleted)."""
+    if not (REPO_ROOT / "bot/_impl.py").exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — line-count assertion vacuous")
     layout = (REPO_ROOT / "agent_docs" / "bot_layout.md").read_text()
+    if not (REPO_ROOT / "bot/_impl.py").exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c)")
     actual = sum(1 for _ in (REPO_ROOT / "bot/_impl.py").read_text().splitlines())
     matches = re.findall(r"\*?\*?(\d{1,3}[,]?\d{3,})\s*lines\*?\*?", layout)
     if not matches:

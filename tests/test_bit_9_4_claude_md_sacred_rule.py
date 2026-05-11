@@ -29,7 +29,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import bot._impl  # noqa: F401
 import bot.main_loop  # noqa: F401
 
 

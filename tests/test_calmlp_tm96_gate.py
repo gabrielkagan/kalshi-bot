@@ -422,7 +422,7 @@ def test_bot_py_compute_derived_uses_calibrated_prob():
     (survives any future relocations of the helper).
     """
     import inspect
-    from bot._impl import compute_derived_features
+    from bot.helpers.derived_features import compute_derived_features
     body = inspect.getsource(compute_derived_features)
     assert 'gap = calibrated_prob - (market_price_cents / 100.0)' in body, (
         "compute_derived_features must use the canonical formula "

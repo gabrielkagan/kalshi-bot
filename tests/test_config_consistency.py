@@ -28,6 +28,7 @@ class TestConfigConstantParity:
 
     def test_15m_config_matches_bot(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["15m"]
         assert cfg.min_entry_price == bot.constants.MIN_ENTRY_PRICE
@@ -40,6 +41,7 @@ class TestConfigConstantParity:
 
     def test_hourly_config_matches_bot(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["hourly"]
         assert cfg.observation_only == bot.constants.HOURLY_OBSERVATION_ONLY
@@ -60,6 +62,7 @@ class TestConfigConstantParity:
 
     def test_spx_hourly_config_matches_bot(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["spx_hourly"]
         assert cfg.observation_only == bot.constants.SPX_HOURLY_OBSERVATION_ONLY
@@ -78,6 +81,7 @@ class TestConfigConstantParity:
 
     def test_weather_config_matches_bot(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["weather"]
         assert cfg.observation_only == bot.constants.WEATHER_OBSERVATION_ONLY
@@ -91,6 +95,7 @@ class TestConfigConstantParity:
 
     def test_sports_config_matches_bot(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["sports"]
         assert cfg.observation_only == bot.constants.SPORTS_OBSERVATION_ONLY
@@ -158,6 +163,7 @@ class TestMinEdgeByPrice:
     def test_get_min_edge_covers_all_valid_prices(self):
         """get_min_edge returns a positive value for all valid prices 1-99."""
         import bot
+        import bot.helpers  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.helpers.X access)
         for price in range(1, 100):
             edge = bot.helpers.sizing.get_min_edge(price)
             assert edge > 0, f"get_min_edge({price}) returned {edge}"
@@ -246,6 +252,7 @@ class TestSTCRanges:
     def test_stc_shadow_within_15m_range(self):
         """STC_SHADOW_THRESHOLD for 15M must fall within the STC range."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.STC_SHADOW_THRESHOLD <= bot.constants.MAX_SECONDS_BEFORE_CLOSE, (
             f"STC_SHADOW_THRESHOLD({bot.constants.STC_SHADOW_THRESHOLD}) > MAX_SECONDS_BEFORE_CLOSE({bot.constants.MAX_SECONDS_BEFORE_CLOSE})")
         assert bot.constants.STC_SHADOW_THRESHOLD >= bot.constants.MIN_SECONDS_BEFORE_CLOSE, (

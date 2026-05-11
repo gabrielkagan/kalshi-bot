@@ -46,6 +46,7 @@ BOT_PY = os.path.join(
 
 def _make_feed():
     import bot
+    import bot.feeds  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.feeds.X access)
     f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
     f._pending_subscribes = []
     f._pending_unsubscribes = []
@@ -169,6 +170,7 @@ class TestIncomingWithinWindowLogged(unittest.TestCase):
 class TestIncomingOutsideWindowDeltaNotLogged(unittest.TestCase):
     def test_orderbook_delta_outside_window_not_logged(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._subscribed_tickers.add("BTC1")
         f._orderbooks["BTC1"] = {"yes": [], "no": [], "ts": time.time()}
@@ -206,6 +208,7 @@ class TestNonDataTypesAlwaysLogged(unittest.TestCase):
 
     def test_subscribed_logged_outside_window(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._ws_connect_ts = (
             time.time() - bot.constants.WS_RAW_LOG_DURATION_S - 5.0)
@@ -224,6 +227,7 @@ class TestNonDataTypesAlwaysLogged(unittest.TestCase):
 
     def test_unsubscribed_logged_outside_window(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._ws_connect_ts = (
             time.time() - bot.constants.WS_RAW_LOG_DURATION_S - 5.0)
@@ -238,6 +242,7 @@ class TestNonDataTypesAlwaysLogged(unittest.TestCase):
     def test_ok_logged_outside_window(self):
         """type=ok is the generic command-success response."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._ws_connect_ts = (
             time.time() - bot.constants.WS_RAW_LOG_DURATION_S - 5.0)
@@ -257,6 +262,7 @@ class TestNonDataTypesAlwaysLogged(unittest.TestCase):
 class TestPayloadTruncation(unittest.TestCase):
     def test_huge_incoming_payload_truncated(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         # Build a giant payload way over the truncate cap.
         huge = "x" * (bot.constants.WS_RAW_LOG_TRUNCATE * 5)
@@ -284,6 +290,7 @@ class TestPayloadTruncation(unittest.TestCase):
 class TestConstantsDefined(unittest.TestCase):
     def test_ws_raw_log_duration_constant_defined(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertTrue(
             hasattr(bot.constants, "WS_RAW_LOG_DURATION_S"),
             "Must define WS_RAW_LOG_DURATION_S module-level "
@@ -296,6 +303,7 @@ class TestConstantsDefined(unittest.TestCase):
 
     def test_ws_raw_log_truncate_constant_defined(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertTrue(hasattr(bot.constants, "WS_RAW_LOG_TRUNCATE"))
         val = bot.constants.WS_RAW_LOG_TRUNCATE
         self.assertGreaterEqual(val, 100)
@@ -314,6 +322,7 @@ class TestRawLogCap(unittest.TestCase):
         the bulk-data-frame path via _log_raw_in with a data
         msg_type."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         cap = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
         f._raw_log_count = cap - 1
@@ -341,6 +350,7 @@ class TestRawLogCap(unittest.TestCase):
         """Repeat hits past the cap don't produce more
         WS_RAW_CAPPED lines."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
         f._raw_log_capped_logged = True  # already noticed
@@ -360,6 +370,7 @@ class TestRawLogCap(unittest.TestCase):
         """_cleanup_session_state resets the counter so the next
         session gets a fresh diagnostic budget."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._connected = True
         f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION + 100
@@ -377,6 +388,7 @@ class TestR2A1NonDataExemptFromCap(unittest.TestCase):
 
     def test_subscribed_logged_even_after_cap(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         # Pretend the data-frame cap is fully exhausted.
         f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
@@ -394,6 +406,7 @@ class TestR2A1NonDataExemptFromCap(unittest.TestCase):
 
     def test_error_logged_even_after_cap(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
         with self.assertLogs("root", level="INFO") as cm:
@@ -408,6 +421,7 @@ class TestR2A1NonDataExemptFromCap(unittest.TestCase):
 
     def test_outgoing_logged_even_after_cap(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
         with self.assertLogs("root", level="INFO") as cm:
@@ -421,6 +435,7 @@ class TestR2A1NonDataExemptFromCap(unittest.TestCase):
     def test_data_frame_still_capped(self):
         """Sanity: bulk types still respect the cap."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
         # Mark the capped-notice as already emitted to prevent it
@@ -444,8 +459,10 @@ class TestAstReconnectResetsConnectTs(unittest.TestCase):
     actually reopens on each reconnect (not just at process start)."""
 
     def test_ws_loop_sets_connect_ts(self):
-        with open(BOT_PY) as fh:
-            src = fh.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as fh:
+                src = fh.read()
         tree = ast.parse(src)
         target = None
         for cls in ast.walk(tree):

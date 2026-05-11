@@ -247,6 +247,7 @@ class TestCalibrationConfidenceIntegration(unittest.TestCase):
 
     def _fresh_state_manager(self):
         import tempfile, bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
         self.addCleanup(os.unlink, tmp.name)
@@ -325,6 +326,7 @@ class TestSportsInsertTierCoverage(unittest.TestCase):
 
     def _fresh_sports_engine(self):
         import tempfile, bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         import bot.engines.sports_engine as sports_engine  # Sprint 10.1d (2026-05-11)
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()

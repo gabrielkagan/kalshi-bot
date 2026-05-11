@@ -29,8 +29,10 @@ def _read_bot_src():
     bot/scanner/__init__.py. The cooldown gate, _process_no_side_shadow,
     and weather NO live candidate gate all moved with the class. Walk
     both files so source-level guards survive the move."""
-    with open(BOT_PATH) as f:
-        src = f.read()
+    src = ""
+    if os.path.exists(BOT_PATH):
+        with open(BOT_PATH) as f:
+            src = f.read()
     if os.path.isfile(SCANNER_PATH):
         with open(SCANNER_PATH) as f:
             src += "\n" + f.read()

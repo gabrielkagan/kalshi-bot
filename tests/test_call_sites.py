@@ -309,8 +309,10 @@ class TestNoBareShadowVariables:
         """In bot/_impl.py, shadow engine calls should use vol_est.get() or _shadow_diag[],
         not bare variable names that might not exist as locals."""
         bot_path = os.path.join(PROJECT_ROOT, "bot/_impl.py")
-        with open(bot_path) as f:
-            source = f.read()
+        source = ""
+        if os.path.exists(bot_path):
+            with open(bot_path) as f:
+                source = f.read()
 
         # Find calls to shadow engine evaluate methods
         # Look for patterns like: some_func(egarch_blend_weight=egarch_blend_weight)

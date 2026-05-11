@@ -45,10 +45,12 @@ class TestHourlyConstants:
 
     def test_hourly_max_entry_price(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.HOURLY_MAX_ENTRY_PRICE == 59, "Sub-60c ceiling must be 59"
 
     def test_hourly_excluded_assets(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert "SOL" in bot.constants.HOURLY_EXCLUDED_ASSETS
         assert "XRP" in bot.constants.HOURLY_EXCLUDED_ASSETS
         assert "BTC" not in bot.constants.HOURLY_EXCLUDED_ASSETS
@@ -56,28 +58,34 @@ class TestHourlyConstants:
 
     def test_hourly_fixed_contracts(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.HOURLY_FIXED_CONTRACTS == 25
 
     def test_hourly_bankroll_fraction(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.HOURLY_BANKROLL_FRACTION == 0.10
 
     def test_hourly_max_edge(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.HOURLY_MAX_EDGE == 0.05
 
     def test_hourly_taker_only(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.HOURLY_TAKER_ONLY is True
 
     def test_hourly_stc_range(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.HOURLY_MIN_STC_ENTRY == 600
         assert bot.constants.HOURLY_MAX_STC_ENTRY == 1800
 
     def test_killed_configs_h_j_k(self):
         """Configs h, j, k must not appear in HOURLY_SHADOW_CONFIGS."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         names = {c["name"] for c in bot.constants.HOURLY_SHADOW_CONFIGS}
         assert "hourly_config_h" not in names, "Config h should be killed (55% WR)"
         assert "hourly_config_j" not in names, "Config j should be killed (55% WR)"
@@ -104,6 +112,7 @@ class TestMarketConfigSync:
     def test_15m_config_unchanged(self):
         """15M config must not be affected by hourly changes."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["15m"]
         assert cfg.observation_only == bot.constants.OBSERVATION_MODE
@@ -128,6 +137,7 @@ class TestSizingIsolation:
     def test_hourly_bankroll_fraction_value(self):
         """Hourly uses 10% of balance; 15M uses full balance."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.HOURLY_BANKROLL_FRACTION == 0.10
         assert bot.constants.SPX_HOURLY_BANKROLL_FRACTION == 0.15
         # 15M has no fraction — uses full balance (no CRYPTO_BANKROLL_FRACTION exists)
@@ -136,6 +146,7 @@ class TestSizingIsolation:
     def test_asset_risk_caps_15m_only(self):
         """XRP and BTC risk caps are gated on _pt in (None, '15m')."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         import ast
         import inspect
         source = inspect.getsource(bot.scanner.OpportunityScanner.scan)
@@ -150,11 +161,13 @@ class TestExecutionIsolation:
     def test_hourly_taker_method_exists(self):
         """_execute_hourly_taker must be a method on OrderExecutor."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         assert hasattr(bot.executor.OrderExecutor, "_execute_hourly_taker")
 
     def test_hourly_taker_route_in_execute(self):
         """execute() must route hourly to _execute_hourly_taker BEFORE the asset lock."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor.execute)
         lines = source.split("\n")
@@ -174,6 +187,7 @@ class TestExecutionIsolation:
     def test_hourly_taker_does_not_use_active_orders(self):
         """_execute_hourly_taker executable code must not write to _active_orders."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor._execute_hourly_taker)
         # Strip docstring — only check executable lines
@@ -188,6 +202,7 @@ class TestExecutionIsolation:
     def test_hourly_taker_caps_count(self):
         """_execute_hourly_taker must enforce count cap via min()."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor._execute_hourly_taker)
         assert "min(candidate" in source and "HOURLY_FIXED_CONTRACTS" in source
@@ -195,6 +210,7 @@ class TestExecutionIsolation:
     def test_addon_blocks_hourly(self):
         """_check_addon_opportunities must skip hourly fills."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor._check_addon_opportunities)
         assert '"hourly"' in source, "Addon must check for hourly product_type"
@@ -202,6 +218,7 @@ class TestExecutionIsolation:
     def test_addon_meta_includes_product_type(self):
         """Addon registration must store product_type in meta."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor._register_addon_eligible)
         assert '"product_type"' in source
@@ -209,6 +226,7 @@ class TestExecutionIsolation:
     def test_execute_gates_on_product_type(self):
         """The hourly route check must be 'product_type == hourly', not an else clause."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor.execute)
         assert 'candidate.get("product_type") == "hourly"' in source
@@ -220,6 +238,7 @@ class TestEdgeCapIsolation:
     def test_edge_cap_gated_on_hourly(self):
         """HOURLY_MAX_EDGE check must be gated on _pt == 'hourly'."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         import inspect
         source = inspect.getsource(bot.scanner.OpportunityScanner.scan)
         # Find the edge cap check
@@ -236,6 +255,7 @@ class TestEdgeCapIsolation:
     def test_hourly_fee_uses_batch_sizing(self):
         """Hourly fee computation must use HOURLY_FIXED_CONTRACTS, not 1."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         import inspect
         source = inspect.getsource(bot.scanner.OpportunityScanner.scan)
         assert "calculate_fee(HOURLY_FIXED_CONTRACTS, best_ask" in source
@@ -243,6 +263,7 @@ class TestEdgeCapIsolation:
     def test_15m_fee_uses_single_contract(self):
         """15M fee computation must still use calculate_fee(1, ...) — not batch."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         import inspect
         source = inspect.getsource(bot.scanner.OpportunityScanner.scan)
         # The else branch still uses calculate_fee(1, ...)
@@ -256,6 +277,7 @@ class TestHourlyIOCOffset:
     def test_hourly_taker_applies_offset(self):
         """_execute_hourly_taker must apply IOC_RETRY_OFFSET."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor._execute_hourly_taker)
         assert "IOC_RETRY_OFFSET" in source
@@ -263,6 +285,7 @@ class TestHourlyIOCOffset:
     def test_sol_taker_offset_unchanged(self):
         """SOL taker-first offset logic must still reference IOC_RETRY_OFFSET."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor.execute)
         # SOL path at line ~11128
@@ -274,6 +297,7 @@ class TestHourlyDC:
 
     def test_hourly_dc_constants(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.HOURLY_DC_Z_THRESHOLD == -4.0
         assert bot.constants.HOURLY_DC_MIN_PRICE == 93
         assert bot.constants.HOURLY_DC_MAX_PRICE == 96
@@ -286,6 +310,7 @@ class TestHourlyDC:
     def test_hourly_dc_in_scan(self):
         """Hourly DC evaluation must exist in scan() with product_type hourly gate."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         import inspect
         source = inspect.getsource(bot.scanner.OpportunityScanner.scan)
         assert 'HOURLY_DC_ENABLED' in source
@@ -296,6 +321,7 @@ class TestHourlyDC:
     def test_hourly_dc_routes_through_dc_taker(self):
         """hourly_dc strategy must be in the DC taker routing list in execute()."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor.execute)
         assert '"hourly_dc"' in source
@@ -303,6 +329,7 @@ class TestHourlyDC:
     def test_hourly_dc_skips_hourly_taker(self):
         """hourly_dc must NOT route through _execute_hourly_taker."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor.execute)
         assert 'strategy") != "hourly_dc"' in source
@@ -310,6 +337,7 @@ class TestHourlyDC:
     def test_hourly_dc_independent_of_sub60c_killswitch(self):
         """HOURLY_DC_ENABLED is separate from HOURLY_LIVE_ENABLED."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         # They're different constants
         assert hasattr(bot.constants, 'HOURLY_DC_ENABLED')
         assert hasattr(bot.constants, 'HOURLY_LIVE_ENABLED')
@@ -322,12 +350,14 @@ class TestDCRetryQueue:
 
     def test_dc_retry_constants(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.DC_IOC_RETRY_DELAY == 8, "DC retry delay must be 8s"
         assert bot.constants.DC_IOC_MAX_RETRIES == 10, "DC max retries must be 10"
 
     def test_dc_execute_delegates_to_method(self):
         """execute() DC path must delegate to _execute_dc_taker."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor.execute)
         assert "_execute_dc_taker" in source
@@ -335,16 +365,19 @@ class TestDCRetryQueue:
     def test_dc_execute_method_exists(self):
         """_execute_dc_taker must exist on OrderExecutor."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         assert hasattr(bot.executor.OrderExecutor, "_execute_dc_taker")
 
     def test_dc_process_retries_method_exists(self):
         """process_dc_retries must exist on OrderExecutor."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         assert hasattr(bot.executor.OrderExecutor, "process_dc_retries")
 
     def test_dc_retry_queue_no_sleep(self):
         """Neither _execute_dc_taker nor process_dc_retries must call time.sleep."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         src_execute = inspect.getsource(bot.executor.OrderExecutor._execute_dc_taker)
         src_process = inspect.getsource(bot.executor.OrderExecutor.process_dc_retries)
@@ -354,6 +387,7 @@ class TestDCRetryQueue:
     def test_dc_retry_queue_in_init(self):
         """OrderExecutor must initialize _dc_retry_queue."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor.__init__)
         assert "_dc_retry_queue" in source
@@ -361,6 +395,7 @@ class TestDCRetryQueue:
     def test_submit_taker_returns_filled_count(self):
         """_submit_taker must set filled_count on returned order_info."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor._submit_taker)
         assert 'order_info["filled_count"]' in source
@@ -368,12 +403,14 @@ class TestDCRetryQueue:
     def test_dc_retry_does_not_affect_general_cooldown(self):
         """DC_IOC_RETRY_DELAY must be separate from IOC_TICKER_COOLDOWN."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.DC_IOC_RETRY_DELAY < bot.constants.IOC_TICKER_COOLDOWN, (
             "DC retry delay must be shorter than general cooldown")
 
     def test_process_dc_retries_wired_in_tick(self):
         """process_dc_retries must be called in _tick()."""
         import bot
+        import bot.main_loop  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.main_loop.X access)
         import inspect
         source = inspect.getsource(bot.main_loop.MainLoop._tick)
         assert "process_dc_retries" in source
@@ -381,6 +418,7 @@ class TestDCRetryQueue:
     def test_dc_retry_checks_price_floor(self):
         """process_dc_retries must check DECIDED_CONTRACT_MIN_PRICE before submitting."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor.process_dc_retries)
         assert "DECIDED_CONTRACT_MIN_PRICE" in source
@@ -389,6 +427,7 @@ class TestDCRetryQueue:
     def test_dc_retry_checks_price_drift(self):
         """process_dc_retries must abort on 3c+ price drift from original."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor.process_dc_retries)
         assert "original_price" in source
@@ -397,6 +436,7 @@ class TestDCRetryQueue:
     def test_dc_initial_checks_price_floor(self):
         """_execute_dc_taker must check DECIDED_CONTRACT_MIN_PRICE on fresh ask."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor._execute_dc_taker)
         assert "DECIDED_CONTRACT_MIN_PRICE" in source
@@ -405,6 +445,7 @@ class TestDCRetryQueue:
     def test_dc_retry_queue_stores_original_price(self):
         """All retry queue entries must include original_price."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         import inspect
         source = inspect.getsource(bot.executor.OrderExecutor._execute_dc_taker)
         # Count occurrences of original_price in queue appends
@@ -418,6 +459,7 @@ class TestHourlyDC97cShadow:
     def test_hourly_dc_97c_shadow_in_scan(self):
         """The hourly_dc_97c_stc600 shadow must exist in scan()."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         import inspect
         source = inspect.getsource(bot.scanner.OpportunityScanner.scan)
         assert "hourly_dc_97c_stc600" in source
@@ -425,6 +467,7 @@ class TestHourlyDC97cShadow:
     def test_hourly_dc_97c_uses_own_constants(self):
         """The 97c shadow must NOT reference HOURLY_DC_MIN_PRICE or HOURLY_DC_MAX_PRICE."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         import inspect
         source = inspect.getsource(bot.scanner.OpportunityScanner.scan)
         # Find the 97c shadow block
@@ -439,6 +482,7 @@ class TestHourlyDC97cShadow:
     def test_15m_dc_constants_unchanged(self):
         """15M DC constants must not be affected by hourly DC changes."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.DECIDED_CONTRACT_MIN_PRICE == 93
         assert bot.constants.DECIDED_CONTRACT_MAX_STC == 300
         assert bot.constants.DECIDED_CONTRACT_Z_T2 == -3.0
@@ -446,6 +490,7 @@ class TestHourlyDC97cShadow:
     def test_hourly_dc_original_constants_unchanged(self):
         """Original hourly DC constants must be unchanged (shadow runs alongside)."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.HOURLY_DC_MIN_PRICE == 93
         assert bot.constants.HOURLY_DC_MAX_PRICE == 96
         assert bot.constants.HOURLY_DC_Z_THRESHOLD == -4.0
@@ -453,6 +498,7 @@ class TestHourlyDC97cShadow:
     def test_isolation_15m_not_hourly(self):
         """15M DC code must gate on _pt in (None, '15m'), not 'hourly'."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         import inspect
         source = inspect.getsource(bot.scanner.OpportunityScanner.scan)
         # The 15M DC block has: _pt in (None, "15m")
@@ -465,6 +511,7 @@ class TestHourlyDC93cShadow:
     def test_hourly_dc_93c_in_scan(self):
         """hourly_dc_93c_stc300 must exist in scan()."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         import inspect
         source = inspect.getsource(bot.scanner.OpportunityScanner.scan)
         assert "hourly_dc_93c_stc300" in source
@@ -472,6 +519,7 @@ class TestHourlyDC93cShadow:
     def test_tier2_price_range(self):
         """Tier 2 must gate on 93-96c, not overlap with Tier 1 (97-99c)."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         import inspect
         source = inspect.getsource(bot.scanner.OpportunityScanner.scan)
         idx = source.find("hourly_dc_93c_stc300")
@@ -482,6 +530,7 @@ class TestHourlyDC93cShadow:
     def test_tier2_stc_300(self):
         """Tier 2 must use STC <= 300s (tighter than Tier 1's 600s)."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         import inspect
         source = inspect.getsource(bot.scanner.OpportunityScanner.scan)
         idx = source.find("hourly_dc_93c_stc300")
@@ -502,11 +551,13 @@ class TestObservationGate:
     def test_observation_only_derives_from_kill_switch(self):
         """HOURLY_OBSERVATION_ONLY must be the inverse of HOURLY_LIVE_ENABLED."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         assert bot.constants.HOURLY_OBSERVATION_ONLY == (not bot.constants.HOURLY_LIVE_ENABLED)
 
     def test_15m_observation_mode_independent(self):
         """15M OBSERVATION_MODE must not be affected by hourly kill switch."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         # OBSERVATION_MODE is a separate constant, not derived from HOURLY_LIVE_ENABLED
         assert hasattr(bot.constants, "OBSERVATION_MODE")
         # Verify they're independent

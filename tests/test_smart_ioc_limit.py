@@ -55,6 +55,7 @@ class TestPickIocLimitBasics(unittest.TestCase):
 
     def setUp(self):
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         self.fn = bot.executor.OrderExecutor._pick_ioc_limit_for_depth
 
     def test_empty_orderbook_returns_best_ask_unchanged(self):
@@ -298,6 +299,7 @@ class TestPickIocLimitProductionScenario(unittest.TestCase):
 
     def test_production_btc_sample_unlocks_deep_level(self):
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         ob = _ob([(34, 1), (33, 1), (31, 151), (29, 1)])
         result = bot.executor.OrderExecutor._pick_ioc_limit_for_depth(
             ob,
@@ -316,6 +318,7 @@ class TestPickIocLimitProductionScenario(unittest.TestCase):
         only 0.69, so edge_ceiling = 69-1(fee)-1(min_edge) = 67.
         Picker must NOT bump to 69 (would zero edge)."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         ob = _ob([(34, 1), (33, 1), (31, 151), (29, 1)])
         result = bot.executor.OrderExecutor._pick_ioc_limit_for_depth(
             ob,
@@ -361,6 +364,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
 
     def test_default_reserve_constant_defined(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertTrue(
             hasattr(bot.constants, "STRATEGY_LIMIT_BUMP_DEFAULT_RESERVE"),
             "Default reserve constant must be defined.")
@@ -372,6 +376,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
 
     def test_strategy_reserve_overrides_dict_defined(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertTrue(
             hasattr(bot.constants, "STRATEGY_LIMIT_BUMP_RESERVE_CENTS"),
             "Per-strategy reserve override dict must be defined.")
@@ -386,6 +391,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         Long form was the bug — silently missed the lookup,
         rendering the override dead code."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         # Short-form strategy strings — these are what candidate.get('strategy')
         # actually returns (set in scan() via _dc_strat = {long: short}).
         expected = {
@@ -422,6 +428,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         comment in STRATEGY_LIMIT_BUMP_RESERVE_CENTS explains
         the intentional omission; this test pins it."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertNotIn(
             "decided_t2_z2", bot.constants.STRATEGY_LIMIT_BUMP_RESERVE_CENTS,
             "decided_t2_z2 is INTENTIONALLY EXCLUDED — shadowed "
@@ -436,8 +443,10 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         to candidate['strategy']. If a future refactor renames the
         DC strategy strings (e.g., decided_t1 → dc_t1), this test
         catches it."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         # The mapping in scan() must contain each key.
         for short_form in ("decided_t1", "decided_t1b",
                            "decided_t2", "decided_t2_z25"):
@@ -451,6 +460,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         """CONFIRMATION_ADDON and DIP_ADDON extend already-trusted
         bets. Reserve=-1."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         for strat in ("CONFIRMATION_ADDON", "DIP_ADDON"):
             self.assertEqual(
                 bot.constants.STRATEGY_LIMIT_BUMP_RESERVE_CENTS.get(strat), -1,
@@ -461,6 +471,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         is structurally negative beyond the fee. That's never +EV
         regardless of WR. Hard rule: no strategy goes below -1."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         for strat, reserve in bot.constants.STRATEGY_LIMIT_BUMP_RESERVE_CENTS.items():
             self.assertGreaterEqual(
                 reserve, -1,
@@ -473,6 +484,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         in the override dict — they get the default (0). Pinning
         this prevents accidental over-aggression."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         forbidden_in_overrides = {
             "terminal_momentum_96", "terminal_momentum_98",
             "terminal_momentum_99",
@@ -500,6 +512,7 @@ class TestPickerIntegrationWithReserve(unittest.TestCase):
         edge_ceiling = floor(85) - 1 - 0 = 84.
         At limit=84, edge = 0 (break-even). Picker stops at 84."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         ob = _ob([(34, 1), (33, 1), (31, 200)])  # YES 66, 67, 69
         # Caller-side computation:
         prob, fee_1c, reserve = 0.85, 1, 0
@@ -518,6 +531,7 @@ class TestPickerIntegrationWithReserve(unittest.TestCase):
         edge_ceiling = 85 - 1 - (-1) = 85.
         Same book, target=100 → still hits at 69 (cumul 153 ≥ 100)."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         ob = _ob([(34, 1), (33, 1), (31, 200)])
         prob, fee_1c, reserve = 0.85, 1, -1
         edge_ceiling = int(prob * 100) - fee_1c - reserve
@@ -540,6 +554,7 @@ class TestPickerIntegrationWithReserve(unittest.TestCase):
         Default: cumul at 66=1, at 67=2 → fall short, return 67.
         Aggressive: cumul at 66=1, at 67=2, at 68=202 → return 68."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         ob = _ob([(34, 1), (33, 1), (32, 200)])  # YES 66, 67, 68
         # Default
         result_default = bot.executor.OrderExecutor._pick_ioc_limit_for_depth(
@@ -570,8 +585,9 @@ class TestSubmitTakerWiring(unittest.TestCase):
         """The smart picker must be wired into _submit_taker.
         AST grep on the function body."""
         import ast
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         target_fn = None
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
@@ -592,8 +608,10 @@ class TestSubmitTakerWiring(unittest.TestCase):
         """_submit_taker must look up STRATEGY_LIMIT_BUMP_RESERVE_CENTS
         (or the default constant) when computing edge_ceiling_price.
         Otherwise the per-strategy override is dead code."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         # Grep is fine here — the constant name is unique enough.
         self.assertIn(
             "STRATEGY_LIMIT_BUMP_RESERVE_CENTS", src,
@@ -631,6 +649,7 @@ class TestR1Fixes(unittest.TestCase):
         (3c above 66c best). Conflating the two couples unrelated
         behaviors."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertTrue(
             hasattr(bot.constants, "IOC_LIMIT_MAX_BUMP_CENTS"),
             "Must define IOC_LIMIT_MAX_BUMP_CENTS as a dedicated "
@@ -641,8 +660,9 @@ class TestR1Fixes(unittest.TestCase):
             "1c only reaches the next-level (often also thin).")
         # And: _submit_taker must reference IOC_LIMIT_MAX_BUMP_CENTS,
         # NOT IOC_RETRY_OFFSET, in the picker call.
-        with open(BOT_PY) as f:
-            tree = __import__("ast").parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = __import__("ast").parse(f.read())
         for cls in tree.body:
             import ast
             if (not isinstance(cls, ast.ClassDef)
@@ -664,8 +684,10 @@ class TestR1Fixes(unittest.TestCase):
         (auto-flagged by WS_DRIFT_AUTO_FLAG), the picker must be
         bypassed — the WS cache it'd read is the same one that's
         been wrong. Source of phantom-bump risk."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         # _submit_taker must reference _ws_drift_cooldown to gate
         # the picker call.
         self.assertIn(
@@ -680,8 +702,9 @@ class TestR1Fixes(unittest.TestCase):
         should be passed via a local var (e.g., _ioc_limit_price)
         only to the place_order call."""
         import ast
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         for cls in tree.body:
             if (not isinstance(cls, ast.ClassDef)
                     or cls.name != "OrderExecutor"):
@@ -728,8 +751,9 @@ class TestR1Fixes(unittest.TestCase):
         node must have a smaller lineno than the FIRST Call node
         whose first arg is a string starting with 'IOC_ABORT_PHANTOM'."""
         import ast
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         target_fn = None
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
@@ -789,8 +813,9 @@ class TestNoSideBypass(unittest.TestCase):
         bypass the picker on NO side. Without this the picker silently
         misbehaves on every NO-side IOC."""
         import ast
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         target_fn = None
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
@@ -819,6 +844,8 @@ class TestPickerWithMaxBump3(unittest.TestCase):
 
     def test_max_bump_3_reaches_production_deep_level(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         ob = _ob([(34, 1), (33, 1), (31, 151)])  # YES 66, 67, 69
         result = bot.executor.OrderExecutor._pick_ioc_limit_for_depth(
             ob,

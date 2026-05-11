@@ -236,6 +236,8 @@ def _main_loop_tree() -> ast.Module:
 
 
 def _bot_impl_tree() -> ast.Module:
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     return ast.parse(BOT_PY.read_text())
 
 
@@ -284,7 +286,7 @@ def test_main_loop_class_NOT_in_bot_impl_module():
 def test_main_loop_module_attr_resolves_via_proxy():
     """Bit 9.3 re-export: bot.main_loop.MainLoop resolves through the proxy chain."""
     import bot
-    import bot._impl
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.main_loop
     assert bot.main_loop.MainLoop is bot._impl.MainLoop, (
         "bot.main_loop.MainLoop not resolving to bot._impl.MainLoop via proxy"
@@ -303,6 +305,7 @@ def test_main_loop_module_attr_resolves_via_proxy():
 def test_main_loop_init_signature_unchanged():
     """MainLoop.__init__ signature must be byte-identical (extraction is structural)."""
     import bot
+    import bot.main_loop  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.main_loop.X access)
     sig = inspect.signature(bot.main_loop.MainLoop.__init__)
     params = list(sig.parameters.keys())
     assert params == ["self"], (
@@ -313,6 +316,7 @@ def test_main_loop_init_signature_unchanged():
 def test_main_loop_run_signature_unchanged():
     """MainLoop.run() must remain the entrypoint method called by bot/__main__.py."""
     import bot
+    import bot.main_loop  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.main_loop.X access)
     assert hasattr(bot.main_loop.MainLoop, "run"), "MainLoop.run missing post-extraction"
     sig = inspect.signature(bot.main_loop.MainLoop.run)
     assert list(sig.parameters.keys()) == ["self"], (
@@ -387,6 +391,7 @@ def test_main_loop_no_static_methods():
 def test_main_loop_method_present(method_name: str):
     """Every named method survives extraction."""
     import bot
+    import bot.main_loop  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.main_loop.X access)
     assert hasattr(bot.main_loop.MainLoop, method_name), (
         f"MainLoop.{method_name} missing post-extraction"
     )
@@ -735,6 +740,8 @@ def test_bot_impl_reexports_main_loop():
     """Bit 9.3-i re-export pattern: `from bot.main_loop import MainLoop` in bot/_impl.py."""
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Bit 9.3.5 final form)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     assert re.search(
         r"from bot\.main_loop import .*MainLoop", src
@@ -761,13 +768,12 @@ def test_no_main_loop_no_impl_toplevel_contract_added():
     assert "main_loop-no-impl-toplevel" not in contract_names, (
         "Unexpected `main_loop-no-impl-toplevel` contract added"
     )
-    # Sanity: 6 contracts post-Bit-9.3-iii.a (2026-05-11). state-no-impl-toplevel
-    # was retired because bot/state.py has zero bot._impl edges post-relocation
-    # of compute_for_15m_main_path to clean-leaf bot/boot.py. Remaining:
-    # engines-no-impl, fetchers-no-engines, feeds-no-engines, helpers-leaf,
-    # bot-no-torch, bot-no-pandas.
-    assert len(contracts) == 6, (
-        f"Expected 6 .importlinter contracts post-Bit-9.3-iii.a; found {len(contracts)}: {contract_names}"
+    # Sanity: 5 contracts post-Bit-9.3-iii.c (2026-05-11). engines-no-impl
+    # was retired because bot/_impl.py was DELETED (its forbidden_modules list
+    # would be empty, which import-linter rejects). Remaining:
+    # fetchers-no-engines, feeds-no-engines, helpers-leaf, bot-no-torch, bot-no-pandas.
+    assert len(contracts) == 5, (
+        f"Expected 5 .importlinter contracts post-Bit-9.3-iii.c; found {len(contracts)}: {contract_names}"
     )
 
 
@@ -839,6 +845,7 @@ def test_main_loop_instantiable_via_new_without_init():
     which requires KALSHI_API_KEY / private key). Mirrors the pattern used by
     tests/test_stale_ticker_cleanup.py + tests/test_cache_staleness_watchdog.py."""
     import bot
+    import bot.main_loop  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.main_loop.X access)
     instance = bot.main_loop.MainLoop.__new__(bot.main_loop.MainLoop)
     assert isinstance(instance, bot.main_loop.MainLoop)
     # Method bindings work via the class

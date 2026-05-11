@@ -3,7 +3,7 @@
 Audit, research, and one-off analysis scripts. Read-only against `state.db` unless explicitly noted.
 
 ## Conventions
-- **Regime-filter every analysis.** Identify when the relevant config changed (`git log market_config.py bot/_impl.py bot/constants.py`) and filter `settled_trades` to that regime only. Pre-regime data is misleading. Bit 3.1 (May 8 2026) moved most module-level UPPER_SNAKE constants from `bot/_impl.py` to `bot/constants.py` — both pathspecs are required to detect post-Bit-3.1 config changes.
+- **Regime-filter every analysis.** Identify when the relevant config changed (`git log market_config.py bot/constants.py bot/main_loop.py bot/scanner/__init__.py bot/executor.py`) and filter `settled_trades` to that regime only. Pre-regime data is misleading. Bit 3.1 (May 8 2026) moved most module-level UPPER_SNAKE constants to `bot/constants.py`; Bits 7.1-9.3 extracted classes to canonical submodules; Bit 9.3-iii.c (2026-05-11) deleted the residual `bot/_impl.py` shim entirely — git history for that file is sealed at the deletion commit and won't show new regime changes.
 - **Kelly-sized PnL only.** Sim PnL and counterfactuals must use the bot's actual Kelly + risk parameters. Never flat 1-contract.
 - **Wilson CI on win rates** when n<200. Use `scripts/wilson_ci.py` if it exists, else compute inline.
 - **Verify schema before querying.** `PRAGMA table_info(<table>)` and `SELECT DISTINCT <col>` before assuming column values.

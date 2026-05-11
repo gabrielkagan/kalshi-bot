@@ -160,6 +160,8 @@ def test_main_loop_capital_allocator_uses_new_path():
 
 def test_bot_impl_circuit_breaker_uses_new_path():
     """bot/_impl.py top-level import targets new path."""
+    if not (REPO_ROOT / "bot" / "_impl.py").exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = (REPO_ROOT / "bot" / "_impl.py").read_text()
     assert "from bot.infra.circuit_breaker import REGISTRY" in src, (
         "bot/_impl.py must use `from bot.infra.circuit_breaker import REGISTRY`."

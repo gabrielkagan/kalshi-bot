@@ -111,6 +111,7 @@ class TestShadowDiagKeyCoverage:
         rule end-to-end against the live sqlite schema.
         """
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         eval_cols = {
             r["name"] for r in

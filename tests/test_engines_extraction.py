@@ -94,7 +94,7 @@ def test_volatility_identity_through_bot_impl():
     annotation (`vol: VolatilityEngine`), and tests/test_vol_engine.py
     static-method calls (`from bot import VolatilityEngine`) all rely
     on these three references being the same object."""
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.engines as be
     import bot.engines.volatility as bev
     assert b.VolatilityEngine is be.VolatilityEngine is bev.VolatilityEngine
@@ -119,6 +119,8 @@ def test_class_not_defined_in_bot_impl(class_name):
     re-import chain in bot/_impl.py is the only place the name should
     resolve from.
     """
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     tree = ast.parse(BOT_PY.read_text(), filename=str(BOT_PY))
     classdefs = [
         node for node in ast.iter_child_nodes(tree)
@@ -151,6 +153,8 @@ def test_bot_impl_imports_engines_subpackage():
 
     AST-based to avoid false matches inside docstrings/comments.
     """
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     tree = ast.parse(BOT_PY.read_text(), filename=str(BOT_PY))
     imported = set()
     for node in ast.iter_child_nodes(tree):
@@ -580,7 +584,7 @@ def test_probability_identity_through_bot_impl():
     `ProbabilityEngine.X(...)` call sites in bot/_impl.py and the 11
     `from bot import ProbabilityEngine` test imports all rely on
     these three references being the same object."""
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.engines as be
     import bot.engines.probability as bep
     assert b.ProbabilityEngine is be.ProbabilityEngine is bep.ProbabilityEngine
@@ -602,6 +606,8 @@ def test_probability_class_not_defined_in_bot_impl(class_name):
     The re-import chain in bot/_impl.py is the only place the name should
     resolve from after Bit 6.2.
     """
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     tree = ast.parse(BOT_PY.read_text(), filename=str(BOT_PY))
     classdefs = [
         node for node in ast.iter_child_nodes(tree)
@@ -636,6 +642,8 @@ def test_bot_impl_imports_probability_engine_from_engines():
     bare-name `ProbabilityEngine.X(...)` call sites in bot/_impl.py rely
     on this re-export.
     """
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     tree = ast.parse(BOT_PY.read_text(), filename=str(BOT_PY))
     imported = set()
     for node in ast.iter_child_nodes(tree):
@@ -974,7 +982,7 @@ def test_calibration_identity_through_bot_impl():
     (CalibrationEngine._fallback_calibrate, ._solve_3x3) + the
     `from bot import CalibrationEngine` test imports all rely on these
     three references being the same object."""
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.engines as be
     import bot.engines.calibration as bec
     assert b.CalibrationEngine is be.CalibrationEngine is bec.CalibrationEngine
@@ -994,6 +1002,7 @@ def test_calibration_module_attribute_post_extraction():
     re-defines the class in bot/_impl.py (or subclasses it elsewhere), the
     proxy chain might silently route to the wrong object."""
     import bot
+    import bot.engines  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.engines.X access)
     assert bot.engines.CalibrationEngine.__module__ == "bot.engines.calibration", (
         f"bot.engines.CalibrationEngine.__module__ = "
         f"{bot.engines.CalibrationEngine.__module__!r}, expected "
@@ -1008,6 +1017,8 @@ def test_calibration_class_not_defined_in_bot_impl(class_name):
     The re-import chain in bot/_impl.py is the only place the name should
     resolve from after Bit 6.3.
     """
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     tree = ast.parse(BOT_PY.read_text(), filename=str(BOT_PY))
     classdefs = [
         node for node in ast.iter_child_nodes(tree)
@@ -1042,6 +1053,8 @@ def test_bot_impl_imports_calibration_engine_from_engines():
     bare-name `CalibrationEngine(...)` instantiation sites in
     MainLoop.__init__ rely on this re-export.
     """
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     tree = ast.parse(BOT_PY.read_text(), filename=str(BOT_PY))
     imported = set()
     for node in ast.iter_child_nodes(tree):
@@ -1293,7 +1306,7 @@ def test_bot_impl_no_longer_owns_calibration_runtime_state():
     (b) someone re-introduced the singleton ownership in this file
     (which would also re-require the .importlinter carve-out for
     probability.py — undesirable per the path-B refactor)."""
-    import bot._impl
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     assert not hasattr(bot._impl, "_CALIBRATION_ENGINE"), (
         "bot._impl._CALIBRATION_ENGINE exists — Bit 6.3 path-B "
         "relocated this singleton to bot/engines/calibration.py. "
@@ -1358,6 +1371,8 @@ def test_bot_impl_uses_cal_state_alias():
     `from bot.engines import *`-style namespace pollution
     (which doesn't happen — the imports are explicit) or as
     NameError. This test pins the alias as the access pattern."""
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     assert "from bot.engines import calibration as _cal_state" in src, (
         "bot/_impl.py is missing `from bot.engines import calibration "
@@ -1397,6 +1412,8 @@ def test_no_class_in_bot_impl_init_annotates_calibration_engine():
     `_CAL_REGISTRY`, `_resolve_cal_engine` return. If a future class is
     added with `cal: CalibrationEngine` in __init__, this test fires —
     add it to the breadcrumb in the line-109 re-export."""
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     tree = ast.parse(src)
     consumers = []

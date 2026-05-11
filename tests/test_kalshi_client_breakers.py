@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
 from bot.kalshi_client import KalshiClient
-import bot._impl  # noqa: F401
+import bot.kalshi_client as _kc_mod
 import bot.helpers  # noqa: F401
 import bot.infra  # noqa: F401
 
@@ -46,20 +46,21 @@ def _make_client_with_mocked_request():
 
 
 class TestKalshiClientBreakerImports(unittest.TestCase):
-    """AST regression: bot/_impl.py must import REGISTRY from
-    circuit_breaker so the breakers are reachable from
-    KalshiClient methods."""
+    """AST regression: bot/kalshi_client.py must import REGISTRY from
+    circuit_breaker so the breakers are reachable from KalshiClient methods.
+    Retargeted from bot/_impl.py post-Bit-9.3-iii.c (canonical home is now
+    bot/kalshi_client.py per Bit 4.3)."""
 
     def test_bot_imports_registry(self):
-        with open(bot._impl.__file__) as f:
+        with open(_kc_mod.__file__) as f:
             src = f.read()
         self.assertIn(
             "from bot.infra.circuit_breaker import", src,  # Sprint 10.5a (2026-05-11): circuit_breaker relocated to bot/infra/
-            "bot/_impl.py must import from bot.infra.circuit_breaker so REGISTRY is "
+            "bot/kalshi_client.py must import from bot.infra.circuit_breaker so REGISTRY is "
             "available to KalshiClient methods.")
         self.assertIn(
             "REGISTRY", src,
-            "REGISTRY symbol must appear in bot/_impl.py")
+            "REGISTRY symbol must appear in bot/kalshi_client.py")
 
 
 class TestKalshiClientGetBalanceBreaker(unittest.TestCase):

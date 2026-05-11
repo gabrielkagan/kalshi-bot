@@ -42,8 +42,9 @@ def _find_tick_method() -> ast.FunctionDef:
     The call site is the cleanest place to time scan() body since the
     method itself is 4700 lines with 4 return points; wrapping it
     externally is non-invasive."""
-    with open(BOT_PY) as f:
-        tree = ast.parse(f.read())
+    if os.path.exists(BOT_PY):
+        with open(BOT_PY) as f:
+            tree = ast.parse(f.read())
     for cls in ast.walk(tree):
         if isinstance(cls, ast.ClassDef) and cls.name == "MainLoop":
             for node in cls.body:
@@ -59,8 +60,10 @@ class TestScanBodyDurationLog(unittest.TestCase):
         """SCAN_BODY_SLOW must be emitted when scanner.scan() takes
         more than the threshold. Without this we can't distinguish
         scan-body slowness from gap-between-calls slowness."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn(
             "SCAN_BODY_SLOW", src,
             "_tick() must emit SCAN_BODY_SLOW warning when "

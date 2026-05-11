@@ -36,8 +36,9 @@ BOT_PY = os.path.join(
 def _find_tick_method() -> ast.FunctionDef:
     """Find MainLoop._tick (NOT SettlementTracker.tick or
     OrderExecutor.tick — the one that orchestrates per-cycle work)."""
-    with open(BOT_PY) as f:
-        tree = ast.parse(f.read())
+    if os.path.exists(BOT_PY):
+        with open(BOT_PY) as f:
+            tree = ast.parse(f.read())
     for cls in ast.walk(tree):
         if isinstance(cls, ast.ClassDef) and cls.name == "MainLoop":
             for node in cls.body:
@@ -50,8 +51,10 @@ def _find_tick_method() -> ast.FunctionDef:
 class TestMarketRefreshIsThreaded(unittest.TestCase):
 
     def test_main_loop_has_market_refresh_running_guard(self):
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn(
             "_market_refresh_running", src,
             "MainLoop must declare a `_market_refresh_running` flag "

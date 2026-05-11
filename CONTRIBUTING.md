@@ -53,9 +53,10 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   `bot/feeds/`, `bot/fetchers/`, `bot/helpers/`, `bot/notifier.py`,
   `bot/logger.py`, `bot/state.py`, `bot/kalshi_client.py`,
   `bot/infra/`, `bot/shadows/`, `bot/models.py`, `migrations/`
-  (top-level, Sprint 10.6). `bot/_impl.py` is a residual re-export
-  shim (~582 LOC post-Bit-9.3-ii) scheduled for deletion in Bit
-  9.3-iii; new code does NOT go there.
+  (top-level, Sprint 10.6). `bot/_impl.py` was DELETED in Bit 9.3-iii.c
+  (2026-05-11) — Sprint 9 main modularization is CLOSED. New code goes
+  in canonical submodules; `bot/runtime_config.py` (PEP 562 dual-probe)
+  is the runtime-config view for dashboard_snapshot.py + supabase_sync.py.
 - **`scripts/cal_mlp/integration.py` is the single torch entry point.**
   Direct `import torch` / `import pandas` anywhere under `bot/` is
   blocked by `.importlinter` contracts (`bot-no-torch`, `bot-no-pandas`).

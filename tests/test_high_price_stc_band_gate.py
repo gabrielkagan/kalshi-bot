@@ -444,8 +444,10 @@ class TestHighPriceStcGateSite_AstGuards(unittest.TestCase):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         bot_path = os.path.join(repo_root, "bot/_impl.py")
         scanner_path = os.path.join(repo_root, "bot", "scanner", "__init__.py")
-        with open(bot_path) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(bot_path):
+            with open(bot_path) as f:
+                src = f.read()
         if os.path.isfile(scanner_path):
             with open(scanner_path) as f:
                 src += "\n" + f.read()
@@ -540,8 +542,9 @@ class TestBleederValidatorImplementation(unittest.TestCase):
         # which file the def now lives in.
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         parts = []
-        with open(os.path.join(repo_root, "bot/_impl.py")) as f:
-            parts.append(f.read())
+        if os.path.exists(os.path.join(repo_root, "bot/_impl.py")):
+            with open(os.path.join(repo_root, "bot/_impl.py")) as f:
+                parts.append(f.read())
         validators_path = os.path.join(repo_root, "bot/helpers/validators.py")
         if os.path.exists(validators_path):
             with open(validators_path) as f:
@@ -603,8 +606,10 @@ class TestSideConventionInvariant(unittest.TestCase):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         bot_path = os.path.join(repo_root, "bot/_impl.py")
         scanner_path = os.path.join(repo_root, "bot", "scanner", "__init__.py")
-        with open(bot_path) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(bot_path):
+            with open(bot_path) as f:
+                src = f.read()
         if os.path.isfile(scanner_path):
             with open(scanner_path) as f:
                 src += "\n" + f.read()

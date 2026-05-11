@@ -42,6 +42,7 @@ class TestPhaseEStateAtDecisionInsert:
         """Build a StateManager with `n_open_total` open positions distributed
         across BTC/ETH/SOL/XRP, return (sm, asset_breakdown)."""
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         # Use :memory: so we don't pollute the real DB.
         sm = bot.state.StateManager(":memory:")
         # Insert N positions across assets — round-robin so the total is
@@ -64,6 +65,7 @@ class TestPhaseEStateAtDecisionInsert:
         """`n_open_positions` reflects total across all 4 assets, not the
         same-asset count."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         sm = self._build_state_with_positions(n_open_total=7)
 
         # Construct a minimal MainLoop-like object that exposes
@@ -93,6 +95,7 @@ class TestPhaseEStateAtDecisionInsert:
         """When there's at least one open position, time_since_last_fill_s
         is a non-negative number (seconds since most recent opened_at)."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         sm = self._build_state_with_positions(n_open_total=3)
 
         class _Stub:
@@ -113,6 +116,8 @@ class TestPhaseEStateAtDecisionInsert:
     def test_time_since_last_fill_none_when_no_positions(self):
         """When no positions have ever existed, time_since_last_fill_s is None."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
 
         class _Stub:
@@ -130,6 +135,8 @@ class TestPhaseEStateAtDecisionInsert:
     def test_recent_n_outcome_streak_consecutive_wins(self):
         """Three consecutive wins → +3 streak."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         # Three settled trades, all wins (positive net pnl).
         for i in range(3):
@@ -156,6 +163,8 @@ class TestPhaseEStateAtDecisionInsert:
     def test_recent_n_outcome_streak_consecutive_losses(self):
         """Two consecutive losses → -2 streak."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         for i in range(2):
             sm.conn.execute(
@@ -182,6 +191,8 @@ class TestPhaseEStateAtDecisionInsert:
         """Most recent: WIN, then LOSS — streak = +1 (only the most recent
         is counted; the loss before it is a different sign)."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         # Older loss
         sm.conn.execute(
@@ -214,6 +225,8 @@ class TestPhaseEStateAtDecisionInsert:
     def test_recent_n_outcome_streak_zero_when_no_trades(self):
         """No settled trades → streak is 0."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
 
         class _Stub:
@@ -238,6 +251,8 @@ class TestPhaseEReconciliationSurvival:
 
     def test_tslf_survives_position_table_clear(self):
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         # Seed a settled trade — recent.
         sm.conn.execute(
@@ -275,6 +290,8 @@ class TestPhaseEStreakPushSemantics:
         most-recent yields 0 by definition; pre-fix would have been -1
         with push counted as loss)."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         # 2 older wins
         for i in range(2):
@@ -311,6 +328,8 @@ class TestPhaseEStreakPushSemantics:
         """Most recent: WIN. Then: PUSH (older). Then: WIN, WIN. Streak
         should be +1 (the most-recent win, then push breaks)."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         for i in range(2):
             sm.conn.execute(
@@ -358,6 +377,8 @@ class TestPhaseEProviderWiresIntoInsert:
         """Build a StateManager, set up positions + a settlement, register
         the provider, run insert_evaluated_opportunity, read back."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         # Seed positions + 1 settled win.
         sm.conn.execute(

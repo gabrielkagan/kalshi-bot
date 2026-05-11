@@ -5,9 +5,9 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 ## Reference docs (read on demand)
 
 - `agent_docs/current_state.md` — what's live, what's shadow, what's disabled. Refresh-target.
-- `agent_docs/config_reference.md` — every constant in `bot/constants.py` (extracted from `bot/_impl.py` per Bit 3.1; re-exported via `from bot.constants import *`) with data justifications.
+- `agent_docs/config_reference.md` — every constant in `bot/constants.py` (canonical home post-Bit-3.1; Bit 9.3-iii.c (2026-05-11) deleted the bot/_impl.py shim that previously re-exported them via `from bot.constants import *`) with data justifications.
 - `agent_docs/db_schema.md` — `state.db` schema for all tables.
-- `agent_docs/bot_layout.md` — bot/_impl.py line ranges + project file map.
+- `agent_docs/bot_layout.md` — project file map (bot/_impl.py was DELETED in Bit 9.3-iii.c; class table reflects canonical submodule homes).
 - `agent_docs/calibration_pipeline.md` — calibration, hourly three-layer, three-commit rule.
 - `kb/_index.md` — design decisions, postmortems, strategy specs (read for any deep "why" question).
 - `kb-research/_index.md` — compiled research findings.
@@ -25,13 +25,13 @@ Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below wi
 
 Each one-liner fires here; rationale + history live in `kb/failures/` postmortems.
 
-- **`bot/__main__.py` is the entrypoint shim — sacred boundary, no logic.** Logic lives in `bot/<subpackage>/<module>.py` (e.g., `bot/main_loop.py`, `bot/scanner/__init__.py`, `bot/executor.py`, `bot/settlement.py`, `bot/order_flow.py`, `bot/orphan_db_watchdog.py`, `bot/boot.py`, `bot/engines/{volatility,probability,calibration}.py`, `bot/feeds/`, `bot/fetchers/`, `bot/helpers/`, `bot/notifier.py`, `bot/logger.py`, `bot/state.py`, `bot/kalshi_client.py`). Runtime chain: systemd → `ops/kalshi-bot.service` → `start.sh` → `python -m bot` → `bot/__main__.py` → `bot.main_loop.MainLoop` (with `import bot._thread_env` firing FIRST so OMP_NUM_THREADS=1 is set before numpy loads transitively). Source of truth for runtime config = `ops/`. The residual `bot/_impl.py` shim (591 LOC post-Bit-9.3-iii.b — re-exports + breadcrumbs + 23-line residual-shim docstring; boot-time bindings + cal_mlp warmup relocated to `bot/boot.py` in 9.3-iii.a) is scheduled for full deletion in Bit 9.3-iii.c; **post-Bit-9.3-iii.b (2026-05-11) the `_BotProxy` is RETIRED — `bot/__init__.py` is now docstring-only and `bot.X` reads must use canonical submodules directly (e.g., `bot.constants.X`, `bot.main_loop.MainLoop`, `bot.state.StateManager`).** bot/_impl.py is NOT the body and is no longer in the production import chain.
+- **`bot/__main__.py` is the entrypoint shim — sacred boundary, no logic.** Logic lives in `bot/<subpackage>/<module>.py` (e.g., `bot/main_loop.py`, `bot/scanner/__init__.py`, `bot/executor.py`, `bot/settlement.py`, `bot/order_flow.py`, `bot/orphan_db_watchdog.py`, `bot/boot.py`, `bot/engines/{volatility,probability,calibration}.py`, `bot/feeds/`, `bot/fetchers/`, `bot/helpers/`, `bot/notifier.py`, `bot/logger.py`, `bot/state.py`, `bot/kalshi_client.py`, `bot/runtime_config.py`). Runtime chain: systemd → `ops/kalshi-bot.service` → `start.sh` → `python -m bot` → `bot/__main__.py` → `bot.main_loop.MainLoop` (with `import bot._thread_env` firing FIRST so OMP_NUM_THREADS=1 is set before numpy loads transitively). Source of truth for runtime config = `ops/`. **Post-Bit-9.3-iii.c (2026-05-11) bot/_impl.py is DELETED** — the residual re-export shim no longer exists. Callers must use canonical submodules directly (`bot.constants.X`, `bot.main_loop.MainLoop`, `bot.state.StateManager`, etc.). dashboard_snapshot.py + supabase_sync.py read runtime config via `import bot.runtime_config as _bot_mod` (PEP 562 dual-probe of bot.constants → config) — that helper replaces the bot._impl namespace they previously used. **The `_BotProxy` (retired in 9.3-iii.b) and bot/_impl.py (deleted in 9.3-iii.c) are GONE.** Sprint 9 main modularization is CLOSED.
 - Never commit `.env` or `*.jsonl` (gitignored). KB files (`kb/`, `kb-research/`) are local-only by convention — don't `git add` new files there (existing tracked entries are pre-rule legacy).
-- Syntax-check before commit: `make ast-check` (alias for `python3 -c "import ast; ast.parse(open('bot/_impl.py').read())"`).
+- Syntax-check before commit: `make ast-check` (alias scans `bot/constants.py` + `bot/main_loop.py` + `bot/scanner/__init__.py` post-Bit-9.3-iii.c; bot/_impl.py is deleted).
 - Pushing to main auto-deploys. Always verify the VPS pulled the new commit hash.
 - Data-driven changes only. No config tuning without backing data.
 - After signature changes: grep all call sites. `ast.parse` won't catch unbound names.
-- After constant changes in `bot/constants.py` (or any remaining underscore-prefixed constants in `bot/_impl.py`): grep across the repo, especially `market_config.py` (asserts at startup → crash loop on mismatch).
+- After constant changes in `bot/constants.py`: grep across the repo, especially `market_config.py` (asserts at startup → crash loop on mismatch). Constants no longer live in bot/_impl.py (deleted in Bit 9.3-iii.c).
 - Performance analysis filters to current config regime. Pre-regime data is misleading.
 - After deploy: verify expected DB rows are being created (e.g., `stc_shadow` when STC 300-600s, `weather_observation` when weather is on). "Service running, no errors" is not enough.
 - Investigate before explaining. Look at actual data, not assumptions about it.
@@ -41,11 +41,11 @@ Each one-liner fires here; rationale + history live in `kb/failures/` postmortem
 - Sim PnL and counterfactuals use actual Kelly sizing. Never flat 1-contract.
 - Dashboard changes: `dashboard_snapshot.py` and `dashboard/index.html` (gh-pages) ship in the same commit per `kb/decisions/dashboard-overhaul-plan.md`.
 - Doc drift: when changing config values, update `README.md` / `whitepaper.md` / `whitepaper_investor.md` / `CLAUDE.md` / `agent_docs/config_reference.md` in the same commit. Run `make doc-drift` (alias for `python3 scripts/doc_drift_check.py`).
-- **`bot/_impl.py` implementation rules** (torch threading + `_thread_env` import ordering, `cal_mlp` four-site lock-step, cell-block `filter_stage` string literals, SQLite WAL pragmas + ≤50-row commit batches, `_shadow_diag` schema chain, engine→CalEngine one-commit wiring, `discover_active_windows()`/`product_type` cross-checks, shadow-strategy add workflow): see `bot/CLAUDE.md`. Auto-loads when working inside `bot/`.
+- **`bot/` implementation rules** (torch threading + `_thread_env` import ordering, `cal_mlp` four-site lock-step, cell-block `filter_stage` string literals, SQLite WAL pragmas + ≤50-row commit batches, `_shadow_diag` schema chain, engine→CalEngine one-commit wiring, `discover_active_windows()`/`product_type` cross-checks, shadow-strategy add workflow): see `bot/CLAUDE.md`. Auto-loads when working inside `bot/`.
 
 ## Anti-patterns
 
-- Don't carve new `bot/<subpackage>/` layers or relocate code across the existing modularization tree outside the planned modularization track (Sprint 4-9 done; Sprint 10 sibling-reorg + Bit 9.3-iii cleanup still pending). Engines (spx/weather/sports/analyst) run as separate threads/processes — that's the only acceptable runtime split. The residual `bot/_impl.py` shim is scheduled for deletion in Bit 9.3-iii; do not add new code to it.
+- Don't carve new `bot/<subpackage>/` layers or relocate code across the existing modularization tree outside the planned modularization track (Sprint 4-9 CLOSED at Bit 9.3-iii.c milestone — bot/_impl.py DELETED 2026-05-11; Sprint 10 sibling-reorg also done). Engines (spx/weather/sports/analyst) run as separate threads/processes — that's the only acceptable runtime split.
 - Don't add async. Synchronous + threading for WS feeds is the design.
 - Don't switch from SQLite. Single-writer + local-to-VPS latency is the right choice.
 - Don't switch from JSONL journals. Append-only, zero-overhead, daily cron rotation.

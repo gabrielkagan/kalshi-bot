@@ -50,14 +50,16 @@ def _detect_regime_cutoff(db_path: str) -> str:
     """Find the last commit that changed regime-relevant files.
 
     Per scripts/CLAUDE.md: use git log --diff-filter on bot/constants.py
-    + bot/_impl.py + market_config.py to detect the last regime change.
+    + bot/main_loop.py + bot/scanner/__init__.py + market_config.py to
+    detect the last regime change. (Bit 9.3-iii.c deleted bot/_impl.py.)
     Returns ISO datetime string for use as --since filter.
     """
     try:
         out = subprocess.check_output(
             ["git", "log", "-1", "--format=%cI",
              "--diff-filter=M",
-             "bot/constants.py", "bot/_impl.py", "market_config.py"],
+             "bot/constants.py", "bot/main_loop.py",
+             "bot/scanner/__init__.py", "market_config.py"],
             stderr=subprocess.DEVNULL,
         ).decode().strip()
         return out or "2026-01-01T00:00:00Z"

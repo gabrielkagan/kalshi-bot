@@ -2,11 +2,11 @@
 
 **DO NOT EDIT MANUALLY.** Regenerate with `make refresh-map` (invokes `scripts/refresh_repo_map.py`).
 
-Generated: 2026-05-11T18:29:27Z (HEAD: `ec88540`).
+Generated: 2026-05-11T22:45:17Z (HEAD: `ba46d77`).
 
 ## Summary
 - Modules: 54 .py files under `bot/`
-- Total LOC: 42,930
+- Total LOC: 42,390
 - Top-level classes: 58
 - Public top-level functions: 41 (underscore-prefixed private functions excluded from this map)
 
@@ -16,15 +16,14 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
 
 ### `bot/`
 
-  - `__init__.py` (38 LOC)
+  - `__init__.py` (41 LOC)
   - `__main__.py` (58 LOC)
-  - `_impl.py` (591 LOC)
   - `_thread_env.py` (36 LOC)
   - `boot.py` (166 LOC)
   - `constants.py` (1804 LOC)
   - `db_writer_registry.py` (168 LOC)
     - functions: recent_writes, register_write, snapshot_active, tracked_write, unregister_write
-  - `executor.py` (5394 LOC)
+  - `executor.py` (5395 LOC)
     - classes: OrderExecutor
   - `kalshi_client.py` (388 LOC)
     - classes: KalshiClient
@@ -41,6 +40,7 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
     - classes: KalshiOrderFlowTracker, OrderFlowEngine
   - `orphan_db_watchdog.py` (245 LOC)
     - functions: detect_orphan_db_holders
+  - `runtime_config.py` (52 LOC)
   - `settlement.py` (1275 LOC)
     - classes: SettlementTracker
     - functions: discover_active_windows
@@ -110,7 +110,7 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
     - `circuit_breaker.py` (412 LOC)
       - classes: CircuitBreaker, CircuitBreakerOpen, CircuitBreakerRegistry, State
   - `scanner/`
-    - `__init__.py` (9477 LOC)
+    - `__init__.py` (9472 LOC)
       - classes: OpportunityScanner
   - `shadows/`
     - `__init__.py` (21 LOC)

@@ -55,7 +55,7 @@ def test_notifier_identity_through_bot_impl():
     what makes the runtime construction in `MainLoop.__init__` (search
     `self.telegram = TelegramNotifier` for the current line) resolve.
     """
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.notifier as bn
     assert b.TelegramNotifier is bn.TelegramNotifier
 
@@ -78,6 +78,7 @@ def test_telegram_notifier_class_not_defined_in_bot_impl():
     bot/_impl.py module scope.
     """
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
+    if not bot_impl.exists() if hasattr(bot_impl, 'exists') else not __import__('os').path.exists(bot_impl): pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c)")
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
     module_level_classdefs = {
         node.name for node in tree.body if isinstance(node, ast.ClassDef)
@@ -93,6 +94,8 @@ def test_bot_impl_imports_telegram_notifier():
     runtime construction in `MainLoop.__init__` (search
     `self.telegram = TelegramNotifier` for the current line) resolves.
     """
+    if not (REPO_ROOT / "bot" / "_impl.py").exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = (REPO_ROOT / "bot" / "_impl.py").read_text()
     assert "from bot.notifier import TelegramNotifier" in src
 

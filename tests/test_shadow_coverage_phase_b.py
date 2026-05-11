@@ -70,6 +70,7 @@ class TestPhaseBSchemaColumns:
 
     def test_all_phase_b_columns_present_in_schema(self):
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         cols = {
             r["name"] for r in
@@ -87,6 +88,7 @@ class TestPhaseBSchemaColumns:
         mirror does not — the four-site lock-step rule (CLAUDE.md) means a
         type mismatch is a 22P02 wedge waiting to happen."""
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         col_types = {
             r["name"]: r["type"].upper() for r in
@@ -116,6 +118,7 @@ class TestPhaseBInsertSignature:
     def test_insert_round_trips_phase_b_columns(self):
         """Real DB roundtrip: insert with values, read back, every column survives."""
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         kwargs = {
             "ticker": "TEST15M-TEST", "event_ticker": "TEST15M",

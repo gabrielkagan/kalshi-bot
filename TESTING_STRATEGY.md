@@ -1,5 +1,16 @@
 # Kalshi Bot — Testing Strategy
 
+> **POST-Bit-9.3-iii.c (2026-05-11) NOTE — bot/_impl.py is DELETED.**
+> This doc was written pre-Sprint-9-modularization-close and references
+> `bot/_impl.py` as the source of constants/signatures throughout. Post-
+> deletion, those references should be read as: constants live in
+> `bot/constants.py`; class signatures live in `bot/main_loop.py`,
+> `bot/scanner/__init__.py`, `bot/executor.py`, `bot/settlement.py`,
+> `bot/state.py`, `bot/order_flow.py`, etc. The testing-strategy
+> categories themselves remain valid; only the source-of-truth file
+> paths shifted. Sprint 9 (Bit 9.3-iii.c) closed the bot/_impl.py "god
+> file" era — this doc's bot/_impl.py mentions are historical breadcrumbs.
+
 **Goal:** Proactively catch the bug classes that have historically caused production incidents, before they reach the VPS. Every test category below maps directly to a real past failure or a known risk.
 
 ---

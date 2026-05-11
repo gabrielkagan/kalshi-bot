@@ -231,6 +231,8 @@ def test_bot_impl_reexports_orphan_db_names():
     """
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c — final shim deletion)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     pat = re.compile(
         r"from\s+bot\.orphan_db_watchdog\s+import\s*\(?[^)\n]*"

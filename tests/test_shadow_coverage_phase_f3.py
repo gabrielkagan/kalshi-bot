@@ -54,6 +54,7 @@ class TestPhaseF3KnockoutHelper:
     def test_no_crossings_returns_one(self):
         """No crossings since window-open → market decided since open → 1.0."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         st = self._state()
         out = bot.scanner.OpportunityScanner._compute_knockout_time_relative(None,
             st, now=time.time(),
@@ -65,6 +66,7 @@ class TestPhaseF3KnockoutHelper:
         time before it). Result still ~1.0 because (now - crossing) ==
         (now - window_open)."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         from collections import deque
         now = time.time()
         st = self._state(
@@ -77,6 +79,7 @@ class TestPhaseF3KnockoutHelper:
     def test_recent_crossing_returns_near_zero(self):
         """Crossing 5s ago, window 600s old → (5 / 600) ≈ 0.0083."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         from collections import deque
         now = time.time()
         st = self._state(
@@ -89,6 +92,7 @@ class TestPhaseF3KnockoutHelper:
     def test_intermediate_crossing_returns_intermediate(self):
         """Crossing halfway through the window → 0.5."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         from collections import deque
         now = time.time()
         st = self._state(
@@ -103,6 +107,7 @@ class TestPhaseF3KnockoutHelper:
         the future → can't compute → None (rather than producing negative
         or > 1 value)."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         now = time.time()
         st = self._state(window_open_ts=now + 10.0)
         out = bot.scanner.OpportunityScanner._compute_knockout_time_relative(None, st, now=now)
@@ -113,6 +118,7 @@ class TestPhaseF3KnockoutHelper:
         running session that booted on the older code) lack window_open_ts.
         Helper must return None, not crash."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         st = self._state()
         del st["window_open_ts"]
         out = bot.scanner.OpportunityScanner._compute_knockout_time_relative(None,
@@ -124,6 +130,7 @@ class TestPhaseF3KnockoutHelper:
         """Numerical edge: if last crossing is BEFORE window_open (shouldn't
         happen but be defensive), value would be > 1. Clamp."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         from collections import deque
         now = time.time()
         st = self._state(
@@ -139,6 +146,7 @@ class TestPhaseF3WindowStateRecordsOpenTs:
 
     def test_first_call_records_window_open_ts(self):
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
 
         class _Stub:
             _window_states = {}
@@ -155,6 +163,7 @@ class TestPhaseF3WindowStateRecordsOpenTs:
         """The window-open timestamp is set ONCE — subsequent ticks must
         not overwrite it (the state opens once, ticks update otherwise)."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
 
         class _Stub:
             _window_states = {}
@@ -173,6 +182,7 @@ class TestPhaseF3ComputeWindowFeaturesIncludesKnockout:
 
     def test_compute_window_features_includes_knockout(self):
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         from collections import deque
 
         class _Stub:
@@ -210,6 +220,7 @@ class TestPhaseF3EndToEndInsert:
 
     def test_insert_picks_up_knockout_from_provider(self):
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         sm._extended_feature_provider = lambda *a, **k: {
             "knockout_time_relative": 0.42,

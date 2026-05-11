@@ -44,6 +44,7 @@ BOT_PY = os.path.join(
 def _make_feed():
     """Bypass __init__ for unit testing."""
     import bot
+    import bot.feeds  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.feeds.X access)
     f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
     f._pending_subscribes = []
     f._pending_unsubscribes = []
@@ -230,8 +231,10 @@ class TestAstSchemaCorrectness(unittest.TestCase):
     def test_send_ob_unsubscribe_uses_delete_markets(self):
         """Phase 2.10 schema: surgical delete_markets (NOT
         sids-array which would nuke the whole channel)."""
-        with open(BOT_PY) as fh:
-            src = fh.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as fh:
+                src = fh.read()
         tree = ast.parse(src)
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
@@ -251,8 +254,10 @@ class TestAstSchemaCorrectness(unittest.TestCase):
         self.fail("_send_ob_unsubscribe not found")
 
     def test_handle_message_branches_on_subscribed(self):
-        with open(BOT_PY) as fh:
-            src = fh.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as fh:
+                src = fh.read()
         tree = ast.parse(src)
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
@@ -414,6 +419,7 @@ class TestR2B2OutstandingSubscribeWatchdog(unittest.TestCase):
 
     def test_stuck_outstanding_subscribe_popped(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._subscribed_tickers.add("STUCK1")
         # Register stale outstanding subscribe.
@@ -444,6 +450,7 @@ class TestR4StuckSubscribeRequestsForceReconnect(unittest.TestCase):
 
     def test_stuck_subscribe_for_subscribed_ticker_requests_reconnect(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._subscribed_tickers.add("STUCK1")
         f._outstanding_subscribes[42] = "STUCK1"
@@ -462,6 +469,7 @@ class TestR4StuckSubscribeRequestsForceReconnect(unittest.TestCase):
         """If the stuck ticker has been unsubscribed since, no
         reconnect is needed."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         # Note: NOT in _subscribed_tickers.
         f._outstanding_subscribes[42] = "GONE1"

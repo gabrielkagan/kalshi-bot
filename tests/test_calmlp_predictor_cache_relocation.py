@@ -48,7 +48,6 @@ from typing import List
 from unittest import mock
 
 import pytest
-import bot._impl  # noqa: F401
 import bot.boot  # noqa: F401
 
 
@@ -69,6 +68,8 @@ if str(_CAL_MLP_DIR) not in sys.path:
 def _read_bot_impl_ast() -> ast.AST:
     """AST-parse bot/_impl.py once per test (cheap; ~18.5K-line file parses
     in ~50ms)."""
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     return ast.parse(BOT_PY.read_text())
 
 
@@ -317,8 +318,13 @@ def test_three_consumer_sites_still_reference_predictor_cache():
     (annotate-kwargs path + async-enqueue path) moved with the class.
     Bit 9.3 (2026-05-10): MainLoop extracted to bot/main_loop.py; the
     `predictors=_calmlp_predictors` kwarg moved with MainLoop. Walk
-    all three files."""
-    src = BOT_PY.read_text()
+    all three files.
+
+    Bit 9.3-iii.c (2026-05-11): bot/_impl.py was DELETED. The 3 consumer
+    sites all live in bot/scanner/__init__.py + bot/main_loop.py. BOT_PY
+    is now read-skip when absent (pre-deletion shape preserved as
+    breadcrumb)."""
+    src = BOT_PY.read_text() if BOT_PY.exists() else ""
     scanner_init = REPO_ROOT / "bot" / "scanner" / "__init__.py"
     if scanner_init.exists():
         src += "\n" + scanner_init.read_text()
@@ -371,11 +377,13 @@ def test_boot_log_emitted_from_bot_boot_namespace(caplog):
     )
 
     # Negative pin: bot/_impl.py should NO LONGER emit the boot log.
-    impl_src = BOT_PY.read_text()
-    assert "[CALMLP] enabled=1 at boot, predictors_warmed=" not in impl_src, (
-        "bot/_impl.py still emits the cal_mlp boot log — Bit 9.3-iii.a relocated "
-        "this to bot/boot.py."
-    )
+    # Vacuously true post-Bit-9.3-iii.c (bot/_impl.py deleted entirely).
+    if BOT_PY.exists():
+        impl_src = BOT_PY.read_text()
+        assert "[CALMLP] enabled=1 at boot, predictors_warmed=" not in impl_src, (
+            "bot/_impl.py still emits the cal_mlp boot log — Bit 9.3-iii.a relocated "
+            "this to bot/boot.py."
+        )
 
     # Negative pin: integration.py must NOT emit the boot log line. If a
     # future agent moves the log emission into warmup_predictor_cache() to

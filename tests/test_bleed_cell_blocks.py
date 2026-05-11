@@ -34,7 +34,9 @@ def _read_bot_and_scanner():
     should_block_sol_taker_lowprice_bleed_candidate) and the
     *_BLOCK_FILTER_STAGE → insert_evaluated_opportunity wiring all
     moved with the scan() method. Walk both files."""
-    src = (REPO / 'bot/_impl.py').read_text()
+    src = ""
+    if (REPO / 'bot/_impl.py').exists():
+        src = (REPO / 'bot/_impl.py').read_text()
     scanner_p = REPO / 'bot' / 'scanner' / '__init__.py'
     if scanner_p.exists():
         src += '\n' + scanner_p.read_text()
@@ -511,7 +513,9 @@ def test_sol_bleed_v2_calengine_accepts_filter_stage():
 
     Bit 9.3 (2026-05-10): MainLoop.__init__ (where the 15M CalEngine `_stages`
     tuple is constructed) lives in bot/main_loop.py. Walk all three for safety."""
-    src = (REPO / 'bot/_impl.py').read_text()
+    src = ""
+    if (REPO / 'bot/_impl.py').exists():
+        src = (REPO / 'bot/_impl.py').read_text()
     _scanner = REPO / 'bot' / 'scanner' / '__init__.py'
     if _scanner.is_file():
         src += '\n' + _scanner.read_text()
@@ -656,7 +660,9 @@ def test_bot_py_tm_strategy_fstring_format_matches_block_strategies():
     this test fails loudly."""
     # Bit 9.1 (2026-05-10): scan() lives in bot/scanner/__init__.py (Bit 8.1) —
     # f"terminal_momentum_{...}" template is there. Read all three for safety.
-    src = (REPO / 'bot/_impl.py').read_text()
+    src = ""
+    if (REPO / 'bot/_impl.py').exists():
+        src = (REPO / 'bot/_impl.py').read_text()
     _scanner = REPO / 'bot' / 'scanner' / '__init__.py'
     if _scanner.is_file():
         src += '\n' + _scanner.read_text()
@@ -773,7 +779,9 @@ def test_bot_py_calengine_accepts_bleed_block_stages():
     reference all 3 BLOCK_FILTER_STAGE constants."""
     # Bit 9.1 (2026-05-10): scan() lives in bot/scanner/__init__.py (Bit 8.1) —
     # f"terminal_momentum_{...}" template is there. Read all three for safety.
-    src = (REPO / 'bot/_impl.py').read_text()
+    src = ""
+    if (REPO / 'bot/_impl.py').exists():
+        src = (REPO / 'bot/_impl.py').read_text()
     _scanner = REPO / 'bot' / 'scanner' / '__init__.py'
     if _scanner.is_file():
         src += '\n' + _scanner.read_text()
@@ -897,7 +905,9 @@ def test_bleed_block_strategies_have_runtime_validator():
     """
     # Bit 9.1 (2026-05-10): scan() lives in bot/scanner/__init__.py (Bit 8.1) —
     # f"terminal_momentum_{...}" template is there. Read all three for safety.
-    src = (REPO / 'bot/_impl.py').read_text()
+    src = ""
+    if (REPO / 'bot/_impl.py').exists():
+        src = (REPO / 'bot/_impl.py').read_text()
     _scanner = REPO / 'bot' / 'scanner' / '__init__.py'
     if _scanner.is_file():
         src += '\n' + _scanner.read_text()
@@ -907,6 +917,9 @@ def test_bleed_block_strategies_have_runtime_validator():
     _main_loop = REPO / 'bot' / 'main_loop.py'  # Bit 9.3 (2026-05-10): MainLoop extracted; CalEngine _stages tuple lives here.
     if _main_loop.is_file():
         src += '\n' + _main_loop.read_text()
+    _boot = REPO / 'bot' / 'boot.py'  # Bit 9.3-iii.a (2026-05-11): boot-time validator calls relocated here.
+    if _boot.is_file():
+        src += '\n' + _boot.read_text()
     # A validator function must exist for the new gates.
     assert '_validate_bleed_block_bleeder_strings' in src or \
            '_validate_tm98_bleed_block' in src or \

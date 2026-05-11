@@ -40,7 +40,6 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
-import bot._impl  # noqa: F401
 import bot.executor  # noqa: F401
 import bot.constants  # noqa: F401
 
@@ -66,15 +65,27 @@ class TestDeadCapSymbolsRemoved(unittest.TestCase):
         # then trigger the constant-init path that __init__ would have
         # taken. We can't easily exercise __init__ without the full
         # client/state setup, so we grep the source instead — same
-        # intent as a structural test.
-        with open(bot._impl.__file__) as f:
-            src = f.read()
-        self.assertNotIn(
-            "_active_taker_count", src,
+        # intent as a structural test. Post-Bit-9.3-iii.c the bot/_impl.py
+        # shim was deleted; the executor body now lives in bot/executor.py,
+        # the main loop in bot/main_loop.py, the scanner in
+        # bot/scanner/__init__.py. Scan all three to seal the negative pin.
+        from pathlib import Path
+        REPO_ROOT_LOCAL = Path(__file__).resolve().parent.parent
+        scan_paths = [
+            REPO_ROOT_LOCAL / "bot" / "executor.py",
+            REPO_ROOT_LOCAL / "bot" / "main_loop.py",
+            REPO_ROOT_LOCAL / "bot" / "scanner" / "__init__.py",
+        ]
+        offenders = []
+        for p in scan_paths:
+            if p.exists() and "_active_taker_count" in p.read_text():
+                offenders.append(str(p))
+        self.assertFalse(
+            offenders,
             "_active_taker_count dict was the dead-cap state. "
             "All references (init + 2 reads) must be removed together. "
             "Partial removal would leave a write-only or read-only "
-            "ghost in the codebase.")
+            f"ghost in the codebase. Found in: {offenders}")
 
 
 # ─── Behavioral pins: hourly_taker / hourly_no_taker still gate correctly ──

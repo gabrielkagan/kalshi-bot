@@ -55,6 +55,7 @@ class TestHypeDogeSpotAtDecisionSchema:
 
     def test_hype_doge_columns_present_in_schema(self):
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         cols = {
             r["name"] for r in
@@ -73,6 +74,7 @@ class TestHypeDogeSpotAtDecisionSchema:
         identical reasons (high-precision spot prices can hold sub-cent BTC
         levels — migration 011 header explains the rationale)."""
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         col_types = {
             r["name"]: r["type"].upper() for r in
@@ -107,6 +109,7 @@ class TestHypeDogeSpotAtDecisionRoundtrip:
 
     def test_insert_round_trips_hype_doge_columns(self):
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         kwargs = {
             "ticker": "KXHYPE15M-26MAY101900-T26",
@@ -141,6 +144,7 @@ class TestHypeDogeSpotAtDecisionProviderRoundtrip:
 
     def test_provider_six_keys_populates_all_six_columns(self):
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
 
         # Stub _extended_feature_provider returning all six spot keys —
@@ -253,6 +257,7 @@ class TestHypeDogeSpotAtDecisionBackfill:
 
     def _make_db_with_eval_schema(self, tmp_path):
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         db_path = tmp_path / "state.db"
         sm = bot.state.StateManager(str(db_path))
         return sm

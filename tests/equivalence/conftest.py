@@ -38,7 +38,6 @@ from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
 import pytest
-import bot._impl  # noqa: F401
 import bot.feeds  # noqa: F401
 import bot.fetchers  # noqa: F401
 

@@ -32,8 +32,9 @@ def _read_bot():
     bot/_impl.py) all find their targets in the concatenated source.
     """
     parts = []
-    with open(BOT_PATH) as f:
-        parts.append(f.read())
+    if os.path.exists(BOT_PATH):
+        with open(BOT_PATH) as f:
+            parts.append(f.read())
     # Bit 8.1 (2026-05-10): append scanner source to parts too.
     _scanner_path = os.path.join(os.path.dirname(BOT_PATH), "scanner", "__init__.py")
     if os.path.isfile(_scanner_path):

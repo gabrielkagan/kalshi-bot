@@ -37,8 +37,9 @@ BOT_PY = os.path.join(
 
 
 def _find_drift_probe_tick() -> ast.FunctionDef:
-    with open(BOT_PY) as f:
-        tree = ast.parse(f.read())
+    if os.path.exists(BOT_PY):
+        with open(BOT_PY) as f:
+            tree = ast.parse(f.read())
     for cls in ast.walk(tree):
         if (isinstance(cls, ast.ClassDef)
                 and cls.name == "OpportunityScanner"):

@@ -69,7 +69,13 @@ TEST_YML_PATH = REPO_ROOT / ".github" / "workflows" / "test.yml"
 DEPLOY_YML_PATH = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 
 EXPECTED_CONTRACTS = (
-    "engines-no-impl",
+    # Bit 9.3-iii.c (2026-05-11) RETIRED `engines-no-impl`. bot/_impl.py
+    # was DELETED — the contract's forbidden_modules list (only bot._impl)
+    # became empty, which import-linter rejects as malformed. The
+    # anti-regression seal moves to
+    # tests/test_bit_9_3_iii_c_impl_deletion.py::test_bot_impl_py_file_absent
+    # and test_bot_impl_module_import_fails — if bot/_impl.py is ever
+    # re-created, those pins fail loudly with a more direct message.
     "fetchers-no-engines",
     "feeds-no-engines",
     "helpers-leaf",
@@ -266,22 +272,17 @@ def test_importlinter_engines_no_impl_has_no_carve_out_post_bit_6_3():
     """
     cp = _read_importlinter()
     section = "importlinter:contract:engines-no-impl"
-    assert cp.has_section(section), "engines-no-impl contract missing"
-    ignore_imports = _multiline_values(cp, section, "ignore_imports")
-    assert "bot.engines.probability -> bot._impl" not in ignore_imports, (
-        "Bit 6.2 carve-out `bot.engines.probability -> bot._impl` "
-        "reappeared in [importlinter:contract:engines-no-impl] "
-        "ignore_imports — Bit 6.3 path-B should have lifted it. "
-        "Either an unrelated late-binding has been re-introduced (then "
-        "investigate WHY and amend the contract with KB rationale) or a "
-        "rebase/merge re-pulled the old contract — drop the line and "
-        "verify lint-imports + the equivalence harness still pass."
-    )
-    assert not ignore_imports, (
-        f"engines-no-impl contract has ignore_imports entries: "
-        f"{ignore_imports}. Path-B refactor expected zero. If a new "
-        f"carve-out is genuinely needed, add it explicitly here AND "
-        f"document the rationale in a KB doc."
+    # Bit 9.3-iii.c (2026-05-11): engines-no-impl contract RETIRED entirely
+    # (bot/_impl.py was deleted, contract's forbidden_modules became empty).
+    # The Bit 6.2 carve-out concern is moot — there's no bot._impl module
+    # to add a carve-out for. The negative pin lives on as a vacuous
+    # assertion (section must not be present in .importlinter).
+    assert not cp.has_section(section), (
+        f"engines-no-impl contract reappeared in .importlinter — Bit "
+        f"9.3-iii.c retired it because bot/_impl.py was deleted. If "
+        f"someone re-created bot/_impl.py and reintroduced this "
+        f"contract, the deletion regression is a bigger concern; see "
+        f"tests/test_bit_9_3_iii_c_impl_deletion.py for the primary seal."
     )
 
 
@@ -666,28 +667,18 @@ def test_lint_imports_passes_on_current_tree():
 def test_lint_imports_fails_when_engines_to_impl_edge_re_introduced(
     tmp_path: Path,
 ):
-    """Negative smoke: simulating a regression that re-adds an
-    ``engines → _impl`` import edge must cause ``lint-imports`` to
-    FAIL. Proves the engines-no-impl contract is genuinely enforced
-    and not silently bypassed by some misconfigured directive.
+    """Bit 9.3-iii.c (2026-05-11) RETIRED. The engines-no-impl contract was
+    retired in the same Bit because bot/_impl.py was DELETED — the contract
+    became empty (forbidden_modules listed only bot._impl) and import-linter
+    rejects empty contracts. The anti-regression seal moves to
+    tests/test_bit_9_3_iii_c_impl_deletion.py::test_bot_impl_py_file_absent
+    (if someone re-creates bot/_impl.py, that pin fails).
 
-    **Bit 6.3 path-B inversion**: pre-Bit-6.3 this test mutated
-    ``.importlinter`` to remove the Bit 6.2 ``ignore_imports``
-    carve-out and asserted the linter then failed (proving the
-    carve-out was load-bearing). Path-B lifted the late-binding so
-    the carve-out is gone; instead, this test mutates
-    ``bot/engines/probability.py`` to add a literal
-    ``import bot._impl`` at module top + a reference inside
-    ``compute()`` (so grimp records the edge), copies the rest of
-    the project tree into ``tmp_path`` to keep ``.importlinter``'s
-    relative paths working, and asserts ``lint-imports`` exits
-    non-zero with the contract reporting BROKEN.
-
-    The fixture-tree mutation pattern (vs the previous
-    ``--config <mutated>``) is required because grimp resolves the
-    target package from the cwd at lint-time; mutating just the
-    config doesn't move the code.
+    This regression-injection test is preserved as a stub for the discipline
+    trail; calling it self-skips.
     """
+    import pytest
+    pytest.skip("engines-no-impl contract retired in Bit 9.3-iii.c (bot/_impl.py deleted)")
     cmd = _require_lint_imports()
 
     # The companion test (test_importlinter_engines_no_impl_has_no_

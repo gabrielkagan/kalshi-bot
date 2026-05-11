@@ -61,7 +61,7 @@ def test_bot_impl_re_exports_all_constants_via_star_import():
     after the star-import. This test enforces that re-export contract.
     """
     import bot.constants
-    import bot._impl
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
 
     # Names known to require explicit underscore re-export (mirrors the
     # MOVE_DESPITE_UNDERSCORE set in the migration script).
@@ -242,6 +242,8 @@ def test_bot_impl_has_no_module_level_uppercase_assignments():
     were relocated to `bot/engines/calibration.py` in Bit 6.3 path-B
     (2026-05-10); this list previously named them.
     """
+    if not (REPO_ROOT / "bot" / "_impl.py").exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = (REPO_ROOT / "bot" / "_impl.py").read_text()
     tree = ast.parse(src)
     leftover = []
@@ -417,14 +419,18 @@ def test_makefile_ast_check_covers_constants_py():
                 break  # next target reached
 
     recipe_text = "\n".join(recipe)
-    assert "bot/_impl.py" in recipe_text, (
-        "Makefile ast-check recipe lost the bot/_impl.py syntax check — "
-        "regression."
-    )
+    # Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED. ast-check now targets
+    # bot/constants.py + bot/main_loop.py + bot/scanner/__init__.py.
     assert "bot/constants.py" in recipe_text, (
-        "Makefile ast-check recipe must also syntax-check bot/constants.py "
+        "Makefile ast-check recipe must syntax-check bot/constants.py "
         "post-Bit-3.1. Without this, a constants.py syntax error escapes "
         "the pre-deploy gate and crashes the bot at boot.\n"
+        f"Current recipe:\n{recipe_text}"
+    )
+    assert "bot/main_loop.py" in recipe_text, (
+        "Makefile ast-check recipe must syntax-check bot/main_loop.py "
+        "post-Bit-9.3. Without this, a main_loop.py syntax error escapes "
+        "the pre-deploy gate.\n"
         f"Current recipe:\n{recipe_text}"
     )
 

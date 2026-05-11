@@ -64,8 +64,9 @@ def _load_bot_ast():
 
     executor_path = os.path.join(PROJECT_ROOT, "bot/executor.py")
     sources = []
-    with open(bot_path) as f:
-        sources.append(f.read())
+    if os.path.exists(bot_path):
+        with open(bot_path) as f:
+            sources.append(f.read())
     if os.path.isfile(executor_path):
         with open(executor_path) as f:
             sources.append(f.read())
@@ -192,8 +193,10 @@ def test_endpoint_stage_set_matches_known_stages():
     # The endpoint INSERT sites that USE these constants stay in bot/_impl.py
     # (other tests in this file scan _impl.py for those usages).
     bot_path = os.path.join(PROJECT_ROOT, "bot/constants.py")
-    with open(bot_path) as f:
-        src = f.read()
+    src = ""
+    if os.path.exists(bot_path):
+        with open(bot_path) as f:
+            src = f.read()
     assert 'TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE = "TM98_97_98C_2_5MIN_BLEED"' in src
     assert 'SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE = "SOL_TAKER_85_89C_2_5MIN_BLEED"' in src
     assert 'SOL_BLEED_V2_BLOCK_FILTER_STAGE = "SOL_BLEED_V2_88_93C_2_5MIN"' in src
@@ -211,6 +214,7 @@ def test_candidate_insert_persists_cal_mlp_request_id(tmp_path):
     # Import lazily so module-level CALMLP env / threading guards don't fire
     # for unrelated tests.
     import bot
+    import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
 
     db_path = str(tmp_path / "state.db")
     state = bot.state.StateManager(db_path)
@@ -247,6 +251,7 @@ def test_candidate_insert_persists_cal_mlp_skipped_reason(tmp_path):
     processor sees a row with NULL request_id AND NULL skip — looks
     permanently unannotated."""
     import bot
+    import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
 
     db_path = str(tmp_path / "state.db")
     state = bot.state.StateManager(db_path)

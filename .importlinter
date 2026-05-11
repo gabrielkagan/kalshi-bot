@@ -28,37 +28,29 @@ root_package = bot
 include_external_packages = True
 
 # ---------------------------------------------------------------------------
-# Contract 1 — engines must not import bot._impl
+# Contract 1 (RETIRED Bit 9.3-iii.c, 2026-05-11) — `engines-no-impl`
 # ---------------------------------------------------------------------------
 # Sprint 6 (Bits 6.1 + 6.2 + 6.3) extracted VolatilityEngine,
-# ProbabilityEngine, and CalibrationEngine into bot/engines/. The intent
-# is that engines depend DOWN on bot.{constants, helpers, feeds, fetchers}
-# but never UP into bot._impl (which would re-create the circular load
-# that the extractions resolved).
+# ProbabilityEngine, and CalibrationEngine into bot/engines/. The original
+# `engines-no-impl` contract forbade bot.engines.* from reaching
+# bot._impl — a load-cycle anti-regression seal.
 #
-# Bit 6.2 originally introduced a carve-out
-# (`ignore_imports = bot.engines.probability -> bot._impl`) because
-# probability.py used a late-binding `from bot import _impl as _bot_impl`
-# pattern to access the mutable `_CALIBRATION_ENGINE` singleton and
-# `_resolve_cal_engine` function (both defined in bot/_impl.py below the
-# line-109 engines re-export — top-level import would have ImportErrored
-# or captured a stale `None`).
+# Bit 6.2 originally shipped with a carve-out
+# `ignore_imports = bot.engines.probability -> bot._impl` for the
+# late-binding access to `_CALIBRATION_ENGINE` and `_resolve_cal_engine`.
+# Bit 6.3 path-B (2026-05-10) RELOCATED those names out of bot/_impl.py
+# into bot/engines/calibration.py — the carve-out was lifted in the same
+# atomic commit, leaving only `bot._impl` in `forbidden_modules`.
 #
-# Bit 6.3 path-B (2026-05-10) RELOCATED `_CALIBRATION_ENGINE` +
-# `_CAL_REGISTRY` + `_derive_subtype` + `_derive_asset_filter` +
-# `_resolve_cal_engine` from bot/_impl.py to bot/engines/calibration.py
-# (where the class itself was already moving). Both bot/_impl.py and
-# bot/engines/probability.py now reach them via top-level
-# `from bot.engines import calibration as _cal_state` plus
-# `_cal_state.X` attribute access. The late-binding is gone; the
-# carve-out below is gone with it.
-[importlinter:contract:engines-no-impl]
-name = bot.engines.* must not import bot._impl (Bit 6.3 path-B lifted the Bit 6.2 carve-out)
-type = forbidden
-source_modules =
-    bot.engines
-forbidden_modules =
-    bot._impl
+# Bit 9.3-iii.c (2026-05-11) DELETED bot/_impl.py entirely. The
+# `engines-no-impl` contract is now vacuous (`forbidden_modules` would be
+# empty, which import-linter rejects as malformed). The contract is
+# RETIRED here. The anti-regression seal moves to
+# `tests/test_bit_9_3_iii_c_impl_deletion.py::test_bot_impl_py_file_absent`
+# + `test_bot_impl_module_import_fails` — if bot/_impl.py is ever
+# re-created, those AST/import pins fail loudly. The original
+# `bot.engines.* must not import bot._impl` claim is stronger now: NO
+# module can import bot._impl because the module doesn't exist.
 
 # ---------------------------------------------------------------------------
 # Contract 2 — fetchers must not import engines
@@ -113,12 +105,11 @@ forbidden_modules =
 # below. New top-level bot/ entries fail the regression test until
 # appended here in the same Bit that creates them.
 [importlinter:contract:helpers-leaf]
-name = bot.helpers.* may not import sibling subpackages or bot._impl (leaf rule)
+name = bot.helpers.* may not import sibling subpackages (leaf rule)
 type = forbidden
 source_modules =
     bot.helpers
 forbidden_modules =
-    bot._impl
     bot._thread_env
     bot.boot
     bot.engines
@@ -130,6 +121,7 @@ forbidden_modules =
     bot.models
     bot.order_flow
     bot.orphan_db_watchdog
+    bot.runtime_config
     bot.scanner
     bot.shadows
     bot.clients

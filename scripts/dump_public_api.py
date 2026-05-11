@@ -69,6 +69,16 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+# Bump recursion limit BEFORE any griffe machinery initializes (must happen
+# pre-`import griffe` so any griffe-internal recursive caching honors it).
+# griffe's expression iterator can recurse deeper than Python's default
+# 1000-frame limit on complex annotations (e.g., nested Tuple/Union/Generic
+# chains in extracted modules). 15K is empirically sufficient for the current
+# bot package surface and low enough to avoid OS-level stack exhaustion on
+# macOS. L94 workarounds remain in place at import sites that need them; this
+# is an orthogonal bump for the iterator depth.
+sys.setrecursionlimit(max(sys.getrecursionlimit(), 15000))
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -79,22 +89,21 @@ SNAPSHOT_PATH = PROJECT_ROOT / "tests" / "contracts" / "public_api.json"
 PACKAGE_NAME = "bot"
 
 # Submodules whose contents are intentionally NOT recursed into in the
-# main static walk. Top-level public CLASSES inside bot._impl are still
-# captured (see _walk_impl_canonical_classes) — those ARE the public
-# surface today, until extraction moves them out.
+# main static walk. Bit 9.3-iii.c (2026-05-11) DELETED bot/_impl.py — it
+# is no longer in this list (the module doesn't exist; nothing to skip).
+# bot._thread_env stays here because it's an OMP-pinning side-effect
+# loader, not a public-API surface.
 #
-# Membership check is prefix-based (see _is_in_skipped) — `bot._impl` and
-# `bot._impl.OrderFlowEngine` both match.
-SKIPPED_SUBMODULES = ("bot._impl", "bot._thread_env")
+# Membership check is prefix-based (see _is_in_skipped).
+SKIPPED_SUBMODULES = ("bot._thread_env",)
 
-# Layer 2 (canonical _impl classes) is auto-derived from
-# ``griffe.load("bot._impl").classes`` rather than a hardcoded allowlist.
-# Rationale: a hardcoded list creates a "drift laundering" loophole —
-# extracting CalibrationEngine but forgetting to update the list would
-# leave a MISSING sentinel that ``make api-snapshot-regen`` silently
-# commits, masking the regression. Auto-derive is self-maintaining:
-# extracted classes disappear naturally; new public classes appear
-# automatically. (R2-M1 fix.)
+# Layer 2 (Bit 9.3-iii.c RETIRED) — historically auto-derived from
+# ``griffe.load("bot._impl").classes`` to capture top-level public
+# CLASSES inside bot/_impl.py. Bit 9.3-iii.c deleted bot/_impl.py, so
+# there are no `_impl` canonical classes left to capture; the canonical
+# homes of every extracted class are already covered by Layer 1 (griffe
+# static walk of bot.* submodules). The _walk_impl_canonical_classes
+# function is retired to a no-op (see below).
 
 
 def _is_in_skipped(path: str | None) -> bool:
@@ -217,32 +226,22 @@ def _walk(module: Any, qualname: str, out: dict[str, Any]) -> None:
 
 
 def _walk_impl_canonical_classes(out: dict[str, Any]) -> None:
-    """Capture signatures for every locally-defined public class in bot/_impl.py.
+    """Layer 2 — RETIRED in Bit 9.3-iii.c (2026-05-11).
 
-    These are NOT covered by ``_walk`` (which skips bot._impl) but ARE the
-    public surface today. Auto-derived from griffe's parse so the list is
-    self-maintaining: extracted classes (Bit 6.3+ moves) naturally
-    disappear; new classes added to _impl naturally appear.
+    Pre-retirement: captured signatures for every locally-defined public class
+    in bot/_impl.py via griffe.load("bot._impl").classes. The shim provided a
+    self-maintaining snapshot of the residual class surface during the
+    multi-Bit modularization track.
 
-    Uses ``impl.classes`` (locally defined) rather than ``impl.members``
-    (which would include aliased imports like ``from bot.engines import
-    VolatilityEngine``).
+    Post-retirement: bot/_impl.py was deleted, so griffe.load("bot._impl")
+    raises ModuleNotFoundError. Every extracted class has a canonical home
+    under bot.<canonical_module> and is covered by Layer 1 (the main static
+    walk). This function is now a no-op kept only to preserve the
+    public_api.json schema shape during the Sprint 9 milestone transition.
+    The __impl_canonical_classes__ meta-key is intentionally absent from
+    the regenerated snapshot.
     """
-    impl = griffe.load("bot._impl")
-    classes: dict[str, Any] = {}
-    for name, cls in sorted(impl.classes.items()):
-        if not _is_public_name(name):
-            continue
-        # Filter out aliased re-export shims: when an extraction Bit moves
-        # a class out of _impl.py and adds ``from bot.engines.foo import X``
-        # as backward-compat, griffe surfaces it in impl.classes with
-        # is_alias=True. We only want classes still LOCALLY defined here.
-        # Already-extracted classes (Logger, KalshiClient, VolatilityEngine,
-        # etc.) appear in Layer 1 under their canonical paths.
-        if getattr(cls, "is_alias", False):
-            continue
-        classes[name] = _signature_class(cls)
-    out["__impl_canonical_classes__"] = classes
+    return None  # no-op post-Bit-9.3-iii.c
 
 
 def _probe_runtime_proxy_attrs(out: dict[str, Any]) -> None:
@@ -266,21 +265,27 @@ def _probe_runtime_proxy_attrs(out: dict[str, Any]) -> None:
 
 
 def dump_bot_public_api() -> dict[str, Any]:
-    """Two-layer snapshot of bot's public API. Deterministic across runs.
+    """Single-layer snapshot of bot's public API. Deterministic across runs.
 
-    Layer 1: griffe static walk of bot.* submodules (excluding bot._impl).
-    Layer 2: griffe static walk of bot._impl canonical classes.
-    Layer 3: (RETIRED Bit 9.3-iii.b) — runtime proxy probe — no longer applicable
-             post-proxy-retirement. _probe_runtime_proxy_attrs is a no-op until
-             Bit 9.3-iii.c deletes bot/_impl.py + this scaffolding entirely.
+    Layer 1: griffe static walk of bot.* submodules.
+    Layer 2: (RETIRED Bit 9.3-iii.c, 2026-05-11) — bot/_impl.py was DELETED;
+             the residual-class layer has no source to walk. _walk_impl_canonical_classes
+             is a no-op.
+    Layer 3: (RETIRED Bit 9.3-iii.b, 2026-05-11) — runtime proxy probe; the
+             _BotProxy was retired so getattr(bot, name) no longer falls through.
+             _probe_runtime_proxy_attrs is a no-op.
     """
+    # Recursion limit bump moved to module-top (see comment near the
+    # sys.setrecursionlimit call above the griffe import) — must run BEFORE
+    # any griffe machinery initializes to avoid OS-level stack exhaustion.
+
     out: dict[str, Any] = {}
 
     package = griffe.load(PACKAGE_NAME)
     _walk(package, PACKAGE_NAME, out)
 
-    _walk_impl_canonical_classes(out)
-    _probe_runtime_proxy_attrs(out)
+    _walk_impl_canonical_classes(out)  # no-op (Bit 9.3-iii.c)
+    _probe_runtime_proxy_attrs(out)    # no-op (Bit 9.3-iii.b)
 
     return out
 

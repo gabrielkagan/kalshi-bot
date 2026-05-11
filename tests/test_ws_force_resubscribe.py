@@ -61,6 +61,7 @@ def _make_feed():
     """Construct a minimal KalshiFeed with the attrs force_resubscribe
     needs. Bypasses __init__ to avoid touching network/asyncio."""
     import bot
+    import bot.feeds  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.feeds.X access)
     f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
     f._pending_subscribes = []
     f._pending_unsubscribes = []
@@ -171,6 +172,7 @@ class TestForceResubscribeHelper(unittest.TestCase):
         self.f.force_resubscribe("KXBTC15M-FOO")
         # Backdate cooldown entry past expiry.
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.f._force_resub_cooldown["KXBTC15M-FOO"] = (
             time.monotonic() - bot.constants.WS_FORCE_RESUB_COOLDOWN_S - 1.0)
         self.f._pending_snapshot_requests.clear()
@@ -203,6 +205,7 @@ class TestSnapshotTimeoutFallback(unittest.TestCase):
         """Backdate the pending timestamp past WS_SNAPSHOT_REQUEST_TIMEOUT_S;
         _check_snapshot_timeouts should queue both unsub and sub."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.f._snapshot_request_pending["KXBTC15M-BAR"] = (
             time.monotonic() - bot.constants.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
         timed_out = self.f._check_snapshot_timeouts()
@@ -255,6 +258,7 @@ class TestForceResubCooldownConstant(unittest.TestCase):
 
     def test_constant_defined(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertTrue(
             hasattr(bot.constants, "WS_FORCE_RESUB_COOLDOWN_S"),
             "Must define WS_FORCE_RESUB_COOLDOWN_S as a module-level "
@@ -307,6 +311,7 @@ class TestPeriodicResnapshot(unittest.TestCase):
 
     def test_periodic_resnap_constant_defined(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertTrue(
             hasattr(bot.constants, "WS_PERIODIC_RESNAPSHOT_INTERVAL_S"),
             "Must define WS_PERIODIC_RESNAPSHOT_INTERVAL_S "
@@ -319,8 +324,10 @@ class TestPeriodicResnapshot(unittest.TestCase):
     def test_main_loop_tick_calls_periodic_resnap(self):
         """AST: MainLoop._tick references WS_PERIODIC_RESNAPSHOT_INTERVAL_S
         and calls force_resubscribe in some path."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         # The constant must be referenced from inside MainLoop._tick.
         # We don't verify call ordering — just that the wiring exists.
         tree = ast.parse(src)
@@ -468,6 +475,7 @@ class TestR1A1AutoDisablePrimary(unittest.TestCase):
         must NOT disable the primary path. Only consecutive
         FULLY-FAILED SWEEPS count, not per-ticker timeouts."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         # 4 tickers all timed out in ONE sweep — represents a
         # transient WS hiccup, not a contract failure.
         for i in range(4):
@@ -490,6 +498,7 @@ class TestR1A1AutoDisablePrimary(unittest.TestCase):
         zero successful snapshots in between, does the primary
         path auto-disable."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         threshold = bot.constants.WS_GET_SNAPSHOT_DISABLE_AFTER
         for sweep in range(threshold):
             t = f"KXBTC15M-S{sweep}"
@@ -505,6 +514,7 @@ class TestR1A1AutoDisablePrimary(unittest.TestCase):
     def test_successful_snapshot_resets_failed_sweep_counter(self):
         # One failed sweep.
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.f._subscribed_tickers.add("KXBTC15M-T0")
         self.f._snapshot_request_pending["KXBTC15M-T0"] = (
             time.monotonic() - bot.constants.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
@@ -559,8 +569,10 @@ class TestR1A3LockedSubscribedAccessor(unittest.TestCase):
 
     def test_main_loop_uses_accessor_not_direct_attr(self):
         """AST: MainLoop._tick references get_subscribed_tickers."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         tree = ast.parse(src)
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)

@@ -26,8 +26,9 @@ BOT_PY = os.path.join(
 
 
 def _find_tick_method() -> ast.FunctionDef:
-    with open(BOT_PY) as f:
-        tree = ast.parse(f.read())
+    if os.path.exists(BOT_PY):
+        with open(BOT_PY) as f:
+            tree = ast.parse(f.read())
     for cls in ast.walk(tree):
         if isinstance(cls, ast.ClassDef):
             for node in cls.body:
@@ -45,8 +46,10 @@ class TestTickHasTimingInstrumentation(unittest.TestCase):
     cause)."""
 
     def test_tick_contains_periodic_task_slow_log(self):
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn("PERIODIC_TASK_SLOW", src,
                       "_tick() must emit `PERIODIC_TASK_SLOW` warnings "
                       "for individual periodic tasks (refresh windows, "
@@ -81,8 +84,10 @@ class TestTickHasTimingInstrumentation(unittest.TestCase):
         match: we need PERIODIC_TASK_SLOW log lines that name the
         suspect tasks so the next deploy's logs tell us which is
         dominating."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         # Each of these names must appear in a logging call within
         # _tick(). We grep the file for the name strings; the
         # PERIODIC_TASK_SLOW log_message will contain the task name.

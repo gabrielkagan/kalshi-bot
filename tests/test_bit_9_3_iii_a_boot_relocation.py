@@ -227,7 +227,7 @@ def test_order_flow_has_no_hpsb_code_references():
 
 def test_impl_reexports_compute_for_15m_main_path_from_bot_boot():
     """bot/_impl.py re-exports compute_for_15m_main_path from bot.boot (preserves snapshot)."""
-    import bot._impl
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.boot
 
     assert bot._impl.compute_for_15m_main_path is bot.boot.compute_for_15m_main_path, (
@@ -239,7 +239,7 @@ def test_impl_reexports_compute_for_15m_main_path_from_bot_boot():
 
 def test_impl_reexports_hpsb_bindings_from_bot_boot():
     """bot/_impl.py re-exports HPSB bindings from bot.boot (preserves snapshot)."""
-    import bot._impl
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.boot
 
     assert bot._impl._HPSB_MISSING_BLEEDERS is bot.boot._HPSB_MISSING_BLEEDERS
@@ -254,7 +254,14 @@ def test_impl_reexports_hpsb_bindings_from_bot_boot():
 
 
 def test_impl_no_longer_has_direct_warmup_call():
-    """bot/_impl.py no longer calls _calmlp_warmup_cache() — moved to bot/boot.py."""
+    """bot/_impl.py no longer calls _calmlp_warmup_cache() — moved to bot/boot.py.
+
+    Vacuous post-Bit-9.3-iii.c: bot/_impl.py was DELETED entirely. The
+    stronger seal is `test_bot_impl_py_file_absent` in
+    tests/test_bit_9_3_iii_c_impl_deletion.py."""
+    if not os.path.exists(os.path.join(REPO_ROOT, "bot/_impl.py")):
+        import pytest
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — assertion vacuous")
     src = _read("bot/_impl.py")
     assert "_calmlp_enabled_at_boot, _calmlp_warmed = _calmlp_warmup_cache()" not in src, (
         "bot/_impl.py still has the cal_mlp warmup call (was lines 416-417). "
@@ -267,7 +274,12 @@ def test_impl_drops_dead_calmlp_start_posthoc_import():
 
     Per Plan-agent M1: bot/main_loop.py ALREADY top-imports this; the
     bot/_impl.py re-import was shadowed dead weight. AST walk catches the
-    actual import statement (not search-anchor substrings in comments)."""
+    actual import statement (not search-anchor substrings in comments).
+
+    Vacuous post-Bit-9.3-iii.c: bot/_impl.py was DELETED entirely."""
+    if not os.path.exists(os.path.join(REPO_ROOT, "bot/_impl.py")):
+        import pytest
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — assertion vacuous")
     tree = ast.parse(_read("bot/_impl.py"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):

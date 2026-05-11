@@ -3,14 +3,13 @@
 Single-class subpackage extracted in Sprint 8 Bit 8.1 (2026-05-10):
 `OpportunityScanner` lives at `bot/scanner/__init__.py` (~9,400 lines,
 36 instance methods + 7 staticmethods). Entry point is `scan()`, called
-once per tick by `MainLoop`. Re-imported into `bot/_impl.py` via the
-line-115 `from bot.scanner import OpportunityScanner` re-export — pre-Bit-9.3-iii.b
-this re-export plus the `_BotProxy` chain let `bot.OpportunityScanner`
-work as a name-route. Post-Bit-9.3-iii.b (2026-05-11) the proxy is retired;
-callers reach `OpportunityScanner` via `from bot.scanner import
-OpportunityScanner` (or `bot.scanner.OpportunityScanner`) directly. The
-re-export in bot/_impl.py persists as part of the residual shim until
-Bit 9.3-iii.c deletes bot/_impl.py entirely.
+once per tick by `MainLoop`. Callers reach `OpportunityScanner` via
+`from bot.scanner import OpportunityScanner` (or `bot.scanner.OpportunityScanner`)
+directly. Bit 9.3-iii.b (2026-05-11) retired the `_BotProxy`; Bit 9.3-iii.c
+(2026-05-11) DELETED `bot/_impl.py` entirely. The pre-deletion re-export
+chain `bot.OpportunityScanner → bot._impl.OpportunityScanner → bot.scanner.OpportunityScanner`
+is GONE; the canonical home (`bot.scanner.OpportunityScanner`) is the only
+resolution path.
 
 ## Cross-class coupling (read before any edit)
 
@@ -164,14 +163,15 @@ to the cell-block UNION in audit/dashboard scripts (full list in
   adding/changing constants read by both scanner and OrderExecutor
   (e.g., `OBSERVATION_MODE`, `WEATHER_NO_SIDE_LIVE`), scanner-targeted
   tests use `@patch("bot.scanner.X")` (or `bot.scanner.<read site>`),
-  while executor-targeted tests use `@patch("bot.executor.X")` (or
-  `@patch("bot._impl.X")` for the residual shim's star-imported binding)
-  because OrderExecutor reads the constant via bot._impl's bare-name
-  (laundered through `from bot.constants import *`). Post-Bit-9.3-iii.b
-  (2026-05-11) `@patch("bot.X")` no longer works (proxy retired); the
-  canonical forms are `@patch("bot.<canonical_module>.X")` or
-  `@patch("bot._impl.X")` until 9.3-iii.c deletes bot/_impl.py. See L85
-  in `kb/concepts/extraction-pre-flight-checklist.md`.
+  while executor-targeted tests use `@patch("bot.executor.X")`.
+  Post-Bit-9.3-iii.b (2026-05-11) `@patch("bot.X")` no longer works
+  (proxy retired). Post-Bit-9.3-iii.c (2026-05-11) `@patch("bot._impl.X")`
+  no longer works either (bot/_impl.py was DELETED). The canonical forms
+  are `@patch("bot.<canonical_module>.X")` OR — for the 3 kill-switch
+  flags (WEATHER_NO_SIDE_LIVE, HOURLY_NO_SIDE_LIVE, BRACKET_NO_ENABLED)
+  whose runtime-freshness fix in Bit 9.3-iii.c routes reads through
+  `bot.constants.X` module-attribute access — `@patch.object(bot.constants, "X", ...)`.
+  See L85 in `kb/concepts/extraction-pre-flight-checklist.md`.
 - Single-class file by design — Bit 8.3 (DEFERRED 2026-05-17) plans
   the internal split into `discover.py` / `evaluate.py` / `gates.py`
   / `shadow.py`. Until then, keep the body in `__init__.py`.

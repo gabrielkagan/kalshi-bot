@@ -920,8 +920,19 @@ def test_thread_env_imported_before_numerical_libs_in_bot_impl():
     C extensions cache OpenBLAS/MKL thread count at C-extension load. AST
     walk covers BOTH `import X` and `from X import ...` forms. Production
     incident 2026-04-29: scan loop 7.75s, 0 candidates in 5 min when this
-    contract broke."""
+    contract broke.
+
+    Bit 9.3-iii.c (2026-05-11): bot/_impl.py was DELETED. The OMP-pinning
+    invariant is now enforced at bot/__main__.py (the canonical entry that
+    imports `bot._thread_env` BEFORE `from bot.main_loop import MainLoop`)
+    and defensively at bot/boot.py (which `__import__("bot._thread_env")`s
+    before scripts/cal_mlp/integration loads numpy/scipy/torch transitively).
+    The sister test `test_thread_env_imported_before_numerical_libs_in_bot_boot`
+    covers the post-deletion canonical path. This test self-skips when
+    bot/_impl.py is absent — preserved as a structural breadcrumb."""
     bot_py = Path(__file__).resolve().parents[1] / 'bot/_impl.py'
+    if not bot_py.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — OMP-pinning invariant moved to bot/__main__.py + bot/boot.py; sister test covers canonical path")
     thread_env_line, numerical_line = _first_lineno_of_numerical_or_thread_env(
         bot_py.read_text()
     )

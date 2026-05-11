@@ -65,14 +65,14 @@ def test_subpackage_exports_both_classes():
 
 
 def test_deribit_identity_through_bot_impl():
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.fetchers as bf
     import bot.fetchers.deribit as bfd
     assert b.DeribitDVOLFetcher is bf.DeribitDVOLFetcher is bfd.DeribitDVOLFetcher
 
 
 def test_coinglass_identity_through_bot_impl():
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.fetchers as bf
     import bot.fetchers.coinglass as bfc
     assert b.CoinGlassFetcher is bf.CoinGlassFetcher is bfc.CoinGlassFetcher
@@ -100,6 +100,7 @@ def test_class_not_defined_in_bot_impl(class_name):
     Mirrors test_kalshi_client_class_not_defined_in_bot_impl (Bit 4.3).
     """
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
+    if not bot_impl.exists() if hasattr(bot_impl, 'exists') else not __import__('os').path.exists(bot_impl): pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c)")
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
     classdefs = [
         node for node in ast.iter_child_nodes(tree)
@@ -119,6 +120,7 @@ def test_bot_impl_imports_fetchers_subpackage():
     AST-based to avoid false matches inside docstrings/comments.
     """
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
+    if not bot_impl.exists() if hasattr(bot_impl, 'exists') else not __import__('os').path.exists(bot_impl): pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c)")
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
     imported = set()
     for node in ast.iter_child_nodes(tree):

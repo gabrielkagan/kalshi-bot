@@ -556,6 +556,7 @@ class TestSTCShadowGate(unittest.TestCase):
     def test_extended_floor_values(self):
         """Per-asset STC extended floors must be >= normal asset floors."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertGreaterEqual(bot.constants.STC_EXTENDED_BTC_MIN_PRICE, bot.constants.BTC_MIN_ENTRY_PRICE)
         self.assertGreaterEqual(bot.constants.STC_EXTENDED_ETH_MIN_PRICE, bot.constants.ETH_MIN_ENTRY_PRICE)
         self.assertGreaterEqual(bot.constants.STC_EXTENDED_SOL_MIN_PRICE, bot.constants.SOL_MIN_ENTRY_PRICE)
@@ -569,6 +570,7 @@ class TestSTCShadowGate(unittest.TestCase):
         setups. The cap clamps SOL rescue sizing to 25ct to limit tail loss.
         """
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertTrue(hasattr(bot.constants, "SOL_RESCUE_CONTRACT_CAP"))
         self.assertIsInstance(bot.constants.SOL_RESCUE_CONTRACT_CAP, int)
         # Sanity: should be positive and less than a typical Kelly output
@@ -582,6 +584,7 @@ class TestSTCShadowGate(unittest.TestCase):
         changes the clamp pattern gets caught.
         """
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         # Simulate the rescue branch's inline clamp on SOL with Kelly=80
         sizing = {"contracts": 80}
         asset = "SOL"

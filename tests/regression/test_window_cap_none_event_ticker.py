@@ -41,8 +41,9 @@ def _read_bot():
     """Bit 9.1 (2026-05-10): includes bot/executor.py — OrderExecutor extracted."""
     import os
     parts = []
-    with open(BOT_PATH) as f:
-        parts.append(f.read())
+    if os.path.exists(BOT_PATH):
+        with open(BOT_PATH) as f:
+            parts.append(f.read())
     _executor_path = os.path.join(os.path.dirname(BOT_PATH), "executor.py")
     if os.path.isfile(_executor_path):
         with open(_executor_path) as f:
@@ -194,7 +195,7 @@ class TestExistingWindowCostForTimeslotHelper(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Import lazily so CALMLP_ENABLED env can be honored.
-        from bot._impl import OrderExecutor  # noqa: WPS433
+        from bot.executor import OrderExecutor
         cls.OrderExecutor = OrderExecutor
 
     def helper(self, positions, timeslot):

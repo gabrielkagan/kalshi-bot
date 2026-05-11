@@ -45,8 +45,10 @@ def _read_bot():
     bot/scanner/__init__.py. Phase D's annotate site, scan for-loop,
     queue-snapshot strip patterns, and `_shadow_diag` reset all live
     in scanner now. Concat both files so the audit survives the move."""
-    with open(BOT_PATH) as f:
-        src = f.read()
+    src = ""
+    if os.path.exists(BOT_PATH):
+        with open(BOT_PATH) as f:
+            src = f.read()
     if os.path.isfile(SCANNER_PATH):
         with open(SCANNER_PATH) as f:
             src += "\n" + f.read()

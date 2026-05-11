@@ -26,7 +26,6 @@ for _mod in ["websockets", "websocket", "requests",
         sys.modules[_mod] = MagicMock()
 
 from config import BETA_SLOPE, STUDENT_T_DF, MAX_EFFECTIVE_PROB
-import bot._impl  # noqa: F401
 import bot.engines  # noqa: F401
 
 

@@ -42,8 +42,9 @@ BOT_PY = os.path.join(
 
 
 def _find_tick_method() -> ast.FunctionDef:
-    with open(BOT_PY) as f:
-        tree = ast.parse(f.read())
+    if os.path.exists(BOT_PY):
+        with open(BOT_PY) as f:
+            tree = ast.parse(f.read())
     for cls in ast.walk(tree):
         if isinstance(cls, ast.ClassDef) and cls.name == "MainLoop":
             for node in cls.body:
@@ -56,8 +57,10 @@ def _find_tick_method() -> ast.FunctionDef:
 class TestEGARCHRefitIsThreaded(unittest.TestCase):
 
     def test_main_loop_has_egarch_refit_running_guard(self):
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn(
             "_egarch_refit_running", src,
             "MainLoop must declare a `_egarch_refit_running` flag to "

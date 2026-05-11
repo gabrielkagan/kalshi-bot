@@ -64,7 +64,7 @@ def test_logger_identity_through_bot_impl():
     (`logger: Logger`) resolve at class-body time. Identity here =
     identity-checkable annotation handoff.
     """
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.logger as bl
     assert b.Logger is bl.Logger
 
@@ -87,6 +87,7 @@ def test_logger_class_not_defined_in_bot_impl():
     module scope.
     """
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
+    if not bot_impl.exists() if hasattr(bot_impl, 'exists') else not __import__('os').path.exists(bot_impl): pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c)")
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
     module_level_classdefs = {
         node.name for node in tree.body if isinstance(node, ast.ClassDef)
@@ -102,6 +103,8 @@ def test_bot_impl_imports_logger():
     type annotations on OpportunityScanner/OrderExecutor/SettlementTracker
     resolve at class-body time.
     """
+    if not (REPO_ROOT / "bot" / "_impl.py").exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = (REPO_ROOT / "bot" / "_impl.py").read_text()
     assert "from bot.logger import Logger" in src
 
@@ -287,14 +290,16 @@ def test_no_circular_bot_impl_import_in_logger():
 
 
 def test_importing_bot_impl_does_not_clobber_root_logger():
-    """Importing bot._impl (which now triggers `from bot.logger import Logger`)
+    """Importing bot._impl (which used to trigger `from bot.logger import Logger`)
     must NOT install handlers on the root logger or call basicConfig.
-    Subprocess isolation — root-logger state in the parent pytest worker is
-    already tainted by other test imports.
+
+    Bit 9.3-iii.c (2026-05-11): bot/_impl.py was DELETED. The regression target
+    no longer exists; the equivalent invariant lives on for the canonical home —
+    importing `bot.logger` directly must remain side-effect free.
     """
     code = (
         "import logging; pre=len(logging.getLogger().handlers); "
-        "import bot._impl; "
+        "import bot.logger; "
         "post=len(logging.getLogger().handlers); "
         "assert pre == post, f'root handler delta: {pre} -> {post}'"
     )

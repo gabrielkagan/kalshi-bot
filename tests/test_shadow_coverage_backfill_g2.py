@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts"))
 
 def _make_db_with_eval_schema(tmp_path):
     import bot
+    import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
     sm = bot.state.StateManager(str(tmp_path / "test.db"))
     return sm
 

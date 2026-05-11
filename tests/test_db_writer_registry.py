@@ -317,7 +317,11 @@ import ast
 # DELETE/commit on the module's connection). supabase_sync.py is a state.db
 # READER (writes go to Supabase HTTP), so it's not tracked here.
 WRITER_MODULES = [
-    "bot/_impl.py",
+    # Bit 9.3-iii.c (2026-05-11): bot/_impl.py was DELETED — the writer-tracking
+    # contract for the residual shim is vacuous. The actual writers that lived
+    # in bot/_impl.py have all been extracted to their canonical homes
+    # (bot/scanner/__init__.py, bot/executor.py, bot/state.py, bot/settlement.py,
+    # bot/main_loop.py) and are covered transitively by other tests.
     "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
     "market_observations_snapshotter.py",
     "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
@@ -388,9 +392,13 @@ def test_state_manager_failure_log_includes_recent_writes():
     released JUST before our BEGIN IMMEDIATE returned SQLITE_BUSY —
     so snapshot_active() returns []. recent_writes() captures writes
     that finished within the last few seconds, which (per RCA) contains
-    the intra-process lock-holder."""
-    bot_impl = (ROOT / "bot" / "_impl.py").read_text()
-    assert "recent_writes" in bot_impl, (
-        "insert_evaluated_opportunity failure log must include "
+    the intra-process lock-holder.
+
+    Bit 7.1 retarget (2026-05-10): the StateManager and its failure log moved
+    to bot/state.py. Bit 9.3-iii.c (2026-05-11): bot/_impl.py was DELETED —
+    pin scans bot/state.py (canonical home of insert_evaluated_opportunity)."""
+    state_src = (ROOT / "bot" / "state.py").read_text()
+    assert "recent_writes" in state_src, (
+        "bot/state.py's insert_evaluated_opportunity failure log must include "
         "recent_writes(window_s=...) output via 'recent_writes=' field."
     )

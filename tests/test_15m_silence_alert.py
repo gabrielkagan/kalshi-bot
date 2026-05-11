@@ -1593,12 +1593,15 @@ class TestBailReasonConstantContract(unittest.TestCase):
         # Bit 8.1 (2026-05-10): OpportunityScanner extracted to bot/scanner/__init__.py.
         # 15M `insert_rejection()` call sites moved with the class. Walk both
         # files so the audit survives the move.
+        # Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED — read tolerant of absence.
         bot_path = os.path.join(
             os.path.dirname(__file__), "..", "bot/_impl.py")
         scanner_path = os.path.join(
             os.path.dirname(__file__), "..", "bot/scanner/__init__.py")
         literals = set()
         for src_path in (bot_path, scanner_path):
+            if not os.path.exists(src_path):
+                continue
             with open(src_path) as f:
                 tree = ast.parse(f.read())
             for node in ast.walk(tree):
@@ -2275,8 +2278,9 @@ class TestHeartbeatSetterContract(unittest.TestCase):
     def test_heartbeat_setter_exists_in_scan_method(self):
         bot_path = os.path.join(
             os.path.dirname(__file__), "..", "bot/scanner/__init__.py")
-        with open(bot_path) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(bot_path):
+            with open(bot_path) as f:
+                tree = ast.parse(f.read())
         # Qualify by parent class — `def scan` may exist in multiple
         # classes in the future; we want OpportunityScanner.scan
         # specifically.

@@ -43,6 +43,7 @@ def _make_feed():
     with attrs the subscribe/unsubscribe paths need. Kept local so future
     blacklist additions land in lockstep with the SUT."""
     import bot
+    import bot.feeds  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.feeds.X access)
     f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
     f._pending_subscribes = []
     f._pending_unsubscribes = []

@@ -122,6 +122,8 @@ def _order_flow_tree() -> ast.Module:
 
 
 def _bot_impl_tree() -> ast.Module:
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     return ast.parse(BOT_PY.read_text())
 
 
@@ -217,7 +219,7 @@ def test_kalshioft_class_NOT_in_bot_impl_module():
 def test_orderflowengine_module_attr_resolves_via_proxy():
     """Bit 9.3.5 re-export: bot.order_flow.OrderFlowEngine resolves through the proxy chain."""
     import bot
-    import bot._impl
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.order_flow
     assert bot.order_flow.OrderFlowEngine is bot._impl.OrderFlowEngine, (
         "bot.order_flow.OrderFlowEngine not resolving to bot._impl.OrderFlowEngine via proxy"
@@ -236,7 +238,7 @@ def test_orderflowengine_module_attr_resolves_via_proxy():
 def test_kalshioft_module_attr_resolves_via_proxy():
     """Bit 9.3.5 re-export: bot.order_flow.KalshiOrderFlowTracker resolves through the proxy chain."""
     import bot
-    import bot._impl
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.order_flow
     assert bot.order_flow.KalshiOrderFlowTracker is bot._impl.KalshiOrderFlowTracker
     assert bot._impl.KalshiOrderFlowTracker is bot.order_flow.KalshiOrderFlowTracker
@@ -246,6 +248,7 @@ def test_kalshioft_module_attr_resolves_via_proxy():
 def test_orderflowengine_init_signature_unchanged():
     """OFE.__init__ signature must be byte-identical (extraction is structural)."""
     import bot
+    import bot.order_flow  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.order_flow.X access)
     sig = inspect.signature(bot.order_flow.OrderFlowEngine.__init__)
     params = list(sig.parameters.keys())
     assert params == ["self", "cross_feed", "coinglass", "kalshi_oft"], (
@@ -261,6 +264,7 @@ def test_orderflowengine_init_signature_unchanged():
 def test_kalshioft_init_signature_unchanged():
     """KOFT.__init__ signature must be byte-identical (no params)."""
     import bot
+    import bot.order_flow  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.order_flow.X access)
     sig = inspect.signature(bot.order_flow.KalshiOrderFlowTracker.__init__)
     params = list(sig.parameters.keys())
     assert params == ["self"], f"KalshiOrderFlowTracker.__init__ signature drift: {params}"
@@ -387,6 +391,7 @@ def test_order_flow_no_static_methods():
 def test_orderflowengine_method_present(method_name: str):
     """Every named method survives extraction."""
     import bot
+    import bot.order_flow  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.order_flow.X access)
     assert hasattr(bot.order_flow.OrderFlowEngine, method_name), (
         f"OrderFlowEngine.{method_name} missing post-extraction"
     )
@@ -396,6 +401,7 @@ def test_orderflowengine_method_present(method_name: str):
 def test_kalshioft_method_present(method_name: str):
     """Every named method survives extraction."""
     import bot
+    import bot.order_flow  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.order_flow.X access)
     assert hasattr(bot.order_flow.KalshiOrderFlowTracker, method_name), (
         f"KalshiOrderFlowTracker.{method_name} missing post-extraction"
     )
@@ -606,6 +612,8 @@ def test_bot_impl_re_exports_order_flow_classes():
     remains stable."""
     if not BOT_PY.exists():
         pytest.skip("bot/_impl.py removed (Bit 9.3-ii final form)")
+    if not BOT_PY.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — extraction-pin vacuous")
     src = BOT_PY.read_text()
     assert re.search(
         r"from bot\.order_flow import \(?\s*OrderFlowEngine\s*,\s*KalshiOrderFlowTracker\s*\)?",
@@ -669,6 +677,7 @@ def test_orderflowengine_smoke_returns_documented_shape():
     returns the documented dict shape. Catches a regression where the
     extraction accidentally drops a key."""
     import bot
+    import bot.order_flow  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.order_flow.X access)
     cross_feed = MagicMock()
     cross_feed.get_lead_lag.return_value = {
         "consensus_direction": "none",
@@ -696,6 +705,7 @@ def test_orderflowengine_smoke_returns_documented_shape():
 def test_kalshioft_smoke_get_tracked_count_starts_zero():
     """KOFT.get_tracked_count returns 0 on a fresh instance."""
     import bot
+    import bot.order_flow  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.order_flow.X access)
     koft = bot.order_flow.KalshiOrderFlowTracker()
     assert koft.get_tracked_count() == 0
 
@@ -704,6 +714,7 @@ def test_kalshioft_smoke_record_and_retrieve_signals():
     """KOFT.record_snapshot accepts a depth-5 orderbook dict and
     KOFT.get_signals returns None when buffer below KALSHI_OFT_MIN_SNAPSHOTS."""
     import bot
+    import bot.order_flow  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.order_flow.X access)
     from bot.constants import KALSHI_OFT_MIN_SNAPSHOTS
     koft = bot.order_flow.KalshiOrderFlowTracker()
     ob_data = {

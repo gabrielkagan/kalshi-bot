@@ -86,28 +86,28 @@ def test_subpackage_exports_all_classes():
 
 
 def test_coinbase_identity_through_bot_impl():
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.feeds as bf
     import bot.feeds.coinbase as bfc
     assert b.CoinbaseFeed is bf.CoinbaseFeed is bfc.CoinbaseFeed
 
 
 def test_orderbook_schema_identity_through_bot_impl():
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.feeds as bf
     import bot.feeds.orderbook_schema as bfo
     assert b.OrderbookSchemaError is bf.OrderbookSchemaError is bfo.OrderbookSchemaError
 
 
 def test_cross_exchange_identity_through_bot_impl():
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.feeds as bf
     import bot.feeds.cross_exchange as bfx
     assert b.CrossExchangeFeed is bf.CrossExchangeFeed is bfx.CrossExchangeFeed
 
 
 def test_kalshi_identity_through_bot_impl():
-    import bot._impl as b
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     import bot.feeds as bf
     import bot.feeds.kalshi as bfk
     assert b.KalshiFeed is bf.KalshiFeed is bfk.KalshiFeed
@@ -139,10 +139,13 @@ def test_class_not_defined_in_bot_impl(class_name):
     """Future drift guard: catches "I'll just add it back to _impl.py".
 
     Mirrors test_fetchers_extraction.py (Bit 4.4). Bit 4.5b adds KalshiFeed
-    to the parametrize list; the re-import chain in bot/_impl.py is the only
-    place the name should resolve from.
-    """
+    to the parametrize list; the re-import chain in bot/_impl.py was the only
+    place the name should resolve from pre-Bit-9.3-iii.c. Post-Bit-9.3-iii.c
+    bot/_impl.py is DELETED — the negative pin is vacuous (no file to define
+    classes in)."""
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
+    if not bot_impl.exists():
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c) — negative pin vacuous")
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
     classdefs = [
         node for node in ast.iter_child_nodes(tree)
@@ -161,6 +164,7 @@ def test_swallow_persist_exception_not_defined_in_bot_impl():
     alongside CoinbaseFeed (its sole consumer). bot/_impl.py must NOT
     redefine it."""
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
+    if not bot_impl.exists() if hasattr(bot_impl, 'exists') else not __import__('os').path.exists(bot_impl): pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c)")
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
     funcdefs = [
         node for node in ast.iter_child_nodes(tree)
@@ -180,6 +184,7 @@ def test_bot_impl_imports_feeds_subpackage():
     AST-based to avoid false matches inside docstrings/comments.
     """
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
+    if not bot_impl.exists() if hasattr(bot_impl, 'exists') else not __import__('os').path.exists(bot_impl): pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c)")
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
     imported = set()
     for node in ast.iter_child_nodes(tree):

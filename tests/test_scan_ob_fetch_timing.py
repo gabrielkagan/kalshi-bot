@@ -53,8 +53,10 @@ class TestScanOBFetchTiming(unittest.TestCase):
     def test_ob_fetch_log_includes_ticker(self):
         """Log must name the ticker so we can correlate slow fetches
         with WS_DRIFT_AUTO_FLAG events on specific tickers."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         idx = 0
         found = False
         while True:

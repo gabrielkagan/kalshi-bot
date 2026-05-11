@@ -55,6 +55,7 @@ BOT_PY = os.path.join(
 def _make_feed():
     """Same fixture as test_ws_force_resubscribe.py — bypass __init__."""
     import bot
+    import bot.feeds  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.feeds.X access)
     f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
     f._pending_subscribes = []
     f._pending_unsubscribes = []
@@ -282,8 +283,10 @@ class TestAstMainHandlerLogsErrors(unittest.TestCase):
     branch and call logging.warning with WS_ERROR_FRAME."""
 
     def test_handle_message_branches_on_error_type(self):
-        with open(BOT_PY) as fh:
-            src = fh.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as fh:
+                src = fh.read()
         tree = ast.parse(src)
         target = None
         for cls in ast.walk(tree):
@@ -324,6 +327,7 @@ class TestTimeoutFallbackKeepsSidForDrain(unittest.TestCase):
 
     def test_timeout_fallback_keeps_sid_for_drain(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
         f._subscribed_tickers.add("KXBTC15M-LOOP")
         f._ticker_to_sid["KXBTC15M-LOOP"] = 500

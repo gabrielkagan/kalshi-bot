@@ -79,7 +79,6 @@ from bot.models import PositionSizer, calculate_fee, calculate_taker_fee, strate
 from bot.constants import (
     BALANCE_CACHE_TTL,
     BRACKET_NO_ASSUMED_PROB,
-    BRACKET_NO_ENABLED,
     BRACKET_NO_FIXED_CONTRACTS,
     BRACKET_NO_KILL_THRESHOLD,
     BRACKET_NO_MAX_CONCURRENT,
@@ -155,7 +154,6 @@ from bot.constants import (
     HOURLY_NO_KILL_THRESHOLD,
     HOURLY_NO_MAX_PRICE,
     HOURLY_NO_MIN_PRICE,
-    HOURLY_NO_SIDE_LIVE,
     HOURLY_OBSERVATION_ENABLED,
     HOURLY_OBSERVATION_ONLY,
     HOURLY_SERIES_TICKERS,
@@ -271,7 +269,6 @@ from bot.constants import (
     WEATHER_NO_MAX_PRICE,
     WEATHER_NO_MIN_PRICE,
     WEATHER_NO_SHADOW_MIN_YES_PROB,
-    WEATHER_NO_SIDE_LIVE,
     WEATHER_NO_SIDE_MIN_STC,
     WEATHER_SHADOW_CONFIGS,
     WEEKEND_DISCOUNT_LIVE,
@@ -316,6 +313,7 @@ from bot.engines import VolatilityEngine, ProbabilityEngine
 from bot.engines import calibration as _cal_state  # Bit 6.3 path-B alias
 from bot.logger import Logger
 import bot.notifier as _telegram_state  # Bit 8.1 path-A++ alias — explicit submodule import bypasses _BotProxy.__getattr__ (the `from bot import notifier` form would go through the proxy and trigger a circular `import bot._impl`)
+import bot.constants  # Bit 9.3-iii.c kill-switch fix (2026-05-11): WEATHER_NO_SIDE_LIVE / HOURLY_NO_SIDE_LIVE / BRACKET_NO_ENABLED are accessed via module-attribute (e.g. `bot.constants.WEATHER_NO_SIDE_LIVE`) rather than explicit-name imports — preserves mutation freshness so the auto-kill writes at lines ~1260/1280/1300 take effect on the next tick. Parallel to the `_telegram_state` and `_cal_state` aliases.
 from bot.db_writer_registry import tracked_write
 
 
@@ -1249,15 +1247,14 @@ class OpportunityScanner:
         self._lp_window_counts = {}  # Low-price shadow: per-window signal count
         # Weather NO-side kill switch: auto-disable if cumulative PnL below threshold
         # Check once per tick, uses module-level _weather_no_killed flag
-        if WEATHER_NO_SIDE_LIVE:
+        if bot.constants.WEATHER_NO_SIDE_LIVE:
             try:
                 _wx_no_pnl = self._state.conn.execute(
                     "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) FROM settled_trades "
                     "WHERE product_type='weather' AND side='no'"
                 ).fetchone()[0]
                 if _wx_no_pnl < WEATHER_NO_KILL_THRESHOLD:
-                    import bot._impl as _self_module
-                    _self_module.WEATHER_NO_SIDE_LIVE = False
+                    bot.constants.WEATHER_NO_SIDE_LIVE = False
                     logging.error(
                         "WEATHER_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
                         _wx_no_pnl, WEATHER_NO_KILL_THRESHOLD)
@@ -1269,15 +1266,14 @@ class OpportunityScanner:
             except Exception:
                 pass  # Non-critical
         # Hourly NO kill switch
-        if HOURLY_NO_SIDE_LIVE:
+        if bot.constants.HOURLY_NO_SIDE_LIVE:
             try:
                 _hno_pnl = self._state.conn.execute(
                     "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) FROM settled_trades "
                     "WHERE product_type='hourly' AND side='no'"
                 ).fetchone()[0]
                 if _hno_pnl < HOURLY_NO_KILL_THRESHOLD:
-                    import bot._impl as _self_module
-                    _self_module.HOURLY_NO_SIDE_LIVE = False
+                    bot.constants.HOURLY_NO_SIDE_LIVE = False
                     logging.error(
                         "HOURLY_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
                         _hno_pnl, HOURLY_NO_KILL_THRESHOLD)
@@ -1289,15 +1285,14 @@ class OpportunityScanner:
             except Exception:
                 pass  # Non-critical
         # Bracket NO kill switch (separate from general weather NO)
-        if BRACKET_NO_ENABLED:
+        if bot.constants.BRACKET_NO_ENABLED:
             try:
                 _bn_pnl = self._state.conn.execute(
                     "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) FROM settled_trades "
                     "WHERE strategy='bracket_no'"
                 ).fetchone()[0]
                 if _bn_pnl < BRACKET_NO_KILL_THRESHOLD:
-                    import bot._impl as _self_module
-                    _self_module.BRACKET_NO_ENABLED = False
+                    bot.constants.BRACKET_NO_ENABLED = False
                     logging.error(
                         "BRACKET_NO_KILL: cumulative PnL=%dc < %dc — auto-disabling",
                         _bn_pnl, BRACKET_NO_KILL_THRESHOLD)
@@ -5415,7 +5410,7 @@ class OpportunityScanner:
                         # Buy NO on bracket contracts when YES is 88-96c. Computes NO cost
                         # from YES price (bypasses corrupted _no_ask_eq). 91.7% NO rate on
                         # 157 single-strike contracts, breakeven 4-12%.
-                        if (BRACKET_NO_ENABLED
+                        if (bot.constants.BRACKET_NO_ENABLED
                                 and _wx_mtype == "bracket"
                                 and BRACKET_NO_YES_MIN <= best_ask <= BRACKET_NO_YES_MAX
                                 and seconds_remaining >= BRACKET_NO_MIN_STC):
@@ -7447,7 +7442,7 @@ class OpportunityScanner:
                 # so the previous location was structurally dead.
                 # See kb/failures/weather-no-candidate-never-fires.md
                 if (_pt == "weather"
-                        and WEATHER_NO_SIDE_LIVE
+                        and bot.constants.WEATHER_NO_SIDE_LIVE
                         and candidates is not None
                         and stc >= WEATHER_NO_SIDE_MIN_STC
                         and no_price >= WEATHER_NO_MIN_PRICE
@@ -7548,7 +7543,7 @@ class OpportunityScanner:
                 # NO price 40-54c, model edge positive, not already holding.
                 # Data: z=2.61, time-split stable (54.8% both halves), all assets positive.
                 if (_pt == "hourly"
-                        and HOURLY_NO_SIDE_LIVE
+                        and bot.constants.HOURLY_NO_SIDE_LIVE
                         and asset not in HOURLY_NO_EXCLUDED_ASSETS
                         and candidates is not None
                         and no_price >= HOURLY_NO_MIN_PRICE

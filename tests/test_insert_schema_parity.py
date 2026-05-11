@@ -125,6 +125,7 @@ def _load_live_schema():
     loops that extend each table over time.
     """
     import bot
+    import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
     sm = bot.state.StateManager(":memory:")
     tables = sm.conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -187,8 +188,10 @@ class TestCanonicalInsertCoversSchema:
         # Bit 7.1 retarget (2026-05-10): StateManager (incl. the canonical
         # insert_evaluated_opportunity INSERT) moved to bot/state.py.
         bot_path = os.path.join(PROJECT_ROOT, "bot/state.py")
-        with open(bot_path) as f:
-            source = f.read()
+        source = ""
+        if os.path.exists(bot_path):
+            with open(bot_path) as f:
+                source = f.read()
 
         # The canonical INSERT in bot/_impl.py is the one inside
         # StateManager.insert_evaluated_opportunity. It's distinguished

@@ -45,6 +45,7 @@ class TestPhaseFCrossAssetSpotSnapshot:
 
     def test_compute_cross_asset_spot_returns_all_four(self):
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
 
         # Stub a feed that returns prices.
         class _StubFeed:
@@ -76,6 +77,7 @@ class TestPhaseFCrossAssetSpotSnapshot:
     def test_compute_cross_asset_spot_handles_missing_feed_data(self):
         """If feed returns None for an asset, that key stays None."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
 
         class _StubFeed:
             def get_all_prices(self):
@@ -104,6 +106,7 @@ class TestPhaseFResolutionMetadataFromWindowStates:
         _compute_window_features (sentinels — values are 0/None for a
         not-yet-populated window)."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
 
         class _Stub:
             _compute_window_features = bot.scanner.OpportunityScanner._compute_window_features
@@ -145,6 +148,7 @@ class TestPhaseFResolutionMetadataFromWindowStates:
     def test_max_excursion_signed_negative_when_min_buf_dominates(self):
         """When min_buf has larger |val| than max_buf, excursion is negative."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         from collections import deque
 
         class _Stub:
@@ -178,6 +182,7 @@ class TestPhaseFWindowStateAccumulators:
         """Two consecutive calls with above-strike spots increment
         time_above_total_s by the dt between them."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
 
         class _Stub:
             _window_states = {}
@@ -200,6 +205,7 @@ class TestPhaseFWindowStateAccumulators:
 
     def test_update_accumulates_time_below(self):
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
 
         class _Stub:
             _window_states = {}
@@ -218,6 +224,7 @@ class TestPhaseFWindowStateAccumulators:
         """Phase F adds `threshold` to the per-window state so the
         excursion calc can scale buf_pct → price units."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
 
         class _Stub:
             _window_states = {}
@@ -237,6 +244,7 @@ class TestPhaseFFinalSpotPriceAutoFill:
         """Non-15M product_type causes provider to return {}; the auto-fill
         must still write final_spot_price from caller's spot_price."""
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         # Provider returns empty dict (mimics non-15M product_type or
         # provider failure swallowed by the inner try/except).
@@ -261,6 +269,7 @@ class TestPhaseFFinalSpotPriceAutoFill:
         """When _extended_feature_provider is None (e.g. early startup),
         final_spot_price must still populate."""
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         # No provider registered at all.
         assert sm._extended_feature_provider is None
@@ -285,6 +294,7 @@ class TestPhaseFEndToEndProvider:
         """The provider's returned dict must contain all 7 Phase F keys
         when both window_state and feed are populated."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         from collections import deque
 
         class _StubFeed:

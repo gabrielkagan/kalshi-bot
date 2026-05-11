@@ -53,8 +53,10 @@ class TestScanWindowTiming(unittest.TestCase):
         unactionable. Looks for the actual `logging.warning(...)` call
         site, not just the first textual occurrence (which may be in
         a comment)."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         # Find every occurrence of SCAN_WINDOW_SLOW and check at least
         # one has asset/ticker formatting nearby (i.e. inside a string
         # literal followed by % args).

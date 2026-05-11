@@ -30,8 +30,10 @@ def _read_bot():
     function / log-string patterns (still in bot/_impl.py) both find
     their targets in the concatenated source.
     """
-    with open(BOT_PATH) as f:
-        impl = f.read()
+    impl = ""
+    if os.path.exists(BOT_PATH):
+        with open(BOT_PATH) as f:
+            impl = f.read()
     # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
     # Concat its source so audits that grep for OpportunityScanner
     # content (filter_stage literals, gate comments, etc.) survive the move.
@@ -45,6 +47,7 @@ def _read_bot():
         with open(_executor_path) as _f:
             impl += "\n" + _f.read()
     constants_path = os.path.join(os.path.dirname(BOT_PATH), "constants.py")
+    constants = ""
     if os.path.exists(constants_path):
         with open(constants_path) as f:
             constants = f.read()

@@ -32,8 +32,10 @@ def _read_bot():
     function / log-string patterns (still in bot/_impl.py) both find
     their targets in the concatenated source.
     """
-    with open(BOT_PATH) as f:
-        impl = f.read()
+    impl = ""
+    if os.path.exists(BOT_PATH):
+        with open(BOT_PATH) as f:
+            impl = f.read()
     # Bit 8.1 (2026-05-10): scanner moved to bot/scanner/__init__.py.
     # Concat its source so audits that grep for OpportunityScanner
     # content (filter_stage literals, gate comments, etc.) survive the move.
@@ -47,6 +49,7 @@ def _read_bot():
         with open(_executor_path) as _f:
             impl += "\n" + _f.read()
     constants_path = os.path.join(os.path.dirname(BOT_PATH), "constants.py")
+    constants = ""
     if os.path.exists(constants_path):
         with open(constants_path) as f:
             constants = f.read()
@@ -671,6 +674,7 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
     def test_sol_93c_uses_20pct(self):
         """SOL DC at 93c: below tier floors, uses default 20%."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         # Tiers: [(97, 0.05), (95, 0.10)]. 93 < 95 → no tier matches → default
         risk = bot.constants.DECIDED_CONTRACT_RISK  # default
         for floor, r in bot.constants.SOL_DC_RISK_TIERS:
@@ -682,6 +686,7 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
     def test_sol_95c_uses_10pct(self):
         """SOL DC at 95c: matches 95c tier → 10%."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         risk = bot.constants.DECIDED_CONTRACT_RISK
         for floor, r in bot.constants.SOL_DC_RISK_TIERS:
             if 95 >= floor:
@@ -692,6 +697,7 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
     def test_sol_96c_uses_10pct(self):
         """SOL DC at 96c: matches 95c tier → 10%."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         risk = bot.constants.DECIDED_CONTRACT_RISK
         for floor, r in bot.constants.SOL_DC_RISK_TIERS:
             if 96 >= floor:
@@ -702,6 +708,7 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
     def test_sol_97c_uses_5pct(self):
         """SOL DC at 97c: matches 97c tier → 5%."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         risk = bot.constants.DECIDED_CONTRACT_RISK
         for floor, r in bot.constants.SOL_DC_RISK_TIERS:
             if 97 >= floor:
@@ -712,6 +719,7 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
     def test_sol_99c_uses_5pct(self):
         """SOL DC at 99c: matches 97c tier → 5%."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         risk = bot.constants.DECIDED_CONTRACT_RISK
         for floor, r in bot.constants.SOL_DC_RISK_TIERS:
             if 99 >= floor:
@@ -722,12 +730,14 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
     def test_xrp_96c_uses_20pct(self):
         """XRP DC at any price: always default 20% (no tiering)."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         # Non-SOL assets don't use SOL_DC_RISK_TIERS
         self.assertEqual(bot.constants.DECIDED_CONTRACT_RISK, 0.20)
 
     def test_btc_96c_uses_20pct(self):
         """BTC DC at any price: always default 20% (no tiering)."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertEqual(bot.constants.DECIDED_CONTRACT_RISK, 0.20)
 
 
@@ -745,11 +755,13 @@ class TestT2Z2Phase1ShadowContract(unittest.TestCase):
     def test_phase1_risk_constant_is_10pct(self):
         """DC_T2_Z2_PHASE1_RISK must be 0.10 (proposed Phase 1 sizing)."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertEqual(bot.constants.DC_T2_Z2_PHASE1_RISK, 0.10)
 
     def test_live_risk_constant_unchanged(self):
         """Live risk (DECIDED_CONTRACT_T2_Z2_RISK) must remain 0.20 — Phase 1 is shadow-only."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertEqual(bot.constants.DECIDED_CONTRACT_T2_Z2_RISK, 0.20)
 
     def test_live_enable_flag_defaults_off(self):
@@ -775,6 +787,7 @@ class TestT2Z2Phase1ShadowContract(unittest.TestCase):
     def test_phase1_shadow_in_frozenset(self):
         """dc_t2_z2_phase1_shadow must be a member of DC_SHADOW_STAGES."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertIn("dc_t2_z2_phase1_shadow", bot.constants.DC_SHADOW_STAGES)
 
     def test_phase1_shadow_block_asset_filter_btc_eth_only(self):
@@ -856,6 +869,7 @@ class TestT2Z2Phase1ShadowContract(unittest.TestCase):
         """Verify sizing formula matches expectation at sample balances."""
         # Formula: max(1, int((balance_cents * 0.10) / best_ask))
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         risk = bot.constants.DC_T2_Z2_PHASE1_RISK
         # Use raw int math to match bot's integer-cent math
         cases = [

@@ -34,6 +34,7 @@ class TestPhaseF2MakerHelper:
     def test_improve_maker_in_wide_spread(self):
         """Bid 75, ask 80 → maker post at 76, depth 0 (new level)."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         ladder_json = json.dumps({
             "yes_bids": [[75, 100], [74, 50]],
             "yes_asks": [[80, 200], [81, 50]],
@@ -49,6 +50,7 @@ class TestPhaseF2MakerHelper:
         maker). Helper returns NULL price + NULL depth — capturing the
         operational truth that a maker post is impossible at this spread."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         ladder_json = json.dumps({
             "yes_bids": [[79, 100]],
             "yes_asks": [[80, 200]],
@@ -62,6 +64,7 @@ class TestPhaseF2MakerHelper:
     def test_no_bid_returns_null(self):
         """No best bid → can't compute maker price."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         out = bot.scanner.OpportunityScanner._compute_maker_counterfactual(
             best_yes_bid=None, best_yes_ask=80, ladder_json=None,
         )
@@ -72,6 +75,7 @@ class TestPhaseF2MakerHelper:
         """No best ask → can't verify the post wouldn't cross. NULL safer
         than guessing."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         ladder_json = json.dumps({"yes_bids": [[75, 100]], "yes_asks": []})
         out = bot.scanner.OpportunityScanner._compute_maker_counterfactual(
             best_yes_bid=75, best_yes_ask=None, ladder_json=ladder_json,
@@ -84,6 +88,7 @@ class TestPhaseF2MakerHelper:
         between standard bid and ask) → maker would JOIN that level;
         depth = sum of qty at 76."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         ladder_json = json.dumps({
             "yes_bids": [[76, 50], [75, 100]],
             "yes_asks": [[80, 200]],
@@ -100,6 +105,7 @@ class TestPhaseF2MakerHelper:
         depth lookup returns 0 (no level found vs True NULL — depth=0 is
         the conservative answer for 'level didn't exist in the ladder')."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         out = bot.scanner.OpportunityScanner._compute_maker_counterfactual(
             best_yes_bid=75, best_yes_ask=80, ladder_json="{not_valid_json",
         )
@@ -111,6 +117,7 @@ class TestPhaseF2MakerHelper:
     def test_no_ladder_provided(self):
         """ladder_json=None → maker_price computable; depth=0 fallback."""
         import bot
+        import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
         out = bot.scanner.OpportunityScanner._compute_maker_counterfactual(
             best_yes_bid=75, best_yes_ask=80, ladder_json=None,
         )
@@ -125,6 +132,7 @@ class TestPhaseF2EndToEndInsert:
 
     def test_insert_picks_up_maker_fields_from_ms_cache(self):
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         sm._scan_ms_cache["TEST15M-X"] = {
             "yes_spread_cents": 5,
@@ -148,6 +156,7 @@ class TestPhaseF2EndToEndInsert:
     def test_insert_explicit_kwargs_override_cache(self):
         """Caller-provided maker fields take precedence over cache values."""
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         sm._scan_ms_cache["TEST15M-Y"] = {
             "maker_price_cents": 76, "maker_depth_at_post": 0,
@@ -167,6 +176,7 @@ class TestPhaseF2EndToEndInsert:
 
     def test_no_cache_entry_writes_null(self):
         import bot
+        import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
         sm = bot.state.StateManager(":memory:")
         # No cache entry for this ticker.
         sm.insert_evaluated_opportunity(

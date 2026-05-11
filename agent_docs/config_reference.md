@@ -1,6 +1,6 @@
 # Config Reference
 
-All values mirror constants in `bot/constants.py` (extracted from `bot/_impl.py` per Bit 3.1; re-exported into `bot/_impl.py` via `from bot.constants import *`). `market_config.py` asserts they match at startup.
+All values mirror constants in `bot/constants.py` (canonical home post-Bit-3.1; bot/_impl.py was DELETED in Bit 9.3-iii.c so the historical `from bot.constants import *` re-export chain is gone — callers reach constants directly via `bot.constants.X` or via `from bot.constants import X`). `market_config.py` asserts they match at startup.
 On change, run `make doc-drift` (alias for `python3 scripts/doc_drift_check.py`) and update this file in the same commit.
 
 ## Global / 15M

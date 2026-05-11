@@ -32,18 +32,18 @@ import bot_state_snapshot  # noqa: E402
 
 @pytest.fixture(scope="module")
 def bot_py_source() -> str:
-    """Bit 7.1 retarget (2026-05-10): StateManager (incl. set_bot_state_provider
-    and the insert_evaluated_opportunity timing wiring this test pins) moved
-    to bot/state.py. Bit 9.3 retarget (2026-05-10): MainLoop (incl. the
-    `_scan_iter = 0` init this test pins) moved to bot/main_loop.py. Concat
-    all four so any pattern resolves regardless of file."""
-    return (
-        (((ROOT / 'bot/_impl.py').read_text() + '\n' + (ROOT / 'bot/scanner/__init__.py').read_text()))
-        + "\n"
-        + (ROOT / "bot/state.py").read_text()
-        + "\n"
-        + (ROOT / "bot/main_loop.py").read_text()
-    )
+    """Bit 7.1 retarget (2026-05-10): StateManager moved to bot/state.py.
+    Bit 9.3 retarget (2026-05-10): MainLoop moved to bot/main_loop.py.
+    Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED — read tolerant of absence.
+    Concat all four so any pattern resolves regardless of file."""
+    parts = []
+    impl = ROOT / "bot/_impl.py"
+    if impl.exists():
+        parts.append(impl.read_text())
+    parts.append((ROOT / "bot/scanner/__init__.py").read_text())
+    parts.append((ROOT / "bot/state.py").read_text())
+    parts.append((ROOT / "bot/main_loop.py").read_text())
+    return "\n".join(parts)
 
 
 # ── Helper module location ───────────────────────────────────────────────

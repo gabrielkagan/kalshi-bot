@@ -34,8 +34,9 @@ def _read_bot():
     concatenated source.
     """
     parts = []
-    with open(BOT_PATH) as f:
-        parts.append(f.read())
+    if os.path.exists(BOT_PATH):
+        with open(BOT_PATH) as f:
+            parts.append(f.read())
     # Bit 8.1 (2026-05-10): append scanner source to parts too.
     _scanner_path = os.path.join(os.path.dirname(BOT_PATH), "scanner", "__init__.py")
     if os.path.isfile(_scanner_path):
@@ -514,8 +515,10 @@ class TestAdversarialRegressions(unittest.TestCase):
         cf_pnl is unaffected: it uses depth at sweep tiers (98/99) not at the
         entry tier (96), and a single-price IOC at 96c cannot consume from
         higher tiers — so 98/99 depths are NOT polluted by our own fill."""
-        with open(BOT_PATH) as f:
-            source = f.read()
+        source = ""
+        if os.path.exists(BOT_PATH):
+            with open(BOT_PATH) as f:
+                source = f.read()
         start = source.find("def _execute_tm_taker")
         end = source.find("\n    def ", start + 10)
         body = source[start:end]

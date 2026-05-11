@@ -69,9 +69,12 @@ operator-invoked.
   `.importlinter` contracts (`bot-no-torch`, `bot-no-pandas`, Bit
   12.3) enforce this. Use `scripts/cal_mlp/integration.py` as the
   single entry point (it constrains threads at module-import time).
-- Don't add `bot/_impl.py` logic. The file is a re-export shim (~582
-  LOC residual post-Bit-9.3-ii) scheduled for deletion in Bit
-  9.3-iii. Logic goes in subpackages.
+- Don't recreate `bot/_impl.py`. The file was DELETED in Bit 9.3-iii.c
+  (2026-05-11) — Sprint 9 main modularization is CLOSED. Logic lives
+  in canonical submodules (`bot/main_loop.py`, `bot/scanner/__init__.py`,
+  `bot/executor.py`, `bot/settlement.py`, `bot/state.py`, `bot/order_flow.py`,
+  `bot/orphan_db_watchdog.py`, `bot/boot.py`, `bot/runtime_config.py`,
+  `bot/engines/`, `bot/feeds/`, `bot/fetchers/`, `bot/helpers/`, etc.).
 - Don't add async.
 - Don't switch from SQLite / JSONL journals.
 - Don't write tests unsolicited (regression tests after bug fixes

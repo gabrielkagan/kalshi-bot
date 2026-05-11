@@ -52,6 +52,7 @@ BOT_PY = os.path.join(
 def _make_executor():
     """Build a real OrderExecutor with mocked I/O. Mirrors test_maker_tail."""
     import bot
+    import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
     client = MagicMock()
     state = MagicMock()
     logger = MagicMock()
@@ -342,8 +343,10 @@ class TestMakerTailCoexistence(unittest.TestCase):
         """AST regression: in _submit_taker, _maybe_ladder_escalate must
         be called BEFORE _maybe_post_maker_tail. Order matters — we
         prefer active ladder over passive tail."""
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         tree = ast.parse(src)
         submit_fn = None
         for cls in ast.walk(tree):
@@ -542,8 +545,10 @@ class TestKillSwitchDefault(unittest.TestCase):
         # Bit 3.1: LADDER_ESCALATION_ENABLED definition lives in
         # bot/constants.py post-extraction. Concatenate both sources so
         # the regex finds the assignment regardless of which file it lives in.
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         constants_path = os.path.join(os.path.dirname(BOT_PY), "constants.py")
         if os.path.exists(constants_path):
             with open(constants_path) as f:
@@ -744,8 +749,9 @@ class TestRetryCounterNotDoubleCount(unittest.TestCase):
         """AST regression: _submit_taker's `_session_ioc_fills += 1`
         must be guarded by NOT _is_ladder_retry, mirroring the
         existing entry_path != 'confirmation_addon' guard."""
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         submit_fn = None
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)

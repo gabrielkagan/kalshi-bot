@@ -41,6 +41,7 @@ def _make_executor():
     """Construct a minimal OrderExecutor that can exercise the
     rolling-window helper without touching network or DB."""
     import bot
+    import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
     ex = bot.executor.OrderExecutor.__new__(bot.executor.OrderExecutor)
     ex._client = MagicMock()
     ex._state = MagicMock()
@@ -58,8 +59,10 @@ class TestConstantDefined(unittest.TestCase):
     duration so it can be tuned without touching logic."""
 
     def test_window_constant_defined(self):
-        with open(BOT_PY) as f:
-            src = f.read()
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
         self.assertIn(
             "IOC_DRIFT_CHECK_REST_WINDOW_S", src,
             "bot/_impl.py must define IOC_DRIFT_CHECK_REST_WINDOW_S as a "
@@ -106,6 +109,7 @@ class TestRollingBuffer(unittest.TestCase):
         uses `time.monotonic()` for cutoff math (R1 P1 fix), so the
         synthetic timestamp must also be monotonic-domain."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         from collections import deque
         old_ts = (time.monotonic()
                   - bot.constants.IOC_DRIFT_CHECK_REST_WINDOW_S - 5.0)
@@ -230,8 +234,9 @@ class TestRecordObservationHardening(unittest.TestCase):
         # AST-walk: `_record_rest_depth_observation` and
         # `_rest_depth_window_max` must call `time.monotonic`, not
         # `time.time`, for cutoff calculations.
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         seen = {}  # name -> (uses_monotonic, uses_time_time)
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
@@ -320,6 +325,7 @@ class TestRecordObservationHardening(unittest.TestCase):
         expire, the dict entry must be removed so settled markets
         don't accumulate forever (15M markets cycle every 15 min)."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         from collections import deque
         ticker = "KXBTC-EXPIRED"
         # Insert an expired sample directly.
@@ -345,8 +351,9 @@ class TestAstWiringDriftCheck(unittest.TestCase):
     calling the raw helper directly. This test catches that."""
 
     def test_drift_check_uses_smoothed_helper(self):
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         # Find the OrderExecutor method that ACTUALLY logs
         # IOC_CACHE_DRIFT (i.e., contains a `logging.warning` Call
         # whose first arg is a string starting with that marker).
@@ -415,8 +422,9 @@ class TestInitWiresBuffer(unittest.TestCase):
     the IOC submit path."""
 
     def test_init_assigns_rest_depth_observations(self):
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
                     or cls.name != "OrderExecutor"):
@@ -482,6 +490,7 @@ class TestColdStartGate(unittest.TestCase):
     def test_window_count_excludes_expired_samples(self):
         """Expired samples must NOT count toward the cold-start gate."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         from collections import deque
         old_ts = (time.monotonic()
                   - bot.constants.IOC_DRIFT_CHECK_REST_WINDOW_S - 5.0)
@@ -498,6 +507,7 @@ class TestColdStartGate(unittest.TestCase):
         sample = no smoothing. A future refactor that lowered to 1
         would silently re-enable the pre-fix bug."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         self.assertGreaterEqual(
             bot.executor.OrderExecutor._REST_DEPTH_MIN_SAMPLES_FOR_CLAMP, 2,
             "Smoothed clamp requires ≥2 samples; otherwise it "
@@ -508,8 +518,9 @@ class TestColdStartGate(unittest.TestCase):
         consult `_rest_depth_window_count` (or equivalent gate)
         before applying the clamp. Without this gate, cold-start
         IOCs use single-sample peak and re-introduce the regression."""
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         target_fn = None
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
@@ -585,6 +596,7 @@ class TestEndToEndFlickerNotClamped(unittest.TestCase):
         """Once all-high samples expire from the window, persistent
         low samples should produce a low peak (real phantom case)."""
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         from collections import deque
         # Pre-load expired high samples.
         old_ts = (time.monotonic()
@@ -612,6 +624,7 @@ class TestPhantomAbortEndToEnd(unittest.TestCase):
 
     def test_fresh_zero_triggers_phantom_abort_through_submit_taker(self):
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         from unittest.mock import patch
         # Build a real OrderExecutor (existing _make_executor in
         # tests/test_execution.py uses real __init__; we replicate
@@ -681,8 +694,9 @@ class TestPhantomAbortStillFires(unittest.TestCase):
     book wouldn't trigger the abort."""
 
     def test_phantom_abort_branch_checks_rest_fresh(self):
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         # Locate the OrderExecutor method that emits IOC_ABORT_PHANTOM.
         target_fn = None
         for cls in ast.walk(tree):
@@ -732,6 +746,7 @@ class TestColdStartCatastrophicDrift(unittest.TestCase):
 
     def test_constant_defined_and_strict(self):
         import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         self.assertTrue(
             hasattr(bot.constants, "IOC_DRIFT_CHECK_COLD_START_RATIO"),
             "IOC_DRIFT_CHECK_COLD_START_RATIO must be defined as a "
@@ -752,8 +767,9 @@ class TestColdStartCatastrophicDrift(unittest.TestCase):
         must reference IOC_DRIFT_CHECK_COLD_START_RATIO. A future
         refactor that removed the catastrophic-drift escape hatch
         would re-introduce the Apr 25 micro-fill bug."""
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         target_fn = None
         for cls in ast.walk(tree):
             if (not isinstance(cls, ast.ClassDef)
@@ -793,6 +809,7 @@ class TestColdStartCatastrophicDrift(unittest.TestCase):
         deep depth, fresh REST returns near-zero. Without the escape
         hatch, this is the exact path that produced 1ct micro-fills."""
         import bot
+        import bot.executor  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.executor.X access)
         from unittest.mock import patch
         client = MagicMock()
         state = MagicMock()

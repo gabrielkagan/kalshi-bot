@@ -37,6 +37,7 @@ def _make_main_loop():
     """Minimal OpportunityScanner fixture (the watchdog lives
     there, not on MainLoop)."""
     import bot
+    import bot.scanner  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.scanner.X access)
     sc = bot.scanner.OpportunityScanner.__new__(bot.scanner.OpportunityScanner)
     sc._scan_15m_process_start_ts = (
         time.time() - 10 * 60)  # uptime 10 min — past the 7 min gate

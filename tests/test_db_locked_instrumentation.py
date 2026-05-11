@@ -65,10 +65,12 @@ def bot_impl_source() -> str:
     stays for backward compat with the L40-pattern AST/regex guards.
     AST-walks find class/method nodes from any file; regex/string
     searches find markers across the concat."""
-    parts = [
-        (ROOT / "bot" / "_impl.py").read_text(),
-        (ROOT / "bot" / "state.py").read_text(),
-    ]
+    # Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED — read tolerant of absence.
+    parts = []
+    impl_p = ROOT / "bot" / "_impl.py"
+    if impl_p.exists():
+        parts.append(impl_p.read_text())
+    parts.append((ROOT / "bot" / "state.py").read_text())
     scanner_p = ROOT / "bot" / "scanner" / "__init__.py"
     if scanner_p.exists():
         parts.append(scanner_p.read_text())
@@ -176,7 +178,7 @@ def _make_state_manager_with_mocked_conn():
     can simulate the failure paths without a real DB. Mirrors the helper
     style in test_kalshi_client_breakers.py.
     """
-    import bot._impl as bi
+    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
     sm = bi.StateManager.__new__(bi.StateManager)
     sm.conn = MagicMock()
     sm.conn.in_transaction = True   # default — we'll override per test

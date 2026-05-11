@@ -115,8 +115,9 @@ class TestDriftProbeWiring(unittest.TestCase):
 
     @staticmethod
     def _find_method(cls_name: str, method_name: str) -> ast.FunctionDef:
-        with open(BOT_PY) as f:
-            tree = ast.parse(f.read())
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                tree = ast.parse(f.read())
         for cls in ast.walk(tree):
             if isinstance(cls, ast.ClassDef) and cls.name == cls_name:
                 for node in cls.body:
