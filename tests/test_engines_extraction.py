@@ -101,11 +101,11 @@ def test_volatility_identity_through_bot_impl():
 
 
 def test_volatility_identity_through_bot_proxy():
-    """bot.VolatilityEngine resolves through `bot._BotProxy` to the
+    """bot.engines.VolatilityEngine resolves through `bot._BotProxy` to the
     canonical class object. Production paths use this chain."""
     import bot
     import bot.engines.volatility as bev
-    assert bot.VolatilityEngine is bev.VolatilityEngine
+    assert bot.engines.VolatilityEngine is bev.VolatilityEngine
 
 
 # ─── 3. Drift guards (AST) ──────────────────────────────────────────────────
@@ -587,12 +587,12 @@ def test_probability_identity_through_bot_impl():
 
 
 def test_probability_identity_through_bot_proxy():
-    """bot.ProbabilityEngine resolves through bot._BotProxy to the
+    """bot.engines.ProbabilityEngine resolves through bot._BotProxy to the
     canonical class object. tests/test_probability_engine.py uses
     `from bot import ProbabilityEngine` 11 times."""
     import bot
     import bot.engines.probability as bep
-    assert bot.ProbabilityEngine is bep.ProbabilityEngine
+    assert bot.engines.ProbabilityEngine is bep.ProbabilityEngine
 
 
 @pytest.mark.parametrize("class_name", ["ProbabilityEngine"])
@@ -981,12 +981,12 @@ def test_calibration_identity_through_bot_impl():
 
 
 def test_calibration_identity_through_bot_proxy():
-    """bot.CalibrationEngine resolves through bot._BotProxy to the
+    """bot.engines.CalibrationEngine resolves through bot._BotProxy to the
     canonical class object. tests/test_calibration_engine.py uses
     `from bot import CalibrationEngine` 11 times in setUpClass blocks."""
     import bot
     import bot.engines.calibration as bec
-    assert bot.CalibrationEngine is bec.CalibrationEngine
+    assert bot.engines.CalibrationEngine is bec.CalibrationEngine
 
 
 def test_calibration_module_attribute_post_extraction():
@@ -994,9 +994,9 @@ def test_calibration_module_attribute_post_extraction():
     re-defines the class in bot/_impl.py (or subclasses it elsewhere), the
     proxy chain might silently route to the wrong object."""
     import bot
-    assert bot.CalibrationEngine.__module__ == "bot.engines.calibration", (
-        f"bot.CalibrationEngine.__module__ = "
-        f"{bot.CalibrationEngine.__module__!r}, expected "
+    assert bot.engines.CalibrationEngine.__module__ == "bot.engines.calibration", (
+        f"bot.engines.CalibrationEngine.__module__ = "
+        f"{bot.engines.CalibrationEngine.__module__!r}, expected "
         f"'bot.engines.calibration'."
     )
 

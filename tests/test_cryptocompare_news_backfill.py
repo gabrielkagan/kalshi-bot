@@ -5,6 +5,7 @@ import os
 import sys
 
 import pytest
+import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -13,7 +14,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts"))
 
 def _make_db(tmp_path):
     import bot
-    return bot.StateManager(str(tmp_path / "test.db"))
+    return bot.state.StateManager(str(tmp_path / "test.db"))
 
 
 def _insert_eval_row(

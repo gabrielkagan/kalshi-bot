@@ -35,12 +35,8 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-from bot import (  # noqa: E402
-    compute_time_regime_features,
-    compute_derived_features,
-    SOL_RESCUE_CONTRACT_CAP,
-)
-
+from bot.constants import SOL_RESCUE_CONTRACT_CAP
+from bot.helpers.derived_features import compute_derived_features
 BATCH_SIZE = 50
 
 

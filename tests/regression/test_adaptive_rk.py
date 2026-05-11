@@ -14,6 +14,7 @@ VolatilityEngine (not a standalone class) post-extraction.
 import math
 import random
 import unittest
+import bot.feeds  # noqa: F401
 
 # ─── Constants (mirror bot/engines/volatility.py) ────────────────────────────────
 RK_CSTAR_FLAT_TOP_PARZEN = 3.5134

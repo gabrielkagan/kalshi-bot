@@ -21,6 +21,7 @@ import time
 import tempfile
 from collections import deque
 from typing import Dict, List, Optional, Tuple
+import bot.feeds  # noqa: F401
 
 # ── Constants (mirrored from bot/engines/volatility.py) ──────────────────────
 

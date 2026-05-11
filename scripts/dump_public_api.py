@@ -32,13 +32,16 @@ What this captures (three layers):
    extracted classes naturally drop out of Layer 2; new classes added to
    ``_impl.py`` (none anticipated post-Sprint-9) would naturally appear.
 
-3. **Runtime proxy probe** — imports ``bot`` and ``bot._impl`` at runtime,
-   enumerates every public name accessible via ``getattr(bot, name)`` (the
-   ``_BotProxy`` exposes ``bot._impl``'s namespace including ``from config
-   import *`` and ``from bot.constants import *`` resolutions). Captures
-   what griffe (static) cannot see: dynamic attribute access. A removed
-   star-import or a renamed proxy attribute surfaces here as a removed
-   list entry.
+3. **Runtime proxy probe** — RETIRED in Bit 9.3-iii.b (2026-05-11).
+   Pre-retirement: imported ``bot`` and ``bot._impl`` at runtime,
+   enumerated every public name accessible via ``getattr(bot, name)`` (the
+   ``_BotProxy`` exposed ``bot._impl``'s namespace including ``from config
+   import *`` and ``from bot.constants import *`` resolutions). Captured
+   what griffe (static) couldn't see: dynamic attribute access. Post-retirement
+   the proxy is gone — ``getattr(bot, name)`` no longer falls through, and
+   Layer 1 (griffe static walk of bot.* submodules) already covers every
+   name's canonical home. ``_probe_runtime_proxy_attrs`` is now a no-op; the
+   ``__bot_proxy_attrs__`` key is absent from regenerated snapshots.
 
 What this DOES NOT cover (deliberate scope):
 - ``bot/_impl.py`` source content patterns (validator-binding lines, no-leaked-
@@ -243,65 +246,33 @@ def _walk_impl_canonical_classes(out: dict[str, Any]) -> None:
 
 
 def _probe_runtime_proxy_attrs(out: dict[str, Any]) -> None:
-    """Snapshot the set of public names accessible via ``getattr(bot, name)``.
+    """Layer 3 — RETIRED in Bit 9.3-iii.b (2026-05-11).
 
-    The ``_BotProxy`` in ``bot/__init__.py`` forwards attribute access to
-    ``bot._impl``'s namespace (which includes ``from config import *`` and
-    ``from bot.constants import *`` star-imports). griffe (static) cannot
-    see this dynamic resolution; this runtime probe does.
+    Pre-retirement: snapshotted public names accessible via ``getattr(bot, name)``
+    that the ``_BotProxy`` in ``bot/__init__.py`` forwarded to ``bot._impl``'s
+    namespace (which included ``from config import *`` and ``from bot.constants
+    import *`` star-imports). griffe (static) couldn't see that dynamic resolution;
+    the runtime probe could.
 
-    Captures the failure mode: an extraction Bit silently drops a star-import
-    in bot/_impl.py, breaking ~94 ``mock.patch("bot.X")`` sites — the affected
-    names disappear from this list, snapshot diffs, CI fails.
+    Post-retirement: the proxy is gone, ``getattr(bot, name)`` no longer falls
+    through, and a probe would either (a) produce ``__bot_proxy_attrs__: []`` +
+    a 615-entry ``__bot_proxy_inaccessible__`` dict of stale AttributeErrors, or
+    (b) need to walk a different surface entirely. Neither adds value — Layer 1
+    (griffe static walk of bot.* submodules) already covers every name's canonical
+    home. This function is now a no-op kept only to preserve the public_api.json
+    schema shape during the transition to Bit 9.3-iii.c (DELETE bot/_impl.py).
     """
-    # Importing bot triggers heavy initialization (numpy, cryptography, etc.)
-    # via bot._impl — that's the cost of running this probe. Acceptable for
-    # a CI gate. ~10-20s on Mac.
-    import bot  # noqa: F401  (triggers proxy setup)
-    import bot._impl as impl
-
-    # Candidate names: everything public in bot._impl that's not a module
-    # import. We want classes, functions, attributes — including everything
-    # surfaced by `from config import *` and `from bot.constants import *`.
-    candidates = []
-    for name in dir(impl):
-        if name.startswith("_"):
-            continue
-        try:
-            value = getattr(impl, name)
-        except AttributeError:
-            continue
-        # Skip bare module re-imports (`import os`, `import requests`).
-        # These are implementation detail; if they're the names @patch
-        # relies on, the test patches into the module not the proxy.
-        if isinstance(value, ModuleType):
-            continue
-        candidates.append(name)
-
-    # Verify proxy access actually works for each candidate. Anything that
-    # errors here is a proxy bug worth surfacing.
-    accessible: list[str] = []
-    inaccessible: list[dict[str, str]] = []
-    for name in sorted(candidates):
-        try:
-            getattr(bot, name)
-            accessible.append(name)
-        except Exception as exc:  # noqa: BLE001
-            inaccessible.append({"name": name, "error": f"{type(exc).__name__}: {exc}"})
-
-    out["__bot_proxy_attrs__"] = sorted(accessible)
-    if inaccessible:
-        out["__bot_proxy_inaccessible__"] = sorted(
-            inaccessible, key=lambda d: d["name"]
-        )
+    return None  # no-op post-Bit-9.3-iii.b
 
 
 def dump_bot_public_api() -> dict[str, Any]:
-    """Three-layer snapshot of bot's public API. Deterministic across runs.
+    """Two-layer snapshot of bot's public API. Deterministic across runs.
 
     Layer 1: griffe static walk of bot.* submodules (excluding bot._impl).
     Layer 2: griffe static walk of bot._impl canonical classes.
-    Layer 3: runtime probe of bot.X proxy-accessible attrs.
+    Layer 3: (RETIRED Bit 9.3-iii.b) — runtime proxy probe — no longer applicable
+             post-proxy-retirement. _probe_runtime_proxy_attrs is a no-op until
+             Bit 9.3-iii.c deletes bot/_impl.py + this scaffolding entirely.
     """
     out: dict[str, Any] = {}
 

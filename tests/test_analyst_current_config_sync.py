@@ -17,6 +17,8 @@ import importlib
 from pathlib import Path
 
 import pytest
+import bot.constants  # noqa: F401
+import config  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ANALYST_PATH = REPO_ROOT / "analyst.py"
@@ -85,7 +87,30 @@ def current_config():
 
 @pytest.fixture(scope="module")
 def bot_module():
-    return importlib.import_module("bot")
+    """A lookup proxy that searches bot.constants then config for the constant name.
+
+    Bit 9.3-iii.b (2026-05-11): pre-retirement this was `import bot` which routed
+    `bot.X` through `_BotProxy.__getattr__` → `bot._impl.X` (resolved via either
+    `from bot.constants import *` or `from config import *`). Post-retirement the
+    proxy is gone, so this fixture explicitly searches the same two canonical homes
+    in the same priority order (bot.constants first — it's the canonical home for
+    constants extracted in Bit 3.1; config second — shared constants like
+    MAX_RISK_PER_TRADE / HOURLY_KELLY_FRACTION live there).
+    """
+    import bot.constants
+    import config
+
+    class _ConstantLookup:
+        def __getattr__(self, name):
+            if hasattr(bot.constants, name):
+                return getattr(bot.constants, name)
+            if hasattr(config, name):
+                return getattr(config, name)
+            raise AttributeError(
+                f"constant {name!r} not in bot.constants or config"
+            )
+
+    return _ConstantLookup()
 
 
 SCALAR_KEYS = (
@@ -138,7 +163,7 @@ def test_current_config_min_edge_by_price_renders_actual_tiers(
     current_config, bot_module
 ):
     """The MIN_EDGE_BY_PRICE entry is a human-readable summary string. Pin it
-    to the actual bot.MIN_EDGE_BY_PRICE list — including the catchall (floor=0)
+    to the actual bot.constants.MIN_EDGE_BY_PRICE list — including the catchall (floor=0)
     tier that covers the 75-88c band, where ETH 75c+ is live.
     """
     snapshot = current_config["MIN_EDGE_BY_PRICE"]
@@ -167,14 +192,14 @@ def test_current_config_min_edge_by_price_renders_actual_tiers(
             f"({floor_cents}, {edge_frac}). Snapshot: {snapshot!r}"
         )
     assert catchall_seen, (
-        "bot.MIN_EDGE_BY_PRICE has no catchall (floor=0) tier — this test "
+        "bot.constants.MIN_EDGE_BY_PRICE has no catchall (floor=0) tier — this test "
         "assumes the catchall exists. Update the test if bot drops it."
     )
 
 
 def test_current_config_sizing_tiers_renders_actual_tiers(current_config, bot_module):
     """SIZING_TIERS entry is a stringified list. Verify every tier in the
-    bot.SIZING_TIERS list is referenced in the snapshot string."""
+    config.SIZING_TIERS list is referenced in the snapshot string."""
     snapshot = current_config["SIZING_TIERS"]
     for edge_floor, risk_frac in bot_module.SIZING_TIERS:
         marker = f"({edge_floor},{risk_frac})"
@@ -278,7 +303,7 @@ def test_price_bucket_lower_label_matches_min_entry_price():
 
 def test_edge_schedule_matches_bot_min_edge_by_price(bot_module):
     """analyst._EDGE_SCHEDULE (function-local in compute_edge_stats) must
-    mirror bot.MIN_EDGE_BY_PRICE exactly — it drives the "halve thresholds"
+    mirror bot.constants.MIN_EDGE_BY_PRICE exactly — it drives the "halve thresholds"
     counterfactual in the alpha audit and feeds the LLM. Bit 4.2.5.1 found this
     schedule was 4-10x stale, breaking the counterfactual numerics.
     """
@@ -286,7 +311,7 @@ def test_edge_schedule_matches_bot_min_edge_by_price(bot_module):
     bot_tiers = list(bot_module.MIN_EDGE_BY_PRICE)
     assert schedule == bot_tiers, (
         f"analyst._EDGE_SCHEDULE = {schedule} drifted from "
-        f"bot.MIN_EDGE_BY_PRICE = {bot_tiers}. The 'halve thresholds' "
+        f"bot.constants.MIN_EDGE_BY_PRICE = {bot_tiers}. The 'halve thresholds' "
         f"counterfactual in compute_edge_stats uses this schedule — "
         f"any drift makes recaptured_profit_cents arithmetically wrong."
     )

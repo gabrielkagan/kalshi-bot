@@ -31,6 +31,8 @@ import os
 import sys
 
 import pytest
+import bot.scanner  # noqa: F401
+import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -59,7 +61,7 @@ class TestPhaseFCrossAssetSpotSnapshot:
 
         class _Stub:
             _feed = _StubFeed()
-        _Stub._compute_cross_asset_spot_snapshot = bot.OpportunityScanner._compute_cross_asset_spot_snapshot
+        _Stub._compute_cross_asset_spot_snapshot = bot.scanner.OpportunityScanner._compute_cross_asset_spot_snapshot
 
         feats = _Stub._compute_cross_asset_spot_snapshot(_Stub)
         assert feats == {
@@ -83,7 +85,7 @@ class TestPhaseFCrossAssetSpotSnapshot:
 
         class _Stub:
             _feed = _StubFeed()
-        _Stub._compute_cross_asset_spot_snapshot = bot.OpportunityScanner._compute_cross_asset_spot_snapshot
+        _Stub._compute_cross_asset_spot_snapshot = bot.scanner.OpportunityScanner._compute_cross_asset_spot_snapshot
 
         feats = _Stub._compute_cross_asset_spot_snapshot(_Stub)
         assert feats["btc_spot_at_decision"] == 67400.0
@@ -104,8 +106,8 @@ class TestPhaseFResolutionMetadataFromWindowStates:
         import bot
 
         class _Stub:
-            _compute_window_features = bot.OpportunityScanner._compute_window_features
-            _compute_knockout_time_relative = bot.OpportunityScanner._compute_knockout_time_relative
+            _compute_window_features = bot.scanner.OpportunityScanner._compute_window_features
+            _compute_knockout_time_relative = bot.scanner.OpportunityScanner._compute_knockout_time_relative
         s = _Stub()
         s._window_states = {}
 
@@ -146,8 +148,8 @@ class TestPhaseFResolutionMetadataFromWindowStates:
         from collections import deque
 
         class _Stub:
-            _compute_window_features = bot.OpportunityScanner._compute_window_features
-            _compute_knockout_time_relative = bot.OpportunityScanner._compute_knockout_time_relative
+            _compute_window_features = bot.scanner.OpportunityScanner._compute_window_features
+            _compute_knockout_time_relative = bot.scanner.OpportunityScanner._compute_knockout_time_relative
         s = _Stub()
         s._window_states = {}
 
@@ -179,7 +181,7 @@ class TestPhaseFWindowStateAccumulators:
 
         class _Stub:
             _window_states = {}
-        _Stub._update_window_state = bot.OpportunityScanner._update_window_state
+        _Stub._update_window_state = bot.scanner.OpportunityScanner._update_window_state
 
         # First tick: spot above strike. is_above=True; on the very first
         # call there's no prior state so nothing to accumulate yet.
@@ -201,7 +203,7 @@ class TestPhaseFWindowStateAccumulators:
 
         class _Stub:
             _window_states = {}
-        _Stub._update_window_state = bot.OpportunityScanner._update_window_state
+        _Stub._update_window_state = bot.scanner.OpportunityScanner._update_window_state
 
         _Stub._update_window_state(_Stub, "TST", spot=66500.0, threshold=67000.0)
         first_state = _Stub._window_states["TST"]
@@ -219,7 +221,7 @@ class TestPhaseFWindowStateAccumulators:
 
         class _Stub:
             _window_states = {}
-        _Stub._update_window_state = bot.OpportunityScanner._update_window_state
+        _Stub._update_window_state = bot.scanner.OpportunityScanner._update_window_state
         _Stub._update_window_state(_Stub, "TST", spot=67500.0, threshold=67000.0)
         assert _Stub._window_states["TST"].get("threshold") == 67000.0
 
@@ -235,7 +237,7 @@ class TestPhaseFFinalSpotPriceAutoFill:
         """Non-15M product_type causes provider to return {}; the auto-fill
         must still write final_spot_price from caller's spot_price."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         # Provider returns empty dict (mimics non-15M product_type or
         # provider failure swallowed by the inner try/except).
         sm._extended_feature_provider = lambda *a, **k: {}
@@ -259,7 +261,7 @@ class TestPhaseFFinalSpotPriceAutoFill:
         """When _extended_feature_provider is None (e.g. early startup),
         final_spot_price must still populate."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         # No provider registered at all.
         assert sm._extended_feature_provider is None
         sm.insert_evaluated_opportunity(
@@ -296,13 +298,13 @@ class TestPhaseFEndToEndProvider:
         # Use an INSTANCE (not class) so the descriptor protocol binds
         # `self` properly when the provider does `self._compute_*(...)`.
         class _Stub:
-            _compute_window_features = bot.OpportunityScanner._compute_window_features
-            _compute_knockout_time_relative = bot.OpportunityScanner._compute_knockout_time_relative
-            _compute_momentum_features = bot.OpportunityScanner._compute_momentum_features
-            _compute_cross_asset_features = bot.OpportunityScanner._compute_cross_asset_features
-            _compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
-            _compute_cross_asset_spot_snapshot = bot.OpportunityScanner._compute_cross_asset_spot_snapshot
-            _get_extended_features_for_ticker = bot.OpportunityScanner._get_extended_features_for_ticker
+            _compute_window_features = bot.scanner.OpportunityScanner._compute_window_features
+            _compute_knockout_time_relative = bot.scanner.OpportunityScanner._compute_knockout_time_relative
+            _compute_momentum_features = bot.scanner.OpportunityScanner._compute_momentum_features
+            _compute_cross_asset_features = bot.scanner.OpportunityScanner._compute_cross_asset_features
+            _compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
+            _compute_cross_asset_spot_snapshot = bot.scanner.OpportunityScanner._compute_cross_asset_spot_snapshot
+            _get_extended_features_for_ticker = bot.scanner.OpportunityScanner._get_extended_features_for_ticker
         s = _Stub()
         s._feed = _StubFeed()
         s._window_states = {

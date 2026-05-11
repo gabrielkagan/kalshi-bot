@@ -38,7 +38,7 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
     cached orderbook, computes cross-side derivation and divergence."""
 
     def test_empty_orderbook_returns_all_none(self):
-        out = bot.OrderExecutor._compute_ladder_diag(None)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(None)
         self.assertIsNone(out["yes_ask_top_price"])
         self.assertIsNone(out["no_bid_top_price"])
         self.assertIsNone(out["cross_side_ask"])
@@ -53,7 +53,7 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
             "yes": [[100, 104]],
             "no": [[1, 50]],
         }
-        out = bot.OrderExecutor._compute_ladder_diag(ob)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(ob)
         self.assertEqual(out["yes_ask_top_price"], 100)
         self.assertEqual(out["yes_ask_top_qty"], 104)
         self.assertEqual(out["no_bid_top_price"], 1)
@@ -68,7 +68,7 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
         """Both ladders agree at 99c — typical healthy fill case
         (BTC TM_99 yes_asks=[[99,6077]], no_bid=1)."""
         ob = {"yes": [[99, 6077]], "no": [[1, 50]]}
-        out = bot.OrderExecutor._compute_ladder_diag(ob)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(ob)
         self.assertEqual(out["yes_ask_top_price"], 99)
         self.assertEqual(out["cross_side_ask"], 99)
         self.assertFalse(out["diverges"])
@@ -77,7 +77,7 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
         """no_bids ladder empty — cross-side undefined.
         diverges should be False (can't diverge if one side missing)."""
         ob = {"yes": [[95, 10]], "no": []}
-        out = bot.OrderExecutor._compute_ladder_diag(ob)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(ob)
         self.assertEqual(out["yes_ask_top_price"], 95)
         self.assertIsNone(out["no_bid_top_price"])
         self.assertIsNone(out["cross_side_ask"])
@@ -85,7 +85,7 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
 
     def test_no_bids_only_yes_asks_empty(self):
         ob = {"yes": [], "no": [[5, 10]]}
-        out = bot.OrderExecutor._compute_ladder_diag(ob)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(ob)
         self.assertIsNone(out["yes_ask_top_price"])
         self.assertEqual(out["no_bid_top_price"], 5)
         self.assertEqual(out["cross_side_ask"], 95)
@@ -98,7 +98,7 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
             "yes": [[99, 10], [95, 5], [97, 3]],
             "no": [],
         }
-        out = bot.OrderExecutor._compute_ladder_diag(ob)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(ob)
         self.assertEqual(out["yes_ask_top_price"], 95)
         self.assertEqual(out["yes_ask_top_qty"], 5)
 
@@ -109,7 +109,7 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
             "yes": [],
             "no": [[1, 10], [3, 5], [2, 8]],
         }
-        out = bot.OrderExecutor._compute_ladder_diag(ob)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(ob)
         self.assertEqual(out["no_bid_top_price"], 3)
         self.assertEqual(out["no_bid_top_qty"], 5)
         self.assertEqual(out["cross_side_ask"], 97)
@@ -119,7 +119,7 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
         (0.99 = 99c, 0.01 = 1c). Helper must convert to cents,
         matching `_best_yes_ask_cents` behavior."""
         ob = {"yes": [[0.99, 50]], "no": [[0.01, 100]]}
-        out = bot.OrderExecutor._compute_ladder_diag(ob)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(ob)
         self.assertEqual(out["yes_ask_top_price"], 99)
         self.assertEqual(out["no_bid_top_price"], 1)
         self.assertEqual(out["cross_side_ask"], 99)
@@ -132,13 +132,13 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
             "yes": [["bad", "data"], [99, 50], None],
             "no": None,
         }
-        out = bot.OrderExecutor._compute_ladder_diag(ob)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(ob)
         self.assertEqual(out["yes_ask_top_price"], 99)
         self.assertIsNone(out["no_bid_top_price"])
 
     def test_missing_keys_safe(self):
         """Cache might not always have both yes/no keys."""
-        out = bot.OrderExecutor._compute_ladder_diag({})
+        out = bot.executor.OrderExecutor._compute_ladder_diag({})
         self.assertIsNone(out["yes_ask_top_price"])
         self.assertIsNone(out["no_bid_top_price"])
         self.assertFalse(out["diverges"])
@@ -147,7 +147,7 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
         """R-review [A3]: schema drift defense. Kalshi has historically
         sent string-typed prices. Helper must coerce via float()."""
         ob = {"yes": [["0.99", 50]], "no": [["0.01", 100]]}
-        out = bot.OrderExecutor._compute_ladder_diag(ob)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(ob)
         self.assertEqual(out["yes_ask_top_price"], 99)
         self.assertEqual(out["no_bid_top_price"], 1)
 
@@ -155,7 +155,7 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
         """R-review [A2]: float 1.0 is ambiguous (1c or 100c?).
         For Kalshi binary 0-100c, treat as cents. Document the choice."""
         ob = {"yes": [[1.0, 50]], "no": [[1.0, 100]]}
-        out = bot.OrderExecutor._compute_ladder_diag(ob)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(ob)
         # 1.0 → 1c (we treat float in [1.0, ∞) as already cents)
         self.assertEqual(out["yes_ask_top_price"], 1)
         self.assertEqual(out["no_bid_top_price"], 1)
@@ -165,16 +165,16 @@ class TestComputeLadderDiagHelper(unittest.TestCase):
         present → one_side_empty=True (uninformative for divergence
         check, distinct from real-alignment case)."""
         ob = {"yes": [], "no": [[5, 10]]}
-        out = bot.OrderExecutor._compute_ladder_diag(ob)
+        out = bot.executor.OrderExecutor._compute_ladder_diag(ob)
         self.assertTrue(out["one_side_empty"])
         self.assertFalse(out["diverges"])  # no comparison possible
         # Both sides present → not empty
         ob2 = {"yes": [[99, 10]], "no": [[1, 10]]}
-        out2 = bot.OrderExecutor._compute_ladder_diag(ob2)
+        out2 = bot.executor.OrderExecutor._compute_ladder_diag(ob2)
         self.assertFalse(out2["one_side_empty"])
         # Both sides absent → not empty (it's symmetric absence)
         ob3 = {"yes": [], "no": []}
-        out3 = bot.OrderExecutor._compute_ladder_diag(ob3)
+        out3 = bot.executor.OrderExecutor._compute_ladder_diag(ob3)
         self.assertFalse(out3["one_side_empty"])
 
 

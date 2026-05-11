@@ -23,6 +23,8 @@ import sys
 import time
 
 import pytest
+import bot.scanner  # noqa: F401
+import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -53,7 +55,7 @@ class TestPhaseF3KnockoutHelper:
         """No crossings since window-open → market decided since open → 1.0."""
         import bot
         st = self._state()
-        out = bot.OpportunityScanner._compute_knockout_time_relative(None,
+        out = bot.scanner.OpportunityScanner._compute_knockout_time_relative(None,
             st, now=time.time(),
         )
         assert out == pytest.approx(1.0, abs=0.01)
@@ -69,7 +71,7 @@ class TestPhaseF3KnockoutHelper:
             crossings=deque([now - 600.0]),
             window_open_ts=now - 600.0,
         )
-        out = bot.OpportunityScanner._compute_knockout_time_relative(None, st, now=now)
+        out = bot.scanner.OpportunityScanner._compute_knockout_time_relative(None, st, now=now)
         assert out == pytest.approx(1.0, abs=0.02)
 
     def test_recent_crossing_returns_near_zero(self):
@@ -81,7 +83,7 @@ class TestPhaseF3KnockoutHelper:
             crossings=deque([now - 590.0, now - 5.0]),
             window_open_ts=now - 600.0,
         )
-        out = bot.OpportunityScanner._compute_knockout_time_relative(None, st, now=now)
+        out = bot.scanner.OpportunityScanner._compute_knockout_time_relative(None, st, now=now)
         assert out == pytest.approx(5.0 / 600.0, rel=0.01)
 
     def test_intermediate_crossing_returns_intermediate(self):
@@ -93,7 +95,7 @@ class TestPhaseF3KnockoutHelper:
             crossings=deque([now - 300.0]),
             window_open_ts=now - 600.0,
         )
-        out = bot.OpportunityScanner._compute_knockout_time_relative(None, st, now=now)
+        out = bot.scanner.OpportunityScanner._compute_knockout_time_relative(None, st, now=now)
         assert out == pytest.approx(0.5, abs=0.01)
 
     def test_window_open_in_future_returns_none(self):
@@ -103,7 +105,7 @@ class TestPhaseF3KnockoutHelper:
         import bot
         now = time.time()
         st = self._state(window_open_ts=now + 10.0)
-        out = bot.OpportunityScanner._compute_knockout_time_relative(None, st, now=now)
+        out = bot.scanner.OpportunityScanner._compute_knockout_time_relative(None, st, now=now)
         assert out is None
 
     def test_missing_window_open_ts_returns_none(self):
@@ -113,7 +115,7 @@ class TestPhaseF3KnockoutHelper:
         import bot
         st = self._state()
         del st["window_open_ts"]
-        out = bot.OpportunityScanner._compute_knockout_time_relative(None,
+        out = bot.scanner.OpportunityScanner._compute_knockout_time_relative(None,
             st, now=time.time(),
         )
         assert out is None
@@ -128,7 +130,7 @@ class TestPhaseF3KnockoutHelper:
             crossings=deque([now - 1200.0]),  # 20 min ago
             window_open_ts=now - 600.0,        # but window opened 10 min ago
         )
-        out = bot.OpportunityScanner._compute_knockout_time_relative(None, st, now=now)
+        out = bot.scanner.OpportunityScanner._compute_knockout_time_relative(None, st, now=now)
         assert out == 1.0
 
 
@@ -140,7 +142,7 @@ class TestPhaseF3WindowStateRecordsOpenTs:
 
         class _Stub:
             _window_states = {}
-        _Stub._update_window_state = bot.OpportunityScanner._update_window_state
+        _Stub._update_window_state = bot.scanner.OpportunityScanner._update_window_state
 
         before = time.time()
         _Stub._update_window_state(_Stub, "TST", spot=67500.0, threshold=67000.0)
@@ -156,7 +158,7 @@ class TestPhaseF3WindowStateRecordsOpenTs:
 
         class _Stub:
             _window_states = {}
-        _Stub._update_window_state = bot.OpportunityScanner._update_window_state
+        _Stub._update_window_state = bot.scanner.OpportunityScanner._update_window_state
 
         _Stub._update_window_state(_Stub, "TST", spot=67500.0, threshold=67000.0)
         original_open = _Stub._window_states["TST"]["window_open_ts"]
@@ -174,8 +176,8 @@ class TestPhaseF3ComputeWindowFeaturesIncludesKnockout:
         from collections import deque
 
         class _Stub:
-            _compute_window_features = bot.OpportunityScanner._compute_window_features
-            _compute_knockout_time_relative = bot.OpportunityScanner._compute_knockout_time_relative
+            _compute_window_features = bot.scanner.OpportunityScanner._compute_window_features
+            _compute_knockout_time_relative = bot.scanner.OpportunityScanner._compute_knockout_time_relative
         # Instance — descriptor protocol binds `self` correctly when
         # _compute_window_features calls self._compute_knockout_time_relative.
         s = _Stub()
@@ -208,7 +210,7 @@ class TestPhaseF3EndToEndInsert:
 
     def test_insert_picks_up_knockout_from_provider(self):
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         sm._extended_feature_provider = lambda *a, **k: {
             "knockout_time_relative": 0.42,
         }

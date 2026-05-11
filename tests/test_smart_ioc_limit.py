@@ -35,6 +35,8 @@ better than best_yes_ask alone) — Kalshi auto-cancels surplus at $0.
 import os
 import sys
 import unittest
+import bot.constants  # noqa: F401
+import bot.executor  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -53,7 +55,7 @@ class TestPickIocLimitBasics(unittest.TestCase):
 
     def setUp(self):
         import bot
-        self.fn = bot.OrderExecutor._pick_ioc_limit_for_depth
+        self.fn = bot.executor.OrderExecutor._pick_ioc_limit_for_depth
 
     def test_empty_orderbook_returns_best_ask_unchanged(self):
         """No NO bids → no fillable depth at any level → return
@@ -297,7 +299,7 @@ class TestPickIocLimitProductionScenario(unittest.TestCase):
     def test_production_btc_sample_unlocks_deep_level(self):
         import bot
         ob = _ob([(34, 1), (33, 1), (31, 151), (29, 1)])
-        result = bot.OrderExecutor._pick_ioc_limit_for_depth(
+        result = bot.executor.OrderExecutor._pick_ioc_limit_for_depth(
             ob,
             best_yes_ask=66,
             target_qty=100,
@@ -315,7 +317,7 @@ class TestPickIocLimitProductionScenario(unittest.TestCase):
         Picker must NOT bump to 69 (would zero edge)."""
         import bot
         ob = _ob([(34, 1), (33, 1), (31, 151), (29, 1)])
-        result = bot.OrderExecutor._pick_ioc_limit_for_depth(
+        result = bot.executor.OrderExecutor._pick_ioc_limit_for_depth(
             ob,
             best_yes_ask=66,
             target_qty=100,
@@ -360,10 +362,10 @@ class TestStrategyReserveOverrides(unittest.TestCase):
     def test_default_reserve_constant_defined(self):
         import bot
         self.assertTrue(
-            hasattr(bot, "STRATEGY_LIMIT_BUMP_DEFAULT_RESERVE"),
+            hasattr(bot.constants, "STRATEGY_LIMIT_BUMP_DEFAULT_RESERVE"),
             "Default reserve constant must be defined.")
         self.assertEqual(
-            bot.STRATEGY_LIMIT_BUMP_DEFAULT_RESERVE, 0,
+            bot.constants.STRATEGY_LIMIT_BUMP_DEFAULT_RESERVE, 0,
             "Default reserve must be 0 (B: break-even after fee). "
             "Going lower without per-strategy gating violates the "
             "math of IOC fill EV.")
@@ -371,10 +373,10 @@ class TestStrategyReserveOverrides(unittest.TestCase):
     def test_strategy_reserve_overrides_dict_defined(self):
         import bot
         self.assertTrue(
-            hasattr(bot, "STRATEGY_LIMIT_BUMP_RESERVE_CENTS"),
+            hasattr(bot.constants, "STRATEGY_LIMIT_BUMP_RESERVE_CENTS"),
             "Per-strategy reserve override dict must be defined.")
         self.assertIsInstance(
-            bot.STRATEGY_LIMIT_BUMP_RESERVE_CENTS, dict)
+            bot.constants.STRATEGY_LIMIT_BUMP_RESERVE_CENTS, dict)
 
     def test_decided_contract_tiers_in_aggressive_bucket(self):
         """All four DC tiers should have reserve=-1 (aggressive).
@@ -394,7 +396,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         }
         for strat in expected:
             self.assertEqual(
-                bot.STRATEGY_LIMIT_BUMP_RESERVE_CENTS.get(strat), -1,
+                bot.constants.STRATEGY_LIMIT_BUMP_RESERVE_CENTS.get(strat), -1,
                 f"DC tier {strat!r} (SHORT form, what candidates "
                 f"actually carry) must have reserve=-1.")
         # And the LONG forms must NOT be present — they'd be dead
@@ -407,7 +409,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         }
         for strat in long_forms:
             self.assertNotIn(
-                strat, bot.STRATEGY_LIMIT_BUMP_RESERVE_CENTS,
+                strat, bot.constants.STRATEGY_LIMIT_BUMP_RESERVE_CENTS,
                 f"Long-form key {strat!r} must NOT be in the dict "
                 f"— candidates carry the short form. R3 [A1] "
                 f"regression: long-form keys silently miss lookup.")
@@ -421,7 +423,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         the intentional omission; this test pins it."""
         import bot
         self.assertNotIn(
-            "decided_t2_z2", bot.STRATEGY_LIMIT_BUMP_RESERVE_CENTS,
+            "decided_t2_z2", bot.constants.STRATEGY_LIMIT_BUMP_RESERVE_CENTS,
             "decided_t2_z2 is INTENTIONALLY EXCLUDED — shadowed "
             "for being unprofitable. If re-validated and re-enabled "
             "in the future, decide separately whether to add an "
@@ -451,7 +453,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         import bot
         for strat in ("CONFIRMATION_ADDON", "DIP_ADDON"):
             self.assertEqual(
-                bot.STRATEGY_LIMIT_BUMP_RESERVE_CENTS.get(strat), -1,
+                bot.constants.STRATEGY_LIMIT_BUMP_RESERVE_CENTS.get(strat), -1,
                 f"Addon {strat!r} must have reserve=-1.")
 
     def test_no_strategy_has_reserve_below_minus_fee(self):
@@ -459,7 +461,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         is structurally negative beyond the fee. That's never +EV
         regardless of WR. Hard rule: no strategy goes below -1."""
         import bot
-        for strat, reserve in bot.STRATEGY_LIMIT_BUMP_RESERVE_CENTS.items():
+        for strat, reserve in bot.constants.STRATEGY_LIMIT_BUMP_RESERVE_CENTS.items():
             self.assertGreaterEqual(
                 reserve, -1,
                 f"Strategy {strat!r} has reserve={reserve}. Below "
@@ -480,7 +482,7 @@ class TestStrategyReserveOverrides(unittest.TestCase):
         }
         for strat in forbidden_in_overrides:
             self.assertNotIn(
-                strat, bot.STRATEGY_LIMIT_BUMP_RESERVE_CENTS,
+                strat, bot.constants.STRATEGY_LIMIT_BUMP_RESERVE_CENTS,
                 f"Strategy {strat!r} must not have a reserve "
                 f"override — calibration-driven strategies and "
                 f"generic execution paths stay on default (B).")
@@ -503,7 +505,7 @@ class TestPickerIntegrationWithReserve(unittest.TestCase):
         prob, fee_1c, reserve = 0.85, 1, 0
         edge_ceiling = int(prob * 100) - fee_1c - reserve
         self.assertEqual(edge_ceiling, 84)
-        result = bot.OrderExecutor._pick_ioc_limit_for_depth(
+        result = bot.executor.OrderExecutor._pick_ioc_limit_for_depth(
             ob, best_yes_ask=66, target_qty=100,
             max_bump_cents=3, edge_ceiling_price=edge_ceiling,
         )
@@ -520,7 +522,7 @@ class TestPickerIntegrationWithReserve(unittest.TestCase):
         prob, fee_1c, reserve = 0.85, 1, -1
         edge_ceiling = int(prob * 100) - fee_1c - reserve
         self.assertEqual(edge_ceiling, 85)
-        result = bot.OrderExecutor._pick_ioc_limit_for_depth(
+        result = bot.executor.OrderExecutor._pick_ioc_limit_for_depth(
             ob, best_yes_ask=66, target_qty=100,
             max_bump_cents=3, edge_ceiling_price=edge_ceiling,
         )
@@ -540,7 +542,7 @@ class TestPickerIntegrationWithReserve(unittest.TestCase):
         import bot
         ob = _ob([(34, 1), (33, 1), (32, 200)])  # YES 66, 67, 68
         # Default
-        result_default = bot.OrderExecutor._pick_ioc_limit_for_depth(
+        result_default = bot.executor.OrderExecutor._pick_ioc_limit_for_depth(
             ob, best_yes_ask=66, target_qty=100,
             max_bump_cents=5,
             edge_ceiling_price=int(0.68 * 100) - 1 - 0,
@@ -549,7 +551,7 @@ class TestPickerIntegrationWithReserve(unittest.TestCase):
             result_default, 67,
             "Default reserve must cap limit at edge=0 ceiling.")
         # Aggressive
-        result_aggressive = bot.OrderExecutor._pick_ioc_limit_for_depth(
+        result_aggressive = bot.executor.OrderExecutor._pick_ioc_limit_for_depth(
             ob, best_yes_ask=66, target_qty=100,
             max_bump_cents=5,
             edge_ceiling_price=int(0.68 * 100) - 1 - (-1),
@@ -630,11 +632,11 @@ class TestR1Fixes(unittest.TestCase):
         behaviors."""
         import bot
         self.assertTrue(
-            hasattr(bot, "IOC_LIMIT_MAX_BUMP_CENTS"),
+            hasattr(bot.constants, "IOC_LIMIT_MAX_BUMP_CENTS"),
             "Must define IOC_LIMIT_MAX_BUMP_CENTS as a dedicated "
             "constant separate from IOC_RETRY_OFFSET.")
         self.assertGreaterEqual(
-            bot.IOC_LIMIT_MAX_BUMP_CENTS, 2,
+            bot.constants.IOC_LIMIT_MAX_BUMP_CENTS, 2,
             "max_bump must be ≥2c to reach typical level-2 depth. "
             "1c only reaches the next-level (often also thin).")
         # And: _submit_taker must reference IOC_LIMIT_MAX_BUMP_CENTS,
@@ -818,16 +820,16 @@ class TestPickerWithMaxBump3(unittest.TestCase):
     def test_max_bump_3_reaches_production_deep_level(self):
         import bot
         ob = _ob([(34, 1), (33, 1), (31, 151)])  # YES 66, 67, 69
-        result = bot.OrderExecutor._pick_ioc_limit_for_depth(
+        result = bot.executor.OrderExecutor._pick_ioc_limit_for_depth(
             ob,
             best_yes_ask=66,
             target_qty=100,
-            max_bump_cents=bot.IOC_LIMIT_MAX_BUMP_CENTS,
+            max_bump_cents=bot.constants.IOC_LIMIT_MAX_BUMP_CENTS,
             edge_ceiling_price=99,
         )
         self.assertEqual(
             result, 69,
-            f"With IOC_LIMIT_MAX_BUMP_CENTS={bot.IOC_LIMIT_MAX_BUMP_CENTS}, "
+            f"With IOC_LIMIT_MAX_BUMP_CENTS={bot.constants.IOC_LIMIT_MAX_BUMP_CENTS}, "
             f"picker must reach 69c (deep level). Got {result}.")
 
 

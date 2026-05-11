@@ -22,6 +22,7 @@ import re
 import sys
 
 import pytest
+import bot.constants  # noqa: F401
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -44,10 +45,33 @@ def _read_bot_and_scanner():
 
 
 def _import_bot():
+    """Return a lookup proxy that searches canonical homes for the requested name.
+
+    Bit 9.3-iii.b (2026-05-11): pre-retirement this returned the `bot` package
+    with _BotProxy.__getattr__ falling through to bot._impl. Post-retirement we
+    explicitly search bot.constants → bot.helpers.cell_blocks → bot.helpers.validators
+    → bot.helpers → config in priority order.
+    """
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
-    import bot  # type: ignore
-    return bot
+    import bot.constants
+    import bot.helpers
+    import bot.helpers.cell_blocks
+    import bot.helpers.validators
+    import config
+
+    class _BotLookup:
+        constants = bot.constants
+        helpers = bot.helpers  # access submodule chain via bot.helpers.validators.X
+
+        def __getattr__(self, name):
+            for mod in (bot.constants, bot.helpers.cell_blocks,
+                        bot.helpers.validators, bot.helpers, config):
+                if hasattr(mod, name):
+                    return getattr(mod, name)
+            raise AttributeError(f"name {name!r} not in any canonical home")
+
+    return _BotLookup()
 
 
 # ---------------------------------------------------------------------------
@@ -66,21 +90,21 @@ def test_tm98_bleed_constants_exist():
     assert hasattr(bot, 'TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE')
     assert hasattr(bot, 'TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES')
     # Defaults match the data: BTC+ETH+XRP, 97-98¢, 121-300s
-    assert bot.TM98_HIGHPRICE_BLEED_BLOCK_ASSETS == frozenset({'BTC', 'ETH', 'XRP'})
-    assert bot.TM98_HIGHPRICE_BLEED_BLOCK_PRICE_LO == 97
-    assert bot.TM98_HIGHPRICE_BLEED_BLOCK_PRICE_HI == 98
-    assert bot.TM98_HIGHPRICE_BLEED_BLOCK_STC_LO_S == 121
-    assert bot.TM98_HIGHPRICE_BLEED_BLOCK_STC_HI_S == 300
-    assert 'terminal_momentum_98' in bot.TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES
+    assert bot.constants.TM98_HIGHPRICE_BLEED_BLOCK_ASSETS == frozenset({'BTC', 'ETH', 'XRP'})
+    assert bot.constants.TM98_HIGHPRICE_BLEED_BLOCK_PRICE_LO == 97
+    assert bot.constants.TM98_HIGHPRICE_BLEED_BLOCK_PRICE_HI == 98
+    assert bot.constants.TM98_HIGHPRICE_BLEED_BLOCK_STC_LO_S == 121
+    assert bot.constants.TM98_HIGHPRICE_BLEED_BLOCK_STC_HI_S == 300
+    assert 'terminal_momentum_98' in bot.constants.TM98_HIGHPRICE_BLEED_BLOCK_STRATEGIES
     # Default disabled — must be flipped on VPS via env.
-    assert bot.TM98_HIGHPRICE_BLEED_BLOCK_ENABLED is False
+    assert bot.constants.TM98_HIGHPRICE_BLEED_BLOCK_ENABLED is False
 
 
 def test_tm98_bleed_predicate_returns_false_when_disabled():
     """Default-OFF: the predicate returns False even on a perfect-match cell."""
     bot = _import_bot()
     # Force enabled=False explicitly (the env-flag default).
-    blocked = bot.should_block_tm98_highprice_bleed_candidate(
+    blocked = bot.helpers.cell_blocks.should_block_tm98_highprice_bleed_candidate(
         asset='BTC', side='yes', entry_price_cents=98,
         seconds_to_close=200.0, strategy='terminal_momentum_98',
         enabled=False,
@@ -94,7 +118,7 @@ def test_tm98_bleed_predicate_blocks_in_cell():
     for asset in ('BTC', 'ETH', 'XRP'):
         for price in (97, 98):
             for stc in (121.0, 200.0, 300.0):
-                assert bot.should_block_tm98_highprice_bleed_candidate(
+                assert bot.helpers.cell_blocks.should_block_tm98_highprice_bleed_candidate(
                     asset=asset, side='yes', entry_price_cents=price,
                     seconds_to_close=stc, strategy='terminal_momentum_98',
                     enabled=True,
@@ -108,43 +132,43 @@ def test_tm98_bleed_predicate_does_not_block_outside_cell():
     non-TM98 strategy excluded, NO-side excluded."""
     bot = _import_bot()
     # SOL not in TM98 block (data showed SOL TM98 is small loss, not catastrophic)
-    assert bot.should_block_tm98_highprice_bleed_candidate(
+    assert bot.helpers.cell_blocks.should_block_tm98_highprice_bleed_candidate(
         asset='SOL', side='yes', entry_price_cents=98,
         seconds_to_close=200.0, strategy='terminal_momentum_98',
         enabled=True,
     ) is False
     # 96¢ excluded (HIGH_PRICE_STC_BLOCK already covers that for SOL/XRP)
-    assert bot.should_block_tm98_highprice_bleed_candidate(
+    assert bot.helpers.cell_blocks.should_block_tm98_highprice_bleed_candidate(
         asset='BTC', side='yes', entry_price_cents=96,
         seconds_to_close=200.0, strategy='terminal_momentum_98',
         enabled=True,
     ) is False
     # 99¢ excluded (TM-99 is profitable at 100% WR last 14d)
-    assert bot.should_block_tm98_highprice_bleed_candidate(
+    assert bot.helpers.cell_blocks.should_block_tm98_highprice_bleed_candidate(
         asset='BTC', side='yes', entry_price_cents=99,
         seconds_to_close=200.0, strategy='terminal_momentum_98',
         enabled=True,
     ) is False
     # STC < 121s excluded
-    assert bot.should_block_tm98_highprice_bleed_candidate(
+    assert bot.helpers.cell_blocks.should_block_tm98_highprice_bleed_candidate(
         asset='BTC', side='yes', entry_price_cents=98,
         seconds_to_close=120.0, strategy='terminal_momentum_98',
         enabled=True,
     ) is False
     # STC > 300s excluded
-    assert bot.should_block_tm98_highprice_bleed_candidate(
+    assert bot.helpers.cell_blocks.should_block_tm98_highprice_bleed_candidate(
         asset='BTC', side='yes', entry_price_cents=98,
         seconds_to_close=301.0, strategy='terminal_momentum_98',
         enabled=True,
     ) is False
     # Non-TM98 strategy excluded
-    assert bot.should_block_tm98_highprice_bleed_candidate(
+    assert bot.helpers.cell_blocks.should_block_tm98_highprice_bleed_candidate(
         asset='BTC', side='yes', entry_price_cents=98,
         seconds_to_close=200.0, strategy='terminal_momentum_99',
         enabled=True,
     ) is False
     # NO-side excluded (NO/YES asymmetry — TM98 is YES-side per scan flow)
-    assert bot.should_block_tm98_highprice_bleed_candidate(
+    assert bot.helpers.cell_blocks.should_block_tm98_highprice_bleed_candidate(
         asset='BTC', side='no', entry_price_cents=98,
         seconds_to_close=200.0, strategy='terminal_momentum_98',
         enabled=True,
@@ -164,7 +188,7 @@ def test_tm98_bleed_predicate_handles_none_inputs():
         dict(asset='BTC', side='yes', entry_price_cents=98, seconds_to_close=200.0,
              strategy=None, enabled=True),
     ):
-        assert bot.should_block_tm98_highprice_bleed_candidate(**kwargs) is False, (
+        assert bot.helpers.cell_blocks.should_block_tm98_highprice_bleed_candidate(**kwargs) is False, (
             f"None input should not block: {kwargs}"
         )
 
@@ -176,13 +200,13 @@ def test_tm98_bleed_predicate_handles_none_inputs():
 def test_sol_taker_bleed_constants_exist():
     bot = _import_bot()
     assert hasattr(bot, 'SOL_TAKER_LOWPRICE_BLEED_BLOCK_ENABLED')
-    assert bot.SOL_TAKER_LOWPRICE_BLEED_BLOCK_ASSETS == frozenset({'SOL'})
-    assert bot.SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_LO == 85
-    assert bot.SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_HI == 89
-    assert bot.SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_LO_S == 121
-    assert bot.SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_HI_S == 300
-    assert 'TAKER_NOW' in bot.SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES
-    assert bot.SOL_TAKER_LOWPRICE_BLEED_BLOCK_ENABLED is False
+    assert bot.constants.SOL_TAKER_LOWPRICE_BLEED_BLOCK_ASSETS == frozenset({'SOL'})
+    assert bot.constants.SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_LO == 85
+    assert bot.constants.SOL_TAKER_LOWPRICE_BLEED_BLOCK_PRICE_HI == 89
+    assert bot.constants.SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_LO_S == 121
+    assert bot.constants.SOL_TAKER_LOWPRICE_BLEED_BLOCK_STC_HI_S == 300
+    assert 'TAKER_NOW' in bot.constants.SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES
+    assert bot.constants.SOL_TAKER_LOWPRICE_BLEED_BLOCK_ENABLED is False
 
 
 def test_sol_taker_bleed_predicate_blocks_in_cell():
@@ -190,7 +214,7 @@ def test_sol_taker_bleed_predicate_blocks_in_cell():
     bot = _import_bot()
     for price in (85, 86, 87, 88, 89):
         for stc in (121.0, 200.0, 300.0):
-            assert bot.should_block_sol_taker_lowprice_bleed_candidate(
+            assert bot.helpers.cell_blocks.should_block_sol_taker_lowprice_bleed_candidate(
                 asset='SOL', side='yes', entry_price_cents=price,
                 seconds_to_close=stc, strategy='TAKER_NOW',
                 enabled=True,
@@ -200,22 +224,22 @@ def test_sol_taker_bleed_predicate_blocks_in_cell():
 def test_sol_taker_bleed_predicate_does_not_block_outside_cell():
     bot = _import_bot()
     # Wrong asset
-    assert bot.should_block_sol_taker_lowprice_bleed_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_taker_lowprice_bleed_candidate(
         asset='BTC', side='yes', entry_price_cents=87,
         seconds_to_close=200.0, strategy='TAKER_NOW', enabled=True,
     ) is False
     # 84¢ excluded (below cell)
-    assert bot.should_block_sol_taker_lowprice_bleed_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_taker_lowprice_bleed_candidate(
         asset='SOL', side='yes', entry_price_cents=84,
         seconds_to_close=200.0, strategy='TAKER_NOW', enabled=True,
     ) is False
     # 90¢ excluded (above cell — SOL @ 90+ is profitable per data)
-    assert bot.should_block_sol_taker_lowprice_bleed_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_taker_lowprice_bleed_candidate(
         asset='SOL', side='yes', entry_price_cents=90,
         seconds_to_close=200.0, strategy='TAKER_NOW', enabled=True,
     ) is False
     # MAKER strategy excluded (different cohort)
-    assert bot.should_block_sol_taker_lowprice_bleed_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_taker_lowprice_bleed_candidate(
         asset='SOL', side='yes', entry_price_cents=87,
         seconds_to_close=200.0, strategy='MAKER_PATIENT', enabled=True,
     ) is False
@@ -256,21 +280,21 @@ def test_sol_bleed_v2_constants_exist():
     assert hasattr(bot, 'SOL_BLEED_V2_BLOCK_FILTER_STAGE')
     assert hasattr(bot, 'SOL_BLEED_V2_BLOCK_STRATEGIES')
     # Defaults reflect the data:
-    assert bot.SOL_BLEED_V2_BLOCK_ASSETS == frozenset({'SOL'})
-    assert bot.SOL_BLEED_V2_BLOCK_PRICE_LO == 88
-    assert bot.SOL_BLEED_V2_BLOCK_PRICE_HI == 93
-    assert bot.SOL_BLEED_V2_BLOCK_STC_LO_S == 121
-    assert bot.SOL_BLEED_V2_BLOCK_STC_HI_S == 300
-    assert bot.SOL_BLEED_V2_BLOCK_STRATEGIES == frozenset({'TAKER_NOW', 'MAKER_PATIENT'})
-    assert bot.SOL_BLEED_V2_BLOCK_FILTER_STAGE == 'SOL_BLEED_V2_88_93C_2_5MIN'
+    assert bot.constants.SOL_BLEED_V2_BLOCK_ASSETS == frozenset({'SOL'})
+    assert bot.constants.SOL_BLEED_V2_BLOCK_PRICE_LO == 88
+    assert bot.constants.SOL_BLEED_V2_BLOCK_PRICE_HI == 93
+    assert bot.constants.SOL_BLEED_V2_BLOCK_STC_LO_S == 121
+    assert bot.constants.SOL_BLEED_V2_BLOCK_STC_HI_S == 300
+    assert bot.constants.SOL_BLEED_V2_BLOCK_STRATEGIES == frozenset({'TAKER_NOW', 'MAKER_PATIENT'})
+    assert bot.constants.SOL_BLEED_V2_BLOCK_FILTER_STAGE == 'SOL_BLEED_V2_88_93C_2_5MIN'
     # Default disabled — must be flipped on VPS via env var.
-    assert bot.SOL_BLEED_V2_BLOCK_ENABLED is False
+    assert bot.constants.SOL_BLEED_V2_BLOCK_ENABLED is False
 
 
 def test_sol_bleed_v2_predicate_returns_false_when_disabled():
     """Default-OFF: the predicate returns False even on a perfect-match cell."""
     bot = _import_bot()
-    blocked = bot.should_block_sol_bleed_v2_candidate(
+    blocked = bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
         asset='SOL', side='yes', entry_price_cents=90,
         seconds_to_close=200.0, strategy='MAKER_PATIENT',
         enabled=False,
@@ -284,7 +308,7 @@ def test_sol_bleed_v2_predicate_blocks_in_cell():
     for strategy in ('TAKER_NOW', 'MAKER_PATIENT'):
         for price in (88, 89, 90, 91, 92, 93):
             for stc in (121.0, 200.0, 299.8, 300.0):
-                assert bot.should_block_sol_bleed_v2_candidate(
+                assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
                     asset='SOL', side='yes', entry_price_cents=price,
                     seconds_to_close=stc, strategy=strategy,
                     enabled=True,
@@ -296,33 +320,33 @@ def test_sol_bleed_v2_predicate_does_not_block_outside_cell():
     bot = _import_bot()
     # Wrong asset (BTC/ETH/XRP)
     for asset in ('BTC', 'ETH', 'XRP'):
-        assert bot.should_block_sol_bleed_v2_candidate(
+        assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
             asset=asset, side='yes', entry_price_cents=90,
             seconds_to_close=200.0, strategy='MAKER_PATIENT',
             enabled=True,
         ) is False
     # 87¢ excluded (below cell)
-    assert bot.should_block_sol_bleed_v2_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
         asset='SOL', side='yes', entry_price_cents=87,
         seconds_to_close=200.0, strategy='MAKER_PATIENT', enabled=True,
     ) is False
     # 94¢ excluded (above cell)
-    assert bot.should_block_sol_bleed_v2_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
         asset='SOL', side='yes', entry_price_cents=94,
         seconds_to_close=200.0, strategy='MAKER_PATIENT', enabled=True,
     ) is False
     # STC < 121s excluded (sub-2min trades have a different bleed shape)
-    assert bot.should_block_sol_bleed_v2_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
         asset='SOL', side='yes', entry_price_cents=90,
         seconds_to_close=120.0, strategy='MAKER_PATIENT', enabled=True,
     ) is False
     # STC > 300s excluded (5/9 KXSOL082215 weekend_discount 93¢ × 361.5s — productive cohort)
-    assert bot.should_block_sol_bleed_v2_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
         asset='SOL', side='yes', entry_price_cents=93,
         seconds_to_close=361.5, strategy='MAKER_PATIENT', enabled=True,
     ) is False
     # NO-side excluded (this gate is YES-side per scan flow)
-    assert bot.should_block_sol_bleed_v2_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
         asset='SOL', side='no', entry_price_cents=90,
         seconds_to_close=200.0, strategy='MAKER_PATIENT', enabled=True,
     ) is False
@@ -351,7 +375,7 @@ def test_sol_bleed_v2_predicate_does_not_block_productive_strategies():
         'bracket_no',
         'hourly_dc',
     ):
-        assert bot.should_block_sol_bleed_v2_candidate(
+        assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
             asset='SOL', side='yes', entry_price_cents=90,
             seconds_to_close=200.0, strategy=strategy, enabled=True,
         ) is False, f"Should NOT block productive strategy {strategy!r} — verify cell scope"
@@ -370,7 +394,7 @@ def test_sol_bleed_v2_predicate_handles_none_inputs():
         dict(asset='SOL', side='yes', entry_price_cents=90, seconds_to_close=200.0,
              strategy=None, enabled=True),
     ):
-        assert bot.should_block_sol_bleed_v2_candidate(**kwargs) is False, (
+        assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(**kwargs) is False, (
             f"None input should not block: {kwargs}"
         )
 
@@ -382,12 +406,12 @@ def test_sol_bleed_v2_blocks_may10_KXSOL101615_loss():
     STC 299.8s → settled NO, -$176.39. Worst single SOL loss in 14d."""
     bot = _import_bot()
     # Block at scanner candidate moment (89¢ MAKER_PATIENT, STC 299.8s)
-    assert bot.should_block_sol_bleed_v2_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
         asset='SOL', side='yes', entry_price_cents=89,
         seconds_to_close=299.8, strategy='MAKER_PATIENT', enabled=True,
     ) is True
     # Also block at fill price (90¢ — covers the 1¢ slip during execution)
-    assert bot.should_block_sol_bleed_v2_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
         asset='SOL', side='yes', entry_price_cents=90,
         seconds_to_close=299.8, strategy='MAKER_PATIENT', enabled=True,
     ) is True
@@ -398,7 +422,7 @@ def test_sol_bleed_v2_blocks_may9_KXSOL091145_loss():
     settled NO, -$127.88. Strategy was already TAKER, demonstrates that
     even before the executor's sol_taker_override, this cell bleeds."""
     bot = _import_bot()
-    assert bot.should_block_sol_bleed_v2_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
         asset='SOL', side='yes', entry_price_cents=92,
         seconds_to_close=292.5, strategy='TAKER_NOW', enabled=True,
     ) is True
@@ -412,7 +436,7 @@ def test_sol_bleed_v2_does_not_block_may9_KXSOL082215_weekend_discount():
     This is a regression-proof against over-widening the gate."""
     bot = _import_bot()
     # Both axes exclude — strategy AND STC
-    assert bot.should_block_sol_bleed_v2_candidate(
+    assert bot.helpers.cell_blocks.should_block_sol_bleed_v2_candidate(
         asset='SOL', side='yes', entry_price_cents=93,
         seconds_to_close=361.5, strategy='weekend_discount', enabled=True,
     ) is False
@@ -468,7 +492,7 @@ def test_sol_bleed_v2_filter_stage_value_consistency_across_files():
         REPO / 'scripts' / 'backtest.py',
         REPO / 'scripts' / 'generate_whitepaper_stats.py',
     )
-    stage_value = bot.SOL_BLEED_V2_BLOCK_FILTER_STAGE
+    stage_value = bot.constants.SOL_BLEED_V2_BLOCK_FILTER_STAGE
     for fpath in target_files:
         if not fpath.exists():
             continue
@@ -521,14 +545,14 @@ def test_sol_bleed_v2_strategies_match_runtime_registry():
     above — extends the runtime-membership check to the new gate's
     strategy set."""
     bot = _import_bot()
-    assert bot.STRATEGY_TAKER_NOW in bot.SOL_BLEED_V2_BLOCK_STRATEGIES, (
-        f"STRATEGY_TAKER_NOW={bot.STRATEGY_TAKER_NOW!r} must be in "
-        f"SOL_BLEED_V2_BLOCK_STRATEGIES={bot.SOL_BLEED_V2_BLOCK_STRATEGIES!r}. "
+    assert bot.constants.STRATEGY_TAKER_NOW in bot.constants.SOL_BLEED_V2_BLOCK_STRATEGIES, (
+        f"STRATEGY_TAKER_NOW={bot.constants.STRATEGY_TAKER_NOW!r} must be in "
+        f"SOL_BLEED_V2_BLOCK_STRATEGIES={bot.constants.SOL_BLEED_V2_BLOCK_STRATEGIES!r}. "
         f"If renamed, update the BLOCK_STRATEGIES frozenset to match."
     )
-    assert bot.STRATEGY_MAKER_PATIENT in bot.SOL_BLEED_V2_BLOCK_STRATEGIES, (
-        f"STRATEGY_MAKER_PATIENT={bot.STRATEGY_MAKER_PATIENT!r} must be in "
-        f"SOL_BLEED_V2_BLOCK_STRATEGIES={bot.SOL_BLEED_V2_BLOCK_STRATEGIES!r}. "
+    assert bot.constants.STRATEGY_MAKER_PATIENT in bot.constants.SOL_BLEED_V2_BLOCK_STRATEGIES, (
+        f"STRATEGY_MAKER_PATIENT={bot.constants.STRATEGY_MAKER_PATIENT!r} must be in "
+        f"SOL_BLEED_V2_BLOCK_STRATEGIES={bot.constants.SOL_BLEED_V2_BLOCK_STRATEGIES!r}. "
         f"If renamed, update the BLOCK_STRATEGIES frozenset to match."
     )
 
@@ -656,7 +680,7 @@ def test_bot_py_tm_strategy_fstring_format_matches_block_strategies():
 
 def test_taker_now_constant_value_matches_block_strategies():
     """R-bleed-1 R1-H2 + R3-H3: assert at RUNTIME that
-    `bot.STRATEGY_TAKER_NOW == "TAKER_NOW"`. The earlier source-grep
+    `bot.constants.STRATEGY_TAKER_NOW == "TAKER_NOW"`. The earlier source-grep
     was false-positive on indirect declarations like
     `STRATEGY_TAKER_NOW = _TN` where `_TN = "TAKER_NOW"`.
 
@@ -664,10 +688,10 @@ def test_taker_now_constant_value_matches_block_strategies():
     false positives — and proves the value matches what
     SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES expects."""
     bot = _import_bot()
-    assert bot.STRATEGY_TAKER_NOW in bot.SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES, (
-        f"STRATEGY_TAKER_NOW={bot.STRATEGY_TAKER_NOW!r} must be in "
+    assert bot.constants.STRATEGY_TAKER_NOW in bot.constants.SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES, (
+        f"STRATEGY_TAKER_NOW={bot.constants.STRATEGY_TAKER_NOW!r} must be in "
         f"SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES="
-        f"{bot.SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES!r}. If renamed, "
+        f"{bot.constants.SOL_TAKER_LOWPRICE_BLEED_BLOCK_STRATEGIES!r}. If renamed, "
         f"update the BLOCK_STRATEGIES frozenset to match the new value."
     )
 
@@ -683,13 +707,13 @@ def test_cross_exchange_consensus_min_when_binance_disabled_default():
     script = (
         "import os; os.environ.pop('BINANCE_FEED_ENABLED', None); "
         "import sys; sys.path.insert(0, %r); "
-        "import bot; "
-        "assert bot.BINANCE_FEED_ENABLED is False, "
-        "    f'BINANCE_FEED_ENABLED={bot.BINANCE_FEED_ENABLED}'; "
-        "assert bot._CROSS_EXCHANGE_FEEDS_ACTIVE == 2, "
-        "    f'_CROSS_EXCHANGE_FEEDS_ACTIVE={bot._CROSS_EXCHANGE_FEEDS_ACTIVE}'; "
-        "assert bot.CROSS_EXCHANGE_CONSENSUS_MIN == 2, "
-        "    f'CROSS_EXCHANGE_CONSENSUS_MIN={bot.CROSS_EXCHANGE_CONSENSUS_MIN}'; "
+        "import bot.constants; "
+        "assert bot.constants.BINANCE_FEED_ENABLED is False, "
+        "    f'BINANCE_FEED_ENABLED={bot.constants.BINANCE_FEED_ENABLED}'; "
+        "assert bot.constants._CROSS_EXCHANGE_FEEDS_ACTIVE == 2, "
+        "    f'_CROSS_EXCHANGE_FEEDS_ACTIVE={bot.constants._CROSS_EXCHANGE_FEEDS_ACTIVE}'; "
+        "assert bot.constants.CROSS_EXCHANGE_CONSENSUS_MIN == 2, "
+        "    f'CROSS_EXCHANGE_CONSENSUS_MIN={bot.constants.CROSS_EXCHANGE_CONSENSUS_MIN}'; "
         "print('OK')"
     ) % str(REPO)
     # Pass a clean env so child does not inherit BINANCE_FEED_ENABLED.
@@ -719,13 +743,13 @@ def test_cross_exchange_consensus_min_derivation_when_binance_enabled():
     script = (
         "import os; os.environ['BINANCE_FEED_ENABLED']='1'; "
         "import sys; sys.path.insert(0, %r); "
-        "import bot; "
-        "assert bot.BINANCE_FEED_ENABLED is True, "
-        "    f'BINANCE_FEED_ENABLED={bot.BINANCE_FEED_ENABLED}'; "
-        "assert bot._CROSS_EXCHANGE_FEEDS_ACTIVE == 3, "
-        "    f'_CROSS_EXCHANGE_FEEDS_ACTIVE={bot._CROSS_EXCHANGE_FEEDS_ACTIVE}'; "
-        "assert bot.CROSS_EXCHANGE_CONSENSUS_MIN == 3, "
-        "    f'CROSS_EXCHANGE_CONSENSUS_MIN={bot.CROSS_EXCHANGE_CONSENSUS_MIN}'; "
+        "import bot.constants; "
+        "assert bot.constants.BINANCE_FEED_ENABLED is True, "
+        "    f'BINANCE_FEED_ENABLED={bot.constants.BINANCE_FEED_ENABLED}'; "
+        "assert bot.constants._CROSS_EXCHANGE_FEEDS_ACTIVE == 3, "
+        "    f'_CROSS_EXCHANGE_FEEDS_ACTIVE={bot.constants._CROSS_EXCHANGE_FEEDS_ACTIVE}'; "
+        "assert bot.constants.CROSS_EXCHANGE_CONSENSUS_MIN == 3, "
+        "    f'CROSS_EXCHANGE_CONSENSUS_MIN={bot.constants.CROSS_EXCHANGE_CONSENSUS_MIN}'; "
         "print('OK')"
     ) % str(REPO)
     res = subprocess.run(
@@ -818,9 +842,9 @@ def test_filter_stage_value_consistency_across_files():
     """
     bot = _import_bot()
     constants = {
-        'HIGH_PRICE_STC_BLOCK_FILTER_STAGE': bot.HIGH_PRICE_STC_BLOCK_FILTER_STAGE,
-        'TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE': bot.TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE,
-        'SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE': bot.SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE,
+        'HIGH_PRICE_STC_BLOCK_FILTER_STAGE': bot.constants.HIGH_PRICE_STC_BLOCK_FILTER_STAGE,
+        'TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE': bot.constants.TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE,
+        'SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE': bot.constants.SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE,
     }
     target_files = (
         REPO / 'bot' / 'shadows' / 'fifteenm_shadow.py',
@@ -901,7 +925,7 @@ def test_bleed_block_validator_callable():
     breaks the wrapper after module load (e.g., monkey-patching, import-
     order issues, future refactor that swallows exceptions silently)."""
     bot = _import_bot()
-    result = bot._validate_bleed_block_bleeder_strings()
+    result = bot.helpers.validators._validate_bleed_block_bleeder_strings()
     assert result == [], result
 
 
@@ -934,10 +958,10 @@ def test_binance_feed_default_disabled():
     script = (
         "import os; os.environ.pop('BINANCE_FEED_ENABLED', None); "
         "import sys; sys.path.insert(0, %r); "
-        "import bot; "
-        "assert hasattr(bot, 'BINANCE_FEED_ENABLED'); "
-        "assert bot.BINANCE_FEED_ENABLED is False, "
-        "    f'BINANCE_FEED_ENABLED={bot.BINANCE_FEED_ENABLED}'; "
+        "import bot.constants; "
+        "assert hasattr(bot.constants, 'BINANCE_FEED_ENABLED'); "
+        "assert bot.constants.BINANCE_FEED_ENABLED is False, "
+        "    f'BINANCE_FEED_ENABLED={bot.constants.BINANCE_FEED_ENABLED}'; "
         "print('OK')"
     ) % str(REPO)
     env = {k: v for k, v in os.environ.items() if k != 'BINANCE_FEED_ENABLED'}

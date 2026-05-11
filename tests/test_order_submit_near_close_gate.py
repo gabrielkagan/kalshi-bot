@@ -41,12 +41,13 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
+import bot.executor  # noqa: F401
 
 
 def _make_executor():
     """OrderExecutor stub bypassing __init__ — only the attrs the
     submit paths need."""
-    e = bot.OrderExecutor.__new__(bot.OrderExecutor)
+    e = bot.executor.OrderExecutor.__new__(bot.executor.OrderExecutor)
     e._client = MagicMock()
     e._state = MagicMock()
     e._ml = MagicMock()
@@ -210,7 +211,7 @@ class TestConstantExists(unittest.TestCase):
 
     def test_constant_default_3s(self):
         self.assertEqual(
-            bot.MIN_ORDER_SUBMIT_STC_S, 3.0,
+            bot.constants.MIN_ORDER_SUBMIT_STC_S, 3.0,
             "MIN_ORDER_SUBMIT_STC_S should be 3.0 (Kalshi processing "
             "latency ~200ms-2s + clock-drift margin). If retuning, "
             "update this test AND the KB article in same commit.")

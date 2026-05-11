@@ -70,7 +70,7 @@ class TestPhaseBSchemaColumns:
 
     def test_all_phase_b_columns_present_in_schema(self):
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         cols = {
             r["name"] for r in
             sm.conn.execute("PRAGMA table_info(evaluated_opportunities)").fetchall()
@@ -87,7 +87,7 @@ class TestPhaseBSchemaColumns:
         mirror does not — the four-site lock-step rule (CLAUDE.md) means a
         type mismatch is a 22P02 wedge waiting to happen."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         col_types = {
             r["name"]: r["type"].upper() for r in
             sm.conn.execute("PRAGMA table_info(evaluated_opportunities)").fetchall()
@@ -104,7 +104,7 @@ class TestPhaseBInsertSignature:
     """insert_evaluated_opportunity accepts every Phase B column as a kwarg."""
 
     def test_signature_accepts_all_phase_b_columns(self):
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         params = set(sig.parameters.keys())
         missing = [name for (name, _, _) in PHASE_B_NEW_COLUMNS if name not in params]
@@ -116,7 +116,7 @@ class TestPhaseBInsertSignature:
     def test_insert_round_trips_phase_b_columns(self):
         """Real DB roundtrip: insert with values, read back, every column survives."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         kwargs = {
             "ticker": "TEST15M-TEST", "event_ticker": "TEST15M",
             "asset": "BTC", "filter_stage": "low_price_shadow",

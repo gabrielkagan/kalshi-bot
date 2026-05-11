@@ -17,6 +17,7 @@ import re
 import sqlite3
 import sys
 import unittest
+import bot.helpers  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -89,7 +90,7 @@ class TestDepthsAtTiers(unittest.TestCase):
     """tm_sweep_extract_depths(yes_asks, tiers) → {tier: qty}, 0 if missing."""
 
     def setUp(self):
-        from bot import tm_sweep_extract_depths
+        from bot.helpers.tm_sweep import tm_sweep_extract_depths
         self.fn = tm_sweep_extract_depths
 
     def test_all_four_tiers_present(self):
@@ -143,7 +144,7 @@ class TestCounterfactualPnL(unittest.TestCase):
     """
 
     def setUp(self):
-        from bot import tm_sweep_counterfactual_pnl
+        from bot.helpers.tm_sweep import tm_sweep_counterfactual_pnl
         self.fn = tm_sweep_counterfactual_pnl
 
     def test_full_fill_no_unfilled_zero_pnl_empty_legs(self):
@@ -157,7 +158,7 @@ class TestCounterfactualPnL(unittest.TestCase):
     def test_partial_fill_win_sweeps_98_then_99(self):
         # 50ct requested, 2 filled at 96, 48 unfilled.
         # Depth: 5@98, 10@99 → take 5@98, 10@99, 33 still missing (no further tier).
-        from bot import calculate_taker_fee
+        from bot.models import calculate_taker_fee
         pnl, legs = self.fn(
             unfilled=48, entry_tier=96,
             depths={96: 0, 97: 7, 98: 5, 99: 10},
@@ -174,7 +175,7 @@ class TestCounterfactualPnL(unittest.TestCase):
         ])
 
     def test_partial_fill_loss_sweeps_98_then_99(self):
-        from bot import calculate_taker_fee
+        from bot.models import calculate_taker_fee
         pnl, legs = self.fn(
             unfilled=48, entry_tier=96,
             depths={96: 0, 97: 7, 98: 5, 99: 10},
@@ -190,7 +191,7 @@ class TestCounterfactualPnL(unittest.TestCase):
 
     def test_skip_97_even_with_depth(self):
         # 7ct at 97 should be IGNORED. cf_pnl computed only from 98/99.
-        from bot import calculate_taker_fee
+        from bot.models import calculate_taker_fee
         pnl, legs = self.fn(
             unfilled=10, entry_tier=96,
             depths={96: 0, 97: 100, 98: 3, 99: 4},
@@ -205,7 +206,7 @@ class TestCounterfactualPnL(unittest.TestCase):
 
     def test_entry_at_98_only_sweeps_99(self):
         # Entry was at 98c. Don't look DOWN at 96/97. Only 99 is eligible.
-        from bot import calculate_taker_fee
+        from bot.models import calculate_taker_fee
         pnl, legs = self.fn(
             unfilled=10, entry_tier=98,
             depths={96: 100, 97: 100, 98: 0, 99: 5},
@@ -225,7 +226,7 @@ class TestCounterfactualPnL(unittest.TestCase):
 
     def test_unfilled_exceeds_total_sweep_depth(self):
         # 100 unfilled, only 5+5=10 available. Sweep takes all 10. Remaining 90 lost.
-        from bot import calculate_taker_fee
+        from bot.models import calculate_taker_fee
         pnl, legs = self.fn(
             unfilled=100, entry_tier=96,
             depths={96: 0, 97: 0, 98: 5, 99: 5},
@@ -237,7 +238,7 @@ class TestCounterfactualPnL(unittest.TestCase):
 
     def test_unfilled_partially_consumed_by_98_only(self):
         # Only 3 unfilled, 5 at 98 → all 3 fill at 98, no 99 leg.
-        from bot import calculate_taker_fee
+        from bot.models import calculate_taker_fee
         pnl, legs = self.fn(
             unfilled=3, entry_tier=96,
             depths={96: 0, 97: 0, 98: 5, 99: 5},
@@ -288,7 +289,7 @@ class TestSchema(unittest.TestCase):
     """tm_sweep_shadow table created at StateManager init with required columns."""
 
     def setUp(self):
-        from bot import StateManager
+        from bot.state import StateManager
         self.tmp_db = "/tmp/test_tm_sweep_shadow_schema.db"
         if os.path.exists(self.tmp_db):
             os.unlink(self.tmp_db)
@@ -339,7 +340,7 @@ class TestInsertAndSettlement(unittest.TestCase):
     """End-to-end: insert helper writes a row; settlement update sets cf_pnl."""
 
     def setUp(self):
-        from bot import StateManager
+        from bot.state import StateManager
         self.tmp_db = "/tmp/test_tm_sweep_shadow_insert.db"
         if os.path.exists(self.tmp_db):
             os.unlink(self.tmp_db)
@@ -408,7 +409,7 @@ class TestInsertAndSettlement(unittest.TestCase):
         self.assertEqual(r["unfilled_count"], 50)
 
     def test_settlement_update_win(self):
-        from bot import calculate_taker_fee
+        from bot.models import calculate_taker_fee
         self._insert_row()  # 48 unfilled at 96c, 5@98 + 10@99 post
         self.state.update_tm_sweep_shadow_on_settlement(
             ticker="KXXRP15M-26APR261015-15", market_result="yes")
@@ -581,8 +582,8 @@ class TestAdversarialRegressions(unittest.TestCase):
         """Adversarial A4: verify that calculate_taker_fee returns int and
         therefore payoff arithmetic in tm_sweep_counterfactual_pnl is int.
         Belt-and-suspenders runtime check, not just static reasoning."""
-        from bot import tm_sweep_counterfactual_pnl, calculate_taker_fee
-        # Verify the upstream contract.
+        from bot.helpers.tm_sweep import tm_sweep_counterfactual_pnl  # Verify the upstream contract.
+        from bot.models import calculate_taker_fee
         self.assertIsInstance(calculate_taker_fee(50, 96), int,
                               "calculate_taker_fee must return int "
                               "(payoff math depends on it)")
@@ -665,12 +666,11 @@ class TestCounterfactualWith97(unittest.TestCase):
     actually capture: includes 97 fills."""
 
     def setUp(self):
-        from bot import tm_sweep_counterfactual_pnl
+        from bot.helpers.tm_sweep import tm_sweep_counterfactual_pnl
         self.fn = tm_sweep_counterfactual_pnl
 
     def test_with_97_sweeps_97_when_depth_present(self):
-        from bot import calculate_taker_fee
-        # Entry at 96, unfilled=48, depths 97c=10, 98c=5, 99c=20.
+        from bot.models import calculate_taker_fee  # Entry at 96, unfilled=48, depths 97c=10, 98c=5, 99c=20.
         # With sweep_tiers=(97,98,99): take 10@97, 5@98, 20@99 — total 35ct fills.
         pnl, legs = self.fn(
             unfilled=48, entry_tier=96,
@@ -687,7 +687,7 @@ class TestCounterfactualWith97(unittest.TestCase):
     def test_with_97_loss_path_97_amplifies_loss(self):
         # 97c loss = -97 per ct. 98c loss = -98 per ct. 99c loss = -99 per ct.
         # On a loss, sweeping 97 makes the loss WORSE, not better. Critical.
-        from bot import calculate_taker_fee
+        from bot.models import calculate_taker_fee
         pnl_with, _ = self.fn(
             unfilled=10, entry_tier=96,
             depths={97: 5, 98: 0, 99: 0},
@@ -708,7 +708,7 @@ class TestCounterfactualWith97(unittest.TestCase):
     def test_with_97_entry_98_does_not_sweep_97_or_98(self):
         # Entry at 98. sweep_tiers=(97,98,99) but tier <= entry filters those out.
         # Only 99 should fire.
-        from bot import calculate_taker_fee
+        from bot.models import calculate_taker_fee
         pnl, legs = self.fn(
             unfilled=10, entry_tier=98,
             depths={97: 100, 98: 100, 99: 5},
@@ -733,7 +733,7 @@ class TestSchemaWith97Column(unittest.TestCase):
             os.unlink(self.tmp_db)
 
     def test_fresh_db_has_with97_column(self):
-        from bot import StateManager
+        from bot.state import StateManager
         state = StateManager(db_path=self.tmp_db)
         cols = {r["name"] for r in state.conn.execute(
             "PRAGMA table_info(tm_sweep_shadow)").fetchall()}
@@ -743,8 +743,7 @@ class TestSchemaWith97Column(unittest.TestCase):
     def test_alter_migration_idempotent(self):
         """If the table exists WITHOUT the column (legacy DB), StateManager
         init must add it. Re-init must not error."""
-        from bot import StateManager
-        # Create legacy table without the column.
+        from bot.state import StateManager  # Create legacy table without the column.
         conn = sqlite3.connect(self.tmp_db)
         conn.execute("""
             CREATE TABLE tm_sweep_shadow (
@@ -792,7 +791,7 @@ class TestSettlementWritesBothCfColumns(unittest.TestCase):
     cf_pnl_cents (sweep_tiers=98,99) and cf_pnl_cents_with_97 (sweep_tiers=97,98,99)."""
 
     def setUp(self):
-        from bot import StateManager
+        from bot.state import StateManager
         self.tmp_db = "/tmp/test_tm_sweep_with97_settle.db"
         if os.path.exists(self.tmp_db):
             os.unlink(self.tmp_db)
@@ -821,7 +820,7 @@ class TestSettlementWritesBothCfColumns(unittest.TestCase):
         self.state.insert_tm_sweep_shadow_row(**defaults)
 
     def test_settlement_writes_both_columns_on_win(self):
-        from bot import calculate_taker_fee
+        from bot.models import calculate_taker_fee
         self._insert()
         self.state.update_tm_sweep_shadow_on_settlement(
             ticker="KXXRP15M-X", market_result="yes")
@@ -862,7 +861,7 @@ class TestBackfillExistingRows(unittest.TestCase):
     NULL. A one-time backfill must populate them from stored depth_97c_post."""
 
     def setUp(self):
-        from bot import StateManager
+        from bot.state import StateManager
         self.tmp_db = "/tmp/test_tm_sweep_with97_backfill.db"
         if os.path.exists(self.tmp_db):
             os.unlink(self.tmp_db)
@@ -874,8 +873,7 @@ class TestBackfillExistingRows(unittest.TestCase):
             os.unlink(self.tmp_db)
 
     def test_backfill_populates_settled_rows_with_null_with97(self):
-        from bot import calculate_taker_fee
-        # Insert a row, settle it WITHOUT writing with_97 (simulate legacy).
+        from bot.models import calculate_taker_fee  # Insert a row, settle it WITHOUT writing with_97 (simulate legacy).
         self.state.insert_tm_sweep_shadow_row(
             ticker="KXBACK-1", event_ticker="E", asset="BTC",
             entry_time="2026-04-26T12:00:00Z",
@@ -970,7 +968,7 @@ class TestWith97AdversarialRegressions(unittest.TestCase):
     """Adversary round 3 findings on the with_97 column."""
 
     def setUp(self):
-        from bot import StateManager
+        from bot.state import StateManager
         self.tmp_db = "/tmp/test_tm_sweep_with97_adversarial.db"
         if os.path.exists(self.tmp_db):
             os.unlink(self.tmp_db)
@@ -1029,8 +1027,7 @@ class TestWith97AdversarialRegressions(unittest.TestCase):
     def test_A5_invariant_with97_ge_cf_on_win_property_based(self):
         """Adversary A5: across many depth configurations, with_97 >= cf_pnl
         on a YES win (sweeping 97 only adds positive payoff legs)."""
-        from bot import tm_sweep_counterfactual_pnl
-        # Sweep over a grid of depth configs; verify monotonicity.
+        from bot.helpers.tm_sweep import tm_sweep_counterfactual_pnl  # Sweep over a grid of depth configs; verify monotonicity.
         for d97 in (0, 1, 5, 50, 500):
             for d98 in (0, 1, 5, 50):
                 for d99 in (0, 1, 5, 50):
@@ -1062,7 +1059,7 @@ class TestWith97AdversarialRegressions(unittest.TestCase):
         smaller with 97 included. The earlier wrong invariant was caught by
         this property-based test before shipping; documenting it here so a
         future maintainer doesn't 'fix' the 'inconsistency' by reverting."""
-        from bot import tm_sweep_counterfactual_pnl
+        from bot.helpers.tm_sweep import tm_sweep_counterfactual_pnl
         for d98 in (0, 1, 5, 50):
             for d99 in (0, 1, 5, 50):
                 for unfilled in (0, 5, 50, 500):
@@ -1162,8 +1159,8 @@ class TestTMSweepLive(unittest.TestCase):
     def test_picker_bumps_96_to_99_with_override(self):
         """End-to-end picker test: entry=96, target_qty=50, depths covering
         97/98/99 → picker returns 99 (the cap that delivers 50 contracts)."""
-        from bot import OrderExecutor, MAX_ENTRY_PRICE, IOC_LIMIT_MAX_BUMP_CENTS
-        # NO-side bids translate to YES asks. NO bid at 4c = YES ask at 96c.
+        from bot.constants import MAX_ENTRY_PRICE, IOC_LIMIT_MAX_BUMP_CENTS  # NO-side bids translate to YES asks. NO bid at 4c = YES ask at 96c.
+        from bot.executor import OrderExecutor
         ob_data = {
             "no": [
                 [4, 2],    # YES ask at 96 with 2 contracts
@@ -1184,7 +1181,8 @@ class TestTMSweepLive(unittest.TestCase):
 
     def test_picker_returns_lowest_sufficient_tier(self):
         """If 98c alone has enough depth, picker returns 98 (smallest)."""
-        from bot import OrderExecutor, MAX_ENTRY_PRICE, IOC_LIMIT_MAX_BUMP_CENTS
+        from bot.constants import MAX_ENTRY_PRICE, IOC_LIMIT_MAX_BUMP_CENTS
+        from bot.executor import OrderExecutor
         ob_data = {
             "no": [
                 [4, 1],    # 96c × 1
@@ -1201,7 +1199,8 @@ class TestTMSweepLive(unittest.TestCase):
     def test_picker_caps_at_99_even_when_target_exceeds_total_depth(self):
         """If total depth in 96-99 is insufficient, picker returns highest
         in-cap tier (99) — never above MAX_ENTRY_PRICE."""
-        from bot import OrderExecutor, MAX_ENTRY_PRICE, IOC_LIMIT_MAX_BUMP_CENTS
+        from bot.constants import MAX_ENTRY_PRICE, IOC_LIMIT_MAX_BUMP_CENTS
+        from bot.executor import OrderExecutor
         ob_data = {"no": [[4, 1], [3, 1], [2, 1], [1, 1]]}  # 4 ct total
         limit = OrderExecutor._pick_ioc_limit_for_depth(
             ob_data, best_yes_ask=96, target_qty=500,
@@ -1285,11 +1284,11 @@ class TestTMSweepLiveAdversarial(unittest.TestCase):
 
     def test_A2_TM_LIVE_STRATEGIES_excludes_dead_paths(self):
         """Imported value of TM_LIVE_STRATEGIES must not include 95 or 97."""
-        from bot import TM_LIVE_STRATEGIES
+        from bot.constants import TM_LIVE_STRATEGIES
         self.assertNotIn("terminal_momentum_95", TM_LIVE_STRATEGIES)
         self.assertNotIn("terminal_momentum_97", TM_LIVE_STRATEGIES)
         # And SHOULD include the live tiers from TM_PRICE_SET.
-        from bot import TM_PRICE_SET
+        from bot.constants import TM_PRICE_SET
         for p in TM_PRICE_SET:
             self.assertIn(f"terminal_momentum_{p}", TM_LIVE_STRATEGIES)
 
@@ -1322,8 +1321,8 @@ class TestTMSweepLiveAdversarial(unittest.TestCase):
         actual capital deployed at swept tier (up to 99c) exceeds the
         per-asset risk cap. Compute count using worst-case fill price
         (MAX_ENTRY_PRICE) when TM_SWEEP_LIVE_ENABLED."""
-        from bot import tm_compute_contracts, TM_BASE_CONTRACTS
-        # Direct verification: at the same scan-time price, sweep-aware
+        from bot.constants import TM_BASE_CONTRACTS  # Direct verification: at the same scan-time price, sweep-aware
+        from bot.helpers.tm_sweep import tm_compute_contracts
         # sizing must produce <= count vs sweep-ignorant sizing.
         bankroll = 100000  # $1000 in cents
         # SOL has risk_frac=0.15. At price=96, max_by_risk = 100000*0.15/96 = 156.
@@ -1370,7 +1369,7 @@ class TestTMSweepLiveAdversarialRound2(unittest.TestCase):
         from TM_PRICE_SET. If TM_PRICE_SET is a mutable set and gets
         mutated at runtime (test code, hot-reload), the two go out of
         sync silently. TM_PRICE_SET must be a frozenset."""
-        from bot import TM_PRICE_SET
+        from bot.constants import TM_PRICE_SET
         self.assertIsInstance(TM_PRICE_SET, frozenset,
                               "TM_PRICE_SET must be frozenset to prevent "
                               "runtime drift from TM_LIVE_STRATEGIES")
@@ -1409,7 +1408,7 @@ class TestTMSweepLiveAdversarialRound2(unittest.TestCase):
         source = _read_bot()
         # The TM_LIVE_STRATEGIES block must mention tm_96 has no fallback,
         # OR add it to eligibility sets.
-        from bot import TM_LIVE_STRATEGIES, MAKER_TAIL_ELIGIBLE_STRATEGIES
+        from bot.constants import TM_LIVE_STRATEGIES, MAKER_TAIL_ELIGIBLE_STRATEGIES
         if "terminal_momentum_96" in TM_LIVE_STRATEGIES:
             # Either tm_96 is in the eligibility sets, or the asymmetry
             # is documented at the TM_LIVE_STRATEGIES assignment.
@@ -1631,7 +1630,7 @@ class TestTMSweepDirectBumpAdversarialRound2(unittest.TestCase):
         column so analysts can filter — and so cf_pnl interpretation is
         correct per row."""
         # Schema check: column exists.
-        from bot import StateManager
+        from bot.state import StateManager
         tmp_db = "/tmp/test_direct_bump_column.db"
         if os.path.exists(tmp_db):
             os.unlink(tmp_db)
@@ -1718,7 +1717,7 @@ class TestTMSweepDirectBumpAdversarialRound3(unittest.TestCase):
         on bumped wins. Removed: analysts compute it as
         `CASE WHEN direct_bump_applied=1 THEN 99 ELSE entry_price_cents END`
         when needed, or use settled_trades for realized fill prices."""
-        from bot import StateManager
+        from bot.state import StateManager
         tmp_db = "/tmp/test_no_effective_entry_col.db"
         if os.path.exists(tmp_db):
             os.unlink(tmp_db)

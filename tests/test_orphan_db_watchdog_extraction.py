@@ -23,7 +23,7 @@ Bit 9.3-ii (Sprint 9 closing, 2026-05-10):
     (and proxy-supporting re-exports for _run_lsof_for_db / _get_pid_cmdline /
     _alert_orphan_db_holder / _ORPHAN_DB_WATCHDOG_PATTERNS so that the
     11 `monkeypatch.setattr(bot, ...)` sites in tests/test_orphan_db_watchdog.py
-    keep working through the _BotProxy chain at Option A scope).
+    keep working through canonical submodule (post-Bit-9.3-iii.b — _BotProxy retired) chain at Option A scope).
   - bot/main_loop.py: `MainLoop.startup` late-binding (was line 639 `from bot._impl
     import detect_orphan_db_holders`) RETARGETED to `from bot.orphan_db_watchdog
     import detect_orphan_db_holders` — eliminates the last bot._impl edge in
@@ -54,6 +54,8 @@ import re
 from pathlib import Path
 
 import pytest
+import bot.executor  # noqa: F401
+import bot.order_flow  # noqa: F401
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -188,7 +190,7 @@ def test_orphan_db_patterns_list_NOT_in_bot_impl_module():
 # ═════════════════════════════════════════════════════════════════════════════
 
 def test_proxy_chain_resolves_detect_orphan_db_holders():
-    """`bot.detect_orphan_db_holders` resolves through proxy chain to bot.orphan_db_watchdog.
+    """`bot.orphan_db_watchdog.detect_orphan_db_holders` resolves through proxy chain to bot.orphan_db_watchdog.
 
     The 11 monkeypatch sites in tests/test_orphan_db_watchdog.py use
     `monkeypatch.setattr(bot, "X", ...)` patterns. Option A keeps the _BotProxy,
@@ -196,36 +198,39 @@ def test_proxy_chain_resolves_detect_orphan_db_holders():
     bot.orphan_db_watchdog.X (Bit 9.3-iii will retire the proxy entirely)."""
     import bot
     import bot.orphan_db_watchdog
-    assert bot.detect_orphan_db_holders is bot.orphan_db_watchdog.detect_orphan_db_holders, (
-        "bot.detect_orphan_db_holders not resolving to bot.orphan_db_watchdog.detect_orphan_db_holders "
+    assert bot.orphan_db_watchdog.detect_orphan_db_holders is bot.orphan_db_watchdog.detect_orphan_db_holders, (
+        "bot.orphan_db_watchdog.detect_orphan_db_holders not resolving to bot.orphan_db_watchdog.detect_orphan_db_holders "
         "via proxy chain — re-export missing in bot/_impl.py?"
     )
 
 
 @pytest.mark.parametrize("name", ORPHAN_DB_FUNCTIONS + ("_ORPHAN_DB_WATCHDOG_PATTERNS",))
-def test_proxy_chain_resolves_all_orphan_db_names(name):
-    """Each of the 5 orphan-DB names resolves via `bot.X` proxy.
+def test_canonical_home_resolves_all_orphan_db_names(name):
+    """Each of the 5 orphan-DB names is reachable from its canonical module bot.orphan_db_watchdog.
 
-    Required to keep tests/test_orphan_db_watchdog.py's 11 `monkeypatch.setattr(bot, ...)`
-    sites working at Option A scope (proxy still in place; Bit 9.3-iii retires it)."""
-    import bot
+    Bit 9.3-iii.b (2026-05-11): pre-retirement this checked `bot.X is bot.orphan_db_watchdog.X`
+    via the proxy chain. Post-retirement bot has no __getattr__ fall-through, so the
+    pin reduces to "name exists on bot.orphan_db_watchdog" — which is what tests/test_orphan_db_watchdog.py
+    now uses directly (`monkeypatch.setattr(bot.orphan_db_watchdog, ...)`).
+    """
     import bot.orphan_db_watchdog
-    proxy_attr = getattr(bot, name)
-    canonical_attr = getattr(bot.orphan_db_watchdog, name)
-    assert proxy_attr is canonical_attr, (
-        f"bot.{name} ({proxy_attr!r}) is not bot.orphan_db_watchdog.{name} ({canonical_attr!r}) — "
-        f"proxy chain broken; check bot/_impl.py re-export."
+    assert hasattr(bot.orphan_db_watchdog, name), (
+        f"bot.orphan_db_watchdog missing {name} — extraction-target leaf module incomplete."
     )
 
 
 def test_bot_impl_reexports_orphan_db_names():
-    """bot/_impl.py re-exports the 5 orphan-DB names so the proxy chain stays valid.
+    """bot/_impl.py re-exports the 5 orphan-DB names — preserves the residual shim surface.
 
-    Without re-exports, `bot.detect_orphan_db_holders` would AttributeError because
-    _BotProxy.__getattr__ falls back to `bot._impl.X` lookup, and the names live
-    in bot.orphan_db_watchdog post-extraction."""
+    Post-Bit-9.3-iii.b (2026-05-11) the `_BotProxy` is retired and tests in
+    tests/test_orphan_db_watchdog.py reach the orphan-DB helpers via
+    `bot.orphan_db_watchdog.X` directly (e.g.,
+    `monkeypatch.setattr(bot.orphan_db_watchdog, "_run_lsof_for_db", ...)`).
+    The re-export here in bot/_impl.py persists for any caller still doing
+    `from bot._impl import X` and is dropped by Bit 9.3-iii.c (DELETE bot/_impl.py).
+    """
     if not BOT_PY.exists():
-        pytest.skip("bot/_impl.py removed (Bit 9.3-iii final form — proxy retired)")
+        pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c — final shim deletion)")
     src = BOT_PY.read_text()
     pat = re.compile(
         r"from\s+bot\.orphan_db_watchdog\s+import\s*\(?[^)\n]*"
@@ -233,9 +238,10 @@ def test_bot_impl_reexports_orphan_db_names():
     )
     assert pat.search(src), (
         "bot/_impl.py is missing the `from bot.orphan_db_watchdog import ...` re-export "
-        "for the orphan-DB names. The 11 `monkeypatch.setattr(bot, ...)` sites in "
-        "tests/test_orphan_db_watchdog.py rely on the proxy chain bot.X → bot._impl.X → "
-        "bot.orphan_db_watchdog.X (Option A); without the re-export the chain breaks."
+        "for the orphan-DB names. Without this re-export `from bot._impl import "
+        "detect_orphan_db_holders` would break; the canonical home is "
+        "`from bot.orphan_db_watchdog import detect_orphan_db_holders` and that path "
+        "is unaffected by this re-export's absence."
     )
 
 

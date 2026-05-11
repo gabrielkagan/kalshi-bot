@@ -40,7 +40,7 @@ class _TempDB(unittest.TestCase):
 
 class TestEvaluatedOpportunitiesNewColumn(_TempDB):
     def test_orderbook_levels_json_column_exists(self):
-        sm = bot.StateManager(db_path=self._fresh_path())
+        sm = bot.state.StateManager(db_path=self._fresh_path())
         cols = self._columns(sm, "evaluated_opportunities")
         self.assertIn("orderbook_levels_json", cols)
         self.assertEqual(cols["orderbook_levels_json"].upper(), "TEXT")
@@ -48,7 +48,7 @@ class TestEvaluatedOpportunitiesNewColumn(_TempDB):
 
 class TestPositionPriceObservationsNewColumn(_TempDB):
     def test_orderbook_levels_json_column_exists(self):
-        sm = bot.StateManager(db_path=self._fresh_path())
+        sm = bot.state.StateManager(db_path=self._fresh_path())
         cols = self._columns(sm, "position_price_observations")
         self.assertIn("orderbook_levels_json", cols)
         self.assertEqual(cols["orderbook_levels_json"].upper(), "TEXT")
@@ -56,7 +56,7 @@ class TestPositionPriceObservationsNewColumn(_TempDB):
 
 class TestOrderLifecycleSnapshotsTable(_TempDB):
     def test_table_exists_with_required_columns(self):
-        sm = bot.StateManager(db_path=self._fresh_path())
+        sm = bot.state.StateManager(db_path=self._fresh_path())
         cols = self._columns(sm, "order_lifecycle_snapshots")
         # Required columns per design
         for required in ("id", "order_id", "ticker", "event_type",
@@ -69,7 +69,7 @@ class TestOrderLifecycleSnapshotsTable(_TempDB):
         self.assertEqual(id_row["pk"], 1)
 
     def test_indexes_exist(self):
-        sm = bot.StateManager(db_path=self._fresh_path())
+        sm = bot.state.StateManager(db_path=self._fresh_path())
         idx = {row["name"] for row in sm.conn.execute(
             "PRAGMA index_list(order_lifecycle_snapshots)")}
         # Need lookups by order_id (lifecycle replay) and ticker (forensic)
@@ -79,7 +79,7 @@ class TestOrderLifecycleSnapshotsTable(_TempDB):
                         f"no ticker index found: {idx}")
 
     def test_required_columns_not_null(self):
-        sm = bot.StateManager(db_path=self._fresh_path())
+        sm = bot.state.StateManager(db_path=self._fresh_path())
         cols = list(sm.conn.execute(
             "PRAGMA table_info(order_lifecycle_snapshots)"))
         notnull = {r["name"]: r["notnull"] for r in cols}
@@ -94,21 +94,21 @@ class TestMigrationIdempotency(_TempDB):
 
     def test_re_init_does_not_error(self):
         path = self._fresh_path()
-        bot.StateManager(db_path=path)
+        bot.state.StateManager(db_path=path)
         # Second init must succeed (ADD COLUMN should fail silently)
         try:
-            bot.StateManager(db_path=path)
+            bot.state.StateManager(db_path=path)
         except Exception as e:
             self.fail(f"Second StateManager init raised: {e}")
 
     def test_existing_eval_opp_rows_survive_reinit(self):
         path = self._fresh_path()
-        sm1 = bot.StateManager(db_path=path)
+        sm1 = bot.state.StateManager(db_path=path)
         sm1.insert_evaluated_opportunity(
             ticker="KXTEST-1", event_ticker="KXTEST", asset="BTC",
             filter_stage="candidate", product_type="15m")
         sm1.conn.close()
-        sm2 = bot.StateManager(db_path=path)
+        sm2 = bot.state.StateManager(db_path=path)
         rows = list(sm2.conn.execute(
             "SELECT ticker, orderbook_levels_json FROM evaluated_opportunities "
             "WHERE ticker='KXTEST-1'"))
@@ -118,7 +118,7 @@ class TestMigrationIdempotency(_TempDB):
 
     def test_existing_position_obs_rows_survive_reinit(self):
         path = self._fresh_path()
-        sm1 = bot.StateManager(db_path=path)
+        sm1 = bot.state.StateManager(db_path=path)
         sm1.conn.execute(
             "INSERT INTO position_price_observations "
             "(ticker, asset, observation_time, entry_price_cents, position_count, source) "
@@ -126,7 +126,7 @@ class TestMigrationIdempotency(_TempDB):
             ("KXTEST-1", "BTC", "2026-04-25T00:00:00Z", 96, 1, "test"))
         sm1.conn.commit()
         sm1.conn.close()
-        sm2 = bot.StateManager(db_path=path)
+        sm2 = bot.state.StateManager(db_path=path)
         rows = list(sm2.conn.execute(
             "SELECT ticker, orderbook_levels_json FROM position_price_observations "
             "WHERE ticker='KXTEST-1'"))
@@ -139,7 +139,7 @@ class TestOrderLifecycleSnapshotsBasicInsert(_TempDB):
     StateManager connection (which has WAL + busy_timeout)?"""
 
     def test_basic_insert_and_read(self):
-        sm = bot.StateManager(db_path=self._fresh_path())
+        sm = bot.state.StateManager(db_path=self._fresh_path())
         sm.conn.execute(
             "INSERT INTO order_lifecycle_snapshots "
             "(order_id, ticker, event_type, observation_time, orderbook_levels_json) "
@@ -162,7 +162,7 @@ class TestEventTypeCheckConstraint(_TempDB):
     ALLOWED = ("submit", "fill", "partial_fill", "cancel")
 
     def test_allowed_event_types_accepted(self):
-        sm = bot.StateManager(db_path=self._fresh_path())
+        sm = bot.state.StateManager(db_path=self._fresh_path())
         for et in self.ALLOWED:
             sm.conn.execute(
                 "INSERT INTO order_lifecycle_snapshots "
@@ -172,7 +172,7 @@ class TestEventTypeCheckConstraint(_TempDB):
 
     def test_invalid_event_type_rejected(self):
         import sqlite3
-        sm = bot.StateManager(db_path=self._fresh_path())
+        sm = bot.state.StateManager(db_path=self._fresh_path())
         with self.assertRaises(sqlite3.IntegrityError):
             sm.conn.execute(
                 "INSERT INTO order_lifecycle_snapshots "
@@ -187,7 +187,7 @@ class TestOrderIdNotNull(_TempDB):
 
     def test_order_id_required(self):
         import sqlite3
-        sm = bot.StateManager(db_path=self._fresh_path())
+        sm = bot.state.StateManager(db_path=self._fresh_path())
         with self.assertRaises(sqlite3.IntegrityError):
             sm.conn.execute(
                 "INSERT INTO order_lifecycle_snapshots "
@@ -202,14 +202,14 @@ class TestPartialMigrationRecovery(_TempDB):
 
     def test_missing_index_recreated_on_reinit(self):
         path = self._fresh_path()
-        sm1 = bot.StateManager(db_path=path)
+        sm1 = bot.state.StateManager(db_path=path)
         # Simulate partial-migration state: drop both indexes
         sm1.conn.execute("DROP INDEX IF EXISTS idx_ols_order_id")
         sm1.conn.execute("DROP INDEX IF EXISTS idx_ols_ticker_time")
         sm1.conn.commit()
         sm1.conn.close()
         # Re-init must restore them
-        sm2 = bot.StateManager(db_path=path)
+        sm2 = bot.state.StateManager(db_path=path)
         idx = {row["name"] for row in sm2.conn.execute(
             "PRAGMA index_list(order_lifecycle_snapshots)")}
         self.assertTrue(any("order_id" in n for n in idx),

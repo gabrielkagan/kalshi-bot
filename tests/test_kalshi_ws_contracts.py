@@ -47,12 +47,10 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bot import (
-    KalshiFeed,
-    OrderbookSchemaError,
-    OrderExecutor,
-    OpportunityScanner,
-)
+from bot.executor import OrderExecutor
+from bot.feeds.kalshi import KalshiFeed
+from bot.feeds.orderbook_schema import OrderbookSchemaError
+from bot.scanner import OpportunityScanner
 
 
 # ─────────────────────────────────────────────────────────────────────────────

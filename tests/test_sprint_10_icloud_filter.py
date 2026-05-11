@@ -30,6 +30,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import bot.orphan_db_watchdog  # noqa: F401
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

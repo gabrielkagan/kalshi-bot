@@ -19,6 +19,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
+import bot.state  # noqa: F401
 
 
 class _TempState(unittest.TestCase):
@@ -26,13 +27,13 @@ class _TempState(unittest.TestCase):
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
         self.addCleanup(os.unlink, tmp.name)
-        return bot.StateManager(db_path=tmp.name)
+        return bot.state.StateManager(db_path=tmp.name)
 
 
 class TestSignatureAcceptsKwarg(_TempState):
     def test_signature_has_orderbook_levels_json(self):
         params = inspect.signature(
-            bot.StateManager.insert_evaluated_opportunity).parameters
+            bot.state.StateManager.insert_evaluated_opportunity).parameters
         self.assertIn("orderbook_levels_json", params)
         # Must default to None — adding a non-default at the end would
         # break TypeError-free additive growth and is forbidden by the

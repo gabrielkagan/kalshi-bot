@@ -84,14 +84,12 @@ Construction site: none. ``ProbabilityEngine`` is a class with only
 ``@staticmethod`` methods; there is no instance and no
 ``MainLoop``-wired wiring. Downstream consumers call ``compute()``,
 ``counterfactual_prob()``, ``_cdf_complement()``, ``_dynamic_cap()``,
-and ``_calibrate()`` as bare-class attribute access from inside
-``bot/_impl.py`` (19 sites, all routed through the proxy
-``bot._impl.ProbabilityEngine`` from the
-``from bot.engines import ProbabilityEngine`` at line ~109) and from
-``tests/test_probability_engine.py`` (11 ``from bot import
-ProbabilityEngine`` sites, routed through ``bot._BotProxy`` →
-``bot._impl.ProbabilityEngine`` →
-``bot.engines.probability.ProbabilityEngine``).
+and ``_calibrate()`` as bare-class attribute access — in ``bot/_impl.py``
+via the ``from bot.engines import ProbabilityEngine`` re-export (line ~109,
+residual shim until Bit 9.3-iii.c), and in ``tests/test_probability_engine.py``
+via ``from bot.engines.probability import ProbabilityEngine`` directly
+(post-Bit-9.3-iii.b, 2026-05-11; the ``_BotProxy`` chain that previously
+routed ``from bot import ProbabilityEngine`` is retired).
 """
 
 import logging

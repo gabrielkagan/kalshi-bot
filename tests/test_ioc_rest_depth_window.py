@@ -28,6 +28,8 @@ import sys
 import time
 import unittest
 from unittest.mock import MagicMock
+import bot.constants  # noqa: F401
+import bot.executor  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -39,7 +41,7 @@ def _make_executor():
     """Construct a minimal OrderExecutor that can exercise the
     rolling-window helper without touching network or DB."""
     import bot
-    ex = bot.OrderExecutor.__new__(bot.OrderExecutor)
+    ex = bot.executor.OrderExecutor.__new__(bot.executor.OrderExecutor)
     ex._client = MagicMock()
     ex._state = MagicMock()
     ex._logger = MagicMock()
@@ -106,7 +108,7 @@ class TestRollingBuffer(unittest.TestCase):
         import bot
         from collections import deque
         old_ts = (time.monotonic()
-                  - bot.IOC_DRIFT_CHECK_REST_WINDOW_S - 5.0)
+                  - bot.constants.IOC_DRIFT_CHECK_REST_WINDOW_S - 5.0)
         # Manually insert an old sample.
         self.ex._rest_depth_observations["KXBTC-3"] = deque(
             [(old_ts, 1000)])
@@ -322,7 +324,7 @@ class TestRecordObservationHardening(unittest.TestCase):
         ticker = "KXBTC-EXPIRED"
         # Insert an expired sample directly.
         old_ts = (time.monotonic()
-                  - bot.IOC_DRIFT_CHECK_REST_WINDOW_S - 5.0)
+                  - bot.constants.IOC_DRIFT_CHECK_REST_WINDOW_S - 5.0)
         self.ex._rest_depth_observations[ticker] = deque(
             [(old_ts, 100)])
         # Read should prune AND drop the dict entry.
@@ -482,7 +484,7 @@ class TestColdStartGate(unittest.TestCase):
         import bot
         from collections import deque
         old_ts = (time.monotonic()
-                  - bot.IOC_DRIFT_CHECK_REST_WINDOW_S - 5.0)
+                  - bot.constants.IOC_DRIFT_CHECK_REST_WINDOW_S - 5.0)
         self.ex._rest_depth_observations["KXBTC-COLD-3"] = deque(
             [(old_ts, 1000), (old_ts + 0.1, 1000)])
         # Both expired — count should be 0 even though dict has entries.
@@ -497,7 +499,7 @@ class TestColdStartGate(unittest.TestCase):
         would silently re-enable the pre-fix bug."""
         import bot
         self.assertGreaterEqual(
-            bot.OrderExecutor._REST_DEPTH_MIN_SAMPLES_FOR_CLAMP, 2,
+            bot.executor.OrderExecutor._REST_DEPTH_MIN_SAMPLES_FOR_CLAMP, 2,
             "Smoothed clamp requires ≥2 samples; otherwise it "
             "degenerates to single-sample (the pre-fix bug).")
 
@@ -586,7 +588,7 @@ class TestEndToEndFlickerNotClamped(unittest.TestCase):
         from collections import deque
         # Pre-load expired high samples.
         old_ts = (time.monotonic()
-                  - bot.IOC_DRIFT_CHECK_REST_WINDOW_S - 1.0)
+                  - bot.constants.IOC_DRIFT_CHECK_REST_WINDOW_S - 1.0)
         self.ex._rest_depth_observations["KXBTC-E2"] = deque(
             [(old_ts, 1000), (old_ts + 0.1, 1000)])
         # Now record current low samples.
@@ -624,7 +626,7 @@ class TestPhantomAbortEndToEnd(unittest.TestCase):
         feed = MagicMock()
         feed.is_connected = True
         feed.pop_fills.return_value = []
-        ex = bot.OrderExecutor(
+        ex = bot.executor.OrderExecutor(
             client=client, state=state, logger=logger,
             main_loop=ml, kalshi_feed=feed)
         # Pre-warm with high samples so the cold-start gate does NOT
@@ -731,17 +733,17 @@ class TestColdStartCatastrophicDrift(unittest.TestCase):
     def test_constant_defined_and_strict(self):
         import bot
         self.assertTrue(
-            hasattr(bot, "IOC_DRIFT_CHECK_COLD_START_RATIO"),
+            hasattr(bot.constants, "IOC_DRIFT_CHECK_COLD_START_RATIO"),
             "IOC_DRIFT_CHECK_COLD_START_RATIO must be defined as a "
             "module-level constant for tunability.")
         self.assertLess(
-            bot.IOC_DRIFT_CHECK_COLD_START_RATIO,
-            bot.IOC_DRIFT_CHECK_DIVERGENCE_RATIO,
+            bot.constants.IOC_DRIFT_CHECK_COLD_START_RATIO,
+            bot.constants.IOC_DRIFT_CHECK_DIVERGENCE_RATIO,
             "Cold-start ratio must be STRICTER (lower) than the "
             "smoothed-window ratio, or it would be no different from "
             "fully-trusting a single REST sample.")
         self.assertGreater(
-            bot.IOC_DRIFT_CHECK_COLD_START_RATIO, 0.0,
+            bot.constants.IOC_DRIFT_CHECK_COLD_START_RATIO, 0.0,
             "Cold-start ratio must be >0 (otherwise the branch never "
             "fires, defeating the fix).")
 
@@ -799,7 +801,7 @@ class TestColdStartCatastrophicDrift(unittest.TestCase):
         feed = MagicMock()
         feed.is_connected = True
         feed.pop_fills.return_value = []
-        ex = bot.OrderExecutor(
+        ex = bot.executor.OrderExecutor(
             client=client, state=state, logger=logger,
             main_loop=ml, kalshi_feed=feed)
         # Cold-start: NO pre-warmed samples. The drift-check fetches

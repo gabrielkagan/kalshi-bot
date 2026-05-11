@@ -25,6 +25,7 @@ from collections import deque
 from pathlib import Path
 
 import pytest
+import bot.feeds  # noqa: F401
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -44,7 +45,7 @@ def _make_feed_isolated(tmp_path: Path):
     state-dir location in production).
     """
     bot = _import_bot()
-    feed = bot.CoinbaseFeed(persist_path=str(tmp_path / 'spot_buffer.json'))
+    feed = bot.feeds.CoinbaseFeed(persist_path=str(tmp_path / 'spot_buffer.json'))
     return bot, feed
 
 
@@ -54,7 +55,7 @@ def test_coinbase_feed_accepts_persist_path_kwarg(tmp_path: Path):
     assert feed is not None
     # Default-no-kwarg must also work for backward compatibility.
     bot = _import_bot()
-    f2 = bot.CoinbaseFeed()  # default persist_path
+    f2 = bot.feeds.CoinbaseFeed()  # default persist_path
     assert f2 is not None
 
 
@@ -91,7 +92,7 @@ def test_load_restores_buffer_on_init(tmp_path: Path):
     feed.persist_buffer()
     # Construct a new instance pointing at the same path.
     persist_path = str(tmp_path / 'spot_buffer.json')
-    feed2 = bot.CoinbaseFeed(persist_path=persist_path)
+    feed2 = bot.feeds.CoinbaseFeed(persist_path=persist_path)
     btc = list(feed2._buffers['BTC'])
     assert len(btc) == 60, f"expected 60 entries, got {len(btc)}"
     # Order doesn't matter for momentum lookup, but verify content.
@@ -118,7 +119,7 @@ def test_load_drops_entries_older_than_buffer_maxage(tmp_path: Path):
         ],
         'ETH': [],
     }))
-    feed2 = bot.CoinbaseFeed(persist_path=str(persist_path))
+    feed2 = bot.feeds.CoinbaseFeed(persist_path=str(persist_path))
     btc = list(feed2._buffers['BTC'])
     # Only the two recent entries should survive.
     assert len(btc) == 2, f"expected 2, got {len(btc)}: {btc}"
@@ -130,7 +131,7 @@ def test_load_handles_missing_file(tmp_path: Path):
     """No persist file = silent empty-buffer init; no crash, no warning."""
     bot = _import_bot()
     persist_path = tmp_path / 'never_written.json'
-    feed = bot.CoinbaseFeed(persist_path=str(persist_path))
+    feed = bot.feeds.CoinbaseFeed(persist_path=str(persist_path))
     # Buffers all empty.
     for asset in feed._buffers:
         assert len(feed._buffers[asset]) == 0
@@ -142,7 +143,7 @@ def test_load_handles_corrupt_file(tmp_path: Path):
     bot = _import_bot()
     persist_path = tmp_path / 'corrupt.json'
     persist_path.write_text('{"BTC": [[1234, 75')  # truncated
-    feed = bot.CoinbaseFeed(persist_path=str(persist_path))
+    feed = bot.feeds.CoinbaseFeed(persist_path=str(persist_path))
     for asset in feed._buffers:
         assert len(feed._buffers[asset]) == 0
 
@@ -159,7 +160,7 @@ def test_load_handles_unknown_asset_in_persist_file(tmp_path: Path):
         'BTC': [[now - 60, 75000.0]],
         'OLDASSET': [[now - 60, 0.42]],   # not in ASSETS — placeholder for a deprecated asset
     }))
-    feed = bot.CoinbaseFeed(persist_path=str(persist_path))
+    feed = bot.feeds.CoinbaseFeed(persist_path=str(persist_path))
     btc = list(feed._buffers['BTC'])
     assert len(btc) == 1
     assert 'OLDASSET' not in feed._buffers
@@ -176,7 +177,7 @@ def test_persist_serialization_roundtrip_full_buffer(tmp_path: Path):
             for i in range(1800):
                 feed._buffers[asset].append((now - i, base_price + (i * 0.01)))
     feed.persist_buffer()
-    feed2 = bot.CoinbaseFeed(persist_path=str(tmp_path / 'spot_buffer.json'))
+    feed2 = bot.feeds.CoinbaseFeed(persist_path=str(tmp_path / 'spot_buffer.json'))
     for asset in ('BTC', 'ETH', 'SOL', 'XRP'):
         assert len(feed2._buffers[asset]) == 1800, \
             f"asset {asset} had {len(feed2._buffers[asset])} entries"
@@ -188,7 +189,7 @@ def test_persist_path_default_is_state_dir(tmp_path: Path, monkeypatch):
     bot = _import_bot()
     # Inspect default value via signature.
     import inspect
-    sig = inspect.signature(bot.CoinbaseFeed.__init__)
+    sig = inspect.signature(bot.feeds.CoinbaseFeed.__init__)
     default = sig.parameters['persist_path'].default
     # Must be a string path containing 'state' or 'data' (writable dir),
     # NOT the repo root or a hardcoded /tmp.
@@ -214,7 +215,7 @@ def test_load_drops_future_dated_entries(tmp_path: Path):
         ],
         'ETH': [],
     }))
-    feed = bot.CoinbaseFeed(persist_path=str(persist_path))
+    feed = bot.feeds.CoinbaseFeed(persist_path=str(persist_path))
     btc = list(feed._buffers['BTC'])
     assert len(btc) == 1, f"expected only the recent entry, got {len(btc)}: {btc}"
     assert btc[0][1] == pytest.approx(75000.0)
@@ -229,7 +230,7 @@ def test_load_accepts_minor_clock_skew_within_60s(tmp_path: Path):
     persist_path.write_text(json.dumps({
         'BTC': [[now + 10, 75000.0]],  # 10s ahead — accept
     }))
-    feed = bot.CoinbaseFeed(persist_path=str(persist_path))
+    feed = bot.feeds.CoinbaseFeed(persist_path=str(persist_path))
     btc = list(feed._buffers['BTC'])
     assert len(btc) == 1
 

@@ -31,7 +31,10 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
-from bot import KalshiClient
+from bot.kalshi_client import KalshiClient
+import bot._impl  # noqa: F401
+import bot.helpers  # noqa: F401
+import bot.infra  # noqa: F401
 
 
 def _make_client_with_mocked_request():
@@ -403,7 +406,7 @@ class TestKalshiBreakerDecoratorContract(unittest.TestCase):
     first call in production."""
 
     def test_missing_inner_breaker_config_raises_at_decoration_time(self):
-        from bot import _kalshi_breaker
+        from bot.helpers.breakers import _kalshi_breaker
         with self.assertRaises(TypeError) as cm:
             @_kalshi_breaker
             def some_method(self):
@@ -415,7 +418,7 @@ class TestKalshiBreakerDecoratorContract(unittest.TestCase):
         resulting outer wrapper has no _breaker_key_fn until
         _breaker_config attaches it, but by then _kalshi_breaker
         already ran and captured the inner unconfigured function."""
-        from bot import _kalshi_breaker, _breaker_config
+        from bot.helpers.breakers import _kalshi_breaker, _breaker_config
         with self.assertRaises(TypeError):
             @_breaker_config(key_fn=lambda self: "x")
             @_kalshi_breaker
@@ -428,31 +431,31 @@ class TestKalshiSeriesKeyHelper(unittest.TestCase):
     breaker registry with garbage keys."""
 
     def test_normal_ticker_extracts_series(self):
-        from bot import _kalshi_series_key
+        from bot.helpers.breakers import _kalshi_series_key
         self.assertEqual(
             _kalshi_series_key("KXBTC15M-26APR250000-00", "orderbook"),
             "kalshi_orderbook_KXBTC15M")
 
     def test_ticker_without_dash_uses_full_ticker(self):
-        from bot import _kalshi_series_key
+        from bot.helpers.breakers import _kalshi_series_key
         self.assertEqual(
             _kalshi_series_key("KXSPX", "market"),
             "kalshi_market_KXSPX")
 
     def test_empty_string_falls_back_to_unknown(self):
-        from bot import _kalshi_series_key
+        from bot.helpers.breakers import _kalshi_series_key
         self.assertEqual(
             _kalshi_series_key("", "orderbook"),
             "kalshi_orderbook_unknown")
 
     def test_none_falls_back_to_unknown(self):
-        from bot import _kalshi_series_key
+        from bot.helpers.breakers import _kalshi_series_key
         self.assertEqual(
             _kalshi_series_key(None, "orderbook"),
             "kalshi_orderbook_unknown")
 
     def test_non_string_falls_back_to_unknown(self):
-        from bot import _kalshi_series_key
+        from bot.helpers.breakers import _kalshi_series_key
         self.assertEqual(
             _kalshi_series_key(12345, "orderbook"),
             "kalshi_orderbook_unknown")

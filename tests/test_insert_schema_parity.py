@@ -34,6 +34,7 @@ import re
 import sys
 
 import pytest
+import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -124,7 +125,7 @@ def _load_live_schema():
     loops that extend each table over time.
     """
     import bot
-    sm = bot.StateManager(":memory:")
+    sm = bot.state.StateManager(":memory:")
     tables = sm.conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
     ).fetchall()

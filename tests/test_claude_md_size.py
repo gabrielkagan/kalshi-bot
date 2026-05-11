@@ -41,6 +41,8 @@ import re
 from pathlib import Path
 
 import pytest
+import bot._impl  # noqa: F401
+import bot.main_loop  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"

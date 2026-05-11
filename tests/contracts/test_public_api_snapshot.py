@@ -1,24 +1,26 @@
 """Public API contract test for the bot package.
 
 Validates that bot's public surface matches the committed snapshot at
-``tests/contracts/public_api.json``. Three layers (see
+``tests/contracts/public_api.json``. Layers (see
 ``scripts/dump_public_api.py`` for full design):
 
 1. Static walk of ``bot.*`` submodules (excluding ``bot._impl``).
 2. Static walk of canonical classes still resident in ``bot/_impl.py``.
-3. Runtime probe of ``bot.X`` attributes accessible via the ``_BotProxy``.
+3. (Historical, pre-Bit-9.3-iii.b) Runtime probe of ``bot.X`` attributes
+   accessible via the ``_BotProxy``. Post-Bit-9.3-iii.b (2026-05-11) the
+   proxy is retired so this layer collects 0 attrs — callers reach names
+   via canonical submodules (``bot.constants.X``, ``bot.main_loop.MainLoop``,
+   ``bot.state.StateManager``, etc.) directly.
 
 Scope: this is an **additive** structural gate. It catches:
 - Removed/renamed re-exports at any subpackage ``__init__.py``
 - Signature drift on public classes/functions
 - Renamed methods on canonical classes (in ``bot._impl`` or extracted modules)
-- Lost proxy attributes (e.g., a Bit silently drops ``from config import *``
-  in ``bot/_impl.py`` and breaks ``mock.patch("bot.X")`` callers)
 
 Scope: this does NOT replace the per-Bit ``test_*_extraction.py`` files,
 which check ``bot/_impl.py`` source patterns, runtime identity
-(``bot.X is bot.engines.foo.X``), decorator chain resolution, and
-behavioral smoke. Both layers are needed.
+(``bot.<canonical_module>.X``), decorator chain resolution, and behavioral
+smoke. Both layers are needed.
 
 If this test fails:
 - Intentional surface change: regenerate via
@@ -36,6 +38,7 @@ import json
 from pathlib import Path
 
 import pytest
+import bot._impl  # noqa: F401
 
 SNAPSHOT_PATH = Path(__file__).parent / "public_api.json"
 REGEN_CMD = "python3 scripts/dump_public_api.py"

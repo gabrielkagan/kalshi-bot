@@ -56,6 +56,9 @@ import sysconfig
 from pathlib import Path
 
 import pytest
+import bot.constants  # noqa: F401
+import bot.engines.probability  # noqa: F401
+import bot.helpers  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 IMPORTLINTER_PATH = REPO_ROOT / ".importlinter"

@@ -4,10 +4,13 @@ Single-class subpackage extracted in Sprint 8 Bit 8.1 (2026-05-10):
 `OpportunityScanner` lives at `bot/scanner/__init__.py` (~9,400 lines,
 36 instance methods + 7 staticmethods). Entry point is `scan()`, called
 once per tick by `MainLoop`. Re-imported into `bot/_impl.py` via the
-line-115 `from bot.scanner import OpportunityScanner` re-export so the
-runtime construction in `MainLoop.__init__`, ~30 test instantiation
-sites, and 13 staticmethod call sites in OrderExecutor/MainLoop all
-resolve through the proxy chain.
+line-115 `from bot.scanner import OpportunityScanner` re-export — pre-Bit-9.3-iii.b
+this re-export plus the `_BotProxy` chain let `bot.OpportunityScanner`
+work as a name-route. Post-Bit-9.3-iii.b (2026-05-11) the proxy is retired;
+callers reach `OpportunityScanner` via `from bot.scanner import
+OpportunityScanner` (or `bot.scanner.OpportunityScanner`) directly. The
+re-export in bot/_impl.py persists as part of the residual shim until
+Bit 9.3-iii.c deletes bot/_impl.py entirely.
 
 ## Cross-class coupling (read before any edit)
 
@@ -37,10 +40,11 @@ top-level import clean.
 (search anchor: `import bot.notifier as _telegram_state`).
 Plain `from bot.notifier import _TELEGRAM` would capture the binding
 by value at import time and silently freeze at `None` when
-`MainLoop.__init__` later mutates the singleton (L83). Likewise
-`from bot import notifier as _telegram_state` triggers
-`_BotProxy.__getattr__` → circular `ImportError` (L84). The
-canonical form is `import bot.notifier as _telegram_state`. Post-Bit-9.3-ii
+`MainLoop.__init__` later mutates the singleton (L83). Post-Bit-9.3-iii.b
+(2026-05-11) the `_BotProxy` is retired so `from bot import notifier as ...`
+no longer compiles at all (AttributeError); pre-9.3-iii.b the form would
+have triggered `_BotProxy.__getattr__` → circular `ImportError` (L84). The
+canonical form remains `import bot.notifier as _telegram_state`. Post-Bit-9.3-ii
 this pattern has 5 consumers — bot/orphan_db_watchdog.py (for the orphan-DB
 Layer-3 watchdog helpers — `_alert_orphan_db_holder` and the
 `detect_orphan_db_holders` lsof-not-found Telegram alert branch — clean
@@ -54,9 +58,12 @@ Same module-attribute access pattern, but for the calibration
 runtime: `from bot.engines import calibration as _cal_state` →
 `_cal_state._CALIBRATION_ENGINE` / `_cal_state._resolve_cal_engine`.
 The `bot.engines` parent goes through Python's normal submodule
-import (no `_BotProxy` interception, since `bot.engines` is itself a
-submodule package, not a `bot.X` top-level), so the
-`from bot.engines import calibration` form is safe here. Identical
+import — pre-Bit-9.3-iii.b the `_BotProxy` would have intercepted top-level
+`bot.X` reads but submodule loads (`bot.engines.calibration`) bypassed it
+via Python's package-import semantics; post-9.3-iii.b the proxy is gone
+entirely and `bot.engines.calibration` resolves via Python's default
+package-import path. The `from bot.engines import calibration` form remains
+safe. Identical
 mutation-freshness reasoning as `_TELEGRAM` above.
 
 ### 4. `self._ml.X` constructor injection
@@ -157,13 +164,14 @@ to the cell-block UNION in audit/dashboard scripts (full list in
   adding/changing constants read by both scanner and OrderExecutor
   (e.g., `OBSERVATION_MODE`, `WEATHER_NO_SIDE_LIVE`), scanner-targeted
   tests use `@patch("bot.scanner.X")` (or `bot.scanner.<read site>`),
-  while executor-targeted tests still use `@patch("bot.X")` /
-  `@patch("bot._impl.X")` because OrderExecutor reads the constant
-  via bot._impl's bare-name (laundered through
-  `from bot.constants import *`). Bulk-retargeting from `bot.X` to
-  `bot.scanner.X` will break ~5 tests in `tests/test_execution.py` /
-  `tests/test_weather_no_side.py` — see L85 in
-  `kb/concepts/extraction-pre-flight-checklist.md`.
+  while executor-targeted tests use `@patch("bot.executor.X")` (or
+  `@patch("bot._impl.X")` for the residual shim's star-imported binding)
+  because OrderExecutor reads the constant via bot._impl's bare-name
+  (laundered through `from bot.constants import *`). Post-Bit-9.3-iii.b
+  (2026-05-11) `@patch("bot.X")` no longer works (proxy retired); the
+  canonical forms are `@patch("bot.<canonical_module>.X")` or
+  `@patch("bot._impl.X")` until 9.3-iii.c deletes bot/_impl.py. See L85
+  in `kb/concepts/extraction-pre-flight-checklist.md`.
 - Single-class file by design — Bit 8.3 (DEFERRED 2026-05-17) plans
   the internal split into `discover.py` / `evaluate.py` / `gates.py`
   / `shadow.py`. Until then, keep the body in `__init__.py`.

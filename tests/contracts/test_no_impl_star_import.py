@@ -19,9 +19,11 @@ across the whole repo, including tests/scripts).
 
 If this test fails:
 - ``from bot._impl import *`` is opaque dependency. Replace with the
-  explicit named imports the call site actually needs, OR — for runtime
-  proxy access — use ``import bot`` and read ``bot.X`` (the
-  ``_BotProxy`` resolves through to ``bot._impl``).
+  explicit named imports the call site actually needs (``from bot.constants
+  import X``, ``from bot.helpers.<sub> import Y``, etc.). Post-Bit-9.3-iii.b
+  (2026-05-11) the ``_BotProxy`` is retired — ``import bot; bot.X`` no longer
+  falls through to ``bot._impl``, so the canonical-submodule form is the
+  only working pattern.
 """
 from __future__ import annotations
 
@@ -98,8 +100,11 @@ def test_no_star_import_from_bot_impl():
             offenders.append(str(path.relative_to(REPO_ROOT)))
     assert not offenders, (
         "The following files use `from bot._impl import *` — replace "
-        "with explicit named imports OR access via `import bot` and "
-        "the _BotProxy:\n  " + "\n  ".join(offenders)
+        "with explicit named imports from canonical submodules "
+        "(`from bot.constants import X`, `from bot.helpers.<sub> import Y`, "
+        "etc.; the _BotProxy was retired in Bit 9.3-iii.b 2026-05-11 so "
+        "`import bot; bot.X` no longer falls through):\n  "
+        + "\n  ".join(offenders)
     )
 
 

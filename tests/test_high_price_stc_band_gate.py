@@ -23,7 +23,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bot import (
+from bot.constants import (
     HIGH_PRICE_STC_BLOCK_ENABLED,
     HIGH_PRICE_STC_BLOCK_ASSETS,
     HIGH_PRICE_STC_BLOCK_PRICE_CENTS,
@@ -31,13 +31,14 @@ from bot import (
     HIGH_PRICE_STC_BLOCK_STC_HI_S,
     HIGH_PRICE_STC_BLOCK_FILTER_STAGE,
     HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES,
-    _HPSB_MISSING_BLEEDERS,
+)
+from bot.helpers.cell_blocks import (
     should_block_high_price_stc_band,
     should_block_high_price_stc_candidate,
-    _validate_high_price_stc_block_bleeder_strings,
 )
-
-
+from bot.helpers.validators import _validate_high_price_stc_block_bleeder_strings
+from bot.main_loop import _HPSB_MISSING_BLEEDERS
+import bot.helpers  # noqa: F401
 class TestHighPriceStcBandGate_FiresOnTargetCell(unittest.TestCase):
     """Gate must fire on every (asset × price × side × STC) combination in the target cell."""
 

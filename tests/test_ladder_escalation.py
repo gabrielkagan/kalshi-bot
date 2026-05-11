@@ -40,6 +40,8 @@ import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
+import bot.executor  # noqa: F401
+import bot.constants  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -57,7 +59,7 @@ def _make_executor():
     feed = MagicMock()
     feed.is_connected = True
     feed.pop_fills.return_value = []
-    ex = bot.OrderExecutor(
+    ex = bot.executor.OrderExecutor(
         client=client, state=state, logger=logger,
         main_loop=ml, kalshi_feed=feed)
     # Default: orderbook fetch returns a deep book (escalated level
@@ -101,7 +103,7 @@ class TestConstants(unittest.TestCase):
     def test_kill_switch_constant_exists(self):
         import bot
         self.assertTrue(
-            hasattr(bot, "LADDER_ESCALATION_ENABLED"),
+            hasattr(bot.constants, "LADDER_ESCALATION_ENABLED"),
             "LADDER_ESCALATION_ENABLED must exist as an env-var-gated "
             "module-level flag — required to disable the feature without "
             "a code change if it misbehaves in prod.")
@@ -109,14 +111,14 @@ class TestConstants(unittest.TestCase):
     def test_max_steps_is_one(self):
         import bot
         self.assertEqual(
-            getattr(bot, "LADDER_ESCALATION_MAX_STEPS", None), 1,
+            getattr(bot.constants, "LADDER_ESCALATION_MAX_STEPS", None), 1,
             "First-ship is single-retry only. Multi-step exposes more "
             "surface for marginal EV gain; revisit after 14d data.")
 
     def test_offset_is_one_cent(self):
         import bot
         self.assertEqual(
-            getattr(bot, "LADDER_ESCALATION_OFFSET", None), 1,
+            getattr(bot.constants, "LADDER_ESCALATION_OFFSET", None), 1,
             "+1¢ per step. The maker-tail behavior is at original price; "
             "ladder is the active alternative one tick up.")
 
@@ -125,7 +127,7 @@ class TestConstants(unittest.TestCase):
         # Mirror MAKER_TAIL_MIN_REMAINDER. Below this, API + state
         # overhead exceeds expected EV gain.
         self.assertEqual(
-            getattr(bot, "LADDER_ESCALATION_MIN_REMAINDER", None), 5,
+            getattr(bot.constants, "LADDER_ESCALATION_MIN_REMAINDER", None), 5,
             "MIN_REMAINDER=5 mirrors maker-tail; below this the API + "
             "state overhead exceeds expected EV gain.")
 
@@ -134,7 +136,7 @@ class TestConstants(unittest.TestCase):
         already been vetted as 'we want more size on partial fills'."""
         import bot
         eligible = getattr(
-            bot, "LADDER_ESCALATION_ELIGIBLE_STRATEGIES", set())
+            bot.constants, "LADDER_ESCALATION_ELIGIBLE_STRATEGIES", set())
         for s in [
             "decided_t1", "decided_t1b",
             "decided_t2", "decided_t2_z25",
@@ -149,7 +151,7 @@ class TestConstants(unittest.TestCase):
     def test_eligibility_excludes_unsuitable(self):
         import bot
         eligible = getattr(
-            bot, "LADDER_ESCALATION_ELIGIBLE_STRATEGIES", set())
+            bot.constants, "LADDER_ESCALATION_ELIGIBLE_STRATEGIES", set())
         for s in [
             "lpne",                # STC 10-120s too tight for retry
             "weather_no_live",     # 1-ct fixed, never partials

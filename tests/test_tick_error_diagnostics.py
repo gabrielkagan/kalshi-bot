@@ -21,6 +21,7 @@ import os
 import sys
 
 import pytest
+import bot.helpers  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -28,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def _import_helper():
     """Lazy import so the test file can be collected even if bot/_impl.py
     has unrelated import-time issues."""
-    from bot import _extract_tick_error_location
+    from bot.helpers.breakers import _extract_tick_error_location
     return _extract_tick_error_location
 
 

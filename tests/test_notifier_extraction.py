@@ -24,6 +24,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import bot.helpers  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,10 +61,10 @@ def test_notifier_identity_through_bot_impl():
 
 
 def test_notifier_identity_through_bot_proxy():
-    """`bot.TelegramNotifier` resolves through the _BotProxy."""
+    """`bot.notifier.TelegramNotifier` resolves through canonical submodule (post-Bit-9.3-iii.b — _BotProxy retired)."""
     import bot
     import bot.notifier as bn
-    assert bot.TelegramNotifier is bn.TelegramNotifier
+    assert bot.notifier.TelegramNotifier is bn.TelegramNotifier
 
 
 # ─── 3. Drift guards (AST + source-string) ──────────────────────────────────

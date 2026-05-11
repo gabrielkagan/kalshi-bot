@@ -81,13 +81,13 @@ def test_coinglass_identity_through_bot_impl():
 def test_deribit_identity_through_bot_proxy():
     import bot
     import bot.fetchers.deribit as bfd
-    assert bot.DeribitDVOLFetcher is bfd.DeribitDVOLFetcher
+    assert bot.fetchers.DeribitDVOLFetcher is bfd.DeribitDVOLFetcher
 
 
 def test_coinglass_identity_through_bot_proxy():
     import bot
     import bot.fetchers.coinglass as bfc
-    assert bot.CoinGlassFetcher is bfc.CoinGlassFetcher
+    assert bot.fetchers.CoinGlassFetcher is bfc.CoinGlassFetcher
 
 
 # ─── 3. Drift guards (AST + source-string) ──────────────────────────────────

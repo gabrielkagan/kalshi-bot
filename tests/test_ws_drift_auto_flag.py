@@ -40,7 +40,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
-from bot import OpportunityScanner
+from bot.scanner import OpportunityScanner
 
 
 BOT_PY = os.path.join(

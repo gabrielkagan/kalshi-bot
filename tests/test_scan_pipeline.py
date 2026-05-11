@@ -22,16 +22,24 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bot import (
-    OpportunityScanner,
-    MIN_ENTRY_PRICE, MAX_ENTRY_PRICE, MIN_EDGE_PCT, MIN_EDGE_BY_PRICE,
-    STC_SHADOW_THRESHOLD, HOURLY_OBSERVATION_ONLY,
-    HOURLY_MIN_STC_ENTRY, HOURLY_MAX_STC_ENTRY,
-    HOURLY_MAX_POSITIONS_PER_WINDOW, HOURLY_MAX_WINDOW_RISK,
-    HOURLY_EXCLUDED_ASSETS, XRP_15M_SHADOW,
-    get_min_edge,
+from bot.constants import (
+    MIN_ENTRY_PRICE,
+    MAX_ENTRY_PRICE,
+    MIN_EDGE_PCT,
+    MIN_EDGE_BY_PRICE,
+    STC_SHADOW_THRESHOLD,
+    HOURLY_OBSERVATION_ONLY,
+    HOURLY_MIN_STC_ENTRY,
+    HOURLY_MAX_STC_ENTRY,
+    HOURLY_MAX_POSITIONS_PER_WINDOW,
+    HOURLY_MAX_WINDOW_RISK,
+    HOURLY_EXCLUDED_ASSETS,
+    XRP_15M_SHADOW,
 )
+from bot.helpers.sizing import get_min_edge
+from bot.scanner import OpportunityScanner
 from bot.models import calculate_fee, calculate_taker_fee
+import bot.helpers  # noqa: F401
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -524,12 +532,12 @@ class TestSTCShadowGate(unittest.TestCase):
 
     def test_live_zone(self):
         """STC=200 (< 300) → should pass both gates (core live zone)."""
-        from bot import STC_EXTENDED_LIVE_FLOOR
+        from bot.constants import STC_EXTENDED_LIVE_FLOOR
         self.assertLess(200, STC_EXTENDED_LIVE_FLOOR)
 
     def test_extended_zone(self):
         """STC=400 (300-600) → extended zone, subject to higher per-asset floors."""
-        from bot import STC_EXTENDED_LIVE_FLOOR
+        from bot.constants import STC_EXTENDED_LIVE_FLOOR
         self.assertGreater(400, STC_EXTENDED_LIVE_FLOOR)
         self.assertLess(400, STC_SHADOW_THRESHOLD)
 
@@ -548,10 +556,10 @@ class TestSTCShadowGate(unittest.TestCase):
     def test_extended_floor_values(self):
         """Per-asset STC extended floors must be >= normal asset floors."""
         import bot
-        self.assertGreaterEqual(bot.STC_EXTENDED_BTC_MIN_PRICE, bot.BTC_MIN_ENTRY_PRICE)
-        self.assertGreaterEqual(bot.STC_EXTENDED_ETH_MIN_PRICE, bot.ETH_MIN_ENTRY_PRICE)
-        self.assertGreaterEqual(bot.STC_EXTENDED_SOL_MIN_PRICE, bot.SOL_MIN_ENTRY_PRICE)
-        self.assertGreaterEqual(bot.STC_EXTENDED_XRP_MIN_PRICE, bot.XRP_MIN_ENTRY_PRICE)
+        self.assertGreaterEqual(bot.constants.STC_EXTENDED_BTC_MIN_PRICE, bot.constants.BTC_MIN_ENTRY_PRICE)
+        self.assertGreaterEqual(bot.constants.STC_EXTENDED_ETH_MIN_PRICE, bot.constants.ETH_MIN_ENTRY_PRICE)
+        self.assertGreaterEqual(bot.constants.STC_EXTENDED_SOL_MIN_PRICE, bot.constants.SOL_MIN_ENTRY_PRICE)
+        self.assertGreaterEqual(bot.constants.STC_EXTENDED_XRP_MIN_PRICE, bot.constants.XRP_MIN_ENTRY_PRICE)
 
     def test_sol_rescue_contract_cap_exists(self):
         """SOL rescue cap must be defined and sensible (Apr 19 fix).
@@ -561,11 +569,11 @@ class TestSTCShadowGate(unittest.TestCase):
         setups. The cap clamps SOL rescue sizing to 25ct to limit tail loss.
         """
         import bot
-        self.assertTrue(hasattr(bot, "SOL_RESCUE_CONTRACT_CAP"))
-        self.assertIsInstance(bot.SOL_RESCUE_CONTRACT_CAP, int)
+        self.assertTrue(hasattr(bot.constants, "SOL_RESCUE_CONTRACT_CAP"))
+        self.assertIsInstance(bot.constants.SOL_RESCUE_CONTRACT_CAP, int)
         # Sanity: should be positive and less than a typical Kelly output
-        self.assertGreater(bot.SOL_RESCUE_CONTRACT_CAP, 0)
-        self.assertLess(bot.SOL_RESCUE_CONTRACT_CAP, 100)
+        self.assertGreater(bot.constants.SOL_RESCUE_CONTRACT_CAP, 0)
+        self.assertLess(bot.constants.SOL_RESCUE_CONTRACT_CAP, 100)
 
     def test_sol_rescue_cap_clamps_oversized(self):
         """The cap logic: for SOL, sizing["contracts"] = min(raw, SOL_RESCUE_CONTRACT_CAP).
@@ -577,21 +585,21 @@ class TestSTCShadowGate(unittest.TestCase):
         # Simulate the rescue branch's inline clamp on SOL with Kelly=80
         sizing = {"contracts": 80}
         asset = "SOL"
-        if asset == "SOL" and sizing["contracts"] > bot.SOL_RESCUE_CONTRACT_CAP:
-            sizing["contracts"] = bot.SOL_RESCUE_CONTRACT_CAP
-        self.assertEqual(sizing["contracts"], bot.SOL_RESCUE_CONTRACT_CAP)
+        if asset == "SOL" and sizing["contracts"] > bot.constants.SOL_RESCUE_CONTRACT_CAP:
+            sizing["contracts"] = bot.constants.SOL_RESCUE_CONTRACT_CAP
+        self.assertEqual(sizing["contracts"], bot.constants.SOL_RESCUE_CONTRACT_CAP)
 
         # BTC with same size should NOT be capped
         sizing_btc = {"contracts": 80}
         asset_btc = "BTC"
-        if asset_btc == "SOL" and sizing_btc["contracts"] > bot.SOL_RESCUE_CONTRACT_CAP:
-            sizing_btc["contracts"] = bot.SOL_RESCUE_CONTRACT_CAP
+        if asset_btc == "SOL" and sizing_btc["contracts"] > bot.constants.SOL_RESCUE_CONTRACT_CAP:
+            sizing_btc["contracts"] = bot.constants.SOL_RESCUE_CONTRACT_CAP
         self.assertEqual(sizing_btc["contracts"], 80)
 
         # SOL with already-small size should NOT be modified
         sizing_small = {"contracts": 10}
-        if "SOL" == "SOL" and sizing_small["contracts"] > bot.SOL_RESCUE_CONTRACT_CAP:
-            sizing_small["contracts"] = bot.SOL_RESCUE_CONTRACT_CAP
+        if "SOL" == "SOL" and sizing_small["contracts"] > bot.constants.SOL_RESCUE_CONTRACT_CAP:
+            sizing_small["contracts"] = bot.constants.SOL_RESCUE_CONTRACT_CAP
         self.assertEqual(sizing_small["contracts"], 10)
 
     def test_gate_checks_product_type_15m(self):
@@ -699,24 +707,23 @@ class TestHourlyNoSideAssetGate(unittest.TestCase):
 
     def test_no_excluded_set_exists(self):
         """HOURLY_NO_EXCLUDED_ASSETS is defined and is a set."""
-        from bot import HOURLY_NO_EXCLUDED_ASSETS
+        from bot.constants import HOURLY_NO_EXCLUDED_ASSETS
         self.assertIsInstance(HOURLY_NO_EXCLUDED_ASSETS, set)
 
     def test_no_excluded_default_empty(self):
         """Original 4 assets eligible on NO-side. T1 (2026-05-10):
         HYPE/DOGE added as NO-side safety belt during shadow until T4."""
-        from bot import HOURLY_NO_EXCLUDED_ASSETS
+        from bot.constants import HOURLY_NO_EXCLUDED_ASSETS
         self.assertEqual(HOURLY_NO_EXCLUDED_ASSETS, {"HYPE", "DOGE"})
 
     def test_yes_no_are_separate_constants(self):
         """YES and NO exclusion lists must not share state."""
-        from bot import HOURLY_EXCLUDED_ASSETS, HOURLY_NO_EXCLUDED_ASSETS
+        from bot.constants import HOURLY_EXCLUDED_ASSETS, HOURLY_NO_EXCLUDED_ASSETS
         self.assertIsNot(HOURLY_EXCLUDED_ASSETS, HOURLY_NO_EXCLUDED_ASSETS)
 
     def test_no_excluded_asset_gate_blocks(self):
         """If an asset is added to HOURLY_NO_EXCLUDED_ASSETS, it's blocked."""
-        from bot import HOURLY_NO_EXCLUDED_ASSETS
-        # Simulate the gate logic at bot/_impl.py:12023
+        from bot.constants import HOURLY_NO_EXCLUDED_ASSETS  # Simulate the gate logic at bot/_impl.py:12023
         test_excl = {"XRP"}
         for asset in ("BTC", "ETH", "SOL", "XRP"):
             blocked = asset in test_excl

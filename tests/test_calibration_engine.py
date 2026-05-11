@@ -32,6 +32,7 @@ for _mod in ["websockets", "websocket", "requests",
         _MOCKED.append(_mod)
 
 from config import BETA_SLOPE, MAX_EFFECTIVE_PROB, NUMERICAL_SAFETY_CEILING
+import bot.engines  # noqa: F401
 
 
 class TestFallbackCalibrate(unittest.TestCase):
@@ -45,7 +46,7 @@ class TestFallbackCalibrate(unittest.TestCase):
     def setUpClass(cls):
         """Import CalibrationEngine once for all tests in this class."""
         # Import bot's CalibrationEngine
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         cls.CalEngine = CalibrationEngine
 
     def _fallback(self, raw_prob, cap=MAX_EFFECTIVE_PROB):
@@ -100,7 +101,7 @@ class TestCalibrationEngineInit(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         cls.CalEngine = CalibrationEngine
 
     def test_fresh_init_fixed_beta(self):
@@ -152,7 +153,7 @@ class TestCalibrate(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         cls.CalEngine = CalibrationEngine
 
     def _make_engine(self):
@@ -205,7 +206,7 @@ class TestAddObservation(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         cls.CalEngine = CalibrationEngine
 
     def test_observation_added(self):
@@ -239,7 +240,7 @@ class TestMaybeRetrain(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         cls.CalEngine = CalibrationEngine
 
     def test_insufficient_data_skips(self):
@@ -301,7 +302,7 @@ class TestIsLearnedMethodActive(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         cls.CalEngine = CalibrationEngine
 
     def test_fixed_beta_not_learned(self):
@@ -329,7 +330,7 @@ class TestUncertaintyShrinkage(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         cls.CalEngine = CalibrationEngine
 
     def test_scarce_data_conservative(self):
@@ -368,7 +369,7 @@ class TestRollingBrier(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         cls.CalEngine = CalibrationEngine
 
     def test_empty_returns_one(self):
@@ -389,7 +390,7 @@ class TestTemperatureScaling(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         cls.CalEngine = CalibrationEngine
 
     def test_temperature_one_is_identity(self):
@@ -431,7 +432,7 @@ class TestBetaCalPredict(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         cls.CalEngine = CalibrationEngine
 
     def test_identity_params(self):
@@ -460,7 +461,7 @@ class TestSolve3x3(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         cls.CalEngine = CalibrationEngine
 
     def test_identity_system(self):

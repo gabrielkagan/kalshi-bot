@@ -807,7 +807,7 @@ class SupabaseSyncer:
             obs_count = len(getattr(cal, "_observations", []))
             if obs_count == 0:
                 return
-            import bot as _bot_mod
+            import bot._impl as _bot_mod  # 9.3-iii.b: uses residual shim until 9.3-iii.c deletes it
             brier = cal.rolling_brier_score()
             row = {
                 "snapshot_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

@@ -79,7 +79,7 @@ class TestShadowDiagKeyCoverage:
 
     def _get_function_params(self, func_name):
         """Get the parameter names of a function from bot/_impl.py's StateManager."""
-        from bot import StateManager
+        from bot.state import StateManager
         func = getattr(StateManager, func_name)
         sig = inspect.signature(func)
         # Skip 'self'
@@ -111,7 +111,7 @@ class TestShadowDiagKeyCoverage:
         rule end-to-end against the live sqlite schema.
         """
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         eval_cols = {
             r["name"] for r in
             sm.conn.execute("PRAGMA table_info(evaluated_opportunities)").fetchall()
@@ -205,35 +205,35 @@ class TestInsertFunctionSignatures:
 
     def test_insert_rejection_has_product_type(self):
         """insert_rejection must accept product_type for multi-market support."""
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_rejection)
         assert "product_type" in sig.parameters, (
             "insert_rejection missing product_type parameter")
 
     def test_insert_evaluated_opportunity_has_product_type(self):
         """insert_evaluated_opportunity must accept product_type."""
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         assert "product_type" in sig.parameters, (
             "insert_evaluated_opportunity missing product_type parameter")
 
     def test_insert_evaluated_opportunity_has_raw_prob(self):
         """insert_evaluated_opportunity must accept raw_prob for CalEngine pipeline."""
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         assert "raw_prob" in sig.parameters, (
             "insert_evaluated_opportunity missing raw_prob parameter")
 
     def test_insert_evaluated_opportunity_has_side(self):
         """insert_evaluated_opportunity must accept side for NO-side trading."""
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         assert "side" in sig.parameters, (
             "insert_evaluated_opportunity missing side parameter")
 
     def test_insert_evaluated_opportunity_has_order_tracking(self):
         """insert_evaluated_opportunity must accept order tracking fields."""
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         for field in ("order_id", "order_submitted_at", "order_outcome"):
             assert field in sig.parameters, (
@@ -241,7 +241,7 @@ class TestInsertFunctionSignatures:
 
     def test_insert_evaluated_opportunity_has_weather_fields(self):
         """insert_evaluated_opportunity must accept weather ensemble fields."""
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         weather_fields = [
             "wx_ensemble_mean", "wx_ensemble_std", "wx_bias_correction",
@@ -253,7 +253,7 @@ class TestInsertFunctionSignatures:
 
     def test_insert_evaluated_opportunity_has_hourly_shadow_fields(self):
         """insert_evaluated_opportunity must accept hourly shadow comparison fields."""
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         hourly_fields = [
             "hourly_pre_temp_prob", "hourly_applied_temp_t",
@@ -270,7 +270,7 @@ class TestInsertFunctionSignatures:
 
         See kb/decisions/v2-train-must-account-for-backfill-skew-may02.md.
         """
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         assert "data_provenance" in sig.parameters, (
             "insert_evaluated_opportunity missing data_provenance parameter")
@@ -286,7 +286,7 @@ class TestInsertFunctionSignatures:
 
         See kb/decisions/phase-h2-bot-microstate-fwd-may02.md.
         """
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         assert "bot_state_snapshot_json" in sig.parameters, (
             "insert_evaluated_opportunity missing bot_state_snapshot_json"

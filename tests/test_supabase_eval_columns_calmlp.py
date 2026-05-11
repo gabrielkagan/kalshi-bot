@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import sys
+import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -76,7 +77,7 @@ def test_eval_columns_subset_of_local_evaluated_opportunities_schema(tmp_path):
     DB so the schema reflects the current bot/_impl.py."""
     import bot
     db_path = str(tmp_path / "state.db")
-    state = bot.StateManager(db_path)
+    state = bot.state.StateManager(db_path)
     local_cols = {
         r[1] for r in state.conn.execute("PRAGMA table_info(evaluated_opportunities)").fetchall()
     }

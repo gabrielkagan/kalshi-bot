@@ -49,7 +49,7 @@ from hypothesis import given, settings, strategies as st
 
 
 # ── Engine import ────────────────────────────────────────────────────
-from bot import VolatilityEngine
+from bot.engines.volatility import VolatilityEngine
 from bot.constants import (
     RK_NOISE_VAR_FLOOR,
     VOL_WINDOW_15MIN,

@@ -34,6 +34,8 @@ import threading
 import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock
+import bot.constants  # noqa: F401
+import bot.feeds  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -44,7 +46,7 @@ BOT_PY = os.path.join(
 
 def _make_feed():
     import bot
-    f = bot.KalshiFeed.__new__(bot.KalshiFeed)
+    f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
     f._pending_subscribes = []
     f._pending_unsubscribes = []
     f._pending_snapshot_requests = []
@@ -172,7 +174,7 @@ class TestIncomingOutsideWindowDeltaNotLogged(unittest.TestCase):
         f._orderbooks["BTC1"] = {"yes": [], "no": [], "ts": time.time()}
         # Backdate connect ts to past the raw-log window.
         f._ws_connect_ts = (
-            time.time() - bot.WS_RAW_LOG_DURATION_S - 5.0)
+            time.time() - bot.constants.WS_RAW_LOG_DURATION_S - 5.0)
         # Use a logger context that captures only WS_RAW_IN; if no
         # WS_RAW_IN log fires, we'll need to verify via missing.
         with self.assertLogs("root", level="DEBUG") as cm:
@@ -206,7 +208,7 @@ class TestNonDataTypesAlwaysLogged(unittest.TestCase):
         import bot
         f = _make_feed()
         f._ws_connect_ts = (
-            time.time() - bot.WS_RAW_LOG_DURATION_S - 5.0)
+            time.time() - bot.constants.WS_RAW_LOG_DURATION_S - 5.0)
         with self.assertLogs("root", level="INFO") as cm:
             f._handle_message(json.dumps({
                 "id": 100,
@@ -224,7 +226,7 @@ class TestNonDataTypesAlwaysLogged(unittest.TestCase):
         import bot
         f = _make_feed()
         f._ws_connect_ts = (
-            time.time() - bot.WS_RAW_LOG_DURATION_S - 5.0)
+            time.time() - bot.constants.WS_RAW_LOG_DURATION_S - 5.0)
         with self.assertLogs("root", level="INFO") as cm:
             f._handle_message(json.dumps({
                 "id": 200, "type": "unsubscribed",
@@ -238,7 +240,7 @@ class TestNonDataTypesAlwaysLogged(unittest.TestCase):
         import bot
         f = _make_feed()
         f._ws_connect_ts = (
-            time.time() - bot.WS_RAW_LOG_DURATION_S - 5.0)
+            time.time() - bot.constants.WS_RAW_LOG_DURATION_S - 5.0)
         with self.assertLogs("root", level="INFO") as cm:
             f._handle_message(json.dumps({
                 "id": 3, "type": "ok",
@@ -257,7 +259,7 @@ class TestPayloadTruncation(unittest.TestCase):
         import bot
         f = _make_feed()
         # Build a giant payload way over the truncate cap.
-        huge = "x" * (bot.WS_RAW_LOG_TRUNCATE * 5)
+        huge = "x" * (bot.constants.WS_RAW_LOG_TRUNCATE * 5)
         with self.assertLogs("root", level="INFO") as cm:
             f._handle_message(json.dumps({
                 "id": 1, "type": "ok",
@@ -283,10 +285,10 @@ class TestConstantsDefined(unittest.TestCase):
     def test_ws_raw_log_duration_constant_defined(self):
         import bot
         self.assertTrue(
-            hasattr(bot, "WS_RAW_LOG_DURATION_S"),
+            hasattr(bot.constants, "WS_RAW_LOG_DURATION_S"),
             "Must define WS_RAW_LOG_DURATION_S module-level "
             "constant.")
-        val = bot.WS_RAW_LOG_DURATION_S
+        val = bot.constants.WS_RAW_LOG_DURATION_S
         # Sane range: at least 30s (capture initial burst), no
         # more than 5min (avoid sustained log spam).
         self.assertGreaterEqual(val, 30.0)
@@ -294,8 +296,8 @@ class TestConstantsDefined(unittest.TestCase):
 
     def test_ws_raw_log_truncate_constant_defined(self):
         import bot
-        self.assertTrue(hasattr(bot, "WS_RAW_LOG_TRUNCATE"))
-        val = bot.WS_RAW_LOG_TRUNCATE
+        self.assertTrue(hasattr(bot.constants, "WS_RAW_LOG_TRUNCATE"))
+        val = bot.constants.WS_RAW_LOG_TRUNCATE
         self.assertGreaterEqual(val, 100)
         self.assertLessEqual(val, 5000)
 
@@ -313,7 +315,7 @@ class TestRawLogCap(unittest.TestCase):
         msg_type."""
         import bot
         f = _make_feed()
-        cap = bot.WS_RAW_LOG_MAX_PER_SESSION
+        cap = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
         f._raw_log_count = cap - 1
         # First log fires (consumes last budget slot).
         f._log_raw_in(
@@ -340,7 +342,7 @@ class TestRawLogCap(unittest.TestCase):
         WS_RAW_CAPPED lines."""
         import bot
         f = _make_feed()
-        f._raw_log_count = bot.WS_RAW_LOG_MAX_PER_SESSION
+        f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
         f._raw_log_capped_logged = True  # already noticed
         with self.assertLogs("root", level="DEBUG") as cm:
             logging.info("sentinel")
@@ -360,7 +362,7 @@ class TestRawLogCap(unittest.TestCase):
         import bot
         f = _make_feed()
         f._connected = True
-        f._raw_log_count = bot.WS_RAW_LOG_MAX_PER_SESSION + 100
+        f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION + 100
         f._raw_log_capped_logged = True
         f._cleanup_session_state()
         self.assertEqual(f._raw_log_count, 0)
@@ -377,7 +379,7 @@ class TestR2A1NonDataExemptFromCap(unittest.TestCase):
         import bot
         f = _make_feed()
         # Pretend the data-frame cap is fully exhausted.
-        f._raw_log_count = bot.WS_RAW_LOG_MAX_PER_SESSION
+        f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
         with self.assertLogs("root", level="INFO") as cm:
             f._handle_message(json.dumps({
                 "id": 100,
@@ -393,7 +395,7 @@ class TestR2A1NonDataExemptFromCap(unittest.TestCase):
     def test_error_logged_even_after_cap(self):
         import bot
         f = _make_feed()
-        f._raw_log_count = bot.WS_RAW_LOG_MAX_PER_SESSION
+        f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
         with self.assertLogs("root", level="INFO") as cm:
             f._handle_message(json.dumps({
                 "id": 4, "type": "error",
@@ -407,7 +409,7 @@ class TestR2A1NonDataExemptFromCap(unittest.TestCase):
     def test_outgoing_logged_even_after_cap(self):
         import bot
         f = _make_feed()
-        f._raw_log_count = bot.WS_RAW_LOG_MAX_PER_SESSION
+        f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
         with self.assertLogs("root", level="INFO") as cm:
             f._log_raw_out({"id": 200, "cmd": "subscribe"})
         joined = "\n".join(cm.output)
@@ -420,7 +422,7 @@ class TestR2A1NonDataExemptFromCap(unittest.TestCase):
         """Sanity: bulk types still respect the cap."""
         import bot
         f = _make_feed()
-        f._raw_log_count = bot.WS_RAW_LOG_MAX_PER_SESSION
+        f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION
         # Mark the capped-notice as already emitted to prevent it
         # from firing in this test (we only want to test suppression).
         f._raw_log_capped_logged = True

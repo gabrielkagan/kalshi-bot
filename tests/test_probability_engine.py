@@ -26,6 +26,8 @@ for _mod in ["websockets", "websocket", "requests",
         sys.modules[_mod] = MagicMock()
 
 from config import BETA_SLOPE, STUDENT_T_DF, MAX_EFFECTIVE_PROB
+import bot._impl  # noqa: F401
+import bot.engines  # noqa: F401
 
 
 class TestZScoreComputation(unittest.TestCase):
@@ -33,7 +35,7 @@ class TestZScoreComputation(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import ProbabilityEngine
+        from bot.engines.probability import ProbabilityEngine
         cls.PE = ProbabilityEngine
 
     def test_spot_equals_threshold_z_zero(self):
@@ -83,7 +85,7 @@ class TestInvalidInputs(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import ProbabilityEngine
+        from bot.engines.probability import ProbabilityEngine
         cls.PE = ProbabilityEngine
 
     def test_zero_spot(self):
@@ -117,7 +119,7 @@ class TestCdfComplement(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import ProbabilityEngine
+        from bot.engines.probability import ProbabilityEngine
         cls.PE = ProbabilityEngine
 
     def test_z_zero_gives_half(self):
@@ -156,7 +158,7 @@ class TestCdfComplement(unittest.TestCase):
         ``ProbabilityEngine._cdf_complement`` lives in
         ``bot/engines/probability.py`` post-Bit-6.2 and reads its own
         module-local binding (`from config import DIST_CONFIG` at the
-        top of the file). Patching `bot.DIST_CONFIG` (which routes
+        top of the file). Patching `config.DIST_CONFIG` (which routes
         through `_BotProxy.__setattr__` to `bot._impl.DIST_CONFIG`)
         no longer reaches the probability module's namespace because
         the extraction created a separate module-level binding.
@@ -183,7 +185,7 @@ class TestRawProbability(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import ProbabilityEngine
+        from bot.engines.probability import ProbabilityEngine
         cls.PE = ProbabilityEngine
 
     def test_deep_itm_high_prob(self):
@@ -220,7 +222,7 @@ class TestZScoreMax(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import ProbabilityEngine
+        from bot.engines.probability import ProbabilityEngine
         cls.PE = ProbabilityEngine
 
     def test_extreme_z_still_tradeable(self):
@@ -248,7 +250,7 @@ class TestDynamicCap(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import ProbabilityEngine
+        from bot.engines.probability import ProbabilityEngine
         cls.PE = ProbabilityEngine
 
     def test_15m_high_stc_cap(self):
@@ -304,12 +306,12 @@ class TestFixedBetaCalibrate(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import ProbabilityEngine
+        from bot.engines.probability import ProbabilityEngine
         cls.PE = ProbabilityEngine
 
     def test_matches_cal_engine_fallback(self):
         """PE._calibrate and CalEngine._fallback_calibrate produce same result."""
-        from bot import CalibrationEngine
+        from bot.engines.calibration import CalibrationEngine
         for p in [0.5, 0.7, 0.85, 0.9, 0.95, 0.99]:
             pe_result = self.PE._calibrate(p, cap=MAX_EFFECTIVE_PROB)
             ce_result = CalibrationEngine._fallback_calibrate(p, cap=MAX_EFFECTIVE_PROB)
@@ -334,7 +336,8 @@ class TestDiscrepancyCheck(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import ProbabilityEngine, DISCREPANCY_PROB, DISCREPANCY_PRICE
+        from bot.constants import DISCREPANCY_PROB, DISCREPANCY_PRICE
+        from bot.engines.probability import ProbabilityEngine
         cls.PE = ProbabilityEngine
         cls.DISC_PROB = DISCREPANCY_PROB
         cls.DISC_PRICE = DISCREPANCY_PRICE
@@ -382,7 +385,7 @@ class TestComputeReturnDict(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import ProbabilityEngine
+        from bot.engines.probability import ProbabilityEngine
         cls.PE = ProbabilityEngine
 
     def test_all_keys_present(self):
@@ -417,7 +420,7 @@ class TestCounterfactualProb(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from bot import ProbabilityEngine
+        from bot.engines.probability import ProbabilityEngine
         cls.PE = ProbabilityEngine
 
     def test_returns_value(self):

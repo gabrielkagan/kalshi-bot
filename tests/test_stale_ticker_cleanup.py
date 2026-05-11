@@ -28,6 +28,7 @@ import os
 import sys
 import unittest
 from unittest.mock import MagicMock
+import bot.main_loop  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -40,7 +41,7 @@ def _make_main_loop():
     _subscribe_discovery_orderbooks behavior. Mocks kalshi_feed
     and state."""
     import bot
-    ml = bot.MainLoop.__new__(bot.MainLoop)
+    ml = bot.main_loop.MainLoop.__new__(bot.main_loop.MainLoop)
     ml._active_windows = []
     ml._discovery_ob_tickers = set()
 
@@ -139,12 +140,12 @@ class TestHeldPositionsProtected(unittest.TestCase):
         }])
         # Even with PPO DISABLED, held position must be protected.
         import bot
-        original = bot.POSITION_PRICE_MONITOR_ENABLED
+        original = bot.constants.POSITION_PRICE_MONITOR_ENABLED
         try:
-            bot.POSITION_PRICE_MONITOR_ENABLED = False
+            bot.constants.POSITION_PRICE_MONITOR_ENABLED = False
             ml._subscribe_discovery_orderbooks()
         finally:
-            bot.POSITION_PRICE_MONITOR_ENABLED = original
+            bot.constants.POSITION_PRICE_MONITOR_ENABLED = original
         self.assertNotIn(
             "KXBTC15M-HELD", kf._fake_unsubbed,
             "Held-position ticker MUST be protected even if PPO "

@@ -53,13 +53,17 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
+import bot.constants  # noqa: F401
+import bot.executor  # noqa: F401
+import bot.infra  # noqa: F401
+import bot.kalshi_client  # noqa: F401
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
 def _make_executor():
     """Stub OrderExecutor bypassing __init__."""
-    e = bot.OrderExecutor.__new__(bot.OrderExecutor)
+    e = bot.executor.OrderExecutor.__new__(bot.executor.OrderExecutor)
     e._active_orders = {}
     e._escalating_assets = set()
     e._client = MagicMock()
@@ -87,7 +91,7 @@ def _reset_breaker_registry():
     refactor of circuit_breaker.py surfaces here loudly instead of
     silently turning the reset into a no-op (yesterday's lesson:
     no silent test infrastructure failures)."""
-    registry = bot._BREAKER_REGISTRY
+    registry = bot.infra.circuit_breaker.REGISTRY
     assert hasattr(registry, '_breakers'), (
         "circuit_breaker.REGISTRY internal attribute name drifted "
         "(was '_breakers'). Update _reset_breaker_registry to match.")
@@ -127,7 +131,7 @@ def _make_client_with_mocked_session():
     so the test exercises the full _request code path (the bug
     we're pinning is in _request, not at the client method
     boundary)."""
-    c = bot.KalshiClient.__new__(bot.KalshiClient)
+    c = bot.kalshi_client.KalshiClient.__new__(bot.kalshi_client.KalshiClient)
     c.session = MagicMock()
     c.api_key = "test-key"
     c._create_signature = MagicMock(return_value="sig")
@@ -571,7 +575,7 @@ class TestForcePopBackstopAfterWindowClose(unittest.TestCase):
         # the boundary. Yesterday's lesson: silent test-infra
         # failures are exactly what causes prod regressions.
         self.assertEqual(
-            bot.MIN_SECONDS_BEFORE_CLOSE, 0,
+            bot.constants.MIN_SECONDS_BEFORE_CLOSE, 0,
             "test_force_pop_does_not_fire_at_remaining_minus_30s "
             "assumes MIN_SECONDS_BEFORE_CLOSE=0. The constant changed "
             "— re-derive the -30s boundary or rewrite the test.")
@@ -888,7 +892,7 @@ class TestResetBreakerRegistryActuallyResets(unittest.TestCase):
 
     def test_reset_clears_breaker_state(self):
         # Plant a breaker in the registry.
-        registry = bot._BREAKER_REGISTRY
+        registry = bot.infra.circuit_breaker.REGISTRY
         registry.get("test_meta_breaker", failures_to_open=3,
                      recovery_seconds=10)
         self.assertIn("test_meta_breaker", registry._breakers)
@@ -919,7 +923,7 @@ class TestCancel404CounterExplicitInit(unittest.TestCase):
         client = MagicMock()
         state = MagicMock()
         logger = MagicMock()
-        e = bot.OrderExecutor(client, state, logger)
+        e = bot.executor.OrderExecutor(client, state, logger)
         self.assertEqual(
             e._cancel_404_count, 0,
             "OrderExecutor.__init__ must explicitly initialize "
@@ -935,7 +939,7 @@ class TestCancel404CounterExplicitInit(unittest.TestCase):
         client = MagicMock()
         state = MagicMock()
         logger = MagicMock()
-        e = bot.OrderExecutor(client, state, logger)
+        e = bot.executor.OrderExecutor(client, state, logger)
         e._client.get_orders = MagicMock(return_value={"orders": []})
         e._log_fill_model_sample = MagicMock()
         order = _make_active_order(asset="ETH")
@@ -982,7 +986,7 @@ class TestKalshiBreakerSuccessOnCancel404Sentinel(unittest.TestCase):
         # Exact shape `_request` returns at bot/_impl.py line 2486-2487.
         sentinel = {"_error": True, "_status_code": 404}
         self.assertTrue(
-            bot._kalshi_breaker_success(sentinel),
+            bot.helpers.breakers._kalshi_breaker_success(sentinel),
             "Cancel-404 sentinel must classify as breaker-success. "
             "If this fails, the cancel path will trip the breaker on "
             "every 404 and re-create the asset-lockout incident from "

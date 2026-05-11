@@ -29,7 +29,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from bot import KalshiClient, fp_str_to_int, dollars_str_to_cents  # type: ignore
+from bot.helpers.strings import fp_str_to_int, dollars_str_to_cents  # type: ignore
+from bot.kalshi_client import KalshiClient
 
 
 def load_client() -> KalshiClient:

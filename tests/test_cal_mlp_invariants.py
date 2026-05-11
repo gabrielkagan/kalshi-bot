@@ -13,6 +13,10 @@ import sys
 from pathlib import Path
 
 import pytest
+import bot.boot  # noqa: F401
+import bot.constants  # noqa: F401
+import bot.main_loop  # noqa: F401
+import bot.models  # noqa: F401
 
 _CAL_MLP_DIR = Path(__file__).resolve().parents[1] / 'scripts' / 'cal_mlp'
 if str(_CAL_MLP_DIR) not in sys.path:

@@ -42,6 +42,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import bot.fetchers  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -121,10 +122,10 @@ def test_all_four_identity_through_bot_proxy():
     import bot.feeds.cross_exchange as bfx
     import bot.feeds.kalshi as bfk
     import bot.feeds.orderbook_schema as bfo
-    assert bot.CoinbaseFeed is bfc.CoinbaseFeed
-    assert bot.CrossExchangeFeed is bfx.CrossExchangeFeed
-    assert bot.KalshiFeed is bfk.KalshiFeed
-    assert bot.OrderbookSchemaError is bfo.OrderbookSchemaError
+    assert bot.feeds.CoinbaseFeed is bfc.CoinbaseFeed
+    assert bot.feeds.CrossExchangeFeed is bfx.CrossExchangeFeed
+    assert bot.feeds.KalshiFeed is bfk.KalshiFeed
+    assert bot.feeds.OrderbookSchemaError is bfo.OrderbookSchemaError
 
 
 # ─── 3. Drift guards (AST + source-string) ──────────────────────────────────

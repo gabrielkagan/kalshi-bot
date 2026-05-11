@@ -26,6 +26,7 @@ import os
 import sys
 
 import pytest
+import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -34,10 +35,10 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts"))
 
 def _make_db_with_eval_schema(tmp_path):
     """Construct a fresh sqlite DB with the production evaluated_opportunities
-    schema (via bot.StateManager) so backfill SQL exercises real columns."""
+    schema (via bot.state.StateManager) so backfill SQL exercises real columns."""
     import bot
     db_path = str(tmp_path / "test.db")
-    sm = bot.StateManager(db_path)
+    sm = bot.state.StateManager(db_path)
     return sm
 
 

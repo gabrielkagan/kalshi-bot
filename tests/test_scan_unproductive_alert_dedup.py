@@ -35,7 +35,8 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot  # noqa: E402
-from bot import OpportunityScanner  # noqa: E402
+from bot.scanner import OpportunityScanner  # noqa: E402
+import bot.notifier  # noqa: F401
 
 
 _ACTIVE_15M = [

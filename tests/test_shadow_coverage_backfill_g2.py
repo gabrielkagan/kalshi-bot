@@ -20,6 +20,7 @@ import os
 import sys
 
 import pytest
+import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -28,7 +29,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts"))
 
 def _make_db_with_eval_schema(tmp_path):
     import bot
-    sm = bot.StateManager(str(tmp_path / "test.db"))
+    sm = bot.state.StateManager(str(tmp_path / "test.db"))
     return sm
 
 

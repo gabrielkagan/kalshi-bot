@@ -26,6 +26,7 @@ import sqlite3
 import sys
 
 import pytest
+import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -212,7 +213,7 @@ def test_candidate_insert_persists_cal_mlp_request_id(tmp_path):
     import bot
 
     db_path = str(tmp_path / "state.db")
-    state = bot.StateManager(db_path)
+    state = bot.state.StateManager(db_path)
 
     state.insert_evaluated_opportunity(
         "KXBTC15M-TEST-00", "EVT-TEST", "BTC",
@@ -248,7 +249,7 @@ def test_candidate_insert_persists_cal_mlp_skipped_reason(tmp_path):
     import bot
 
     db_path = str(tmp_path / "state.db")
-    state = bot.StateManager(db_path)
+    state = bot.state.StateManager(db_path)
 
     state.insert_evaluated_opportunity(
         "KXSOL15M-TEST-00", "EVT-TEST-2", "SOL",

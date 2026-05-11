@@ -50,6 +50,10 @@ import sys
 from pathlib import Path
 
 import pytest
+import bot.helpers  # noqa: F401
+import bot.helpers.breakers  # noqa: F401
+import bot.helpers.tm_sweep  # noqa: F401
+import bot.infra  # noqa: F401
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

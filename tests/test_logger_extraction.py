@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import bot.constants  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -69,10 +70,10 @@ def test_logger_identity_through_bot_impl():
 
 
 def test_logger_identity_through_bot_proxy():
-    """`from bot import Logger` resolves through the _BotProxy."""
+    """`from bot import Logger` resolves through canonical submodule (post-Bit-9.3-iii.b — _BotProxy retired)."""
     import bot
     import bot.logger as bl
-    assert bot.Logger is bl.Logger
+    assert bot.logger.Logger is bl.Logger
 
 
 # ─── 3. Drift guards (AST + source-string) ──────────────────────────────────

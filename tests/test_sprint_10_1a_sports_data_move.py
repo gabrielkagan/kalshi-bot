@@ -38,6 +38,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import bot.engines.__init__  # noqa: F401
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

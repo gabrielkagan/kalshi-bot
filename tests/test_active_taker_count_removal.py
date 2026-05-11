@@ -40,6 +40,9 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
+import bot._impl  # noqa: F401
+import bot.executor  # noqa: F401
+import bot.constants  # noqa: F401
 
 
 # ─── Symbol-removal pins ─────────────────────────────────────────────────
@@ -51,7 +54,7 @@ class TestDeadCapSymbolsRemoved(unittest.TestCase):
 
     def test_max_concurrent_taker_constant_removed(self):
         self.assertFalse(
-            hasattr(bot, "MAX_CONCURRENT_TAKER_PER_ASSET"),
+            hasattr(bot.constants, "MAX_CONCURRENT_TAKER_PER_ASSET"),
             "MAX_CONCURRENT_TAKER_PER_ASSET was a dead-cap constant. "
             "Re-introducing it without wiring real per-asset "
             "concurrency control (locks + atomic counter, or async-safe "
@@ -78,7 +81,7 @@ class TestDeadCapSymbolsRemoved(unittest.TestCase):
 
 def _make_executor():
     """Stub OrderExecutor for behavioral tests."""
-    e = bot.OrderExecutor.__new__(bot.OrderExecutor)
+    e = bot.executor.OrderExecutor.__new__(bot.executor.OrderExecutor)
     e._recent_taker_tickers = {}
     e._submit_taker = MagicMock(return_value={"ok": True})
     e._logger = MagicMock()

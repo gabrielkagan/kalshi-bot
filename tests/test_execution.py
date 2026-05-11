@@ -33,19 +33,30 @@ for _mod in ["websockets", "websocket", "requests",
         sys.modules[_mod] = MagicMock()
         _MOCKED.append(_mod)
 
-from bot import (
-    OrderExecutor,
-    MAKER_PRICE_OFFSET, MAKER_POLL_INTERVAL, ESCALATION_MAX_ENTRY,
-    MAKER_TIMEOUT_SECONDS, DIRECT_TAKER_THRESHOLD, MAKER_ONLY_THRESHOLD,
-    SOL_TAKER_FIRST, ESCALATION_WAIT_LONG, ESCALATION_WAIT_MEDIUM,
-    ESCALATION_WAIT_SHORT, BTC_ESCALATION_WAIT_OVERRIDE,
-    POST_ONLY_MAX_SAME_PRICE, POST_ONLY_DEGRADED_EXTRA_OFFSET,
-    POST_ONLY_REJECTION_EXPIRY, EARLY_ESCALATION_MIN_MOVE,
-    MIN_ENTRY_PRICE, MAX_ENTRY_PRICE, MIN_EDGE_PCT,
-    calculate_taker_fee,
+from bot.constants import (
+    MAKER_PRICE_OFFSET,
+    MAKER_POLL_INTERVAL,
+    ESCALATION_MAX_ENTRY,
+    MAKER_TIMEOUT_SECONDS,
+    DIRECT_TAKER_THRESHOLD,
+    MAKER_ONLY_THRESHOLD,
+    SOL_TAKER_FIRST,
+    ESCALATION_WAIT_LONG,
+    ESCALATION_WAIT_MEDIUM,
+    ESCALATION_WAIT_SHORT,
+    BTC_ESCALATION_WAIT_OVERRIDE,
+    POST_ONLY_MAX_SAME_PRICE,
+    POST_ONLY_DEGRADED_EXTRA_OFFSET,
+    POST_ONLY_REJECTION_EXPIRY,
+    EARLY_ESCALATION_MIN_MOVE,
+    MIN_ENTRY_PRICE,
+    MAX_ENTRY_PRICE,
+    MIN_EDGE_PCT,
 )
-
-
+from bot.executor import OrderExecutor
+from bot.models import calculate_taker_fee
+import bot.notifier  # noqa: F401
+import bot.scanner  # noqa: F401
 def _make_candidate(**overrides):
     """Build a minimal candidate dict for OrderExecutor.execute()."""
     base = {
@@ -770,14 +781,14 @@ class TestStrategyClampPolicy(unittest.TestCase):
         direct, CONFIRMATION_ADDON, DIP_ADDON) are no_clamp. A
         future revert to top_of_book on these would re-trigger
         the 50% size drop, so this test catches that regression."""
-        import bot
+        import bot.constants
         no_clamp_required = {
             "TAKER_NOW", "MAKER_PATIENT", "MAKER_AGGRESSIVE",
             "PANIC_CAPTURE", "CONFIRMATION_ADDON", "DIP_ADDON",
         }
         for strat in no_clamp_required:
             self.assertEqual(
-                bot.STRATEGY_CLAMP_POLICY.get(strat), "no_clamp",
+                bot.constants.STRATEGY_CLAMP_POLICY.get(strat), "no_clamp",
                 f"Strategy {strat!r} must be 'no_clamp' per the "
                 f"Apr 25 size-restoration fix. Reverting to "
                 f"'top_of_book' clamps 15M IOCs to single-level "
@@ -1445,7 +1456,7 @@ class TestMakerToTakerEscalation(unittest.TestCase):
         }
         ex._active_orders["BTC"] = order
 
-        with patch("bot.OpportunityScanner") as mock_scanner:
+        with patch("bot.scanner.OpportunityScanner") as mock_scanner:
             mock_scanner._best_yes_ask_cents.return_value = 92
             mock_scanner._convert_orderbook_fp.return_value = {"no": [[8, 10]]}
             result = ex._escalate_to_taker(order, remaining=300)
@@ -1478,7 +1489,7 @@ class TestMakerToTakerEscalation(unittest.TestCase):
         }
         ex._active_orders["BTC"] = order
 
-        with patch("bot.OpportunityScanner") as mock_scanner:
+        with patch("bot.scanner.OpportunityScanner") as mock_scanner:
             mock_scanner._best_yes_ask_cents.return_value = None
             mock_scanner._convert_orderbook_fp.return_value = {"no": []}
             result = ex._escalate_to_taker(order, remaining=300)

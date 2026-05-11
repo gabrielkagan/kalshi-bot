@@ -165,7 +165,7 @@ class DashboardSnapshotBuilder:
             snap["starting_balance"] = 0.0
 
         # Initial deposit (fixed constant — used for true return % on dashboard)
-        from bot import INITIAL_DEPOSIT_CENTS
+        from bot.constants import INITIAL_DEPOSIT_CENTS
         snap["initial_deposit"] = round(INITIAL_DEPOSIT_CENTS / 100, 2)
 
         # Drawdown Kelly multiplier
@@ -931,7 +931,7 @@ class DashboardSnapshotBuilder:
 
         # ── trading config values ──────────────────────────────────────
         try:
-            import bot as _bot_mod
+            import bot._impl as _bot_mod  # 9.3-iii.b: uses residual shim until 9.3-iii.c deletes it; getattr fallback survives star-import gaps
             snap["trading_config"] = {
                 "min_edge_by_price": getattr(_bot_mod, "MIN_EDGE_BY_PRICE", []),
                 "market_blend_w": getattr(_bot_mod, "MARKET_BLEND_W", None),
@@ -1021,7 +1021,7 @@ class DashboardSnapshotBuilder:
         try:
             mz = getattr(self._ml, "mz_tracker", None)
             if mz:
-                import bot as _bot_mod
+                import bot._impl as _bot_mod  # 9.3-iii.b: uses residual shim until 9.3-iii.c deletes it; getattr fallback survives star-import gaps
                 snap["egarch_blend"] = {
                     "shadow_mode": getattr(_bot_mod, "EGARCH_BLEND_SHADOW_MODE", True),
                     "weights": {a: mz.get_weight(a) for a in ASSETS},
@@ -1267,7 +1267,7 @@ class DashboardSnapshotBuilder:
         try:
             koft = getattr(self._ml, "kalshi_oft", None)
             if koft:
-                import bot as _bot_mod
+                import bot._impl as _bot_mod  # 9.3-iii.b: uses residual shim until 9.3-iii.c deletes it; getattr fallback survives star-import gaps
                 koft_data = {
                     "shadow_mode": getattr(_bot_mod, "KALSHI_OFT_SHADOW_MODE", True),
                     "tracked_tickers": koft.get_tracked_count(),
@@ -1431,9 +1431,9 @@ class DashboardSnapshotBuilder:
             if hourly_obs_cand == 0 and total_orders > 0:
                 # Scanner doesn't track hourly separately; check if hourly obs is active
                 try:
-                    import bot as _bot_mod3
-                    if getattr(_bot_mod3, "HOURLY_OBSERVATION_ENABLED", False) and \
-                       getattr(_bot_mod3, "HOURLY_OBSERVATION_ONLY", True):
+                    import bot._impl as _bot_mod  # 9.3-iii.b: uses residual shim until 9.3-iii.c deletes it; getattr fallback survives star-import gaps
+                    if getattr(_bot_mod, "HOURLY_OBSERVATION_ENABLED", False) and \
+                       getattr(_bot_mod, "HOURLY_OBSERVATION_ONLY", True):
                         # Can't distinguish 15m vs hourly candidates, suppress this alert
                         candidates_15m = 0
                         exec_eng["candidates_15m"] = 0
@@ -1453,7 +1453,7 @@ class DashboardSnapshotBuilder:
 
         # ── Shadow calibration pipeline ─────────────────────────────────
         try:
-            import bot as _bot_mod
+            import bot._impl as _bot_mod  # 9.3-iii.b: uses residual shim until 9.3-iii.c deletes it; getattr fallback survives star-import gaps
             cal_engine = getattr(self._ml, "calibration", None)
             if cal_engine:
                 snap["shadow_cal_pipeline"] = {
@@ -1470,7 +1470,7 @@ class DashboardSnapshotBuilder:
 
         # ── Hourly observation mode ──────────────────────────────────────
         try:
-            import bot as _bot_mod
+            import bot._impl as _bot_mod  # 9.3-iii.b: uses residual shim until 9.3-iii.c deletes it; getattr fallback survives star-import gaps
             hourly_enabled = getattr(_bot_mod, "HOURLY_OBSERVATION_ENABLED", False)
             if hourly_enabled:
                 hourly_data = {
@@ -4076,7 +4076,7 @@ class DashboardSnapshotBuilder:
         See kb/decisions/dashboard-overhaul-plan.md (Phase P) and
         kb/concepts/public-dashboard-schema.md for rationale.
         """
-        from bot import INITIAL_DEPOSIT_CENTS
+        from bot.constants import INITIAL_DEPOSIT_CENTS
         import math as _math
 
         pub: Dict[str, Any] = {

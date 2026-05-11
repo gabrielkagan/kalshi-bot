@@ -3,8 +3,12 @@ bot/_impl.py per Sprint 3 Bit 3.1.
 
 Re-exported into bot._impl via `from bot.constants import *` near the top
 of bot/_impl.py. External consumers (market_config.py, dashboard_snapshot.py,
-postdeploy_verify.py, etc.) read these via `bot.X` (proxy → bot._impl.X
-→ the star-imported binding).
+postdeploy_verify.py, etc.) reach these via `import bot.constants; bot.constants.X`
+directly post-Bit-9.3-iii.b (2026-05-11 — `_BotProxy` retired). Pre-retirement
+the same callers used `import bot; bot.X` via the proxy → bot._impl.X →
+star-imported binding chain; that path is gone. Consumers still doing
+`import bot._impl as _bot_mod; getattr(_bot_mod, NAME, default)` work via the
+residual shim's star-imports until Bit 9.3-iii.c deletes bot/_impl.py.
 
 ZERO-DEPS by contract: only `os` is imported (for `os.environ.get(...)`
 env-flag constants like HIGH_PRICE_STC_BLOCK_ENABLED). DO NOT add numpy /

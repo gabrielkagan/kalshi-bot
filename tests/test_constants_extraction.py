@@ -56,7 +56,7 @@ def test_bot_impl_re_exports_all_constants_via_star_import():
     by default. The migration script's MOVE_DESPITE_UNDERSCORE allowlist
     moves `_CROSS_EXCHANGE_FEEDS_ACTIVE` to bot/constants.py because
     `CROSS_EXCHANGE_CONSENSUS_MIN` references it. To preserve the
-    `bot._CROSS_EXCHANGE_FEEDS_ACTIVE` access pattern, bot/_impl.py
+    `bot.constants._CROSS_EXCHANGE_FEEDS_ACTIVE` access pattern, bot/_impl.py
     has an explicit `from bot.constants import _CROSS_EXCHANGE_FEEDS_ACTIVE`
     after the star-import. This test enforces that re-export contract.
     """

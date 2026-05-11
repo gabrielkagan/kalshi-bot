@@ -16,6 +16,7 @@ import re
 import sys
 
 import pytest
+import bot.constants  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -46,26 +47,48 @@ class TestPublicAPIImports:
         assert hasattr(market_config, "validate_market_configs")
 
     def test_bot_exports_key_functions(self):
-        """bot/_impl.py exports all functions that other modules depend on."""
-        import bot
+        """Canonical-home modules export all names that other modules depend on.
+
+        Bit 9.3-iii.b (2026-05-11): pre-retirement these `hasattr(bot, X)` checks
+        relied on the _BotProxy chain → bot._impl.X. Post-retirement each name is
+        looked up from its canonical home (bot.constants for most, bot.state for
+        StateManager, bot.models for fee helpers, bot.helpers for get_min_edge,
+        config for MAX_RISK_PER_TRADE / MARKET_BLEND_W).
+        """
+        import bot.constants
+        import bot.helpers
+        import bot.models
+        import bot.state
+        import config
+
+        # (name, canonical_module) pairs
         required_attrs = [
-            "StateManager",
-            "calculate_fee",
-            "calculate_maker_fee",
-            "MIN_ENTRY_PRICE",
-            "MAX_ENTRY_PRICE",
-            "MAX_RISK_PER_TRADE",
-            "OBSERVATION_MODE",
-            "MARKET_BLEND_W",
-            "MIN_EDGE_BY_PRICE",
-            "get_min_edge",
+            ("StateManager", bot.state),
+            ("calculate_fee", bot.models),
+            ("calculate_maker_fee", bot.models),
+            ("MIN_ENTRY_PRICE", bot.constants),
+            ("MAX_ENTRY_PRICE", bot.constants),
+            ("MAX_RISK_PER_TRADE", config),
+            ("OBSERVATION_MODE", bot.constants),
+            ("MARKET_BLEND_W", bot.constants),
+            ("MIN_EDGE_BY_PRICE", bot.constants),
+            ("get_min_edge", bot.helpers),
         ]
-        for attr in required_attrs:
-            assert hasattr(bot, attr), f"bot/_impl.py missing expected export: {attr}"
+        for attr, mod in required_attrs:
+            assert hasattr(mod, attr), (
+                f"{mod.__name__} missing expected export: {attr}"
+            )
 
     def test_bot_exports_hourly_constants(self):
-        """bot/_impl.py exports all hourly constants that market_config.py validates against."""
-        import bot
+        """bot.constants exports all hourly constants that market_config.py validates against.
+
+        Bit 9.3-iii.b retarget: hasattr(bot, X) → hasattr(bot.constants, X). HOURLY_MARKET_BLEND_W
+        / HOURLY_KELLY_FRACTION / HOURLY_TEMPERATURE_T live in config (shared-constants module),
+        not bot.constants.
+        """
+        import bot.constants
+        import config
+
         hourly_constants = [
             "HOURLY_OBSERVATION_ONLY",
             "HOURLY_MIN_ENTRY_PRICE",
@@ -83,11 +106,16 @@ class TestPublicAPIImports:
             "HOURLY_MAX_WINDOW_RISK",
         ]
         for const in hourly_constants:
-            assert hasattr(bot, const), f"bot/_impl.py missing hourly constant: {const}"
+            assert hasattr(bot.constants, const) or hasattr(config, const), (
+                f"bot.constants + config both missing hourly constant: {const}"
+            )
 
     def test_bot_exports_spx_constants(self):
-        """bot/_impl.py exports all SPX constants that market_config.py validates against."""
-        import bot
+        """bot.constants + config export all SPX constants market_config.py validates against."""
+        import bot.constants
+        import config
+
+        # SPX_HOURLY_* — all in bot.constants per Sprint 3 Bit 3.1 extraction.
         spx_constants = [
             "SPX_HOURLY_OBSERVATION_ONLY",
             "SPX_HOURLY_MIN_ENTRY_PRICE",
@@ -104,11 +132,15 @@ class TestPublicAPIImports:
             "SPX_HOURLY_MAX_WINDOW_RISK",
         ]
         for const in spx_constants:
-            assert hasattr(bot, const), f"bot/_impl.py missing SPX constant: {const}"
+            assert hasattr(bot.constants, const) or hasattr(config, const), (
+                f"bot.constants + config both missing SPX constant: {const}"
+            )
 
     def test_bot_exports_weather_constants(self):
-        """bot/_impl.py exports all weather constants that market_config.py validates against."""
-        import bot
+        """bot.constants + config export all weather constants market_config.py validates against."""
+        import bot.constants
+        import config
+
         weather_constants = [
             "WEATHER_OBSERVATION_ONLY",
             "WEATHER_MIN_ENTRY_PRICE",
@@ -120,11 +152,13 @@ class TestPublicAPIImports:
             "WEATHER_MARKET_BLEND_W",
         ]
         for const in weather_constants:
-            assert hasattr(bot, const), f"bot/_impl.py missing weather constant: {const}"
+            assert hasattr(bot.constants, const) or hasattr(config, const), (
+                f"bot.constants + config both missing weather constant: {const}"
+            )
 
     def test_bot_exports_sports_constant(self):
-        import bot
-        assert hasattr(bot, "SPORTS_OBSERVATION_ONLY")
+        import bot.constants
+        assert hasattr(bot.constants, "SPORTS_OBSERVATION_ONLY")
 
 
 class TestCalEnginePipelineTripleShip:
@@ -246,7 +280,7 @@ class TestCrossModuleFunctionArity:
 
     def test_calculate_fee_signature_stable(self):
         """calculate_fee must accept (count, price, is_taker) — callers depend on this."""
-        from bot import calculate_fee
+        from bot.models import calculate_fee
         sig = inspect.signature(calculate_fee)
         params = list(sig.parameters.keys())
         assert "count" in params or len(params) >= 2, (

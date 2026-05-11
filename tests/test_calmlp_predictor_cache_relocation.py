@@ -48,6 +48,8 @@ from typing import List
 from unittest import mock
 
 import pytest
+import bot._impl  # noqa: F401
+import bot.boot  # noqa: F401
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

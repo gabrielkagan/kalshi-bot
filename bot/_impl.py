@@ -1,5 +1,28 @@
 #!/usr/bin/env python3
-"""Kalshi cryptocurrency prediction market trading bot."""
+"""Kalshi cryptocurrency prediction market trading bot — RESIDUAL RE-EXPORT SHIM.
+
+Post-Bit-9.3-iii.b (2026-05-11) this module is no longer in the production import
+chain. bot/__main__.py imports `bot.main_loop` directly; bot/state.py imports
+`bot.boot` directly; bot/__init__.py is docstring-only with no `_BotProxy`. This
+residual re-export shim survives ONLY to:
+
+1. Preserve the `from bot._impl import X` form for any caller still using it (the
+   star-imports + explicit re-exports below provide the full historical surface).
+2. Provide a side-effect-loader for callers that use `import bot._impl as _bot_mod`
+   then `getattr(_bot_mod, NAME, default)` for runtime-config introspection
+   (dashboard_snapshot.py L1434/1024/934/1270/1456/1473, supabase_sync.py L810).
+
+Bit 9.3-iii.c DELETES bot/_impl.py entirely once the above callers migrate to
+canonical-submodule access (bot.constants.X / bot.helpers.X / etc.).
+
+NARRATIVE COMMENTS BELOW are historical record. The long re-export comments at
+lines ~108-450 document the extraction history of each name — they describe the
+past proxy chain `bot.X → bot._impl.X → bot.<canonical_module>.X` that resolved
+test-suite + production reads pre-Bit-9.3-iii.b. That chain is GONE. The
+re-exports themselves still work (they're plain Python attribute bindings on
+this module) — what's gone is the auto-routing from `bot.X`. Treat the
+narrative paragraphs as history, not current behavior.
+"""
 
 # R-p7-deploy-r7 CRITICAL: pin OMP/MKL/OpenBLAS to 1 thread BEFORE numpy /
 # scipy / torch / sklearn / pandas C-extensions load. These libraries cache

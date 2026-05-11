@@ -23,6 +23,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+import bot.scanner  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = REPO_ROOT / "pyproject.toml"

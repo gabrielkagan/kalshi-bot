@@ -17,6 +17,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot  # noqa: E402
+import bot.scanner  # noqa: F401
 
 
 BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
@@ -41,7 +42,7 @@ class TestLossCooldownConstants(unittest.TestCase):
 
     def test_loss_cooldown_enabled(self):
         """LOSS_COOLDOWN_ENABLED must be True by default (the feature is the fix)."""
-        self.assertTrue(bot.LOSS_COOLDOWN_ENABLED)
+        self.assertTrue(bot.constants.LOSS_COOLDOWN_ENABLED)
 
     def test_loss_cooldown_seconds_is_2h(self):
         """LOSS_COOLDOWN_SECONDS must be 7200 (2 hours).
@@ -49,7 +50,7 @@ class TestLossCooldownConstants(unittest.TestCase):
         Counterfactual validation used 2h lockout (+$441/30d). Tightening or
         loosening this needs fresh data analysis.
         """
-        self.assertEqual(bot.LOSS_COOLDOWN_SECONDS, 7200)
+        self.assertEqual(bot.constants.LOSS_COOLDOWN_SECONDS, 7200)
 
     def test_cooldown_query_is_15m_losses_only(self):
         """The cooldown SQL query must filter to 15M losses only."""
@@ -161,15 +162,15 @@ class TestWeatherNoCandidateInCorrectPath(unittest.TestCase):
     def test_process_no_side_shadow_accepts_candidates_list(self):
         """The function signature must accept candidates list param for live append path."""
         import inspect
-        sig = inspect.signature(bot.OpportunityScanner._process_no_side_shadow)
+        sig = inspect.signature(bot.scanner.OpportunityScanner._process_no_side_shadow)
         self.assertIn("candidates", sig.parameters,
                       "_process_no_side_shadow must accept a 'candidates' parameter to support "
                       "the weather NO live path")
 
     def test_weather_no_assumed_prob_produces_positive_edge_at_40c(self):
         """WEATHER_NO_ASSUMED_PROB must be high enough that edge > 0 at 40c cap."""
-        prob = bot.WEATHER_NO_ASSUMED_PROB
-        max_price = bot.WEATHER_NO_MAX_PRICE
+        prob = bot.constants.WEATHER_NO_ASSUMED_PROB
+        max_price = bot.constants.WEATHER_NO_MAX_PRICE
         fee_estimate = 0.02
         edge = prob - max_price / 100.0 - fee_estimate
         self.assertGreater(
@@ -184,8 +185,8 @@ class TestWeatherNoCandidateInCorrectPath(unittest.TestCase):
         Edge = prob - price/100 - fee/100. At NO=40c with ~0.6c taker fee,
         edge = 0.70 - 0.40 - 0.006 = 0.294. Must stay positive.
         """
-        prob = bot.WEATHER_NO_ASSUMED_PROB
-        max_price = bot.WEATHER_NO_MAX_PRICE
+        prob = bot.constants.WEATHER_NO_ASSUMED_PROB
+        max_price = bot.constants.WEATHER_NO_MAX_PRICE
         fee_estimate = 0.02  # conservative upper bound (2c on 40c)
         edge = prob - max_price / 100.0 - fee_estimate
         self.assertGreater(

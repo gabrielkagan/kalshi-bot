@@ -42,6 +42,8 @@ import threading
 import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock
+import bot.constants  # noqa: F401
+import bot.feeds  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -53,7 +55,7 @@ BOT_PY = os.path.join(
 def _make_feed():
     """Same fixture as test_ws_force_resubscribe.py — bypass __init__."""
     import bot
-    f = bot.KalshiFeed.__new__(bot.KalshiFeed)
+    f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
     f._pending_subscribes = []
     f._pending_unsubscribes = []
     f._pending_snapshot_requests = []
@@ -327,7 +329,7 @@ class TestTimeoutFallbackKeepsSidForDrain(unittest.TestCase):
         f._ticker_to_sid["KXBTC15M-LOOP"] = 500
         # Backdate pending request past timeout.
         f._snapshot_request_pending["KXBTC15M-LOOP"] = (
-            time.monotonic() - bot.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
+            time.monotonic() - bot.constants.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
         f._check_snapshot_timeouts()
         self.assertEqual(
             f._ticker_to_sid.get("KXBTC15M-LOOP"), 500,

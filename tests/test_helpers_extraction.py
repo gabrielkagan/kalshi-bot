@@ -14,6 +14,7 @@ import importlib
 from pathlib import Path
 
 import pytest
+import bot.constants  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -113,16 +114,17 @@ def test_each_public_helper_in_bot_impl():
             )
 
 
-def test_each_public_helper_via_bot_proxy():
-    """`from bot import X` works for every public helper (via _BotProxy)."""
-    import bot
+def test_each_public_helper_resolves_via_canonical_module():
+    """Every public helper resolves via its canonical bot.helpers.<sub> module.
+
+    Bit 9.3-iii.b (2026-05-11): pre-retirement this checked `hasattr(bot, X)` via
+    _BotProxy → bot._impl.X (resolved through `from bot.helpers import *`).
+    Post-retirement the canonical home is bot.helpers.<sub> directly.
+    """
     for sub, names in PUBLIC_HELPERS.items():
         mod = importlib.import_module(f"bot.helpers.{sub}")
         for name in names:
-            assert hasattr(bot, name), f"bot missing {name}"
-            assert getattr(bot, name) is getattr(mod, name), (
-                f"identity mismatch: bot.{name} vs bot.helpers.{sub}.{name}"
-            )
+            assert hasattr(mod, name), f"bot.helpers.{sub} missing {name}"
 
 
 # ─── 4. Underscore re-export contract (Bit 3.1 L3) ──────────────────────────
@@ -147,16 +149,19 @@ def test_each_underscore_helper_in_bot_impl():
             )
 
 
-def test_each_underscore_helper_via_bot_proxy():
-    """_BotProxy proxies underscore-prefixed names through to bot._impl too —
-    e.g., test_kalshi_client_breakers.py uses `from bot import _kalshi_breaker`.
+def test_each_underscore_helper_resolves_via_canonical_module():
+    """Underscore-prefixed helpers resolve via their canonical bot.helpers.<sub> module.
+
+    Bit 9.3-iii.b (2026-05-11): pre-retirement `from bot import _kalshi_breaker`
+    routed through _BotProxy → bot._impl._kalshi_breaker. Post-retirement
+    callers reach `from bot.helpers.breakers import _kalshi_breaker` directly.
     """
-    import bot
     for sub, names in UNDERSCORE_HELPERS.items():
         mod = importlib.import_module(f"bot.helpers.{sub}")
         for name in names:
-            assert hasattr(bot, name), f"bot missing {name}"
-            assert getattr(bot, name) is getattr(mod, name)
+            assert hasattr(mod, name), (
+                f"bot.helpers.{sub} missing {name}; canonical-home pin"
+            )
 
 
 # ─── 5. Moved helpers absent from bot/_impl.py module scope ─────────────────

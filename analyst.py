@@ -43,8 +43,11 @@ MIN_SETTLED_FOR_PARAM_OPTIMIZER = 500
 
 # Current bot config (for param optimizer context)
 # !! Keep in sync with the `bot` package — last verified 2026-05-08 (Bit 4.2.5.1 sweep) !!
-# Source of truth lives in bot/constants.py (Bit 3.1) and bot/_impl.py (remaining
-# constants), all surfaced via `import bot; bot.<NAME>` (lazy proxy in bot/__init__.py).
+# Source of truth lives in bot/constants.py (Bit 3.1) — reach via
+# `import bot.constants; bot.constants.<NAME>`. Constants that historically
+# lived in `config.py` (MAX_RISK_PER_TRADE, MARKET_BLEND_W, HOURLY_KELLY_FRACTION)
+# reach via `import config; config.<NAME>` directly.
+# Post-Bit-9.3-iii.b (2026-05-11) the legacy `bot.<NAME>` proxy form is RETIRED.
 # Pinned by tests/test_analyst_current_config_sync.py (AST-based; fails on drift).
 CURRENT_CONFIG = {
     "MIN_ENTRY_PRICE": 75,
@@ -400,7 +403,7 @@ def compute_edge_stats(rows: List[sqlite3.Row]) -> dict:
 
     # Counterfactual: what if edge thresholds were halved?
     # Current price-dependent: 97c→1.0%, 95c→0.75%, 93c→0.5%, 91c→0.2%, 89c→0.25%, <89c→0.25%
-    # Mirrors bot.MIN_EDGE_BY_PRICE; pinned by tests/test_analyst_current_config_sync.py.
+    # Mirrors bot.constants.MIN_EDGE_BY_PRICE; pinned by tests/test_analyst_current_config_sync.py.
     _EDGE_SCHEDULE = [(97, 0.01), (95, 0.0075), (93, 0.005), (91, 0.002), (89, 0.0025), (0, 0.0025)]
 
     def _get_min_edge(price_cents):

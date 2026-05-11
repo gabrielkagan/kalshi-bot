@@ -11,6 +11,8 @@ import os
 import sys
 
 import pytest
+import bot.constants  # noqa: F401
+import config  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -28,70 +30,70 @@ class TestConfigConstantParity:
         import bot
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["15m"]
-        assert cfg.min_entry_price == bot.MIN_ENTRY_PRICE
-        assert cfg.max_entry_price == bot.MAX_ENTRY_PRICE
-        assert cfg.max_risk_per_trade == bot.MAX_RISK_PER_TRADE
-        assert cfg.min_seconds_before_close == bot.MIN_SECONDS_BEFORE_CLOSE
-        assert cfg.max_seconds_before_close == bot.MAX_SECONDS_BEFORE_CLOSE
-        assert cfg.market_blend_w == bot.MARKET_BLEND_W
-        assert cfg.observation_only == bot.OBSERVATION_MODE
+        assert cfg.min_entry_price == bot.constants.MIN_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.constants.MAX_ENTRY_PRICE
+        assert cfg.max_risk_per_trade == config.MAX_RISK_PER_TRADE
+        assert cfg.min_seconds_before_close == bot.constants.MIN_SECONDS_BEFORE_CLOSE
+        assert cfg.max_seconds_before_close == bot.constants.MAX_SECONDS_BEFORE_CLOSE
+        assert cfg.market_blend_w == bot.constants.MARKET_BLEND_W
+        assert cfg.observation_only == bot.constants.OBSERVATION_MODE
 
     def test_hourly_config_matches_bot(self):
         import bot
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["hourly"]
-        assert cfg.observation_only == bot.HOURLY_OBSERVATION_ONLY
-        assert cfg.min_entry_price == bot.HOURLY_MIN_ENTRY_PRICE
-        assert cfg.max_entry_price == bot.HOURLY_MAX_ENTRY_PRICE
-        assert cfg.min_seconds_before_close == bot.HOURLY_MIN_SECONDS_BEFORE_CLOSE
-        assert cfg.max_seconds_before_close == bot.HOURLY_MAX_SECONDS_BEFORE_CLOSE
-        assert cfg.max_risk_per_trade == bot.HOURLY_MAX_RISK_PER_TRADE
-        assert cfg.kelly_fraction == bot.HOURLY_KELLY_FRACTION
-        assert cfg.market_blend_w == bot.HOURLY_MARKET_BLEND_W
-        assert cfg.temperature_t == bot.HOURLY_TEMPERATURE_T
-        assert cfg.temperature_enabled == bot.HOURLY_TEMPERATURE_ENABLED
-        assert cfg.min_stc_entry == bot.HOURLY_MIN_STC_ENTRY
-        assert cfg.max_stc_entry == bot.HOURLY_MAX_STC_ENTRY
-        assert cfg.excluded_assets == frozenset(bot.HOURLY_EXCLUDED_ASSETS)
-        assert cfg.max_positions_per_window == bot.HOURLY_MAX_POSITIONS_PER_WINDOW
-        assert cfg.max_window_risk == bot.HOURLY_MAX_WINDOW_RISK
+        assert cfg.observation_only == bot.constants.HOURLY_OBSERVATION_ONLY
+        assert cfg.min_entry_price == bot.constants.HOURLY_MIN_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.constants.HOURLY_MAX_ENTRY_PRICE
+        assert cfg.min_seconds_before_close == bot.constants.HOURLY_MIN_SECONDS_BEFORE_CLOSE
+        assert cfg.max_seconds_before_close == bot.constants.HOURLY_MAX_SECONDS_BEFORE_CLOSE
+        assert cfg.max_risk_per_trade == bot.constants.HOURLY_MAX_RISK_PER_TRADE
+        assert cfg.kelly_fraction == bot.constants.HOURLY_KELLY_FRACTION
+        assert cfg.market_blend_w == bot.constants.HOURLY_MARKET_BLEND_W
+        assert cfg.temperature_t == bot.constants.HOURLY_TEMPERATURE_T
+        assert cfg.temperature_enabled == bot.constants.HOURLY_TEMPERATURE_ENABLED
+        assert cfg.min_stc_entry == bot.constants.HOURLY_MIN_STC_ENTRY
+        assert cfg.max_stc_entry == bot.constants.HOURLY_MAX_STC_ENTRY
+        assert cfg.excluded_assets == frozenset(bot.constants.HOURLY_EXCLUDED_ASSETS)
+        assert cfg.max_positions_per_window == bot.constants.HOURLY_MAX_POSITIONS_PER_WINDOW
+        assert cfg.max_window_risk == bot.constants.HOURLY_MAX_WINDOW_RISK
 
     def test_spx_hourly_config_matches_bot(self):
         import bot
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["spx_hourly"]
-        assert cfg.observation_only == bot.SPX_HOURLY_OBSERVATION_ONLY
-        assert cfg.min_entry_price == bot.SPX_HOURLY_MIN_ENTRY_PRICE
-        assert cfg.max_entry_price == bot.SPX_HOURLY_MAX_ENTRY_PRICE
-        assert cfg.min_seconds_before_close == bot.SPX_HOURLY_MIN_SECONDS_BEFORE_CLOSE
-        assert cfg.max_seconds_before_close == bot.SPX_HOURLY_MAX_SECONDS_BEFORE_CLOSE
-        assert cfg.max_risk_per_trade == bot.SPX_HOURLY_MAX_RISK_PER_TRADE
-        assert cfg.kelly_fraction == bot.SPX_HOURLY_KELLY_FRACTION
-        assert cfg.market_blend_w == bot.SPX_HOURLY_MARKET_BLEND_W
-        assert cfg.temperature_t == bot.SPX_HOURLY_TEMPERATURE_T
-        assert cfg.fee_multiplier_taker == bot.SPX_HOURLY_FEE_MULTIPLIER_TAKER
-        assert cfg.fee_multiplier_maker == bot.SPX_HOURLY_FEE_MULTIPLIER_MAKER
-        assert cfg.max_positions_per_window == bot.SPX_HOURLY_MAX_POSITIONS_PER_WINDOW
-        assert cfg.max_window_risk == bot.SPX_HOURLY_MAX_WINDOW_RISK
+        assert cfg.observation_only == bot.constants.SPX_HOURLY_OBSERVATION_ONLY
+        assert cfg.min_entry_price == bot.constants.SPX_HOURLY_MIN_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.constants.SPX_HOURLY_MAX_ENTRY_PRICE
+        assert cfg.min_seconds_before_close == bot.constants.SPX_HOURLY_MIN_SECONDS_BEFORE_CLOSE
+        assert cfg.max_seconds_before_close == bot.constants.SPX_HOURLY_MAX_SECONDS_BEFORE_CLOSE
+        assert cfg.max_risk_per_trade == bot.constants.SPX_HOURLY_MAX_RISK_PER_TRADE
+        assert cfg.kelly_fraction == bot.constants.SPX_HOURLY_KELLY_FRACTION
+        assert cfg.market_blend_w == bot.constants.SPX_HOURLY_MARKET_BLEND_W
+        assert cfg.temperature_t == bot.constants.SPX_HOURLY_TEMPERATURE_T
+        assert cfg.fee_multiplier_taker == bot.constants.SPX_HOURLY_FEE_MULTIPLIER_TAKER
+        assert cfg.fee_multiplier_maker == bot.constants.SPX_HOURLY_FEE_MULTIPLIER_MAKER
+        assert cfg.max_positions_per_window == bot.constants.SPX_HOURLY_MAX_POSITIONS_PER_WINDOW
+        assert cfg.max_window_risk == bot.constants.SPX_HOURLY_MAX_WINDOW_RISK
 
     def test_weather_config_matches_bot(self):
         import bot
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["weather"]
-        assert cfg.observation_only == bot.WEATHER_OBSERVATION_ONLY
-        assert cfg.min_entry_price == bot.WEATHER_MIN_ENTRY_PRICE
-        assert cfg.max_entry_price == bot.WEATHER_MAX_ENTRY_PRICE
-        assert cfg.min_seconds_before_close == bot.WEATHER_MIN_SECONDS_BEFORE_CLOSE
-        assert cfg.max_seconds_before_close == bot.WEATHER_MAX_SECONDS_BEFORE_CLOSE
-        assert cfg.max_risk_per_trade == bot.WEATHER_MAX_RISK_PER_TRADE
-        assert cfg.kelly_fraction == bot.WEATHER_KELLY_FRACTION
-        assert cfg.market_blend_w == bot.WEATHER_MARKET_BLEND_W
+        assert cfg.observation_only == bot.constants.WEATHER_OBSERVATION_ONLY
+        assert cfg.min_entry_price == bot.constants.WEATHER_MIN_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.constants.WEATHER_MAX_ENTRY_PRICE
+        assert cfg.min_seconds_before_close == bot.constants.WEATHER_MIN_SECONDS_BEFORE_CLOSE
+        assert cfg.max_seconds_before_close == bot.constants.WEATHER_MAX_SECONDS_BEFORE_CLOSE
+        assert cfg.max_risk_per_trade == bot.constants.WEATHER_MAX_RISK_PER_TRADE
+        assert cfg.kelly_fraction == bot.constants.WEATHER_KELLY_FRACTION
+        assert cfg.market_blend_w == bot.constants.WEATHER_MARKET_BLEND_W
 
     def test_sports_config_matches_bot(self):
         import bot
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["sports"]
-        assert cfg.observation_only == bot.SPORTS_OBSERVATION_ONLY
+        assert cfg.observation_only == bot.constants.SPORTS_OBSERVATION_ONLY
         assert cfg.observation_only is True, "sports must always be observation-only"
         assert cfg.cal_eligible is False, "sports must not be cal_eligible"
 
@@ -157,7 +159,7 @@ class TestMinEdgeByPrice:
         """get_min_edge returns a positive value for all valid prices 1-99."""
         import bot
         for price in range(1, 100):
-            edge = bot.get_min_edge(price)
+            edge = bot.helpers.sizing.get_min_edge(price)
             assert edge > 0, f"get_min_edge({price}) returned {edge}"
 
     # Removed: test_get_min_edge_monotonic — schedule is intentionally
@@ -244,7 +246,7 @@ class TestSTCRanges:
     def test_stc_shadow_within_15m_range(self):
         """STC_SHADOW_THRESHOLD for 15M must fall within the STC range."""
         import bot
-        assert bot.STC_SHADOW_THRESHOLD <= bot.MAX_SECONDS_BEFORE_CLOSE, (
-            f"STC_SHADOW_THRESHOLD({bot.STC_SHADOW_THRESHOLD}) > MAX_SECONDS_BEFORE_CLOSE({bot.MAX_SECONDS_BEFORE_CLOSE})")
-        assert bot.STC_SHADOW_THRESHOLD >= bot.MIN_SECONDS_BEFORE_CLOSE, (
-            f"STC_SHADOW_THRESHOLD({bot.STC_SHADOW_THRESHOLD}) < MIN_SECONDS_BEFORE_CLOSE({bot.MIN_SECONDS_BEFORE_CLOSE})")
+        assert bot.constants.STC_SHADOW_THRESHOLD <= bot.constants.MAX_SECONDS_BEFORE_CLOSE, (
+            f"STC_SHADOW_THRESHOLD({bot.constants.STC_SHADOW_THRESHOLD}) > MAX_SECONDS_BEFORE_CLOSE({bot.constants.MAX_SECONDS_BEFORE_CLOSE})")
+        assert bot.constants.STC_SHADOW_THRESHOLD >= bot.constants.MIN_SECONDS_BEFORE_CLOSE, (
+            f"STC_SHADOW_THRESHOLD({bot.constants.STC_SHADOW_THRESHOLD}) < MIN_SECONDS_BEFORE_CLOSE({bot.constants.MIN_SECONDS_BEFORE_CLOSE})")

@@ -20,6 +20,7 @@ import os
 import sys
 
 import pytest
+import bot.engines  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)

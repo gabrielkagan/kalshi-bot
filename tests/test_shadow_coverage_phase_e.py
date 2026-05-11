@@ -26,6 +26,8 @@ import sys
 import tempfile
 
 import pytest
+import bot.scanner  # noqa: F401
+import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -41,7 +43,7 @@ class TestPhaseEStateAtDecisionInsert:
         across BTC/ETH/SOL/XRP, return (sm, asset_breakdown)."""
         import bot
         # Use :memory: so we don't pollute the real DB.
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         # Insert N positions across assets — round-robin so the total is
         # known and `active_positions_same_asset` differs from the total.
         assets = ["BTC", "ETH", "SOL", "XRP"]
@@ -73,7 +75,7 @@ class TestPhaseEStateAtDecisionInsert:
             _bot_state_cache = {}
             _ml = None
             _state = sm
-        _Stub._compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
+        _Stub._compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
         feats = _Stub._compute_bot_state_features(_Stub, "BTC")
 
         assert feats.get("n_open_positions") == 7, (
@@ -98,7 +100,7 @@ class TestPhaseEStateAtDecisionInsert:
             _bot_state_cache = {}
             _ml = None
             _state = sm
-        _Stub._compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
+        _Stub._compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
         feats = _Stub._compute_bot_state_features(_Stub, "BTC")
 
         tslf = feats.get("time_since_last_fill_s")
@@ -111,14 +113,14 @@ class TestPhaseEStateAtDecisionInsert:
     def test_time_since_last_fill_none_when_no_positions(self):
         """When no positions have ever existed, time_since_last_fill_s is None."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
 
         class _Stub:
             ASSETS = ["BTC", "ETH", "SOL", "XRP"]
             _bot_state_cache = {}
             _ml = None
             _state = sm
-        _Stub._compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
+        _Stub._compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
         feats = _Stub._compute_bot_state_features(_Stub, "BTC")
         assert feats.get("time_since_last_fill_s") is None, (
             f"time_since_last_fill_s should be None when no positions exist, "
@@ -128,7 +130,7 @@ class TestPhaseEStateAtDecisionInsert:
     def test_recent_n_outcome_streak_consecutive_wins(self):
         """Three consecutive wins → +3 streak."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         # Three settled trades, all wins (positive net pnl).
         for i in range(3):
             sm.conn.execute(
@@ -145,7 +147,7 @@ class TestPhaseEStateAtDecisionInsert:
             _bot_state_cache = {}
             _ml = None
             _state = sm
-        _Stub._compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
+        _Stub._compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
         feats = _Stub._compute_bot_state_features(_Stub, "BTC")
         assert feats.get("recent_n_outcome_streak") == 3, (
             f"3 consecutive wins → streak +3, got {feats.get('recent_n_outcome_streak')!r}"
@@ -154,7 +156,7 @@ class TestPhaseEStateAtDecisionInsert:
     def test_recent_n_outcome_streak_consecutive_losses(self):
         """Two consecutive losses → -2 streak."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         for i in range(2):
             sm.conn.execute(
                 "INSERT INTO settled_trades(ticker, event_ticker, asset, market_result, "
@@ -170,7 +172,7 @@ class TestPhaseEStateAtDecisionInsert:
             _bot_state_cache = {}
             _ml = None
             _state = sm
-        _Stub._compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
+        _Stub._compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
         feats = _Stub._compute_bot_state_features(_Stub, "BTC")
         assert feats.get("recent_n_outcome_streak") == -2, (
             f"2 consecutive losses → streak -2, got {feats.get('recent_n_outcome_streak')!r}"
@@ -180,7 +182,7 @@ class TestPhaseEStateAtDecisionInsert:
         """Most recent: WIN, then LOSS — streak = +1 (only the most recent
         is counted; the loss before it is a different sign)."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         # Older loss
         sm.conn.execute(
             "INSERT INTO settled_trades(ticker, event_ticker, asset, market_result, "
@@ -202,7 +204,7 @@ class TestPhaseEStateAtDecisionInsert:
             _bot_state_cache = {}
             _ml = None
             _state = sm
-        _Stub._compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
+        _Stub._compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
         feats = _Stub._compute_bot_state_features(_Stub, "BTC")
         assert feats.get("recent_n_outcome_streak") == 1, (
             f"WIN-after-LOSS streak should be +1 (most-recent only), "
@@ -212,14 +214,14 @@ class TestPhaseEStateAtDecisionInsert:
     def test_recent_n_outcome_streak_zero_when_no_trades(self):
         """No settled trades → streak is 0."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
 
         class _Stub:
             ASSETS = ["BTC", "ETH", "SOL", "XRP"]
             _bot_state_cache = {}
             _ml = None
             _state = sm
-        _Stub._compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
+        _Stub._compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
         feats = _Stub._compute_bot_state_features(_Stub, "BTC")
         assert feats.get("recent_n_outcome_streak") == 0, (
             f"no trades → streak 0, got {feats.get('recent_n_outcome_streak')!r}"
@@ -236,7 +238,7 @@ class TestPhaseEReconciliationSurvival:
 
     def test_tslf_survives_position_table_clear(self):
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         # Seed a settled trade — recent.
         sm.conn.execute(
             "INSERT INTO settled_trades(ticker, event_ticker, asset, market_result, "
@@ -252,7 +254,7 @@ class TestPhaseEReconciliationSurvival:
             _bot_state_cache = {}
             _ml = None
             _state = sm
-        _Stub._compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
+        _Stub._compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
 
         feats = _Stub._compute_bot_state_features(_Stub, "BTC")
         tslf = feats.get("time_since_last_fill_s")
@@ -273,7 +275,7 @@ class TestPhaseEStreakPushSemantics:
         most-recent yields 0 by definition; pre-fix would have been -1
         with push counted as loss)."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         # 2 older wins
         for i in range(2):
             sm.conn.execute(
@@ -297,7 +299,7 @@ class TestPhaseEStreakPushSemantics:
             _bot_state_cache = {}
             _ml = None
             _state = sm
-        _Stub._compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
+        _Stub._compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
 
         feats = _Stub._compute_bot_state_features(_Stub, "BTC")
         assert feats.get("recent_n_outcome_streak") == 0, (
@@ -309,7 +311,7 @@ class TestPhaseEStreakPushSemantics:
         """Most recent: WIN. Then: PUSH (older). Then: WIN, WIN. Streak
         should be +1 (the most-recent win, then push breaks)."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         for i in range(2):
             sm.conn.execute(
                 "INSERT INTO settled_trades(ticker, event_ticker, asset, market_result, "
@@ -339,7 +341,7 @@ class TestPhaseEStreakPushSemantics:
             _bot_state_cache = {}
             _ml = None
             _state = sm
-        _Stub._compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
+        _Stub._compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
 
         feats = _Stub._compute_bot_state_features(_Stub, "BTC")
         assert feats.get("recent_n_outcome_streak") == 1, (
@@ -356,7 +358,7 @@ class TestPhaseEProviderWiresIntoInsert:
         """Build a StateManager, set up positions + a settlement, register
         the provider, run insert_evaluated_opportunity, read back."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         # Seed positions + 1 settled win.
         sm.conn.execute(
             "INSERT INTO positions(ticker, event_ticker, asset, side, count, "
@@ -378,7 +380,7 @@ class TestPhaseEProviderWiresIntoInsert:
             _bot_state_cache = {}
             _ml = None
             _state = sm
-        _Stub._compute_bot_state_features = bot.OpportunityScanner._compute_bot_state_features
+        _Stub._compute_bot_state_features = bot.scanner.OpportunityScanner._compute_bot_state_features
 
         def _provider(ticker, asset, spot, threshold, product_type):
             if product_type not in (None, "15m"):

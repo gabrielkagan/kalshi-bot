@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bot import KalshiClient  # noqa: E402
+from bot.kalshi_client import KalshiClient  # noqa: E402
 
 
 SERIES_TO_PROBE = ["KXNHLGAME", "KXNBAGAME", "KXMLBGAME"]

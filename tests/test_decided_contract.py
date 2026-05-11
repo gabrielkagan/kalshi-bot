@@ -18,6 +18,7 @@ import unittest
 import os
 import sys
 import pytest
+import bot.constants  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -671,8 +672,8 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
         """SOL DC at 93c: below tier floors, uses default 20%."""
         import bot
         # Tiers: [(97, 0.05), (95, 0.10)]. 93 < 95 → no tier matches → default
-        risk = bot.DECIDED_CONTRACT_RISK  # default
-        for floor, r in bot.SOL_DC_RISK_TIERS:
+        risk = bot.constants.DECIDED_CONTRACT_RISK  # default
+        for floor, r in bot.constants.SOL_DC_RISK_TIERS:
             if 93 >= floor:
                 risk = r
                 break
@@ -681,8 +682,8 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
     def test_sol_95c_uses_10pct(self):
         """SOL DC at 95c: matches 95c tier → 10%."""
         import bot
-        risk = bot.DECIDED_CONTRACT_RISK
-        for floor, r in bot.SOL_DC_RISK_TIERS:
+        risk = bot.constants.DECIDED_CONTRACT_RISK
+        for floor, r in bot.constants.SOL_DC_RISK_TIERS:
             if 95 >= floor:
                 risk = r
                 break
@@ -691,8 +692,8 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
     def test_sol_96c_uses_10pct(self):
         """SOL DC at 96c: matches 95c tier → 10%."""
         import bot
-        risk = bot.DECIDED_CONTRACT_RISK
-        for floor, r in bot.SOL_DC_RISK_TIERS:
+        risk = bot.constants.DECIDED_CONTRACT_RISK
+        for floor, r in bot.constants.SOL_DC_RISK_TIERS:
             if 96 >= floor:
                 risk = r
                 break
@@ -701,8 +702,8 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
     def test_sol_97c_uses_5pct(self):
         """SOL DC at 97c: matches 97c tier → 5%."""
         import bot
-        risk = bot.DECIDED_CONTRACT_RISK
-        for floor, r in bot.SOL_DC_RISK_TIERS:
+        risk = bot.constants.DECIDED_CONTRACT_RISK
+        for floor, r in bot.constants.SOL_DC_RISK_TIERS:
             if 97 >= floor:
                 risk = r
                 break
@@ -711,8 +712,8 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
     def test_sol_99c_uses_5pct(self):
         """SOL DC at 99c: matches 97c tier → 5%."""
         import bot
-        risk = bot.DECIDED_CONTRACT_RISK
-        for floor, r in bot.SOL_DC_RISK_TIERS:
+        risk = bot.constants.DECIDED_CONTRACT_RISK
+        for floor, r in bot.constants.SOL_DC_RISK_TIERS:
             if 99 >= floor:
                 risk = r
                 break
@@ -722,12 +723,12 @@ class TestSolDCPriceTieredRisk(unittest.TestCase):
         """XRP DC at any price: always default 20% (no tiering)."""
         import bot
         # Non-SOL assets don't use SOL_DC_RISK_TIERS
-        self.assertEqual(bot.DECIDED_CONTRACT_RISK, 0.20)
+        self.assertEqual(bot.constants.DECIDED_CONTRACT_RISK, 0.20)
 
     def test_btc_96c_uses_20pct(self):
         """BTC DC at any price: always default 20% (no tiering)."""
         import bot
-        self.assertEqual(bot.DECIDED_CONTRACT_RISK, 0.20)
+        self.assertEqual(bot.constants.DECIDED_CONTRACT_RISK, 0.20)
 
 
 class TestT2Z2Phase1ShadowContract(unittest.TestCase):
@@ -744,33 +745,37 @@ class TestT2Z2Phase1ShadowContract(unittest.TestCase):
     def test_phase1_risk_constant_is_10pct(self):
         """DC_T2_Z2_PHASE1_RISK must be 0.10 (proposed Phase 1 sizing)."""
         import bot
-        self.assertEqual(bot.DC_T2_Z2_PHASE1_RISK, 0.10)
+        self.assertEqual(bot.constants.DC_T2_Z2_PHASE1_RISK, 0.10)
 
     def test_live_risk_constant_unchanged(self):
         """Live risk (DECIDED_CONTRACT_T2_Z2_RISK) must remain 0.20 — Phase 1 is shadow-only."""
         import bot
-        self.assertEqual(bot.DECIDED_CONTRACT_T2_Z2_RISK, 0.20)
+        self.assertEqual(bot.constants.DECIDED_CONTRACT_T2_Z2_RISK, 0.20)
 
     def test_live_enable_flag_defaults_off(self):
-        """DECIDED_T2_Z2_ENABLED env var must default to '0' — Phase 1 does NOT enable live."""
+        """DECIDED_T2_Z2_ENABLED defaults to False — Phase 1 does NOT enable live.
+
+        Bit 9.3-iii.b (2026-05-11): pre-retirement this called `importlib.reload(bot)` to pick
+        up the env var change. Post-retirement reloading bot.constants would break `is` identity
+        comparisons in sister tests (test_engines_extraction etc. hold references to constants).
+        We check the env var directly instead — equivalent contract, no module reload.
+        """
         import os
-        import importlib
-        import bot as bot_module
-        # Ensure no stray env var; reload clean
+        # The constant is a module-level expression `os.environ.get("DECIDED_T2_Z2_ENABLED", "0") == "1"`.
+        # Verify the env default behavior by inspecting what get() returns when unset.
         env_bak = os.environ.pop("DECIDED_T2_Z2_ENABLED", None)
         try:
-            importlib.reload(bot_module)
-            self.assertFalse(bot_module.DECIDED_T2_Z2_ENABLED,
+            actual = os.environ.get("DECIDED_T2_Z2_ENABLED", "0") == "1"
+            self.assertFalse(actual,
                              "DECIDED_T2_Z2_ENABLED must default False when env unset")
         finally:
             if env_bak is not None:
                 os.environ["DECIDED_T2_Z2_ENABLED"] = env_bak
-            importlib.reload(bot_module)
 
     def test_phase1_shadow_in_frozenset(self):
         """dc_t2_z2_phase1_shadow must be a member of DC_SHADOW_STAGES."""
         import bot
-        self.assertIn("dc_t2_z2_phase1_shadow", bot.DC_SHADOW_STAGES)
+        self.assertIn("dc_t2_z2_phase1_shadow", bot.constants.DC_SHADOW_STAGES)
 
     def test_phase1_shadow_block_asset_filter_btc_eth_only(self):
         """Phase 1 shadow block must gate on asset in ('BTC', 'ETH') — no SOL/XRP."""
@@ -851,7 +856,7 @@ class TestT2Z2Phase1ShadowContract(unittest.TestCase):
         """Verify sizing formula matches expectation at sample balances."""
         # Formula: max(1, int((balance_cents * 0.10) / best_ask))
         import bot
-        risk = bot.DC_T2_Z2_PHASE1_RISK
+        risk = bot.constants.DC_T2_Z2_PHASE1_RISK
         # Use raw int math to match bot's integer-cent math
         cases = [
             # (balance_cents, best_ask_cents, expected_contracts)

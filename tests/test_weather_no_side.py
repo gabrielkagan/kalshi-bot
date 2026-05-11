@@ -28,7 +28,9 @@ for _mod in ["websockets", "websocket", "requests",
         sys.modules[_mod] = MagicMock()
 
 import bot
-from bot import OrderExecutor, calculate_taker_fee
+from bot.executor import OrderExecutor
+from bot.models import calculate_taker_fee
+import bot.constants  # noqa: F401
 
 
 def _make_weather_no_candidate(**overrides):
@@ -340,15 +342,15 @@ class TestNoSideConstants(unittest.TestCase):
 
     def test_weather_no_side_live_is_true(self):
         """WEATHER_NO_SIDE_LIVE enabled (promoted with 1-contract fixed sizing)."""
-        self.assertTrue(bot.WEATHER_NO_SIDE_LIVE)
+        self.assertTrue(bot.constants.WEATHER_NO_SIDE_LIVE)
 
     def test_weather_no_side_min_stc_is_16h(self):
         """WEATHER_NO_SIDE_MIN_STC must be 57600 (16 hours)."""
-        self.assertEqual(bot.WEATHER_NO_SIDE_MIN_STC, 57600.0)
+        self.assertEqual(bot.constants.WEATHER_NO_SIDE_MIN_STC, 57600.0)
 
     def test_weather_observation_only_still_true(self):
         """WEATHER_OBSERVATION_ONLY must remain True (YES-side gate)."""
-        self.assertTrue(bot.WEATHER_OBSERVATION_ONLY)
+        self.assertTrue(bot.constants.WEATHER_OBSERVATION_ONLY)
 
 
 class TestNoSideSettlement(unittest.TestCase):

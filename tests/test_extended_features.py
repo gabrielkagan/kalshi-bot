@@ -20,15 +20,10 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bot import (
-    compute_time_regime_features,
-    compute_derived_features,
-    FOMC_ANNOUNCEMENT_DATES,
-    CPI_RELEASE_DATES,
-    SOL_RESCUE_CONTRACT_CAP,
-)
-
-
+from bot.constants import FOMC_ANNOUNCEMENT_DATES, CPI_RELEASE_DATES, SOL_RESCUE_CONTRACT_CAP
+from bot.helpers.derived_features import compute_derived_features
+from bot.helpers.time_features import compute_time_regime_features
+import bot.helpers  # noqa: F401
 class TestTimeRegimeFeatures(unittest.TestCase):
     """Tier 4: time/regime features."""
 
@@ -223,7 +218,7 @@ class TestInsertAutoPopulates(unittest.TestCase):
 
     def test_signature_accepts_new_kwargs(self):
         """The 26 new kwargs must all be accepted without crashes."""
-        from bot import StateManager
+        from bot.state import StateManager
         import inspect
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         expected_new = {
@@ -255,7 +250,7 @@ class TestCalibrationConfidenceIntegration(unittest.TestCase):
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
         self.addCleanup(os.unlink, tmp.name)
-        return bot.StateManager(db_path=tmp.name)
+        return bot.state.StateManager(db_path=tmp.name)
 
     def test_populates_from_15m_cal_engine(self):
         # Bit 6.3 path-B: _CALIBRATION_ENGINE relocated from bot/_impl.py
@@ -335,7 +330,7 @@ class TestSportsInsertTierCoverage(unittest.TestCase):
         tmp.close()
         self.addCleanup(os.unlink, tmp.name)
         # Create schema by instantiating StateManager once
-        bot.StateManager(db_path=tmp.name)
+        bot.state.StateManager(db_path=tmp.name)
         return sports_engine.SportsEngine(db_path=tmp.name), tmp.name
 
     def _make_game_signal(self):

@@ -69,7 +69,7 @@ def test_kalshi_client_identity_through_bot_impl():
 
 
 def test_kalshi_client_identity_through_bot_proxy():
-    """`bot.KalshiClient` resolves through the _BotProxy.
+    """`bot.kalshi_client.KalshiClient` resolves through canonical submodule (post-Bit-9.3-iii.b — _BotProxy retired).
 
     Multiple scripts use `from bot import KalshiClient`
     (correct_ioc_double_count.py, sports_diagnose.py, sports_raw_probe.py,
@@ -77,7 +77,7 @@ def test_kalshi_client_identity_through_bot_proxy():
     """
     import bot
     import bot.kalshi_client as bkc
-    assert bot.KalshiClient is bkc.KalshiClient
+    assert bot.kalshi_client.KalshiClient is bkc.KalshiClient
 
 
 def test_kalshi_client_three_way_identity_chain():
@@ -88,7 +88,7 @@ def test_kalshi_client_three_way_identity_chain():
     import bot
     import bot._impl as b
     import bot.kalshi_client as bkc
-    assert bot.KalshiClient is b.KalshiClient is bkc.KalshiClient
+    assert bot.kalshi_client.KalshiClient is b.KalshiClient is bkc.KalshiClient
 
 
 # ─── 3. Drift guards (AST + source-string) ──────────────────────────────────

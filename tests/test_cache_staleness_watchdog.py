@@ -36,6 +36,7 @@ import sys
 import time
 import unittest
 from unittest.mock import MagicMock, patch
+import bot.main_loop  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -134,7 +135,7 @@ class TestStalenessLogicCorrect(unittest.TestCase):
         # the staleness-check method and the timestamp attribute.
         # This avoids the heavy MainLoop.__init__ dependencies.
         import bot
-        self.ml = bot.MainLoop.__new__(bot.MainLoop)
+        self.ml = bot.main_loop.MainLoop.__new__(bot.main_loop.MainLoop)
         # Provide minimum attributes the check needs.
 
     def test_fresh_cache_is_not_stale(self):
@@ -167,8 +168,8 @@ class TestStalenessBudgetRelationship(unittest.TestCase):
 
     def test_budget_is_multiple_of_refresh_interval(self):
         import bot
-        ratio = (bot.ACTIVE_WINDOWS_STALENESS_BUDGET_S
-                 / bot.MARKET_REFRESH_SECONDS)
+        ratio = (bot.constants.ACTIVE_WINDOWS_STALENESS_BUDGET_S
+                 / bot.constants.MARKET_REFRESH_SECONDS)
         self.assertGreaterEqual(
             ratio, 3.0,
             f"Budget must allow at least 2 missed refreshes (ratio>=3) "
@@ -759,7 +760,7 @@ class TestCacheStaleLogDedup(unittest.TestCase):
 
     def setUp(self):
         import bot
-        self.ml = bot.MainLoop.__new__(bot.MainLoop)
+        self.ml = bot.main_loop.MainLoop.__new__(bot.main_loop.MainLoop)
         self.ml._active_windows_updated_at = 0.0
         self.ml._cache_stale_episode_started_at = 0.0
         self.ml._cache_stale_last_heartbeat_at = 0.0

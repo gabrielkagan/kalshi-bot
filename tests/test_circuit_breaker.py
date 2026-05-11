@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import unittest
+import bot.infra  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

@@ -19,12 +19,12 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bot import VolatilityEngine
+from bot.engines.volatility import VolatilityEngine
 
 # Import constants needed for assertions
-from bot import (
+from bot.constants import (
     VOL_WINDOW_1MIN, VOL_WINDOW_5MIN, VOL_WINDOW_15MIN,
-    VOL_RETURN_INTERVAL, RK_NOISE_VAR_FLOOR, RK_MIN_RETURNS_FOR_ADAPTIVE,
+    RK_NOISE_VAR_FLOOR, RK_MIN_RETURNS_FOR_ADAPTIVE,
     RK_CSTAR_FLAT_TOP_PARZEN, RK_BANDWIDTH_MAX_FRACTION,
     JUMP_ADAPTIVE_SUBSAMPLE, JUMP_ADAPTIVE_PCTILE_WINDOW,
     JUMP_ADAPTIVE_SIGMA_MULT, JUMP_ADAPTIVE_EWMA_LAMBDA,
@@ -33,8 +33,8 @@ from bot import (
     JUMP_ADAPTIVE_DECAY_MAX_BOOST, JUMP_ADAPTIVE_DECAY_MIN_BOOST,
     JUMP_ADAPTIVE_DECAY_CAP, JUMP_ADAPTIVE_MAG_SCALE_BASE,
     JUMP_ADAPTIVE_MAG_CAP, JUMP_ADAPTIVE_MAX_HISTORY,
-    ASSETS,
 )
+from config import VOL_RETURN_INTERVAL, ASSETS
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

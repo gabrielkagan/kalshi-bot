@@ -51,12 +51,12 @@ echo "[4/4] Verifying critical constants..."
 python3 -c "
 import sys
 sys.path.insert(0, '.')
-import bot
+import bot.constants
 checks = [
-    ('OBSERVATION_MODE', bot.OBSERVATION_MODE, False),
-    ('MIN_ENTRY_PRICE', bot.MIN_ENTRY_PRICE, 86),
-    ('MAX_ENTRY_PRICE', bot.MAX_ENTRY_PRICE, 99),
-    ('MAX_SECONDS_BEFORE_CLOSE', bot.MAX_SECONDS_BEFORE_CLOSE, 900),
+    ('OBSERVATION_MODE', bot.constants.OBSERVATION_MODE, False),
+    ('MIN_ENTRY_PRICE', bot.constants.MIN_ENTRY_PRICE, 86),
+    ('MAX_ENTRY_PRICE', bot.constants.MAX_ENTRY_PRICE, 99),
+    ('MAX_SECONDS_BEFORE_CLOSE', bot.constants.MAX_SECONDS_BEFORE_CLOSE, 900),
 ]
 changed = []
 for name, actual, expected in checks:

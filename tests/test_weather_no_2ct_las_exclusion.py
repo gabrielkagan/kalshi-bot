@@ -17,11 +17,20 @@ import re
 import sys
 
 import pytest
+import bot.executor  # noqa: F401
+import bot.constants  # noqa: F401
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def _import_bot():
+    """Return a lookup proxy that searches canonical homes for the requested name.
+
+    Bit 9.3-iii.b (2026-05-11): pre-retirement this returned the `bot` package
+    with _BotProxy.__getattr__ falling through to bot._impl. Post-retirement we
+    explicitly search bot.constants → bot.helpers.cell_blocks → config in priority
+    order, which matches the same set of names the proxy used to surface.
+    """
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
     # Mock heavy deps (mirrors tests/test_weather_no_side.py prelude)
@@ -35,8 +44,24 @@ def _import_bot():
                  "cryptography.hazmat.primitives.asymmetric.padding"]:
         if _mod not in sys.modules:
             sys.modules[_mod] = MagicMock()
-    import bot  # type: ignore
-    return bot
+    import bot.constants
+    import bot.executor
+    import bot.helpers
+    import bot.helpers.cell_blocks
+    import config
+
+    class _BotLookup:
+        constants = bot.constants
+        helpers = bot.helpers
+        executor = bot.executor
+
+        def __getattr__(self, name):
+            for mod in (bot.constants, bot.helpers.cell_blocks, bot.helpers, config):
+                if hasattr(mod, name):
+                    return getattr(mod, name)
+            raise AttributeError(f"name {name!r} not in any canonical home")
+
+    return _BotLookup()
 
 
 # ---------------------------------------------------------------------------
@@ -45,18 +70,18 @@ def _import_bot():
 
 def test_weather_no_contract_count_constant_exists_and_is_2():
     bot = _import_bot()
-    assert hasattr(bot, "WEATHER_NO_CONTRACT_COUNT"), \
+    assert hasattr(bot.constants, "WEATHER_NO_CONTRACT_COUNT"), \
         "WEATHER_NO_CONTRACT_COUNT must be a module-level constant"
-    assert bot.WEATHER_NO_CONTRACT_COUNT == 2, \
-        f"Expected 2 contracts, got {bot.WEATHER_NO_CONTRACT_COUNT}"
-    assert isinstance(bot.WEATHER_NO_CONTRACT_COUNT, int)
+    assert bot.constants.WEATHER_NO_CONTRACT_COUNT == 2, \
+        f"Expected 2 contracts, got {bot.constants.WEATHER_NO_CONTRACT_COUNT}"
+    assert isinstance(bot.constants.WEATHER_NO_CONTRACT_COUNT, int)
 
 
 def test_weather_no_excluded_prefixes_constant_exists_with_las():
     bot = _import_bot()
-    assert hasattr(bot, "WEATHER_NO_EXCLUDED_CITY_PREFIXES"), \
+    assert hasattr(bot.constants, "WEATHER_NO_EXCLUDED_CITY_PREFIXES"), \
         "WEATHER_NO_EXCLUDED_CITY_PREFIXES must be a module-level constant"
-    excluded = bot.WEATHER_NO_EXCLUDED_CITY_PREFIXES
+    excluded = bot.constants.WEATHER_NO_EXCLUDED_CITY_PREFIXES
     assert "KXHIGHTLV" in excluded, \
         "Las Vegas (KXHIGHTLV) must be in the exclusion set"
     # frozenset is the standard for immutable membership constants in this repo
@@ -82,7 +107,7 @@ def test_predicate_excludes_las_ticker():
         "KXHIGHTLV-26MAY041800-A82",
         "KXHIGHTLV-26DEC25-T100",
     ):
-        assert bot.should_exclude_weather_no_ticker(ticker) is True, \
+        assert bot.helpers.cell_blocks.should_exclude_weather_no_ticker(ticker) is True, \
             f"Expected exclusion for {ticker}"
 
 
@@ -98,7 +123,7 @@ def test_predicate_passes_other_weather_cities():
         "KXHIGHCHI-26APR12-B72",           # Chicago
         "KXHIGHTDAL-26APR12-B88",          # Dallas
     ):
-        assert bot.should_exclude_weather_no_ticker(ticker) is False, \
+        assert bot.helpers.cell_blocks.should_exclude_weather_no_ticker(ticker) is False, \
             f"Expected pass-through for {ticker}"
 
 
@@ -112,28 +137,28 @@ def test_predicate_no_partial_prefix_collision():
     # Exact prefix without the dash separator should still be safe
     # because real tickers always have 'KXHIGHTLV-' followed by date.
     # But we want defense against e.g. "KXHIGHTLVX-..." or "KXHIGHTLVENICE-..."
-    assert bot.should_exclude_weather_no_ticker("KXHIGHTLVX-26APR12") is False
-    assert bot.should_exclude_weather_no_ticker("KXHIGHTLVENICE-26APR12") is False
+    assert bot.helpers.cell_blocks.should_exclude_weather_no_ticker("KXHIGHTLVX-26APR12") is False
+    assert bot.helpers.cell_blocks.should_exclude_weather_no_ticker("KXHIGHTLVENICE-26APR12") is False
 
 
 def test_predicate_handles_empty_and_none_ticker():
     bot = _import_bot()
     # Defensive: empty string returns False (don't crash, don't match)
-    assert bot.should_exclude_weather_no_ticker("") is False
+    assert bot.helpers.cell_blocks.should_exclude_weather_no_ticker("") is False
     # None returns False (defensive)
-    assert bot.should_exclude_weather_no_ticker(None) is False
+    assert bot.helpers.cell_blocks.should_exclude_weather_no_ticker(None) is False
 
 
 def test_predicate_accepts_custom_exclusion_set():
     """Predicate must accept an override set for testability."""
     bot = _import_bot()
     custom = frozenset({"KXHIGHNY"})
-    assert bot.should_exclude_weather_no_ticker(
+    assert bot.helpers.cell_blocks.should_exclude_weather_no_ticker(
         "KXHIGHNY-26APR12", excluded_prefixes=custom) is True
-    assert bot.should_exclude_weather_no_ticker(
+    assert bot.helpers.cell_blocks.should_exclude_weather_no_ticker(
         "KXHIGHTLV-26APR12", excluded_prefixes=custom) is False
     # Empty set excludes nothing
-    assert bot.should_exclude_weather_no_ticker(
+    assert bot.helpers.cell_blocks.should_exclude_weather_no_ticker(
         "KXHIGHTLV-26APR12", excluded_prefixes=frozenset()) is False
 
 
@@ -204,7 +229,7 @@ def _make_executor(bot):
     kalshi_feed = MagicMock()
     kalshi_feed.is_connected = True
     kalshi_feed.pop_fills.return_value = []
-    return bot.OrderExecutor(
+    return bot.executor.OrderExecutor(
         client=client, state=state, logger=logger,
         main_loop=main_loop, kalshi_feed=kalshi_feed,
     )

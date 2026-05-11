@@ -14,6 +14,8 @@ import math
 import os
 from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, Optional
+import bot.constants  # noqa: F401
+import config  # noqa: F401
 
 
 def _bot_hourly_live() -> bool:
@@ -240,132 +242,132 @@ def validate_market_configs() -> None:
 
     # ── 15M ──
     cfg = MARKET_CONFIGS["15m"]
-    assert cfg.min_entry_price == bot.MIN_ENTRY_PRICE, (
-        f"15m min_entry: {cfg.min_entry_price} != {bot.MIN_ENTRY_PRICE}")
-    assert cfg.max_entry_price == bot.MAX_ENTRY_PRICE, (
-        f"15m max_entry: {cfg.max_entry_price} != {bot.MAX_ENTRY_PRICE}")
-    assert cfg.max_risk_per_trade == bot.MAX_RISK_PER_TRADE, (
-        f"15m max_risk: {cfg.max_risk_per_trade} != {bot.MAX_RISK_PER_TRADE}")
-    assert cfg.min_seconds_before_close == bot.MIN_SECONDS_BEFORE_CLOSE, (
-        f"15m min_stc: {cfg.min_seconds_before_close} != {bot.MIN_SECONDS_BEFORE_CLOSE}")
-    assert cfg.max_seconds_before_close == bot.MAX_SECONDS_BEFORE_CLOSE, (
-        f"15m max_stc: {cfg.max_seconds_before_close} != {bot.MAX_SECONDS_BEFORE_CLOSE}")
-    assert cfg.market_blend_w == bot.MARKET_BLEND_W, (
-        f"15m blend_w: {cfg.market_blend_w} != {bot.MARKET_BLEND_W}")
-    assert cfg.observation_only == bot.OBSERVATION_MODE, (
-        f"15m obs_only: {cfg.observation_only} != {bot.OBSERVATION_MODE}")
+    assert cfg.min_entry_price == bot.constants.MIN_ENTRY_PRICE, (
+        f"15m min_entry: {cfg.min_entry_price} != {bot.constants.MIN_ENTRY_PRICE}")
+    assert cfg.max_entry_price == bot.constants.MAX_ENTRY_PRICE, (
+        f"15m max_entry: {cfg.max_entry_price} != {bot.constants.MAX_ENTRY_PRICE}")
+    assert cfg.max_risk_per_trade == config.MAX_RISK_PER_TRADE, (
+        f"15m max_risk: {cfg.max_risk_per_trade} != {config.MAX_RISK_PER_TRADE}")
+    assert cfg.min_seconds_before_close == bot.constants.MIN_SECONDS_BEFORE_CLOSE, (
+        f"15m min_stc: {cfg.min_seconds_before_close} != {bot.constants.MIN_SECONDS_BEFORE_CLOSE}")
+    assert cfg.max_seconds_before_close == bot.constants.MAX_SECONDS_BEFORE_CLOSE, (
+        f"15m max_stc: {cfg.max_seconds_before_close} != {bot.constants.MAX_SECONDS_BEFORE_CLOSE}")
+    assert cfg.market_blend_w == bot.constants.MARKET_BLEND_W, (
+        f"15m blend_w: {cfg.market_blend_w} != {bot.constants.MARKET_BLEND_W}")
+    assert cfg.observation_only == bot.constants.OBSERVATION_MODE, (
+        f"15m obs_only: {cfg.observation_only} != {bot.constants.OBSERVATION_MODE}")
 
     # ── Hourly ──
     cfg_h = MARKET_CONFIGS["hourly"]
-    assert cfg_h.observation_only == bot.HOURLY_OBSERVATION_ONLY, (
-        f"hourly obs_only: {cfg_h.observation_only} != {bot.HOURLY_OBSERVATION_ONLY}")
-    assert cfg_h.min_entry_price == bot.HOURLY_MIN_ENTRY_PRICE, (
-        f"hourly min_entry: {cfg_h.min_entry_price} != {bot.HOURLY_MIN_ENTRY_PRICE}")
-    assert cfg_h.max_entry_price == bot.HOURLY_MAX_ENTRY_PRICE, (
-        f"hourly max_entry: {cfg_h.max_entry_price} != {bot.HOURLY_MAX_ENTRY_PRICE}")
-    assert cfg_h.min_seconds_before_close == bot.HOURLY_MIN_SECONDS_BEFORE_CLOSE, (
-        f"hourly min_stc: {cfg_h.min_seconds_before_close} != {bot.HOURLY_MIN_SECONDS_BEFORE_CLOSE}")
-    assert cfg_h.max_seconds_before_close == bot.HOURLY_MAX_SECONDS_BEFORE_CLOSE, (
-        f"hourly max_stc: {cfg_h.max_seconds_before_close} != {bot.HOURLY_MAX_SECONDS_BEFORE_CLOSE}")
-    assert cfg_h.max_risk_per_trade == bot.HOURLY_MAX_RISK_PER_TRADE, (
-        f"hourly max_risk: {cfg_h.max_risk_per_trade} != {bot.HOURLY_MAX_RISK_PER_TRADE}")
-    assert cfg_h.kelly_fraction == bot.HOURLY_KELLY_FRACTION, (
-        f"hourly kelly_f: {cfg_h.kelly_fraction} != {bot.HOURLY_KELLY_FRACTION}")
-    assert cfg_h.market_blend_w == bot.HOURLY_MARKET_BLEND_W, (
-        f"hourly blend_w: {cfg_h.market_blend_w} != {bot.HOURLY_MARKET_BLEND_W}")
-    assert cfg_h.temperature_t == bot.HOURLY_TEMPERATURE_T, (
-        f"hourly temp_t: {cfg_h.temperature_t} != {bot.HOURLY_TEMPERATURE_T}")
-    assert cfg_h.temperature_enabled == bot.HOURLY_TEMPERATURE_ENABLED, (
-        f"hourly temp_enabled: {cfg_h.temperature_enabled} != {bot.HOURLY_TEMPERATURE_ENABLED}")
-    assert cfg_h.min_stc_entry == bot.HOURLY_MIN_STC_ENTRY, (
-        f"hourly min_stc_entry: {cfg_h.min_stc_entry} != {bot.HOURLY_MIN_STC_ENTRY}")
-    assert cfg_h.max_stc_entry == bot.HOURLY_MAX_STC_ENTRY, (
-        f"hourly max_stc_entry: {cfg_h.max_stc_entry} != {bot.HOURLY_MAX_STC_ENTRY}")
-    assert cfg_h.excluded_assets == frozenset(bot.HOURLY_EXCLUDED_ASSETS), (
-        f"hourly excluded: {cfg_h.excluded_assets} != {bot.HOURLY_EXCLUDED_ASSETS}")
-    assert cfg_h.max_positions_per_window == bot.HOURLY_MAX_POSITIONS_PER_WINDOW, (
-        f"hourly max_pos: {cfg_h.max_positions_per_window} != {bot.HOURLY_MAX_POSITIONS_PER_WINDOW}")
-    assert cfg_h.max_window_risk == bot.HOURLY_MAX_WINDOW_RISK, (
-        f"hourly max_wrisk: {cfg_h.max_window_risk} != {bot.HOURLY_MAX_WINDOW_RISK}")
+    assert cfg_h.observation_only == bot.constants.HOURLY_OBSERVATION_ONLY, (
+        f"hourly obs_only: {cfg_h.observation_only} != {bot.constants.HOURLY_OBSERVATION_ONLY}")
+    assert cfg_h.min_entry_price == bot.constants.HOURLY_MIN_ENTRY_PRICE, (
+        f"hourly min_entry: {cfg_h.min_entry_price} != {bot.constants.HOURLY_MIN_ENTRY_PRICE}")
+    assert cfg_h.max_entry_price == bot.constants.HOURLY_MAX_ENTRY_PRICE, (
+        f"hourly max_entry: {cfg_h.max_entry_price} != {bot.constants.HOURLY_MAX_ENTRY_PRICE}")
+    assert cfg_h.min_seconds_before_close == bot.constants.HOURLY_MIN_SECONDS_BEFORE_CLOSE, (
+        f"hourly min_stc: {cfg_h.min_seconds_before_close} != {bot.constants.HOURLY_MIN_SECONDS_BEFORE_CLOSE}")
+    assert cfg_h.max_seconds_before_close == bot.constants.HOURLY_MAX_SECONDS_BEFORE_CLOSE, (
+        f"hourly max_stc: {cfg_h.max_seconds_before_close} != {bot.constants.HOURLY_MAX_SECONDS_BEFORE_CLOSE}")
+    assert cfg_h.max_risk_per_trade == bot.constants.HOURLY_MAX_RISK_PER_TRADE, (
+        f"hourly max_risk: {cfg_h.max_risk_per_trade} != {bot.constants.HOURLY_MAX_RISK_PER_TRADE}")
+    assert cfg_h.kelly_fraction == bot.constants.HOURLY_KELLY_FRACTION, (
+        f"hourly kelly_f: {cfg_h.kelly_fraction} != {bot.constants.HOURLY_KELLY_FRACTION}")
+    assert cfg_h.market_blend_w == bot.constants.HOURLY_MARKET_BLEND_W, (
+        f"hourly blend_w: {cfg_h.market_blend_w} != {bot.constants.HOURLY_MARKET_BLEND_W}")
+    assert cfg_h.temperature_t == bot.constants.HOURLY_TEMPERATURE_T, (
+        f"hourly temp_t: {cfg_h.temperature_t} != {bot.constants.HOURLY_TEMPERATURE_T}")
+    assert cfg_h.temperature_enabled == bot.constants.HOURLY_TEMPERATURE_ENABLED, (
+        f"hourly temp_enabled: {cfg_h.temperature_enabled} != {bot.constants.HOURLY_TEMPERATURE_ENABLED}")
+    assert cfg_h.min_stc_entry == bot.constants.HOURLY_MIN_STC_ENTRY, (
+        f"hourly min_stc_entry: {cfg_h.min_stc_entry} != {bot.constants.HOURLY_MIN_STC_ENTRY}")
+    assert cfg_h.max_stc_entry == bot.constants.HOURLY_MAX_STC_ENTRY, (
+        f"hourly max_stc_entry: {cfg_h.max_stc_entry} != {bot.constants.HOURLY_MAX_STC_ENTRY}")
+    assert cfg_h.excluded_assets == frozenset(bot.constants.HOURLY_EXCLUDED_ASSETS), (
+        f"hourly excluded: {cfg_h.excluded_assets} != {bot.constants.HOURLY_EXCLUDED_ASSETS}")
+    assert cfg_h.max_positions_per_window == bot.constants.HOURLY_MAX_POSITIONS_PER_WINDOW, (
+        f"hourly max_pos: {cfg_h.max_positions_per_window} != {bot.constants.HOURLY_MAX_POSITIONS_PER_WINDOW}")
+    assert cfg_h.max_window_risk == bot.constants.HOURLY_MAX_WINDOW_RISK, (
+        f"hourly max_wrisk: {cfg_h.max_window_risk} != {bot.constants.HOURLY_MAX_WINDOW_RISK}")
 
     # ── SPX Hourly ──
     cfg_s = MARKET_CONFIGS["spx_hourly"]
-    assert cfg_s.observation_only == bot.SPX_HOURLY_OBSERVATION_ONLY, (
-        f"spx obs_only: {cfg_s.observation_only} != {bot.SPX_HOURLY_OBSERVATION_ONLY}")
-    assert cfg_s.min_entry_price == bot.SPX_HOURLY_MIN_ENTRY_PRICE, (
-        f"spx min_entry: {cfg_s.min_entry_price} != {bot.SPX_HOURLY_MIN_ENTRY_PRICE}")
-    assert cfg_s.max_entry_price == bot.SPX_HOURLY_MAX_ENTRY_PRICE, (
-        f"spx max_entry: {cfg_s.max_entry_price} != {bot.SPX_HOURLY_MAX_ENTRY_PRICE}")
-    assert cfg_s.min_seconds_before_close == bot.SPX_HOURLY_MIN_SECONDS_BEFORE_CLOSE, (
-        f"spx min_stc: {cfg_s.min_seconds_before_close} != {bot.SPX_HOURLY_MIN_SECONDS_BEFORE_CLOSE}")
-    assert cfg_s.max_seconds_before_close == bot.SPX_HOURLY_MAX_SECONDS_BEFORE_CLOSE, (
-        f"spx max_stc: {cfg_s.max_seconds_before_close} != {bot.SPX_HOURLY_MAX_SECONDS_BEFORE_CLOSE}")
-    assert cfg_s.max_risk_per_trade == bot.SPX_HOURLY_MAX_RISK_PER_TRADE, (
-        f"spx max_risk: {cfg_s.max_risk_per_trade} != {bot.SPX_HOURLY_MAX_RISK_PER_TRADE}")
-    assert cfg_s.kelly_fraction == bot.SPX_HOURLY_KELLY_FRACTION, (
-        f"spx kelly_f: {cfg_s.kelly_fraction} != {bot.SPX_HOURLY_KELLY_FRACTION}")
-    assert cfg_s.market_blend_w == bot.SPX_HOURLY_MARKET_BLEND_W, (
-        f"spx blend_w: {cfg_s.market_blend_w} != {bot.SPX_HOURLY_MARKET_BLEND_W}")
-    assert cfg_s.temperature_t == bot.SPX_HOURLY_TEMPERATURE_T, (
-        f"spx temp_t: {cfg_s.temperature_t} != {bot.SPX_HOURLY_TEMPERATURE_T}")
-    assert cfg_s.fee_multiplier_taker == bot.SPX_HOURLY_FEE_MULTIPLIER_TAKER, (
-        f"spx fee_taker: {cfg_s.fee_multiplier_taker} != {bot.SPX_HOURLY_FEE_MULTIPLIER_TAKER}")
-    assert cfg_s.fee_multiplier_maker == bot.SPX_HOURLY_FEE_MULTIPLIER_MAKER, (
-        f"spx fee_maker: {cfg_s.fee_multiplier_maker} != {bot.SPX_HOURLY_FEE_MULTIPLIER_MAKER}")
-    assert cfg_s.max_positions_per_window == bot.SPX_HOURLY_MAX_POSITIONS_PER_WINDOW, (
-        f"spx max_pos: {cfg_s.max_positions_per_window} != {bot.SPX_HOURLY_MAX_POSITIONS_PER_WINDOW}")
-    assert cfg_s.max_window_risk == bot.SPX_HOURLY_MAX_WINDOW_RISK, (
-        f"spx max_wrisk: {cfg_s.max_window_risk} != {bot.SPX_HOURLY_MAX_WINDOW_RISK}")
+    assert cfg_s.observation_only == bot.constants.SPX_HOURLY_OBSERVATION_ONLY, (
+        f"spx obs_only: {cfg_s.observation_only} != {bot.constants.SPX_HOURLY_OBSERVATION_ONLY}")
+    assert cfg_s.min_entry_price == bot.constants.SPX_HOURLY_MIN_ENTRY_PRICE, (
+        f"spx min_entry: {cfg_s.min_entry_price} != {bot.constants.SPX_HOURLY_MIN_ENTRY_PRICE}")
+    assert cfg_s.max_entry_price == bot.constants.SPX_HOURLY_MAX_ENTRY_PRICE, (
+        f"spx max_entry: {cfg_s.max_entry_price} != {bot.constants.SPX_HOURLY_MAX_ENTRY_PRICE}")
+    assert cfg_s.min_seconds_before_close == bot.constants.SPX_HOURLY_MIN_SECONDS_BEFORE_CLOSE, (
+        f"spx min_stc: {cfg_s.min_seconds_before_close} != {bot.constants.SPX_HOURLY_MIN_SECONDS_BEFORE_CLOSE}")
+    assert cfg_s.max_seconds_before_close == bot.constants.SPX_HOURLY_MAX_SECONDS_BEFORE_CLOSE, (
+        f"spx max_stc: {cfg_s.max_seconds_before_close} != {bot.constants.SPX_HOURLY_MAX_SECONDS_BEFORE_CLOSE}")
+    assert cfg_s.max_risk_per_trade == bot.constants.SPX_HOURLY_MAX_RISK_PER_TRADE, (
+        f"spx max_risk: {cfg_s.max_risk_per_trade} != {bot.constants.SPX_HOURLY_MAX_RISK_PER_TRADE}")
+    assert cfg_s.kelly_fraction == bot.constants.SPX_HOURLY_KELLY_FRACTION, (
+        f"spx kelly_f: {cfg_s.kelly_fraction} != {bot.constants.SPX_HOURLY_KELLY_FRACTION}")
+    assert cfg_s.market_blend_w == bot.constants.SPX_HOURLY_MARKET_BLEND_W, (
+        f"spx blend_w: {cfg_s.market_blend_w} != {bot.constants.SPX_HOURLY_MARKET_BLEND_W}")
+    assert cfg_s.temperature_t == bot.constants.SPX_HOURLY_TEMPERATURE_T, (
+        f"spx temp_t: {cfg_s.temperature_t} != {bot.constants.SPX_HOURLY_TEMPERATURE_T}")
+    assert cfg_s.fee_multiplier_taker == bot.constants.SPX_HOURLY_FEE_MULTIPLIER_TAKER, (
+        f"spx fee_taker: {cfg_s.fee_multiplier_taker} != {bot.constants.SPX_HOURLY_FEE_MULTIPLIER_TAKER}")
+    assert cfg_s.fee_multiplier_maker == bot.constants.SPX_HOURLY_FEE_MULTIPLIER_MAKER, (
+        f"spx fee_maker: {cfg_s.fee_multiplier_maker} != {bot.constants.SPX_HOURLY_FEE_MULTIPLIER_MAKER}")
+    assert cfg_s.max_positions_per_window == bot.constants.SPX_HOURLY_MAX_POSITIONS_PER_WINDOW, (
+        f"spx max_pos: {cfg_s.max_positions_per_window} != {bot.constants.SPX_HOURLY_MAX_POSITIONS_PER_WINDOW}")
+    assert cfg_s.max_window_risk == bot.constants.SPX_HOURLY_MAX_WINDOW_RISK, (
+        f"spx max_wrisk: {cfg_s.max_window_risk} != {bot.constants.SPX_HOURLY_MAX_WINDOW_RISK}")
     assert cfg_s.cal_engine_enabled is True, (
         "spx_hourly cal_engine_enabled must be True — SPX-D CalEngine is the live calibration")
-    assert isinstance(bot.SPX_HOURLY_BANKROLL_FRACTION, float), (
-        f"SPX_HOURLY_BANKROLL_FRACTION must be float, got {type(bot.SPX_HOURLY_BANKROLL_FRACTION)}")
-    assert 0 < bot.SPX_HOURLY_BANKROLL_FRACTION <= 1.0, (
-        f"SPX_HOURLY_BANKROLL_FRACTION must be in (0, 1.0], got {bot.SPX_HOURLY_BANKROLL_FRACTION}")
+    assert isinstance(bot.constants.SPX_HOURLY_BANKROLL_FRACTION, float), (
+        f"SPX_HOURLY_BANKROLL_FRACTION must be float, got {type(bot.constants.SPX_HOURLY_BANKROLL_FRACTION)}")
+    assert 0 < bot.constants.SPX_HOURLY_BANKROLL_FRACTION <= 1.0, (
+        f"SPX_HOURLY_BANKROLL_FRACTION must be in (0, 1.0], got {bot.constants.SPX_HOURLY_BANKROLL_FRACTION}")
 
     # ── Weather ──
     cfg_w = MARKET_CONFIGS["weather"]
-    assert cfg_w.observation_only == bot.WEATHER_OBSERVATION_ONLY, (
-        f"weather obs_only: {cfg_w.observation_only} != {bot.WEATHER_OBSERVATION_ONLY}")
-    assert cfg_w.min_entry_price == bot.WEATHER_MIN_ENTRY_PRICE, (
-        f"weather min_entry: {cfg_w.min_entry_price} != {bot.WEATHER_MIN_ENTRY_PRICE}")
-    assert cfg_w.max_entry_price == bot.WEATHER_MAX_ENTRY_PRICE, (
-        f"weather max_entry: {cfg_w.max_entry_price} != {bot.WEATHER_MAX_ENTRY_PRICE}")
-    assert cfg_w.min_seconds_before_close == bot.WEATHER_MIN_SECONDS_BEFORE_CLOSE, (
-        f"weather min_stc: {cfg_w.min_seconds_before_close} != {bot.WEATHER_MIN_SECONDS_BEFORE_CLOSE}")
-    assert cfg_w.max_seconds_before_close == bot.WEATHER_MAX_SECONDS_BEFORE_CLOSE, (
-        f"weather max_stc: {cfg_w.max_seconds_before_close} != {bot.WEATHER_MAX_SECONDS_BEFORE_CLOSE}")
-    assert cfg_w.max_risk_per_trade == bot.WEATHER_MAX_RISK_PER_TRADE, (
-        f"weather max_risk: {cfg_w.max_risk_per_trade} != {bot.WEATHER_MAX_RISK_PER_TRADE}")
-    assert cfg_w.kelly_fraction == bot.WEATHER_KELLY_FRACTION, (
-        f"weather kelly_f: {cfg_w.kelly_fraction} != {bot.WEATHER_KELLY_FRACTION}")
-    assert cfg_w.market_blend_w == bot.WEATHER_MARKET_BLEND_W, (
-        f"weather blend_w: {cfg_w.market_blend_w} != {bot.WEATHER_MARKET_BLEND_W}")
-    assert cfg_w.min_stc_entry == bot.WEATHER_MIN_STC_ENTRY, (
-        f"weather min_stc_entry: {cfg_w.min_stc_entry} != {bot.WEATHER_MIN_STC_ENTRY}")
-    assert cfg_w.max_stc_entry == bot.WEATHER_MAX_STC_ENTRY, (
-        f"weather max_stc_entry: {cfg_w.max_stc_entry} != {bot.WEATHER_MAX_STC_ENTRY}")
-    assert cfg_w.cal_engine_enabled == bot.WEATHER_CAL_ENGINE_ENABLED, (
-        f"weather cal_enabled: {cfg_w.cal_engine_enabled} != {bot.WEATHER_CAL_ENGINE_ENABLED}")
+    assert cfg_w.observation_only == bot.constants.WEATHER_OBSERVATION_ONLY, (
+        f"weather obs_only: {cfg_w.observation_only} != {bot.constants.WEATHER_OBSERVATION_ONLY}")
+    assert cfg_w.min_entry_price == bot.constants.WEATHER_MIN_ENTRY_PRICE, (
+        f"weather min_entry: {cfg_w.min_entry_price} != {bot.constants.WEATHER_MIN_ENTRY_PRICE}")
+    assert cfg_w.max_entry_price == bot.constants.WEATHER_MAX_ENTRY_PRICE, (
+        f"weather max_entry: {cfg_w.max_entry_price} != {bot.constants.WEATHER_MAX_ENTRY_PRICE}")
+    assert cfg_w.min_seconds_before_close == bot.constants.WEATHER_MIN_SECONDS_BEFORE_CLOSE, (
+        f"weather min_stc: {cfg_w.min_seconds_before_close} != {bot.constants.WEATHER_MIN_SECONDS_BEFORE_CLOSE}")
+    assert cfg_w.max_seconds_before_close == bot.constants.WEATHER_MAX_SECONDS_BEFORE_CLOSE, (
+        f"weather max_stc: {cfg_w.max_seconds_before_close} != {bot.constants.WEATHER_MAX_SECONDS_BEFORE_CLOSE}")
+    assert cfg_w.max_risk_per_trade == bot.constants.WEATHER_MAX_RISK_PER_TRADE, (
+        f"weather max_risk: {cfg_w.max_risk_per_trade} != {bot.constants.WEATHER_MAX_RISK_PER_TRADE}")
+    assert cfg_w.kelly_fraction == bot.constants.WEATHER_KELLY_FRACTION, (
+        f"weather kelly_f: {cfg_w.kelly_fraction} != {bot.constants.WEATHER_KELLY_FRACTION}")
+    assert cfg_w.market_blend_w == bot.constants.WEATHER_MARKET_BLEND_W, (
+        f"weather blend_w: {cfg_w.market_blend_w} != {bot.constants.WEATHER_MARKET_BLEND_W}")
+    assert cfg_w.min_stc_entry == bot.constants.WEATHER_MIN_STC_ENTRY, (
+        f"weather min_stc_entry: {cfg_w.min_stc_entry} != {bot.constants.WEATHER_MIN_STC_ENTRY}")
+    assert cfg_w.max_stc_entry == bot.constants.WEATHER_MAX_STC_ENTRY, (
+        f"weather max_stc_entry: {cfg_w.max_stc_entry} != {bot.constants.WEATHER_MAX_STC_ENTRY}")
+    assert cfg_w.cal_engine_enabled == bot.constants.WEATHER_CAL_ENGINE_ENABLED, (
+        f"weather cal_enabled: {cfg_w.cal_engine_enabled} != {bot.constants.WEATHER_CAL_ENGINE_ENABLED}")
     # Weather NO-side live constants exist and have valid types
-    assert isinstance(bot.WEATHER_NO_SIDE_LIVE, bool), (
-        f"WEATHER_NO_SIDE_LIVE must be bool, got {type(bot.WEATHER_NO_SIDE_LIVE)}")
-    assert isinstance(bot.WEATHER_NO_SIDE_MIN_STC, (int, float)), (
-        f"WEATHER_NO_SIDE_MIN_STC must be numeric, got {type(bot.WEATHER_NO_SIDE_MIN_STC)}")
-    assert bot.WEATHER_NO_SIDE_MIN_STC >= 3600, (
-        f"WEATHER_NO_SIDE_MIN_STC must be >= 1h, got {bot.WEATHER_NO_SIDE_MIN_STC}")
-    assert isinstance(bot.WEATHER_NO_CONTRACT_COUNT, int) and bot.WEATHER_NO_CONTRACT_COUNT >= 1, (
-        f"WEATHER_NO_CONTRACT_COUNT must be int >= 1, got {bot.WEATHER_NO_CONTRACT_COUNT!r}")
-    assert isinstance(bot.WEATHER_NO_EXCLUDED_CITY_PREFIXES, frozenset), (
+    assert isinstance(bot.constants.WEATHER_NO_SIDE_LIVE, bool), (
+        f"WEATHER_NO_SIDE_LIVE must be bool, got {type(bot.constants.WEATHER_NO_SIDE_LIVE)}")
+    assert isinstance(bot.constants.WEATHER_NO_SIDE_MIN_STC, (int, float)), (
+        f"WEATHER_NO_SIDE_MIN_STC must be numeric, got {type(bot.constants.WEATHER_NO_SIDE_MIN_STC)}")
+    assert bot.constants.WEATHER_NO_SIDE_MIN_STC >= 3600, (
+        f"WEATHER_NO_SIDE_MIN_STC must be >= 1h, got {bot.constants.WEATHER_NO_SIDE_MIN_STC}")
+    assert isinstance(bot.constants.WEATHER_NO_CONTRACT_COUNT, int) and bot.constants.WEATHER_NO_CONTRACT_COUNT >= 1, (
+        f"WEATHER_NO_CONTRACT_COUNT must be int >= 1, got {bot.constants.WEATHER_NO_CONTRACT_COUNT!r}")
+    assert isinstance(bot.constants.WEATHER_NO_EXCLUDED_CITY_PREFIXES, frozenset), (
         f"WEATHER_NO_EXCLUDED_CITY_PREFIXES must be frozenset, got "
-        f"{type(bot.WEATHER_NO_EXCLUDED_CITY_PREFIXES).__name__}")
+        f"{type(bot.constants.WEATHER_NO_EXCLUDED_CITY_PREFIXES).__name__}")
 
     # ── Sports ──
     cfg_sp = MARKET_CONFIGS["sports"]
     assert cfg_sp.observation_only is True, (
         "sports observation_only must be True — never live without explicit promotion")
-    assert cfg_sp.observation_only == bot.SPORTS_OBSERVATION_ONLY, (
-        f"sports obs_only: {cfg_sp.observation_only} != {bot.SPORTS_OBSERVATION_ONLY}")
+    assert cfg_sp.observation_only == bot.constants.SPORTS_OBSERVATION_ONLY, (
+        f"sports obs_only: {cfg_sp.observation_only} != {bot.constants.SPORTS_OBSERVATION_ONLY}")
     assert cfg_sp.cal_eligible is False, "sports must NOT be cal_eligible"
 
     # ── Cross-type invariants ──
@@ -385,8 +387,8 @@ def validate_market_configs() -> None:
     assert MARKET_CONFIGS["15m"].cal_engine_state_path == "", "FATAL: 15m must not set cal_engine_state_path"
 
     # Hourly cal_engine_enabled must match bot.py constant
-    assert MARKET_CONFIGS["hourly"].cal_engine_enabled == bot.HOURLY_CALIBRATION_ENABLED, (
-        f"hourly cal_engine_enabled mismatch: {MARKET_CONFIGS['hourly'].cal_engine_enabled} != {bot.HOURLY_CALIBRATION_ENABLED}")
+    assert MARKET_CONFIGS["hourly"].cal_engine_enabled == bot.constants.HOURLY_CALIBRATION_ENABLED, (
+        f"hourly cal_engine_enabled mismatch: {MARKET_CONFIGS['hourly'].cal_engine_enabled} != {bot.constants.HOURLY_CALIBRATION_ENABLED}")
 
     # ── CalEngine subtype invariants ──
     # Subtypes and single-engine state path are mutually exclusive.
@@ -400,12 +402,12 @@ def validate_market_configs() -> None:
     _all_state_paths = []
     for pt, cfg in MARKET_CONFIGS.items():
         if cfg.cal_engine_state_path:
-            assert cfg.cal_engine_state_path != bot.CALIBRATION_STATE_PATH, (
+            assert cfg.cal_engine_state_path != bot.constants.CALIBRATION_STATE_PATH, (
                 f"FATAL: {pt} shares state file with 15M engine!")
             _all_state_paths.append(cfg.cal_engine_state_path)
         for sub_code, sub_path in cfg.cal_subtypes.items():
             assert sub_path, f"FATAL: empty state path for {pt}/{sub_code}"
-            assert sub_path != bot.CALIBRATION_STATE_PATH, (
+            assert sub_path != bot.constants.CALIBRATION_STATE_PATH, (
                 f"FATAL: {pt}/{sub_code} shares state file with 15M!")
             _all_state_paths.append(sub_path)
     assert len(_all_state_paths) == len(set(_all_state_paths)), (

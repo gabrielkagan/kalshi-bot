@@ -68,7 +68,7 @@ def test_orphan_watchdog_returns_no_offenders_when_db_is_held_by_self_only(
         lambda **kw: sent.append(kw),
     )
 
-    offenders = bot.detect_orphan_db_holders(str(db), self_pid=self_pid)
+    offenders = bot.orphan_db_watchdog.detect_orphan_db_holders(str(db), self_pid=self_pid)
     assert offenders == [], f"healthy case must report []; got {offenders}"
     assert sent == [], f"no alert when only self holds DB; got {sent}"
 
@@ -97,7 +97,7 @@ def test_orphan_watchdog_detects_non_bot_pid_holding_db(monkeypatch, tmp_path):
     # C-9 fix: liveness probe expects the orphan PID to be alive.
     monkeypatch.setattr(os, "kill", lambda pid, sig: None)
 
-    offenders = bot.detect_orphan_db_holders(str(db), self_pid=self_pid)
+    offenders = bot.orphan_db_watchdog.detect_orphan_db_holders(str(db), self_pid=self_pid)
     assert orphan_pid in [o["pid"] for o in offenders], (
         f"must detect orphan pid {orphan_pid}; got {offenders}"
     )
@@ -144,7 +144,7 @@ def test_orphan_watchdog_skips_alert_for_legitimate_cron_processes(
         lambda **kw: sent.append(kw),
     )
 
-    offenders = bot.detect_orphan_db_holders(str(db), self_pid=self_pid)
+    offenders = bot.orphan_db_watchdog.detect_orphan_db_holders(str(db), self_pid=self_pid)
     # The PID IS reported as an offender (returned for caller-side
     # inspection) but NO alert is sent.
     assert any(o["pid"] == cron_pid for o in offenders), (
@@ -186,7 +186,7 @@ def test_orphan_watchdog_alerts_on_h4_backfill_pattern(monkeypatch, tmp_path):
             bot.orphan_db_watchdog, "_alert_orphan_db_holder",
             lambda **kw: sent.append(kw),
         )
-        bot.detect_orphan_db_holders(str(db), self_pid=self_pid)
+        bot.orphan_db_watchdog.detect_orphan_db_holders(str(db), self_pid=self_pid)
         assert len(sent) == 1, (
             f"must alert on {script_name}; got: {sent}"
         )
@@ -228,7 +228,7 @@ def test_orphan_watchdog_skips_alert_when_pid_already_exited(
         lambda **kw: sent.append(kw),
     )
 
-    offenders = bot.detect_orphan_db_holders(str(db), self_pid=self_pid)
+    offenders = bot.orphan_db_watchdog.detect_orphan_db_holders(str(db), self_pid=self_pid)
     assert offenders == [], (
         f"must drop already-exited PID; got {offenders}"
     )
@@ -259,7 +259,7 @@ def test_orphan_watchdog_does_not_kill(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(os, "kill", lambda pid, sig: kills.append((pid, sig)))
 
-    bot.detect_orphan_db_holders(str(db), self_pid=self_pid)
+    bot.orphan_db_watchdog.detect_orphan_db_holders(str(db), self_pid=self_pid)
     # Only signal 0 (liveness probe) is allowed.
     non_probe_kills = [(p, s) for (p, s) in kills if s != 0]
     assert non_probe_kills == [], (
@@ -294,7 +294,7 @@ def test_orphan_watchdog_alerts_via_telegram(monkeypatch, tmp_path):
         lambda **kw: sent.append(kw),
     )
 
-    bot.detect_orphan_db_holders(str(db), self_pid=self_pid)
+    bot.orphan_db_watchdog.detect_orphan_db_holders(str(db), self_pid=self_pid)
     assert len(sent) == 1, f"expected exactly 1 alert; got: {sent}"
     msg_kwargs = sent[0]
     assert msg_kwargs.get("pid") == orphan_pid
@@ -317,7 +317,7 @@ def test_orphan_watchdog_handles_lsof_failure_gracefully(
     monkeypatch.setattr(bot.orphan_db_watchdog, "_run_lsof_for_db", _lsof_fail)
 
     # Must not raise.
-    offenders = bot.detect_orphan_db_holders(str(db), self_pid=os.getpid())
+    offenders = bot.orphan_db_watchdog.detect_orphan_db_holders(str(db), self_pid=os.getpid())
     # On lsof failure, we conservatively report no offenders rather
     # than blocking startup.
     assert offenders == []

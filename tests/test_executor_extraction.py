@@ -243,10 +243,10 @@ def test_executor_class_NOT_in_bot_impl_module():
 
 
 def test_executor_module_attr_resolves_via_proxy():
-    """bot.OrderExecutor → bot.executor.OrderExecutor via _BotProxy chain."""
+    """bot.executor.OrderExecutor → bot.executor.OrderExecutor via canonical submodule (post-Bit-9.3-iii.b — _BotProxy retired) chain."""
     import bot
     import bot.executor
-    assert bot.OrderExecutor is bot.executor.OrderExecutor
+    assert bot.executor.OrderExecutor is bot.executor.OrderExecutor
 
 
 def test_executor_reexported_into_bot_impl():
@@ -689,7 +689,7 @@ def test_bot_impl_reexports_order_executor():
     src = BOT_PY.read_text()
     assert re.search(r"from bot\.executor import OrderExecutor", src), (
         "bot/_impl.py missing `from bot.executor import OrderExecutor` re-export — "
-        "needed for ~12 test files using `bot.OrderExecutor`-style access via _BotProxy chain"
+        "needed for ~12 test files using `bot.executor.OrderExecutor`-style access via canonical submodule (post-Bit-9.3-iii.b — _BotProxy retired) chain"
     )
 
 

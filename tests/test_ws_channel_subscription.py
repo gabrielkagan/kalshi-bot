@@ -34,6 +34,7 @@ import threading
 import time
 import unittest
 from unittest.mock import AsyncMock
+import bot.feeds  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -44,7 +45,7 @@ BOT_PY = os.path.join(
 
 def _make_feed():
     import bot
-    f = bot.KalshiFeed.__new__(bot.KalshiFeed)
+    f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
     f._pending_subscribes = []
     f._pending_unsubscribes = []
     f._pending_snapshot_requests = []

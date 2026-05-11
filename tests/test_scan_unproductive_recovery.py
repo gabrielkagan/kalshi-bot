@@ -25,6 +25,7 @@ import sys
 import time
 import unittest
 from unittest.mock import MagicMock
+import bot.scanner  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -36,7 +37,7 @@ def _make_main_loop():
     """Minimal OpportunityScanner fixture (the watchdog lives
     there, not on MainLoop)."""
     import bot
-    sc = bot.OpportunityScanner.__new__(bot.OpportunityScanner)
+    sc = bot.scanner.OpportunityScanner.__new__(bot.scanner.OpportunityScanner)
     sc._scan_15m_process_start_ts = (
         time.time() - 10 * 60)  # uptime 10 min — past the 7 min gate
     sc._scan_15m_iter_heartbeat_ts = 0.0

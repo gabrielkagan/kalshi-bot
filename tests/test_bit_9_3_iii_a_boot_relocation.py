@@ -13,6 +13,11 @@ See kb/decisions/bit-9.3-iii-a-plan-may11.md for the plan.
 """
 import ast
 import os
+import bot.executor  # noqa: F401
+import bot.order_flow  # noqa: F401
+import bot.scanner  # noqa: F401
+import bot.settlement  # noqa: F401
+import bot.state  # noqa: F401
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

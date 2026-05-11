@@ -32,12 +32,13 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
+import bot.executor  # noqa: F401
 
 
 def _make_executor():
     """Stub OrderExecutor with the attrs process_dc_retries needs.
     Bypass __init__ to skip Kalshi client + state init."""
-    e = bot.OrderExecutor.__new__(bot.OrderExecutor)
+    e = bot.executor.OrderExecutor.__new__(bot.executor.OrderExecutor)
     e._dc_retry_queue = []
     e._session_dc_retries = 0
     e._session_dc_retry_fills = 0

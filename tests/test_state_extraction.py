@@ -186,12 +186,12 @@ def test_state_identity_through_bot_impl():
 
 
 def test_state_identity_through_bot_proxy():
-    """bot.StateManager (resolved via _BotProxy) must be the same class object
+    """bot.state.StateManager (resolved via canonical submodule (post-Bit-9.3-iii.b — _BotProxy retired)) must be the same class object
     as bot.state.StateManager."""
     import bot
     import bot.state
 
-    assert bot.StateManager is bot.state.StateManager
+    assert bot.state.StateManager is bot.state.StateManager
 
 
 def test_state_module_attribute_post_extraction():

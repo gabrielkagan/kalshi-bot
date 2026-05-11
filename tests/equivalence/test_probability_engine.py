@@ -38,13 +38,13 @@ from hypothesis import example, given, settings, strategies as st
 
 
 # ── Engine import ────────────────────────────────────────────────────
-# The proxy chain `bot._BotProxy → bot._impl.ProbabilityEngine →
-# bot.engines.ProbabilityEngine → bot.engines.probability.ProbabilityEngine`
-# is the documented public path (Bit 6.2). Importing from
-# `bot.engines.probability` directly would skip the late-binding
-# fixture wiring on `bot._impl`, so we go through `bot`.
-from bot import ProbabilityEngine
+# Post-Bit-9.3-iii.b (2026-05-11) `_BotProxy` is retired; `bot.engines.probability`
+# is the canonical home for `ProbabilityEngine` (Bit 6.2 extraction). The
+# `import bot._impl` below pre-loads star-imports the equivalence harness
+# needs via the residual shim (kept until Bit 9.3-iii.c).
+from bot.engines.probability import ProbabilityEngine
 from config import MAX_EFFECTIVE_PROB
+import bot._impl  # noqa: F401  -- pre-loads star-imports for fixture wiring
 
 
 # ─────────────────────────────────────────────────────────────────────

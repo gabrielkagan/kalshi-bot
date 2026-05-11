@@ -14,6 +14,9 @@ import sys
 import textwrap
 
 import pytest
+import bot.engines  # noqa: F401
+import bot.helpers  # noqa: F401
+import config  # noqa: F401
 
 # Add project root to path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -72,7 +75,7 @@ class TestFeeCalculation:
 
     def test_maker_fee_is_zero(self):
         """Kalshi charges $0 on maker fills (verified against 100 API fills)."""
-        from bot import calculate_fee, calculate_maker_fee
+        from bot.models import calculate_fee, calculate_maker_fee
         for count in [1, 5, 10, 25]:
             for price in [50, 70, 86, 90, 95, 99]:
                 assert calculate_fee(count, price, is_taker=False) == 0, (
@@ -134,7 +137,7 @@ class TestFeeCalculation:
 
     def test_bot_fee_function_matches(self):
         """Verify bot/_impl.py calculate_fee matches Kalshi billing: taker = formula, maker = $0."""
-        from bot import calculate_fee
+        from bot.models import calculate_fee
         for count in [1, 5, 10, 25]:
             for price in [50, 70, 86, 90, 95, 99]:
                 # Taker: ceil formula
@@ -162,8 +165,7 @@ class TestEdgeThresholds:
     """Verify price-dependent edge schedule is correctly applied."""
 
     def test_get_min_edge_schedule(self):
-        from bot import get_min_edge
-        # 86-88c → 0.25%
+        from bot.helpers.sizing import get_min_edge  # 86-88c → 0.25%
         assert get_min_edge(86) == 0.0025
         assert get_min_edge(88) == 0.0025
         # 89-90c → 0.25%
@@ -187,7 +189,7 @@ class TestEdgeThresholds:
 
     def test_stc_shadow_threshold_boundary(self):
         """STC_SHADOW_THRESHOLD=600 means 0-600s is live (with extended floors at 300-600s)."""
-        from bot import STC_SHADOW_THRESHOLD, MAX_SECONDS_BEFORE_CLOSE, STC_EXTENDED_LIVE_FLOOR
+        from bot.constants import STC_SHADOW_THRESHOLD, MAX_SECONDS_BEFORE_CLOSE, STC_EXTENDED_LIVE_FLOOR
         assert STC_SHADOW_THRESHOLD == 600
         assert MAX_SECONDS_BEFORE_CLOSE == 900
         assert STC_EXTENDED_LIVE_FLOOR == 300
@@ -253,44 +255,44 @@ class TestConfigSync:
         import bot
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["15m"]
-        assert cfg.min_entry_price == bot.MIN_ENTRY_PRICE
-        assert cfg.max_entry_price == bot.MAX_ENTRY_PRICE
-        assert cfg.max_risk_per_trade == bot.MAX_RISK_PER_TRADE
-        assert cfg.min_seconds_before_close == bot.MIN_SECONDS_BEFORE_CLOSE
-        assert cfg.max_seconds_before_close == bot.MAX_SECONDS_BEFORE_CLOSE
-        assert cfg.market_blend_w == bot.MARKET_BLEND_W
-        assert cfg.observation_only == bot.OBSERVATION_MODE
+        assert cfg.min_entry_price == bot.constants.MIN_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.constants.MAX_ENTRY_PRICE
+        assert cfg.max_risk_per_trade == config.MAX_RISK_PER_TRADE
+        assert cfg.min_seconds_before_close == bot.constants.MIN_SECONDS_BEFORE_CLOSE
+        assert cfg.max_seconds_before_close == bot.constants.MAX_SECONDS_BEFORE_CLOSE
+        assert cfg.market_blend_w == bot.constants.MARKET_BLEND_W
+        assert cfg.observation_only == bot.constants.OBSERVATION_MODE
 
     def test_hourly_config_matches_bot(self):
         import bot
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["hourly"]
-        assert cfg.observation_only == bot.HOURLY_OBSERVATION_ONLY
-        assert cfg.min_entry_price == bot.HOURLY_MIN_ENTRY_PRICE
-        assert cfg.min_seconds_before_close == bot.HOURLY_MIN_SECONDS_BEFORE_CLOSE
-        assert cfg.max_seconds_before_close == bot.HOURLY_MAX_SECONDS_BEFORE_CLOSE
-        assert cfg.max_risk_per_trade == bot.HOURLY_MAX_RISK_PER_TRADE
-        assert cfg.kelly_fraction == bot.HOURLY_KELLY_FRACTION
-        assert cfg.market_blend_w == bot.HOURLY_MARKET_BLEND_W
-        assert cfg.cal_engine_enabled == bot.HOURLY_CALIBRATION_ENABLED
+        assert cfg.observation_only == bot.constants.HOURLY_OBSERVATION_ONLY
+        assert cfg.min_entry_price == bot.constants.HOURLY_MIN_ENTRY_PRICE
+        assert cfg.min_seconds_before_close == bot.constants.HOURLY_MIN_SECONDS_BEFORE_CLOSE
+        assert cfg.max_seconds_before_close == bot.constants.HOURLY_MAX_SECONDS_BEFORE_CLOSE
+        assert cfg.max_risk_per_trade == bot.constants.HOURLY_MAX_RISK_PER_TRADE
+        assert cfg.kelly_fraction == bot.constants.HOURLY_KELLY_FRACTION
+        assert cfg.market_blend_w == bot.constants.HOURLY_MARKET_BLEND_W
+        assert cfg.cal_engine_enabled == bot.constants.HOURLY_CALIBRATION_ENABLED
 
     def test_spx_config_matches_bot(self):
         import bot
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["spx_hourly"]
-        assert cfg.observation_only == bot.SPX_HOURLY_OBSERVATION_ONLY
-        assert cfg.min_entry_price == bot.SPX_HOURLY_MIN_ENTRY_PRICE
-        assert cfg.max_entry_price == bot.SPX_HOURLY_MAX_ENTRY_PRICE
-        assert cfg.max_risk_per_trade == bot.SPX_HOURLY_MAX_RISK_PER_TRADE
+        assert cfg.observation_only == bot.constants.SPX_HOURLY_OBSERVATION_ONLY
+        assert cfg.min_entry_price == bot.constants.SPX_HOURLY_MIN_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.constants.SPX_HOURLY_MAX_ENTRY_PRICE
+        assert cfg.max_risk_per_trade == bot.constants.SPX_HOURLY_MAX_RISK_PER_TRADE
 
     def test_weather_config_matches_bot(self):
         import bot
         from market_config import MARKET_CONFIGS
         cfg = MARKET_CONFIGS["weather"]
-        assert cfg.observation_only == bot.WEATHER_OBSERVATION_ONLY
-        assert cfg.min_entry_price == bot.WEATHER_MIN_ENTRY_PRICE
-        assert cfg.max_entry_price == bot.WEATHER_MAX_ENTRY_PRICE
-        assert cfg.market_blend_w == bot.WEATHER_MARKET_BLEND_W
+        assert cfg.observation_only == bot.constants.WEATHER_OBSERVATION_ONLY
+        assert cfg.min_entry_price == bot.constants.WEATHER_MIN_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.constants.WEATHER_MAX_ENTRY_PRICE
+        assert cfg.market_blend_w == bot.constants.WEATHER_MARKET_BLEND_W
 
 
 # ============================================================================
@@ -402,14 +404,14 @@ class TestShadowDiagKeys:
     }
 
     def test_insert_rejection_accepts_shadow_keys(self):
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_rejection)
         params = set(sig.parameters.keys())
         missing = self.EXPECTED_SHADOW_KEYS - params
         assert not missing, f"insert_rejection missing shadow_diag keys: {missing}"
 
     def test_insert_evaluated_opportunity_accepts_shadow_keys(self):
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         params = set(sig.parameters.keys())
         missing = self.EXPECTED_SHADOW_KEYS - params
@@ -417,7 +419,7 @@ class TestShadowDiagKeys:
 
     def test_shadow_keys_are_subset_of_both_functions(self):
         """Both functions must accept ALL shadow_diag keys (they get **splatted)."""
-        from bot import StateManager
+        from bot.state import StateManager
         for fn_name in ["insert_rejection", "insert_evaluated_opportunity"]:
             fn = getattr(StateManager, fn_name)
             params = set(inspect.signature(fn).parameters.keys())
@@ -671,14 +673,14 @@ class TestXRPSizingCap:
 
     def test_xrp_risk_cap_exists(self):
         import bot
-        assert hasattr(bot, "XRP_MAX_RISK_PER_TRADE")
-        assert bot.XRP_MAX_RISK_PER_TRADE < bot.MAX_RISK_PER_TRADE
+        assert hasattr(bot.constants, "XRP_MAX_RISK_PER_TRADE")
+        assert bot.constants.XRP_MAX_RISK_PER_TRADE < config.MAX_RISK_PER_TRADE
 
     def test_xrp_cap_is_reasonable(self):
         import bot
         # XRP cap should be meaningfully lower than global
-        assert bot.XRP_MAX_RISK_PER_TRADE <= 0.15
-        assert bot.MAX_RISK_PER_TRADE >= 0.20
+        assert bot.constants.XRP_MAX_RISK_PER_TRADE <= 0.15
+        assert config.MAX_RISK_PER_TRADE >= 0.20
 
 
 class TestBTCSizingCap:
@@ -686,13 +688,13 @@ class TestBTCSizingCap:
 
     def test_btc_risk_cap_exists(self):
         import bot
-        assert hasattr(bot, "BTC_MAX_RISK_PER_TRADE")
-        assert bot.BTC_MAX_RISK_PER_TRADE < bot.MAX_RISK_PER_TRADE
+        assert hasattr(bot.constants, "BTC_MAX_RISK_PER_TRADE")
+        assert bot.constants.BTC_MAX_RISK_PER_TRADE < config.MAX_RISK_PER_TRADE
 
     def test_btc_cap_is_reasonable(self):
         import bot
-        assert bot.BTC_MAX_RISK_PER_TRADE <= 0.15
-        assert bot.BTC_MAX_RISK_PER_TRADE >= 0.05
+        assert bot.constants.BTC_MAX_RISK_PER_TRADE <= 0.15
+        assert bot.constants.BTC_MAX_RISK_PER_TRADE >= 0.05
 
 
 # ============================================================================
@@ -751,7 +753,7 @@ class TestProductTypeTracking:
     """All DB insert functions must accept and store product_type."""
 
     def test_insert_functions_accept_product_type(self):
-        from bot import StateManager
+        from bot.state import StateManager
         for fn_name in ["insert_rejection", "insert_evaluated_opportunity"]:
             fn = getattr(StateManager, fn_name)
             params = set(inspect.signature(fn).parameters.keys())
@@ -803,19 +805,19 @@ class TestObservationModeSafety:
 
     def test_hourly_is_observation_only(self):
         import bot
-        assert bot.HOURLY_OBSERVATION_ONLY is True
+        assert bot.constants.HOURLY_OBSERVATION_ONLY is True
 
     # Removed: test_spx_is_live — SPX reverted to observation Mar 17 (Polygon 403).
     # Covered by test_live_product_is_not_observation which now asserts observation_only=True.
 
     def test_weather_is_observation_only(self):
         import bot
-        assert bot.WEATHER_OBSERVATION_ONLY is True
+        assert bot.constants.WEATHER_OBSERVATION_ONLY is True
 
     def test_live_mode_is_enabled(self):
         """15M should be live (OBSERVATION_MODE=False means live)."""
         import bot
-        assert bot.OBSERVATION_MODE is False
+        assert bot.constants.OBSERVATION_MODE is False
 
 
 # ============================================================================
@@ -890,11 +892,11 @@ class TestCodebaseHygiene:
         """Verify critical trading constants haven't drifted unexpectedly."""
         import bot
         # These are the "known good" values as of Mar 23, 2026
-        assert bot.MIN_ENTRY_PRICE == 75  # lowered from 80 for ETH 75-79c
-        assert bot.MAX_ENTRY_PRICE == 99
-        assert bot.MAX_SECONDS_BEFORE_CLOSE == 900
-        assert bot.STC_SHADOW_THRESHOLD == 600
-        assert bot.OBSERVATION_MODE is False
+        assert bot.constants.MIN_ENTRY_PRICE == 75  # lowered from 80 for ETH 75-79c
+        assert bot.constants.MAX_ENTRY_PRICE == 99
+        assert bot.constants.MAX_SECONDS_BEFORE_CLOSE == 900
+        assert bot.constants.STC_SHADOW_THRESHOLD == 600
+        assert bot.constants.OBSERVATION_MODE is False
 
 
 # ============================================================================
@@ -914,7 +916,7 @@ class TestCalEnginePipelineWiring:
         assert "raw_prob" in content, "bot/engines/sports_engine.py missing raw_prob in INSERT"
 
     def test_bot_insert_evaluated_accepts_raw_prob(self):
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         assert "raw_prob" in sig.parameters, (
             "insert_evaluated_opportunity missing raw_prob parameter"
@@ -932,8 +934,8 @@ class TestRetryLoopPrevention:
     def test_direct_taker_threshold_reasonable(self):
         """DIRECT_TAKER_THRESHOLD must be set and reasonable."""
         import bot
-        assert hasattr(bot, "DIRECT_TAKER_THRESHOLD")
-        assert 30 <= bot.DIRECT_TAKER_THRESHOLD <= 300
+        assert hasattr(bot.constants, "DIRECT_TAKER_THRESHOLD")
+        assert 30 <= bot.constants.DIRECT_TAKER_THRESHOLD <= 300
 
 
 # ============================================================================
@@ -946,7 +948,7 @@ class TestTVRKWeights:
 
     def test_tv_rk_weights_near_expiry(self):
         """Near expiry (< 60s): fast RK₁ should dominate."""
-        from bot import compute_tv_rk_weights
+        from bot.models import compute_tv_rk_weights
         w1, w5, w15 = compute_tv_rk_weights(30.0)
         assert w1 > w5
         assert w1 > w15
@@ -954,14 +956,14 @@ class TestTVRKWeights:
 
     def test_tv_rk_weights_far_from_expiry(self):
         """Far from expiry (> 180s): stable RK₁₅ should dominate."""
-        from bot import compute_tv_rk_weights
+        from bot.models import compute_tv_rk_weights
         w1, w5, w15 = compute_tv_rk_weights(300.0)
         assert w15 >= w1
         assert abs(w1 + w5 + w15 - 1.0) < 0.01
 
     def test_tv_rk_weights_sum_to_one(self):
         """Weights must sum to ~1.0 at all time points (small tolerance for interpolation)."""
-        from bot import compute_tv_rk_weights
+        from bot.models import compute_tv_rk_weights
         for stc in [10, 30, 60, 90, 120, 180, 300, 600, 900]:
             w1, w5, w15 = compute_tv_rk_weights(float(stc))
             assert abs(w1 + w5 + w15 - 1.0) < 0.06, f"Weights don't sum to ~1 at STC={stc}: {w1+w5+w15}"
@@ -2145,17 +2147,17 @@ class TestSOLEdgeFloor:
 
     def test_sol_min_edge_exists(self):
         import bot
-        assert hasattr(bot, "SOL_MIN_EDGE")
-        assert bot.SOL_MIN_EDGE >= 0.008
+        assert hasattr(bot.constants, "SOL_MIN_EDGE")
+        assert bot.constants.SOL_MIN_EDGE >= 0.008
 
     def test_sol_min_edge_higher_than_default(self):
         import bot
         # At most common SOL prices (80-92c), default edge is 0.25-0.35%
         # SOL floor should be much higher
         for price in [80, 85, 88, 90, 91]:
-            default_edge = bot.get_min_edge(price)
-            assert bot.SOL_MIN_EDGE > default_edge, (
-                f"SOL_MIN_EDGE {bot.SOL_MIN_EDGE} should exceed default "
+            default_edge = bot.helpers.sizing.get_min_edge(price)
+            assert bot.constants.SOL_MIN_EDGE > default_edge, (
+                f"SOL_MIN_EDGE {bot.constants.SOL_MIN_EDGE} should exceed default "
                 f"{default_edge} at {price}c"
             )
 
@@ -2180,7 +2182,7 @@ class TestNBBOFallbackGates:
 
     def test_nbbo_fallback_gates_exist(self):
         """NBBO_FALLBACK_GATES config must exist with all 4 assets."""
-        from bot import NBBO_FALLBACK_GATES
+        from bot.constants import NBBO_FALLBACK_GATES
         assert isinstance(NBBO_FALLBACK_GATES, dict)
         for asset in ("BTC", "ETH", "SOL", "XRP"):
             assert asset in NBBO_FALLBACK_GATES, f"Missing gate for {asset}"
@@ -2194,32 +2196,32 @@ class TestNBBOFallbackGates:
             assert max_stc is None or isinstance(max_stc, (int, float))
 
     def test_btc_gate_values(self):
-        from bot import NBBO_FALLBACK_GATES
+        from bot.constants import NBBO_FALLBACK_GATES
         min_p, max_p, max_stc = NBBO_FALLBACK_GATES["BTC"]
         assert min_p == 80  # Lowered from 86 for LPNE (BTC 80-87c near-expiry)
         assert max_p == 99
         assert max_stc == 300.0
 
     def test_eth_gate_values(self):
-        from bot import NBBO_FALLBACK_GATES, ETH_MIN_ENTRY_PRICE
+        from bot.constants import NBBO_FALLBACK_GATES, ETH_MIN_ENTRY_PRICE
         min_p, _, max_stc = NBBO_FALLBACK_GATES["ETH"]
         assert min_p == ETH_MIN_ENTRY_PRICE, f"ETH NBBO floor must match ETH_MIN_ENTRY_PRICE ({ETH_MIN_ENTRY_PRICE})"
         assert max_stc == 300.0, "NBBO STC gate should be 300s"
 
     def test_sol_gate_excludes_low_prices(self):
         """SOL 80-85c has 50-73% WR — must be excluded."""
-        from bot import NBBO_FALLBACK_GATES
+        from bot.constants import NBBO_FALLBACK_GATES
         min_p, _, _ = NBBO_FALLBACK_GATES["SOL"]
         assert min_p >= 86, f"SOL min_price {min_p} too low, 80-85c is a WR trap"
 
     def test_xrp_gate_values(self):
-        from bot import NBBO_FALLBACK_GATES
+        from bot.constants import NBBO_FALLBACK_GATES
         _, _, max_stc = NBBO_FALLBACK_GATES["XRP"]
         assert max_stc == 300.0, "NBBO STC gate should be 300s"
 
     def test_all_stc_gates_uniform(self):
         """All NBBO STC gates should use the same value (currently 300s)."""
-        from bot import NBBO_FALLBACK_GATES
+        from bot.constants import NBBO_FALLBACK_GATES
         stc_values = set(max_stc for _, _, max_stc in NBBO_FALLBACK_GATES.values())
         assert len(stc_values) == 1, f"NBBO STC gates not uniform: {stc_values}"
         assert stc_values.pop() == 300.0, "NBBO STC gate should be 300s"
@@ -2270,14 +2272,13 @@ class TestNBBOFallbackGates:
 
     def test_nbbo_fallback_blocks_low_price(self):
         """NBBO fallback must reject prices below asset gate."""
-        from bot import NBBO_FALLBACK_GATES
-        # SOL at 83c should be blocked (gate starts at 86c)
+        from bot.constants import NBBO_FALLBACK_GATES  # SOL at 83c should be blocked (gate starts at 86c)
         min_p, _, _ = NBBO_FALLBACK_GATES["SOL"]
         assert 83 < min_p, "Test assumes 83c is below SOL gate"
 
     def test_nbbo_fallback_blocks_high_stc(self):
         """NBBO fallback must reject signals with STC >= 300s."""
-        from bot import NBBO_FALLBACK_GATES
+        from bot.constants import NBBO_FALLBACK_GATES
         _, _, max_stc = NBBO_FALLBACK_GATES["ETH"]
         assert max_stc is not None
         assert max_stc == 300.0

@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bot import KalshiClient  # noqa: E402
+from bot.kalshi_client import KalshiClient  # noqa: E402
 
 
 def build_client() -> KalshiClient:

@@ -24,9 +24,8 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
-from bot import OpportunityScanner
-
-# Default active_windows for tests that exercise the 15M-present branch.
+from bot.scanner import OpportunityScanner  # Default active_windows for tests that exercise the 15M-present branch.
+import bot.notifier  # noqa: F401
 # A non-empty list with product_type="15m" bypasses the catalog-gap guard
 # (added 2026-04-24) so the silence alert can fire on age threshold alone.
 _ACTIVE_15M = [{"product_type": "15m", "asset": "BTC"}]
@@ -739,7 +738,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
         showing zero for the new reason. Module-load assertion
         enforces this; this test pins the contract from the test
         side."""
-        scanner = bot.OpportunityScanner
+        scanner = bot.scanner.OpportunityScanner
         ws = scanner._WS_SHAPE_BAIL_REASONS
         thr = scanner._THRESHOLD_SHAPE_BAIL_REASONS
         bail = set(scanner._BAIL_REJECTION_REASONS)
@@ -753,7 +752,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
         surface every member of `_BAIL_REJECTION_REASONS` so a future
         new reason is visible in the alert without a separate edit
         site. Pin via direct call with a pre-built dict."""
-        scanner = bot.OpportunityScanner
+        scanner = bot.scanner.OpportunityScanner
         formatted = scanner._format_bail_breakdown(
             {"threshold_unparsable": 5})
         for reason in scanner._BAIL_REJECTION_REASONS:
@@ -769,7 +768,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
         alphabetically, not by tuple order, so a maintainer reordering
         `_BAIL_REJECTION_REASONS` doesn't silently flip alert layout.
         Pin the order with explicit position assertions."""
-        scanner = bot.OpportunityScanner
+        scanner = bot.scanner.OpportunityScanner
         formatted = scanner._format_bail_breakdown({
             "no_orderbook": 7,
             "threshold_unparsable": 1,
@@ -862,7 +861,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
         rejected a real 75%-threshold case as BAIL FLOOD. Ratio
         loosened to 3 (75%) so a 3-ticker incident with 1 WS blip
         routes correctly. Pin the constant + boundary cases here."""
-        scanner = bot.OpportunityScanner
+        scanner = bot.scanner.OpportunityScanner
         self.assertEqual(scanner._THRESHOLD_SHAPE_DOMINANCE_RATIO, 3)
 
     def test_three_threshold_one_ws_routes_threshold_at_new_ratio(self):
@@ -954,14 +953,14 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
             "no_orderbook", "no_best_ask",
             "threshold_unparsable", "another_threshold_reason")
         with patch.object(
-                bot.OpportunityScanner,
+                bot.scanner.OpportunityScanner,
                 "_THRESHOLD_SHAPE_BAIL_REASONS", new_thr_bucket), \
              patch.object(
-                bot.OpportunityScanner,
+                bot.scanner.OpportunityScanner,
                 "_BAIL_REJECTION_REASONS", new_bail_reasons):
             # Verify the invariant holds at runtime under the patch
             # (would fail if either patch was forgotten).
-            scanner = bot.OpportunityScanner
+            scanner = bot.scanner.OpportunityScanner
             self.assertEqual(
                 scanner._WS_SHAPE_BAIL_REASONS
                 | scanner._THRESHOLD_SHAPE_BAIL_REASONS,
@@ -1047,7 +1046,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
         bucket size is 1; this test will fail loudly if someone
         extends `_THRESHOLD_SHAPE_BAIL_REASONS` without updating
         whatever would need to change."""
-        scanner = bot.OpportunityScanner
+        scanner = bot.scanner.OpportunityScanner
         # If the bucket grows, all the test's assumptions about
         # 'threshold_unparsable' as the sole label need re-review.
         # Loud failure beats silent label drift.
@@ -1163,10 +1162,10 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
 
         s._state.conn = _TickerOnlyRaisingConn()
         with patch.object(
-                bot.OpportunityScanner,
+                bot.scanner.OpportunityScanner,
                 "_THRESHOLD_SHAPE_BAIL_REASONS", new_thr_bucket), \
              patch.object(
-                bot.OpportunityScanner,
+                bot.scanner.OpportunityScanner,
                 "_BAIL_REJECTION_REASONS", new_bail_reasons):
             with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
                 s._check_15m_silence_alert(_ACTIVE_15M)
@@ -1217,7 +1216,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
 
         s._state.conn = _TickerOnlyRaisingConn()
         with patch.object(
-                bot.OpportunityScanner,
+                bot.scanner.OpportunityScanner,
                 "_SILENCE_AGE_THRESHOLD_SECONDS", 300):
             with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
                 s._check_15m_silence_alert(_ACTIVE_15M)
@@ -1257,7 +1256,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
 
         s._state.conn = _TickerOnlyRaisingConn()
         with patch.object(
-                bot.OpportunityScanner,
+                bot.scanner.OpportunityScanner,
                 "_SILENCE_AGE_THRESHOLD_SECONDS", 599):
             with patch.object(bot.notifier, "_TELEGRAM") as mock_tele:
                 s._check_15m_silence_alert(_ACTIVE_15M)
@@ -1452,7 +1451,7 @@ class TestBailFloodMessageDifferentiation(unittest.TestCase):
         zero in the discriminator, and (c) surface in the Breakdown
         line via `_format_bail_breakdown` (so it's visible to
         operators even if untested)."""
-        scanner = bot.OpportunityScanner
+        scanner = bot.scanner.OpportunityScanner
         ws = scanner._WS_SHAPE_BAIL_REASONS
         thr = scanner._THRESHOLD_SHAPE_BAIL_REASONS
         bail = set(scanner._BAIL_REJECTION_REASONS)
@@ -1570,7 +1569,7 @@ class TestBailReasonConstantContract(unittest.TestCase):
     def test_bail_constant_matches_curated_set(self):
         """`_BAIL_REJECTION_REASONS` in bot/_impl.py must equal this test's
         KNOWN_BAIL_REASONS. Update both in the same commit."""
-        actual = set(bot.OpportunityScanner._BAIL_REJECTION_REASONS)
+        actual = set(bot.scanner.OpportunityScanner._BAIL_REJECTION_REASONS)
         self.assertEqual(
             actual, self.KNOWN_BAIL_REASONS,
             "_BAIL_REJECTION_REASONS drifted from KNOWN_BAIL_REASONS")
@@ -2147,7 +2146,7 @@ class TestBailReasonsConstantNonEmpty(unittest.TestCase):
 
     def test_constant_is_non_empty(self):
         self.assertTrue(
-            len(bot.OpportunityScanner._BAIL_REJECTION_REASONS) > 0)
+            len(bot.scanner.OpportunityScanner._BAIL_REJECTION_REASONS) > 0)
 
 
 class TestSilent15MAlertHeartbeatGate(unittest.TestCase):

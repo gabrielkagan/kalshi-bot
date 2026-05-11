@@ -36,6 +36,8 @@ import sys
 import time
 import unittest
 from unittest.mock import MagicMock
+import bot.constants  # noqa: F401
+import bot.feeds  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -59,7 +61,7 @@ def _make_feed():
     """Construct a minimal KalshiFeed with the attrs force_resubscribe
     needs. Bypasses __init__ to avoid touching network/asyncio."""
     import bot
-    f = bot.KalshiFeed.__new__(bot.KalshiFeed)
+    f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
     f._pending_subscribes = []
     f._pending_unsubscribes = []
     f._pending_snapshot_requests = []
@@ -170,7 +172,7 @@ class TestForceResubscribeHelper(unittest.TestCase):
         # Backdate cooldown entry past expiry.
         import bot
         self.f._force_resub_cooldown["KXBTC15M-FOO"] = (
-            time.monotonic() - bot.WS_FORCE_RESUB_COOLDOWN_S - 1.0)
+            time.monotonic() - bot.constants.WS_FORCE_RESUB_COOLDOWN_S - 1.0)
         self.f._pending_snapshot_requests.clear()
         self.f.force_resubscribe("KXBTC15M-FOO")
         self.assertIn(
@@ -202,7 +204,7 @@ class TestSnapshotTimeoutFallback(unittest.TestCase):
         _check_snapshot_timeouts should queue both unsub and sub."""
         import bot
         self.f._snapshot_request_pending["KXBTC15M-BAR"] = (
-            time.monotonic() - bot.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
+            time.monotonic() - bot.constants.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
         timed_out = self.f._check_snapshot_timeouts()
         self.assertEqual(timed_out, ["KXBTC15M-BAR"])
         self.assertIn(
@@ -254,12 +256,12 @@ class TestForceResubCooldownConstant(unittest.TestCase):
     def test_constant_defined(self):
         import bot
         self.assertTrue(
-            hasattr(bot, "WS_FORCE_RESUB_COOLDOWN_S"),
+            hasattr(bot.constants, "WS_FORCE_RESUB_COOLDOWN_S"),
             "Must define WS_FORCE_RESUB_COOLDOWN_S as a module-level "
             "constant.")
         # Reasonable range — not so short we re-sub mid-snapshot,
         # not so long that legitimate repeat triggers wait too long.
-        val = bot.WS_FORCE_RESUB_COOLDOWN_S
+        val = bot.constants.WS_FORCE_RESUB_COOLDOWN_S
         self.assertGreaterEqual(val, 5.0)
         self.assertLessEqual(val, 120.0)
 
@@ -306,10 +308,10 @@ class TestPeriodicResnapshot(unittest.TestCase):
     def test_periodic_resnap_constant_defined(self):
         import bot
         self.assertTrue(
-            hasattr(bot, "WS_PERIODIC_RESNAPSHOT_INTERVAL_S"),
+            hasattr(bot.constants, "WS_PERIODIC_RESNAPSHOT_INTERVAL_S"),
             "Must define WS_PERIODIC_RESNAPSHOT_INTERVAL_S "
             "module-level.")
-        val = bot.WS_PERIODIC_RESNAPSHOT_INTERVAL_S
+        val = bot.constants.WS_PERIODIC_RESNAPSHOT_INTERVAL_S
         # Reasonable range: 1-30 min.
         self.assertGreaterEqual(val, 60.0)
         self.assertLessEqual(val, 1800.0)
@@ -472,7 +474,7 @@ class TestR1A1AutoDisablePrimary(unittest.TestCase):
             t = f"KXBTC15M-Q{i}"
             self.f._subscribed_tickers.add(t)
             self.f._snapshot_request_pending[t] = (
-                time.monotonic() - bot.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
+                time.monotonic() - bot.constants.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
         self.f._check_snapshot_timeouts()
         self.assertEqual(
             self.f._get_snapshot_consecutive_failed_sweeps, 1,
@@ -488,12 +490,12 @@ class TestR1A1AutoDisablePrimary(unittest.TestCase):
         zero successful snapshots in between, does the primary
         path auto-disable."""
         import bot
-        threshold = bot.WS_GET_SNAPSHOT_DISABLE_AFTER
+        threshold = bot.constants.WS_GET_SNAPSHOT_DISABLE_AFTER
         for sweep in range(threshold):
             t = f"KXBTC15M-S{sweep}"
             self.f._subscribed_tickers.add(t)
             self.f._snapshot_request_pending[t] = (
-                time.monotonic() - bot.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
+                time.monotonic() - bot.constants.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
             self.f._check_snapshot_timeouts()
         self.assertTrue(
             self.f._get_snapshot_disabled,
@@ -505,7 +507,7 @@ class TestR1A1AutoDisablePrimary(unittest.TestCase):
         import bot
         self.f._subscribed_tickers.add("KXBTC15M-T0")
         self.f._snapshot_request_pending["KXBTC15M-T0"] = (
-            time.monotonic() - bot.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
+            time.monotonic() - bot.constants.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0)
         self.f._check_snapshot_timeouts()
         self.assertEqual(
             self.f._get_snapshot_consecutive_failed_sweeps, 1)

@@ -33,6 +33,7 @@ import sys
 import time
 import unittest
 from unittest.mock import MagicMock
+import bot.feeds  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -42,7 +43,7 @@ def _make_feed():
     with attrs the subscribe/unsubscribe paths need. Kept local so future
     blacklist additions land in lockstep with the SUT."""
     import bot
-    f = bot.KalshiFeed.__new__(bot.KalshiFeed)
+    f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
     f._pending_subscribes = []
     f._pending_unsubscribes = []
     f._pending_snapshot_requests = []

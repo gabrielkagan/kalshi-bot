@@ -40,9 +40,11 @@ before any scanner method runs. Locked by tests/test_scanner_extraction.py.
 
 Re-imported into bot/_impl.py via `from bot.scanner import OpportunityScanner`
 so the runtime construction in `MainLoop.__init__` (search "self.scanner = OpportunityScanner")
-+ ~30 test instantiation sites + 13 OrderExecutor + MainLoop static-method
-call sites all resolve via the proxy chain bot._impl.OpportunityScanner →
-bot.scanner.OpportunityScanner.
++ test instantiation sites + 13 OrderExecutor + MainLoop static-method
+call sites resolve. Post-Bit-9.3-iii.b (2026-05-11) the `_BotProxy` is retired;
+callers reach `OpportunityScanner` via `from bot.scanner import OpportunityScanner`
+directly (or `bot.scanner.OpportunityScanner`). The bot/_impl.py re-export
+persists as the residual shim until Bit 9.3-iii.c deletes bot/_impl.py.
 """
 import datetime
 import inspect

@@ -30,16 +30,15 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bot import (
-    OrderExecutor,
-    OpportunityScanner,
-    StateManager,
-    compute_derived_features,
-)
+from bot.executor import OrderExecutor
+from bot.helpers.derived_features import compute_derived_features
+from bot.scanner import OpportunityScanner
+from bot.state import StateManager
 import bot
 # Bit 6.3 path-B: _resolve_cal_engine relocated from bot/_impl.py to
 # bot/engines/calibration.py. Test patches target the new module.
 import bot.engines.calibration as _cal_state
+import bot.helpers  # noqa: F401
 
 
 # ─────────────────────────────────────────────────────────────────────────────

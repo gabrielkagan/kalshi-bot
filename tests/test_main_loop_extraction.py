@@ -282,20 +282,20 @@ def test_main_loop_class_NOT_in_bot_impl_module():
 
 
 def test_main_loop_module_attr_resolves_via_proxy():
-    """Bit 9.3 re-export: bot.MainLoop resolves through the proxy chain."""
+    """Bit 9.3 re-export: bot.main_loop.MainLoop resolves through the proxy chain."""
     import bot
     import bot._impl
     import bot.main_loop
-    assert bot.MainLoop is bot._impl.MainLoop, (
-        "bot.MainLoop not resolving to bot._impl.MainLoop via proxy"
+    assert bot.main_loop.MainLoop is bot._impl.MainLoop, (
+        "bot.main_loop.MainLoop not resolving to bot._impl.MainLoop via proxy"
     )
     assert bot._impl.MainLoop is bot.main_loop.MainLoop, (
         "bot._impl.MainLoop not the SAME class as bot.main_loop.MainLoop — "
         "the re-export `from bot.main_loop import MainLoop` must bind the same "
         "class object (not re-define)."
     )
-    assert bot.MainLoop.__module__ == "bot.main_loop", (
-        f"bot.MainLoop.__module__ = {bot.MainLoop.__module__!r}; "
+    assert bot.main_loop.MainLoop.__module__ == "bot.main_loop", (
+        f"bot.main_loop.MainLoop.__module__ = {bot.main_loop.MainLoop.__module__!r}; "
         f"expected 'bot.main_loop' post-extraction."
     )
 
@@ -303,7 +303,7 @@ def test_main_loop_module_attr_resolves_via_proxy():
 def test_main_loop_init_signature_unchanged():
     """MainLoop.__init__ signature must be byte-identical (extraction is structural)."""
     import bot
-    sig = inspect.signature(bot.MainLoop.__init__)
+    sig = inspect.signature(bot.main_loop.MainLoop.__init__)
     params = list(sig.parameters.keys())
     assert params == ["self"], (
         f"MainLoop.__init__ signature drift: {params} (expected just ['self'])"
@@ -313,8 +313,8 @@ def test_main_loop_init_signature_unchanged():
 def test_main_loop_run_signature_unchanged():
     """MainLoop.run() must remain the entrypoint method called by bot/__main__.py."""
     import bot
-    assert hasattr(bot.MainLoop, "run"), "MainLoop.run missing post-extraction"
-    sig = inspect.signature(bot.MainLoop.run)
+    assert hasattr(bot.main_loop.MainLoop, "run"), "MainLoop.run missing post-extraction"
+    sig = inspect.signature(bot.main_loop.MainLoop.run)
     assert list(sig.parameters.keys()) == ["self"], (
         f"MainLoop.run signature drift: {sig.parameters}"
     )
@@ -387,7 +387,7 @@ def test_main_loop_no_static_methods():
 def test_main_loop_method_present(method_name: str):
     """Every named method survives extraction."""
     import bot
-    assert hasattr(bot.MainLoop, method_name), (
+    assert hasattr(bot.main_loop.MainLoop, method_name), (
         f"MainLoop.{method_name} missing post-extraction"
     )
 
@@ -839,8 +839,8 @@ def test_main_loop_instantiable_via_new_without_init():
     which requires KALSHI_API_KEY / private key). Mirrors the pattern used by
     tests/test_stale_ticker_cleanup.py + tests/test_cache_staleness_watchdog.py."""
     import bot
-    instance = bot.MainLoop.__new__(bot.MainLoop)
-    assert isinstance(instance, bot.MainLoop)
+    instance = bot.main_loop.MainLoop.__new__(bot.main_loop.MainLoop)
+    assert isinstance(instance, bot.main_loop.MainLoop)
     # Method bindings work via the class
     assert hasattr(instance, "run")
     assert callable(instance.run)

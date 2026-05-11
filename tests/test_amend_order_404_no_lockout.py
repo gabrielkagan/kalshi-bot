@@ -49,13 +49,15 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
+import bot.executor  # noqa: F401
+import bot.kalshi_client  # noqa: F401
 
 
 def _make_executor():
     """Mirror the helper in test_cancel_404_pops_active_orders.py:
     bypass __init__, set the minimum required state for
     _reprice_maker to run."""
-    e = bot.OrderExecutor.__new__(bot.OrderExecutor)
+    e = bot.executor.OrderExecutor.__new__(bot.executor.OrderExecutor)
     e._active_orders = {}
     e._client = MagicMock()
     e._state = MagicMock()
@@ -165,7 +167,7 @@ class TestPost404DoesNotReturnSentinel(unittest.TestCase):
     """
 
     def test_post_404_returns_none_not_sentinel(self):
-        c = bot.KalshiClient.__new__(bot.KalshiClient)
+        c = bot.kalshi_client.KalshiClient.__new__(bot.kalshi_client.KalshiClient)
         c.session = MagicMock()
         c.api_key = "test-key"
         c._create_signature = MagicMock(return_value="sig")

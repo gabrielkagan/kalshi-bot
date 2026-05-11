@@ -2,12 +2,12 @@
 
 **DO NOT EDIT MANUALLY.** Regenerate with `make refresh-map` (invokes `scripts/refresh_repo_map.py`).
 
-Generated: 2026-05-11T13:46:19Z (HEAD: `89d0b36`).
+Generated: 2026-05-11T18:29:27Z (HEAD: `ec88540`).
 
 ## Summary
-- Modules: 53 .py files under `bot/`
-- Total LOC: 43,012
-- Top-level classes: 59
+- Modules: 54 .py files under `bot/`
+- Total LOC: 42,930
+- Top-level classes: 58
 - Public top-level functions: 41 (underscore-prefixed private functions excluded from this map)
 
 Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this map is the navigation-aid complement.
@@ -16,12 +16,12 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
 
 ### `bot/`
 
-  - `__init__.py` (273 LOC)
-    - classes: _BotProxy
-  - `__main__.py` (40 LOC)
-  - `_impl.py` (583 LOC)
+  - `__init__.py` (38 LOC)
+  - `__main__.py` (58 LOC)
+  - `_impl.py` (591 LOC)
   - `_thread_env.py` (36 LOC)
-  - `constants.py` (1800 LOC)
+  - `boot.py` (166 LOC)
+  - `constants.py` (1804 LOC)
   - `db_writer_registry.py` (168 LOC)
     - functions: recent_writes, register_write, snapshot_active, tracked_write, unregister_write
   - `executor.py` (5394 LOC)
@@ -30,21 +30,21 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
     - classes: KalshiClient
   - `logger.py` (90 LOC)
     - classes: Logger
-  - `main_loop.py` (2227 LOC)
+  - `main_loop.py` (2208 LOC)
     - classes: MainLoop
   - `models.py` (1274 LOC)
     - classes: EGARCHEstimator, MincerZarnowitzTracker, PositionSizer
     - functions: calculate_fee, calculate_maker_fee, calculate_taker_fee, compute_tv_rk_weights, strategy_to_group
   - `notifier.py` (87 LOC)
     - classes: TelegramNotifier
-  - `order_flow.py` (378 LOC)
+  - `order_flow.py` (384 LOC)
     - classes: KalshiOrderFlowTracker, OrderFlowEngine
   - `orphan_db_watchdog.py` (245 LOC)
     - functions: detect_orphan_db_holders
   - `settlement.py` (1275 LOC)
     - classes: SettlementTracker
     - functions: discover_active_windows
-  - `state.py` (2806 LOC)
+  - `state.py` (2774 LOC)
     - classes: StateManager
   - `clients/`
     - `__init__.py` (0 LOC)
@@ -52,7 +52,7 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
     - `__init__.py` (66 LOC)
     - `calibration.py` (1209 LOC)
       - classes: CalibrationEngine
-    - `probability.py` (318 LOC)
+    - `probability.py` (316 LOC)
       - classes: ProbabilityEngine
     - `sports_data.py` (477 LOC)
       - classes: LeagueConfig, SportGroupConfig
@@ -61,7 +61,7 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
       - classes: BayesianComebackModel, ComebackSignal, ESPNLiveFeed, GameState, KalshiGameMarkets, KalshiSportsDiscovery, PlattCalibrator, SportsEngine
     - `spx_engine.py` (1162 LOC)
       - classes: IntradaySeasonalFilter, MarketHoursGuard, SPXEGARCHEstimator, SPXEngine, SPXPriceFeed, SPXVolatilityEngine
-    - `volatility.py` (1054 LOC)
+    - `volatility.py` (1056 LOC)
       - classes: VolatilityEngine
     - `weather_engine.py` (1030 LOC)
       - classes: WeatherEngine, WeatherEnsembleFetcher, WeatherProbabilityModel, WeatherWindowDiscovery
@@ -110,7 +110,7 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
     - `circuit_breaker.py` (412 LOC)
       - classes: CircuitBreaker, CircuitBreakerOpen, CircuitBreakerRegistry, State
   - `scanner/`
-    - `__init__.py` (9475 LOC)
+    - `__init__.py` (9477 LOC)
       - classes: OpportunityScanner
   - `shadows/`
     - `__init__.py` (21 LOC)

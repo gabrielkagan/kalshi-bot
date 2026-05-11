@@ -22,7 +22,8 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
-from bot import OpportunityScanner, PRICE_BUFFER_SIZE
+from bot.constants import PRICE_BUFFER_SIZE
+from bot.scanner import OpportunityScanner
 
 
 def _make_scanner_stub() -> OpportunityScanner:

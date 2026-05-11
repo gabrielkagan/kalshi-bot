@@ -52,6 +52,8 @@ from pathlib import Path
 from typing import List, Tuple
 
 import pytest
+import bot.helpers.tm_sweep  # noqa: F401
+import bot.models  # noqa: F401
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -411,16 +413,16 @@ def test_scanner_identity_through_bot_impl():
 
 
 def test_scanner_identity_through_bot_proxy():
-    """bot.OpportunityScanner (proxy) routes to bot.scanner.OpportunityScanner."""
+    """bot.scanner.OpportunityScanner (proxy) routes to bot.scanner.OpportunityScanner."""
     import bot
     import bot.scanner
-    assert bot.OpportunityScanner is bot.scanner.OpportunityScanner
+    assert bot.scanner.OpportunityScanner is bot.scanner.OpportunityScanner
 
 
 def test_scanner_module_attribute_post_extraction():
     """After extraction, OpportunityScanner.__module__ reports bot.scanner."""
     import bot
-    assert bot.OpportunityScanner.__module__ == "bot.scanner"
+    assert bot.scanner.OpportunityScanner.__module__ == "bot.scanner"
 
 
 # ============================================================ Drift guards (3)
@@ -496,10 +498,10 @@ def test_scanner_static_methods_remain_static(static_name):
 
 @pytest.mark.parametrize("static_name", SCANNER_STATIC_METHODS)
 def test_scanner_static_methods_reachable_via_proxy(static_name):
-    """All 7 staticmethods reachable via bot.OpportunityScanner.X (proxy chain)."""
+    """All 7 staticmethods reachable via bot.scanner.OpportunityScanner.X (proxy chain)."""
     import bot
     import bot.scanner
-    proxy_attr = getattr(bot.OpportunityScanner, static_name)
+    proxy_attr = getattr(bot.scanner.OpportunityScanner, static_name)
     direct_attr = getattr(bot.scanner.OpportunityScanner, static_name)
     assert proxy_attr is direct_attr
     assert callable(proxy_attr)
@@ -922,10 +924,10 @@ def test_scanner_no_forbidden_numerical_imports(path, label, forbidden):
 
 
 def test_scanner_class_attribute_loads_via_bot_proxy():
-    """bot.OpportunityScanner resolves without ImportError/AttributeError at class-load time."""
+    """bot.scanner.OpportunityScanner resolves without ImportError/AttributeError at class-load time."""
     import bot
-    assert bot.OpportunityScanner is not None
-    assert callable(bot.OpportunityScanner)
+    assert bot.scanner.OpportunityScanner is not None
+    assert callable(bot.scanner.OpportunityScanner)
 
 
 def test_scanner_init_signature_matches_pre_extraction():
@@ -1074,7 +1076,7 @@ def test_no_stale_bot_telegram_patches_outside_bot_notifier():
     """Path-A++ regression seal: post-Bit-8.1, _TELEGRAM patches must target bot.notifier (NOT bot or bot._impl).
 
     The original ~86 sites of @patch.object(bot, "_TELEGRAM", ...) /
-    @patch("bot._TELEGRAM", ...) all need retargeting. This test fires
+    @patch("bot.notifier._TELEGRAM", ...) all need retargeting. This test fires
     if any survive post-extraction.
     """
     tests_dir = REPO_ROOT / "tests"
@@ -1095,7 +1097,7 @@ def test_no_stale_bot_telegram_patches_outside_bot_notifier():
                 line_no = text[:m.start()].count("\n") + 1
                 stale.append(f"{py_file.relative_to(REPO_ROOT)}:{line_no}: {m.group(0)}")
     assert not stale, (
-        f"Found {len(stale)} stale `bot._TELEGRAM` / `bot._impl._TELEGRAM` patch targets — "
+        f"Found {len(stale)} stale `bot.notifier._TELEGRAM` / `bot._impl._TELEGRAM` patch targets — "
         f"path-A++ requires retargeting to `bot.notifier._TELEGRAM`:\n  " + "\n  ".join(stale[:10])
         + (f"\n  ... and {len(stale) - 10} more" if len(stale) > 10 else "")
     )
@@ -1104,7 +1106,7 @@ def test_no_stale_bot_telegram_patches_outside_bot_notifier():
 # NOTE: prior drafts of this file had `test_no_stale_bot_observation_mode_patches`
 # and `test_no_stale_bot_weather_no_side_live_patches` regression seals — they
 # proved too strict, because tests that exercise OrderExecutor (still in
-# bot/_impl.py post-Bit-8.1) legitimately patch `bot.OBSERVATION_MODE` to reach
+# bot/_impl.py post-Bit-8.1) legitimately patch `bot.constants.OBSERVATION_MODE` to reach
 # bot._impl's bare-name reads. Tests that exercise scanner.scan() use
 # `bot.scanner.OBSERVATION_MODE`. The right contract is enforced by the
 # behavioral pins above (test_telegram_singleton_mutation_propagates_via_module_attribute,

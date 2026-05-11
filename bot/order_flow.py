@@ -8,8 +8,11 @@ bot/_impl.py via:
 
     from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker
 
-so the proxy chain (`bot.OrderFlowEngine` → `bot._impl.OrderFlowEngine`
-→ `bot.order_flow.OrderFlowEngine`; identical for KOFT) stays stable.
+Post-Bit-9.3-iii.b (2026-05-11) the `_BotProxy` is retired; callers reach
+both classes via `from bot.order_flow import OrderFlowEngine,
+KalshiOrderFlowTracker` (or `bot.order_flow.X`) directly. The re-export
+in bot/_impl.py persists as the residual shim until Bit 9.3-iii.c deletes
+bot/_impl.py.
 
 ## Clean-leaf shape (no carve-out, no late-binding)
 

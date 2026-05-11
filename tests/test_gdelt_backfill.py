@@ -4,7 +4,7 @@ Tests the backfill harness in scripts/gdelt_backfill.py with the GDELT
 Doc API mocked. Mirrors the test conventions established in
 test_shadow_coverage_backfill_g2.py / g4.py / g5.py:
 
-  - Real SQLite via bot.StateManager + tmp_path.
+  - Real SQLite via bot.state.StateManager + tmp_path.
   - All HTTP via injected `request_fn` / `fetcher` — no real network.
   - Eight named tests per the Phase-H spec:
       test_api_url_format
@@ -22,6 +22,7 @@ import os
 import sys
 
 import pytest
+import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -30,7 +31,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts"))
 
 def _make_db(tmp_path):
     import bot
-    return bot.StateManager(str(tmp_path / "test.db"))
+    return bot.state.StateManager(str(tmp_path / "test.db"))
 
 
 def _insert_eval_row(

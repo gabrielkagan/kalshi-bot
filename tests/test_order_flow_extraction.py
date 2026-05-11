@@ -52,6 +52,9 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import bot.engines  # noqa: F401
+import bot.notifier  # noqa: F401
+import bot.scanner  # noqa: F401
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -212,38 +215,38 @@ def test_kalshioft_class_NOT_in_bot_impl_module():
 
 
 def test_orderflowengine_module_attr_resolves_via_proxy():
-    """Bit 9.3.5 re-export: bot.OrderFlowEngine resolves through the proxy chain."""
+    """Bit 9.3.5 re-export: bot.order_flow.OrderFlowEngine resolves through the proxy chain."""
     import bot
     import bot._impl
     import bot.order_flow
-    assert bot.OrderFlowEngine is bot._impl.OrderFlowEngine, (
-        "bot.OrderFlowEngine not resolving to bot._impl.OrderFlowEngine via proxy"
+    assert bot.order_flow.OrderFlowEngine is bot._impl.OrderFlowEngine, (
+        "bot.order_flow.OrderFlowEngine not resolving to bot._impl.OrderFlowEngine via proxy"
     )
     assert bot._impl.OrderFlowEngine is bot.order_flow.OrderFlowEngine, (
         "bot._impl.OrderFlowEngine not the SAME class as bot.order_flow.OrderFlowEngine — "
         "the re-export `from bot.order_flow import OrderFlowEngine` must bind the same "
         "class object (not re-define)."
     )
-    assert bot.OrderFlowEngine.__module__ == "bot.order_flow", (
-        f"bot.OrderFlowEngine.__module__ = {bot.OrderFlowEngine.__module__!r}; "
+    assert bot.order_flow.OrderFlowEngine.__module__ == "bot.order_flow", (
+        f"bot.order_flow.OrderFlowEngine.__module__ = {bot.order_flow.OrderFlowEngine.__module__!r}; "
         f"expected 'bot.order_flow' post-extraction."
     )
 
 
 def test_kalshioft_module_attr_resolves_via_proxy():
-    """Bit 9.3.5 re-export: bot.KalshiOrderFlowTracker resolves through the proxy chain."""
+    """Bit 9.3.5 re-export: bot.order_flow.KalshiOrderFlowTracker resolves through the proxy chain."""
     import bot
     import bot._impl
     import bot.order_flow
-    assert bot.KalshiOrderFlowTracker is bot._impl.KalshiOrderFlowTracker
+    assert bot.order_flow.KalshiOrderFlowTracker is bot._impl.KalshiOrderFlowTracker
     assert bot._impl.KalshiOrderFlowTracker is bot.order_flow.KalshiOrderFlowTracker
-    assert bot.KalshiOrderFlowTracker.__module__ == "bot.order_flow"
+    assert bot.order_flow.KalshiOrderFlowTracker.__module__ == "bot.order_flow"
 
 
 def test_orderflowengine_init_signature_unchanged():
     """OFE.__init__ signature must be byte-identical (extraction is structural)."""
     import bot
-    sig = inspect.signature(bot.OrderFlowEngine.__init__)
+    sig = inspect.signature(bot.order_flow.OrderFlowEngine.__init__)
     params = list(sig.parameters.keys())
     assert params == ["self", "cross_feed", "coinglass", "kalshi_oft"], (
         f"OrderFlowEngine.__init__ signature drift: {params}"
@@ -258,7 +261,7 @@ def test_orderflowengine_init_signature_unchanged():
 def test_kalshioft_init_signature_unchanged():
     """KOFT.__init__ signature must be byte-identical (no params)."""
     import bot
-    sig = inspect.signature(bot.KalshiOrderFlowTracker.__init__)
+    sig = inspect.signature(bot.order_flow.KalshiOrderFlowTracker.__init__)
     params = list(sig.parameters.keys())
     assert params == ["self"], f"KalshiOrderFlowTracker.__init__ signature drift: {params}"
 
@@ -384,7 +387,7 @@ def test_order_flow_no_static_methods():
 def test_orderflowengine_method_present(method_name: str):
     """Every named method survives extraction."""
     import bot
-    assert hasattr(bot.OrderFlowEngine, method_name), (
+    assert hasattr(bot.order_flow.OrderFlowEngine, method_name), (
         f"OrderFlowEngine.{method_name} missing post-extraction"
     )
 
@@ -393,7 +396,7 @@ def test_orderflowengine_method_present(method_name: str):
 def test_kalshioft_method_present(method_name: str):
     """Every named method survives extraction."""
     import bot
-    assert hasattr(bot.KalshiOrderFlowTracker, method_name), (
+    assert hasattr(bot.order_flow.KalshiOrderFlowTracker, method_name), (
         f"KalshiOrderFlowTracker.{method_name} missing post-extraction"
     )
 
@@ -676,7 +679,7 @@ def test_orderflowengine_smoke_returns_documented_shape():
     coinglass.get_funding_rate.return_value = None
     kalshi_oft = MagicMock()
     kalshi_oft.get_signals.return_value = None
-    ofe = bot.OrderFlowEngine(cross_feed=cross_feed, coinglass=coinglass, kalshi_oft=kalshi_oft)
+    ofe = bot.order_flow.OrderFlowEngine(cross_feed=cross_feed, coinglass=coinglass, kalshi_oft=kalshi_oft)
     result = ofe.get_signals("BTC", ticker="KXBTC-EXAMPLE-T0")
     assert set(result.keys()) >= {
         "prob_adjustment", "confidence", "signals", "adjustments_applied",
@@ -693,7 +696,7 @@ def test_orderflowengine_smoke_returns_documented_shape():
 def test_kalshioft_smoke_get_tracked_count_starts_zero():
     """KOFT.get_tracked_count returns 0 on a fresh instance."""
     import bot
-    koft = bot.KalshiOrderFlowTracker()
+    koft = bot.order_flow.KalshiOrderFlowTracker()
     assert koft.get_tracked_count() == 0
 
 
@@ -702,7 +705,7 @@ def test_kalshioft_smoke_record_and_retrieve_signals():
     KOFT.get_signals returns None when buffer below KALSHI_OFT_MIN_SNAPSHOTS."""
     import bot
     from bot.constants import KALSHI_OFT_MIN_SNAPSHOTS
-    koft = bot.KalshiOrderFlowTracker()
+    koft = bot.order_flow.KalshiOrderFlowTracker()
     ob_data = {
         "yes": [[55, 100], [54, 50]],
         "no": [[45, 80], [44, 30]],

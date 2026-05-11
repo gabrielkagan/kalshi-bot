@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts"))
 
 def _make_db(tmp_path):
     import bot
-    return bot.StateManager(str(tmp_path / "test.db"))
+    return bot.state.StateManager(str(tmp_path / "test.db"))
 
 
 def _insert_eval_row(

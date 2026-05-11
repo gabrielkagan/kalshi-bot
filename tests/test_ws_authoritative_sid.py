@@ -31,6 +31,8 @@ import threading
 import time
 import unittest
 from unittest.mock import AsyncMock
+import bot.constants  # noqa: F401
+import bot.feeds  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -42,7 +44,7 @@ BOT_PY = os.path.join(
 def _make_feed():
     """Bypass __init__ for unit testing."""
     import bot
-    f = bot.KalshiFeed.__new__(bot.KalshiFeed)
+    f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
     f._pending_subscribes = []
     f._pending_unsubscribes = []
     f._pending_snapshot_requests = []
@@ -418,7 +420,7 @@ class TestR2B2OutstandingSubscribeWatchdog(unittest.TestCase):
         f._outstanding_subscribes[42] = "STUCK1"
         f._outstanding_subscribe_ts[42] = (
             time.monotonic()
-            - bot.WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S - 1.0)
+            - bot.constants.WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S - 1.0)
         with self.assertLogs("root", level="WARNING") as cm:
             f._check_snapshot_timeouts()
         self.assertNotIn(
@@ -447,7 +449,7 @@ class TestR4StuckSubscribeRequestsForceReconnect(unittest.TestCase):
         f._outstanding_subscribes[42] = "STUCK1"
         f._outstanding_subscribe_ts[42] = (
             time.monotonic()
-            - bot.WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S - 1.0)
+            - bot.constants.WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S - 1.0)
         f._check_snapshot_timeouts()
         self.assertTrue(
             f._force_reconnect_requested,
@@ -465,7 +467,7 @@ class TestR4StuckSubscribeRequestsForceReconnect(unittest.TestCase):
         f._outstanding_subscribes[42] = "GONE1"
         f._outstanding_subscribe_ts[42] = (
             time.monotonic()
-            - bot.WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S - 1.0)
+            - bot.constants.WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S - 1.0)
         f._check_snapshot_timeouts()
         self.assertFalse(
             f._force_reconnect_requested,

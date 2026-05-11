@@ -34,7 +34,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bot import OpportunityScanner
+from bot.scanner import OpportunityScanner
+import bot._impl  # noqa: F401
 
 
 def _make_scanner_for_drift_probe(
@@ -83,12 +84,18 @@ _SLEEP_PATCHER = None
 
 
 def setUpModule():
-    """Patch bot.time.sleep to no-op for all tests in this module.
+    """Patch bot.scanner.time.sleep to no-op for all tests in this module.
     The drift probe's REST-stability step uses `time.sleep(2.0)` between
     two REST fetches. Without this patch, the test suite would hang 2s
-    on every test that triggers the probe (~25× slowdown)."""
+    on every test that triggers the probe (~25× slowdown).
+
+    Bit 9.3-iii.b: was `bot.time.sleep` pre-proxy-retirement (resolved via
+    `bot._impl.time`); now targets `bot.scanner.time.sleep` directly because
+    the drift probe lives in OpportunityScanner.scan() (search anchor:
+    `time.sleep(2.0)` in bot/scanner/__init__.py).
+    """
     global _SLEEP_PATCHER
-    _SLEEP_PATCHER = patch("bot.time.sleep", return_value=None)
+    _SLEEP_PATCHER = patch("bot.scanner.time.sleep", return_value=None)
     _SLEEP_PATCHER.start()
 
 

@@ -28,6 +28,7 @@ no periodic GET /series reconcile yet. See sports_data.py comment.
 import os
 import sys
 import unittest
+import bot.engines  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

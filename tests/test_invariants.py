@@ -30,7 +30,7 @@ class TestFeeFormulaProperties:
 
     def test_maker_fee_always_zero(self):
         """Maker fee is always $0 (Kalshi billing)."""
-        from bot import calculate_fee
+        from bot.models import calculate_fee
         for count in [1, 5, 10, 25, 50]:
             for price in range(1, 100):
                 fee = calculate_fee(count, price, is_taker=False)
@@ -147,19 +147,19 @@ class TestGetMinEdgeConsistency:
         """Every price from 0-99 maps to some edge threshold."""
         import bot
         for price in range(0, 100):
-            edge = bot.get_min_edge(price)
+            edge = bot.helpers.sizing.get_min_edge(price)
             assert edge > 0, f"get_min_edge({price}) returned non-positive {edge}"
 
     def test_schedule_matches_documented_values(self):
         """Spot-check schedule against current config values."""
         import bot
         # 86c -> 0.25%
-        assert bot.get_min_edge(86) == pytest.approx(0.0025, abs=1e-6)
+        assert bot.helpers.sizing.get_min_edge(86) == pytest.approx(0.0025, abs=1e-6)
         # 91c -> 0.20%
-        assert bot.get_min_edge(91) == pytest.approx(0.002, abs=1e-6)
+        assert bot.helpers.sizing.get_min_edge(91) == pytest.approx(0.002, abs=1e-6)
         # 93c -> 0.50%
-        assert bot.get_min_edge(93) == pytest.approx(0.005, abs=1e-6)
+        assert bot.helpers.sizing.get_min_edge(93) == pytest.approx(0.005, abs=1e-6)
         # 95c -> 0.75%
-        assert bot.get_min_edge(95) == pytest.approx(0.0075, abs=1e-6)
+        assert bot.helpers.sizing.get_min_edge(95) == pytest.approx(0.0075, abs=1e-6)
         # 97c -> 1.0%
-        assert bot.get_min_edge(97) == pytest.approx(0.010, abs=1e-6)
+        assert bot.helpers.sizing.get_min_edge(97) == pytest.approx(0.010, abs=1e-6)

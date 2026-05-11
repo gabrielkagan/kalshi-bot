@@ -55,7 +55,7 @@ class TestHypeDogeSpotAtDecisionSchema:
 
     def test_hype_doge_columns_present_in_schema(self):
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         cols = {
             r["name"] for r in
             sm.conn.execute("PRAGMA table_info(evaluated_opportunities)").fetchall()
@@ -73,7 +73,7 @@ class TestHypeDogeSpotAtDecisionSchema:
         identical reasons (high-precision spot prices can hold sub-cent BTC
         levels — migration 011 header explains the rationale)."""
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         col_types = {
             r["name"]: r["type"].upper() for r in
             sm.conn.execute("PRAGMA table_info(evaluated_opportunities)").fetchall()
@@ -91,7 +91,7 @@ class TestHypeDogeSpotAtDecisionSignature:
     kwargs (Optional[float] = None, matching btc/eth/sol/xrp precedent)."""
 
     def test_signature_accepts_hype_doge_kwargs(self):
-        from bot import StateManager
+        from bot.state import StateManager
         sig = inspect.signature(StateManager.insert_evaluated_opportunity)
         params = set(sig.parameters.keys())
         missing = [name for (name, _) in HYPE_DOGE_NEW_COLUMNS if name not in params]
@@ -107,7 +107,7 @@ class TestHypeDogeSpotAtDecisionRoundtrip:
 
     def test_insert_round_trips_hype_doge_columns(self):
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
         kwargs = {
             "ticker": "KXHYPE15M-26MAY101900-T26",
             "event_ticker": "KXHYPE15M-26MAY101900",
@@ -141,7 +141,7 @@ class TestHypeDogeSpotAtDecisionProviderRoundtrip:
 
     def test_provider_six_keys_populates_all_six_columns(self):
         import bot
-        sm = bot.StateManager(":memory:")
+        sm = bot.state.StateManager(":memory:")
 
         # Stub _extended_feature_provider returning all six spot keys —
         # mirrors the ASSETS-driven scanner output. Provider signature is
@@ -254,7 +254,7 @@ class TestHypeDogeSpotAtDecisionBackfill:
     def _make_db_with_eval_schema(self, tmp_path):
         import bot
         db_path = tmp_path / "state.db"
-        sm = bot.StateManager(str(db_path))
+        sm = bot.state.StateManager(str(db_path))
         return sm
 
     def test_backfill_picks_up_row_with_btc_populated_but_hype_doge_null(self, tmp_path):

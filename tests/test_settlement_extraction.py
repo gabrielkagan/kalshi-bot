@@ -236,31 +236,31 @@ def test_discover_active_windows_NOT_in_bot_impl_module():
 
 
 def test_settlement_module_attr_resolves_via_proxy():
-    """Bit 9.2 re-export: bot.SettlementTracker resolves through the proxy chain."""
+    """Bit 9.2 re-export: bot.settlement.SettlementTracker resolves through the proxy chain."""
     import bot
     import bot._impl
     import bot.settlement
-    assert bot.SettlementTracker is bot._impl.SettlementTracker, (
-        "bot.SettlementTracker not resolving to bot._impl.SettlementTracker via proxy"
+    assert bot.settlement.SettlementTracker is bot._impl.SettlementTracker, (
+        "bot.settlement.SettlementTracker not resolving to bot._impl.SettlementTracker via proxy"
     )
     assert bot._impl.SettlementTracker is bot.settlement.SettlementTracker, (
         "bot._impl.SettlementTracker not the SAME class as bot.settlement.SettlementTracker — "
         "the line-117 re-export `from bot.settlement import SettlementTracker` must bind the "
         "same class object (not re-define)."
     )
-    assert bot.SettlementTracker.__module__ == "bot.settlement", (
-        f"bot.SettlementTracker.__module__ = {bot.SettlementTracker.__module__!r}; "
+    assert bot.settlement.SettlementTracker.__module__ == "bot.settlement", (
+        f"bot.settlement.SettlementTracker.__module__ = {bot.settlement.SettlementTracker.__module__!r}; "
         f"expected 'bot.settlement' post-extraction."
     )
 
 
 def test_discover_active_windows_module_attr_resolves_via_proxy():
-    """Bit 9.2 re-export: bot.discover_active_windows resolves through the proxy chain."""
+    """Bit 9.2 re-export: bot.settlement.discover_active_windows resolves through the proxy chain."""
     import bot
     import bot._impl
     import bot.settlement
-    assert bot.discover_active_windows is bot._impl.discover_active_windows, (
-        "bot.discover_active_windows not resolving via proxy"
+    assert bot.settlement.discover_active_windows is bot._impl.discover_active_windows, (
+        "bot.settlement.discover_active_windows not resolving via proxy"
     )
     assert bot._impl.discover_active_windows is bot.settlement.discover_active_windows, (
         "bot._impl.discover_active_windows not the SAME function as bot.settlement.discover_active_windows"
@@ -270,7 +270,7 @@ def test_discover_active_windows_module_attr_resolves_via_proxy():
 def test_settlement_init_signature_unchanged():
     """SettlementTracker.__init__ signature must be byte-identical (extraction is structural, not behavioral)."""
     import bot
-    sig = inspect.signature(bot.SettlementTracker.__init__)
+    sig = inspect.signature(bot.settlement.SettlementTracker.__init__)
     params = list(sig.parameters.keys())
     assert params == ["self", "client", "state", "logger", "main_loop"], (
         f"SettlementTracker.__init__ signature drift: {params}"
@@ -336,7 +336,7 @@ def test_settlement_static_methods_decorated():
 def test_settlement_method_present(method_name: str):
     """Every named method survives extraction."""
     import bot
-    assert hasattr(bot.SettlementTracker, method_name), (
+    assert hasattr(bot.settlement.SettlementTracker, method_name), (
         f"SettlementTracker.{method_name} missing post-extraction"
     )
 
@@ -716,7 +716,7 @@ def test_settlement_instantiates_via_mocks():
     client_mock = MagicMock()
     state_mock = MagicMock()
     logger_mock = MagicMock()
-    tracker = bot.SettlementTracker(client_mock, state_mock, logger_mock)
+    tracker = bot.settlement.SettlementTracker(client_mock, state_mock, logger_mock)
     # __init__ sets these
     assert tracker._client is client_mock
     assert tracker._state is state_mock
@@ -732,8 +732,8 @@ def test_discover_active_windows_callable_via_proxy():
     """Behavioral smoke: discover_active_windows is callable through the bot proxy."""
     import bot
     # Just verify it's a callable function with the right signature
-    assert callable(bot.discover_active_windows)
-    sig = inspect.signature(bot.discover_active_windows)
+    assert callable(bot.settlement.discover_active_windows)
+    sig = inspect.signature(bot.settlement.discover_active_windows)
     params = list(sig.parameters.keys())
     assert params == ["client"], f"discover_active_windows signature drift: {params}"
 
