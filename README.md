@@ -128,14 +128,14 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 190,933 |
+| Markets evaluated | 191,032 |
 | Observation period | 2026-02-22 to 2026-05-11 |
-| Filter pass rate | 4.0\% (7,632 of 190,933) |
-| Top rejection reason | Insufficient Edge (57,785) |
-| Settled trades | 3,852 (3,566 W / 284 L / 2 BE) |
+| Filter pass rate | 4.0\% (7,636 of 191,032) |
+| Top rejection reason | Insufficient Edge (57,803) |
+| Settled trades | 3,856 (3,570 W / 284 L / 2 BE) |
 | Win rate | 92.6\% |
 
-*Last updated: 2026-05-11T01:15:20Z*
+*Last updated: 2026-05-11T01:32:36Z*
 
 ## Live vs Observation
 
@@ -219,7 +219,7 @@ models.py                      -- EGARCH / Mincer-Zarnowitz / PositionSizer / fe
 analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)
 market_config.py               -- centralized MarketTypeConfig (validates against bot/_impl.py at startup)
 fifteenm_shadow.py             -- 15M shadow engine (recalibrated EGARCH + LightGBM research)
-spx_engine.py                  -- S&P 500 intraday engine (EGARCH + VIX, observation mode)
+bot/engines/spx_engine.py      -- S&P 500 intraday engine (EGARCH + VIX, observation mode)  (Sprint 10.1b relocation, 2026-05-11)
 weather_engine.py              -- weather temperature engine (NWP ensemble, NO-side live + observation)
 sports_engine.py               -- sports comeback engine (Bayesian LR, observation mode)
 bot/engines/sports_data.py     -- sports LR tables and league configuration  (Sprint 10.1a relocation, 2026-05-11)
